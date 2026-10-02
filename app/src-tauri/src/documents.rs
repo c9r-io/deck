@@ -878,32 +878,8 @@ pub(crate) fn board_path() -> PathBuf {
 }
 
 /// A quarantined Board is never a new empty Board, including after restart.
-fn board_was_quarantined(path: &std::path::Path) -> Result<bool, DeckError> {
-    let Some(parent) = path.parent() else {
-        return Ok(false);
-    };
-    let prefix = format!(
-        "{}.corrupt-",
-        path.file_stem().unwrap_or_default().to_string_lossy()
-    );
-    match std::fs::read_dir(parent) {
-        Ok(entries) => {
-            for entry in entries {
-                let name = entry?.file_name().to_string_lossy().into_owned();
-                if name.strip_prefix(&prefix).is_some_and(|suffix| {
-                    !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit() || b == b'-')
-                }) {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
-    }
-}
 fn load_board_at(path: &std::path::Path) -> Result<Option<storage::LoadOutcome>, DeckError> {
-    if !path.exists() && board_was_quarantined(path)? {
+    if !path.exists() && storage::was_quarantined(path)? {
         let backup = path.with_file_name(format!(
             "{}.bak",
             path.file_name().unwrap_or_default().to_string_lossy()
@@ -984,7 +960,7 @@ pub(crate) fn save_board(
         .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid board"))?;
     if !board_path().exists()
         && crate::reminder::committed_payload().is_none()
-        && board_was_quarantined(&board_path())?
+        && storage::was_quarantined(&board_path())?
     {
         return Err(DeckError::new(
             ErrorKind::InvalidDoc,
@@ -1016,11 +992,21 @@ pub(crate) fn settings_path() -> PathBuf {
     crate::datadir::deck_dir().join("settings.json")
 }
 
+fn load_settings_at(path: &std::path::Path) -> Result<Option<storage::LoadOutcome>, DeckError> {
+    storage::load_typed::<SettingsDoc>(path)
+}
+
 #[tauri::command]
 pub(crate) fn load_settings() -> Result<LoadedDoc, DeckError> {
-    Ok(to_loaded(storage::load_typed::<SettingsDoc>(
-        &settings_path(),
-    )?))
+    Ok(to_loaded(load_settings_at(&settings_path())?))
+}
+
+fn save_settings_at(path: &std::path::Path, data: &str) -> Result<(), DeckError> {
+    validate_saved_update_channel(data)?;
+    // a revoked automation approval is committed only under the fence the
+    // scheduler's pre-fire authority check holds (storage::settings_fence)
+    let _fence = storage::settings_fence();
+    save_validated::<SettingsDoc>(path, data, "settings")
 }
 
 #[tauri::command]
@@ -1031,11 +1017,7 @@ pub(crate) fn save_settings(data: String) -> Result<(), DeckError> {
             "injected settings save failure",
         ));
     }
-    validate_saved_update_channel(&data)?;
-    // a revoked automation approval is committed only under the fence the
-    // scheduler's pre-fire authority check holds (storage::settings_fence)
-    let _fence = storage::settings_fence();
-    save_validated::<SettingsDoc>(&settings_path(), &data, "settings")
+    save_settings_at(&settings_path(), &data)
 }
 
 fn validate_saved_update_channel(data: &str) -> Result<(), DeckError> {
@@ -1059,9 +1041,11 @@ fn validate_saved_update_channel(data: &str) -> Result<(), DeckError> {
 /// unreadable. Every reader below tolerates a missing/foreign value: settings
 /// are advisory, and a bad file must never stop the app from booting.
 fn settings_value() -> Option<serde_json::Value> {
-    let raw = storage::load_typed::<SettingsDoc>(&settings_path())
-        .ok()??
-        .payload;
+    settings_value_at(&settings_path())
+}
+
+fn settings_value_at(path: &std::path::Path) -> Option<serde_json::Value> {
+    let raw = storage::load_typed::<SettingsDoc>(path).ok()??.payload;
     serde_json::from_str(&raw).ok()
 }
 

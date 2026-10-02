@@ -325,9 +325,11 @@ pub(crate) fn config_from_value(v: Option<&Value>) -> ChannelConfig {
 }
 
 pub(crate) fn read_config() -> ChannelConfig {
-    let raw = match crate::storage::load_typed::<crate::documents::SettingsDoc>(
-        &crate::documents::settings_path(),
-    ) {
+    read_config_at(&crate::documents::settings_path())
+}
+
+fn read_config_at(path: &std::path::Path) -> ChannelConfig {
+    let raw = match crate::storage::load_typed::<crate::documents::SettingsDoc>(path) {
         Ok(Some(doc)) => doc.payload,
         _ => return ChannelConfig::default(),
     };

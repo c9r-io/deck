@@ -272,8 +272,14 @@ fn the_documents_door_names_only_reviewed_modules() {
 #[test]
 fn settings_writes_and_the_pre_fire_authority_check_share_one_fence() {
     let documents = source("documents.rs");
-    let save = &documents[documents.find("fn save_settings(").unwrap()..];
-    let save = &save[..save.find("\n}\n").unwrap()];
+    // the command is the path-bound form of the one function that writes
+    let command = source_scan::function_body(&documents, "save_settings").unwrap();
+    assert!(command.contains("save_settings_at(&settings_path(), &data)"));
+    assert!(
+        !command.contains("storage::"),
+        "the command writes nothing itself"
+    );
+    let save = source_scan::function_body(&documents, "save_settings_at").unwrap();
     let fence = save
         .find("storage::settings_fence()")
         .expect("save_settings takes the fence");

@@ -341,6 +341,44 @@ fn unique_corrupt_path(path: &Path) -> PathBuf {
     }
 }
 
+/// Move a file this build cannot use to a unique `.corrupt-<ts>` beside it.
+/// The bytes are kept, never overwritten. They may hold user content and a
+/// pre-migration 0644 mode would survive the rename, so the kept file is
+/// restricted to the user explicitly.
+fn quarantine(path: &Path) -> std::io::Result<PathBuf> {
+    let corrupt = unique_corrupt_path(path);
+    std::fs::rename(path, &corrupt)?;
+    restrict_to_user(&corrupt);
+    Ok(corrupt)
+}
+
+/// Whether a recovery ever set this file aside: a `<stem>.corrupt-<ts>`
+/// sibling exists. Nothing removes those, so the answer survives restarts.
+pub(crate) fn was_quarantined(path: &Path) -> Result<bool, DeckError> {
+    let Some(parent) = path.parent() else {
+        return Ok(false);
+    };
+    let prefix = format!(
+        "{}.corrupt-",
+        path.file_stem().unwrap_or_default().to_string_lossy()
+    );
+    match std::fs::read_dir(parent) {
+        Ok(entries) => {
+            for entry in entries {
+                let name = entry?.file_name().to_string_lossy().into_owned();
+                if name.strip_prefix(&prefix).is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+                }) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// A projection/save fence may inspect the main file but must never quarantine
 /// it or consume recovery before the authoritative Board loader sees warnings.
 pub(crate) fn peek_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<String>, DeckError> {
@@ -393,22 +431,16 @@ pub fn load_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<LoadOutcome
         Err(DocErr::Bad(e)) => e,
     };
     // quarantine the damaged original FIRST — it is preserved, never clobbered
-    let corrupt = unique_corrupt_path(path);
-    let kept_at = match std::fs::rename(path, &corrupt) {
-        Ok(()) => {
-            // the damaged bytes may hold user content; a pre-migration 0644
-            // mode would survive the rename, so restrict explicitly. Only
-            // the file NAME is reported (it sits beside the original) — the
-            // absolute path never enters warnings or logs.
-            restrict_to_user(&corrupt);
-            format!(
-                " — the damaged file was kept as {}",
-                corrupt
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            )
-        }
+    let kept_at = match quarantine(path) {
+        // Only the file NAME is reported (it sits beside the original) — the
+        // absolute path never enters warnings or logs.
+        Ok(corrupt) => format!(
+            " — the damaged file was kept as {}",
+            corrupt
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        ),
         Err(e) => format!(" (quarantining it also failed: {e})"),
     };
     let bak = bak_path(path);

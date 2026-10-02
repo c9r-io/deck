@@ -526,9 +526,11 @@ pub(crate) fn read_config() -> Config {
 /// about authority (`scheduler::authority`) can treat "unknown" as neither
 /// granted nor revoked. A missing file is a real empty config.
 pub(crate) fn read_config_strict() -> Option<Config> {
-    let raw = match storage::load_typed::<crate::documents::SettingsDoc>(
-        &crate::documents::settings_path(),
-    ) {
+    read_config_strict_at(&crate::documents::settings_path())
+}
+
+pub(crate) fn read_config_strict_at(path: &std::path::Path) -> Option<Config> {
+    let raw = match storage::load_typed::<crate::documents::SettingsDoc>(path) {
         Ok(Some(doc)) => doc.payload,
         Ok(None) => return Some(Config::default()),
         Err(_) => return None,
