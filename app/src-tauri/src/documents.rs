@@ -38,7 +38,16 @@
 //!   with `storage::read_typed`, never moving a file. A Board that was ever set
 //!   aside is never a new empty Board: with nothing loadable left the load
 //!   fails, and every save is refused while this process holds no committed
-//!   Board (`save_board_at`).
+//!   Board (`save_board_at`), each refusal emitting `board-lost`.
+//! - The lost Board's way out is the user's explicit choice, never deck's:
+//!   `board_recovery_state` answers why a load failed (`lost` with its one way
+//!   out, `newer`, `other`) and `board_lost_exit` takes the way
+//!   `lost_exit_at` offers now — restore the newest copy a recovery set aside
+//!   that passes full validation, or, with none, commit an empty Board. Either
+//!   is named only on what was read: while the backup, or a kept copy newer
+//!   than any usable one, cannot be read right now, no way out is offered. The
+//!   exit commits the chosen Board (lifting the fence) and moves nothing; the
+//!   webview saves it through its one transaction queue.
 //! - settings.json has one owner, the webview. `load_settings`
 //!   (`storage::load_as_owner`) sets a damaged file aside and reports the
 //!   recovery once, in-band; `save_settings` (`storage::save_typed_as_owner`)
@@ -975,8 +984,13 @@ pub(crate) fn board_project_exists(project_id: &str) -> Result<bool, DeckError> 
         .any(|project| project.id == project_id))
 }
 
+/// Emitted when a save is refused because the Board is lost: the webview
+/// offers the way out again instead of a failure with no next step.
+const BOARD_LOST_EVENT: &str = "board-lost";
+
 #[tauri::command]
 pub(crate) fn save_board(
+    app: tauri::AppHandle,
     data: String,
     reminder_changes: Option<Vec<crate::reminder::Claim>>,
 ) -> Result<(), DeckError> {
@@ -986,14 +1000,22 @@ pub(crate) fn save_board(
             "injected board save failure",
         ));
     }
-    save_board_at(
-        &board_path(),
+    let path = board_path();
+    let saved = save_board_at(
+        &path,
         &data,
         &reminder_changes.unwrap_or_default(),
         committed_board(),
-    )?;
-    commit_board(&data);
-    Ok(())
+    );
+    match saved {
+        Ok(()) => commit_board(&data),
+        Err(_) if board_lost_at(&path, committed_board().is_some()).unwrap_or(false) => {
+            use tauri::Emitter;
+            let _ = app.emit(BOARD_LOST_EVENT, ());
+        }
+        Err(_) => {}
+    }
+    saved
 }
 
 /// The Board save at `path`, given the Board this process committed last.
@@ -1007,7 +1029,7 @@ fn save_board_at(
         .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid board"))?;
     let next: serde_json::Value = serde_json::from_str(data)
         .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid board"))?;
-    if !path.exists() && committed.is_none() && storage::was_quarantined(path)? {
+    if board_lost_at(path, committed.is_some())? {
         return Err(DeckError::new(
             ErrorKind::InvalidDoc,
             "quarantined board needs recovery before saving",
@@ -1031,6 +1053,142 @@ fn save_board_at(
         .unwrap_or_else(|| serde_json::json!({"cards":[]}));
     crate::reminder::validate_changes(&old, &next, claims)?;
     storage::save_typed_as_owner::<BoardDoc>(path, data)
+}
+
+/// The lost Board: nothing loadable is left on disk — a recovery set the
+/// main file aside and no usable backup remains, or the files were removed
+/// after one — and this process committed no Board. Every save is refused
+/// in this state (a save would be a silent empty Board) until the user
+/// chooses a way forward (`board_lost_exit`).
+fn board_lost_at(path: &std::path::Path, committed: bool) -> Result<bool, DeckError> {
+    Ok(!committed && !path.exists() && storage::was_quarantined(path)?)
+}
+
+/// Why the Board did not load, as a closed answer for the webview (an error
+/// crosses IPC as its message only): `lost` (above) with its one way out —
+/// the copy that can be restored, or none for a new Board; `newer`, written
+/// by a newer deck — update deck; `other`, anything else, including a lost
+/// Board whose backup or newest kept copies cannot be read right now (no way
+/// out is offered: the next start looks again).
+#[derive(Debug, PartialEq, Serialize)]
+pub(crate) struct BoardRecovery {
+    state: &'static str,
+    kept: Option<KeptBoard>,
+}
+
+/// What the dialog says about a kept copy: when it was last written (ms
+/// since the epoch) and how many cards it holds — never its file name.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct KeptBoard {
+    saved_at: u64,
+    cards: usize,
+}
+
+/// The one way out of the lost Board.
+enum LostExit {
+    /// the newest copy a recovery set aside that passes full validation now
+    Restore(KeptBoard, String),
+    /// nothing can be restored: an empty Board
+    New,
+}
+
+/// The way out of the lost Board this process can offer now; `Ok(None)`
+/// when the Board is not lost. A way out is named only on what was READ:
+/// the backup (absent, or read and unusable — one that loads now is not
+/// lost, the next start loads it), then the copies a recovery set aside,
+/// newest first. The newest that passes full validation is restored; with
+/// none, a new Board. A file that cannot be read right now may be intact
+/// and newer — the saves that follow either way out would replace the
+/// backup — so that is an error (unknown) and no way out, until it reads.
+/// Nothing here moves or writes a file.
+fn lost_exit_at(path: &std::path::Path, committed: bool) -> Result<Option<LostExit>, DeckError> {
+    if !board_lost_at(path, committed)? || storage::read_typed::<BoardDoc>(path)?.is_some() {
+        return Ok(None);
+    }
+    let Some((kept, payload)) = storage::newest_valid_copy::<BoardDoc>(path)? else {
+        return Ok(Some(LostExit::New));
+    };
+    let cards = serde_json::from_str::<serde_json::Value>(&payload)
+        .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid kept board"))?["cards"]
+        .as_array()
+        .map_or(0, Vec::len);
+    let written = std::fs::metadata(&kept)?.modified()?;
+    let saved_at = written
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        });
+    Ok(Some(LostExit::Restore(
+        KeptBoard { saved_at, cards },
+        payload,
+    )))
+}
+
+fn board_recovery_at(path: &std::path::Path, committed: bool) -> BoardRecovery {
+    if matches!(
+        storage::read_typed::<BoardDoc>(path),
+        Err(error) if error.kind() == ErrorKind::NewerSchema
+    ) {
+        return BoardRecovery {
+            state: "newer",
+            kept: None,
+        };
+    }
+    match lost_exit_at(path, committed) {
+        Ok(Some(LostExit::Restore(kept, _))) => BoardRecovery {
+            state: "lost",
+            kept: Some(kept),
+        },
+        Ok(Some(LostExit::New)) => BoardRecovery {
+            state: "lost",
+            kept: None,
+        },
+        Ok(None) | Err(_) => BoardRecovery {
+            state: "other",
+            kept: None,
+        },
+    }
+}
+
+#[tauri::command]
+pub(crate) fn board_recovery_state() -> BoardRecovery {
+    board_recovery_at(&board_path(), committed_board().is_some())
+}
+
+/// The Board a new start commits: no project, no card.
+const NO_BOARD: &str = r#"{"projects":[],"cards":[]}"#;
+
+/// The user's way out of the lost Board, by an explicit choice — besides a
+/// load, the only thing that commits a Board and so lifts the save fence.
+/// Only the way `lost_exit_at` offers now is taken: `restore` commits the
+/// kept copy it validated, `new` an empty Board, so a copy that could be
+/// restored is never given up by a choice the user cannot take back.
+/// Nothing on disk moves — the kept copies and the backup stay; the webview
+/// then saves the chosen Board through its one transaction queue.
+fn board_lost_exit_at(
+    path: &std::path::Path,
+    action: &str,
+    committed: bool,
+) -> Result<String, DeckError> {
+    match (action, lost_exit_at(path, committed)?) {
+        ("restore", Some(LostExit::Restore(_, payload))) => Ok(payload),
+        ("new", Some(LostExit::New)) => Ok(NO_BOARD.into()),
+        ("restore" | "new", _) => Err(DeckError::new(
+            ErrorKind::Invalid,
+            "that way out of a lost Board is not open",
+        )),
+        _ => Err(DeckError::new(ErrorKind::Invalid, "unknown Board exit")),
+    }
+}
+
+/// Takes the exit and answers with the Board it committed, for the webview
+/// to hold in place of its placeholder.
+#[tauri::command]
+pub(crate) fn board_lost_exit(action: String) -> Result<String, DeckError> {
+    let payload = board_lost_exit_at(&board_path(), &action, committed_board().is_some())?;
+    commit_board(&payload);
+    Ok(payload)
 }
 
 /// Boot-time storage notices (corruption recovered from .bak, etc.) for the
@@ -1522,6 +1680,279 @@ mod tests {
             ErrorKind::NewerSchema
         );
         assert_eq!(d.files(), before);
+        // the closed answer says why, and the lost Board's exits stay shut
+        assert_eq!(board_recovery_at(&d.main(), false).state, "newer");
+        assert!(board_lost_exit_at(&d.main(), "new", false).is_err());
+        assert_eq!(d.files(), before);
+    }
+
+    /// A Board whose one card carries a reminder in `zone`.
+    fn with_reminder_zone(zone: &str) -> String {
+        board(&format!(
+            r#"{{"id":"a","projectId":"P1","columnId":"C1","title":"t","desc":"","cmd":"claude","dir":"~/w","session":"shell-a",
+                "reminder":{{"id":"0123456789abcdef0123456789abcdef","revision":1,"dueAt":4102444800000,"timeZone":"{zone}","note":"","inAppOnly":false,"due":false}}}}"#
+        ))
+    }
+
+    /// The lost Board's way out when a kept copy is intact: a Board saved
+    /// once (no backup yet) whose main file could not be READ at the load
+    /// was set aside intact. (Mode 000 stands in for a failing read here;
+    /// in the app, launch repairs plain mode bits before the load.) The
+    /// closed answer offers that copy; a new start is refused while it can
+    /// be restored; restoring moves nothing on disk, and the webview's save
+    /// of it then goes through.
+    #[test]
+    fn board_exit_restores_an_intact_kept_copy_and_offers_nothing_else() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = BoardDir::empty("exit-restore");
+        save_board_at(&d.main(), &latest_board(), &[], None).unwrap();
+        std::fs::set_permissions(d.main(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(d.main()).is_ok() {
+            return; // a privileged test user reads through any mode
+        }
+        assert!(
+            load_board_at(&d.main()).is_err(),
+            "nothing else is loadable"
+        );
+        let recovery = board_recovery_at(&d.main(), false);
+        assert_eq!(recovery.state, "lost");
+        let kept = recovery.kept.expect("the kept copy is intact");
+        assert_eq!(kept.cards, 2);
+        assert!(kept.saved_at > 1_700_000_000_000, "{}", kept.saved_at);
+        // the answer as the dialog reads it
+        assert_eq!(
+            serde_json::to_value(board_recovery_at(&d.main(), false)).unwrap(),
+            serde_json::json!({"state": "lost", "kept": {"savedAt": kept.saved_at, "cards": 2}})
+        );
+        let before = d.files();
+        assert_eq!(
+            board_lost_exit_at(&d.main(), "new", false)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Invalid,
+            "a copy that can be restored is never given up"
+        );
+        let restored = board_lost_exit_at(&d.main(), "restore", false).unwrap();
+        assert_eq!(cards_in(&restored), 2);
+        assert_eq!(d.files(), before, "the exit moves and writes nothing");
+        // the webview's first save of the restored Board goes through
+        save_board_at(&d.main(), &restored, &[], Some(restored.clone())).unwrap();
+        let loaded = load_board_at(&d.main()).unwrap().unwrap();
+        assert_eq!((loaded.source, cards_in(&loaded.payload)), ("main", 2));
+        assert_eq!(board_recovery_at(&d.main(), true).state, "other");
+        assert!(
+            board_lost_exit_at(&d.main(), "restore", true).is_err(),
+            "not lost any more"
+        );
+        assert_eq!(d.kept().len(), 1, "the kept copy stays where it is");
+    }
+
+    /// The lost Board's way out when no copy can be restored — both copies
+    /// damaged, a Board saved once, the files removed after an old
+    /// quarantine, a reminder time zone this Mac does not know (the whole
+    /// Board stays invalid, by decision): only a new start, which commits an
+    /// empty Board; the webview's first save then goes through.
+    #[test]
+    fn board_exit_starts_new_only_when_nothing_can_be_restored() {
+        let lost = |tag: &str, main: Option<String>, backup: Option<String>, kept: bool| {
+            let d = BoardDir::empty(tag);
+            if let Some(bytes) = main {
+                std::fs::write(d.main(), bytes).unwrap();
+            }
+            if let Some(bytes) = backup {
+                std::fs::write(d.backup(), bytes).unwrap();
+            }
+            if kept {
+                std::fs::write(d.0.join("deck.corrupt-1700000000"), "long ago").unwrap();
+            }
+            d
+        };
+        let unknown_zone = with_reminder_zone("Mars/Olympus");
+        assert!(serde_json::from_str::<BoardDoc>(&with_reminder_zone("Asia/Tokyo")).is_ok());
+        for (cell, d) in [
+            (
+                "both damaged",
+                lost(
+                    "new-both",
+                    Some("{damaged".into()),
+                    Some("{worse".into()),
+                    false,
+                ),
+            ),
+            (
+                "saved once",
+                lost("new-once", Some("{damaged".into()), None, false),
+            ),
+            (
+                "removed after an old quarantine",
+                lost("new-removed", None, None, true),
+            ),
+            (
+                "unknown time zone",
+                lost(
+                    "new-zone",
+                    Some(unknown_zone.clone()),
+                    Some(unknown_zone.clone()),
+                    false,
+                ),
+            ),
+        ] {
+            let _ = load_board_at(&d.main());
+            let recovery = board_recovery_at(&d.main(), false);
+            assert_eq!((recovery.state, &recovery.kept), ("lost", &None), "{cell}");
+            assert_eq!(
+                board_lost_exit_at(&d.main(), "restore", false)
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::Invalid,
+                "{cell}"
+            );
+            let before = d.files();
+            let committed = board_lost_exit_at(&d.main(), "new", false).unwrap();
+            assert_eq!(committed, NO_BOARD, "{cell}");
+            assert_eq!(
+                d.files(),
+                before,
+                "{cell}: the exit moves and writes nothing"
+            );
+            save_board_at(&d.main(), &older_board(), &[], Some(committed)).unwrap();
+            let loaded = load_board_at(&d.main()).unwrap().unwrap();
+            assert_eq!(
+                (loaded.source, cards_in(&loaded.payload)),
+                ("main", 1),
+                "{cell}"
+            );
+            assert!(
+                !d.kept().is_empty(),
+                "{cell}: the kept bytes are still there"
+            );
+        }
+    }
+
+    /// Several kept copies: the newest that passes full validation now is the
+    /// one offered — a newer damaged copy is skipped, and copies set aside in
+    /// the same second are ordered by their counter.
+    #[test]
+    fn board_exit_offers_the_newest_kept_copy_that_still_validates() {
+        let d = BoardDir::empty("exit-newest");
+        for (name, bytes) in [
+            ("deck.corrupt-1700000000", latest_board()),
+            ("deck.corrupt-1700000500", latest_board()),
+            ("deck.corrupt-1700000500-1", older_board()),
+            ("deck.corrupt-1700000900", "{damaged".to_string()),
+            ("settings.corrupt-1800000000", older_board()),
+        ] {
+            std::fs::write(d.0.join(name), bytes).unwrap();
+        }
+        let recovery = board_recovery_at(&d.main(), false);
+        assert_eq!(recovery.state, "lost");
+        assert_eq!(recovery.kept.map(|kept| kept.cards), Some(1));
+        let restored = board_lost_exit_at(&d.main(), "restore", false).unwrap();
+        assert_eq!(json(&restored), json(&older_board()));
+    }
+
+    /// A file that cannot be read right now may be intact, and newer than
+    /// anything deck could offer: while the backup, or a kept copy newer than
+    /// any usable one, cannot be read, no way out is offered — neither a new
+    /// Board nor a restore, since the saves after either would replace the
+    /// backup. The next look, once it reads, finds the way. A kept copy
+    /// older than the one restored never stands in its way.
+    #[test]
+    fn board_exit_offers_nothing_while_a_file_that_could_be_newer_cannot_be_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: PathBuf, bits: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits)).unwrap()
+        };
+        let no_way_out = |d: &BoardDir| {
+            let before = d.files();
+            assert_eq!(board_recovery_at(&d.main(), false).state, "other");
+            assert!(board_lost_exit_at(&d.main(), "new", false).is_err());
+            assert!(board_lost_exit_at(&d.main(), "restore", false).is_err());
+            assert_eq!(d.files(), before);
+        };
+        // the main file damaged, its backup unreadable
+        let d = BoardDir::saved_twice("unread-backup");
+        std::fs::write(d.main(), "{damaged").unwrap();
+        mode(d.backup(), 0o000);
+        if std::fs::read(d.backup()).is_ok() {
+            return; // a privileged test user reads through any mode
+        }
+        assert!(load_board_at(&d.main()).is_err());
+        no_way_out(&d);
+        mode(d.backup(), 0o600);
+        let loaded = load_board_at(&d.main()).unwrap().unwrap();
+        assert_eq!((loaded.source, cards_in(&loaded.payload)), ("backup", 1));
+
+        // the newest kept copy unreadable, an older one damaged
+        let d = BoardDir::empty("unread-kept");
+        std::fs::write(d.0.join("deck.corrupt-1700000000"), "{damaged").unwrap();
+        std::fs::write(d.0.join("deck.corrupt-1700000500"), latest_board()).unwrap();
+        mode(d.0.join("deck.corrupt-1700000500"), 0o000);
+        no_way_out(&d);
+        mode(d.0.join("deck.corrupt-1700000500"), 0o600);
+        let recovery = board_recovery_at(&d.main(), false);
+        assert_eq!(recovery.state, "lost");
+        assert_eq!(recovery.kept.map(|kept| kept.cards), Some(2));
+
+        // a kept copy validates, but the backup cannot be read: not even a
+        // restore; once the backup reads, the next load answers from it
+        let d = BoardDir::empty("unread-backup-kept");
+        std::fs::write(d.0.join("deck.corrupt-1700000000"), older_board()).unwrap();
+        save_board_at(&d.backup(), &latest_board(), &[], None).unwrap();
+        mode(d.backup(), 0o000);
+        no_way_out(&d);
+        mode(d.backup(), 0o600);
+        assert_eq!(board_recovery_at(&d.main(), false).state, "other");
+        let loaded = load_board_at(&d.main()).unwrap().unwrap();
+        assert_eq!((loaded.source, cards_in(&loaded.payload)), ("backup", 2));
+
+        // an unreadable kept copy OLDER than a usable one is not in the way
+        let d = BoardDir::empty("unread-older-kept");
+        std::fs::write(d.0.join("deck.corrupt-1700000000"), older_board()).unwrap();
+        std::fs::write(d.0.join("deck.corrupt-1700000500"), latest_board()).unwrap();
+        mode(d.0.join("deck.corrupt-1700000000"), 0o000);
+        let recovery = board_recovery_at(&d.main(), false);
+        assert_eq!(recovery.state, "lost");
+        assert_eq!(recovery.kept.map(|kept| kept.cards), Some(2));
+        assert!(board_lost_exit_at(&d.main(), "new", false).is_err());
+        assert_eq!(
+            cards_in(&board_lost_exit_at(&d.main(), "restore", false).unwrap()),
+            2
+        );
+    }
+
+    /// The exits are for the lost Board only, and their vocabulary is closed.
+    #[test]
+    fn board_exit_is_refused_unless_the_board_is_lost() {
+        let d = BoardDir::saved_twice("exit-not-lost");
+        let before = d.files();
+        assert_eq!(board_recovery_at(&d.main(), false).state, "other");
+        for action in ["restore", "new"] {
+            assert_eq!(
+                board_lost_exit_at(&d.main(), action, false)
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::Invalid,
+                "{action}"
+            );
+        }
+        assert_eq!(d.files(), before);
+        // set aside once, the backup loads: the next load answers from it
+        std::fs::remove_file(d.main()).unwrap();
+        std::fs::write(d.0.join("deck.corrupt-1700000000"), "long ago").unwrap();
+        assert_eq!(board_recovery_at(&d.main(), false).state, "other");
+        assert!(board_lost_exit_at(&d.main(), "new", false).is_err());
+        // nothing loadable, but committed in this process: not lost either
+        std::fs::remove_file(d.backup()).unwrap();
+        assert_eq!(board_recovery_at(&d.main(), true).state, "other");
+        assert!(board_lost_exit_at(&d.main(), "new", true).is_err());
+        assert_eq!(board_recovery_at(&d.main(), false).state, "lost");
+        assert_eq!(
+            board_lost_exit_at(&d.main(), "start-over", false)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Invalid
+        );
     }
 
     // ---------- settings recovery: the state matrix ----------

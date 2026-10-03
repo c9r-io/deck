@@ -280,6 +280,7 @@ fn storage_doors(document: &str) -> Vec<String> {
         "save_typed_as_owner",
         "save_validated",
         "ensure_review_schema",
+        "newest_valid_copy",
     ];
     let mut doors = Vec::new();
     for (file, text) in source_scan::production_sources() {
@@ -312,11 +313,17 @@ fn storage_doors(document: &str) -> Vec<String> {
 /// Every production call of `path_fn()` (a document's path), as "file
 /// function"; the declaration and longer names ending in it are not calls.
 fn path_callers(path_fn: &str) -> Vec<String> {
-    let call = format!("{path_fn}()");
+    callers_of(&format!("{path_fn}()"))
+}
+
+/// Every production occurrence of `call` (a function name with its opening
+/// parenthesis), as "file function"; the declaration and longer names ending
+/// in it are not calls.
+fn callers_of(call: &str) -> Vec<String> {
     let mut callers = Vec::new();
     for (file, text) in source_scan::production_sources() {
         let code = code_only(&text);
-        for (at, _) in code.match_indices(&call) {
+        for (at, _) in code.match_indices(call) {
             let before = &code[..at];
             if before.ends_with("fn ")
                 || before
@@ -380,19 +387,24 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
 }
 
 /// deck.json the same way: the webview loads it (`load_board_at`) and saves
-/// it (`save_board_at`), and the backend reads it for the Connector and the
-/// first-send admission (`connector_board_payload_at`). Only the owner's two
-/// doors may set a damaged Board aside — the load, which then tells the user
-/// once, and the save, when the file was damaged while deck ran — and every
-/// other read is `read_typed` or the non-moving `peek_typed`.
+/// it (`save_board_at`), the backend reads it for the Connector and the
+/// first-send admission (`connector_board_payload_at`), and the way out of a
+/// lost Board reads the backup and the copies a recovery set aside
+/// (`board_recovery_at`, `lost_exit_at`). Only the owner's two doors may set
+/// a damaged Board aside — the load, which then tells the user once, and the
+/// save, when the file was damaged while deck ran — and every other read is
+/// `read_typed`, `newest_valid_copy` or the non-moving `peek_typed`.
 #[test]
 fn only_the_board_owner_uses_a_door_that_moves_the_file() {
     assert_eq!(
         storage_doors("BoardDoc"),
         [
             "load_as_owner in documents.rs load_board_at",
+            "newest_valid_copy in documents.rs lost_exit_at",
             "peek_typed in documents.rs save_board_at",
+            "read_typed in documents.rs board_recovery_at",
             "read_typed in documents.rs connector_board_payload_at",
+            "read_typed in documents.rs lost_exit_at",
             "save_typed_as_owner in documents.rs save_board_at",
         ],
         "a Board read outside the webview's load goes through storage::read_typed, which \
@@ -401,11 +413,36 @@ fn only_the_board_owner_uses_a_door_that_moves_the_file() {
     assert_eq!(
         path_callers("board_path"),
         [
+            "documents.rs board_lost_exit",
+            "documents.rs board_recovery_state",
             "documents.rs connector_board_payload",
             "documents.rs load_board",
             "documents.rs save_board",
         ],
         "a new reader of deck.json: route it through documents::connector_board_payload"
+    );
+}
+
+/// The Board this process committed is what lifts the save fence over a lost
+/// Board, so who commits one is a closed list: the webview's load, its save,
+/// and the user's explicit way out. A fourth place would let something other
+/// than the user's choice turn "nothing loadable" into a Board that saves.
+#[test]
+fn only_a_load_a_save_and_the_users_exit_commit_a_board() {
+    assert_eq!(
+        callers_of("commit_board("),
+        [
+            "documents.rs board_lost_exit",
+            "documents.rs load_board",
+            "documents.rs save_board",
+        ],
+        "a Board becomes committed by loading it, saving it, or the user's way out of a lost \
+         Board (documents::board_lost_exit) — nowhere else"
+    );
+    assert_eq!(
+        callers_of("observe_committed("),
+        ["documents.rs commit_board"],
+        "the committed-Board mirror is written through documents::commit_board only"
     );
 }
 

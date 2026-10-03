@@ -174,6 +174,7 @@ const LISTEN_TARGETS: &[&str] = &[
     "channel-changed",
     "connector-changed",
     "mcp-changed",
+    "board-lost",
 ];
 
 /// Keydown CATEGORIES — the frontend classifies before sending; a raw key

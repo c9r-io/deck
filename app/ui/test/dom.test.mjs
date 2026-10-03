@@ -9,8 +9,9 @@ globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
 const {
-  cfmDone, choiceDialog, confirmDangerDialog, confirmDialog, initDialogs, inlineRename, projectDefaultsDialog, promptDialog,
+  boardExitDialog, cfmDone, choiceDialog, confirmDangerDialog, confirmDialog, createBoardExit, initDialogs, inlineRename, projectDefaultsDialog, promptDialog,
 } = await import('../js/dialogs.js');
+const { formatDateTime } = await import('../js/i18n.js');
 const {
   connectorPairingChanged, initSettings, renderConnectorSettings, mcpAuthorizationDialog, persistSessionRestoreChoice, persistUpdateChannelChoice,
   persistThemeChoice, filterSettings, renderMcpSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
@@ -876,6 +877,191 @@ test('the choice dialog resolves an explicit answer, or null on cancel and Escap
   promise = choiceDialog('outside', [{ id: 'home', label: 'Home shell' }]);
   dlg.fire('mousedown', { target: dlg });
   assert.equal(await promise, null, 'a click on the scrim cancels');
+});
+
+test('the lost Board dialog offers only the way out the backend names, with Cancel focused', async () => {
+  const dlg = fakeDocument.getElementById('chd');
+  const actions = () => fakeDocument.getElementById('chd-actions').children;
+  const message = () => fakeDocument.getElementById('chd-msg').textContent;
+  const savedAt = Date.UTC(2026, 9, 1, 9, 30);
+  let promise = boardExitDialog({ state: 'lost', kept: { savedAt, cards: 3 } });
+  assert.ok(message().includes(formatDateTime(savedAt, { dateStyle: 'medium', timeStyle: 'short' })), message());
+  assert.match(message(), /\(3 card\(s\)\)/);
+  assert.doesNotMatch(message(), /corrupt|\.bak|deck\.json/, 'no internal file names');
+  assert.deepEqual(actions().map(b => b.textContent), ['Cancel', 'Restore the kept Board'], 'restorable: never a new Board');
+  assert.equal(fakeDocument.activeElement.textContent, 'Cancel', 'a stray Enter takes nothing');
+  actions()[1].fire('click');
+  assert.equal(await promise, 'restore');
+  assert.equal(dlg.style.display, 'none');
+
+  promise = boardExitDialog({ state: 'lost', kept: null });
+  assert.deepEqual(actions().map(b => b.textContent), ['Cancel', 'Start a new Board'], 'nothing restorable: only a new Board');
+  assert.match(message(), /no usable backup.*previous cards will not be in it.*without a card.*no longer fire/);
+  assert.equal(fakeDocument.activeElement.textContent, 'Cancel');
+  dlg.fire('keydown', { key: 'Escape' });
+  assert.equal(await promise, null, 'Cancel keeps the placeholder');
+  promise = boardExitDialog({ state: 'lost', kept: null });
+  actions()[1].fire('click');
+  assert.equal(await promise, 'new');
+});
+
+/* A backend like documents.rs for the lost Board: every save is refused
+   until an exit commits a Board, and the exit names what it committed. */
+const RESTORED = JSON.stringify({
+  projects: [{ id: 'P1', name: 'restored', columns: [{ id: 'C1', name: 'c' }] }],
+  cards: [{ id: 'a', projectId: 'P1', columnId: 'C1', title: 'A', desc: '', cmd: 'claude', dir: '~/w', session: 'shell-a' }],
+});
+function lostBoardBackend({ kept = false, state = 'lost', exitFails = false, saveFails = false } = {}) {
+  const calls = [];
+  let committed = false;
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'board_recovery_state') {
+      return committed ? { state: 'other', kept: null } : { state, kept: kept ? { savedAt: 1, cards: 1 } : null };
+    }
+    if (cmd === 'board_lost_exit') {
+      if (exitFails) throw 'that way out of a lost Board is not open';
+      committed = true;
+      return args.action === 'restore' ? RESTORED : '{"projects":[],"cards":[]}';
+    }
+    if (cmd === 'save_board') {
+      if (!committed) throw 'quarantined board needs recovery before saving';
+      if (saveFails) throw 'no space left on device';
+      return;
+    }
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  store.projects = [{ id: 'PH', name: 'main', columns: [{ id: 'CH', name: 'c' }] }];
+  store.cards = [];
+  return calls;
+}
+const holdRestored = json => { const data = JSON.parse(json); store.projects = data.projects; store.cards = data.cards; };
+const exitActions = () => fakeDocument.getElementById('chd-actions').children;
+const lastToast = () => fakeDocument.getElementById('toasts').children.at(-1).textContent;
+
+test('the lost Board exit restores inside the Board queue, then saves the restored Board', async () => {
+  const calls = lostBoardBackend({ kept: true });
+  const names = () => calls.map(([cmd]) => cmd);
+  const order = [];
+  const offer = createBoardExit({
+    mutateBoard,
+    hold: json => { order.push('hold'); holdRestored(json); },
+    exited: () => order.push('exited'),
+  });
+  const pending = offer();
+  await tick();
+  assert.deepEqual(exitActions().map(b => b.textContent), ['Cancel', 'Restore the kept Board']);
+  await assert.rejects(mutateBoard(draft => { draft.projects[0].name = 'renamed'; }), 'refused while lost');
+  assert.equal(store.projects[0].name, 'main', 'a refused change never reaches the store');
+  offer();
+  await tick();
+  assert.equal(names().filter(cmd => cmd === 'board_recovery_state').length, 1, 'no second offer while one is open');
+  // a Board transaction already in the queue finishes before the exit runs
+  let release;
+  const earlier = mutateBoard(async () => { await new Promise(resolve => { release = resolve; }); return { noop: true }; });
+  await tick();
+  try {
+    exitActions()[1].fire('click');
+    await tick(); await tick();
+    assert.ok(!names().includes('board_lost_exit'), 'the exit waits its turn in the Board queue');
+  } finally {
+    release();   // never leave the shared queue blocked for the tests that follow
+  }
+  await earlier;
+  await pending;
+  assert.deepEqual(order, ['hold', 'exited'], 'the webview holds the Board before the app carries on');
+  assert.deepEqual(names(), ['board_recovery_state', 'save_board', 'board_lost_exit', 'save_board']);
+  assert.deepEqual(calls[2][1], { action: 'restore' });
+  assert.deepEqual(JSON.parse(calls[3][1].data).cards.map(c => c.id), ['a'], 'the restored Board is what gets saved');
+  assert.equal(store.projects[0].name, 'restored');
+  offer();
+  await tick();
+  assert.equal(fakeDocument.getElementById('chd').style.display, 'none', 'no longer lost: nothing is offered');
+});
+
+test('the lost Board exit is offered at most twice, and a new Board saves what is on screen', async () => {
+  const calls = lostBoardBackend({ kept: false });
+  const held = [];
+  let exits = 0;
+  const offer = createBoardExit({ mutateBoard, hold: json => held.push(json), exited: () => { exits += 1; } });
+  // boot hands over the answer it already has; it is not asked for again
+  let pending = offer({ state: 'lost', kept: null });
+  await tick();
+  assert.equal(fakeDocument.getElementById('chd').style.display, 'flex');
+  exitActions()[0].fire('click');
+  await pending;
+  assert.deepEqual(calls, [], 'Cancel takes nothing');
+  pending = offer();
+  await tick();
+  assert.deepEqual(exitActions().map(b => b.textContent), ['Cancel', 'Start a new Board']);
+  exitActions()[1].fire('click');
+  await pending;
+  assert.deepEqual(calls.map(([cmd]) => cmd), ['board_recovery_state', 'board_lost_exit', 'save_board']);
+  assert.deepEqual(calls[1][1], { action: 'new' });
+  assert.deepEqual([held, exits], [['{"projects":[],"cards":[]}'], 1], 'the app holds the empty Board the exit committed');
+  assert.deepEqual(JSON.parse(calls[2][1].data).projects.map(p => p.id), ['PH'], 'and saves what it then shows');
+  offer();
+  await tick();
+  assert.equal(calls.length, 3, 'a third offer does not even ask');
+
+  const quiet = lostBoardBackend({ kept: false });
+  const again = createBoardExit({ mutateBoard, hold: () => {}, exited: () => {} });
+  pending = again({ state: 'lost', kept: null });
+  await tick();
+  exitActions()[0].fire('click');
+  await pending;
+  pending = again();
+  await tick();
+  exitActions()[0].fire('click');
+  await pending;
+  again();
+  await tick();
+  assert.equal(quiet.length, 1, 'boot, then one more after a Cancel, and no third');
+  assert.equal(fakeDocument.getElementById('chd').style.display, 'none');
+});
+
+test('the lost Board exit is offered for a lost Board only, a refused exit changes nothing, a failed save keeps the Board in hand', async () => {
+  for (const state of ['newer', 'other']) {
+    const calls = lostBoardBackend({ state });
+    const offer = createBoardExit({ mutateBoard, hold: () => {}, exited: () => {} });
+    for (let n = 0; n < 3; n += 1) { offer(); await tick(); }
+    offer({ state, kept: null });
+    await tick();
+    assert.equal(fakeDocument.getElementById('chd').style.display, 'none', state);
+    assert.equal(calls.length, 3, 'an answer that is not lost is no offer and uses none up');
+  }
+  window.__TAURI__ = { core: { invoke: async () => { throw 'no answer'; } } };
+  createBoardExit({ mutateBoard, hold: () => {}, exited: () => {} })();
+  await tick();
+  assert.equal(fakeDocument.getElementById('chd').style.display, 'none', 'no answer is no offer');
+
+  let calls = lostBoardBackend({ kept: true, exitFails: true });
+  let order = [];
+  let offer = createBoardExit({ mutateBoard, hold: () => order.push('hold'), exited: () => order.push('exited') });
+  let pending = offer();
+  await tick();
+  exitActions()[1].fire('click');
+  await pending;
+  assert.deepEqual(order, [], 'a refused exit holds nothing and the app does not carry on');
+  assert.deepEqual(calls.map(([cmd]) => cmd), ['board_recovery_state', 'board_lost_exit']);
+  assert.match(lastToast(), /could not be loaded/);
+  assert.equal(store.projects[0].id, 'PH');
+
+  calls = lostBoardBackend({ kept: true, saveFails: true });
+  order = [];
+  offer = createBoardExit({
+    mutateBoard,
+    hold: json => { order.push('hold'); holdRestored(json); },
+    exited: () => order.push('exited'),
+  });
+  pending = offer();
+  await tick();
+  exitActions()[1].fire('click');
+  await pending;
+  assert.deepEqual(order, ['hold', 'exited']);
+  assert.deepEqual(calls.map(([cmd]) => cmd), ['board_recovery_state', 'board_lost_exit', 'save_board']);
+  assert.equal(store.projects[0].name, 'restored', 'the webview holds what the backend committed');
+  assert.match(lastToast(), /first Board could not be saved/);
 });
 
 test('the project defaults dialog edits two trimmed strings and chips only fill the command', async () => {

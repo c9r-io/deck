@@ -326,6 +326,20 @@ or the pollers: they wait for it, and no approval is withdrawn meanwhile. To
 start over with default settings on purpose, remove both `settings.json` and
 `settings.json.bak`.
 
+For `deck.json`, the Board, a launch that finds nothing usable — the file and
+its backup both damaged, or no backup yet — never starts an empty Board on its
+own: the Board stays empty, no change is saved, and deck asks you what to do,
+at launch and once more the first time a change cannot be saved. If a copy deck
+set aside still passes its checks (a file that could not be read when deck
+started often does), it offers only to restore that copy, naming its date and
+number of cards; otherwise it offers only to start a new Board and says what
+that means: the previous cards are not in it, sessions that are still running
+keep running without a card, and reminders you set no longer fire. Either way
+the files deck could not use stay in `~/.deck`. Deck offers a way out only
+from what it could read: while the backup, or a set-aside copy newer than any
+usable one, cannot be read at all, it offers nothing and looks again at the
+next launch.
+
 Terminal drag selection has one explicit owner. tmux copy-mode tracks the
 anchor and active endpoint while the pointer is down; at pointerup deck freezes
 the exact tmux bytes and content coordinates under a generation token. A small

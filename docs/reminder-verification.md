@@ -18,8 +18,10 @@ The native projector only reads a validated committed snapshot supplied by the
 authoritative Board load/save door. It never consumes storage recovery ahead
 of that loader. The save fence peeks without quarantine; a previously
 quarantined Board recovers from its typed backup across reload/restart, or
-refuses empty defaults when no valid backup exists. The native projector only
-projects committed Board intent. Request identifiers
+refuses empty defaults when no valid backup exists until the user explicitly
+restores a kept copy (its reminders are projected as they were) or starts a
+new Board (an empty projection withdraws the old requests). The native
+projector only projects committed Board intent. Request identifiers
 are `deck.reminder.<hex UTF-8 cardId>.<reminderId>.<revision>`; Agent session
 identifiers keep their old closed alphabet. The Swift serial queue reconciles
 pending/delivered requests only within that namespace, uses one non-repeating

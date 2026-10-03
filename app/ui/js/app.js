@@ -1,10 +1,10 @@
 import { reconcileReminders } from './board.js';
 // app.js — in-app updates and boot
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import './persistence.js';
+import { mutateBoard } from './persistence.js';
 import './board.js';
 import { $, ctx, genId, initInputDiagnostics, inv, listen, state, store, uev } from './state.js';
-import { initDialogs, toast } from './dialogs.js';
+import { createBoardExit, initDialogs, toast } from './dialogs.js';
 import { initSettings, loadSettings, openSettings, installTranslationPack } from './settings.js';
 import {
   activeProject, closeBuffer, initBuffer, panes, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow,
@@ -352,6 +352,42 @@ function initModules() {
   wireChrome();
 }
 
+/* A Board document the backend validated, held as the webview's Board:
+   column semantics migrated, runtime-only fields fresh. */
+function holdLoadedBoard(json) {
+  const data = JSON.parse(json);
+  store.projects = migrateColumnSemantics(data.projects || []);
+  store.cards = (data.cards || []).map(c => ({
+    ...c, pinned: c.pinned === true,
+    status: 'stopped', mem: null, tail: [], idle: null,
+  }));
+}
+
+function startReminders() {
+  reconcileReminders();
+  setInterval(reconcileReminders, 2000);
+  window.addEventListener("focus", reconcileReminders);
+  document.addEventListener("visibilitychange", reconcileReminders);
+}
+
+/* The lost Board's way out (dialogs.js `createBoardExit`), offered at boot
+   and on the backend's `board-lost`. The Board the exit committed replaces
+   the placeholder; one without a project — a new start — keeps the
+   placeholder's, as a first run would create it. */
+const offerBoardExit = createBoardExit({
+  mutateBoard,
+  hold: json => {
+    const placeholder = store.projects;
+    holdLoadedBoard(json);
+    if (!store.projects.length) store.projects = placeholder;
+  },
+  exited: () => {
+    state.projectId = store.projects[0].id;
+    render();
+    startReminders();
+  },
+});
+
 export async function boot() {
   initModules();
   window.__DECK_DEBUG = await inv('debug_logging_enabled').catch(() => false);
@@ -407,22 +443,20 @@ export async function boot() {
   let doc = null, loadErr = null;
   try { doc = await inv('load_board'); } catch (e) { loadErr = String(e); }
   if (doc && doc.warning) toast(translateNotice(doc.warning));
-  if (doc && doc.data) {
-    const data = JSON.parse(doc.data);   // backend already validated the shape
-    store.projects = migrateColumnSemantics(data.projects || []);
-    store.cards = (data.cards || []).map(c => ({
-      ...c, pinned: c.pinned === true,
-      status: 'stopped', mem: null, tail: [], idle: null,
-    }));
-  }
+  if (doc && doc.data) holdLoadedBoard(doc.data);
+  /* why it failed, as a closed answer: a lost Board is offered its way out
+     after the first render instead of a notice with no next step */
+  const recovery = loadErr ? await inv('board_recovery_state').catch(() => null) : null;
   if (loadErr) {
-    toast(t('error.boardLoad'));
+    if (recovery?.state === 'newer') toast(t('error.boardNewer'));
+    else if (recovery?.state !== 'lost') toast(t('error.boardLoad'));
     uev('board-load-fail');
   }
   if (!store.projects.length) {
     if (loadErr) {
-      /* in-memory board only — nothing touches disk until the user actually
-         changes something (the damaged file was already quarantined) */
+      /* an in-memory placeholder: the backend refuses every save of it until
+         the user takes the lost Board's way out (a newer file: until deck is
+         updated), so defaults never land on whatever is on disk */
       store.projects.push({
         id: genId('P'), name: 'main',
         columns: ['attention', 'working', 'queued', 'parked'].map(semantic => ({ id: genId('C'), semantic, name: t(`board.default.${semantic}`) })),
@@ -443,12 +477,9 @@ export async function boot() {
   state.projectId = store.projects[0].id;
   render();
   startPolling();
-  if (!loadErr) {
-    reconcileReminders();
-    setInterval(reconcileReminders, 2000);
-    window.addEventListener("focus", reconcileReminders);
-    document.addEventListener("visibilitychange", reconcileReminders);
-  }
+  if (!loadErr) startReminders();
+  listen('board-lost', () => offerBoardExit()).catch(() => uev('listen-fail', 'board-lost'));
+  if (recovery?.state === 'lost') offerBoardExit(recovery);
 
   refreshQueue();
   drainInbound();

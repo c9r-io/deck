@@ -2,10 +2,12 @@ import { localCandidates, localParts, noteValid, shortcutTime } from './reminder
 // dialogs.js — confirm/prompt/choice dialogs, project defaults, toasts, inline rename
 // The settings modal and everything it persists live in settings.js, which
 // imports these primitives; nothing here knows the settings document.
+// The lost Board's way out (`createBoardExit`) is the one flow here: the
+// app hands it the Board queue and store, so it stays testable without one.
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, ctx, genId, inv } from './state.js';
 import { inlineRenameValue, isComposingKeyEvent } from './pure.js';
-import { t } from './i18n.js';
+import { formatDateTime, t } from './i18n.js';
 import { normalizeTaskPreset, normalizeTaskPresets } from './connector-model.js';
 
 /* ---------- confirm dialog (window.confirm is a silent no-op in WKWebView) ---------- */
@@ -69,6 +71,61 @@ export function choiceDialog(msg, choices) {
     $('chd').style.display = 'flex';
     (primary || cancel).focus();
   });
+}
+
+/* The lost Board's one way out, as the backend's closed answer names it
+   (`board_recovery_state`): restore the kept copy — when it was written and
+   how many cards it holds — or, only when nothing can be restored, start a
+   new Board with its consequences spelled out. Neither choice is primary, so
+   Cancel has the focus and a stray Enter takes nothing. Resolves 'restore',
+   'new' or null. */
+export function boardExitDialog(recovery) {
+  const kept = recovery && recovery.kept;
+  if (!kept) return choiceDialog(t('board.lostNew'), [{ id: 'new', label: t('board.startNew') }]);
+  const date = formatDateTime(kept.savedAt, { dateStyle: 'medium', timeStyle: 'short' });
+  return choiceDialog(t('board.lostRestorable', { date, n: kept.cards }),
+    [{ id: 'restore', label: t('board.restoreKept') }]);
+}
+
+/* The lost Board's way out, end to end (documents.rs `lost_exit_at`):
+   nothing could be loaded and the backend refuses every save. The returned
+   `offer(known)` takes the backend's answer (`known`, the one boot already
+   has, or a fresh `board_recovery_state`) and shows the dialog only for a
+   lost Board — at most twice per run (boot, then the first save refused
+   after a Cancel), and never while one is open. A choice runs the
+   exit inside one queued Board transaction, so no other Board write lands
+   between the backend committing the chosen Board and the webview holding
+   it (`hold(json)`: the restored Board, or an empty one for a new start);
+   `exited()` then lets the app carry on, and the chosen Board is saved like
+   any change. A refused exit changes nothing; a failed save leaves the
+   webview holding what the backend committed, and the next change saves
+   it. The app owns the Board, so its queue and store arrive as `deps`. */
+export function createBoardExit({ mutateBoard, hold, exited }) {
+  let offers = 0, open = false;
+  return async function offer(known) {
+    if (open || offers >= 2) return;
+    open = true;
+    try {
+      const recovery = known || await inv('board_recovery_state').catch(() => null);
+      if (!recovery || recovery.state !== 'lost') return;
+      offers += 1;
+      const action = await boardExitDialog(recovery);
+      if (!action) return;
+      try {
+        await mutateBoard(async () => {
+          hold(await inv('board_lost_exit', { action }));
+          return { noop: true };
+        });
+      } catch (e) {
+        toast(t('error.boardLoad'));
+        return;
+      }
+      exited();
+      await mutateBoard(() => {}).catch(() => toast(t('error.firstBoardSave')));
+    } finally {
+      open = false;
+    }
+  };
 }
 
 /* ---------- project defaults dialog (04 A v01) ----------

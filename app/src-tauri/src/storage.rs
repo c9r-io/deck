@@ -41,6 +41,11 @@
 //!   main file damaged while deck runs instead of refusing the save. The one
 //!   backend writer of settings.json, `ensure_review_schema`, loads the same
 //!   way and leaves a main file it merely cannot read alone;
+//! - nothing removes a copy a recovery set aside: `kept_copies` lists them,
+//!   newest first, and `newest_valid_copy` reads them without moving one,
+//!   skipping a copy it read and found unusable and stopping at one it could
+//!   not read (the Board's way out of a load that left nothing loadable,
+//!   `documents.rs`);
 //! - a single flock guards against two deck instances fighting over the
 //!   same files (and double-firing the scheduler).
 //!
@@ -367,31 +372,67 @@ fn quarantine(path: &Path) -> std::io::Result<PathBuf> {
     Ok(corrupt)
 }
 
-/// Whether a recovery ever set this file aside: a `<stem>.corrupt-<ts>`
-/// sibling exists. Nothing removes those, so the answer survives restarts.
-pub(crate) fn was_quarantined(path: &Path) -> Result<bool, DeckError> {
+/// Every copy a recovery set aside for this file — the `<stem>.corrupt-<ts>`
+/// siblings `quarantine` names (`<ts>-<n>` when several fall in one second)
+/// — newest first. Nothing removes them, so the list survives restarts.
+pub(crate) fn kept_copies(path: &Path) -> Result<Vec<PathBuf>, DeckError> {
     let Some(parent) = path.parent() else {
-        return Ok(false);
+        return Ok(Vec::new());
     };
     let prefix = format!(
         "{}.corrupt-",
         path.file_stem().unwrap_or_default().to_string_lossy()
     );
-    match std::fs::read_dir(parent) {
-        Ok(entries) => {
-            for entry in entries {
-                let name = entry?.file_name().to_string_lossy().into_owned();
-                if name.strip_prefix(&prefix).is_some_and(|suffix| {
-                    !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit() || b == b'-')
-                }) {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut kept = Vec::new();
+    for entry in entries {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        let Some(suffix) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+            continue;
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
+        // the timestamp, then the same-second counter
+        let order: Vec<u64> = suffix
+            .split('-')
+            .map(|part| part.parse().unwrap_or(0))
+            .collect();
+        kept.push((order, parent.join(&name)));
     }
+    kept.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(kept.into_iter().map(|(_, path)| path).collect())
+}
+
+/// Whether a recovery ever set this file aside (`kept_copies` is not empty).
+pub(crate) fn was_quarantined(path: &Path) -> Result<bool, DeckError> {
+    Ok(!kept_copies(path)?.is_empty())
+}
+
+/// The newest copy a recovery set aside that passes full validation as `T`
+/// now, read and never moved. A copy that was read and is unusable is
+/// skipped; one that cannot be READ ends the search with an error — it may
+/// be intact, and it is newer than every copy after it. `Ok(None)`: every
+/// copy was read and none is usable.
+pub(crate) fn newest_valid_copy<T: DeserializeOwned>(
+    path: &Path,
+) -> Result<Option<(PathBuf, String)>, DeckError> {
+    for kept in kept_copies(path)? {
+        match held::<T>(&kept) {
+            Held::Good(payload) => return Ok(Some((kept, payload))),
+            Held::Unreadable(kind) => {
+                let message =
+                    format!("a kept copy could not be read ({kind}); it was left untouched");
+                return Err(DeckError::new(ErrorKind::io(kind), message));
+            }
+            Held::Nothing | Held::Newer | Held::Damaged(_) => {}
+        }
+    }
+    Ok(None)
 }
 
 /// What one file holds, as far as a reader that will not move it can tell.

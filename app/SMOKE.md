@@ -836,9 +836,19 @@ a fixture.
       aside as `.corrupt-<ts>` — NEVER silently replaced with an empty board
 - [ ] Valid-JSON corruption too: replace deck.json's contents with `{"x":1}`
       → same recovery path (typed validation, not just a JSON parse)
-- [ ] Delete `.bak` as well → relaunch shows a hard "could not be loaded"
-      toast; deck runs with an in-memory board and does NOT write a default
-      file until you actually change something
+- [ ] Delete `.bak` as well (no intact `.corrupt-<ts>` left from earlier) →
+      relaunch: no toast; a dialog offers ONLY "Start a new Board", naming
+      its three consequences, with Cancel focused. Cancel → the in-memory
+      board stays, a change is refused and no file is written; the first
+      refused change offers the dialog once more, later ones do not. "Start
+      a new Board" → the default project is saved, deck.json exists again,
+      every `.corrupt-<ts>` is untouched
+- [ ] Quit → rename a healthy `deck.json` to `deck.corrupt-1700000000` and
+      delete `.bak` → relaunch: the dialog offers ONLY "Restore the kept
+      Board", naming the copy's date and card count; Restore → the cards are
+      back, deck.json is written again, the kept `.corrupt-<ts>` copy
+      remains. (`chmod 000` cannot stage this: launch re-restricts every
+      data file to 0600 before the Board loads.)
 - [ ] Set `"schema_version": 99` in deck.json → toast says update deck; the
       file is left byte-identical (no .corrupt, no overwrite on save)
 - [ ] Set `"schema_version": "1"` (a STRING) → treated as damage: recovery

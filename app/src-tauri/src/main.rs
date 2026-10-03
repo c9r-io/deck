@@ -406,6 +406,8 @@ fn main() {
             links::voice_open_settings,
             documents::load_board,
             documents::save_board,
+            documents::board_recovery_state,
+            documents::board_lost_exit,
             documents::load_settings,
             documents::save_settings,
             updater::build_identity,
