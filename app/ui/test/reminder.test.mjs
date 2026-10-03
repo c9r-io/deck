@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { localCandidates, localParts, shortcutTime, noteValid, reminderDue, reminderClaim, sameReminder, reminderAction, retirementKey, rememberRetirement, retirementBlocked, reminderRequestId } from '../js/reminder-model.js';
+import { localCandidates, localParts, shortcutTime, noteValid, reminderDue, reminderClaim, sameReminder, reminderAction, retirementKey, rememberRetirement, retirementBlocked, reminderRequestId, reminderTick } from '../js/reminder-model.js';
 import { createAttentionTracker, attentionRows } from '../js/attention-model.js';
 const card = () => ({ id: 'card-a', session: 'same-name', reminder: { id: 'unique', revision: 1, dueAt: 2000, due: false, timeZone: 'Asia/Tokyo', note: '', inAppOnly: false } });
 test('time round trips reject gaps, invalid dates and ambiguous implicit choices', () => {
@@ -49,6 +49,20 @@ test('due is independent of viewing, agent episodes and host clock rollback', ()
   assert.equal(t.matches(future, 'reminder'), false); assert.equal(t.matches(future, 'reminders'), true);
   const p = [{ id: 'p', columns: [{ id: 'col' }] }]; c.projectId = future.projectId = 'p'; c.columnId = future.columnId = 'col';
   assert.deepEqual(attentionRows(p, [future, c], t, 'reminders').map(row => row.card.id), [c.id, future.id]);
+});
+test('the periodic reconcile runs only while the Board has a reminder', () => {
+  let cards = [{ id: 'plain' }, { id: 'other', reminderRetirements: ['exit:1:2:$3'] }]; let runs = 0;
+  const tick = reminderTick(() => cards, () => { runs += 1; });
+  tick(); tick();
+  assert.equal(runs, 0, 'nothing to latch or keep registered: no IPC');
+  cards = [{ id: 'plain' }, card()]; tick();
+  assert.equal(runs, 1, 'a future reminder is work: its due instant and its registration');
+  cards[1].reminder.due = true; tick();
+  assert.equal(runs, 2, 'a due reminder still is: its notification can be answered');
+  cards[1].reminder.inAppOnly = true; tick();
+  assert.equal(runs, 3, 'so is one that only shows inside deck');
+  delete cards[1].reminder; tick();
+  assert.equal(runs, 3, 'the Board is read at every tick, not once');
 });
 test('ending a reminder never releases the same blocked retirement; new generations remain ordinary', () => {
   const c = card(); const key = retirementKey('exit', c, '123:456:$1');

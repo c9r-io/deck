@@ -4,6 +4,10 @@
 export const REMINDER_NOTE_BYTES = 280;
 export const reminderDue = (card, now = Date.now()) => !!card?.reminder &&
   (card.reminder.due === true || card.reminder.dueAt <= now);
+// The webview's periodic reconcile. A Board without a reminder has nothing
+// for it: no due latch to set, no request to keep registered. It then makes
+// no IPC at all; the boot, focus and visibility runs stay unconditional.
+export const reminderTick = (cards, reconcile) => () => { if (cards().some(card => card.reminder)) reconcile(); };
 export const reminderClaim = card => card?.reminder
   ? { cardId: card.id, id: card.reminder.id, revision: card.reminder.revision } : null;
 export const sameReminder = (reminder, claim) => !!reminder && !!claim &&

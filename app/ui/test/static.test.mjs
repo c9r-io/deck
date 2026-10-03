@@ -414,6 +414,22 @@ test('every view change leaves the session view first, and the tool slot closes 
     assert.match(workspace, new RegExp(`<section id="${id}" class="session-tool"`), `${id} is a right-hand session tool`);
 });
 
+test('reminders poll the backend only while the Board has one', () => {
+  const app = read('app/ui/js/app.js');
+  const start = app.slice(app.indexOf('function startReminders()'), app.indexOf('const offerBoardExit'));
+  assert.ok(start.length > 0 && start.length < 1200, 'startReminders is where the reminder triggers are set up');
+  // the one timer goes through the model's check (reminder-model.js `reminderTick`)
+  assert.equal((start.match(/setInterval\(/g) || []).length, 1);
+  assert.match(start, /setInterval\(reminderTick\(\(\) => store\.cards, reconcileReminders\), 2000\)/);
+  // boot, focus and visibility stay unconditional: they pick up a response to
+  // a notification whose reminder is no longer on the Board
+  assert.match(start, /\{\s*reconcileReminders\(\);/);
+  assert.match(start, /addEventListener\("focus", reconcileReminders\)/);
+  assert.match(start, /addEventListener\("visibilitychange", reconcileReminders\)/);
+  const code = app.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.equal((code.match(/reconcileReminders/g) || []).length, 5, 'the import and these four: nothing else in app.js drives reminders');
+});
+
 // check.mjs is the gate that keeps import cycles inside the view core. It is
 // run here on small module directories: a cycle outside the core must be
 // found whichever static edge closes it, wherever the module lives, and

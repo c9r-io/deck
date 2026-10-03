@@ -3,6 +3,16 @@
 //! owns scheduled delivery even after quit. Async results are version fenced.
 //! Responses use a bounded durable inbox until the WebView can transact them.
 //! Notes never cross the bridge. Agent identifiers/removal remain separate.
+//!
+//! What runs the projection: every committed Board (`observe_committed`), a
+//! system wake or clock change, and the webview's reconcile. `reminder_status`
+//! is therefore not a plain read: it projects and refreshes the Dock. The
+//! webview reconciles at boot, on every return to its window, and every 2 s
+//! while the Board has a reminder (`reminderTick` in reminder-model.js; a
+//! Board without one makes no periodic call). That tick is the clock for the
+//! due latch, for the Dock at a due instant, for another try at a failed
+//! registration and for a response that arrives while deck is in the
+//! background: `action_callback` stores the response and signals nobody.
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use serde::{Deserialize, Serialize};

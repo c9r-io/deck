@@ -13,6 +13,18 @@ export async function runReminderSmoke() {
     while (!(await check())) { if (Date.now() >= deadline) throw new Error('bounded reminder condition timeout'); await pause(100); }
   };
   const report = (name, ok, stage = 0) => inv('ui_event', { code: 'smoke-check', detail: name, a: ok ? 1 : -1, b: stage });
+  // The webview's own reminder requests, counted where every invoke leaves
+  // it: a fetch to the ipc:// protocol (`__TAURI__.core` is frozen). The
+  // count only proves silence once it has seen such a request.
+  let reminderIpc = 0;
+  const systemFetch = window.fetch;
+  try {
+    window.fetch = function (url, init) {
+      const command = /^(?:ipc:\/\/localhost|https?:\/\/ipc\.localhost)\/([^?#]+)/.exec(String(url?.url || url));
+      if (command && /^reminder_(status|actions)$/.test(decodeURIComponent(command[1]))) reminderIpc += 1;
+      return systemFetch.call(window, url, init);
+    };
+  } catch (_) { /* nothing counted: the quiet check below fails */ }
   const click = async el => {
     if (!el) throw new Error('missing UI control');
     const rect = el.getBoundingClientRect();
@@ -105,7 +117,10 @@ export async function runReminderSmoke() {
     await until(async () => (await inv('smoke_native_input', { input: { kind: 'state' } }) & 3) === 3);
     const end = editReminder(protectedCard.id); await until(() => $('reminder-end')); await click($('reminder-end')); await end;
     for (let i = 0; i < 4; i++) if (!(await pollNow())) throw new Error('failed poll cannot prove retirement suppression');
-    await report('reminder-no-backlog', !!provider.get(protectedCard.id) && !provider.get(protectedCard.id).reminder);
+    // No reminder is left on the Board: reconciliation has no work, and the
+    // webview stops asking the backend (two periods of its reconcile tick).
+    const counted = reminderIpc; await pause(5000);
+    await report('reminder-no-backlog', !!provider.get(protectedCard.id) && !provider.get(protectedCard.id).reminder && counted > 0 && reminderIpc === counted);
     stage = 6;
     const inventory = await inv('smoke_reminder_inventory');
     await report('reminder-native-empty', inventory.pending.length === 0 && inventory.delivered.length === 0);

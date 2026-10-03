@@ -177,6 +177,65 @@ keeps its existing own-DOM editor and own-window normal-quit transport and
 does not require global foreground activation. A prior failed active-window
 assertion under a lock remains in historical evidence, never overwritten.
 
+### Background reconciliation (2026-10-03)
+
+The webview's reconcile is what sets the due latch, refreshes the Dock at a
+due instant, tries a failed registration again and transacts a notification
+response; the native callback only stores the response. It runs at boot, on
+every return to the window, and every 2 seconds while the Board has a
+reminder. A Board without one makes no periodic call: the `reminder` WK mode
+counts the webview's own `reminder_status` / `reminder_actions` requests for
+five seconds after the last reminder ended and requires none.
+
+Whether that tick keeps running in the background was measured on the
+isolated Mac mini with a temporary, uncommitted probe in a debug carrier
+hidden through the own-window driver for 23.8 minutes (process priority 4,
+another application frontmost):
+
+- a 2-second interval fired every 3.0 seconds (median; maximum 3.4), twenty
+  times in every minute;
+- one-shot timers aimed 1 to 16 minutes ahead were 61 to 202 ms late;
+- an event emitted from Rust reached its listener in 3 ms (median; maximum
+  8), and a Board transaction started from it committed in 30 ms (maximum
+  113), 286 of 286 and 23 of 23;
+- an in-app-only reminder due after three hidden minutes showed in the Dock
+  one second after its instant and had its latch committed within two.
+
+So in that state timers are slowed, not frozen: the tick that transacts a
+background response keeps running every three seconds. The probe ran on to 38
+minutes with the same cadence (twenty ticks in every minute, 457 of 457
+events, 38 of 38 transactions).
+
+#### Follow-up tests owed
+
+None of these ran. Each stays open until the named evidence exists.
+
+1. **A response answered while Deck is in the background** (end to end). No
+   authorized channel clicked a notification, so this is BLOCKED; only the
+   tick behind it was measured. By hand, in an isolated carrier with
+   notification permission: set a reminder one minute ahead, hide the app
+   (Command-H), choose **Remind in 1 hour** on the banner without bringing the
+   app forward and wait ten seconds. Pass: the carrier's `deck.json` has the
+   reminder at revision plus one, `dueAt` equal to the click time plus one
+   hour and `due` false, and the system holds a pending request for that new
+   revision.
+2. **Deeper background states**: a locked screen, display sleep, and hours
+   hidden. Repeat the cadence measurement (or test 1) in each. Pass: the tick
+   keeps running, or a response is transacted within a stated bound.
+3. **A withdrawal the notification center did not answer.** When the three
+   reads in `deckReminderProject` do not return within 5 seconds, the
+   projector returns without removing obsolete requests. While the Board has
+   a reminder the 2-second tick asks again. When the request that should go
+   belonged to the LAST reminder there is no tick: nothing asks again until
+   the next window focus, visibility change, Board save, wake, clock change
+   or restart, and the ended reminder can still be delivered in between. This
+   cannot be reproduced unattended today; it needs a debug-only fault that
+   makes one projection's reads time out. Owed, with that fault: end the last
+   reminder, assert through the carrier inventory that its request is still
+   pending, then assert it is gone after (a) a window focus and (b) a Board
+   save. Decide from the result whether the projector should try again on
+   its own.
+
 ### Evidence evaluator closure (2026-09-30)
 
 `aggregate` evaluates the closed Reminder subassertion list in

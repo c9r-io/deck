@@ -2,6 +2,7 @@ import { reconcileReminders } from './board.js';
 // app.js — in-app updates and boot
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { mutateBoard } from './persistence.js';
+import { reminderTick } from './reminder-model.js';
 import './board.js';
 import { $, ctx, genId, initInputDiagnostics, inv, listen, state, store, uev } from './state.js';
 import { createBoardExit, initDialogs, toast } from './dialogs.js';
@@ -363,9 +364,14 @@ function holdLoadedBoard(json) {
   }));
 }
 
+/* Reminder reconciliation (board.js `reconcileReminders`): once now, at every
+   return to the window, and every 2 s while the Board has a reminder — that
+   tick is what sets a due latch, refreshes the Dock and answers a
+   notification response while deck is in the background. A Board without a
+   reminder makes no periodic IPC (reminder-model.js `reminderTick`). */
 function startReminders() {
   reconcileReminders();
-  setInterval(reconcileReminders, 2000);
+  setInterval(reminderTick(() => store.cards, reconcileReminders), 2000);
   window.addEventListener("focus", reconcileReminders);
   document.addEventListener("visibilitychange", reconcileReminders);
 }
