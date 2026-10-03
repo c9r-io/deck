@@ -105,7 +105,16 @@
 //! it. Install takes deck's hooks out document-wide, hook by hook, before
 //! writing the specs: a hook the user keeps in the same group stays in it,
 //! and an EMPTY array the user wrote is left exactly as written; uninstall
-//! prunes only what taking deck's hooks out emptied. Hooks inherit `$TMUX`/`$TMUX_PANE`; the helper
+//! prunes only what taking deck's hooks out emptied. The file is never
+//! serialized again: what is written is its owner's text with deck's hooks
+//! cut out and deck's groups put in, every other byte (the order of the
+//! keys, the indentation, the spelling of a number or an escape) where it
+//! was, and only when that text parses back to exactly the value the
+//! install or uninstall decided; a text deck cannot follow is refused and
+//! the file left alone. Nothing is written when the file already is what
+//! was asked for. The write replaces the file the path NAMES
+//! (`datadir::atomic_write_through_link`): a symlinked settings file stays
+//! a link. Hooks inherit `$TMUX`/`$TMUX_PANE`; the helper
 //! drains the hook stdin payload and discards it after reading at most ONE
 //! allowlisted top-level field (the source's interaction id, below),
 //! charset-validates every field,
@@ -1246,6 +1255,7 @@ pub(crate) fn spawn_listener() {
 /// Markers every deck-authored hook command carries; install/uninstall touch
 /// only the hooks carrying one. A group (`{matcher?, hooks: [...]}`) may also
 /// hold hooks the user put there, and those are never deck's to remove.
+/// Everything else in the file keeps its bytes (`hooks_file_edited`).
 /// Current entries run the helper INSIDE the installed, signed, notarized
 /// bundle — deck never drops an executable into the home directory (an app
 /// writing a binary under `~` and registering it in another program's hook
@@ -1512,6 +1522,477 @@ pub(crate) fn hooks_installed(root: &serde_json::Value, specs: &[HookSpec]) -> b
     })
 }
 
+// ---------- writing only what is deck's ----------------------------------------
+//
+// The file belongs to the agent CLI and to whoever edits it: the order of its
+// keys, its indentation and the way it spells a number or an escape are
+// theirs. So the document is never serialized again. The functions above
+// decide WHAT the result is, on the parsed value; the ones below produce it
+// as the original text with deck's hooks cut out and deck's groups put in,
+// every other byte where it was — and that text is used only when it parses
+// back to exactly the decided value.
+
+/// One edit of a hooks document.
+#[derive(Clone, Copy)]
+enum HookEdit<'a> {
+    Install {
+        specs: &'a [HookSpec],
+        source: &'a str,
+        style: HookStyle,
+        helper: &'a str,
+    },
+    Uninstall,
+}
+
+/// The half-open byte range of a JSON value in the document text.
+type Span = std::ops::Range<usize>;
+
+/// One element of an array or one member of an object: `whole` runs from the
+/// member's key (or the element's start) to the end of the value, `value` is
+/// the value alone.
+struct Item {
+    key: Option<String>,
+    whole: Span,
+    value: Span,
+}
+
+fn skip_space(text: &[u8], mut at: usize) -> usize {
+    while matches!(text.get(at), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+        at += 1;
+    }
+    at
+}
+
+/// Where the JSON value that starts at `at` ends. serde_json has accepted
+/// the text already, so this only finds boundaries; whatever it does not
+/// expect is `None`, and the caller leaves the file alone.
+fn value_end(text: &[u8], at: usize) -> Option<usize> {
+    match *text.get(at)? {
+        b'"' => {
+            let mut at = at + 1;
+            loop {
+                match *text.get(at)? {
+                    b'"' => return Some(at + 1),
+                    b'\\' => at += 2,
+                    _ => at += 1,
+                }
+            }
+        }
+        b'{' | b'[' => {
+            let mut depth = 0usize;
+            let mut at = at;
+            loop {
+                match *text.get(at)? {
+                    b'"' => {
+                        at = value_end(text, at)?;
+                        continue;
+                    }
+                    b'{' | b'[' => depth += 1,
+                    b'}' | b']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(at + 1);
+                        }
+                    }
+                    _ => {}
+                }
+                at += 1;
+            }
+        }
+        _ => {
+            let end = (at..text.len())
+                .find(|&i| matches!(text[i], b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r'))
+                .unwrap_or(text.len());
+            (end > at).then_some(end)
+        }
+    }
+}
+
+/// The items of the object or array at `span`.
+fn items(text: &str, span: &Span) -> Option<Vec<Item>> {
+    let bytes = text.as_bytes();
+    let (object, close) = match *bytes.get(span.start)? {
+        b'{' => (true, b'}'),
+        b'[' => (false, b']'),
+        _ => return None,
+    };
+    let mut found = Vec::new();
+    let mut at = skip_space(bytes, span.start + 1);
+    if *bytes.get(at)? == close {
+        return (at + 1 == span.end).then_some(found);
+    }
+    loop {
+        let start = at;
+        let key = if object {
+            let end = value_end(bytes, at)?;
+            let key = serde_json::from_str::<String>(text.get(at..end)?).ok()?;
+            at = skip_space(bytes, end);
+            if *bytes.get(at)? != b':' {
+                return None;
+            }
+            at = skip_space(bytes, at + 1);
+            Some(key)
+        } else {
+            None
+        };
+        let end = value_end(bytes, at)?;
+        found.push(Item {
+            key,
+            whole: start..end,
+            value: at..end,
+        });
+        at = skip_space(bytes, end);
+        match *bytes.get(at)? {
+            b',' => at = skip_space(bytes, at + 1),
+            byte if byte == close => return (at + 1 == span.end).then_some(found),
+            _ => return None,
+        }
+    }
+}
+
+/// One step of the document's indentation: what its first key is indented
+/// by, two spaces when it shows none.
+fn indent_unit(text: &str) -> String {
+    let space = [' ', '\t', '\n', '\r'];
+    let inside = text.trim_start_matches(space).get(1..).unwrap_or("");
+    let lead = &inside[..inside.len() - inside.trim_start_matches(space).len()];
+    match lead.rfind('\n') {
+        Some(at) if at + 1 < lead.len() => lead[at + 1..].to_string(),
+        _ => "  ".to_string(),
+    }
+}
+
+/// What stands around the items of one container: after the opening bracket,
+/// between two items (the comma included), before the closing bracket.
+struct Layout {
+    lead: String,
+    between: String,
+    tail: String,
+}
+
+/// The container's own layout when it has items; the document's, one step
+/// deeper than the line the container opens on, when it has none.
+fn layout(text: &str, span: &Span, old: &[Item]) -> Layout {
+    let Some(first) = old.first() else {
+        let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+        let line = text[..span.start].rfind('\n').map_or(0, |at| at + 1);
+        let base: String = text[line..span.start]
+            .chars()
+            .take_while(|c| matches!(c, ' ' | '\t'))
+            .collect();
+        let unit = indent_unit(text);
+        return Layout {
+            lead: format!("{newline}{base}{unit}"),
+            between: format!(",{newline}{base}{unit}"),
+            tail: format!("{newline}{base}"),
+        };
+    };
+    let lead = text[span.start + 1..first.whole.start].to_string();
+    let between = match old.get(1) {
+        Some(second) => text[first.whole.end..second.whole.start].to_string(),
+        None => format!(",{lead}"),
+    };
+    let last = old.last().unwrap_or(first);
+    Layout {
+        tail: text[last.whole.end..span.end - 1].to_string(),
+        lead,
+        between,
+    }
+}
+
+/// The text of the container at `span` with items dropped or replaced
+/// (`kept[i]`: `None` drops item i) and `added` at its end. Every piece
+/// between the items is the container's own: an item that stays keeps the
+/// separator that stood before it, so the text changes only where an item
+/// did.
+fn rebuilt(
+    text: &str,
+    span: &Span,
+    old: &[Item],
+    kept: &[Option<String>],
+    added: &[String],
+) -> String {
+    let Layout {
+        lead,
+        between,
+        tail,
+    } = layout(text, span, old);
+    let mut out = String::from(&text[span.start..span.start + 1]);
+    let mut any = false;
+    for (index, item) in kept.iter().enumerate() {
+        let Some(item) = item else { continue };
+        if any {
+            out.push_str(&text[old[index - 1].whole.end..old[index].whole.start]);
+        } else {
+            out.push_str(&lead);
+        }
+        out.push_str(item);
+        any = true;
+    }
+    for item in added {
+        out.push_str(if any { &between } else { &lead });
+        out.push_str(item);
+        any = true;
+    }
+    if any {
+        out.push_str(&tail);
+    }
+    out.push_str(&text[span.end - 1..span.end]);
+    out
+}
+
+/// A value deck writes, as text for a container whose items follow `lead`:
+/// serde's pretty form re-indented in the document's own unit, or its
+/// compact form when the container is written on one line.
+fn written(value: &serde_json::Value, text: &str, lead: &str) -> Option<String> {
+    let Some(at) = lead.rfind('\n') else {
+        return serde_json::to_string(value).ok();
+    };
+    let newline = if lead[..at].ends_with('\r') {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let (indent, unit) = (&lead[at + 1..], indent_unit(text));
+    let pretty = serde_json::to_string_pretty(value).ok()?;
+    let mut out = String::new();
+    for (index, line) in pretty.lines().enumerate() {
+        let body = line.trim_start_matches(' ');
+        if index > 0 {
+            out.push_str(newline);
+            out.push_str(indent);
+            out.push_str(&unit.repeat((line.len() - body.len()) / 2));
+        }
+        out.push_str(body);
+    }
+    Some(out)
+}
+
+/// A container after deck's hooks were taken out of it.
+enum Stripped {
+    Same,
+    Gone,
+    Changed(String),
+}
+
+/// One group without deck's hooks: the user's hooks stay, as written, in
+/// what is left of it (`strip_ours`, on the text).
+fn group_stripped(text: &str, group: &Item) -> Option<Stripped> {
+    let value: serde_json::Value = serde_json::from_str(text.get(group.value.clone())?).ok()?;
+    let ours: Vec<bool> = entry_hooks(&value).map(hook_is_ours).collect();
+    if !ours.contains(&true) {
+        return Some(Stripped::Same);
+    }
+    if !ours.contains(&false) {
+        return Some(Stripped::Gone);
+    }
+    let members = items(text, &group.value)?;
+    // serde_json keeps the LAST of two equal keys; so does this
+    let list = members
+        .iter()
+        .rev()
+        .find(|member| member.key.as_deref() == Some("hooks"))?;
+    let hooks = items(text, &list.value)?;
+    if hooks.len() != ours.len() {
+        return None;
+    }
+    let kept: Vec<Option<String>> = hooks
+        .iter()
+        .zip(&ours)
+        .map(|(hook, ours)| (!ours).then(|| text[hook.whole.clone()].to_string()))
+        .collect();
+    Some(Stripped::Changed(format!(
+        "{}{}{}",
+        &text[group.value.start..list.value.start],
+        rebuilt(text, &list.value, &hooks, &kept, &[]),
+        &text[list.value.end..group.value.end]
+    )))
+}
+
+/// One event's list without deck's hooks and, on install, with deck's group
+/// at its end. `Gone`: taking deck's hooks out emptied the list, so the
+/// event goes with it.
+fn list_edited(text: &str, list: &Span, add: Option<&serde_json::Value>) -> Option<Stripped> {
+    if text.as_bytes().get(list.start) != Some(&b'[') {
+        // not a list: nothing of deck's is in it, and the value engine has
+        // already refused to add to it
+        return add.is_none().then_some(Stripped::Same);
+    }
+    let old = items(text, list)?;
+    let mut kept = Vec::new();
+    let mut changed = false;
+    for group in &old {
+        kept.push(match group_stripped(text, group)? {
+            Stripped::Same => Some(text[group.whole.clone()].to_string()),
+            Stripped::Changed(group) => {
+                changed = true;
+                Some(group)
+            }
+            Stripped::Gone => {
+                changed = true;
+                None
+            }
+        });
+    }
+    let mut added = Vec::new();
+    if let Some(group) = add {
+        added.push(written(group, text, &layout(text, list, &old).lead)?);
+    }
+    Some(if added.is_empty() && !changed {
+        Stripped::Same
+    } else if added.is_empty() && kept.iter().all(Option::is_none) {
+        Stripped::Gone
+    } else {
+        Stripped::Changed(rebuilt(text, list, &old, &kept, &added))
+    })
+}
+
+/// The document's text after `edit`. `None` when the text is not laid out
+/// the way this reads it; the caller then leaves the file alone.
+fn hooks_text_edited(text: &str, edit: HookEdit) -> Option<String> {
+    let bytes = text.as_bytes();
+    let start = skip_space(bytes, 0);
+    if bytes.get(start) != Some(&b'{') {
+        return None;
+    }
+    let root = start..value_end(bytes, start)?;
+    let members = items(text, &root)?;
+    let specs: &[HookSpec] = match edit {
+        HookEdit::Install { specs, .. } => specs,
+        HookEdit::Uninstall => &[],
+    };
+    let group = |spec: &HookSpec| match edit {
+        HookEdit::Install {
+            source,
+            style,
+            helper,
+            ..
+        } => Some(spec_entry(style, helper, source, spec)),
+        HookEdit::Uninstall => None,
+    };
+    let own = |item: &Item| Some(text[item.whole.clone()].to_string());
+    let replaced =
+        |span: &Span, with: String| format!("{}{with}{}", &text[..span.start], &text[span.end..]);
+
+    let Some(hooks) = members
+        .iter()
+        .rev()
+        .find(|member| member.key.as_deref() == Some("hooks"))
+    else {
+        // no hooks key: uninstall has nothing to do, install adds the key
+        // after the last one the document has
+        if specs.is_empty() {
+            return Some(text.to_string());
+        }
+        let mut events = serde_json::Map::new();
+        for spec in specs {
+            events.insert(spec.0.to_string(), serde_json::json!([group(spec)?]));
+        }
+        let lead = layout(text, &root, &members).lead;
+        let member = format!(
+            "\"hooks\": {}",
+            written(&serde_json::Value::Object(events), text, &lead)?
+        );
+        let kept: Vec<Option<String>> = members.iter().map(own).collect();
+        return Some(replaced(
+            &root,
+            rebuilt(text, &root, &members, &kept, &[member]),
+        ));
+    };
+    let events = items(text, &hooks.value)?;
+    let mut kept = Vec::new();
+    let mut changed = false;
+    for event in &events {
+        let name = event.key.as_deref()?;
+        let add = specs.iter().find(|spec| spec.0 == name).and_then(&group);
+        kept.push(match list_edited(text, &event.value, add.as_ref())? {
+            Stripped::Same => own(event),
+            Stripped::Changed(list) => {
+                changed = true;
+                Some(format!(
+                    "{}{list}",
+                    &text[event.whole.start..event.value.start]
+                ))
+            }
+            Stripped::Gone => {
+                changed = true;
+                None
+            }
+        });
+    }
+    let lead = layout(text, &hooks.value, &events).lead;
+    let mut added = Vec::new();
+    for spec in specs {
+        if events
+            .iter()
+            .any(|event| event.key.as_deref() == Some(spec.0))
+        {
+            continue;
+        }
+        added.push(format!(
+            "{}: {}",
+            serde_json::to_string(spec.0).ok()?,
+            written(&serde_json::json!([group(spec)?]), text, &lead)?
+        ));
+    }
+    if added.is_empty() && !changed {
+        return Some(text.to_string());
+    }
+    if added.is_empty() && kept.iter().all(Option::is_none) {
+        // taking deck's hooks out emptied `hooks` itself: the key goes
+        let rest: Vec<Option<String>> = members
+            .iter()
+            .map(|member| {
+                (member.whole != hooks.whole).then(|| text[member.whole.clone()].to_string())
+            })
+            .collect();
+        return Some(replaced(&root, rebuilt(text, &root, &members, &rest, &[])));
+    }
+    Some(replaced(
+        &hooks.value,
+        rebuilt(text, &hooks.value, &events, &kept, &added),
+    ))
+}
+
+/// The text to write for `edit`, or `None` when the file already is what the
+/// edit asks for: a toggle that changes nothing writes nothing. The value
+/// engine decides the result; the text is the owner's original with deck's
+/// part changed, and it must parse back to exactly that result or the file
+/// is left alone. A file that does not exist yet has no text to keep.
+fn hooks_file_edited(original: Option<&str>, edit: HookEdit) -> Result<Option<String>, DeckError> {
+    let value = settings_value(original)?;
+    let next = match edit {
+        HookEdit::Install {
+            specs,
+            source,
+            style,
+            helper,
+        } => {
+            if hooks_are_current(&value, specs, source, style, helper) {
+                return Ok(None);
+            }
+            hooks_with_install(value.clone(), specs, source, style, helper)?
+        }
+        HookEdit::Uninstall => hooks_with_uninstall(value.clone()),
+    };
+    if next == value {
+        return Ok(None);
+    }
+    let Some(original) = original else {
+        let pretty = serde_json::to_string_pretty(&next).map_err(DeckError::from)?;
+        return Ok(Some(format!("{pretty}\n")));
+    };
+    hooks_text_edited(original, edit)
+        .filter(|edited| {
+            serde_json::from_str::<serde_json::Value>(edited).is_ok_and(|value| value == next)
+        })
+        .map(Some)
+        .ok_or(DeckError::new(
+            ErrorKind::Other,
+            "the agent settings file is laid out in a way deck cannot edit in place — not modifying it",
+        ))
+}
+
 fn claude_settings_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".claude").join("settings.json"))
 }
@@ -1529,20 +2010,35 @@ fn codex_hooks_path() -> Option<PathBuf> {
         .map(|dir| dir.join("hooks.json"))
 }
 
-fn read_settings_value(path: &Path) -> Result<serde_json::Value, DeckError> {
+fn not_json() -> DeckError {
+    DeckError::new(
+        ErrorKind::Other,
+        "the agent settings file is not valid JSON — not modifying it",
+    )
+}
+
+/// The settings file as its owner wrote it; `None` when there is none.
+fn read_settings_text(path: &Path) -> Result<Option<String>, DeckError> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
-            DeckError::new(
-                ErrorKind::Other,
-                "the agent settings file is not valid JSON — not modifying it",
-            )
-        }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
+        Ok(bytes) => String::from_utf8(bytes).map(Some).map_err(|_| not_json()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(DeckError::new(
             ErrorKind::io(e.kind()),
             format!("could not read agent settings ({})", e.kind()),
         )),
     }
+}
+
+/// The document a settings text holds; no file reads as an empty one.
+fn settings_value(text: Option<&str>) -> Result<serde_json::Value, DeckError> {
+    match text {
+        Some(text) => serde_json::from_str(text).map_err(|_| not_json()),
+        None => Ok(serde_json::json!({})),
+    }
+}
+
+fn read_settings_value(path: &Path) -> Result<serde_json::Value, DeckError> {
+    settings_value(read_settings_text(path)?.as_deref())
 }
 
 /// Atomic replace of a file that belongs to the agent CLI, not deck
@@ -1601,14 +2097,6 @@ fn installed_helper_path() -> Result<String, DeckError> {
     helper_path_in(bundle)
 }
 
-fn write_hooks(path: &Path, next: &serde_json::Value, never_ran: &str) -> Result<(), DeckError> {
-    let bytes = format!(
-        "{}\n",
-        serde_json::to_string_pretty(next).map_err(DeckError::from)?
-    );
-    write_agent_config(path, bytes.as_bytes(), never_ran)
-}
-
 /// Each agent module: config path, spec table, source word, hook style,
 /// never-ran message.
 type AgentModule = (
@@ -1642,8 +2130,9 @@ fn agent_modules() -> [AgentModule; 2] {
 /// installed but are not what the CURRENT spec describes — a helper other
 /// than this install's (the legacy `~/.deck/bin` copy, or a bundle that
 /// moved), a matcher this deck version narrowed, an event it retired —
-/// rewrite ONLY deck's entries, then delete the legacy copy once nothing
-/// references it. Comparing the whole entry is what lets a spec change
+/// rewrite ONLY deck's hooks, every other byte of the file where it was,
+/// then delete the legacy copy once nothing references it. Comparing deck's
+/// whole hook and the matcher of its group is what lets a spec change
 /// (`permission_prompt|idle_prompt` → `permission_prompt`) reach users who
 /// enabled the toggle under an older version without touching it again.
 /// A non-release build returns before reading anything.
@@ -1660,13 +2149,16 @@ pub(crate) fn migrate_hooks_on_boot() {
         if !hooks_installed(&value, specs) {
             continue;
         }
-        if hooks_are_current(&value, specs, source, style, &helper) {
-            continue;
-        }
-        let result = hooks_with_install(value.clone(), specs, source, style, &helper)
-            .and_then(|next| write_hooks(&path, &next, never_ran));
-        match result {
-            Ok(()) => applog(&format!(
+        let edit = HookEdit::Install {
+            specs,
+            source,
+            style,
+            helper: &helper,
+        };
+        match hooks_set(&path, edit, never_ran) {
+            // already what the current spec describes: the file is not written
+            Ok(false) => {}
+            Ok(true) => applog(&format!(
                 "[agent-hooks] {source} entries rewritten to the current spec"
             )),
             Err(e) => {
@@ -1706,26 +2198,14 @@ fn retire_legacy_helper_copy() {
     }
 }
 
-/// Shared enable/disable for one agent's hooks document.
-fn hooks_set(
-    path: &Path,
-    specs: &[HookSpec],
-    source: &str,
-    style: HookStyle,
-    enable: bool,
-    never_ran: &str,
-) -> Result<(), DeckError> {
-    let value = read_settings_value(path)?;
-    let next = if enable {
-        let helper = installed_helper_path()?;
-        hooks_with_install(value, specs, source, style, &helper)?
-    } else {
-        if !path.exists() {
-            return Ok(());
-        }
-        hooks_with_uninstall(value)
-    };
-    write_hooks(path, &next, never_ran)
+/// Apply one edit to an agent's hooks file. Says whether the file was
+/// written: it is not when it already is what the edit asks for.
+fn hooks_set(path: &Path, edit: HookEdit, never_ran: &str) -> Result<bool, DeckError> {
+    let original = read_settings_text(path)?;
+    match hooks_file_edited(original.as_deref(), edit)? {
+        Some(text) => write_agent_config(path, text.as_bytes(), never_ran).map(|()| true),
+        None => Ok(false),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -1757,14 +2237,21 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
         .find(|(_, _, source, _, _)| *source == agent)
         .ok_or(DeckError::new(ErrorKind::Other, "unknown agent"))?;
     let (path, specs, source, style, never_ran) = module;
-    let result = hooks_set(
-        &path.ok_or(DeckError::new(ErrorKind::Other, "no home directory"))?,
-        specs,
-        source,
-        style,
-        enable,
-        never_ran,
-    );
+    let path = path.ok_or(DeckError::new(ErrorKind::Other, "no home directory"))?;
+    let result = if enable {
+        installed_helper_path().and_then(|helper| {
+            let edit = HookEdit::Install {
+                specs,
+                source,
+                style,
+                helper: &helper,
+            };
+            hooks_set(&path, edit, never_ran)
+        })
+    } else {
+        hooks_set(&path, HookEdit::Uninstall, never_ran)
+    }
+    .map(|_written| ());
     match &result {
         Ok(()) => applog(&format!(
             "[agent-hooks] {agent} {}",
@@ -3967,6 +4454,356 @@ mod tests {
         .unwrap();
         assert!(hooks_installed(&installed, CLAUDE_HOOKS));
         assert_eq!(hooks_with_uninstall(installed), user);
+    }
+
+    const CLAUDE_INSTALL: HookEdit<'static> = HookEdit::Install {
+        specs: CLAUDE_HOOKS,
+        source: "claude-code",
+        style: HookStyle::Exec,
+        helper: HELPER,
+    };
+
+    /// The text a file gets from an edit that changes it.
+    fn edited(text: &str, edit: HookEdit) -> String {
+        hooks_file_edited(Some(text), edit)
+            .unwrap()
+            .expect("the edit changes the file")
+    }
+
+    fn parsed(text: &str) -> serde_json::Value {
+        serde_json::from_str(text).unwrap()
+    }
+
+    fn value_installed(text: &str) -> serde_json::Value {
+        hooks_with_install(
+            parsed(text),
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER,
+        )
+        .unwrap()
+    }
+
+    /// The file is its owner's: the order of its keys, a compact array, an
+    /// escape and a number spelled their way all stay BYTE for byte. Deck's
+    /// key goes after the last one, in the document's indentation; nothing
+    /// is written a second time; and turning the hooks off again gives the
+    /// original file back exactly.
+    #[test]
+    fn the_file_keeps_every_byte_that_is_not_decks() {
+        let original = concat!(
+            "{\n",
+            "  \"model\": \"opus\",\n",
+            "  \"zeta\": true,\n",
+            "  \"env\": {\n",
+            "    \"ZED\": \"1\",\n",
+            "    \"ALPHA\": \"2\"\n",
+            "  },\n",
+            "  \"alpha\": [1, 2],\n",
+            "  \"note\": \"caf\\u00e9\",\n",
+            "  \"big\": 1e3\n",
+            "}\n",
+        );
+        let installed = edited(original, CLAUDE_INSTALL);
+        let kept = original.strip_suffix("\n}\n").unwrap();
+        // deck's own part is what serde writes for it, one step in
+        let hooks = serde_json::to_string_pretty(&value_installed(original)["hooks"])
+            .unwrap()
+            .replace('\n', "\n  ");
+        assert_eq!(installed, format!("{kept},\n  \"hooks\": {hooks}\n}}\n"));
+        assert_eq!(parsed(&installed), value_installed(original));
+
+        assert_eq!(
+            hooks_file_edited(Some(&installed), CLAUDE_INSTALL).unwrap(),
+            None,
+            "already what the toggle asks for: nothing to write"
+        );
+        assert_eq!(edited(&installed, HookEdit::Uninstall), original);
+        assert_eq!(
+            hooks_file_edited(Some(original), HookEdit::Uninstall).unwrap(),
+            None
+        );
+    }
+
+    /// Foreign groups keep their own layout — a compact one, an oddly spaced
+    /// one, an empty list — and deck's lines follow the document's
+    /// indentation, here four spaces.
+    #[test]
+    fn foreign_groups_keep_their_text_and_decks_follow_the_document() {
+        let stop = "            {\"hooks\": [{\"type\": \"command\", \"command\": \"say done\"}]}";
+        let guard = "        \"PreToolUse\": [ { \"matcher\" : \"Bash\", \"hooks\" : [ { \"type\":\"command\", \"command\":\"my-guard\" } ] } ],\n";
+        let original = format!(
+            "{{\n    \"hooks\": {{\n        \"Stop\": [\n{stop}\n        ],\n{guard}        \"SessionEnd\": []\n    }},\n    \"model\": \"opus\"\n}}\n"
+        );
+        let installed = edited(&original, CLAUDE_INSTALL);
+        assert!(
+            installed.starts_with(&format!(
+                "{{\n    \"hooks\": {{\n        \"Stop\": [\n{stop},\n            {{\n                \"hooks\": [\n"
+            )),
+            "{installed}"
+        );
+        assert!(installed.contains(guard));
+        assert!(
+            installed.contains("        \"SessionEnd\": [],\n        \"UserPromptSubmit\": [\n")
+        );
+        assert!(installed.ends_with("\n        ]\n    },\n    \"model\": \"opus\"\n}\n"));
+        assert!(
+            installed
+                .lines()
+                .all(|line| (line.len() - line.trim_start_matches(' ').len()) % 4 == 0),
+            "{installed}"
+        );
+        assert_eq!(parsed(&installed), value_installed(&original));
+        assert_eq!(edited(&installed, HookEdit::Uninstall), original);
+    }
+
+    /// Tabs and CRLF line ends, and a file written on one line, stay what
+    /// they are.
+    #[test]
+    fn tabs_line_ends_and_a_one_line_file_stay_what_they_are() {
+        let theirs = "{ \"hooks\": [{ \"type\": \"command\", \"command\": \"say done\" }] }";
+        let original = format!(
+            "{{\r\n\t\"model\": \"opus\",\r\n\t\"hooks\": {{\r\n\t\t\"Stop\": [\r\n\t\t\t{theirs}\r\n\t\t]\r\n\t}}\r\n}}\r\n"
+        );
+        let installed = edited(&original, CLAUDE_INSTALL);
+        assert!(installed.contains(&format!(
+            "\r\n\t\t\t{theirs},\r\n\t\t\t{{\r\n\t\t\t\t\"hooks\": [\r\n\t\t\t\t\t{{\r\n"
+        )));
+        assert!(
+            !installed.replace("\r\n", "").contains(['\r', '\n']),
+            "every line ends the way the file's do"
+        );
+        assert!(
+            installed.lines().all(|line| !line.starts_with(' ')),
+            "indented with tabs alone: {installed}"
+        );
+        assert_eq!(parsed(&installed), value_installed(&original));
+        assert_eq!(edited(&installed, HookEdit::Uninstall), original);
+
+        let one_line = "{\"model\":\"opus\",\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"say done\"}]}]}}";
+        let installed = edited(one_line, CLAUDE_INSTALL);
+        assert!(
+            !installed.contains('\n'),
+            "still one line, still no final newline"
+        );
+        assert!(installed.starts_with(
+            "{\"model\":\"opus\",\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"say done\"}]},{"
+        ));
+        assert_eq!(parsed(&installed), value_installed(one_line));
+        assert_eq!(edited(&installed, HookEdit::Uninstall), one_line);
+    }
+
+    /// A hook the user keeps in deck's own group: taking deck's hook out
+    /// leaves theirs, and the group around it, exactly as written.
+    #[test]
+    fn a_shared_group_loses_decks_hook_and_nothing_else() {
+        let theirs = "          { \"type\": \"command\", \"command\": \"say done\" }\n";
+        let before = "{\n  \"hooks\": {\n    \"Stop\": [\n      {\n        \"hooks\": [\n";
+        let after = "        ]\n      }\n    ]\n  }\n}\n";
+        let original = format!(
+            "{before}          {{ \"type\": \"command\", \"command\": \"{HELPER}\", \"args\": [\"claude-code\", \"turn-done\"], \"timeout\": 10 }},\n{theirs}{after}"
+        );
+        assert_eq!(
+            edited(&original, HookEdit::Uninstall),
+            format!("{before}{theirs}{after}")
+        );
+        // an install (two events are missing) moves deck's hook to a group
+        // of its own and leaves theirs where it was
+        let installed = edited(&original, CLAUDE_INSTALL);
+        assert!(
+            installed.starts_with(&format!(
+                "{before}{}\n        ]\n      }},\n      {{\n        \"hooks\": [\n",
+                theirs.trim_end()
+            )),
+            "{installed}"
+        );
+        assert_eq!(parsed(&installed), value_installed(&original));
+        assert_eq!(
+            edited(&installed, HookEdit::Uninstall),
+            format!("{before}{theirs}{after}")
+        );
+        // a file whose deck hooks are the spec's is not written at all, a
+        // shared group or not: neither the toggle nor the boot migration
+        // rearranges what the user put together
+        let mut shared = value_installed("{}");
+        shared["hooks"]["Stop"][0]["hooks"]
+            .as_array_mut()
+            .unwrap()
+            .insert(
+                0,
+                serde_json::json!({ "type": "command", "command": "say done" }),
+            );
+        let shared = serde_json::to_string_pretty(&shared).unwrap();
+        assert_eq!(
+            hooks_file_edited(Some(&shared), CLAUDE_INSTALL).unwrap(),
+            None
+        );
+    }
+
+    /// No file, an empty object, a text that is not JSON, and one the
+    /// editor cannot follow.
+    #[test]
+    fn a_new_file_an_empty_one_and_what_is_refused() {
+        // no file yet: deck's own document, as it always wrote it
+        let fresh = hooks_file_edited(None, CLAUDE_INSTALL).unwrap().unwrap();
+        assert_eq!(
+            fresh,
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&value_installed("{}")).unwrap()
+            )
+        );
+        assert_eq!(hooks_file_edited(None, HookEdit::Uninstall).unwrap(), None);
+        // an empty object, with and without a final newline: laid out in
+        // two spaces, and the final newline is the owner's choice
+        for original in ["{}", "{}\n"] {
+            let installed = edited(original, CLAUDE_INSTALL);
+            let (head, tail) = original.split_once("{}").unwrap();
+            assert!(installed.starts_with(&format!("{head}{{\n  \"hooks\": {{\n")));
+            assert!(installed.ends_with(&format!("\n  }}\n}}{tail}")));
+            assert_eq!(parsed(&installed), value_installed(original));
+            assert_eq!(edited(&installed, HookEdit::Uninstall), original);
+        }
+        // the last of two equal keys is the one serde_json reads; the
+        // shadowed one is the owner's text like everything else
+        let twice = "{\"hooks\": {\"Stop\": []}, \"hooks\": {}}";
+        let installed = edited(twice, CLAUDE_INSTALL);
+        assert!(installed.starts_with("{\"hooks\": {\"Stop\": []}, \"hooks\": {"));
+        assert_eq!(parsed(&installed), value_installed(twice));
+        // refused, with a reason and nothing to write
+        for broken in ["", "{ \"model\": ", "[]", "{\"hooks\": []}"] {
+            assert!(
+                hooks_file_edited(Some(broken), CLAUDE_INSTALL).is_err(),
+                "{broken:?}"
+            );
+        }
+        assert!(hooks_file_edited(Some("{ nope"), HookEdit::Uninstall).is_err());
+        // the editor itself gives up on what it cannot follow
+        assert_eq!(hooks_text_edited("[]", CLAUDE_INSTALL), None);
+        assert_eq!(
+            hooks_text_edited("{\"hooks\": {\"Stop\": [}}", CLAUDE_INSTALL),
+            None
+        );
+        assert_eq!(hooks_text_edited("{\"hooks\": 1}", CLAUDE_INSTALL), None);
+    }
+
+    /// The whole write on disk: through a symlink, byte for byte, and no
+    /// write at all when the file already is what was asked for.
+    #[test]
+    fn the_toggle_writes_the_owners_file_in_place_or_not_at_all() {
+        use std::os::unix::fs::MetadataExt;
+        let root = std::env::temp_dir().join(format!("deck-hooktext-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (home, repo) = (root.join("claude"), root.join("dotfiles"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        let original = "{\n  \"zeta\": 1,\n  \"alpha\": [1, 2]\n}\n";
+        let target = repo.join("settings.json");
+        std::fs::write(&target, original).unwrap();
+        let link = home.join("settings.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let read = |path: &Path| std::fs::read_to_string(path).unwrap();
+        let inode = |path: &Path| std::fs::metadata(path).unwrap().ino();
+
+        assert!(hooks_set(&link, CLAUDE_INSTALL, "never ran").unwrap());
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(read(&target), edited(original, CLAUDE_INSTALL));
+        let written = inode(&target);
+        assert!(!hooks_set(&link, CLAUDE_INSTALL, "never ran").unwrap());
+        assert_eq!(inode(&target), written, "the file was not replaced again");
+        assert!(hooks_set(&link, HookEdit::Uninstall, "never ran").unwrap());
+        assert_eq!(read(&target), original);
+        assert!(!hooks_set(&link, HookEdit::Uninstall, "never ran").unwrap());
+
+        // no file: turning hooks off creates none, turning them on does
+        let fresh = home.join("hooks.json");
+        assert!(!hooks_set(&fresh, HookEdit::Uninstall, "never ran").unwrap());
+        assert!(!fresh.exists());
+        assert!(hooks_set(&fresh, CLAUDE_INSTALL, "never ran").unwrap());
+        assert_eq!(parsed(&read(&fresh)), value_installed("{}"));
+
+        // not JSON: refused, not a byte changed
+        let broken = home.join("broken.json");
+        std::fs::write(&broken, "{ nope").unwrap();
+        assert!(hooks_set(&broken, CLAUDE_INSTALL, "never ran").is_err());
+        assert_eq!(read(&broken), "{ nope");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Awkward but valid documents: brackets and quotes inside strings, a
+    /// `hooks` key that is not the document's, numbers and escapes in their
+    /// own spelling, uneven spacing, several groups. The edited text always
+    /// parses to what the value engine decided, and turning the hooks off
+    /// again gives the original bytes back.
+    #[test]
+    fn awkward_documents_are_followed_byte_for_byte() {
+        let documents = [
+            "{\"a\":\"] } \\\" [ {\",\"b\":[{\"hooks\":\"not ours\"}]}",
+            "{\n  \"env\": { \"hooks\": 1 },\n  \"n\": [-0.0, 1E+2, 123456789012345678901234567890],\n  \"s\": \"\\u4f60\\ud83d\\ude00\\\\\"\n}",
+            "{\n\t\"hooks\": {\n\t\t\"PreToolUse\": [\n\t\t\t{ \"matcher\": \"Bash\", \"hooks\": [] },\n\n\t\t\t{ \"hooks\": [ { \"type\": \"command\", \"command\": \"a\" } ,{ \"type\": \"command\", \"command\": \"b\" } ] }\n\t\t]   ,\n\t\t\"Stop\"   :   [ { \"hooks\": [ { \"type\": \"command\", \"command\": \"c\" } ] } ]\n\t}\n}",
+            "  {\"model\": \"opus\"}  \n\n",
+            "{\"hooks\": {\"PreCompact\": \"left alone\", \"Other\": [1, \"x\", null]}, \"hooks2\": {}}",
+        ];
+        for original in documents {
+            let installed = edited(original, CLAUDE_INSTALL);
+            assert_eq!(
+                parsed(&installed),
+                value_installed_or_none(original).expect("installable"),
+                "{original}"
+            );
+            assert_eq!(
+                hooks_file_edited(Some(&installed), CLAUDE_INSTALL).unwrap(),
+                None,
+                "{original}"
+            );
+            assert_eq!(
+                edited(&installed, HookEdit::Uninstall),
+                original,
+                "{original}"
+            );
+        }
+        // deck's group in the middle of a list goes, and its neighbours keep
+        // the separators they had
+        let deck = serde_json::to_string(&spec_entry(
+            HookStyle::Exec,
+            HELPER,
+            "claude-code",
+            &("Stop", None, "turn-done"),
+        ))
+        .unwrap();
+        let middle = format!(
+            "{{\"hooks\": {{\"Stop\": [ {{\"hooks\": [{{\"command\": \"a\"}}]}} ,\t{deck},\n  {{\"hooks\": [{{\"command\": \"b\"}}]}} ]}}}}"
+        );
+        assert_eq!(
+            edited(&middle, HookEdit::Uninstall),
+            "{\"hooks\": {\"Stop\": [ {\"hooks\": [{\"command\": \"a\"}]},\n  {\"hooks\": [{\"command\": \"b\"}]} ]}}"
+        );
+        // what the user wrote empty cannot be told from what deck emptied
+        // once deck's hooks have been in it: the round trip keeps the value
+        // of everything else, not these empty containers
+        for (original, without) in [
+            ("{ }", "{}"),
+            ("{\n}\n", "{}\n"),
+            ("{\"hooks\": { }, \"z\": 1}", "{\"z\": 1}"),
+        ] {
+            let installed = edited(original, CLAUDE_INSTALL);
+            assert_eq!(edited(&installed, HookEdit::Uninstall), without);
+        }
+    }
+
+    fn value_installed_or_none(text: &str) -> Option<serde_json::Value> {
+        hooks_with_install(
+            parsed(text),
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER,
+        )
+        .ok()
     }
 
     #[test]
