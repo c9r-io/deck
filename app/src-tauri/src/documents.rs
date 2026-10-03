@@ -916,11 +916,22 @@ fn load_board_at(path: &std::path::Path) -> Result<Option<storage::LoadOutcome>,
     storage::load_typed::<BoardDoc>(path)
 }
 
+/// The reminder module keeps the process's copy of the committed Board (what
+/// the webview last loaded or saved); the Board door reads it and feeds it
+/// here and nowhere else (12-C3 moves it).
+fn committed_board() -> Option<String> {
+    crate::reminder::committed_payload()
+}
+
+fn commit_board(payload: &str) {
+    crate::reminder::observe_committed(payload);
+}
+
 #[tauri::command]
 pub(crate) fn load_board() -> Result<LoadedDoc, DeckError> {
     let loaded = load_board_at(&board_path())?;
     if let Some(doc) = &loaded {
-        crate::reminder::observe_committed(&doc.payload);
+        commit_board(&doc.payload);
     }
     Ok(to_loaded(loaded))
 }
@@ -929,7 +940,11 @@ pub(crate) fn load_board() -> Result<LoadedDoc, DeckError> {
 /// Board payload selected by normal recovery. Callers project closed DTOs;
 /// they never receive a mutable document handle.
 pub(crate) fn connector_board_payload() -> Result<String, DeckError> {
-    load_board_at(&board_path())?
+    connector_board_payload_at(&board_path())
+}
+
+fn connector_board_payload_at(path: &std::path::Path) -> Result<String, DeckError> {
+    load_board_at(path)?
         .map(|loaded| loaded.payload)
         .ok_or_else(|| DeckError::new(ErrorKind::Missing, "board is not initialized"))
 }
@@ -971,29 +986,41 @@ pub(crate) fn save_board(
             "injected board save failure",
         ));
     }
-    serde_json::from_str::<BoardDoc>(&data)
+    save_board_at(
+        &board_path(),
+        &data,
+        &reminder_changes.unwrap_or_default(),
+        committed_board(),
+    )?;
+    commit_board(&data);
+    Ok(())
+}
+
+/// The Board save at `path`, given the Board this process committed last.
+fn save_board_at(
+    path: &std::path::Path,
+    data: &str,
+    claims: &[crate::reminder::Claim],
+    committed: Option<String>,
+) -> Result<(), DeckError> {
+    serde_json::from_str::<BoardDoc>(data)
         .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid board"))?;
-    let next: serde_json::Value = serde_json::from_str(&data)
+    let next: serde_json::Value = serde_json::from_str(data)
         .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid board"))?;
-    if !board_path().exists()
-        && crate::reminder::committed_payload().is_none()
-        && storage::was_quarantined(&board_path())?
-    {
+    if !path.exists() && committed.is_none() && storage::was_quarantined(path)? {
         return Err(DeckError::new(
             ErrorKind::InvalidDoc,
             "quarantined board needs recovery before saving",
         ));
     }
-    let old = storage::peek_typed::<BoardDoc>(&board_path())?
-        .or_else(crate::reminder::committed_payload)
+    let old = storage::peek_typed::<BoardDoc>(path)?
+        .or(committed)
         .map(|payload| serde_json::from_str::<serde_json::Value>(&payload))
         .transpose()
         .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid committed board"))?
         .unwrap_or_else(|| serde_json::json!({"cards":[]}));
-    crate::reminder::validate_changes(&old, &next, &reminder_changes.unwrap_or_default())?;
-    save_validated::<BoardDoc>(&board_path(), &data, "board")?;
-    crate::reminder::observe_committed(&data);
-    Ok(())
+    crate::reminder::validate_changes(&old, &next, claims)?;
+    save_validated::<BoardDoc>(path, data, "board")
 }
 
 /// Boot-time storage notices (corruption recovered from .bak, etc.) for the

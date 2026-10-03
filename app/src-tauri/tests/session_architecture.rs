@@ -216,13 +216,14 @@ const DOCUMENTS_MAY_NAME: &[(&str, Option<usize>, &str)] = &[
     ),
     // Registered debt, not an endorsement. Since the Card Reminder work the
     // Board door takes the reminder type and its validator (a Board-domain
-    // delegation like the two above), and `load_board` / `save_board` also
-    // read and feed the reminder module's in-memory mirror of the committed
-    // Board. Moving that mirror behind the persistence side is governance
-    // item 12-C3; until then this count may only go down.
+    // delegation like the two above), and reads and feeds the reminder
+    // module's in-memory mirror of the committed Board — through
+    // `committed_board` and `commit_board` only. Moving that mirror behind
+    // the persistence side is governance item 12-C3; until then this count
+    // may only go down.
     (
         "reminder",
-        Some(8),
+        Some(7),
         "DEBT (12-C3): the reminder type, its validator and the committed-Board mirror",
     ),
 ];
