@@ -266,20 +266,9 @@ fn the_documents_door_names_only_reviewed_modules() {
     assert!(documents.contains("crate::admission::channel_agent_command("));
 }
 
-/// settings.json has one owner — the webview, through `load_settings` and
-/// `save_settings` — and readers all over the backend: the scheduler's
-/// authority check, the pollers, the notification, locale and translation
-/// switches. A reader that goes through the owner's door moves a damaged file
-/// aside before the webview has seen it: the recovery warning is dropped, the
-/// next read finds no file, and the scheduler takes "no file" for "no rules"
-/// and strips every approval. So the doors are a closed list: each storage
-/// door that names `SettingsDoc`, and each function that asks for the
-/// settings path, with the one function it is allowed in. Three of them may
-/// set a damaged file aside — the owner's load, the owner's save, and the
-/// queue's review barrier, which writes the document back — and every other
-/// one is `read_typed`. The quarantining `load_typed` is in none of them.
-#[test]
-fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
+/// Every call of a storage door that names `document` as its type argument,
+/// as "door in file function", over production code.
+fn storage_doors(document: &str) -> Vec<String> {
     const DOORS: &[&str] = &[
         "load_typed",
         "peek_typed",
@@ -292,7 +281,7 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
         "save_validated",
         "ensure_review_schema",
     ];
-    let (mut doors, mut paths) = (Vec::new(), Vec::new());
+    let mut doors = Vec::new();
     for (file, text) in source_scan::production_sources() {
         let code = code_only(&text);
         for door in DOORS {
@@ -307,7 +296,7 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
                 }
                 let argument = &code[at + call.len()..];
                 let argument = &argument[..argument.find('>').expect("a closed type argument")];
-                if argument.rsplit("::").next() == Some("SettingsDoc") {
+                if argument.rsplit("::").next() == Some(document) {
                     doors.push(format!(
                         "{door} in {file} {}",
                         source_scan::enclosing_function(&code, at)
@@ -315,7 +304,19 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
                 }
             }
         }
-        for (at, _) in code.match_indices("settings_path()") {
+    }
+    doors.sort();
+    doors
+}
+
+/// Every production call of `path_fn()` (a document's path), as "file
+/// function"; the declaration and longer names ending in it are not calls.
+fn path_callers(path_fn: &str) -> Vec<String> {
+    let call = format!("{path_fn}()");
+    let mut callers = Vec::new();
+    for (file, text) in source_scan::production_sources() {
+        let code = code_only(&text);
+        for (at, _) in code.match_indices(&call) {
             let before = &code[..at];
             if before.ends_with("fn ")
                 || before
@@ -323,18 +324,34 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
                     .next_back()
                     .is_some_and(source_scan::is_ident)
             {
-                continue; // the declaration, or another module's own path
+                continue;
             }
-            paths.push(format!(
+            callers.push(format!(
                 "{file} {}",
                 source_scan::enclosing_function(&code, at)
             ));
         }
     }
-    doors.sort();
-    paths.sort();
+    callers.sort();
+    callers
+}
+
+/// settings.json has one owner — the webview, through `load_settings` and
+/// `save_settings` — and readers all over the backend: the scheduler's
+/// authority check, the pollers, the notification, locale and translation
+/// switches. A reader that goes through the owner's door moves a damaged file
+/// aside before the webview has seen it: the recovery warning is dropped, the
+/// next read finds no file, and the scheduler takes "no file" for "no rules"
+/// and strips every approval. So the doors are a closed list: each storage
+/// door that names `SettingsDoc`, and each function that asks for the
+/// settings path, with the one function it is allowed in. Three of them may
+/// set a damaged file aside — the owner's load, the owner's save, and the
+/// queue's review barrier, which writes the document back — and every other
+/// one is `read_typed`. The quarantining `load_typed` is in none of them.
+#[test]
+fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
     assert_eq!(
-        doors,
+        storage_doors("SettingsDoc"),
         [
             "ensure_review_schema in scheduler/mod.rs save_queue",
             "load_as_owner in documents.rs load_settings_at",
@@ -348,7 +365,7 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
          one aside"
     );
     assert_eq!(
-        paths,
+        path_callers("settings_path"),
         [
             "documents.rs load_settings",
             "documents.rs save_settings",
@@ -359,6 +376,36 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
         ],
         "a new reader of settings.json: route it through documents::settings_value, \
          inbound::read_config_strict or inbound_channel::read_config"
+    );
+}
+
+/// deck.json the same way: the webview loads it (`load_board_at`) and saves
+/// it (`save_board_at`), and the backend reads it for the Connector and the
+/// first-send admission (`connector_board_payload_at`). Only the owner's two
+/// doors may set a damaged Board aside — the load, which then tells the user
+/// once, and the save, when the file was damaged while deck ran — and every
+/// other read is `read_typed` or the non-moving `peek_typed`.
+#[test]
+fn only_the_board_owner_uses_a_door_that_moves_the_file() {
+    assert_eq!(
+        storage_doors("BoardDoc"),
+        [
+            "load_as_owner in documents.rs load_board_at",
+            "peek_typed in documents.rs save_board_at",
+            "read_typed in documents.rs connector_board_payload_at",
+            "save_typed_as_owner in documents.rs save_board_at",
+        ],
+        "a Board read outside the webview's load goes through storage::read_typed, which \
+         never moves a file; only the owner's load and save may set one aside"
+    );
+    assert_eq!(
+        path_callers("board_path"),
+        [
+            "documents.rs connector_board_payload",
+            "documents.rs load_board",
+            "documents.rs save_board",
+        ],
+        "a new reader of deck.json: route it through documents::connector_board_payload"
     );
 }
 

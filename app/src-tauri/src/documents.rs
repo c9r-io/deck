@@ -6,9 +6,9 @@
 //!
 //! # Contract
 //! - One rule set, two doors. `BoardDoc` / `SettingsDoc` deserialize through
-//!   `try_from`, so `storage::load_typed` (quarantine-first recovery on
-//!   failure) and `save_board` / `save_settings` (reject before touching
-//!   disk) run identical checks: non-empty unique project, column and card
+//!   `try_from`, so the loads (quarantine-first recovery on failure) and
+//!   `save_board` / `save_settings` (reject before touching disk) run
+//!   identical checks: non-empty unique project, column and card
 //!   ids; a card's project and column exist; one tmux session per card with
 //!   a name the runtime would accept; settings values from closed sets
 //!   (locale, theme, accent, update channel, voice languages) or bounded ranges (font scale,
@@ -27,6 +27,18 @@
 //!   its emitter named (`storage.privacy`, `queue.persist`, `queue.load`,
 //!   `history.load`, `queue.interrupted`, `storage.recovered`), never a code
 //!   inferred from the note's wording.
+//! - deck.json has one owner, the webview. `load_board`
+//!   (`storage::load_as_owner`) is the one load that sets a damaged file
+//!   aside, and so the one that reports the recovery — once; a Board recovered
+//!   from its backup and not saved since loads the backup again without a
+//!   second notice. `save_board` sets aside a main file damaged while deck
+//!   ran (the committed Board is the base for the reminder checks) instead of
+//!   refusing every save until a restart. The backend's Board readers
+//!   (`connector_board_payload`, and `board_project_exists` through it) read
+//!   with `storage::read_typed`, never moving a file. A Board that was ever set
+//!   aside is never a new empty Board: with nothing loadable left the load
+//!   fails, and every save is refused while this process holds no committed
+//!   Board (`save_board_at`).
 //! - settings.json has one owner, the webview. `load_settings`
 //!   (`storage::load_as_owner`) sets a damaged file aside and reports the
 //!   recovery once, in-band; `save_settings` (`storage::save_typed_as_owner`)
@@ -894,26 +906,22 @@ pub(crate) fn board_path() -> PathBuf {
     crate::datadir::deck_dir().join("deck.json")
 }
 
-/// A quarantined Board is never a new empty Board, including after restart.
+/// The webview's load of the Board (`storage::load_as_owner`): the one load
+/// that sets a damaged main file aside, and so the one that carries the
+/// recovery warning — once. A main file set aside earlier keeps loading from
+/// its backup without a second notice. A Board that was ever set aside is
+/// never a new empty Board, including after a restart: with nothing loadable
+/// left the load fails, and so does every save until the user chooses a way
+/// forward (`save_board_at`).
 fn load_board_at(path: &std::path::Path) -> Result<Option<storage::LoadOutcome>, DeckError> {
-    if !path.exists() && storage::was_quarantined(path)? {
-        let backup = path.with_file_name(format!(
-            "{}.bak",
-            path.file_name().unwrap_or_default().to_string_lossy()
-        ));
-        let payload = storage::peek_typed::<BoardDoc>(&backup)?.ok_or_else(|| {
-            DeckError::new(
-                ErrorKind::InvalidDoc,
-                "quarantined board needs recovery; refusing empty defaults",
-            )
-        })?;
-        return Ok(Some(storage::LoadOutcome {
-            payload,
-            source: "backup",
-            warning: Some("board recovered after quarantine".into()),
-        }));
+    match storage::load_as_owner::<BoardDoc>(path)? {
+        Some(doc) => Ok(Some(doc)),
+        None if storage::was_quarantined(path)? => Err(DeckError::new(
+            ErrorKind::InvalidDoc,
+            "quarantined board needs recovery; refusing empty defaults",
+        )),
+        None => Ok(None),
     }
-    storage::load_typed::<BoardDoc>(path)
 }
 
 /// The reminder module keeps the process's copy of the committed Board (what
@@ -943,8 +951,12 @@ pub(crate) fn connector_board_payload() -> Result<String, DeckError> {
     connector_board_payload_at(&board_path())
 }
 
+/// Read, never moved (`storage::read_typed`): the Connector and the
+/// first-send admission get the best validated copy — the backup while the
+/// main file is damaged — and leave setting a file aside to the webview's
+/// load, which is the one that tells the user.
 fn connector_board_payload_at(path: &std::path::Path) -> Result<String, DeckError> {
-    load_board_at(path)?
+    storage::read_typed::<BoardDoc>(path)?
         .map(|loaded| loaded.payload)
         .ok_or_else(|| DeckError::new(ErrorKind::Missing, "board is not initialized"))
 }
@@ -961,18 +973,6 @@ pub(crate) fn board_project_exists(project_id: &str) -> Result<bool, DeckError> 
         .projects
         .iter()
         .any(|project| project.id == project_id))
-}
-
-/// The same full business validation as load, BEFORE anything touches disk:
-/// an invalid document never overwrites the main file or rotates the .bak.
-pub(crate) fn save_validated<T: serde::de::DeserializeOwned>(
-    path: &std::path::Path,
-    data: &str,
-    what: &str,
-) -> Result<(), DeckError> {
-    serde_json::from_str::<T>(data)
-        .map_err(|e| DeckError::classified(format!("refusing to save invalid {what}: {e}")))?;
-    storage::save_typed::<T>(path, data)
 }
 
 #[tauri::command]
@@ -1013,14 +1013,24 @@ fn save_board_at(
             "quarantined board needs recovery before saving",
         ));
     }
-    let old = storage::peek_typed::<BoardDoc>(path)?
+    // A main file this build cannot use, while this process holds a committed
+    // Board, was damaged behind the webview's back: the committed Board is
+    // the base for the reminder checks, and the owner's save sets the damaged
+    // file aside instead of refusing every save until a restart. With nothing
+    // committed the file is not this process's to replace: refused.
+    let disk = match storage::peek_typed::<BoardDoc>(path) {
+        Ok(found) => found,
+        Err(error) if error.kind() == ErrorKind::InvalidDoc && committed.is_some() => None,
+        Err(error) => return Err(error),
+    };
+    let old = disk
         .or(committed)
         .map(|payload| serde_json::from_str::<serde_json::Value>(&payload))
         .transpose()
         .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid committed board"))?
         .unwrap_or_else(|| serde_json::json!({"cards":[]}));
     crate::reminder::validate_changes(&old, &next, claims)?;
-    save_validated::<BoardDoc>(path, data, "board")
+    storage::save_typed_as_owner::<BoardDoc>(path, data)
 }
 
 /// Boot-time storage notices (corruption recovered from .bak, etc.) for the
@@ -1179,6 +1189,19 @@ pub(crate) fn update_channel_setting() -> String {
 mod tests {
     use super::*;
 
+    /// The same full business validation as load, BEFORE anything touches
+    /// disk: an invalid document never overwrites the main file or rotates
+    /// the .bak (the plain typed save the validation tests below exercise).
+    fn save_validated<T: serde::de::DeserializeOwned>(
+        path: &std::path::Path,
+        data: &str,
+        what: &str,
+    ) -> Result<(), DeckError> {
+        serde_json::from_str::<T>(data)
+            .map_err(|e| DeckError::classified(format!("refusing to save invalid {what}: {e}")))?;
+        storage::save_typed::<T>(path, data)
+    }
+
     // ---------- settings readers: closed values, advisory file ----------
 
     /// Each reader accepts only its closed alphabet and falls back to the
@@ -1260,6 +1283,245 @@ mod tests {
         assert!(load_board_at(&path).is_err());
         assert!(!path.exists());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // ---------- board recovery: the state matrix ----------
+    //
+    // Main file × backup × "set aside before" × what this process committed,
+    // one cell per test. The OWNER is the webview (`load_board_at`,
+    // `save_board_at`); the READERS are the backend's (`connector_board_payload_at`).
+    // `committed` stands for the reminder module's process-wide mirror,
+    // passed explicitly so parallel tests never share it.
+
+    struct BoardDir(PathBuf);
+
+    impl BoardDir {
+        fn empty(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("deck-board-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            BoardDir(dir)
+        }
+
+        /// Saved twice by this process: the main file holds `latest_board()`, the
+        /// backup `older_board()`.
+        fn saved_twice(tag: &str) -> Self {
+            let dir = Self::empty(tag);
+            save_board_at(&dir.main(), &older_board(), &[], None).unwrap();
+            save_board_at(&dir.main(), &latest_board(), &[], Some(older_board())).unwrap();
+            dir
+        }
+
+        fn main(&self) -> PathBuf {
+            self.0.join("deck.json")
+        }
+
+        fn backup(&self) -> PathBuf {
+            self.0.join("deck.json.bak")
+        }
+
+        /// Every file with its bytes: equal listings mean nothing was moved,
+        /// created, removed or rewritten.
+        fn files(&self) -> Vec<(String, Vec<u8>)> {
+            let mut files: Vec<_> = std::fs::read_dir(&self.0)
+                .unwrap()
+                .flatten()
+                .map(|entry| {
+                    (
+                        entry.file_name().to_string_lossy().into_owned(),
+                        std::fs::read(entry.path()).unwrap_or_default(),
+                    )
+                })
+                .collect();
+            files.sort();
+            files
+        }
+
+        /// The bytes of every file a recovery set aside.
+        fn kept(&self) -> Vec<Vec<u8>> {
+            self.files()
+                .into_iter()
+                .filter(|(name, _)| name.starts_with("deck.corrupt-"))
+                .map(|(_, bytes)| bytes)
+                .collect()
+        }
+    }
+
+    impl Drop for BoardDir {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            for entry in std::fs::read_dir(&self.0).into_iter().flatten().flatten() {
+                let _ =
+                    std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o600));
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn older_board() -> String {
+        board(&card("a", "P1", "C1", "shell-a"))
+    }
+
+    fn latest_board() -> String {
+        board(&format!(
+            "{},{}",
+            card("a", "P1", "C1", "shell-a"),
+            card("b", "P1", "C2", "shell-b")
+        ))
+    }
+
+    fn cards_in(payload: &str) -> usize {
+        serde_json::from_str::<serde_json::Value>(payload).unwrap()["cards"]
+            .as_array()
+            .unwrap()
+            .len()
+    }
+
+    /// Normal: the owner loads the main file and saves keep the previous
+    /// version as the backup; reading changes nothing.
+    #[test]
+    fn board_matrix_normal_loads_the_main_file() {
+        let d = BoardDir::saved_twice("normal");
+        let before = d.files();
+        let loaded = load_board_at(&d.main()).unwrap().unwrap();
+        assert_eq!((loaded.source, loaded.warning.is_none()), ("main", true));
+        assert_eq!(cards_in(&loaded.payload), 2);
+        assert_eq!(cards_in(&connector_board_payload_at(&d.main()).unwrap()), 2);
+        assert_eq!(d.files(), before);
+        assert!(d.kept().is_empty());
+    }
+
+    /// A backend reader that gets to a damaged Board first (the Connector,
+    /// the first-send admission) reads the backup and moves nothing: the
+    /// webview's load is the one that sets the file aside, and the one told.
+    #[test]
+    fn board_matrix_a_backend_reader_never_moves_the_file() {
+        let d = BoardDir::saved_twice("reader-first");
+        std::fs::write(d.main(), "{damaged").unwrap();
+        let before = d.files();
+        for round in 0..2 {
+            let read = connector_board_payload_at(&d.main()).unwrap();
+            assert_eq!(cards_in(&read), 1, "read {round}: the backup answers");
+        }
+        assert_eq!(d.files(), before, "a backend read moved or rewrote a file");
+        let loaded = load_board_at(&d.main()).unwrap().unwrap();
+        assert_eq!(loaded.source, "backup");
+        assert!(loaded.warning.is_some(), "the webview is told");
+        assert_eq!(d.kept(), [b"{damaged".to_vec()]);
+    }
+
+    /// Recovered from the backup and not saved since: every later start
+    /// loads the backup again, and says nothing more — the start that set the
+    /// file aside already told the user.
+    #[test]
+    fn board_matrix_recovery_is_reported_once() {
+        let d = BoardDir::saved_twice("told-once");
+        std::fs::write(d.main(), "{damaged").unwrap();
+        let first = load_board_at(&d.main()).unwrap().unwrap();
+        assert_eq!((first.source, first.warning.is_some()), ("backup", true));
+        for start in 0..2 {
+            let again = load_board_at(&d.main()).unwrap().unwrap();
+            assert_eq!(again.source, "backup", "start {start}");
+            assert!(again.warning.is_none(), "start {start}: told once");
+            assert_eq!(cards_in(&again.payload), 1);
+        }
+        // the first save puts the main file back
+        save_board_at(&d.main(), &older_board(), &[], Some(older_board())).unwrap();
+        let rebuilt = load_board_at(&d.main()).unwrap().unwrap();
+        assert_eq!((rebuilt.source, rebuilt.warning), ("main", None));
+    }
+
+    /// A main file damaged while deck runs (the webview holds the committed
+    /// Board): the save is not refused until a restart — the damaged file is
+    /// set aside, the backup kept, and what the user sees is written.
+    #[test]
+    fn board_matrix_damage_while_running_never_refuses_the_owners_save() {
+        let d = BoardDir::saved_twice("damaged-running");
+        let backup = std::fs::read(d.backup()).unwrap();
+        std::fs::write(d.main(), "{damaged").unwrap();
+        save_board_at(&d.main(), &latest_board(), &[], Some(latest_board())).unwrap();
+        let loaded = load_board_at(&d.main()).unwrap().unwrap();
+        assert_eq!((loaded.source, cards_in(&loaded.payload)), ("main", 2));
+        assert_eq!(d.kept(), [b"{damaged".to_vec()]);
+        assert_eq!(std::fs::read(d.backup()).unwrap(), backup);
+        // with nothing committed in this process the damaged file is not the
+        // owner's to replace: refused, untouched
+        std::fs::write(d.main(), "{damaged again").unwrap();
+        let before = d.files();
+        assert!(save_board_at(&d.main(), &latest_board(), &[], None).is_err());
+        assert_eq!(d.files(), before);
+    }
+
+    /// Nothing loadable is left — both copies damaged, or a Board saved only
+    /// once (no backup yet), or an old quarantine and the files removed —
+    /// and nothing was committed: the load fails, and every save is refused
+    /// until the user chooses a way forward. Never a silent empty Board.
+    #[test]
+    fn board_matrix_nothing_loadable_stays_lost_until_the_user_chooses() {
+        let lost = |tag: &str, main: Option<&str>, backup: Option<&str>, kept: bool| {
+            let d = BoardDir::empty(tag);
+            if let Some(bytes) = main {
+                std::fs::write(d.main(), bytes).unwrap();
+            }
+            if let Some(bytes) = backup {
+                std::fs::write(d.backup(), bytes).unwrap();
+            }
+            if kept {
+                std::fs::write(d.0.join("deck.corrupt-1700000000"), "long ago").unwrap();
+            }
+            d
+        };
+        for (cell, d) in [
+            (
+                "both damaged",
+                lost("lost-both", Some("{damaged"), Some("{worse"), false),
+            ),
+            (
+                "saved once",
+                lost("lost-once", Some("{damaged"), None, false),
+            ),
+            (
+                "removed after an old quarantine",
+                lost("lost-removed", None, None, true),
+            ),
+        ] {
+            for start in 0..2 {
+                assert!(load_board_at(&d.main()).is_err(), "{cell}: start {start}");
+                assert!(
+                    save_board_at(&d.main(), &older_board(), &[], None).is_err(),
+                    "{cell}: start {start}: a save would be a silent empty Board"
+                );
+            }
+            assert!(!d.main().exists(), "{cell}");
+            assert!(!d.kept().is_empty(), "{cell}: the damaged bytes are kept");
+        }
+    }
+
+    /// Written by a newer deck: refused as it is, by every door.
+    #[test]
+    fn board_matrix_newer_schema_is_refused_untouched() {
+        let d = BoardDir::empty("newer");
+        std::fs::write(
+            d.main(),
+            r#"{"schema_version":99,"data":{"projects":[],"cards":[]}}"#,
+        )
+        .unwrap();
+        let before = d.files();
+        assert_eq!(
+            load_board_at(&d.main()).unwrap_err().kind(),
+            ErrorKind::NewerSchema
+        );
+        assert_eq!(
+            connector_board_payload_at(&d.main()).unwrap_err().kind(),
+            ErrorKind::NewerSchema
+        );
+        assert_eq!(
+            save_board_at(&d.main(), &older_board(), &[], Some(older_board()))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::NewerSchema
+        );
+        assert_eq!(d.files(), before);
     }
 
     // ---------- settings recovery: the state matrix ----------
