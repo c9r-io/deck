@@ -7062,6 +7062,149 @@ fn clock_policy_revokes_on_disable_delete_source_command_and_target_changes() {
     }
 }
 
+/// The webview's side of a clock head, from the fixture both sides read
+/// (`ui/test/fixtures/clock-first-send.json`; `inbound-dom.test.mjs` proves it
+/// is what the dispatcher persists and queues). `clock_head_matches` reads
+/// that card and call as untyped JSON, and the typed Board document declares
+/// neither `origin` nor `inboundPlan.firstSend`, so this is what ties its keys
+/// to the webview's: it accepts the fixture as written, and each field it
+/// reads refuses the head once changed or missing.
+#[test]
+fn the_clock_head_check_reads_the_card_and_call_the_webview_writes() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../ui/test/fixtures/clock-first-send.json"
+    ))
+    .unwrap();
+    let key = fixture["event"]["key"].as_str().unwrap();
+    for name in ["plain", "reviewed"] {
+        let run = &fixture["runs"][name];
+        let rule: crate::inbound::Rule = serde_json::from_value(run["rule"].clone()).unwrap();
+        assert!(
+            crate::inbound::validate_settings(&serde_json::json!({"rules": [run["rule"]]})).is_ok(),
+            "{name}: a rule settings accept"
+        );
+        let board = serde_json::json!({"projects": [fixture["project"]], "cards": [run["card"]]});
+        assert!(
+            serde_json::from_value::<crate::documents::BoardDoc>(board.clone()).is_ok(),
+            "{name}: a Board that loads"
+        );
+        let args: QueueAddArgs = serde_json::from_value(run["call"]["args"].clone()).unwrap();
+        let claim = args
+            .first_send
+            .clone()
+            .expect("the head row claims the option");
+        assert_eq!(
+            (claim.rule.as_str(), claim.event.as_str()),
+            (rule.id.as_str(), key)
+        );
+        let reviewed = name == "reviewed";
+        assert_eq!((args.review_each, rule.review_each), (reviewed, reviewed));
+        let event = slack_event(key, &rule.id, "clock");
+        assert!(
+            first_send::verify(
+                Some(&config_with(vec![rule.clone()])),
+                &claim,
+                &args.cmd,
+                &args.mode,
+                args.external_text,
+                Some(&event)
+            )
+            .is_ok(),
+            "{name}"
+        );
+        assert!(
+            first_send::clock_head_matches(&board, &args, &rule, &claim),
+            "{name}: the head as the webview writes it"
+        );
+        // every field the check reads, spelled as the webview spells it
+        let mut read = vec![
+            vec!["origin", "source"],
+            vec!["origin", "key"],
+            vec!["origin", "badge"],
+            vec!["id"],
+            vec!["session"],
+            vec!["projectId"],
+            vec!["cmd"],
+            vec!["dir"],
+            vec!["inboundPlan", "initialQueued"],
+            vec!["inboundPlan", "firstSend", "rule"],
+            vec!["inboundPlan", "reviewEach"],
+            vec!["inboundPlan", "initialSteps", "0", "mode"],
+            vec!["inboundPlan", "initialSteps", "0", "tplIdx"],
+            vec!["inboundPlan", "initialSteps", "0", "tpl"],
+            vec!["inboundPlan", "initialSteps", "0", "at"],
+            vec!["inboundPlan", "initialSteps", "0", "text"],
+        ];
+        // a reviewed list is one operation; single rows have one each
+        read.push(if reviewed {
+            vec!["inboundPlan", "operationId"]
+        } else {
+            vec!["inboundPlan", "initialSteps", "0", "operationId"]
+        });
+        for path in &read {
+            let (last, parents) = path.split_last().unwrap();
+            for remove in [false, true] {
+                let mut forged = board.clone();
+                let mut at = &mut forged["cards"][0];
+                for step in parents {
+                    at = match step.parse::<usize>() {
+                        Ok(index) => &mut at[index],
+                        Err(_) => &mut at[*step],
+                    };
+                }
+                assert!(!at[*last].is_null(), "{name}: the fixture has {path:?}");
+                if remove {
+                    at.as_object_mut().unwrap().remove(*last);
+                } else {
+                    at[*last] = "forged".into();
+                }
+                assert!(
+                    !first_send::clock_head_matches(&forged, &args, &rule, &claim),
+                    "{name}: {path:?} {}",
+                    if remove { "missing" } else { "changed" }
+                );
+            }
+        }
+    }
+    // one list says which rule sources may carry the option
+    let listed: Vec<&str> = fixture["firstSendSources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|source| source.as_str().unwrap())
+        .collect();
+    for source in crate::inbound::SOURCES
+        .iter()
+        .copied()
+        .chain(["channel", "connector"])
+    {
+        let mut rule = first_send_rule("claude");
+        rule.source = source.into();
+        rule.enabled = true;
+        let claim = FirstSendClaim {
+            rule: rule.id.clone(),
+            event: "slot".into(),
+        };
+        let event = slack_event("slot", &rule.badge, source);
+        let verdict = first_send::verify(
+            Some(&config_with(vec![rule])),
+            &claim,
+            "claude",
+            "at",
+            false,
+            Some(&event),
+        );
+        assert_eq!(
+            verdict.is_ok(),
+            listed.contains(&source),
+            "{source}: {verdict:?}"
+        );
+        if !listed.contains(&source) {
+            assert_eq!(verdict, Err("trigger"), "{source}");
+        }
+    }
+}
+
 /// A native clock event and a committed first-row identity are both required.
 #[test]
 fn clock_admission_rejects_forged_event_rule_slot_source_step_and_owner_target() {

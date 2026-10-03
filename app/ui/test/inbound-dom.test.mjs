@@ -8,6 +8,7 @@ const { drainInbound, startInbound } = await import('../js/inbound.js');
 const { provider } = await import('../js/board.js');
 const { listeners, store } = await import('../js/state.js');
 const realQueueInboundPlan = provider.queueInboundPlan;
+const realCreate = provider.create;
 const item = { id: 'item-1', event: { source: 'slack', key: 'C9/1.2', badge: 'deck', text: 'sample', from: 'tester', where: '#test' },
   rule: { id: 'rule-1', projectId: 'P1', columnId: 'C1', template: 'triage', cmd: 'claude', dir: '/tmp' } };
 function setup(items, fail = '', steps = ['first', 'second']) {
@@ -291,6 +292,68 @@ test('only a clock run takes the owner commands; every other origin takes the ex
     }
   } finally {
     provider.queueInboundPlan = realQueueInboundPlan;
+    listeners.clear(); for (const listener of savedListeners) listeners.add(listener);
+  }
+});
+
+/* The head of a clock run with the first-send option, pinned on both sides.
+   The backend admits that head by reading the persisted card and the call's
+   arguments as untyped JSON, key by key (scheduler/first_send.rs
+   `clock_head_matches`); nothing else ties those keys to what this side
+   writes. fixtures/clock-first-send.json is that tie: this test proves it is
+   exactly what the real dispatcher persists and queues, and
+   scheduler/tests.rs that the backend accepts exactly it. A renamed key
+   fails here first, and there once the fixture follows. */
+test('the clock first-send fixture is what the dispatcher persists and queues', async () => {
+  const { readFileSync } = await import('node:fs');
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/clock-first-send.json', import.meta.url), 'utf8'));
+  const { INBOUND_SOURCES, normalizeInbound } = await import('../js/settings-model.js');
+  const { withFirstSend } = await import('../js/automation-model.js');
+  const savedListeners = [...listeners]; listeners.clear();
+  const realNow = Date.now;
+  try {
+    for (const [name, run] of Object.entries(fixture.runs)) {
+      assert.deepEqual(normalizeInbound({ rules: [run.rule] }).rules, [run.rule], `${name}: the rule is in its saved form`);
+      const calls = [];
+      let pending = [{ id: `item-${name}`, event: fixture.event, rule: run.rule }];
+      store.cards = []; store.projects = [structuredClone(fixture.project)];
+      provider.create = realCreate; provider.queueInboundPlan = realQueueInboundPlan;
+      window.__TAURI__ = { event: { listen: async () => {} }, core: { invoke: async (cmd, args) => {
+        calls.push([cmd, structuredClone(args)]);
+        if (cmd === 'inbound_pending') { const next = pending; pending = []; return next; }
+      } } };
+      Date.now = () => fixture.now * 1000;
+      await drainInbound();
+      Date.now = realNow;
+      // the Board as it was on disk when the head row was queued
+      const queued = calls.findIndex(([cmd]) => cmd.includes('queue_add'));
+      const saved = calls.slice(0, queued).filter(([cmd]) => cmd === 'save_board').at(-1);
+      const card = JSON.parse(saved[1].data).cards[0];
+      const [command, payload] = calls[queued];
+      // generated values, mapped to the fixture's fixed ones wherever they occur
+      const ids = new Map([[card.id, run.card.id], [card.session, run.card.session],
+        [card.inboundPlan.operationId, run.card.inboundPlan.operationId],
+        ...card.inboundPlan.initialSteps.map((step, index) => [step.operationId, run.card.inboundPlan.initialSteps[index].operationId])]);
+      assert.equal(ids.size, 3 + card.inboundPlan.initialSteps.length, 'the generated ids are distinct');
+      const mapped = value => (typeof value === 'string' && ids.has(value) ? ids.get(value)
+        : Array.isArray(value) ? value.map(mapped)
+        : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, mapped(inner)]))
+        : value);
+      assert.match(card.title, /^Daily summary · \d{2}-\d{2}$/, 'the title ends in the run\'s local date');
+      assert.deepEqual({ ...mapped(card), title: run.card.title }, run.card, `${name}: the persisted card`);
+      assert.deepEqual({ command, ...mapped(payload) }, run.call, `${name}: the head row's call`);
+    }
+    // one list says which rule sources may carry the option
+    const slack = { ...fixture.runs.plain.rule, id: 'rslack1', source: 'slack', badge: 'eyes' };
+    for (const source of [...INBOUND_SOURCES, 'channel', 'connector']) {
+      const listed = fixture.firstSendSources.includes(source);
+      assert.equal(withFirstSend({ source }, true).firstSendWithoutReadiness === true, listed, source);
+      const saved = normalizeInbound({ rules: [source === 'clock' ? fixture.runs.plain.rule : { ...slack, source }] }).rules[0];
+      assert.equal(saved?.firstSendWithoutReadiness === true, listed, `${source}: kept by the settings reader`);
+    }
+  } finally {
+    Date.now = realNow;
+    provider.create = realCreate; provider.queueInboundPlan = realQueueInboundPlan;
     listeners.clear(); for (const listener of savedListeners) listeners.add(listener);
   }
 });

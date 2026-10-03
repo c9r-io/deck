@@ -1,0 +1,221 @@
+{
+  "about": "One clock run with the first-send option, in both list forms: the card the webview persists for it and the call it queues the head row with. inbound-dom.test.mjs proves these are what the real dispatcher produces from `event` and each `rule` (generated ids, the session name and the date in the title are mapped to the fixed ones here). scheduler/tests.rs proves scheduler/first_send.rs `clock_head_matches` accepts each and refuses it with any field it reads changed or missing. `firstSendSources` is the closed list of rule sources that may carry the option; both sides hold their own spelling of it to this one.",
+  "firstSendSources": [
+    "slack",
+    "clock"
+  ],
+  "now": 1790000100,
+  "event": {
+    "source": "clock",
+    "key": "1790000000",
+    "badge": "adaily1",
+    "text": "Daily summary",
+    "from": "",
+    "where": "",
+    "link": ""
+  },
+  "project": {
+    "id": "P1",
+    "name": "main",
+    "columns": [
+      {
+        "id": "C1",
+        "name": "Working"
+      }
+    ],
+    "templates": [
+      {
+        "name": "daily",
+        "steps": [
+          "Summarize yesterday.",
+          "List open questions."
+        ]
+      }
+    ]
+  },
+  "runs": {
+    "plain": {
+      "rule": {
+        "id": "adaily1",
+        "source": "clock",
+        "badge": "adaily1",
+        "projectId": "P1",
+        "columnId": "C1",
+        "cmd": "claude",
+        "template": "daily",
+        "dir": "/tmp/deck-fixture",
+        "name": "Daily summary",
+        "enabled": true,
+        "finish": "keep",
+        "since": 0,
+        "firstSendWithoutReadiness": true,
+        "schedule": {
+          "unit": "day",
+          "days": [],
+          "minute": 540
+        },
+        "graceMin": 30
+      },
+      "card": {
+        "id": "Srunplain",
+        "projectId": "P1",
+        "columnId": "C1",
+        "title": "Daily summary · 09-21",
+        "desc": "daily",
+        "cmd": "claude",
+        "dir": "/tmp/deck-fixture",
+        "session": "deck-daily-summary-plain",
+        "pinned": false,
+        "launched": false,
+        "origin": {
+          "source": "clock",
+          "key": "1790000000",
+          "badge": "adaily1"
+        },
+        "inboundPlan": {
+          "operationId": "Blistplain",
+          "reviewEach": false,
+          "initialSteps": [
+            {
+              "operationId": "Bstep1plain",
+              "text": "Summarize yesterday.",
+              "mode": "at",
+              "at": 1790000100,
+              "tpl": "daily",
+              "tplIdx": 1,
+              "tplTotal": 2
+            },
+            {
+              "operationId": "Bstep2plain",
+              "text": "List open questions.",
+              "mode": "chain",
+              "at": null,
+              "tpl": "daily",
+              "tplIdx": 2,
+              "tplTotal": 2
+            }
+          ],
+          "initialQueued": false,
+          "firstSend": {
+            "rule": "adaily1"
+          }
+        }
+      },
+      "call": {
+        "command": "queue_add",
+        "args": {
+          "session": "deck-daily-summary-plain",
+          "cardId": "Srunplain",
+          "dir": "/tmp/deck-fixture",
+          "cmd": "claude",
+          "reviewEach": false,
+          "operationId": "Bstep1plain",
+          "text": "Summarize yesterday.",
+          "mode": "at",
+          "at": 1790000100,
+          "tpl": "daily",
+          "tplIdx": 1,
+          "tplTotal": 2,
+          "firstSend": {
+            "rule": "adaily1",
+            "event": "1790000000"
+          }
+        }
+      }
+    },
+    "reviewed": {
+      "rule": {
+        "id": "adaily1",
+        "source": "clock",
+        "badge": "adaily1",
+        "projectId": "P1",
+        "columnId": "C1",
+        "cmd": "claude",
+        "template": "daily",
+        "dir": "/tmp/deck-fixture",
+        "name": "Daily summary",
+        "enabled": true,
+        "finish": "keep",
+        "since": 0,
+        "firstSendWithoutReadiness": true,
+        "schedule": {
+          "unit": "day",
+          "days": [],
+          "minute": 540
+        },
+        "graceMin": 30,
+        "reviewEach": true
+      },
+      "card": {
+        "id": "Srunreviewed",
+        "projectId": "P1",
+        "columnId": "C1",
+        "title": "Daily summary · 09-21",
+        "desc": "daily",
+        "cmd": "claude",
+        "dir": "/tmp/deck-fixture",
+        "session": "deck-daily-summary-reviewed",
+        "pinned": false,
+        "launched": false,
+        "origin": {
+          "source": "clock",
+          "key": "1790000000",
+          "badge": "adaily1"
+        },
+        "inboundPlan": {
+          "operationId": "Blistreviewed",
+          "reviewEach": true,
+          "initialSteps": [
+            {
+              "operationId": "Bstep1reviewed",
+              "text": "Summarize yesterday.",
+              "mode": "at",
+              "at": 1790000100,
+              "tpl": "daily",
+              "tplIdx": 1,
+              "tplTotal": 2
+            },
+            {
+              "operationId": "Bstep2reviewed",
+              "text": "List open questions.",
+              "mode": "chain",
+              "at": null,
+              "tpl": "daily",
+              "tplIdx": 2,
+              "tplTotal": 2
+            }
+          ],
+          "initialQueued": false,
+          "firstSend": {
+            "rule": "adaily1"
+          }
+        }
+      },
+      "call": {
+        "command": "queue_add_reviewed_list",
+        "args": {
+          "session": "deck-daily-summary-reviewed",
+          "cardId": "Srunreviewed",
+          "dir": "/tmp/deck-fixture",
+          "cmd": "claude",
+          "reviewEach": true,
+          "operationId": "Blistreviewed",
+          "text": "Summarize yesterday.",
+          "mode": "at",
+          "at": 1790000100,
+          "tpl": "daily",
+          "tplIdx": 1,
+          "tplTotal": 2,
+          "firstSend": {
+            "rule": "adaily1",
+            "event": "1790000000"
+          }
+        },
+        "texts": [
+          "Summarize yesterday.",
+          "List open questions."
+        ]
+      }
+    }
+  }
+}
