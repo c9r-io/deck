@@ -61,7 +61,10 @@
 //!   `storage::settings_fence` in the transaction that persists the firing
 //!   intent, exactly like the authority fence. Unreadable settings: nothing
 //!   is stripped, and nothing is sent on the override (the row falls back to
-//!   the ordinary first-interaction hold). Send-now never consults it.
+//!   the ordinary first-interaction hold). Settings are read without moving
+//!   the file, so a damaged main file is answered from its backup: the
+//!   choices of the previous save, as for the approval (`authority.rs`).
+//!   Send-now never consults it.
 //! - Durable vs transient: the rule flag and the row copy survive restarts;
 //!   interaction evidence does not and is never invented. After a Deck
 //!   restart a still-permitted pending head row may still be sent on it.
@@ -71,6 +74,25 @@
 //! - Compatibility: Slack optional fields remain compatible. Clock-enabled
 //!   settings and clock overrides upgrade to sticky schema v4: v3 refuses
 //!   them untouched instead of decoding the new closed origin as damage.
+//! - Exit: replaced, not removed. "Temporary" above lasts until an agent
+//!   exposes an authoritative fact that a fresh interactive session accepts
+//!   its first typed prompt. Selection then takes that fact as the reason
+//!   the head row may go (`select::hold_reason`, where the override is
+//!   honored today), and for that agent the override stops being what lifts
+//!   the hold. Three things must hold across that change, each one checkable:
+//!   1. A rule that has the option keeps sending its head row with no click
+//!      and no new confirmation. The tests that send an overridden head stay
+//!      green, or are replaced by tests that reach the same send through the
+//!      readiness fact; the user is never asked to accept anything again.
+//!   2. The saved flag, the row copy and sticky v4 keep loading as they are.
+//!      Where readiness is proven the override is simply not consulted;
+//!      nothing is stripped from settings or from rows.
+//!   3. An agent without the fact keeps the override exactly as written here.
+//!
+//!   Deleting the flag, or leaving v4, is a later migration of its own, with
+//!   its own proof that old files load and no rule needs re-confirming. Until
+//!   a readiness fact exists there is nothing to replace this with, and no
+//!   Signal word, quiet time, title or timer is one.
 
 use serde::{Deserialize, Serialize};
 

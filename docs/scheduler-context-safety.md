@@ -303,6 +303,17 @@ first typed prompt — and never a claim that the agent is ready.
 - Audit: the delivery record's `readiness_overridden` says the scheduler
   sent the row without interaction evidence because the rule allowed it; a
   send-now of the same row is `manual` instead.
+- Exit: the override is replaced, not removed. It lasts until an agent
+  exposes an authoritative fact that a fresh interactive session accepts its
+  first typed prompt; selection then takes that fact as the reason the head
+  row may go, and for that agent the override stops being what lifts the
+  hold. Across that change a rule that has the option keeps sending its head
+  row with no click and no new confirmation, the saved flag, the row copy
+  and sticky v4 keep loading as they are (the override is not consulted
+  where readiness is proven; nothing is stripped), and an agent without the
+  fact keeps the override as described here. Deleting the flag or leaving v4
+  is a later migration of its own. No Signal word, quiet time, title or
+  timer is such a fact.
 - **Revocation fence.** The irreversible boundary is the persisted firing
   intent. An automatic send of an approved row re-reads settings and
   re-validates the approval inside the very transaction that persists that
