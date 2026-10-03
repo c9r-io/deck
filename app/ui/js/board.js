@@ -1193,7 +1193,10 @@ export function renderSidebar() {
       pin.setAttribute('aria-label', t('card.important'));
       el.appendChild(pin);
     }
-    el.onclick = () => openSession(s.id);
+    /* the reminder label below is its own target: its click edits the
+       reminder and must not also open (and, for a stopped card, start) the
+       session. The click still travels on, so open menus close as usual. */
+    el.onclick = e => { if (!e.target.closest('.card-reminder')) openSession(s.id); };
     if (s.reminder) {
     const chip = document.createElement("button"); chip.className = "btn card-reminder";
     chip.textContent = reminderLabel(s); chip.onclick = () => editReminder(s.id); el.append(chip);

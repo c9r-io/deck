@@ -510,6 +510,24 @@ test("orphaned rules are dropped only once the webview holds the user's Board", 
   assert.match(start, /provider\.subscribe\(ev => \{ if \(ev === 'projects'\) pruneOrphans\(\); \}\);/);
 });
 
+/* 09-C6: the sidebar's reminder label is a button inside the row. Its click
+   edits the reminder; the row's own handler skips it, so the label never also
+   opens (and, for a stopped card, starts) the session. The real click is in
+   the reminder smoke (`reminder-ui-save`). */
+test("a click on the sidebar's reminder label does not open the session", () => {
+  const board = code('app/ui/js/board.js');
+  const sidebar = board.slice(board.indexOf('export function renderSidebar()'), board.indexOf('export function updateSidebarSelection()'));
+  assert.ok(sidebar.length > 500, 'renderSidebar is where the rows are built');
+  // the row opens the session for every click except one on the label
+  assert.match(sidebar, /el\.onclick = e => \{ if \(!e\.target\.closest\('\.card-reminder'\)\) openSession\(s\.id\); \};/);
+  assert.equal((sidebar.match(/openSession\(/g) || []).length, 1);
+  // the label keeps its one job and lets the click travel on, so the menus
+  // that close on any click still close
+  assert.match(sidebar, /chip\.className = "btn card-reminder";/);
+  assert.match(sidebar, /chip\.onclick = \(\) => editReminder\(s\.id\);/);
+  assert.doesNotMatch(sidebar, /stopPropagation/);
+});
+
 // check.mjs is the gate that keeps import cycles inside the view core. It is
 // run here on small module directories: a cycle outside the core must be
 // found whichever static edge closes it, wherever the module lives, and

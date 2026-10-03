@@ -2,7 +2,7 @@
 // actual UN inventory only; never fabricates OS responses or notification PASS.
 export async function runReminderSmoke() {
   const { $, ctx, inv, store, state } = await import('../js/state.js');
-  const { provider, render, editReminder, pollNow, reconcileReminders } = await import('../js/board.js');
+  const { panes, provider, render, editReminder, pollNow, reconcileReminders } = await import('../js/board.js');
   const { mutateBoard } = await import('../js/persistence.js');
   const { localParts, reminderClaim, reminderRequestId } = await import('../js/reminder-model.js');
   const { showSessionCtx } = await import('../js/terminal.js');
@@ -75,11 +75,26 @@ export async function runReminderSmoke() {
     await report('reminder-preview', $('reminder-preview').textContent.includes(Intl.DateTimeFormat().resolvedOptions().timeZone));
     await click($('reminder-save'));
     await until(() => provider.get(protectedCard.id)?.reminder);
-    await report('reminder-ui-save', !!document.querySelector('.card-reminder'));
+    // a real click on the sidebar's date label edits the reminder and nothing
+    // else: the row under it does not open (or start) the session
+    const label = document.querySelector('#side-list .side-item .card-reminder');
+    let labelOnly = false;
+    if (label) {
+      await click(label);
+      await until(() => $('reminder-date'));
+      await pause(300);
+      labelOnly = state.view === 'board' && !panes.has(protectedCard.session);
+      await click(document.querySelector('.reminder-editor .cfm-actions button'));
+      await until(() => !$('reminder-date'), 3000);
+    }
+    await report('reminder-ui-save', !!label && labelOnly);
     const saved = JSON.parse((await inv('load_board')).data).cards.find(c => c.id === protectedCard.id);
     await report('reminder-durable', saved.reminder.id === provider.get(protectedCard.id).reminder.id && saved.reminder.inAppOnly);
     await provider.rename(protectedCard.id, 'Renamed reminder shell');
-    await openSession(protectedCard.id); render();
+    // the rest of the row opens the session, as before: a real click on its name
+    await click(document.querySelector(`#side-list .side-item[data-sid="${protectedCard.id}"] .name`));
+    await until(() => state.view === 'session' && panes.get(protectedCard.session)?.attached);
+    render();
     await click($('reminder-btn'));
     await until(() => $('reminder-date'));
     await report('reminder-header', !!$('reminder-end'));
