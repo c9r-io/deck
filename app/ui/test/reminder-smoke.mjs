@@ -5,6 +5,8 @@ export async function runReminderSmoke() {
   const { panes, provider, render, editReminder, pollNow, reconcileReminders } = await import('../js/board.js');
   const { mutateBoard } = await import('../js/persistence.js');
   const { localParts, reminderClaim, reminderRequestId } = await import('../js/reminder-model.js');
+  const { t } = await import('../js/i18n.js');
+  const cardOf = card => document.querySelector(`.card[data-sid="${card.id}"]`);
   const { showSessionCtx } = await import('../js/terminal.js');
   const { openSession, leaveSessionView } = await import('../js/layout.js');
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -60,6 +62,7 @@ export async function runReminderSmoke() {
     await provider.createStarted({ projectId: project.id, columnId: project.columns[0].id, title: 'Reminder lifecycle sentinel', dir: '/tmp', cmd: '' });
     protectedCard = (await provider.createStarted({ projectId: project.id, columnId: project.columns[0].id, title: 'Reminder protected shell', dir: '/tmp', cmd: '' })).card;
     await pollNow(); render();
+    const plainHeight = cardOf(protectedCard).getBoundingClientRect().height;
     const ctxEvent = { preventDefault() {}, stopPropagation() {}, currentTarget: null, clientX: 350, clientY: 200 };
     showSessionCtx(ctxEvent, protectedCard.id);
     await click($('ctx').querySelector('[data-a="reminder"]'));
@@ -87,7 +90,24 @@ export async function runReminderSmoke() {
       await click(document.querySelector('.reminder-editor .cfm-actions button'));
       await until(() => !$('reminder-date'), 3000);
     }
-    await report('reminder-ui-save', !!label && labelOnly);
+    // the card carries the reminder too: a short label at the end of its status
+    // row, the sidebar's full text as its title, the card no taller for it, and
+    // a real click on it edits the reminder only
+    const cardLabel = cardOf(protectedCard).querySelector('.card-status .card-reminder');
+    const shaped = !!cardLabel && /^🔔 (?:(?:\d{4}\/)?\d{1,2}\/\d{1,2} )?\d{2}:\d{2}$/.test(cardLabel.textContent)
+      && cardLabel.title === label?.textContent
+      && Math.abs(cardOf(protectedCard).getBoundingClientRect().height - plainHeight) < 0.5;
+    await inv('smoke_native_snapshot', { name: 'reminder-card-label' }).catch(() => {});
+    let cardLabelOnly = false;
+    if (cardLabel) {
+      await click(cardLabel);
+      await until(() => $('reminder-date'));
+      await pause(300);
+      cardLabelOnly = state.view === 'board' && !panes.has(protectedCard.session);
+      await click(document.querySelector('.reminder-editor .cfm-actions button'));
+      await until(() => !$('reminder-date'), 3000);
+    }
+    await report('reminder-ui-save', !!label && labelOnly && shaped && cardLabelOnly);
     const saved = JSON.parse((await inv('load_board')).data).cards.find(c => c.id === protectedCard.id);
     await report('reminder-durable', saved.reminder.id === provider.get(protectedCard.id).reminder.id && saved.reminder.inAppOnly);
     await provider.rename(protectedCard.id, 'Renamed reminder shell');
@@ -125,7 +145,11 @@ export async function runReminderSmoke() {
     stage = 5;
     await until(async () => { await reconcileReminders(); return provider.get(protectedCard.id)?.reminder?.due === true; }, 90000);
     const dueInventory = await inv('smoke_reminder_inventory');
-    await report('reminder-real-due', ctx.attention.matches(provider.get(protectedCard.id), 'reminder') && ctx.attention.counts(provider.list()).pending >= 1 && dueInventory.dockBadge === '1');
+    // once due, the card's label says so instead of the date
+    const dueLabel = cardOf(protectedCard)?.querySelector('.card-status .card-reminder.due');
+    await inv('smoke_native_snapshot', { name: 'reminder-card-due' }).catch(() => {});
+    await report('reminder-real-due', ctx.attention.matches(provider.get(protectedCard.id), 'reminder') && ctx.attention.counts(provider.list()).pending >= 1 && dueInventory.dockBadge === '1'
+      && dueLabel?.textContent === '🔔 ' + t('reminder.dueShort'));
     // Arrival observation is complete. Configure the End control only after
     // restoring this owned window; inactive AppKit first clicks may be ignored.
     await inv('smoke_native_input', { input: { kind: 'activate' } });

@@ -43,7 +43,7 @@
 // An inbound automation card retains its frozen template plan until every
 // row is durably queued; queueInboundPlan replays stable operation IDs.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
-import { reminderRequestId, reminderAction, reminderClaim, reminderDue, rememberRetirement, retirementBlocked, retirementKey, sameReminder } from './reminder-model.js';
+import { reminderRequestId, reminderAction, reminderClaim, reminderDue, reminderShort, rememberRetirement, retirementBlocked, retirementKey, sameReminder } from './reminder-model.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
 import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
 import { channelAgentCommand } from './channel-model.js';
@@ -1496,6 +1496,22 @@ export async function openProjectDefaults(pid, opener = null) {
   if (back && back.isConnected && back.focus) back.focus();
 }
 
+/* A card's reminder label, at the right end of its status row (attention.js
+   repaints the rest of that row in place and leaves this alone). The date is
+   short and the full one, as the sidebar spells it, is the title; once due it
+   says so. Its click edits the reminder and nothing else: the card's own
+   click handler skips it. */
+function cardReminderLabel(s) {
+  const chip = document.createElement('button');
+  const due = reminderDue(s);
+  chip.type = 'button';
+  chip.className = 'card-reminder' + (due ? ' due' : '');
+  chip.textContent = '🔔 ' + (due ? t('reminder.dueShort') : reminderShort(s.reminder));
+  chip.title = reminderLabel(s);
+  chip.onclick = () => editReminder(s.id);
+  return chip;
+}
+
 export function cardEl(s) {
   const el = document.createElement('div');
   el.className = 'card' + (s.status === 'waiting' ? ' waiting' : s.status === 'attention' ? ' attention' : '');
@@ -1513,6 +1529,7 @@ export function cardEl(s) {
     <div class="card-desc"></div>`;
   el.querySelector('.card-title').textContent = s.title;
   paintCardSignalStatus(el.querySelector('.card-status'), s);
+  if (s.reminder) el.querySelector('.card-status').append(cardReminderLabel(s));
   paintCardAttentionBadge(el.querySelector('.card-attention-badge'), s);
   el.querySelector('.dot').title = dotTitle(s.status);
   const pin = el.querySelector('.card-pin');

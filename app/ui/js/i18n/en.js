@@ -19,6 +19,7 @@ const dictionary = {
   "reminder.invalid": "Choose a valid future time and a short single-line note. Missing or repeated local times require correction or an explicit choice.",
   "reminder.pending": "Reminder scheduled",
   "reminder.due": "Reminder needs attention",
+  "reminder.dueShort": "Due",
   "reminder.saveFailed": "Reminder could not be saved. The previous reminder is unchanged.",
   "reminder.closeConfirm": "This card has a reminder: {time}. Cancel this reminder and close the card?",
   "reminder.cancelClose": "Cancel reminder and close",

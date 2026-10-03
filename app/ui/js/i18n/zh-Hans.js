@@ -18,6 +18,7 @@ const dictionary = {
   "reminder.invalid": "请选择有效的未来时间并填写简短单行备注。不存在或重复的本地时间需修改或明确选择。",
   "reminder.pending": "待提醒",
   "reminder.due": "提醒到期待处理",
+  "reminder.dueShort": "到期",
   "reminder.saveFailed": "提醒无法保存，原有提醒保持不变。",
   "reminder.closeConfirm": "此卡片有提醒：{time}。是否取消此提醒并关闭卡片？",
   "reminder.cancelClose": "取消提醒并关闭",

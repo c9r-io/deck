@@ -1,8 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { localCandidates, localParts, shortcutTime, noteValid, reminderDue, reminderClaim, sameReminder, reminderAction, retirementKey, rememberRetirement, retirementBlocked, reminderRequestId, reminderTick } from '../js/reminder-model.js';
+import { reminderShort, localCandidates, localParts, shortcutTime, noteValid, reminderDue, reminderClaim, sameReminder, reminderAction, retirementKey, rememberRetirement, retirementBlocked, reminderRequestId, reminderTick } from '../js/reminder-model.js';
 import { createAttentionTracker, attentionRows } from '../js/attention-model.js';
 const card = () => ({ id: 'card-a', session: 'same-name', reminder: { id: 'unique', revision: 1, dueAt: 2000, due: false, timeZone: 'Asia/Tokyo', note: '', inAppOnly: false } });
+test("the card label is the time today, month/day and time otherwise, in the reminder's own zone", () => {
+  const at = (iso, timeZone = 'Asia/Tokyo') => ({ dueAt: Date.parse(iso), timeZone });
+  const now = Date.parse('2026-10-05T00:30:00Z');   // 09:30 on 5 October in Tokyo
+  assert.equal(reminderShort(at('2026-10-05T03:00:00Z'), now), '12:00');
+  assert.equal(reminderShort(at('2026-10-05T14:59:00Z'), now), '23:59');
+  // tomorrow in Tokyo although still the 5th in UTC; no leading zero in the date
+  assert.equal(reminderShort(at('2026-10-05T15:00:00Z'), now), '10/6 00:00');
+  assert.equal(reminderShort(at('2026-11-09T00:05:00Z'), now), '11/9 09:05');
+  assert.equal(reminderShort(at('2027-01-01T00:00:00Z'), now), '2027/1/1 09:00');
+  // a reminder that is past keeps its date (the card says Due instead)
+  assert.equal(reminderShort(at('2026-10-04T03:00:00Z'), now), '10/4 12:00');
+  // the same instant in another zone: 14:00 today in Tokyo, 01:00 tomorrow in New York
+  assert.equal(reminderShort(at('2026-10-05T05:00:00Z'), now), '14:00');
+  assert.equal(reminderShort(at('2026-10-05T05:00:00Z', 'America/New_York'), now), '10/5 01:00');
+});
+
 test('time round trips reject gaps, invalid dates and ambiguous implicit choices', () => {
   assert.deepEqual(localCandidates('2026-03-08T02:30', 'America/New_York'), []);
   assert.equal(localCandidates('2026-11-01T01:30', 'America/New_York').length, 2);

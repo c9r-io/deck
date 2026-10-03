@@ -1148,6 +1148,17 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 .card-status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-signal-help { flex: none; border: 0; padding: 0; background: none; color: var(--muted); font: inherit; text-decoration: underline; cursor: pointer; }
 .card-signal-help:hover, .card-signal-help:focus-visible { color: var(--text); }
+/* the reminder label on a card: the status row's right end, one line, and no
+   taller than the row's own text, so a card is the same height with it */
+.card-status .card-reminder {
+  margin: 0 0 0 auto; flex: none; max-width: 70%;
+  font-family: var(--mono); font-size: 0.769231rem; line-height: 1.2;
+  padding: 0 5px; border: 1px solid var(--border-soft); border-radius: 4px;
+  color: var(--muted); background: var(--panel);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left;
+}
+.card-status .card-reminder:hover, .card-status .card-reminder:focus-visible { color: var(--text); border-color: var(--border); }
+.card-status .card-reminder.due { color: var(--attn); border-color: var(--attn-border); }
 .card.attention .card-status { color: var(--attn); }
 @media (max-width: 1050px) {
   .attention-row, .attention-labels { grid-template-columns: minmax(110px,1.2fr) minmax(110px,1fr) auto; gap: 8px 12px; }

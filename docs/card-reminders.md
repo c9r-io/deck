@@ -5,7 +5,11 @@ of Automation, Agent state, starred cards, task completion and process life.
 It never sends input, starts a session, moves a card or keeps a process alive.
 
 Use **Set reminder…** in a card's context menu or the Session header. A saved
-reminder also has a clickable date label on the Board. The editor shows the
+reminder also has a clickable date label on the Board: the full date in the
+sidebar, and on the card a short one at the right of its status line (the
+time for a reminder due today, month/day and time otherwise, **Due** once it
+is; the full date is its tooltip). Clicking either opens the editor and
+nothing else. The editor shows the
 full date, weekday and original time zone before saving. Shortcuts fill an
 hour from the action, tomorrow at 09:00, or Monday in the next natural week.
 Repeated local times require a UTC occurrence choice; nonexistent and past

@@ -528,6 +528,30 @@ test("a click on the sidebar's reminder label does not open the session", () => 
   assert.doesNotMatch(sidebar, /stopPropagation/);
 });
 
+/* 09b: a Board card shows its reminder too (docs/card-reminders.md): a short
+   label at the right end of the status row, which keeps the card's height.
+   The real click and the height are in the reminder smoke. */
+test('a Board card shows its reminder as a label at the end of the status row', () => {
+  const board = code('app/ui/js/board.js');
+  const card = board.slice(board.indexOf('export function cardEl(s)'), board.indexOf('export async function closeSession('));
+  assert.ok(card.length > 1500, 'cardEl is where a card is built');
+  // only a card with a reminder gets one, after the row was painted
+  assert.match(card, /paintCardSignalStatus\(el\.querySelector\('\.card-status'\), s\);\s*if \(s\.reminder\) el\.querySelector\('\.card-status'\)\.append\(cardReminderLabel\(s\)\);/);
+  // the card's own click handler skips it, so the label edits the reminder only
+  assert.match(card, /closest\('\.card-x, \.card-pin, \.card-signal-help, \.card-reminder'\)/);
+  const label = board.slice(board.indexOf('function cardReminderLabel(s)'), board.indexOf('export function cardEl(s)'));
+  assert.ok(label.length > 200 && label.length < 900, 'cardReminderLabel sits right above cardEl');
+  assert.match(label, /chip\.className = 'card-reminder' \+ \(due \? ' due' : ''\);/);
+  assert.match(label, /chip\.textContent = '🔔 ' \+ \(due \? t\('reminder\.dueShort'\) : reminderShort\(s\.reminder\)\);/);
+  assert.match(label, /chip\.title = reminderLabel\(s\);/);
+  assert.match(label, /chip\.onclick = \(\) => editReminder\(s\.id\);/);
+  assert.doesNotMatch(label, /openSession|stopPropagation/);
+  // one line at the row's right end, no taller than the row's own text
+  const rule = read('app/ui/style.css').match(/\.card-status \.card-reminder \{[^}]*\}/)?.[0] || '';
+  for (const part of ['margin: 0 0 0 auto', 'flex: none', 'white-space: nowrap', 'line-height: 1.2']) assert.ok(rule.includes(part), part);
+  for (const file of ['en.js', 'zh-Hans.js']) assert.match(read(`app/ui/js/i18n/${file}`), /"reminder\.dueShort": "(Due|到期)",/);
+});
+
 // check.mjs is the gate that keeps import cycles inside the view core. It is
 // run here on small module directories: a cycle outside the core must be
 // found whichever static edge closes it, wherever the module lives, and
