@@ -46,6 +46,28 @@
     "max_serialized_bytes": 2097152
   },
   "presets_max": 50,
+  "board": {
+    "plan_steps_max": 20,
+    "plan_template_name_max_bytes": 120,
+    "preset_name_max_bytes": 120,
+    "preset_title_max_bytes": 120,
+    "preset_dir_max_bytes": 1024,
+    "preset_cmd_max_bytes": 200,
+    "preset_steps_max": 20,
+    "preset_step_max_bytes": 2000
+  },
+  "editor": {
+    "preset_name_max_chars": 120,
+    "preset_title_max_chars": 120
+  },
+  "unit_gaps": {
+    "sample": "模模模模模模模模模模模模模模模模模模模模模模模模模模模模模模模模模模模模模模模模模",
+    "pairs": [
+      ["inbound.template_name_max_chars", "board.plan_template_name_max_bytes"],
+      ["editor.preset_name_max_chars", "board.preset_name_max_bytes"],
+      ["editor.preset_title_max_chars", "board.preset_title_max_bytes"]
+    ]
+  },
   "drop_max_bytes": 33554432,
   "translation_max_bytes": 16384,
   "translation_live_bytes": 4096,

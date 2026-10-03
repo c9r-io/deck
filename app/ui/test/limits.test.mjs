@@ -4,12 +4,16 @@ import { REMINDER_NOTE_BYTES } from '../js/reminder-model.js';
 // exports to it, and src-tauri/src/limits_mirror.rs holds the Rust constants
 // to the same file. The backend stays authoritative (it refuses on save);
 // the frontend copies exist so the UI never offers what the backend refuses.
+// A length bound's key says its unit. Where the UI DOES offer what the Board
+// refuses, the fixture says so (`unit_gaps`: characters here, bytes there)
+// and both halves hold their side to it; the gap is known and left open.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   AGENT_STATES, CHAIN_QUIET_SECS, CONTEXT_STATUS_KEYS, INBOUND_BADGE_RE, ITEM_MAX_ATTEMPTS,
   LOCAL_ID_RE, MAX_DROP_BYTES, MAX_QUIET_SECS, MCP_ERROR_KEYS, MIN_QUIET_SECS,
+  TEMPLATE_STEPS_MAX, templateNameProblem,
 } from '../js/pure.js';
 import {
   ACCENTS, AUTO_SEND_CLASSES, AUTO_SEND_MAX_STEPS, DEFAULT_GRACE_MIN, FINISH_MODES, FONT_SCALE_MAX, FONT_SCALE_MIN, INBOUND_CMD_MAX,
@@ -22,7 +26,7 @@ import {
 import {
   BUFFER_MAX_BYTES, BUFFER_MAX_COPIES, BUFFER_MAX_ENTRIES, BUFFER_MAX_ENTRY_BYTES, BUFFER_MAX_SERIALIZED_BYTES,
 } from '../js/buffer-model.js';
-import { PRESET_MAX } from '../js/connector-model.js';
+import { normalizeTaskPreset, PRESET_MAX } from '../js/connector-model.js';
 import { dictionaries, LOCALE_CHOICES } from '../js/i18n.js';
 import { ACCENT_IDS, THEME_IDS } from '../js/theme.js';
 import { NOTIFY_STATUS_WORDS } from '../js/notify-model.js';
@@ -98,4 +102,70 @@ test('closed status vocabularies', () => {
 
 test('reminder note bounds match the native fixture', () => {
   assert.equal(REMINDER_NOTE_BYTES, limits.reminder_note_bytes);
+});
+
+/* The Board's bounds (documents.rs). The frontend holds the preset ones in
+   `normalizeTaskPreset`, without constants of its own, so they are read off
+   its behaviour: a value at the bound is kept and the next one is dropped. */
+const utf8 = value => new TextEncoder().encode(value).byteLength;
+const presetKept = fields => !!normalizeTaskPreset(
+  { id: 'R1', name: 'n', columnId: 'C1', title: 't', dir: '~/w', cmd: 'codex', steps: ['s'], ...fields }, [{ id: 'C1' }]);
+
+test('Board mirrors: plan steps, and the preset bounds the frontend counts in the same unit', () => {
+  const b = limits.board;
+  assert.deepEqual(Object.keys(b), ['plan_steps_max', 'plan_template_name_max_bytes', 'preset_name_max_bytes',
+    'preset_title_max_bytes', 'preset_dir_max_bytes', 'preset_cmd_max_bytes', 'preset_steps_max', 'preset_step_max_bytes']);
+  assert.equal(TEMPLATE_STEPS_MAX, b.plan_steps_max, 'a template never has more steps than a plan may freeze');
+  const dir = bytes => '/' + 'a'.repeat(bytes - 1);
+  assert.ok(presetKept({ dir: dir(b.preset_dir_max_bytes) }));
+  assert.ok(!presetKept({ dir: dir(b.preset_dir_max_bytes + 1) }));
+  const cjkDir = '/' + '模'.repeat(Math.floor(b.preset_dir_max_bytes / 3) + 1);
+  assert.ok([...cjkDir].length < b.preset_dir_max_bytes && utf8(cjkDir) > b.preset_dir_max_bytes);
+  assert.ok(!presetKept({ dir: cjkDir }), 'a directory is counted in bytes here too');
+  const cmd = bytes => 'codex ' + 'a'.repeat(bytes - 6);
+  assert.ok(presetKept({ cmd: cmd(b.preset_cmd_max_bytes) }));
+  assert.ok(!presetKept({ cmd: cmd(b.preset_cmd_max_bytes + 1) }));
+  assert.ok(presetKept({ steps: Array(b.preset_steps_max).fill('s') }));
+  assert.ok(!presetKept({ steps: Array(b.preset_steps_max + 1).fill('s') }));
+  assert.ok(presetKept({ steps: ['a'.repeat(b.preset_step_max_bytes)] }));
+  assert.ok(!presetKept({ steps: ['a'.repeat(b.preset_step_max_bytes + 1)] }));
+  assert.ok(!presetKept({ steps: ['模'.repeat(Math.floor(b.preset_step_max_bytes / 3) + 1)] }), 'a step is counted in bytes here too');
+});
+
+test('editor mirrors: a template name, a preset name and a preset title are counted in characters', () => {
+  const names = limits.inbound.template_name_max_chars;
+  for (const unit of ['a', '模', '😀']) {
+    assert.equal(templateNameProblem(unit.repeat(names)), null, `template name: ${names} × ${unit}`);
+    assert.equal(templateNameProblem(unit.repeat(names + 1)), 'long', `template name: ${names + 1} × ${unit}`);
+  }
+  for (const [field, key] of [['name', 'preset_name_max_chars'], ['title', 'preset_title_max_chars']]) {
+    const max = limits.editor[key];
+    for (const unit of ['a', '模', '😀']) {
+      assert.ok(presetKept({ [field]: unit.repeat(max) }), `${field}: ${max} × ${unit}`);
+      assert.ok(!presetKept({ [field]: unit.repeat(max + 1) }), `${field}: ${max + 1} × ${unit}`);
+    }
+  }
+  assert.deepEqual(Object.keys(limits.editor), ['preset_name_max_chars', 'preset_title_max_chars']);
+});
+
+/* Known and left open: these names carry one number in two units. The
+   editors below accept the fixture's sample; limits_mirror.rs shows that the
+   Board refuses it, when the run card or the project defaults are saved.
+   Changing the unit on either side breaks one of the two tests. */
+test('the listed unit gaps are real on the editors\' side', () => {
+  const { sample, pairs } = limits.unit_gaps;
+  const at = key => key.split('.').reduce((value, part) => value[part], limits);
+  const accepts = {
+    'inbound.template_name_max_chars': () => templateNameProblem(sample) === null,
+    'editor.preset_name_max_chars': () => presetKept({ name: sample }),
+    'editor.preset_title_max_chars': () => presetKept({ title: sample }),
+  };
+  assert.deepEqual(pairs.map(([chars]) => chars), Object.keys(accepts), 'a new pair needs its editor named here');
+  for (const [chars, bytes] of pairs) {
+    assert.ok(chars.endsWith('_chars') && bytes.endsWith('_bytes'), `${chars} / ${bytes}`);
+    assert.equal(at(chars), at(bytes), `${chars} / ${bytes}: one number, two units`);
+    assert.ok([...sample].length <= at(chars), 'within the characters');
+    assert.ok(utf8(sample) > at(bytes), 'over the bytes');
+    assert.ok(accepts[chars](), `${chars}: the editor accepts what the Board refuses`);
+  }
 });

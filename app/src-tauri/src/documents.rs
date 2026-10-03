@@ -205,6 +205,30 @@ pub(crate) const BUFFER_MAX_ENTRY_BYTES: usize = 32 * 1024;
 pub(crate) const BUFFER_MAX_BYTES: usize = 1024 * 1024;
 pub(crate) const BUFFER_MAX_SERIALIZED_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const PRESETS_MAX: usize = 50;
+// The bounds of a project task preset and of a frozen plan, as this
+// validation counts them. A length here is BYTES (`str::len`), and
+// `ui/test/fixtures/limits.json` carries each under a key that says so. A
+// preset's steps become a Connector run's frozen steps, so the two share
+// the step bounds.
+pub(crate) const PRESET_NAME_MAX_BYTES: usize = 120;
+pub(crate) const PRESET_TITLE_MAX_BYTES: usize = 120;
+pub(crate) const PRESET_DIR_MAX_BYTES: usize = 1024;
+pub(crate) const PRESET_CMD_MAX_BYTES: usize = 200;
+pub(crate) const PRESET_STEPS_MAX: usize = 20;
+pub(crate) const PRESET_STEP_MAX_BYTES: usize = 2000;
+pub(crate) const PLAN_STEPS_MAX: usize = 20;
+/// The template name a frozen step carries (`tpl`), in bytes as well.
+///
+/// KNOWN GAP, left open on purpose. The editors and the settings validation
+/// bound the same names (a template's, a preset's name and title) at 120
+/// CHARACTERS, so a name of 41 to 120 CJK characters passes them and is
+/// refused here, when the run card or the project defaults are saved.
+/// Counting characters here is not a local change: a Board carrying such a
+/// name is damage to every build that counts bytes (it sets the file aside
+/// and may go on from an older backup), so it needs a sticky schema version
+/// first (`storage.rs`). `limits.json` lists the pairs under `unit_gaps`,
+/// and both halves of the mirror hold their side to that list.
+pub(crate) const PLAN_TEMPLATE_NAME_MAX_BYTES: usize = 120;
 /// A channel collection run waits at most a week of idleness.
 pub(crate) const CHANNEL_MAX_IDLE_MINUTES: u32 = 7 * 24 * 60;
 pub(crate) const FONT_SCALE_MIN: f64 = 0.5;
@@ -342,7 +366,7 @@ fn validate_inbound_plan(card_id: &str, plan: &InboundPlan) -> Result<(), DeckEr
     let valid = bounded_buffer_id(&plan.operation_id)
         && plan.operation_id.len() <= 120
         && (plan.initial_queued || !plan.initial_steps.is_empty())
-        && plan.initial_steps.len() <= 20
+        && plan.initial_steps.len() <= PLAN_STEPS_MAX
         && plan.initial_steps.iter().enumerate().all(|(index, step)| {
             bounded_buffer_id(&step.operation_id)
                 && !step.text.is_empty()
@@ -350,7 +374,7 @@ fn validate_inbound_plan(card_id: &str, plan: &InboundPlan) -> Result<(), DeckEr
                 && matches!(step.mode.as_str(), "at" | "chain")
                 && (step.mode == "at") == step.at.is_some()
                 && !step.tpl.is_empty()
-                && step.tpl.len() <= 120
+                && step.tpl.len() <= PLAN_TEMPLATE_NAME_MAX_BYTES
                 && step.tpl_idx == index + 1
                 && step.tpl_total == plan.initial_steps.len()
         });
@@ -369,11 +393,11 @@ fn validate_connector_run(card_id: &str, run: &ConnectorRun) -> Result<(), DeckE
     let valid = run.handle.len() == 64
         && run.handle.chars().all(|c| c.is_ascii_hexdigit())
         && bounded_buffer_id(&run.preset_id)
-        && run.initial_steps.len() <= 20
+        && run.initial_steps.len() <= PRESET_STEPS_MAX
         && run.initial_steps.iter().enumerate().all(|(index, step)| {
             bounded_buffer_id(&step.operation_id)
                 && !step.text.is_empty()
-                && step.text.len() <= 2000
+                && step.text.len() <= PRESET_STEP_MAX_BYTES
                 && matches!(step.mode.as_str(), "at" | "chain")
                 && (step.mode == "at") == step.at.is_some()
                 && step.tpl == run.preset_id
@@ -415,7 +439,7 @@ fn validate_channel_run(
                 && matches!(step.mode.as_str(), "at" | "chain")
                 && (step.mode == "at") == step.at.is_some()
                 && !step.tpl.is_empty()
-                && step.tpl.len() <= 120
+                && step.tpl.len() <= PLAN_TEMPLATE_NAME_MAX_BYTES
                 && step.tpl_idx == index + 1
                 && step.tpl_total == run.initial_steps.len()
         });
@@ -590,21 +614,21 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
             if !bounded_buffer_id(&preset.id)
                 || !preset_ids.insert(preset.id.as_str())
                 || preset.name.is_empty()
-                || preset.name.len() > 120
+                || preset.name.len() > PRESET_NAME_MAX_BYTES
                 || preset.title.is_empty()
-                || preset.title.len() > 120
+                || preset.title.len() > PRESET_TITLE_MAX_BYTES
                 || preset.dir.is_empty()
-                || preset.dir.len() > 1024
+                || preset.dir.len() > PRESET_DIR_MAX_BYTES
                 || preset.dir.chars().any(char::is_control)
                 || preset.cmd.is_empty()
-                || preset.cmd.len() > 200
+                || preset.cmd.len() > PRESET_CMD_MAX_BYTES
                 || !supported
                 || !col_ids.contains(preset.column_id.as_str())
-                || preset.steps.len() > 20
+                || preset.steps.len() > PRESET_STEPS_MAX
                 || preset
                     .steps
                     .iter()
-                    .any(|step| step.is_empty() || step.len() > 2000)
+                    .any(|step| step.is_empty() || step.len() > PRESET_STEP_MAX_BYTES)
             {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
