@@ -15,6 +15,21 @@ export function notifyNeedsAgentStatus(hooks) {
   return !!hooks && hooks.claude !== true && hooks.codex !== true;
 }
 
+/* A label's title: at most this many bytes of UTF-8, cut at a character
+   boundary. notify.rs holds the same bound and cuts the same way
+   (test/fixtures/limits.json `notify`). Counting UTF-16 units instead let
+   a long CJK title through that the backend then refused, together with
+   every other card's label, and could leave half a character, which fails
+   the whole call in the backend's deserializer. */
+export const LABEL_TITLE_MAX_BYTES = 512;
+export function labelTitle(title) {
+  const bytes = new TextEncoder().encode(String(title || ''));
+  let end = Math.min(bytes.length, LABEL_TITLE_MAX_BYTES);
+  // a cut inside a character steps back to where that character starts
+  while (end < bytes.length && end > 0 && (bytes[end] & 0xC0) === 0x80) end--;
+  return new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes.subarray(0, end));
+}
+
 /** session → {title, project} for every card, sorted so the key is stable. */
 export function cardLabels(cards, projects) {
   const names = new Map((projects || []).map(p => [p.id, String(p.name || '')]));
@@ -22,7 +37,7 @@ export function cardLabels(cards, projects) {
     .filter(card => card && typeof card.session === 'string' && card.session)
     .map(card => ({
       session: card.session,
-      title: String(card.title || '').slice(0, 512),
+      title: labelTitle(card.title),
       project: names.get(card.projectId) || '',
     }))
     .sort((a, b) => (a.session < b.session ? -1 : a.session > b.session ? 1 : 0));

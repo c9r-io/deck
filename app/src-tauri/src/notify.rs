@@ -44,7 +44,9 @@
 //!   the locale setting) prefixed by the project name. No prompt, output,
 //!   path or free text ever reaches the system, and nothing but closed
 //!   codes reaches app.log (`tests/log_privacy.rs`). A session without a
-//!   label is never announced.
+//!   label is never announced. A title longer than 512 bytes is announced
+//!   by its longest prefix of whole characters, and one label deck cannot
+//!   use never costs the other cards theirs (`set_labels_with`).
 //! - **Once per episode; withdrawn when superseded or viewed** — never
 //!   a claim that the cause was resolved. Input is the session's PROJECTED
 //!   observation (`agent_status::Observation`: word, Deck-local episode,
@@ -309,17 +311,34 @@ pub(crate) fn configure_with(
     native.status()
 }
 
+/// What one batch of labels may hold. `ui/test/fixtures/limits.json` carries
+/// both under `notify`, and the webview cuts a title the same way before it
+/// sends it (`notify-model.js` `labelTitle`).
+pub(crate) const LABELS_MAX: usize = 4096;
+pub(crate) const LABEL_TITLE_MAX_BYTES: usize = 512;
+
+/// Replace the labels. The two bounds keep what one call can put in memory
+/// small, and neither lets one label cost the other cards theirs: a title
+/// longer than its bound is cut to its longest prefix of whole characters
+/// (still the card's own title, nothing added), and a label that names no
+/// session is left out — it could not be announced anyway, the session name
+/// being the notification's identifier. Only more labels than a batch may
+/// hold refuse it, and then the labels stay as they were.
 pub(crate) fn set_labels_with(n: &mut Notify, labels: Vec<CardLabel>) -> Result<(), DeckError> {
-    if labels.len() > 4096 {
+    if labels.len() > LABELS_MAX {
         return Err(DeckError::new(ErrorKind::Invalid, "too many card labels"));
     }
     let mut map = HashMap::with_capacity(labels.len());
-    for label in labels {
-        if crate::tmux::validate_session_name(&label.session).is_err() || label.title.len() > 512 {
-            return Err(DeckError::new(
-                ErrorKind::Invalid,
-                "card label out of bounds",
-            ));
+    for mut label in labels {
+        if crate::tmux::validate_session_name(&label.session).is_err() {
+            continue;
+        }
+        if label.title.len() > LABEL_TITLE_MAX_BYTES {
+            let mut end = LABEL_TITLE_MAX_BYTES;
+            while !label.title.is_char_boundary(end) {
+                end -= 1;
+            }
+            label.title.truncate(end);
         }
         map.insert(label.session.clone(), label);
     }
@@ -818,8 +837,83 @@ mod tests {
         assert_eq!(*granted.badge.borrow(), Some(0));
     }
 
+    /// One label deck cannot use must not cost every other card its
+    /// notification. A title longer than the bound is cut to its first
+    /// whole characters (still the card's own title), a label that names no
+    /// session is left out, and the rest of the batch stands. Only more
+    /// labels than the bound refuse the batch, and then nothing changes.
     #[test]
-    fn a_refused_post_is_not_remembered_and_labels_are_bounded() {
+    fn one_unusable_label_does_not_silence_the_others() {
+        let mut n = Notify::default();
+        let fake = Fake::new("authorized");
+        let long = "题".repeat(171);
+        assert_eq!((long.chars().count(), long.len()), (171, 513));
+        set_labels_with(
+            &mut n,
+            vec![
+                label("deck-card-ab12", "Fix the parser", "deck"),
+                label("deck-card-cd34", &long, "deck"),
+                label("bad name", "t", "p"),
+            ],
+        )
+        .unwrap();
+        configure_with(&mut n, &fake, true, false, false);
+        fake.clear();
+        observe_word(&mut n, &fake, "deck-card-ab12", NEEDS_INPUT, true, "en");
+        assert_eq!(
+            fake.calls(),
+            ["post deck-card-ab12 [Fix the parser] [deck · asked for your input] sound=false"]
+        );
+        fake.clear();
+        // the long title is announced by its beginning
+        observe_word(&mut n, &fake, "deck-card-cd34", TURN_DONE, true, "en");
+        assert_eq!(
+            fake.calls(),
+            [format!(
+                "post deck-card-cd34 [{}] [deck · a turn has ended] sound=false",
+                "题".repeat(170)
+            )]
+        );
+        assert!(!n.labels.contains_key("bad name"));
+
+        // nothing is cut at the bound; a cut is a prefix and never splits a
+        // character
+        for (title, kept) in [
+            ("x".repeat(512), 512),
+            ("x".repeat(513), 512),
+            ("é".repeat(256), 512),
+            (format!("a{}", "é".repeat(256)), 511),
+            (format!("a{}", "😀".repeat(128)), 509),
+            ("题".repeat(4000), 510),
+        ] {
+            set_labels_with(&mut n, vec![label("deck-card-ab12", &title, "p")]).unwrap();
+            let shown = &n.labels["deck-card-ab12"].title;
+            assert_eq!(shown.len(), kept, "{} bytes", title.len());
+            assert!(title.starts_with(shown.as_str()));
+        }
+
+        // the count bound still refuses the batch, and leaves the labels
+        let many = (0..4097)
+            .map(|i| label(&format!("deck-card-{i:04}"), "t", "p"))
+            .collect();
+        assert!(set_labels_with(&mut n, many).is_err());
+        assert_eq!(n.labels.len(), 1);
+        let most = (0..4096)
+            .map(|i| label(&format!("deck-card-{i:04}"), "t", "p"))
+            .collect();
+        assert!(set_labels_with(&mut n, most).is_ok());
+        assert_eq!(n.labels.len(), 4096);
+
+        // a string that is not valid Unicode never gets this far: the whole
+        // call fails in the deserializer, so the webview must not send one
+        assert!(serde_json::from_str::<Vec<CardLabel>>(
+            r#"[{"session":"deck-card-ab12","title":"ok\ud83d"}]"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_refused_post_is_not_remembered() {
         let mut n = Notify::default();
         let fake = Fake {
             status: "provisional",
@@ -834,11 +928,6 @@ mod tests {
             ["post deck-card-ab12 [t] [p · asked for your input] sound=true"]
         );
         assert!(n.posted.is_empty());
-        assert!(set_labels_with(&mut n, vec![label("bad name", "t", "p")]).is_err());
-        assert!(
-            set_labels_with(&mut n, vec![label("deck-card-ab12", &"x".repeat(513), "p")]).is_err()
-        );
-        assert!(set_labels_with(&mut n, vec![label("deck-card-ab12", "ok", "p")]).is_ok());
     }
 
     #[test]

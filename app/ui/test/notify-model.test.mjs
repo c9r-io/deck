@@ -20,6 +20,27 @@ test('card labels carry session, bounded title and project name, sorted by sessi
   assert.equal(cardLabels(null, null).length, 0);
 });
 
+test('a label title is cut by UTF-8 bytes at a character boundary, the unit the backend counts', () => {
+  const title = text => cardLabels([card('C1', 'deck-card-aa', text, 'P1')], projects)[0].title;
+  const bytes = text => new TextEncoder().encode(text).length;
+  assert.equal(title('题'.repeat(170)), '题'.repeat(170), '510 bytes: as it is');
+  assert.equal(title('题'.repeat(171)), '题'.repeat(170), '513 bytes: its first whole characters');
+  assert.equal(title('题'.repeat(600)), '题'.repeat(170));
+  assert.equal(title('é'.repeat(256)), 'é'.repeat(256), 'exactly at the bound');
+  assert.equal(title('a' + 'é'.repeat(256)), 'a' + 'é'.repeat(255));
+  assert.equal(title('a' + '😀'.repeat(300)), 'a' + '😀'.repeat(127), 'never half a character');
+  for (const text of ['题'.repeat(171), 'a' + '😀'.repeat(300), 'x'.repeat(600)]) {
+    assert.ok(bytes(title(text)) <= 512, `${bytes(title(text))} bytes`);
+    assert.ok(text.startsWith(title(text)), 'a prefix of the card\'s own title');
+  }
+  // a string that is not valid Unicode would fail the whole call in the
+  // backend's deserializer, with every other card's label
+  assert.equal(title('ok\ud83d'), 'ok�');
+  assert.ok(!JSON.stringify(cardLabels([card('C1', 'deck-card-aa', 'a' + '😀'.repeat(300), 'P1')], projects)).includes('\\ud83d'));
+  // nothing else about a title is touched
+  for (const text of ['Fix parser', '', '﻿with a mark', ' spaced  ']) assert.equal(title(text), text);
+});
+
 test('the labels key changes exactly when a label changes', () => {
   const a = cardLabels([card('C1', 'deck-card-aa', 'Fix parser', 'P1')], projects);
   const b = cardLabels([card('C1', 'deck-card-aa', 'Fix parser', 'P1')], projects);

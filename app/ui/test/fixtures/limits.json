@@ -46,6 +46,10 @@
     "max_serialized_bytes": 2097152
   },
   "presets_max": 50,
+  "notify": {
+    "labels_max": 4096,
+    "label_title_max_bytes": 512
+  },
   "board": {
     "plan_steps_max": 20,
     "plan_template_name_max_bytes": 120,

@@ -471,3 +471,14 @@ fn the_listed_unit_gaps_are_real_on_the_board_side() {
         "settings count characters"
     );
 }
+
+#[test]
+fn notify_label_bounds_match_the_fixture() {
+    let n = &limits()["notify"];
+    assert_eq!(number(&n["labels_max"]), crate::notify::LABELS_MAX as u64);
+    assert_eq!(
+        number(&n["label_title_max_bytes"]),
+        crate::notify::LABEL_TITLE_MAX_BYTES as u64
+    );
+    assert_eq!(n.as_object().unwrap().len(), 2, "every key is held");
+}

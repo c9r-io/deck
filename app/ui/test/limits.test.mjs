@@ -29,7 +29,7 @@ import {
 import { normalizeTaskPreset, PRESET_MAX } from '../js/connector-model.js';
 import { dictionaries, LOCALE_CHOICES } from '../js/i18n.js';
 import { ACCENT_IDS, THEME_IDS } from '../js/theme.js';
-import { NOTIFY_STATUS_WORDS } from '../js/notify-model.js';
+import { LABEL_TITLE_MAX_BYTES, NOTIFY_STATUS_WORDS } from '../js/notify-model.js';
 import { CODEX_SIGNAL_TRUST } from '../js/attention-model.js';
 import { MAX_TRANSLATION_BYTES, MAX_LIVE_TRANSLATION_BYTES } from '../js/local-intelligence.js';
 
@@ -168,4 +168,10 @@ test('the listed unit gaps are real on the editors\' side', () => {
     assert.ok(utf8(sample) > at(bytes), 'over the bytes');
     assert.ok(accepts[chars](), `${chars}: the editor accepts what the Board refuses`);
   }
+});
+
+test('notification label mirrors: the title bound, in bytes', () => {
+  assert.equal(LABEL_TITLE_MAX_BYTES, limits.notify.label_title_max_bytes);
+  // the count bound is the backend's alone: the webview sends every card
+  assert.deepEqual(Object.keys(limits.notify), ['labels_max', 'label_title_max_bytes']);
 });
