@@ -94,14 +94,18 @@
 //! a release-location install can enable hooks; dev/smoke builds get an
 //! error and never touch agent config. `migrate_hooks_on_boot` (release
 //! installs only) rewrites installed entries that are not what the CURRENT
-//! spec describes — `hooks_are_current` compares the WHOLE entry (event,
-//! matcher, helper path, style, args) and rejects a deck entry left under a
-//! retired event, so a spec change (a narrowed matcher, a moved bundle, the
-//! legacy copy) reaches users who enabled the toggle under an older version
+//! spec describes — `hooks_are_current` compares deck's WHOLE hook and the
+//! matcher of its group (event, matcher, helper path, style, args) and
+//! rejects a deck hook left under a retired event, while what the user added
+//! to that group is not deck's to judge. So a spec change (a narrowed
+//! matcher, a moved bundle, the legacy copy) reaches users who enabled the
+//! toggle under an older version
 //! without them touching the switch; installed-ness alone (`hooks_installed`)
 //! cannot see that. It also deletes the legacy copy once nothing references
-//! it. Install strips deck's entries document-wide before writing the specs,
-//! but an EMPTY array the user wrote is left exactly as written. Hooks inherit `$TMUX`/`$TMUX_PANE`; the helper
+//! it. Install takes deck's hooks out document-wide, hook by hook, before
+//! writing the specs: a hook the user keeps in the same group stays in it,
+//! and an EMPTY array the user wrote is left exactly as written; uninstall
+//! prunes only what taking deck's hooks out emptied. Hooks inherit `$TMUX`/`$TMUX_PANE`; the helper
 //! drains the hook stdin payload and discards it after reading at most ONE
 //! allowlisted top-level field (the source's interaction id, below),
 //! charset-validates every field,
@@ -1240,7 +1244,8 @@ pub(crate) fn spawn_listener() {
 // merge engine serves both; each agent contributes only its spec table.
 
 /// Markers every deck-authored hook command carries; install/uninstall touch
-/// only entries containing one, byte-preserving everything else in the file.
+/// only the hooks carrying one. A group (`{matcher?, hooks: [...]}`) may also
+/// hold hooks the user put there, and those are never deck's to remove.
 /// Current entries run the helper INSIDE the installed, signed, notarized
 /// bundle — deck never drops an executable into the home directory (an app
 /// writing a binary under `~` and registering it in another program's hook
@@ -1312,17 +1317,38 @@ fn command_is_ours(command: &str) -> bool {
     command.contains(HELPER_MARKER) || command.contains(LEGACY_HELPER_MARKER)
 }
 
-fn entry_commands(entry: &serde_json::Value) -> impl Iterator<Item = &str> {
+fn hook_is_ours(hook: &serde_json::Value) -> bool {
+    hook.get("command")
+        .and_then(|c| c.as_str())
+        .is_some_and(command_is_ours)
+}
+
+/// The hooks of one group.
+fn entry_hooks(entry: &serde_json::Value) -> impl Iterator<Item = &serde_json::Value> {
     entry
         .get("hooks")
         .and_then(|h| h.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|hook| hook.get("command").and_then(|c| c.as_str()))
 }
 
+/// The group carries a deck hook (it may carry the user's as well).
 fn entry_is_ours(entry: &serde_json::Value) -> bool {
-    entry_commands(entry).any(command_is_ours)
+    entry_hooks(entry).any(hook_is_ours)
+}
+
+/// Take deck's hooks out of one event's list, hook by hook: a hook the user
+/// keeps in the same group stays where it is, and a group goes only when
+/// taking deck's hooks out left it without any.
+fn strip_ours(list: &mut Vec<serde_json::Value>) {
+    list.retain_mut(|entry| {
+        let Some(hooks) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
+            return true;
+        };
+        let before = hooks.len();
+        hooks.retain(|hook| !hook_is_ours(hook));
+        hooks.len() == before || !hooks.is_empty()
+    });
 }
 
 /// The complete document entry one spec must produce.
@@ -1339,13 +1365,15 @@ fn spec_entry(
     entry
 }
 
-/// deck's entries in this document are EXACTLY what the current specs
-/// describe: one entry per spec event, byte-identical matcher, helper path,
-/// style and arguments, and no deck entry left under an event the specs no
-/// longer name. `hooks_installed` only asks whether SOME deck entry exists
-/// per event, so it cannot see a spec change — a narrowed matcher, a moved
-/// bundle, a legacy `~/.deck/bin` path, a shell-form entry where exec form
-/// is expected. This is the predicate boot migration repairs against.
+/// deck's hooks in this document are EXACTLY what the current specs
+/// describe: one hook per spec event, in a group with the spec's matcher,
+/// with the identical helper path, style and arguments, and no deck hook
+/// left under an event the specs no longer name. What else its group holds
+/// is the user's and is not looked at: a hook they added beside deck's does
+/// not make deck's stale. `hooks_installed` only asks whether SOME deck hook
+/// exists per event, so it cannot see a spec change — a narrowed matcher, a
+/// moved bundle, a legacy `~/.deck/bin` path, a shell-form hook where exec
+/// form is expected. This is the predicate boot migration repairs against.
 pub(crate) fn hooks_are_current(
     root: &serde_json::Value,
     specs: &[HookSpec],
@@ -1356,37 +1384,41 @@ pub(crate) fn hooks_are_current(
     let Some(hooks) = root.get("hooks").and_then(|h| h.as_object()) else {
         return false;
     };
-    let ours = |list: &serde_json::Value| {
+    // deck's hooks under one event, each with the matcher of its group
+    let ours = |list: &serde_json::Value| -> Vec<(Option<serde_json::Value>, serde_json::Value)> {
         list.as_array()
             .into_iter()
             .flatten()
-            .filter(|entry| entry_is_ours(entry))
-            .count()
+            .flat_map(|entry| {
+                entry_hooks(entry)
+                    .filter(|hook| hook_is_ours(hook))
+                    .map(|hook| (entry.get("matcher").cloned(), hook.clone()))
+            })
+            .collect()
     };
     // nothing of ours under a retired event
     if hooks
         .iter()
-        .any(|(event, list)| !specs.iter().any(|(e, _, _)| e == event) && ours(list) > 0)
+        .any(|(event, list)| !specs.iter().any(|(e, _, _)| e == event) && !ours(list).is_empty())
     {
         return false;
     }
-    specs.iter().all(|spec| {
-        let Some(list) = hooks.get(spec.0).and_then(|l| l.as_array()) else {
+    specs.iter().all(|(event, matcher, state)| {
+        let mine = hooks.get(*event).map(&ours).unwrap_or_default();
+        let [(group_matcher, hook)] = mine.as_slice() else {
             return false;
         };
-        let mut mine = list.iter().filter(|entry| entry_is_ours(entry));
-        let Some(entry) = mine.next() else {
-            return false;
-        };
-        mine.next().is_none() && *entry == spec_entry(style, helper, source, spec)
+        *group_matcher == matcher.map(serde_json::Value::from)
+            && *hook == hook_value(style, helper, source, state)
     })
 }
 
-/// Add deck's hook entries to a parsed hooks document. Everything the user
-/// wrote — other hooks, unknown keys, other events — is preserved; every
-/// entry carrying the helper marker is dropped first (document-wide, so an
-/// event a previous deck version registered and this one no longer does
-/// cannot linger) and the current specs are written in the agent's `style`.
+/// Add deck's hook groups to a parsed hooks document. Everything the user
+/// wrote — other hooks, hooks in a group deck's hook shares, unknown keys,
+/// other events — is preserved; every hook carrying the helper marker is
+/// taken out first (document-wide, so an event a previous deck version
+/// registered and this one no longer does cannot linger) and the current
+/// specs are written, each in a group of its own, in the agent's `style`.
 pub(crate) fn hooks_with_install(
     mut root: serde_json::Value,
     specs: &[HookSpec],
@@ -1412,7 +1444,7 @@ pub(crate) fn hooks_with_install(
             continue;
         };
         let before = list.len();
-        list.retain(|entry| !entry_is_ours(entry));
+        strip_ours(list);
         if list.is_empty() && before > 0 {
             emptied.push(event.clone());
         }
@@ -1436,21 +1468,29 @@ pub(crate) fn hooks_with_install(
     Ok(root)
 }
 
-/// Remove every deck-authored entry, pruning emptied arrays/objects.
+/// Remove every deck-authored hook, and with it the group, the event list
+/// and the `hooks` key that this left empty. An empty list or an empty
+/// `hooks` the user wrote is theirs and stays.
 pub(crate) fn hooks_with_uninstall(mut root: serde_json::Value) -> serde_json::Value {
+    let mut emptied_all = false;
     if let Some(hooks) = root.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-        for (_, list) in hooks.iter_mut() {
-            if let Some(list) = list.as_array_mut() {
-                list.retain(|entry| !entry_is_ours(entry));
+        let mut emptied = Vec::new();
+        for (event, list) in hooks.iter_mut() {
+            let Some(list) = list.as_array_mut() else {
+                continue;
+            };
+            let before = list.len();
+            strip_ours(list);
+            if list.is_empty() && before > 0 {
+                emptied.push(event.clone());
             }
         }
-        hooks.retain(|_, list| list.as_array().map(|l| !l.is_empty()).unwrap_or(true));
+        for event in &emptied {
+            hooks.remove(event);
+        }
+        emptied_all = !emptied.is_empty() && hooks.is_empty();
     }
-    if root
-        .get("hooks")
-        .and_then(|h| h.as_object())
-        .is_some_and(|h| h.is_empty())
-    {
+    if emptied_all {
         if let Some(obj) = root.as_object_mut() {
             obj.remove("hooks");
         }
@@ -1458,7 +1498,7 @@ pub(crate) fn hooks_with_uninstall(mut root: serde_json::Value) -> serde_json::V
     root
 }
 
-/// Installed = every deck hook event carries a marker entry; a partial
+/// Installed = every deck hook event carries a marker hook; a partial
 /// install reads as OFF so re-enabling repairs it.
 pub(crate) fn hooks_installed(root: &serde_json::Value, specs: &[HookSpec]) -> bool {
     let Some(hooks) = root.get("hooks").and_then(|h| h.as_object()) else {
@@ -3837,6 +3877,96 @@ mod tests {
         );
         assert_eq!(names(&repo), ["settings.json"]);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A hook the user keeps in the SAME group as deck's is theirs. It does
+    /// not make deck's hook stale (so the boot migration leaves the file
+    /// alone), and install and uninstall take deck's hook out from beside it:
+    /// their hook stays in its group, under that group's matcher.
+    #[test]
+    fn a_foreign_hook_in_decks_own_group_is_never_removed() {
+        let install = |doc: serde_json::Value| {
+            hooks_with_install(doc, CLAUDE_HOOKS, "claude-code", HookStyle::Exec, HELPER).unwrap()
+        };
+        let is_current = |doc: &serde_json::Value| {
+            hooks_are_current(doc, CLAUDE_HOOKS, "claude-code", HookStyle::Exec, HELPER)
+        };
+        let theirs = serde_json::json!({ "type": "command", "command": "say done" });
+        let guard = serde_json::json!({ "type": "command", "command": "my-notifier" });
+        let mut mixed = install(serde_json::json!({ "model": "opus" }));
+        mixed["hooks"]["Stop"][0]["hooks"]
+            .as_array_mut()
+            .unwrap()
+            .push(theirs.clone());
+        mixed["hooks"]["Notification"][0]["hooks"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, guard.clone());
+        let their_stop = serde_json::json!({ "hooks": [theirs] });
+        let their_notification =
+            serde_json::json!({ "matcher": "permission_prompt", "hooks": [guard] });
+
+        assert!(hooks_installed(&mixed, CLAUDE_HOOKS));
+        assert!(
+            is_current(&mixed),
+            "a user's hook beside deck's does not make deck's stale"
+        );
+
+        // an install keeps both groups, each without deck's hook, and gives
+        // deck a group of its own again
+        let reinstalled = install(mixed.clone());
+        assert_eq!(reinstalled["hooks"]["Stop"][0], their_stop);
+        assert_eq!(reinstalled["hooks"]["Notification"][0], their_notification);
+        assert_eq!(reinstalled["hooks"]["Stop"].as_array().unwrap().len(), 2);
+        assert!(is_current(&reinstalled));
+        assert_eq!(install(reinstalled.clone()), reinstalled);
+
+        // an uninstall leaves exactly their hooks
+        let removed = hooks_with_uninstall(mixed.clone());
+        assert!(!hooks_installed(&removed, CLAUDE_HOOKS));
+        assert_eq!(
+            removed,
+            serde_json::json!({ "model": "opus", "hooks": {
+                "Stop": [their_stop],
+                "Notification": [their_notification]
+            } })
+        );
+        assert_eq!(hooks_with_uninstall(reinstalled), removed);
+
+        // deck's hook in a shared group is held to the spec like any other:
+        // a moved helper or a widened matcher is stale, and the repair keeps
+        // the user's hook
+        let mut moved = mixed.clone();
+        moved["hooks"]["Stop"][0]["hooks"][0]["command"] =
+            serde_json::json!("/Users/x/Applications/deck.app/Contents/MacOS/deck-status-helper");
+        assert!(!is_current(&moved));
+        let repaired = install(moved);
+        assert!(is_current(&repaired));
+        assert_eq!(repaired["hooks"]["Stop"][0], their_stop);
+        let mut wide = mixed.clone();
+        wide["hooks"]["Notification"][0]["matcher"] =
+            serde_json::json!("permission_prompt|idle_prompt");
+        assert!(!is_current(&wide));
+    }
+
+    /// Uninstall prunes what taking deck's hooks out emptied, and nothing
+    /// the user wrote empty.
+    #[test]
+    fn uninstall_leaves_what_the_user_wrote_empty() {
+        let user = serde_json::json!({ "hooks": { "PreToolUse": [], "Stop": [{ "hooks": [] }] } });
+        assert_eq!(hooks_with_uninstall(user.clone()), user);
+        let bare = serde_json::json!({ "hooks": {} });
+        assert_eq!(hooks_with_uninstall(bare.clone()), bare);
+        let installed = hooks_with_install(
+            user.clone(),
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER,
+        )
+        .unwrap();
+        assert!(hooks_installed(&installed, CLAUDE_HOOKS));
+        assert_eq!(hooks_with_uninstall(installed), user);
     }
 
     #[test]
