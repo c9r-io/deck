@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { channelAgentCommand, channelBlockReason, channelDigestId, channelRunExpired, channelSource, channelTemplatePlan, collectingCard, nextCollectedAt, normalizeChannelConfig, unfinishedChannelPlans } from '../js/channel-model.js';
+import { channelAgentCommand, channelBlockReason, channelDigestId, channelRunExpired, channelSource, channelTemplatePlan, collectingCard, createPendingNotices, nextCollectedAt, normalizeChannelConfig, unfinishedChannelPlans } from '../js/channel-model.js';
 
 const rule = { id: 'R1', enabled: true, channelIds: ['C1'], senderUserIds: ['U1'], senderBotIds: [],
   match: { kind: 'regex', value: 'INC-(?<incident>[0-9]+)', groupCapture: 'incident' }, includeThreads: true,
@@ -85,4 +85,31 @@ test('first-event identities and unfinished queue journals are deterministic acr
   assert.match(one, /^S[0-9a-f]{32}$/);
   const pending = { id: one, channelRun: { initialQueued: false, initialSteps: [{ operationId: 'B1', text: 'frozen' }] } };
   assert.deepEqual(unfinishedChannelPlans([pending, { channelRun: { initialQueued: true } }]), [pending]);
+});
+
+test('a pending event is announced once per run, a sentence once per drain, and never to a hidden page', () => {
+  const notices = createPendingNotices();
+  const drain = ids => notices.drain(new Set(ids));
+  drain(['e1', 'e2', 'e3']);
+  assert.equal(notices.tell('e1', 'no target', true), true);
+  assert.equal(notices.tell('e2', 'no target', true), false, 'the same sentence in the same drain is one toast');
+  assert.equal(notices.tell('e3', 'scratchpad full', true), true, 'another sentence is another toast');
+  drain(['e1', 'e2', 'e3']);
+  for (const id of ['e1', 'e2', 'e3']) assert.equal(notices.tell(id, 'no target', true), false, `${id} was announced`);
+  // a different reason for an announced event stays silent: once per event
+  assert.equal(notices.tell('e1', 'scratchpad full', true), false);
+  // a new event is new: it is announced, with a sentence already used in an earlier drain
+  drain(['e1', 'e2', 'e3', 'e4']);
+  assert.equal(notices.tell('e4', 'no target', true), true);
+  // hidden: nothing is shown and nothing is spent
+  drain(['e5']);
+  assert.equal(notices.tell('e5', 'no target', false), false);
+  drain(['e5']);
+  assert.equal(notices.tell('e5', 'no target', false), false);
+  drain(['e5']);
+  assert.equal(notices.tell('e5', 'no target', true), true, 'the first visible drain says it');
+  // an event that left the inbox is forgotten, so the set cannot outgrow the inbox
+  drain(['e6']);
+  drain(['e1', 'e6']);
+  assert.equal(notices.tell('e1', 'no target', true), true, 'e1 was forgotten when it left');
 });

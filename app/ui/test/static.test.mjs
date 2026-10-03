@@ -414,6 +414,18 @@ test('every view change leaves the session view first, and the tool slot closes 
     assert.match(workspace, new RegExp(`<section id="${id}" class="session-tool"`), `${id} is a right-hand session tool`);
 });
 
+test('every reason a channel event stays pending goes through the once-per-run notice', () => {
+  const inbound = read('app/ui/js/inbound.js');
+  const handle = inbound.slice(inbound.indexOf('async function handleChannel(item)'), inbound.indexOf('export async function drainChannel()'));
+  assert.ok(handle.length > 1000 && handle.length < 6000, 'handleChannel is where a channel event is placed or left pending');
+  assert.equal((handle.match(/\btoast\(/g) || []).length, 0, 'a direct toast here repeats at every drain');
+  // one notice per unacknowledged way out, each with its own sentence
+  assert.deepEqual((handle.match(/pendingNotice\(item, /g) || []).length, 6);
+  for (const key of ['expirySaveFailed', 'eventConflict', 'bufferFull', 'noTemplate', 'blockedCommand', 'blockedTemplate', 'noTarget', 'orphan', 'createFailed']) {
+    assert.ok(handle.includes(`'channel.${key}'`), key);
+  }
+});
+
 test('reminders poll the backend only while the Board has one', () => {
   const app = read('app/ui/js/app.js');
   const start = app.slice(app.indexOf('function startReminders()'), app.indexOf('const offerBoardExit'));

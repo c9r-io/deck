@@ -31,13 +31,18 @@
 // `firstSend: {rule}` into the plan; the head row alone claims it with the
 // event key, and the backend re-checks the claim against settings and its
 // own copy of the event. Clock runs use owner admission with their native slot.
+// A channel event that cannot be placed (its frozen target is gone or
+// blocked, the scratchpad is full, the card could not be created) is never
+// acknowledged: it stays in the inbox, every drain tries it again, and
+// Settings shows the pending count. Why is said once per run, not once per
+// drain (`pendingNotice`, channel-model.js `createPendingNotices`).
 import { ctx, genId, inv, listen, store, uev } from './state.js';
 import { provider } from './board.js';
 import { toast } from './dialogs.js';
 import { planInbound } from './pure.js';
 import { t } from './i18n.js';
 import { bufferLimitError, emptyBuffer, upsertExternal } from './buffer-model.js';
-import { channelBlockReason, channelDigestId, channelRunExpired, channelSource, channelTemplatePlan, collectingCard, unfinishedChannelPlans } from './channel-model.js';
+import { channelBlockReason, channelDigestId, channelRunExpired, channelSource, channelTemplatePlan, collectingCard, createPendingNotices, unfinishedChannelPlans } from './channel-model.js';
 import { expandHome, normalizeTemplateStep } from './pure.js';
 import { grantState } from './automation-model.js';
 
@@ -45,6 +50,13 @@ let draining = false;
 let again = false;
 let channelDraining = false;
 let channelAgain = false;
+const pendingNotices = createPendingNotices();
+
+/* the reason a channel event stays pending, shown once per run */
+function pendingNotice(item, key) {
+  const sentence = t(key);
+  if (pendingNotices.tell(item.id, sentence, !document.hidden)) toast(sentence);
+}
 
 async function reconcileInboundCard(card) {
   const plan = card.inboundPlan;
@@ -80,7 +92,7 @@ async function handleChannel(item) {
   for (const card of [...store.cards]) {
     if (channelRunExpired(card.channelRun, Math.floor(Date.now() / 1000))) {
       try { await provider.setChannelRun(card.id, card.channelRun.groupKey, { collecting: false }); }
-      catch (_) { toast(t('channel.expirySaveFailed')); return; }
+      catch (_) { pendingNotice(item, 'channel.expirySaveFailed'); return; }
     }
   }
   let card = collectingCard(store.cards, item);
@@ -88,8 +100,8 @@ async function handleChannel(item) {
   if (card) {
     const base = card.buffer || emptyBuffer();
     const added = upsertExternal(base, { id: entryId, text: item.body, source: channelSource(item), now: item.occurredAt * 1000 });
-    if (added.error === 'immutable') { toast(t('channel.eventConflict')); return; }
-    if (added.error || bufferLimitError(added.buffer)) { toast(t('channel.bufferFull')); return; }
+    if (added.error === 'immutable') { pendingNotice(item, 'channel.eventConflict'); return; }
+    if (added.error || bufferLimitError(added.buffer)) { pendingNotice(item, 'channel.bufferFull'); return; }
     if (!added.noop) {
       try { await provider.appendChannelEvent(card.id, base.revision || 0, item.groupKey, added.buffer, Math.floor(Date.now() / 1000)); }
       catch (_) { channelAgain = true; return; }
@@ -101,8 +113,8 @@ async function handleChannel(item) {
   const column = project?.columns.find(value => value.id === item.target.columnId);
   const plan = channelTemplatePlan(item, project, Math.floor(Date.now() / 1000));
   if (!project || !column || plan.error) {
-    toast(t({ template: 'channel.noTemplate', command: 'channel.blockedCommand',
-      'template-leading-message': 'channel.blockedTemplate' }[plan.error] || 'channel.noTarget'));
+    pendingNotice(item, { template: 'channel.noTemplate', command: 'channel.blockedCommand',
+      'template-leading-message': 'channel.blockedTemplate' }[plan.error] || 'channel.noTarget');
     return;
   }
   const operationIds = await Promise.all(plan.texts.map((_, index) => channelDigestId('B', `${item.operationKey}/step/${index}`)));
@@ -110,7 +122,7 @@ async function handleChannel(item) {
     mode: index ? 'chain' : 'at', at: index ? null : plan.at,
     tpl: plan.template, tplIdx: index + 1, tplTotal: plan.texts.length }));
   const added = upsertExternal(emptyBuffer(), { id: entryId, text: item.body, source: channelSource(item), now: item.occurredAt * 1000 });
-  if (added.error || bufferLimitError(added.buffer)) { toast(t('channel.bufferFull')); return; }
+  if (added.error || bufferLimitError(added.buffer)) { pendingNotice(item, 'channel.bufferFull'); return; }
   added.buffer.collecting = true;
   const id = await channelDigestId('S', item.operationKey);
   const channelRun = { groupKey: item.groupKey, firstEventId: item.eventId, connectionId: item.connectionId,
@@ -123,7 +135,7 @@ async function handleChannel(item) {
       desc: plan.template, origin: { source: 'channel', key: item.operationKey, badge: item.ruleId },
       buffer: added.buffer, channelRun }, { requireCreated: true }));
   } catch (error) {
-    toast(t(error?.stage === 'orphan' ? 'channel.orphan' : 'channel.createFailed'));
+    pendingNotice(item, error?.stage === 'orphan' ? 'channel.orphan' : 'channel.createFailed');
     return;
   }
   await ackChannel(item.id);
@@ -139,6 +151,7 @@ export async function drainChannel() {
       for (const card of unfinishedChannelPlans(store.cards)) await reconcileChannelCard(card);
       let items;
       try { items = await inv('channel_pending'); } catch (_) { return; }
+      pendingNotices.drain(new Set((items || []).map(item => item.id)));
       for (const item of items || []) await handleChannel(item);
     } while (channelAgain);
   } finally { channelDraining = false; }

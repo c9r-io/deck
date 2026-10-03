@@ -265,6 +265,27 @@ test('a hung optional Tunnel status cannot delay MCP client revoke', async () =>
   assert.ok(calls.some(([cmd, args]) => cmd === 'mcp_client_revoke' && args.clientId === 'client_live'));
 });
 
+test('Settings shows how many channel events are pending: the quiet place a once-told event stays visible', async () => {
+  const { renderInboundSettings } = await import('../js/settings.js');
+  const el = id => fakeDocument.getElementById(id);
+  ctx.settings = normalizeSettingsDoc({});
+  const status = { enabled: true, connected: true, tokenReady: true, pendingCount: 0, lastConnected: 1, gapSince: null, gapUnresolved: false, rejectedCount: 0, lastError: null };
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    if (cmd === 'inbound_status') return { sources: [] };
+    if (cmd === 'slack_connection_status') return null;
+    if (cmd === 'channel_status') return status;
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  await renderInboundSettings();
+  assert.doesNotMatch(el('set-channel-status').textContent, /pending/);
+  status.pendingCount = 2;
+  await renderInboundSettings();
+  assert.match(el('set-channel-status').textContent, / · 2 pending/);
+  status.pendingCount = 1234;
+  await renderInboundSettings();
+  assert.match(el('set-channel-status').textContent, / · 1,234 pending/);
+});
+
 test('MCP settings say when the authorization data could not be loaded and offer no control that would fail', async () => {
   const el = id => fakeDocument.getElementById(id);
   window.__TAURI__ = { core: { invoke: async cmd => {

@@ -98,6 +98,31 @@ export function normalizeChannelConfig(raw) {
   };
 }
 
+// Why a pending event could not be placed is said once per run. The event
+// stays in the inbox and Settings shows the count, so repeating the sentence
+// at every drain is noise. `tell(id, sentence, visible)` answers whether to
+// show it now: never twice for one event, once per drain for one sentence
+// however many events share it, and not at all while the page is hidden — a
+// toast nobody could see does not count, the next drain says it. `drain`
+// starts a pass and forgets events that left the inbox.
+export function createPendingNotices() {
+  const told = new Set();
+  let said = new Set();
+  return {
+    drain(pendingIds) {
+      said = new Set();
+      for (const id of told) if (!pendingIds.has(id)) told.delete(id);
+    },
+    tell(id, sentence, visible) {
+      if (!visible || told.has(id)) return false;
+      told.add(id);
+      if (said.has(sentence)) return false;
+      said.add(sentence);
+      return true;
+    },
+  };
+}
+
 export const channelRunExpired = (run, nowSecs) => !!run?.collecting
   && run.idleMinutes > 0 && run.lastCollectedAt + run.idleMinutes * 60 < nowSecs;
 

@@ -2943,15 +2943,29 @@ export async function verifyChannel() {
     const column = project.columns.find(value => value.semantic === 'working') || project.columns[0];
     const cardsBefore = store.cards.length;
     const queueBefore = (await inv('queue_list')).operations?.length || 0;
+    // Why they stay pending is said once per run, and only to a visible page:
+    // the two seeded events share one sentence, so the drain the seed's own
+    // `channel-changed` starts shows one toast, and the drains after it (the
+    // 60 s tick is this same call) show none.
+    await inv('smoke_native_input', { input: { kind: 'activate' } });
+    const visible = await waitFor(() => !document.hidden, 5000);
+    let notices = 0;
+    const counter = new MutationObserver(records => { for (const record of records) notices += record.addedNodes.length; });
+    counter.observe($('toasts'), { childList: true });
     const seeded = await inv('channel_smoke_seed', { projectId: project.id, columnId: column.id, scenario: 'dedupe' });
-    await drainChannel();
+    await waitFor(() => notices > 0, 3000);
+    await pause(300); // the app's own drain is over: the next two are not folded into it
+    await drainChannel(); await drainChannel();
+    await pause(100);
+    counter.disconnect();
     const pending = await inv('channel_pending');
     const queueAfter = (await inv('queue_list')).operations?.length || 0;
     const blockedOk = seeded.every(id => pending.some(item => item.id === id))
       && store.cards.length === cardsBefore && !store.cards.some(card => card.origin?.source === 'channel')
-      && queueAfter === queueBefore;
+      && queueAfter === queueBefore && visible && notices === 1;
     for (const id of seeded) await inv('channel_ack', { id });
-    await report('channel-route', blockedOk, pending.length, store.cards.length - cardsBefore);
+    // b: the pending notices shown (-1: the page stayed hidden, so none could count)
+    await report('channel-route', blockedOk, pending.length, visible ? notices : -1);
     await report('done', !smokeFailed, 1, 0);
   } catch (_) { await report('done', false, 0, 17); }
 }

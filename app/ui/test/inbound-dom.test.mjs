@@ -281,3 +281,92 @@ test('a legacy staged Channel inbox item drains without any Slack credentials', 
   assert.ok(calls.indexOf('channel_ack') > calls.indexOf('board-persist'), calls.join(','));
   assert.equal(store.cards[0].origin.source, 'channel');
 });
+
+/* ---------- a pending channel event that cannot be placed ---------- */
+const channelEvent = (n, target = {}) => ({ id: `default/T1/E${n}/rule`, operationKey: `channel:default/T1/E${n}/rule`,
+  groupKey: 'default/T1/C1/rule', connectionId: 'default', workspaceId: 'T1', eventId: `E${n}`, ruleId: 'rule',
+  channelId: 'C1', messageTs: `${n}.0`, occurredAt: Math.floor(Date.now() / 1000), senderUserId: 'U1', body: 'incident',
+  target: { projectId: 'P1', columnId: 'C1', dir: '/tmp', cmd: 'claude', template: 'triage', idleMinutes: 30, ...target } });
+function channelInbox(events) {
+  const inbox = { pending: events, acks: [], creates: 0 };
+  store.cards = [];
+  store.projects = [{ id: 'P1', columns: [{ id: 'C1' }], templates: [{ name: 'triage', steps: ['Inspect {{msg.text}}'] }] }];
+  provider.createStarted = async card => { inbox.creates += 1; const saved = { ...card, session: 'deck-test' }; store.cards.push(saved); return { card: saved }; };
+  provider.queueChannelPlan = async () => true;
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    if (cmd === 'channel_pending') return inbox.pending;
+    if (cmd === 'channel_ack') { inbox.acks.push(args.id); inbox.pending = inbox.pending.filter(event => event.id !== args.id); }
+  } } };
+  return inbox;
+}
+const toastTexts = () => fakeDocument.getElementById('toasts').children.map(el => el.textContent);
+
+test('a channel event whose target is gone is announced once per run and stays pending', async () => {
+  const { drainChannel } = await import('../js/inbound.js');
+  const inbox = channelInbox([channelEvent(101, { columnId: 'GONE' })]);
+  const before = toastTexts().length;
+  // boot, a `channel-changed`, and the 60 s tick are all this same call
+  await drainChannel(); await drainChannel(); await drainChannel();
+  const shown = toastTexts().slice(before);
+  assert.equal(shown.length, 1, shown.join(' | '));
+  assert.match(shown[0], /project or group is missing.*remains pending/);
+  assert.deepEqual([inbox.acks, inbox.pending.length, inbox.creates], [[], 1, 0], 'nothing acknowledged, nothing created');
+  // a later event of the same broken rule is news once; the first stays silent
+  inbox.pending = [...inbox.pending, channelEvent(102, { columnId: 'GONE' })];
+  await drainChannel(); await drainChannel();
+  assert.equal(toastTexts().length - before, 2);
+  assert.equal(inbox.pending.length, 2);
+});
+
+test('events that share a reason make one toast per drain; each closed reason has its sentence', async () => {
+  const { drainChannel } = await import('../js/inbound.js');
+  const inbox = channelInbox([
+    channelEvent(201, { columnId: 'GONE' }), channelEvent(202, { columnId: 'GONE' }), channelEvent(203, { columnId: 'GONE' }),
+    channelEvent(204, { template: 'missing' }), channelEvent(205, { cmd: 'claude;zsh' }),
+  ]);
+  const before = toastTexts().length;
+  await drainChannel();
+  const shown = toastTexts().slice(before);
+  assert.equal(shown.length, 3, shown.join(' | '));
+  assert.match(shown[0], /project or group is missing/);
+  assert.match(shown[1], /template is missing or empty/);
+  assert.match(shown[2], /blocked: use claude or codex/);
+  await drainChannel(); await drainChannel();
+  assert.equal(toastTexts().length - before, 3, 'every one of the five was announced by the first drain');
+  assert.deepEqual([inbox.acks, inbox.pending.length], [[], 5]);
+});
+
+test('a toast nobody could see is not counted: the first visible drain announces the event', async () => {
+  const { drainChannel } = await import('../js/inbound.js');
+  channelInbox([channelEvent(301, { columnId: 'GONE' })]);
+  const before = toastTexts().length;
+  fakeDocument.hidden = true;
+  try {
+    await drainChannel(); await drainChannel();
+    assert.equal(toastTexts().length - before, 0, 'hidden page: nothing shown');
+  } finally { fakeDocument.hidden = false; }
+  await drainChannel(); await drainChannel();
+  assert.equal(toastTexts().length - before, 1);
+});
+
+test('a card that cannot be created is announced once; the event is tried again at every drain', async () => {
+  const { drainChannel } = await import('../js/inbound.js');
+  const inbox = channelInbox([channelEvent(351)]);
+  let attempts = 0;
+  provider.createStarted = async () => { attempts += 1; throw Error('tmux'); };
+  const before = toastTexts().length;
+  await drainChannel(); await drainChannel(); await drainChannel();
+  const shown = toastTexts().slice(before);
+  assert.equal(shown.length, 1, shown.join(' | '));
+  assert.match(shown[0], /could not be created.*remains pending/);
+  assert.deepEqual([attempts, inbox.acks, inbox.pending.length], [3, [], 1], 'silence is not giving up');
+});
+
+test('a placeable channel event is created and acknowledged without a pending notice', async () => {
+  const { drainChannel } = await import('../js/inbound.js');
+  const inbox = channelInbox([channelEvent(401)]);
+  const before = toastTexts().length;
+  await drainChannel();
+  assert.deepEqual([inbox.acks, inbox.creates, inbox.pending.length], [['default/T1/E401/rule'], 1, 0]);
+  assert.equal(toastTexts().length - before, 0);
+});
