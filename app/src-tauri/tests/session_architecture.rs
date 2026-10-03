@@ -178,6 +178,95 @@ fn lifecycle_and_ledger_do_not_name_feature_modules() {
     }
 }
 
+/// What the scheduler names of the automation rule model (`inbound`), as a
+/// register that may only shrink. At 0.7.16 no scheduler file named
+/// `inbound`. Content authority (`authority.rs`) and the first-send readiness
+/// override (`first_send.rs`) each brought the rule, its settings reader and
+/// the pending event into the scheduler, a few references at a time, and the
+/// two modules now name each other. The two policies are independent and are
+/// not folded into one mechanism here (a third policy would be the moment).
+/// Until then: a file that is not listed may not name `inbound`, a listed
+/// file names it exactly as often as registered, and the number is lowered
+/// when a reference goes. A higher number, or a new row, needs its reason
+/// written here.
+const SCHEDULER_NAMES_INBOUND: &[(&str, usize, &str)] = &[
+    (
+        "scheduler/authority.rs",
+        3,
+        "the rule with its grant and the config; the pending event of a bounded step",
+    ),
+    (
+        "scheduler/first_send.rs",
+        1,
+        "the rule, the config and the pending event of a head row's claim",
+    ),
+    (
+        "scheduler/delivery.rs",
+        1,
+        "the type of the settings read handed to the pre-fire fences",
+    ),
+    (
+        "scheduler/ops.rs",
+        6,
+        "admission: the settings read, the pending event, the clock slot",
+    ),
+    (
+        "scheduler/thread.rs",
+        2,
+        "the tick's settings read for the revocation sweep and the fences",
+    ),
+    ("scheduler/review.rs", 1, "the queue view's settings read"),
+];
+
+#[test]
+fn the_scheduler_names_the_rule_model_only_where_registered() {
+    let sources = source_scan::production_sources();
+    let mut problems = Vec::new();
+    for (file, text) in sources
+        .iter()
+        .filter(|(file, _)| file.starts_with("scheduler/"))
+    {
+        let count = references(&code_only(text), "inbound");
+        match SCHEDULER_NAMES_INBOUND
+            .iter()
+            .find(|(name, _, _)| name == file)
+        {
+            None if count > 0 => problems.push(format!(
+                "{file} names `inbound` ({count}): what the scheduler takes from the automation \
+                 rule model is a closed register (SCHEDULER_NAMES_INBOUND). Reach it through a \
+                 file that is registered, or add a row that says why this file needs it"
+            )),
+            Some((_, registered, why)) if *registered != count => problems.push(format!(
+                "{file} names `inbound` {count} time(s), registered {registered} ({why}): lower \
+                 the number when a reference goes; a higher one needs its own reason"
+            )),
+            _ => {}
+        }
+    }
+    for (file, _, why) in SCHEDULER_NAMES_INBOUND {
+        if !sources.iter().any(|(name, _)| name == file) {
+            problems.push(format!(
+                "stale entry `{file}` ({why}): no such production file"
+            ));
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+    // the other direction: the rule model wakes the scheduler once a run's
+    // rows are queued, and names nothing else of it
+    let back: Vec<(String, usize)> = sources
+        .iter()
+        .filter(|(file, _)| file.starts_with("inbound"))
+        .map(|(file, text)| (file.clone(), references(&code_only(text), "scheduler")))
+        .filter(|(_, count)| *count > 0)
+        .collect();
+    assert_eq!(
+        back,
+        [("inbound.rs".to_string(), 1)],
+        "the automation rule model names the scheduler once, to wake it"
+    );
+    assert!(code_only(&source("inbound.rs")).contains("crate::scheduler::wake_scheduler();"));
+}
+
 /// What the typed-documents door may name, as a closed list: the
 /// infrastructure underneath it, two closed vocabularies it validates
 /// against, and the delegations it makes to feature modules. A module that is
