@@ -84,6 +84,28 @@
 //! Local-command failures are stable machine codes (`mcp-*`) the webview maps
 //! to one sentence each.
 //!
+//! An unreadable ledger — damaged, written by a deck this build does not
+//! understand, or one whose boot-time save failed — is an error from the one
+//! load (`spawn`) to the end of the run: no socket, every tool
+//! `FEATURE_DISABLED`, no write, no runner started, mcp.json untouched, and
+//! `mcp_status` answers `unavailable` so Settings can say why. It must not
+//! take the other terminals with it. The guards other modules call —
+//! `guard_terminal_input` (every terminal-input path and the Connector's
+//! pane read) and `guard_server_restart` — then decide from the panes
+//! themselves (`RunnerPanes`): such a run cannot start a runner, so ONE tmux
+//! pane listing finds every runner pane there will be, namely the panes
+//! whose root process is the bundled runner (argv[0] through libproc, no
+//! spawn). Those sessions, and any whose root process cannot be identified,
+//! stay refused and are looked at again through libproc alone; every other
+//! session, including one created later, is not MCP's to fence. A server
+//! restart goes ahead only when none is left. Until a listing has succeeded
+//! nothing is known and both guards refuse. The input guard is asked per
+//! keystroke, so on one session's behalf it asks again for a listing that
+//! failed at most once a second. That pause holds nobody else back: before
+//! the first session exists tmux has no pane to list, and neither a status
+//! read nor another session's failure there may cost the next session its
+//! first input.
+//!
 //! Runner errors (`runner::RUNNER_ERRORS`, held to
 //! `mcp-fixtures/runner-errors.json`): an error the runner gives before any
 //! job process could start or any input byte could be written is a

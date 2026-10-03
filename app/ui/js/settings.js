@@ -761,12 +761,24 @@ export async function renderConnectorSettings() {
 export async function renderMcpSettings() {
   let status = null;
   try { status = await inv('mcp_status'); } catch (_) {}
-  $('set-mcp-status').textContent = t(status?.enabled ? 'mcp.on' : 'mcp.off');
+  /* The authorization data could not be loaded in this run: MCP stays off
+     and nothing here can change that, so the row says why instead of
+     offering controls that would fail. Ordinary terminals are unaffected
+     (mcp/mod.rs). */
+  const unavailable = status?.unavailable === true;
+  $('set-mcp-status').textContent = t(unavailable ? 'mcp.unavailable' : status?.enabled ? 'mcp.on' : 'mcp.off');
   $('set-mcp-toggle').textContent = t(status?.enabled ? 'mcp.disable' : 'mcp.enable');
   $('set-mcp-toggle').dataset.enabled = String(status?.enabled === true);
-  $('set-mcp-add').disabled = !status?.enabled;
+  $('set-mcp-toggle').disabled = unavailable;
+  $('set-mcp-add').disabled = unavailable || !status?.enabled;
+  $('set-mcp-retention').disabled = unavailable;
   $('set-mcp-retention').value = String(status?.outputRetentionMs || 24 * 60 * 60 * 1000);
   const clients = $('set-mcp-clients'); clients.replaceChildren();
+  if (unavailable) {
+    const note = document.createElement('div'); note.className = 'set-hint';
+    note.textContent = t('mcp.unavailableHint');
+    clients.appendChild(note);
+  }
   for (const client of status?.clients || []) {
     const row = document.createElement('div'); row.className = 'set-row mcp-client-row';
     const details = document.createElement('div'); details.className = 'mcp-client-details';

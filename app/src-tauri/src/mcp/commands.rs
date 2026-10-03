@@ -12,6 +12,10 @@ pub(crate) struct StatusView {
     pub(super) socket_ready: bool,
     pub(super) clients: Vec<ClientView>,
     pub(super) output_retention_ms: u64,
+    /// The ledger could not be loaded in this run: MCP stays off and no
+    /// command here can change that (absent from the answer otherwise).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(super) unavailable: bool,
 }
 
 #[derive(Serialize)]
@@ -26,9 +30,14 @@ pub(crate) struct ClientView {
 
 #[tauri::command]
 pub(crate) fn mcp_status() -> Result<StatusView, DeckError> {
-    let runtime = runtime()?;
+    Ok(status_of(runtime()?))
+}
+
+/// What Settings shows. A ledger that could not be loaded is an answer, not
+/// an error: `unavailable`, with nothing enabled and no client listed.
+pub(super) fn status_of(runtime: &Runtime) -> StatusView {
     let emergency = runtime.emergency.lock_or_recover();
-    runtime.read(|doc| StatusView {
+    let loaded = runtime.read(|doc| StatusView {
         enabled: doc.config.enabled && !emergency.disabled,
         socket_ready: runtime.socket.exists(),
         output_retention_ms: doc.config.output_retention_ms,
@@ -44,6 +53,14 @@ pub(crate) fn mcp_status() -> Result<StatusView, DeckError> {
                 projects: client.projects.clone(),
             })
             .collect(),
+        unavailable: false,
+    });
+    loaded.unwrap_or(StatusView {
+        enabled: false,
+        socket_ready: false,
+        clients: Vec::new(),
+        output_retention_ms: DEFAULT_OUTPUT_RETENTION_MS,
+        unavailable: true,
     })
 }
 
@@ -1485,19 +1502,151 @@ pub(super) fn session_ui(runtime: &Runtime, card_id: String) -> Result<SessionUi
     })
 }
 
-/// All ordinary Deck terminal-input paths call this before writing. A managed
-/// runner also discards pane stdin while MCP owns control, closing the check /
-/// write race for keyboard input already queued at takeover.
+/// How the root process of a tmux pane looks to libproc (`pane_root`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PaneRoot {
+    /// the pane runner
+    Runner,
+    /// any other program
+    Ordinary,
+    /// no such process: the pane has ended
+    Gone,
+    /// a process that cannot be identified
+    Unknown,
+}
+
+/// What the guards use when the ledger cannot be read: every pane's session
+/// and root pid from ONE tmux listing, what a root process is, and a clock
+/// that only moves forward (ms) to pace the input guard after a listing
+/// that failed.
+pub(super) struct PaneFacts<'a> {
+    pub(super) list: &'a dyn Fn() -> Result<Vec<(String, u32)>, DeckError>,
+    pub(super) root: &'a dyn Fn(u32) -> PaneRoot,
+    pub(super) now: &'a dyn Fn() -> u64,
+}
+
+/// The runner panes of a run whose ledger could not be read. The ledger is
+/// loaded once (`spawn`) and `mcp_start_session` needs it, so such a run
+/// never starts a runner: every runner pane already existed, ONE pane
+/// listing finds them all, and a session that appears later is not one.
+pub(super) struct RunnerPanes {
+    /// Sessions whose pane root was, or may have been, a runner at the one
+    /// listing, with those pids; `None` until a listing has succeeded.
+    suspects: Option<HashMap<String, Vec<u32>>>,
+    /// The session the input guard last could not get a listing for, and
+    /// the earliest time it asks again on that session's behalf.
+    retry: Option<(String, u64)>,
+}
+
+/// On one session's behalf, the input guard asks again for a listing that
+/// failed no sooner than this.
+const LIST_RETRY_MS: u64 = 1_000;
+
+/// A root process that is no runner: another program, or none at all.
+fn cleared(root: PaneRoot) -> bool {
+    matches!(root, PaneRoot::Ordinary | PaneRoot::Gone)
+}
+
+impl RunnerPanes {
+    pub(super) const fn new() -> Self {
+        Self {
+            suspects: None,
+            retry: None,
+        }
+    }
+
+    /// The suspects of this run, from one pane listing. `Err`: the panes
+    /// could not be listed, so nothing is known yet.
+    fn suspects(&mut self, facts: &PaneFacts<'_>) -> Result<&mut HashMap<String, Vec<u32>>, ()> {
+        if self.suspects.is_none() {
+            let rows = (facts.list)().map_err(|_| ())?;
+            let mut suspects: HashMap<String, Vec<u32>> = HashMap::new();
+            for (session, pid) in rows {
+                if !cleared((facts.root)(pid)) {
+                    suspects.entry(session).or_default().push(pid);
+                }
+            }
+            self.suspects = Some(suspects);
+        }
+        self.suspects.as_mut().ok_or(())
+    }
+
+    /// Whether `session` holds, or may hold, a runner. A suspect is looked
+    /// at again through libproc alone and dropped once no runner is left.
+    /// This is asked per keystroke, so a listing that failed is not asked
+    /// for again at once on the same session's behalf. That pause holds
+    /// nobody else back: not another session (a phone reading a stopped card
+    /// while tmux has no pane yet) and not a status read (`any_runner`),
+    /// which finds no tmux server before the first session exists. Either
+    /// would cost the session created next its first second of input.
+    fn may_hold_runner(&mut self, session: &str, facts: &PaneFacts<'_>) -> Result<bool, ()> {
+        let paused = |retry: &(String, u64)| retry.0 == session && (facts.now)() < retry.1;
+        if self.suspects.is_none() && self.retry.as_ref().is_some_and(paused) {
+            return Err(());
+        }
+        let Ok(suspects) = self.suspects(facts) else {
+            let again = (facts.now)().saturating_add(LIST_RETRY_MS);
+            self.retry = Some((session.to_string(), again));
+            return Err(());
+        };
+        let Some(pids) = suspects.get(session) else {
+            return Ok(false);
+        };
+        if pids.iter().all(|pid| cleared((facts.root)(*pid))) {
+            suspects.remove(session);
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// Whether any session holds, or may hold, a runner. Asked by a status
+    /// read or a restart, never per keystroke: no pause, and none started.
+    fn any_runner(&mut self, facts: &PaneFacts<'_>) -> Result<bool, ()> {
+        let suspects = self.suspects(facts)?;
+        suspects.retain(|_, pids| !pids.iter().all(|pid| cleared((facts.root)(*pid))));
+        Ok(!suspects.is_empty())
+    }
+}
+
+/// All ordinary Deck terminal-input paths call this before writing, and the
+/// Connector before it reads a pane. A managed runner also discards pane
+/// stdin while MCP owns control, closing the check / write race for keyboard
+/// input already queued at takeover.
+///
+/// A ledger that could not be read answers for no session, and MCP itself
+/// stays closed (`route`, `socket_should_listen`). That must not take every
+/// terminal with it: a session is then refused only while it is, or may be,
+/// a runner pane (`RunnerPanes`) — proved from the pane's root process, never
+/// assumed. Every other session is not MCP's to fence.
 pub(crate) fn guard_terminal_input(tmux_session: &str) -> Result<(), DeckError> {
     let Some(runtime) = RUNTIME.get() else {
         return Ok(());
     };
-    let session = runtime.read(|doc| {
+    with_live_panes(runtime, |facts| {
+        guard_terminal_input_at(runtime, tmux_session, facts, &RUNNER_PANES)
+    })
+}
+
+pub(super) fn guard_terminal_input_at(
+    runtime: &Runtime,
+    tmux_session: &str,
+    facts: &PaneFacts<'_>,
+    panes: &Mutex<RunnerPanes>,
+) -> Result<(), DeckError> {
+    let session = match runtime.read(|doc| {
         doc.sessions
             .iter()
             .find(|session| session.tmux_session == tmux_session)
             .map(|session| (session.session_id.clone(), session.human_lock))
-    })?;
+    }) {
+        Ok(session) => session,
+        Err(unreadable) => {
+            return match panes.lock_or_recover().may_hold_runner(tmux_session, facts) {
+                Ok(false) => Ok(()),
+                Ok(true) | Err(()) => Err(unreadable),
+            }
+        }
+    };
     match session {
         None | Some((_, true)) => Ok(()),
         // A takeover whose state write failed still hands the keyboard over
@@ -1512,6 +1661,46 @@ pub(crate) fn guard_terminal_input(tmux_session: &str) -> Result<(), DeckError> 
             Ok(())
         }
         Some(_) => Err(DeckError::new(ErrorKind::Perm, "MCP owns terminal control")),
+    }
+}
+
+/// What this run knows about its runner panes; both guards share it.
+static RUNNER_PANES: Mutex<RunnerPanes> = Mutex::new(RunnerPanes::new());
+
+/// tmux, libproc and this run's clock.
+fn with_live_panes<T>(runtime: &Runtime, run: impl FnOnce(&PaneFacts<'_>) -> T) -> T {
+    run(&PaneFacts {
+        list: &list_pane_roots,
+        root: &pane_root,
+        now: &|| runtime.monotonic_ms(),
+    })
+}
+
+/// The file name `grants::runner_program` gives the bundled runner. tmux
+/// execs it as the pane's own process, so it is that process's argv[0].
+pub(super) const RUNNER_NAME: &str = "deck-mcp-runner";
+
+fn list_pane_roots() -> Result<Vec<(String, u32)>, DeckError> {
+    Ok(crate::tmux::list_panes()?
+        .into_iter()
+        .map(|row| (row.session_name, row.pane_pid))
+        .collect())
+}
+
+/// What the process `pid` is, from its argv[0] alone; a pid that has no
+/// argv[0] to read is gone only when libproc finds no such process.
+pub(super) fn pane_root(pid: u32) -> PaneRoot {
+    match crate::procinfo::argv0(pid) {
+        Some(argv0)
+            if Path::new(&argv0)
+                .file_name()
+                .is_some_and(|name| name == RUNNER_NAME) =>
+        {
+            PaneRoot::Runner
+        }
+        Some(_) => PaneRoot::Ordinary,
+        None if crate::procinfo::process(pid).is_none() => PaneRoot::Gone,
+        None => PaneRoot::Unknown,
     }
 }
 
@@ -1559,12 +1748,25 @@ pub(crate) fn stop_managed_jobs(tmux_session: &str) {
 
 /// Managed runner panes cannot be reconstructed by ordinary shell restore.
 /// This provider exposes only bounded identifiers from the durable ledger.
+/// Without a readable ledger the sessions cannot be named: the restart goes
+/// ahead only when no pane root is, or may be, a runner (`RunnerPanes`), and
+/// is refused as before while one lives.
 pub(crate) fn guard_server_restart() -> Result<Vec<crate::tmux_lifecycle::RestartBlocker>, DeckError>
 {
     let Some(runtime) = RUNTIME.get() else {
         return Ok(Vec::new());
     };
-    runtime.read(|doc| {
+    with_live_panes(runtime, |facts| {
+        guard_server_restart_at(runtime, facts, &RUNNER_PANES)
+    })
+}
+
+pub(super) fn guard_server_restart_at(
+    runtime: &Runtime,
+    facts: &PaneFacts<'_>,
+    panes: &Mutex<RunnerPanes>,
+) -> Result<Vec<crate::tmux_lifecycle::RestartBlocker>, DeckError> {
+    let listed = runtime.read(|doc| {
         doc.sessions
             .iter()
             .map(|session| crate::tmux_lifecycle::RestartBlocker {
@@ -1573,5 +1775,12 @@ pub(crate) fn guard_server_restart() -> Result<Vec<crate::tmux_lifecycle::Restar
                 card_id: session.card_id.clone(),
             })
             .collect()
-    })
+    });
+    match listed {
+        Ok(blockers) => Ok(blockers),
+        Err(unreadable) => match panes.lock_or_recover().any_runner(facts) {
+            Ok(false) => Ok(Vec::new()),
+            Ok(true) | Err(()) => Err(unreadable),
+        },
+    }
 }

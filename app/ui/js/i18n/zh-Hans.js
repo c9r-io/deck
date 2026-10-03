@@ -964,6 +964,8 @@ const dictionary = {
   'mcp.disable': '停用',
   'mcp.on': '已启用 · 仅本地 socket',
   'mcp.off': '已关闭',
+  'mcp.unavailable': '不可用',
+  'mcp.unavailableHint': 'Deck 这次启动没能载入 MCP 的授权数据，MCP 终端控制保持关闭，文件没有被改动。普通终端不受影响。重新启动或更新 Deck 可能恢复。',
   'mcp.add': '授权 MCP 客户端…',
   'mcp.authorizeTitle': '授权 MCP 客户端',
   'mcp.clientName': '为此 MCP 客户端命名',

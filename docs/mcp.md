@@ -311,7 +311,13 @@ session ends; per-job memory is bounded. Closing a card removes its session,
 job bindings and grants; the journal retires records as described under the
 exact replay window, keeps at most 64 job bindings per session and one live
 execution grant per session, and bounds each client's share. Corrupt and
-future-version MCP configuration fails closed. State schema v6 is distinct
+future-version MCP configuration fails closed: MCP stays off for that Deck
+run (no socket, every tool refused, Settings shows it as unavailable) and
+`mcp.json` is left untouched. Ordinary terminals keep working. Without the
+ledger Deck lists the tmux panes once, treats a session whose pane process is
+the managed runner as MCP's and keeps refusing terminal input to it, and
+treats every other session as it would without MCP; restarting the tmux
+server is refused while such a runner lives. State schema v6 is distinct
 from Deck control protocol v5 and from the MCP standard version negotiated by
 the SDK. v3/v4/v5 state upgrades in place to v6: control/create sequences are
 added at 0; legacy `allowShell` fields are accepted but ignored and omitted on

@@ -265,6 +265,38 @@ test('a hung optional Tunnel status cannot delay MCP client revoke', async () =>
   assert.ok(calls.some(([cmd, args]) => cmd === 'mcp_client_revoke' && args.clientId === 'client_live'));
 });
 
+test('MCP settings say when the authorization data could not be loaded and offer no control that would fail', async () => {
+  const el = id => fakeDocument.getElementById(id);
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    if (cmd === 'mcp_status') return { enabled: false, socketReady: false, clients: [], outputRetentionMs: 86_400_000, unavailable: true };
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  await renderMcpSettings();
+  assert.equal(el('set-mcp-status').textContent, 'unavailable');
+  assert.deepEqual([el('set-mcp-toggle').disabled, el('set-mcp-add').disabled, el('set-mcp-retention').disabled], [true, true, true]);
+  const note = el('set-mcp-clients').children;
+  assert.equal(note.length, 1);
+  assert.equal(note[0].className, 'set-hint');
+  assert.match(note[0].textContent, /MCP terminal control stays off.*file was left untouched.*Ordinary terminals are not affected.*Restarting or updating Deck/);
+  assert.doesNotMatch(note[0].textContent, /mcp\.json|ledger|runner/, 'no internal names');
+
+  // a ledger that loads again: the row and its controls are as before
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    if (cmd === 'mcp_status') return { enabled: false, socketReady: false, clients: [], outputRetentionMs: 86_400_000 };
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  await renderMcpSettings();
+  assert.equal(el('set-mcp-status').textContent, 'off');
+  assert.deepEqual([el('set-mcp-toggle').disabled, el('set-mcp-add').disabled, el('set-mcp-retention').disabled], [false, true, false]);
+  assert.equal(el('set-mcp-clients').children.length, 0);
+
+  // a status that cannot be fetched at all stays what it was: off, enable offered
+  window.__TAURI__ = { core: { invoke: async () => { throw new Error('ipc'); } } };
+  await renderMcpSettings();
+  assert.equal(el('set-mcp-status').textContent, 'off');
+  assert.equal(el('set-mcp-toggle').disabled, false);
+});
+
 test('Tunnel actions expose stopped state and suppress double activation while pending', async () => {
   let starts = 0;
   window.__TAURI__ = { core: { invoke: async cmd => {

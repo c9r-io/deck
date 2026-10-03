@@ -965,6 +965,8 @@ const dictionary = {
   'mcp.disable': 'Disable',
   'mcp.on': 'enabled · local socket only',
   'mcp.off': 'off',
+  'mcp.unavailable': 'unavailable',
+  'mcp.unavailableHint': 'Deck could not load its MCP authorization data at this launch, so MCP terminal control stays off; the file was left untouched. Ordinary terminals are not affected. Restarting or updating Deck may restore it.',
   'mcp.add': 'Authorize MCP client…',
   'mcp.authorizeTitle': 'Authorize MCP client',
   'mcp.clientName': 'Name this MCP client',

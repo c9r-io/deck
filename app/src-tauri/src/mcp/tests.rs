@@ -919,6 +919,428 @@ fn corrupt_or_extended_state_fails_closed() {
     std::fs::remove_dir(root).unwrap();
 }
 
+// ---------- an unreadable ledger: ordinary sessions keep their terminal ----------
+
+/// The runtime `spawn` builds when mcp.json could not be loaded.
+fn unreadable_runtime(tag: &str) -> (Runtime, PathBuf) {
+    let root = test_root(tag);
+    let path = root.join("mcp.json");
+    // written by a deck this build does not understand
+    std::fs::write(
+        &path,
+        br#"{"version":99,"config":{"enabled":true,"clients":[]},"sessions":[],"operations":[],"jobs":[]}"#,
+    )
+    .unwrap();
+    let doc = load(&path);
+    assert!(doc.is_err());
+    let runtime = Runtime {
+        app: None,
+        path,
+        socket: root.join("control.sock"),
+        doc: Mutex::new(doc),
+        io: Mutex::new(()),
+        delivery: Mutex::new(()),
+        emergency: Mutex::new(EmergencyFences::default()),
+        service_instance: "svc_unreadable".into(),
+        runner_auth: Mutex::new(HashMap::new()),
+        started: Instant::now(),
+    };
+    (runtime, root)
+}
+
+/// tmux, libproc and the clock for a test: the pane listing (`None`: tmux
+/// does not answer), how each root process looks (absent: gone), how often
+/// the listing was asked for, and the time.
+struct FakePanes {
+    listing: std::cell::RefCell<Option<Vec<(String, u32)>>>,
+    roots: std::cell::RefCell<HashMap<u32, PaneRoot>>,
+    listed: std::cell::Cell<usize>,
+    clock: std::cell::Cell<u64>,
+}
+
+impl FakePanes {
+    fn new(listing: &[(&str, u32)], roots: &[(u32, PaneRoot)]) -> Self {
+        Self {
+            listing: std::cell::RefCell::new(Some(
+                listing
+                    .iter()
+                    .map(|(session, pid)| (session.to_string(), *pid))
+                    .collect(),
+            )),
+            roots: std::cell::RefCell::new(roots.iter().copied().collect()),
+            listed: std::cell::Cell::new(0),
+            clock: std::cell::Cell::new(0),
+        }
+    }
+
+    fn with<T>(&self, run: impl FnOnce(&PaneFacts<'_>) -> T) -> T {
+        let list = || {
+            self.listed.set(self.listed.get() + 1);
+            self.listing
+                .borrow()
+                .clone()
+                .ok_or_else(|| DeckError::new(ErrorKind::Tmux, "no server"))
+        };
+        let root = |pid: u32| {
+            self.roots
+                .borrow()
+                .get(&pid)
+                .copied()
+                .unwrap_or(PaneRoot::Gone)
+        };
+        run(&PaneFacts {
+            list: &list,
+            root: &root,
+            now: &|| self.clock.get(),
+        })
+    }
+}
+
+/// Without the ledger, one pane listing tells which sessions are runner
+/// panes: those stay refused, every other session keeps its keyboard,
+/// deliveries and reads — also a session created afterwards, since a run
+/// with an unreadable ledger cannot start a runner. A refused session is
+/// looked at again through libproc alone and released once no runner is left
+/// in it.
+#[test]
+fn an_unreadable_ledger_refuses_only_the_sessions_that_may_be_runner_panes() {
+    let (runtime, root) = unreadable_runtime("unreadable-input");
+    let panes = Mutex::new(RunnerPanes::new());
+    let tmux = FakePanes::new(
+        &[
+            ("ordinary", 100),
+            ("managed", 200),
+            ("split", 300),
+            ("split", 301),
+            ("unknown", 400),
+            ("ended", 500),
+        ],
+        &[
+            (100, PaneRoot::Ordinary),
+            (200, PaneRoot::Runner),
+            (300, PaneRoot::Ordinary),
+            (301, PaneRoot::Runner),
+            (400, PaneRoot::Unknown),
+        ],
+    );
+    let guard = |session: &str| {
+        tmux.with(|facts| guard_terminal_input_at(&runtime, session, facts, &panes))
+    };
+    assert!(guard("ordinary").is_ok());
+    for refused in ["managed", "split", "unknown"] {
+        assert_eq!(
+            guard(refused).unwrap_err().kind(),
+            ErrorKind::Recovery,
+            "{refused}"
+        );
+    }
+    assert!(
+        guard("ended").is_ok(),
+        "a root process that is gone is no runner"
+    );
+    assert!(
+        guard("created-later").is_ok(),
+        "this run cannot have started a runner in it"
+    );
+    assert_eq!(tmux.listed.get(), 1, "one listing serves the whole run");
+
+    tmux.roots.borrow_mut().remove(&200); // the managed card was closed
+    tmux.roots.borrow_mut().insert(400, PaneRoot::Ordinary);
+    assert!(guard("managed").is_ok());
+    assert!(guard("unknown").is_ok());
+    assert!(
+        guard("split").is_err(),
+        "one of its panes still is a runner"
+    );
+    assert_eq!(tmux.listed.get(), 1);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// No listing, no proof: input stays refused, and a listing that failed is
+/// asked for again at most once a second.
+#[test]
+fn an_unreadable_ledger_refuses_input_until_the_panes_could_be_listed() {
+    let (runtime, root) = unreadable_runtime("unreadable-listing");
+    let panes = Mutex::new(RunnerPanes::new());
+    let tmux = FakePanes::new(&[("ordinary", 100)], &[(100, PaneRoot::Ordinary)]);
+    let answer = tmux.listing.borrow_mut().take();
+    let guard = |session: &str| {
+        tmux.with(|facts| guard_terminal_input_at(&runtime, session, facts, &panes))
+    };
+    assert!(guard("ordinary").is_err());
+    assert!(guard("ordinary").is_err());
+    assert_eq!(tmux.listed.get(), 1, "not repeated on every keystroke");
+    tmux.clock.set(1_000);
+    assert!(guard("ordinary").is_err());
+    assert_eq!(tmux.listed.get(), 2);
+    *tmux.listing.borrow_mut() = answer;
+    tmux.clock.set(1_999);
+    assert!(guard("ordinary").is_err(), "still within the pause");
+    tmux.clock.set(2_000);
+    assert!(guard("ordinary").is_ok());
+    assert!(guard("ordinary").is_ok());
+    assert_eq!(tmux.listed.get(), 3);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A server restart kills every pane. Without the ledger it goes ahead only
+/// when no pane root is, or may be, a runner; the sessions cannot be named
+/// as blockers, so the restart is refused as before while one lives.
+#[test]
+fn an_unreadable_ledger_allows_a_server_restart_only_without_a_live_runner() {
+    let (runtime, root) = unreadable_runtime("unreadable-restart");
+    let panes = Mutex::new(RunnerPanes::new());
+    let tmux = FakePanes::new(
+        &[("ordinary", 100), ("managed", 200)],
+        &[(100, PaneRoot::Ordinary), (200, PaneRoot::Runner)],
+    );
+    let restart = |panes: &Mutex<RunnerPanes>| {
+        tmux.with(|facts| guard_server_restart_at(&runtime, facts, panes))
+    };
+    assert_eq!(restart(&panes).unwrap_err().kind(), ErrorKind::Recovery);
+    tmux.roots.borrow_mut().remove(&200); // the managed card was closed
+    assert!(restart(&panes).unwrap().is_empty());
+    assert_eq!(tmux.listed.get(), 1);
+
+    let unlisted = Mutex::new(RunnerPanes::new());
+    tmux.listing.borrow_mut().take();
+    assert!(restart(&unlisted).is_err(), "unknown is not a restart");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The pause after a listing that failed holds back only the session it was
+/// asked for. Before the first session exists tmux has no pane to list, so a
+/// status read (at boot, or when Settings opens) and a phone reading a
+/// stopped card both fail there; neither may cost the session created next
+/// its first second of input.
+#[test]
+fn an_unreadable_ledger_pauses_only_the_session_whose_listing_failed() {
+    let (runtime, root) = unreadable_runtime("unreadable-pause");
+    let tmux = FakePanes::new(&[("ordinary", 100)], &[(100, PaneRoot::Ordinary)]);
+    let guard = |session: &str, panes: &Mutex<RunnerPanes>| {
+        tmux.with(|facts| guard_terminal_input_at(&runtime, session, facts, panes))
+    };
+    let input = |panes: &Mutex<RunnerPanes>| guard("ordinary", panes);
+    let status = |panes: &Mutex<RunnerPanes>| {
+        tmux.with(|facts| guard_server_restart_at(&runtime, facts, panes))
+    };
+
+    let panes = Mutex::new(RunnerPanes::new());
+    let answer = tmux.listing.borrow_mut().take(); // no tmux server yet
+    assert!(status(&panes).is_err());
+    assert!(status(&panes).is_err());
+    assert_eq!(tmux.listed.get(), 2, "a status read asks each time");
+    *tmux.listing.borrow_mut() = answer; // the first session was created
+    assert!(
+        input(&panes).is_ok(),
+        "at the same instant: no pause started"
+    );
+    assert_eq!(tmux.listed.get(), 3);
+    assert!(status(&panes).unwrap().is_empty());
+    assert_eq!(
+        tmux.listed.get(),
+        3,
+        "one listing that succeeded serves the run"
+    );
+
+    // the other way round: the input guard's own pause holds no status read
+    // back, and the listing that read gets serves the input guard at once
+    let paused = Mutex::new(RunnerPanes::new());
+    let answer = tmux.listing.borrow_mut().take();
+    assert!(input(&paused).is_err());
+    *tmux.listing.borrow_mut() = answer;
+    assert!(input(&paused).is_err(), "within its own pause");
+    assert_eq!(tmux.listed.get(), 4);
+    assert!(status(&paused).unwrap().is_empty());
+    assert!(input(&paused).is_ok());
+    assert_eq!(tmux.listed.get(), 5);
+
+    // and another session's failed listing holds nobody else back
+    let phone = Mutex::new(RunnerPanes::new());
+    let answer = tmux.listing.borrow_mut().take();
+    assert!(guard("a-stopped-card", &phone).is_err());
+    assert!(guard("a-stopped-card", &phone).is_err());
+    assert_eq!(tmux.listed.get(), 6, "paused for that session");
+    *tmux.listing.borrow_mut() = answer;
+    assert!(input(&phone).is_ok(), "and for no other");
+    assert_eq!(tmux.listed.get(), 7);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The unreadable ledger still authorizes nothing: no socket, every tool
+/// refused, no write, and mcp.json exactly as it was. The local status says
+/// "unavailable" instead of failing, so Settings can say why.
+#[test]
+fn an_unreadable_ledger_keeps_mcp_closed_and_says_so() {
+    let (runtime, root) = unreadable_runtime("unreadable-closed");
+    let before = std::fs::read(&runtime.path).unwrap();
+    assert!(!socket_should_listen(&runtime));
+    for tool in CONTROL_TOOLS {
+        assert_eq!(
+            route(&runtime, request(tool, json!({})))["error"]["code"],
+            "FEATURE_DISABLED",
+            "{tool}"
+        );
+    }
+    assert!(runtime
+        .write(|doc| {
+            doc.config.enabled = true;
+            Ok(())
+        })
+        .is_err());
+    assert_eq!(
+        serde_json::to_value(status_of(&runtime)).unwrap(),
+        json!({
+            "enabled": false,
+            "socketReady": false,
+            "clients": [],
+            "outputRetentionMs": DEFAULT_OUTPUT_RETENTION_MS,
+            "unavailable": true,
+        })
+    );
+    assert_eq!(std::fs::read(&runtime.path).unwrap(), before);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A ledger that loads is the whole answer: tmux and libproc are never
+/// asked, and the status carries no "unavailable".
+#[test]
+fn a_readable_ledger_never_asks_for_the_pane_listing() {
+    let (runtime, _runner, root) = fixture("readable-guard", "svc_test");
+    let panes = Mutex::new(RunnerPanes::new());
+    let facts = PaneFacts {
+        list: &|| panic!("the pane listing was asked for"),
+        root: &|_| panic!("a pane root was looked up"),
+        now: &|| panic!("the clock was read"),
+    };
+    assert!(guard_terminal_input_at(&runtime, "an-ordinary-session", &facts, &panes).is_ok());
+    assert_eq!(
+        guard_terminal_input_at(&runtime, "deck-mcp-test", &facts, &panes)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Perm
+    );
+    assert_eq!(
+        guard_server_restart_at(&runtime, &facts, &panes)
+            .unwrap()
+            .len(),
+        1
+    );
+    let status = serde_json::to_value(status_of(&runtime)).unwrap();
+    assert_eq!(status["enabled"], true);
+    assert!(status.get("unavailable").is_none());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A pane's root process is a runner by the file name of its argv[0] — the
+/// name `runner_program` gives the bundled binary — read through libproc.
+#[test]
+fn a_pane_root_is_a_runner_by_the_file_name_of_its_argv0() {
+    use std::os::unix::process::CommandExt;
+    assert_eq!(pane_root(std::process::id()), PaneRoot::Ordinary);
+    let mut shell = std::process::Command::new("/bin/sleep")
+        .arg0("-zsh")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let mut runner = std::process::Command::new("/bin/sleep")
+        .arg0(format!(
+            "/Applications/deck.app/Contents/MacOS/{RUNNER_NAME}"
+        ))
+        .arg("30")
+        .spawn()
+        .unwrap();
+    assert_eq!(pane_root(shell.id()), PaneRoot::Ordinary);
+    assert_eq!(pane_root(runner.id()), PaneRoot::Runner);
+    let ended = runner.id();
+    for child in [&mut shell, &mut runner] {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    assert_eq!(pane_root(ended), PaneRoot::Gone);
+    assert!(
+        include_str!("grants.rs").contains(&format!("parent.join(\"{RUNNER_NAME}\")")),
+        "the bundled runner's file name has one spelling"
+    );
+}
+
+/// The whole chain on a real tmux server with the real runner binary: tmux
+/// execs a pane command with arguments directly, so the listing's pane pid IS
+/// the runner and its argv[0] tells that pane from any other.
+#[test]
+fn a_real_pane_listing_tells_a_runner_pane_from_any_other() {
+    use std::os::unix::fs::FileTypeExt;
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = test_root("pane-roots");
+    // the runner accepts its socket only in a directory that is exactly 0700
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // under its bundled name, as `runner_program` finds it beside the app
+    let runner = root.join(RUNNER_NAME);
+    std::fs::copy(
+        manifest.join("binaries/deck-mcp-runner-aarch64-apple-darwin"),
+        &runner,
+    )
+    .unwrap();
+    let tmux = manifest.join("binaries/tmux-aarch64-apple-darwin");
+    let socket = format!("deck-smoke-mcp-roots-{}", std::process::id());
+    let run = |args: &[&str]| -> Result<String, DeckError> {
+        let output = std::process::Command::new(&tmux)
+            .args(["-f", "/dev/null", "-L", &socket])
+            .args(args)
+            .output()
+            .map_err(DeckError::from)?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            Err(DeckError::new(ErrorKind::Tmux, "isolated tmux failed"))
+        }
+    };
+    run(&["new-session", "-d", "-s", "ordinary", "/bin/sleep", "30"]).unwrap();
+    let mut managed = vec![
+        "new-session".to_string(),
+        "-d".into(),
+        "-s".into(),
+        "managed".into(),
+        runner.display().to_string(),
+    ];
+    managed.extend(runner_launch_args(
+        &root.join("r.sock").display().to_string(),
+        "g_roots",
+        "svc_roots",
+        std::process::id(),
+        60_000,
+    ));
+    let managed: Vec<&str> = managed.iter().map(String::as_str).collect();
+    run(&managed).unwrap();
+    // as `mcp_start_session` waits: the runner is up once its socket answers
+    let ready = (0..100).any(|_| {
+        UnixStream::connect(root.join("r.sock")).is_ok() || {
+            std::thread::sleep(Duration::from_millis(20));
+            false
+        }
+    });
+    let verdicts: HashMap<String, PaneRoot> = crate::tmux::list_panes_with(&run)
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.session_name, pane_root(row.pane_pid)))
+        .collect();
+    let socket_path = run(&["display-message", "-p", "#{socket_path}"]).unwrap();
+    run(&["kill-server"]).unwrap();
+    let socket_path = Path::new(socket_path.trim());
+    if std::fs::symlink_metadata(socket_path).is_ok_and(|meta| meta.file_type().is_socket()) {
+        let _ = std::fs::remove_file(socket_path);
+    }
+    assert!(ready, "the runner did not start");
+    assert_eq!(
+        verdicts,
+        HashMap::from([
+            ("ordinary".to_string(), PaneRoot::Ordinary),
+            ("managed".to_string(), PaneRoot::Runner),
+        ])
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn command_surface_exercises_local_authorization_and_board_reconciliation() {
     let root = test_root("commands");
