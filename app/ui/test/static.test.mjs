@@ -442,6 +442,28 @@ test('reminders poll the backend only while the Board has one', () => {
   assert.equal((code.match(/reconcileReminders/g) || []).length, 5, 'the import and these four: nothing else in app.js drives reminders');
 });
 
+test("inbound triggers are pulled only once the webview holds the user's Board", () => {
+  const code = file => read(file).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const app = code('app/ui/js/app.js');
+  // two starts and no other pull: boot after a Board that loaded, and the lost
+  // Board's way out, the one other moment the placeholder is replaced
+  assert.equal((app.match(/\bstartInbound\b/g) || []).length, 3, 'the import and the two starts');
+  assert.match(app, /\n  if \(!loadErr\) startInbound\(\);\n/);
+  const exit = app.slice(app.indexOf('const offerBoardExit'), app.indexOf('export async function boot()'));
+  assert.match(exit, /exited: \(\) => \{[^}]*\bstartReminders\(\);\s*startInbound\(\);\s*\}/);
+  assert.doesNotMatch(app, /drainInbound|drainChannel|initInbound/);
+  // the module wires nothing on its own: both listeners and the one timer
+  // belong to startInbound, which also runs the first drains
+  const inbound = code('app/ui/js/inbound.js');
+  const start = inbound.slice(inbound.indexOf('export function startInbound()'));
+  assert.ok(start.length > 100 && start.length < 600, 'startInbound closes the module');
+  for (const call of [/\blisten\(/g, /\bsetInterval\(/g]) {
+    assert.equal((inbound.match(call) || []).length, (start.match(call) || []).length, String(call));
+  }
+  assert.deepEqual([(start.match(/\blisten\(/g) || []).length, (start.match(/\bsetInterval\(/g) || []).length], [2, 1]);
+  assert.match(start, /return Promise\.all\(\[drainInbound\(\), drainChannel\(\)\]\);/);
+});
+
 // check.mjs is the gate that keeps import cycles inside the view core. It is
 // run here on small module directories: a cycle outside the core must be
 // found whichever static edge closes it, wherever the module lives, and

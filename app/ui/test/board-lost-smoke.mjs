@@ -5,8 +5,14 @@
 // Cancel first, a refused change offers the exit once more, the exit is
 // taken, and the chosen Board must be on disk and usable. `a` on each check
 // names the exit: 1 restore, 2 new.
+// A restore root whose settings also carry a clock rule that is due at launch
+// (SMOKE.md) checks, under the same checkpoints, that inbound triggers wait
+// for the user's Board (inbound.js `startInbound`): while the exit is on
+// offer the rule's slot stays pending in the backend — not acknowledged, no
+// run recorded, no notice — and taking the exit starts its run on the
+// restored Board.
 export async function runBoardLostSmoke() {
-  const { inv, state, store } = await import('../js/state.js');
+  const { ctx, inv, state, store } = await import('../js/state.js');
   const { mutateBoard } = await import('../js/persistence.js');
   const { formatDateTime, t } = await import('../js/i18n.js');
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -22,6 +28,7 @@ export async function runBoardLostSmoke() {
   });
   const shown = () => document.getElementById('chd').style.display === 'flex';
   const buttons = () => [...document.getElementById('chd-actions').children];
+  const toasts = () => [...document.getElementById('toasts').children].map(el => el.textContent);
   let stage = 0;
   try {
     stage = 1;
@@ -29,6 +36,11 @@ export async function runBoardLostSmoke() {
     const restorable = !!recovery.kept;
     const exit = restorable ? 1 : 2;
     const cards = restorable ? recovery.kept.cards : 0;
+    /* the seeded clock rule, if this restore root carries one, and its run */
+    const rule = restorable
+      ? (ctx.settings.inbound?.rules || []).find(value => value.source === 'clock' && value.enabled !== false) || null
+      : null;
+    const run = () => store.cards.find(card => card.origin?.source === 'clock' && card.origin.badge === rule.id);
     const label = t(restorable ? 'board.restoreKept' : 'board.startNew');
     const message = restorable
       ? t('board.lostRestorable', {
@@ -37,11 +49,21 @@ export async function runBoardLostSmoke() {
       : t('board.lostNew');
     // boot: one dialog, only the exit the backend names, Cancel focused
     await until(shown);
-    await report('board-lost-offer', recovery.state === 'lost'
+    let held = true;
+    if (rule) {
+      // the backend's first poll comes a few seconds after launch; a webview
+      // that listened for it would have pulled the slot well within the pause
+      await until(async () => (await inv('inbound_pending')).length + (await inv('inbound_runs')).length > 0, 15000);
+      await pause(1500);
+      const pending = await inv('inbound_pending');
+      held = pending.length === 1 && pending[0].rule.id === rule.id && (await inv('inbound_runs')).length === 0
+        && !toasts().some(text => text.includes(rule.name || rule.id));
+    }
+    await report('board-lost-offer', held && recovery.state === 'lost'
       && buttons().map(b => b.textContent).join('|') === [t('common.cancel'), label].join('|')
       && document.getElementById('chd-msg').textContent === message
       && document.activeElement === buttons()[0]
-      && store.cards.length === 0, exit, buttons().length);
+      && store.cards.length === 0, exit, buttons().length + (rule ? 10 : 0));
 
     stage = 2;
     // Cancel keeps the placeholder; a refused change offers the exit once more
@@ -60,13 +82,19 @@ export async function runBoardLostSmoke() {
     buttons()[1].click();
     await until(async () => (await inv('board_recovery_state')).state === 'other');
     await until(() => !shown(), 2000);
+    // with a seeded rule, the slot that waited becomes its run on that Board:
+    // the card created and saved, the template queued, the slot acknowledged
+    const expected = cards + (rule ? 1 : 0);
+    if (rule) await until(async () => !!run() && (await inv('inbound_pending')).length === 0, 15000);
     let disk = null;
     await until(async () => {
       try { disk = await inv('load_board'); } catch (_) { return false; }
-      return disk.source === 'main';
+      return disk.source === 'main' && (!rule || JSON.parse(disk.data).cards.length === expected);
     });
     const saved = JSON.parse(disk.data);
-    await report('board-lost-exit', store.cards.length === cards && saved.cards.length === cards
+    const started = !rule || (await inv('inbound_runs')).some(value => value.rule === rule.id
+      && value.outcome === 'running' && value.card === run().id);
+    await report('board-lost-exit', started && store.cards.length === expected && saved.cards.length === expected
       && store.projects.length >= 1 && saved.projects.length === store.projects.length
       && state.projectId === store.projects[0].id
       && document.querySelectorAll('.card').length === store.cards.filter(c => c.projectId === state.projectId).length,

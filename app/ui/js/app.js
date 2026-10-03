@@ -15,7 +15,7 @@ import { closePaneBySid, initLayout, leaveSessionView, openSession } from './lay
 import { initTerminalChrome, newDefaultSession } from './terminal.js';
 import { initScheduler, refreshQueue } from './scheduler.js';
 import { initTemplates } from './templates.js';
-import { drainChannel, drainInbound, initInbound } from './inbound.js';
+import { startInbound } from './inbound.js';
 import { drainConnector, initConnector } from './connector.js';
 import { initMcp } from './mcp.js';
 import { initAutomation } from './automation.js';
@@ -346,7 +346,6 @@ function initModules() {
   initTranslationLens({ panes, enableTranslation: () => installTranslationPack(true, { confirmed: true }),
     openSettings: () => openSettings({ section: 'terminal', setting: 'local-translation' }) });
   initTemplates({ provider });
-  initInbound();
   initConnector();
   initMcp();
   initAutomation({ activeProject, newSessionSummary, openProjectDefaults, projectDefaultsSummary, provider, openSession, newDefaultSession });
@@ -379,7 +378,8 @@ function startReminders() {
 /* The lost Board's way out (dialogs.js `createBoardExit`), offered at boot
    and on the backend's `board-lost`. The Board the exit committed replaces
    the placeholder; one without a project — a new start — keeps the
-   placeholder's, as a first run would create it. */
+   placeholder's, as a first run would create it. What waited for the user's
+   Board starts then: reminders and the inbound triggers. */
 const offerBoardExit = createBoardExit({
   mutateBoard,
   hold: json => {
@@ -391,6 +391,7 @@ const offerBoardExit = createBoardExit({
     state.projectId = store.projects[0].id;
     render();
     startReminders();
+    startInbound();
   },
 });
 
@@ -488,8 +489,10 @@ export async function boot() {
   if (recovery?.state === 'lost') offerBoardExit(recovery);
 
   refreshQueue();
-  drainInbound();
-  drainChannel();
+  /* inbound triggers are planned against the user's Board only: one that did
+     not load leaves them pending until the way out is taken or deck starts
+     again (inbound.js `startInbound`) */
+  if (!loadErr) startInbound();
   drainConnector();
   setTimeout(checkForUpdate, 4000);
   /* runtime cadence comes from a Rust thread (App Nap freezes JS timers) */

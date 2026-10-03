@@ -115,7 +115,16 @@ a=1, and `board-lost-exit` b is the number of cards restored. The carrier
 cancels the dialog, makes a change that is refused, takes the exit when the
 dialog comes back, and requires the chosen Board on disk and usable
 (`scripts/smoke-verdict <root> board-lost`); the copy that was set aside
-must still be there afterwards.
+must still be there afterwards. The restore root may also carry a clock rule
+that is due at launch, to check that inbound triggers wait for the user's
+Board: a `settings.json` whose `inbound.rules` holds one enabled `clock`
+rule (`schedule` `{"unit":"day","minute":0}`, `graceMin` 1440, `since` 0, an
+empty `cmd`, a `name`) pointing at a project, a group and a one-row template
+(`:`) of the kept Board. While the exit is on offer its slot must stay
+pending in the backend, with no run recorded and no notice
+(`board-lost-offer` then reports b = 10 + the number of buttons), and after
+the exit its run must be on the restored Board, queued and acknowledged
+(`board-lost-exit` b counts that card too).
 
 **Window size.** Every mode runs in the default window, which is the minimum
 supported window size: 1280×800 points (`tauri.conf.json` `minWidth` /

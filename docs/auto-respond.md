@@ -192,6 +192,13 @@ existing session. The command may independently resume its own prior context.
 - Deleting a rule leaves its existing cards. A rule whose project no longer
   exists cannot dispatch a new card; project deletion currently does not
   remove the saved rule from settings.
+- While the Board could not be loaded (deck shows an empty Board and says
+  why) no trigger is dispatched: a badge is not used up and a clock slot is
+  not skipped, and nothing is said about a missing project. A badge starts
+  its card once the Board is back, in the same run or after a restart. A
+  clock slot starts when you take the way out deck offers in the same run;
+  after a restart it starts only inside the rule's grace and is otherwise
+  recorded as `skipped (missed)`, as after any launch.
 
 ## What deck keeps
 

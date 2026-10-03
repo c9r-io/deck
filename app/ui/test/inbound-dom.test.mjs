@@ -4,14 +4,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fakeDocument } from './fixtures/dom-fixture.mjs';
 globalThis.document = fakeDocument; globalThis.window = { __TAURI__: null };
-const { drainInbound, initInbound } = await import('../js/inbound.js');
+const { drainInbound, startInbound } = await import('../js/inbound.js');
 const { provider } = await import('../js/board.js');
 const { listeners, store } = await import('../js/state.js');
 const realQueueInboundPlan = provider.queueInboundPlan;
 const item = { id: 'item-1', event: { source: 'slack', key: 'C9/1.2', badge: 'deck', text: 'sample', from: 'tester', where: '#test' },
   rule: { id: 'rule-1', projectId: 'P1', columnId: 'C1', template: 'triage', cmd: 'claude', dir: '/tmp' } };
 function setup(items, fail = '', steps = ['first', 'second']) {
-  const calls = []; let pending = items, handler;
+  const calls = [], heard = {}; let pending = items, handler;
   store.cards = []; store.projects = [{ id: 'P1', columns: [{ id: 'C1' }], templates: [{ name: 'triage', steps }] }];
   provider.create = async card => {
     calls.push(['create', card]); if (fail === 'create') throw Error('failed');
@@ -33,7 +33,7 @@ function setup(items, fail = '', steps = ['first', 'second']) {
     return true;
   };
   window.__TAURI__ = {
-    event: { listen: async (_name, fn) => { handler = fn; } },
+    event: { listen: async (name, fn) => { heard[name] = fn; handler = fn; } },
     core: { invoke: async (cmd, args) => {
       calls.push([cmd, args]); if (cmd === fail) throw Error('failed');
       if (fail === 'second-channel-add' && cmd === 'channel_queue_add'
@@ -41,13 +41,35 @@ function setup(items, fail = '', steps = ['first', 'second']) {
       if (cmd === 'inbound_pending') { const next = pending; pending = []; return next; }
     } },
   };
-  return { calls, handler: () => handler };
+  return { calls, handler: () => handler, heard };
 }
+
+test('nothing is pulled until startInbound; it then listens and drains what was pending', async () => {
+  const f = setup([item]);
+  // app.js starts this module only once the webview holds the user's Board (a
+  // Board that loaded, or the lost Board's way out). Until then the item waits
+  // in the backend: nothing listens for it and nothing asks for it.
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual([Object.keys(f.heard), f.calls], [[], []]);
+  await startInbound();
+  assert.deepEqual(Object.keys(f.heard).sort(), ['channel-changed', 'inbound-changed']);
+  // the first drains took what was pending all along: each inbox asked once,
+  // the badge's card created, its plan queued, then the acknowledgement
+  assert.deepEqual(['inbound_pending', 'channel_pending'].map(name => f.calls.filter(([cmd]) => cmd === name).length), [1, 1]);
+  assert.equal(store.cards.length, 1);
+  assert.deepEqual([f.calls.at(-1)[0], f.calls.at(-1)[1].outcome], ['inbound_ack', 'done']);
+  // a later announcement is pulled by the listener it registered
+  const later = setup([{ ...item, id: 'item-later', event: { ...item.event, key: 'C9/9.9' } }]);
+  await f.heard['inbound-changed']();
+  assert.deepEqual([later.calls.at(-1)[0], later.calls.at(-1)[1].id], ['inbound_ack', 'item-later']);
+  await f.heard['channel-changed']();
+  assert.equal(later.calls.filter(([cmd]) => cmd === 'channel_pending').length, 1);
+});
 
 test('dispatcher preserves reviewed-list atomicity and acks only after enqueue', async () => {
   for (const reviewEach of [false, true]) {
     const f = setup([{ ...item, rule: { ...item.rule, reviewEach } }]);
-    initInbound(); await f.handler()();
+    await startInbound();
     const queued = f.calls.filter(([cmd]) => cmd === (reviewEach ? 'channel_queue_add_reviewed_list' : 'channel_queue_add'));
     assert.equal(queued.length, reviewEach ? 1 : 2);
     assert.equal(f.calls.at(-1)[0], 'inbound_ack');

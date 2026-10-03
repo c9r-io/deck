@@ -36,6 +36,15 @@
 // acknowledged: it stays in the inbox, every drain tries it again, and
 // Settings shows the pending count. Why is said once per run, not once per
 // drain (`pendingNotice`, channel-model.js `createPendingNotices`).
+// Nothing is pulled before `startInbound`, which app.js calls once the
+// webview holds the user's Board: after a Board that loaded, or after the
+// lost Board's way out. Planned against a Board that is not the user's (the
+// placeholder of a failed load, or nothing yet) every rule points at a
+// project that is not there: a badge or clock item would be acknowledged
+// `skipped` for good, with a notice that its project no longer exists, and a
+// channel event would say the same. Left unpulled, the item stays pending in
+// the backend, which announces it again at every poll and offers it afresh
+// after a restart, and the channel event stays in its inbox.
 import { ctx, genId, inv, listen, store, uev } from './state.js';
 import { provider } from './board.js';
 import { toast } from './dialogs.js';
@@ -260,11 +269,14 @@ async function handleInbound(item) {
   return ack(item.id, 'done', 'created', { card: card.id });
 }
 
-/* DOM wiring, run once at boot (app.js) so the module can be imported
-   without a document. */
-export function initInbound() {
+/* Everything this module pulls starts here, when app.js says the webview
+   holds the user's Board: the two listeners, the 60 s tick and the first
+   drains. The events carry no content, so one that came before the listeners
+   is covered by those drains; resolves when they have finished. */
+export function startInbound() {
   listen('channel-changed', drainChannel).catch(() => uev('listen-fail', 'channel-changed'));
   listen('inbound-changed', drainInbound).catch(() => uev('listen-fail', 'inbound-changed'));
   const timer = setInterval(() => { drainChannel(); drainInbound(); }, 60_000);
   timer.unref?.();
+  return Promise.all([drainInbound(), drainChannel()]);
 }
