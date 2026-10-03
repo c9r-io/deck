@@ -449,6 +449,69 @@ fn only_a_load_a_save_and_the_users_exit_commit_a_board() {
     );
 }
 
+/// Who owns the committed Board. The save fence over a lost Board and the
+/// base of the reminder checks are persistence decisions, so the copy they
+/// read belongs to the Board door: one static, read by `committed_board`,
+/// written by `commit_board`. The reminder module keeps its own copy to
+/// project from (a wake or a tick projects without a commit) and offers it to
+/// nobody. The door reaches the projection through one observer, registered
+/// by the reminder module itself when its bridge starts; a second registrant,
+/// or none, would change which Board is projected or stop the projection.
+#[test]
+fn the_board_door_owns_the_committed_board_and_tells_one_observer() {
+    // every function that names `name`, its `static` declaration aside
+    let users = |text: &str, name: &str| {
+        let mut functions: Vec<String> = text
+            .match_indices(name)
+            .filter(|&(at, _)| {
+                !text[..at].ends_with("static ")
+                    && !text[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(source_scan::is_ident)
+                    && !text[at + name.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(source_scan::is_ident)
+            })
+            .map(|(at, _)| source_scan::enclosing_function(text, at))
+            .collect();
+        functions.sort();
+        functions
+    };
+    let documents = code_only(production_region(&source("documents.rs")));
+    assert_eq!(
+        users(&documents, "COMMITTED_BOARD"),
+        ["commit_board", "committed_board"],
+        "the door's committed-Board copy has one writer and one reader"
+    );
+    assert_eq!(
+        callers_of("set_commit_observer("),
+        ["reminder.rs init"],
+        "the Board door's commit observer is registered once, by the reminder bridge's init"
+    );
+    assert!(
+        code_only(&source("notify.rs")).contains("crate::reminder::init();")
+            && code_only(&source("main.rs")).contains("notify::init("),
+        "the reminder bridge starts in setup, before the webview can load a Board"
+    );
+    // the door never names the projection, and the reminder module hands its
+    // copy to no other module
+    for name in ["observe_committed", "reconcile"] {
+        assert!(
+            users(&documents, name).is_empty(),
+            "documents.rs names `{name}`: the projection is reached through the observer only"
+        );
+    }
+    let reminder = code_only(production_region(&source("reminder.rs")));
+    assert_eq!(
+        users(&reminder, "COMMITTED"),
+        ["observe_committed", "reconcile"],
+        "the reminder module's copy of the Board is written by its observer and read by its \
+         projection, and offered to no other module"
+    );
+}
+
 /// The data directory has one resolver, `datadir::deck_dir()`, and in a
 /// unit-test build it answers with a directory of the test process's own —
 /// so a test that reaches a real save, a quarantine or the tmux config can
