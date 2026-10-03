@@ -349,6 +349,29 @@ test('a toast nobody could see is not counted: the first visible drain announces
   assert.equal(toastTexts().length - before, 1);
 });
 
+test('a channel event whose project or group is gone says so, whatever else is wrong with it', async () => {
+  const { drainChannel } = await import('../js/inbound.js');
+  // without its project no template can be found either; that is not the reason to give
+  const gone = [[501, { projectId: 'GONE' }], [502, { projectId: 'GONE', cmd: 'claude;zsh' }],
+    [503, { columnId: 'GONE', template: 'missing' }], [504, { columnId: 'GONE' }]];
+  for (const [n, target] of gone) {
+    channelInbox([channelEvent(n, target)]);
+    const before = toastTexts().length;
+    await drainChannel();
+    const shown = toastTexts().slice(before);
+    assert.equal(shown.length, 1, JSON.stringify(target));
+    assert.match(shown[0], /project or group is missing.*remains pending/, JSON.stringify(target));
+  }
+  // with both in place the narrower reason is the one given
+  const narrower = [[511, { template: 'missing' }, /template is missing or empty/], [512, { cmd: 'claude;zsh' }, /blocked: use claude or codex/]];
+  for (const [n, target, sentence] of narrower) {
+    channelInbox([channelEvent(n, target)]);
+    const before = toastTexts().length;
+    await drainChannel();
+    assert.match(toastTexts().slice(before).join(' | '), sentence, JSON.stringify(target));
+  }
+});
+
 test('a card that cannot be created is announced once; the event is tried again at every drain', async () => {
   const { drainChannel } = await import('../js/inbound.js');
   const inbox = channelInbox([channelEvent(351)]);

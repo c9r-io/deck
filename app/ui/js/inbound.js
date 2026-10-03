@@ -113,8 +113,11 @@ async function handleChannel(item) {
   const column = project?.columns.find(value => value.id === item.target.columnId);
   const plan = channelTemplatePlan(item, project, Math.floor(Date.now() / 1000));
   if (!project || !column || plan.error) {
-    pendingNotice(item, { template: 'channel.noTemplate', command: 'channel.blockedCommand',
-      'template-leading-message': 'channel.blockedTemplate' }[plan.error] || 'channel.noTarget');
+    /* a missing project or group is the reason to give: without its project
+       no template can be found either, and that is not what is wrong */
+    pendingNotice(item, !project || !column ? 'channel.noTarget'
+      : { template: 'channel.noTemplate', command: 'channel.blockedCommand',
+        'template-leading-message': 'channel.blockedTemplate' }[plan.error] || 'channel.noTarget');
     return;
   }
   const operationIds = await Promise.all(plan.texts.map((_, index) => channelDigestId('B', `${item.operationKey}/step/${index}`)));
