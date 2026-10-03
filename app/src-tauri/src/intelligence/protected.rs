@@ -71,24 +71,25 @@ fn escape_html(source: &str) -> String {
     }
     result
 }
+/// The entities `escape_html` writes, read back once each. A translation is
+/// Chinese text: a character of several bytes may sit anywhere after an `&`,
+/// so nothing here cuts `rest` at a byte count; an entity is recognised by
+/// its prefix only. An `&` that starts none of them stays an `&`.
+const ENTITIES: [(&str, char); 5] = [
+    ("&amp;", '&'),
+    ("&lt;", '<'),
+    ("&gt;", '>'),
+    ("&quot;", '"'),
+    ("&#39;", '\''),
+];
 fn unescape_html(source: &str) -> String {
     let mut result = String::with_capacity(source.len());
     let mut rest = source;
     while let Some(at) = rest.find('&') {
         result.push_str(&rest[..at]);
         rest = &rest[at..];
-        let entity = [
-            (&rest[..rest.len().min(5)], "&amp;", '&'),
-            (&rest[..rest.len().min(4)], "&lt;", '<'),
-            (&rest[..rest.len().min(4)], "&gt;", '>'),
-            (&rest[..rest.len().min(6)], "&quot;", '"'),
-            (&rest[..rest.len().min(5)], "&#39;", '\''),
-        ];
-        if let Some((_, token, ch)) = entity
-            .into_iter()
-            .find(|(_, token, _)| rest.starts_with(token))
-        {
-            result.push(ch);
+        if let Some((token, ch)) = ENTITIES.iter().find(|(token, _)| rest.starts_with(token)) {
+            result.push(*ch);
             rest = &rest[token.len()..];
         } else {
             result.push('&');
@@ -261,6 +262,139 @@ mod tests {
             "é中文🙂".repeat(400).as_str(),
         ] {
             assert_eq!(split_document(source).concat(), source);
+        }
+    }
+
+    /// The target language is Chinese, so a translation puts characters of
+    /// two to four bytes right next to an entity, or a few bytes after an
+    /// `&`. The third case is what the real model returned for "R&D team's
+    /// report: x>y.".
+    #[test]
+    fn unescape_reads_entities_next_to_multibyte_text() {
+        for (encoded, plain) in [
+            ("优点&amp;缺点", "优点&缺点"),
+            ("x &gt;测试", "x >测试"),
+            (
+                "研发团队&amp;#39;s 报告:x&gt;y。",
+                "研发团队&#39;s 报告:x>y。",
+            ),
+            ("it&#39;的", "it'的"),
+            ("&lt;中&gt;", "<中>"),
+            ("&quot;引&quot;", "\"引\""),
+            ("&缺点", "&缺点"),
+            ("a&é", "a&é"),
+            ("&🙂&", "&🙂&"),
+        ] {
+            assert_eq!(unescape_html(encoded), plain, "{encoded}");
+        }
+        // a character of every width at every distance from an `&`, an entity or not
+        for wide in ["é", "中", "🙂"] {
+            for gap in 0..=6 {
+                let between = &"ab;cde"[..gap];
+                assert_eq!(
+                    unescape_html(&format!("&{between}{wide}&amp;{wide}")),
+                    format!("&{between}{wide}&{wide}")
+                );
+            }
+            for (token, ch) in ENTITIES {
+                for gap in 0..=3 {
+                    let between = &"xyz"[..gap];
+                    assert_eq!(
+                        unescape_html(&format!("{token}{between}{wide}")),
+                        format!("{ch}{between}{wide}")
+                    );
+                }
+            }
+        }
+    }
+
+    /// The parser as it was before, verbatim: the reference for every input it
+    /// could process. Its five slices were never read; they only panicked when
+    /// byte 4, 5 or 6 after an `&` fell inside a character.
+    fn unescape_html_before(source: &str) -> String {
+        let mut result = String::with_capacity(source.len());
+        let mut rest = source;
+        while let Some(at) = rest.find('&') {
+            result.push_str(&rest[..at]);
+            rest = &rest[at..];
+            let entity = [
+                (&rest[..rest.len().min(5)], "&amp;", '&'),
+                (&rest[..rest.len().min(4)], "&lt;", '<'),
+                (&rest[..rest.len().min(4)], "&gt;", '>'),
+                (&rest[..rest.len().min(6)], "&quot;", '"'),
+                (&rest[..rest.len().min(5)], "&#39;", '\''),
+            ];
+            if let Some((_, token, ch)) = entity
+                .into_iter()
+                .find(|(_, token, _)| rest.starts_with(token))
+            {
+                result.push(ch);
+                rest = &rest[token.len()..];
+            } else {
+                result.push('&');
+                rest = &rest[1..];
+            }
+        }
+        result.push_str(rest);
+        result
+    }
+
+    /// Nothing else about the parser changed: a lone `&` and a truncated
+    /// entity stay as written, and `&amp;amp;` is decoded once.
+    #[test]
+    fn unescape_is_unchanged_wherever_the_old_parser_did_not_panic() {
+        for (encoded, plain) in [
+            ("", ""),
+            ("&", "&"),
+            ("x&", "x&"),
+            ("a & b", "a & b"),
+            ("&am", "&am"),
+            ("&amp", "&amp"),
+            ("&#39", "&#39"),
+            ("&amp;amp;", "&amp;"),
+            ("&amp;lt;", "&lt;"),
+            ("&&amp;", "&&"),
+            ("&lt;&gt;&quot;&#39;", "<>\"'"),
+        ] {
+            assert_eq!(unescape_html(encoded), plain, "{encoded}");
+        }
+        // every concatenation of up to five pieces: whole, truncated and
+        // doubled entities, lone ampersands, and what sits between them
+        let pieces = [
+            "&", "amp;", "lt;", "gt;", "quot;", "#39;", "&amp;", "am", ";", "a", " ", "#",
+        ];
+        let mut level = vec![String::new()];
+        let mut checked = 0usize;
+        for _ in 0..5 {
+            let mut next = Vec::with_capacity(level.len() * pieces.len());
+            for prefix in &level {
+                for piece in pieces {
+                    let source = format!("{prefix}{piece}");
+                    assert_eq!(
+                        unescape_html(&source),
+                        unescape_html_before(&source),
+                        "{source}"
+                    );
+                    checked += 1;
+                    next.push(source);
+                }
+            }
+            level = next;
+        }
+        assert_eq!(checked, 271_452);
+    }
+
+    #[test]
+    fn prose_with_markup_characters_round_trips_byte_for_byte() {
+        for source in [
+            "优点 & 缺点, a < b > c, it's \"quoted\" & done",
+            "R&D team's report: x>y.",
+            "'单引号' 和 & 符号后接中文",
+            "Run `cargo test` & check /usr/local/example-q17 < 5 > 3 isn't \"bad\"",
+            "&amp; stays text, so does &#39; and &lt;tag&gt;",
+        ] {
+            let (html, originals) = carrier(source);
+            assert_eq!(restore(&html, &originals).unwrap(), source, "{source}");
         }
     }
 }
