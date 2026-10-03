@@ -306,7 +306,9 @@ export function createSerialTransactionQueue({ snapshot, persist, commit, serial
  * of the card's owning shell (`exited_normally`, shell_exit.rs) or an
  * explicitly configured automation finish. Missing sessions alone never
  * authorize observing a card here. `forget` drops a card whose authority is
- * no longer current (a close already in flight still settles). */
+ * no longer current (a close already in flight still settles). Both callers
+ * read their evidence again on every poll, so a close that failed is tried
+ * again only while it still holds. */
 export function createExitRetirementTracker() {
   const pending = new Set();
   const warned = new Set();
@@ -943,7 +945,9 @@ export function nextScheduleSlot(schedule, now, since = 0) {
    kills that work with the session. Any reported agent word therefore
    holds the close; a live interactive agent keeps its card until the
    program exits or the user closes it (signal census:
-   tests/signal_census.rs). */
+   tests/signal_census.rs). board.js `observeRunFinish` takes this reading
+   on every poll: for the three confirmations, and again before each retry
+   of a close that failed. */
 export function runFinishHolds({ rule, queued, agent, fg, alive, stopped, viewing, reviewRequired, finalReviewed }, shellFg) {
   if (reviewRequired && !finalReviewed) return false;
   if (!alive || stopped || viewing || queued) return false;

@@ -16,6 +16,10 @@
 // Board saved, then the pane closed), re-proven on every poll, never for an
 // MCP-origin card or a card whose buffer is retained. `pty-exit` only wakes
 // the poll; it is never evidence.
+// The other automatic close is an automation's finish (`observeRunFinish`):
+// three consecutive readings queue it, a close that failed is tried again
+// only by a poll that reads the same, a session that is gone drops it, and
+// the close looks for a pane once more inside its own transaction.
 // Pending and due reminders protect deletion at the transaction boundary.
 // Blocked exit/run identities persist after ending the reminder; later real
 // generations keep ordinary retirement rules. Reminder responses never start work.
@@ -326,6 +330,12 @@ export const provider = {
           }
           if (opts.automatic && retirementBlocked(card, opts.retirementKey)) return { noop: true, protected: true };
           if (opts.automatic && retainedBuffer(card)) return { noop: true, protected: true };
+          // An automation finish (`unlessShown`) never retires a card a pane
+          // is showing: it gives the close up, and the run has to qualify
+          // again once the pane is gone. Read here, before any side effect:
+          // a pane can open after the poll that read the evidence, while
+          // this transaction waited its turn.
+          if (opts.unlessShown && hasPane(card.session)) return { noop: true, protected: true };
           // A remote (MCP) close never retires a card a pane is showing: the
           // person looking at it decides. Refused before any side effect.
           if (opts.mcpOperationId && hasPane(card.session)) {
@@ -916,18 +926,28 @@ function noteRunEnded(card) {
    reading). A reported `turn-done` is NOT enough — it ends an interaction,
    not the agent's work. The reading must survive three consecutive polls. An
    open pane holds the close for as long as the user keeps it: a run they are
-   reading or talking to is theirs until they leave. */
+   reading or talking to is theirs until they leave.
+   A close that failed stays queued, and a later poll tries it again only on
+   its own reading: a poll that reads anything else, or finds the session
+   gone, drops the queued close (`dropRunFinish`), and the run has to hold
+   for three polls again. The one fact a queued close is not asked twice is
+   the final review: the failed attempt's own schedule cancellation erased
+   it (scheduler/ops.rs `clear_session_items`), and a prompt queued since
+   holds the close by itself. A close that had already killed the session
+   when the Board write failed is therefore not completed here: its card
+   stays stopped. */
 const runConfirm = createConfirmationCounter(3);
 const runRetirement = createExitRetirementTracker();
+const dropRunFinish = c => { runConfirm.forget(c.id); runRetirement.forget(c.id); };
 function observeRunFinish(c, info) {
-  if (retirementBlocked(c, retirementKey("run", c))) { runConfirm.forget(c.id); return; }
-  if (retainedBuffer(c)) { runConfirm.forget(c.id); return; }
-  if (c.inboundPlan && !c.inboundPlan.initialQueued) { runConfirm.forget(c.id); return; }
-  if (!info.alive || !c.origin) { runConfirm.forget(c.id); return; }
+  if (retirementBlocked(c, retirementKey("run", c))) { dropRunFinish(c); return; }
+  if (retainedBuffer(c)) { dropRunFinish(c); return; }
+  if (c.inboundPlan && !c.inboundPlan.initialQueued) { dropRunFinish(c); return; }
+  if (!info.alive || !c.origin) { dropRunFinish(c); return; }
   const holds = runFinishHolds({
     rule: ruleOf(c.origin),
     reviewRequired: c.inboundPlan?.reviewEach === true || c.origin.reviewEach === true,
-    finalReviewed: (ctx.queueCache.review_completed || []).includes(c.session),
+    finalReviewed: runRetirement.pending(c.id) || (ctx.queueCache.review_completed || []).includes(c.session),
     queued: (ctx.queueCache.items || []).some(i => i.session === c.session),
     /* agent and fg from the SAME Signal target pane, and fg only for a
        single-pane session (poll_sessions `finish_fg`): no pane-local shell
@@ -935,7 +955,8 @@ function observeRunFinish(c, info) {
     agent: info.agent, fg: info.finish_fg, alive: true,
     stopped: c.status === 'stopped', viewing: hasPane(c.session),
   }, SHELL_FG);
-  if (runConfirm.observe(c.id, holds)) {
+  if (!holds) { dropRunFinish(c); return; }
+  if (runConfirm.observe(c.id, true)) {
     runConfirm.forget(c.id);
     runRetirement.observe(c.id);
   }
@@ -1013,6 +1034,9 @@ async function pollSessionsNow() {
       c.lifecycle = info.lifecycle || null;
       if (info.exited_normally === true && !retirementBlocked(c, retirementKey("exit", c, c.lifecycle)) && c.origin?.source !== 'mcp' && !retainedBuffer(c)) exitRetirement.observe(c.id);
       else exitRetirement.forget(c.id);
+      /* a finish close is only ever tried on a session this poll read alive:
+         one that is gone keeps its card, stopped */
+      runRetirement.forget(c.id);
       const changed = c.status !== 'stopped' || c.mem != null || c.idle != null || c.fg != null || c.scrolled;
       c.status = 'stopped';
       c.mem = null;
@@ -1072,7 +1096,7 @@ async function pollSessionsNow() {
   await runRetirement.drain({
     get: sid => provider.get(sid),
     markStopped: c => { c.status = 'stopped'; emit('status', c); },
-    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true, automatic: true, retirementKey: retirementKey("run", c) }),
+    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true, automatic: true, unlessShown: true, retirementKey: retirementKey("run", c) }),
     failed: () => { uev('inbound', 'run-close-fail'); toast(t('automation.runCloseFailed')); },
     succeeded: c => {
       closePaneBySid(c.id, { detach: false });
