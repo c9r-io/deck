@@ -57,6 +57,11 @@ pub(super) fn scan(source: &str) -> Vec<Span> {
     spans
 }
 
+/// Prose as HTML text for the model: the characters that could form markup
+/// or an entity are escaped. An apostrophe is not one of them, and it is left
+/// as written: Bergamot's HTML reader does not decode `&#39;`, so an escaped
+/// one broke every contraction ("Don&#39;t" was read as "Don", text, "t") and
+/// came back visible in the translation.
 fn escape_html(source: &str) -> String {
     let mut result = String::with_capacity(source.len());
     for ch in source.chars() {
@@ -65,13 +70,13 @@ fn escape_html(source: &str) -> String {
             '<' => result.push_str("&lt;"),
             '>' => result.push_str("&gt;"),
             '"' => result.push_str("&quot;"),
-            '\'' => result.push_str("&#39;"),
             _ => result.push(ch),
         }
     }
     result
 }
-/// The entities `escape_html` writes, read back once each. A translation is
+/// The entities `escape_html` writes, and `&#39;` in case the model writes
+/// one, read back once each. A translation is
 /// Chinese text: a character of several bytes may sit anywhere after an `&`,
 /// so nothing here cuts `rest` at a byte count; an entity is recognised by
 /// its prefix only. An `&` that starts none of them stays an `&`.
@@ -382,6 +387,27 @@ mod tests {
             level = next;
         }
         assert_eq!(checked, 271_452);
+    }
+
+    /// The model's HTML reader does not know `&#39;`: it read "Don&#39;t" as
+    /// the word "Don", some text and a "t", and the translation came out
+    /// wrong with the entity still visible in it.
+    #[test]
+    fn an_apostrophe_reaches_the_model_as_written() {
+        assert_eq!(
+            carrier("Don't panic, it's 'fine'").0,
+            "Don't panic, it's 'fine'"
+        );
+        // what could form markup is escaped as before
+        assert_eq!(
+            carrier("a & b < c > d \"e\"").0,
+            "a &amp; b &lt; c &gt; d &quot;e&quot;"
+        );
+        // and a `&#39;` in what comes back is still read
+        assert_eq!(
+            restore("它&#39;的 &quot;x&quot;", &[]).unwrap(),
+            "它'的 \"x\""
+        );
     }
 
     #[test]
