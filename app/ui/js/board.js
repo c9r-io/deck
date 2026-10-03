@@ -1197,10 +1197,7 @@ export function renderSidebar() {
        reminder and must not also open (and, for a stopped card, start) the
        session. The click still travels on, so open menus close as usual. */
     el.onclick = e => { if (!e.target.closest('.card-reminder')) openSession(s.id); };
-    if (s.reminder) {
-    const chip = document.createElement("button"); chip.className = "btn card-reminder";
-    chip.textContent = reminderLabel(s); chip.onclick = () => editReminder(s.id); el.append(chip);
-  }
+    if (s.reminder) el.append(reminderChip(s));
   el.oncontextmenu = e => showSessionCtx(e, s.id);
     /* sidebar items are drag sources for split (方案 A) */
     el.draggable = true;
@@ -1496,12 +1493,13 @@ export async function openProjectDefaults(pid, opener = null) {
   if (back && back.isConnected && back.focus) back.focus();
 }
 
-/* A card's reminder label, at the right end of its status row (attention.js
-   repaints the rest of that row in place and leaves this alone). The date is
-   short and the full one, as the sidebar spells it, is the title; once due it
-   says so. Its click edits the reminder and nothing else: the card's own
-   click handler skips it. */
-function cardReminderLabel(s) {
+/* A reminder's label, the same on a Board card (the right end of its status
+   row; attention.js repaints the rest of that row in place and leaves this
+   alone) and in the session's sidebar row (after the name, which stays
+   visible). The date is short and the full one, with weekday and zone, is the
+   title; once due it says so. Its click edits the reminder and nothing else:
+   the card's and the row's own click handlers skip it. */
+function reminderChip(s) {
   const chip = document.createElement('button');
   const due = reminderDue(s);
   chip.type = 'button';
@@ -1529,7 +1527,7 @@ export function cardEl(s) {
     <div class="card-desc"></div>`;
   el.querySelector('.card-title').textContent = s.title;
   paintCardSignalStatus(el.querySelector('.card-status'), s);
-  if (s.reminder) el.querySelector('.card-status').append(cardReminderLabel(s));
+  if (s.reminder) el.querySelector('.card-status').append(reminderChip(s));
   paintCardAttentionBadge(el.querySelector('.card-attention-badge'), s);
   el.querySelector('.dot').title = dotTitle(s.status);
   const pin = el.querySelector('.card-pin');

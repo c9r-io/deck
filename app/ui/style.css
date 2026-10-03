@@ -124,7 +124,7 @@ body.side-collapsed .side-home { justify-content: center; padding: 7px 0; margin
 body.side-collapsed .side-home .label { display: none; }
 body.side-collapsed .side-group { display: none; }
 body.side-collapsed .side-item { justify-content: center; padding: 8px 0; margin: 1px 8px; }
-body.side-collapsed .side-item .name, body.side-collapsed .side-board-group, body.side-collapsed .side-empty { display: none; }
+body.side-collapsed .side-item .name, body.side-collapsed .side-item .card-reminder, body.side-collapsed .side-board-group, body.side-collapsed .side-empty { display: none; }
 body.side-collapsed .side-new { padding: 8px 0; margin: 8px; }
 body.side-collapsed .side-new .label { display: none; }
 
@@ -1148,17 +1148,19 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 .card-status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-signal-help { flex: none; border: 0; padding: 0; background: none; color: var(--muted); font: inherit; text-decoration: underline; cursor: pointer; }
 .card-signal-help:hover, .card-signal-help:focus-visible { color: var(--text); }
-/* the reminder label on a card: the status row's right end, one line, and no
-   taller than the row's own text, so a card is the same height with it */
-.card-status .card-reminder {
+/* the reminder label, on a card (the status row's right end) and in a
+   sidebar row (after the name): one line and no taller than the row's own
+   text, so a card or a row is the same height with it */
+.card-status .card-reminder, .side-item .card-reminder {
   margin: 0 0 0 auto; flex: none; max-width: 70%;
   font-family: var(--mono); font-size: 0.769231rem; line-height: 1.2;
   padding: 0 5px; border: 1px solid var(--border-soft); border-radius: 4px;
   color: var(--muted); background: var(--panel);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left;
 }
-.card-status .card-reminder:hover, .card-status .card-reminder:focus-visible { color: var(--text); border-color: var(--border); }
-.card-status .card-reminder.due { color: var(--attn); border-color: var(--attn-border); }
+.card-status .card-reminder:hover, .card-status .card-reminder:focus-visible,
+.side-item .card-reminder:hover, .side-item .card-reminder:focus-visible { color: var(--text); border-color: var(--border); }
+.card-status .card-reminder.due, .side-item .card-reminder.due { color: var(--attn); border-color: var(--attn-border); }
 .card.attention .card-status { color: var(--attn); }
 @media (max-width: 1050px) {
   .attention-row, .attention-labels { grid-template-columns: minmax(110px,1.2fr) minmax(110px,1fr) auto; gap: 8px 12px; }
@@ -1209,4 +1211,3 @@ html.font-scale-large .voice-language-choices { grid-template-columns: minmax(0,
 
 .reminder-overlay {position:fixed;inset:0;z-index:15000;background:var(--modal-overlay);display:flex;align-items:center;justify-content:center;}
 .reminder-editor {background:var(--panel);padding:24px;border:1px solid var(--border);border-radius:12px;width:min(520px,90vw);display:flex;flex-direction:column;gap:12px;}
-.card-reminder {margin:6px;max-width:95%;white-space:normal;text-align:left;}

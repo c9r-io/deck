@@ -80,7 +80,15 @@ export async function runReminderSmoke() {
     await until(() => provider.get(protectedCard.id)?.reminder);
     // a real click on the sidebar's date label edits the reminder and nothing
     // else: the row under it does not open (or start) the session
-    const label = document.querySelector('#side-list .side-item .card-reminder');
+    const label = document.querySelector(`#side-list .side-item[data-sid="${protectedCard.id}"] .card-reminder`);
+    // its row still shows the session's name, in front of the label, and is no
+    // taller than a row without a reminder
+    const row = label?.closest('.side-item'), name = row?.querySelector('.name');
+    const plainRow = [...document.querySelectorAll('#side-list .side-item')].find(item => !item.querySelector('.card-reminder'));
+    const rowShaped = !!name && !!plainRow && name.textContent === provider.get(protectedCard.id).title
+      && name.getBoundingClientRect().width > 40
+      && label.getBoundingClientRect().left >= name.getBoundingClientRect().right - 0.5
+      && Math.abs(row.getBoundingClientRect().height - plainRow.getBoundingClientRect().height) < 0.5;
     let labelOnly = false;
     if (label) {
       await click(label);
@@ -90,12 +98,12 @@ export async function runReminderSmoke() {
       await click(document.querySelector('.reminder-editor .cfm-actions button'));
       await until(() => !$('reminder-date'), 3000);
     }
-    // the card carries the reminder too: a short label at the end of its status
-    // row, the sidebar's full text as its title, the card no taller for it, and
-    // a real click on it edits the reminder only
+    // the card carries the same label at the end of its status row: the short
+    // date as text, the full one (with its zone) as title, the card no taller
+    // for it, and a real click on it edits the reminder only
     const cardLabel = cardOf(protectedCard).querySelector('.card-status .card-reminder');
     const shaped = !!cardLabel && /^🔔 (?:(?:\d{4}\/)?\d{1,2}\/\d{1,2} )?\d{2}:\d{2}$/.test(cardLabel.textContent)
-      && cardLabel.title === label?.textContent
+      && cardLabel.textContent === label?.textContent && cardLabel.title === label?.title && /\(.+\)$/.test(cardLabel.title)
       && Math.abs(cardOf(protectedCard).getBoundingClientRect().height - plainHeight) < 0.5;
     await inv('smoke_native_snapshot', { name: 'reminder-card-label' }).catch(() => {});
     let cardLabelOnly = false;
@@ -107,7 +115,7 @@ export async function runReminderSmoke() {
       await click(document.querySelector('.reminder-editor .cfm-actions button'));
       await until(() => !$('reminder-date'), 3000);
     }
-    await report('reminder-ui-save', !!label && labelOnly && shaped && cardLabelOnly);
+    await report('reminder-ui-save', !!label && labelOnly && rowShaped && shaped && cardLabelOnly);
     const saved = JSON.parse((await inv('load_board')).data).cards.find(c => c.id === protectedCard.id);
     await report('reminder-durable', saved.reminder.id === provider.get(protectedCard.id).reminder.id && saved.reminder.inAppOnly);
     await provider.rename(protectedCard.id, 'Renamed reminder shell');

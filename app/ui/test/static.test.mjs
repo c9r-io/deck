@@ -521,11 +521,16 @@ test("a click on the sidebar's reminder label does not open the session", () => 
   // the row opens the session for every click except one on the label
   assert.match(sidebar, /el\.onclick = e => \{ if \(!e\.target\.closest\('\.card-reminder'\)\) openSession\(s\.id\); \};/);
   assert.equal((sidebar.match(/openSession\(/g) || []).length, 1);
-  // the label keeps its one job and lets the click travel on, so the menus
-  // that close on any click still close
-  assert.match(sidebar, /chip\.className = "btn card-reminder";/);
-  assert.match(sidebar, /chip\.onclick = \(\) => editReminder\(s\.id\);/);
-  assert.doesNotMatch(sidebar, /stopPropagation/);
+  // the label is the one a card carries (`reminderChip`): it keeps its one
+  // job and lets the click travel on, so the menus that close on any click
+  // still close. It comes after the name, which the row must go on showing.
+  assert.match(sidebar, /if \(s\.reminder\) el\.append\(reminderChip\(s\)\);/);
+  assert.doesNotMatch(sidebar, /stopPropagation|reminderLabel\(|card-reminder"/);
+  const css = read('app/ui/style.css');
+  // the full-date button that took the row's width, and its rule, are gone
+  assert.doesNotMatch(css, /^\.card-reminder \{/m);
+  // a collapsed sidebar shows neither the name nor the label
+  assert.match(css, /body\.side-collapsed \.side-item \.name, body\.side-collapsed \.side-item \.card-reminder,/);
 });
 
 /* 09b: a Board card shows its reminder too (docs/card-reminders.md): a short
@@ -536,18 +541,18 @@ test('a Board card shows its reminder as a label at the end of the status row', 
   const card = board.slice(board.indexOf('export function cardEl(s)'), board.indexOf('export async function closeSession('));
   assert.ok(card.length > 1500, 'cardEl is where a card is built');
   // only a card with a reminder gets one, after the row was painted
-  assert.match(card, /paintCardSignalStatus\(el\.querySelector\('\.card-status'\), s\);\s*if \(s\.reminder\) el\.querySelector\('\.card-status'\)\.append\(cardReminderLabel\(s\)\);/);
+  assert.match(card, /paintCardSignalStatus\(el\.querySelector\('\.card-status'\), s\);\s*if \(s\.reminder\) el\.querySelector\('\.card-status'\)\.append\(reminderChip\(s\)\);/);
   // the card's own click handler skips it, so the label edits the reminder only
   assert.match(card, /closest\('\.card-x, \.card-pin, \.card-signal-help, \.card-reminder'\)/);
-  const label = board.slice(board.indexOf('function cardReminderLabel(s)'), board.indexOf('export function cardEl(s)'));
-  assert.ok(label.length > 200 && label.length < 900, 'cardReminderLabel sits right above cardEl');
+  const label = board.slice(board.indexOf('function reminderChip(s)'), board.indexOf('export function cardEl(s)'));
+  assert.ok(label.length > 200 && label.length < 900, 'reminderChip sits right above cardEl');
   assert.match(label, /chip\.className = 'card-reminder' \+ \(due \? ' due' : ''\);/);
   assert.match(label, /chip\.textContent = '🔔 ' \+ \(due \? t\('reminder\.dueShort'\) : reminderShort\(s\.reminder\)\);/);
   assert.match(label, /chip\.title = reminderLabel\(s\);/);
   assert.match(label, /chip\.onclick = \(\) => editReminder\(s\.id\);/);
   assert.doesNotMatch(label, /openSession|stopPropagation/);
   // one line at the row's right end, no taller than the row's own text
-  const rule = read('app/ui/style.css').match(/\.card-status \.card-reminder \{[^}]*\}/)?.[0] || '';
+  const rule = read('app/ui/style.css').match(/\.card-status \.card-reminder, \.side-item \.card-reminder \{[^}]*\}/)?.[0] || '';
   for (const part of ['margin: 0 0 0 auto', 'flex: none', 'white-space: nowrap', 'line-height: 1.2']) assert.ok(rule.includes(part), part);
   for (const file of ['en.js', 'zh-Hans.js']) assert.match(read(`app/ui/js/i18n/${file}`), /"reminder\.dueShort": "(Due|到期)",/);
 });
