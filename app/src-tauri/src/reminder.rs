@@ -4,8 +4,9 @@
 //! Responses use a bounded durable inbox until the WebView can transact them.
 //! Notes never cross the bridge. Agent identifiers/removal remain separate.
 //!
-//! What runs the projection: every committed Board (`observe_committed`), a
-//! system wake or clock change, and the webview's reconcile. `reminder_status`
+//! What runs the projection: every committed Board (`observe_committed`, the
+//! observer `init` registers with the Board door), a system wake or clock
+//! change, and the webview's reconcile. `reminder_status`
 //! is therefore not a plain read: it projects and refreshes the Dock. The
 //! webview reconciles at boot, on every return to its window, and every 2 s
 //! while the Board has a reminder (`reminderTick` in reminder-model.js; a
@@ -388,6 +389,8 @@ extern "C" fn result_callback(raw: *const std::ffi::c_char, code: i32) {
     }
 }
 pub(crate) fn init() {
+    // every Board the door commits is projected (documents.rs `commit_board`)
+    crate::documents::set_commit_observer(observe_committed);
     #[cfg(target_os = "macos")]
     // SAFETY: static callback functions live for the entire process.
     unsafe {
@@ -395,9 +398,11 @@ pub(crate) fn init() {
     }
 }
 
-/// Only the authoritative load/save door supplies this read-only mirror.
-/// Projection must never run storage recovery ahead of the Board loader.
-pub(crate) fn observe_committed(payload: &str) {
+/// The Board door's commit observer. Only that authoritative load/save door
+/// supplies this copy, the projection's input; the door keeps its own and
+/// never reads this one. Projection must never run storage recovery ahead of
+/// the Board loader.
+fn observe_committed(payload: &str) {
     if let Ok(board) = serde_json::from_str(payload) {
         {
             let _fence = PROJECT.lock_or_recover();
@@ -405,12 +410,6 @@ pub(crate) fn observe_committed(payload: &str) {
         }
         reconcile();
     }
-}
-pub(crate) fn committed_payload() -> Option<String> {
-    COMMITTED
-        .lock_or_recover()
-        .as_ref()
-        .and_then(|board| serde_json::to_string(board).ok())
 }
 pub(crate) fn reconcile() {
     let _lock = PROJECT.lock_or_recover();

@@ -48,6 +48,14 @@
 //!   than any usable one, cannot be read right now, no way out is offered. The
 //!   exit commits the chosen Board (lifting the fence) and moves nothing; the
 //!   webview saves it through its one transaction queue.
+//! - The door keeps the Board this process committed last
+//!   (`COMMITTED_BOARD`): the webview's load, its save, or the user's way out
+//!   of a lost Board, through `commit_board` and nowhere else. That copy is
+//!   what "holds a committed Board" means above. Each commit is then told to
+//!   ONE observer, registered once at boot (`set_commit_observer`, the
+//!   reminder projection): on the committing thread, before the command
+//!   returns, and never while the door's lock is held. The door names no
+//!   feature for it, as `tmux_lifecycle` names none for its restart guard.
 //! - settings.json has one owner, the webview. `load_settings`
 //!   (`storage::load_as_owner`) sets a damaged file aside and reports the
 //!   recovery once, in-band; `save_settings` (`storage::save_typed_as_owner`)
@@ -77,9 +85,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 use crate::error::{DeckError, ErrorKind};
 use crate::storage;
+use crate::sync::LockRecover;
 
 // ---------- board persistence ------------------------------------------------
 
@@ -933,15 +943,40 @@ fn load_board_at(path: &std::path::Path) -> Result<Option<storage::LoadOutcome>,
     }
 }
 
-/// The reminder module keeps the process's copy of the committed Board (what
-/// the webview last loaded or saved); the Board door reads it and feeds it
-/// here and nowhere else (12-C3 moves it).
-fn committed_board() -> Option<String> {
-    crate::reminder::committed_payload()
+/// The Board this process committed last: what the webview loaded or saved,
+/// or the way out it took from a lost Board. The door owns it. It lifts the
+/// save fence over a lost Board (`board_lost_at`) and is the base of the
+/// reminder checks when the main file was damaged while deck ran
+/// (`save_board_at`). Read by `committed_board` and written by `commit_board`,
+/// nowhere else.
+static COMMITTED_BOARD: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+
+/// The one observer of a commit (see the header): set once at boot by the
+/// feature that projects the committed Board, never replaced.
+type CommitObserver = fn(&str);
+static COMMIT_OBSERVER: OnceLock<CommitObserver> = OnceLock::new();
+
+pub(crate) fn set_commit_observer(observer: CommitObserver) {
+    let _ = COMMIT_OBSERVER.set(observer);
 }
 
+fn committed_board() -> Option<String> {
+    COMMITTED_BOARD
+        .lock_or_recover()
+        .as_ref()
+        .and_then(|board| serde_json::to_string(board).ok())
+}
+
+/// The door's copy is replaced first, under its own lock and nothing else;
+/// the observer is told after that lock is released.
 fn commit_board(payload: &str) {
-    crate::reminder::observe_committed(payload);
+    let Ok(board) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return;
+    };
+    *COMMITTED_BOARD.lock_or_recover() = Some(board);
+    if let Some(observer) = COMMIT_OBSERVER.get() {
+        observer(payload);
+    }
 }
 
 #[tauri::command]

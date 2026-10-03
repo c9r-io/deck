@@ -180,11 +180,11 @@ fn lifecycle_and_ledger_do_not_name_feature_modules() {
 
 /// What the typed-documents door may name, as a closed list: the
 /// infrastructure underneath it, two closed vocabularies it validates
-/// against, the two delegations it makes to feature modules — and one
-/// registered debt. A module that is not listed fails. A count is pinned only
-/// where the number is the rule: one lookup per vocabulary, one call per
-/// delegation, and a debt that may only shrink. Counted over production code
-/// (no comments, no strings, not the trailing test module).
+/// against, and the delegations it makes to feature modules. A module that is
+/// not listed fails. A count is pinned only where the number is the rule: one
+/// lookup per vocabulary, one call per delegation, and for the reminder the
+/// two types and two validators the Board door takes. Counted over production
+/// code (no comments, no strings, not the trailing test module).
 const DOCUMENTS_MAY_NAME: &[(&str, Option<usize>, &str)] = &[
     ("error", None, "the one error type"),
     (
@@ -193,6 +193,11 @@ const DOCUMENTS_MAY_NAME: &[(&str, Option<usize>, &str)] = &[
         "the typed envelope and atomic writes underneath",
     ),
     ("datadir", None, "where deck.json and settings.json live"),
+    (
+        "sync",
+        None,
+        "poison-tolerant locking for the door's own committed-Board copy",
+    ),
     (
         "smoke_faults",
         None,
@@ -214,17 +219,15 @@ const DOCUMENTS_MAY_NAME: &[(&str, Option<usize>, &str)] = &[
         Some(1),
         "delegation: task-preset commands to the channel admission table",
     ),
-    // Registered debt, not an endorsement. Since the Card Reminder work the
-    // Board door takes the reminder type and its validator (a Board-domain
-    // delegation like the two above), and reads and feeds the reminder
-    // module's in-memory mirror of the committed Board — through
-    // `committed_board` and `commit_board` only. Moving that mirror behind
-    // the persistence side is governance item 12-C3; until then this count
-    // may only go down.
+    // A Board-domain delegation like the two above: a card's reminder and a
+    // save's claims are the reminder module's types (three uses), checked by
+    // its two validators. The door reads no reminder state and calls no
+    // reminder policy: it owns the committed-Board copy, and the projection
+    // is the observer the reminder module registers.
     (
         "reminder",
-        Some(7),
-        "DEBT (12-C3): the reminder type, its validator and the committed-Board mirror",
+        Some(5),
+        "delegation: the reminder and claim types and their two validators",
     ),
 ];
 
@@ -439,10 +442,10 @@ fn only_a_load_a_save_and_the_users_exit_commit_a_board() {
         "a Board becomes committed by loading it, saving it, or the user's way out of a lost \
          Board (documents::board_lost_exit) — nowhere else"
     );
-    assert_eq!(
-        callers_of("observe_committed("),
-        ["documents.rs commit_board"],
-        "the committed-Board mirror is written through documents::commit_board only"
+    assert!(
+        callers_of("observe_committed(").is_empty(),
+        "nothing calls the reminder projection's observer by name: the Board door tells its \
+         registered observer from documents::commit_board"
     );
 }
 
