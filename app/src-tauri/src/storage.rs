@@ -1,4 +1,3 @@
-//! Card reminders and blocked retirement identities use sticky Board v5.
 //! Review-aware opt-in uses envelope v2 (sticky) for queue.json and
 //! settings.json. Card buffers, frozen inbound plans and idempotent queue operations use
 //! sticky v3 envelopes for deck.json and queue.json respectively.
@@ -14,7 +13,9 @@
 //!   rename → parent-directory fsync (both the main file and its `.bak`);
 //! - the previous good version is kept as `<file>.bak` before each save;
 //! - files carry `{"schema_version": N, "data": …}`; legacy version-less
-//!   files are read as v0 and upgraded in place on their next save;
+//!   files are read as v0 and upgraded in place on their next save; a Board
+//!   that holds a card reminder or a blocked retirement identity is written
+//!   as v5 and stays v5 (sticky), so an older deck refuses it untouched;
 //! - loading is TYPED: a file must parse as JSON, carry a readable envelope
 //!   AND deserialize into its document type — valid JSON with the wrong
 //!   business structure goes through the same recovery as garbage bytes;

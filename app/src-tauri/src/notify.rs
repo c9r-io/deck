@@ -1,7 +1,3 @@
-//! Card reminders have independent UTC intent and native scheduling in
-//! reminder.rs. The Dock unions due card IDs with enabled Agent reasons;
-//! viewing an Agent episode never handles a reminder. Agent post/withdraw
-//! identifiers and notifyAway semantics below remain unchanged.
 //! notify.rs — away notifications and the Dock badge, the desktop side of
 //! the attention loop: a macOS notification when an agent needs the user
 //! while the deck window is not in front, and a badge with the number of
@@ -19,6 +15,13 @@
 //!   `notifyAway` setting is on (off by default; `notifySound` adds the
 //!   default sound). Nothing is posted for `working`, for the 15 s output
 //!   heuristic (no hook state is no state), for a star, or for a stop.
+//! - **Card reminders are a separate source.** Their UTC intent and native
+//!   scheduling live in `reminder.rs`, which this module starts at `init`.
+//!   Here they only join the Dock count: `push_badge` unions the cards whose
+//!   reminder is due (`reminder::badge_keys`, one count per card, whether or
+//!   not `notifyAway` is on) with the agent reasons above. Viewing an agent
+//!   episode never handles a reminder, and a reminder changes nothing about
+//!   the post/withdraw identifiers or the switch.
 //! - **Attention, not authority.** The two words are interaction
 //!   observations: `needs-input` = the agent requested input (it may have
 //!   moved on since), `turn-done` = an interaction ended (not task

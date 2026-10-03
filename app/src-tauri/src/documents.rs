@@ -1,5 +1,3 @@
-//! Card reminders are typed, bounded Board v5 intent. Native save fences
-//! removals/edits against explicit current-revision claims before persistence.
 //! Typed board/settings documents: `BoardDoc` and `SettingsDoc` validate
 //! business structure via `try_from` (the SAME rules on load and save), and
 //! the load/save commands plus the settings readers other modules use.
@@ -15,6 +13,13 @@
 //!   editor name, shortcut table), with `inbound` handed to
 //!   `inbound::validate_settings`. A violation is an `InvalidDoc` error with
 //!   its rule's message; the file is never rewritten to make it pass.
+//! - A card's `reminder` is typed, bounded Board intent (`reminder::Reminder`;
+//!   a Board that holds one is a sticky v5 envelope, `storage.rs`), checked on
+//!   load and save by `reminder::validate`. `save_board` also fences every
+//!   removal or edit of a saved reminder against the caller's explicit
+//!   current-revision claims (`reminder::validate_changes`) before anything
+//!   is persisted. Those two types and two validators are all this door takes
+//!   from the reminder module.
 //! - The typed structs are parse-only. The webview owns the documents and
 //!   `save_*` persists the ORIGINAL string, so unknown extension fields
 //!   round-trip untouched and the `#[allow(dead_code)]` fields exist to be
