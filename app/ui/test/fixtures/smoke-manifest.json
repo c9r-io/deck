@@ -126,6 +126,16 @@
         "rename-restart": {}
       }
     },
+    "board-lost": {
+      "terminal": "done",
+      "checks": {
+        "board-lost-offer": {},
+        "board-lost-reoffer": {},
+        "board-lost-exit": {},
+        "board-lost-usable": {},
+        "board-lost-exception": { "failureOnly": true }
+      }
+    },
     "buffer": {
       "terminal": "done",
       "checks": {

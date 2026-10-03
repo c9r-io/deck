@@ -201,6 +201,11 @@ const KEY_CLASSES: &[&str] = &[
 /// recorded). Process names themselves stay out of the log.
 const FG_CLASSES: &[&str] = &["no-card", "no-fg", "agent", "editor", "repl", "other"];
 const SMOKE_CHECKS: &[&str] = &[
+    "board-lost-offer",
+    "board-lost-reoffer",
+    "board-lost-exit",
+    "board-lost-usable",
+    "board-lost-exception",
     "reminder-real-due",
     "reminder-phase-ready",
     "reminder-restart-held",

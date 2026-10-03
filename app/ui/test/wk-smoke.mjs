@@ -3148,6 +3148,13 @@ export async function verifyClockLive() {
   await runClockLiveSmoke();
 }
 
+// The lost Board's way out, on a root the operator seeded with nothing
+// loadable (board-lost-smoke.mjs).
+export async function verifyBoardLost() {
+  const { runBoardLostSmoke } = await import('./board-lost-smoke.mjs');
+  await runBoardLostSmoke();
+}
+
 export async function verifyReminder() {
   const { runReminderSmoke } = await import('./reminder-smoke.mjs');
   await runReminderSmoke();

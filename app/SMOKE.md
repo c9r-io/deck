@@ -106,6 +106,16 @@ session): a clock-style automation card with one owner `:` no-op must be
 started by the scheduler and delivered (`scripts/smoke-verdict <root>
 empty-start`). It is the regression for the zero-session deadlock, where a
 failed `list-panes -a` on an empty server selected nothing forever.
+`board-lost` runs on a root seeded, before launch, so that the Board cannot
+be loaded, and follows the one way out deck offers for it. A damaged
+`deck.json` with no backup (`printf '{damaged' > "$ROOT/deck.json"`) is a new
+Board: every checkpoint reports a=2. A healthy `deck.json` copied in as
+`deck.corrupt-1700000000`, with no `deck.json` and no `.bak`, is a restore:
+a=1, and `board-lost-exit` b is the number of cards restored. The carrier
+cancels the dialog, makes a change that is refused, takes the exit when the
+dialog comes back, and requires the chosen Board on disk and usable
+(`scripts/smoke-verdict <root> board-lost`); the copy that was set aside
+must still be there afterwards.
 
 **Window size.** Every mode runs in the default window, which is the minimum
 supported window size: 1280×800 points (`tauri.conf.json` `minWidth` /

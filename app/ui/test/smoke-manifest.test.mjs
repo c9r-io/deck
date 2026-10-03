@@ -26,6 +26,7 @@ const CARRIERS = {
   'reminder-smoke.mjs': ['reminder'],
   'reminder-native-smoke.mjs': ['reminder-native'],
   'authority-smoke.mjs': ['authority-live', 'empty-start'],
+  'board-lost-smoke.mjs': ['board-lost'],
 };
 
 /* Names built at runtime, which a single-line literal scan cannot read:
