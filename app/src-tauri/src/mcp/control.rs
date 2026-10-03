@@ -27,12 +27,52 @@ pub(super) const CONTROL_TOOLS: [&str; 14] = [
     "deck_session_close",
 ];
 
+/// Whether `credential` is the current credential of a client that may use
+/// the control surface now: the feature on, the client neither revoked nor
+/// emergency-fenced.
+fn credential_matches(runtime: &Runtime, client_id: &str, credential: &str) -> bool {
+    let emergency_auth_blocked = runtime
+        .emergency
+        .lock_or_recover()
+        .clients
+        .contains(client_id);
+    !emergency_auth_blocked
+        && runtime
+            .read(|doc| {
+                doc.config.enabled
+                    && doc.config.clients.iter().any(|client| {
+                        client.id == client_id
+                            && client.revoked_at.is_none()
+                            && client.credential_version > 0
+                            && secret_hash_matches(
+                                &client.credential_hash,
+                                &sha(credential.as_bytes()),
+                            )
+                    })
+            })
+            .unwrap_or(false)
+}
+
 pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
     if request.version != CONTROL_PROTOCOL {
+        // The reply is the same for everyone and comes before any other
+        // check. The local note is kept only for a request that would have
+        // authenticated, so an unauthenticated same-uid peer cannot make
+        // Settings say anything; nothing is logged or audited either way.
+        if valid_id(&request.client_id)
+            && request.credential.len() <= 128
+            && credential_matches(runtime, &request.client_id, &request.credential)
+        {
+            runtime
+                .emergency
+                .lock_or_recover()
+                .refused_adapters
+                .insert(request.client_id.clone());
+        }
         return error_value(
             "PROTOCOL_MISMATCH",
             "the adapter and Deck speak different control protocol versions",
-            "Use the deck-mcp adapter bundled with the running Deck build.",
+            "Restart this integration so that it starts the adapter bundled with the running Deck. For the Secure Tunnel: Stop Tunnel, then Start Tunnel, in Deck's Settings.",
         );
     }
     if !valid_id(&request.client_id) || request.credential.len() > 128 {
@@ -54,33 +94,19 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
             "Ask the local Deck user to enable MCP terminal control in Settings.",
         );
     }
-    let emergency_auth_blocked = runtime
-        .emergency
-        .lock_or_recover()
-        .clients
-        .contains(&request.client_id);
-    let authenticated = !emergency_auth_blocked
-        && runtime
-            .read(|doc| {
-                doc.config.enabled
-                    && doc.config.clients.iter().any(|client| {
-                        client.id == request.client_id
-                            && client.revoked_at.is_none()
-                            && client.credential_version > 0
-                            && secret_hash_matches(
-                                &client.credential_hash,
-                                &sha(request.credential.as_bytes()),
-                            )
-                    })
-            })
-            .unwrap_or(false);
-    if !authenticated {
+    if !credential_matches(runtime, &request.client_id, &request.credential) {
         return error_value(
             "AUTH_REQUIRED",
             "MCP credential is invalid or revoked",
             "Reauthorize this integration locally in Deck.",
         );
     }
+    // this client's adapter speaks the current protocol (again)
+    runtime
+        .emergency
+        .lock_or_recover()
+        .refused_adapters
+        .remove(&request.client_id);
     let request_session = request
         .arguments
         .get("session_id")

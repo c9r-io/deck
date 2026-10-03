@@ -196,6 +196,32 @@ test('MCP authorization keeps the form when the project disappears during previe
   assert.equal(await pending, null);
 });
 
+test('an MCP client whose adapter was refused says so on its own row, with the next step', async () => {
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    if (cmd === 'mcp_status') return { enabled: true, outputRetentionMs: 86_400_000, clients: [
+      { id: 'client_skewed', name: 'Tunnel', revoked: false, projects: [], adapterRefused: true },
+      { id: 'client_fine', name: 'Local', revoked: false, projects: [] },
+      { id: 'client_gone', name: 'Old', revoked: true, projects: [], adapterRefused: true },
+    ] };
+    if (cmd === 'tunnel_helper_status') return new Promise(() => {});
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  await renderMcpSettings();
+  const rows = fakeDocument.getElementById('set-mcp-clients').children;
+  const note = row => row.children.find(child => String(child.className).includes('mcp-adapter-refused'));
+  // only the client that was refused, and never a revoked one
+  assert.deepEqual(rows.map(row => !!note(row)), [true, false, false]);
+  assert.equal(note(rows[0]).textContent,
+    "This integration's adapter was started by another Deck version, so its requests are refused. Restart the integration. For the Secure Tunnel: Stop Tunnel, then Start Tunnel.");
+  // the row keeps its two leading cells; the note is a line of its own after them
+  assert.equal(rows[0].children.indexOf(note(rows[0])), 2);
+  // the Chinese sentence names the buttons as the Chinese interface labels them
+  const zh = (await import('../js/i18n/zh-Hans.js')).default;
+  assert.equal(zh['mcp.adapterRefused'],
+    '这个集成的适配器是另一个 Deck 版本启动的，请求被拒绝。请重启这个集成；Secure Tunnel 请先“停止 Tunnel”再“启动 Tunnel”。');
+  for (const label of [zh['mcp.tunnelStop'], zh['mcp.tunnelStart']]) assert.ok(zh['mcp.adapterRefused'].includes(`“${label}”`), label);
+});
+
 test('MCP settings delete only an already-revoked client after confirmation', async () => {
   const calls = [];
   window.__TAURI__ = { core: { invoke: async (cmd, args) => {

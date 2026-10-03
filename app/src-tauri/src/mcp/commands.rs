@@ -26,6 +26,11 @@ pub(crate) struct ClientView {
     pub(super) revoked: bool,
     pub(super) allow_create: bool,
     pub(super) projects: Vec<ProjectScope>,
+    /// Its adapter was last refused for a control-protocol mismatch
+    /// (`control::route`): the integration has to be restarted. Absent from
+    /// the answer otherwise.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(super) adapter_refused: bool,
 }
 
 #[tauri::command]
@@ -51,6 +56,8 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
                 revoked: client.revoked_at.is_some() || emergency.clients.contains(&client.id),
                 allow_create: client.allow_create,
                 projects: client.projects.clone(),
+                adapter_refused: client.revoked_at.is_none()
+                    && emergency.refused_adapters.contains(&client.id),
             })
             .collect(),
         unavailable: false,
@@ -295,6 +302,7 @@ pub(crate) fn mcp_client_add(
         };
         doc.config.clients.push(client.clone());
         Ok(ClientView {
+            adapter_refused: false,
             id: client.id,
             name: client.name,
             revoked: false,

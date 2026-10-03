@@ -347,6 +347,12 @@ pub(super) struct EmergencyFences {
     /// Execution revocations whose persistence failed. Only a later local
     /// approval — ordered after it by the delivery lock — lifts this.
     pub(super) execution_unpersisted: HashSet<String>,
+    /// Not a fence, an observation kept beside them: clients whose adapter
+    /// was last refused for a control-protocol mismatch. `control::route`
+    /// notes it only for a request that authenticated and drops it at the
+    /// client's next accepted request; Settings shows it on the client's row
+    /// (`commands::status_of`). In memory only.
+    pub(super) refused_adapters: HashSet<String>,
 }
 
 impl EmergencyFences {

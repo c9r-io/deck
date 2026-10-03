@@ -992,6 +992,7 @@ const dictionary = {
   'mcp.revoke': '撤销',
   'mcp.revokeConfirm': '撤销“{name}”？新的 MCP 写入会被阻止，其终端交回给你；正在运行的程序会继续，直到你在该窗格按 Ctrl-C 或关闭卡片。',
   'mcp.revoked': '已撤销',
+  'mcp.adapterRefused': '这个集成的适配器是另一个 Deck 版本启动的，请求被拒绝。请重启这个集成；Secure Tunnel 请先“停止 Tunnel”再“启动 Tunnel”。',
   'mcp.delete': '删除',
   'mcp.deleteConfirm': '删除已撤销的客户端“{name}”？其授权记录和本地凭据将被移除；历史安全审计记录仍会保留。',
   'mcp.actionFailed': '无法完成 MCP 控制更改。',

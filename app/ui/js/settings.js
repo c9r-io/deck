@@ -832,6 +832,15 @@ export async function renderMcpSettings() {
       };
       actions.append(remove);
     }
+    /* its adapter speaks another control protocol and is being refused (kept
+       by the backend for an authenticated request only, mcp/mod.rs): the one
+       thing that helps is restarting that integration, so the row says so */
+    if (client.adapterRefused === true && !client.revoked) {
+      const note = document.createElement('div'); note.className = 'mcp-tunnel-status mcp-adapter-refused';
+      note.style.color = 'var(--wait)';
+      note.textContent = t('mcp.adapterRefused');
+      row.appendChild(note);
+    }
     clients.appendChild(row);
     renderTunnelForClient(client, row, actions);
   }

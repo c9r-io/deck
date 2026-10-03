@@ -993,6 +993,7 @@ const dictionary = {
   'mcp.revoke': 'Revoke',
   'mcp.revokeConfirm': 'Revoke “{name}”? New MCP writes stop and its terminals return to you; a running program keeps running until you press Ctrl-C in its pane or close the card.',
   'mcp.revoked': 'revoked',
+  'mcp.adapterRefused': "This integration's adapter was started by another Deck version, so its requests are refused. Restart the integration. For the Secure Tunnel: Stop Tunnel, then Start Tunnel.",
   'mcp.delete': 'Delete',
   'mcp.deleteConfirm': 'Delete revoked client “{name}”? Its authorization record and local credential will be removed. Historical security ledger entries remain.',
   'mcp.actionFailed': 'The MCP control change could not be completed.',

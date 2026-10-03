@@ -10,6 +10,16 @@ runner carries no protocol number of its own: it ships inside the same signed
 bundle as the app, and the shared `mcp-fixtures/` hold the two to one
 contract (see "Contract fixtures" below).
 
+When to raise the control protocol: only when an Adapter of the previous
+protocol would be unsafe or wrong against the new Deck (it would send what
+Deck must not accept, or misread what Deck returns). A change both sides
+tolerate does not raise it. The cost of every raise is paid by users: each
+Adapter process that is already running is refused with `PROTOCOL_MISMATCH`
+on every call until its integration is restarted, and the Secure Tunnel,
+which keeps one Adapter for as long as it runs, has to be stopped and
+started by hand. Deck tells the local user on the client's row in Settings
+(see `docs/mcp.md`); it does not restart anything itself.
+
 ## Decision
 
 Deck uses a thin Rust STDIO MCP adapter, a private in-process Deck control

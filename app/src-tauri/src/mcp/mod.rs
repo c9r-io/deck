@@ -118,6 +118,21 @@
 //! the control protocol, runner argv and the tool list are likewise held to
 //! the shared `mcp-fixtures/` by each crate's own tests; no crate parses
 //! another's source.
+//!
+//! Control protocol skew: a request at another `CONTROL_PROTOCOL` is refused
+//! with `PROTOCOL_MISMATCH` before any other check, the same for everyone,
+//! and leaves no log line and no audit record. The adapter's own version
+//! never reaches Deck. A long-lived adapter (the Secure Tunnel keeps one)
+//! outlives a Deck update, so the local user is told where they can act: when
+//! the refused request's client id and credential authenticate, the client
+//! is noted in memory (`EmergencyFences::refused_adapters`) and Settings says
+//! on that client's row to restart the integration (`ClientView`
+//! `adapter_refused`); the client's next accepted request drops the note. An
+//! unauthenticated peer leaves nothing. An adapter of the same protocol is
+//! never mentioned, whatever build it came from. The protocol number is
+//! raised only when an adapter of the previous protocol would be unsafe or
+//! wrong against this Deck: every raise refuses every running adapter until
+//! its integration is restarted (`docs/mcp-architecture.md`).
 //! The control socket is bound under a private temporary name, made 0600, and
 //! atomically renamed into place; Deck never changes its process-wide umask.
 //!

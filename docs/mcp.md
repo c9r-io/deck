@@ -121,7 +121,16 @@ reports the pane's `runnerVersion`. The private control socket exists only
 while the feature is enabled and is removed on disable. When it is absent,
 the Adapter returns `FEATURE_DISABLED`; if disable races an already-connected
 request, the service returns the same code. An adapter/app protocol skew returns
-`PROTOCOL_MISMATCH` (never `AUTH_REQUIRED`).
+`PROTOCOL_MISMATCH` (never `AUTH_REQUIRED`), with the advice to restart the
+integration. An Adapter process that was started before a Deck update keeps
+running the old Adapter (the Secure Tunnel holds one for as long as the
+tunnel runs), so after an update that changed the control protocol its
+requests are refused until it is restarted. When such a request carries the
+client's valid credential, Settings → MCP says so on that client's row and
+names the next step: restart the integration; for the Secure Tunnel, **Stop
+Tunnel**, then **Start Tunnel**. The line goes away with the client's next
+accepted request. An Adapter of the same protocol never produces it, whatever
+build it came from, and a request without a valid credential leaves nothing.
 
 Request identity and replay. Every side effect carries a `request_id`, and
 every side effect is also bound to a server-issued value that only moves

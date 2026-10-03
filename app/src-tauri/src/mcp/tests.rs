@@ -610,6 +610,121 @@ fn scope_preview_classifies_paths_and_final_scope_check_rejects_stale_project() 
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A request at another control-protocol version is refused first, for
+/// everyone, with one reply. Deck notes it locally only when the request's
+/// client id and credential are those of a client that may use the control
+/// surface now: an unauthenticated same-uid peer cannot make Settings say
+/// anything. The note is on that client's status row and that client's next
+/// accepted request clears it.
+#[test]
+fn a_protocol_mismatch_is_noted_for_an_authenticated_client_only() {
+    let root = test_root("skew");
+    let mut doc = DiskDoc::default();
+    doc.config.enabled = true;
+    doc.config.clients.push(client_record(&root));
+    let mut gone = client_record(&root);
+    gone.id = "client_gone".into();
+    gone.revoked_at = Some(1);
+    doc.config.clients.push(gone);
+    let path = root.join("mcp.json");
+    save(&path, &doc).unwrap();
+    let runtime = Runtime {
+        app: None,
+        path,
+        socket: root.join("control.sock"),
+        doc: Mutex::new(Ok(doc)),
+        io: Mutex::new(()),
+        delivery: Mutex::new(()),
+        emergency: Mutex::new(EmergencyFences::default()),
+        service_instance: "svc_test".into(),
+        runner_auth: Mutex::new(HashMap::new()),
+        started: Instant::now(),
+    };
+    let skewed = |client: &str, credential: &str| {
+        let mut request = request("deck_capabilities", json!({}));
+        request.version = CONTROL_PROTOCOL + 1;
+        request.client_id = client.into();
+        request.credential = credential.into();
+        route(&runtime, request)
+    };
+    let status = || serde_json::to_value(status_of(&runtime)).unwrap();
+    let noted = |client: &str| {
+        status()["clients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|view| view["id"] == client)
+            .is_some_and(|view| view["adapterRefused"] == true)
+    };
+    // whoever cannot authenticate leaves no note: a wrong credential, an
+    // unknown client, a malformed client id, a revoked client
+    for (client, credential) in [
+        ("client_a", "mcp_wrong"),
+        ("client_x", "mcp_test"),
+        ("not a client id", "mcp_test"),
+        ("client_gone", "mcp_test"),
+    ] {
+        let reply = skewed(client, credential);
+        assert_eq!(reply["error"]["code"], "PROTOCOL_MISMATCH", "{client}");
+        assert!(!noted("client_a") && !noted("client_gone"), "{client}");
+    }
+    assert!(status()["clients"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|view| view.get("adapterRefused").is_none()));
+    // the authorized client's own adapter, at another protocol version: the
+    // same reply, with advice someone can act on
+    let reply = skewed("client_a", "mcp_test");
+    assert_eq!(reply["error"]["code"], "PROTOCOL_MISMATCH");
+    let advice = reply["error"]["nextAction"].as_str().unwrap();
+    assert!(
+        advice.contains("Restart this integration")
+            && advice.contains("Stop Tunnel, then Start Tunnel"),
+        "{advice}"
+    );
+    assert!(noted("client_a") && !noted("client_gone"));
+    // the row of a client revoked since then no longer says it, and a request
+    // that arrives while the feature is off is not a client's either
+    let set = |revoked: Option<u64>, enabled: bool| {
+        runtime
+            .write(|doc| {
+                doc.config.clients[0].revoked_at = revoked;
+                doc.config.enabled = enabled;
+                Ok(())
+            })
+            .unwrap()
+    };
+    set(Some(2), true);
+    assert!(!noted("client_a"));
+    set(None, false);
+    runtime.emergency.lock_or_recover().refused_adapters.clear();
+    assert_eq!(
+        skewed("client_a", "mcp_test")["error"]["code"],
+        "PROTOCOL_MISMATCH"
+    );
+    assert!(runtime
+        .emergency
+        .lock_or_recover()
+        .refused_adapters
+        .is_empty());
+    set(None, true);
+    skewed("client_a", "mcp_test");
+    assert!(noted("client_a"));
+    // a failed authentication at the current protocol does not clear it
+    let mut wrong = request("deck_capabilities", json!({}));
+    wrong.credential = "mcp_wrong".into();
+    assert_eq!(route(&runtime, wrong)["error"]["code"], "AUTH_REQUIRED");
+    assert!(noted("client_a"));
+    // the client's next accepted request does
+    assert!(route(&runtime, request("deck_capabilities", json!({})))["ok"] == true);
+    assert!(!noted("client_a"));
+    assert!(status()["clients"][0].get("adapterRefused").is_none());
+    // no audit record was written for any of it
+    assert!(runtime.read(|doc| doc.audit.is_empty()).unwrap());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn request(tool: &str, arguments: Value) -> WireRequest {
     WireRequest {
         version: CONTROL_PROTOCOL,
