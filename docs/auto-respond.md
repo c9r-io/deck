@@ -190,8 +190,10 @@ existing session. The command may independently resume its own prior context.
   plan. Existing runs and rules without opt-in
   keep their timing. See [inspection and compatibility](scheduler-context-safety.md#human-inspection-checkpoints-c-v01).
 - Deleting a rule leaves its existing cards. A rule whose project no longer
-  exists cannot dispatch a new card; project deletion currently does not
-  remove the saved rule from settings.
+  exists cannot dispatch a new card, and deck removes it from settings at
+  the next change to the Board's projects (deleting the project is one).
+  It judges this against your Board only: while the Board could not be
+  loaded, no rule is removed.
 - While the Board could not be loaded (deck shows an empty Board and says
   why) no trigger is dispatched: a badge is not used up and a clock slot is
   not skipped, and nothing is said about a missing project. A badge starts

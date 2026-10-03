@@ -10,10 +10,14 @@
 // for the user's Board (inbound.js `startInbound`): while the exit is on
 // offer the rule's slot stays pending in the backend — not acknowledged, no
 // run recorded, no notice — and taking the exit starts its run on the
-// restored Board.
+// restored Board. Its rules are judged against the user's Board only
+// (automation.js `startOrphanPruning`): a `projects` event on the placeholder
+// drops none of them, and after the exit the same event drops the one whose
+// project is not on the restored Board, if the root carries such a rule.
 export async function runBoardLostSmoke() {
   const { ctx, inv, state, store } = await import('../js/state.js');
   const { mutateBoard } = await import('../js/persistence.js');
+  const { openProjectDefaults } = await import('../js/board.js');
   const { formatDateTime, t } = await import('../js/i18n.js');
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (check, budget = 8000) => {
@@ -29,6 +33,18 @@ export async function runBoardLostSmoke() {
   const shown = () => document.getElementById('chd').style.display === 'flex';
   const buttons = () => [...document.getElementById('chd-actions').children];
   const toasts = () => [...document.getElementById('toasts').children].map(el => el.textContent);
+  const ruleIds = () => (ctx.settings.inbound?.rules || []).map(value => value.id).join(',');
+  const seeded = ruleIds();
+  /* the project defaults dialog confirmed as it was: a Board operation that
+     changes nothing and still announces `projects` */
+  const confirmDefaults = async () => {
+    const dialog = document.getElementById('pdf');
+    openProjectDefaults(store.projects[0].id);
+    await until(() => dialog.style.display === 'flex');
+    document.getElementById('pdf-yes').click();
+    await until(() => dialog.style.display !== 'flex', 2000);
+    await pause(400);
+  };
   let stage = 0;
   try {
     stage = 1;
@@ -70,10 +86,12 @@ export async function runBoardLostSmoke() {
     buttons()[0].click();
     await until(() => !shown(), 2000);
     const placeholder = store.projects[0].name;
+    let kept = true;
+    if (rule) { await confirmDefaults(); kept = ruleIds() === seeded; }
     let refused = false;
     await mutateBoard(draft => { draft.projects[0].name = 'refused'; }).catch(() => { refused = true; });
     await until(shown);
-    await report('board-lost-reoffer', refused && store.projects[0].name === placeholder
+    await report('board-lost-reoffer', kept && refused && store.projects[0].name === placeholder
       && (await inv('board_recovery_state')).state === 'lost'
       && buttons().length === 2 && buttons()[1].textContent === label, exit);
 
@@ -105,7 +123,14 @@ export async function runBoardLostSmoke() {
     await mutateBoard(draft => { draft.projects[0].name = 'after exit'; });
     const after = JSON.parse((await inv('load_board')).data);
     await pause(600);
-    await report('board-lost-usable', after.projects[0].name === 'after exit' && !shown(), exit);
+    // the same event on the user's Board leaves only the rules whose project is on it
+    let live = true;
+    if (rule) {
+      await confirmDefaults();
+      await until(() => ruleIds() === rule.id, 4000).catch(() => {});
+      live = ruleIds() === rule.id;
+    }
+    await report('board-lost-usable', live && after.projects[0].name === 'after exit' && !shown(), exit);
     await report('done', true, 1, 0);
   } catch (error) {
     await report('board-lost-exception', false, 1, stage);

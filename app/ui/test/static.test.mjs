@@ -442,15 +442,16 @@ test('reminders poll the backend only while the Board has one', () => {
   assert.equal((code.match(/reconcileReminders/g) || []).length, 5, 'the import and these four: nothing else in app.js drives reminders');
 });
 
+const code = file => read(file).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
 test("inbound triggers are pulled only once the webview holds the user's Board", () => {
-  const code = file => read(file).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const app = code('app/ui/js/app.js');
   // two starts and no other pull: boot after a Board that loaded, and the lost
   // Board's way out, the one other moment the placeholder is replaced
   assert.equal((app.match(/\bstartInbound\b/g) || []).length, 3, 'the import and the two starts');
   assert.match(app, /\n  if \(!loadErr\) startInbound\(\);\n/);
   const exit = app.slice(app.indexOf('const offerBoardExit'), app.indexOf('export async function boot()'));
-  assert.match(exit, /exited: \(\) => \{[^}]*\bstartReminders\(\);\s*startInbound\(\);\s*\}/);
+  assert.match(exit, /exited: \(\) => \{[^}]*\bstartReminders\(\);\s*startInbound\(\);[^}]*\}/);
   assert.doesNotMatch(app, /drainInbound|drainChannel|initInbound/);
   // the module wires nothing on its own: both listeners and the one timer
   // belong to startInbound, which also runs the first drains
@@ -462,6 +463,29 @@ test("inbound triggers are pulled only once the webview holds the user's Board",
   }
   assert.deepEqual([(start.match(/\blisten\(/g) || []).length, (start.match(/\bsetInterval\(/g) || []).length], [2, 1]);
   assert.match(start, /return Promise\.all\(\[drainInbound\(\), drainChannel\(\)\]\);/);
+});
+
+test("orphaned rules are dropped only once the webview holds the user's Board", () => {
+  const app = code('app/ui/js/app.js');
+  // two starts: boot after a Board that loaded, and the lost Board's way out
+  assert.equal((app.match(/\bstartOrphanPruning\b/g) || []).length, 3, 'the import and the two starts');
+  assert.match(app, /\n  if \(!loadErr\) startOrphanPruning\(\);\n/);
+  const exit = app.slice(app.indexOf('const offerBoardExit'), app.indexOf('export async function boot()'));
+  assert.match(exit, /exited: \(\) => \{[^}]*\bstartOrphanPruning\(\);[^}]*\}/);
+  // the boot start comes before a first run creates its project, so that
+  // project event is judged as it always was
+  const boot = app.slice(app.indexOf('export async function boot()'));
+  assert.ok(boot.indexOf('startOrphanPruning()') > boot.indexOf("inv('load_board')"));
+  assert.ok(boot.indexOf('startOrphanPruning()') < boot.indexOf("provider.createProject('main')"));
+  // in the drawer the pruning has one caller, and the subscription made at
+  // init, before any Board is held, only renders
+  const automation = code('app/ui/js/automation.js');
+  assert.equal((automation.match(/\bpruneOrphans\(\)/g) || []).length, 2, 'its definition and the one call');
+  const init = automation.slice(automation.indexOf('export function initAutomation(deps)'), automation.indexOf('export function startOrphanPruning()'));
+  assert.ok(init.length > 1000, 'startOrphanPruning follows initAutomation');
+  assert.doesNotMatch(init, /pruneOrphans/);
+  const start = automation.slice(automation.indexOf('export function startOrphanPruning()'), automation.indexOf('export const stopAutomation'));
+  assert.match(start, /provider\.subscribe\(ev => \{ if \(ev === 'projects'\) pruneOrphans\(\); \}\);/);
 });
 
 // check.mjs is the gate that keeps import cycles inside the view core. It is

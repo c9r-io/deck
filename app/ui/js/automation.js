@@ -40,8 +40,13 @@
 // the backend sources + inbound.js; closing a finished run is board.js's
 // poll. The Slack CONNECTION (its switch and tokens) stays in Settings: it
 // is account-level, a rule is project-level. A rule whose project no longer
-// exists is dropped on the next Board change, whatever its trigger, so a
-// deleted project never leaves a rule that fires into nothing. Weekday chips
+// exists is dropped on the next project change of the user's Board, whatever
+// its trigger, so a deleted project never leaves a rule that fires into
+// nothing. That begins with `startOrphanPruning`, which app.js calls once a
+// Board loaded or after the lost Board's way out: against the placeholder of
+// a failed load every rule looks orphaned, and one project event there (an
+// operation that changed nothing announces one) would save settings without
+// any of them. Weekday chips
 // and day-of-month options are built here (their labels go through the
 // locale), so the editor is rebuilt on a language change; the drawer itself
 // is re-rendered on every Board transaction and every inbound change while
@@ -620,11 +625,17 @@ export function initAutomation(deps) {
   buildDayControls();
   onLocaleChange(() => { buildDayControls(); renderAutomations(); });
   unsubscribe = provider.subscribe(ev => {
-    if (ev === 'projects') pruneOrphans();
     if (ev === 'projects' || ev === 'list') renderAutomations();
   });
   listen('inbound-changed', async () => { await refreshRuns(); renderAutomations(); })
     .catch(() => uev('listen-fail', 'inbound-changed'));
+}
+
+/* Orphaned rules are dropped from here on: app.js calls this once the
+   webview holds the user's Board (a Board that loaded, or the lost Board's
+   way out), never for the placeholder of a failed load. */
+export function startOrphanPruning() {
+  provider.subscribe(ev => { if (ev === 'projects') pruneOrphans(); });
 }
 
 export const stopAutomation = () => { if (unsubscribe) { unsubscribe(); unsubscribe = null; } };

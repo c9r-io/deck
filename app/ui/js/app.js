@@ -18,7 +18,7 @@ import { initTemplates } from './templates.js';
 import { startInbound } from './inbound.js';
 import { drainConnector, initConnector } from './connector.js';
 import { initMcp } from './mcp.js';
-import { initAutomation } from './automation.js';
+import { initAutomation, startOrphanPruning } from './automation.js';
 import { closeDropdownMenu, initDropdowns } from './dropdown.js';
 import { registerSessionPopup } from './session-tools.js';
 import { initAttention, openFromNotification } from './attention.js';
@@ -379,7 +379,8 @@ function startReminders() {
    and on the backend's `board-lost`. The Board the exit committed replaces
    the placeholder; one without a project — a new start — keeps the
    placeholder's, as a first run would create it. What waited for the user's
-   Board starts then: reminders and the inbound triggers. */
+   Board starts then: reminders, the inbound triggers and the pruning of
+   orphaned rules. */
 const offerBoardExit = createBoardExit({
   mutateBoard,
   hold: json => {
@@ -392,6 +393,7 @@ const offerBoardExit = createBoardExit({
     render();
     startReminders();
     startInbound();
+    startOrphanPruning();
   },
 });
 
@@ -459,6 +461,11 @@ export async function boot() {
     else if (recovery?.state !== 'lost') toast(t('error.boardLoad'));
     uev('board-load-fail');
   }
+  /* automation rules are judged against the user's Board only: one that did
+     not load leaves them alone until the way out (automation.js
+     `startOrphanPruning`). It starts before a first run creates its project,
+     as the drawer's subscription always has. */
+  if (!loadErr) startOrphanPruning();
   if (!store.projects.length) {
     if (loadErr) {
       /* an in-memory placeholder: the backend refuses every save of it until

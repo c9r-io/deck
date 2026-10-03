@@ -124,7 +124,14 @@ empty `cmd`, a `name`) pointing at a project, a group and a one-row template
 pending in the backend, with no run recorded and no notice
 (`board-lost-offer` then reports b = 10 + the number of buttons), and after
 the exit its run must be on the restored Board, queued and acknowledged
-(`board-lost-exit` b counts that card too).
+(`board-lost-exit` b counts that card too). With such a root the carrier
+also confirms the project defaults dialog unchanged (a Board operation that
+changes nothing and still announces `projects`), once on the placeholder
+and once after the exit: on the placeholder no rule may be dropped
+(`board-lost-reoffer`); after the exit only the rules whose project is on
+the restored Board may remain (`board-lost-usable`), so the root may carry
+a second rule (a Slack badge rule, never offered while Slack is off)
+pointing at a project the kept Board does not have.
 
 **Window size.** Every mode runs in the default window, which is the minimum
 supported window size: 1280×800 points (`tauri.conf.json` `minWidth` /
