@@ -1505,23 +1505,20 @@ fn read_settings_value(path: &Path) -> Result<serde_json::Value, DeckError> {
     }
 }
 
-/// Atomic replace that PRESERVES the file's existing permissions (these
-/// config files belong to the agent CLI, not deck — 0600 is only the default
-/// for a file deck itself creates). Refuses to create the agent's config
+/// Atomic replace of a file that belongs to the agent CLI, not deck
+/// (`datadir::atomic_write_through_link`): a symlinked settings file stays a
+/// link and its target gets the bytes, the file keeps its own mode (0600 is
+/// only the default for a file deck itself creates), a link to nothing and
+/// a file deck may not write are refused, and a failure leaves the file as
+/// it was with nothing beside it. Refuses to create the agent's config
 /// DIRECTORY: a missing one means the agent never ran on this Mac.
 fn write_agent_config(path: &Path, bytes: &[u8], never_ran: &str) -> Result<(), DeckError> {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(path)
-        .map(|m| m.permissions().mode() & 0o777)
-        .unwrap_or(0o600);
     if let Some(dir) = path.parent() {
         if !dir.exists() {
             return Err(DeckError::new(ErrorKind::Missing, never_ran));
         }
     }
-    crate::datadir::atomic_write(path, bytes)?;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
-    Ok(())
+    crate::datadir::atomic_write_through_link(path, bytes)
 }
 
 /// The helper a hook command may name: the sidecar inside `bundle`, which
@@ -3716,6 +3713,130 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hooks_with_uninstall(only_ours), serde_json::json!({}));
+    }
+
+    /// The agent's settings file belongs to the agent CLI and to whoever
+    /// manages it. A symlinked one (a dotfiles checkout) stays a link and its
+    /// TARGET gets the bytes and keeps its mode; a link to nothing and a file
+    /// deck may not write are refused and left exactly as they were; and no
+    /// temp file is ever left beside any of them.
+    #[test]
+    fn the_config_write_goes_through_a_link_and_refuses_what_it_may_not_write() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = std::env::temp_dir().join(format!("deck-agentcfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (home, repo) = (root.join("claude"), root.join("dotfiles"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        let names = |dir: &Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let chmod = |path: &Path, mode: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        let is_link = |path: &Path| {
+            std::fs::symlink_metadata(path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        };
+        let read = |path: &Path| std::fs::read_to_string(path).unwrap();
+
+        // a link into another directory
+        let target = repo.join("settings.json");
+        std::fs::write(&target, "old").unwrap();
+        chmod(&target, 0o644);
+        let link = home.join("settings.json");
+        symlink(&target, &link).unwrap();
+        write_agent_config(&link, b"new", "never ran").unwrap();
+        assert!(is_link(&link), "the link is still a link");
+        assert_eq!(read(&target), "new", "its target got the bytes");
+        assert_eq!(mode(&target), 0o644, "and kept its mode");
+
+        // a relative link to that link
+        let chained = home.join("chained.json");
+        symlink("settings.json", &chained).unwrap();
+        write_agent_config(&chained, b"newer", "never ran").unwrap();
+        assert!(is_link(&chained) && is_link(&link));
+        assert_eq!(read(&target), "newer");
+
+        // a plain file keeps its mode; a file deck creates is private
+        let plain = home.join("plain.json");
+        std::fs::write(&plain, "old").unwrap();
+        chmod(&plain, 0o640);
+        write_agent_config(&plain, b"new", "never ran").unwrap();
+        assert_eq!((read(&plain).as_str(), mode(&plain)), ("new", 0o640));
+        let fresh = home.join("fresh.json");
+        write_agent_config(&fresh, b"new", "never ran").unwrap();
+        assert_eq!((read(&fresh).as_str(), mode(&fresh)), ("new", 0o600));
+
+        // a link to nothing: refused; it stays a link and nothing is created
+        let dangling = home.join("dangling.json");
+        symlink(repo.join("missing.json"), &dangling).unwrap();
+        assert!(write_agent_config(&dangling, b"new", "never ran").is_err());
+        assert!(
+            is_link(&dangling),
+            "a dangling link is not replaced by a file"
+        );
+        assert!(!repo.join("missing.json").exists());
+
+        // a file deck may not write: refused, although a rename would pass
+        let readonly = home.join("readonly.json");
+        std::fs::write(&readonly, "old").unwrap();
+        chmod(&readonly, 0o444);
+        assert!(write_agent_config(&readonly, b"new", "never ran").is_err());
+        assert_eq!((read(&readonly).as_str(), mode(&readonly)), ("old", 0o444));
+
+        // a directory deck may not write into: refused
+        let locked = root.join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("settings.json"), "old").unwrap();
+        chmod(&locked, 0o500);
+        let refused = write_agent_config(&locked.join("settings.json"), b"new", "never ran");
+        chmod(&locked, 0o700);
+        assert!(refused.is_err());
+        assert_eq!(read(&locked.join("settings.json")), "old");
+        assert_eq!(names(&locked), ["settings.json"]);
+
+        // the replace itself fails (the path names a directory): the temp
+        // file it had written is removed
+        let occupied = home.join("occupied.json");
+        std::fs::create_dir_all(occupied.join("inside")).unwrap();
+        assert!(write_agent_config(&occupied, b"new", "never ran").is_err());
+        assert!(occupied.join("inside").is_dir());
+
+        // the agent never ran here: its directory is not created
+        let absent = root.join("absent").join("settings.json");
+        let error = write_agent_config(&absent, b"new", "never ran").unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Missing);
+        assert_eq!(
+            error.message(),
+            "never ran",
+            "said as the agent's own sentence"
+        );
+        assert!(!root.join("absent").exists());
+
+        // nothing but the files themselves, beside the links and the target
+        assert_eq!(
+            names(&home),
+            [
+                "chained.json",
+                "dangling.json",
+                "fresh.json",
+                "occupied.json",
+                "plain.json",
+                "readonly.json",
+                "settings.json"
+            ]
+        );
+        assert_eq!(names(&repo), ["settings.json"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -9,6 +9,13 @@
 //! `harden_data_dir` migrates a tree an older deck left 0644 at boot, and
 //! `prune_old_files` ages out transient drops and snapshots.
 //!
+//! One entry here writes a file that is NOT deck's and lives elsewhere:
+//! `atomic_write_through_link`, for an agent CLI's settings file
+//! (`agent_status.rs`). It replaces the file the path names, so a symlink
+//! stays a link, keeps that file's own mode instead of imposing 0600,
+//! refuses a file it may not write, and leaves nothing behind when it
+//! fails.
+//!
 //! `deck_dir` is the ONE resolver of that directory, and in a unit-test
 //! build it answers with a directory of the test process's own under the
 //! system temp directory, never `~/.deck`: a test that reaches a real save,
@@ -160,6 +167,86 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), DeckError> {
         let _ = d.sync_all();
     }
     Ok(())
+}
+
+/// Replace a file that belongs to someone else: an agent CLI's settings,
+/// which its owner may keep as a symlink into a dotfiles checkout. The file
+/// the path NAMES gets the bytes: a symlink is resolved and stays a link,
+/// and the temp file is made beside the TARGET, where the rename is atomic
+/// whatever volume that is. The existing file keeps its mode (a new one is
+/// 0600), set before the rename so the file never shows another. Refused,
+/// with the original exactly as it was: a link whose target is missing, and
+/// an existing file this process may not write (the rename alone would not
+/// care). A failure at any later step removes the temp file.
+pub(crate) fn atomic_write_through_link(path: &Path, bytes: &[u8]) -> Result<(), DeckError> {
+    use std::os::unix::fs::PermissionsExt;
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let io = |what: &str, e: std::io::Error| {
+        DeckError::new(ErrorKind::io(e.kind()), format!("{what} ({})", e.kind()))
+    };
+    let linked = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink());
+    let target = if linked {
+        std::fs::canonicalize(path).map_err(|e| io("could not resolve the linked file", e))?
+    } else {
+        path.to_path_buf()
+    };
+    let mode = match std::fs::metadata(&target) {
+        Ok(meta) => {
+            if meta.is_file() {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&target)
+                    .map_err(|e| io("the file may not be written", e))?;
+            }
+            meta.permissions().mode() & 0o777
+        }
+        Err(_) => 0o600,
+    };
+    let dir = target.parent().ok_or(DeckError::new(
+        ErrorKind::Other,
+        "data path has no parent directory",
+    ))?;
+    let tmp = dir.join(format!(
+        ".{}.tmp.{}.{}",
+        target.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let replaced = write_temp_then_rename(&tmp, &target, mode, bytes);
+    if replaced.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return replaced;
+    }
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
+}
+
+/// The steps of `atomic_write_through_link` that may leave `tmp` behind.
+fn write_temp_then_rename(
+    tmp: &Path,
+    target: &Path,
+    mode: u32,
+    bytes: &[u8],
+) -> Result<(), DeckError> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(tmp)
+        .map_err(|e| {
+            DeckError::new(
+                ErrorKind::io(e.kind()),
+                format!("could not create temp file ({})", e.kind()),
+            )
+        })?;
+    f.write_all(bytes).map_err(DeckError::from)?;
+    f.set_permissions(std::fs::Permissions::from_mode(mode))
+        .map_err(DeckError::from)?;
+    f.sync_all().map_err(DeckError::from)?;
+    std::fs::rename(tmp, target).map_err(|e| DeckError::classified(e.to_string()))
 }
 
 /// Best-effort cleanup of transient files older than `max_age_secs`
@@ -345,6 +432,66 @@ mod tests {
         // idempotent: a second run changes nothing and still succeeds
         harden_data_dir(&d).unwrap();
         assert_eq!(mode_of(&d), 0o700);
+    }
+
+    /// The write entry for a file that is not deck's: through a link, with
+    /// the file's own mode, refusing what it may not write, and removing its
+    /// temp file when the replace fails. (`agent_status.rs` holds the
+    /// scenarios of its one caller.)
+    #[test]
+    fn a_write_through_a_link_replaces_the_target_and_cleans_up_after_a_failure() {
+        let d = tdir("through");
+        let listing = |dir: &Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        let target = d.join("target.json");
+        std::fs::write(&target, "old").unwrap();
+        set_mode(&target, 0o644);
+        let link = d.join("link.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        atomic_write_through_link(&link, b"new").unwrap();
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(mode_of(&target), 0o644);
+        // a file created here is private from its first instant
+        atomic_write_through_link(&d.join("fresh.json"), b"x").unwrap();
+        assert_eq!(mode_of(&d.join("fresh.json")), 0o600);
+        // refused before anything is written
+        set_mode(&target, 0o444);
+        let e = atomic_write_through_link(&link, b"newer").unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::Perm);
+        assert!(
+            !e.to_string().contains("through"),
+            "no path in the message: {e}"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        let dangling = d.join("dangling.json");
+        std::os::unix::fs::symlink(d.join("nowhere.json"), &dangling).unwrap();
+        let e = atomic_write_through_link(&dangling, b"x").unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::Missing);
+        assert!(!d.join("nowhere.json").exists());
+        // the rename fails after the temp file was written: it is removed
+        let occupied = d.join("occupied.json");
+        std::fs::create_dir_all(occupied.join("inside")).unwrap();
+        assert!(atomic_write_through_link(&occupied, b"x").is_err());
+        assert_eq!(
+            listing(&d),
+            [
+                "dangling.json",
+                "fresh.json",
+                "link.json",
+                "occupied.json",
+                "target.json"
+            ]
+        );
     }
 
     #[test]
