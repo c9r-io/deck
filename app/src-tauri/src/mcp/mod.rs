@@ -133,6 +133,11 @@
 //! raised only when an adapter of the previous protocol would be unsafe or
 //! wrong against this Deck: every raise refuses every running adapter until
 //! its integration is restarted (`docs/mcp-architecture.md`).
+//! Build identity is diagnostic only: `deck_capabilities` carries
+//! `deckVersion`/`deckBuild`, inspect carries the pane runner's
+//! `runnerBuild` (the commit it was built from) and `runnerVersion`, which is
+//! the runner crate's own version and does not follow Deck releases. Whether
+//! a pane's runner belongs to this Deck service is `stale`, nothing else.
 //! The control socket is bound under a private temporary name, made 0600, and
 //! atomically renamed into place; Deck never changes its process-wide umask.
 //!

@@ -117,7 +117,11 @@ registry that answers `tools/list` (a contract test keeps them identical). It
 means “exposed by this Adapter,” not “authorized for every call.” The response
 also carries non-secret build identity: `deckVersion`/`deckBuild` from the
 control service and `adapterVersion`/`adapterBuild` from the Adapter; inspect
-reports the pane's `runnerVersion`. The private control socket exists only
+reports the pane's `runnerBuild`, the commit its runner was built from (absent
+in a local build), and `runnerVersion`, which is the runner's own version and
+does not follow Deck releases. None of these says whether something must be
+restarted: a pane whose runner belongs to an earlier Deck service is reported
+by `stale`. The private control socket exists only
 while the feature is enabled and is removed on disable. When it is absent,
 the Adapter returns `FEATURE_DISABLED`; if disable races an already-connected
 request, the service returns the same code. An adapter/app protocol skew returns

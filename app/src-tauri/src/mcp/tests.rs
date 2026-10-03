@@ -161,7 +161,8 @@ impl FakeRunner {
                 "auth":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7u8;32])}),
             "ping" => json!({"ok":true,"generation":generation,
                 "job": if live { json!({"jobId":"job_live","state":"running"}) } else { Value::Null },
-                "serviceCurrent":!service.is_empty() && !stale,"runnerVersion":"0.1.0"}),
+                "serviceCurrent":!service.is_empty() && !stale,"runnerVersion":"0.1.0",
+                "runnerBuild":"build_fixture"}),
             _ if stale => json!({"ok":false,"generation":generation,"error":"runner-stale"}),
             "control" if fail_next_control.swap(false, Ordering::SeqCst) => {
                 json!({"ok":false,"generation":generation,"error":"dispatch-context-invalid"})
@@ -1778,6 +1779,14 @@ fn production_routes_cover_authorized_job_and_control_lifecycle() {
         )["sessionGeneration"],
         "g_a"
     );
+    // the pane's runner is identified by the build it came from; its version
+    // is the runner crate's own and does not follow Deck releases
+    let inspected = route(
+        &runtime,
+        request("deck_session_inspect", json!({"session_id":"mcp_a"})),
+    );
+    assert_eq!(inspected["runnerBuild"], "build_fixture");
+    assert_eq!(inspected["runnerVersion"], "0.1.0");
 
     let control = |request_id: &str, action: &str, epoch: Option<u64>| {
         let mut value = json!({

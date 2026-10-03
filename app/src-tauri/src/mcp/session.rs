@@ -387,6 +387,7 @@ pub(super) fn inspect(
         "foreground": (!job.is_null()).then_some("managed-job"),
         "stale": runner.as_ref().is_none_or(|probe| !probe.current),
         "runnerVersion": runner.as_ref().and_then(|probe| probe.version.clone()),
+        "runnerBuild": runner.as_ref().and_then(|probe| probe.build.clone()),
         "mayStartNextJob": denial.is_none(),
         "mayStartNextJobReason": denial,
     }))

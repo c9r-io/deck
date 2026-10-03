@@ -171,6 +171,8 @@ pub(super) struct RunnerProbe {
     pub(super) current: bool,
     pub(super) job: Value,
     pub(super) version: Option<String>,
+    /// The commit the pane's runner was built from; absent in a local build.
+    pub(super) build: Option<String>,
 }
 
 pub(super) fn probe_runner(runtime: &Runtime, session: &ManagedSession) -> Option<RunnerProbe> {
@@ -189,6 +191,10 @@ pub(super) fn probe_runner(runtime: &Runtime, session: &ManagedSession) -> Optio
         job: value.get("job").cloned().unwrap_or(Value::Null),
         version: value
             .get("runnerVersion")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        build: value
+            .get("runnerBuild")
             .and_then(Value::as_str)
             .map(str::to_owned),
     })
