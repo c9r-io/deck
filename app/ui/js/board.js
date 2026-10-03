@@ -41,7 +41,9 @@
 // so the native gate judges it; a source link in an entry opens only through
 // `open_target("url")` (links.rs `validate_open`), never by the webview.
 // An inbound automation card retains its frozen template plan until every
-// row is durably queued; queueInboundPlan replays stable operation IDs.
+// row is durably queued; queueInboundPlan replays stable operation IDs. Its
+// rows take the owner commands for a clock run only; every other origin
+// takes the external ones (`channel_queue_add*`, the native admission).
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { reminderRequestId, reminderAction, reminderClaim, reminderDay, reminderDue, reminderShort, rememberRetirement, retirementBlocked, retirementKey, sameReminder } from './reminder-model.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
@@ -534,7 +536,11 @@ export const provider = {
       const plan = card?.inboundPlan;
       if (!card || card.origin?.key !== expectedKey || !plan) return { noop: true };
       if (plan.initialQueued) { admitted = true; return { noop: true }; }
-      const external = card.origin.source === 'slack';
+      /* only a clock run's rows are the rule owner's own text. Every other
+         origin is someone else's until shown otherwise, a source added later
+         included: its rows take the external commands, where the native
+         admission holds them to an agent command and marks them external */
+      const external = card.origin.source !== 'clock';
       const command = external ? 'channel_queue_add' : 'queue_add';
       const base = { session: card.session, cardId: card.id, dir: card.dir, cmd: card.cmd,
         reviewEach: plan.reviewEach === true };

@@ -22,11 +22,12 @@ function setup(items, fail = '', steps = ['first', 'second']) {
     const card = store.cards.find(value => value.id === sid && value.origin.key === key);
     if (!card || card.inboundPlan.initialQueued) return !!card;
     const plan = card.inboundPlan;
-    if (plan.reviewEach) await window.__TAURI__.core.invoke(card.origin.source === 'slack'
+    const external = card.origin.source !== 'clock';
+    if (plan.reviewEach) await window.__TAURI__.core.invoke(external
       ? 'channel_queue_add_reviewed_list' : 'queue_add_reviewed_list', {
       args: { operationId: plan.operationId }, texts: plan.initialSteps.map(step => step.text),
     });
-    else for (const step of plan.initialSteps) await window.__TAURI__.core.invoke(card.origin.source === 'slack'
+    else for (const step of plan.initialSteps) await window.__TAURI__.core.invoke(external
       ? 'channel_queue_add' : 'queue_add', { args: step });
     plan.initialQueued = true;
     plan.initialSteps = [];
@@ -251,6 +252,43 @@ test('a badge rule that accepted the first-send risk claims it on the head row o
     await drainInbound();
     assert.equal('firstSend' in store.cards[0].inboundPlan, false);
     assert.ok(c.calls.filter(([name]) => name === 'queue_add').every(([, args]) => !('firstSend' in args.args)));
+  } finally {
+    provider.queueInboundPlan = realQueueInboundPlan;
+    listeners.clear(); for (const listener of savedListeners) listeners.add(listener);
+  }
+});
+
+/* Which commands a frozen plan's rows enter through is decided from the
+   card's origin alone, in the webview: the backend's owner commands cannot
+   tell whose text they are given. Only a clock run's rows are the rule
+   owner's own; every other origin, a source added later included, must take
+   the external commands, which hold the native admission. */
+test('only a clock run takes the owner commands; every other origin takes the external ones', async () => {
+  const savedListeners = [...listeners]; listeners.clear();
+  try {
+    const step = (n, mode) => ({ operationId: `B${n}`, text: `step ${n}`, mode, at: mode === 'at' ? 1 : null,
+      tpl: 'triage', tplIdx: n, tplTotal: 2 });
+    const route = async (source, reviewEach) => {
+      const f = setup([]);
+      provider.queueInboundPlan = realQueueInboundPlan;
+      store.cards = [{ id: 'S-route', projectId: 'P1', columnId: 'C1', title: 'route', session: 'deck-test', cmd: 'claude', dir: '/tmp',
+        origin: { ...(source === undefined ? {} : { source }), key: 'K1', badge: 'deck' },
+        inboundPlan: { operationId: 'B0', reviewEach, initialSteps: [step(1, 'at'), step(2, 'chain')], initialQueued: false } }];
+      assert.equal(await provider.queueInboundPlan('S-route', 'K1'), true);
+      assert.equal(store.cards[0].inboundPlan.initialQueued, true);
+      return f.calls.map(([cmd]) => cmd).filter(cmd => cmd.includes('queue_add'));
+    };
+    // the two sources there are today, unchanged
+    assert.deepEqual(await route('clock', false), ['queue_add', 'queue_add']);
+    assert.deepEqual(await route('clock', true), ['queue_add_reviewed_list']);
+    assert.deepEqual(await route('slack', false), ['channel_queue_add', 'channel_queue_add']);
+    assert.deepEqual(await route('slack', true), ['channel_queue_add_reviewed_list']);
+    // anything else is not known to be the owner's text: another kind of card,
+    // a source added later, a near miss, a missing or malformed value
+    for (const source of ['channel', 'connector', 'mcp', 'a-source-added-later', 'Clock', '', undefined, null, 42]) {
+      assert.deepEqual(await route(source, false), ['channel_queue_add', 'channel_queue_add'], String(source));
+      assert.deepEqual(await route(source, true), ['channel_queue_add_reviewed_list'], String(source));
+    }
   } finally {
     provider.queueInboundPlan = realQueueInboundPlan;
     listeners.clear(); for (const listener of savedListeners) listeners.add(listener);

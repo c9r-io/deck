@@ -22,7 +22,9 @@
 //!    buffers, text `send-keys`, the PTY writer) is pinned and labelled;
 //! 5. every frontend call of those commands is pinned per JS file and
 //!    function; plain `queue_add*` next to external text must carry its
-//!    guard (`clock ?`, `externalText`).
+//!    guard (`external ?`, `externalText`), and the one place that derives
+//!    `external` from a card's origin must default to it: only a clock run
+//!    is known to be the owner's own text.
 //!
 //! Unused entries fail, like `edr_quiet.rs`. Scope decisions: clock rules
 //! are OWNER text (the template and command are the rule owner's; a clock
@@ -897,10 +899,18 @@ const FRONTEND_ADMISSION: &[(&str, &str, &str)] = &[
         "if ((await grantState(rule, template)) !== 'valid') return null;",
     ),
     ("board.js", "queueChannelPlan", "channelAgentCommand("),
+    // The owner commands are an allowlist of ONE origin: a clock run's rows
+    // are the rule owner's own template. Every other origin is external by
+    // default, so a source added later, or a card whose origin is missing
+    // or malformed, meets `admit_external` instead of inheriting the owner
+    // path; the backend's owner commands cannot tell whose text they get.
+    // (ba60adc wrote this as `clock ?`; f800aef replaced it with
+    // `source === 'slack'`, under which any new source entered as owner
+    // text and this census still passed.)
     (
         "board.js",
         "queueInboundPlan",
-        "const external = card.origin.source === 'slack'",
+        "const external = card.origin.source !== 'clock';",
     ),
 ];
 
