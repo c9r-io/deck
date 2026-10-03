@@ -89,6 +89,7 @@ export async function runReminderSmoke() {
       && name.getBoundingClientRect().width > 40
       && label.getBoundingClientRect().left >= name.getBoundingClientRect().right - 0.5
       && Math.abs(row.getBoundingClientRect().height - plainRow.getBoundingClientRect().height) < 0.5;
+    const nameWidth = name?.getBoundingClientRect().width, rowHeight = row?.getBoundingClientRect().height;
     let labelOnly = false;
     if (label) {
       await click(label);
@@ -98,12 +99,14 @@ export async function runReminderSmoke() {
       await click(document.querySelector('.reminder-editor .cfm-actions button'));
       await until(() => !$('reminder-date'), 3000);
     }
-    // the card carries the same label at the end of its status row: the short
-    // date as text, the full one (with its zone) as title, the card no taller
-    // for it, and a real click on it edits the reminder only
+    // the card carries the label too, at the end of its status row: the short
+    // date as text (the sidebar's, plus the time when the day is not today),
+    // the full one (with its zone) as title, the card no taller for it, and a
+    // real click on it edits the reminder only
     const cardLabel = cardOf(protectedCard).querySelector('.card-status .card-reminder');
     const shaped = !!cardLabel && /^🔔 (?:(?:\d{4}\/)?\d{1,2}\/\d{1,2} )?\d{2}:\d{2}$/.test(cardLabel.textContent)
-      && cardLabel.textContent === label?.textContent && cardLabel.title === label?.title && /\(.+\)$/.test(cardLabel.title)
+      && [label?.textContent, `${label?.textContent} ${cardLabel.textContent.slice(-5)}`].includes(cardLabel.textContent)
+      && cardLabel.title === label?.title && /\(.+\)$/.test(cardLabel.title)
       && Math.abs(cardOf(protectedCard).getBoundingClientRect().height - plainHeight) < 0.5;
     await inv('smoke_native_snapshot', { name: 'reminder-card-label' }).catch(() => {});
     let cardLabelOnly = false;
@@ -115,7 +118,44 @@ export async function runReminderSmoke() {
       await click(document.querySelector('.reminder-editor .cfm-actions button'));
       await until(() => !$('reminder-date'), 3000);
     }
-    await report('reminder-ui-save', !!label && labelOnly && rowShaped && shaped && cardLabelOnly);
+    // a reminder on another day, set with the editor's "tomorrow" shortcut (in
+    // the app only): the sidebar's label is the date alone, so its row keeps
+    // as much room for the session's name as with a time, and the card's label
+    // adds the time. It is ended again here: the later phases expect one.
+    const sentinel = provider.list().find(c => c.title === 'Reminder lifecycle sentinel');
+    const sideOf = card => document.querySelector(`#side-list .side-item[data-sid="${card.id}"]`);
+    let otherDay = false;
+    const far = editReminder(sentinel.id);
+    await until(() => $('reminder-date'));
+    await click([...document.querySelectorAll('.reminder-editor .btn')].find(button => button.textContent === t('reminder.tomorrow')));
+    await click($('reminder-in-app'));
+    if ($('reminder-in-app').checked) {
+      await click($('reminder-save'));
+      await until(() => provider.get(sentinel.id)?.reminder && sideOf(sentinel)?.querySelector('.card-reminder'));
+      await far;
+      const farRow = sideOf(sentinel), farName = farRow.querySelector('.name'), farLabel = farRow.querySelector('.card-reminder');
+      const farCard = cardOf(sentinel)?.querySelector('.card-status .card-reminder');
+      const sameYear = /^🔔 \d{1,2}\/\d{1,2}$/.test(farLabel.textContent);
+      otherDay = provider.get(sentinel.id).reminder.inAppOnly === true
+        && /^🔔 (?:\d{4}\/)?\d{1,2}\/\d{1,2}$/.test(farLabel.textContent)
+        && farCard?.textContent === `${farLabel.textContent} 09:00`
+        && farLabel.title === farCard.title && /\(.+\)$/.test(farLabel.title)
+        && farName.textContent === sentinel.title
+        && farName.getBoundingClientRect().width > (sameYear ? nameWidth - 0.5 : 40)
+        && farLabel.getBoundingClientRect().left >= farName.getBoundingClientRect().right - 0.5
+        && Math.abs(farRow.getBoundingClientRect().height - rowHeight) < 0.5;
+      await inv('smoke_native_snapshot', { name: 'reminder-other-day' }).catch(() => {});
+      const ended = editReminder(sentinel.id);
+      await until(() => $('reminder-end'));
+      await click($('reminder-end'));
+      await until(() => !provider.get(sentinel.id)?.reminder);
+      await ended;
+      otherDay = otherDay && !sideOf(sentinel).querySelector('.card-reminder');
+    } else {
+      await click(document.querySelector('.reminder-editor .cfm-actions button'));
+      await far;
+    }
+    await report('reminder-ui-save', !!label && labelOnly && rowShaped && shaped && cardLabelOnly && otherDay);
     const saved = JSON.parse((await inv('load_board')).data).cards.find(c => c.id === protectedCard.id);
     await report('reminder-durable', saved.reminder.id === provider.get(protectedCard.id).reminder.id && saved.reminder.inAppOnly);
     await provider.rename(protectedCard.id, 'Renamed reminder shell');

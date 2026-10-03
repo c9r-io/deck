@@ -523,8 +523,9 @@ test("a click on the sidebar's reminder label does not open the session", () => 
   assert.equal((sidebar.match(/openSession\(/g) || []).length, 1);
   // the label is the one a card carries (`reminderChip`): it keeps its one
   // job and lets the click travel on, so the menus that close on any click
-  // still close. It comes after the name, which the row must go on showing.
-  assert.match(sidebar, /if \(s\.reminder\) el\.append\(reminderChip\(s\)\);/);
+  // still close. It comes after the name, which the row must go on showing:
+  // the row asks for the date alone on another day (the card adds the time).
+  assert.match(sidebar, /if \(s\.reminder\) el\.append\(reminderChip\(s, reminderDay\)\);/);
   assert.doesNotMatch(sidebar, /stopPropagation|reminderLabel\(|card-reminder"/);
   const css = read('app/ui/style.css');
   // the full-date button that took the row's width, and its rule, are gone
@@ -544,10 +545,10 @@ test('a Board card shows its reminder as a label at the end of the status row', 
   assert.match(card, /paintCardSignalStatus\(el\.querySelector\('\.card-status'\), s\);\s*if \(s\.reminder\) el\.querySelector\('\.card-status'\)\.append\(reminderChip\(s\)\);/);
   // the card's own click handler skips it, so the label edits the reminder only
   assert.match(card, /closest\('\.card-x, \.card-pin, \.card-signal-help, \.card-reminder'\)/);
-  const label = board.slice(board.indexOf('function reminderChip(s)'), board.indexOf('export function cardEl(s)'));
+  const label = board.slice(board.indexOf('function reminderChip(s, spell = reminderShort)'), board.indexOf('export function cardEl(s)'));
   assert.ok(label.length > 200 && label.length < 900, 'reminderChip sits right above cardEl');
   assert.match(label, /chip\.className = 'card-reminder' \+ \(due \? ' due' : ''\);/);
-  assert.match(label, /chip\.textContent = '🔔 ' \+ \(due \? t\('reminder\.dueShort'\) : reminderShort\(s\.reminder\)\);/);
+  assert.match(label, /chip\.textContent = '🔔 ' \+ \(due \? t\('reminder\.dueShort'\) : spell\(s\.reminder\)\);/);
   assert.match(label, /chip\.title = reminderLabel\(s\);/);
   assert.match(label, /chip\.onclick = \(\) => editReminder\(s\.id\);/);
   assert.doesNotMatch(label, /openSession|stopPropagation/);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { reminderShort, localCandidates, localParts, shortcutTime, noteValid, reminderDue, reminderClaim, sameReminder, reminderAction, retirementKey, rememberRetirement, retirementBlocked, reminderRequestId, reminderTick } from '../js/reminder-model.js';
+import { reminderShort, reminderDay, localCandidates, localParts, shortcutTime, noteValid, reminderDue, reminderClaim, sameReminder, reminderAction, retirementKey, rememberRetirement, retirementBlocked, reminderRequestId, reminderTick } from '../js/reminder-model.js';
 import { createAttentionTracker, attentionRows } from '../js/attention-model.js';
 const card = () => ({ id: 'card-a', session: 'same-name', reminder: { id: 'unique', revision: 1, dueAt: 2000, due: false, timeZone: 'Asia/Tokyo', note: '', inAppOnly: false } });
 test("the card label is the time today, month/day and time otherwise, in the reminder's own zone", () => {
@@ -17,6 +17,25 @@ test("the card label is the time today, month/day and time otherwise, in the rem
   // the same instant in another zone: 14:00 today in Tokyo, 01:00 tomorrow in New York
   assert.equal(reminderShort(at('2026-10-05T05:00:00Z'), now), '14:00');
   assert.equal(reminderShort(at('2026-10-05T05:00:00Z', 'America/New_York'), now), '10/5 01:00');
+});
+test("the sidebar's label is the date alone on another day and the time today", () => {
+  const at = (iso, timeZone = 'Asia/Tokyo') => ({ dueAt: Date.parse(iso), timeZone });
+  const now = Date.parse('2026-10-05T00:30:00Z');   // 09:30 on 5 October in Tokyo
+  // today the time is the whole label, as on the card
+  assert.equal(reminderDay(at('2026-10-05T03:00:00Z'), now), '12:00');
+  assert.equal(reminderDay(at('2026-10-05T14:59:00Z'), now), '23:59');
+  // another day: month/day without the time, the year first when it differs
+  assert.equal(reminderDay(at('2026-10-05T15:00:00Z'), now), '10/6');
+  assert.equal(reminderDay(at('2026-11-09T00:05:00Z'), now), '11/9');
+  assert.equal(reminderDay(at('2027-01-01T00:00:00Z'), now), '2027/1/1');
+  assert.equal(reminderDay(at('2026-10-04T03:00:00Z'), now), '10/4');
+  // the day is the reminder's own zone's: today in Tokyo, tomorrow in New York
+  assert.equal(reminderDay(at('2026-10-05T05:00:00Z'), now), '14:00');
+  assert.equal(reminderDay(at('2026-10-05T05:00:00Z', 'America/New_York'), now), '10/5');
+  // it is the card's label without the time, whatever the reminder
+  for (const iso of ['2026-10-05T03:00:00Z', '2026-10-05T15:00:00Z', '2027-01-01T00:00:00Z']) {
+    assert.equal(reminderShort(at(iso), now).replace(/^(.+) \d{2}:\d{2}$/, '$1'), reminderDay(at(iso), now));
+  }
 });
 
 test('time round trips reject gaps, invalid dates and ambiguous implicit choices', () => {

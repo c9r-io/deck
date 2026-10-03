@@ -43,7 +43,7 @@
 // An inbound automation card retains its frozen template plan until every
 // row is durably queued; queueInboundPlan replays stable operation IDs.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
-import { reminderRequestId, reminderAction, reminderClaim, reminderDue, reminderShort, rememberRetirement, retirementBlocked, retirementKey, sameReminder } from './reminder-model.js';
+import { reminderRequestId, reminderAction, reminderClaim, reminderDay, reminderDue, reminderShort, rememberRetirement, retirementBlocked, retirementKey, sameReminder } from './reminder-model.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
 import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
 import { channelAgentCommand } from './channel-model.js';
@@ -1197,7 +1197,8 @@ export function renderSidebar() {
        reminder and must not also open (and, for a stopped card, start) the
        session. The click still travels on, so open menus close as usual. */
     el.onclick = e => { if (!e.target.closest('.card-reminder')) openSession(s.id); };
-    if (s.reminder) el.append(reminderChip(s));
+    // the date alone on another day: the row is narrow and the name comes first
+    if (s.reminder) el.append(reminderChip(s, reminderDay));
   el.oncontextmenu = e => showSessionCtx(e, s.id);
     /* sidebar items are drag sources for split (方案 A) */
     el.draggable = true;
@@ -1493,18 +1494,19 @@ export async function openProjectDefaults(pid, opener = null) {
   if (back && back.isConnected && back.focus) back.focus();
 }
 
-/* A reminder's label, the same on a Board card (the right end of its status
-   row; attention.js repaints the rest of that row in place and leaves this
-   alone) and in the session's sidebar row (after the name, which stays
-   visible). The date is short and the full one, with weekday and zone, is the
-   title; once due it says so. Its click edits the reminder and nothing else:
-   the card's and the row's own click handlers skip it. */
-function reminderChip(s) {
+/* A reminder's label, on a Board card (the right end of its status row;
+   attention.js repaints the rest of that row in place and leaves this alone)
+   and in the session's sidebar row (after the name, which stays visible; the
+   row passes `reminderDay`, so another day's label comes without its time).
+   The date is short and the full one, with weekday and zone, is the title;
+   once due it says so. Its click edits the reminder and nothing else: the
+   card's and the row's own click handlers skip it. */
+function reminderChip(s, spell = reminderShort) {
   const chip = document.createElement('button');
   const due = reminderDue(s);
   chip.type = 'button';
   chip.className = 'card-reminder' + (due ? ' due' : '');
-  chip.textContent = '🔔 ' + (due ? t('reminder.dueShort') : reminderShort(s.reminder));
+  chip.textContent = '🔔 ' + (due ? t('reminder.dueShort') : spell(s.reminder));
   chip.title = reminderLabel(s);
   chip.onclick = () => editReminder(s.id);
   return chip;

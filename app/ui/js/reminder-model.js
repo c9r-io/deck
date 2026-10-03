@@ -21,18 +21,22 @@ export function localParts(instant, timeZone) {
   const p = Object.fromEntries(parts.map(part => [part.type, part.value]));
   return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
 }
-/* A reminder's short label for a Board card: the time when it falls today
-   (in the reminder's own time zone), month/day and time otherwise, the year
-   first when that differs. Numbers only, so it reads the same in every
-   language; the full date, weekday and zone are the label's title and the
-   sidebar's text (board.js `reminderLabel`). */
-export function reminderShort(reminder, now = Date.now()) {
+/* A reminder's short label, in parts: the time alone when it falls today (in
+   the reminder's own time zone), otherwise month/day (the year first when
+   that differs) and then the time. Numbers only, so it reads the same in
+   every language; the full date, weekday and zone are the label's title
+   (board.js `reminderLabel`). */
+function shortParts(reminder, now) {
   const [date, time] = localParts(reminder.dueAt, reminder.timeZone).split('T');
   const [today] = localParts(now, reminder.timeZone).split('T');
-  if (date === today) return time;
+  if (date === today) return [time];
   const [year, month, day] = date.split('-').map(Number);
-  return `${year === Number(today.slice(0, 4)) ? '' : `${year}/`}${month}/${day} ${time}`;
+  return [`${year === Number(today.slice(0, 4)) ? '' : `${year}/`}${month}/${day}`, time];
 }
+// A Board card spells every part. The sidebar's row is narrow and has the
+// session's name to show, so it spells the first: the date alone on another day.
+export const reminderShort = (reminder, now = Date.now()) => shortParts(reminder, now).join(' ');
+export const reminderDay = (reminder, now = Date.now()) => shortParts(reminder, now)[0];
 export function localCandidates(local, timeZone) {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(local)) return [];
   const utc = Date.parse(`${local}:00Z`);
