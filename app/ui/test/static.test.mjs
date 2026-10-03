@@ -442,6 +442,28 @@ test('reminders poll the backend only while the Board has one', () => {
   assert.equal((code.match(/reconcileReminders/g) || []).length, 5, 'the import and these four: nothing else in app.js drives reminders');
 });
 
+/* 08-C4: a reaction approves a run for a message, not the bytes that are
+   sent. Its event carries no text; Deck reads the message when it handles the
+   reaction (at once on the live path, later through the search catch-up), so
+   the hint may not say the reaction approved what is sent. */
+test('the automatic-send hint says when the Slack text is read, in both languages and in the guide', () => {
+  const said = {
+    en: 'Your reaction approves the run and its first step for that message. The text is read when Deck handles the reaction, so an edit made after you reacted may be what gets sent.',
+    zh: '你的表情回应批准的是针对那条消息的这次运行及其第一步。文本在 Deck 处理该回应时读取，所以你回应之后的编辑可能会被发送。',
+  };
+  const en = read('app/ui/js/i18n/en.js'), zh = read('app/ui/js/i18n/zh-Hans.js');
+  assert.ok(en.includes(`'automation.autoSend.hint': '${said.en} With this on, `), 'English');
+  assert.ok(zh.includes(`'automation.autoSend.hint': '${said.zh}开启后，`), 'Simplified Chinese');
+  // the page's default text is the English entry, word for word
+  const entry = en.match(/'automation\.autoSend\.hint': '([^']*)'/)[1];
+  assert.ok(read('app/ui/index.html').includes(`data-i18n="automation.autoSend.hint">${entry}</p>`), 'index.html');
+  assert.ok(read('docs/auto-respond.md').replace(/\s+/g, ' ').includes(said.en), 'docs/auto-respond.md');
+  // nothing says the reaction approved the text that is sent
+  for (const file of ['app/ui/js/i18n/en.js', 'app/ui/js/i18n/zh-Hans.js', 'app/ui/index.html', 'docs/auto-respond.md']) {
+    assert.doesNotMatch(read(file), /already approves the run and its first step|已批准这次运行及其第一步/, file);
+  }
+});
+
 const code = file => read(file).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 test("inbound triggers are pulled only once the webview holds the user's Board", () => {

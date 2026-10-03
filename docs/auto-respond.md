@@ -72,7 +72,11 @@ reading, so it is deleted instead (cards it already created stay).
 
 ### Automatically continue approved follow-up steps
 
-Your reaction on the message already approves the run and its first step.
+Your reaction approves the run and its first step for that message. The
+text is read when Deck handles the reaction, so an edit made after you
+reacted may be what gets sent. Deck handles a reaction as soon as it
+arrives; one it missed (deck not running, the live connection down) is
+handled when the search catch-up finds the badge, which looks back 30 days.
 A Slack badge rule has one more choice: **Automatically continue approved
 follow-up steps**. Ticking it approves *this version* of the rule and its
 template so that the run's later steps continue once the agent is safely

@@ -661,7 +661,7 @@ const dictionary = {
   'automation.slackOff': '未连接 — 在设置里连接 Slack 之前，这条自动化不会触发',
   'automation.kv.autoSend': '自动发送',
   'automation.autoSend.option': '自动继续已批准的后续步骤',
-  'automation.autoSend.hint': '你的表情回应已批准这次运行及其第一步。开启后，这一版本模板的后续步骤会在 agent 安全就绪后自动继续，无需逐条「手动立即发送」。正在请求输入或权限的 agent 以及检查点仍会暂停这条自动化。第一步如何发给新启动的 agent 由下方单独的选项决定。修改规则或其模板后会关闭此项，直到你再次批准。',
+  'automation.autoSend.hint': '你的表情回应批准的是针对那条消息的这次运行及其第一步。文本在 Deck 处理该回应时读取，所以你回应之后的编辑可能会被发送。开启后，这一版本模板的后续步骤会在 agent 安全就绪后自动继续，无需逐条「手动立即发送」。正在请求输入或权限的 agent 以及检查点仍会暂停这条自动化。第一步如何发给新启动的 agent 由下方单独的选项决定。修改规则或其模板后会关闭此项，直到你再次批准。',
   'automation.autoSend.external': '同时发送包含 Slack 消息内容的步骤。外部消息是不受信任的输入，可能影响 agent 的行为。',
   'automation.autoSend.withdrawn': '这项修改需要重新批准 — 勾选「自动继续已批准的后续步骤」即批准新版本',
   'automation.autoSend.on': '已批准的后续步骤自动继续（不含 Slack 消息内容）',

@@ -662,7 +662,7 @@ const dictionary = {
   'automation.slackOff': 'not connected — this automation waits until Slack is connected in Settings',
   'automation.kv.autoSend': 'automatic sending',
   'automation.autoSend.option': 'Automatically continue approved follow-up steps',
-  'automation.autoSend.hint': 'Your reaction already approves the run and its first step. With this on, the later steps of this version of the template continue once the agent is safely ready, without a Send now for each. An agent asking for input or permission and inspection checkpoints still pause the automation. How the first step reaches a newly started agent is the separate option below. Editing the rule or its template turns this off until you approve again.',
+  'automation.autoSend.hint': 'Your reaction approves the run and its first step for that message. The text is read when Deck handles the reaction, so an edit made after you reacted may be what gets sent. With this on, the later steps of this version of the template continue once the agent is safely ready, without a Send now for each. An agent asking for input or permission and inspection checkpoints still pause the automation. How the first step reaches a newly started agent is the separate option below. Editing the rule or its template turns this off until you approve again.',
   'automation.autoSend.external': 'Also send steps that contain Slack message content. External messages are untrusted input and may influence the agent.',
   'automation.autoSend.withdrawn': 'This change needs your approval again — tick “Automatically continue approved follow-up steps” to approve the new version',
   'automation.autoSend.on': 'approved follow-up steps continue (no Slack message content)',
