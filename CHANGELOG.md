@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.7.23 — 2026-10-04 (Nightly)
+
+- A Board that cannot be loaded now has a way out that you choose. Deck
+  offers the newest copy it kept, with its date and card count, or a new
+  Board when there is none; until you choose, nothing is written over what
+  is on disk. A Board recovered from its backup is reported once instead of
+  at every start, and a Board written by a newer Deck says to update Deck.
+- A damaged `settings.json` no longer costs you your settings, automation
+  rules and approvals: Deck keeps answering from the last good copy and
+  tells you once.
+- While the Board has not loaded, no Slack or clock trigger is handled and
+  no automation rule is removed.
+- When the MCP record (`mcp.json`) cannot be read, ordinary terminals keep
+  taking input; only sessions an MCP client controls stay protected.
+- Card reminders: a Board card shows its reminder as a short label at the
+  end of its status row. In the sidebar the label no longer pushes out the
+  session's name, and clicking it opens the reminder without opening the
+  session.
+- Choosing "Remind in 1 hour" on a notification while Deck is not running no
+  longer leaves Deck running without a window. Deck saves the new time and
+  quits, and the application you were using keeps the keyboard. If Deck had
+  to start its tmux server for that, it stops it again.
+- Closing a card no longer leaves the rest of the Board marked "old
+  snapshot" and frozen for about ten seconds. It happened when the closed
+  card was the first by name or the only one. A card closed within ten
+  seconds of being opened can still show it.
+- Local Translation: opening it in a session before it is set up shows the
+  steps there (enable it, or download the offline pack). English with
+  apostrophes ("don't", "it's") is translated correctly, and text with
+  `&`, `<` or `>` no longer makes the translation fail every time. On
+  Copied text, a copy its source marked as private or temporary (password
+  managers, text expanders) is never read.
+- Away notifications: one card with a very long title no longer stops the
+  notifications of every card.
+- Agent hooks: installing or removing Deck's hooks keeps a symlinked
+  settings file a symlink, keeps hooks you added yourself, and leaves the
+  rest of the file exactly as it was.
+- An automation run set to close its card, whose close failed, is tried
+  again only on a fresh check and never while you are looking at the card.
+- A channel message Deck cannot place says why once instead of every
+  minute, and names a missing project or group correctly.
+- MCP: when a client's adapter is refused because its version no longer
+  matches Deck, Settings says so on that client's row.
+  `deck_session_inspect` reports the build of a pane's runner.
+- The banner shown when Deck cannot run its built-in tmux now says to
+  reinstall Deck instead of pointing to Homebrew.
+
 ## 0.7.22 — 2026-10-02 (Nightly)
 
 - Scheduled prompts, the scratchpad and Local Translation now share one
