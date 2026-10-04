@@ -128,8 +128,16 @@ this socket's query-client arguments (`reap_orphaned_query_clients`, via
 libproc and `kill(2)`; nothing is spawned).
 
 Discovery and the first failure of a channel generation use the existing
-one-shot query as an oracle. A ten-second cooldown then fails closed instead
-of creating a new process on every Board poll. No sentinel session is created:
+one-shot query as an oracle. The client is attached to one session, the
+smallest name at discovery, and tmux ends it with that session
+(`detach-on-destroy`): closing that card, or its shell exiting, fails the
+channel while the server is fine. A generation that served ten seconds and
+whose oracle read succeeds is therefore replaced by the next poll's
+discovery, and no poll fails. A generation that fails sooner, or whose
+server the oracle cannot read, is followed by a ten-second cooldown that
+fails closed instead of creating a new process on every Board poll. Either
+way a failed channel is never replaced within ten seconds of its own attach
+(`tmux::query_snapshot_with`). No sentinel session is created:
 an empty server has no persistent query client. On such a server `list-panes
 -a` fails with exactly `no current target`; only then one more command list —
 the server line followed by `list-sessions` — may prove a reachable server

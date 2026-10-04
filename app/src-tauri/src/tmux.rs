@@ -9,9 +9,10 @@
 //! Everything deck knows about tmux lives here. The spawn sites stay in
 //! `tmux`, `tmux_owned`, `tmux_with_stdin`, `tmux_batch` and `connect_with`;
 //! the processing behind them (`captured_output`, `command_with_stdin`,
-//! `list_panes_with`, `pane_row_with`, `init_deck_server_with`) takes the
-//! command or runner as an argument so an isolated bundled tmux exercises
-//! the production logic without touching the deck/deck-dev sockets.
+//! `list_panes_with`, `pane_row_with`, `init_deck_server_with`,
+//! `query_snapshot_with`) takes the command or runner as an argument so an
+//! isolated bundled tmux exercises the production logic without touching
+//! the deck/deck-dev sockets.
 //!
 //! # Contract
 //! tmux ships INSIDE the app: a statically linked binary (see
@@ -972,6 +973,7 @@ struct TmuxQueryChannel {
     parser: ControlParser,
     server_pid: u32,
     session: String,
+    connected_at: Instant,
 }
 
 fn nonblocking(fd: i32) -> Result<(), DeckError> {
@@ -1042,6 +1044,7 @@ impl TmuxQueryChannel {
             parser: ControlParser::default(),
             server_pid,
             session,
+            connected_at: Instant::now(),
         };
         // The attach command itself is the first framed response. Consume it
         // before accepting the first fixed query so command frames cannot mix.
@@ -1213,16 +1216,39 @@ static QUERY_STATE: Mutex<QueryState> = Mutex::new(QueryState {
 /// command.
 pub(crate) fn query_snapshot() -> Result<PaneSnapshot, DeckError> {
     let mut state = QUERY_STATE.lock_or_recover();
+    query_snapshot_with(&mut state, &tmux, &TmuxQueryChannel::connect)
+}
+
+/// `query_snapshot` against whichever server `run` and `connect` reach
+/// (isolated tests pass their own runner and client).
+///
+/// The client is attached to one session and ends with it, so closing that
+/// card fails the channel while the server is fine. A generation that served
+/// `CONTROL_RETRY_DELAY` and whose oracle read succeeds is therefore simply
+/// replaced by the next poll. One that fails sooner, or whose server the
+/// oracle cannot read, cools down: polls fail closed for the delay instead
+/// of exec-looping. Either way a failed channel is never replaced within
+/// `CONTROL_RETRY_DELAY` of its own attach.
+fn query_snapshot_with(
+    state: &mut QueryState,
+    run: &dyn Fn(&[&str]) -> Result<String, DeckError>,
+    connect: &dyn Fn(&[PaneRow]) -> Result<TmuxQueryChannel, DeckError>,
+) -> Result<PaneSnapshot, DeckError> {
     if let Some(channel) = state.channel.as_mut() {
         match channel.snapshot() {
             Ok(snapshot) => return Ok(snapshot),
             Err(error) => {
                 applog(&format!("[tmux-control] query reset ({})", error.code()));
+                let failed_at = Instant::now();
+                let settled = failed_at.duration_since(channel.connected_at) >= CONTROL_RETRY_DELAY;
                 state.channel.take();
-                state.retry_after = Some(Instant::now() + CONTROL_RETRY_DELAY);
                 // Exactly one one-shot oracle read accompanies a failed
-                // generation. Cooldown polls fail closed instead of exec-looping.
-                return snapshot_or_empty_with(&tmux);
+                // generation.
+                let oracle = snapshot_or_empty_with(run);
+                if !settled || oracle.is_err() {
+                    state.retry_after = Some(failed_at + CONTROL_RETRY_DELAY);
+                }
+                return oracle;
             }
         }
     }
@@ -1233,11 +1259,11 @@ pub(crate) fn query_snapshot() -> Result<PaneSnapshot, DeckError> {
         return Err(DeckError::new(ErrorKind::Tmux, "tmux control recovering"));
     }
     state.retry_after = None;
-    let snapshot = snapshot_or_empty_with(&tmux)?;
+    let snapshot = snapshot_or_empty_with(run)?;
     if snapshot.rows.is_empty() {
         return Ok(snapshot);
     }
-    match TmuxQueryChannel::connect(&snapshot.rows) {
+    match connect(&snapshot.rows) {
         Ok(channel) => {
             applog("[tmux-control] read channel connected");
             state.channel = Some(channel);
@@ -2518,5 +2544,196 @@ mod tests {
             "{clients}"
         );
         drop(channel);
+    }
+
+    /// One Board poll through the production state machine, against an
+    /// isolated server: its one-shot runner and its own query client.
+    fn poll_isolated(
+        server: &IsolatedControlServer,
+        state: &mut QueryState,
+    ) -> Result<PaneSnapshot, DeckError> {
+        let run = |args: &[&str]| server.tmux(args);
+        let connect = |rows: &[PaneRow]| {
+            TmuxQueryChannel::connect_with(
+                server.binary.to_str().unwrap(),
+                "/dev/null",
+                &server.socket,
+                rows,
+            )
+        };
+        query_snapshot_with(state, &run, &connect)
+    }
+
+    fn session_names(snapshot: &PaneSnapshot) -> Vec<&str> {
+        snapshot
+            .rows
+            .iter()
+            .map(|row| row.session_name.as_str())
+            .collect()
+    }
+
+    fn host_session() -> Option<String> {
+        owned_control_client().map(|(_, _, session)| session)
+    }
+
+    /// Makes the installed generation as old as one that has served for
+    /// `CONTROL_RETRY_DELAY`.
+    fn settle(state: &mut QueryState) {
+        let channel = state.channel.as_mut().expect("an installed channel");
+        channel.connected_at = Instant::now()
+            .checked_sub(CONTROL_RETRY_DELAY)
+            .expect("a clock older than the retry delay");
+    }
+
+    /// Runs `end` (a session or the whole server goes away) and waits for
+    /// the installed client to end by itself, as tmux makes it.
+    fn end_client(server: &IsolatedControlServer, state: &mut QueryState, end: &[&str]) {
+        server.run(end);
+        let channel = state.channel.as_mut().expect("an installed channel");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while channel
+            .child
+            .try_wait()
+            .expect("wait for the query client")
+            .is_none()
+        {
+            assert!(Instant::now() < deadline, "the query client stayed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// The query client ends with the session it is attached to, so closing
+    /// that card fails the channel while the server is fine. A generation
+    /// that served its ten seconds is replaced without a refused poll: the
+    /// failed read returns the oracle's rows, and the next poll attaches a
+    /// client to the smallest remaining session.
+    #[test]
+    fn a_settled_channel_whose_host_session_ends_is_replaced_at_the_next_poll() {
+        let _serial = CONTROL_CLIENT_TESTS.lock_or_recover();
+        let server = IsolatedControlServer::new();
+        server.new_session("alpha", "/bin/sleep");
+        server.new_session("beta", "/bin/sleep");
+        let mut state = QueryState::default();
+        let both = poll_isolated(&server, &mut state).expect("discovery");
+        assert_eq!(session_names(&both), ["alpha", "beta"]);
+        assert_eq!(host_session().as_deref(), Some("alpha"));
+        let served = poll_isolated(&server, &mut state).expect("rows from the channel");
+        assert_eq!(session_names(&served), ["alpha", "beta"]);
+        settle(&mut state);
+
+        end_client(&server, &mut state, &["kill-session", "-t", "=alpha"]);
+        let rest = poll_isolated(&server, &mut state).expect("the oracle read");
+        assert_eq!(session_names(&rest), ["beta"]);
+        assert!(state.channel.is_none());
+        assert_eq!(owned_control_client(), None);
+
+        let next = poll_isolated(&server, &mut state).expect("the next poll is not refused");
+        assert_eq!(session_names(&next), ["beta"]);
+        assert_eq!(host_session().as_deref(), Some("beta"));
+        let served = poll_isolated(&server, &mut state).expect("rows from the new channel");
+        assert_eq!(session_names(&served), ["beta"]);
+        assert!(state.retry_after.is_none());
+    }
+
+    /// The last session ending empties the server and ends the client. After
+    /// a settled generation every poll reads the proven-empty server: none
+    /// is refused, and no client is attached to nothing.
+    #[test]
+    fn a_settled_channel_whose_last_session_ends_reads_the_empty_server() {
+        let _serial = CONTROL_CLIENT_TESTS.lock_or_recover();
+        let server = IsolatedControlServer::new();
+        server.run(&["start-server", ";", "set-option", "-g", "exit-empty", "off"]);
+        server.new_session("alpha", "/bin/sleep");
+        let mut state = QueryState::default();
+        let one = poll_isolated(&server, &mut state).expect("discovery");
+        assert_eq!(session_names(&one), ["alpha"]);
+        settle(&mut state);
+
+        end_client(&server, &mut state, &["kill-session", "-t", "=alpha"]);
+        let emptied = poll_isolated(&server, &mut state).expect("the oracle read");
+        assert!(emptied.rows.is_empty());
+        assert!(emptied.server.is_some(), "identity and ledger survive");
+
+        let next = poll_isolated(&server, &mut state).expect("the next poll is not refused");
+        assert!(next.rows.is_empty());
+        assert!(next.server.is_some());
+        assert!(state.channel.is_none());
+        assert!(state.retry_after.is_none());
+        assert_eq!(owned_control_client(), None);
+    }
+
+    /// The bound the cooldown exists for: a generation that fails before it
+    /// served ten seconds is not replaced at once, whatever the reason and
+    /// although the server answers. Polls fail closed for the delay.
+    #[test]
+    fn a_channel_that_fails_within_ten_seconds_still_cools_down() {
+        let _serial = CONTROL_CLIENT_TESTS.lock_or_recover();
+        let server = IsolatedControlServer::new();
+        server.new_session("alpha", "/bin/sleep");
+        server.new_session("beta", "/bin/sleep");
+        let mut state = QueryState::default();
+        poll_isolated(&server, &mut state).expect("discovery");
+        assert_eq!(host_session().as_deref(), Some("alpha"));
+
+        end_client(&server, &mut state, &["kill-session", "-t", "=alpha"]);
+        let rest = poll_isolated(&server, &mut state).expect("the oracle read");
+        assert_eq!(session_names(&rest), ["beta"]);
+        assert!(state.channel.is_none());
+        let wait = state.retry_after.expect("a cooldown");
+        assert!(wait > Instant::now() + CONTROL_RETRY_DELAY - Duration::from_secs(1));
+
+        let cooling = poll_isolated(&server, &mut state).expect_err("a refused poll");
+        assert_eq!(cooling.message(), "tmux control recovering");
+        assert!(state.channel.is_none());
+        assert_eq!(owned_control_client(), None);
+    }
+
+    /// A settled generation whose server no longer answers cools down too:
+    /// the oracle's failure is the poll's result, and later polls fail
+    /// closed instead of running tmux again.
+    #[test]
+    fn a_settled_channel_whose_server_is_gone_still_cools_down() {
+        let _serial = CONTROL_CLIENT_TESTS.lock_or_recover();
+        let server = IsolatedControlServer::new();
+        server.new_session("alpha", "/bin/sleep");
+        let mut state = QueryState::default();
+        poll_isolated(&server, &mut state).expect("discovery");
+        settle(&mut state);
+
+        end_client(&server, &mut state, &["kill-server"]);
+        let lost = poll_isolated(&server, &mut state).expect_err("no server to read");
+        assert_ne!(lost.message(), "tmux control recovering");
+        assert!(state.channel.is_none());
+        assert!(state.retry_after.is_some(), "a cooldown");
+
+        let cooling = poll_isolated(&server, &mut state).expect_err("a refused poll");
+        assert_eq!(cooling.message(), "tmux control recovering");
+    }
+
+    /// A failed channel is never replaced within ten seconds of its own
+    /// attach: the client that replaced a settled generation is itself new,
+    /// so when its own session ends right away the cooldown applies.
+    #[test]
+    fn a_replacement_that_fails_right_away_cools_down() {
+        let _serial = CONTROL_CLIENT_TESTS.lock_or_recover();
+        let server = IsolatedControlServer::new();
+        for name in ["alpha", "beta", "gamma"] {
+            server.new_session(name, "/bin/sleep");
+        }
+        let mut state = QueryState::default();
+        poll_isolated(&server, &mut state).expect("discovery");
+        settle(&mut state);
+        end_client(&server, &mut state, &["kill-session", "-t", "=alpha"]);
+        poll_isolated(&server, &mut state).expect("the oracle read");
+        poll_isolated(&server, &mut state).expect("the replacement attaches");
+        assert_eq!(host_session().as_deref(), Some("beta"));
+
+        end_client(&server, &mut state, &["kill-session", "-t", "=beta"]);
+        let rest = poll_isolated(&server, &mut state).expect("the oracle read");
+        assert_eq!(session_names(&rest), ["gamma"]);
+        assert!(state.retry_after.is_some(), "a cooldown");
+        let cooling = poll_isolated(&server, &mut state).expect_err("a refused poll");
+        assert_eq!(cooling.message(), "tmux control recovering");
+        assert_eq!(owned_control_client(), None);
     }
 }
