@@ -14,11 +14,14 @@
 //   finishes) plus one replaceable latest snapshot in the model.
 // - Copied content: the tab establishes the observation scope. The native
 //   gate records a baseline (never reads existing text); a later change
-//   while Deck is focused is translated automatically. Readiness is shown
-//   only after the baseline exists. Focus loss disarms; nothing copied while
-//   away is read. Deck's own copies (both buttons, Cmd+C in the result) go
-//   through one receipted writer, and only that exact pasteboard version is
-//   excluded — never text that merely looks like an old result.
+//   while Deck is focused is translated automatically, unless its writer
+//   marked it confidential or momentary: such a version is never read and
+//   the poll returns nothing for it (intelligence/pasteboard.rs). Readiness
+//   is shown only after the baseline exists. Focus loss disarms; nothing
+//   copied while away is read. Deck's own copies (both buttons, Cmd+C in
+//   the result) go through one receipted writer, and only that exact
+//   pasteboard version is excluded — never text that merely looks like an
+//   old result.
 // - Reading never pauses: a live selection inside the result only defers
 //   showing a newer result until the selection or its focus ends.
 // - The button always opens the panel. Until enabled and installed it shows
