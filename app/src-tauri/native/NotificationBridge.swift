@@ -1,12 +1,25 @@
-// In-process macOS user notifications for deck's away notifications
-// (notify.rs owns the policy: what is posted, when, and the Dock badge).
-// This file only talks to UNUserNotificationCenter: request authorization,
-// post one notification per tmux session identifier, remove it, and hand a
-// click back to Rust as that identifier. Nothing here logs, spawns, reads
-// files or opens a socket; strings cross the bridge one way (Rust → system)
-// except the clicked identifier, which is deck's own session name.
-// Every entry is a no-op outside a real .app bundle (unit tests, a bare
-// binary): UNUserNotificationCenter aborts the process without a bundle.
+// In-process macOS user notifications. Two users share this file: deck's
+// away notifications (notify.rs owns that policy: what is posted, when, and
+// the Dock badge) and the system projection of card reminders (reminder.rs
+// owns that one: which requests should exist, for which card revision, and
+// what a response means).
+// This file only talks to UNUserNotificationCenter. For an away
+// notification: request authorization, post one notification per tmux
+// session identifier, remove it, and hand a click back to Rust as that
+// identifier. For reminders: make the pending and delivered requests match
+// the set Rust projects (calendar triggers in UTC; a card title, a project
+// name and one fixed phrase, never a note; two fixed actions), remove the
+// ones no longer wanted, and hand a response back as the request's
+// identifier, a closed action kind and the time. The two identifier
+// namespaces are disjoint (a session name has no dot, a reminder identifier
+// has five dotted parts), so neither side can address the other's requests.
+// Nothing here logs, spawns, reads files or opens a socket; strings cross
+// the bridge one way (Rust → system) except those identifiers, which deck
+// itself made.
+// Every entry that reaches the notification center is a no-op outside a
+// real .app bundle (unit tests, a bare binary): UNUserNotificationCenter
+// aborts the process without a bundle. `deck_reminder_zone_valid` uses
+// Foundation only and works anywhere.
 import Foundation
 import AppKit
 import UserNotifications
