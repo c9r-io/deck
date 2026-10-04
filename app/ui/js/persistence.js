@@ -1,7 +1,7 @@
-// Reminder intent and blocked retirement identities persist with their card.
-// Only explicit current-version changes carry claims to the native save fence.
 // persistence.js — one global Board transaction queue
 // Part of deck's no-build frontend: native ES modules, no bundler.
+// Reminder intent and blocked retirement identities persist with their card.
+// Only explicit current-version changes carry claims to the native save fence.
 import { ctx, inv, store } from './state.js';
 import { createSerialTransactionQueue } from './pure.js';
 
