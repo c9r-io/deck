@@ -2381,9 +2381,13 @@ mod tests {
     /// The one Board document both sides pin. `dom.test.mjs` proves the
     /// fixture is exactly what `persistence.js` writes; this test proves
     /// what `BoardCard` requires of it and names every key it merely
-    /// tolerates. A new persisted key changes the fixture (the frontend test
-    /// forces that) and then fails here until it is either declared in
-    /// `BoardCard` or added to the tolerated list on purpose.
+    /// tolerates. A new key that is always written changes the fixture (the
+    /// frontend test forces that) and then fails here until it is either
+    /// declared in `BoardCard` or added to the tolerated list on purpose. A
+    /// key written only when it has a value sits on another card of the
+    /// fixture, which this test does not take apart: `tests/ipc_contract.rs`
+    /// holds every key `persistence.js` can write to a declared field or a
+    /// listed exception.
     #[test]
     fn board_fixture_pins_the_schema_on_both_sides() {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
