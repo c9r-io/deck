@@ -37,9 +37,16 @@ native-to-WebView startup gap. The loaded Board transaction rechecks card,
 identity and revision; old/duplicate snoozes cannot change current time or
 resurrect a removed reminder. Commit precedes acknowledgment, so crash replay
 is a no-op against the newer revision. Inbox write failure is surfaced and never
-reported as a successful snooze. The background-launch visibility guard avoids
-requesting focus for an early Snooze; actual OS callback ordering remains a
-required platform acceptance item. No response creates a shell or grants input.
+reported as a successful snooze. A Snooze that reaches the delegate before the
+WebView has asked about its window makes the launch response-only: the window
+stays unrevealed, the app is hidden so the application in use keeps the
+keyboard, the automatic work `main.rs` deferred does not start, and the
+process ends once the inbox is empty and the system has confirmed the request
+of every Snooze that launch transacted. Anything else (the Dock, an Open, a
+failed save or registration, six seconds without a finish) turns it into an
+ordinary visible launch; no path leaves Deck running without a window. Actual
+OS callback ordering remains a required platform acceptance item. No response
+creates a shell or grants input.
 
 Blocked retirement identities persist as a bounded card field: exact native
 server PID/start/session generation for a normal shell exit, or the frozen
@@ -155,11 +162,12 @@ matrix includes every requested item; PARTIAL PASS/BLOCKED/NOT RUN records
 cannot constitute complete product PASS. Dedicated notification authorization
 records, if created by macOS, are not deleted through a privacy database.
 
-After a real cold Snooze has independently passed callback, committed exact
-time and registration assertions, the verifier reopens only its owned app
-through LaunchServices for the next normal-quit/restart setup. Hidden WebView
-timers do not certify that setup command; reopening is outside the completed
-notification observation window and never substitutes for the system action.
+A real cold Snooze is a response-only launch: after its callback the verifier
+requires the owned process to end by itself, the committed time to be exact,
+and the new request to be the one pending, which it reads through the
+inventory-only observer because no Deck is running. The next setup starts the
+owned app again as an ordinary launch. This track has not been run since the
+change; it needs the connected system-UI driver.
 
 Before subsequent editor and normal-quit commands, the own-window driver
 requires actual AppKit active/key-window bits. AX Raise alone does not establish
@@ -285,9 +293,10 @@ What a cold Snooze leaves behind, from four of them:
   when the response arrived and the overdue interval ran. That is one
   observation, with Deck still the frontmost application.
 
-Open, and nothing was changed for it: whether Deck should keep running after
-a cold Snooze, who resumes the content process, and what else waits while it
-is suspended.
+These observations describe the build that was tested. Since then a cold
+Snooze is a response-only launch that ends (see the Responses paragraph
+above), so Deck no longer stays in that state; the change itself has unit
+tests and still needs a click on a real banner to be confirmed.
 
 ### Evidence evaluator closure (2026-09-30)
 

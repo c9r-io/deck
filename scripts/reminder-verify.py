@@ -922,15 +922,31 @@ class LocalCarrier:
         wait_until(lambda:not self.pids(),15)
         at=int(time.time()*1000);self.manifest['phases'].append({'normalExitConfirmedAt':at,'remainingOwnedPids':[]});self.save();self.scenario('native-idle');return at
 
-    def maintenance(self, cleanup=False):
+    def maintenance(self, cleanup=False, name='quit-delivery-inventory.json'):
         if self.pids(): raise RuntimeError('Inventory observer must not conceal a running Deck')
         path=self.data/'evidence/reminder-maintenance.json';path.unlink(missing_ok=True)
         self.launch('native-cleanup' if cleanup else 'native-inventory')
         wait_until(lambda:path.exists() and not self.pids(),15)
         value=json.loads(path.read_text())
         if value.get('boardLoaded') is not False: raise RuntimeError('Observer loaded Board')
-        (self.out/('cleanup-inventory.json' if cleanup else 'quit-delivery-inventory.json')).write_text(json.dumps(value,indent=2))
+        (self.out/('cleanup-inventory.json' if cleanup else name)).write_text(json.dumps(value,indent=2))
         self.scenario('native-idle');return value
+
+    def registered_after_exit(self, label):
+        """A response-only launch has ended. The same identity reads the
+        notification center without loading a Board: the committed reminder's
+        request must be the one pending."""
+        card=self.card();r=card['reminder'];identifier='deck.reminder.'+card['id'].encode().hex()+'.'+r['id']+'.'+str(r['revision'])
+        value=self.maintenance(name=label+'-inventory.json')
+        rows=[row for row in value['pending'] if row['identifier']==identifier]
+        own_prefix='deck.reminder.'+card['id'].encode().hex()+'.'
+        obsolete=[row for row in value['pending']+value['delivered'] if row['identifier'].startswith(own_prefix) and row['identifier']!=identifier]
+        if value['authorization'] not in [3,4] or len(rows)!=1 or obsolete or abs(rows[0]['dueAt']-r['dueAt'])>=1000:
+            raise RuntimeError('Cold Snooze ended without its registered request')
+        snapshot={'observedAt':int(time.time()*1000),'pids':self.pids(),'inventory':value,
+                  'cards':[{key:c[key] for key in ['id','session','title','status','reminderRetirements'] if key in c} | ({'reminder':{k:v for k,v in c['reminder'].items() if k!='note'}} if c.get('reminder') else {}) for c in self.board()['cards']]}
+        (self.out/(label+'.json')).write_text(json.dumps(snapshot,indent=2))
+        return card,identifier,value
 
     def ui(self, kind, title=None, identifier=None):
         """Ask only the connected authorized agent driver, never a human."""
@@ -948,7 +964,7 @@ class LocalCarrier:
         if not value.get('observation'): raise RuntimeError('UI action has no observation audit')
         return value
 
-    def callback(self, kind, identifier, previous_revision):
+    def callback(self, kind, identifier, previous_revision, ends=False):
         def match():
             p=self.data/'evidence/reminder-native-actions.json'
             if not p.exists(): return None
@@ -957,7 +973,10 @@ class LocalCarrier:
             return rows[0] if rows else None
         action=wait_until(match,20)
         if action['cardId']!=self.card()['id'] or action['revision']!=previous_revision: raise RuntimeError('Wrong native response identity')
-        wait_until(lambda:self.pids(),15)
+        # A Snooze answered while Deck was not running is a response-only
+        # launch: Deck transacts it and ends by itself. Every other response
+        # leaves a running Deck.
+        wait_until((lambda:not self.pids()) if ends else (lambda:self.pids()),15)
         self.snapshot('callback-'+kind);return action
 
     def clean(self):
@@ -1115,20 +1134,13 @@ def local_main(args):
             carrier.step('native-edit',2);card,identifier,_=carrier.registered('cold-snooze-registration');exited=carrier.quit();due=card['reminder']['dueAt']
             wait_until(lambda:int(time.time()*1000)>due+1000,max(1,(due+45000-int(time.time()*1000))/1000))
             value=carrier.maintenance();assert_delivered_after_exit(value,identifier,exited,due+45000)
-            carrier.ui('snooze',card['title'],identifier);action=carrier.callback('snooze',identifier,card['reminder']['revision'])
-            wait_until(lambda:carrier.card()['reminder']['dueAt']==action['actedAt']+3600000,15);carrier.registered('cold-snooze-persisted');facts['coldSnooze']=action
+            carrier.ui('snooze',card['title'],identifier);action=carrier.callback('snooze',identifier,card['reminder']['revision'],ends=True)
+            wait_until(lambda:carrier.card()['reminder']['dueAt']==action['actedAt']+3600000,15);carrier.registered_after_exit('cold-snooze-persisted');facts['coldSnooze']=action
             report['readiness']['systemNotificationActions']=True
-            # The real cold Snooze deliberately leaves its window hidden. After
-            # its callback, commit and registration have passed, reopen only the
-            # owned app for the next normal-quit/restart setup. Hidden WebView
-            # timers are not a reliable transport for a subsequent test command.
-            before = carrier.pids()
-            if run(['open','-a',str(carrier.app)]).returncode:
-                raise RuntimeError('Owned post-Snooze setup reopen failed')
-            if carrier.pids() != before:
-                raise RuntimeError('Setup reopen replaced the tested generation')
-            carrier.actions.append({'actor':'codex','action':'post-assertion owned-app setup reopen','runId':carrier.run_id,'at':int(time.time()*1000)})
-            carrier.quit();carrier.launch();carrier.registered('snooze-restart')
+            # The cold Snooze was a response-only launch: Deck committed the
+            # answer, saw its request registered and ended. The next setup
+            # starts it again as an ordinary launch.
+            carrier.launch();carrier.registered('snooze-restart')
             carrier.step('native-end-fault',9);facts['saveFailurePreservesProtection']=True
             carrier.step('native-in-app',7)
             wait_until(lambda:carrier.inventory()['pending']==[] and carrier.inventory()['delivered']==[],10)

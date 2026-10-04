@@ -487,9 +487,20 @@ export async function boot() {
       }
     }
   }
-  if (await inv("reminder_launch_visible").catch(() => true)) await revealThemedWindow();
+  const visible = await inv("reminder_launch_visible").catch(() => true);
+  if (visible) await revealThemedWindow();
   state.projectId = store.projects[0].id;
   render();
+  /* A launch the system made to deliver "remind in 1 hour" while deck was not
+     running (reminder.rs, response-only launch): transact that answer and
+     nothing else. The backend then ends the process, or says that deck stays
+     (the user asked for it meanwhile, or the answer could not be completed)
+     and the ordinary boot goes on in a revealed window. */
+  if (!visible) {
+    if (!loadErr) await reconcileReminders();
+    if (!(await inv('reminder_response_finish').catch(() => true))) return;
+    await revealThemedWindow();
+  }
   startPolling();
   if (!loadErr) startReminders();
   listen('board-lost', () => offerBoardExit()).catch(() => uev('listen-fail', 'board-lost'));

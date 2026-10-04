@@ -14,11 +14,31 @@
 //! due latch, for the Dock at a due instant, for another try at a failed
 //! registration and for a response that arrives while deck is in the
 //! background: `action_callback` stores the response and signals nobody.
+//!
+//! A launch the system made to deliver "remind in 1 hour" while deck was not
+//! running is RESPONSE-ONLY (`LAUNCH`): a Snooze that arrives before the
+//! webview has asked `reminder_launch_visible`. The user answered "not now"
+//! and did not ask for deck, so that launch does one thing. The window stays
+//! unrevealed, the app is hidden at once so the application in use keeps the
+//! keyboard, and what `main.rs` handed to `defer_automatic_work` (scheduler,
+//! inbound sources, Slack transport, Connector, MCP) does not start. The
+//! webview transacts the answer and calls `reminder_response_finish`, which
+//! ends the process only when the inbox is empty and the system has confirmed
+//! the request of every Snooze it transacted (`finish_decision`). Everything
+//! else turns the launch into an ordinary, visible one (`stay`): the user
+//! asked for deck meanwhile (Dock, or a click on a banner), the answer could
+//! not be saved or registered, or the webview did not finish within
+//! `RESPONSE_ONLY_LIMIT`. No path leaves deck running without a window. An
+//! ordinary launch starts the deferred work when the webview asks, and a
+//! Snooze answered while deck runs changes nothing here.
+use crate::applog::applog;
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{LazyLock, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 pub(crate) const NOTE_BYTES: usize = 280;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -257,9 +277,33 @@ impl TryFrom<InboxRaw> for Inbox {
     }
 }
 static INBOX: Mutex<()> = Mutex::new(());
-static ACTION_FAILURE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static WEBVIEW_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static BACKGROUND_LAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ACTION_FAILURE: AtomicBool = AtomicBool::new(false);
+/// What this launch is. Only an undecided launch can become response-only
+/// (an early Snooze) or ordinary (the webview asked first, or anything else
+/// arrived first); a response-only launch then ends or becomes ordinary.
+static LAUNCH: AtomicU8 = AtomicU8::new(UNDECIDED);
+const UNDECIDED: u8 = 0;
+const ORDINARY: u8 = 1;
+const RESPONSE_ONLY: u8 = 2;
+const ENDING: u8 = 3;
+/// The user asked for deck (Dock icon) during a response-only launch.
+static REOPENED: AtomicBool = AtomicBool::new(false);
+/// A notification answer could not be stored in this launch. Unlike
+/// `ACTION_FAILURE`, which the webview consumes to say so once, this stays:
+/// a launch that lost an answer never ends as if it had transacted it.
+static ANSWER_LOST: AtomicBool = AtomicBool::new(false);
+/// Requests the Snoozes transacted by a response-only launch must see
+/// registered before the process may end.
+static EXPECTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+type Deferred = Box<dyn FnOnce() + Send>;
+static DEFERRED: Mutex<Option<Deferred>> = Mutex::new(None);
+static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+/// How long `reminder_response_finish` waits for the system to confirm a
+/// registration, and how long a response-only launch may last at all. The
+/// second is below the point where the system suspends a webview whose
+/// window was never shown (about 7.5 s, measured 2026-10-04).
+const REGISTRATION_WAIT: Duration = Duration::from_secs(4);
+const RESPONSE_ONLY_LIMIT: Duration = Duration::from_secs(6);
 static RESULTS: LazyLock<Mutex<HashMap<String, &'static str>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static PROJECT: Mutex<()> = Mutex::new(());
@@ -303,6 +347,10 @@ extern "C" {
     );
     fn deck_reminder_project(json: *const std::ffi::c_char);
 }
+fn answer_not_saved() {
+    ACTION_FAILURE.store(true, Ordering::Release);
+    ANSWER_LOST.store(true, Ordering::Release);
+}
 #[cfg(target_os = "macos")]
 extern "C" fn action_callback(raw: *const std::ffi::c_char, kind: i32, acted_at: u64) {
     if raw.is_null() || !matches!(kind, 1 | 2) {
@@ -315,12 +363,12 @@ extern "C" fn action_callback(raw: *const std::ffi::c_char, kind: i32, acted_at:
     let Some(claim) = parse_request(&request) else {
         return;
     };
-    if kind == 2 && !WEBVIEW_READY.load(std::sync::atomic::Ordering::Acquire) {
-        BACKGROUND_LAUNCH.store(true, std::sync::atomic::Ordering::Release);
+    if response_arrived(kind) {
+        response_only_began();
     }
     let _lock = INBOX.lock_or_recover();
     let Ok(mut inbox) = inbox() else {
-        ACTION_FAILURE.store(true, std::sync::atomic::Ordering::Release);
+        answer_not_saved();
         return;
     };
     if inbox
@@ -331,7 +379,7 @@ extern "C" fn action_callback(raw: *const std::ffi::c_char, kind: i32, acted_at:
         return;
     }
     if inbox.actions.len() >= 128 {
-        ACTION_FAILURE.store(true, std::sync::atomic::Ordering::Release);
+        answer_not_saved();
         return;
     }
     inbox.actions.push(Action {
@@ -344,7 +392,7 @@ extern "C" fn action_callback(raw: *const std::ffi::c_char, kind: i32, acted_at:
     });
     if let Ok(json) = serde_json::to_string(&inbox) {
         if crate::storage::save_typed::<Inbox>(&inbox_path(), &json).is_err() {
-            ACTION_FAILURE.store(true, std::sync::atomic::Ordering::Release);
+            answer_not_saved();
         } else if cfg!(debug_assertions) && crate::smoke_faults::enabled() {
             // Preserve actual system callbacks through ACK for isolated evidence.
             // No response injection seam; only this native delegate writes it.
@@ -511,7 +559,7 @@ pub(crate) fn reminder_status() -> HashMap<String, &'static str> {
 }
 #[tauri::command]
 pub(crate) fn reminder_actions() -> Result<Vec<Action>, DeckError> {
-    if ACTION_FAILURE.swap(false, std::sync::atomic::Ordering::AcqRel) {
+    if ACTION_FAILURE.swap(false, Ordering::AcqRel) {
         return Err(DeckError::new(
             ErrorKind::Other,
             "reminder notification action was not saved",
@@ -527,19 +575,24 @@ pub(crate) fn reminder_ack(request: String, kind: String) -> Result<(), DeckErro
     }
     let _lock = INBOX.lock_or_recover();
     let mut inbox = inbox()?;
-    if kind == "snooze" {
-        BACKGROUND_LAUNCH.store(false, std::sync::atomic::Ordering::Release);
-    }
     inbox
         .actions
         .retain(|a| a.request != request || a.kind != kind);
     crate::storage::save_typed::<Inbox>(
         &inbox_path(),
         &serde_json::to_string(&inbox).map_err(|_| invalid())?,
-    )
+    )?;
+    expect_registration(&request, &kind);
+    Ok(())
 }
+/// The webview locates the card of an Open. That is the user asking for
+/// deck: a response-only launch becomes an ordinary one first.
 #[tauri::command]
 pub(crate) fn reminder_show(app: tauri::AppHandle) {
+    stay("opened");
+    show_window(&app);
+}
+fn show_window(app: &tauri::AppHandle) {
     use tauri::Manager;
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -552,13 +605,200 @@ pub(crate) fn reminder_request_permission() -> String {
     crate::notify::reminder_request_permission()
 }
 
-pub(crate) fn background_launch() -> bool {
-    BACKGROUND_LAUNCH.load(std::sync::atomic::Ordering::Acquire)
+/// Deck's automatic work waits here until the launch is an ordinary one
+/// (`main.rs` setup). A response-only launch that ends never runs it.
+pub(crate) fn defer_automatic_work(app: tauri::AppHandle, start: impl FnOnce() + Send + 'static) {
+    let _ = APP.set(app);
+    defer_start(start);
 }
+fn defer_start(start: impl FnOnce() + Send + 'static) {
+    *DEFERRED.lock_or_recover() = Some(Box::new(start));
+}
+fn start_deferred() {
+    let start = DEFERRED.lock_or_recover().take();
+    if let Some(start) = start {
+        start();
+    }
+}
+/// A notification answer reached the delegate. True when it makes this
+/// launch response-only: a Snooze, before anything else decided the launch.
+fn response_arrived(kind: i32) -> bool {
+    let to = if kind == 2 { RESPONSE_ONLY } else { ORDINARY };
+    LAUNCH
+        .compare_exchange(UNDECIDED, to, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+        && to == RESPONSE_ONLY
+}
+/// The system made deck the frontmost application when it launched it.
+/// Hiding hands the keyboard back to the application the user is in; the
+/// bound below makes sure the launch never lingers without a window.
+fn response_only_began() {
+    applog("[reminder] response-only launch");
+    if let Some(app) = APP.get() {
+        #[cfg(target_os = "macos")]
+        let _ = app.hide();
+        let _ = app;
+    }
+    std::thread::spawn(|| {
+        std::thread::sleep(RESPONSE_ONLY_LIMIT);
+        stay("unfinished");
+    });
+}
+/// A response-only launch becomes an ordinary one, shown. False when the
+/// launch is not response-only (any more).
+fn stay(reason: &'static str) -> bool {
+    if LAUNCH
+        .compare_exchange(RESPONSE_ONLY, ORDINARY, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return false;
+    }
+    applog(match reason {
+        "opened" => "[reminder] response-only launch stays: a card was opened",
+        "reopened" => "[reminder] response-only launch stays: deck was asked for",
+        "answer-pending" => "[reminder] response-only launch stays: the answer is not transacted",
+        "registration-failed" => "[reminder] response-only launch stays: registration failed",
+        "registration-unconfirmed" => {
+            "[reminder] response-only launch stays: registration not confirmed"
+        }
+        _ => "[reminder] response-only launch stays: not finished in time",
+    });
+    start_deferred();
+    if let Some(app) = APP.get() {
+        show_window(app);
+    }
+    true
+}
+/// The Dock icon was clicked while the launch is response-only: the user
+/// wants deck. The finish turns the launch into an ordinary one.
+pub(crate) fn reopen_requested() {
+    REOPENED.store(true, Ordering::Release);
+}
+/// The Snooze just acknowledged was transacted by a response-only launch:
+/// its next revision's request is what the system must confirm before the
+/// process may end.
+fn expect_registration(request: &str, kind: &str) {
+    if kind != "snooze" || LAUNCH.load(Ordering::Acquire) != RESPONSE_ONLY {
+        return;
+    }
+    let (Some(claim), Some((head, _))) = (parse_request(request), request.rsplit_once('.')) else {
+        return;
+    };
+    EXPECTED
+        .lock_or_recover()
+        .push(format!("{head}.{}", claim.revision + 1));
+}
+/// What the projection last recorded for each expected request; `None` for
+/// one the committed Board no longer has (the answer changed nothing).
+fn expected_states() -> Vec<Option<&'static str>> {
+    let results = RESULTS.lock_or_recover();
+    EXPECTED
+        .lock_or_recover()
+        .iter()
+        .map(|request| results.get(request).copied())
+        .collect()
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Finish {
+    Wait,
+    End,
+    Stay(&'static str),
+}
+struct FinishFacts {
+    response_only: bool,
+    reopened: bool,
+    failed: bool,
+    inbox_empty: bool,
+    registrations: Vec<Option<&'static str>>,
+    waited: bool,
+}
+/// The process ends only on positive proof that the answer is done: nothing
+/// left in the inbox, nothing failed, and every Snooze this launch transacted
+/// has its new request registered. The user asking for deck outranks all.
+fn finish_decision(facts: &FinishFacts) -> Finish {
+    if !facts.response_only {
+        return Finish::Stay("ordinary");
+    }
+    if facts.reopened {
+        return Finish::Stay("reopened");
+    }
+    if facts.failed || !facts.inbox_empty {
+        return Finish::Stay("answer-pending");
+    }
+    if facts.registrations.contains(&Some("registration-failed")) {
+        return Finish::Stay("registration-failed");
+    }
+    if facts.registrations.contains(&Some("saved")) {
+        return if facts.waited {
+            Finish::Stay("registration-unconfirmed")
+        } else {
+            Finish::Wait
+        };
+    }
+    Finish::End
+}
+fn finish_facts(waited: bool) -> FinishFacts {
+    let inbox_empty = {
+        let _lock = INBOX.lock_or_recover();
+        inbox().is_ok_and(|inbox| inbox.actions.is_empty())
+    };
+    FinishFacts {
+        response_only: LAUNCH.load(Ordering::Acquire) == RESPONSE_ONLY,
+        reopened: REOPENED.load(Ordering::Acquire),
+        failed: ANSWER_LOST.load(Ordering::Acquire),
+        inbox_empty,
+        registrations: expected_states(),
+        waited,
+    }
+}
+/// The webview transacted what a response-only launch was made for. False:
+/// the process ends. True: deck stays as an ordinary launch and the boot
+/// goes on. A bounded wait covers the system's asynchronous registration.
+#[tauri::command]
+pub(crate) async fn reminder_response_finish(app: tauri::AppHandle) -> bool {
+    tauri::async_runtime::spawn_blocking(move || {
+        let deadline = Instant::now() + REGISTRATION_WAIT;
+        loop {
+            match finish_decision(&finish_facts(Instant::now() >= deadline)) {
+                Finish::Wait => std::thread::sleep(Duration::from_millis(50)),
+                Finish::Stay(reason) => {
+                    stay(reason);
+                    return true;
+                }
+                Finish::End => {
+                    let ended = LAUNCH.compare_exchange(
+                        RESPONSE_ONLY,
+                        ENDING,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                    if ended.is_ok() {
+                        applog("[reminder] response-only launch: answer transacted, exiting");
+                        app.exit(0);
+                    }
+                    return ended.is_err();
+                }
+            }
+        }
+    })
+    .await
+    .unwrap_or(true)
+}
+/// The launch is response-only (or ending): the Dock's Reopen must not
+/// reveal the window by itself (`main.rs`).
+pub(crate) fn background_launch() -> bool {
+    matches!(LAUNCH.load(Ordering::Acquire), RESPONSE_ONLY | ENDING)
+}
+/// The webview asks whether to reveal its window. An undecided launch is an
+/// ordinary one from here on, and what waited for that starts.
 #[tauri::command]
 pub(crate) fn reminder_launch_visible() -> bool {
-    WEBVIEW_READY.store(true, std::sync::atomic::Ordering::Release);
-    !BACKGROUND_LAUNCH.load(std::sync::atomic::Ordering::Acquire)
+    let _ = LAUNCH.compare_exchange(UNDECIDED, ORDINARY, Ordering::AcqRel, Ordering::Acquire);
+    let visible = LAUNCH.load(Ordering::Acquire) == ORDINARY;
+    if visible {
+        start_deferred();
+    }
+    visible
 }
 
 #[cfg(test)]
@@ -613,5 +853,198 @@ mod tests {
         assert!(validate(&r).is_err());
         r.note = "line\nbreak".into();
         assert!(validate(&r).is_err());
+    }
+
+    // ---- a launch the system made for a notification answer ----
+    static LAUNCH_TESTS: Mutex<()> = Mutex::new(());
+    /// The launch state is process-wide: one test at a time, from a fresh one.
+    fn fresh_launch() -> std::sync::MutexGuard<'static, ()> {
+        let guard = LAUNCH_TESTS.lock_or_recover();
+        LAUNCH.store(UNDECIDED, Ordering::Release);
+        REOPENED.store(false, Ordering::Release);
+        ANSWER_LOST.store(false, Ordering::Release);
+        EXPECTED.lock_or_recover().clear();
+        *DEFERRED.lock_or_recover() = None;
+        guard
+    }
+    fn counted() -> (
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        impl FnOnce() + Send + 'static,
+    ) {
+        let runs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = runs.clone();
+        (runs, move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        })
+    }
+    #[test]
+    fn an_early_snooze_makes_the_launch_response_only_and_starts_nothing() {
+        let _serial = fresh_launch();
+        let (runs, start) = counted();
+        defer_start(start);
+        assert!(response_arrived(2));
+        assert!(!reminder_launch_visible(), "the window stays unrevealed");
+        assert!(background_launch());
+        assert_eq!(runs.load(Ordering::SeqCst), 0, "no automatic work starts");
+        // a second early Snooze belongs to the same launch
+        assert!(!response_arrived(2));
+        assert!(background_launch());
+    }
+    #[test]
+    fn an_ordinary_launch_starts_the_deferred_work_exactly_once() {
+        let _serial = fresh_launch();
+        let (runs, start) = counted();
+        defer_start(start);
+        assert!(reminder_launch_visible());
+        assert!(reminder_launch_visible());
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        // a Snooze answered once deck is up changes nothing about the launch
+        assert!(!response_arrived(2));
+        assert!(!background_launch());
+        assert!(reminder_launch_visible());
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn a_click_on_the_banner_itself_is_an_ordinary_launch() {
+        let _serial = fresh_launch();
+        let (runs, start) = counted();
+        defer_start(start);
+        assert!(!response_arrived(1));
+        // a Snooze after it no longer makes the launch response-only
+        assert!(!response_arrived(2));
+        assert!(!background_launch());
+        assert!(reminder_launch_visible());
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn staying_starts_the_deferred_work_and_ends_the_response_only_launch() {
+        let _serial = fresh_launch();
+        let (runs, start) = counted();
+        defer_start(start);
+        assert!(response_arrived(2));
+        assert!(!reminder_launch_visible());
+        assert!(stay("reopened"));
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "staying itself starts it");
+        assert!(!background_launch());
+        assert!(reminder_launch_visible());
+        assert!(!stay("reopened"), "only a response-only launch is turned");
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn an_ordinary_launch_cannot_be_ended_as_response_only() {
+        let _serial = fresh_launch();
+        assert!(reminder_launch_visible());
+        assert!(!stay("unfinished"));
+        assert_eq!(
+            finish_decision(&finish_facts(false)),
+            Finish::Stay("ordinary")
+        );
+    }
+    #[test]
+    fn the_launch_ends_only_when_the_answer_is_transacted_and_registered() {
+        let decide = |change: fn(&mut FinishFacts)| {
+            let mut facts = FinishFacts {
+                response_only: true,
+                reopened: false,
+                failed: false,
+                inbox_empty: true,
+                registrations: vec![Some("scheduled")],
+                waited: false,
+            };
+            change(&mut facts);
+            finish_decision(&facts)
+        };
+        assert_eq!(decide(|_| {}), Finish::End);
+        // an answer that no longer applied to anything registers nothing
+        assert_eq!(decide(|f| f.registrations.clear()), Finish::End);
+        assert_eq!(decide(|f| f.registrations = vec![None]), Finish::End);
+        assert_eq!(
+            decide(|f| f.response_only = false),
+            Finish::Stay("ordinary")
+        );
+        assert_eq!(decide(|f| f.reopened = true), Finish::Stay("reopened"));
+        assert_eq!(decide(|f| f.failed = true), Finish::Stay("answer-pending"));
+        assert_eq!(
+            decide(|f| f.inbox_empty = false),
+            Finish::Stay("answer-pending")
+        );
+        assert_eq!(
+            decide(|f| f.registrations = vec![Some("scheduled"), Some("registration-failed")]),
+            Finish::Stay("registration-failed")
+        );
+        // not confirmed yet: wait, and when the wait is over do not end
+        assert_eq!(
+            decide(|f| f.registrations = vec![Some("scheduled"), Some("saved")]),
+            Finish::Wait
+        );
+        assert_eq!(
+            decide(|f| {
+                f.registrations = vec![Some("saved")];
+                f.waited = true;
+            }),
+            Finish::Stay("registration-unconfirmed")
+        );
+        // the user asking for deck outranks every other reason
+        assert_eq!(
+            decide(|f| {
+                f.reopened = true;
+                f.inbox_empty = false;
+                f.registrations = vec![Some("registration-failed")];
+            }),
+            Finish::Stay("reopened")
+        );
+    }
+    #[test]
+    fn an_acked_snooze_names_the_request_the_end_waits_for() {
+        let _serial = fresh_launch();
+        let request = request_id("card", &sample());
+        let next = request_id(
+            "card",
+            &Reminder {
+                revision: 2,
+                ..sample()
+            },
+        );
+        // deck already running: nothing is expected
+        assert!(reminder_launch_visible());
+        expect_registration(&request, "snooze");
+        assert!(EXPECTED.lock_or_recover().is_empty());
+        drop(_serial);
+        let _serial = fresh_launch();
+        assert!(response_arrived(2));
+        expect_registration(&request, "open");
+        expect_registration("not a request", "snooze");
+        assert!(EXPECTED.lock_or_recover().is_empty());
+        expect_registration(&request, "snooze");
+        assert_eq!(*EXPECTED.lock_or_recover(), vec![next.clone()]);
+        // what the end reads is the state the projection last recorded
+        RESULTS.lock_or_recover().remove(&next);
+        assert_eq!(expected_states(), vec![None]);
+        RESULTS.lock_or_recover().insert(next.clone(), "saved");
+        assert_eq!(expected_states(), vec![Some("saved")]);
+        RESULTS.lock_or_recover().insert(next.clone(), "scheduled");
+        assert_eq!(expected_states(), vec![Some("scheduled")]);
+        RESULTS.lock_or_recover().remove(&next);
+    }
+    #[test]
+    fn an_answer_that_could_not_be_stored_keeps_deck_even_after_the_webview_was_told() {
+        let _serial = fresh_launch();
+        assert!(response_arrived(2));
+        answer_not_saved();
+        // the webview's read consumes the one-time notice, not the fact
+        assert!(ACTION_FAILURE.swap(false, Ordering::AcqRel));
+        let facts = finish_facts(false);
+        assert!(facts.failed && facts.inbox_empty);
+        assert_eq!(finish_decision(&facts), Finish::Stay("answer-pending"));
+    }
+    #[test]
+    fn the_dock_during_a_response_only_launch_keeps_deck() {
+        let _serial = fresh_launch();
+        assert!(response_arrived(2));
+        assert!(!finish_facts(false).reopened);
+        reopen_requested();
+        let facts = finish_facts(false);
+        assert!(facts.response_only && facts.reopened);
+        assert_eq!(finish_decision(&facts), Finish::Stay("reopened"));
     }
 }

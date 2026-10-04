@@ -226,11 +226,21 @@ fn main() {
             // legacy/old server as pending, and replaces only an empty one.
             tmux_lifecycle::reconcile_on_boot();
             tmux::exit_on_termination_signals(app.handle().clone());
-            scheduler::spawn_scheduler(app.handle().clone());
-            inbound::spawn_inbound(app.handle().clone());
-            slack_transport::spawn(app.handle().clone());
-            connector::spawn_connector(app.handle().clone());
-            mcp::spawn(app.handle().clone());
+            // Deck's automatic work starts once the launch is known to be an
+            // ordinary one, which the webview's first question about its
+            // window settles. A launch the system made to deliver "remind in
+            // 1 hour" transacts that answer and ends without starting any
+            // of it (reminder.rs, response-only launch).
+            {
+                let handle = app.handle().clone();
+                reminder::defer_automatic_work(app.handle().clone(), move || {
+                    scheduler::spawn_scheduler(handle.clone());
+                    inbound::spawn_inbound(handle.clone());
+                    slack_transport::spawn(handle.clone());
+                    connector::spawn_connector(handle.clone());
+                    mcp::spawn(handle);
+                });
+            }
             // Agent-status socket: content-free state words from agent hooks
             // (see agent_status.rs). Re-points already-installed hook
             // entries at this install's bundled helper and retires the
@@ -390,6 +400,7 @@ fn main() {
             input_source::input_source_snapshot,
             notify::notify_configure,
             reminder::reminder_launch_visible,
+            reminder::reminder_response_finish,
             reminder::reminder_status,
             reminder::reminder_actions,
             reminder::reminder_ack,
@@ -556,7 +567,12 @@ fn main() {
         .run(|app, event| {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
-                if reminder::background_launch() { return; }
+                // A response-only launch has no window to bring back; the
+                // click still counts: that launch will stay (reminder.rs).
+                if reminder::background_launch() {
+                    reminder::reopen_requested();
+                    return;
+                }
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.show();
                     let _ = w.set_focus();

@@ -468,7 +468,28 @@ test('reminders poll the backend only while the Board has one', () => {
   assert.match(start, /addEventListener\("focus", reconcileReminders\)/);
   assert.match(start, /addEventListener\("visibilitychange", reconcileReminders\)/);
   const code = app.replace(/\/\*[\s\S]*?\*\//g, '');
-  assert.equal((code.match(/reconcileReminders/g) || []).length, 5, 'the import and these four: nothing else in app.js drives reminders');
+  assert.equal((code.match(/reconcileReminders/g) || []).length, 6, 'the import, these four and the response-only launch: nothing else in app.js drives reminders');
+});
+
+/* 22-COLD-SNOOZE: the system launches deck to deliver "remind in 1 hour"
+   when it was not running. That launch transacts the answer and asks the
+   backend whether the process ends; nothing of the ordinary boot (polling,
+   the reminder tick, inbound triggers, the Connector drain, the update
+   check) starts before that answer. */
+test('a launch made for a notification answer transacts it before anything else starts', () => {
+  const app = read('app/ui/js/app.js').replace(/\/\*[\s\S]*?\*\//g, '');
+  const boot = app.slice(app.indexOf('export async function boot()'));
+  const asked = boot.indexOf('inv("reminder_launch_visible")');
+  const block = boot.indexOf('if (!visible) {');
+  const finish = boot.indexOf("inv('reminder_response_finish')");
+  assert.ok(asked > 0 && block > asked && finish > block, 'the question, then the response-only block with its finish');
+  assert.match(boot, /const visible = await inv\("reminder_launch_visible"\)\.catch\(\(\) => true\);\n  if \(visible\) await revealThemedWindow\(\);/);
+  // the answer is transacted only against a Board that loaded, and a failed
+  // call keeps deck (true): the process never ends on an error
+  assert.match(boot, /if \(!visible\) \{\n    if \(!loadErr\) await reconcileReminders\(\);\n    if \(!\(await inv\('reminder_response_finish'\)\.catch\(\(\) => true\)\)\) return;\n    await revealThemedWindow\(\);\n  \}/);
+  for (const start of ['startPolling();', 'startReminders();', 'startInbound();', 'drainConnector();', 'setTimeout(checkForUpdate', 'refreshQueue();']) {
+    assert.ok(boot.indexOf(start) > finish, `${start} waits for the answer`);
+  }
 });
 
 /* 08-C4: a reaction approves a run for a message, not the bytes that are

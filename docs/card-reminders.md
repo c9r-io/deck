@@ -33,6 +33,16 @@ The system Snooze action sets a new version exactly one hour from the actual
 response time. In Deck, use the date label to remind later or explicitly end
 the reminder. Viewing a card or dismissing a system banner does not end it.
 
+When Deck is not running, the system starts it to deliver a Snooze. That
+launch does that one thing: Deck saves the new time, waits until the system
+has confirmed the new request, and exits again. No window appears, the
+application you were using keeps the keyboard, and nothing else Deck would
+do on its own (lists, automations, Slack, the Connector) starts. If the
+answer cannot be saved or registered, or you ask for Deck in the meantime
+(the Dock icon, or a click on a banner), Deck opens normally instead and
+shows what happened. A Snooze answered while Deck is running changes
+nothing about its window.
+
 Due reminders remain visible on the card, Session entry and Needs attention.
 **Due reminders** filters due intent; **All reminders** includes future intent.
 These sort a derived list, never the Board. Agent input requests and unread
