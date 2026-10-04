@@ -295,8 +295,18 @@ What a cold Snooze leaves behind, from four of them:
 
 These observations describe the build that was tested. Since then a cold
 Snooze is a response-only launch that ends (see the Responses paragraph
-above), so Deck no longer stays in that state; the change itself has unit
-tests and still needs a click on a real banner to be confirmed.
+above), so Deck no longer stays in that state.
+
+That change was confirmed by hand the same day, on the build that has it,
+with one real banner answered while Deck was not running: the process
+existed for 0.56 seconds and ended by itself; it was the frontmost
+application for about 0.2 seconds and hidden by 0.3; the Board was written
+0.26 seconds after the answer; after the exit the inventory-only observer
+found the new request pending and no old one; the log shows no polling and
+no session start. A Snooze answered while Deck ran, and a click on a banner
+with Deck not running, behaved as before. Only unit tests cover the paths
+that keep Deck instead: the Dock, a failed save or registration, and the
+six-second bound.
 
 ### Evidence evaluator closure (2026-09-30)
 
