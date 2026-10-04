@@ -2,6 +2,8 @@
 # Compile the debug-only smoke pasteboard guard with its headless tests and
 # run them on a test-owned NAMED pasteboard (never the general one). Then
 # compile each SMOKE_MUTANT_* variant; every mutant must FAIL the tests.
+# The same run holds the Lens read (PasteboardBridge.swift) to its privacy
+# markers on that named board (section P of the tests).
 set -eu
 cd "$(dirname "$0")/.."
 dir=$(mktemp -d "${TMPDIR:-/tmp}/deck-smoke-guard.XXXXXX")

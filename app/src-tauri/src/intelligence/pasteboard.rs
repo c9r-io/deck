@@ -6,9 +6,13 @@
 //! never read. Deck's own Lens copies go through `translation_clipboard_write`,
 //! whose native write returns the changeCount it produced; the gate excludes
 //! exactly that version (never text that resembles an old result), and the
-//! receipt dies with the armed cycle. Debug smoke builds may point this same
-//! gate at a named test pasteboard (`native/SmokeBridge.swift`); the gate
-//! logic is unchanged.
+//! receipt dies with the armed cycle. A version its writer marked confidential
+//! or momentary (`org.nspasteboard.ConcealedType` / `TransientType`, looked
+//! for natively before and after the read) is never read: the gate consumes
+//! it without publishing text or an error, so the Lens keeps what it had.
+//! The markers are the writer's choice; a copy without one is ordinary text
+//! here. Debug smoke builds may point this same gate at a named test
+//! pasteboard (`native/SmokeBridge.swift`); the gate logic is unchanged.
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use std::ffi::{c_char, CStr};
@@ -63,7 +67,7 @@ fn error(code: &'static str) -> DeckError {
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn deck_pasteboard_focused_count() -> i64;
-    fn deck_pasteboard_read_text() -> *mut c_char;
+    fn deck_pasteboard_read_text(withheld: *mut i32) -> *mut c_char;
     fn deck_pasteboard_free(text: *mut c_char);
     fn deck_pasteboard_write_text(text: *const c_char) -> i64;
 }
@@ -78,12 +82,25 @@ fn focused_count() -> Result<i64, DeckError> {
         Ok(count)
     }
 }
-fn read_text() -> Result<String, DeckError> {
+/// One read of the focused pasteboard.
+#[derive(Debug, PartialEq)]
+enum Read {
+    Text(String),
+    /// The writer marked this version confidential or momentary: its text
+    /// was not read (`native/PasteboardBridge.swift`).
+    Withheld,
+}
+fn read_text() -> Result<Read, DeckError> {
     #[cfg(target_os = "macos")]
     {
-        let ptr = unsafe { deck_pasteboard_read_text() };
+        let mut withheld = 0;
+        let ptr = unsafe { deck_pasteboard_read_text(&mut withheld) };
         if ptr.is_null() {
-            return Err(error("clipboard-not-text"));
+            return if withheld != 0 {
+                Ok(Read::Withheld)
+            } else {
+                Err(error("clipboard-not-text"))
+            };
         }
         let text = unsafe { CStr::from_ptr(ptr) }
             .to_string_lossy()
@@ -97,7 +114,7 @@ fn read_text() -> Result<String, DeckError> {
         if text.trim().is_empty() {
             return Err(error("text-empty"));
         }
-        Ok(text)
+        Ok(Read::Text(text))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -168,14 +185,11 @@ pub(crate) fn translation_clipboard_poll() -> Result<Option<String>, DeckError> 
     if count <= baseline {
         return Ok(None);
     }
-    let text = read_text();
+    let read = read_text();
     // A second native focus/count probe closes a race with focus loss and a
     // second clipboard write while the AppKit read was in flight.
     let recheck = focused_count()?;
-    if !accept_read(&mut locked(), count, recheck, generation) {
-        return Ok(None);
-    }
-    text.map(Some)
+    publish(&mut locked(), count, recheck, generation, read)
 }
 
 /// A read taken between two native probes is published only when both saw
@@ -184,6 +198,26 @@ pub(crate) fn translation_clipboard_poll() -> Result<Option<String>, DeckError> 
 /// baseline untouched, so the next poll reads the newer text instead.
 fn accept_read(state: &mut Gate, count: i64, recheck: i64, generation: u64) -> bool {
     recheck == count && state.changed(count, generation)
+}
+
+/// What one poll hands to the Lens. A version the gate accepts is consumed
+/// whatever the read found: its text is published, a failed read is
+/// reported, and a version withheld for a privacy marker is neither: the
+/// Lens keeps what it had, and the next copy is read as usual.
+fn publish(
+    state: &mut Gate,
+    count: i64,
+    recheck: i64,
+    generation: u64,
+    read: Result<Read, DeckError>,
+) -> Result<Option<String>, DeckError> {
+    if !accept_read(state, count, recheck, generation) {
+        return Ok(None);
+    }
+    match read? {
+        Read::Text(text) => Ok(Some(text)),
+        Read::Withheld => Ok(None),
+    }
 }
 
 #[cfg(test)]
@@ -236,6 +270,51 @@ mod tests {
         );
         let current = state.generation;
         assert!(accept_read(&mut state, 23, 23, current));
+    }
+    /// One poll whose two native probes agree on `count`.
+    fn stable(
+        state: &mut Gate,
+        count: i64,
+        read: Result<Read, DeckError>,
+    ) -> Result<Option<String>, DeckError> {
+        let generation = state.generation;
+        publish(state, count, count, generation, read)
+    }
+    fn text(value: &str) -> Result<Read, DeckError> {
+        Ok(Read::Text(value.into()))
+    }
+    fn not_text() -> Result<Read, DeckError> {
+        Err(error("clipboard-not-text"))
+    }
+    #[test]
+    fn a_marked_version_is_consumed_and_nothing_is_published() {
+        let mut state = Gate::default();
+        state.arm(40);
+        let withheld = stable(&mut state, 41, Ok(Read::Withheld));
+        assert_eq!(withheld, Ok(None), "neither text nor an error");
+        assert_eq!(state.baseline, 41, "the withheld version is consumed");
+        let again = stable(&mut state, 41, text("x"));
+        assert_eq!(again, Ok(None), "and never looked at again");
+        let next = stable(&mut state, 42, text("next"));
+        assert_eq!(next, Ok(Some("next".into())), "the next copy is read");
+    }
+    #[test]
+    fn a_failed_read_is_reported_once_and_an_unstable_one_never() {
+        let mut state = Gate::default();
+        state.arm(50);
+        let generation = state.generation;
+        // copied again mid-read: nothing is published, whatever the read found
+        for read in [Ok(Read::Withheld), text("stale"), not_text()] {
+            assert_eq!(publish(&mut state, 51, 52, generation, read), Ok(None));
+        }
+        assert_eq!(state.baseline, 50, "an unstable read consumes nothing");
+        let failed = stable(&mut state, 52, not_text());
+        assert_eq!(failed, Err(error("clipboard-not-text")));
+        let again = stable(&mut state, 52, not_text());
+        assert_eq!(again, Ok(None), "the failed version is consumed too");
+        // Deck's own receipted write stays excluded, whatever was read
+        state.wrote(53);
+        assert_eq!(stable(&mut state, 53, text("own")), Ok(None));
     }
     #[test]
     fn self_write_rebaseline_excludes_own_change() {
