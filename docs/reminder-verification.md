@@ -201,14 +201,16 @@ another application frontmost):
 - an in-app-only reminder due after three hidden minutes showed in the Dock
   one second after its instant and had its latch committed within two.
 
-So in that state timers are slowed, not frozen: the tick that transacts a
-background response keeps running every three seconds. The probe ran on to 38
-minutes with the same cadence (twenty ticks in every minute, 457 of 457
-events, 38 of 38 transactions).
+So in that state (a window that was shown and then hidden) timers are slowed,
+not frozen: the tick that transacts a background response keeps running every
+three seconds. The probe ran on to 38 minutes with the same cadence (twenty
+ticks in every minute, 457 of 457 events, 38 of 38 transactions). A window
+that was never shown is a different state; see the by-hand check below.
 
 #### Follow-up tests owed
 
-None of these ran. Each stays open until the named evidence exists.
+Test 1 ran by hand on 2026-10-04 and passed (next section). Tests 2 and 3 did
+not run; each stays open until the named evidence exists.
 
 1. **A response answered while Deck is in the background** (end to end). No
    authorized channel clicked a notification, so this is BLOCKED; only the
@@ -218,7 +220,8 @@ None of these ran. Each stays open until the named evidence exists.
    app forward and wait ten seconds. Pass: the carrier's `deck.json` has the
    reminder at revision plus one, `dueAt` equal to the click time plus one
    hour and `due` false, and the system holds a pending request for that new
-   revision.
+   revision. Done by hand on 2026-10-04: passed, the Board was written 1.2
+   seconds after the answer while the app was hidden.
 2. **Deeper background states**: a locked screen, display sleep, and hours
    hidden. Repeat the cadence measurement (or test 1) in each. Pass: the tick
    keeps running, or a response is transacted within a stated bound.
@@ -235,6 +238,56 @@ None of these ran. Each stays open until the named evidence exists.
    pending, then assert it is gone after (a) a window focus and (b) a Board
    save. Decide from the result whether the projector should try again on
    its own.
+
+### By-hand notification check (2026-10-04)
+
+No agent UI channel can see Notification Center, so a person answered real
+notifications. The carrier was the dedicated local one described above (same
+path, identity and signed launch file), built from `6ce8ed5`. A scratch
+driver steered only Deck's own window through the `reminder-native` smoke
+commands and read the Board file, the carrier's notification inventory and
+the native delegate's evidence file; it clicked no system object and injected
+nothing. An ad-hoc signed carrier cannot do this: the notification center
+refuses its permission request (`usernoted` fails to validate the client).
+This is evidence from a person. The verifier's matrix is defined for
+unattended agent clicks and is unchanged by it.
+
+Each answer below was a real click on a real banner:
+
+- running, window visible, not the frontmost application, **Remind in 1
+  hour**: revision plus one, `dueAt` equal to the answer plus one hour, due
+  latch cleared, the old request replaced by the new one; the Board was
+  written 1.3 seconds after the answer;
+- running, hidden with Command-H, **Remind in 1 hour**: the same, 1.2
+  seconds (owed test 1 above);
+- running, the frontmost application when the banner arrived, **Remind in 1
+  hour**: the same, 0.15 seconds;
+- not running, **Remind in 1 hour**: the system started the carrier without
+  arguments, it stayed in its private environment; the same, 0.2 seconds;
+- not running, a click on the banner itself: cold start, the stopped due card
+  focused on the Board, the reminder unchanged, no session started.
+
+Not covered: sleep and wake, a locked screen, hours in the background.
+
+What a cold Snooze leaves behind, from four of them:
+
+- about 0.1 seconds after launch the system makes Deck the frontmost
+  application (four of four), while the background-launch guard keeps its
+  window unrevealed. The application the person was using stops receiving
+  keystrokes until they click one of its windows (confirmed by typing). A
+  Snooze answered while Deck is already running does not change the
+  frontmost application;
+- about 7.5 seconds after launch the system suspends the webview's content
+  process (the three that were then left alone). No interval runs while it
+  is suspended;
+- a later Snooze, for a second card two minutes after the first, was still
+  transacted 0.37 seconds after the answer: the content process was resumed
+  when the response arrived and the overdue interval ran. That is one
+  observation, with Deck still the frontmost application.
+
+Open, and nothing was changed for it: whether Deck should keep running after
+a cold Snooze, who resumes the content process, and what else waits while it
+is suspended.
 
 ### Evidence evaluator closure (2026-09-30)
 
