@@ -329,10 +329,14 @@ pub(crate) fn read_config() -> ChannelConfig {
 }
 
 /// Read, never moved: settings.json belongs to the webview
-/// (`storage::read_typed`).
+/// (`storage::read_typed`). Only its current version turns monitoring on: a
+/// damaged main file's backup is the save before the last one, so it could
+/// re-enable a connection or a rule that save switched off
+/// (`inbound::read_config_strict`). Until the settings are saved again the
+/// answer is the disabled default.
 fn read_config_at(path: &std::path::Path) -> ChannelConfig {
     let raw = match crate::storage::read_typed::<crate::documents::SettingsDoc>(path) {
-        Ok(Some(doc)) => doc.payload,
+        Ok(Some(doc)) if doc.source == "main" => doc.payload,
         _ => return ChannelConfig::default(),
     };
     let value: Value = match serde_json::from_str(&raw) {
@@ -1198,7 +1202,7 @@ mod tests {
     /// The channel rules are read like every other backend setting: from the
     /// backup while the main file is damaged, and without moving anything.
     #[test]
-    fn channel_config_reads_the_backup_of_a_damaged_settings_file_and_moves_nothing() {
+    fn channel_config_never_takes_a_backup_for_the_current_settings_and_moves_nothing() {
         let dir =
             std::env::temp_dir().join(format!("deck-channel-settings-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1225,16 +1229,29 @@ mod tests {
 
         std::fs::write(&path, "{damaged").unwrap();
         let before = names();
+        // the backup holds the connection the last save switched off
         for read in 0..3 {
             let config = read_config_at(&path);
             assert!(
-                config.connection.enabled,
-                "read {read}: the backup stands in"
+                !config.connection.enabled && config.rules.is_empty(),
+                "read {read}: a backup turns nothing on"
             );
-            assert_eq!(config.rules.len(), 1, "read {read}");
         }
         assert_eq!(names(), before, "the read moved a file");
         assert_eq!(std::fs::read(&path).unwrap(), b"{damaged");
+        // the owner saving the recovered document makes it current
+        let recovered = crate::storage::load_as_owner::<crate::documents::SettingsDoc>(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.source, "backup");
+        assert!(!read_config_at(&path).connection.enabled, "set aside");
+        crate::storage::save_typed_as_owner::<crate::documents::SettingsDoc>(
+            &path,
+            &recovered.payload,
+        )
+        .unwrap();
+        let config = read_config_at(&path);
+        assert!(config.connection.enabled && config.rules.len() == 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

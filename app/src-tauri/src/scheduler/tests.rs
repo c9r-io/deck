@@ -5182,13 +5182,14 @@ fn an_unreadable_authority_source_holds_without_revoking() {
     );
 }
 
-/// A damaged settings.json withdraws nothing. The tick's sweep judges rows
-/// against whatever `read_config_strict` hands it, so the file states go
-/// through the real read here: with the main file damaged and its backup
-/// intact, the approval and the first-send override on queued rows survive
-/// tick after tick and the file stays where it is; with nothing provable
-/// there is no sweep at all (the rows hold, as above); only a settings file
-/// that is really absent is an empty config.
+/// A damaged settings.json withdraws nothing and proves nothing. The tick's
+/// sweep judges rows against whatever `read_config_strict` hands it, so the
+/// file states go through the real read here: with the main file damaged
+/// there is no sweep at all, whether or not its backup loads (the backup is
+/// the previous save, not the current one) — the approval and the
+/// first-send override on queued rows are kept tick after tick and the file
+/// stays where it is; only a settings file that is really absent is an
+/// empty config.
 #[test]
 fn a_damaged_settings_file_strips_no_approval_and_no_override_from_queued_rows() {
     let dir = std::env::temp_dir().join(format!("deck-sched-settings-{}", std::process::id()));
@@ -5235,11 +5236,7 @@ fn a_damaged_settings_file_strips_no_approval_and_no_override_from_queued_rows()
 
     std::fs::write(&path, "{damaged").unwrap();
     for tick in 0..3 {
-        assert_eq!(
-            sweep(&mut q),
-            Some(0),
-            "tick {tick}: the backup still proves both"
-        );
+        assert_eq!(sweep(&mut q), None, "tick {tick}: a backup is no proof");
         assert_eq!(kept(&q), (true, true), "tick {tick}");
     }
     assert_eq!(
@@ -5259,6 +5256,157 @@ fn a_damaged_settings_file_strips_no_approval_and_no_override_from_queued_rows()
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(sweep(&mut q), Some(2));
     assert_eq!(kept(&q), (false, false));
+}
+
+/// A revocation that was saved stays saved when the settings file is damaged
+/// afterwards. settings.json.bak is the save BEFORE the last one: here it
+/// holds the approval, the first-send choice and the Slack switch the last
+/// save took away. While only the backup loads — damaged in place, or set
+/// aside by the owner's load — the webview can still recover it, and nothing
+/// automatic acts on it: no sweep, no automatic send on a stored approval or
+/// override, no source enabled. Only the owner saving the recovered document
+/// makes it the current version, and then the ordinary rules judge it.
+#[test]
+fn a_revocation_survives_a_settings_file_damaged_after_it() {
+    use crate::documents::SettingsDoc;
+    let dir = std::env::temp_dir().join(format!("deck-sched-rollback-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("settings.json");
+    let approved = grant_fixture()["rule"].clone();
+    let mut accepting = approved.clone();
+    accepting["id"] = "Rfirst01".into();
+    accepting["badge"] = "rocket".into();
+    accepting["cmd"] = "claude".into();
+    accepting["firstSendWithoutReadiness"] = true.into();
+    accepting.as_object_mut().unwrap().remove("autoSend");
+    // A: Slack on, the approval and the first-send choice in place
+    let a = serde_json::json!({"inbound": {"sources": {"slack": {"enabled": true}}, "rules": [approved, accepting]}});
+    // B: Slack off, the approval unticked, the first-send choice unticked
+    let mut b = a.clone();
+    b["inbound"]["sources"]["slack"]["enabled"] = false.into();
+    b["inbound"]["rules"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("autoSend");
+    b["inbound"]["rules"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("firstSendWithoutReadiness");
+    let save = |doc: &serde_json::Value| {
+        crate::storage::save_typed_as_owner::<SettingsDoc>(&path, &doc.to_string()).unwrap()
+    };
+    let source = || crate::inbound::read_config_strict_at(&path);
+    // rows admitted while A was current, not sent yet
+    let step = || qs(vec![external_step("e", Some(step_authority(0)))]);
+    let head = || {
+        let mut head = overridden_head("h");
+        head.readiness_override.as_mut().unwrap().rule = "Rfirst01".into();
+        qs(vec![head])
+    };
+    let sweep = |q: &mut QueueState| {
+        source().map(|config| revoke_stale(q, &config) + first_send::revoke_stale(q, &config))
+    };
+    // one automatic pass over a fresh copy of the rows: (step sent, head sent)
+    let automatic = || {
+        let sent = |q: QueueState, seen: &Observations| {
+            let fired = AtomicBool::new(false);
+            let qm = Mutex::new(q);
+            send_one(
+                &qm,
+                &AtomicBool::new(false),
+                "s",
+                720,
+                seen,
+                &SendHooks {
+                    fire: &|_: &QueueItem| {
+                        fired.store(true, AtomicOrdering::SeqCst);
+                        Ok(())
+                    },
+                    persist: &ok_persist,
+                    kill: &|_: &str| {},
+                    authority: &source,
+                },
+            );
+            let q = qm.lock_or_recover();
+            let kept = q
+                .items
+                .first()
+                .is_some_and(|row| row.authority.is_some() || row.readiness_override.is_some());
+            (fired.load(AtomicOrdering::SeqCst), kept)
+        };
+        (
+            sent(step(), &seen(0)),
+            sent(head(), &unestablished(NOW - 400)),
+        )
+    };
+
+    save(&a);
+    assert_eq!(
+        automatic(),
+        ((true, false), (true, false)),
+        "A current: both send"
+    );
+    save(&b); // main = B, backup = A
+    let current = source().expect("B is the current version");
+    assert!(!current.slack_enabled && current.rules[0].auto_send.is_none());
+    assert!(!current.rules[1].first_send_without_readiness);
+    assert_eq!(sweep(&mut step()), Some(1), "B withdraws the approval");
+    assert_eq!(sweep(&mut head()), Some(1), "B withdraws the override");
+    assert_eq!(
+        automatic(),
+        ((false, false), (false, false)),
+        "B current: neither is sent, both are stripped"
+    );
+
+    // the main file is damaged after the revocation; the backup still holds A
+    std::fs::write(&path, "{damaged").unwrap();
+    let unknown = |state: &str| {
+        assert_eq!(source(), None, "{state}: the backup is not authority");
+        let lenient = source().unwrap_or_default();
+        assert!(
+            !lenient.slack_enabled && lenient.badges("slack").is_empty(),
+            "{state}: no source is enabled from the backup"
+        );
+        for mut q in [step(), head()] {
+            assert_eq!(sweep(&mut q), None, "{state}: nothing swept");
+        }
+        // nothing sent, and nothing stripped either: unknown, not revoked
+        assert_eq!(automatic(), ((false, true), (false, true)), "{state}");
+        let mut seen = seen(0);
+        mark_authority_unverified(&mut seen);
+        assert!(select_due(&step(), NOW, 720, &seen).is_empty(), "{state}");
+    };
+    unknown("damaged in place");
+    assert_eq!(std::fs::read(&path).unwrap(), b"{damaged");
+
+    // the owner's load recovers A for the user to see, and sets the damaged
+    // file aside; that is still not a current version
+    let recovered = crate::storage::load_as_owner::<SettingsDoc>(&path)
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered.source, "backup");
+    assert!(recovered.warning.is_some());
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&recovered.payload).unwrap(),
+        a
+    );
+    assert!(!path.exists());
+    unknown("set aside");
+    // the review barrier is no commit either
+    crate::storage::ensure_review_schema::<SettingsDoc>(&path).unwrap();
+    unknown("after the review barrier");
+
+    // the user saves what was recovered: A is the current version again and
+    // its grant, unchanged, is valid by the ordinary rules
+    save(&a);
+    let current = source().expect("the saved document is current");
+    assert!(current.slack_enabled && current.rules[1].first_send_without_readiness);
+    assert!(valid_grant(&current.rules[0]).is_some());
+    assert_eq!(sweep(&mut step()), Some(0));
+    assert_eq!(sweep(&mut head()), Some(0));
+    assert_eq!(automatic(), ((true, false), (true, false)));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// B.1-4: the run's content is a snapshot, its authority is revocable. A

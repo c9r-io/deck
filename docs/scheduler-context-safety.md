@@ -333,12 +333,19 @@ first typed prompt — and never a claim that the agent is ready.
   `authority-unverified`, and the fence refuses) until settings can be read
   again. Send-now still works. The scheduler reads settings without ever
   moving the file (`storage::read_typed`), so "unreadable" lasts as long as
-  the condition does and never turns into "no settings": while the main
-  file is damaged the backup answers — the rules, approvals and first-send
-  choices of the previous save — and only a settings file that is really
-  absent is an empty config that withdraws them. A revocation made in the
-  one save a damaged file took with it is therefore not seen until the
-  settings are saved again.
+  the condition does and never turns into "no settings": only a settings
+  file that is really absent is an empty config that withdraws them.
+- **A backup is recovery material, not authority.** `settings.json.bak` is
+  the save before the last one, so it can hold the very rule, approval,
+  first-send choice or monitoring switch the last save took away. While the
+  main file is damaged (or set aside and not saved since), the scheduler and
+  the Slack, channel and clock sources treat settings as unreadable even
+  though the backup loads: stored approvals and overrides are kept, nothing
+  is sent automatically on them, no source polls and no clock slot is
+  offered. The webview still loads the backup and shows it; saving settings
+  writes it as the current version, and from then on it is judged by the
+  ordinary rules (a grant it carries is valid if its digest still matches).
+  Storage only reports which copy answered (`LoadOutcome::source`).
 - **Content snapshot vs authority lifetime.** A run's prompt bytes are frozen
   when it is created; no rule or template edit ever rewrites them. Its
   authority is not frozen: it lives exactly as long as the grant version it

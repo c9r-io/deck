@@ -62,8 +62,9 @@
 //!   intent, exactly like the authority fence. Unreadable settings: nothing
 //!   is stripped, and nothing is sent on the override (the row falls back to
 //!   the ordinary first-interaction hold). Settings are read without moving
-//!   the file, so a damaged main file is answered from its backup: the
-//!   choices of the previous save, as for the approval (`authority.rs`).
+//!   the file, and a damaged main file is unreadable settings even when its
+//!   backup loads: the backup is the previous save and could bring back a
+//!   choice the last save withdrew, as for the approval (`authority.rs`).
 //!   Send-now never consults it.
 //! - Durable vs transient: the rule flag and the row copy survive restarts;
 //!   interaction evidence does not and is never invented. After a Deck

@@ -316,9 +316,12 @@ version header deck cannot read) is left byte-for-byte alone instead of
 being overwritten.
 
 For `settings.json` this holds whichever part of deck reads the file first.
-With a usable backup, every setting, automation and approval of the previous
-save carries on, you are told once, and your next settings change writes the
-file again; nothing needs doing in `~/.deck`. With no usable backup deck says
+With a usable backup, every setting of the previous save is loaded, you are
+told once, and your next settings change writes the file again; nothing needs
+doing in `~/.deck`. Until that change, automations do not act on the backup:
+it is one save old and may hold a rule or an approval you had since removed,
+so Slack and channel monitoring, clock runs and automatic sends wait (queued
+rows keep their approvals and can still be sent by hand). With no usable backup deck says
 once that settings could not be loaded and you carry on from the defaults;
 the damaged file stays where it was set aside. A settings file that is there
 but cannot be read for the moment is not treated as damaged by the scheduler

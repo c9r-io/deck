@@ -445,8 +445,8 @@ fn callers_of(call: &str) -> Vec<String> {
 /// door that names `SettingsDoc`, and each function that asks for the
 /// settings path, with the one function it is allowed in. Three of them may
 /// set a damaged file aside — the owner's load, the owner's save, and the
-/// queue's review barrier, which writes the document back — and every other
-/// one is `read_typed`. The quarantining `load_typed` is in none of them.
+/// queue's review barrier, which raises the envelope and never makes a
+/// recovered document the main file — and every other one is `read_typed`. The quarantining `load_typed` is in none of them.
 #[test]
 fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
     assert_eq!(

@@ -515,30 +515,38 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
     Ok(())
 }
 
-/// Lenient read for the poller: an unreadable or invalid settings file
-/// yields the empty config (nothing enabled), never a panic or a guess.
+/// Lenient read for the poller: an unreadable or invalid settings file, or
+/// one that only its backup can answer for, yields the empty config (nothing
+/// enabled, nothing polled, no clock slot offered), never a panic or a guess.
 pub(crate) fn read_config() -> Config {
     read_config_strict().unwrap_or_default()
 }
 
-/// `read_config` that tells a failed read apart: `None` when settings.json
-/// exists but nothing validated can be read from it or its backup, so a
-/// caller deciding about authority (`scheduler::authority`) can treat
-/// "unknown" as neither granted nor revoked. A missing file is a real empty
-/// config. The scheduler asks on every tick and the settings belong to the
-/// webview, so this reads without moving anything (`storage::read_typed`):
-/// a damaged main file is answered from its backup — the rules, approvals
-/// and first-send choices of the previous save — and "unknown" stays
-/// unknown for as long as it lasts instead of turning into "missing".
+/// `read_config` that tells "unknown" apart: `None` when settings.json
+/// exists but its CURRENT version cannot be read, so a caller deciding about
+/// authority (`scheduler::authority`) can treat "unknown" as neither granted
+/// nor revoked. A missing file is a real empty config. The scheduler asks on
+/// every tick and the settings belong to the webview, so this reads without
+/// moving anything (`storage::read_typed`), and "unknown" stays unknown for
+/// as long as it lasts instead of turning into "missing".
+///
+/// The backup is recovery material, never authority. It holds the save
+/// BEFORE the last one, so answering from it would bring back a rule, an
+/// approval, a first-send choice or a Slack switch the user's last save took
+/// away. A damaged or set-aside main file whose backup still loads is
+/// therefore "unknown" here, exactly like one nothing can be read from; it
+/// becomes an answer again when its owner saves (`documents::save_settings`),
+/// which is the user committing what the webview recovered. The advisory
+/// readers (`documents::settings_value`) keep answering from the backup.
 pub(crate) fn read_config_strict() -> Option<Config> {
     read_config_strict_at(&crate::documents::settings_path())
 }
 
 pub(crate) fn read_config_strict_at(path: &std::path::Path) -> Option<Config> {
     let raw = match storage::read_typed::<crate::documents::SettingsDoc>(path) {
-        Ok(Some(doc)) => doc.payload,
+        Ok(Some(doc)) if doc.source == "main" => doc.payload,
+        Ok(Some(_)) | Err(_) => return None,
         Ok(None) => return Some(Config::default()),
-        Err(_) => return None,
     };
     let v: Value = serde_json::from_str(&raw).ok()?;
     match v.get("inbound") {
@@ -1666,10 +1674,11 @@ mod tests {
     /// The authority source across the settings recovery states. `Some` is a
     /// config the scheduler may judge approvals against (a rule missing from
     /// it is a real revocation); `None` is no proof either way, and the rows
-    /// hold. In no state does this read move or rewrite a file, however many
-    /// ticks ask.
+    /// hold. Only the current version is ever `Some`: a backup, one save old,
+    /// is no proof. In no state does this read move or rewrite a file,
+    /// however many ticks ask.
     #[test]
-    fn the_authority_source_survives_a_damaged_settings_file_and_moves_nothing() {
+    fn the_authority_source_is_the_current_settings_file_only_and_moves_nothing() {
         use std::os::unix::fs::PermissionsExt;
         let dir =
             std::env::temp_dir().join(format!("deck-inbound-settings-{}", std::process::id()));
@@ -1718,16 +1727,21 @@ mod tests {
             ["R-deck", "R-bug"]
         );
 
-        // damaged main, good backup: the backup's rules, on every tick
+        // damaged main, good backup: the backup is the save before the
+        // last one — no proof, on every tick, and the poller's lenient read
+        // enables nothing
         fs::write(&path, "{damaged").unwrap();
         let before = listing();
         for tick in 0..3 {
-            let config = read_config_strict_at(&path)
-                .unwrap_or_else(|| panic!("tick {tick}: the backup is proof"));
-            assert_eq!(ids(&config), ["R-deck"], "tick {tick}");
-            assert!(config.slack_enabled && config.rules[0].first_send_without_readiness);
+            assert_eq!(read_config_strict_at(&path), None, "tick {tick}");
         }
         assert_eq!(listing(), before, "the read moved or rewrote a file");
+        // the advisory readers still answer from that backup
+        let recovered = storage::read_typed::<crate::documents::SettingsDoc>(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.source, "backup");
+        assert!(recovered.payload.contains("R-deck"));
 
         // both damaged: no proof either way, on every tick
         fs::write(&backup, "{damaged too").unwrap();

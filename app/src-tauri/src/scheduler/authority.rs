@@ -65,11 +65,16 @@
 //!   The source is read without moving the settings file
 //!   (`inbound::read_config_strict`, `storage::read_typed`), so this state
 //!   lasts as long as its cause and never turns into "no settings, nothing
-//!   granted". While the main file is damaged its backup answers: the grants
-//!   of the previous save. The fence above is therefore a statement about the
-//!   settings file as last written — a revocation made in the one save a
-//!   damaged file took with it is not seen again until settings are saved,
-//!   and a grant made in that save is withdrawn from waiting rows.
+//!   granted".
+//! - The backup is recovery material, never authority. settings.json.bak is
+//!   the save BEFORE the last one, so it can hold exactly the grant the last
+//!   save revoked. A damaged or set-aside main file whose backup still loads
+//!   is therefore the same "unreadable source" as above — rows hold with what
+//!   they carry, nothing is granted, revoked or sent automatically — until
+//!   the owner saves settings again (the user committing what the webview
+//!   recovered, grants included, as the current version). The fence orders a
+//!   send against settings WRITES; it is this rule, not the fence, that keeps
+//!   a later damaged file from undoing a revocation that had returned.
 //! - `revoke_stale` (the scheduler tick) strips authority from every unsent
 //!   row whose grant is no longer the rule's valid grant — revoked, edited,
 //!   the rule deleted — and bumps its revision, so the panel and disk agree

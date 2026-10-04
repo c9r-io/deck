@@ -45,7 +45,13 @@
 //!   produced once, and saves with `save_typed_as_owner`, which sets aside a
 //!   main file damaged while deck runs instead of refusing the save. The one
 //!   backend writer of settings.json, `ensure_review_schema`, loads the same
-//!   way and leaves a main file it merely cannot read alone;
+//!   way, leaves a main file it merely cannot read alone, and never writes a
+//!   recovered document as the main file;
+//! - a `.bak` is the version BEFORE the last save, not the last save.
+//!   `LoadOutcome::source` says which one answered, and it stays "backup"
+//!   until the owner saves: this layer reports provenance and decides
+//!   nothing with it. A reader for which the previous version must not stand
+//!   in for the current one checks it (`inbound::read_config_strict`);
 //! - nothing removes a copy a recovery set aside: `kept_copies` lists them,
 //!   newest first, and `newest_valid_copy` reads them without moving one,
 //!   skipping a copy it read and found unusable and stopping at one it could
@@ -863,21 +869,26 @@ pub(crate) fn save_typed_as_owner<T: DeserializeOwned>(
 
 /// Upgrade only the envelope while holding the same lock as settings saves.
 /// Reading outside this lock could restore stale user settings during opt-in.
-/// It writes the settings back as their owner would load them: a damaged
-/// main file is set aside and the backup written in its place (raising the
-/// recovery notice the webview's own load will no longer see), and a file an
-/// earlier recovery set aside is rebuilt from its backup, never from `{}`.
-/// It runs on the scheduler's thread, though, not for the owner: a main file
-/// it merely cannot READ is left where it is, and the queue save that asked
-/// for the barrier fails and is retried.
+/// It loads the settings as their owner would: a damaged main file is set
+/// aside (raising the recovery notice the webview's own load will no longer
+/// see). It never makes a recovered document the current one, though: when
+/// only the backup answers, the barrier is raised on the backup where it
+/// lies, and the main file stays absent until its owner saves — so a reader
+/// can still tell the previous save from the current one
+/// (`LoadOutcome::source`), and nothing but `{}` on a real first run is ever
+/// written here that the owner did not save. It runs on the scheduler's
+/// thread, not for the owner: a main file it merely cannot READ is left
+/// where it is, and the queue save that asked for the barrier fails and is
+/// retried.
 pub(crate) fn ensure_review_schema<T: DeserializeOwned>(path: &Path) -> Result<(), DeckError> {
     let _save_guard = SAVE_LOCK.lock_or_recover();
-    let already_v2 = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("schema_version").and_then(|n| n.as_u64()))
-        == Some(2);
-    if already_v2 {
+    let version_at = |path: &Path| {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("schema_version").and_then(|n| n.as_u64()))
+    };
+    if version_at(path) == Some(2) {
         return Ok(());
     }
     if let Held::Unreadable(kind) = held::<T>(path) {
@@ -889,17 +900,24 @@ pub(crate) fn ensure_review_schema<T: DeserializeOwned>(path: &Path) -> Result<(
             ),
         ));
     }
-    let payload = match load_as_owner::<T>(path)? {
+    let (payload, recovered) = match load_as_owner::<T>(path)? {
         Some(doc) => {
             if let Some(note) = doc.warning {
                 warn(StorageNotice::Recovered, note);
             }
-            doc.payload
+            (doc.payload, doc.source == "backup")
         }
-        None => "{}".into(),
+        None => ("{}".into(), false),
     };
     serde_json::from_str::<T>(&payload).map_err(DeckError::from)?;
-    save_checked_locked(path, &payload, true, 2, |existing| {
+    let bak = bak_path(path);
+    if recovered && version_at(&bak).is_some_and(|version| version >= 2) {
+        return Ok(());
+    }
+    // the backup is rewritten in place (same payload, higher envelope) and
+    // keeps no backup of its own
+    let target = if recovered { bak.as_path() } else { path };
+    save_checked_locked(target, &payload, !recovered, 2, |existing| {
         serde_json::from_value::<T>(existing.clone())
             .map(|_| ())
             .map_err(DeckError::from)
@@ -1959,11 +1977,12 @@ mod tests {
         assert!(p.is_dir());
     }
 
-    /// The review barrier writes settings back, so it must write what their
-    /// owner would load: never `{}` over settings that can be recovered, and
-    /// a recovery it performs itself is reported.
+    /// The review barrier never writes `{}` over settings that can be
+    /// recovered, reports a recovery it performs itself, and never makes a
+    /// recovered document the main file: while only the backup loads, the
+    /// envelope is raised on the backup and every reader still sees "backup".
     #[test]
-    fn the_review_barrier_rebuilds_recoverable_settings_instead_of_emptying_them() {
+    fn the_review_barrier_keeps_recoverable_settings_and_never_makes_them_current() {
         let d = tdir("review-recovery");
         let p = d.join("settings.json");
         let on_disk = |p: &Path| {
@@ -1976,19 +1995,37 @@ mod tests {
         std::fs::write(&p, "{broken").unwrap();
         assert_eq!(load_as_owner::<Doc>(&p).unwrap().unwrap().source, "backup");
         take_notices();
+        let raised = |p: &Path| {
+            assert!(!p.exists(), "the barrier wrote a main file");
+            assert_eq!(on_disk(&bak_path(p))["schema_version"], 2);
+            assert_eq!(on_disk(&bak_path(p))["data"]["v"], 1);
+            assert!(!bak_path(&bak_path(p)).exists());
+            let read = read_typed::<Doc>(p).unwrap().unwrap();
+            assert_eq!(
+                (read.source, read.payload.as_str()),
+                ("backup", r#"{"v":1}"#)
+            );
+        };
         ensure_review_schema::<Doc>(&p).unwrap();
-        assert_eq!(on_disk(&p)["schema_version"], 2);
-        assert_eq!(on_disk(&p)["data"]["v"], 1, "rebuilt from the backup");
+        raised(&p);
         assert!(take_notices().is_empty(), "its owner was already told");
+        // a second barrier finds it raised and writes nothing
+        let before = listing(&d);
+        ensure_review_schema::<Doc>(&p).unwrap();
+        assert_eq!(listing(&d), before);
+
+        // the owner's save is what makes the recovered document current
+        save_typed_as_owner::<Doc>(&p, r#"{"v":1}"#).unwrap();
+        assert_eq!(read_typed::<Doc>(&p).unwrap().unwrap().source, "main");
+        save_typed_as_owner::<Doc>(&p, r#"{"v":3}"#).unwrap(); // .bak holds v1
 
         // damaged and not yet seen by its owner: set aside here, told once
         std::fs::write(&p, "{broken again").unwrap();
         ensure_review_schema::<Doc>(&p).unwrap();
-        assert_eq!(on_disk(&p)["schema_version"], 2);
-        assert_eq!(on_disk(&p)["data"]["v"], 1);
+        raised(&p);
         assert_eq!(take_notices(), [StorageNotice::Recovered]);
         let loaded = load_as_owner::<Doc>(&p).unwrap().unwrap();
-        assert_eq!((loaded.source, loaded.warning), ("main", None));
+        assert_eq!((loaded.source, loaded.warning), ("backup", None));
         let kept = listing(&d)
             .into_iter()
             .filter(|(name, _)| name.starts_with("settings.corrupt-"))

@@ -67,7 +67,9 @@
 //!   writes it, setting aside a file damaged since the load instead of
 //!   refusing the user. The one other writer is the queue's review barrier
 //!   (`storage::ensure_review_schema`), which writes the same document back
-//!   under a higher envelope version. A file whose backup still loads keeps
+//!   under a higher envelope version — on the backup itself while only the
+//!   backup loads, so the barrier never makes a recovered document current.
+//!   A file whose backup still loads keeps
 //!   every setting across the restart and is rebuilt by the next save; one
 //!   with no usable backup is a load error the first time and a first run
 //!   after that, so Settings is never locked.
@@ -82,7 +84,11 @@
 //!   updater down with it. `inbound::read_config_strict` and
 //!   `inbound_channel::read_config` read through the same door
 //!   (`tests/session_architecture.rs` keeps the quarantining door out of
-//!   every reader).
+//!   every reader) but take only the CURRENT version
+//!   (`LoadOutcome::source == "main"`): rules, approvals, first-send choices
+//!   and monitoring switches are authority, and the backup, one save old,
+//!   may hold what the last save withdrew. Storage reports where a document
+//!   came from; whether a backup may stand in is each reader's decision.
 //! - `save_settings` refuses an unknown `updateChannel` before disk
 //!   (`validate_saved_update_channel`) so a build can never be pointed at an
 //!   endpoint deck does not ship.
