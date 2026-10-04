@@ -1041,8 +1041,10 @@ pub(crate) fn clock_policy_pending(key: &str, rule: &Rule) -> bool {
 }
 
 /// The webview has created the card (or decided it cannot). Both outcomes
-/// retire the item for good: a badge the user must fix a rule for is
-/// re-armed by removing and re-adding the badge, never by deck retrying.
+/// retire the item for good: deck never retries it, and the same badge on
+/// the same message starts nothing again while the seen ledger remembers
+/// it (`SEEN_TTL_SECS`) — removing and re-adding the badge does not re-arm
+/// it. A rule fixed afterwards takes effect from the next badged message.
 /// A clock item records its run either way; a badge item records a run only
 /// when `card` names the card it created (so the rule's finish mode and the
 /// drawer history apply to both triggers); `reason` is the closed word for a
