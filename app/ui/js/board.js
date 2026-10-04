@@ -28,10 +28,14 @@
 // Codex coverage diagnostics live in the runtime attention snapshot and
 // the status row; no card field or persistence is added for signal coverage.
 // Foreground changes in the focused pane invalidate ephemeral resume hints.
-// Creation (04 A v01): `provider.createStarted` is the ONE path that makes a
-// card for a new session — it starts the tmux session first and persists the
-// card only after that succeeded, so a failed start never leaves a card
-// behind; a launch command sent by that start marks the card `launched`.
+// Creation (04 A v01): `provider.createStarted` is the path that makes a
+// card together with its session — it starts the tmux session first and
+// persists the card only after that succeeded, so a failed start never
+// leaves a card behind; a launch command sent by that start marks the card
+// `launched`. The one exception is an automation run (Slack badge, clock):
+// inbound.js persists the run's card with its frozen plan through
+// `provider.create`, stopped, and the scheduler's delivery start creates
+// the session when it sends the first row.
 // A project's optional defaults (`dir`, `cmd`; pure.js projectDefaults) feed
 // the Board's own entries only; `openProjectDefaults` edits them.
 // The session header scratchpad count follows the focused card, independently
