@@ -1,7 +1,8 @@
 //! notify.rs — away notifications and the Dock badge, the desktop side of
 //! the attention loop: a macOS notification when an agent needs the user
 //! while the deck window is not in front, and a badge with the number of
-//! cards waiting. Both are derived from the agent-status hook words only.
+//! cards waiting. The notification is derived from the agent-status hook
+//! words only; the badge adds the cards whose reminder is due (below).
 //!
 //! # Contract
 //! - **Two closed signals, one switch.** A notification is posted for a
@@ -11,10 +12,11 @@
 //!   unfocused). The badge counts sessions in `needs-input` plus sessions
 //!   in `turn-done` that are still unread — the same rows the Needs
 //!   attention list shows, minus manual follow-up — and is kept whether or
-//!   not the window is focused. Both exist only while the
-//!   `notifyAway` setting is on (off by default; `notifySound` adds the
-//!   default sound). Nothing is posted for `working`, for the 15 s output
-//!   heuristic (no hook state is no state), for a star, or for a stop.
+//!   not the window is focused. The notification and this agent part of
+//!   the badge exist only while the `notifyAway` setting is on (off by
+//!   default; `notifySound` adds the default sound). Nothing is posted for
+//!   `working`, for the 15 s output heuristic (no hook state is no state),
+//!   for a star, or for a stop.
 //! - **Card reminders are a separate source.** Their UTC intent and native
 //!   scheduling live in `reminder.rs`, which this module starts at `init`.
 //!   Here they only join the Dock count: `push_badge` unions the cards whose
