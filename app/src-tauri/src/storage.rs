@@ -1,10 +1,3 @@
-//! Review-aware opt-in uses envelope v2 (sticky) for queue.json and
-//! settings.json. Card buffers, frozen inbound plans and idempotent queue operations use
-//! sticky v3 envelopes for deck.json and queue.json respectively.
-//! A settings v2 barrier precedes the first reviewed queue save, preventing old
-//! automation finish rules from treating a refused queue as empty. deck.json
-//! joins the version door only once it retains scratchpad content; a card's
-//! `origin.reviewEach` alone still does not lock the whole Board.
 //! One reliable persistence layer for every deck data file
 //! (deck.json / queue.json / history.json / settings.json).
 //!
@@ -13,9 +6,20 @@
 //!   rename → parent-directory fsync (both the main file and its `.bak`);
 //! - the previous good version is kept as `<file>.bak` before each save;
 //! - files carry `{"schema_version": N, "data": …}`; legacy version-less
-//!   files are read as v0 and upgraded in place on their next save; a Board
-//!   that holds a card reminder or a blocked retirement identity is written
-//!   as v5 and stays v5 (sticky), so an older deck refuses it untouched;
+//!   files are read as v0 and upgraded in place on their next save. The
+//!   version written is the lowest one whose readers understand the
+//!   content (`save_checked_locked`), and it never goes back down (sticky),
+//!   so an older deck refuses the file untouched instead of misreading it:
+//!   v1 ordinary data; v2 queue.json and settings.json that use inspection
+//!   checkpoints (a card's `origin.reviewEach` alone does not lock the whole
+//!   Board); v3 deck.json, queue.json or settings.json holding a card
+//!   scratchpad that is collecting or has entries, a channel or Connector
+//!   run, a frozen inbound plan, a task preset, a channel rule, an enabled
+//!   channel connection or an idempotent queue operation; v4 queue.json and
+//!   settings.json that use a clock first send; v5 a Board that holds a
+//!   card reminder or a blocked retirement identity. A settings v2 barrier
+//!   precedes the first reviewed queue save, so an old automation finish
+//!   rule never takes a refused queue for an empty one;
 //! - loading is TYPED: a file must parse as JSON, carry a readable envelope
 //!   AND deserialize into its document type — valid JSON with the wrong
 //!   business structure goes through the same recovery as garbage bytes;
@@ -90,7 +94,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 // v2 protects opt-in human checkpoints; v3 protects retained scratchpad and
-// channel/idempotency fields; v4 protects clock readiness origins/policy.
+// channel/idempotency fields; v4 protects clock readiness origins/policy;
+// v5 protects card reminders and blocked retirement identities.
 // Ordinary documents keep v1; upgrades are sticky.
 pub const SCHEMA_VERSION: u64 = 5;
 
