@@ -3,7 +3,9 @@
 deck can tell you when an agent asked for input or ended a turn while its
 window is not in front, and count those cards on the Dock icon. Both are
 off by default and both are derived from the same agent-status hook
-words the Board already uses; nothing is inferred from output.
+words the Board already uses; nothing is inferred from output. The Dock
+count also includes cards whose [reminder](card-reminders.md) is due, and
+that part does not depend on this switch (see the last section).
 
 The words are interaction observations, not task truth. **Input
 requested** (`needs-input`) says the agent raised a question or permission
@@ -41,7 +43,8 @@ same word posts nothing.
 
 ## What a notification contains
 
-- Title: the card's title.
+- Title: the card's title; one longer than 512 bytes is shown by its
+  first whole characters.
 - Body: the project name and one of two fixed phrases — *asked for your
   input* or *a turn has ended* (Chinese: 请求了你的输入 / 一轮已结束), following
   the interface language.
@@ -70,10 +73,11 @@ only while that observation does and is not kept across a Deck restart.
 
 The Dock badge is the number of cards with an **input request** plus cards with an
 **unread turn ending** — the same rows as the Needs attention list minus
-manual follow-up. It updates whether or not the window is focused, and it
-is cleared and no longer updated when the switch is off. Viewing a card
-with an input request keeps it counted until the agent reports another
-word: viewing is not answering.
+manual follow-up — plus cards whose reminder is due, each card counted
+once. It updates whether or not the window is focused. When the switch is
+off the agent rows are no longer counted; a due reminder still is. Viewing
+a card with an input request keeps it counted until the agent reports
+another word: viewing is not answering.
 
 ## Finding the card when you come back
 
