@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { en } from '../js/i18n/en.js';
+import { zhHans } from '../js/i18n/zh-Hans.js';
 import { COPY_NO_SELECTION_REASONS, PROMOTION_SOURCES } from '../js/selection-forensics.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -38,7 +39,7 @@ test('i18n owns visible copy and translation parameters never enter innerHTML', 
   const html = read('app/ui/index.html');
   for (const line of html.split('\n')) {
     if (!/>[^<{]*[A-Za-z][^<{]*</.test(line)) continue;
-    if (/<(?:title|script|style|svg|path|circle|b)\b/.test(line)) continue;
+    if (/<(?:title|script|style|svg|path|circle)\b/.test(line)) continue;
     if (/class="wordmark"/.test(line)) continue;
     assert.match(line, /data-i18n(?:-title|-placeholder)?=/, `unkeyed visible HTML: ${line.trim()}`);
   }
@@ -198,6 +199,34 @@ test('the updater, relaunch and server restart stay backend-owned', () => {
   assert.match(plist, /NSLocalNetworkUsageDescription/);
   assert.match(plist, /Shell commands, CLIs, and agents launched or restored by deck can access devices and services on your local network\./);
   assert.doesNotMatch(plist, /scan/i);
+});
+
+// The main window is the app: nothing in it may load another page in the
+// webview. The page has no anchor at all, and the one script that builds an
+// anchor cancels the click and hands the address to the validated native
+// opener. The tmux banner used to carry the only bare link, next to advice
+// (install tmux with Homebrew) that could never help: deck runs only the
+// tmux inside its own bundle (`tmux::tmux_bin`).
+test('no link in the main window loads another page, and the tmux banner names a step that can help', () => {
+  const html = read('app/ui/index.html');
+  assert.doesNotMatch(html, /<a[\s>]/i, 'index.html has no anchor');
+  assert.doesNotMatch(production, /<a\s+(?:href|class|id|target)\b/i, 'no anchor built from markup');
+  const built = [...production.matchAll(/createElement\(\s*['"]a['"]\s*\)/g)];
+  assert.equal(built.length, 1, 'a new script-built anchor needs the same handling and a review here');
+  const site = production.slice(built[0].index, built[0].index + 300);
+  assert.match(site, /a\.onclick = event => \{ event\.preventDefault\(\); openExternalLink\(href\); \};/);
+  assert.match(site, /a\.onauxclick = event => event\.preventDefault\(\);/);
+  assert.doesNotMatch(production, /window\.open\(|\blocation\.(?:href|assign|replace)\b|\blocation\s*=[^=]/);
+
+  // one keyed sentence, shown only when `tmux_available` is false
+  assert.match(html, /<div id="banner" data-i18n="app\.tmuxMissing">[^<]+<\/div>/);
+  assert.match(read('app/ui/js/app.js'), /if \(!ok\) \$\('banner'\)\.style\.display = 'block';/);
+  for (const [name, dictionary] of [['en', en], ['zh-Hans', zhHans]]) {
+    assert.match(dictionary['app.tmuxMissing'] || '', /tmux/, `${name} names what cannot run`);
+    assert.doesNotMatch(Object.values(dictionary).join('\n'), /brew/i, `${name} sends the user to a package manager`);
+  }
+  assert.match(en['app.tmuxMissing'], /sessions cannot start.*reinstall/i);
+  assert.match(zhHans['app.tmuxMissing'], /session 无法启动.*重新下载并安装/);
 });
 
 test('the canonical dictionary has no unused keys outside documented dynamic families', () => {
