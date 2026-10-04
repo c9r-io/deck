@@ -1,5 +1,3 @@
-// Reviewed templates enter in one queue transaction; an opted-in run needs
-// an explicit final inspection even if enqueue fails. No hook releases it.
 // inbound.js — 自动化 dispatch: turn a fired trigger into a card + queued prompts
 // Part of deck's no-build frontend: native ES modules, no bundler.
 //
@@ -9,6 +7,8 @@
 // template through the ordinary queue, and acks only after every row is
 // queued. The frozen plan lives on the card until then: a queue failure or
 // restart replays stable operation IDs on the same card, never a second card.
+// Reviewed templates enter in one queue transaction; an opted-in run needs
+// an explicit final inspection even if enqueue fails. No hook releases it.
 // A clock item
 // (automation.js owns the rules) is the same path with two differences: a
 // slot whose rule still has a card on the Board is acked `busy`, and a
