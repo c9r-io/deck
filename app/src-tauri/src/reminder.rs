@@ -28,7 +28,10 @@
 //! else turns the launch into an ordinary, visible one (`stay`): the user
 //! asked for deck meanwhile (Dock, or a click on a banner), the answer could
 //! not be saved or registered, or the webview did not finish within
-//! `RESPONSE_ONLY_LIMIT`. No path leaves deck running without a window. An
+//! `RESPONSE_ONLY_LIMIT`. No path leaves deck running without a window. A
+//! launch that ends this way also gives back the tmux server its boot gate
+//! started when none existed: at exit `main.rs` asks
+//! `tmux_lifecycle::retire_boot_server` while `background_launch` holds. An
 //! ordinary launch starts the deferred work when the webview asks, and a
 //! Snooze answered while deck runs changes nothing here.
 use crate::applog::applog;

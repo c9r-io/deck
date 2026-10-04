@@ -42,7 +42,9 @@ WebView has asked about its window makes the launch response-only: the window
 stays unrevealed, the app is hidden so the application in use keeps the
 keyboard, the automatic work `main.rs` deferred does not start, and the
 process ends once the inbox is empty and the system has confirmed the request
-of every Snooze that launch transacted. Anything else (the Dock, an Open, a
+of every Snooze that launch transacted. On its way out it stops the tmux
+server its own start-up created when none was running
+(`docs/tmux-server-lifecycle.md`). Anything else (the Dock, an Open, a
 failed save or registration, six seconds without a finish) turns it into an
 ordinary visible launch; no path leaves Deck running without a window. Actual
 OS callback ordering remains a required platform acceptance item. No response

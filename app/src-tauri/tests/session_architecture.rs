@@ -701,3 +701,80 @@ fn settings_writes_and_the_pre_fire_authority_check_share_one_fence() {
         held.contains("match first_send::fence(&sel, config.as_ref().and_then(Option::as_ref))")
     );
 }
+
+/// The server outlives every exit but one. A launch that ends without ever
+/// having been an ordinary one (`reminder::background_launch`: it only
+/// delivered a notification answer) gives back the server its own boot gate
+/// started when none existed (`tmux_lifecycle::retire_boot_server`). The
+/// gate remembers such a start at both of its start sites and nowhere else:
+/// a server that session creation starts is in use and is never remembered,
+/// and no other exit or command retires anything.
+#[test]
+fn only_a_response_only_exit_gives_back_the_server_its_boot_gate_started() {
+    assert_eq!(
+        callers_of("retire_boot_server("),
+        ["main.rs main"],
+        "one caller: the exit event in main.rs"
+    );
+    let main = code_only(&source("main.rs"));
+    let exit = &main[main.find("tauri::RunEvent::Exit").unwrap()..];
+    let (open, close) = source_scan::body_span(exit, 0).unwrap();
+    let handler = &exit[open..=close];
+    let guard = handler
+        .find("if reminder::background_launch() {")
+        .expect("the retirement is asked for a response-only launch only");
+    let (inner_open, inner_close) = source_scan::body_span(handler, guard).unwrap();
+    assert_eq!(
+        handler[inner_open..=inner_close]
+            .split_whitespace()
+            .collect::<Vec<_>>(),
+        ["{", "tmux_lifecycle::retire_boot_server();", "}"],
+        "the guarded block retires and does nothing else"
+    );
+    assert_eq!(handler.matches("retire_boot_server").count(), 1);
+
+    assert_eq!(
+        callers_of("start_missing_server_at_boot("),
+        [
+            "tmux_lifecycle.rs reconcile_on_boot",
+            "tmux_lifecycle.rs reconcile_on_boot"
+        ],
+        "the boot gate remembers both of its starts from nothing"
+    );
+    let lifecycle = code_only(production_region(&source("tmux_lifecycle.rs")));
+    let gate = source_scan::function_body(&lifecycle, "reconcile_on_boot").unwrap();
+    assert!(
+        !gate.contains("start_current_server("),
+        "a start in the boot gate that is not remembered could never be given back"
+    );
+    let creation = source_scan::function_body(&lifecycle, "session_creation_guard").unwrap();
+    assert!(
+        creation.contains("start_current_server(&build)?")
+            && !creation.contains("start_missing_server_at_boot"),
+        "a server started for a session is in use: it is not remembered"
+    );
+    let mut users: Vec<String> = lifecycle
+        .match_indices("BOOT_STARTED")
+        .filter(|&(at, _)| !lifecycle[..at].ends_with("static "))
+        .map(|(at, _)| source_scan::enclosing_function(&lifecycle, at))
+        .collect();
+    users.sort();
+    assert_eq!(
+        users,
+        ["retire_boot_server", "start_missing_server_at_boot"],
+        "the remembered server has one writer and one reader, which takes it"
+    );
+    // the retirement takes the record, then the lifecycle gate, then a bound
+    // on how long a leaving process waits for tmux, and only then asks tmux
+    let retire = source_scan::function_body(&lifecycle, "retire_boot_server").unwrap();
+    let step = |text: &str| {
+        retire
+            .find(text)
+            .unwrap_or_else(|| panic!("missing: {text}"))
+    };
+    let taken = step("BOOT_STARTED.lock_or_recover().take()");
+    let gated = step("try_operation()");
+    let bounded = step("Deadline::until(");
+    let asked = step("retire_started_server_on(&deck_server(), &started)");
+    assert!(taken < gated && gated < bounded && bounded < asked);
+}

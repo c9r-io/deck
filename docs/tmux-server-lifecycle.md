@@ -5,7 +5,9 @@ the GUI process. Quitting, hiding, crashing, or reopening the same build must
 therefore leave the server and its sessions alone. Installing a different app
 build is a separate lifecycle event: a server that continues executing an old
 helper also continues carrying that old code identity and must not be reused
-indefinitely.
+indefinitely. One exit stops a server: a launch that only delivered a
+notification answer gives back the empty server it started itself (see Boot
+and update behavior).
 
 ## Root cause
 
@@ -92,6 +94,20 @@ Production builds may create a server only when the running app bundle is in a
 stable Applications location. A process launched from an updater temporary
 directory, DMG, App Translocation, or another transient location can inspect
 an existing server but cannot become the creator of a new long-lived one.
+
+Boot runs before a launch can know what it is, so a launch the system makes
+only to deliver a notification answer (the response-only launch,
+`docs/card-reminders.md`) starts a server like any other when none exists.
+That launch ends within a second and never has a session. On its way out it
+stops the server its own boot started, so a “not now” on a notification
+leaves no process behind that was not there before. The stop is one tmux
+command that decides inside the server (`if-shell -F` on the PID, the start
+time and a session count of zero, then `kill-server`); the socket file tmux
+leaves is then removed under the same device/inode check a restart uses
+(`tmux_lifecycle::retire_boot_server`). A server that was already running, a
+server with a session, and every other exit are untouched, and a stop that
+fails leaves the server running. The launch still runs the boot inspection
+and the webview's start-up tmux queries before it knows it is response-only.
 
 ## Board query channel
 

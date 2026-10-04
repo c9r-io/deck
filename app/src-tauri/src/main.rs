@@ -580,6 +580,12 @@ fn main() {
             }
             if matches!(&event, tauri::RunEvent::Exit) {
                 tmux::stop_query_channel();
+                // A launch made only to deliver a notification answer ends
+                // without leaving the tmux server its boot gate started when
+                // none existed. Every other exit keeps the server.
+                if reminder::background_launch() {
+                    tmux_lifecycle::retire_boot_server();
+                }
             }
             let _ = (app, &event);
         });

@@ -85,6 +85,79 @@ fn kill_missing_session_on_reachable_empty_server_reports_no_current_target() {
         .is_empty());
 }
 
+/// The guarded stop a response-only launch gives its own server back with
+/// (`tmux_lifecycle::retire_started_server_on`). `if-shell -F` decides
+/// inside the server on `#{pid}`, `#{start_time}` and `#{server_sessions}`;
+/// its else branch answers `kept`; a server that is stopped answers nothing,
+/// is gone when the command returns, and leaves its socket file behind.
+#[test]
+fn a_guarded_kill_server_stops_only_the_named_empty_server_and_leaves_its_socket() {
+    let server = Server::new("guarded-stop");
+    server.run(&["set-option", "-g", "exit-empty", "off"]);
+    let socket = server.socket_path().expect("socket path");
+    let pid = server.run(&["display-message", "-p", "#{pid}"]);
+    let started = server.run(&["display-message", "-p", "#{start_time}"]);
+    let guard = |pid: &str, started: &str| {
+        format!(
+            "#{{&&:#{{&&:#{{==:#{{pid}},{pid}}},#{{==:#{{start_time}},{started}}}}},#{{==:#{{server_sessions}},0}}}}"
+        )
+    };
+    let stop = |condition: &str| {
+        let out = Command::new(tmux_bin())
+            .args(["-f", "/dev/null", "-L", &server.0])
+            .args([
+                "if-shell",
+                "-F",
+                condition,
+                "kill-server",
+                "display-message -p kept",
+            ])
+            .output()
+            .expect("bundled tmux runs");
+        assert!(out.status.success(), "the guarded stop itself never fails");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    let sessions = || server.run(&["display-message", "-p", "#{server_sessions}"]);
+
+    assert_eq!(sessions(), "1");
+    assert_eq!(
+        stop(&guard(&pid, &started)),
+        "kept",
+        "a server with a session stays"
+    );
+    server.run(&["kill-session", "-t", "=t"]);
+    assert_eq!(sessions(), "0");
+    assert_eq!(
+        stop(&guard(&pid, "1")),
+        "kept",
+        "another start time is another server"
+    );
+    assert_eq!(
+        stop(&guard("1", &started)),
+        "kept",
+        "another pid is another server"
+    );
+    assert_eq!(server.run(&["display-message", "-p", "#{pid}"]), pid);
+
+    assert_eq!(stop(&guard(&pid, &started)), "");
+    let after = Command::new(tmux_bin())
+        .args(["-f", "/dev/null", "-L", &server.0])
+        .args(["display-message", "-p", "#{pid}"])
+        .output()
+        .expect("bundled tmux runs");
+    assert!(!after.status.success(), "the server is gone at once");
+    assert!(
+        String::from_utf8_lossy(&after.stderr).contains("no server running"),
+        "{}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+    assert!(
+        std::fs::symlink_metadata(&socket).is_ok_and(|metadata| metadata.file_type().is_socket()),
+        "tmux leaves the socket file of a stopped server"
+    );
+    std::fs::remove_file(&socket).expect("remove the stale socket");
+}
+
 /// A name no other server or directory in this or any concurrent test run
 /// uses: the process id separates runs, the sequence separates tests (and a
 /// tag reused by two of them) inside one run.

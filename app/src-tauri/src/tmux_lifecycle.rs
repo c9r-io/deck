@@ -28,10 +28,24 @@
 //! restart transaction runs the registered guard before any tmux impact,
 //! and an unset guard means no feature objects.
 //!
+//! One exit gives a server back. The boot gate runs before a launch can know
+//! what it is, so a launch that only delivers a notification answer
+//! (`reminder.rs`, response-only) starts a server like any other when none
+//! exists. The gate remembers a start from nothing
+//! (`start_missing_server_at_boot`), and that launch's exit
+//! (`retire_boot_server`, called from `main.rs`) stops exactly that server
+//! while it still has no session: one tmux command (a format condition, no
+//! shell) decides on PID, start time and session count inside the server and
+//! stops it, then the socket file it leaves is removed under the restart's
+//! device/inode check.
+//! A server that already ran, one with a session, and every other exit are
+//! never touched; a stop that fails leaves the server running.
+//!
 //! Every tmux-facing step (`probe_server_on`, `start_current_server_on`,
 //! `wait_for_old_server_exit_on`, `clean_confirmed_intent_socket_on`,
-//! `complete_restart_on`) and the lifecycle file (`read_disk_at`,
-//! `write_disk_at`, `status_from_probe_with`) take a `ServerHandle`;
+//! `complete_restart_on`, `retire_started_server_on`) and the lifecycle file
+//! (`read_disk_at`, `write_disk_at`, `status_from_probe_with`) take a
+//! `ServerHandle`;
 //! production builds exactly one, `deck_server()`, and the parameterless
 //! wrappers used by the boot gate and commands pass it. Tests run the same
 //! code against a throwaway bundled-tmux socket and a temporary file.
@@ -73,6 +87,11 @@ const LIFECYCLE_FILE: &str = "tmux-lifecycle.json";
 
 static OPERATION: Mutex<()> = Mutex::new(());
 static APP_UPDATE_INSTALLING: AtomicBool = AtomicBool::new(false);
+/// The server this launch's boot gate started when none existed, as it was
+/// verified then. Only `retire_boot_server` reads it.
+static BOOT_STARTED: Mutex<Option<ServerSnapshot>> = Mutex::new(None);
+/// A leaving process waits this long for tmux, at most.
+const RETIRE_BUDGET: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1231,7 +1250,7 @@ pub(crate) fn reconcile_on_boot() {
                         ));
                         return;
                     }
-                    if let Ok(fresh) = start_current_server(&build) {
+                    if let Ok(fresh) = start_missing_server_at_boot(&build) {
                         disk.operation = None;
                         disk.deferred_build = None;
                         disk.notice = Some(LifecycleNotice {
@@ -1270,7 +1289,7 @@ pub(crate) fn reconcile_on_boot() {
 
     match probe_server() {
         Probe::Absent => {
-            if let Err(error) = start_current_server(&build) {
+            if let Err(error) = start_missing_server_at_boot(&build) {
                 applog(&format!(
                     "[tmux-lifecycle] initial server start failed ({})",
                     error.code()
@@ -1295,6 +1314,77 @@ pub(crate) fn reconcile_on_boot() {
             applog("[tmux-lifecycle] server inspection unavailable");
         }
     }
+}
+
+/// What became of the server a leaving launch gave back.
+#[derive(Debug, Eq, PartialEq)]
+enum Retirement {
+    /// It was still that server and still had no session: stopped, and its
+    /// socket file removed.
+    Stopped,
+    /// tmux kept it: a session exists, or it is no longer that server.
+    Kept,
+    /// The stop could not be asked or confirmed; nothing else was touched.
+    Unconfirmed,
+}
+
+/// Gives back the server `started` describes, if tmux still runs exactly
+/// that server and it has no session. One command decides and stops inside
+/// the server (`-F`: a format, no shell), so nothing can happen between the
+/// check and the stop; its else branch answers when tmux kept the server.
+/// The socket file a stopped server leaves behind is removed under the same
+/// device/inode check a restart uses.
+fn retire_started_server_on(server: &ServerHandle<'_>, started: &ServerSnapshot) -> Retirement {
+    let still_ours_and_empty = format!(
+        "#{{&&:#{{&&:#{{==:#{{pid}},{}}},#{{==:#{{start_time}},{}}}}},#{{==:#{{server_sessions}},0}}}}",
+        started.pid, started.started_at
+    );
+    match (server.run)(&[
+        "if-shell",
+        "-F",
+        &still_ours_and_empty,
+        "kill-server",
+        "display-message -p kept",
+    ]) {
+        Ok(answer) if answer.trim().is_empty() => {}
+        Ok(_) => return Retirement::Kept,
+        Err(error) if absent_error(error.message()) => {}
+        Err(_) => return Retirement::Unconfirmed,
+    }
+    match wait_for_old_server_exit_on(server, started) {
+        Ok(()) => Retirement::Stopped,
+        Err(_) => Retirement::Unconfirmed,
+    }
+}
+
+/// A launch that ends without ever having been an ordinary one (`main.rs`: a
+/// response-only launch, `reminder.rs`) gives back the server its own boot
+/// gate started when none existed. Nothing of deck used it, and the machine
+/// keeps no process the user did not ask for. A server that already ran, one
+/// that has a session, and every ordinary exit are left alone; a stop that
+/// fails leaves the server running, which is what an ordinary exit does.
+pub(crate) fn retire_boot_server() {
+    let Some(started) = BOOT_STARTED.lock_or_recover().take() else {
+        return;
+    };
+    let Ok(_guard) = try_operation() else {
+        return;
+    };
+    let _deadline =
+        crate::session_runtime::Deadline::until(std::time::Instant::now() + RETIRE_BUDGET);
+    applog(match retire_started_server_on(&deck_server(), &started) {
+        Retirement::Stopped => "[tmux-lifecycle] boot server retired",
+        Retirement::Kept => "[tmux-lifecycle] boot server kept",
+        Retirement::Unconfirmed => "[tmux-lifecycle] boot server retirement unconfirmed",
+    });
+}
+
+/// The boot gate's start of a server where none existed. It is remembered,
+/// so `retire_boot_server` can give exactly this server back.
+fn start_missing_server_at_boot(build: &CurrentBuildIdentity) -> Result<ServerSnapshot, DeckError> {
+    let fresh = start_current_server(build)?;
+    *BOOT_STARTED.lock_or_recover() = Some(fresh.clone());
+    Ok(fresh)
 }
 
 /// Guard every server-creating path. Existing incompatible sessions remain
@@ -3140,6 +3230,232 @@ mod tests {
                 .message(),
             "tmux start-server failed: refused"
         );
+    }
+
+    /// The isolated server started through the production step, as the boot
+    /// gate starts one when none exists.
+    fn started_from_nothing(handle: &ServerHandle<'_>) -> ServerSnapshot {
+        let current = build(SourceCategory::Development, "0.4.41", "bbbbbbb", 1);
+        start_current_server_on(handle, &current).expect("server started")
+    }
+
+    /// A launch that ends without ever having been an ordinary one gives back
+    /// the server its boot gate started. One guarded tmux command decides and
+    /// stops, without a shell, and the socket file goes with the server.
+    #[test]
+    fn real_tmux_retire_stops_the_empty_server_this_launch_started() {
+        let server = IsolatedServer::new("retire");
+        let dir = TestDir::new("retire");
+        let asked = std::cell::RefCell::new(Vec::<Vec<String>>::new());
+        let run = |args: &[&str]| {
+            asked
+                .borrow_mut()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+            server.tmux(args)
+        };
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let handle = ServerHandle {
+            run: &run,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        let fresh = started_from_nothing(&handle);
+        assert!(fresh.socket_path.exists());
+        asked.borrow_mut().clear();
+
+        assert_eq!(
+            retire_started_server_on(&handle, &fresh),
+            Retirement::Stopped
+        );
+        assert!(!server.is_running());
+        assert!(!fresh.socket_path.exists(), "the socket file went with it");
+        assert!(matches!(probe_server_on(&handle), Probe::Absent));
+
+        let asked = asked.borrow();
+        assert_eq!(
+            asked[0],
+            [
+                "if-shell".to_string(),
+                "-F".into(),
+                format!(
+                    "#{{&&:#{{&&:#{{==:#{{pid}},{}}},#{{==:#{{start_time}},{}}}}},#{{==:#{{server_sessions}},0}}}}",
+                    fresh.pid, fresh.started_at
+                ),
+                "kill-server".into(),
+                "display-message -p kept".into(),
+            ],
+            "the stop is the first and only command that can end the server"
+        );
+        assert_eq!(
+            asked
+                .iter()
+                .filter(|args| args.iter().any(|arg| arg.contains("kill-server")))
+                .count(),
+            1
+        );
+    }
+
+    /// A server someone uses is never stopped: the guard is the session
+    /// count tmux itself reads when the command runs.
+    #[test]
+    fn real_tmux_retire_keeps_a_server_that_has_a_session() {
+        let server = IsolatedServer::new("retire-used");
+        let dir = TestDir::new("retire-used");
+        let run = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let handle = ServerHandle {
+            run: &run,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        let fresh = started_from_nothing(&handle);
+        server.new_session("alpha");
+
+        assert_eq!(retire_started_server_on(&handle, &fresh), Retirement::Kept);
+        assert_eq!(server.pid(), fresh.pid);
+        assert_eq!(
+            server.run(&["list-sessions", "-F", "#{session_name}"]),
+            "alpha"
+        );
+        assert!(fresh.socket_path.exists());
+    }
+
+    /// Only the server this launch started: the same process under another
+    /// start time, or another server on the same socket, stays.
+    #[test]
+    fn real_tmux_retire_keeps_a_server_this_launch_did_not_start() {
+        let server = IsolatedServer::new("retire-other");
+        let dir = TestDir::new("retire-other");
+        let run = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let handle = ServerHandle {
+            run: &run,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        let fresh = started_from_nothing(&handle);
+        let mut another_start = fresh.clone();
+        another_start.started_at += 1;
+        assert_eq!(
+            retire_started_server_on(&handle, &another_start),
+            Retirement::Kept
+        );
+        assert_eq!(server.pid(), fresh.pid);
+
+        server.stop();
+        server.start(None);
+        let replacement = server.pid();
+        assert_ne!(replacement, fresh.pid);
+        assert_eq!(retire_started_server_on(&handle, &fresh), Retirement::Kept);
+        assert_eq!(server.pid(), replacement);
+        assert!(server.is_running());
+    }
+
+    /// A server that is already gone leaves its socket file behind; the file
+    /// is removed while it is still the one this launch's server made.
+    #[test]
+    fn real_tmux_retire_of_a_server_already_gone_removes_its_stale_socket() {
+        let server = IsolatedServer::new("retire-gone");
+        let dir = TestDir::new("retire-gone");
+        let run = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let handle = ServerHandle {
+            run: &run,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        let fresh = started_from_nothing(&handle);
+        let _ = server.output(&["kill-server"]);
+        for _ in 0..100 {
+            if !server.is_running() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!server.is_running());
+
+        assert_eq!(
+            retire_started_server_on(&handle, &fresh),
+            Retirement::Stopped
+        );
+        assert!(!fresh.socket_path.exists());
+    }
+
+    /// A stop tmux did not take, or whose end cannot be confirmed, changes
+    /// nothing: the server and its socket file stay as they were.
+    #[test]
+    fn real_tmux_retire_that_is_not_confirmed_leaves_the_server_alone() {
+        let server = IsolatedServer::new("retire-unconfirmed");
+        let dir = TestDir::new("retire-unconfirmed");
+        let run = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let handle = ServerHandle {
+            run: &run,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        let fresh = started_from_nothing(&handle);
+
+        let refusing = |args: &[&str]| {
+            if args[0] == "if-shell" {
+                Err(DeckError::new(
+                    ErrorKind::Tmux,
+                    "tmux if-shell failed: refused",
+                ))
+            } else {
+                server.tmux(args)
+            }
+        };
+        let refused = ServerHandle {
+            run: &refusing,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        assert_eq!(
+            retire_started_server_on(&refused, &fresh),
+            Retirement::Unconfirmed
+        );
+        assert_eq!(server.pid(), fresh.pid);
+        assert!(fresh.socket_path.exists());
+
+        // tmux said it stopped, yet the same server still answers
+        let silent = |args: &[&str]| {
+            if args[0] == "if-shell" {
+                Ok(String::new())
+            } else {
+                server.tmux(args)
+            }
+        };
+        let unstopped = ServerHandle {
+            run: &silent,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        {
+            let _deadline = crate::session_runtime::Deadline::until(
+                std::time::Instant::now() + Duration::from_millis(400),
+            );
+            assert_eq!(
+                retire_started_server_on(&unstopped, &fresh),
+                Retirement::Unconfirmed
+            );
+        }
+        assert_eq!(server.pid(), fresh.pid);
+        assert!(fresh.socket_path.exists());
     }
 
     #[test]
