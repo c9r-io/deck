@@ -1,7 +1,7 @@
-// Reminder-protected maintenance cards are retained before any bulk side effect.
 // Local, user-confirmed managed-session closure before shell replacement.
 // Backend status is the authority; a changed review or uncertain close stops
 // before the ordinary restart command. The backend rechecks under its gate.
+// Reminder-protected maintenance cards are retained before any bulk side effect.
 export function managedBlockers(status) {
   return (status?.restartBlockers || []).filter(item => item.kind === 'managed-session');
 }
