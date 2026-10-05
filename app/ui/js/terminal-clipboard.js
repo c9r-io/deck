@@ -35,6 +35,39 @@ export function createTerminalCopy({ selection, term, copySelection, elsewhere, 
   };
 }
 
+/* Command-C that no terminal handled. A pane's handler hangs on its own
+   xterm, so with the keyboard focus outside every terminal (a click on a
+   pane header, a button, the Board) it never runs, while an xterm selection
+   stays painted: the key did nothing, said nothing, logged nothing, and a
+   successful copy is silent too, so the user could not tell. This one
+   document-level listener closes that gap and nothing else:
+   - exactly one visible pane holds a selection → that pane's own handler
+     copies it, with its own route, outcome, notices and log lines. No pane
+     is "current" here, so this is the selection the user sees, not another
+     pane's taken implicitly;
+   - more than one holds one → no pane is chosen; the existing "selection is
+     in another pane" notice;
+   - none → nothing: Command-C elsewhere in the app stays what it was.
+   It never acts on a key a terminal already handled (`defaultPrevented`),
+   in a text field (the field's own copy), or during an input method's
+   composition. One closed log line, `keydown-unfocused` (a = holders),
+   carries the first holder's ids. */
+export function createUnfocusedCopy({ holders, editable, log, notice }) {
+  return event => {
+    if (!event || event.type !== 'keydown' || !event.metaKey
+        || String(event.key || '').toLowerCase() !== 'c') return false;
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return false;
+    if (editable()) return false;
+    const panes = holders();
+    if (!panes.length) return false;
+    log('terminal-copy', 'keydown-unfocused', panes.length, null, panes[0].selection.traceContext());
+    if (panes.length === 1) return panes[0].copyKey(event) === true;
+    event.preventDefault();
+    notice('error.copyElsewhere');
+    return true;
+  };
+}
+
 export async function copyExact(text, writer) {
   await writer(text);
   return text.length;

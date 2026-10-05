@@ -50,6 +50,10 @@
 //! press(3); b = ms since that pane's last release (press for 3). Emitted only on an empty copy, not per click.
 //! `source-elsewhere` carries the source pane's IDs and a/b = destination pane
 //! and copy attempt; it diagnoses focus mistakes without copying another pane.
+//! `keydown-unfocused`: Command-C arrived with the keyboard focus outside
+//! every terminal while a terminal selection was on screen; a = how many
+//! panes held one, with the first holder's IDs. With one holder that pane's
+//! own `keydown-*` route and outcome follow; with more, nothing is copied.
 //! ⌘C can only report what it FOUND, so `terminal-selection` records the
 //! selection's own life: `promote` / `start-ok` / `finish-ok` (or
 //! `start-failed` / `update-failed` / `finish-failed` / `freeze-failed`,
@@ -851,6 +855,7 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
             "keydown-native",
             "keydown-none",
             "keydown-elsewhere",
+            "keydown-unfocused",
             "source-elsewhere",
             "success",
             "selection-vanished",

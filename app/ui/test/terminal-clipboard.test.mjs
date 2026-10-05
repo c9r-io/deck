@@ -91,3 +91,54 @@ test('PTY codecs preserve Unicode, control keys and arbitrary output bytes', () 
   assert.deepEqual([...b64ToU8('/wAB')], [255, 0, 1]);
   assert.throws(() => b64ToU8('%%%'));
 });
+
+// F17: Command-C that no terminal handled. With the keyboard focus outside
+// every terminal the pane handlers never run; a selection that is still on
+// screen is then copied by its own pane, through that pane's handler.
+test('Command-C outside every terminal copies the one visible selection, through its own pane', async () => {
+  const { createUnfocusedCopy } = await import('../js/terminal-clipboard.js');
+  const make = ({ holders = [], editable = false } = {}) => {
+    const logs = [], notices = [], handled = [];
+    const pane = id => ({ id, selection: { traceContext: () => ({ run: 1, pane: id, selection: 4 }) },
+      copyKey: event => { handled.push(id); event.preventDefault(); return true; } });
+    const handle = createUnfocusedCopy({ holders: () => holders.map(pane), editable: () => editable,
+      log: (...args) => logs.push(args), notice: key => notices.push(key) });
+    const key = (values = {}) => {
+      const event = { type: 'keydown', metaKey: true, key: 'c', defaultPrevented: false,
+        preventDefault() { this.defaultPrevented = true; }, ...values };
+      return [handle(event), event];
+    };
+    return { logs, notices, handled, key };
+  };
+  // one pane holds a selection: its own handler copies it
+  let f = make({ holders: [7] });
+  let [done, event] = f.key();
+  assert.equal(done, true); assert.deepEqual(f.handled, [7]); assert.equal(event.defaultPrevented, true);
+  assert.deepEqual(f.logs.map(entry => entry.slice(0, 3)), [['terminal-copy', 'keydown-unfocused', 1]]);
+  assert.equal(f.logs[0][4].pane, 7, 'the log carries the holder\'s ids, never text');
+  assert.deepEqual(f.notices, []);
+  // nothing selected anywhere: Command-C elsewhere in the app stays what it was
+  f = make(); [done, event] = f.key();
+  assert.equal(done, false); assert.equal(event.defaultPrevented, false);
+  assert.deepEqual([f.handled, f.logs, f.notices], [[], [], []]);
+  // two panes hold one: no pane is chosen; the existing notice, one log line
+  f = make({ holders: [3, 9] }); [done, event] = f.key();
+  assert.equal(done, true); assert.deepEqual(f.handled, []); assert.equal(event.defaultPrevented, true);
+  assert.deepEqual(f.notices, ['error.copyElsewhere']);
+  assert.deepEqual(f.logs.map(entry => entry.slice(0, 3)), [['terminal-copy', 'keydown-unfocused', 2]]);
+  // never: a key a terminal already handled, a field's own Command-C, an
+  // input method's composition, another key or modifier
+  for (const [what, setup, values] of [
+    ['already handled', { holders: [7] }, { defaultPrevented: true }],
+    ['a text field', { holders: [7], editable: true }, {}],
+    ['composing', { holders: [7] }, { isComposing: true }],
+    ['IME keyCode', { holders: [7] }, { keyCode: 229 }],
+    ['keyup', { holders: [7] }, { type: 'keyup' }],
+    ['no Command', { holders: [7] }, { metaKey: false }],
+    ['another key', { holders: [7] }, { key: 'v' }],
+  ]) {
+    f = make(setup); [done, event] = f.key(values);
+    assert.equal(done, false, what);
+    assert.deepEqual([f.handled, f.logs, f.notices], [[], [], []], what);
+  }
+});

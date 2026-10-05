@@ -44,7 +44,7 @@ import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelec
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
 import { b64ToU8, strToB64 } from './terminal-bytes.js';
 import { wireTerminalLinks } from './terminal-links.js';
-import { createTerminalCopy, writeClipboard } from './terminal-clipboard.js';
+import { createTerminalCopy, createUnfocusedCopy, writeClipboard } from './terminal-clipboard.js';
 import { getFontScale, onFontScaleChange, TERMINAL_BASE_FONT_SIZE } from './font-scale.js';
 import { registerShortcutAction } from './shortcuts.js';
 import { showAttention } from './attention.js';
@@ -459,6 +459,9 @@ export function wireTerminalInput(pane, term, host) {
     elsewhere: () => terminalSelectionElsewhere(pane),
     write: writeClipboard, log: uev, notice: key => toast(t(key)),
   });
+  // the same handler serves a Command-C pressed with the focus outside every
+  // terminal (terminal-clipboard.js createUnfocusedCopy)
+  pane.copyKey = copyKey;
   /* app shortcuts pass through; ⌘C/⌘V are handled here because a menu-less
      macOS app gets no standard edit actions in the webview */
   term.attachCustomKeyEventHandler(e => {
@@ -1076,6 +1079,19 @@ export function renderSessionView() {
    without a document. */
 export function initLayout() {
   onThemeChange(({ terminal }) => panes.forEach(pane => { pane.term.options.theme = terminal; }));
+
+  /* Command-C with the focus outside every terminal: a selection still on
+     screen is copied by its own pane (terminal-clipboard.js). Bubble phase,
+     after any terminal's own handler has had the key. */
+  document.addEventListener('keydown', createUnfocusedCopy({
+    holders: () => [...panes.values()].filter(pane => pane.body.isConnected && pane.body.getClientRects().length > 0
+      && (hasTerminalSelection(pane) || pane.term.hasSelection())),
+    editable: () => {
+      const active = document.activeElement;
+      return !!active && (/^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName) || active.isContentEditable === true);
+    },
+    log: uev, notice: key => toast(t(key)),
+  }));
 
   onFontScaleChange(scale => {
     panes.forEach(pane => { pane.term.options.fontSize = TERMINAL_BASE_FONT_SIZE * scale; });
