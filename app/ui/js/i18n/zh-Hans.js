@@ -247,7 +247,7 @@ const dictionary = {
   "settings.group.appearance": "外观",
   "settings.group.agentStatus": "Agent 状态",
   "settings.group.awayNotifications": "离席通知",
-  "settings.notifyNeedsAgentStatus": "尚未开启任何 Agent 状态集成，因此不会发出通知。请在“Agent 状态”中开启 Claude Code 或 Codex。",
+  "settings.notifyNeedsAgentStatus": "尚未开启任何 Agent 状态集成：agent 请求输入或结束一轮时不会通知；列表的投递停下来等你处理时仍会通知。要收到前一种，请在“Agent 状态”中开启 Claude Code 或 Codex。",
   "settings.immediate": "更改即时生效",
   "settings.details": "了解详情",
   "settings.shellData": "Shell 恢复数据",

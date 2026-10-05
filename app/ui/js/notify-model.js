@@ -7,8 +7,10 @@ import { ATTENTION_FILTERS } from './attention-model.js';
 
 export const NOTIFY_STATUS_WORDS = Object.freeze(['unsupported', 'not-determined', 'denied', 'authorized', 'provisional']);
 
-/** Away notifications fire only on agent-status hook events, so Settings
- * names the dependency when BOTH integrations are known to be off. `hooks`
+/** The agent half of away notifications (an input request, a turn ending)
+ * fires only on agent-status hook events, so Settings names the dependency
+ * when BOTH integrations are known to be off. A held delivery is Deck's own
+ * source and is announced without them; the sentence says both. `hooks`
  * is null while their state is unknown (not read yet, or the read failed):
  * no claim is made then. Nothing is switched on or off here. */
 export function notifyNeedsAgentStatus(hooks) {

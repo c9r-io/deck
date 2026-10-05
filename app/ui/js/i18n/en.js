@@ -248,7 +248,7 @@ const dictionary = {
   "settings.group.appearance": "Appearance",
   "settings.group.agentStatus": "Agent status",
   "settings.group.awayNotifications": "Away notifications",
-  "settings.notifyNeedsAgentStatus": "No agent status integration is on, so notifications will not fire. Turn on Claude Code or Codex under Agent status.",
+  "settings.notifyNeedsAgentStatus": "No agent status integration is on: an agent asking for input or ending a turn will not notify. A list’s delivery that stops to wait for you still does. For the former, turn on Claude Code or Codex under Agent status.",
   "settings.immediate": "Changes apply immediately",
   "settings.details": "Learn more",
   "settings.shellData": "Shell recovery data",
