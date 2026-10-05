@@ -56,7 +56,13 @@
 //! unexpired trusted-host MCP job — the signed `deck-mcp-runner`, which
 //! starts the requested absolute executable path and exact argv at its
 //! single fixed entry (`spawn_job`); bare names never resolve through the
-//! child PATH. Execution authority permits any program, including
+//! child PATH. `links.rs` hands `open` a resolved path, an http(s) URL, a
+//! fixed System Settings URL, or — for a clicked `file:line` and an editor
+//! in its closed `EDITOR_LINE_SCHEMES` table — that editor's own URL built
+//! in Rust from the table's scheme, the canonical path and parsed numbers,
+//! always with `-a <the chosen editor>`; never an editor's command-line
+//! tool, and no clicked text as a scheme. Execution authority permits any
+//! program, including
 //! interpreters and shells; it is not a sandbox, `-d -f` does not skip
 //! `/etc/zshenv`, and nothing here promises EDR invisibility. The ONE
 //! executable outside the bundle is the optional, separately installed and

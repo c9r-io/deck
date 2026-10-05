@@ -6,6 +6,13 @@
 //! sentence): the wire carries only the message, so the code is what lets
 //! the link menu say which of the four reasons applied. The codes are
 //! mirrored in `ui/test/fixtures/limits.json` (`link_failures`).
+//! A clicked `file:line[:column]` reaches the editor as a position only for
+//! the editors in `EDITOR_LINE_SCHEMES`, through that editor's own URL
+//! scheme: the URL is built here from the scheme in the table, the
+//! canonical path (percent-encoded) and the parsed numbers, and handed to
+//! `open -a <the chosen editor>`. No clicked text becomes part of a scheme;
+//! an editor outside the table, or a click without a line, opens exactly as
+//! before. The editor may ask before opening such a URL; that is its own.
 //! Voice setup opens only three fixed System Settings destinations; terminal
 //! URLs still accept only http(s). Opening settings never grants permissions.
 
@@ -189,6 +196,78 @@ pub(crate) fn validate_open(kind: &str, value: &str, resolved: &str) -> Result<(
     }
 }
 
+/// A clicked `:line[:column]`, both 1-based as the terminal printed them.
+type ClickedPosition = (u32, Option<u32>);
+
+/// Editors that open a file at a position through their own URL scheme,
+/// `<scheme>://file<absolute path>:<line>[:<column>]`. Closed, and only
+/// what was seen working: VS Code documents the form ("Opening VS Code with
+/// URLs"), Cursor follows it. Keys are the `detect_editors` names.
+const EDITOR_LINE_SCHEMES: &[(&str, &str)] =
+    &[("Visual Studio Code", "vscode"), ("Cursor", "cursor")];
+
+/// The `:line[:column]` suffix `regex_strip_lineno` removes, as numbers.
+/// Digits only; a zero or an overflowing line is no position at all, and
+/// such a column is dropped.
+fn clicked_position(raw: &str) -> Option<ClickedPosition> {
+    let number = |digits: &str| {
+        (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+            .then(|| digits.parse::<u32>().ok().filter(|n| *n > 0))
+    };
+    let (head, tail) = raw.rsplit_once(':')?;
+    let last = number(tail)?;
+    match head.rsplit_once(':').and_then(|(_, line)| number(line)) {
+        Some(line) => Some((line?, last)),
+        None => Some((last?, None)),
+    }
+}
+
+/// The file a click names, canonical, and the position it carried. The
+/// literal path wins when it exists, so a real `name:42` file is that file
+/// and has no position; the suffix is read only after that lookup failed.
+fn resolve_clicked_file(
+    value: &str,
+    cwd: &str,
+) -> Result<(String, Option<ClickedPosition>), DeckError> {
+    let raw = unquote_clicked_path(value);
+    let literal = absolute_clicked_path(&raw, cwd)?;
+    if let Ok(path) = std::fs::canonicalize(&literal) {
+        return Ok((path.to_string_lossy().into_owned(), None));
+    }
+    let stripped = regex_strip_lineno(&raw);
+    let path = std::fs::canonicalize(absolute_clicked_path(&stripped, cwd)?)
+        .map_err(|_| path_missing())?;
+    Ok((path.to_string_lossy().into_owned(), clicked_position(&raw)))
+}
+
+/// What `open -a <editor>` is handed for a resolved file: the path, or for
+/// an `EDITOR_LINE_SCHEMES` editor and a click that carried a line, that
+/// editor's URL. Everything but unreserved characters and `/` is
+/// percent-encoded, so nothing in a file name can end the path early.
+fn editor_target(editor: &str, resolved: &str, position: Option<ClickedPosition>) -> String {
+    let scheme = EDITOR_LINE_SCHEMES
+        .iter()
+        .find(|(name, _)| *name == editor)
+        .map(|(_, scheme)| *scheme);
+    let (Some(scheme), Some((line, column))) = (scheme, position) else {
+        return resolved.to_string();
+    };
+    let mut url = format!("{scheme}://file");
+    for byte in resolved.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                url.push(byte as char)
+            }
+            _ => url.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    url.push_str(&format!(":{line}"));
+    if let Some(column) = column {
+        url.push_str(&format!(":{column}"));
+    }
+    url
+}
+
 #[tauri::command]
 pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<(), DeckError> {
     open_with_editor(&kind, &value, &cwd, crate::documents::editor_app)
@@ -202,23 +281,12 @@ fn open_with_editor(
     cwd: &str,
     editor: impl Fn() -> Option<String>,
 ) -> Result<(), DeckError> {
-    let resolved = if kind == "url" {
-        String::new()
+    let (resolved, position) = if kind == "url" {
+        (String::new(), None)
     } else if kind == "editor-parent" {
-        resolve_clicked_parent(value, cwd)?.directory
+        (resolve_clicked_parent(value, cwd)?.directory, None)
     } else {
-        let raw = unquote_clicked_path(value);
-        let literal = absolute_clicked_path(&raw, cwd)?;
-        match std::fs::canonicalize(&literal) {
-            Ok(path) => path.to_string_lossy().into_owned(),
-            Err(_) => {
-                let stripped = regex_strip_lineno(&raw);
-                std::fs::canonicalize(absolute_clicked_path(&stripped, cwd)?)
-                    .map_err(|_| path_missing())?
-                    .to_string_lossy()
-                    .into_owned()
-            }
-        }
+        resolve_clicked_file(value, cwd)?
     };
     validate_open(kind, value, &resolved)?;
     let status = match kind {
@@ -231,7 +299,7 @@ fn open_with_editor(
         },
         "editor" => match editor() {
             Some(app) => Command::new("/usr/bin/open")
-                .args(["-a", &app, &resolved])
+                .args(["-a", &app, &editor_target(&app, &resolved, position)])
                 .status(),
             None => Command::new("/usr/bin/open")
                 .args(["-t", &resolved])
@@ -520,6 +588,141 @@ mod tests {
                 .unwrap_err()
                 .message(),
             "link-path-missing"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_clicked_suffix_is_a_position_only_as_plain_positive_numbers() {
+        assert_eq!(clicked_position("src/foo.rs:42:7"), Some((42, Some(7))));
+        assert_eq!(clicked_position("src/foo.rs:42"), Some((42, None)));
+        assert_eq!(clicked_position("a:b/c.rs:9"), Some((9, None)));
+        for none in [
+            "src/foo.rs",
+            "src/foo.rs:",
+            "a:b/c",
+            "src/foo.rs:0",
+            "src/foo.rs:0:3",
+            "src/foo.rs:99999999999",
+            "src/foo.rs:+4",
+            "src/foo.rs:４２",
+        ] {
+            assert_eq!(clicked_position(none), None, "{none}");
+        }
+        // a column that is not usable is dropped, the line stays
+        assert_eq!(clicked_position("src/foo.rs:42:0"), Some((42, None)));
+        assert_eq!(
+            clicked_position("src/foo.rs:42:99999999999"),
+            Some((42, None))
+        );
+    }
+
+    /// The URL is the table's scheme, the canonical path and two numbers.
+    /// Nothing else, and only for a listed editor and a click with a line.
+    #[test]
+    fn only_listed_editors_get_a_line_url_built_from_the_canonical_path() {
+        let path = "/tmp/deck f03 空格/sample#1.txt";
+        assert_eq!(
+            editor_target("Visual Studio Code", path, Some((9, None))),
+            "vscode://file/tmp/deck%20f03%20%E7%A9%BA%E6%A0%BC/sample%231.txt:9"
+        );
+        assert_eq!(
+            editor_target("Cursor", "/tmp/deck-f03-sample.txt", Some((42, Some(7)))),
+            "cursor://file/tmp/deck-f03-sample.txt:42:7"
+        );
+        // characters that could end or reshape the URL never survive
+        let hostile = "/tmp/a:1?x=y&z%20\"<>'`|{}[]^\n;@=+,$!*()";
+        let url = editor_target("Cursor", hostile, Some((3, None)));
+        let encoded = url
+            .strip_prefix("cursor://file")
+            .and_then(|rest| rest.strip_suffix(":3"))
+            .unwrap();
+        assert!(
+            encoded
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-._~/%".contains(c)),
+            "{encoded}"
+        );
+        // no line, or an editor that is not listed: the path, byte for byte
+        assert_eq!(editor_target("Cursor", path, None), path);
+        for editor in [
+            "Zed",
+            "Sublime Text",
+            "TextMate",
+            "BBEdit",
+            "Nova",
+            "IntelliJ IDEA",
+            "WebStorm",
+            "RustRover",
+            "Xcode",
+            "cursor",
+            "Cursor ",
+            "vscode://evil",
+            "",
+        ] {
+            assert_eq!(
+                editor_target(editor, path, Some((9, Some(2)))),
+                path,
+                "{editor}"
+            );
+        }
+        for (name, scheme) in EDITOR_LINE_SCHEMES {
+            assert!(scheme.chars().all(|c| c.is_ascii_lowercase()), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_position_comes_only_from_a_suffix_the_filesystem_did_not_claim() {
+        let root = std::env::temp_dir().join(format!(
+            "deck-link-position-{}-{}",
+            std::process::id(),
+            crate::datadir::now_epoch()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("code.rs"), b"fn main() {}\n").unwrap();
+        std::fs::write(root.join("name:12"), b"literal colon\n").unwrap();
+        let cwd = root.to_string_lossy().into_owned();
+        let canonical = |name: &str| {
+            std::fs::canonicalize(root.join(name))
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        assert_eq!(
+            resolve_clicked_file("code.rs:42:7", &cwd).unwrap(),
+            (canonical("code.rs"), Some((42, Some(7))))
+        );
+        assert_eq!(
+            resolve_clicked_file("\"code.rs\":42", &cwd).unwrap(),
+            (canonical("code.rs"), Some((42, None)))
+        );
+        assert_eq!(
+            resolve_clicked_file("code.rs", &cwd).unwrap(),
+            (canonical("code.rs"), None)
+        );
+        assert_eq!(
+            resolve_clicked_file("code.rs:", &cwd).unwrap(),
+            (canonical("code.rs"), None)
+        );
+        // a literal existing colon-number filename wins: it is the file
+        assert_eq!(
+            resolve_clicked_file("name:12", &cwd).unwrap(),
+            (canonical("name:12"), None)
+        );
+        // A line on that file was never resolved (both numeric suffixes are
+        // removed together) and still is not: unchanged, it stays missing.
+        assert_eq!(
+            resolve_clicked_file("name:12:5", &cwd)
+                .unwrap_err()
+                .message(),
+            LINK_PATH_MISSING
+        );
+        assert_eq!(
+            resolve_clicked_file("absent.rs:3", &cwd)
+                .unwrap_err()
+                .message(),
+            LINK_PATH_MISSING
         );
         std::fs::remove_dir_all(&root).unwrap();
     }
