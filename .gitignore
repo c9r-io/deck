@@ -12,3 +12,5 @@ app/src-tauri/binaries/deck-mcp-runner-*
 .wrangler/
 # staged by app/src-tauri/build.rs from app/ui (release drops ui/test)
 app/src-tauri/ui-dist/
+# local evaluation reports — working notes, never committed
+/reports/
