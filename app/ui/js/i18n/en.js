@@ -862,7 +862,7 @@ const dictionary = {
   'queue.stage.authorized': "Approved step · {stage}",
   'queue.stage.firstSendOverride': "First step without readiness confirmation · {stage}",
   'queue.stage.context': "Time conditions met · awaiting selection and target checks",
-  'queue.stage.firstSend': "Waiting for first agent interaction · interact with the agent once, or use Send now to confirm it is ready. Deck doesn’t send a newly started agent its first prompt on its own (a startup dialog may own Enter) unless its clock or Slack automation allows that; unattended sends need the Agent status integration",
+  'queue.stage.firstSend': "Waiting for first agent interaction · interact with the agent once, or use Send now to confirm it is ready. Deck doesn’t send a newly started agent its first prompt on its own (a startup dialog may own Enter) unless its clock or Slack automation, or its phone task preset, allows that; unattended sends need the Agent status integration",
   'queue.plan.current': "Sends to this session · order applies within this list",
   'queue.plan.repeat': "Repeats in this session · count records first-row deliveries",
   'queue.plan.conditions': "First row: not before. Later rows: their quiet interval. Sends are at least one minute apart.",
@@ -1075,6 +1075,8 @@ const dictionary = {
   'presets.cardTitle': 'Card title',
   'presets.steps': 'Initial steps',
   'presets.hint': 'One step per line, up to 20. Use codex or claude with optional simple arguments.',
+  'presets.firstSend.hint': 'A task created from the phone starts its agent and then waits for your first interaction on this Mac. Enable once to accept startup-input risk for this preset: Deck starts the agent with no prompt bytes, waits briefly for compatibility, then sends the first step. This wait is not readiness proof: a Trust, Update, sign-in, permission or other startup dialog may receive the text and Enter. Later steps keep their normal checks. Claude is supported; Codex requires --no-daemon.',
+  'presets.firstSend.confirm': 'Enable automatic first input for this preset? You accept once that a Trust, Update, sign-in, permission or other startup dialog may receive the text or Enter instead. After a short compatibility wait, tasks created from the phone with this preset need no manual first-send confirmation. Blocking conditions still apply. Enable only if you accept this risk.',
   'presets.invalid': 'Complete the preset with a valid group, directory, codex or claude command, and at most 20 bounded steps.',
 };
 export { dictionary };

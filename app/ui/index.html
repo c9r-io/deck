@@ -687,6 +687,9 @@
       <div class="set-row"><label for="pdf-preset-cmd" data-i18n="automation.cmd">Command</label><input id="pdf-preset-cmd" maxlength="200" placeholder="codex"></div>
       <div class="set-row"><label for="pdf-preset-steps" data-i18n="presets.steps">Initial steps</label><textarea id="pdf-preset-steps" rows="4"></textarea></div>
       <div class="set-hint" data-i18n="presets.hint">One step per line, up to 20. Commands are fixed on this Mac and must launch Codex or Claude.</div>
+      <label class="q-review-option"><input type="checkbox" id="pdf-preset-first-send"><span data-i18n="automation.firstSend.option">Send the first step to a newly started agent without waiting for readiness</span></label>
+      <div class="set-hint" data-i18n="presets.firstSend.hint">A task created from the phone starts its agent and then waits for your first interaction on this Mac. Enable once to accept startup-input risk for this preset: Deck starts the agent with no prompt bytes, waits briefly for compatibility, then sends the first step. This wait is not readiness proof: a Trust, Update, sign-in, permission or other startup dialog may receive the text and Enter. Later steps keep their normal checks. Claude is supported; Codex requires --no-daemon.</div>
+      <div class="set-hint" id="pdf-preset-first-send-unsupported" data-i18n="automation.firstSend.unsupported" hidden>on, but not used: the command must be Claude, or Codex with --no-daemon</div>
       <div class="set-actions"><button class="btn" type="button" id="pdf-preset-delete" data-i18n="common.delete">Delete</button><button class="btn" type="button" id="pdf-preset-done" data-i18n="common.done">Done</button></div>
     </div>
     <div class="cfm-actions">

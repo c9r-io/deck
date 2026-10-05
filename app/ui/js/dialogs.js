@@ -9,6 +9,7 @@ import { $, ctx, genId, inv } from './state.js';
 import { inlineRenameValue, isComposingKeyEvent } from './pure.js';
 import { formatDateTime, t } from './i18n.js';
 import { normalizeTaskPreset, normalizeTaskPresets } from './connector-model.js';
+import { firstSendNeedsConfirm, firstSendSupported } from './automation-model.js';
 
 /* ---------- confirm dialog (window.confirm is a silent no-op in WKWebView) ---------- */
 let confirmPointerOnly = false;
@@ -159,6 +160,25 @@ export function projectDefaultsDialog({ name, dir = '', cmd = '', recent = [], p
       }
       $('pdf-preset-add').disabled = draftPresets.length >= 50;
     };
+    /* ticked on a command the override cannot reach: say so, as a rule's
+       facts do; the choice is kept and applies once the command fits */
+    const syncFirstSend = () => {
+      $('pdf-preset-first-send-unsupported').hidden = !$('pdf-preset-first-send').checked
+        || firstSendSupported($('pdf-preset-cmd').value.trim());
+    };
+    $('pdf-preset-cmd').oninput = syncFirstSend;
+    /* the first-send risk is accepted explicitly, as on a rule: the box
+       stays unticked unless the confirmation is answered yes */
+    $('pdf-preset-first-send').onchange = async () => {
+      const box = $('pdf-preset-first-send');
+      if (firstSendNeedsConfirm(false, box.checked)) {
+        box.checked = false;
+        $('cfm').classList.add('cfm-over-dialog');
+        try { if (await confirmDialog(t('presets.firstSend.confirm'))) box.checked = true; }
+        finally { $('cfm').classList.remove('cfm-over-dialog'); }
+      }
+      syncFirstSend();
+    };
     const openPreset = preset => {
       editingPreset = preset?.id || genId('R');
       $('pdf-preset-name').value = preset?.name || '';
@@ -166,6 +186,7 @@ export function projectDefaultsDialog({ name, dir = '', cmd = '', recent = [], p
       $('pdf-preset-dir').value = preset?.dir || dirInput.value.trim();
       $('pdf-preset-cmd').value = preset?.cmd || cmdInput.value.trim() || 'codex';
       $('pdf-preset-steps').value = (preset?.steps || []).join('\n');
+      $('pdf-preset-first-send').checked = preset?.firstSend === true; syncFirstSend();
       const target = $('pdf-preset-column'); target.replaceChildren();
       for (const column of columns) { const option = document.createElement('option'); option.value = column.id; option.textContent = column.name; target.appendChild(option); }
       target.value = preset?.columnId || columns[0]?.id || '';
@@ -177,7 +198,8 @@ export function projectDefaultsDialog({ name, dir = '', cmd = '', recent = [], p
       const preset = normalizeTaskPreset({ id: editingPreset, name: $('pdf-preset-name').value,
         columnId: $('pdf-preset-column').value, title: $('pdf-preset-title').value,
         dir: $('pdf-preset-dir').value, cmd: $('pdf-preset-cmd').value,
-        steps: $('pdf-preset-steps').value.split('\n') }, columns);
+        steps: $('pdf-preset-steps').value.split('\n'),
+        firstSend: $('pdf-preset-first-send').checked }, columns);
       if (!preset) { toast(t('presets.invalid')); return false; }
       draftPresets = [...draftPresets.filter(value => value.id !== editingPreset), preset];
       editingPreset = null; editor.hidden = true; renderPresets(); return true;

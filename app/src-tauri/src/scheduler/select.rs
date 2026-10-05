@@ -51,12 +51,15 @@
 //!   hold here still applies once it exists. Other process-bound rows
 //!   (`expected_process` naming any other program) are unchanged.
 //! - First-send readiness override (`first_send.rs`): the head row of a
-//!   Slack badge or clock run whose rule explicitly accepted the startup-dialog risk
+//!   Slack badge or clock run whose rule, or of a phone task whose preset,
+//!   explicitly accepted the startup-dialog risk
 //!   carries `readiness_override`; it lifts the first-interaction gate for
 //!   that row alone — never needs-input, Codex `Unavailable`, the external
 //!   or authority holds, or anything else — and only while this tick could
-//!   read settings (`authority_unverified` false; otherwise the ordinary
-//!   gate holds). It is not evidence: the generation stays unestablished,
+//!   read the source that backs it: settings for a rule
+//!   (`authority_unverified` false), the current Board for a preset
+//!   (`board_unverified` false); otherwise the ordinary gate holds. It is
+//!   not evidence: the generation stays unestablished,
 //!   so every later row is still gated. `relies_on_readiness_override` says
 //!   when a send depends on it (the pre-fire fence and the audit).
 //! - A session a SUCCESSFUL listing proves absent is not gated: the row is
@@ -104,6 +107,11 @@ pub(crate) struct Observed {
     /// (`mark_authority_unverified`, `authority.rs`) or on a first-send
     /// readiness override (`first_send.rs`).
     pub(crate) authority_unverified: bool,
+    /// The same kind of tick-wide fact for the other source: this tick had
+    /// no current Board (`documents::board_authority`), so no row may be
+    /// sent automatically on a phone task's first-send override, which the
+    /// Board backs (`first_send.rs`). Nothing else depends on it.
+    pub(crate) board_unverified: bool,
 }
 
 /// The tick could not revalidate approvals: every session's observation
@@ -112,6 +120,14 @@ pub(crate) struct Observed {
 pub(crate) fn mark_authority_unverified(seen: &mut Observations) {
     for observed in seen.values_mut() {
         observed.authority_unverified = true;
+    }
+}
+
+/// The tick had no current Board: every session's observation holds a phone
+/// task head that relies on its first-send override, without touching it.
+pub(crate) fn mark_board_unverified(seen: &mut Observations) {
+    for observed in seen.values_mut() {
+        observed.board_unverified = true;
     }
 }
 
@@ -146,6 +162,7 @@ pub(crate) fn observe_with(
                 codex: evidence.get(session).and_then(|e| e.codex),
                 claude_interaction: evidence.get(session).is_some_and(|e| e.claude_interaction),
                 authority_unverified: false,
+                board_unverified: false,
             });
     }
     seen
@@ -215,12 +232,15 @@ fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool
     }
     let configured = row_agent(i);
     // the rule's explicit risk acceptance stands in for missing interaction
-    // evidence on the run's head row only, and only while settings could be
-    // read this tick (`first_send.rs`); it is never evidence itself
-    let overridden = honor_override
-        && i.readiness_override.is_some()
-        && i.mode == "at"
-        && !o.authority_unverified;
+    // evidence on the run's head row only, and only while the source that
+    // backs it (settings, or the Board for a phone task) could be read this
+    // tick (`first_send.rs`); it is never evidence itself
+    let source_unverified = match first_send::backing(i) {
+        Some(first_send::Backing::Board) => o.board_unverified,
+        _ => o.authority_unverified,
+    };
+    let overridden =
+        honor_override && i.readiness_override.is_some() && i.mode == "at" && !source_unverified;
     // Codex: the target's proof or literal `codex` foreground, or a row
     // configured for Codex (a wrapper or `node` foreground) — `Trusted` is
     // its interaction evidence

@@ -2704,3 +2704,54 @@ fn phone_pairing_fixtures_are_what_the_host_produces() {
         phone_json(phone_fixture!("pair-response.json"))
     );
 }
+
+/// The record a phone task's first-send claim is checked against: an
+/// applied `task-create` whose saved result names a card, from a device
+/// that is still paired. Nothing else is proof.
+#[test]
+fn a_task_proof_is_an_applied_task_create_from_a_paired_device() {
+    let task = |id: &str| CommandRequest {
+        kind: "task-create".into(),
+        ..request(id, "a")
+    };
+    let applied = |device: &str, id: &str, kind_of: &CommandRequest| JournalEntry {
+        code: None,
+        result: Some(serde_json::json!({ "cardId": format!("S{id}") })),
+        ..tombstone(device, kind_of, "applied")
+    };
+    let mut doc = DiskDoc::fresh().unwrap();
+    doc.devices = vec![device("D0"), device("D1")];
+    doc.commands = vec![
+        applied("D0", "made", &task("made")),
+        tombstone("D0", &task("refused"), "rejected"),
+        tombstone("D0", &task("unknown"), "ambiguous"),
+        pending("D0", &task("running"), "executing"),
+        // another command kind that also ends with a card id
+        applied("D0", "buffer", &request("buffer", "a")),
+        JournalEntry {
+            result: Some(serde_json::json!({ "revision": "1" })),
+            ..applied("D0", "no-card", &task("no-card"))
+        },
+        applied("D1", "theirs", &task("theirs")),
+    ];
+    let handle = |index: usize| doc.commands[index].handle.clone();
+    assert_eq!(
+        task_proof_in(&doc, &handle(0)),
+        Some(TaskProof {
+            device_id: "D0".into(),
+            card_id: "Smade".into(),
+        })
+    );
+    for index in 1..=5 {
+        assert_eq!(task_proof_in(&doc, &handle(index)), None, "entry {index}");
+    }
+    assert_eq!(task_proof_in(&doc, "no-such-handle"), None);
+    // revoking the device ends the proof, and leaves the other device's
+    let (made, theirs) = (handle(0), handle(6));
+    revoke_device(&mut doc, "D0").unwrap();
+    assert_eq!(task_proof_in(&doc, &made), None);
+    assert_eq!(
+        task_proof_in(&doc, &theirs).map(|proof| proof.device_id),
+        Some("D1".into())
+    );
+}

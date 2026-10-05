@@ -77,6 +77,36 @@ test('task session start followed by Board save failure is ambiguous and never r
   assert.equal(store.cards.length, 0);
 });
 
+test('queueing a phone task run claims the frozen first-send choice on the head row alone', async () => {
+  const { provider } = await import('../js/board.js');
+  const queue = async firstSend => {
+    const handle = (firstSend ? 'd' : 'e').repeat(64); const rows = []; let saved = null;
+    store.projects = [{ id: 'P1', name: 'P', columns: [{ id: 'C1', name: 'Working' }] }];
+    store.cards = [{ id: 'S1', projectId: 'P1', columnId: 'C1', title: 'Remote', desc: '', cmd: 'claude', dir: '/tmp',
+      session: 'deck-s-0001', origin: { source: 'connector', key: handle, badge: 'R1' },
+      connectorRun: { handle, presetId: 'R1', initialQueued: false, ...(firstSend ? { firstSend: true } : {}), initialSteps: [
+        { operationId: 'B0', text: 'first', mode: 'at', at: 10, tpl: 'R1', tplIdx: 1, tplTotal: 2 },
+        { operationId: 'B1', text: 'second', mode: 'chain', at: null, tpl: 'R1', tplIdx: 2, tplTotal: 2 }] } }];
+    window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+      if (cmd === 'channel_queue_add') { rows.push(args.args); return; }
+      if (cmd === 'save_board') { saved = JSON.parse(args.data); return; }
+      throw new Error(`unexpected ${cmd}`);
+    } } };
+    /* this fake DOM cannot paint the Board: the repaint that follows the
+       committed write throws here, after everything under test happened */
+    await provider.queueConnectorPlan('S1', handle).catch(error => {
+      if (!/querySelector is not a function/.test(String(error?.message))) throw error;
+    });
+    return { handle, rows, saved };
+  };
+  const on = await queue(true);
+  assert.deepEqual(on.rows.map(row => row.firstSend), [{ rule: 'R1', event: on.handle, presetProject: 'P1' }, undefined]);
+  assert.deepEqual(on.rows.map(row => [row.operationId, row.mode]), [['B0', 'at'], ['B1', 'chain']]);
+  assert.equal(on.saved.cards[0].connectorRun.initialQueued, true, 'queued once, then recorded');
+  const off = await queue(false);
+  assert.deepEqual(off.rows.map(row => 'firstSend' in row), [false, false]);
+});
+
 test('native string rejections retain the closed unsupported-target result code', async () => {
   const handle = 'd'.repeat(64); const pending = { handle, request: { id: 'remote-4', kind: 'buffer-queue', cardId: 'S1',
     expectedRevision: '1', payload: { entryIds: ['N1'] } } };

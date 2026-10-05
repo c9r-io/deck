@@ -577,10 +577,15 @@ pub(crate) fn queue_view(q: QueueState) -> QueueView {
         .ok()
         .map(observe);
     if let Some(seen) = activity.as_mut() {
-        if (any_authority(&q) || first_send::any_override(&q))
+        if (any_authority(&q) || first_send::any_override(&q, first_send::Backing::Settings))
             && crate::inbound::read_config_strict().is_none()
         {
             mark_authority_unverified(seen);
+        }
+        if first_send::any_override(&q, first_send::Backing::Board)
+            && crate::documents::board_authority().is_none()
+        {
+            mark_board_unverified(seen);
         }
     }
     let plans = q

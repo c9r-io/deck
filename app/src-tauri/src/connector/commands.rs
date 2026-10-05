@@ -337,6 +337,49 @@ pub(crate) fn connector_complete(
     })
 }
 
+/// The journal's own record that command `handle` created a card: what a
+/// phone task's first-send claim is checked against (`scheduler/
+/// first_send.rs`). Ids only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TaskProof {
+    pub(crate) device_id: String,
+    pub(crate) card_id: String,
+}
+
+/// `Some` only while the Connector is on, the journal holds `handle` as an
+/// applied `task-create` whose saved result names a card, and the device
+/// that sent it is still paired. A webview cannot make this record: the
+/// entry exists only for a command an authenticated device sent, and its
+/// result is written once, when the card was created. A tombstone dropped
+/// at capacity, or a command that ended ambiguous, is no proof.
+pub(crate) fn task_proof(handle: &str) -> Option<TaskProof> {
+    let runtime = rt().ok()?;
+    if !runtime.feature_active() {
+        return None;
+    }
+    runtime
+        .read(|doc| task_proof_in(doc, handle))
+        .ok()
+        .flatten()
+}
+
+pub(super) fn task_proof_in(doc: &DiskDoc, handle: &str) -> Option<TaskProof> {
+    let command = doc.commands.iter().find(|c| c.handle == handle)?;
+    if command.kind != "task-create"
+        || command.state != "applied"
+        || !doc
+            .devices
+            .iter()
+            .any(|device| device.id == command.device_id && device.revoked_at.is_none())
+    {
+        return None;
+    }
+    Some(TaskProof {
+        device_id: command.device_id.clone(),
+        card_id: command.result.as_ref()?.get("cardId")?.as_str()?.to_owned(),
+    })
+}
+
 #[tauri::command]
 pub(crate) fn connector_validate(handle: String) -> Result<bool, DeckError> {
     validate_claimed(&handle, validate_applicable)

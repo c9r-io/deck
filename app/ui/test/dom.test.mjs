@@ -1197,6 +1197,50 @@ test('project defaults creates a bounded desktop task preset in the same Board d
     title: 'Remote fix', dir: '~/work', cmd: 'codex', steps: ['inspect', 'fix'] });
 });
 
+test('a preset\'s first-send box is ticked only through the confirmation and is saved as an explicit true', async () => {
+  const el = id => fakeDocument.getElementById(id);
+  const existing = { id: 'R1', name: 'Fix issue', columnId: 'C1', title: 'Remote fix', dir: '~/work', cmd: 'claude', steps: ['inspect'] };
+  const open = presets => projectDefaultsDialog({ name: 'Atlas', dir: '~/work', cmd: 'codex', recent: [],
+    presets, columns: [{ id: 'C1', name: 'Working' }] });
+  const box = el('pdf-preset-first-send'); const note = el('pdf-preset-first-send-unsupported');
+  let promise = open([existing]);
+  el('pdf-presets').children[0].fire('click');
+  assert.equal(box.checked, false, 'off by default');
+  assert.equal(note.hidden, true);
+  // declined: the box stays unticked
+  box.checked = true; let change = box.onchange();
+  assert.equal(box.checked, false, 'unticked while the question is open');
+  assert.equal(el('cfm').style.display, 'flex');
+  assert.match(el('cfm-msg').textContent, /this preset/);
+  cfmDone(false); await change;
+  assert.equal(box.checked, false);
+  // accepted: ticked, and saved on the preset
+  box.checked = true; change = box.onchange(); cfmDone(true); await change;
+  assert.equal(box.checked, true);
+  assert.equal(note.hidden, true, 'Claude is a command the option reaches');
+  el('pdf-preset-done').fire('click'); el('pdf-yes').fire('click');
+  assert.deepEqual((await promise).presets, [{ ...existing, firstSend: true }]);
+  // reopened ticked; unticking asks nothing and stores the field as absent
+  promise = open([{ ...existing, firstSend: true }]);
+  el('pdf-presets').children[0].fire('click');
+  assert.equal(box.checked, true);
+  el('cfm').style.display = 'none';
+  box.checked = false; await box.onchange();
+  assert.equal(el('cfm').style.display, 'none', 'no question to untick');
+  el('pdf-preset-done').fire('click'); el('pdf-yes').fire('click');
+  assert.deepEqual((await promise).presets, [existing]);
+  // a command the option cannot reach says so while ticked, and follows the field
+  promise = open([{ ...existing, cmd: 'codex', firstSend: true }]);
+  el('pdf-presets').children[0].fire('click');
+  assert.equal(note.hidden, false, 'Codex in its shared daemon');
+  el('pdf-preset-cmd').value = 'codex --no-daemon'; el('pdf-preset-cmd').oninput();
+  assert.equal(note.hidden, true);
+  el('pdf-preset-cmd').value = 'codex'; el('pdf-preset-cmd').oninput();
+  assert.equal(note.hidden, false);
+  el('pdf-preset-done').fire('click'); el('pdf-yes').fire('click');
+  assert.deepEqual((await promise).presets, [{ ...existing, cmd: 'codex', firstSend: true }], 'kept, as on a rule');
+});
+
 test('voice settings save only preferences, preserve unrelated fields and roll back on failure', async () => {
   const { persistVoicePreferences, renderVoicePreferences } = await import('../js/settings.js');
   const { normalizeSettings } = await import('../js/settings-model.js');

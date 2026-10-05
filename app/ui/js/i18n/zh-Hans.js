@@ -861,7 +861,7 @@ const dictionary = {
   'queue.stage.authorized': "已批准的步骤 · {stage}",
   'queue.stage.firstSendOverride': "第一步不等待就绪确认 · {stage}",
   'queue.stage.context': "时间条件已满足 · 等待调度与目标检查",
-  'queue.stage.firstSend': "等待首次 Agent 交互 · 在 agent 里交互一次，或使用「手动立即发送」确认它已就绪。除非对应的时钟或 Slack 自动化允许，Deck 不会自动向新启动的 agent 发送第一条提示（启动对话框可能占用回车）；无人值守发送需要启用 Agent 状态集成",
+  'queue.stage.firstSend': "等待首次 Agent 交互 · 在 agent 里交互一次，或使用「手动立即发送」确认它已就绪。除非对应的时钟或 Slack 自动化、或手机任务预设允许，Deck 不会自动向新启动的 agent 发送第一条提示（启动对话框可能占用回车）；无人值守发送需要启用 Agent 状态集成",
   'queue.plan.current': "发到当前 session · 本列表只约束投递顺序",
   'queue.plan.repeat': "重复发到同一 session · 次数按首行投递记账",
   'queue.plan.conditions': "首行按“不早于”；后续按各行静默条件。每次发送至少间隔 1 分钟。",
@@ -1074,6 +1074,8 @@ const dictionary = {
   'presets.cardTitle': '卡片标题',
   'presets.steps': '初始步骤',
   'presets.hint': '每行一个步骤，最多 20 条。命令可为 codex 或 claude，允许简单参数。',
+  'presets.firstSend.hint': '从手机创建的任务会先启动 Agent，然后等你在这台 Mac 上交互一次。开启一次即为这个预设接受启动输入风险：Deck 先启动 Agent，不输入提示，再经过短暂兼容等待发送第一步。等待不代表就绪证明：Trust、Update、登录、权限或其他启动对话框仍可能接收文字和回车。后续步骤保持原有检查。支持 Claude；Codex 需要 --no-daemon。',
+  'presets.firstSend.confirm': '为这个预设开启自动首步输入？你一次性接受启动输入风险：Trust、Update、登录、Permission 或其他对话框可能接收文字和回车。经过短暂兼容等待后，用这个预设从手机创建的任务无需手动确认首步。真实阻塞条件仍然有效。只在你接受这一风险时开启。',
   'presets.invalid': '请填写有效的分组、目录、codex 或 claude 命令，以及最多 20 条有界步骤。',
 };
 export { dictionary };

@@ -954,6 +954,7 @@ fn a_card_deleted_mid_send_leaves_no_session_behind() {
             fire: &fire,
             persist: &ok_persist,
             kill: &kill,
+            board: &test_board,
             authority: &test_authority,
         },
     );
@@ -1157,6 +1158,7 @@ fn send_test(
             fire,
             persist,
             kill: &kill,
+            board: &test_board,
             authority: &test_authority,
         },
     )
@@ -1374,6 +1376,7 @@ fn send_safe_test(
             fire,
             persist: &ok_persist,
             kill: &kill,
+            board: &test_board,
             authority: &test_authority,
         },
         &ContextHooks {
@@ -1581,6 +1584,7 @@ fn delete_during_probe_reaps_a_session_the_worker_may_have_started() {
             fire: &|_: &QueueItem| panic!("deleted prompt must not send"),
             persist: &ok_persist,
             kill: &kill,
+            board: &test_board,
             authority: &test_authority,
         },
         &ContextHooks {
@@ -1684,6 +1688,7 @@ fn one_sessions_context_wait_does_not_block_another_session() {
                     fire: &|_: &QueueItem| Ok(()),
                     persist: &ok_persist,
                     kill: &kill,
+                    board: &test_board,
                     authority: &test_authority,
                 },
                 &ContextHooks {
@@ -1715,6 +1720,7 @@ fn one_sessions_context_wait_does_not_block_another_session() {
                 fire: &|_: &QueueItem| Ok(()),
                 persist: &ok_persist,
                 kill: &kill,
+                board: &test_board,
                 authority: &test_authority,
             },
             &ContextHooks {
@@ -2563,6 +2569,7 @@ fn observed_replacement_revokes_inspection_before_any_injection() {
             fire: &|_| panic!("stale permission must never inject"),
             persist: &ok_persist,
             kill: &|_| {},
+            board: &test_board,
             authority: &test_authority,
         },
         &ContextHooks {
@@ -2839,6 +2846,7 @@ fn seen_codex(
             codex: Some(trust),
             claude_interaction: false,
             authority_unverified: false,
+            board_unverified: false,
         },
     )])
 }
@@ -3675,6 +3683,7 @@ fn a_started_agent_row_stays_pending_without_delivery_bookkeeping() {
                 fire: &|_: &QueueItem| panic!("{agent}: a started agent is never typed into"),
                 persist: &ok_persist,
                 kill: &|_: &str| {},
+                board: &test_board,
                 authority: &test_authority,
             },
             &ContextHooks {
@@ -3840,6 +3849,7 @@ while (sysread(STDIN, my $b, 1)) { printf $l "%02x", ord($b); }
             fire: &fire,
             persist: &ok_persist,
             kill: &|_: &str| {},
+            board: &test_board,
             authority: &test_authority,
         },
         &ContextHooks {
@@ -4568,6 +4578,7 @@ fn a_send_now_of_an_approved_row_is_audited_as_manual() {
             fire: &|_: &QueueItem| Ok(()),
             persist: &ok_persist,
             kill: &|_: &str| {},
+            board: &test_board,
             authority: &test_authority,
         },
         &ContextHooks {
@@ -4673,6 +4684,7 @@ fn an_approved_first_step_never_types_into_a_fresh_agent() {
                 },
                 persist: &ok_persist,
                 kill: &|_: &str| {},
+                board: &test_board,
                 authority: &test_authority,
             },
             &ContextHooks {
@@ -4910,6 +4922,7 @@ fn a_revocation_before_the_firing_intent_stops_the_automatic_send() {
             fire: &|_: &QueueItem| panic!("a revoked approval must not begin a send"),
             persist: &ok_persist,
             kill: &|_: &str| {},
+            board: &test_board,
             authority: &source,
         },
         &ContextHooks {
@@ -4942,6 +4955,7 @@ fn a_revocation_before_the_firing_intent_stops_the_automatic_send() {
             fire: &|_: &QueueItem| Ok(()),
             persist: &ok_persist,
             kill: &|_: &str| {},
+            board: &test_board,
             authority: &source,
         },
         &ContextHooks {
@@ -4997,6 +5011,7 @@ fn the_pre_fire_authority_read_happens_under_the_settings_fence() {
                     },
                     persist: &ok_persist,
                     kill: &|_: &str| {},
+                    board: &test_board,
                     authority: &source,
                 },
             )
@@ -5030,6 +5045,7 @@ fn send_test_with(
             fire: &|_: &QueueItem| Ok(()),
             persist: &ok_persist,
             kill: &|_: &str| {},
+            board: &test_board,
             authority: source,
         },
     )
@@ -5064,6 +5080,7 @@ fn a_revocation_inside_the_irreversible_window_keeps_crash_semantics() {
             },
             persist: &ok_persist,
             kill: &|_: &str| {},
+            board: &test_board,
             authority: &source,
         },
     );
@@ -5140,6 +5157,7 @@ fn an_unreadable_authority_source_holds_without_revoking() {
             fire: &|_: &QueueItem| panic!("no proof, no automatic send"),
             persist: &counting,
             kill: &|_: &str| {},
+            board: &test_board,
             authority: &|| None,
         },
     );
@@ -5161,6 +5179,7 @@ fn an_unreadable_authority_source_holds_without_revoking() {
             fire: &|_: &QueueItem| Ok(()),
             persist: &ok_persist,
             kill: &|_: &str| {},
+            board: &test_board,
             authority: &|| None,
         },
         &ContextHooks {
@@ -5219,8 +5238,10 @@ fn a_damaged_settings_file_strips_no_approval_and_no_override_from_queued_rows()
     head.readiness_override.as_mut().unwrap().rule = "Rfirst01".into();
     let mut q = qs(vec![external_step("e", Some(step_authority(0))), head]);
     let sweep = |q: &mut QueueState| {
-        crate::inbound::read_config_strict_at(&path)
-            .map(|config| revoke_stale(q, &config) + first_send::revoke_stale(q, &config))
+        crate::inbound::read_config_strict_at(&path).map(|config| {
+            revoke_stale(q, &config)
+                + first_send::revoke_stale(q, first_send::Sources::settings(&config))
+        })
     };
     let kept = |q: &QueueState| {
         (
@@ -5305,7 +5326,10 @@ fn a_revocation_survives_a_settings_file_damaged_after_it() {
         qs(vec![head])
     };
     let sweep = |q: &mut QueueState| {
-        source().map(|config| revoke_stale(q, &config) + first_send::revoke_stale(q, &config))
+        source().map(|config| {
+            revoke_stale(q, &config)
+                + first_send::revoke_stale(q, first_send::Sources::settings(&config))
+        })
     };
     // one automatic pass over a fresh copy of the rows: (step sent, head sent)
     let automatic = || {
@@ -5325,6 +5349,7 @@ fn a_revocation_survives_a_settings_file_damaged_after_it() {
                     },
                     persist: &ok_persist,
                     kill: &|_: &str| {},
+                    board: &test_board,
                     authority: &source,
                 },
             );
@@ -5560,6 +5585,7 @@ while (sysread(STDIN, my $b, 1)) { printf $l "%02x", ord($b); }
             rule: granted_rule().id,
             trigger: first_send::FirstSendOrigin::SlackBadge,
             clock_target: None,
+            connector: None,
         });
     }
     let session = row.session.clone();
@@ -5582,6 +5608,7 @@ while (sysread(STDIN, my $b, 1)) { printf $l "%02x", ord($b); }
                 fire: &fire,
                 persist: &ok_persist,
                 kill: &|_: &str| {},
+                board: &test_board,
                 authority: &test_authority,
             },
             &ContextHooks {
@@ -5614,6 +5641,7 @@ while (sysread(STDIN, my $b, 1)) { printf $l "%02x", ord($b); }
                     fire: &fire,
                     persist: &ok_persist,
                     kill: &|_: &str| {},
+                    board: &test_board,
                     authority: &rule_source,
                 },
                 &ContextHooks {
@@ -5686,6 +5714,7 @@ fn first_send_override() -> ReadinessOverride {
         rule: granted_rule().id,
         trigger: first_send::FirstSendOrigin::SlackBadge,
         clock_target: None,
+        connector: None,
     }
 }
 
@@ -5711,10 +5740,16 @@ fn slack_event(key: &str, badge: &str, source: &str) -> crate::inbound::Event {
     }
 }
 
+/// No Board: a phone task override finds its source unreadable.
+fn test_board() -> Option<serde_json::Value> {
+    None
+}
+
 fn first_send_claim() -> FirstSendClaim {
     FirstSendClaim {
         rule: granted_rule().id,
         event: "C9/1.2".into(),
+        preset_project: None,
     }
 }
 
@@ -5807,7 +5842,8 @@ fn only_verified_automation_head_rows_can_be_admitted_with_the_override() {
             clock_target: Some(first_send::ClockTarget {
                 project: clock.project_id.clone(),
                 dir: clock.dir.clone()
-            })
+            }),
+            connector: None,
         })
     );
     assert_eq!(
@@ -5939,6 +5975,7 @@ fn without_the_override_a_fresh_agent_still_gets_nothing() {
                 fire: &|_: &QueueItem| panic!("{agent}: never typed into"),
                 persist: &ok_persist,
                 kill: &|_: &str| {},
+                board: &test_board,
                 authority: &|| Some(config_with(vec![first_send_rule("claude")])),
             },
             &ContextHooks {
@@ -6069,6 +6106,7 @@ fn an_overridden_first_step_is_sent_on_the_next_tick_and_audited_honestly() {
             fire: &fire,
             persist: &ok_persist,
             kill: &|_: &str| {},
+            board: &test_board,
             authority: &source,
         };
         // tick 1: the session is absent — started, nothing typed
@@ -6160,6 +6198,7 @@ fn overridden_first_send_stabilizes_and_rechecks_before_paste() {
             },
             persist: &ok_persist,
             kill: &|_| {},
+            board: &test_board,
             authority: &|| Some(config_with(vec![first_send_rule("claude")])),
         },
         &ContextHooks {
@@ -6223,6 +6262,7 @@ fn overridden_stabilization_cancels_on_withdrawal_hold_or_replacement() {
                     fire: &|_| panic!("{change}: no paste after withdrawal"),
                     persist: &ok_persist,
                     kill: &|_| {},
+                    board: &test_board,
                     authority: &|| {
                         if revoked.load(Ordering::SeqCst) && change == "unreadable" {
                             None
@@ -6317,6 +6357,7 @@ fn codex_unavailable_during_stabilization_never_injects() {
             fire: &|_| panic!("unavailable Codex must not receive the prompt"),
             persist: &ok_persist,
             kill: &|_| {},
+            board: &test_board,
             authority: &|| Some(config_with(vec![first_send_rule("codex --no-daemon")])),
         },
         &ContextHooks {
@@ -6358,6 +6399,7 @@ fn a_send_now_of_an_overridden_row_is_manual() {
             fire: &|_: &QueueItem| Ok(()),
             persist: &ok_persist,
             kill: &|_: &str| {},
+            board: &test_board,
             authority: &|| panic!("send-now never consults the fence"),
         },
         &ContextHooks {
@@ -6404,6 +6446,7 @@ fn a_withdrawn_override_restores_the_first_interaction_gate() {
                 fire: &|_: &QueueItem| panic!("{name}: nothing is sent"),
                 persist: &ok_persist,
                 kill: &|_: &str| {},
+                board: &test_board,
                 authority: &source,
             },
         );
@@ -6430,16 +6473,22 @@ fn a_withdrawn_override_restores_the_first_interaction_gate() {
         (config_with(vec![changed]), 1),
     ] {
         let mut q = qs(vec![overridden_head("h")]);
-        assert!(first_send::any_override(&q));
-        assert_eq!(first_send::revoke_stale(&mut q, &config), stripped);
+        assert!(first_send::any_override(&q, first_send::Backing::Settings));
+        assert_eq!(
+            first_send::revoke_stale(&mut q, first_send::Sources::settings(&config)),
+            stripped
+        );
         assert_eq!(q.items[0].readiness_override.is_none(), stripped == 1);
     }
     // a firing/ambiguous row keeps its crash semantics
     let mut firing = overridden_head("f");
     firing.state = ItemState::Ambiguous;
     let mut q = qs(vec![firing]);
-    assert!(!first_send::any_override(&q));
-    assert_eq!(first_send::revoke_stale(&mut q, &config_with(vec![])), 0);
+    assert!(!first_send::any_override(&q, first_send::Backing::Settings));
+    assert_eq!(
+        first_send::revoke_stale(&mut q, first_send::Sources::settings(&config_with(vec![]))),
+        0
+    );
 }
 
 /// Restart: the rule flag and the row copy are durable, interaction
@@ -6486,6 +6535,7 @@ fn an_overridden_row_keeps_every_identity_check() {
                 fire: &|_: &QueueItem| panic!("{status:?}: never sent"),
                 persist: &ok_persist,
                 kill: &|_: &str| {},
+                board: &test_board,
                 authority: &|| Some(config_with(vec![first_send_rule("claude")])),
             },
             &ContextHooks {
@@ -6510,6 +6560,7 @@ fn an_overridden_row_keeps_every_identity_check() {
             fire: &|_: &QueueItem| panic!("replaced between probes: never sent"),
             persist: &ok_persist,
             kill: &|_: &str| {},
+            board: &test_board,
             authority: &|| Some(config_with(vec![first_send_rule("claude")])),
         },
         &ContextHooks {
@@ -6563,6 +6614,7 @@ fn channel_monitor_connector_and_manual_head_rows_cannot_use_the_override() {
     let claim = FirstSendClaim {
         rule: "channel-rule".into(),
         event: "C9/1.2".into(),
+        preset_project: None,
     };
     let everything_on = config_with(vec![first_send_rule("claude")]);
     let event = slack_event("C9/1.2", "eyes", "slack");
@@ -6961,6 +7013,7 @@ mod real_claude {
                 kill: &|session| {
                     let _ = server.run(&["kill-session", "-t", &format!("={session}")]);
                 },
+                board: &test_board,
                 authority: &authority,
             };
             let context_hooks = ContextHooks {
@@ -7101,6 +7154,7 @@ fn clock_first_send_head() -> QueueItem {
             project: rule.project_id,
             dir: rule.dir,
         }),
+        connector: None,
     });
     row
 }
@@ -7133,6 +7187,7 @@ fn clock_head_stabilizes_without_grant_and_owner_followups_keep_ordinary_guards(
             },
             persist: &ok_persist,
             kill: &|_| {},
+            board: &test_board,
             authority: &|| Some(config_with(vec![clock_first_send_rule()])),
         },
         &ContextHooks {
@@ -7171,9 +7226,15 @@ fn clock_head_stabilizes_without_grant_and_owner_followups_keep_ordinary_guards(
 fn clock_policy_revokes_on_disable_delete_source_command_and_target_changes() {
     let row = clock_first_send_head();
     let rule = clock_first_send_rule();
-    assert_eq!(first_send::fence(&row, None), Fence::Unverified);
     assert_eq!(
-        first_send::fence(&row, Some(&config_with(vec![rule.clone()]))),
+        first_send::fence(&row, first_send::Sources::default()),
+        Fence::Unverified
+    );
+    assert_eq!(
+        first_send::fence(
+            &row,
+            first_send::Sources::settings(&config_with(vec![rule.clone()]))
+        ),
         Fence::Clear
     );
     for change in [
@@ -7195,12 +7256,16 @@ fn clock_policy_revokes_on_disable_delete_source_command_and_target_changes() {
             vec![rule]
         });
         assert_eq!(
-            first_send::fence(&row, Some(&cfg)),
+            first_send::fence(&row, first_send::Sources::settings(&cfg)),
             Fence::Revoked,
             "{change}"
         );
         let mut q = qs(vec![row.clone()]);
-        assert_eq!(first_send::revoke_stale(&mut q, &cfg), 1, "{change}");
+        assert_eq!(
+            first_send::revoke_stale(&mut q, first_send::Sources::settings(&cfg)),
+            1,
+            "{change}"
+        );
         assert_eq!(q.items[0].text, row.text);
         assert!(!q.items[0].external);
         assert_eq!(
@@ -7332,6 +7397,7 @@ fn the_clock_head_check_reads_the_card_and_call_the_webview_writes() {
         let claim = FirstSendClaim {
             rule: rule.id.clone(),
             event: "slot".into(),
+            preset_project: None,
         };
         let event = slack_event("slot", &rule.badge, source);
         let verdict = first_send::verify(
@@ -7361,6 +7427,7 @@ fn clock_admission_rejects_forged_event_rule_slot_source_step_and_owner_target()
     let claim = FirstSendClaim {
         rule: rule.id.clone(),
         event: NOW.to_string(),
+        preset_project: None,
     };
     let event = slack_event(&claim.event, &rule.id, "clock");
     let config = config_with(vec![rule.clone()]);
@@ -7632,4 +7699,497 @@ fn delivery_wait_stages_are_the_shared_list() {
         .map(|word| word.as_str().unwrap())
         .collect();
     assert_eq!(shared, DELIVERY_WAIT_STAGES);
+}
+
+// ---- phone task presets: the first-send override backed by the Board ----
+
+const HANDLE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+/// A current Board with one preset that accepted the first-send risk and the
+/// card a phone `task-create` made from it, its run still unqueued.
+fn preset_board() -> serde_json::Value {
+    serde_json::json!({
+        "projects": [{"id": "P1", "presets": [{"id": "R1", "name": "Fix", "columnId": "C1",
+            "title": "Remote task", "dir": "/work", "cmd": "claude", "steps": ["first", "second"],
+            "firstSend": true}]}],
+        "cards": [{"id": "card", "session": "s", "projectId": "P1", "cmd": "claude", "dir": "/work",
+            "origin": {"source": "connector", "key": HANDLE, "badge": "R1"},
+            "connectorRun": {"handle": HANDLE, "presetId": "R1", "initialQueued": false, "firstSend": true,
+                "initialSteps": [
+                    {"operationId": "head-op", "text": "first", "mode": "at", "at": NOW, "tpl": "R1", "tplIdx": 1, "tplTotal": 2},
+                    {"operationId": "next-op", "text": "second", "mode": "chain", "at": null, "tpl": "R1", "tplIdx": 2, "tplTotal": 2}]}}]
+    })
+}
+
+fn preset_claim() -> FirstSendClaim {
+    FirstSendClaim {
+        rule: "R1".into(),
+        event: HANDLE.into(),
+        preset_project: Some("P1".into()),
+    }
+}
+
+fn preset_args() -> QueueAddArgs {
+    serde_json::from_value(serde_json::json!({"session": "s", "cardId": "card", "operationId": "head-op",
+        "cmd": "claude", "dir": "/work", "text": "first", "mode": "at", "at": NOW, "tpl": "R1", "tplIdx": 1,
+        "tplTotal": 2}))
+    .unwrap()
+}
+
+fn task_proof() -> crate::connector::TaskProof {
+    crate::connector::TaskProof {
+        device_id: "dev_1".into(),
+        card_id: "card".into(),
+    }
+}
+
+fn preset_override() -> ReadinessOverride {
+    ReadinessOverride {
+        rule: "R1".into(),
+        trigger: first_send::FirstSendOrigin::Connector,
+        clock_target: None,
+        connector: Some(first_send::ConnectorTarget {
+            project: "P1".into(),
+            dir: "/work".into(),
+            device: "dev_1".into(),
+        }),
+    }
+}
+
+/// The head row of a phone task whose preset accepted the first-send risk.
+fn preset_head() -> QueueItem {
+    let mut row = bootstrap_row("claude");
+    row.external = true;
+    row.readiness_override = Some(preset_override());
+    row
+}
+
+fn board_sources(board: &serde_json::Value) -> first_send::Sources<'_> {
+    first_send::Sources {
+        settings: None,
+        board: Some(board),
+    }
+}
+
+/// The preset's choice, the journal's record and the card's frozen run must
+/// all agree; the override that comes back names the preset, its project,
+/// its directory and the device.
+#[test]
+fn a_phone_task_head_is_admitted_against_the_board_and_the_journal() {
+    let board = preset_board();
+    assert_eq!(
+        first_send::verify_connector(
+            Some(&board),
+            &preset_claim(),
+            &preset_args(),
+            Some(&task_proof())
+        ),
+        Ok(preset_override())
+    );
+    // `~` in the preset is the card's home directory
+    let home = dirs::home_dir().unwrap().to_string_lossy().into_owned();
+    let mut tilde = board.clone();
+    tilde["projects"][0]["presets"][0]["dir"] = "~/work".into();
+    tilde["cards"][0]["dir"] = format!("{home}/work").into();
+    let mut args = preset_args();
+    args.dir = format!("{home}/work");
+    let granted =
+        first_send::verify_connector(Some(&tilde), &preset_claim(), &args, Some(&task_proof()))
+            .unwrap();
+    assert_eq!(granted.connector.unwrap().dir, "~/work");
+}
+
+/// Every refusal has its own closed code, and each one admits the row
+/// without the override.
+#[test]
+fn a_phone_task_claim_is_refused_for_each_missing_fact() {
+    let board = preset_board();
+    let verify = |board: Option<&serde_json::Value>,
+                  claim: &FirstSendClaim,
+                  args: &QueueAddArgs,
+                  proof: Option<&crate::connector::TaskProof>| {
+        first_send::verify_connector(board, claim, args, proof).err()
+    };
+    let (claim, args, proof) = (preset_claim(), preset_args(), task_proof());
+    // no current Board: absent, or one that stands as recovered
+    assert_eq!(
+        verify(None, &claim, &args, Some(&proof)),
+        Some("board-unreadable")
+    );
+    // the row
+    let mut verbatim = args.clone();
+    verbatim.external_text = true;
+    assert_eq!(
+        verify(Some(&board), &claim, &verbatim, Some(&proof)),
+        Some("verbatim")
+    );
+    let mut later = args.clone();
+    later.mode = "chain".into();
+    assert_eq!(
+        verify(Some(&board), &claim, &later, Some(&proof)),
+        Some("step")
+    );
+    let mut reviewed = args.clone();
+    reviewed.review_each = true;
+    assert_eq!(
+        verify(Some(&board), &claim, &reviewed, Some(&proof)),
+        Some("step")
+    );
+    // the preset
+    for (project, preset) in [("P2", "R1"), ("P1", "R2")] {
+        let other = FirstSendClaim {
+            rule: preset.into(),
+            event: HANDLE.into(),
+            preset_project: Some(project.into()),
+        };
+        assert_eq!(
+            verify(Some(&board), &other, &args, Some(&proof)),
+            Some("no-preset")
+        );
+    }
+    for off in [
+        serde_json::Value::Null,
+        false.into(),
+        "true".into(),
+        1.into(),
+    ] {
+        let mut unticked = board.clone();
+        unticked["projects"][0]["presets"][0]["firstSend"] = off.clone();
+        assert_eq!(
+            verify(Some(&unticked), &claim, &args, Some(&proof)),
+            Some("off"),
+            "{off}"
+        );
+    }
+    let mut renamed = board.clone();
+    renamed["projects"][0]["presets"][0]["cmd"] = "claude --resume".into();
+    assert_eq!(
+        verify(Some(&renamed), &claim, &args, Some(&proof)),
+        Some("command")
+    );
+    // an agent the override cannot reach: Codex in its shared daemon
+    let mut daemon = board.clone();
+    daemon["projects"][0]["presets"][0]["cmd"] = "codex".into();
+    daemon["cards"][0]["cmd"] = "codex".into();
+    let mut codex = args.clone();
+    codex.cmd = "codex".into();
+    assert_eq!(
+        verify(Some(&daemon), &claim, &codex, Some(&proof)),
+        Some("agent")
+    );
+    // the journal: no applied task-create for this handle, or another card's
+    assert_eq!(verify(Some(&board), &claim, &args, None), Some("no-event"));
+    let other_card = crate::connector::TaskProof {
+        device_id: "dev_1".into(),
+        card_id: "elsewhere".into(),
+    };
+    assert_eq!(
+        verify(Some(&board), &claim, &args, Some(&other_card)),
+        Some("event")
+    );
+}
+
+/// A caller cannot borrow another run's choice: the card made from this
+/// handle, its frozen run and this row must be one and the same.
+#[test]
+fn a_phone_task_claim_is_refused_when_the_card_or_its_run_differs() {
+    let board = preset_board();
+    let refused = |board: &serde_json::Value, args: &QueueAddArgs| {
+        first_send::verify_connector(Some(board), &preset_claim(), args, Some(&task_proof()))
+            == Err("head")
+    };
+    assert!(!refused(&board, &preset_args()));
+    for pointer in [
+        "/cards/0/session",
+        "/cards/0/projectId",
+        "/cards/0/dir",
+        "/cards/0/origin/source",
+        "/cards/0/origin/key",
+        "/cards/0/origin/badge",
+        "/cards/0/connectorRun/handle",
+        "/cards/0/connectorRun/presetId",
+        "/cards/0/connectorRun/initialSteps/0/operationId",
+        "/cards/0/connectorRun/initialSteps/0/text",
+        "/cards/0/connectorRun/initialSteps/0/mode",
+        "/cards/0/connectorRun/initialSteps/0/tpl",
+    ] {
+        let mut forged = board.clone();
+        *forged.pointer_mut(pointer).unwrap() = "forged".into();
+        assert!(refused(&forged, &preset_args()), "{pointer}");
+    }
+    // the run already queued its rows, or never froze the choice
+    for (field, value) in [("initialQueued", true), ("firstSend", false)] {
+        let mut forged = board.clone();
+        forged["cards"][0]["connectorRun"][field] = value.into();
+        assert!(refused(&forged, &preset_args()), "{field}");
+    }
+    let mut unfrozen = board.clone();
+    unfrozen["cards"][0]["connectorRun"]
+        .as_object_mut()
+        .unwrap()
+        .remove("firstSend");
+    assert!(refused(&unfrozen, &preset_args()));
+    // two cards claim the same command
+    let mut twice = board.clone();
+    let copy = twice["cards"][0].clone();
+    twice["cards"].as_array_mut().unwrap().push(copy);
+    assert!(refused(&twice, &preset_args()));
+    // the row is not the frozen head
+    for change in ["operation", "text", "tpl", "at", "target"] {
+        let mut args = preset_args();
+        match change {
+            "operation" => args.operation_id = None,
+            "text" => args.text = "something else".into(),
+            "tpl" => args.tpl = Some("other".into()),
+            "at" => args.at = Some(NOW + 1),
+            _ => args.dir = "/elsewhere".into(),
+        }
+        assert!(refused(&board, &args), "{change}");
+    }
+}
+
+/// The Board is the preset override's only source: unreadable means nothing
+/// is stripped and nothing is sent; unticking, deleting or re-pointing the
+/// preset withdraws it; settings never decide it.
+#[test]
+fn a_phone_task_override_is_swept_and_fenced_against_the_board_alone() {
+    let row = preset_head();
+    let board = preset_board();
+    assert_eq!(first_send::backing(&row), Some(first_send::Backing::Board));
+    assert_eq!(first_send::fence(&row, board_sources(&board)), Fence::Clear);
+    // readable settings are no source for it, with or without rules
+    assert_eq!(
+        first_send::fence(&row, first_send::Sources::settings(&config_with(vec![]))),
+        Fence::Unverified
+    );
+    let mut q = qs(vec![row.clone()]);
+    assert!(first_send::any_override(&q, first_send::Backing::Board));
+    assert!(!first_send::any_override(&q, first_send::Backing::Settings));
+    assert_eq!(
+        first_send::revoke_stale(&mut q, first_send::Sources::settings(&config_with(vec![]))),
+        0
+    );
+    assert_eq!(
+        first_send::revoke_stale(&mut q, first_send::Sources::default()),
+        0
+    );
+    assert_eq!(first_send::revoke_stale(&mut q, board_sources(&board)), 0);
+    assert!(q.items[0].readiness_override.is_some());
+    for change in ["off", "deleted", "project", "command", "dir"] {
+        let mut changed = board.clone();
+        match change {
+            "off" => {
+                changed["projects"][0]["presets"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("firstSend");
+            }
+            "deleted" => changed["projects"][0]["presets"] = serde_json::json!([]),
+            "project" => changed["projects"] = serde_json::json!([]),
+            "command" => changed["projects"][0]["presets"][0]["cmd"] = "claude --resume".into(),
+            _ => changed["projects"][0]["presets"][0]["dir"] = "/elsewhere".into(),
+        }
+        assert_eq!(
+            first_send::fence(&row, board_sources(&changed)),
+            Fence::Revoked,
+            "{change}"
+        );
+        let mut q = qs(vec![row.clone()]);
+        let revision = q.items[0].revision;
+        assert_eq!(
+            first_send::revoke_stale(&mut q, board_sources(&changed)),
+            1,
+            "{change}"
+        );
+        assert!(q.items[0].readiness_override.is_none() && q.items[0].revision != revision);
+    }
+    // and the Board never decides a rule's override
+    let mut q = qs(vec![overridden_head("h")]);
+    assert_eq!(first_send::revoke_stale(&mut q, board_sources(&board)), 0);
+    assert!(q.items[0].readiness_override.is_some());
+}
+
+/// Each source being unreadable holds only the rows it backs.
+#[test]
+fn an_unreadable_board_holds_only_a_phone_task_head() {
+    let stage = |row: QueueItem, obs: &Observations| {
+        let q = qs(vec![row]);
+        serde_json::to_value(plan_item(&q, &q.items[0], NOW, 720, Some(obs))).unwrap()["stage"]
+            .clone()
+    };
+    let readable = unestablished(NOW - 400);
+    let mut no_board = readable.clone();
+    mark_board_unverified(&mut no_board);
+    let mut no_settings = readable.clone();
+    mark_authority_unverified(&mut no_settings);
+    assert_ne!(stage(preset_head(), &readable), "first-send");
+    assert_eq!(stage(preset_head(), &no_board), "first-send");
+    assert_ne!(stage(preset_head(), &no_settings), "first-send");
+    assert_ne!(stage(overridden_head("h"), &no_board), "first-send");
+    assert_eq!(stage(overridden_head("h"), &no_settings), "first-send");
+}
+
+/// The Board twin of `the_pre_fire_authority_read_happens_under_the_settings_fence`:
+/// the automatic send reads the Board while holding the fence every Board
+/// commit takes, so a save that unticks the preset and has returned is
+/// always seen, and settings are not consulted for this row at all.
+#[test]
+fn the_pre_fire_board_read_happens_under_the_board_fence() {
+    let hooks =
+        |board: &'static (dyn Fn() -> Option<serde_json::Value> + Sync),
+         fire: &'static (dyn Fn(&QueueItem) -> Result<(), DeckError> + Sync)| {
+            SendHooks {
+                fire,
+                persist: &ok_persist,
+                kill: &|_: &str| {},
+                board,
+                authority: &|| panic!("settings do not back a phone task override"),
+            }
+        };
+    static UNDER_FENCE: AtomicBool = AtomicBool::new(false);
+    let qm = Mutex::new(qs(vec![preset_head()]));
+    let r = send_one(
+        &qm,
+        &AtomicBool::new(false),
+        "s",
+        720,
+        &unestablished(NOW - 400),
+        &hooks(
+            &|| {
+                UNDER_FENCE.store(crate::documents::board_fence_busy(), AtomicOrdering::SeqCst);
+                Some(preset_board())
+            },
+            &|_: &QueueItem| Ok(()),
+        ),
+    );
+    assert!(matches!(r, SendResult::Sent { .. }), "{r:?}");
+    assert!(UNDER_FENCE.load(AtomicOrdering::SeqCst));
+    assert!(qm.lock_or_recover().deliveries[0].readiness_overridden);
+
+    // no current Board: the row and its override stay, nothing is sent
+    let qm = Mutex::new(qs(vec![preset_head()]));
+    let r = send_one(
+        &qm,
+        &AtomicBool::new(false),
+        "s",
+        720,
+        &unestablished(NOW - 400),
+        &hooks(&|| None, &|_: &QueueItem| panic!("never sent")),
+    );
+    assert_eq!(r, SendResult::Nothing);
+    assert!(qm.lock_or_recover().items[0].readiness_override.is_some());
+
+    // a Board writer holding the fence blocks the send until it commits;
+    // committing the untick there means the send never begins
+    static UNTICKED: AtomicBool = AtomicBool::new(false);
+    static FIRED: AtomicBool = AtomicBool::new(false);
+    let qm = Mutex::new(qs(vec![preset_head()]));
+    std::thread::scope(|scope| {
+        let writer = crate::documents::board_fence();
+        let send = scope.spawn(|| {
+            send_one(
+                &qm,
+                &AtomicBool::new(false),
+                "s",
+                720,
+                &unestablished(NOW - 400),
+                &hooks(
+                    &|| {
+                        let mut board = preset_board();
+                        if UNTICKED.load(AtomicOrdering::SeqCst) {
+                            board["projects"][0]["presets"][0]["firstSend"] = false.into();
+                        }
+                        Some(board)
+                    },
+                    &|_: &QueueItem| {
+                        FIRED.store(true, AtomicOrdering::SeqCst);
+                        Ok(())
+                    },
+                ),
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            !FIRED.load(AtomicOrdering::SeqCst),
+            "blocked behind the Board write"
+        );
+        UNTICKED.store(true, AtomicOrdering::SeqCst); // the save commits the untick
+        drop(writer);
+        assert_eq!(send.join().unwrap(), SendResult::Nothing);
+    });
+    assert!(!FIRED.load(AtomicOrdering::SeqCst));
+    assert!(qm.lock_or_recover().items[0].readiness_override.is_none());
+}
+
+/// Send-now is the user acting: it never reads the Board.
+#[test]
+fn send_now_of_a_phone_task_head_never_consults_the_board() {
+    let qm = Mutex::new(qs(vec![preset_head()]));
+    let r = send_one_safe_requested(
+        &qm,
+        &AtomicBool::new(false),
+        SendRequest {
+            session: "s",
+            now_min: 720,
+            activity: &unestablished(NOW - 400),
+            requested: Some("b"),
+        },
+        &SendHooks {
+            fire: &|_: &QueueItem| Ok(()),
+            persist: &ok_persist,
+            kill: &|_: &str| {},
+            board: &|| panic!("send-now never consults the Board"),
+            authority: &|| panic!("send-now never consults the fence"),
+        },
+        &ContextHooks {
+            prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                Prepared::Probe(probe_result(
+                    ContextStatus::Ready,
+                    ContextCode::ProcessMatched,
+                    1,
+                ))
+            },
+            final_probe: &|_: &QueueItem| {
+                probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
+            },
+        },
+    );
+    assert!(matches!(r, SendResult::Sent { .. }), "{r:?}");
+    assert!(!qm.lock_or_recover().deliveries[0].readiness_overridden);
+}
+
+/// The override is the head row's alone, the row stays external, and the
+/// origin round-trips through queue.json under its closed word.
+#[test]
+fn a_phone_task_override_stays_on_the_head_and_round_trips() {
+    let mut q = QueueState::default();
+    let mut args = preset_args();
+    args.channel_path = true;
+    args.first_send_granted = Some(preset_override());
+    add_item(&mut q, args, "first".into()).unwrap();
+    let mut next = preset_args();
+    next.channel_path = true;
+    next.operation_id = Some("next-op".into());
+    next.mode = "chain".into();
+    next.at = None;
+    next.tpl_idx = Some(2);
+    add_item(&mut q, next, "second".into()).unwrap();
+    assert_eq!(
+        q.items
+            .iter()
+            .map(|i| i.readiness_override.is_some())
+            .collect::<Vec<_>>(),
+        [true, false]
+    );
+    assert!(q.items.iter().all(|i| i.external && i.authority.is_none()));
+    let saved = serde_json::to_value(&q).unwrap();
+    assert_eq!(
+        saved["items"][0]["readiness_override"]["trigger"],
+        "connector"
+    );
+    let reloaded: QueueState = serde_json::from_value(saved).unwrap();
+    assert_eq!(
+        reloaded.items[0].readiness_override,
+        Some(preset_override())
+    );
 }

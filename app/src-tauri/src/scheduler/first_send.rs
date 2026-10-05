@@ -1,6 +1,7 @@
-//! First-send readiness override: a Slack badge or clock rule's explicit, per-rule
-//! acceptance that the FIRST step of its runs may be sent to a freshly
-//! started agent without first-interaction evidence.
+//! First-send readiness override: the explicit acceptance, per Slack badge
+//! rule, clock rule or phone task preset, that the FIRST step of its runs
+//! may be sent to a freshly started agent without first-interaction
+//! evidence.
 //!
 //! # Contract
 //! A temporary compatibility escape hatch for a missing upstream primitive:
@@ -21,16 +22,23 @@
 //! - **readiness evidence** — `agent_status::Evidence`, never written or
 //!   faked here: the generation stays "no interaction" after the send, and
 //!   no Signal word, quiet time, title or timer creates the override;
-//! - **the override** — `Rule.first_send_without_readiness` (settings) and
-//!   its row copy `QueueItem.readiness_override`: readiness is UNKNOWN and
-//!   the user accepted the startup-dialog risk for this rule's first send.
+//! - **the override** — `Rule.first_send_without_readiness` (settings) or a
+//!   task preset's `firstSend` (the Board), and its row copy
+//!   `QueueItem.readiness_override`: readiness is UNKNOWN and the user
+//!   accepted the startup-dialog risk for this rule's or preset's first send.
 //!
 //! Scope, closed: verified Slack badge runs use external admission; verified
-//! clock runs use owner admission and remain external=false. Only the head
-//! of a frozen run may carry this policy, for Claude or literal Codex
-//! --no-daemon. This separate FirstSendOrigin never expands TriggerClass or
-//! Slack content authority. Channel monitors, Connector, MCP, manual lists
-//! and later steps never obtain it.
+//! clock runs use owner admission and remain external=false; a verified
+//! phone task (Connector `task-create`) uses external admission and stays
+//! external. Only the head of a frozen run may carry this policy, for Claude
+//! or literal Codex --no-daemon. This separate FirstSendOrigin never expands
+//! TriggerClass or content authority. Channel monitors, every other
+//! Connector command, MCP, manual lists and later steps never obtain it.
+//!
+//! Two sources, never mixed: a Slack or clock override is backed by
+//! settings.json, a phone task override by the Board (`Backing`). Each row
+//! is admitted, swept and fenced against its own source alone, and each
+//! source being unreadable holds only the rows it backs.
 //!
 //! - Admission: CURRENT settings and the backend's pending native event must
 //!   match {rule,event}. Clock owner admission additionally checks the saved
@@ -40,6 +48,17 @@
 //!   Clock target policy freezes rule project/directory; disabling, changing
 //!   source/command/target or deleting the rule withdraws it. Schedule/template
 //!   edits affect future runs, not frozen prompt bytes or this policy.
+//! - Phone task admission (`verify_connector`): the option is the preset's,
+//!   set on this Mac only; the phone sends a project and a preset id and
+//!   never this choice. The CURRENT Board (`documents::board_authority`, so
+//!   never one answered from its backup) must hold the preset with
+//!   `firstSend`, a supported command equal to the row's, and exactly one
+//!   card made from that command handle whose frozen, still unqueued run
+//!   froze the choice and whose head is this row. The Connector's own
+//!   journal must say that handle is an applied `task-create` naming that
+//!   card, from a device that is still paired (`connector::task_proof`).
+//!   Unticking, deleting the preset or its project, or changing the
+//!   preset's command or directory withdraws it.
 //! - Selection (`select::hold_reason`): the override lifts ONLY the
 //!   first-interaction hold (Claude without an interaction word, Codex
 //!   `Unknown`) and only while this tick could read settings. Needs-input,
@@ -65,6 +84,9 @@
 //!   the file, and a damaged main file is unreadable settings even when its
 //!   backup loads: the backup is the previous save and could bring back a
 //!   choice the last save withdrew, as for the approval (`authority.rs`).
+//!   A phone task override is swept against the Board the same way and
+//!   fenced under `documents::board_fence`, which every Board commit takes;
+//!   a Board that is absent or stands as recovered is an unreadable source.
 //!   Send-now never consults it.
 //! - Durable vs transient: the rule flag and the row copy survive restarts;
 //!   interaction evidence does not and is never invented. After a Deck
@@ -75,6 +97,9 @@
 //! - Compatibility: Slack optional fields remain compatible. Clock-enabled
 //!   settings and clock overrides upgrade to sticky schema v4: v3 refuses
 //!   them untouched instead of decoding the new closed origin as damage.
+//!   A preset with `firstSend` (deck.json) and a phone task override
+//!   (queue.json) upgrade to sticky v6 for the same reason; an older build
+//!   would otherwise drop the preset's choice on its next Board save.
 //! - Exit: replaced, not removed. "Temporary" above lasts until an agent
 //!   exposes an authoritative fact that a fresh interactive session accepts
 //!   its first typed prompt. Selection then takes that fact as the reason
@@ -109,6 +134,10 @@ pub(crate) struct ReadinessOverride {
     pub(crate) trigger: FirstSendOrigin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) clock_target: Option<ClockTarget>,
+    /// Present exactly for `FirstSendOrigin::Connector`, where `rule` is the
+    /// preset id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) connector: Option<ConnectorTarget>,
 }
 
 /// Readiness origins are independent of Slack content-authority triggers.
@@ -117,6 +146,52 @@ pub(crate) struct ReadinessOverride {
 pub(crate) enum FirstSendOrigin {
     SlackBadge,
     Clock,
+    Connector,
+}
+
+/// Which document backs an override: the one it is admitted, swept and
+/// fenced against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Backing {
+    Settings,
+    Board,
+}
+
+impl FirstSendOrigin {
+    pub(crate) fn backing(self) -> Backing {
+        match self {
+            Self::SlackBadge | Self::Clock => Backing::Settings,
+            Self::Connector => Backing::Board,
+        }
+    }
+}
+
+/// What an override's row is checked against, each `None` when that source
+/// could not be read as current.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Sources<'a> {
+    pub(crate) settings: Option<&'a Config>,
+    pub(crate) board: Option<&'a serde_json::Value>,
+}
+
+impl<'a> Sources<'a> {
+    #[cfg(test)]
+    pub(crate) fn settings(config: &'a Config) -> Self {
+        Self {
+            settings: Some(config),
+            board: None,
+        }
+    }
+}
+
+/// The preset a phone task override came from, frozen at admission: its
+/// project, its directory as saved, and the paired device whose command made
+/// the run.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct ConnectorTarget {
+    pub(crate) project: String,
+    pub(crate) dir: String,
+    pub(crate) device: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -133,6 +208,11 @@ pub(crate) struct ClockTarget {
 pub(crate) struct FirstSendClaim {
     pub(crate) rule: String,
     pub(crate) event: String,
+    /// Present for a phone task alone: `rule` is then a task preset of this
+    /// project and `event` the Connector command handle. Omitted otherwise
+    /// so older operation fingerprints stay identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) preset_project: Option<String>,
 }
 
 /// Whether the override can reach this agent command: Claude, or Codex
@@ -206,7 +286,145 @@ pub(crate) fn verify(
             project: rule.project_id.clone(),
             dir: rule.dir.clone(),
         }),
+        connector: None,
     })
+}
+
+/// `dir` as a card's directory: a leading `~` is the home directory.
+fn expand_home(dir: &str) -> Option<String> {
+    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned());
+    let dir = dir.trim();
+    if dir.is_empty() || dir == "~" {
+        home
+    } else if let Some(rest) = dir.strip_prefix("~/") {
+        home.map(|h| format!("{}/{rest}", h.trim_end_matches('/')))
+    } else {
+        Some(dir.to_owned())
+    }
+}
+
+/// Preset `id` of project `project` on `board`.
+fn preset<'a>(
+    board: &'a serde_json::Value,
+    project: &str,
+    id: &str,
+) -> Option<&'a serde_json::Value> {
+    board
+        .get("projects")?
+        .as_array()?
+        .iter()
+        .find(|p| p["id"] == project)?
+        .get("presets")?
+        .as_array()?
+        .iter()
+        .find(|p| p["id"] == id)
+}
+
+/// Whether `preset` currently allows the override for a row launched with
+/// `cmd` from a run frozen with directory `dir`.
+fn preset_allows(preset: &serde_json::Value, cmd: &str, dir: &str) -> bool {
+    preset["firstSend"] == true
+        && preset["cmd"] == cmd
+        && preset["dir"] == dir
+        && supported_command(cmd)
+}
+
+/// Check a phone task head row's claim (module header). `board` is the
+/// current Board or nothing, `proof` the Connector journal's own record of
+/// the claimed command handle.
+pub(crate) fn verify_connector(
+    board: Option<&serde_json::Value>,
+    claim: &FirstSendClaim,
+    args: &super::ops::QueueAddArgs,
+    proof: Option<&crate::connector::TaskProof>,
+) -> Result<ReadinessOverride, Refusal> {
+    if args.external_text {
+        return Err("verbatim");
+    }
+    if args.mode != "at" || args.review_each || args.group.is_some() {
+        return Err("step");
+    }
+    let project = claim.preset_project.as_deref().ok_or("no-preset")?;
+    let board = board.ok_or("board-unreadable")?;
+    let preset = preset(board, project, &claim.rule).ok_or("no-preset")?;
+    if preset["firstSend"] != true {
+        return Err("off");
+    }
+    if preset["cmd"] != args.cmd.as_str() {
+        return Err("command");
+    }
+    if !supported_command(&args.cmd) {
+        return Err("agent");
+    }
+    let proof = proof.ok_or("no-event")?;
+    if proof.card_id != args.card_id {
+        return Err("event");
+    }
+    let dir = preset["dir"].as_str().unwrap_or_default();
+    if !connector_head_matches(board, args, project, &claim.rule, &claim.event, dir) {
+        return Err("head");
+    }
+    Ok(ReadinessOverride {
+        rule: claim.rule.clone(),
+        trigger: FirstSendOrigin::Connector,
+        clock_target: None,
+        connector: Some(ConnectorTarget {
+            project: project.to_owned(),
+            dir: dir.to_owned(),
+            device: proof.device_id.clone(),
+        }),
+    })
+}
+
+/// The Board's side of a phone task claim: exactly one card was made from
+/// command `handle` by preset `preset`, it is this row's card, and its
+/// frozen run is still unqueued, froze the choice and opens with this row.
+fn connector_head_matches(
+    board: &serde_json::Value,
+    args: &super::ops::QueueAddArgs,
+    project: &str,
+    preset: &str,
+    handle: &str,
+    preset_dir: &str,
+) -> bool {
+    let Some(cards) = board.get("cards").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    let matching: Vec<_> = cards
+        .iter()
+        .filter(|c| {
+            c["origin"]["source"] == "connector"
+                && c["origin"]["key"] == handle
+                && c["origin"]["badge"] == preset
+        })
+        .collect();
+    let [card] = matching.as_slice() else {
+        return false;
+    };
+    let run = &card["connectorRun"];
+    let head = &run["initialSteps"][0];
+    expand_home(preset_dir).as_deref() == Some(args.dir.as_str())
+        && card["id"] == args.card_id
+        && card["session"] == args.session
+        && card["projectId"] == project
+        && card["cmd"] == args.cmd
+        && card["dir"] == args.dir
+        && run["handle"] == handle
+        && run["presetId"] == preset
+        && run["initialQueued"] == false
+        && run["firstSend"] == true
+        && head["operationId"].as_str() == args.operation_id.as_deref()
+        && args.operation_id.is_some()
+        && head["mode"] == "at"
+        && head["tplIdx"] == 1
+        && args.tpl_idx == Some(1)
+        && head["tpl"].as_str() == args.tpl.as_deref()
+        && head["at"].as_u64() == args.at
+        && head["text"]
+            .as_str()
+            .map(super::ops::normalize_prompt)
+            .as_deref()
+            == Some(super::ops::normalize_prompt(&args.text).as_str())
 }
 
 /// Clock owner admission requires the committed run plan as well as the
@@ -238,15 +456,7 @@ pub(crate) fn clock_head_matches(
     } else {
         &head["operationId"]
     };
-    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned());
-    let dir = rule.dir.trim();
-    let configured_dir = if dir.is_empty() || dir == "~" {
-        home.clone()
-    } else if let Some(rest) = dir.strip_prefix("~/") {
-        home.map(|h| format!("{}/{rest}", h.trim_end_matches('/')))
-    } else {
-        Some(dir.to_owned())
-    };
+    let configured_dir = expand_home(&rule.dir);
     configured_dir.as_deref() == Some(args.dir.as_str())
         && card["id"] == args.card_id
         && card["session"] == args.session
@@ -272,35 +482,57 @@ pub(crate) fn clock_head_matches(
             == Some(super::ops::normalize_prompt(&args.text).as_str())
 }
 
-/// Whether the row's override is still backed by its rule.
-fn still_allowed(config: &Config, i: &QueueItem) -> bool {
-    i.readiness_override.as_ref().is_some_and(|o| {
-        config
-            .rules
-            .iter()
-            .find(|r| r.id == o.rule)
-            .is_some_and(|rule| {
-                allows(rule, &i.cmd)
-                    && match o.trigger {
-                        FirstSendOrigin::SlackBadge => rule.source == "slack",
-                        FirstSendOrigin::Clock => {
-                            rule.source == "clock"
-                                && o.clock_target.as_ref().is_some_and(|t| {
-                                    t.project == rule.project_id && t.dir == rule.dir
-                                })
-                        }
+/// The source that backs this row's override, when it carries one.
+pub(crate) fn backing(i: &QueueItem) -> Option<Backing> {
+    i.readiness_override.as_ref().map(|o| o.trigger.backing())
+}
+
+/// Whether the row's override is still backed by its rule (settings).
+fn rule_still_allows(config: &Config, i: &QueueItem, o: &ReadinessOverride) -> bool {
+    config
+        .rules
+        .iter()
+        .find(|r| r.id == o.rule)
+        .is_some_and(|rule| {
+            allows(rule, &i.cmd)
+                && match o.trigger {
+                    FirstSendOrigin::SlackBadge => rule.source == "slack",
+                    FirstSendOrigin::Clock => {
+                        rule.source == "clock"
+                            && o.clock_target
+                                .as_ref()
+                                .is_some_and(|t| t.project == rule.project_id && t.dir == rule.dir)
                     }
-            })
+                    FirstSendOrigin::Connector => false,
+                }
+        })
+}
+
+/// Whether the row's override is still backed by its preset (the Board).
+fn preset_still_allows(board: &serde_json::Value, i: &QueueItem, o: &ReadinessOverride) -> bool {
+    o.connector.as_ref().is_some_and(|target| {
+        preset(board, &target.project, &o.rule)
+            .is_some_and(|preset| preset_allows(preset, &i.cmd, &target.dir))
     })
+}
+
+/// Whether the row's override still stands: `None` when the source that
+/// backs it could not be read, which proves nothing either way.
+fn standing(sources: Sources<'_>, i: &QueueItem) -> Option<bool> {
+    let o = i.readiness_override.as_ref()?;
+    match o.trigger.backing() {
+        Backing::Settings => sources.settings.map(|c| rule_still_allows(c, i, o)),
+        Backing::Board => sources.board.map(|b| preset_still_allows(b, i, o)),
+    }
 }
 
 /// The override check immediately before the irreversible boundary, for an
 /// automatic send that relies on it (`select::relies_on_readiness_override`).
-pub(crate) fn fence(i: &QueueItem, config: Option<&Config>) -> Fence {
-    match config {
+pub(crate) fn fence(i: &QueueItem, sources: Sources<'_>) -> Fence {
+    match standing(sources, i) {
         None => Fence::Unverified,
-        Some(config) if still_allowed(config, i) => Fence::Clear,
-        Some(_) => Fence::Revoked,
+        Some(true) => Fence::Clear,
+        Some(false) => Fence::Revoked,
     }
 }
 
@@ -308,18 +540,21 @@ fn revocable(i: &QueueItem) -> bool {
     i.readiness_override.is_some() && matches!(i.state, ItemState::Pending | ItemState::Failed)
 }
 
-/// Whether any unsent row carries the override (the tick reads settings
-/// only then, or for `authority::any_authority`).
-pub(crate) fn any_override(q: &QueueState) -> bool {
-    q.items.iter().any(revocable)
+/// Whether any unsent row carries an override backed by `source` (the tick
+/// reads that source only then, or for `authority::any_authority`).
+pub(crate) fn any_override(q: &QueueState, source: Backing) -> bool {
+    q.items
+        .iter()
+        .any(|i| revocable(i) && backing(i) == Some(source))
 }
 
-/// Strip the override from every unsent row whose rule no longer allows it;
-/// the number of rows that lost it.
-pub(crate) fn revoke_stale(q: &mut QueueState, config: &Config) -> usize {
+/// Strip the override from every unsent row whose rule or preset no longer
+/// allows it; the number of rows that lost it. A row whose source is
+/// unreadable is left alone.
+pub(crate) fn revoke_stale(q: &mut QueueState, sources: Sources<'_>) -> usize {
     let mut n = 0;
     for item in q.items.iter_mut().filter(|i| revocable(i)) {
-        if !still_allowed(config, item) {
+        if standing(sources, item) == Some(false) {
             item.readiness_override = None;
             item.revision = item.revision.wrapping_add(1);
             n += 1;

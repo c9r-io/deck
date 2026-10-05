@@ -677,3 +677,10 @@ test('the import-cycle gate sees every static edge and every cycle', () => {
   const late = check({ 'a.js': "export const a = () => import('./b.js');\n", 'b.js': b });
   assert.equal(late.status, 0, late.output);
 });
+
+test('the project defaults dialog scrolls inside itself and its confirmation opens above it', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const z = selector => Number(css.match(new RegExp(`${selector} \\{[^}]*z-index: (\\d+)`))?.[1]);
+  assert.match(css, /#pdf-box \{ max-height: calc\(84vh - 20px\); overflow-y: auto; \}/);
+  assert.ok(z('#cfm\\.cfm-over-dialog') > z('#chd, #pdf, #mcp-auth'), 'the confirmation is not hidden behind the dialog');
+});

@@ -180,6 +180,13 @@ struct TaskPreset {
     dir: String,
     cmd: String,
     steps: Vec<String>,
+    /// The user's acceptance, for this preset, that the first step of a
+    /// phone task goes to the freshly started agent without readiness
+    /// (`scheduler/first_send.rs`). Typed here so a non-boolean is damage;
+    /// read from the committed Board's value, never from this struct.
+    #[allow(dead_code)]
+    #[serde(default)]
+    first_send: bool,
 }
 #[derive(serde::Deserialize)]
 pub(crate) struct BoardColumn {
@@ -378,6 +385,11 @@ struct ConnectorRun {
     initial_steps: Vec<ChannelStep>,
     #[serde(default)]
     initial_queued: bool,
+    /// The preset's first-send choice as frozen when the run was made; a
+    /// claim only, checked at admission against the current preset.
+    #[allow(dead_code)]
+    #[serde(default)]
+    first_send: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -1047,9 +1059,8 @@ pub(crate) fn board_fence_busy() -> bool {
 /// The committed Board as AUTHORITY: the current version, or `None` when
 /// there is none or it is a recovered one (module header). A caller deciding
 /// an irreversible step on it holds `board_fence` around the read and that
-/// step. Its first reader is the task-preset first-send choice
-/// (`scheduler/first_send.rs`); until that lands only the tests call it.
-#[cfg_attr(not(test), allow(dead_code))]
+/// step. Its reader is the task-preset first-send choice
+/// (`scheduler/first_send.rs`).
 pub(crate) fn board_authority() -> Option<serde_json::Value> {
     match COMMITTED_BOARD.lock_or_recover().as_ref() {
         Some((board, BoardStanding::Current)) => Some(board.clone()),
@@ -2717,6 +2728,24 @@ mod tests {
             &with_preset.replace("\"columnId\":\"C1\"", "\"columnId\":\"missing\"")
         )
         .is_err());
+        // the first-send choice is a boolean or absent; anything else is
+        // damage, never a value some reader might take for a yes
+        for (value, valid) in [
+            ("true", true),
+            ("false", true),
+            ("\"true\"", false),
+            ("1", false),
+        ] {
+            let doc = with_preset.replace(
+                "\"cmd\":\"codex\"",
+                &format!("\"cmd\":\"codex\",\"firstSend\":{value}"),
+            );
+            assert_eq!(
+                serde_json::from_str::<BoardDoc>(&doc).is_ok(),
+                valid,
+                "{value}"
+            );
+        }
     }
 
     #[test]

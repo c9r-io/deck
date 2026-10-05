@@ -101,9 +101,10 @@ use std::sync::Mutex;
 
 // v2 protects opt-in human checkpoints; v3 protects retained scratchpad and
 // channel/idempotency fields; v4 protects clock readiness origins/policy;
-// v5 protects card reminders and blocked retirement identities.
+// v5 protects card reminders and blocked retirement identities; v6 protects
+// a phone task preset's first-send choice and its queue origin.
 // Ordinary documents keep v1; upgrades are sticky.
-pub const SCHEMA_VERSION: u64 = 5;
+pub const SCHEMA_VERSION: u64 = 6;
 
 /// The two documents whose review fields an old reader could misinterpret as
 /// ordinary state (queue rows it would resend; finish rules it would apply).
@@ -137,6 +138,25 @@ fn uses_clock_first_send(v: &serde_json::Value) -> bool {
                 || o.values().any(uses_clock_first_send)
         }
         serde_json::Value::Array(a) => a.iter().any(uses_clock_first_send),
+        _ => false,
+    }
+}
+
+// A phone task preset's first-send choice (deck.json) and the row origin it
+// admits (queue.json). A v5 reader decodes the closed origin as damage, and
+// its webview rebuilds presets from the fields it knows, so its next Board
+// save would drop the choice without a word: it must refuse both untouched.
+fn uses_connector_first_send(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(o) => {
+            o.get("presets")
+                .and_then(|v| v.as_array())
+                .is_some_and(|presets| presets.iter().any(|p| p["firstSend"] == true))
+                || o.get("readiness_override")
+                    .is_some_and(|v| v["trigger"] == "connector")
+                || o.values().any(uses_connector_first_send)
+        }
+        serde_json::Value::Array(a) => a.iter().any(uses_connector_first_send),
         _ => false,
     }
 }
@@ -701,7 +721,11 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let feature_version = if name == "deck.json"
+    let feature_version = if matches!(name.as_ref(), "deck.json" | "queue.json")
+        && uses_connector_first_send(&data)
+    {
+        6
+    } else if name == "deck.json"
         && data
             .get("cards")
             .and_then(|v| v.as_array())
@@ -709,7 +733,8 @@ fn save_checked_locked(
                 cards
                     .iter()
                     .any(|c| c.get("reminder").is_some() || c.get("reminderRetirements").is_some())
-            }) {
+            })
+    {
         5
     } else if matches!(name.as_ref(), "queue.json" | "settings.json")
         && uses_clock_first_send(&data)
@@ -1530,6 +1555,50 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(raw["schema_version"], 2);
         assert_eq!(raw["data"]["v"], 50);
+    }
+    /// A preset's first-send choice and the queue origin it admits are
+    /// refused by a v5 reader instead of being dropped or read as damage.
+    #[test]
+    fn phone_task_first_send_documents_upgrade_to_sticky_v6_only_when_used() {
+        let dir = tdir("connector-readiness-version");
+        for (name, data, unused) in [
+            (
+                "deck.json",
+                serde_json::json!({"projects":[{"presets":[{"id":"R1", "firstSend":true}]}]}),
+                serde_json::json!({"projects":[{"presets":[{"id":"R1"}, {"id":"R2", "firstSend":false}]}]}),
+            ),
+            (
+                "queue.json",
+                serde_json::json!({"items":[{"readiness_override":{"rule":"R1", "trigger":"connector"}}]}),
+                serde_json::json!({"items":[{"readiness_override":{"rule":"R", "trigger":"clock"}}]}),
+            ),
+        ] {
+            let p = dir.join(name);
+            save_typed::<serde_json::Value>(&p, &unused.to_string()).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert!(raw["schema_version"].as_u64().unwrap() < 6, "{name}");
+            save_typed::<serde_json::Value>(&p, &data.to_string()).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert_eq!(raw["schema_version"], 6, "{name}");
+            assert!(envelope_payload_for(&raw, 5).is_err(), "{name}");
+            // sticky: the choice withdrawn, the version stays
+            save_typed::<serde_json::Value>(&p, &unused.to_string()).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert_eq!(raw["schema_version"], 6, "{name}");
+        }
+        // settings.json has no such field: it never takes v6 for one
+        let p = dir.join("settings.json");
+        save_typed::<serde_json::Value>(
+            &p,
+            &serde_json::json!({"presets":[{"firstSend":true}]}).to_string(),
+        )
+        .unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert!(raw["schema_version"].as_u64().unwrap() < 6);
+        let _ = std::fs::remove_dir_all(dir);
     }
     #[test]
     fn clock_readiness_documents_upgrade_to_sticky_v4_only_when_used() {

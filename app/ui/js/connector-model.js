@@ -1,6 +1,14 @@
 // Pure Connector desktop shapes: task presets use the same codex/claude
 // rule as Slack channels; this module also owns deterministic journal IDs and
 // pairing detection.
+//
+// A preset may carry `firstSend: true`: the user's acceptance, for this
+// preset, that the first step of a phone task goes to the freshly started
+// agent without waiting for readiness (scheduler/first_send.rs). It is set
+// in the project defaults dialog on this Mac only, stored as absent when
+// off, and frozen into the run (`connectorRun.firstSend`) as a claim the
+// native admission checks against the current Board. The phone never sends
+// or sees it.
 import { channelAgentCommand } from './channel-model.js';
 import { LOCAL_ID_RE } from './pure.js';
 export const PRESET_MAX = 50;
@@ -13,6 +21,7 @@ export function normalizeTaskPreset(raw, columns = []) {
     columnId: String(raw.columnId || ''), title: String(raw.title || '').trim(),
     dir: String(raw.dir || '').trim(), cmd: String(raw.cmd || '').trim(),
     steps: (Array.isArray(raw.steps) ? raw.steps : []).map(String).map(value => value.trim()).filter(Boolean),
+    ...(raw.firstSend === true ? { firstSend: true } : {}),
   };
   if (!LOCAL_ID_RE.test(preset.id) || !preset.name || [...preset.name].length > 120
     || !preset.title || [...preset.title].length > 120 || !preset.dir || utf8(preset.dir) > 1024
@@ -51,6 +60,24 @@ export function newlyPairedDevice(before, after) {
   const known = new Set((before || []).map(device => device.id));
   return (after || []).find(device => !device.revoked && !known.has(device.id)) || null;
 }
+
+/* the frozen run a phone task card carries until its rows are queued: one
+   step per preset step under its deterministic operation id, the first one
+   timed, and the preset's first-send choice when there is a first step */
+export function connectorRunPlan(handle, preset, operationIds, at) {
+  const initialSteps = preset.steps.map((text, index) => ({ operationId: operationIds[index], text,
+    mode: index ? 'chain' : 'at', at: index ? null : at, tpl: preset.id,
+    tplIdx: index + 1, tplTotal: preset.steps.length }));
+  return { handle, presetId: preset.id, initialSteps, initialQueued: initialSteps.length === 0,
+    ...(preset.firstSend === true && initialSteps.length ? { firstSend: true } : {}) };
+}
+
+/* the head row's first-send claim for a frozen phone task run: the preset,
+   its project and the command handle; nothing when the run did not freeze
+   the choice */
+export const connectorFirstSendClaim = card => (card?.connectorRun?.firstSend === true
+  ? { firstSend: { rule: card.connectorRun.presetId, event: card.connectorRun.handle, presetProject: card.projectId } }
+  : {});
 
 export const unfinishedConnectorPlans = cards => (cards || [])
   .filter(card => card.connectorRun && !card.connectorRun.initialQueued);

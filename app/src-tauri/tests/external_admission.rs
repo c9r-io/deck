@@ -460,6 +460,29 @@ fn external_text_reaches_the_one_admission() {
     assert!(first_send.contains("clock_policy_pending"));
     assert!(first_send.contains("clock_head_matches"));
     assert!(first_send.contains("clock == args.channel_path"));
+    // A phone task's claim names a preset. It is decided before any rule is
+    // looked up, on the external path alone, against the current Board
+    // (never one answered from its backup) and the Connector's own journal;
+    // the verdict is `verify_connector`'s, and nothing else can mint it.
+    let preset = first_send
+        .find("if claim.preset_project.is_some() {")
+        .expect("the preset branch");
+    let rules = first_send
+        .find("crate::inbound::read_config_strict()")
+        .expect("the rule branch");
+    assert!(preset < rules);
+    let preset = &first_send[preset..rules];
+    assert!(preset.contains("if !args.channel_path {\n            return;"));
+    assert!(preset.contains("crate::documents::board_authority()"));
+    assert!(preset.contains("crate::connector::task_proof(&claim.event)"));
+    assert!(preset.contains("first_send::verify_connector("));
+    assert!(preset.contains("        return;\n    }\n    let config = "));
+    let minted: Vec<_> = production_sources()
+        .into_iter()
+        .filter(|(_, source)| source.contains("FirstSendOrigin::Connector,"))
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(minted, ["scheduler/first_send.rs"]);
     // ...and the verdict is the backend's own (`#[serde(skip)]`), never a
     // caller field, while provenance stays set beside it
     let ops = production_sources()

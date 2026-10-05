@@ -4,7 +4,7 @@ import { ctx, emit, inv, listen, store, uev } from './state.js';
 import { provider } from './board.js';
 import { mutateBoard } from './persistence.js';
 import { addManual, addQueueCopy, bufferLimitError, deleteEntry, editEntry, emptyBuffer } from './buffer-model.js';
-import { connectorBufferOperationId, connectorId, unfinishedConnectorPlans } from './connector-model.js';
+import { connectorBufferOperationId, connectorId, connectorRunPlan, unfinishedConnectorPlans } from './connector-model.js';
 import { expandHome } from './pure.js';
 import { toast } from './dialogs.js';
 import { t } from './i18n.js';
@@ -114,11 +114,7 @@ async function createTask(handle, request) {
   if (!project || !preset) throw new Error('preset not found');
   const id = await connectorId('S', handle, 'card');
   const operationIds = await Promise.all(preset.steps.map((_, index) => connectorId('B', handle, `step/${index}`)));
-  const at = Math.floor(Date.now() / 1000);
-  const initialSteps = preset.steps.map((text, index) => ({ operationId: operationIds[index], text,
-    mode: index ? 'chain' : 'at', at: index ? null : at, tpl: preset.id,
-    tplIdx: index + 1, tplTotal: preset.steps.length }));
-  const connectorRun = { handle, presetId: preset.id, initialSteps, initialQueued: initialSteps.length === 0 };
+  const connectorRun = connectorRunPlan(handle, preset, operationIds, Math.floor(Date.now() / 1000));
   let card;
   try {
     ({ card } = await provider.createStarted({ id, projectId: project.id, columnId: preset.columnId,

@@ -653,6 +653,10 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 #pdf-box .set-row label { width: 108px; }
 #pdf-box .set-row input { flex: 1; min-width: 0; font-family: var(--mono); }
 #pdf-box .set-hint { margin: 8px 0 14px; }
+/* taller than the window once a task preset is open (recent-command chips,
+   the preset fields, the first-send option and its hint): it scrolls inside
+   itself so every field and both button rows stay reachable */
+#pdf-box { max-height: calc(84vh - 20px); overflow-y: auto; }
 #mcp-auth-box h2 { margin: 0 0 14px; font-size: 1.07692rem; font-weight: 600; }
 #mcp-auth-box .set-row { align-items: flex-start; margin-bottom: 10px; }
 #mcp-auth-box .set-row label { width: 138px; }
@@ -786,6 +790,8 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
   background: var(--modal-overlay);
   align-items: flex-start; justify-content: center;
 }
+/* a confirmation asked from inside the project defaults dialog */
+#cfm.cfm-over-dialog { z-index: 73; }
 #cfm-box {
   margin-top: 16vh; width: 380px; max-width: calc(100vw - 40px);
   background: var(--panel); border: 1px solid var(--border);

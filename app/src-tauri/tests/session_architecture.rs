@@ -701,9 +701,21 @@ fn settings_writes_and_the_pre_fire_authority_check_share_one_fence() {
         .expect("settings read");
     assert!(taken < read);
     assert!(held.contains("match fence(&sel, config.as_ref().and_then(Option::as_ref))"));
-    assert!(
-        held.contains("match first_send::fence(&sel, config.as_ref().and_then(Option::as_ref))")
-    );
+    // ...except a phone task's override, which the Board backs: its read
+    // happens in the same held region, under the Board fence taken after
+    // the settings fence and before the queue lock
+    let board_taken = guarded
+        .find(".then(crate::documents::board_fence);")
+        .expect("Board fence taken");
+    let board_released = guarded
+        .find("drop(board_guard);")
+        .expect("Board fence released");
+    let board_read = held.find(".then(|| (h.board)())").expect("Board read");
+    assert!(taken < board_taken && board_taken < board_read);
+    assert!(intent < board_released && board_released < released);
+    assert!(held.contains("settings: config.as_ref().and_then(Option::as_ref),"));
+    assert!(held.contains("board: board.as_ref().and_then(Option::as_ref),"));
+    assert!(held.contains("match first_send::fence(&sel, sources)"));
 }
 
 /// The server outlives every exit but one. A launch that ends without ever

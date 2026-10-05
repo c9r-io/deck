@@ -189,23 +189,40 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         // first-send readiness override, stops every unsent row that relied
         // on it BEFORE this tick selects anything; unreadable settings
         // neither grant nor revoke (`authority.rs`, `first_send.rs`)
-        let needs_settings = {
+        // a phone task's override is backed by the Board instead, and is
+        // swept against the current one the same way
+        let (needs_settings, needs_board) = {
             let q = state.q.lock_or_recover();
-            any_authority(&q) || first_send::any_override(&q)
+            (
+                any_authority(&q) || first_send::any_override(&q, first_send::Backing::Settings),
+                first_send::any_override(&q, first_send::Backing::Board),
+            )
         };
-        if needs_settings {
-            let config = crate::inbound::read_config_strict();
-            if config.is_none() {
-                // no proof either way: rows, approvals and overrides stay;
-                // automatic sends that rely on one hold this tick
-                if let Some(seen) = listing.as_mut() {
+        if needs_settings || needs_board {
+            let config = needs_settings
+                .then(crate::inbound::read_config_strict)
+                .flatten();
+            let board = needs_board
+                .then(crate::documents::board_authority)
+                .flatten();
+            // no proof either way: rows, approvals and overrides stay;
+            // automatic sends that rely on one hold this tick
+            if let Some(seen) = listing.as_mut() {
+                if needs_settings && config.is_none() {
                     mark_authority_unverified(seen);
                 }
+                if needs_board && board.is_none() {
+                    mark_board_unverified(seen);
+                }
             }
-            if let Some(config) = config {
+            if config.is_some() || board.is_some() {
+                let sources = first_send::Sources {
+                    settings: config.as_ref(),
+                    board: board.as_ref(),
+                };
                 match with_queue_opt(&state.q, &save_queue, |q| {
-                    let approvals = revoke_stale(q, &config);
-                    let overrides = first_send::revoke_stale(q, &config);
+                    let approvals = config.as_ref().map_or(0, |c| revoke_stale(q, c));
+                    let overrides = first_send::revoke_stale(q, sources);
                     Ok((approvals + overrides > 0).then_some((approvals, overrides)))
                 }) {
                     Ok(Some((approvals, overrides))) => {
@@ -290,6 +307,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                         fire: &fire_item,
                         persist: &save_queue,
                         kill: &kill_session_quietly,
+                        board: &crate::documents::board_authority,
                         authority: &crate::inbound::read_config_strict,
                     },
                     &ContextHooks {

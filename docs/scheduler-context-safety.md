@@ -162,8 +162,8 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   may start it (a clock automation's card starts this way), bind its pane
   and stop there: nothing is pasted, no Enter is sent, and the row is not
   consumed, retried, counted or advanced — it stays pending at
-  `first-send` unless the separate, explicitly consented clock or Slack badge
-  override applies on a later pass. Other process-bound programs keep the
+  `first-send` unless the separate, explicitly consented clock, Slack badge
+  or phone task preset override applies on a later pass. Other process-bound programs keep the
   old fresh-start path (a 2.5 s settle, then delivery).
 - Owner rows without a hook word keep the quiet-only rule (Codex: once
   trusted). Manual immediate
@@ -269,6 +269,27 @@ first typed prompt — and never a claim that the agent is ready.
   and clock row origins use sticky schema v4; v3 readers refuse the envelope
   untouched BEFORE decoding unsupported settings/closed enum values. Existing
   Slack serialization stays unchanged.
+- A phone task preset may carry `firstSend` (absent = off), ticked in
+  **Project defaults** on the Mac after the same confirmation; the phone
+  sends a project and a preset id and never this choice. The run freezes it
+  (`connectorRun.firstSend`) and only its HEAD claims it, on the external
+  path: the row stays `external`, and its later steps still wait at the
+  external hold. This override is backed by the **Board**, not by settings.
+  Admission needs the current Board to hold the preset with the option and a
+  supported command equal to the row's, exactly one card made from that
+  command handle whose still-unqueued frozen run opens with this row, and the
+  Connector's own journal to say the handle is an applied `task-create`
+  naming that card from a device that is still paired. The tick sweeps it
+  against the current Board (unticked, preset or project deleted, command or
+  directory changed), and the pre-fire check reads the Board under the Board
+  fence every Board save takes, so an untick whose save returned is always
+  seen. "Current" excludes a Board that was answered from `deck.json.bak` or
+  taken as the way out of a lost Board and not saved since: like unreadable
+  settings, that proves nothing either way, so nothing is stripped and
+  nothing is sent on the override until the next Board save. A preset with
+  the option and a row with this origin use sticky schema v6 (deck.json and
+  queue.json): older builds refuse them untouched instead of dropping the
+  choice on their next Board save.
 - Selection: the override lifts only the first-interaction gate (Claude
   without an interaction word, Codex `Unknown`) for that `at` row, and only
   while the tick read settings successfully. Needs-input, Codex

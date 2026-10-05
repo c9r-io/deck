@@ -261,7 +261,8 @@ pub(crate) struct QueueAddArgs {
     pub(crate) granted: Vec<Option<StepAuthority>>,
     /// The frozen plan's statement that this call's first text is the head
     /// row of a verified Slack badge or clock run whose rule accepts startup
-    /// risk (`first_send.rs`). External Slack and owner clock paths verify
+    /// risk, or of a verified phone task whose preset does (`first_send.rs`).
+    /// External Slack, owner clock and external phone task paths verify
     /// their native origin independently; omitted when absent so older operation fingerprints stay
     /// identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -756,11 +757,28 @@ pub(super) fn admit_authority(args: &mut QueueAddArgs, texts: &[String]) {
 /// the event. A refused claim admits the row without it — the ordinary
 /// first-interaction gate holds it. Owner admission additionally requires a
 /// committed clock head and native pending slot; Slack stays external.
+/// A phone task's claim names a preset instead of a rule and is checked
+/// against the current Board and the Connector's own journal, on the
+/// external path alone.
 pub(super) fn admit_first_send(args: &mut QueueAddArgs) {
     args.first_send_granted = None;
     let Some(claim) = args.first_send.clone() else {
         return;
     };
+    if claim.preset_project.is_some() {
+        if !args.channel_path {
+            return;
+        }
+        let board = crate::documents::board_authority();
+        let proof = crate::connector::task_proof(&claim.event);
+        match first_send::verify_connector(board.as_ref(), &claim, args, proof.as_ref()) {
+            Ok(granted) => args.first_send_granted = Some(granted),
+            Err(code) => applog(&format!(
+                "[queue] first-send policy not applied ({code}) — the first step waits for an agent interaction"
+            )),
+        }
+        return;
+    }
     let config = crate::inbound::read_config_strict();
     let event = crate::inbound::pending_event(&claim.event, &claim.rule);
     if let Some(rule) = config
@@ -1235,6 +1253,7 @@ pub(crate) fn queue_send_now(
             fire: &fire_once,
             persist: &save_queue,
             kill: &kill_session_quietly,
+            board: &crate::documents::board_authority,
             authority: &crate::inbound::read_config_strict,
         },
         &ContextHooks {

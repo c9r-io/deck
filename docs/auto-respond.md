@@ -122,6 +122,11 @@ saved clock schedule/template expresses the task once, or the Slack reaction
 expresses that run. Later scheduled runs need no manual first-send confirmation. Deck does not claim the agent is
 ready; it only stops waiting for proof.
 
+A phone task preset (**Project defaults**, see [Connector](connector.md))
+offers the same choice for tasks created from the phone, with the same
+confirmation and the same limits below; there the choice belongs to the
+preset instead of a rule.
+
 - Only the first step of runs this rule creates. Later steps keep every
   normal check, with or without the approval above: after the first step
   the agent has still not *proven* an interaction to Deck, so an approved

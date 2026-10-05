@@ -70,7 +70,7 @@ import { locateAttentionCard, paintCardSignalStatus, paintCardAttentionBadge, re
 import { cardLabels, dismissKey, labelsKey, seenDismissals } from './notify-model.js';
 import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, retainedBuffer } from './buffer-model.js';
 import { nextCollectedAt } from './channel-model.js';
-import { normalizeTaskPresets } from './connector-model.js';
+import { connectorFirstSendClaim, normalizeTaskPresets } from './connector-model.js';
 import { ruleLabel } from './automation-model.js';
 import { formatDateTime, onLocaleChange } from './i18n.js';
 export { migrateColumnSemantics } from './board-defaults.js';
@@ -533,10 +533,14 @@ export const provider = {
       const run = card?.connectorRun;
       if (!card || run?.handle !== expectedHandle) return { noop: true };
       if (run.initialQueued) { admitted = true; return { noop: true }; }
-      for (const step of run.initialSteps || []) {
+      /* the preset's first-send choice belongs to the head row alone and
+         is only a claim here (scheduler/first_send.rs): the native
+         admission checks it against the current Board and its own journal */
+      for (const [index, step] of (run.initialSteps || []).entries()) {
         await inv('channel_queue_add', { args: { session: card.session, cardId: card.id,
           operationId: step.operationId, dir: card.dir, cmd: card.cmd, text: step.text,
-          mode: step.mode, at: step.at, tpl: step.tpl, tplIdx: step.tplIdx, tplTotal: step.tplTotal } });
+          mode: step.mode, at: step.at, tpl: step.tpl, tplIdx: step.tplIdx, tplTotal: step.tplTotal,
+          ...(index === 0 ? connectorFirstSendClaim(card) : {}) } });
       }
       run.initialQueued = true; admitted = true;
     });
