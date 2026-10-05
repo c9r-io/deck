@@ -34,6 +34,11 @@
 //!   quiet, context,
 //!   unknown) with its observation time and whether the row carries content
 //!   authority, so the webview never derives readiness from hook state.
+//! - `delivery_waits` is the same projection read for attention: per session,
+//!   the row whose stage means "a person has to act and nothing else will"
+//!   (`DELIVERY_WAIT_STAGES`). It is Deck's own queue fact, never an agent
+//!   word; it only feeds the away notification and the Dock count
+//!   (`notify.rs`), and releases, retries or sends nothing.
 
 use super::*;
 use crate::datadir::now_epoch;
@@ -487,6 +492,61 @@ pub(crate) fn plan_item(
         authorized: i.authority.is_some(),
         first_send_override: i.readiness_override.is_some(),
     }
+}
+
+/// One session's most pressing delivery wait: the row and its plan stage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DeliveryWait {
+    pub(crate) item: String,
+    pub(crate) stage: &'static str,
+}
+
+/// The plan stages at which a delivery waits for a person and does not move
+/// on by itself, most pressing first: an uncertain delivery, a row that
+/// stopped retrying, a human checkpoint, and external content whose turn has
+/// come without an approval. Time, gap, quiet and "previous row" waits are
+/// the machine's; an agent's own input request is the agent's to announce.
+pub(crate) const DELIVERY_WAIT_STAGES: [&str; 4] = ["ambiguous", "failed", "review", "external"];
+
+/// session → its most pressing delivery wait, from `plan_item`'s stages.
+/// A tick without a pane listing cannot evaluate a hold (the stage reads
+/// `unknown`); a wait already known for a row that is still unknown is kept
+/// from `previous`, so a failed listing neither ends nor repeats it.
+pub(crate) fn delivery_waits(
+    q: &QueueState,
+    now: u64,
+    minutes: u32,
+    activity: Option<&Observations>,
+    previous: &HashMap<String, DeliveryWait>,
+) -> HashMap<String, DeliveryWait> {
+    let rank = |stage: &str| DELIVERY_WAIT_STAGES.iter().position(|s| *s == stage);
+    let mut waits: HashMap<String, DeliveryWait> = HashMap::new();
+    let mut unknown: HashSet<&str> = HashSet::new();
+    for i in &q.items {
+        let stage = plan_item(q, i, now, minutes, activity).stage;
+        if stage == "unknown" {
+            unknown.insert(i.id.as_str());
+        }
+        let Some(pressing) = rank(stage) else {
+            continue;
+        };
+        let known = waits.get(&i.session).and_then(|w| rank(w.stage));
+        if known.is_none_or(|k| pressing < k) {
+            waits.insert(
+                i.session.clone(),
+                DeliveryWait {
+                    item: i.id.clone(),
+                    stage,
+                },
+            );
+        }
+    }
+    for (session, wait) in previous {
+        if !waits.contains_key(session) && unknown.contains(wait.item.as_str()) {
+            waits.insert(session.clone(), wait.clone());
+        }
+    }
+    waits
 }
 
 #[derive(Serialize)]

@@ -3,9 +3,12 @@
 deck can tell you when an agent asked for input or ended a turn while its
 window is not in front, and count those cards on the Dock icon. Both are
 off by default and both are derived from the same agent-status hook
-words the Board already uses; nothing is inferred from output. The Dock
-count also includes cards whose [reminder](card-reminders.md) is due, and
-that part does not depend on this switch (see the last section).
+words the Board already uses; nothing is inferred from output. The same
+switch also tells you when a list's delivery has stopped to wait for you
+(below); that part is Deck's own queue state and needs no agent
+integration. The Dock count also includes cards whose
+[reminder](card-reminders.md) is due, and that part does not depend on this
+switch (see the last section).
 
 The words are interaction observations, not task truth. **Input
 requested** (`needs-input`) says the agent raised a question or permission
@@ -36,6 +39,31 @@ never notify: the 15 s output heuristic is activity, not readiness, and
 quiet never means ready. Nothing is posted for *working*, for a manual
 follow-up star, or for a session that stopped.
 
+### A delivery that waits for you
+
+A list (the ⏱ panel) sends its rows by itself until one of them needs a
+person. deck notifies you, in its own words, when a card's list reaches
+such a row while you are away:
+
+- a row was sent and waits for you to **check the result** (a list with
+  inspection checkpoints);
+- a delivery is **uncertain**: the text was pasted and the Enter was not
+  confirmed;
+- a row **stopped retrying** after repeated failures;
+- the row whose turn it is carries **external content** that no automation
+  approval covers, and waits for *Send now*.
+
+These are the rows the Needs attention list shows as *Delivery waiting*.
+A wait that passes by itself — a minimum gap, a quiet period, a time of
+day, an earlier row — never notifies, and an agent's own input request is
+announced as the agent's (above), not as a delivery. Rows held by a live
+observation (waiting for a first agent interaction, Codex Signal that
+cannot be attributed, an approval deck could not re-read) are not announced.
+
+It is information only: a notification never sends, retries or releases a
+row. Each wait is announced once; the notification goes when that wait
+ends. In a list with checkpoints every checked row is its own wait.
+
 **Away** means the deck window is not focused: hidden with ⌘W, behind
 another app, or on another Space. A notification is posted at the moment
 of the transition into one of the two states; a repeated report of the
@@ -45,9 +73,14 @@ same word posts nothing.
 
 - Title: the card's title; one longer than 512 bytes is shown by its
   first whole characters.
-- Body: the project name and one of two fixed phrases — *asked for your
-  input* or *a turn has ended* (Chinese: 请求了你的输入 / 一轮已结束), following
-  the interface language.
+- Body: the project name and one of three fixed phrases, following the
+  interface language. Two say what the agent reported: *asked for your
+  input* or *a turn has ended* (Chinese: 请求了你的输入 / 一轮已结束). One is
+  deck's own: *a delivery is waiting* (有投递待处理).
+
+A card has one notification at a time. If an agent's and a held delivery's
+both apply, the newer one is shown; when one of them ends, the other is
+not removed with it.
 
 Never a prompt, terminal output, a path or any other text. Card titles and
 project names reach the notification only; app.log records closed codes
@@ -73,9 +106,11 @@ only while that observation does and is not kept across a Deck restart.
 
 The Dock badge is the number of cards with an **input request** plus cards with an
 **unread turn ending** — the same rows as the Needs attention list minus
-manual follow-up — plus cards whose reminder is due, each card counted
+manual follow-up — plus cards with a **delivery waiting** (the four kinds
+above), plus cards whose reminder is due, each card counted
 once. It updates whether or not the window is focused. When the switch is
-off the agent rows are no longer counted; a due reminder still is. Viewing
+off the agent rows and the waiting deliveries are no longer counted; a due
+reminder still is. Viewing
 a card with an input request keeps it counted until the agent reports
 another word: viewing is not answering.
 

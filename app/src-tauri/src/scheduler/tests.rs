@@ -7442,3 +7442,121 @@ fn clock_admission_rejects_forged_event_rule_slot_source_step_and_owner_target()
         &claim
     ));
 }
+
+/// F05: which sessions have a delivery waiting for a person. Four stages
+/// count (uncertain, stopped retrying, checkpoint, external content whose
+/// turn has come); the machine's own waits and an agent's request do not.
+#[test]
+fn delivery_waits_are_the_stages_only_a_person_can_end() {
+    let none = HashMap::new();
+    let quiet = NOW - 400;
+    let waits = |q: &QueueState, obs: Option<&Observations>| {
+        delivery_waits(q, NOW, 720, obs, &none)
+            .into_iter()
+            .map(|(session, wait)| (session, (wait.item, wait.stage)))
+            .collect::<HashMap<_, _>>()
+    };
+    let only = |item: &str, stage: &'static str| {
+        HashMap::from([("s".to_string(), (item.to_string(), stage))])
+    };
+
+    let mut review = qi("r", "once");
+    review.state = ItemState::Review;
+    assert_eq!(
+        waits(&qs(vec![review]), Some(&seen(quiet))),
+        only("r", "review")
+    );
+    let mut ambiguous = qi("a", "once");
+    ambiguous.state = ItemState::Ambiguous;
+    assert_eq!(
+        waits(&qs(vec![ambiguous.clone()]), Some(&seen(quiet))),
+        only("a", "ambiguous")
+    );
+    let mut dead = qi("d", "once");
+    dead.state = ItemState::Failed;
+    dead.attempts = MAX_ATTEMPTS;
+    assert_eq!(
+        waits(&qs(vec![dead.clone()]), Some(&seen(quiet))),
+        only("d", "failed")
+    );
+    let mut external = qi("e", "chain");
+    external.external = true;
+    assert_eq!(
+        waits(&qs(vec![external.clone()]), Some(&seen(quiet))),
+        only("e", "external")
+    );
+    assert_eq!(
+        waits(
+            &qs(vec![external.clone()]),
+            Some(&seen_agent(quiet, "turn-done"))
+        ),
+        only("e", "external"),
+        "an interaction boundary changes nothing"
+    );
+
+    // not a person's wait: an ordinary due or quiet-waiting row, a paused
+    // row, a retry that has attempts left, a checked row, an agent's request
+    let mut retrying = qi("t", "once");
+    retrying.state = ItemState::Failed;
+    retrying.attempts = 1;
+    let mut paused = external.clone();
+    paused.paused = true;
+    let mut approved = qi("v", "once");
+    approved.state = ItemState::ReviewApproved;
+    for q in [
+        qs(vec![qi("o", "once")]),
+        qs(vec![qi("c", "chain")]),
+        qs(vec![retrying]),
+        qs(vec![paused]),
+        qs(vec![approved]),
+    ] {
+        assert!(waits(&q, Some(&seen(NOW - 10))).is_empty());
+        assert!(waits(&q, Some(&seen(quiet))).is_empty());
+    }
+    assert!(
+        waits(
+            &qs(vec![qi("c", "chain")]),
+            Some(&seen_agent(quiet, "needs-input"))
+        )
+        .is_empty(),
+        "the agent announces its own request"
+    );
+
+    // the most pressing reason names the session, whatever the row order;
+    // another session has its own
+    let mut other = dead.clone();
+    other.id = "x".into();
+    other.session = "t".into();
+    let mut checkpoint = qi("r", "once");
+    checkpoint.state = ItemState::Review;
+    let q = qs(vec![checkpoint, ambiguous, other]);
+    let both = waits(&q, Some(&seen(quiet)));
+    assert_eq!(both["s"], ("a".to_string(), "ambiguous"));
+    assert_eq!(both["t"], ("x".to_string(), "failed"));
+}
+
+/// A tick whose pane listing failed cannot say whether a hold still stands.
+/// A wait already known for that row is kept; it is neither ended nor made
+/// new. A row that has left the queue ends its wait either way.
+#[test]
+fn a_failed_listing_neither_ends_nor_repeats_a_known_delivery_wait() {
+    let quiet = NOW - 400;
+    let mut external = qi("e", "chain");
+    external.external = true;
+    let q = qs(vec![external]);
+    let known = delivery_waits(&q, NOW, 720, Some(&seen(quiet)), &HashMap::new());
+    assert_eq!(known["s"].stage, "external");
+    // no listing this tick: the hold is unknown, the wait is carried
+    assert!(delivery_waits(&q, NOW, 720, None, &HashMap::new()).is_empty());
+    assert_eq!(delivery_waits(&q, NOW, 720, None, &known), known);
+    // the row was sent or removed: nothing is carried for it
+    assert!(delivery_waits(&qs(vec![]), NOW, 720, None, &known).is_empty());
+    assert!(delivery_waits(&qs(vec![qi("z", "once")]), NOW, 720, None, &known).is_empty());
+    // a state the queue itself holds needs no listing
+    let mut review = qi("r", "once");
+    review.state = ItemState::Review;
+    assert_eq!(
+        delivery_waits(&qs(vec![review]), NOW, 720, None, &HashMap::new())["s"].stage,
+        "review"
+    );
+}

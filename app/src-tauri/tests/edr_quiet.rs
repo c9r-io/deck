@@ -45,8 +45,8 @@
 //!
 //! - post anything as a macOS notification but a card's title, its project
 //!   name and a fixed phrase: one of two for an agent's away notification
-//!   (`notify.rs`), one for a card reminder, which also offers two fixed
-//!   actions (`reminder.rs`). No prompt, output, path or reminder note
+//!   and one for a delivery deck holds for a person (`notify.rs`), one for
+//!   a card reminder, which also offers two fixed actions (`reminder.rs`). No prompt, output, path or reminder note
 //!   reaches the system (`native/NotificationBridge.swift`: in-process,
 //!   UNUserNotificationCenter only, no-op outside a bundle).
 //!
@@ -463,8 +463,8 @@ fn native_speech_is_in_process_local_and_content_free() {
 /// The notification bridge talks to UNUserNotificationCenter and nothing
 /// else: no process, no network, no file, no log line, and every entry is
 /// a no-op outside a bundle. An away notification is the card's title, its
-/// project name and one of two fixed phrases, handed over by notify.rs from
-/// exactly one call site. A card reminder is the title, the project name
+/// project name and one of three fixed phrases (two for an agent, one for a
+/// held delivery), handed over by notify.rs from exactly one call site. A card reminder is the title, the project name
 /// and one fixed phrase, with two fixed actions; its note never crosses.
 /// The bridge sets no other content field.
 #[test]
@@ -550,13 +550,16 @@ fn native_notifications_are_in_process_and_content_closed() {
         notify[..call].contains("impl Native for SystemNative"),
         "the call is inside SystemNative::post"
     );
-    // the body comes from body_text and nowhere else
-    assert_eq!(notify.matches("&body_text(").count(), 1);
+    // the body comes from body_text and nowhere else: once for an agent's
+    // observation, once for a held delivery
+    assert_eq!(notify.matches("&body_text(").count(), 2);
     for phrase in [
         "asked for your input",
         "a turn has ended",
+        "a delivery is waiting",
         "请求了你的输入",
         "一轮已结束",
+        "有投递待处理",
     ] {
         assert_eq!(
             notify.matches(phrase).count(),

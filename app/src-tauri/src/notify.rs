@@ -24,6 +24,20 @@
 //!   not `notifyAway` is on) with the agent reasons above. Viewing an agent
 //!   episode never handles a reminder, and a reminder changes nothing about
 //!   the post/withdraw identifiers or the switch.
+//! - **Held deliveries are a third source, and Deck's own.** The scheduler
+//!   publishes, each tick, the sessions whose delivery waits for a person
+//!   (`scheduler::delivery_waits`: an uncertain delivery, a row that stopped
+//!   retrying, a human checkpoint, external content awaiting send-now) with
+//!   an opaque key per wait. It is a queue fact, not an agent observation:
+//!   it reads no hook word, never touches `states`, and its phrase names
+//!   the held delivery, not anything an agent said. A session
+//!   that ENTERS a wait (a key it did not have) is announced once while the
+//!   window is away, under the same switch; the notification is withdrawn
+//!   when that wait ends, and the waiting sessions join the Dock count.
+//!   Nothing here sends, retries or releases a row. The identifier is still
+//!   the session, so a card has one notification: the newer of an agent's
+//!   and a held delivery's replaces the other, and withdrawing one never
+//!   removes the other.
 //! - **Attention, not authority.** The two words are interaction
 //!   observations: `needs-input` = the agent requested input (it may have
 //!   moved on since), `turn-done` = an interaction ended (not task
@@ -42,8 +56,9 @@
 //!   fact that a `turn-done` was viewed (`notify_dismiss`), and the
 //!   settings (`notify_configure`).
 //! - **Content is a closed set.** The title is the card's own title, the
-//!   body is one of two fixed phrases (`body_text`, en / zh-Hans, following
-//!   the locale setting) prefixed by the project name. No prompt, output,
+//!   body is one of three fixed phrases (`body_text`, en / zh-Hans, following
+//!   the locale setting; two for an agent, one for a held delivery) prefixed
+//!   by the project name. No prompt, output,
 //!   path or free text ever reaches the system, and nothing but closed
 //!   codes reaches app.log (`tests/log_privacy.rs`). A session without a
 //!   label is never announced. A title longer than 512 bytes is announced
@@ -95,6 +110,8 @@ pub(crate) const STATUS_WORDS: [&str; 5] = [
 
 const NEEDS_INPUT: &str = "needs-input";
 const TURN_DONE: &str = "turn-done";
+/// Not an agent word: Deck's own "a delivery is held for a person".
+const DELIVERY_WAIT: &str = "delivery-wait";
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct CardLabel {
@@ -114,6 +131,11 @@ pub(crate) struct Notify {
     states: HashMap<String, crate::agent_status::Observation>,
     /// Sessions with a notification handed to the system.
     posted: HashSet<String>,
+    /// Deck's own held deliveries: session → the opaque key of that wait.
+    waits: HashMap<String, String>,
+    /// Sessions whose posted notification is the held-delivery one. Never
+    /// in `posted` at the same time: the identifier is shared.
+    wait_posted: HashSet<String>,
     /// Announcing transitions per session (a notification was due).
     #[cfg(test)]
     announced: HashMap<String, u32>,
@@ -146,13 +168,23 @@ fn away() -> bool {
     !FOCUSED.load(Ordering::Acquire)
 }
 
-/// The two phrases the system ever shows, per locale, after the project.
+/// The three phrases the system ever shows, per locale, after the project:
+/// two say what an agent reported, one that Deck holds a delivery.
 pub(crate) fn body_text(locale: &str, state: &str, project: &str) -> String {
-    let phrase = match (locale == "zh-Hans", state == NEEDS_INPUT) {
-        (true, true) => "请求了你的输入",
-        (true, false) => "一轮已结束",
-        (false, true) => "asked for your input",
-        (false, false) => "a turn has ended",
+    let kind = if state == NEEDS_INPUT {
+        0
+    } else if state == DELIVERY_WAIT {
+        2
+    } else {
+        1
+    };
+    let phrase = match (locale == "zh-Hans", kind) {
+        (true, 0) => "请求了你的输入",
+        (true, 2) => "有投递待处理",
+        (true, _) => "一轮已结束",
+        (false, 0) => "asked for your input",
+        (false, 2) => "a delivery is waiting",
+        (false, _) => "a turn has ended",
     };
     if project.is_empty() {
         phrase.to_string()
@@ -178,7 +210,8 @@ fn push_badge(n: &Notify, native: &dyn Native) {
         .states
         .iter()
         .filter(|(_, seen)| n.enabled && (seen.state == NEEDS_INPUT || unread(seen)))
-        .map(|(session, _)| session.clone());
+        .map(|(session, _)| session.clone())
+        .chain(n.waits.keys().filter(|_| n.enabled).cloned());
     native.badge(crate::reminder::badge_keys(sessions).len());
 }
 
@@ -238,6 +271,8 @@ pub(crate) fn observe_with(
                 n.sound,
             ) {
                 n.posted.insert(session.to_string());
+                // the shared identifier: this replaced a held-delivery one
+                n.wait_posted.remove(session);
                 applog(&format!(
                     "[notify] posted {} s={} e={}",
                     seen.state,
@@ -245,6 +280,59 @@ pub(crate) fn observe_with(
                     seen.episode
                 ));
             }
+        }
+    }
+    push_badge(n, native);
+}
+
+/// The scheduler's held deliveries for this tick (module header): the whole
+/// map, session → the key of its wait. A key a session did not have is a
+/// wait it entered; a session no longer in the map left its wait.
+pub(crate) fn waits_with(
+    n: &mut Notify,
+    native: &dyn Native,
+    waits: HashMap<String, String>,
+    away: bool,
+    locale: &str,
+) {
+    let ended: Vec<String> = n
+        .waits
+        .keys()
+        .filter(|session| waits.get(*session) != n.waits.get(*session))
+        .cloned()
+        .collect();
+    for session in ended {
+        if n.wait_posted.remove(&session) {
+            native.remove(&session);
+        }
+    }
+    let entered: Vec<String> = waits
+        .iter()
+        .filter(|(session, key)| n.waits.get(*session) != Some(*key))
+        .map(|(session, _)| session.clone())
+        .collect();
+    n.waits = waits;
+    for session in entered {
+        if !(n.enabled && away && can_post(native)) {
+            continue;
+        }
+        let Some(label) = n.labels.get(&session) else {
+            continue;
+        };
+        if native.post(
+            &session,
+            &label.title,
+            &body_text(locale, DELIVERY_WAIT, &label.project),
+            n.sound,
+        ) {
+            // the shared identifier: this replaced an agent one, which is
+            // no longer there for `withdraw` to remove
+            n.posted.remove(&session);
+            n.wait_posted.insert(session.clone());
+            applog(&format!(
+                "[notify] posted delivery-wait s={}",
+                crate::applog::session_tag(&session)
+            ));
         }
     }
     push_badge(n, native);
@@ -307,6 +395,9 @@ pub(crate) fn configure_with(
         let posted: Vec<String> = n.posted.iter().cloned().collect();
         for session in posted {
             withdraw(n, native, &session);
+        }
+        for session in std::mem::take(&mut n.wait_posted) {
+            native.remove(&session);
         }
     }
     push_badge(n, native);
@@ -495,6 +586,22 @@ pub(crate) fn observe(session: &str, seen: crate::agent_status::Observation) {
         &SystemNative,
         session,
         seen,
+        away(),
+        &locale,
+    );
+}
+
+/// The scheduler tick's held deliveries (`waits_with`). The same map again
+/// is answered before the locale read, which reads the settings document.
+pub(crate) fn delivery_waits(waits: HashMap<String, String>) {
+    if NOTIFY.lock_or_recover().waits == waits {
+        return;
+    }
+    let locale = crate::documents::locale_setting();
+    waits_with(
+        &mut NOTIFY.lock_or_recover(),
+        &SystemNative,
+        waits,
         away(),
         &locale,
     );
@@ -1040,5 +1147,194 @@ mod tests {
         // agent_status converges too
         observe_with(&mut n, &fake, s, ended(5, true), true, "en");
         assert_eq!(badge_count(&n), 0);
+    }
+
+    fn waits(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(session, key)| (session.to_string(), key.to_string()))
+            .collect()
+    }
+
+    /// A held delivery is Deck's own source: entering a wait is announced
+    /// once while away, in Deck's phrase, and the notification goes when
+    /// that wait ends. The same map again says nothing.
+    #[test]
+    fn a_held_delivery_is_announced_once_and_withdrawn_when_the_wait_ends() {
+        let (mut n, fake) = ready();
+        let s = "deck-card-ab12";
+        waits_with(&mut n, &fake, waits(&[(s, "q1:review")]), true, "en");
+        assert_eq!(
+            fake.calls(),
+            ["post deck-card-ab12 [Fix the parser] [deck · a delivery is waiting] sound=false"]
+        );
+        assert_eq!(*fake.badge.borrow(), Some(1));
+        fake.clear();
+        waits_with(&mut n, &fake, waits(&[(s, "q1:review")]), true, "en");
+        assert!(fake.calls().is_empty(), "the same wait is not repeated");
+        // the next row's checkpoint is another wait: the old one goes, the
+        // new one is announced, in the interface language
+        waits_with(&mut n, &fake, waits(&[(s, "q2:review")]), true, "zh-Hans");
+        assert_eq!(
+            fake.calls(),
+            [
+                "remove deck-card-ab12",
+                "post deck-card-ab12 [Fix the parser] [deck · 有投递待处理] sound=false"
+            ]
+        );
+        fake.clear();
+        // handled: withdrawn, nothing counted
+        waits_with(&mut n, &fake, waits(&[]), true, "en");
+        assert_eq!(fake.calls(), ["remove deck-card-ab12"]);
+        assert_eq!(*fake.badge.borrow(), Some(0));
+        // a project-less card gets the bare phrase
+        fake.clear();
+        waits_with(
+            &mut n,
+            &fake,
+            waits(&[("deck-card-cd34", "q9:failed")]),
+            true,
+            "en",
+        );
+        assert_eq!(
+            fake.calls(),
+            ["post deck-card-cd34 [Write docs] [a delivery is waiting] sound=false"]
+        );
+    }
+
+    /// The same conditions as an agent notification: only while away, only
+    /// with the switch on and authorization, only for a labelled card. A
+    /// wait entered while the window was in front is counted, never posted
+    /// later.
+    #[test]
+    fn a_held_delivery_respects_focus_the_switch_authorization_and_labels() {
+        let s = "deck-card-ab12";
+        let (mut n, fake) = ready();
+        waits_with(&mut n, &fake, waits(&[(s, "q1:external")]), false, "en");
+        assert!(fake.calls().is_empty(), "in front: no notification");
+        assert_eq!(*fake.badge.borrow(), Some(1), "but it is counted");
+        waits_with(&mut n, &fake, waits(&[(s, "q1:external")]), true, "en");
+        assert!(
+            fake.calls().is_empty(),
+            "leaving later does not announce it"
+        );
+
+        let (mut n, fake) = ready();
+        configure_with(&mut n, &fake, false, false, false);
+        fake.clear();
+        waits_with(&mut n, &fake, waits(&[(s, "q1:external")]), true, "en");
+        assert!(fake.calls().is_empty(), "switch off: nothing posted");
+        assert_eq!(*fake.badge.borrow(), Some(0), "and nothing counted");
+
+        let mut n = Notify::default();
+        let denied = Fake::new("denied");
+        set_labels_with(&mut n, vec![label(s, "Fix the parser", "deck")]).unwrap();
+        configure_with(&mut n, &denied, true, false, false);
+        waits_with(&mut n, &denied, waits(&[(s, "q1:external")]), true, "en");
+        assert!(denied.calls().is_empty(), "not authorized: nothing posted");
+
+        let (mut n, fake) = ready();
+        waits_with(
+            &mut n,
+            &fake,
+            waits(&[("deck-card-zz99", "q1:review")]),
+            true,
+            "en",
+        );
+        assert!(fake.calls().is_empty(), "no label, no announcement");
+
+        // turning the switch off withdraws a posted one and clears the count
+        let (mut n, fake) = ready();
+        waits_with(&mut n, &fake, waits(&[(s, "q1:ambiguous")]), true, "en");
+        fake.clear();
+        configure_with(&mut n, &fake, false, false, false);
+        assert_eq!(fake.calls(), ["remove deck-card-ab12"]);
+        assert_eq!(*fake.badge.borrow(), Some(0));
+    }
+
+    /// One card, one notification, two independent sources. The newer one
+    /// replaces the other; ending one never removes the other's, and the
+    /// agent's observations are untouched by a held delivery.
+    #[test]
+    fn a_held_delivery_and_an_agent_notification_do_not_remove_each_other() {
+        let s = "deck-card-ab12";
+        let (mut n, fake) = ready();
+        observe_word(&mut n, &fake, s, TURN_DONE, true, "en");
+        fake.clear();
+        // the list's next row is held: its notification takes the card's slot
+        waits_with(&mut n, &fake, waits(&[(s, "q1:external")]), true, "en");
+        assert_eq!(
+            fake.calls(),
+            ["post deck-card-ab12 [Fix the parser] [deck · a delivery is waiting] sound=false"]
+        );
+        assert_eq!(*fake.badge.borrow(), Some(1), "one card counts once");
+        assert_eq!(n.states[s].state, TURN_DONE, "the observation is untouched");
+        fake.clear();
+        // the user views the ending: the agent side has nothing posted to
+        // remove, the held-delivery notification stays
+        dismiss_current(&mut n, &fake, s);
+        assert!(fake.calls().is_empty());
+        assert_eq!(*fake.badge.borrow(), Some(1), "the wait still counts");
+        // the wait ends: now it goes
+        waits_with(&mut n, &fake, waits(&[]), true, "en");
+        assert_eq!(fake.calls(), ["remove deck-card-ab12"]);
+        assert_eq!(*fake.badge.borrow(), Some(0));
+
+        // the other order: an agent's request replaces a held-delivery one,
+        // and the wait ending afterwards removes nothing of the agent's
+        let (mut n, fake) = ready();
+        waits_with(&mut n, &fake, waits(&[(s, "q1:review")]), true, "en");
+        fake.clear();
+        observe_word(&mut n, &fake, s, NEEDS_INPUT, true, "en");
+        assert_eq!(
+            fake.calls(),
+            ["post deck-card-ab12 [Fix the parser] [deck · asked for your input] sound=false"]
+        );
+        fake.clear();
+        waits_with(&mut n, &fake, waits(&[]), true, "en");
+        assert!(
+            fake.calls().is_empty(),
+            "the agent's notification is not the wait's to remove"
+        );
+        assert_eq!(*fake.badge.borrow(), Some(1));
+        // and a session leaving the hook store does not end a wait
+        let (mut n, fake) = ready();
+        waits_with(&mut n, &fake, waits(&[(s, "q1:failed")]), true, "en");
+        fake.clear();
+        retain_with(&mut n, &fake, &HashSet::new());
+        assert!(fake.calls().is_empty());
+        assert_eq!(n.waits.len(), 1);
+    }
+
+    /// Only the fixed phrase crosses: a wait's key (a row id and a stage)
+    /// never reaches the system.
+    #[test]
+    fn a_held_delivery_shows_nothing_but_the_title_the_project_and_the_phrase() {
+        let (mut n, fake) = ready();
+        waits_with(
+            &mut n,
+            &fake,
+            waits(&[("deck-card-ab12", "row-SECRET-id:first-send")]),
+            true,
+            "en",
+        );
+        let calls = fake.calls().join("\n");
+        assert!(
+            !calls.contains("SECRET") && !calls.contains("first-send"),
+            "{calls}"
+        );
+        for (locale, phrase) in [("en", "a delivery is waiting"), ("zh-Hans", "有投递待处理")]
+        {
+            assert_eq!(body_text(locale, DELIVERY_WAIT, ""), phrase);
+            assert_eq!(
+                body_text(locale, DELIVERY_WAIT, "deck"),
+                format!("deck · {phrase}")
+            );
+        }
+        // the two agent phrases are what they were
+        assert_eq!(body_text("en", NEEDS_INPUT, ""), "asked for your input");
+        assert_eq!(body_text("en", TURN_DONE, ""), "a turn has ended");
+        assert_eq!(body_text("zh-Hans", NEEDS_INPUT, ""), "请求了你的输入");
+        assert_eq!(body_text("zh-Hans", TURN_DONE, ""), "一轮已结束");
     }
 }

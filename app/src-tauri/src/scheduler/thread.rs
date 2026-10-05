@@ -127,7 +127,20 @@ fn sleep_until_tick() {
     *f = false;
 }
 
+/// Hand the tick's delivery waits to the notification module as
+/// session → an opaque key for that one wait (row and stage).
+fn publish_delivery_waits(waits: &HashMap<String, DeliveryWait>) {
+    crate::notify::delivery_waits(
+        waits
+            .iter()
+            .map(|(session, wait)| (session.clone(), format!("{}:{}", wait.item, wait.stage)))
+            .collect(),
+    );
+}
+
 pub(crate) fn spawn_scheduler(app: AppHandle) {
+    // the delivery waits the last tick published (`review::delivery_waits`)
+    let mut waits: HashMap<String, DeliveryWait> = HashMap::new();
     std::thread::spawn(move || loop {
         sleep_until_tick();
         let state = app.state::<Queues>();
@@ -135,6 +148,11 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         // empty-queue fast path so dirty state never loses its retry driver.
         flush_dirty(&state.q, &state.dirty, &save_queue);
         if state.q.lock_or_recover().items.is_empty() {
+            // nothing queued, nothing waits
+            if !waits.is_empty() {
+                waits.clear();
+                publish_delivery_waits(&waits);
+            }
             continue;
         }
         // pane activity (chain quiet) and agent hook words (agent hold), one
@@ -224,6 +242,17 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                 .map(|i| i.session)
                 .collect()
         };
+        // Attention only: which sessions have a delivery waiting for a
+        // person. Read from the same state and observations the selection
+        // just used; it selects, sends and releases nothing.
+        let current = {
+            let q = state.q.lock_or_recover();
+            delivery_waits(&q, now_epoch(), local_minutes(), listing.as_ref(), &waits)
+        };
+        if current != waits {
+            waits = current;
+            publish_delivery_waits(&waits);
+        }
         let Some(activity) = listing else {
             continue;
         };
