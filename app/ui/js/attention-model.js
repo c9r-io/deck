@@ -30,15 +30,48 @@ import { reminderDue } from './reminder-model.js';
 // Only snapshots without an episode fall back to status comparison, where a
 // missed working→done cannot be told from a repeat. Presentation (Board badge, list, tab dot, Dock) reads these
 // categories; none of them is side-effect authority (tests/signal_census.rs).
-import { CARD_QUIET_SECS, effectiveCardStatus } from './pure.js';
+// - Delivery waiting: `deliveryWaits` reads Deck's own queue items (the copy
+//   scheduler.js already holds), never an agent word or a plan snapshot. A
+//   session is waiting when a row is at a human checkpoint (`review`), its
+//   delivery is uncertain (`ambiguous`), it stopped retrying (`failed`, dead),
+//   or the row whose turn it is carries external content no approval covers
+//   (`external`: the group's head only, never a paused row). It says a
+//   delivery is held, not that the work is stuck. It joins `pending` and the
+//   list; it is not an agent observation, so the card badge and the Dock
+//   count (attentionBadge, notify.rs) leave it out on purpose. Holds that
+//   need a live observation (first interaction, Codex Signal, unverified
+//   approval) are not read here.
+import { CARD_QUIET_SECS, effectiveCardStatus, itemDead } from './pure.js';
 
-export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'done', 'followed', 'unavailable', 'stopped', 'reminder', 'reminders']);
+export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'waiting', 'done', 'followed', 'unavailable', 'stopped', 'reminder', 'reminders']);
+/* most pressing first: one reason per session */
+export const DELIVERY_WAITS = Object.freeze(['ambiguous', 'failed', 'review', 'external']);
+
+export function deliveryWaits(items) {
+  const heads = new Map();
+  const order = i => i.seq ?? 1;
+  for (const i of items) {
+    if (!i.group || i.state === 'review-approved') continue;
+    const head = heads.get(i.group);
+    if (!head || order(i) < order(head) || (order(i) === order(head) && i.added < head.added)) heads.set(i.group, i);
+  }
+  const waits = new Map();
+  for (const i of items) {
+    const reason = i.state === 'ambiguous' ? 'ambiguous' : itemDead(i) ? 'failed' : i.state === 'review' ? 'review'
+      : i.external === true && i.mode === 'chain' && !i.authority && !i.paused && (!i.group || heads.get(i.group) === i) ? 'external' : null;
+    const known = waits.get(i.session);
+    if (reason && (!known || DELIVERY_WAITS.indexOf(reason) < DELIVERY_WAITS.indexOf(known))) waits.set(i.session, reason);
+  }
+  return waits;
+}
 export const CODEX_SIGNAL_TRUST = Object.freeze(['unknown', 'trusted', 'unavailable']);
 
 export function createAttentionTracker() {
   const snapshots = new Map();
   let lastSuccess = null;
   let failed = false;
+  let waits = new Map();
+  const waiting = card => (card && waits.get(card.session)) || null;
   const get = card => {
     const value = card && snapshots.get(card.id);
     return value?.session === card?.session ? value : null;
@@ -55,11 +88,13 @@ export function createAttentionTracker() {
   const matches = (card, filter) => {
     const kind = category(card);
     return filter === 'all' || (filter === 'reminder' ? reminderDue(card) : filter === 'reminders' ? !!card.reminder : false) || (filter === 'followed' ? card.pinned === true
-      : filter === 'pending' ? kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card)
+      : filter === 'pending' ? kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card) || !!waiting(card)
+      : filter === 'waiting' ? !!waiting(card)
       : filter === 'unavailable' ? kind === 'unavailable' || kind === 'unknown' : kind === filter);
   };
   return {
-    get, category, matches,
+    get, category, matches, waiting,
+    deliveries(items) { waits = deliveryWaits(items || []); },
     record(cards, infos, visible, now) {
       visible = visible || new Set();
       now = now ?? Date.now();
@@ -116,12 +151,13 @@ export function createAttentionTracker() {
       };
     },
     counts(cards) {
-      const counts = { all: cards.length, pending: 0, input: 0, done: 0, followed: 0, unavailable: 0, stopped: 0, unknown: 0 };
+      const counts = { all: cards.length, pending: 0, input: 0, waiting: 0, done: 0, followed: 0, unavailable: 0, stopped: 0, unknown: 0 };
       for (const card of cards) {
         const kind = category(card);
         if (kind in counts) counts[kind]++;
         if (card.pinned === true) counts.followed++;
-        if (kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card)) counts.pending++;
+        if (waiting(card)) counts.waiting++;
+        if (kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card) || waiting(card)) counts.pending++;
         if (kind === 'unknown') counts.unavailable++;
       }
       if (cards.some(card => card.reminder)) { counts.reminder = cards.filter(card => reminderDue(card)).length; counts.reminders = cards.filter(card => card.reminder).length; }
@@ -162,12 +198,14 @@ export function attentionRows(projects, cards, tracker, filter) {
       added.add(card.id);
       if (tracker.matches(card, filter)) {
         const category = tracker.category(card);
-        const kind = reminderDue(card) && !['input', 'done'].includes(category) ? 'reminder' : filter === 'pending' && !['input', 'done'].includes(category) ? 'followed' : category;
+        /* an input request outranks a held delivery; the row names both */
+        const kind = category !== 'input' && tracker.waiting(card) ? 'waiting'
+          : reminderDue(card) && !['input', 'done'].includes(category) ? 'reminder' : filter === 'pending' && !['input', 'done'].includes(category) ? 'followed' : category;
         ordered.push({ card, project, column, kind });
       }
     }
   }
   if (filter === 'reminder' || filter === 'reminders') return ordered.sort((a, b) => a.card.reminder.dueAt - b.card.reminder.dueAt);
   if (filter !== 'pending') return ordered;
-  return ['input', 'done', 'reminder', 'followed'].flatMap(kind => ordered.filter(row => row.kind === kind));
+  return ['input', 'waiting', 'done', 'reminder', 'followed'].flatMap(kind => ordered.filter(row => row.kind === kind));
 }

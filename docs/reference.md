@@ -39,9 +39,14 @@ live status. Status summaries and filters live in the sidebar’s Needs attentio
 view, keeping the Board focused on its groups.
 
 **Needs attention spans all projects.** Its sidebar entry links to sessions
-with an explicit input request, an unread turn ending, or a manual follow-up
-star, showing each card's
-original project and group. Opening a session successfully marks its ending as
+with an explicit input request, a held delivery, an unread turn ending, or a
+manual follow-up star, showing each card's
+original project and group. A delivery is held when a scheduled prompt was
+sent and waits for your inspection, its delivery is uncertain, it stopped
+retrying, or the step whose turn it is carries external content no automation
+approval covers. Deck reads this from its own list, not from the agent; the
+card's ⏰ chip names it, and the list shows it after input requests. It is
+not part of the card's attention badge, the Dock count or away notifications. Opening a session successfully marks its ending as
 viewed, not handled or task-complete; an input request stays until its state
 changes. The back action restores the attention filter and position. Quiet or
 recent output without valid agent state is separate from confirmed requests:

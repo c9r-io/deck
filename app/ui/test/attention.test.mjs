@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ATTENTION_BADGE_LABELS, attentionBadge, createAttentionTracker, attentionRows, codexCoverageGap } from '../js/attention-model.js';
+import { ATTENTION_BADGE_LABELS, DELIVERY_WAITS, attentionBadge, createAttentionTracker, attentionRows, codexCoverageGap, deliveryWaits } from '../js/attention-model.js';
 import { NOTIFY_COUNTED_FILTERS } from '../js/notify-model.js';
 import { dictionaries } from '../js/i18n.js';
 import fixture from './fixtures/attention-fixture.mjs';
@@ -47,7 +47,7 @@ test('Codex coverage is diagnostic only and follows live session snapshots', () 
 
 test('12-card fixture: manual follow-up joins pending without changing live categories or placement', () => {
   const tracker = trackerOf();
-  assert.deepEqual(tracker.counts(cards), { all: 12, pending: 5, input: 2, done: 2, followed: 2, unavailable: 3, stopped: 1, unknown: 0 });
+  assert.deepEqual(tracker.counts(cards), { all: 12, pending: 5, input: 2, waiting: 0, done: 2, followed: 2, unavailable: 3, stopped: 1, unknown: 0 });
   assert.equal(tracker.counts(cards.filter(c => c.projectId === 'Atlas')).pending, 1);
   assert.equal(tracker.category(cards[0]), 'input', 'viewed input remains pending');
   assert.equal(tracker.category(cards[2]), 'other', 'viewed turn ended is not unread');
@@ -123,7 +123,7 @@ test('session replacement, removed cards, new tracker and changed input episode 
   fresh.record(cards, infos);
   assert.equal(fresh.category(cards[2]), 'done', 'no promise of persistent read state after restart');
   fresh.record([], []);
-  assert.deepEqual(fresh.counts([]), { all: 0, pending: 0, input: 0, done: 0, followed: 0, unavailable: 0, stopped: 0, unknown: 0 });
+  assert.deepEqual(fresh.counts([]), { all: 0, pending: 0, input: 0, waiting: 0, done: 0, followed: 0, unavailable: 0, stopped: 0, unknown: 0 });
   assert.equal(fresh.freshness([]).kind, 'fresh');
 });
 
@@ -278,4 +278,61 @@ test('viewed and stale never change the observation; only closed words are state
   }
   tracker.record([probe], [{ name: 'probe', alive: false, agent: 'turn-done' }], new Set(), 901);
   assert.equal(tracker.get(probe).agent, null, 'a dead session reports no interaction state');
+});
+
+test('a held delivery is read from queue items alone: checkpoint, uncertain, dead, and the external row whose turn it is', () => {
+  const row = (session, extra) => ({ session, state: 'pending', mode: 'chain', attempts: 0, added: 1, ...extra });
+  const waits = deliveryWaits([
+    row('review', { state: 'review' }),
+    row('approved', { state: 'review-approved' }),
+    row('uncertain', { state: 'ambiguous' }),
+    row('retrying', { state: 'failed', attempts: 7 }),
+    row('dead', { state: 'failed', attempts: 8 }),
+    row('owner', {}),
+    row('timed', { mode: 'at', external: true }),
+    row('external', { external: true, group: 'g1', seq: 1 }),
+    row('behind', { group: 'g2', seq: 1 }),
+    row('behind', { external: true, group: 'g2', seq: 2 }),
+    row('turn', { state: 'review-approved', group: 'g3', seq: 1 }),
+    row('turn', { external: true, group: 'g3', seq: 2 }),
+    row('granted', { external: true, authority: { step: 1 } }),
+    row('paused', { external: true, paused: true }),
+    row('both', { external: true }),
+    row('both', { state: 'ambiguous' }),
+    row('tie', { external: true, group: 'g4', added: 2 }),
+    row('tie', { group: 'g4', added: 1 }),
+  ]);
+  assert.deepEqual(Object.fromEntries(waits), {
+    review: 'review', uncertain: 'ambiguous', dead: 'failed', external: 'external', turn: 'external', both: 'ambiguous',
+  });
+  for (const reason of DELIVERY_WAITS) {
+    for (const locale of ['en', 'zh-Hans']) assert.ok(dictionaries[locale][`attention.waiting.${reason}`], `${locale} ${reason}`);
+  }
+});
+
+test('a held delivery joins pending after input requests and stays off the badge', () => {
+  const tracker = trackerOf();
+  const before = tracker.counts(cards);
+  const held = id => cards.find(c => c.id === id);
+  // 01 requests input, 07 has an unread ending, 03 is neither
+  tracker.deliveries([
+    { session: held('01').session, state: 'review' },
+    { session: held('07').session, state: 'ambiguous' },
+    { session: held('03').session, state: 'failed', attempts: 8 },
+    { session: 'no-such-card', state: 'review' },
+  ]);
+  assert.equal(tracker.waiting(held('03')), 'failed');
+  assert.equal(tracker.waiting(held('02')), null);
+  const counts = tracker.counts(cards);
+  assert.equal(counts.waiting, 3);
+  assert.equal(counts.pending, before.pending + 1, 'only the card that was not pending yet is added');
+  assert.deepEqual({ ...counts, waiting: 0, pending: before.pending }, before, 'no agent category changes');
+  const rows = attentionRows(projects, cards, tracker, 'pending');
+  assert.deepEqual(rows.map(r => [r.card.id, r.kind]),
+    [['01', 'input'], ['08', 'input'], ['03', 'waiting'], ['07', 'waiting'], ['10', 'done'], ['11', 'followed']]);
+  assert.deepEqual(attentionRows(projects, cards, tracker, 'waiting').map(r => r.card.id), ['01', '03', '07']);
+  assert.deepEqual(attentionBadge(tracker, held('03')), null, 'the badge stays the Dock set');
+  assert.equal(attentionBadge(tracker, held('07')).kind, 'done');
+  tracker.deliveries([]);
+  assert.deepEqual(tracker.counts(cards), before);
 });

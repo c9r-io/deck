@@ -279,6 +279,7 @@
       "terminal": "done",
       "checks": {
         "review-atomic-list": {},
+        "review-attention": {},
         "review-cancel-dialog": {},
         "review-default": {},
         "review-dialog": {},

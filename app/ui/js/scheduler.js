@@ -9,6 +9,9 @@
 // confirmation does. Reviewed templates enter as one backend transaction.
 // Plans are read-only snapshots: an open panel re-fetches them on the poll
 // tick (refreshQueuePlans) so a waiting list is not shown as "unknown".
+// Every fetch hands the items to the attention tracker (`deliveries`,
+// attention-model.js), and a card's chip names a held delivery after its
+// count, so a row that waits for you is visible without opening the panel.
 // The panel shows one LIST per queue group (an "at" head and the chain rows
 // behind it) or per standing "every" rule (its embedded rows). A list's head
 // carries the two optional fields the form offers — NOT BEFORE (the head's
@@ -60,7 +63,7 @@ export { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, grou
 import { autoGrowField, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { claimSessionTool, registerSessionPopup, registerSessionTool, releaseSessionTool } from './session-tools.js';
 // Board access is injected at boot; the queue view has no view-core imports.
-let provider, pollNow;
+let provider, pollNow, refreshAttention;
 import { strToB64 } from './terminal-bytes.js';
 import { openTemplates } from './templates.js';
 import { formatInterval, formatNumber, onLocaleChange, t } from './i18n.js';
@@ -69,7 +72,9 @@ import { formatInterval, formatNumber, onLocaleChange, t } from './i18n.js';
 let queueFetchedAt = 0;
 export async function refreshQueue() {
   try { ctx.queueCache = await inv('queue_list'); queueFetchedAt = Date.now(); } catch (e) { ctx.queueCache.plans = []; }
+  ctx.attention.deliveries(ctx.queueCache.items);
   renderQueueUI();
+  refreshAttention();
 }
 /* the backend emits queue-changed only on mutations, and a list that is
    merely waiting (gap, quiet, not-before) mutates nothing — so an open panel
@@ -95,7 +100,9 @@ const drafts = new Map();   // list key → { text, quiet }
 export function setQueueChip(chip, card) {
   if (!chip) return;
   const q = sessionQueue(card.session);
-  chip.textContent = q.length ? '⏰' + q.length : '';
+  const waiting = q.length ? ctx.attention.waiting(card) : null;
+  chip.classList.toggle('waiting', !!waiting);
+  chip.textContent = q.length ? '⏰' + q.length + (waiting ? ' · ' + t(`attention.waiting.${waiting}`) : '') : '';
   chip.title = q.length
     ? t('queue.next', { when: fmtWhen(q[0]), prompt: promptTooltip(q[0].text) })
     : '';
@@ -703,7 +710,7 @@ export function showTplPop(anchor, { insert, save = null }) {
 /* DOM wiring, run once at boot (app.js) so the module can be imported
    without a document. */
 export function initScheduler(deps) {
-  ({ provider, pollNow } = deps);
+  ({ provider, pollNow, refreshAttention } = deps);
   registerSessionTool('queue', closeQueuePanel);
   registerSessionPopup(hideTplPop);
   $('queue-btn').onclick = () => toggleQueuePanel();

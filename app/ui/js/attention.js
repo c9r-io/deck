@@ -19,6 +19,10 @@
 //   `refreshBoardAttention` repaints it in place on every attention refresh,
 //   so viewing an ending clears it without a card rebuild or a status change.
 //   It never reflects native notification delivery.
+// - A held delivery (`tracker.waiting`, attention-model.js) is a list row and
+//   a filter, counted in the sidebar's pending number; the row's reason ends
+//   with it. The Board card says it on its queue chip (scheduler.js), not on
+//   the attention badge.
 // - Keyed rows preserve focus and scroll: `updateRows` reconciles children by
 //   key instead of rebuilding, restores the focused button after the
 //   insertBefore blur, and a pointer held inside the list freezes
@@ -120,7 +124,7 @@ function sourceText(card) {
 }
 
 function countText(filter, counts, freshness) {
-  if (freshness.kind !== 'unknown' || ['all', 'followed', 'unavailable', 'reminder', 'reminders'].includes(filter)) return formatNumber(counts[filter] || 0);
+  if (freshness.kind !== 'unknown' || ['all', 'followed', 'waiting', 'unavailable', 'reminder', 'reminders'].includes(filter)) return formatNumber(counts[filter] || 0);
   // Manual follow-up is known even before the first successful status poll.
   return filter === 'pending' && (counts.followed || counts.reminder) ? `${formatNumber(Math.max(counts.followed, counts.reminder || 0))}+` : '—';
 }
@@ -251,7 +255,7 @@ function updateRows() {
     pin.setAttribute('aria-pressed', String(card.pinned === true));
     pin.classList.toggle('active', card.pinned === true);
     row.querySelector('.attention-origin').textContent = `${project.name} / ${column.name}`;
-    row.querySelector('.attention-reason').textContent = (card.pinned === true ? `${t('attention.filter.followed')} · ` : '') + attentionStatusText(card) + (card.reminder ? ' · ' + t(card.reminder.due || card.reminder.dueAt <= Date.now() ? 'reminder.due' : 'reminder.pending') : '');
+    row.querySelector('.attention-reason').textContent = (card.pinned === true ? `${t('attention.filter.followed')} · ` : '') + attentionStatusText(card) + (ctx.attention.waiting(card) ? ' · ' + t(`attention.waiting.${ctx.attention.waiting(card)}`) : '') + (card.reminder ? ' · ' + t(card.reminder.due || card.reminder.dueAt <= Date.now() ? 'reminder.due' : 'reminder.pending') : '');
     row.querySelector('.attention-reason').dataset.status = snapshot?.status || 'unknown';
     row.querySelector('.attention-viewed').textContent = sourceText(card);
     row.querySelector('.attention-open').textContent = t(locate ? 'attention.locate' : 'attention.open');

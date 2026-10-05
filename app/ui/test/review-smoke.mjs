@@ -3,10 +3,11 @@
 // Synthetic agent observations exercise display only, never delivery authority.
 export async function runReviewSmoke(restart = false) {
   const { $, ctx, inv, state, store } = await import('../js/state.js');
-  const { provider, pollNow, stopPolling, render } = await import('../js/board.js');
+  const { provider, pollNow, stopPolling, render, switchProject } = await import('../js/board.js');
   const { openSession } = await import('../js/layout.js');
   const { refreshQueue, toggleQueuePanel, renderQueueUI } = await import('../js/scheduler.js');
-  const { setLocale } = await import('../js/i18n.js');
+  const { setLocale, t } = await import('../js/i18n.js');
+  const { showAttention } = await import('../js/attention.js');
   const { activateTheme } = await import('../js/theme.js');
   const { applyFontScale } = await import('../js/font-scale.js');
   const { cfmDone } = await import('../js/dialogs.js');
@@ -131,6 +132,17 @@ export async function runReviewSmoke(restart = false) {
     await report('review-final-hold', finalPreview.next_text === null
       && !ctx.queueCache.review_completed.includes(card.session)
       && ctx.queueCache.deliveries.filter(d => d.session === card.session).length === 3);
+    // the held checkpoint is readable with the terminal and the panel closed:
+    // the Board card's chip, then the Needs-attention row
+    const held = t('attention.waiting.review');
+    switchProject(card.projectId); await pause(120);
+    const chip = document.querySelector(`#columns .card[data-sid="${card.id}"] .q-chip`);
+    const onBoard = state.view === 'board' && !!chip && chip.classList.contains('waiting') && chip.textContent.includes(held);
+    ctx.attentionFilter = 'waiting'; showAttention();
+    const row = () => [...$('attention-list').children].find(el => el.dataset.sid === card.id);
+    await wait(() => !!row(), 3000);
+    await report('review-attention', onBoard && ctx.attention.counts(store.cards).waiting === 1
+      && !!row()?.querySelector('.attention-reason').textContent.includes(held));
     await report('done', !failed);
   } catch (e) {
     await inv('ui_event', { code: 'smoke-check', detail: 'review-stage', a: -1, b: stage });

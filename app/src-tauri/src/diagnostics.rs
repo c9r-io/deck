@@ -333,6 +333,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "defaults-exit",
     "review-default",
     "review-atomic-list",
+    "review-attention",
     "review-no-bypass",
     "review-save-failure",
     "review-idempotent",

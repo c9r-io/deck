@@ -76,3 +76,14 @@ test('the badge is painted from the tracker and repainted in place', () => {
     [true, undefined, '', undefined, 0], 'viewed ending: the same element is cleared, not replaced');
   paintCardAttentionBadge(null, card);
 });
+
+test('a held delivery never paints the attention badge', () => {
+  const card = { id: 'held', session: 'held-session', title: 'Held' };
+  ctx.attention = createAttentionTracker();
+  ctx.attention.record([card], [{ name: card.session, alive: true, agent: 'working', idle_secs: 1 }], new Set(), 1);
+  ctx.attention.deliveries([{ session: card.session, state: 'ambiguous' }]);
+  const el = new Badge();
+  paintCardAttentionBadge(el, card);
+  assert.equal(ctx.attention.waiting(card), 'ambiguous');
+  assert.deepEqual([el.hidden, el.textContent], [true, '']);
+});

@@ -756,6 +756,7 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
   padding: 1px 5px; flex: none;
 }
 .card .q-chip:empty { display: none; }
+.card .q-chip.waiting { border-color: var(--wait); font-family: inherit; }
 
 /* ---------- quick-command / completion bar ----------
    A real flex row inside the focused pane. xterm is fitted into the
