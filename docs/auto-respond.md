@@ -94,7 +94,12 @@ now, as on Stable. It does not make the agent unattended:
   (`codex` → `codex --yolo` included), template or its steps, finish or
   inspection mode — turns it off until you tick it again, and unticking it
   (or deleting the rule) also stops the unsent steps of runs already under
-  way.
+  way. Editing the template's steps in the template manager does the same
+  for every approved rule that uses it: deck says so at that moment and
+  names the rules, and the Automations drawer then shows whether it was the
+  template or the rule that changed. Steps already queued for a run keep
+  the text that was approved and still go by themselves; runs started
+  afterwards wait for Send now at each follow-up until you approve again.
 
 Steps that paste Slack message content (`{{msg.text}}` and friends) need a
 second, explicit tick: external messages are untrusted input and may

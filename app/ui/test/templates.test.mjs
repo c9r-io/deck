@@ -262,3 +262,56 @@ test('creating and deleting a template goes through the ordinary Board write', a
   closeTemplates();
   assert.equal($('tpl-modal').style.display, 'none');
 });
+
+// F16: editing the steps of a template an APPROVED Slack badge rule uses says
+// so at once, names the rule, and says it once per rule while the manager is
+// open. Nothing is asked and nothing about the approval is changed here.
+test('a step edit that voids an automation approval is announced once, by rule', async () => {
+  const { approveRule } = await import('../js/automation-model.js');
+  const { dictionaries } = await import('../js/i18n.js');
+  // full Slack rules make the Board's render paint the automations chip, so
+  // that module needs its Board dependencies as the app gives them
+  const { initAutomation } = await import('../js/automation.js');
+  window.__TAURI__ = { event: { listen: async () => {} }, core: { invoke: async () => null } };
+  $('auto-drawer').hidden = true;   // the drawer is closed, as in the app; a fake element is not hidden by default
+  initAutomation({ provider, activeProject: () => store.projects[0], newSessionSummary: () => '', openProjectDefaults() {},
+    projectDefaultsSummary: () => '', openSession() {}, newDefaultSession() {} });
+  const toasts = () => $('toasts').children.map(child => child.textContent);
+  const steps = ['read the notes', 'plan the work'];
+  const plain = { id: 'deck', source: 'slack', badge: 'deck', projectId: 'P1', columnId: 'C1', template: 'morning',
+    dir: '~/work', cmd: 'claude', finish: 'keep', reviewEach: false, enabled: true };
+  const approved = await approveRule(plain, { name: 'morning', steps });
+  const unapproved = { ...plain, id: 'bare', badge: 'bare' };
+  const elsewhere = await approveRule({ ...plain, id: 'other', badge: 'other', template: 'evening' }, { name: 'evening', steps: ['x'] });
+  const edit = async (index, text) => {
+    const editor = await openEditor(index);
+    editor.value = text;
+    editor.fire('keydown', { key: 'Enter', metaKey: true });
+    await settle();
+  };
+  seed([{ name: 'morning', steps: [...steps] }, { name: 'evening', steps: ['x'] }], [approved, unapproved, elsewhere]);
+  $('toasts').children.length = 0;
+  await edit(0, 'read the notes and the diff');
+  assert.deepEqual(savedTemplates()[0].steps, ['read the notes and the diff', 'plan the work']);
+  assert.equal(toasts().length, 1, `said once: ${JSON.stringify(toasts())}`);
+  assert.ok(toasts()[0].includes(':deck:'), `names the approved rule: ${JSON.stringify(toasts())}`);
+  assert.ok(!toasts()[0].includes(':bare:') && !toasts()[0].includes(':other:'), 'and only that one');
+  await edit(1, 'plan the work, briefly');
+  assert.equal(toasts().length, 1, 'the same rule is not announced again while the manager is open');
+  assert.deepEqual(ctx.settings.inbound.rules, [approved, unapproved, elsewhere], 'no rule or approval is rewritten');
+  // a template no approved rule uses: nothing is said
+  seed([{ name: 'morning', steps: [...steps] }], [unapproved]);
+  $('toasts').children.length = 0;
+  await edit(0, 'something else');
+  assert.deepEqual(toasts(), []);
+  // reopening the manager is a new session: a still-approved rule is told again
+  seed([{ name: 'morning', steps: [...steps] }], [approved]);
+  $('toasts').children.length = 0;
+  await edit(0, 'again');
+  assert.equal(toasts().length, 1);
+  for (const [locale, dictionary] of Object.entries(dictionaries)) {
+    const sentence = dictionary['templates.approvalVoided'];
+    assert.equal(typeof sentence, 'string', locale);
+    assert.ok(sentence.includes('{rules}'), `${locale}: names the rules`);
+  }
+});

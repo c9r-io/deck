@@ -232,22 +232,52 @@ export async function approveRule(rule, template, { external = false } = {}) {
   return { ...rule, autoSend: { digest: await grantDigest(rule, grant), ...grant } };
 }
 
+/* `grantState` with the reason a stale approval is stale, for the drawer's
+   one line: 'stale-template' (the template's steps or their classes are not
+   the approved ones, or the template is gone) | 'stale-rule' (a field of the
+   rule the approval covers changed). Presentation only: nothing reads the
+   reason to decide anything, and the backend's validity (`valid_grant`) is
+   the rule's own digest, as before. */
+export async function grantDetail(rule, template) {
+  const grant = rule?.autoSend;
+  if (!grant) return 'none';
+  if (rule.source !== 'slack') return 'stale-rule';
+  if (!template) return 'stale-template';
+  const current = await templateGrant(template);
+  if (JSON.stringify(current.steps) !== JSON.stringify(grant.steps)
+    || JSON.stringify(current.classes) !== JSON.stringify(grant.classes)) return 'stale-template';
+  return (await grantDigest(rule, grant)) === grant.digest ? 'valid' : 'stale-rule';
+}
+
 /* 'none' (never approved) | 'valid' | 'stale' (the rule or its template
    changed since approval: grants nothing) */
 export async function grantState(rule, template) {
-  const grant = rule?.autoSend;
-  if (!grant) return 'none';
-  if (rule.source !== 'slack' || !template) return 'stale';
-  const current = await templateGrant(template);
-  if (JSON.stringify(current.steps) !== JSON.stringify(grant.steps)
-    || JSON.stringify(current.classes) !== JSON.stringify(grant.classes)) return 'stale';
-  return (await grantDigest(rule, grant)) === grant.digest ? 'valid' : 'stale';
+  const detail = await grantDetail(rule, template);
+  return detail.startsWith('stale') ? 'stale' : detail;
 }
 
-/* the approval row of a Slack badge rule's facts, from its `grantState` */
+/* The Slack badge rules whose approval ONE save of template `name` takes
+   away: approved against the steps before it, not against the steps after.
+   A rule that was never approved, already stale, in another project or on
+   another template is not in it. The template manager says so at the moment
+   of the edit (templates.js); it changes no rule and no approval. */
+export async function approvalsVoidedBy(rules, projectId, name, before, after) {
+  const out = [];
+  for (const rule of Array.isArray(rules) ? rules : []) {
+    if (!rule?.autoSend || rule.source !== 'slack' || rule.projectId !== projectId || rule.template !== name) continue;
+    if ((await grantState(rule, { name, steps: before })) !== 'valid') continue;
+    if ((await grantState(rule, { name, steps: after })) !== 'valid') out.push(rule);
+  }
+  return out;
+}
+
+/* the approval row of a Slack badge rule's facts, from its `grantDetail`
+   (a bare 'stale' keeps the sentence that names both possibilities) */
 export const approvalText = (rule, state) => t(state === 'valid'
   ? (rule.autoSend.external ? 'automation.autoSend.onExternal' : 'automation.autoSend.on')
-  : state === 'stale' ? 'automation.autoSend.stale' : 'automation.autoSend.off');
+  : state === 'stale-template' ? 'automation.autoSend.staleTemplate'
+    : state === 'stale-rule' ? 'automation.autoSend.staleRule'
+      : state === 'stale' ? 'automation.autoSend.stale' : 'automation.autoSend.off');
 
 /* ---------- first-send readiness override (clock and Slack badge rules) ---------- */
 

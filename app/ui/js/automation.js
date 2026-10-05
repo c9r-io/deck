@@ -77,7 +77,7 @@ import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { persistInbound } from './settings.js';
 import { minToHM, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
-import { approveRule, composeRule, finishHintShown, firstSendNeedsConfirm, withFirstSend, graceOptions, graceText, grantState, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, templateCarriesMessage, triggerText } from './automation-model.js';
+import { approveRule, composeRule, finishHintShown, firstSendNeedsConfirm, withFirstSend, graceOptions, graceText, grantDetail, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, templateCarriesMessage, triggerText } from './automation-model.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN } from './settings-model.js';
@@ -222,7 +222,7 @@ export function renderAutomations() {
 async function refreshApprovals() {
   const next = new Map();
   for (const rule of rulesOf().filter(r => r.source === 'slack')) {
-    next.set(rule.id, await grantState(rule, ruleTemplate(rule)));
+    next.set(rule.id, await grantDetail(rule, ruleTemplate(rule)));
   }
   const changed = next.size !== approvals.size || [...next].some(([id, value]) => approvals.get(id) !== value);
   approvals = next;

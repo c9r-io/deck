@@ -293,3 +293,37 @@ test('the close-the-card hint is for a clock rule that closes its card', async (
     'hidden until the editor decides');
   assert.match(read('js/automation.js'), /\$\('auto-finish-hint'\)\.hidden = !finishHintShown\(segGet\('auto-trigger'\), segGet\('auto-finish'\)\);/);
 });
+
+// F16: why an approval grants nothing, and which approvals one template save voids.
+test('a stale approval says whether the template or the rule changed', async () => {
+  const { grantDetail, approvalsVoidedBy } = await import('../js/automation-model.js');
+  const rule = vector.rule;
+  assert.equal(await grantDetail(rule, template), 'valid');
+  assert.equal(await grantDetail({ ...rule, autoSend: undefined }, template), 'none');
+  for (const tpl of [{ ...template, steps: ['changed', ...template.steps.slice(1)] },
+    { ...template, steps: [...template.steps].reverse() }, { ...template, steps: template.steps.slice(1) }, null]) {
+    assert.equal(await grantDetail(rule, tpl), 'stale-template');
+    assert.equal(await grantState(rule, tpl), 'stale', 'the three-state reading is unchanged');
+  }
+  for (const edited of [{ ...rule, cmd: 'claude' }, { ...rule, dir: '~/other' }, { ...rule, finish: 'keep' }, { ...rule, source: 'clock' }]) {
+    assert.equal(await grantDetail(edited, template), 'stale-rule');
+    assert.equal(await grantState(edited, template), 'stale');
+  }
+  assert.notEqual(approvalText(rule, 'stale-template'), approvalText(rule, 'stale-rule'));
+  assert.notEqual(approvalText(rule, 'stale-template'), approvalText(rule, 'stale'));
+  assert.match(approvalText(rule, 'stale-template'), /template/i);
+  assert.match(approvalText(rule, 'stale-rule'), /rule/i);
+  // one save of this template: only a rule that WAS approved against the old
+  // steps and is not against the new ones
+  const changed = ['changed', ...template.steps.slice(1)];
+  const rules = [rule, { ...rule, id: 'never', autoSend: undefined }, { ...rule, id: 'elsewhere', projectId: 'P2' },
+    { ...rule, id: 'other-template', template: 'other' }, { ...rule, id: 'already-stale', cmd: 'claude' },
+    { ...rule, id: 'clock', source: 'clock' }];
+  const voided = await approvalsVoidedBy(rules, rule.projectId, rule.template, template.steps, changed);
+  assert.deepEqual(voided.map(value => value.id), [rule.id]);
+  assert.deepEqual(await approvalsVoidedBy(rules, rule.projectId, rule.template, template.steps, [...template.steps]), [],
+    'a save that changes no step voids nothing');
+  assert.deepEqual(await approvalsVoidedBy(rules, rule.projectId, rule.template, changed, template.steps), [],
+    'an approval that was not valid before is not "voided" by this save');
+  assert.deepEqual(await approvalsVoidedBy(null, rule.projectId, rule.template, template.steps, changed), []);
+});

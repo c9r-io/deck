@@ -38,6 +38,7 @@ import {
   promptSummary, templateNameProblem,
 } from './pure.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
+import { approvalsVoidedBy, ruleLabel } from './automation-model.js';
 
 let provider = null;      // the Board, from initTemplates
 let projectId = null;
@@ -46,6 +47,9 @@ let nameShown = null;     // whose name the editor field currently holds
 let openStep = null;      // index of the one step opened into the full editor
 let unsubscribe = null;
 let opener = null;        // element (or resolver) that opened the manager; focus returns there
+// Rules already told, while this manager is open, that a step edit took
+// their automatic-continue approval away: one notice per rule, not per save.
+const voidedTold = new Set();
 
 const isOpen = () => $('tpl-modal').style.display === 'flex';
 const project = () => (projectId ? provider.project(projectId) : null);
@@ -58,6 +62,7 @@ const inboundRules = () => (ctx.settings && ctx.settings.inbound && ctx.settings
 
 export function openTemplates(from = null) {
   opener = from;
+  voidedTold.clear();
   projectId = state.projectId;
   const list = templates();
   selected = list.length ? list[0].name : null;
@@ -94,14 +99,35 @@ export function closeTemplates() {
    rebuilt from the committed board, so the screen never shows a change the
    user was told failed. */
 async function persist(name, steps) {
+  const before = templates().find(tp => tp.name === name)?.steps || [];
   try {
     await provider.saveTemplate(projectId, name, steps);
-    return true;
   } catch (_) {
     toast(t('error.templateSave'));
     renderTemplates();
     return false;
   }
+  // after the save, and outside its failure handling: a notice that cannot
+  // be made must never read as a save that failed
+  await tellVoidedApprovals(name, before, steps);
+  return true;
+}
+
+/* An approval covers the template's steps by hash, so any step edit takes it
+   away (automation-model.js `approvalsVoidedBy`). Say so when it happens and
+   name the rules: until now the user met it at the next run, stopped at its
+   second step. A notice only — the approval was already void the moment the
+   steps changed, nothing is asked, and re-approving stays in the rule editor.
+   A hashing failure says nothing rather than failing the save it follows. */
+async function tellVoidedApprovals(name, before, after) {
+  try {
+    const rules = await approvalsVoidedBy(inboundRules(), projectId, name, before, after);
+    const fresh = rules.filter(rule => !voidedTold.has(rule.id));
+    if (!fresh.length) return;
+    fresh.forEach(rule => voidedTold.add(rule.id));
+    const labels = fresh.slice(0, 3).map(ruleLabel).join(' ');
+    toast(t('templates.approvalVoided', { rules: fresh.length > 3 ? `${labels} +${formatNumber(fresh.length - 3)}` : labels }));
+  } catch (_) { /* nothing is said */ }
 }
 
 /* The collapsed row: the step's first line, plus how many more there are.
