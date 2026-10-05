@@ -541,7 +541,9 @@ fn only_a_load_a_save_and_the_users_exit_commit_a_board() {
 /// Who owns the committed Board. The save fence over a lost Board and the
 /// base of the reminder checks are persistence decisions, so the copy they
 /// read belongs to the Board door: one static, read by `committed_board`,
-/// written by `commit_board`. The reminder module keeps its own copy to
+/// written by `commit_board`. `board_authority` is its second reader, for a
+/// caller that treats what the Board says as authority; it sees the Board
+/// only while it is the user's current version, never a recovered one. The reminder module keeps its own copy to
 /// project from (a wake or a tick projects without a commit) and offers it to
 /// nobody. The door reaches the projection through one observer, registered
 /// by the reminder module itself when its bridge starts; a second registrant,
@@ -571,8 +573,10 @@ fn the_board_door_owns_the_committed_board_and_tells_one_observer() {
     let documents = code_only(production_region(&source("documents.rs")));
     assert_eq!(
         users(&documents, "COMMITTED_BOARD"),
-        ["commit_board", "committed_board"],
-        "the door's committed-Board copy has one writer and one reader"
+        ["board_authority", "commit_board", "committed_board"],
+        "the door's committed-Board copy has one writer and two readers: `committed_board` for \
+         the door's own persistence decisions, and `board_authority`, which answers only for a \
+         current Board, for a reader that treats what the Board says as authority"
     );
     assert_eq!(
         callers_of("set_commit_observer("),

@@ -61,6 +61,27 @@
 //!   reminder projection): on the committing thread, before the command
 //!   returns, and never while the door's lock is held. The door names no
 //!   feature for it, as `tmux_lifecycle` names none for its restart guard.
+//! - The committed Board also knows its STANDING, for the readers that treat
+//!   what a Board says as authority (a choice the user ticked on a project's
+//!   task preset): `Current` when the main file loaded or the owner saved,
+//!   `Recovered` when the load answered from the backup or the user took a
+//!   way out of a lost Board and has not saved since. deck.json.bak is the
+//!   save BEFORE the last one, so it can hold exactly the choice the last
+//!   save withdrew; `board_authority` therefore answers only for a `Current`
+//!   Board, and a recovered or absent one is "no proof either way" — nothing
+//!   granted, nothing revoked — until the owner's next save makes what the
+//!   webview holds current. This is the Board's half of the rule settings
+//!   follow (`inbound::read_config_strict`, below); every other reader of
+//!   the committed Board is unchanged and still sees a recovered one.
+//! - `board_fence` orders an automatic send against Board writes, as
+//!   `storage::settings_fence` does against settings writes: every commit of
+//!   the Board (`load_board`, `save_board` across its disk write,
+//!   `board_lost_exit`) is made under it, and a sender that decides on
+//!   `board_authority` holds it until its firing intent is persisted. So a
+//!   save that withdrew a choice and has RETURNED is always seen, and one
+//!   that lands later finds the send already begun. Lock order: the settings
+//!   fence, this fence, the queue lock, `SAVE_LOCK`; nothing that holds the
+//!   queue lock or `SAVE_LOCK` may take it.
 //! - settings.json has one owner, the webview. `load_settings`
 //!   (`storage::load_as_owner`) sets a damaged file aside and reports the
 //!   recovery once, in-band; `save_settings` (`storage::save_typed_as_owner`)
@@ -984,7 +1005,57 @@ fn load_board_at(path: &std::path::Path) -> Result<Option<storage::LoadOutcome>,
 /// reminder checks when the main file was damaged while deck ran
 /// (`save_board_at`). Read by `committed_board` and written by `commit_board`,
 /// nowhere else.
-static COMMITTED_BOARD: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+static COMMITTED_BOARD: Mutex<Option<(serde_json::Value, BoardStanding)>> = Mutex::new(None);
+
+/// Whether the committed Board is the user's current version or one a
+/// recovery put in its place (module header). Kept in the same slot as the
+/// Board and written with it, by `commit_board` only, so no reader can pair
+/// one Board with another's standing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BoardStanding {
+    /// the main file loaded, or the owner saved
+    Current,
+    /// the load answered from the backup, or the user took a way out of a
+    /// lost Board and has not saved since
+    Recovered,
+}
+
+/// The standing of a Board the webview just loaded, from where storage says
+/// it came from: only the main file is the current version.
+fn load_standing(source: &str) -> BoardStanding {
+    if source == "main" {
+        BoardStanding::Current
+    } else {
+        BoardStanding::Recovered
+    }
+}
+
+/// Orders Board commits against an automatic send that decides on what the
+/// Board says (module header).
+static BOARD_FENCE: Mutex<()> = Mutex::new(());
+
+pub(crate) fn board_fence() -> std::sync::MutexGuard<'static, ()> {
+    BOARD_FENCE.lock_or_recover()
+}
+
+/// Test probe: whether the fence is held right now (by anyone).
+#[cfg(test)]
+pub(crate) fn board_fence_busy() -> bool {
+    BOARD_FENCE.try_lock().is_err()
+}
+
+/// The committed Board as AUTHORITY: the current version, or `None` when
+/// there is none or it is a recovered one (module header). A caller deciding
+/// an irreversible step on it holds `board_fence` around the read and that
+/// step. Its first reader is the task-preset first-send choice
+/// (`scheduler/first_send.rs`); until that lands only the tests call it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn board_authority() -> Option<serde_json::Value> {
+    match COMMITTED_BOARD.lock_or_recover().as_ref() {
+        Some((board, BoardStanding::Current)) => Some(board.clone()),
+        _ => None,
+    }
+}
 
 /// The one observer of a commit (see the header): set once at boot by the
 /// feature that projects the committed Board, never replaced.
@@ -999,16 +1070,17 @@ fn committed_board() -> Option<String> {
     COMMITTED_BOARD
         .lock_or_recover()
         .as_ref()
-        .and_then(|board| serde_json::to_string(board).ok())
+        .and_then(|(board, _)| serde_json::to_string(board).ok())
 }
 
 /// The door's copy is replaced first, under its own lock and nothing else;
-/// the observer is told after that lock is released.
-fn commit_board(payload: &str) {
+/// the observer is told after that lock is released. The caller holds
+/// `board_fence`.
+fn commit_board(payload: &str, standing: BoardStanding) {
     let Ok(board) = serde_json::from_str::<serde_json::Value>(payload) else {
         return;
     };
-    *COMMITTED_BOARD.lock_or_recover() = Some(board);
+    *COMMITTED_BOARD.lock_or_recover() = Some((board, standing));
     if let Some(observer) = COMMIT_OBSERVER.get() {
         observer(payload);
     }
@@ -1016,9 +1088,10 @@ fn commit_board(payload: &str) {
 
 #[tauri::command]
 pub(crate) fn load_board() -> Result<LoadedDoc, DeckError> {
+    let _fence = board_fence();
     let loaded = load_board_at(&board_path())?;
     if let Some(doc) = &loaded {
-        commit_board(&doc.payload);
+        commit_board(&doc.payload, load_standing(doc.source));
     }
     Ok(to_loaded(loaded))
 }
@@ -1071,6 +1144,9 @@ pub(crate) fn save_board(
         ));
     }
     let path = board_path();
+    // held across the disk write and the commit: when this returns, no
+    // automatic send can still begin on what the previous Board said
+    let _fence = board_fence();
     let saved = save_board_at(
         &path,
         &data,
@@ -1078,7 +1154,8 @@ pub(crate) fn save_board(
         committed_board(),
     );
     match saved {
-        Ok(()) => commit_board(&data),
+        // the owner's save is the current version, whatever was held before
+        Ok(()) => commit_board(&data, BoardStanding::Current),
         Err(_) if board_lost_at(&path, committed_board().is_some()).unwrap_or(false) => {
             use tauri::Emitter;
             let _ = app.emit(BOARD_LOST_EVENT, ());
@@ -1256,8 +1333,11 @@ fn board_lost_exit_at(
 /// to hold in place of its placeholder.
 #[tauri::command]
 pub(crate) fn board_lost_exit(action: String) -> Result<String, DeckError> {
+    let _fence = board_fence();
     let payload = board_lost_exit_at(&board_path(), &action, committed_board().is_some())?;
-    commit_board(&payload);
+    // a kept copy or an empty Board the user chose, not yet their saved
+    // version: the webview saves it next, and that save makes it current
+    commit_board(&payload, BoardStanding::Recovered);
     Ok(payload)
 }
 
@@ -3075,5 +3155,52 @@ mod tests {
         let dir = crate::datadir::deck_dir();
         assert_eq!(board_path(), dir.join("deck.json"));
         assert_eq!(settings_path(), dir.join("settings.json"));
+    }
+    /// Only the main file is the user's current Board; the backup is the
+    /// save before the last one.
+    #[test]
+    fn a_board_loaded_from_its_backup_is_recovered_not_current() {
+        assert_eq!(load_standing("main"), BoardStanding::Current);
+        assert_eq!(load_standing("backup"), BoardStanding::Recovered);
+        assert_eq!(load_standing("none"), BoardStanding::Recovered);
+        assert_eq!(load_standing(""), BoardStanding::Recovered);
+    }
+
+    /// The committed Board answers as authority only while it is the current
+    /// version: not before any load, not for a recovered Board, and again
+    /// once the owner has saved. Every other reader keeps seeing it.
+    #[test]
+    fn the_committed_board_is_authority_only_while_current() {
+        // serialize with any other commit: this test is the fence's holder
+        let _fence = board_fence();
+        assert!(board_fence_busy(), "a commit is made under the fence");
+        let before = COMMITTED_BOARD.lock_or_recover().take();
+        assert_eq!(board_authority(), None, "nothing committed: no proof");
+        assert_eq!(committed_board(), None);
+
+        let recovered =
+            r#"{"projects":[{"id":"P1","presets":[{"id":"R1","firstSend":true}]}],"cards":[]}"#;
+        commit_board(recovered, BoardStanding::Recovered);
+        assert_eq!(board_authority(), None, "a recovered Board grants nothing");
+        assert!(
+            committed_board().is_some_and(|text| text.contains("R1")),
+            "the other readers still see it"
+        );
+
+        let saved = r#"{"projects":[{"id":"P1","presets":[{"id":"R1"}]}],"cards":[]}"#;
+        commit_board(saved, BoardStanding::Current);
+        let current = board_authority().expect("the owner's save is current");
+        assert!(current["projects"][0]["presets"][0]
+            .get("firstSend")
+            .is_none());
+
+        // an unparsable payload commits nothing and changes no standing
+        commit_board("not json", BoardStanding::Recovered);
+        assert_eq!(board_authority(), Some(current));
+
+        // a later recovery takes the standing away again, in one step
+        commit_board(recovered, BoardStanding::Recovered);
+        assert_eq!(board_authority(), None);
+        *COMMITTED_BOARD.lock_or_recover() = before;
     }
 }
