@@ -97,6 +97,8 @@ const dictionary = {
   "attention.waiting.failed": "投递已停止重试",
   "attention.waiting.review": "已发送，尚未检查",
   "attention.waiting.external": "下一步不会自动发送",
+  "attention.waiting.first-send": "等待首次 Agent 交互",
+  "attention.waiting.codex-signal": "无法归属 Codex Signal",
   "attention.filter.followed": "人工关注",
   "attention.filter.unavailable": "无有效状态",
   "attention.filter.stopped": "已停止",

@@ -38,16 +38,26 @@ import { reminderDue } from './reminder-model.js';
 //   (`external`: the group's head only, never a paused row). It says a
 //   delivery is held, not that the work is stuck. It joins `pending` and the
 //   list; it is not an agent observation, so the card badge and the Dock
-//   count (attentionBadge, notify.rs) leave it out on purpose. Holds that
-//   need a live observation (first interaction, Codex Signal, unverified
-//   approval) are not read here.
+//   badge (attentionBadge) leaves it out on purpose; the Dock count and the
+//   away notification take it from the backend as Deck's own source
+//   (notify.rs, scheduler `delivery_waits`). Two holds need a live
+//   observation and are NOT derived here: the backend's plan (`plans`,
+//   review.rs `plan_item`) names a row held for a first agent interaction
+//   (`first-send`) or because Codex Signal cannot be attributed
+//   (`codex-signal`), and the model accepts exactly those two stage words
+//   for a row still in the queue. An approval Deck could not re-read
+//   (`authority-unverified`) usually passes by itself and stays in the panel.
+//   The six words are one list with the backend's (limits.json
+//   `delivery_waits`).
 import { CARD_QUIET_SECS, effectiveCardStatus, itemDead } from './pure.js';
 
 export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'waiting', 'done', 'followed', 'unavailable', 'stopped', 'reminder', 'reminders']);
 /* most pressing first: one reason per session */
-export const DELIVERY_WAITS = Object.freeze(['ambiguous', 'failed', 'review', 'external']);
+export const DELIVERY_WAITS = Object.freeze(['ambiguous', 'failed', 'review', 'external', 'first-send', 'codex-signal']);
+/* the two the backend's plan decides; never read from hook state here */
+const LIVE_DELIVERY_WAITS = Object.freeze(['first-send', 'codex-signal']);
 
-export function deliveryWaits(items) {
+export function deliveryWaits(items, plans = []) {
   const heads = new Map();
   const order = i => i.seq ?? 1;
   for (const i of items) {
@@ -61,6 +71,13 @@ export function deliveryWaits(items) {
       : i.external === true && i.mode === 'chain' && !i.authority && !i.paused && (!i.group || heads.get(i.group) === i) ? 'external' : null;
     const known = waits.get(i.session);
     if (reason && (!known || DELIVERY_WAITS.indexOf(reason) < DELIVERY_WAITS.indexOf(known))) waits.set(i.session, reason);
+  }
+  const sessions = new Map(items.map(i => [i.id, i.session]));
+  for (const plan of plans || []) {
+    const session = plan && sessions.get(plan.item);
+    if (!session || !LIVE_DELIVERY_WAITS.includes(plan.stage)) continue;
+    const known = waits.get(session);
+    if (!known || DELIVERY_WAITS.indexOf(plan.stage) < DELIVERY_WAITS.indexOf(known)) waits.set(session, plan.stage);
   }
   return waits;
 }
@@ -94,7 +111,7 @@ export function createAttentionTracker() {
   };
   return {
     get, category, matches, waiting,
-    deliveries(items) { waits = deliveryWaits(items || []); },
+    deliveries(items, plans) { waits = deliveryWaits(items || [], plans || []); },
     record(cards, infos, visible, now) {
       visible = visible || new Set();
       now = now ?? Date.now();

@@ -51,14 +51,22 @@ such a row while you are away:
   confirmed;
 - a row **stopped retrying** after repeated failures;
 - the row whose turn it is carries **external content** that no automation
-  approval covers, and waits for *Send now*.
+  approval covers, and waits for *Send now*;
+- the first prompt for a freshly started agent waits for a **first agent
+  interaction** (or *Send now*), because its automation did not accept
+  sending without one;
+- a row is held because **Codex Signal cannot be attributed** to that Codex
+  process, and waits for *Send now*.
 
 These are the rows the Needs attention list shows as *Delivery waiting*.
 A wait that passes by itself — a minimum gap, a quiet period, a time of
 day, an earlier row — never notifies, and an agent's own input request is
-announced as the agent's (above), not as a delivery. Rows held by a live
-observation (waiting for a first agent interaction, Codex Signal that
-cannot be attributed, an approval deck could not re-read) are not announced.
+announced as the agent's (above), not as a delivery. An approval deck could
+not re-read for a moment is not announced either; it usually returns at the
+next check. A first step whose automation allows sending without readiness
+is not waiting and is not announced. The last two kinds need no agent
+integration to be announced, so a Codex session without attributable hooks
+still tells you when its list has stopped.
 
 It is information only: a notification never sends, retries or releases a
 row. Each wait is announced once; the notification goes when that wait
@@ -106,7 +114,7 @@ only while that observation does and is not kept across a Deck restart.
 
 The Dock badge is the number of cards with an **input request** plus cards with an
 **unread turn ending** — the same rows as the Needs attention list minus
-manual follow-up — plus cards with a **delivery waiting** (the four kinds
+manual follow-up — plus cards with a **delivery waiting** (the kinds
 above), plus cards whose reminder is due, each card counted
 once. It updates whether or not the window is focused. When the switch is
 off the agent rows and the waiting deliveries are no longer counted; a due

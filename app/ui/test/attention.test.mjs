@@ -310,6 +310,37 @@ test('a held delivery is read from queue items alone: checkpoint, uncertain, dea
   }
 });
 
+// F05: the two holds that need a live observation are not derived here at
+// all. The backend's plan names the stage; the model only accepts those two
+// words, for a row that is still queued, below every reason the queue holds.
+test('a row the backend holds for a first interaction or for Codex Signal is a held delivery too', () => {
+  const row = (id, session, extra) => ({ id, session, state: 'pending', mode: 'chain', attempts: 0, added: 1, ...extra });
+  const items = [
+    row('a', 'fresh'), row('b', 'codex'), row('c', 'both', { state: 'review' }), row('d', 'both'),
+    row('e', 'machine'), row('f', 'agent'), row('g', 'unverified'), row('h', 'two'), row('i', 'two'),
+  ];
+  const plans = [
+    { item: 'a', stage: 'first-send' }, { item: 'b', stage: 'codex-signal' },
+    { item: 'c', stage: 'review' }, { item: 'd', stage: 'first-send' },
+    { item: 'e', stage: 'quiet' }, { item: 'f', stage: 'agent' }, { item: 'g', stage: 'authority-unverified' },
+    { item: 'h', stage: 'codex-signal' }, { item: 'i', stage: 'first-send' },
+    { item: 'gone', stage: 'first-send' }, { stage: 'first-send' }, null,
+  ];
+  assert.deepEqual(Object.fromEntries(deliveryWaits(items, plans)), {
+    fresh: 'first-send', codex: 'codex-signal', both: 'review', two: 'first-send',
+  });
+  assert.deepEqual(Object.fromEntries(deliveryWaits(items)), { both: 'review' }, 'without a plan nothing live is claimed');
+  assert.deepEqual(Object.fromEntries(deliveryWaits(items, undefined)), { both: 'review' });
+  assert.deepEqual([...DELIVERY_WAITS], ['ambiguous', 'failed', 'review', 'external', 'first-send', 'codex-signal']);
+  const tracker = trackerOf();
+  const card = cards.find(c => c.id === '03');
+  tracker.deliveries([row('a', card.session)], [{ item: 'a', stage: 'first-send' }]);
+  assert.equal(tracker.waiting(card), 'first-send');
+  assert.equal(attentionBadge(tracker, card), null, 'never the agent badge');
+  tracker.deliveries([row('a', card.session)], [{ item: 'a', stage: 'context' }]);
+  assert.equal(tracker.waiting(card), null, 'the hold is over when the plan says so');
+});
+
 test('a held delivery joins pending after input requests and stays off the badge', () => {
   const tracker = trackerOf();
   const before = tracker.counts(cards);

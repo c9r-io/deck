@@ -27,8 +27,9 @@
 //! - **Held deliveries are a third source, and Deck's own.** The scheduler
 //!   publishes, each tick, the sessions whose delivery waits for a person
 //!   (`scheduler::delivery_waits`: an uncertain delivery, a row that stopped
-//!   retrying, a human checkpoint, external content awaiting send-now) with
-//!   an opaque key per wait. It is a queue fact, not an agent observation:
+//!   retrying, a human checkpoint, external content awaiting send-now, a
+//!   first prompt awaiting an agent interaction, a row held because Codex
+//!   Signal cannot be attributed) with an opaque key per wait. It is a queue fact, not an agent observation:
 //!   it reads no hook word, never touches `states`, and its phrase names
 //!   the held delivery, not anything an agent said. A session
 //!   that ENTERS a wait (a key it did not have) is announced once while the

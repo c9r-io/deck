@@ -28,6 +28,7 @@ import {
 } from '../js/buffer-model.js';
 import { normalizeTaskPreset, PRESET_MAX } from '../js/connector-model.js';
 import { dictionaries, LOCALE_CHOICES } from '../js/i18n.js';
+import { DELIVERY_WAITS } from '../js/attention-model.js';
 import { ACCENT_IDS, THEME_IDS } from '../js/theme.js';
 import { LABEL_TITLE_MAX_BYTES, NOTIFY_STATUS_WORDS } from '../js/notify-model.js';
 import { CODEX_SIGNAL_TRUST } from '../js/attention-model.js';
@@ -200,4 +201,16 @@ test('link failure reasons: one sentence each, in both languages', () => {
   // only a path that was not there is retried with the wider reading; any
   // other reason means the narrow reading already resolved
   assert.match(terminal, /if \(!lookback \|\| linkFailure\(err\) !== 'link-path-missing'\) throw err;/);
+});
+
+// scheduler/review.rs DELIVERY_WAIT_STAGES: the plan stages at which a
+// delivery waits for a person. The list, the Dock count and the away
+// notification name the same six.
+test('held-delivery reasons are one list with the backend', () => {
+  assert.deepEqual([...DELIVERY_WAITS], limits.delivery_waits);
+  for (const reason of limits.delivery_waits) {
+    for (const [locale, dictionary] of Object.entries(dictionaries)) {
+      assert.equal(typeof dictionary[`attention.waiting.${reason}`], 'string', `${locale} ${reason}`);
+    }
+  }
 });

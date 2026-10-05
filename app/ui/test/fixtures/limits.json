@@ -91,5 +91,6 @@
   "context_statuses": ["ready", "foreground-different", "session-replaced", "unavailable", "starting", "unknown"],
   "storage_notices": ["storage.privacy", "queue.persist", "queue.load", "history.load", "queue.interrupted", "storage.recovered"],
   "mcp_local_errors": ["mcp-session-busy", "mcp-runner-stale", "mcp-client-revoked", "mcp-feature-disabled", "mcp-runner-unconfirmed", "mcp-fence-unpersisted"],
-  "link_failures": ["link-no-editor", "link-path-missing", "link-not-allowed", "link-open-failed"]
+  "link_failures": ["link-no-editor", "link-path-missing", "link-not-allowed", "link-open-failed"],
+  "delivery_waits": ["ambiguous", "failed", "review", "external", "first-send", "codex-signal"]
 }

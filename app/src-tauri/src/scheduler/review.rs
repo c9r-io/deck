@@ -503,10 +503,25 @@ pub(crate) struct DeliveryWait {
 
 /// The plan stages at which a delivery waits for a person and does not move
 /// on by itself, most pressing first: an uncertain delivery, a row that
-/// stopped retrying, a human checkpoint, and external content whose turn has
-/// come without an approval. Time, gap, quiet and "previous row" waits are
-/// the machine's; an agent's own input request is the agent's to announce.
-pub(crate) const DELIVERY_WAIT_STAGES: [&str; 4] = ["ambiguous", "failed", "review", "external"];
+/// stopped retrying, a human checkpoint, external content whose turn has
+/// come without an approval, a first prompt held until the agent proves an
+/// interaction, and a row held because Codex Signal cannot be attributed.
+/// The last two rest on an observation, and each is one-way within a pane
+/// generation (interaction evidence only appears; Codex trust is monotone),
+/// so neither flickers; a row whose rule accepted the first-send risk is
+/// never at `first-send`. Time, gap, quiet and "previous row" waits are the
+/// machine's; an agent's own input request is the agent's to announce; an
+/// approval that could not be re-read (`authority-unverified`) usually
+/// returns by the next tick and is left out. Mirrored by the webview
+/// (`limits.json` `delivery_waits`).
+pub(crate) const DELIVERY_WAIT_STAGES: [&str; 6] = [
+    "ambiguous",
+    "failed",
+    "review",
+    "external",
+    "first-send",
+    "codex-signal",
+];
 
 /// session → its most pressing delivery wait, from `plan_item`'s stages.
 /// A tick without a pane listing cannot evaluate a hold (the stage reads

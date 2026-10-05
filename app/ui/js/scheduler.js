@@ -72,7 +72,7 @@ import { formatInterval, formatNumber, onLocaleChange, t } from './i18n.js';
 let queueFetchedAt = 0;
 export async function refreshQueue() {
   try { ctx.queueCache = await inv('queue_list'); queueFetchedAt = Date.now(); } catch (e) { ctx.queueCache.plans = []; }
-  ctx.attention.deliveries(ctx.queueCache.items);
+  ctx.attention.deliveries(ctx.queueCache.items, ctx.queueCache.plans);
   renderQueueUI();
   refreshAttention();
 }

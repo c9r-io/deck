@@ -7560,3 +7560,76 @@ fn a_failed_listing_neither_ends_nor_repeats_a_known_delivery_wait() {
         "review"
     );
 }
+
+/// F05, second half: the two holds that rest on a live observation. A first
+/// prompt held until the agent proves an interaction, and a row held because
+/// Codex Signal cannot be attributed, wait for a person; a first step whose
+/// rule accepted the risk does not, nor does an approval that could not be
+/// re-read this tick.
+#[test]
+fn a_first_interaction_hold_and_an_unattributable_codex_are_delivery_waits() {
+    use crate::agent_status::CodexSignalTrust::{Trusted, Unavailable};
+    let none = HashMap::new();
+    let quiet = NOW - 400;
+    let stage_of = |q: &QueueState, obs: &Observations| {
+        delivery_waits(q, NOW, 720, Some(obs), &none)
+            .get("s")
+            .map(|wait| wait.stage)
+    };
+    // a fresh Claude with no interaction evidence: held, and a person's
+    let q = qs(vec![bootstrap_row("claude")]);
+    assert_eq!(stage_of(&q, &unestablished(quiet)), Some("first-send"));
+    // evidence arrived: the ordinary rules, nothing waits
+    assert_eq!(stage_of(&q, &seen(quiet)), None);
+    // the rule accepted the first-send risk: never a wait, with or without
+    // evidence, while the bounded stabilization runs
+    let q = qs(vec![overridden_head("h")]);
+    assert_eq!(stage_of(&q, &unestablished(quiet)), None);
+    assert_eq!(stage_of(&q, &unestablished(NOW - 1)), None);
+    // Codex Signal unavailable for this generation; a proof ends the hold
+    let mut codex = qi("o", "chain");
+    codex.cmd = "codex".into();
+    codex.expected_process = Some("codex".into());
+    let q = qs(vec![codex]);
+    assert_eq!(
+        stage_of(&q, &seen_codex(quiet, None, Unavailable)),
+        Some("codex-signal")
+    );
+    assert_eq!(stage_of(&q, &seen_codex(quiet, None, Trusted)), None);
+    // an approval that could not be re-read is the machine's to retry
+    let mut approved = qi("p", "chain");
+    approved.external = true;
+    approved.authority = Some(step_authority(1));
+    let mut unverified = seen(quiet);
+    mark_authority_unverified(&mut unverified);
+    let q = qs(vec![approved]);
+    assert_eq!(
+        serde_json::to_value(plan_item(&q, &q.items[0], NOW, 720, Some(&unverified))).unwrap()
+            ["stage"],
+        "authority-unverified"
+    );
+    assert_eq!(stage_of(&q, &unverified), None);
+    // a queue state outranks a live hold on the same session
+    let mut checkpoint = qi("r", "once");
+    checkpoint.state = ItemState::Review;
+    let q = qs(vec![bootstrap_row("claude"), checkpoint]);
+    assert_eq!(stage_of(&q, &unestablished(quiet)), Some("review"));
+    // a failed listing keeps a known live hold and invents none
+    let q = qs(vec![bootstrap_row("claude")]);
+    let known = delivery_waits(&q, NOW, 720, Some(&unestablished(quiet)), &none);
+    assert_eq!(delivery_waits(&q, NOW, 720, None, &known), known);
+    assert!(delivery_waits(&q, NOW, 720, None, &none).is_empty());
+}
+
+#[test]
+fn delivery_wait_stages_are_the_shared_list() {
+    let limits: serde_json::Value =
+        serde_json::from_str(include_str!("../../../ui/test/fixtures/limits.json")).unwrap();
+    let shared: Vec<&str> = limits["delivery_waits"]
+        .as_array()
+        .expect("limits.json delivery_waits")
+        .iter()
+        .map(|word| word.as_str().unwrap())
+        .collect();
+    assert_eq!(shared, DELIVERY_WAIT_STAGES);
+}

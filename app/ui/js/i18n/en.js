@@ -98,6 +98,8 @@ const dictionary = {
   "attention.waiting.failed": "delivery stopped retrying",
   "attention.waiting.review": "sent, not inspected yet",
   "attention.waiting.external": "next step will not send automatically",
+  "attention.waiting.first-send": "waiting for a first agent interaction",
+  "attention.waiting.codex-signal": "Codex Signal cannot be attributed",
   "attention.filter.followed": "Followed",
   "attention.filter.unavailable": "No valid state",
   "attention.filter.stopped": "Stopped",

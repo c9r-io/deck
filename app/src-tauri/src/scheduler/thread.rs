@@ -152,6 +152,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
             if !waits.is_empty() {
                 waits.clear();
                 publish_delivery_waits(&waits);
+                let _ = app.emit("queue-changed", ());
             }
             continue;
         }
@@ -252,6 +253,10 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         if current != waits {
             waits = current;
             publish_delivery_waits(&waits);
+            // a hold can begin or end with no queue mutation (an agent
+            // proved an interaction, Codex left the foreground): the
+            // webview re-reads its plans so the list says the same
+            let _ = app.emit("queue-changed", ());
         }
         let Some(activity) = listing else {
             continue;
