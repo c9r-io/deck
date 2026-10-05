@@ -183,6 +183,19 @@ existing session. The command may independently resume its own prior context.
   its card until it exits or you close it, and a clock rule's next slot is
   skipped as `busy` meanwhile. The check cannot establish business success.
   **keep it** leaves the card for you.
+
+  To let a run end on its own, make the last step of the template tell the
+  program to exit (an agent's own exit command, or a prompt that ends in the
+  agent exiting). When the program has exited the check above holds and the
+  card closes, so the next slot starts. Two things to know before you do:
+  deck sends that last step when the terminal has gone quiet, like every
+  follow-up step, and does not wait for the agent to confirm its work is
+  finished; and an agent that ended a turn may still be running something in
+  the background, which exiting ends. The step is your instruction and deck
+  delivers it as written — where in the template it is safe is yours to
+  decide. The editor says the first half of this under **close the card** for
+  a clock rule; no agent's command is named there or here, because those are
+  the agent vendor's to change.
 - **Inspect every row before continuing** is off by default and affects new
   runs when enabled on a rule. All template rows enter the reviewed list in
   one queue transaction. Each delivered row leaves a durable human checkpoint,

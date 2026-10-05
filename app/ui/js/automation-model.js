@@ -69,6 +69,12 @@ export const triggerText = rule => (rule.source === 'clock'
   : rule.source === 'channel' ? t('automation.trigger.channelSummary', { count: formatNumber(rule.channelIds.length) })
     : t('automation.trigger.badge', { badge: rule.badge }));
 
+/* "Close the card" depends on the program exiting, and an interactive agent
+   does not exit by itself: its card stays and a clock rule's next slot is
+   skipped. The editor says so for that combination only. A badge run has no
+   slot to skip; a channel rule has no finish choice. */
+export const finishHintShown = (trigger, finish) => trigger === 'clock' && finish === 'close';
+
 export const ruleLabel = rule => rule.name || (rule.source === 'clock' || rule.source === 'channel' ? rule.id : `:${rule.badge}:`);
 
 /* one recorded run as a line: its outcome decides the mark and the words;

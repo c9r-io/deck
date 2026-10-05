@@ -716,6 +716,7 @@ const dictionary = {
   'automation.finish': '程序退出后',
   'automation.finish.close': '关闭卡片',
   'automation.finish.keep': '保留',
+  'automation.finish.closeHint': '交互式 agent 不会自己退出：它的卡片会一直留着，这条规则的下一个时段会被跳过。想让运行自己结束，就让模板的最后一步使程序退出。',
   'automation.kv.target': '创建到',
   'automation.kv.cmd': '命令',
   'automation.kv.template': '模板',

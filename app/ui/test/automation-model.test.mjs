@@ -271,3 +271,25 @@ test('the first-send option and its warning are in both languages and say the ri
   assert.equal(/approv/i.test(en['queue.stage.firstSend']), false);
   assert.ok(/ready/.test(en['queue.stage.firstSend']));
 });
+
+// F07: a clock rule that closes its card says what that depends on. The
+// sentence is shown for that combination only, and names no agent's command.
+test('the close-the-card hint is for a clock rule that closes its card', async () => {
+  const { finishHintShown } = await import('../js/automation-model.js');
+  const { dictionaries } = await import('../js/i18n.js');
+  const { readFileSync } = await import('node:fs');
+  assert.equal(finishHintShown('clock', 'close'), true);
+  assert.equal(finishHintShown('clock', 'keep'), false);
+  assert.equal(finishHintShown('slack', 'close'), false, 'a badge run has no slot to skip');
+  assert.equal(finishHintShown('channel', 'close'), false);
+  assert.equal(finishHintShown(undefined, undefined), false);
+  for (const [locale, dictionary] of Object.entries(dictionaries)) {
+    const hint = dictionary['automation.finish.closeHint'];
+    assert.equal(typeof hint, 'string', locale);
+    assert.doesNotMatch(hint, /\/exit|\/quit|claude|codex/i, `${locale}: no vendor command in the interface`);
+  }
+  const read = name => readFileSync(new URL(`../${name}`, import.meta.url), 'utf8');
+  assert.match(read('index.html'), /<p class="q-hint" id="auto-finish-hint" data-i18n="automation\.finish\.closeHint" hidden>/,
+    'hidden until the editor decides');
+  assert.match(read('js/automation.js'), /\$\('auto-finish-hint'\)\.hidden = !finishHintShown\(segGet\('auto-trigger'\), segGet\('auto-finish'\)\);/);
+});

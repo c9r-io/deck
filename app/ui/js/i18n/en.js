@@ -717,6 +717,7 @@ const dictionary = {
   'automation.finish': 'After the program exits',
   'automation.finish.close': 'close the card',
   'automation.finish.keep': 'keep it',
+  'automation.finish.closeHint': 'An interactive agent does not exit by itself: its card stays, and this rule’s next slot is skipped. To let a run end on its own, make the template’s last step exit the program.',
   'automation.kv.target': 'creates in',
   'automation.kv.cmd': 'command',
   'automation.kv.template': 'template',

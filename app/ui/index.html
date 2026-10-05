@@ -130,6 +130,7 @@
               <button type="button" data-v="keep" aria-pressed="false" data-i18n="automation.finish.keep">keep it</button>
             </div>
           </div>
+          <p class="q-hint" id="auto-finish-hint" data-i18n="automation.finish.closeHint" hidden>An interactive agent does not exit by itself: its card stays, and this rule's next slot is skipped. To let a run end on its own, make the template's last step exit the program.</p>
           <label class="q-review-option q-p q-p-clock q-p-slack"><input type="checkbox" id="auto-review"><span data-i18n="queue.review.option">Inspect after every row, including the last</span></label>
           <label class="q-review-option q-p q-p-slack"><input type="checkbox" id="auto-send"><span data-i18n="automation.autoSend.option">Automatically continue approved follow-up steps</span></label>
           <p class="q-hint q-p q-p-slack" id="auto-send-hint" data-i18n="automation.autoSend.hint">Your reaction approves the run and its first step for that message. The text is read when Deck handles the reaction, so an edit made after you reacted may be what gets sent. With this on, the later steps of this version of the template continue once the agent is safely ready, without a Send now for each. An agent asking for input or permission and inspection checkpoints still pause the automation. How the first step reaches a newly started agent is the separate option below. Editing the rule or its template turns this off until you approve again.</p>

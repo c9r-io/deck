@@ -77,7 +77,7 @@ import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { persistInbound } from './settings.js';
 import { minToHM, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
-import { approveRule, composeRule, firstSendNeedsConfirm, withFirstSend, graceOptions, graceText, grantState, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, templateCarriesMessage, triggerText } from './automation-model.js';
+import { approveRule, composeRule, finishHintShown, firstSendNeedsConfirm, withFirstSend, graceOptions, graceText, grantState, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, templateCarriesMessage, triggerText } from './automation-model.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN } from './settings-model.js';
@@ -295,7 +295,13 @@ function syncEditor() {
   $('auto-dom').hidden = trigger !== 'clock' || unit !== 'month';
   $('auto-slack-state').textContent = t(slackConnected() ? 'automation.slackOn' : 'automation.slackOffHint');
   $('auto-capture-row').hidden = trigger !== 'channel' || $('auto-match-kind').value !== 'regex';
+  syncFinishHint();
   syncApproval();
+}
+
+/* automation-model.js finishHintShown */
+function syncFinishHint() {
+  $('auto-finish-hint').hidden = !finishHintShown(segGet('auto-trigger'), segGet('auto-finish'));
 }
 
 /* the external-content box exists only for a template that carries message
@@ -615,6 +621,7 @@ export function initAutomation(deps) {
     b.onclick = () => {
       if (segGet('auto-finish') !== b.dataset.v) withdrawApproval();
       segSet('auto-finish', b.dataset.v);
+      syncFinishHint();
     };
   });
   $('auto-drawer').addEventListener('keydown', event => {
