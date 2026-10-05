@@ -40,7 +40,7 @@ import { applyFontScale } from './font-scale.js';
 import { newlyPairedDevice } from './connector-model.js';
 import { slackConnectionView } from './slack-connection-model.js';
 import { removeLegacySlackCredentials } from './slack-legacy-cleanup.js';
-import { NOTIFY_STATUS_WORDS, notifyNeedsAgentStatus, notifyStatusKey } from './notify-model.js';
+import { NOTIFY_STATUS_WORDS, agentHooksToastKey, notifyNeedsAgentStatus, notifyStatusKey } from './notify-model.js';
 import { SETTINGS_SECTIONS, isSettingsSection, searchSettings, sectionItems, settingItem } from './settings-search-model.js';
 import {
   formatShortcut, isSafeShortcut, registerShortcutAction, shortcutConflict, shortcutFromEvent,
@@ -609,7 +609,7 @@ export async function persistAgentHooksChoice(agent, boxId, confirmKey) {
       agentHooksKnown = { ...agentHooksKnown, [agent === 'codex' ? 'codex' : 'claude']: desired };
       renderNotifyDependency();
     }
-    toast(t(desired ? 'settings.agentHooksEnabled' : 'settings.agentHooksDisabled'));
+    toast(t(agentHooksToastKey(desired, ctx.settings.notifyAway)));
   } catch (_) {
     box.checked = !desired;
     toast(t('error.agentHooks'));

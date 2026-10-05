@@ -458,6 +458,7 @@ const dictionary = {
   'inbound.createFailed': 'could not create the card for :{badge}: — will retry',
   'inbound.planPending': 'The card was created, but its template could not be queued. deck will retry.',
   'settings.agentHooksEnabled': 'agent status hooks installed',
+  'settings.agentHooksEnabledNotifyOff': 'agent status hooks installed. Away notifications are still off; you can turn them on below',
   'settings.agentHooksDisabled': 'agent status hooks removed',
   'error.agentHooks': 'could not update the agent’s config file — it was left untouched',
   'settings.updates': 'Updates',

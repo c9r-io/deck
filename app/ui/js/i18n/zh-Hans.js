@@ -457,6 +457,7 @@ const dictionary = {
   'inbound.createFailed': '无法为 :{badge}: 建卡 — 稍后重试',
   'inbound.planPending': '卡片已创建，但模板暂时无法入队。deck 将重试。',
   'settings.agentHooksEnabled': '已安装 agent 状态 hook',
+  'settings.agentHooksEnabledNotifyOff': '已安装 agent 状态 hook。离席通知还是关的，可以在下面打开',
   'settings.agentHooksDisabled': '已移除 agent 状态 hook',
   'error.agentHooks': '无法更新 agent 的配置文件——文件未被改动',
   'settings.updates': '更新',

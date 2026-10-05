@@ -17,6 +17,16 @@ export function notifyNeedsAgentStatus(hooks) {
   return !!hooks && hooks.claude !== true && hooks.codex !== true;
 }
 
+/** What Settings says after an agent status integration was switched. Turning
+ * one on while away notifications are off adds, to the same toast, that they
+ * are a second switch just below: the user asked for agent status and is one
+ * step from hearing about it when away. No dialog, no permission request, and
+ * the notification switch is not touched. */
+export function agentHooksToastKey(enabled, notifyAway) {
+  if (!enabled) return 'settings.agentHooksDisabled';
+  return notifyAway === true ? 'settings.agentHooksEnabled' : 'settings.agentHooksEnabledNotifyOff';
+}
+
 /* A label's title: at most this many bytes of UTF-8, cut at a character
    boundary. notify.rs holds the same bound and cuts the same way
    (test/fixtures/limits.json `notify`). Counting UTF-16 units instead let

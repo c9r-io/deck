@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAttentionTracker } from '../js/attention-model.js';
-import { NOTIFY_COUNTED_FILTERS, NOTIFY_STATUS_WORDS, cardLabels, dismissKey, labelsKey, notifyNeedsAgentStatus, notifyStatusKey, seenDismissals } from '../js/notify-model.js';
+import { NOTIFY_COUNTED_FILTERS, NOTIFY_STATUS_WORDS, agentHooksToastKey, cardLabels, dismissKey, labelsKey, notifyNeedsAgentStatus, notifyStatusKey, seenDismissals } from '../js/notify-model.js';
 
 const projects = [{ id: 'P1', name: 'deck' }, { id: 'P2', name: 'site' }];
 const card = (id, session, title, projectId) => ({ id, session, title, projectId });
@@ -109,4 +109,22 @@ test('the agent-status dependency is named only when both hooks are known to be 
   assert.equal(notifyNeedsAgentStatus({ claude: true, codex: true }), false, 'both on');
   assert.equal(notifyNeedsAgentStatus(null), false, 'unknown state makes no claim');
   assert.equal(notifyNeedsAgentStatus(undefined), false);
+});
+
+// F09: turning an agent status integration on says, once, that away
+// notifications are a second switch when that switch is off. Nothing asks.
+test('enabling an integration mentions away notifications only while they are off', async () => {
+  const { dictionaries } = await import('../js/i18n.js');
+  assert.equal(agentHooksToastKey(true, false), 'settings.agentHooksEnabledNotifyOff');
+  assert.equal(agentHooksToastKey(true, undefined), 'settings.agentHooksEnabledNotifyOff');
+  assert.equal(agentHooksToastKey(true, true), 'settings.agentHooksEnabled', 'already on: the sentence it always was');
+  assert.equal(agentHooksToastKey(false, false), 'settings.agentHooksDisabled');
+  assert.equal(agentHooksToastKey(false, true), 'settings.agentHooksDisabled');
+  for (const [locale, dictionary] of Object.entries(dictionaries)) {
+    const plain = dictionary['settings.agentHooksEnabled'], hint = dictionary['settings.agentHooksEnabledNotifyOff'];
+    assert.equal(typeof hint, 'string', locale);
+    assert.ok(hint.startsWith(plain), `${locale}: the same confirmation, then the hint`);
+    assert.ok(hint.toLowerCase().includes(dictionary['settings.group.awayNotifications'].toLowerCase()),
+      `${locale}: names the group as Settings does`);
+  }
 });
