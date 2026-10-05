@@ -37,7 +37,7 @@ import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } fr
 import { choiceDialog, confirmDialog, inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { syncReminderButton, markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
-import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
+import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, openLinkDefault, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
 import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, MAX_DROP_BYTES, mcpErrorKey, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCellAt, terminalSelectionWheelRoute, terminalWheelLines } from './pure.js';
 import { closeSessionTools } from './session-tools.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, terminalSelectionElsewhere, wireTerminalSelection } from './selection.js';
@@ -528,9 +528,9 @@ export function wireTerminalInput(pane, term, host) {
 
   wireTerminalLinks(pane, {
     logEvent: uev,
-    openLink: (event, link, trace) => {
+    openLink: (event, link, trace, direct) => {
       const c = card();
-      showLinkCtx(event, link.kind, link.text, c ? c.dir : ctx.HOME, c ? c.id : null, link.lookback, trace);
+      (direct ? openLinkDefault : showLinkCtx)(event, link.kind, link.text, c ? c.dir : ctx.HOME, c ? c.id : null, link.lookback, trace);
     },
   });
 

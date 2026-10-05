@@ -5,7 +5,13 @@ import { terminalLogicalLine, terminalLinkRanges, tokenizeTerminalLinks } from '
    object. xterm rebuilds that object on every row repaint, even if the text
    is identical. At release we verify the live public buffer, grid, viewport
    and selection guard before opening exactly once. No input is replayed and
-   no xterm private API is used. Hover stays synchronous and filesystem-free. */
+   no xterm private API is used. Hover stays synchronous and filesystem-free.
+
+   A click with Command held from press to release, and no other modifier,
+   passes the same guards and then asks the view owner for the link's default
+   action instead of its menu (`direct`). It is logged as direct-path /
+   direct-url where the menu click logs menu-path / menu-url. */
+const commandOnly = e => !!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
 export function wireTerminalLinks(pane, { openLink, logEvent }) {
   const term = pane.term, host = pane.body;
   let press = null, hovered = null, attempt = 0, lastSlowScan = -Infinity;
@@ -55,7 +61,7 @@ export function wireTerminalLinks(pane, { openLink, logEvent }) {
     if (!cell) return;
     attempt++;
     const link = at(cell);
-    press = { cell, link, at: Date.now(), trace: context(), moved: false,
+    press = { cell, link, at: Date.now(), trace: context(), moved: false, command: commandOnly(e),
       buffer: term.buffer.active, viewport: term.buffer.active.viewportY, cols: term.cols, rows: term.rows };
     if (link) log(link.kind === 'url' ? 'press-url' : 'press-path', link.text.length, e.detail, press.trace);
   };
@@ -87,8 +93,9 @@ export function wireTerminalLinks(pane, { openLink, logEvent }) {
       outcome('changed'); return;
     }
     term.clearSelection();
-    openLink(e, current, ended.trace);
-    outcome(current.kind === 'url' ? 'menu-url' : 'menu-path');
+    const direct = ended.command && commandOnly(e);
+    openLink(e, current, ended.trace, direct);
+    outcome((direct ? 'direct-' : 'menu-') + (current.kind === 'url' ? 'url' : 'path'));
   };
   const blur = () => cancelPress('cancelled');
   const hidden = () => { if (document.hidden) blur(); };

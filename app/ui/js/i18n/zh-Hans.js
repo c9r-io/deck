@@ -816,6 +816,7 @@ const dictionary = {
   'link.editor-parent': '在编辑器中打开上级文件夹',
   'link.session-parent': '在上级文件夹中新建 session',
   'link.reveal': '在 Finder 中显示',
+  'link.directHint': '⌘ 点击',
   'link.copyPath': '复制路径',
   'session.shellName': 'shell {number}',
   'queue.review.option': "每行发送后由我检查，再继续（包括末行）",

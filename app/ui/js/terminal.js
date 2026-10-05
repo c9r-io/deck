@@ -183,7 +183,11 @@ let ignoreLinkOpeningClickUntil = 0;
    A failed open says why. The backend's message is one of the closed
    links.rs LINK_FAILURES codes (limits.json `link_failures`); it selects a
    sentence here and is never shown itself. Anything else gets the generic
-   sentence. The log still records only `action-failed`. */
+   sentence. The log still records only `action-failed`.
+
+   One executor, `runLinkAction`, serves both ways in: the menu's items, and
+   a Command-click, which runs the menu's FIRST item for that kind without
+   showing the menu (`openLinkDefault`). The menu says so beside that item. */
 const LINK_FAILURE_KEYS = {
   'link-no-editor': 'terminal.openNoEditor',
   'link-path-missing': 'terminal.openPathMissing',
@@ -191,71 +195,86 @@ const LINK_FAILURE_KEYS = {
   'link-open-failed': 'terminal.openSystemFailed',
 };
 const linkFailure = err => String(err?.message || err);
+async function runLinkAction(a, value, cwd, sid, lookback, trace) {
+  const request = ++linkActionGeneration;
+  const action = ['copy', 'url', 'editor', 'editor-parent', 'session-parent', 'reveal'].indexOf(a) + 1;
+  if (!action) return;
+  const started = Date.now();
+  const log = detail => uev('terminal-link', detail, action, Date.now() - started, trace);
+  const attempt = operation => operation(value).catch(err => {
+    if (!lookback || linkFailure(err) !== 'link-path-missing') throw err;
+    log('action-retry');
+    return operation(lookback);
+  });
+  log('action-start');
+  if (a === 'copy') {
+    writeClipboard(value, trace).then(() => { log('action-ok'); toast(t('terminal.copied')); },
+      () => { log('action-failed'); toast(t('terminal.copyFailed')); });
+  } else if (a === 'session-parent') {
+    try {
+      const origin = sid && provider.get(sid);
+      if (!origin) throw new Error('the source session is no longer available');
+      const parentOf = target => inv('resolve_parent_dir', { value: target, cwd: cwd || ctx.HOME });
+      const resolved = await attempt(parentOf);
+      if (request !== linkActionGeneration || !provider.get(sid)) { log('action-stale'); return; }
+      await newSession(resolved.directory, { projectId: origin.projectId, rethrow: true });
+      log('action-ok');
+      toast(t('terminal.openedParent'));
+    } catch (err) {
+      log('action-failed');
+      if (request === linkActionGeneration) toast(t('terminal.createPathFailed'));
+    }
+  } else {
+    const openIt = target => inv('open_target', { kind: a, value: target, cwd: cwd || ctx.HOME });
+    attempt(openIt)
+      .then(() => { log('action-ok'); toast(t(a === 'url' ? 'terminal.openBrowser' : a.startsWith('editor') ? 'terminal.openEditor' : 'terminal.revealFinder')); })
+      .catch(err => { log('action-failed'); toast(t(LINK_FAILURE_KEYS[linkFailure(err)] || 'terminal.openFailed')); });
+  }
+}
+
+/* Command-click: the menu's first item, run at once. Any link menu still
+   open belongs to an older click and is put away first. */
+export function openLinkDefault(e, kind, value, cwd, sid = null, lookback = null, trace = null) {
+  $('ctx').style.display = 'none';
+  return runLinkAction(linkMenuItems(kind)[0].action, value, cwd, sid, lookback, trace);
+}
+
 export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null, trace = null) {
-  const ctx = $('ctx');
+  const menu = $('ctx');
   linkActionGeneration++; // invalidate any older path resolution
   // xterm activates providers on mouseup. The browser's compatibility click
   // follows immediately; it opened this menu and must not also close it.
   ignoreLinkOpeningClickUntil = Date.now() + 120;
   const restoreFocus = document.activeElement;
-  ctx.innerHTML = '<span class="ctx-value"></span>' + linkMenuItems(kind)
+  menu.innerHTML = '<span class="ctx-value"></span>' + linkMenuItems(kind)
     .map(item => `<button data-a="${item.action}"></button>`).join('');
-  const valueLabel = ctx.querySelector('.ctx-value');
+  const valueLabel = menu.querySelector('.ctx-value');
   valueLabel.textContent = value;
   valueLabel.title = value;
   const labelKeys = { url: 'link.url', copy: kind === 'url' ? 'link.copyUrl' : 'link.copyPath', editor: 'link.editor', 'editor-parent': 'link.editor-parent', 'session-parent': 'link.session-parent', reveal: 'link.reveal' };
-  ctx.querySelectorAll('button').forEach(button => { button.textContent = t(labelKeys[button.dataset.a]); });
-  ctx.setAttribute('role', 'menu');
-  ctx.querySelectorAll('button').forEach(b => b.setAttribute('role', 'menuitem'));
+  menu.querySelectorAll('button').forEach(button => { button.textContent = t(labelKeys[button.dataset.a]); });
+  // the first item is what a Command-click runs without this menu
+  const hint = document.createElement('span');
+  hint.className = 'ctx-key'; hint.textContent = t('link.directHint');
+  menu.querySelector('button').appendChild(hint);
+  menu.setAttribute('role', 'menu');
+  menu.querySelectorAll('button').forEach(b => b.setAttribute('role', 'menuitem'));
   const close = () => {
     linkActionGeneration++;
-    ctx.style.display = 'none';
-    ctx.onkeydown = null;
+    menu.style.display = 'none';
+    menu.onkeydown = null;
     if (restoreFocus && restoreFocus.isConnected && restoreFocus.focus) restoreFocus.focus();
   };
-  ctx.onclick = async ev => {
+  menu.onclick = ev => {
     ev.stopPropagation();
-    const a = ev.target.dataset && ev.target.dataset.a;
+    const a = ev.target.closest('button')?.dataset.a;
     if (!a) return;
-    const request = ++linkActionGeneration;
-    const action = ['copy', 'url', 'editor', 'editor-parent', 'session-parent', 'reveal'].indexOf(a) + 1;
-    if (!action) return;
-    const started = Date.now();
-    const log = detail => uev('terminal-link', detail, action, Date.now() - started, trace);
-    const attempt = operation => operation(value).catch(err => {
-      if (!lookback || linkFailure(err) !== 'link-path-missing') throw err;
-      log('action-retry');
-      return operation(lookback);
-    });
-    log('action-start');
-    ctx.style.display = 'none';
+    menu.style.display = 'none';
     if (restoreFocus && restoreFocus.isConnected && restoreFocus.focus) restoreFocus.focus();
-    if (a === 'copy') {
-      writeClipboard(value, trace).then(() => { log('action-ok'); toast(t('terminal.copied')); },
-        () => { log('action-failed'); toast(t('terminal.copyFailed')); });
-    } else if (a === 'session-parent') {
-      try {
-        const origin = sid && provider.get(sid);
-        if (!origin) throw new Error('the source session is no longer available');
-        const parentOf = target => inv('resolve_parent_dir', { value: target, cwd: cwd || ctx.HOME });
-        const resolved = await attempt(parentOf);
-        if (request !== linkActionGeneration || !provider.get(sid)) { log('action-stale'); return; }
-        await newSession(resolved.directory, { projectId: origin.projectId, rethrow: true });
-        log('action-ok');
-        toast(t('terminal.openedParent'));
-      } catch (err) {
-        log('action-failed');
-        if (request === linkActionGeneration) toast(t('terminal.createPathFailed'));
-      }
-    } else {
-      const openIt = target => inv('open_target', { kind: a, value: target, cwd: cwd || ctx.HOME });
-      attempt(openIt)
-        .then(() => { log('action-ok'); toast(t(a === 'url' ? 'terminal.openBrowser' : a.startsWith('editor') ? 'terminal.openEditor' : 'terminal.revealFinder')); })
-        .catch(err => { log('action-failed'); toast(t(LINK_FAILURE_KEYS[linkFailure(err)] || 'terminal.openFailed')); });
-    }
+    runLinkAction(a, value, cwd, sid, lookback, trace);
   };
-  ctx.onkeydown = ev => {
-    const buttons = [...ctx.querySelectorAll('button')];
+  menu.onkeydown = ev => {
+    const buttons = [...menu.querySelectorAll('button')];
     const i = buttons.indexOf(document.activeElement);
     if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); close(); return; }
     if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp' || ev.key === 'Home' || ev.key === 'End') {
@@ -267,7 +286,7 @@ export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null, tr
     }
   };
   placeCtx(e);
-  const first = ctx.querySelector('button');
+  const first = menu.querySelector('button');
   if (first) first.focus();
 }
 

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { wireTerminalLinks } from '../js/terminal-links.js';
 import { terminalLogicalLine, terminalLinkRanges, tokenizeTerminalLinks } from '../js/terminal-links-model.js';
 
@@ -33,7 +34,7 @@ function fixture(text = 'src/main.rs') {
   };
   const pane = { term, body: host, selection: { traceContext: () => ({ run: 1, pane: 2, selection: 3 }), allowLinkActivation: () => allowed } };
   const opened = [], logs = [];
-  wireTerminalLinks(pane, { openLink: (event, link, trace) => opened.push({ link, trace }), logEvent: (...args) => logs.push(args) });
+  wireTerminalLinks(pane, { openLink: (event, link, trace, direct) => opened.push({ link, trace, direct }), logEvent: (...args) => logs.push(args) });
   return { doc, win, host, term, pane, opened, logs, screen,
     repaint: text => { lines = [row(text)]; },
     allow: value => { allowed = value; }, cursor: value => { cursor = value; },
@@ -91,6 +92,61 @@ test('OSC 8 keeps ownership; observational queries do not steal the active path 
   f.down(); f.up(); assert.equal(f.opened.length, 1);
   link.leave(); f.down(); f.up(); assert.equal(f.opened.length, 1);
   f.pane.disposeLinks();
+});
+
+// F08: Command held for the whole click asks the view owner for the default
+// action instead of the menu. It is the same press, with every guard above.
+test('Command held from press to release asks for the default action; any other click opens the menu', () => {
+  const command = { metaKey: true };
+  const outcome = f => f.logs.at(-1)[1];
+  let f = fixture(); f.down(command); f.up(command);
+  assert.equal(f.opened.length, 1); assert.equal(f.opened[0].direct, true);
+  assert.equal(outcome(f), 'direct-path'); assert.equal(f.term.clears, 1);
+  f.down(); f.up();
+  assert.equal(f.opened.length, 2); assert.equal(f.opened[1].direct, false);
+  assert.equal(outcome(f), 'menu-path');
+  f.pane.disposeLinks();
+  // Command at one end only, or with another modifier, is an ordinary click
+  for (const [down, up] of [[command, {}], [{}, command],
+    [{ metaKey: true, shiftKey: true }, { metaKey: true, shiftKey: true }],
+    [{ metaKey: true, altKey: true }, command], [command, { metaKey: true, ctrlKey: true }]]) {
+    f = fixture(); f.down(down); f.up(up);
+    assert.equal(f.opened.length, 1); assert.equal(f.opened[0].direct, false, JSON.stringify([down, up]));
+    assert.equal(outcome(f), 'menu-path'); f.pane.disposeLinks();
+  }
+  f = fixture('https://example.com/a'); f.down(command); f.up(command);
+  assert.equal(f.opened[0].direct, true); assert.equal(f.opened[0].link.kind, 'url');
+  assert.equal(outcome(f), 'direct-url'); f.pane.disposeLinks();
+  // the guards are not relaxed for it: a drag, a refused activation, a
+  // changed row and a miss open nothing, with or without Command
+  f = fixture(); f.down(command); f.doc.fire('mousemove', { clientX: 200, clientY: 5 }); f.up(command);
+  assert.deepEqual(f.opened, []); assert.equal(outcome(f), 'drag'); f.pane.disposeLinks();
+  f = fixture(); f.allow(false); f.down(command); f.up(command);
+  assert.deepEqual(f.opened, []); f.pane.disposeLinks();
+  f = fixture(); f.down(command); f.repaint('src/other.rs'); f.up(command);
+  assert.deepEqual(f.opened, []); assert.equal(outcome(f), 'changed'); f.pane.disposeLinks();
+  f = fixture('plain text'); f.down(command); f.up(command);
+  assert.deepEqual(f.opened, []); f.pane.disposeLinks();
+  f = fixture(); f.down(command); f.up(command);
+  assert.ok(!JSON.stringify(f.logs).includes('src/main.rs'), 'diagnostics contain no link text');
+  f.pane.disposeLinks();
+});
+
+// terminal.js and layout.js are WKWebView-bound; their wiring is read from source.
+test('a Command-click runs the menu\'s first item through the menu\'s own executor', () => {
+  const read = name => readFileSync(new URL(`../js/${name}`, import.meta.url), 'utf8');
+  const terminal = read('terminal.js'), layout = read('layout.js');
+  assert.match(layout, /\(direct \? openLinkDefault : showLinkCtx\)\(event, link\.kind, link\.text,/);
+  assert.match(terminal, /export function openLinkDefault\([^)]*\) \{\n[^}]*return runLinkAction\(linkMenuItems\(kind\)\[0\]\.action, value, cwd, sid, lookback, trace\);\n\}/);
+  const menu = terminal.slice(terminal.indexOf('export function showLinkCtx('));
+  const body = menu.slice(0, menu.indexOf('\n}\n'));
+  assert.match(body, /runLinkAction\(a, value, cwd, sid, lookback, trace\);/);
+  assert.equal((terminal.match(/inv\('open_target'/g) || []).length, 1, 'one place opens a target');
+  // the menu names the shortcut beside its first item, and a click on that
+  // label still finds the item
+  assert.match(body, /hint\.textContent = t\('link\.directHint'\);\n\s*menu\.querySelector\('button'\)\.appendChild\(hint\);/);
+  assert.match(body, /ev\.target\.closest\('button'\)\?\.dataset\.a/);
+  assert.doesNotMatch(body, /\bctx\./, 'the menu element is not confused with the shared state object');
 });
 
 test('plain text and non-primary/outside presses are harmless; URLs use the same lifecycle', () => {

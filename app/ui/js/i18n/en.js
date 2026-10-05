@@ -817,6 +817,7 @@ const dictionary = {
   'link.editor-parent': 'Open parent folder in editor',
   'link.session-parent': 'New session in parent folder',
   'link.reveal': 'Reveal in Finder',
+  'link.directHint': '⌘ click',
   'link.copyPath': 'Copy path',
   'session.shellName': 'shell {number}',
   'queue.review.option': "Inspect after every sent row, including the last",

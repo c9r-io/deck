@@ -774,8 +774,9 @@ const SELECTION_EVENTS: &[&str] = &[
 ];
 
 /// Link attempts share the terminal numeric context (selection = 0).
-/// press/menu/blocked: a = candidate UTF-16 length, b = click count for press,
-/// otherwise elapsed ms. miss = no candidate on a click. scan-slow: a = ms,
+/// press/menu/direct/blocked: a = candidate UTF-16 length, b = click count for
+/// press, otherwise elapsed ms. menu-* opened the link menu; direct-* is a
+/// Command-click that ran the default action without it. miss = no candidate on a click. scan-slow: a = ms,
 /// b = scanned UTF-16 length, limited to one per pane per five seconds.
 /// action-*: a = copy(1), URL(2), editor(3), editor-parent(4), session-parent(5),
 /// reveal(6); b = elapsed ms. No candidate, path, URL or error text is accepted.
@@ -784,6 +785,8 @@ const LINK_EVENTS: &[&str] = &[
     "press-url",
     "menu-path",
     "menu-url",
+    "direct-path",
+    "direct-url",
     "miss",
     "drag",
     "viewport",
