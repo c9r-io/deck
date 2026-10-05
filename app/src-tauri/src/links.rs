@@ -1,6 +1,11 @@
 //! Terminal link targets: resolving clicked paths against the pane cwd in
 //! Rust (no shell) and the validated `open_target` command. Hover discovery
 //! is frontend-only; a path is checked when an action is taken on it.
+//! A failed open or parent resolution returns one of the closed
+//! `LINK_FAILURES` codes as its whole message (never the path, the URL or a
+//! sentence): the wire carries only the message, so the code is what lets
+//! the link menu say which of the four reasons applied. The codes are
+//! mirrored in `ui/test/fixtures/limits.json` (`link_failures`).
 //! Voice setup opens only three fixed System Settings destinations; terminal
 //! URLs still accept only http(s). Opening settings never grants permissions.
 
@@ -51,6 +56,26 @@ pub(crate) fn voice_open_settings(kind: VoiceSettings) -> Result<(), DeckError> 
 
 // ---------- open path / url ----------------------------------------------------
 
+/// Why `open_target` / `resolve_parent_dir` refused or failed, as the UI
+/// may tell it apart. Each is the error's entire message.
+pub(crate) const LINK_NO_EDITOR: &str = "link-no-editor";
+pub(crate) const LINK_PATH_MISSING: &str = "link-path-missing";
+pub(crate) const LINK_NOT_ALLOWED: &str = "link-not-allowed";
+pub(crate) const LINK_OPEN_FAILED: &str = "link-open-failed";
+#[cfg(test)]
+const LINK_FAILURES: [&str; 4] = [
+    LINK_NO_EDITOR,
+    LINK_PATH_MISSING,
+    LINK_NOT_ALLOWED,
+    LINK_OPEN_FAILED,
+];
+
+/// The clicked path, its parent or the session directory it is relative to
+/// is not there or cannot be read.
+fn path_missing() -> DeckError {
+    DeckError::new(ErrorKind::Missing, LINK_PATH_MISSING)
+}
+
 #[derive(Serialize)]
 pub(crate) struct ResolvedPathTarget {
     directory: String,
@@ -83,17 +108,9 @@ fn absolute_clicked_path(value: &str, cwd: &str) -> Result<PathBuf, DeckError> {
     if path.is_absolute() {
         return Ok(path);
     }
-    let cwd = std::fs::canonicalize(expand_tilde(cwd)).map_err(|_| {
-        DeckError::new(
-            ErrorKind::Missing,
-            "the session working directory is unavailable",
-        )
-    })?;
+    let cwd = std::fs::canonicalize(expand_tilde(cwd)).map_err(|_| path_missing())?;
     if !cwd.is_dir() {
-        return Err(DeckError::new(
-            ErrorKind::Missing,
-            "the session working directory is unavailable",
-        ));
+        return Err(path_missing());
     }
     Ok(cwd.join(path))
 }
@@ -112,44 +129,21 @@ pub(crate) fn resolve_clicked_parent(
         Err(_) => {
             let stripped = regex_strip_lineno(&raw);
             if stripped == raw {
-                return Err(DeckError::new(
-                    ErrorKind::Missing,
-                    "the selected path does not exist or cannot be accessed",
-                ));
+                return Err(path_missing());
             }
-            std::fs::canonicalize(absolute_clicked_path(&stripped, cwd)?).map_err(|_| {
-                DeckError::new(
-                    ErrorKind::Missing,
-                    "the selected path does not exist or cannot be accessed",
-                )
-            })?
+            std::fs::canonicalize(absolute_clicked_path(&stripped, cwd)?)
+                .map_err(|_| path_missing())?
         }
     };
-    let meta = std::fs::metadata(&resolved).map_err(|_| {
-        DeckError::new(
-            ErrorKind::Missing,
-            "the selected path does not exist or cannot be accessed",
-        )
-    })?;
+    let meta = std::fs::metadata(&resolved).map_err(|_| path_missing())?;
     let target_is_directory = meta.is_dir();
     let directory = if target_is_directory {
         resolved
     } else {
-        resolved
-            .parent()
-            .ok_or_else(|| {
-                DeckError::new(
-                    ErrorKind::Missing,
-                    "the selected path has no usable parent folder",
-                )
-            })?
-            .to_path_buf()
+        resolved.parent().ok_or_else(path_missing)?.to_path_buf()
     };
     if !directory.is_dir() {
-        return Err(DeckError::new(
-            ErrorKind::Missing,
-            "the selected path has no usable parent folder",
-        ));
+        return Err(path_missing());
     }
     Ok(ResolvedPathTarget {
         directory: directory.to_string_lossy().into_owned(),
@@ -169,82 +163,73 @@ pub(crate) fn resolve_parent_dir(
 /// subprocess spawns. `open` treats its argument as a URL when it parses as
 /// one — an unvalidated "url" click could reach file:// or an arbitrary app
 /// scheme; a relative path could resolve outside the card's cwd view. Rules:
-/// urls must be http(s); paths must resolve absolute and exist.
+/// urls must be http(s); paths must resolve absolute and exist. A refusal
+/// names its reason and repeats nothing of what was clicked.
 pub(crate) fn validate_open(kind: &str, value: &str, resolved: &str) -> Result<(), DeckError> {
+    let not_allowed = || DeckError::new(ErrorKind::Invalid, LINK_NOT_ALLOWED);
     match kind {
         "url" => {
             let lower = value.trim().to_ascii_lowercase();
             if lower.starts_with("http://") || lower.starts_with("https://") {
                 Ok(())
             } else {
-                Err(DeckError::new(
-                    ErrorKind::Invalid,
-                    format!("only http(s) links open externally: {value}"),
-                ))
+                Err(not_allowed())
             }
         }
         "editor" | "editor-parent" | "reveal" => {
             if !resolved.starts_with('/') {
-                return Err(DeckError::new(
-                    ErrorKind::Invalid,
-                    format!("path did not resolve absolute: {resolved}"),
-                ));
+                return Err(not_allowed());
             }
             if !std::path::Path::new(resolved).exists() {
-                return Err(DeckError::new(
-                    ErrorKind::Missing,
-                    format!("no such path: {resolved}"),
-                ));
+                return Err(path_missing());
             }
             Ok(())
         }
-        _ => Err(DeckError::new(
-            ErrorKind::Invalid,
-            format!("unknown kind: {kind}"),
-        )),
+        _ => Err(not_allowed()),
     }
 }
 
 #[tauri::command]
 pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<(), DeckError> {
+    open_with_editor(&kind, &value, &cwd, crate::documents::editor_app)
+}
+
+/// `open_target` with the editor choice supplied by the caller, read only
+/// by the two editor actions and only after the target resolved.
+fn open_with_editor(
+    kind: &str,
+    value: &str,
+    cwd: &str,
+    editor: impl Fn() -> Option<String>,
+) -> Result<(), DeckError> {
     let resolved = if kind == "url" {
         String::new()
     } else if kind == "editor-parent" {
-        resolve_clicked_parent(&value, &cwd)?.directory
+        resolve_clicked_parent(value, cwd)?.directory
     } else {
-        let raw = unquote_clicked_path(&value);
-        let literal = absolute_clicked_path(&raw, &cwd)?;
+        let raw = unquote_clicked_path(value);
+        let literal = absolute_clicked_path(&raw, cwd)?;
         match std::fs::canonicalize(&literal) {
             Ok(path) => path.to_string_lossy().into_owned(),
             Err(_) => {
                 let stripped = regex_strip_lineno(&raw);
-                std::fs::canonicalize(absolute_clicked_path(&stripped, &cwd)?)
-                    .map_err(|_| {
-                        DeckError::new(
-                            ErrorKind::Missing,
-                            "the selected path does not exist or cannot be accessed",
-                        )
-                    })?
+                std::fs::canonicalize(absolute_clicked_path(&stripped, cwd)?)
+                    .map_err(|_| path_missing())?
                     .to_string_lossy()
                     .into_owned()
             }
         }
     };
-    validate_open(&kind, &value, &resolved)?;
-    let status = match kind.as_str() {
+    validate_open(kind, value, &resolved)?;
+    let status = match kind {
         "url" => Command::new("/usr/bin/open").arg(value.trim()).status(),
-        "editor-parent" => match crate::documents::editor_app() {
+        "editor-parent" => match editor() {
             Some(app) => Command::new("/usr/bin/open")
                 .args(["-a", &app, &resolved])
                 .status(),
-            None => {
-                return Err(DeckError::new(
-                    ErrorKind::Missing,
-                    "choose an editor in Settings before opening a folder",
-                ))
-            }
+            None => return Err(DeckError::new(ErrorKind::Missing, LINK_NO_EDITOR)),
         },
-        "editor" => match crate::documents::editor_app() {
+        "editor" => match editor() {
             Some(app) => Command::new("/usr/bin/open")
                 .args(["-a", &app, &resolved])
                 .status(),
@@ -257,14 +242,13 @@ pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<()
             .status(),
         _ => unreachable!("validate_open rejects unknown kinds"),
     }
-    .map_err(DeckError::from)?;
+    // `open` could not be started: the log keeps the io kind, the caller
+    // gets the same reason as an `open` that ran and failed.
+    .map_err(|e| DeckError::new(ErrorKind::io(e.kind()), LINK_OPEN_FAILED))?;
     if status.success() {
         Ok(())
     } else {
-        Err(DeckError::new(
-            ErrorKind::Other,
-            "the selected item could not be opened",
-        ))
+        Err(DeckError::new(ErrorKind::Other, LINK_OPEN_FAILED))
     }
 }
 
@@ -433,6 +417,124 @@ mod tests {
         assert!(resolve_clicked_parent("\"空 格😀/code.rs\":12:3", &cwd).is_ok());
         assert!(resolve_clicked_parent("memcache.go:265", &cwd).is_err());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Every failure before `open(1)` runs carries one closed reason code as
+    /// its whole message: no path, no URL, no sentence the UI would have to
+    /// parse. The kinds the log has always recorded are unchanged.
+    #[test]
+    fn open_failures_name_a_closed_reason_and_carry_no_content() {
+        let root = std::env::temp_dir().join(format!(
+            "deck-link-failure-{}-{}",
+            std::process::id(),
+            crate::datadir::now_epoch()
+        ));
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        let cwd = root.to_string_lossy().into_owned();
+        let open = |kind: &str, value: &str, cwd: &str| {
+            open_target(kind.into(), value.into(), cwd.into()).unwrap_err()
+        };
+        for (kind, value, cwd, code, error_kind) in [
+            (
+                "editor",
+                "absent.rs:12",
+                cwd.as_str(),
+                "link-path-missing",
+                ErrorKind::Missing,
+            ),
+            (
+                "reveal",
+                "nested/absent",
+                cwd.as_str(),
+                "link-path-missing",
+                ErrorKind::Missing,
+            ),
+            (
+                "editor-parent",
+                "absent/file.rs",
+                cwd.as_str(),
+                "link-path-missing",
+                ErrorKind::Missing,
+            ),
+            (
+                "editor",
+                "file.rs",
+                "/definitely/missing/deck-cwd",
+                "link-path-missing",
+                ErrorKind::Missing,
+            ),
+            (
+                "url",
+                "file:///etc/passwd",
+                cwd.as_str(),
+                "link-not-allowed",
+                ErrorKind::Invalid,
+            ),
+            (
+                "url",
+                "x-private-scheme://secret-token",
+                cwd.as_str(),
+                "link-not-allowed",
+                ErrorKind::Invalid,
+            ),
+        ] {
+            let error = open(kind, value, cwd);
+            assert_eq!(error.message(), code, "{kind} {value}");
+            assert_eq!(error.kind(), error_kind, "{kind} {value}");
+        }
+        for (value, cwd) in [
+            ("absent.rs", cwd.as_str()),
+            ("file.rs", "/definitely/missing/deck-cwd"),
+        ] {
+            let error = resolve_parent_dir(value.into(), cwd.into())
+                .map(|_| ())
+                .unwrap_err();
+            assert_eq!(error.message(), "link-path-missing");
+            assert_eq!(error.kind(), ErrorKind::Missing);
+        }
+        // A folder that resolved, with no editor chosen: refused before any
+        // spawn. The file action has a system default and is not refused.
+        let no_editor = open_with_editor("editor-parent", "nested", &cwd, || None).unwrap_err();
+        assert_eq!(no_editor.message(), "link-no-editor");
+        assert_eq!(no_editor.kind(), ErrorKind::Missing);
+        // Resolution is checked first, so a missing path is never reported
+        // as a missing editor.
+        assert_eq!(
+            open_with_editor("editor-parent", "absent/file.rs", &cwd, || None)
+                .unwrap_err()
+                .message(),
+            "link-path-missing"
+        );
+        assert_eq!(
+            validate_open("shell", "", "/tmp").unwrap_err().message(),
+            "link-not-allowed"
+        );
+        assert_eq!(
+            validate_open("reveal", "", "relative/path")
+                .unwrap_err()
+                .message(),
+            "link-not-allowed"
+        );
+        assert_eq!(
+            validate_open("editor", "", "/no/such/path/deck-test")
+                .unwrap_err()
+                .message(),
+            "link-path-missing"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn link_failure_codes_are_the_shared_list() {
+        let limits: serde_json::Value =
+            serde_json::from_str(include_str!("../../ui/test/fixtures/limits.json")).unwrap();
+        let shared: Vec<&str> = limits["link_failures"]
+            .as_array()
+            .expect("limits.json link_failures")
+            .iter()
+            .map(|code| code.as_str().unwrap())
+            .collect();
+        assert_eq!(shared, LINK_FAILURES);
     }
 
     #[test]

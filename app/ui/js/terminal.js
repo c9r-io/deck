@@ -174,11 +174,23 @@ let ignoreLinkOpeningClickUntil = 0;
 
 /* `lookback` is the wider reading of a path whose start the tokenizer had to
    guess (CJK prose has no space to end on). Every action below tries the
-   narrow reading first and falls back to it, so the filesystem settles what
-   the heuristic could not. Resolution fails before `open_target` spawns
-   anything, so the retry cannot open two things; only a failure of `open(1)`
-   itself — which resolution already passed — could, and that is the same
-   candidate the user pointed at. */
+   narrow reading first and falls back to it only when that path was not
+   there, so the filesystem settles what the heuristic could not. Any other
+   failure means the narrow reading resolved: it is reported as it is and
+   never retried, so a retry cannot open two things or replace the real
+   reason with "not found".
+
+   A failed open says why. The backend's message is one of the closed
+   links.rs LINK_FAILURES codes (limits.json `link_failures`); it selects a
+   sentence here and is never shown itself. Anything else gets the generic
+   sentence. The log still records only `action-failed`. */
+const LINK_FAILURE_KEYS = {
+  'link-no-editor': 'terminal.openNoEditor',
+  'link-path-missing': 'terminal.openPathMissing',
+  'link-not-allowed': 'terminal.openNotAllowed',
+  'link-open-failed': 'terminal.openSystemFailed',
+};
+const linkFailure = err => String(err?.message || err);
 export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null, trace = null) {
   const ctx = $('ctx');
   linkActionGeneration++; // invalidate any older path resolution
@@ -211,7 +223,7 @@ export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null, tr
     const started = Date.now();
     const log = detail => uev('terminal-link', detail, action, Date.now() - started, trace);
     const attempt = operation => operation(value).catch(err => {
-      if (!lookback) throw err;
+      if (!lookback || linkFailure(err) !== 'link-path-missing') throw err;
       log('action-retry');
       return operation(lookback);
     });
@@ -239,7 +251,7 @@ export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null, tr
       const openIt = target => inv('open_target', { kind: a, value: target, cwd: cwd || ctx.HOME });
       attempt(openIt)
         .then(() => { log('action-ok'); toast(t(a === 'url' ? 'terminal.openBrowser' : a.startsWith('editor') ? 'terminal.openEditor' : 'terminal.revealFinder')); })
-        .catch(() => { log('action-failed'); toast(t('terminal.openFailed')); });
+        .catch(err => { log('action-failed'); toast(t(LINK_FAILURE_KEYS[linkFailure(err)] || 'terminal.openFailed')); });
     }
   };
   ctx.onkeydown = ev => {

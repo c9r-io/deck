@@ -175,3 +175,29 @@ test('notification label mirrors: the title bound, in bytes', () => {
   // the count bound is the backend's alone: the webview sends every card
   assert.deepEqual(Object.keys(limits.notify), ['labels_max', 'label_title_max_bytes']);
 });
+
+// links.rs LINK_FAILURES: a failed open says which reason applied. terminal.js
+// is WKWebView-bound, so its table is read from the source, like static.test.
+test('link failure reasons: one sentence each, in both languages', () => {
+  const terminal = readFileSync(new URL('../js/terminal.js', import.meta.url), 'utf8');
+  const table = terminal.match(/const LINK_FAILURE_KEYS = \{([\s\S]*?)\};/)?.[1] || '';
+  const entries = [...table.matchAll(/'([a-z-]+)': '([A-Za-z.]+)'/g)].map(match => [match[1], match[2]]);
+  assert.deepEqual(entries.map(([code]) => code), limits.link_failures);
+  for (const [locale, dictionary] of Object.entries(dictionaries)) {
+    const sentences = entries.map(([, key]) => dictionary[key]);
+    for (const [index, sentence] of sentences.entries()) {
+      assert.equal(typeof sentence, 'string', `${locale} ${entries[index][1]}`);
+    }
+    assert.equal(new Set([...sentences, dictionary['terminal.openFailed']]).size, entries.length + 1,
+      `${locale}: every reason reads differently, and none is the bare fallback`);
+    // "no editor" says where to choose one, in the Settings labels as they are now
+    const noEditor = dictionary[Object.fromEntries(entries)['link-no-editor']];
+    assert.ok(noEditor.includes(dictionary['settings.terminal']), `${locale} names the section`);
+    assert.ok(noEditor.includes(dictionary['settings.openFiles']), `${locale} names the setting`);
+  }
+  // the backend's message is never shown: an unknown one falls back to the generic sentence
+  assert.match(terminal, /t\(LINK_FAILURE_KEYS\[linkFailure\(err\)\] \|\| 'terminal\.openFailed'\)/);
+  // only a path that was not there is retried with the wider reading; any
+  // other reason means the narrow reading already resolved
+  assert.match(terminal, /if \(!lookback \|\| linkFailure\(err\) !== 'link-path-missing'\) throw err;/);
+});
