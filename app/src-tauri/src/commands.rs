@@ -85,28 +85,42 @@ pub(crate) fn set_terminal_mode_style(
     crate::tmux::tmux(&["set", "-g", "copy-mode-position-style", &style]).map(|_| ())
 }
 
+/// The editors the Settings picker can offer: a closed list of application
+/// names, each exactly the `.app` name its vendor ships. It is extended a
+/// name at a time, by decision; it is the picker's content, not a rule the
+/// saved setting is checked against. Order is the picker's order.
+const EDITOR_CANDIDATES: &[&str] = &[
+    "Cursor",
+    "Visual Studio Code",
+    "Windsurf",
+    "Devin",
+    "VSCodium",
+    "Kiro",
+    "Trae",
+    "Antigravity",
+    "Zed",
+    "Zed Preview",
+    "Sublime Text",
+    "TextMate",
+    "BBEdit",
+    "Nova",
+    "MacVim",
+    "Emacs",
+    "IntelliJ IDEA",
+    "WebStorm",
+    "RustRover",
+    "Xcode",
+];
+
 /// Developer editors present in /Applications or ~/Applications, offered in
 /// the Settings editor picker. Names double as `open -a` targets.
 #[tauri::command]
 pub(crate) fn detect_editors() -> Vec<String> {
-    const CANDIDATES: &[&str] = &[
-        "Cursor",
-        "Visual Studio Code",
-        "Zed",
-        "Sublime Text",
-        "TextMate",
-        "BBEdit",
-        "Nova",
-        "IntelliJ IDEA",
-        "WebStorm",
-        "RustRover",
-        "Xcode",
-    ];
     let mut roots = vec![PathBuf::from("/Applications")];
     if let Some(h) = dirs::home_dir() {
         roots.push(h.join("Applications"));
     }
-    CANDIDATES
+    EDITOR_CANDIDATES
         .iter()
         .filter(|c| roots.iter().any(|r| r.join(format!("{c}.app")).exists()))
         .map(|c| c.to_string())
@@ -812,6 +826,57 @@ mod tests {
             line,
             "safe to log verbatim"
         );
+    }
+
+    /// The picker's list: the eleven it always had, in their old relative
+    /// order, and the names added on 2026-10-05. Every entry is a bare
+    /// application name, never a path, a bundle file name or a duplicate.
+    #[test]
+    fn editor_candidates_are_bare_names_and_keep_the_original_eleven() {
+        const ORIGINAL: [&str; 11] = [
+            "Cursor",
+            "Visual Studio Code",
+            "Zed",
+            "Sublime Text",
+            "TextMate",
+            "BBEdit",
+            "Nova",
+            "IntelliJ IDEA",
+            "WebStorm",
+            "RustRover",
+            "Xcode",
+        ];
+        let kept: Vec<&str> = EDITOR_CANDIDATES
+            .iter()
+            .copied()
+            .filter(|name| ORIGINAL.contains(name))
+            .collect();
+        assert_eq!(kept, ORIGINAL);
+        for added in [
+            "Windsurf",
+            "Devin",
+            "VSCodium",
+            "Kiro",
+            "Trae",
+            "Antigravity",
+            "Zed Preview",
+            "MacVim",
+            "Emacs",
+        ] {
+            assert!(EDITOR_CANDIDATES.contains(&added), "{added}");
+        }
+        assert_eq!(EDITOR_CANDIDATES.len(), ORIGINAL.len() + 9);
+        for (index, name) in EDITOR_CANDIDATES.iter().enumerate() {
+            assert!(!EDITOR_CANDIDATES[..index].contains(name), "{name} twice");
+            assert!(
+                !name.is_empty()
+                    && *name == name.trim()
+                    && !name.contains('/')
+                    && !name.ends_with(".app")
+                    && !name.chars().any(char::is_control),
+                "{name}"
+            );
+        }
     }
 
     /// Both probes are read-only and answer from fixed roots: the editor
