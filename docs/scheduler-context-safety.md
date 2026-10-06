@@ -261,8 +261,9 @@ first typed prompt — and never a claim that the agent is ready.
   off, no inherited default). The frozen plan carries `firstSend: {rule}`;
   only its HEAD claims it with the event key. Slack retains external admission.
   Clock uses owner `queue_add*`, remains `external=false`, and must match the
-  native pending slot/rule plus the committed unique card origin, session,
-  target, frozen first text and operation ID. A generic owner `at` row cannot
+  native pending slot/rule plus, on the current Board (never one answered
+  from `deck.json.bak`), the unique card origin, session, target, frozen
+  first text and operation ID. A generic owner `at` row cannot
   obtain the exception. Reviewed lists copy it only to row zero; operation
   replay stays idempotent. No new Slack content-authority trigger is added.
   `FirstSendOrigin` is separate from `TriggerClass`. Clock-enabled settings

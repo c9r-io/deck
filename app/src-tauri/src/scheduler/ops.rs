@@ -779,7 +779,8 @@ pub(super) fn admit_authority(args: &mut QueueAddArgs, texts: &[String]) {
 /// is checked against the CURRENT settings and the backend's own copy of
 /// the event. A refused claim admits the row without it — the ordinary
 /// first-interaction gate holds it. Owner admission additionally requires a
-/// committed clock head and native pending slot; Slack stays external.
+/// clock head on the current Board and a native pending slot; Slack stays
+/// external.
 /// A phone task's claim names a preset instead of a rule and is checked
 /// against the current Board and the Connector's own journal, on the
 /// external path alone.
@@ -796,9 +797,12 @@ pub(super) fn admit_first_send(args: &mut QueueAddArgs) {
         let proof = crate::connector::task_proof(&claim.event);
         match first_send::verify_connector(board.as_ref(), &claim, args, proof.as_ref()) {
             Ok(granted) => args.first_send_granted = Some(granted),
-            Err(code) => applog(&format!(
-                "[queue] first-send policy not applied ({code}) — the first step waits for an agent interaction"
-            )),
+            Err(code) => {
+                // a statement of its own: the log scan reads to its end
+                applog(&format!(
+                    "[queue] first-send policy not applied ({code}) — the first step waits for an agent interaction"
+                ));
+            }
         }
         return;
     }
@@ -816,9 +820,9 @@ pub(super) fn admit_first_send(args: &mut QueueAddArgs) {
             if !crate::inbound::clock_policy_pending(&claim.event, rule) {
                 return;
             }
-            let board = crate::documents::connector_board_payload()
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+            // the CURRENT Board, as for a phone task: never one answered
+            // from deck.json.bak (`documents::board_authority`)
+            let board = crate::documents::board_authority();
             if !board
                 .as_ref()
                 .is_some_and(|b| first_send::clock_head_matches(b, args, rule, &claim))

@@ -479,8 +479,8 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
 }
 
 /// deck.json the same way: the webview loads it (`load_board_at`) and saves
-/// it (`save_board_at`), the backend reads it for the Connector and the
-/// first-send admission (`connector_board_payload_at`), and the way out of a
+/// it (`save_board_at`), the backend reads it for the Connector
+/// (`connector_board_payload_at`), and the way out of a
 /// lost Board reads the backup and the copies a recovery set aside
 /// (`board_recovery_at`, `lost_exit_at`). Only the owner's two doors may set
 /// a damaged Board aside — the load, which then tells the user once, and the

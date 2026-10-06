@@ -41,8 +41,12 @@
 //! source being unreadable holds only the rows it backs.
 //!
 //! - Admission: CURRENT settings and the backend's pending native event must
-//!   match {rule,event}. Clock owner admission additionally checks the saved
+//!   match {rule,event}. Clock owner admission additionally checks, on the
+//!   CURRENT Board (`documents::board_authority`: never one answered from
+//!   deck.json.bak, which is the save before the last one), the
 //!   card's unique origin, session/target, frozen first text and operation ID.
+//!   A Board that stands as recovered admits no clock override: the head
+//!   waits at the first-interaction gate like any other.
 //!   Missing native proof admits no override; replay is operation-idempotent.
 //!   The pending event cannot be manufactured by a claimed source/timestamp.
 //!   Clock target policy freezes rule project/directory; disabling, changing

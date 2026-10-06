@@ -1142,10 +1142,12 @@ pub(crate) fn connector_board_payload() -> Result<String, DeckError> {
     connector_board_payload_at(&board_path())
 }
 
-/// Read, never moved (`storage::read_typed`): the Connector and the
-/// first-send admission get the best validated copy — the backup while the
-/// main file is damaged — and leave setting a file aside to the webview's
-/// load, which is the one that tells the user.
+/// Read, never moved (`storage::read_typed`): the Connector gets the best
+/// validated copy — the backup while the main file is damaged — and leaves
+/// setting a file aside to the webview's load, which is the one that tells
+/// the user. This is a PROJECTION source (what the phone is shown, whether
+/// a project exists), never authority: a decision that sends on what the
+/// Board says reads `board_authority` instead.
 fn connector_board_payload_at(path: &std::path::Path) -> Result<String, DeckError> {
     storage::read_typed::<BoardDoc>(path)?
         .map(|loaded| loaded.payload)

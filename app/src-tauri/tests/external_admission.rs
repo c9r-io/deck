@@ -460,6 +460,27 @@ fn external_text_reaches_the_one_admission() {
     assert!(first_send.contains("clock_policy_pending"));
     assert!(first_send.contains("clock_head_matches"));
     assert!(first_send.contains("clock == args.channel_path"));
+    // Both Board-reading branches decide on the CURRENT Board alone: the
+    // disk read that falls back to deck.json.bak is a projection source for
+    // the Connector and never reaches an admission.
+    assert_eq!(
+        first_send
+            .matches("crate::documents::board_authority()")
+            .count(),
+        2
+    );
+    assert!(!first_send.contains("connector_board_payload"));
+    let scheduler_disk_readers: Vec<_> = production_sources()
+        .into_iter()
+        .filter(|(name, source)| {
+            name.starts_with("scheduler/") && source.contains("connector_board_payload")
+        })
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        scheduler_disk_readers.is_empty(),
+        "{scheduler_disk_readers:?}"
+    );
     // A phone task's claim names a preset. It is decided before any rule is
     // looked up, on the external path alone, against the current Board
     // (never one answered from its backup) and the Connector's own journal;
