@@ -152,6 +152,15 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         1,
         Producer,
     ),
+    // the poll's idle fallback: a session with a projection is one whose
+    // bells are ignored (`bell.rs`), exactly as in the poll
+    (
+        "commands.rs",
+        "poll_idle_tick",
+        "agent_status::projections",
+        1,
+        Attention,
+    ),
     // notification body, Dock badge, unread mark
     ("notify.rs", "", "\"needs-input\"", 1, Attention),
     ("notify.rs", "", "\"turn-done\"", 1, Attention),
@@ -926,8 +935,21 @@ fn signal_never_writes_content_authority() {
 
 // ------------------------------------------------------- the terminal bell
 
+/// The production files that call the poll's idle fallback.
+fn callers_of_poll_idle_tick(sources: &[(String, String)]) -> Vec<&str> {
+    let mut callers: Vec<&str> = sources
+        .iter()
+        .filter(|(_, source)| code_only(source).contains("poll_idle_tick("))
+        .map(|(name, _)| name.as_str())
+        .filter(|name| *name != "commands.rs")
+        .collect();
+    callers.sort();
+    callers
+}
+
 /// A terminal bell (`bell.rs`) is an attention observation and nothing
-/// else. It is read where the Board poll already reads the snapshot and
+/// else. It is read where the Board poll already reads the snapshot (and by
+/// that poll's idle fallback, from the same snapshot source) and
 /// shown in the Needs attention list; no scheduler, delivery, lifecycle,
 /// retirement, Connector, MCP or inbound code can see it, the bookkeeping
 /// reads no agent word, and the frontend never lets it reach a card status,
@@ -971,7 +993,26 @@ fn a_terminal_bell_is_attention_and_never_reaches_a_side_effect() {
             .unwrap()
             .1,
     );
-    assert_eq!(commands.matches("crate::notify::bells(").count(), 1);
+    // (the hand-over twice: the poll, and its idle fallback on the
+    // scheduler's tick while the webview is not polling)
+    assert_eq!(commands.matches("crate::notify::bells(").count(), 2);
+    // that fallback is driven by the scheduler's thread and gives it nothing
+    // back: one call, a function without a return value, and — below — no
+    // scheduler file that names a bell
+    let thread = code_only(
+        &sources
+            .iter()
+            .find(|(name, _)| name == "scheduler/thread.rs")
+            .unwrap()
+            .1,
+    );
+    assert_eq!(
+        thread.matches("crate::commands::poll_idle_tick(").count(),
+        1
+    );
+    assert!(commands
+        .contains("pub(crate) fn poll_idle_tick(shown: &std::collections::HashSet<String>) {"));
+    assert_eq!(callers_of_poll_idle_tick(&sources), ["scheduler/thread.rs"]);
     assert_eq!(
         commands.matches("bell: rung.contains_key(&name),").count(),
         1

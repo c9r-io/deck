@@ -51,7 +51,8 @@
 //!   while the window is away, under the same switch, withdrawn when the
 //!   episode ends (the card was viewed), counted in the Dock. Its phrase
 //!   says a program rang the bell and nothing about what that means. It is
-//!   noticed at the next poll, which the webview drives.
+//!   noticed at the next poll, or at the scheduler's next tick while the
+//!   webview is not polling (`bell.rs`, Cadence).
 //! - **Attention, not authority.** The two words are interaction
 //!   observations: `needs-input` = the agent requested input (it may have
 //!   moved on since), `turn-done` = an interaction ended (not task

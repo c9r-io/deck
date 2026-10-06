@@ -98,8 +98,12 @@ program rang the terminal bell*.
 - Sessions with agent state are ignored: the integration says more.
 - deck reads nothing else: not that a command ended or succeeded, not quiet
   time, not output. The phrase says only that the bell rang.
-- Bells from before deck started are not reported, and a bell is noticed
-  at deck's next poll, not at the instant it rings.
+- Bells from before deck started are not reported. A bell is noticed
+  within a few seconds while deck's window is on screen, and within about
+  half a minute when macOS has put the window's timers to sleep (the
+  window fully covered for a few minutes, for instance): deck's backend
+  then looks for bells itself, so you do not have to come back to deck to
+  be told.
 
 **Away** means the deck window is not focused: hidden with ⌘W, behind
 another app, or on another Space. A notification is posted at the moment
@@ -200,6 +204,11 @@ in `notify.rs` on the agent-status listener thread as each hook event
 arrives, not by the Board's poll. The webview only supplies card titles
 and project names (kept in memory, never logged), tells the backend when
 an unread ending was viewed, and passes the two settings.
+
+The terminal bell is read on the Board's poll, which the webview's timer
+drives. When no poll has arrived for ten seconds the scheduler's own
+thread makes the same bell observation on its 20-second tick, and hands
+it back at the next poll (`bell.rs`, Cadence).
 
 ## Known limits
 

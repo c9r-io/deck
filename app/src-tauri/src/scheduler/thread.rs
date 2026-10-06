@@ -146,6 +146,11 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
     let mut unverified = UnverifiedSince::new();
     std::thread::spawn(move || loop {
         sleep_until_tick();
+        // this tick is the one native cadence deck has: while the webview's
+        // poll is not running it also drives the attention observation the
+        // poll would have made (`commands::poll_idle_tick`), queue or no
+        // queue. Nothing comes back: no scheduler decision can see it.
+        crate::commands::poll_idle_tick(&app.state::<crate::pty::PtyState>().attached());
         let state = app.state::<Queues>();
         // A post-send transition can be the last once item. Flush before the
         // empty-queue fast path so dirty state never loses its retry driver.

@@ -56,9 +56,21 @@
 //! or lifecycle code reads it (`tests/signal_census.rs`). An unreadable or
 //! malformed server line is simply no bell.
 //!
-//! Cadence: the Board poll drives this, so a bell is noticed at the next
-//! poll (the webview's timer, which macOS slows while Deck is hidden), not
-//! at the instant it rings.
+//! Cadence: two drivers, one observation. The Board poll drives it while the
+//! webview polls (about every 2.5 s). macOS stops the webview's timer once
+//! the Deck window has been fully covered for a few minutes — measured: no
+//! poll for 19 minutes, through a display sleep and its wake, until Deck
+//! was brought to the front, by which time the window was focused and
+//! nothing was announced. So when no poll has arrived for
+//! `commands::POLL_IDLE`, the scheduler's native tick (every 20 s) runs the
+//! same observation instead (`commands::poll_idle_tick`):
+//! the same `Bells`, the same read-only snapshot, the sessions the last
+//! poll asked about, the same watched rule, the same hand-over to
+//! `notify.rs`. It stands down at the next poll. A bell is therefore
+//! noticed within a poll, or within a tick while the webview sleeps — never
+//! at the instant it rings. Both changes of driver are one closed log line.
+//! The fallback adds no thread, process, client or stored state, and reads
+//! nothing else the poll owns.
 //!
 //! This file is dependency-free so the tmux contract suite includes it
 //! (`#[path]`) and drives the production hook and parser against the

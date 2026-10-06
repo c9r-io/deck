@@ -625,6 +625,11 @@ pub(crate) async fn poll_sessions(
     // a pane shows these sessions right now (`bell.rs`: watched)
     let shown = panes.attached();
     tauri::async_runtime::spawn_blocking(move || {
+        // the webview is polling: the native bell fallback stands down
+        *LAST_POLL.lock_or_recover() = Some((std::time::Instant::now(), names.clone()));
+        if POLL_IDLE_NOW.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            applog("[poll] webview poll resumed");
+        }
         let _activity = crate::session_runtime::activity_guard()?;
         let _deadline = crate::session_runtime::Deadline::until(
             std::time::Instant::now() + std::time::Duration::from_secs(2),
@@ -665,6 +670,111 @@ static EXIT_EVIDENCE: std::sync::Mutex<crate::shell_exit::ExitEvidence> =
 /// restart takes the ledger it finds as already seen.
 static BELLS: std::sync::LazyLock<std::sync::Mutex<crate::bell::Bells>> =
     std::sync::LazyLock::new(Default::default);
+
+/// When the webview last asked for a Board poll, and for which sessions.
+static LAST_POLL: std::sync::Mutex<Option<(std::time::Instant, Vec<String>)>> =
+    std::sync::Mutex::new(None);
+
+/// Whether the fallback is the one observing bells right now: logged once
+/// per change, so a late notice can be traced to a stopped webview timer.
+static POLL_IDLE_NOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A Board poll this old means the webview's timer is not running (macOS
+/// stops it while the display sleeps or the screen is locked, and it stays
+/// stopped after the wake until Deck is brought to the front): four missed
+/// polls.
+pub(crate) const POLL_IDLE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The sessions the bell fallback should observe now: the last poll's, once
+/// that poll is `POLL_IDLE` old. `None` while the webview is polling, and
+/// before its first poll (nothing says which sessions are cards).
+pub(crate) fn idle_poll_sessions(
+    last: Option<&(std::time::Instant, Vec<String>)>,
+    now: std::time::Instant,
+) -> Option<&[String]> {
+    let (at, names) = last?;
+    (now.saturating_duration_since(*at) >= POLL_IDLE).then_some(names.as_slice())
+}
+
+/// The bell observation while the webview is not polling (`bell.rs`
+/// Cadence), driven by the scheduler's native tick. The same owner (`BELLS`),
+/// the same read-only snapshot, the same sessions as the last poll, the same
+/// watched rule and the same hand-over to the notification module as the
+/// poll's — only the driver differs, so a bell rung while the user is away
+/// is noticed without them returning to Deck. It reads nothing else the
+/// poll owns: no liveness, no exit evidence, no agent reconciliation (a
+/// session counts as reporting by its last projection). A snapshot that
+/// fails or carries no server line changes nothing.
+pub(crate) fn poll_idle_tick(shown: &std::collections::HashSet<String>) {
+    let Some(names) = idle_poll_sessions(
+        LAST_POLL.lock_or_recover().as_ref(),
+        std::time::Instant::now(),
+    )
+    .map(<[String]>::to_vec) else {
+        return;
+    };
+    if !POLL_IDLE_NOW.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        applog("[poll] webview poll idle; bells observed on the scheduler tick");
+    }
+    let Ok(_activity) = crate::session_runtime::activity_guard() else {
+        return;
+    };
+    let _deadline = crate::session_runtime::Deadline::until(
+        std::time::Instant::now() + std::time::Duration::from_secs(2),
+    );
+    let Ok(crate::tmux::PaneSnapshot {
+        rows,
+        server: Some(server),
+    }) = crate::tmux::query_snapshot()
+    else {
+        return;
+    };
+    let agents = crate::agent_status::projections(&rows);
+    let mut bells = BELLS.lock_or_recover();
+    let mut watch = BellWatch {
+        bells: &mut bells,
+        shown,
+        focused: crate::notify::focused(),
+        rung: HashMap::new(),
+    };
+    observe_bells(&mut watch, &server, &rows, &names, &|name| {
+        agents.contains_key(name)
+    });
+    crate::notify::bells(watch.rung);
+}
+
+/// Bells of the requested sessions from one snapshot's rows and server line
+/// (`bell.rs`), for the poll and for its idle fallback.
+fn observe_bells(
+    watch: &mut BellWatch<'_>,
+    server: &crate::shell_exit::ServerLedger,
+    rows: &[crate::tmux::PaneRow],
+    names: &[String],
+    reports: &dyn Fn(&str) -> bool,
+) {
+    let mut live: Vec<(&str, &str)> = Vec::new();
+    for row in rows {
+        if names.contains(&row.session_name)
+            && !live.iter().any(|(name, _)| *name == row.session_name)
+        {
+            live.push((&row.session_name, &row.session_id));
+        }
+    }
+    let sessions: Vec<crate::bell::Session> = live
+        .iter()
+        .map(|(name, id)| crate::bell::Session {
+            name,
+            id,
+            reports: reports(name),
+            watched: watch.focused && watch.shown.contains(*name),
+        })
+        .collect();
+    watch.rung = watch.bells.observe(
+        (server.server_pid, server.server_start),
+        &crate::bell::parse_ledger(&server.bells),
+        &sessions,
+    );
+}
 
 /// An intentional service restart: nothing that ends from now on may
 /// authorize retirement until it is observed alive again.
@@ -762,28 +872,9 @@ pub(crate) fn poll_observing_bells(
     // server line nothing is observed: what the last poll found stands.
     let rung = match (bell, server.as_ref()) {
         (Some(watch), Some(server)) => {
-            let mut live: Vec<(&str, &str)> = Vec::new();
-            for row in &rows {
-                if names.contains(&row.session_name)
-                    && !live.iter().any(|(name, _)| *name == row.session_name)
-                {
-                    live.push((&row.session_name, &row.session_id));
-                }
-            }
-            let sessions: Vec<crate::bell::Session> = live
-                .iter()
-                .map(|(name, id)| crate::bell::Session {
-                    name,
-                    id,
-                    reports: agents.contains_key(*name),
-                    watched: watch.focused && watch.shown.contains(*name),
-                })
-                .collect();
-            watch.rung = watch.bells.observe(
-                (server.server_pid, server.server_start),
-                &crate::bell::parse_ledger(&server.bells),
-                &sessions,
-            );
+            observe_bells(watch, server, &rows, &names, &|name| {
+                agents.contains_key(name)
+            });
             watch.rung.clone()
         }
         (Some(watch), None) => {
@@ -1024,6 +1115,173 @@ mod tests {
         assert_eq!(panes["alpha"].command, "zsh");
         assert!(panes["beta"].in_mode, "copy-mode pane reported as scrolled");
         assert_eq!(panes["beta"].pane_pid, 200);
+    }
+
+    /// The fallback takes over only when the webview has stopped polling,
+    /// and then observes exactly the sessions the last poll asked about.
+    #[test]
+    fn the_bell_fallback_stands_down_while_the_webview_polls() {
+        let start = std::time::Instant::now();
+        let names = vec!["card".to_string()];
+        assert_eq!(idle_poll_sessions(None, start), None, "never polled");
+        let last = (start, names.clone());
+        let after = |secs: u64| start + std::time::Duration::from_secs(secs);
+        assert_eq!(idle_poll_sessions(Some(&last), start), None);
+        assert_eq!(idle_poll_sessions(Some(&last), after(9)), None);
+        assert_eq!(
+            idle_poll_sessions(Some(&last), after(10)),
+            Some(names.as_slice())
+        );
+        assert_eq!(
+            idle_poll_sessions(Some(&last), after(3600)),
+            Some(names.as_slice())
+        );
+        // a poll timestamp ahead of `now` (the two clocks raced) is not idle
+        assert_eq!(idle_poll_sessions(Some(&(after(5), names)), start), None);
+    }
+
+    /// The poll and its idle fallback are two drivers of ONE observation:
+    /// the same bookkeeping, sessions, watched rule and episode keys. A bell
+    /// rung while only the fallback runs is noticed; when the poll comes
+    /// back it reports the same episode (nothing is announced twice), and a
+    /// bell it already showed viewed never returns through the fallback.
+    #[test]
+    fn the_poll_and_its_idle_fallback_share_one_bell_observation() {
+        let _store = crate::agent_status::STORE_TEST_LOCK.lock_or_recover();
+        let _tracker = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        let pane = |session: &str, id: &str, pane: &str| PaneRow {
+            server_pid: 100,
+            session_id: id.into(),
+            session_name: session.into(),
+            window_id: "@1".into(),
+            pane_id: pane.into(),
+            pane_pid: u32::MAX,
+            command: "zsh".into(),
+            ..PaneRow::default()
+        };
+        let rows = || vec![pane("card", "$1", "%1"), pane("other", "$2", "%2")];
+        let server = |bells: &str| {
+            crate::shell_exit::parse_server_line(&format!("deck-exits\t100\t5000\t\t{bells}"))
+                .unwrap()
+        };
+        let names = vec!["card".to_string()];
+        let mut bells = crate::bell::Bells::default();
+        let mut evidence = crate::shell_exit::ExitEvidence::new();
+        let shown = |cards: &[&str]| -> std::collections::HashSet<String> {
+            cards.iter().map(|s| s.to_string()).collect()
+        };
+        fn poll(
+            bells: &mut crate::bell::Bells,
+            evidence: &mut crate::shell_exit::ExitEvidence,
+            snapshot: crate::tmux::PaneSnapshot,
+            focused: bool,
+            shown: &std::collections::HashSet<String>,
+        ) -> HashMap<String, String> {
+            let mut watch = BellWatch {
+                bells,
+                shown,
+                focused,
+                rung: HashMap::new(),
+            };
+            poll_observing_bells(
+                vec!["card".into()],
+                vec![],
+                false,
+                Ok(snapshot),
+                crate::procinfo::processes,
+                evidence,
+                &|_| false,
+                Some(&mut watch),
+            )
+            .unwrap();
+            watch.rung
+        }
+        let fallback = |bells: &mut crate::bell::Bells,
+                        ledger: &str,
+                        focused: bool,
+                        shown: &std::collections::HashSet<String>,
+                        reports: bool| {
+            let mut watch = BellWatch {
+                bells,
+                shown,
+                focused,
+                rung: HashMap::new(),
+            };
+            observe_bells(&mut watch, &server(ledger), &rows(), &names, &|_| reports);
+            watch.rung
+        };
+        let snapshot = |ledger: &str| crate::tmux::PaneSnapshot {
+            rows: rows(),
+            server: Some(server(ledger)),
+        };
+        // the webview's first poll takes the baseline, then stops (display asleep)
+        let old = "b1|$1|@1|%1|10;";
+        assert!(poll(&mut bells, &mut evidence, snapshot(old), false, &shown(&[])).is_empty());
+        // nothing new: the fallback reports nothing, and no baseline bell
+        assert!(fallback(&mut bells, old, false, &shown(&[]), false).is_empty());
+        // a bell in a session the poll never asked about is not the fallback's
+        let foreign = "b1|$1|@1|%1|10;b1|$2|@1|%2|20;";
+        assert!(fallback(&mut bells, foreign, false, &shown(&[]), false).is_empty());
+        // the card's bell while only the fallback runs: noticed, once
+        let rang = "b1|$1|@1|%1|10;b1|$2|@1|%2|20;b1|$1|@1|%1|30;";
+        let noticed = fallback(&mut bells, rang, false, &shown(&["card"]), false);
+        assert_eq!(noticed.keys().collect::<Vec<_>>(), ["card"]);
+        assert_eq!(
+            fallback(&mut bells, rang, false, &shown(&[]), false),
+            noticed
+        );
+        // more bells in the same unseen episode change nothing
+        let more = "b1|$1|@1|%1|30;b1|$1|@1|%1|31;";
+        assert_eq!(
+            fallback(&mut bells, more, false, &shown(&[]), false),
+            noticed
+        );
+        // the webview polls again: the same episode under the same key, so
+        // the notification module sees no new entry
+        assert_eq!(
+            poll(
+                &mut bells,
+                &mut evidence,
+                snapshot(more),
+                false,
+                &shown(&[])
+            ),
+            noticed
+        );
+        // viewed through the poll (in front, its pane open): gone for both
+        assert!(poll(
+            &mut bells,
+            &mut evidence,
+            snapshot(more),
+            true,
+            &shown(&["card"])
+        )
+        .is_empty());
+        assert!(fallback(&mut bells, more, false, &shown(&[]), false).is_empty());
+        // a new bell after that is a new episode, whichever driver reads it
+        let again = "b1|$1|@1|%1|31;b1|$1|@1|%1|40;";
+        let second = fallback(&mut bells, again, false, &shown(&[]), false);
+        assert_ne!(second, noticed);
+        assert_eq!(second.keys().collect::<Vec<_>>(), ["card"]);
+        // the watched rule holds for the fallback too: the window in front
+        // with the card's pane open is someone looking at it
+        assert!(fallback(&mut bells, again, true, &shown(&["card"]), false).is_empty());
+        // and a session that reports agent state never rings through it
+        let later = "b1|$1|@1|%1|40;b1|$1|@1|%1|50;";
+        assert!(fallback(&mut bells, later, false, &shown(&[]), true).is_empty());
+        assert!(fallback(&mut bells, later, false, &shown(&[]), false).is_empty());
+        // a replaced server is a new baseline for the fallback as for the poll
+        let mut watch = BellWatch {
+            bells: &mut bells,
+            shown: &shown(&[]),
+            focused: false,
+            rung: HashMap::new(),
+        };
+        let replaced =
+            crate::shell_exit::parse_server_line("deck-exits\t200\t9000\t\tb1|$1|@1|%1|60;")
+                .unwrap();
+        observe_bells(&mut watch, &replaced, &rows(), &names, &|_| false);
+        assert!(watch.rung.is_empty(), "what a new server already held");
     }
 
     /// The bell observation rides the same snapshot (`bell.rs`): only the
