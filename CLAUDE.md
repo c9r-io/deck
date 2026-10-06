@@ -194,12 +194,14 @@ evolution; it makes scope expansion deliberate.
   permission auto-approval. Three row facts stay separate
   (`scheduler/authority.rs`): external **provenance** (`external`, never
   cleared) ≠ **content authority** (`authority`: the user's explicit,
-  revision-bound approval of a Slack badge automation's exact steps, checked
-  by the backend at admission and revoked by the tick) ≠ **input readiness**
+  revision-bound approval of a Slack badge automation's or a phone task
+  preset's exact steps, checked by the backend at admission and revoked by
+  the tick; being paired is never prompt authority, and text the phone
+  supplies is never approved) ≠ **input readiness**
   (every scheduler hold, including the first-interaction gate). An approval
   releases only the external-follow-up hold; the fresh-start pass never types
-  into an interactive agent. A separately enabled, native-verified Slack badge or clock first-send
-  override may send the head row on a later pass after bounded compatibility
+  into an interactive agent. A separately enabled, native-verified Slack badge, clock or phone task
+  preset first-send override may send the head row on a later pass after bounded compatibility
   stabilization and current fences; it is not Agent readiness evidence.
   No Signal word, quiet
   time or activity ever creates, restores or upgrades authority
@@ -242,7 +244,12 @@ evolution; it makes scope expansion deliberate.
   queue operations upgrade queue.json to sticky v3, and enabled channel
   connections/rules upgrade settings.json to sticky v3; ordinary data stays v1. Clock first-send settings/queue origins upgrade to sticky
   v4 so older readers refuse them untouched. Card Reminder intent and blocked
-  retirement identities upgrade deck.json to sticky v5. Native notifications
+  retirement identities upgrade deck.json to sticky v5. A phone task preset's
+  first-send choice or approval (deck.json) and the queue origins they admit
+  (queue.json) upgrade to sticky v6. A rule's choices are backed by settings
+  and a preset's by the Board; for both a backup is recovery material, never
+  authority: a Board answered from deck.json.bak, or taken as the way out of
+  a lost Board and not saved since, grants and revokes nothing. Native notifications
   project committed Board intent; their responses return through the same writer.
   Reminders grant no input/start authority and protect pending/due cards from
   non-cancelling deletion, including deferred retirement after ending Reminder.
@@ -290,8 +297,8 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Dropdowns (deck's own listbox over every `<select>`) | `ui/js/dropdown.js` |
 | Settings modal: sections and search, the ONE settings writer, font scale, shortcuts, theme/locale/channel choices, inbound/Connector/MCP settings; dialog primitives (confirm, choice, prompt, toast, inline rename, project defaults) stay separate; the section list, stable setting ids and search rules are DOM-free | `ui/js/settings.js`, `ui/js/settings-search-model.js`, `ui/js/dialogs.js` |
 | Lists (the ⏱ panel): queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js`, `ui/js/queue-review.js`, `scheduler/review.rs` |
-| Automation delivery authority: the approval grant, claim verification at admission, revocation sweep, delivery audit | `scheduler/authority.rs`, `inbound.rs` (`AutoSend`), `ui/js/automation-model.js` (`approveRule` / `grantState`, shared vector `ui/test/fixtures/automation-grant.json`) |
-| Slack badge and clock first-send readiness override (explicit per-rule risk acceptance for a run's head row; never readiness evidence) | `scheduler/first_send.rs`, `inbound.rs` (`first_send_without_readiness`), `ui/js/automation-model.js` (`withFirstSend`) |
+| Automation delivery authority: the approval grant (a Slack badge rule's in settings, a phone task preset's in the Board), claim verification at admission, revocation sweep, delivery audit | `scheduler/authority.rs`, `inbound.rs` (`AutoSend`), `ui/js/automation-model.js` (`approveRule` / `grantState`, shared vector `ui/test/fixtures/automation-grant.json`), `ui/js/connector-model.js` (`withPresetApproval`, shared vector `ui/test/fixtures/preset-grant.json`) |
+| Slack badge, clock and phone task preset first-send readiness override (explicit per-rule or per-preset risk acceptance for a run's head row; never readiness evidence), and the Board-side source a preset's choices are swept and fenced against | `scheduler/first_send.rs`, `inbound.rs` (`first_send_without_readiness`), `documents.rs` (`board_authority`, `board_fence`), `ui/js/automation-model.js` (`withFirstSend`), `ui/js/connector-model.js` |
 | Templates (saved lists, shared by cards and automations) | `ui/js/templates.js` |
 | Needs-attention view (sidebar entry), runtime read state, tab done-dot | `ui/js/attention.js`, `ui/js/attention-model.js` |
 | Away notifications and the Dock badge (Rust-side trigger, closed content, in-process UNUserNotificationCenter bridge) | `notify.rs`, `native/NotificationBridge.swift`, `ui/js/notify-model.js` (+ `docs/notifications.md`) |
