@@ -653,6 +653,11 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 #pdf-box .set-row label { width: 108px; }
 #pdf-box .set-row input { flex: 1; min-width: 0; font-family: var(--mono); }
 #pdf-box .set-hint { margin: 8px 0 14px; }
+/* `.btn` and `.set-row` set a display of their own, which outranks the
+   browser's rule for the hidden attribute: without this a hidden control in
+   this dialog stays on screen (the Delete button of a preset that does not
+   exist yet did). The same guard the settings and translation panels have. */
+#pdf [hidden] { display: none; }
 /* taller than the window once a task preset is open (recent-command chips,
    the preset fields, the first-send option and its hint): it scrolls inside
    itself so every field and both button rows stay reachable */

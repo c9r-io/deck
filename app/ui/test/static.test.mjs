@@ -684,3 +684,16 @@ test('the project defaults dialog scrolls inside itself and its confirmation ope
   assert.match(css, /#pdf-box \{ max-height: calc\(84vh - 20px\); overflow-y: auto; \}/);
   assert.ok(z('#cfm\\.cfm-over-dialog') > z('#chd, #pdf, #mcp-auth'), 'the confirmation is not hidden behind the dialog');
 });
+
+test('a hidden control inside the project defaults dialog is not put back on screen by its own display rule', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  /* the cause: these classes set a display, which beats the hidden attribute's default rule */
+  assert.match(css, /^\.btn \{\s*display: inline-flex;/m);
+  assert.match(css, /^#pdf \[hidden\] \{ display: none; \}$/m);
+  /* the control this was found on is hidden by attribute, in the dialog */
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const dialog = html.slice(html.indexOf('<div id="pdf"'), html.indexOf('id="pdf-yes"'));
+  assert.match(dialog, /class="btn"[^>]*id="pdf-preset-delete"/);
+  const dialogs = readFileSync(new URL('../js/dialogs.js', import.meta.url), 'utf8');
+  assert.match(dialogs, /\$\('pdf-preset-delete'\)\.hidden = !preset;/);
+});
