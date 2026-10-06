@@ -697,3 +697,17 @@ test('a hidden control inside the project defaults dialog is not put back on scr
   const dialogs = readFileSync(new URL('../js/dialogs.js', import.meta.url), 'utf8');
   assert.match(dialogs, /\$\('pdf-preset-delete'\)\.hidden = !preset;/);
 });
+
+test('the capture-name row is really hidden when the editor marks it hidden', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.match(css, /^\.set-row \{[^}]*display: flex/m, 'the cause: its class sets a display');
+  assert.match(css, /^#auto-capture-row\[hidden\] \{ display: none; \}$/m);
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(html, /<div class="set-row" id="auto-capture-row">/);
+  const editor = readFileSync(new URL('../js/automation.js', import.meta.url), 'utf8');
+  assert.match(editor, /\$\('auto-capture-row'\)\.hidden = trigger !== 'channel' \|\| \$\('auto-match-kind'\)\.value !== 'regex';/);
+  /* the translation button is never marked hidden, in markup or in code: it needs no guard */
+  assert.doesNotMatch(html, /id="translation-btn"[^>]*\shidden[\s>]/);
+  const lens = readFileSync(new URL('../js/translation-lens.js', import.meta.url), 'utf8');
+  assert.deepEqual(lens.match(/\$\('translation-btn'\)\.hidden = \w+/g), ["$('translation-btn').hidden = false"]);
+});
