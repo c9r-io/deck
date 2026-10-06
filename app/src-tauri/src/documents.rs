@@ -26,12 +26,15 @@
 //!   validated, not read; `launched` defaults to true so a board written
 //!   before the field never re-runs a command.
 //! - `LoadedDoc` carries the text, its source and at most one `UiNotice`: a
-//!   closed code the webview translates, always `storage.recovered` for an
-//!   in-band load warning. `storage_warnings` drains the boot-time notices
-//!   once, for the first Board render; each is the `storage::StorageNotice`
+//!   closed code the webview translates, `storage.recovered` for an in-band
+//!   load warning, or `storage.choices-withdrawn` in its place when the
+//!   recovery turned preset choices off (below). `storage_warnings` drains
+//!   the boot-time notices once, for the first Board render, and again after
+//!   the user's way out of a lost Board; each is the `storage::StorageNotice`
 //!   its emitter named (`storage.privacy`, `queue.persist`, `queue.load`,
-//!   `history.load`, `queue.interrupted`, `storage.recovered`), never a code
-//!   inferred from the note's wording.
+//!   `history.load`, `queue.interrupted`, `storage.recovered`,
+//!   `storage.choices-withdrawn`), never a code inferred from the note's
+//!   wording.
 //! - deck.json has one owner, the webview. `load_board`
 //!   (`storage::load_as_owner`) is the one load that sets a damaged file
 //!   aside, and so the one that reports the recovery — once; a Board recovered
@@ -68,11 +71,28 @@
 //!   way out of a lost Board and has not saved since. deck.json.bak is the
 //!   save BEFORE the last one, so it can hold exactly the choice the last
 //!   save withdrew; `board_authority` therefore answers only for a `Current`
-//!   Board, and a recovered or absent one is "no proof either way" — nothing
-//!   granted, nothing revoked — until the owner's next save makes what the
-//!   webview holds current. This is the Board's half of the rule settings
-//!   follow (`inbound::read_config_strict`, below); every other reader of
-//!   the committed Board is unchanged and still sees a recovered one.
+//!   Board: a recovered or absent one admits nothing. This is the Board's
+//!   half of the rule settings follow (`inbound::read_config_strict`,
+//!   below); every other reader of the committed Board is unchanged and
+//!   still sees a recovered one.
+//! - Recovery restores content, never a decision. The owner's next save —
+//!   any save: a renamed card, the card a phone `task-create` adds, the save
+//!   that follows the way out of a lost Board — makes what the webview holds
+//!   the current Board, so the webview must never be handed a recovered
+//!   choice to save. A `Recovered` Board is therefore committed, and handed
+//!   to the webview, WITHOUT its task presets' `firstSend` and `autoSend`
+//!   (`withdraw_preset_choices`, inside `commit_board`); nothing else in it
+//!   changes. That holds across the write-back and every restart: the main
+//!   file the next save writes holds no choice, and a restart before any
+//!   save recovers and withdraws again. Turning a choice back on is the
+//!   user's explicit act in the project defaults dialog, and the load says
+//!   so (`storage.choices-withdrawn`) each time it withdrew one. Because a
+//!   recovered Board holds no choice by construction, it is a readable
+//!   source for taking one BACK (`board_preset_choices`: the sweep and the
+//!   pre-fire fence strip what a waiting step still carries); only the
+//!   absence of any committed Board is "no proof either way". A card's
+//!   frozen run keeps its own copy: that is a claim, refused while its
+//!   preset does not hold the choice.
 //! - `board_fence` orders an automatic send against Board writes, as
 //!   `storage::settings_fence` does against settings writes: every commit of
 //!   the Board (`load_board`, `save_board` across its disk write,
@@ -1087,13 +1107,59 @@ pub(crate) fn board_fence_busy() -> bool {
 /// The committed Board as AUTHORITY: the current version, or `None` when
 /// there is none or it is a recovered one (module header). A caller deciding
 /// an irreversible step on it holds `board_fence` around the read and that
-/// step. Its reader is the task-preset first-send choice
-/// (`scheduler/first_send.rs`).
+/// step. Its readers are the admissions that grant something on what the
+/// Board says (`scheduler/ops.rs`: a phone task's first-send choice and
+/// approval, a clock head's card).
 pub(crate) fn board_authority() -> Option<serde_json::Value> {
     match COMMITTED_BOARD.lock_or_recover().as_ref() {
         Some((board, BoardStanding::Current)) => Some(board.clone()),
         _ => None,
     }
+}
+
+/// What the committed Board's task presets allow NOW, for the sweep and the
+/// pre-fire fence that take a choice back (`scheduler/first_send.rs`
+/// `phone_tasks`). Unlike `board_authority` a recovered Board answers too:
+/// its presets hold no choice by construction (`withdraw_preset_choices`),
+/// so it is known to allow nothing. `None` only while this process holds no
+/// committed Board. A caller deciding an irreversible step on it holds
+/// `board_fence`, as for `board_authority`.
+pub(crate) fn board_preset_choices() -> Option<serde_json::Value> {
+    COMMITTED_BOARD
+        .lock_or_recover()
+        .as_ref()
+        .map(|(board, _)| board.clone())
+}
+
+/// The choices a task preset carries as the user's own decision on this
+/// Mac: the first-send risk acceptance and the approval of its steps.
+const PRESET_CHOICES: [&str; 2] = ["firstSend", "autoSend"];
+
+/// `payload` with every task preset's choices removed, or `None` when it
+/// holds none. Recovery restores content, never a decision: a Board that is
+/// not the user's last save (the backup, a kept copy) may hold exactly the
+/// choice a later save withdrew, and the webview's next save of it — any
+/// save, a renamed card or the card of a phone task — would otherwise make
+/// that choice current again. Everything else in the document is kept as it
+/// is, a card's frozen run included: a run's own copy of a choice is only a
+/// claim, refused while its preset does not hold the choice.
+fn withdraw_preset_choices(payload: &str) -> Option<String> {
+    let mut board: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let mut withdrawn = false;
+    let presets = board
+        .get_mut("projects")
+        .and_then(|projects| projects.as_array_mut())
+        .into_iter()
+        .flatten()
+        .filter_map(|project| project.get_mut("presets")?.as_array_mut())
+        .flatten()
+        .filter_map(|preset| preset.as_object_mut());
+    for preset in presets {
+        for choice in PRESET_CHOICES {
+            withdrawn |= preset.remove(choice).is_some();
+        }
+    }
+    withdrawn.then(|| board.to_string())
 }
 
 /// The one observer of a commit (see the header): set once at boot by the
@@ -1115,24 +1181,58 @@ fn committed_board() -> Option<String> {
 /// The door's copy is replaced first, under its own lock and nothing else;
 /// the observer is told after that lock is released. The caller holds
 /// `board_fence`.
-fn commit_board(payload: &str, standing: BoardStanding) {
+///
+/// A `Recovered` Board is committed without its task presets' choices
+/// (`withdraw_preset_choices`), here and nowhere else, so no recovered Board
+/// this process holds can carry one. When that changed the document the
+/// rewritten payload is returned: it is the one the webview must hold, and
+/// so the one its next save writes.
+fn commit_board(payload: &str, standing: BoardStanding) -> Option<String> {
+    let withdrawn = match standing {
+        BoardStanding::Recovered => withdraw_preset_choices(payload),
+        BoardStanding::Current => None,
+    };
+    let payload = withdrawn.as_deref().unwrap_or(payload);
     let Ok(board) = serde_json::from_str::<serde_json::Value>(payload) else {
-        return;
+        return None;
     };
     *COMMITTED_BOARD.lock_or_recover() = Some((board, standing));
     if let Some(observer) = COMMIT_OBSERVER.get() {
         observer(payload);
     }
+    withdrawn
+}
+
+/// Tell the user, once per load, that a recovery turned preset choices off.
+fn choices_withdrawn() -> UiNotice {
+    notice(storage::StorageNotice::ChoicesWithdrawn)
 }
 
 #[tauri::command]
 pub(crate) fn load_board() -> Result<LoadedDoc, DeckError> {
+    load_board_door(&board_path())
+}
+
+/// The webview's load at `path`: loaded and committed under the fence. A
+/// Board answered from the backup is handed over without its presets'
+/// choices, and says so (in place of the plain recovery notice, and on every
+/// such load until the owner's save puts a main file back).
+fn load_board_door(path: &std::path::Path) -> Result<LoadedDoc, DeckError> {
     let _fence = board_fence();
-    let loaded = load_board_at(&board_path())?;
-    if let Some(doc) = &loaded {
-        commit_board(&doc.payload, load_standing(doc.source));
+    let mut loaded = load_board_at(path)?;
+    let withdrawn = loaded
+        .as_mut()
+        .and_then(|doc| {
+            let rewritten = commit_board(&doc.payload, load_standing(doc.source))?;
+            doc.payload = rewritten;
+            Some(())
+        })
+        .is_some();
+    let mut doc = to_loaded(loaded);
+    if withdrawn {
+        doc.warning = Some(choices_withdrawn());
     }
-    Ok(to_loaded(loaded))
+    Ok(doc)
 }
 
 /// Connector read seam: the returned bytes are the committed, fully typed
@@ -1185,23 +1285,27 @@ pub(crate) fn save_board(
         ));
     }
     let path = board_path();
+    let saved = save_board_door(&path, &data, &reminder_changes.unwrap_or_default());
+    if saved.is_err() && board_lost_at(&path, committed_board().is_some()).unwrap_or(false) {
+        use tauri::Emitter;
+        let _ = app.emit(BOARD_LOST_EVENT, ());
+    }
+    saved
+}
+
+/// The owner's save at `path`: written and committed under the fence.
+fn save_board_door(
+    path: &std::path::Path,
+    data: &str,
+    claims: &[crate::reminder::Claim],
+) -> Result<(), DeckError> {
     // held across the disk write and the commit: when this returns, no
     // automatic send can still begin on what the previous Board said
     let _fence = board_fence();
-    let saved = save_board_at(
-        &path,
-        &data,
-        &reminder_changes.unwrap_or_default(),
-        committed_board(),
-    );
-    match saved {
+    let saved = save_board_at(path, data, claims, committed_board());
+    if saved.is_ok() {
         // the owner's save is the current version, whatever was held before
-        Ok(()) => commit_board(&data, BoardStanding::Current),
-        Err(_) if board_lost_at(&path, committed_board().is_some()).unwrap_or(false) => {
-            use tauri::Emitter;
-            let _ = app.emit(BOARD_LOST_EVENT, ());
-        }
-        Err(_) => {}
+        let _ = commit_board(data, BoardStanding::Current);
     }
     saved
 }
@@ -1374,12 +1478,27 @@ fn board_lost_exit_at(
 /// to hold in place of its placeholder.
 #[tauri::command]
 pub(crate) fn board_lost_exit(action: String) -> Result<String, DeckError> {
+    board_lost_exit_door(&board_path(), &action)
+}
+
+/// The exit at `path`: chosen and committed under the fence.
+fn board_lost_exit_door(path: &std::path::Path, action: &str) -> Result<String, DeckError> {
     let _fence = board_fence();
-    let payload = board_lost_exit_at(&board_path(), &action, committed_board().is_some())?;
+    let payload = board_lost_exit_at(path, action, committed_board().is_some())?;
     // a kept copy or an empty Board the user chose, not yet their saved
-    // version: the webview saves it next, and that save makes it current
-    commit_board(&payload, BoardStanding::Recovered);
-    Ok(payload)
+    // version: the webview saves it next, and that save makes it current.
+    // A kept copy's preset choices are not restored with it; the webview
+    // drains the notice once the exit is taken (`storage_warnings`).
+    match commit_board(&payload, BoardStanding::Recovered) {
+        Some(rewritten) => {
+            storage::warn(
+                storage::StorageNotice::ChoicesWithdrawn,
+                "preset choices withdrawn from a restored board".into(),
+            );
+            Ok(rewritten)
+        }
+        None => Ok(payload),
+    }
 }
 
 /// Boot-time storage notices (corruption recovered from .bak, etc.) for the
@@ -1534,9 +1653,64 @@ pub(crate) fn update_channel_setting() -> String {
     update_channel_from(settings_value().as_ref())
 }
 
+/// The Board doors on a scratch file, for tests in other modules.
+#[cfg(test)]
+pub(crate) use tests::door as test_door;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three Board doors on a scratch file, for a test in another module
+    /// that drives the real load, save and way out. `hold` serializes every
+    /// test that replaces the process's committed Board and puts the previous
+    /// one back; `restart` forgets it, as a new process would.
+    pub(crate) mod door {
+        use super::super::*;
+
+        static SERIAL: Mutex<()> = Mutex::new(());
+
+        pub(crate) struct Held {
+            before: Option<(serde_json::Value, BoardStanding)>,
+            _serial: std::sync::MutexGuard<'static, ()>,
+        }
+
+        impl Drop for Held {
+            fn drop(&mut self) {
+                *COMMITTED_BOARD.lock_or_recover() = self.before.take();
+            }
+        }
+
+        pub(crate) fn hold() -> Held {
+            let serial = SERIAL.lock_or_recover();
+            Held {
+                before: COMMITTED_BOARD.lock_or_recover().take(),
+                _serial: serial,
+            }
+        }
+
+        pub(crate) fn restart() {
+            *COMMITTED_BOARD.lock_or_recover() = None;
+        }
+
+        /// What the webview is handed: the payload, where it came from and the
+        /// notice's code.
+        pub(crate) type Loaded = (String, String, Option<&'static str>);
+
+        /// `None` on a first run.
+        pub(crate) fn load(path: &std::path::Path) -> Result<Option<Loaded>, DeckError> {
+            let doc = load_board_door(path)?;
+            Ok((doc.source != "none").then(|| (doc.data, doc.source, doc.warning.map(|w| w.code))))
+        }
+
+        pub(crate) fn save(path: &std::path::Path, data: &str) -> Result<(), DeckError> {
+            save_board_door(path, data, &[])
+        }
+
+        pub(crate) fn lost_exit(path: &std::path::Path, action: &str) -> Result<String, DeckError> {
+            board_lost_exit_door(path, action)
+        }
+    }
 
     /// The same full business validation as load, BEFORE anything touches
     /// disk: an invalid document never overwrites the main file or rotates
@@ -3245,15 +3419,63 @@ mod tests {
         assert_eq!(load_standing(""), BoardStanding::Recovered);
     }
 
+    /// Withdrawing a recovered Board's preset choices removes exactly the
+    /// two choices: every other field, unknown ones and a card's frozen run
+    /// included, is the same value afterwards, and a Board without a choice
+    /// is not rewritten at all.
+    #[test]
+    fn a_recovered_boards_preset_choices_are_withdrawn_and_nothing_else() {
+        let digest = "a".repeat(64);
+        let with = serde_json::json!({
+            "projects": [
+                {"id": "P1", "name": "main", "future": {"firstSend": true}, "presets": [
+                    {"id": "R1", "name": "n", "firstSend": true, "autoSend": {"digest": digest}, "later": 1},
+                    {"id": "R2", "name": "m", "autoSend": {"digest": digest}}]},
+                {"id": "P2", "name": "side"}],
+            "cards": [{"id": "c", "connectorRun": {"firstSend": true, "autoSend": digest}}],
+            "extension": [1, 2],
+        });
+        let mut expected = with.clone();
+        for preset in expected["projects"][0]["presets"].as_array_mut().unwrap() {
+            let preset = preset.as_object_mut().unwrap();
+            preset.remove("firstSend");
+            preset.remove("autoSend");
+        }
+        let rewritten = withdraw_preset_choices(&with.to_string()).expect("choices were held");
+        assert_eq!(json(&rewritten), expected);
+        assert_eq!(withdraw_preset_choices(&rewritten), None, "nothing left");
+        assert_eq!(withdraw_preset_choices(NO_BOARD), None);
+        assert_eq!(withdraw_preset_choices("not json"), None);
+
+        // only a recovered Board is rewritten; the owner's save never is
+        let _held = test_door::hold();
+        let _fence = board_fence();
+        assert_eq!(
+            commit_board(&with.to_string(), BoardStanding::Current),
+            None
+        );
+        assert_eq!(board_preset_choices(), Some(with.clone()));
+        assert_eq!(
+            commit_board(&with.to_string(), BoardStanding::Recovered).map(|text| json(&text)),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            board_preset_choices(),
+            Some(expected),
+            "readable, allows nothing"
+        );
+        assert_eq!(board_authority(), None, "and admits nothing");
+    }
+
     /// The committed Board answers as authority only while it is the current
     /// version: not before any load, not for a recovered Board, and again
     /// once the owner has saved. Every other reader keeps seeing it.
     #[test]
     fn the_committed_board_is_authority_only_while_current() {
         // serialize with any other commit: this test is the fence's holder
+        let _held = test_door::hold();
         let _fence = board_fence();
         assert!(board_fence_busy(), "a commit is made under the fence");
-        let before = COMMITTED_BOARD.lock_or_recover().take();
         assert_eq!(board_authority(), None, "nothing committed: no proof");
         assert_eq!(committed_board(), None);
 
@@ -3280,6 +3502,5 @@ mod tests {
         // a later recovery takes the standing away again, in one step
         commit_board(recovered, BoardStanding::Recovered);
         assert_eq!(board_authority(), None);
-        *COMMITTED_BOARD.lock_or_recover() = before;
     }
 }

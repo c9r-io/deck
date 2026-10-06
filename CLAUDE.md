@@ -249,7 +249,9 @@ evolution; it makes scope expansion deliberate.
   (queue.json) upgrade to sticky v6. A rule's choices are backed by settings
   and a preset's by the Board; for both a backup is recovery material, never
   authority: a Board answered from deck.json.bak, or taken as the way out of
-  a lost Board and not saved since, grants and revokes nothing. Native notifications
+  a lost Board, is handed to the webview without its presets' choices, so no
+  later save can make a withdrawn one current; it admits nothing and the
+  steps still waiting lose theirs. Native notifications
   project committed Board intent; their responses return through the same writer.
   Reminders grant no input/start authority and protect pending/due cards from
   non-cancelling deletion, including deferred retirement after ending Reminder.

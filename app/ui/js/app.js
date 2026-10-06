@@ -375,6 +375,11 @@ function startReminders() {
   document.addEventListener("visibilitychange", reconcileReminders);
 }
 
+/* The backend's queued storage notices (documents.rs `storage_warnings`),
+   each shown once: at boot, and after the way out of a lost Board. */
+const toastStorageWarnings = () => inv('storage_warnings')
+  .then(ws => (ws || []).forEach(w => toast(translateNotice(w)))).catch(() => {});
+
 /* The lost Board's way out (dialogs.js `createBoardExit`), offered at boot
    and on the backend's `board-lost`. The Board the exit committed replaces
    the placeholder; one without a project — a new start — keeps the
@@ -391,6 +396,9 @@ const offerBoardExit = createBoardExit({
   exited: () => {
     state.projectId = store.projects[0].id;
     render();
+    /* a restored copy comes back without its presets' automatic-send
+       choices (documents.rs `withdraw_preset_choices`); the backend says so */
+    toastStorageWarnings();
     startReminders();
     startInbound();
     startOrphanPruning();
@@ -441,7 +449,7 @@ export async function boot() {
   } catch (e) {
     uev('ping-fail');
   }
-  inv('storage_warnings').then(ws => (ws || []).forEach(w => toast(translateNotice(w)))).catch(() => {});
+  toastStorageWarnings();
   ctx.HOME = await inv('default_dir').catch(() => '~');
   const ok = await inv('tmux_available').catch(() => false);
   if (!ok) $('banner').style.display = 'block';

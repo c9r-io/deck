@@ -623,7 +623,7 @@ pub(crate) struct SendHooks<'a> {
     pub(crate) authority: &'a (dyn Fn() -> Option<crate::inbound::Config> + Sync),
     /// read the Board-side source for the pre-fire fence of a phone task's
     /// first-send override or approval (`first_send::phone_tasks`); `None` =
-    /// no current Board, or the Connector's devices could not be read
+    /// no committed Board, or the Connector's devices could not be read
     pub(crate) board: &'a (dyn Fn() -> Option<first_send::PhoneTasks> + Sync),
 }
 

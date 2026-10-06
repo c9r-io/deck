@@ -124,7 +124,7 @@ pub(crate) fn mark_authority_unverified(seen: &mut Observations) {
     }
 }
 
-/// The tick had no current Board: every session's observation holds a phone
+/// The tick had no Board-side source: every session's observation holds a phone
 /// task head that relies on its first-send override, without touching it.
 pub(crate) fn mark_board_unverified(seen: &mut Observations) {
     for observed in seen.values_mut() {

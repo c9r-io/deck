@@ -309,13 +309,14 @@ const DOCUMENTS_MAY_NAME: &[(&str, Option<usize>, &str)] = &[
         "delegation: task-preset commands to the channel admission table",
     ),
     // A Board-domain delegation like the two above: a card's reminder and a
-    // save's claims are the reminder module's types (three uses), checked by
+    // save's claims are the reminder module's types (four uses: the card, the
+    // save command, the save door at a path, the save itself), checked by
     // its two validators. The door reads no reminder state and calls no
     // reminder policy: it owns the committed-Board copy, and the projection
     // is the observer the reminder module registers.
     (
         "reminder",
-        Some(5),
+        Some(6),
         "delegation: the reminder and claim types and their two validators",
     ),
 ];
@@ -524,13 +525,21 @@ fn only_a_load_a_save_and_the_users_exit_commit_a_board() {
     assert_eq!(
         callers_of("commit_board("),
         [
-            "documents.rs board_lost_exit",
-            "documents.rs load_board",
-            "documents.rs save_board",
+            "documents.rs board_lost_exit_door",
+            "documents.rs load_board_door",
+            "documents.rs save_board_door",
         ],
         "a Board becomes committed by loading it, saving it, or the user's way out of a lost \
          Board (documents::board_lost_exit) — nowhere else"
     );
+    // each door is its command at the one Board path, and nothing else
+    for (door, command) in [
+        ("load_board_door(", "documents.rs load_board"),
+        ("save_board_door(", "documents.rs save_board"),
+        ("board_lost_exit_door(", "documents.rs board_lost_exit"),
+    ] {
+        assert_eq!(callers_of(door), [command], "{door}");
+    }
     assert!(
         callers_of("observe_committed(").is_empty(),
         "nothing calls the reminder projection's observer by name: the Board door tells its \
@@ -543,7 +552,10 @@ fn only_a_load_a_save_and_the_users_exit_commit_a_board() {
 /// read belongs to the Board door: one static, read by `committed_board`,
 /// written by `commit_board`. `board_authority` is its second reader, for a
 /// caller that treats what the Board says as authority; it sees the Board
-/// only while it is the user's current version, never a recovered one. The reminder module keeps its own copy to
+/// only while it is the user's current version, never a recovered one.
+/// `board_preset_choices` is the third, for the sweep and the fence that take
+/// a preset's choice back: it also sees a recovered Board, which holds no
+/// choice because `commit_board` withdraws them. The reminder module keeps its own copy to
 /// project from (a wake or a tick projects without a commit) and offers it to
 /// nobody. The door reaches the projection through one observer, registered
 /// by the reminder module itself when its bridge starts; a second registrant,
@@ -573,10 +585,23 @@ fn the_board_door_owns_the_committed_board_and_tells_one_observer() {
     let documents = code_only(production_region(&source("documents.rs")));
     assert_eq!(
         users(&documents, "COMMITTED_BOARD"),
-        ["board_authority", "commit_board", "committed_board"],
-        "the door's committed-Board copy has one writer and two readers: `committed_board` for \
-         the door's own persistence decisions, and `board_authority`, which answers only for a \
-         current Board, for a reader that treats what the Board says as authority"
+        [
+            "board_authority",
+            "board_preset_choices",
+            "commit_board",
+            "committed_board"
+        ],
+        "the door's committed-Board copy has one writer and three readers: `committed_board` \
+         for the door's own persistence decisions, `board_authority`, which answers only for a \
+         current Board, for a reader that grants something on what the Board says, and \
+         `board_preset_choices` for the readers that take a preset's choice back"
+    );
+    // who may read which: an admission grants only on the current Board, and
+    // the one reader of a recovered Board's (empty) choices is the source the
+    // sweep and the fence share
+    assert_eq!(
+        callers_of("board_preset_choices("),
+        ["scheduler/first_send.rs board_side"]
     );
     assert_eq!(
         callers_of("set_commit_observer("),

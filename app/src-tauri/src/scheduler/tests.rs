@@ -8698,3 +8698,400 @@ fn a_phone_task_approval_round_trips_with_its_audit_record() {
     let badge = serde_json::to_value(step_authority(0)).unwrap();
     assert!(badge.get("connector").is_none());
 }
+
+// ---- a recovered Board never brings a withdrawn preset choice back ----
+//
+// The chain these tests drive, on the production storage, recovery, door
+// and admission code: the user ticks a preset's choices (save A), unticks
+// them (save B, so deck.json.bak holds A), the main file is damaged, deck
+// restarts and the webview is handed the backup. Whatever the webview then
+// saves — a renamed card, the card of a phone `task-create` — is the
+// owner's save and the current Board. Neither that save nor a restart after
+// it may make a withdrawn choice sendable: not for a new phone task, not for
+// a step that was already waiting.
+
+/// Which of the preset's two choices a scenario ticks.
+#[derive(Clone, Copy, Debug)]
+struct Choices {
+    first_send: bool,
+    auto_send: bool,
+}
+
+const CHOICE_MATRIX: [Choices; 3] = [
+    Choices {
+        first_send: true,
+        auto_send: false,
+    },
+    Choices {
+        first_send: false,
+        auto_send: true,
+    },
+    Choices {
+        first_send: true,
+        auto_send: true,
+    },
+];
+
+struct RecoveryDir(std::path::PathBuf);
+
+impl RecoveryDir {
+    fn new(tag: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("deck-preset-recovery-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn main(&self) -> std::path::PathBuf {
+        self.0.join("deck.json")
+    }
+}
+
+impl Drop for RecoveryDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The preset as the project defaults dialog saves it with `choices`.
+fn dialog_preset(choices: Choices) -> serde_json::Value {
+    let mut preset = serde_json::json!({"id": "R1", "name": "Fix", "columnId": "C1",
+        "title": "Remote task", "dir": "/work", "cmd": "claude", "steps": ["first", "second"]});
+    if choices.first_send {
+        preset["firstSend"] = true.into();
+    }
+    if choices.auto_send {
+        preset["autoSend"] = serde_json::json!({"digest": preset_digest("P1", &preset).unwrap()});
+    }
+    preset
+}
+
+/// A Board the webview saves: one project with the preset and `cards`.
+fn owner_board(preset: serde_json::Value, cards: Vec<serde_json::Value>) -> String {
+    serde_json::json!({
+        "projects": [{"id": "P1", "name": "main", "columns": [{"id": "C1", "name": "Working"}],
+            "presets": [preset]}],
+        "cards": cards,
+    })
+    .to_string()
+}
+
+/// What the webview does for a phone `task-create` on the Board it holds
+/// (connector.js `createTask`, connector-model.js `connectorRunPlan`): a
+/// card whose run freezes the held preset's steps and choices, added to
+/// that Board. Returns the Board to save.
+fn webview_task_create(held: &str, n: u32) -> String {
+    let mut board: serde_json::Value = serde_json::from_str(held).unwrap();
+    let preset = board["projects"][0]["presets"][0].clone();
+    let handle = format!("{n:064x}");
+    let mut run = serde_json::json!({"handle": handle, "presetId": "R1", "initialQueued": false,
+        "initialSteps": [
+            {"operationId": format!("head-{n}"), "text": "first", "mode": "at", "at": NOW, "tpl": "R1", "tplIdx": 1, "tplTotal": 2},
+            {"operationId": format!("next-{n}"), "text": "second", "mode": "chain", "at": null, "tpl": "R1", "tplIdx": 2, "tplTotal": 2}]});
+    if preset["firstSend"] == true {
+        run["firstSend"] = true.into();
+    }
+    if let Some(digest) = preset["autoSend"]["digest"].as_str() {
+        run["autoSend"] = digest.into();
+    }
+    board["cards"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+        "id": format!("card-{n}"), "projectId": "P1", "columnId": "C1", "title": "Remote task",
+        "desc": "Fix", "cmd": "claude", "dir": "/work", "session": format!("task-{n}"),
+        "origin": {"source": "connector", "key": handle, "badge": "R1"}, "connectorRun": run}));
+    board.to_string()
+}
+
+/// What the native admission grants the rows of task `n` when the webview
+/// queues its frozen run from the Board it holds (board.js
+/// `queueConnectorPlan`): a claim is made only for what the run froze, and
+/// each is decided against `documents::board_authority`, as `ops.rs` does.
+/// The Connector's journal says the command was applied by paired `dev_1`.
+fn admitted(held: &str, n: u32) -> (bool, bool) {
+    let board: serde_json::Value = serde_json::from_str(held).unwrap();
+    let card = board["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == format!("card-{n}"))
+        .expect("the task's card");
+    let run = &card["connectorRun"];
+    let handle = run["handle"].as_str().unwrap();
+    let args = |step: usize| -> QueueAddArgs {
+        let row = &run["initialSteps"][step];
+        serde_json::from_value(
+            serde_json::json!({"session": card["session"], "cardId": card["id"],
+            "operationId": row["operationId"], "cmd": "claude", "dir": "/work", "text": row["text"],
+            "mode": row["mode"], "at": row["at"], "tpl": "R1", "tplIdx": step + 1, "tplTotal": 2}),
+        )
+        .unwrap()
+    };
+    let proof = crate::connector::TaskProof {
+        device_id: "dev_1".into(),
+        card_id: card["id"].as_str().unwrap().into(),
+    };
+    let current = crate::documents::board_authority();
+    let first_send = run["firstSend"] == true
+        && first_send::verify_connector(
+            current.as_ref(),
+            &FirstSendClaim {
+                rule: "R1".into(),
+                event: handle.into(),
+                preset_project: Some("P1".into()),
+            },
+            &args(0),
+            Some(&proof),
+        )
+        .is_ok();
+    let auto_send = run["autoSend"].as_str().is_some_and(|grant| {
+        let mut claim = preset_authority_claim(grant, 1);
+        claim.event = Some(handle.into());
+        verify_preset_claim(current.as_ref(), &claim, &args(1), "second", Some(&proof)).is_ok()
+    });
+    (first_send, auto_send)
+}
+
+/// The steps of an earlier task that were queued while the choices stood
+/// and have not been sent: its head with the override, its second step with
+/// the approval.
+fn waiting_rows(choices: Choices) -> QueueState {
+    let mut rows = Vec::new();
+    if choices.first_send {
+        rows.push(preset_head());
+    }
+    if choices.auto_send {
+        let digest = preset_digest("P1", &dialog_preset(choices)).unwrap();
+        rows.push(external_step("e", Some(preset_authority(&digest, 1))));
+    }
+    qs(rows)
+}
+
+/// Whether any waiting row may still be sent automatically on its choice,
+/// by the pre-fire fence over the Board-side source as it stands now.
+fn waiting_rows_sendable(q: &QueueState) -> bool {
+    let tasks = first_send::board_side(Some(vec!["dev_1".into()]));
+    let sources = first_send::Sources {
+        settings: None,
+        board: tasks.as_ref(),
+    };
+    q.items.iter().any(|row| {
+        (row.readiness_override.is_some() && first_send::fence(row, sources) == Fence::Clear)
+            || (row.authority.is_some() && fence(row, sources) == Fence::Clear)
+    })
+}
+
+/// The scheduler tick's sweep over the Board-side source as it stands now.
+fn tick_sweep(q: &mut QueueState) {
+    let tasks = first_send::board_side(Some(vec!["dev_1".into()]));
+    let sources = first_send::Sources {
+        settings: None,
+        board: tasks.as_ref(),
+    };
+    revoke_stale(q, sources);
+    first_send::revoke_stale(q, sources);
+}
+
+/// Control: with no recovery, a ticked choice is granted to a new phone
+/// task and still stands for a waiting step, across a restart.
+#[test]
+fn a_current_boards_preset_choices_keep_working() {
+    use crate::documents::test_door;
+    for choices in CHOICE_MATRIX {
+        let _held = test_door::hold();
+        let dir = RecoveryDir::new("control");
+        test_door::save(&dir.main(), &owner_board(dialog_preset(choices), vec![])).unwrap();
+        test_door::restart();
+        let (held, source, notice) = test_door::load(&dir.main()).unwrap().unwrap();
+        assert_eq!((source.as_str(), notice), ("main", None));
+        let mut waiting = waiting_rows(choices);
+        assert!(waiting_rows_sendable(&waiting), "{choices:?}");
+        let held = webview_task_create(&held, 1);
+        test_door::save(&dir.main(), &held).unwrap();
+        assert_eq!(
+            admitted(&held, 1),
+            (choices.first_send, choices.auto_send),
+            "{choices:?}"
+        );
+        tick_sweep(&mut waiting);
+        assert!(
+            waiting_rows_sendable(&waiting),
+            "{choices:?}: swept nothing"
+        );
+    }
+}
+
+/// The chain above, end to end: nothing the webview saves after the
+/// recovery, and no restart after that save, makes a withdrawn choice
+/// sendable again.
+#[test]
+fn a_recovered_board_never_restores_a_withdrawn_preset_choice() {
+    use crate::documents::test_door;
+    let none = Choices {
+        first_send: false,
+        auto_send: false,
+    };
+    for choices in CHOICE_MATRIX {
+        for ordinary_save in ["rename", "task-create"] {
+            let cell = format!("{choices:?} / {ordinary_save}");
+            let _held = test_door::hold();
+            let dir = RecoveryDir::new("chain");
+            let bystander = serde_json::json!({"id": "a", "projectId": "P1", "columnId": "C1",
+                "title": "t", "desc": "", "cmd": "", "dir": "~/w", "session": "shell-a"});
+            // save A: ticked; save B: withdrawn (the backup now holds A)
+            test_door::save(
+                &dir.main(),
+                &owner_board(dialog_preset(choices), vec![bystander.clone()]),
+            )
+            .unwrap();
+            test_door::save(
+                &dir.main(),
+                &owner_board(dialog_preset(none), vec![bystander.clone()]),
+            )
+            .unwrap();
+            let mut waiting = waiting_rows(choices);
+            assert!(!waiting_rows_sendable(&waiting), "{cell}: B withdrew it");
+
+            // the main file is damaged; deck restarts on the backup
+            std::fs::write(dir.main(), "{damaged").unwrap();
+            test_door::restart();
+            let (_, source, notice) = test_door::load(&dir.main()).unwrap().unwrap();
+            assert_eq!(source, "backup", "{cell}");
+            assert_eq!(notice, Some("storage.choices-withdrawn"), "{cell}");
+            assert!(!waiting_rows_sendable(&waiting), "{cell}: recovered");
+            // a restart before any save answers from the backup again, the
+            // same way, and says so again
+            test_door::restart();
+            let (held, source, notice) = test_door::load(&dir.main()).unwrap().unwrap();
+            assert_eq!(source, "backup", "{cell}");
+            assert_eq!(notice, Some("storage.choices-withdrawn"), "{cell}");
+            assert!(!waiting_rows_sendable(&waiting), "{cell}: recovered twice");
+
+            // the webview's next ordinary save of what it was handed
+            let held = if ordinary_save == "rename" {
+                let mut board: serde_json::Value = serde_json::from_str(&held).unwrap();
+                board["cards"][0]["title"] = "renamed".into();
+                webview_task_create(&board.to_string(), 0)
+            } else {
+                webview_task_create(&held, 0)
+            };
+            if ordinary_save == "rename" {
+                // the rename alone, before any task exists
+                let mut board: serde_json::Value = serde_json::from_str(&held).unwrap();
+                board["cards"].as_array_mut().unwrap().pop();
+                test_door::save(&dir.main(), &board.to_string()).unwrap();
+                assert!(
+                    !waiting_rows_sendable(&waiting),
+                    "{cell}: a rename is not an approval"
+                );
+            }
+            test_door::save(&dir.main(), &held).unwrap();
+            assert!(
+                crate::documents::board_authority().is_some(),
+                "{cell}: the owner's save is the current Board"
+            );
+            assert_eq!(admitted(&held, 0), (false, false), "{cell}: new task");
+            assert!(!waiting_rows_sendable(&waiting), "{cell}: waiting step");
+
+            // the tick sweeps the waiting steps against the saved Board
+            tick_sweep(&mut waiting);
+            assert!(
+                waiting
+                    .items
+                    .iter()
+                    .all(|row| row.authority.is_none() && row.readiness_override.is_none()),
+                "{cell}: the waiting steps fall back to send-now"
+            );
+            assert!(
+                waiting.items.iter().all(|row| row.external),
+                "{cell}: provenance stays"
+            );
+
+            // written back and restarted: the main file answers, and still no
+            let prompts_before: Vec<String> =
+                waiting.items.iter().map(|row| row.text.clone()).collect();
+            test_door::restart();
+            let (held, source, notice) = test_door::load(&dir.main()).unwrap().unwrap();
+            assert_eq!((source.as_str(), notice), ("main", None), "{cell}");
+            let held = webview_task_create(&held, 1);
+            test_door::save(&dir.main(), &held).unwrap();
+            assert_eq!(admitted(&held, 1), (false, false), "{cell}: after restart");
+            assert_eq!(admitted(&held, 0), (false, false), "{cell}: the older run");
+            assert!(!waiting_rows_sendable(&waiting), "{cell}: after restart");
+            assert_eq!(
+                waiting
+                    .items
+                    .iter()
+                    .map(|row| row.text.clone())
+                    .collect::<Vec<_>>(),
+                prompts_before,
+                "{cell}: no prompt was rewritten or dropped"
+            );
+
+            // the user ticks the same choices again, on this Mac: a new task
+            // gets them; the task created from the recovered Board, and the
+            // steps that were waiting, do not
+            let mut board: serde_json::Value = serde_json::from_str(&held).unwrap();
+            board["projects"][0]["presets"][0] = dialog_preset(choices);
+            let held = webview_task_create(&board.to_string(), 2);
+            test_door::save(&dir.main(), &held).unwrap();
+            assert_eq!(
+                admitted(&held, 2),
+                (choices.first_send, choices.auto_send),
+                "{cell}: an explicit approval works"
+            );
+            assert_eq!(
+                admitted(&held, 0),
+                (false, false),
+                "{cell}: not the old run"
+            );
+            assert!(
+                !waiting_rows_sendable(&waiting),
+                "{cell}: not the old steps"
+            );
+        }
+    }
+}
+
+/// The same for the lost Board's way out: the copy the user restores is
+/// saved at once by the webview, and that save is not an approval either.
+#[test]
+fn a_restored_kept_board_never_restores_a_preset_choice() {
+    use crate::documents::test_door;
+    for choices in CHOICE_MATRIX {
+        let _held = test_door::hold();
+        let dir = RecoveryDir::new("exit");
+        std::fs::write(
+            dir.0.join("deck.corrupt-1700000000"),
+            owner_board(dialog_preset(choices), vec![]),
+        )
+        .unwrap();
+        test_door::restart();
+        assert!(test_door::load(&dir.main()).is_err(), "the Board is lost");
+        let mut waiting = waiting_rows(choices);
+        crate::storage::take_notices();
+        let held = test_door::lost_exit(&dir.main(), "restore").unwrap();
+        assert_eq!(
+            crate::storage::take_notices()
+                .iter()
+                .map(|notice| notice.code())
+                .collect::<Vec<_>>(),
+            ["storage.choices-withdrawn"],
+            "{choices:?}: the user is told"
+        );
+        assert!(!waiting_rows_sendable(&waiting), "{choices:?}: restored");
+        // dialogs.js `createBoardExit` saves the chosen Board right away
+        test_door::save(&dir.main(), &held).unwrap();
+        assert!(!waiting_rows_sendable(&waiting), "{choices:?}: saved");
+        let held = webview_task_create(&held, 0);
+        test_door::save(&dir.main(), &held).unwrap();
+        assert_eq!(admitted(&held, 0), (false, false), "{choices:?}");
+        tick_sweep(&mut waiting);
+        assert!(waiting
+            .items
+            .iter()
+            .all(|row| row.authority.is_none() && row.readiness_override.is_none()));
+    }
+}

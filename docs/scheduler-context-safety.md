@@ -285,9 +285,15 @@ first typed prompt — and never a claim that the agent is ready.
   directory changed), and the pre-fire check reads the Board under the Board
   fence every Board save takes, so an untick whose save returned is always
   seen. "Current" excludes a Board that was answered from `deck.json.bak` or
-  taken as the way out of a lost Board and not saved since: like unreadable
-  settings, that proves nothing either way, so nothing is stripped and
-  nothing is sent on the override until the next Board save. A preset with
+  taken as the way out of a lost Board. Such a Board is handed to the webview
+  without its presets' first-send and approval choices, and Deck says so:
+  the backup is the save before the last one and may hold exactly the choice
+  the last save withdrew, and the next save of it — any save, including the
+  card a phone task adds — would otherwise make that choice current again.
+  Nothing is admitted on a recovered Board, the tick strips the override or
+  approval from the steps still waiting (they fall back to the first
+  interaction gate or to Send now, both announced), and the choice comes
+  back only when the user ticks it again in the project defaults. A preset with
   the option and a row with this origin use sticky schema v6 (deck.json and
   queue.json): older builds refuse them untouched instead of dropping the
   choice on their next Board save.

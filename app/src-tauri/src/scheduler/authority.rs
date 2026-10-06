@@ -136,8 +136,18 @@
 //!     `documents::board_fence`, which every Board commit takes. A device
 //!     revocation is not a Board write and takes no fence: it is seen by the
 //!     next sweep and by every pre-fire read that follows it.
-//!   - No current Board, or an unreadable Connector state, is the same
-//!     "unreadable source": nothing granted, revoked or sent automatically.
+//!   - A Board recovered from its backup or from a kept copy never brings an
+//!     approval back: the door hands it over without its presets' choices
+//!     (`documents.rs`), so nothing is admitted on it, the sweep strips the
+//!     approval from the steps still waiting, and the saves that follow
+//!     write a Board that approves nothing until the user ticks the preset
+//!     again. No committed Board at all, or an unreadable Connector state,
+//!     is the same "unreadable source": nothing granted, revoked or sent
+//!     automatically.
+//!   - A preset's grant is its content digest and nothing else, so ticking
+//!     an unchanged preset again is the same grant. Steps the sweep already
+//!     stripped stay manual (a row never regains authority); a frozen run
+//!     that was not queued yet claims the grant when it is queued.
 //!   - deck.json and queue.json take sticky schema v6 when a preset carries
 //!     a grant or a row or audit record this trigger: the closed word has no
 //!     catch-all, and an older webview would drop the preset's grant on its

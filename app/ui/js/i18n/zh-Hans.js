@@ -229,6 +229,7 @@ const dictionary = {
   'error.selectionStart': '无法开始终端选择',
   'error.operation': '{operation}失败',
   'notice.storage.recovered': '已保留损坏的数据文件，并从备份恢复。',
+  'notice.storage.choices-withdrawn': '这个看板是从较早的副本恢复的，因此其中手机任务预设的自动发送选项已关闭。如仍需要，请在项目默认值中重新开启；在此之前，从手机创建的任务会等你在这台 Mac 上处理。',
   'notice.storage.privacy': '部分数据文件的权限无法收紧；请检查 ~/.deck 的权限。',
   'notice.queue.persist': '发送后的定时 prompt 状态无法保存；deck 将继续重试。',
   'notice.queue.load': '无法载入定时 prompt；现有文件未被改动。',

@@ -91,8 +91,13 @@
 //!   backup loads: the backup is the previous save and could bring back a
 //!   choice the last save withdrew, as for the approval (`authority.rs`).
 //!   A phone task override is swept against the Board the same way and
-//!   fenced under `documents::board_fence`, which every Board commit takes;
-//!   a Board that is absent or stands as recovered is an unreadable source.
+//!   fenced under `documents::board_fence`, which every Board commit takes.
+//!   A Board that stands as recovered holds no preset choice (the door
+//!   withdraws them, `documents.rs`), so it is readable and allows nothing:
+//!   the override is stripped and the head waits at the first-interaction
+//!   gate, where it is announced. Only a process without any committed
+//!   Board (before the webview's load, or while the Board is lost), or an
+//!   unreadable Connector state, is an unreadable source.
 //!   Send-now never consults it.
 //! - Durable vs transient: the rule flag and the row copy survive restarts;
 //!   interaction evidence does not and is never invented. After a Deck
@@ -190,10 +195,11 @@ impl<'a> From<&'a Config> for Sources<'a> {
 }
 
 /// The Board-side source: what a phone task's override and approval are
-/// swept and fenced against. The current Board says what its presets allow;
-/// the Connector says which devices are still paired, so that revoking a
-/// device takes back what its tasks have not sent yet. Both or nothing: when
-/// either cannot be read there is no source (`phone_tasks`).
+/// swept and fenced against. The committed Board says what its presets allow
+/// (`documents::board_preset_choices`: a recovered one allows nothing); the
+/// Connector says which devices are still paired, so that revoking a device
+/// takes back what its tasks have not sent yet. Both or nothing: when either
+/// cannot be read there is no source (`phone_tasks`).
 #[derive(Clone, Debug)]
 pub(crate) struct PhoneTasks {
     pub(crate) board: serde_json::Value,
@@ -202,9 +208,14 @@ pub(crate) struct PhoneTasks {
 
 /// The Board-side source as it stands now, or `None` (no proof either way).
 pub(crate) fn phone_tasks() -> Option<PhoneTasks> {
+    board_side(crate::connector::paired_devices())
+}
+
+/// The Board-side source given the Connector's answer about paired devices.
+pub(crate) fn board_side(paired: Option<Vec<String>>) -> Option<PhoneTasks> {
     Some(PhoneTasks {
-        board: crate::documents::board_authority()?,
-        paired: crate::connector::paired_devices()?,
+        board: crate::documents::board_preset_choices()?,
+        paired: paired?,
     })
 }
 

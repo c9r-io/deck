@@ -230,6 +230,7 @@ const dictionary = {
   'error.selectionStart': 'terminal selection could not start',
   'error.operation': '{operation} failed',
   'notice.storage.recovered': 'A damaged data file was preserved and recovered from its backup.',
+  'notice.storage.choices-withdrawn': 'This Board was restored from an earlier copy, so the automatic-send options on its phone task presets were turned off. Turn them on again in the project defaults if you still want them; until then, tasks created from the phone wait for you on this Mac.',
   'notice.storage.privacy': 'Some data-file permissions could not be restricted; check ~/.deck permissions.',
   'notice.queue.persist': 'Scheduled prompt state could not be saved after delivery; deck will keep retrying.',
   'notice.queue.load': 'Scheduled prompts could not be loaded; the existing file was left untouched.',

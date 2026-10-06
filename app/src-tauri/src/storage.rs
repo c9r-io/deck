@@ -239,17 +239,21 @@ pub(crate) enum StorageNotice {
     QueueInterrupted,
     /// a document was restored from its .bak backup.
     Recovered,
+    /// a Board that is not the user's last save was put in its place, and
+    /// the choices on its task presets were turned off (`documents.rs`).
+    ChoicesWithdrawn,
 }
 
 impl StorageNotice {
     #[cfg(test)]
-    pub(crate) const ALL: [StorageNotice; 6] = [
+    pub(crate) const ALL: [StorageNotice; 7] = [
         StorageNotice::Privacy,
         StorageNotice::QueuePersist,
         StorageNotice::QueueLoad,
         StorageNotice::HistoryLoad,
         StorageNotice::QueueInterrupted,
         StorageNotice::Recovered,
+        StorageNotice::ChoicesWithdrawn,
     ];
 
     /// The webview's notice code (i18n `notice.*`).
@@ -261,6 +265,7 @@ impl StorageNotice {
             StorageNotice::HistoryLoad => "history.load",
             StorageNotice::QueueInterrupted => "queue.interrupted",
             StorageNotice::Recovered => "storage.recovered",
+            StorageNotice::ChoicesWithdrawn => "storage.choices-withdrawn",
         }
     }
 }
