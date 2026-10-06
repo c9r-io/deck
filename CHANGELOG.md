@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.7.24 — 2026-10-06 (Nightly)
+
+- Terminal links: Command-click runs a link's default action without opening
+  the menu. A file with `:line` or `:line:column` opens at that position in
+  VS Code and Cursor. When a link cannot be opened, Deck says which of four
+  reasons applied (no editor, the path is gone, not allowed, the open
+  failed). The editor picker knows nine more editors (Windsurf, Devin,
+  VSCodium, Kiro, Trae, Antigravity, Zed Preview, MacVim, Emacs).
+- Command-C copies a terminal selection that is still on screen when the
+  keyboard focus has moved elsewhere in Deck. It used to do nothing, with no
+  message.
+- A delivery that stops and waits for you is now announced while you are
+  away, and counted on the Dock: an uncertain delivery, a row that stopped
+  retrying, an inspection checkpoint, external content that needs Send now,
+  a first prompt waiting for an agent interaction, or a Codex session whose
+  status cannot be attributed. The last two need no agent integration.
+- A program that rings the terminal bell in a session without agent status
+  (an ordinary shell, a long command, `make test; printf '\a'`) now calls
+  you: the card joins Needs attention as "Bell" and, while you are away, a
+  notification says a program rang the terminal bell. One per card until you
+  look; a bell while you are at Deck with the card's pane open is ignored.
+- Phone task presets (Project defaults) have two new choices, both off by
+  default and set on the Mac only. "Send the first step to a newly started
+  agent without waiting for readiness" accepts the startup-dialog risk for
+  that preset, as a clock or Slack rule can. "Automatically continue
+  approved follow-up steps" approves the preset as it stands (directory,
+  command and every step), so a task created from the phone can run to the
+  end; editing any of those unticks it, and revoking the paired device
+  takes back the steps not yet sent. A preset that uses either makes older
+  Deck versions refuse the Board and ask for an update.
+- Editing a template's steps tells you, by rule, which automation approvals
+  that edit switched off, and the Automations drawer says whether the
+  template or the rule changed.
+- A clock rule set to close its card says what closing depends on.
+- Settings: turning on an agent status integration says once when away
+  notifications are still off; the hint under away notifications no longer
+  claims nothing will be announced.
+- Needs attention: unpinning a card with the keyboard no longer drops the
+  focus onto the page when the save takes a moment.
+- The project defaults dialog scrolls inside itself, so a task preset's
+  fields and buttons stay reachable in a small window. A Delete button for a
+  preset that does not exist yet, and the regex capture-name field shown for
+  other matchers in the automation editor, are gone.
+- A failure while repainting no longer makes a saved change report "could
+  not be saved"; it is written to the log instead.
+- A clock rule's first step is no longer admitted on a Board that was
+  loaded from its backup and not saved since.
+
 ## 0.7.23 — 2026-10-04 (Nightly)
 
 - A Board that cannot be loaded now has a way out that you choose. Deck
