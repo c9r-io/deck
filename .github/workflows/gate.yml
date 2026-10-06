@@ -195,15 +195,16 @@ jobs:
         id: ce-probe
         run: python3 scripts/ce_parity.py --plan scripts/ce/plan-full-local-2.json --app-evidence "$RUNNER_TEMP/ce-app-probe.jsonl" --deck-build "$DECK_GATE_COMMIT" --print-app-probe-env >> "$GITHUB_OUTPUT"
 
-      # Parallel test threads, adopted on CI measurement (2026-09-25,
-      # macos-15 runner, this exact step). Parallel: 20 runs, 20 green,
-      # min/median/max 169/204/285 s. Serial controls: main before FR-5,
-      # median 375 s (5 runs); the same code with --test-threads=1, median
-      # 359 s (5 runs). Saving ~156-172 s, 43-46 %. The suite is
-      # parallel-safe since FR-5 (TZ guard + lock, per-thread storage
-      # notices, unique tmux/runner names, polled waits).
-      # Rollback rule: any parallel-related red on the production gate
-      # restores --test-threads=1 at once; no second attempt.
+      # Serial test threads, restored 2026-10-06 by the rollback rule this
+      # step carried: any parallel-related red on the production gate
+      # restores --test-threads=1 at once; no second attempt. Parallel
+      # threads were adopted on CI measurement (2026-09-25, macos-15 runner,
+      # this exact step: 20 runs, 20 green, median 204 s against 359 s
+      # serial). Three reds followed, each a tmux contract test timing out
+      # after 5 s waiting for a shell prompt while the rest of the suite
+      # ran beside it: runs 37113342524 and 37131208546 (2026-10-03) and
+      # 37444260208 (2026-10-06, green on the same commit in the nightly
+      # gate). Going parallel again needs a new measurement, not an edit.
       - name: cargo test + coverage (unit, storage/scheduler recovery, log privacy, tmux contract, status helper)
         env:
           DECK_CE_EVIDENCE: ${{ steps.ce-probe.outputs.DECK_CE_EVIDENCE }}
@@ -211,7 +212,7 @@ jobs:
           DECK_CE_DECK_BUILD: ${{ steps.ce-probe.outputs.DECK_CE_DECK_BUILD }}
           DECK_CE_PLAN_ID: ${{ steps.ce-probe.outputs.DECK_CE_PLAN_ID }}
           DECK_CE_CASE: ${{ steps.ce-probe.outputs.DECK_CE_CASE }}
-        run: cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml
+        run: cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
 
       # Full Local parity (Controlled Execution, docs/ce-calibration.md): the
       # REAL workload on the frozen plan v2, not only the aggregator's unit
