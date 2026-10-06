@@ -1112,6 +1112,15 @@ mod tests {
             format_ui_event("js-error", Some("TypeError"), Some(42), None).unwrap(),
             "[ui] js-error TypeError a=42"
         );
+        // a listener of the webview's event bus that threw (state.js `emit`)
+        assert_eq!(
+            format_ui_event("js-error", Some("TypeError"), Some(0), Some(1)).unwrap(),
+            "[ui] js-error TypeError a=0 b=1"
+        );
+        assert_eq!(
+            format_ui_event("js-error", Some("error"), Some(0), Some(1)).unwrap(),
+            "[ui] js-error error a=0 b=1"
+        );
         assert_eq!(
             format_ui_event("keydown", Some("arrow"), Some(0), None).unwrap(),
             "[ui] keydown arrow a=0"

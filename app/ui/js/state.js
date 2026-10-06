@@ -149,9 +149,23 @@ export const genId = p => p + Date.now().toString(36) + (ctx.nextIdCounter++).to
 import { CARD_QUIET_SECS, fmtMem, sessionName } from './pure.js';
 export { fmtMem, sessionName };
 
-/* ---------- tiny event bus (same contract as the mock) ---------- */
+/* ---------- tiny event bus ----------
+   `emit` tells listeners about something that ALREADY happened: a Board
+   write that was persisted and committed, a poll result, a status change.
+   So a listener that throws cannot undo it and must not be able to make it
+   look undone. Each listener runs on its own: its exception stops neither
+   the listeners after it nor the caller, which would otherwise report a
+   saved write as failed ("the template could not be saved", a phone command
+   answered `ambiguous`). The failure is not hidden: it is logged as the
+   closed `js-error` event with its error class, and b=1 marks it as coming
+   from a listener (window.onerror logs the same code with a line number and
+   no b). A failed WRITE is a different path and is unchanged: persistence
+   throws inside the transaction (persistence.js), before any emit. */
 export const listeners = new Set();
-export const emit = (ev, s) => listeners.forEach(fn => fn(ev, s));
+export const emit = (ev, s) => listeners.forEach(fn => {
+  try { fn(ev, s); }
+  catch (error) { uev('js-error', errClass(error), 0, 1); }
+});
 
 /* ---------- formatting ---------- */
 export function setMemChip(chip, s) {

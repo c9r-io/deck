@@ -92,11 +92,7 @@ test('queueing a phone task run claims the frozen first-send choice on the head 
       if (cmd === 'save_board') { saved = JSON.parse(args.data); return; }
       throw new Error(`unexpected ${cmd}`);
     } } };
-    /* this fake DOM cannot paint the Board: the repaint that follows the
-       committed write throws here, after everything under test happened */
-    await provider.queueConnectorPlan('S1', handle).catch(error => {
-      if (!/querySelector is not a function/.test(String(error?.message))) throw error;
-    });
+    assert.equal(await provider.queueConnectorPlan('S1', handle), true);
     return { handle, rows, saved };
   };
   const on = await queue(true);
