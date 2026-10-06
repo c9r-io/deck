@@ -70,7 +70,7 @@ import { locateAttentionCard, paintCardSignalStatus, paintCardAttentionBadge, re
 import { cardLabels, dismissKey, labelsKey, seenDismissals } from './notify-model.js';
 import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, retainedBuffer } from './buffer-model.js';
 import { nextCollectedAt } from './channel-model.js';
-import { connectorFirstSendClaim, normalizeTaskPresets } from './connector-model.js';
+import { connectorAuthorityClaim, connectorFirstSendClaim, normalizeTaskPresets } from './connector-model.js';
 import { ruleLabel } from './automation-model.js';
 import { formatDateTime, onLocaleChange } from './i18n.js';
 export { migrateColumnSemantics } from './board-defaults.js';
@@ -533,14 +533,15 @@ export const provider = {
       const run = card?.connectorRun;
       if (!card || run?.handle !== expectedHandle) return { noop: true };
       if (run.initialQueued) { admitted = true; return { noop: true }; }
-      /* the preset's first-send choice belongs to the head row alone and
-         is only a claim here (scheduler/first_send.rs): the native
-         admission checks it against the current Board and its own journal */
+      /* the preset's first-send choice belongs to the head row alone, its
+         approval to each step; both are only claims here
+         (scheduler/first_send.rs, scheduler/authority.rs): the native
+         admission checks them against the current Board and its own journal */
       for (const [index, step] of (run.initialSteps || []).entries()) {
         await inv('channel_queue_add', { args: { session: card.session, cardId: card.id,
           operationId: step.operationId, dir: card.dir, cmd: card.cmd, text: step.text,
           mode: step.mode, at: step.at, tpl: step.tpl, tplIdx: step.tplIdx, tplTotal: step.tplTotal,
-          ...(index === 0 ? connectorFirstSendClaim(card) : {}) } });
+          ...(index === 0 ? connectorFirstSendClaim(card) : {}), ...connectorAuthorityClaim(card, index) } });
       }
       run.initialQueued = true; admitted = true;
     });
@@ -1520,7 +1521,7 @@ export async function openProjectDefaults(pid, opener = null) {
   const recent = await inv('recent_commands', { limit: 6 }).catch(() => []);
   const current = projectDefaults(p);
   const result = await projectDefaultsDialog({
-    name: p.name, dir: current.dir, cmd: current.cmd,
+    projectId: p.id, name: p.name, dir: current.dir, cmd: current.cmd,
     recent: Array.isArray(recent) ? recent.filter(c => typeof c === 'string') : [],
     presets: p.presets || [], columns: p.columns,
   });

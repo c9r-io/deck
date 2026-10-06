@@ -186,8 +186,8 @@ row are kept apart (`scheduler/authority.rs`):
 - **Provenance** — `external`: the row entered through the external
   admission. Never cleared or rewritten by anything below.
 - **Content authority** — `authority`: the user explicitly approved this
-  exact step of this exact version of a Slack badge automation for
-  automatic delivery. External provenance ≠ unapproved content.
+  exact step of this exact version of a Slack badge automation, or of a
+  phone task preset, for automatic delivery. External provenance ≠ unapproved content.
 - **Input readiness** — every hold above. Authorization ≠ input readiness.
 
 An approval is stored on the rule (`autoSend` in settings.json) as a
@@ -274,7 +274,7 @@ first typed prompt — and never a claim that the agent is ready.
   sends a project and a preset id and never this choice. The run freezes it
   (`connectorRun.firstSend`) and only its HEAD claims it, on the external
   path: the row stays `external`, and its later steps still wait at the
-  external hold. This override is backed by the **Board**, not by settings.
+  external hold unless the preset is also approved (below). This override is backed by the **Board**, not by settings.
   Admission needs the current Board to hold the preset with the option and a
   supported command equal to the row's, exactly one card made from that
   command handle whose still-unqueued frozen run opens with this row, and the
@@ -374,10 +374,37 @@ first typed prompt — and never a claim that the agent is ready.
   version (this is deliberately conservative: an edited definition is a
   different approval), so the run's unsent rows keep their text and lose
   only automatic delivery.
-- **Scope.** Only Slack badge rules carry approvals. Slack channel monitors
-  (a message triggers without a per-message human action), Connector rows
-  and scratchpad copies stay manual; clock rules are owner text and
-  unchanged.
+- **Scope.** Slack badge rules and phone task presets carry approvals.
+  Slack channel monitors (a message triggers without a per-message human
+  action), messages and scratchpad copies sent from the phone, and
+  scratchpad copies stay manual; clock rules are owner text and unchanged.
+- **Phone task presets.** Being paired is never prompt authority: the phone
+  can only name a preset, and what is approved is the preset's own content,
+  ticked in **Project defaults** on the Mac. The grant is
+  `preset.autoSend.digest` in the Board: the SHA-256 of the project id, the
+  preset id, its directory, its full command and each step's SHA-256 (name,
+  card title and column are outside), so the steps need no second copy and
+  no edit made elsewhere can leave a stale approval behind. Every step is
+  `fixed`. The run freezes the digest (`connectorRun.autoSend`) and each row
+  claims its step on the external path. Admission needs the current Board
+  to hold the preset with a valid grant equal to the claimed one, the same
+  command, the row's text equal to that step, and exactly one card made from
+  the claimed command handle whose still-unqueued frozen run froze that
+  grant and holds this row as that step; the Connector's journal must say
+  the handle is an applied `task-create` naming that card from a device
+  that is still paired. The sweep and the pre-fire check read the
+  **Board-side source**: the current Board together with the devices still
+  paired. Unticking, editing a covered field, deleting the preset or its
+  project, or **revoking the device** whose command made the run strips the
+  approval (and the first-send override) from that run's unsent rows; a
+  re-approval after an edit is a new grant and does not revive them. The
+  fence is the Board fence. A device revocation is not a Board write: it is
+  seen by the next sweep and by every pre-fire read that follows it. No
+  current Board (see the first-send section) or an unreadable Connector
+  state is an unreadable source: nothing is granted, stripped or sent
+  automatically, and the row shows the same "approval cannot be verified"
+  hold. Sticky schema v6 covers the preset's grant and the new trigger word
+  in queue.json, as for the first-send choice.
 - **Audit.** A delivery record copies the row's authority (rule id, grant
   digest, step, class, trigger) and whether the user sent it by hand; the
   ⏱ history shows "approved step N" and "sent by you". Log lines carry

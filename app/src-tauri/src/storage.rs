@@ -102,7 +102,8 @@ use std::sync::Mutex;
 // v2 protects opt-in human checkpoints; v3 protects retained scratchpad and
 // channel/idempotency fields; v4 protects clock readiness origins/policy;
 // v5 protects card reminders and blocked retirement identities; v6 protects
-// a phone task preset's first-send choice and its queue origin.
+// a phone task preset's first-send choice and approval and their queue
+// origins.
 // Ordinary documents keep v1; upgrades are sticky.
 pub const SCHEMA_VERSION: u64 = 6;
 
@@ -142,21 +143,28 @@ fn uses_clock_first_send(v: &serde_json::Value) -> bool {
     }
 }
 
-// A phone task preset's first-send choice (deck.json) and the row origin it
-// admits (queue.json). A v5 reader decodes the closed origin as damage, and
-// its webview rebuilds presets from the fields it knows, so its next Board
-// save would drop the choice without a word: it must refuse both untouched.
-fn uses_connector_first_send(v: &serde_json::Value) -> bool {
+// A phone task preset's first-send choice and approval (deck.json) and the
+// row origins they admit (queue.json: a row's override, a row's or a
+// delivery record's authority). A v5 reader decodes the closed origins as
+// damage, and its webview rebuilds presets from the fields it knows, so its
+// next Board save would drop both without a word: it must refuse both files
+// untouched.
+fn uses_phone_task_policy(v: &serde_json::Value) -> bool {
     match v {
         serde_json::Value::Object(o) => {
             o.get("presets")
                 .and_then(|v| v.as_array())
-                .is_some_and(|presets| presets.iter().any(|p| p["firstSend"] == true))
-                || o.get("readiness_override")
-                    .is_some_and(|v| v["trigger"] == "connector")
-                || o.values().any(uses_connector_first_send)
+                .is_some_and(|presets| {
+                    presets
+                        .iter()
+                        .any(|p| p["firstSend"] == true || p["autoSend"].is_object())
+                })
+                || ["readiness_override", "authority"]
+                    .iter()
+                    .any(|key| o.get(*key).is_some_and(|v| v["trigger"] == "connector"))
+                || o.values().any(uses_phone_task_policy)
         }
-        serde_json::Value::Array(a) => a.iter().any(uses_connector_first_send),
+        serde_json::Value::Array(a) => a.iter().any(uses_phone_task_policy),
         _ => false,
     }
 }
@@ -721,34 +729,33 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let feature_version = if matches!(name.as_ref(), "deck.json" | "queue.json")
-        && uses_connector_first_send(&data)
-    {
-        6
-    } else if name == "deck.json"
-        && data
-            .get("cards")
-            .and_then(|v| v.as_array())
-            .is_some_and(|cards| {
-                cards
-                    .iter()
-                    .any(|c| c.get("reminder").is_some() || c.get("reminderRetirements").is_some())
-            })
-    {
-        5
-    } else if matches!(name.as_ref(), "queue.json" | "settings.json")
-        && uses_clock_first_send(&data)
-    {
-        4
-    } else if matches!(name.as_ref(), "deck.json" | "queue.json" | "settings.json")
-        && uses_buffer(&data)
-    {
-        3
-    } else if review_gated(&name) && uses_review(&data) {
-        2
-    } else {
-        1
-    };
+    let feature_version =
+        if matches!(name.as_ref(), "deck.json" | "queue.json") && uses_phone_task_policy(&data) {
+            6
+        } else if name == "deck.json"
+            && data
+                .get("cards")
+                .and_then(|v| v.as_array())
+                .is_some_and(|cards| {
+                    cards.iter().any(|c| {
+                        c.get("reminder").is_some() || c.get("reminderRetirements").is_some()
+                    })
+                })
+        {
+            5
+        } else if matches!(name.as_ref(), "queue.json" | "settings.json")
+            && uses_clock_first_send(&data)
+        {
+            4
+        } else if matches!(name.as_ref(), "deck.json" | "queue.json" | "settings.json")
+            && uses_buffer(&data)
+        {
+            3
+        } else if review_gated(&name) && uses_review(&data) {
+            2
+        } else {
+            1
+        };
     let mut version = minimum_version.max(feature_version);
     let existing = match std::fs::read(path) {
         Ok(bytes) => {
@@ -1561,7 +1568,7 @@ mod tests {
     #[test]
     fn phone_task_first_send_documents_upgrade_to_sticky_v6_only_when_used() {
         let dir = tdir("connector-readiness-version");
-        for (name, data, unused) in [
+        for (case, (name, data, unused)) in [
             (
                 "deck.json",
                 serde_json::json!({"projects":[{"presets":[{"id":"R1", "firstSend":true}]}]}),
@@ -1572,8 +1579,30 @@ mod tests {
                 serde_json::json!({"items":[{"readiness_override":{"rule":"R1", "trigger":"connector"}}]}),
                 serde_json::json!({"items":[{"readiness_override":{"rule":"R", "trigger":"clock"}}]}),
             ),
-        ] {
-            let p = dir.join(name);
+            // the approval: on the preset, on a row, on a delivery record
+            (
+                "deck.json",
+                serde_json::json!({"projects":[{"presets":[{"id":"R1", "autoSend":{"digest":"d"}}]}]}),
+                serde_json::json!({"projects":[{"presets":[{"id":"R1"}]}]}),
+            ),
+            (
+                "queue.json",
+                serde_json::json!({"items":[{"authority":{"rule":"R1", "trigger":"connector"}}]}),
+                serde_json::json!({"items":[{"authority":{"rule":"R", "trigger":"slack-badge"}}]}),
+            ),
+            (
+                "queue.json",
+                serde_json::json!({"deliveries":[{"authority":{"rule":"R1", "trigger":"connector"}}]}),
+                serde_json::json!({"deliveries":[{"authority":{"rule":"R", "trigger":"slack-badge"}}]}),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // one directory per case: the version is sticky per file
+            let case = dir.join(case.to_string());
+            std::fs::create_dir_all(&case).unwrap();
+            let p = case.join(name);
             save_typed::<serde_json::Value>(&p, &unused.to_string()).unwrap();
             let raw: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();

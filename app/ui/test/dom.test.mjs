@@ -1241,6 +1241,69 @@ test('a preset\'s first-send box is ticked only through the confirmation and is 
   assert.deepEqual((await promise).presets, [{ ...existing, cmd: 'codex', firstSend: true }], 'kept, as on a rule');
 });
 
+test('a preset is approved as it is saved, and an edit to what the approval covers unticks it with a notice', async () => {
+  const { presetApproved } = await import('../js/connector-model.js');
+  const el = id => fakeDocument.getElementById(id);
+  const existing = { id: 'R1', name: 'Fix issue', columnId: 'C1', title: 'Remote fix', dir: '~/work', cmd: 'claude', steps: ['inspect', 'fix'] };
+  const open = presets => projectDefaultsDialog({ projectId: 'P1', name: 'Atlas', dir: '~/work', cmd: 'codex', recent: [],
+    presets, columns: [{ id: 'C1', name: 'Working' }] });
+  const box = el('pdf-preset-auto-send'); const toasts = el('toasts');
+  const save = async promise => { el('pdf-preset-done').fire('click'); el('pdf-yes').fire('click'); return (await promise).presets; };
+  /* opening a preset checks its stored approval asynchronously (SHA-256):
+     the same computation queued behind it has finished only after it */
+  const openFirst = async preset => { el('pdf-presets').children[0].fire('click');
+    await presetApproved('P1', preset); await tick(); await tick(); };
+  // off by default; ticking asks nothing and approves exactly what is saved
+  let promise = open([existing]);
+  await openFirst(existing);
+  assert.equal(box.checked, false);
+  box.checked = true;
+  let [saved] = await save(promise);
+  assert.equal(await presetApproved('P1', saved), true);
+  assert.deepEqual({ ...saved, autoSend: undefined }, { ...existing, autoSend: undefined });
+  // reopened ticked; the name, title and column are outside the approval
+  promise = open([saved]);
+  await openFirst(saved);
+  assert.equal(box.checked, true);
+  toasts.replaceChildren();
+  el('pdf-preset-name').value = 'Renamed'; el('pdf-preset-title').value = 'Other title';
+  assert.equal(box.checked, true);
+  const [renamed] = await save(promise);
+  assert.equal(renamed.autoSend.digest, saved.autoSend.digest);
+  assert.equal(toasts.children.length, 0);
+  // each covered field withdraws the tick, says so once, and saves without an approval
+  for (const field of ['pdf-preset-dir', 'pdf-preset-cmd', 'pdf-preset-steps']) {
+    promise = open([saved]);
+    await openFirst(saved);
+    assert.equal(box.checked, true, field);
+    toasts.replaceChildren();
+    el(field).value = field === 'pdf-preset-steps' ? 'inspect\nfix it' : field === 'pdf-preset-cmd' ? 'codex' : '~/elsewhere';
+    el(field).oninput(); el(field).oninput();
+    assert.equal(box.checked, false, field);
+    assert.equal(toasts.children.length, 1, `${field}: said once`);
+    const [edited] = await save(promise);
+    assert.equal('autoSend' in edited, false, field);
+  }
+  // re-ticking after the edit approves the edited version, a new grant
+  promise = open([saved]);
+  await openFirst(saved);
+  el('pdf-preset-steps').value = 'inspect\nfix it'; el('pdf-preset-steps').oninput();
+  box.checked = true;
+  const [reapproved] = await save(promise);
+  assert.notEqual(reapproved.autoSend.digest, saved.autoSend.digest);
+  assert.equal(await presetApproved('P1', reapproved), true);
+  // an approval of another version of the preset opens unticked, and saving as-is drops it
+  promise = open([{ ...saved, steps: ['inspect', 'changed by hand'] }]);
+  await openFirst({ ...saved, steps: ['inspect', 'changed by hand'] });
+  assert.equal(box.checked, false);
+  const [stale] = await save(promise);
+  assert.equal('autoSend' in stale, false);
+  // a preset that is never opened keeps its approval untouched
+  promise = open([saved]);
+  el('pdf-yes').fire('click');
+  assert.deepEqual((await promise).presets, [saved]);
+});
+
 test('voice settings save only preferences, preserve unrelated fields and roll back on failure', async () => {
   const { persistVoicePreferences, renderVoicePreferences } = await import('../js/settings.js');
   const { normalizeSettings } = await import('../js/settings-model.js');

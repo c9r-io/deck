@@ -187,6 +187,25 @@ struct TaskPreset {
     #[allow(dead_code)]
     #[serde(default)]
     first_send: bool,
+    /// The user's approval of this exact version of the preset: later steps
+    /// of its phone tasks continue without a per-row send-now
+    /// (`scheduler/authority.rs`). Shape only here; whether the digest still
+    /// matches the preset is decided where it is used.
+    #[serde(default)]
+    auto_send: Option<PresetGrant>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PresetGrant {
+    digest: String,
+}
+
+fn sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 #[derive(serde::Deserialize)]
 pub(crate) struct BoardColumn {
@@ -390,6 +409,10 @@ struct ConnectorRun {
     #[allow(dead_code)]
     #[serde(default)]
     first_send: bool,
+    /// The preset's grant digest as frozen when the run was made; a claim
+    /// only, checked at admission against the current preset.
+    #[serde(default)]
+    auto_send: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -433,6 +456,7 @@ fn validate_connector_run(card_id: &str, run: &ConnectorRun) -> Result<(), DeckE
         && run.handle.chars().all(|c| c.is_ascii_hexdigit())
         && bounded_buffer_id(&run.preset_id)
         && run.initial_steps.len() <= PRESET_STEPS_MAX
+        && run.auto_send.as_deref().is_none_or(sha256_hex)
         && run.initial_steps.iter().enumerate().all(|(index, step)| {
             bounded_buffer_id(&step.operation_id)
                 && !step.text.is_empty()
@@ -662,6 +686,10 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
                 || preset.cmd.is_empty()
                 || preset.cmd.len() > PRESET_CMD_MAX_BYTES
                 || !supported
+                || preset
+                    .auto_send
+                    .as_ref()
+                    .is_some_and(|grant| !sha256_hex(&grant.digest))
                 || !col_ids.contains(preset.column_id.as_str())
                 || preset.steps.len() > PRESET_STEPS_MAX
                 || preset
@@ -2739,6 +2767,26 @@ mod tests {
             let doc = with_preset.replace(
                 "\"cmd\":\"codex\"",
                 &format!("\"cmd\":\"codex\",\"firstSend\":{value}"),
+            );
+            assert_eq!(
+                serde_json::from_str::<BoardDoc>(&doc).is_ok(),
+                valid,
+                "{value}"
+            );
+        }
+        // the approval is an object holding one SHA-256 and nothing else
+        let digest = "a".repeat(64);
+        for (value, valid) in [
+            (format!("{{\"digest\":\"{digest}\"}}"), true),
+            ("{\"digest\":\"abc\"}".to_string(), false),
+            (format!("{{\"digest\":\"{}\"}}", "A".repeat(64)), false),
+            (format!("{{\"digest\":\"{digest}\",\"steps\":[]}}"), false),
+            ("true".to_string(), false),
+            ("{}".to_string(), false),
+        ] {
+            let doc = with_preset.replace(
+                "\"cmd\":\"codex\"",
+                &format!("\"cmd\":\"codex\",\"autoSend\":{value}"),
             );
             assert_eq!(
                 serde_json::from_str::<BoardDoc>(&doc).is_ok(),

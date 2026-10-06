@@ -108,6 +108,14 @@ automatically and the others wait for Send now. Deck does not claim to make
 message text safe. See `docs/scheduler-context-safety.md` ("Automation
 delivery authority") for the exact rules.
 
+A phone task preset (**Project defaults**, see [Connector](connector.md))
+offers the same approval for tasks created from the phone. There it covers
+the preset itself — its directory, its command and every step — so editing
+any of those in the preset unticks it on the spot, and its steps are always
+your own fixed text (there is no message content, and no second tick).
+Revoking the paired device also stops the unsent steps of the tasks it
+created.
+
 ### Send the first step to a newly started agent without waiting for readiness
 
 A separate, unticked-by-default choice on a clock or Slack badge rule, independent of
@@ -151,8 +159,8 @@ preset instead of a rule.
   can proceed with real established-interaction evidence. Frozen prompt bytes
   never change: schedule/template edits affect future runs. Review checkpoints
   remain independent. Clock follow-ups are owner text and need no Slack grant.
-- Slack channel monitors, the Connector, manual lists and generic owner rows never have
-  this option. A delivery sent this way is recorded as such (no text).
+- Slack channel monitors, messages and scratchpad copies sent from the phone, manual lists and generic owner rows never have
+  this option (a phone task preset has its own, above). A delivery sent this way is recorded as such (no text).
 - It is a temporary escape hatch: when an agent exposes an official
   readiness fact, Deck should use that instead.
 - The 6-second grace extends Deck's historical 2.5-second fresh-start settle

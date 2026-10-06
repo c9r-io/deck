@@ -363,6 +363,24 @@ pub(crate) fn task_proof(handle: &str) -> Option<TaskProof> {
         .flatten()
 }
 
+/// The ids of the devices that are paired now, or `None` when the
+/// Connector's state cannot be read (no proof either way). A revoked device
+/// is absent, whether or not its record is still kept. The scheduler takes
+/// back what a revoked device's tasks have not sent yet from this list
+/// (`scheduler/first_send.rs` `PhoneTasks`); turning the Connector off
+/// revokes no device and changes nothing here.
+pub(crate) fn paired_devices() -> Option<Vec<String>> {
+    rt().ok()?.read(paired_devices_in).ok()
+}
+
+pub(super) fn paired_devices_in(doc: &DiskDoc) -> Vec<String> {
+    doc.devices
+        .iter()
+        .filter(|device| device.revoked_at.is_none())
+        .map(|device| device.id.clone())
+        .collect()
+}
+
 pub(super) fn task_proof_in(doc: &DiskDoc, handle: &str) -> Option<TaskProof> {
     let command = doc.commands.iter().find(|c| c.handle == handle)?;
     if command.kind != "task-create"

@@ -716,7 +716,21 @@ pub(super) fn admit_authority(args: &mut QueueAddArgs, texts: &[String]) {
     let Some(claim) = args.authority.clone() else {
         return;
     };
-    let config = crate::inbound::read_config_strict();
+    // a phone task's claim names a preset: the current Board and the
+    // Connector's own journal decide it, never settings
+    let preset = claim.preset_project.is_some().then(|| {
+        (
+            crate::documents::board_authority(),
+            claim
+                .event
+                .as_deref()
+                .and_then(crate::connector::task_proof),
+        )
+    });
+    let config = preset
+        .is_none()
+        .then(crate::inbound::read_config_strict)
+        .flatten();
     // the backend's own copy of the event the run was made from
     let event = claim
         .event
@@ -731,14 +745,23 @@ pub(super) fn admit_authority(args: &mut QueueAddArgs, texts: &[String]) {
             skeleton: claim.skeletons.get(k).and_then(Option::as_deref),
             event: event.as_ref(),
         };
-        let verdict = verify_claim(
-            config.as_ref(),
-            &step,
-            &args.cmd,
-            &normalize_prompt(text),
-            args.external_text,
-            proof,
-        );
+        let verdict = match &preset {
+            Some((board, task)) => verify_preset_claim(
+                board.as_ref(),
+                &step,
+                args,
+                &normalize_prompt(text),
+                task.as_ref(),
+            ),
+            None => verify_claim(
+                config.as_ref(),
+                &step,
+                &args.cmd,
+                &normalize_prompt(text),
+                args.external_text,
+                proof,
+            ),
+        };
         args.granted.push(match verdict {
             Ok(authority) => Some(authority),
             Err(code) => {
@@ -1253,7 +1276,7 @@ pub(crate) fn queue_send_now(
             fire: &fire_once,
             persist: &save_queue,
             kill: &kill_session_quietly,
-            board: &crate::documents::board_authority,
+            board: &first_send::phone_tasks,
             authority: &crate::inbound::read_config_strict,
         },
         &ContextHooks {

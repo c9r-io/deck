@@ -1,6 +1,6 @@
 //! Automation delivery authority: the user's explicit, revision-bound
-//! approval for a Slack badge automation to send its approved steps without
-//! a per-row send-now.
+//! approval for a Slack badge automation, or for a phone task preset, to
+//! send its approved steps without a per-row send-now.
 //!
 //! # Contract
 //! Deck may coordinate an Agent session; it does not own the Agent's
@@ -104,10 +104,44 @@
 //!   `autoSend`. Legacy rules and rows carry nothing and keep the Stable
 //!   behaviour. The closed words `ContentClass`/`TriggerClass` have no
 //!   catch-all: adding one is a queue.json schema change (see `ItemState`).
-//! - Scope: only Slack badge rules. Slack channel monitors (no per-message
-//!   human action), Connector rows (a paired phone is not prompt authority)
-//!   and verbatim scratchpad copies stay send-now only; clock rows are owner
-//!   text and never needed an approval.
+//! - Scope: Slack badge rules and phone task presets. Slack channel
+//!   monitors (no per-message human action), every other Connector row (a
+//!   message or a scratchpad copy sent from the phone: text the phone
+//!   supplies, which no approval on this Mac ever saw) and verbatim
+//!   scratchpad copies stay send-now only; clock rows are owner text and
+//!   never needed an approval.
+//! - A phone task preset (`TriggerClass::Connector`). Being paired is never
+//!   prompt authority: the phone can only name a preset, and what is
+//!   approved is the preset's own content, on this Mac. The grant is the
+//!   preset's `autoSend.digest` in the Board (deck.json): `preset_digest`
+//!   hashes the project id, the preset id, its directory, its full command
+//!   and each step's SHA-256, so the steps need no second copy and an edit
+//!   to anything sent, or to where, voids it; the name, the card title and
+//!   the column are outside. Every step is `fixed`. The webview computes the
+//!   same digest (connector-model.js `presetGrantDigest`; one fixture pins
+//!   both). Everything above holds with the Board in place of settings:
+//!   - `verify_preset_claim` admits step k of a run only against the
+//!     CURRENT Board (`documents::board_authority`, never one answered from
+//!     its backup): the preset's grant is valid and is the claimed one, its
+//!     command is the row's, the row's text is exactly the preset's step k,
+//!     and exactly one card was made from the claimed command handle whose
+//!     still unqueued frozen run froze that grant and holds this row as step
+//!     k. The Connector's own journal must say the handle is an applied
+//!     `task-create` naming that card from a device that is still paired.
+//!   - The sweep and the fence read the Board-side source
+//!     (`first_send::PhoneTasks`): the current Board plus the devices that
+//!     are still paired. Unticking, editing a covered field, deleting the
+//!     preset or its project, or revoking the device whose command made the
+//!     run strips the approval from that run's unsent rows. The fence is
+//!     `documents::board_fence`, which every Board commit takes. A device
+//!     revocation is not a Board write and takes no fence: it is seen by the
+//!     next sweep and by every pre-fire read that follows it.
+//!   - No current Board, or an unreadable Connector state, is the same
+//!     "unreadable source": nothing granted, revoked or sent automatically.
+//!   - deck.json and queue.json take sticky schema v6 when a preset carries
+//!     a grant or a row or audit record this trigger: the closed word has no
+//!     catch-all, and an older webview would drop the preset's grant on its
+//!     next Board save.
 //! - Not readiness, and not the first-send readiness override: a badge
 //!   rule's separate risk acceptance for its runs' head row lives in
 //!   `first_send.rs` and never writes or reads `StepAuthority`.
@@ -152,6 +186,16 @@ impl ContentClass {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum TriggerClass {
     SlackBadge,
+    /// a phone task preset's approval (`rule` is the preset id)
+    Connector,
+}
+
+/// The preset a phone task's approval came from: its project, and the paired
+/// device whose command made the run.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct PresetSource {
+    pub(crate) project: String,
+    pub(crate) device: String,
 }
 
 /// The webview's statement of which approved step a row is (from the frozen
@@ -171,6 +215,11 @@ pub(crate) struct AuthorityClaim {
     pub(crate) event: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) skeletons: Vec<Option<String>>,
+    /// Present for a phone task alone: `rule` is then a task preset of this
+    /// project and `event` the Connector command handle. Omitted otherwise
+    /// so older fingerprints stay identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) preset_project: Option<String>,
 }
 
 /// What `verify_claim` checks a bounded step against: the approved
@@ -192,6 +241,9 @@ pub(crate) struct StepAuthority {
     pub(crate) step: u32,
     pub(crate) class: ContentClass,
     pub(crate) trigger: TriggerClass,
+    /// Present exactly for `TriggerClass::Connector`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) connector: Option<PresetSource>,
 }
 
 fn finish_word(rule: &Rule) -> &'static str {
@@ -306,6 +358,92 @@ pub(crate) fn verify_claim(
         step: claim.step,
         class,
         trigger: TriggerClass::SlackBadge,
+        connector: None,
+    })
+}
+
+/* ---------- a phone task preset's approval (the Board) ---------- */
+
+/// SHA-256 of a preset's canonical authority manifest (module header), or
+/// `None` when the preset lacks a field the manifest needs. The webview's
+/// `presetGrantDigest` builds the identical compact JSON array.
+pub(crate) fn preset_digest(project: &str, preset: &serde_json::Value) -> Option<String> {
+    let steps: Vec<String> = preset["steps"]
+        .as_array()?
+        .iter()
+        .map(|step| {
+            step.as_str()
+                .map(|text| crate::ledger::sha(text.as_bytes()))
+        })
+        .collect::<Option<_>>()?;
+    let manifest = serde_json::json!([
+        "deck-preset-grant",
+        1,
+        project,
+        preset["id"].as_str()?,
+        preset["dir"].as_str()?,
+        preset["cmd"].as_str()?,
+        steps,
+    ]);
+    Some(crate::ledger::sha(manifest.to_string().as_bytes()))
+}
+
+/// The preset's grant digest when it still matches the preset (an approval
+/// for another version of the preset is void).
+fn valid_preset_grant<'a>(project: &str, preset: &'a serde_json::Value) -> Option<&'a str> {
+    let stored = preset["autoSend"]["digest"].as_str()?;
+    (preset_digest(project, preset).as_deref() == Some(stored)).then_some(stored)
+}
+
+/// Check a phone task row's claim against the current Board (`None` = none,
+/// which grants nothing) and the Connector journal's own record of the
+/// claimed command handle. `text` is the row's normalized prompt.
+pub(crate) fn verify_preset_claim(
+    board: Option<&serde_json::Value>,
+    claim: &AuthorityClaim,
+    args: &super::ops::QueueAddArgs,
+    text: &str,
+    proof: Option<&crate::connector::TaskProof>,
+) -> Result<StepAuthority, Refusal> {
+    if args.external_text {
+        return Err("verbatim");
+    }
+    let project = claim.preset_project.as_deref().ok_or("no-preset")?;
+    let handle = claim.event.as_deref().ok_or("no-event")?;
+    let board = board.ok_or("board-unreadable")?;
+    let preset = first_send::preset(board, project, &claim.rule).ok_or("no-preset")?;
+    let grant = valid_preset_grant(project, preset).ok_or("no-grant")?;
+    if grant != claim.grant {
+        return Err("stale");
+    }
+    if preset["cmd"] != args.cmd.as_str() {
+        return Err("command");
+    }
+    let step = claim.step as usize;
+    let approved = preset["steps"][step].as_str().ok_or("step")?;
+    if super::normalize_prompt(approved) != text {
+        return Err("content");
+    }
+    let proof = proof.ok_or("no-event")?;
+    if proof.card_id != args.card_id {
+        return Err("event");
+    }
+    let dir = preset["dir"].as_str().unwrap_or_default();
+    if first_send::connector_step(board, args, project, &claim.rule, handle, dir, step)
+        .is_none_or(|run| run["autoSend"] != grant)
+    {
+        return Err("run");
+    }
+    Ok(StepAuthority {
+        rule: claim.rule.clone(),
+        grant: grant.to_owned(),
+        step: claim.step,
+        class: ContentClass::Fixed,
+        trigger: TriggerClass::Connector,
+        connector: Some(PresetSource {
+            project: project.to_owned(),
+            device: proof.device_id.clone(),
+        }),
     })
 }
 
@@ -449,16 +587,43 @@ pub(crate) enum Fence {
     Unverified,
 }
 
-/// Decide the fence for an automatic send of `i` under `config` (the
-/// settings read made while holding `storage::settings_fence`).
-pub(crate) fn fence(i: &QueueItem, config: Option<&Config>) -> Fence {
+/// Which document backs an approval (`first_send::Backing`).
+pub(crate) fn backing(authority: &StepAuthority) -> first_send::Backing {
+    match authority.trigger {
+        TriggerClass::SlackBadge => first_send::Backing::Settings,
+        TriggerClass::Connector => first_send::Backing::Board,
+    }
+}
+
+/// The source that backs this row's approval, when an automatic send of it
+/// relies on one.
+pub(crate) fn relied_backing(i: &QueueItem) -> Option<first_send::Backing> {
+    i.authority
+        .as_ref()
+        .filter(|_| relies_on_authority(i))
+        .map(backing)
+}
+
+/// Decide the fence for an automatic send of `i` under `sources` (read
+/// while holding the fence of the source that backs the row:
+/// `storage::settings_fence` or `documents::board_fence`).
+pub(crate) fn fence(i: &QueueItem, sources: first_send::Sources<'_>) -> Fence {
     let Some(authority) = i.authority.as_ref().filter(|_| relies_on_authority(i)) else {
         return Fence::Clear;
     };
-    match config {
+    match standing(sources, authority) {
         None => Fence::Unverified,
-        Some(config) if still_granted(config, authority) => Fence::Clear,
-        Some(_) => Fence::Revoked,
+        Some(true) => Fence::Clear,
+        Some(false) => Fence::Revoked,
+    }
+}
+
+/// Whether `authority` still stands: `None` when the source that backs it
+/// could not be read, which proves nothing either way.
+fn standing(sources: first_send::Sources<'_>, authority: &StepAuthority) -> Option<bool> {
+    match backing(authority) {
+        first_send::Backing::Settings => sources.settings.map(|c| still_granted(c, authority)),
+        first_send::Backing::Board => sources.board.map(|t| preset_still_grants(t, authority)),
     }
 }
 
@@ -480,26 +645,48 @@ fn still_granted(config: &Config, authority: &StepAuthority) -> bool {
         })
 }
 
+/// Whether `authority` is still backed by its preset's current valid grant
+/// and by a device that is still paired.
+fn preset_still_grants(tasks: &first_send::PhoneTasks, authority: &StepAuthority) -> bool {
+    authority.connector.as_ref().is_some_and(|source| {
+        tasks.paired.contains(&source.device)
+            && authority.class == ContentClass::Fixed
+            && first_send::preset(&tasks.board, &source.project, &authority.rule).is_some_and(
+                |preset| {
+                    valid_preset_grant(&source.project, preset) == Some(authority.grant.as_str())
+                        && preset["steps"][authority.step as usize].is_string()
+                },
+            )
+    })
+}
+
 /// Rows the revocation sweep may touch: unsent and not mid-send/ambiguous.
 fn revocable(i: &QueueItem) -> bool {
     i.authority.is_some() && matches!(i.state, ItemState::Pending | ItemState::Failed)
 }
 
-/// Whether any row carries a revocable authority (the tick reads settings
-/// only then).
-pub(crate) fn any_authority(q: &QueueState) -> bool {
-    q.items.iter().any(revocable)
+/// Whether any row carries a revocable authority backed by `source` (the
+/// tick reads that source only then).
+pub(crate) fn any_authority(q: &QueueState, source: first_send::Backing) -> bool {
+    q.items
+        .iter()
+        .any(|i| revocable(i) && i.authority.as_ref().map(backing) == Some(source))
 }
 
 /// Strip authority from every unsent row whose grant is gone or changed;
-/// the number of rows that lost it.
-pub(crate) fn revoke_stale(q: &mut QueueState, config: &Config) -> usize {
+/// the number of rows that lost it. A row whose source is unreadable is
+/// left alone.
+pub(crate) fn revoke_stale<'a>(
+    q: &mut QueueState,
+    sources: impl Into<first_send::Sources<'a>>,
+) -> usize {
+    let sources = sources.into();
     let mut n = 0;
     for item in q.items.iter_mut().filter(|i| revocable(i)) {
-        if !item
+        if item
             .authority
             .as_ref()
-            .is_some_and(|a| still_granted(config, a))
+            .is_some_and(|a| standing(sources, a) == Some(false))
         {
             item.authority = None;
             item.revision = item.revision.wrapping_add(1);

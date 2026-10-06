@@ -16,7 +16,7 @@
 //!   work and resume on its own, so no hook word is readiness or approval
 //!   for text that arrived from outside deck. Such a row waits for the
 //!   user's send-now — or, when the user approved this exact version of a
-//!   Slack badge automation's steps, it is selected like an owner row and
+//!   Slack badge automation's or a phone task preset's steps, it is selected like an owner row and
 //!   every hold here still applies (needs-input, Codex trust, the
 //!   first-interaction gate). Authority is durable and checked at
 //!   admission; readiness is not: an approval never substitutes for
@@ -108,9 +108,10 @@ pub(crate) struct Observed {
     /// readiness override (`first_send.rs`).
     pub(crate) authority_unverified: bool,
     /// The same kind of tick-wide fact for the other source: this tick had
-    /// no current Board (`documents::board_authority`), so no row may be
-    /// sent automatically on a phone task's first-send override, which the
-    /// Board backs (`first_send.rs`). Nothing else depends on it.
+    /// no Board-side source (`first_send::phone_tasks`: the current Board
+    /// and the Connector's paired devices), so no row may be sent
+    /// automatically on a phone task's first-send override or approval,
+    /// which that source backs. Nothing else depends on it.
     pub(crate) board_unverified: bool,
 }
 
@@ -227,7 +228,13 @@ fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool
     let o = seen?;
     // a failed read of the authority source is no proof the approval
     // still stands (and no proof it was revoked): hold, keep everything
-    if o.authority_unverified && relies_on_authority(i) {
+    // (settings for a rule's approval, the Board side for a phone task's)
+    let approval_unverified = match relied_backing(i) {
+        Some(first_send::Backing::Settings) => o.authority_unverified,
+        Some(first_send::Backing::Board) => o.board_unverified,
+        None => false,
+    };
+    if approval_unverified {
         return Some(Hold::AuthorityUnverified);
     }
     let configured = row_agent(i);

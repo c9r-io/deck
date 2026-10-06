@@ -2755,3 +2755,15 @@ fn a_task_proof_is_an_applied_task_create_from_a_paired_device() {
         Some("D1".into())
     );
 }
+
+/// The scheduler's view of who is still paired: revoking a device removes
+/// it, whether or not its record is kept.
+#[test]
+fn paired_devices_are_the_unrevoked_ones() {
+    let mut doc = DiskDoc::fresh().unwrap();
+    assert!(paired_devices_in(&doc).is_empty());
+    doc.devices = vec![device("D0"), device("D1")];
+    assert_eq!(paired_devices_in(&doc), ["D0", "D1"]);
+    revoke_device(&mut doc, "D0").unwrap();
+    assert_eq!(paired_devices_in(&doc), ["D1"]);
+}

@@ -3939,6 +3939,7 @@ fn step_authority(k: u32) -> StepAuthority {
             ContentClass::Fixed
         },
         trigger: TriggerClass::SlackBadge,
+        connector: None,
     }
 }
 
@@ -4073,6 +4074,7 @@ fn a_claim_is_admitted_only_against_the_current_valid_grant() {
     let config = config_with(vec![rule.clone()]);
     let claim = |step: u32| AuthorityClaim {
         rule: rule.id.clone(),
+        preset_project: None,
         grant: digest.clone(),
         step,
         event: Some(badge_event().key),
@@ -4245,6 +4247,7 @@ fn a_bounded_row_is_authorized_only_as_the_expansion_of_its_approved_step() {
     let event = badge_event();
     let claim = |step: u32, key: &str| AuthorityClaim {
         rule: rule.id.clone(),
+        preset_project: None,
         grant: digest.clone(),
         step,
         event: Some(key.into()),
@@ -4829,6 +4832,7 @@ fn authority_enters_only_through_the_external_admission() {
     let mut owner = add_args("s", "x");
     owner.authority = Some(AuthorityClaim {
         rule: "R".into(),
+        preset_project: None,
         grant: crate::ledger::sha(b"g"),
         step: 0,
         event: None,
@@ -5741,7 +5745,7 @@ fn slack_event(key: &str, badge: &str, source: &str) -> crate::inbound::Event {
 }
 
 /// No Board: a phone task override finds its source unreadable.
-fn test_board() -> Option<serde_json::Value> {
+fn test_board() -> Option<first_send::PhoneTasks> {
     None
 }
 
@@ -7764,10 +7768,18 @@ fn preset_head() -> QueueItem {
     row
 }
 
-fn board_sources(board: &serde_json::Value) -> first_send::Sources<'_> {
+/// The Board-side source: this Board, and `dev_1` still paired.
+fn phone_tasks(board: serde_json::Value) -> first_send::PhoneTasks {
+    first_send::PhoneTasks {
+        board,
+        paired: vec!["dev_1".into()],
+    }
+}
+
+fn board_sources(tasks: &first_send::PhoneTasks) -> first_send::Sources<'_> {
     first_send::Sources {
         settings: None,
-        board: Some(board),
+        board: Some(tasks),
     }
 }
 
@@ -7956,7 +7968,10 @@ fn a_phone_task_override_is_swept_and_fenced_against_the_board_alone() {
     let row = preset_head();
     let board = preset_board();
     assert_eq!(first_send::backing(&row), Some(first_send::Backing::Board));
-    assert_eq!(first_send::fence(&row, board_sources(&board)), Fence::Clear);
+    assert_eq!(
+        first_send::fence(&row, board_sources(&phone_tasks(board.clone()))),
+        Fence::Clear
+    );
     // readable settings are no source for it, with or without rules
     assert_eq!(
         first_send::fence(&row, first_send::Sources::settings(&config_with(vec![]))),
@@ -7973,7 +7988,10 @@ fn a_phone_task_override_is_swept_and_fenced_against_the_board_alone() {
         first_send::revoke_stale(&mut q, first_send::Sources::default()),
         0
     );
-    assert_eq!(first_send::revoke_stale(&mut q, board_sources(&board)), 0);
+    assert_eq!(
+        first_send::revoke_stale(&mut q, board_sources(&phone_tasks(board.clone()))),
+        0
+    );
     assert!(q.items[0].readiness_override.is_some());
     for change in ["off", "deleted", "project", "command", "dir"] {
         let mut changed = board.clone();
@@ -7990,14 +8008,14 @@ fn a_phone_task_override_is_swept_and_fenced_against_the_board_alone() {
             _ => changed["projects"][0]["presets"][0]["dir"] = "/elsewhere".into(),
         }
         assert_eq!(
-            first_send::fence(&row, board_sources(&changed)),
+            first_send::fence(&row, board_sources(&phone_tasks(changed.clone()))),
             Fence::Revoked,
             "{change}"
         );
         let mut q = qs(vec![row.clone()]);
         let revision = q.items[0].revision;
         assert_eq!(
-            first_send::revoke_stale(&mut q, board_sources(&changed)),
+            first_send::revoke_stale(&mut q, board_sources(&phone_tasks(changed.clone()))),
             1,
             "{change}"
         );
@@ -8005,7 +8023,10 @@ fn a_phone_task_override_is_swept_and_fenced_against_the_board_alone() {
     }
     // and the Board never decides a rule's override
     let mut q = qs(vec![overridden_head("h")]);
-    assert_eq!(first_send::revoke_stale(&mut q, board_sources(&board)), 0);
+    assert_eq!(
+        first_send::revoke_stale(&mut q, board_sources(&phone_tasks(board.clone()))),
+        0
+    );
     assert!(q.items[0].readiness_override.is_some());
 }
 
@@ -8036,7 +8057,7 @@ fn an_unreadable_board_holds_only_a_phone_task_head() {
 #[test]
 fn the_pre_fire_board_read_happens_under_the_board_fence() {
     let hooks =
-        |board: &'static (dyn Fn() -> Option<serde_json::Value> + Sync),
+        |board: &'static (dyn Fn() -> Option<first_send::PhoneTasks> + Sync),
          fire: &'static (dyn Fn(&QueueItem) -> Result<(), DeckError> + Sync)| {
             SendHooks {
                 fire,
@@ -8057,7 +8078,7 @@ fn the_pre_fire_board_read_happens_under_the_board_fence() {
         &hooks(
             &|| {
                 UNDER_FENCE.store(crate::documents::board_fence_busy(), AtomicOrdering::SeqCst);
-                Some(preset_board())
+                Some(phone_tasks(preset_board()))
             },
             &|_: &QueueItem| Ok(()),
         ),
@@ -8099,7 +8120,7 @@ fn the_pre_fire_board_read_happens_under_the_board_fence() {
                         if UNTICKED.load(AtomicOrdering::SeqCst) {
                             board["projects"][0]["presets"][0]["firstSend"] = false.into();
                         }
-                        Some(board)
+                        Some(phone_tasks(board))
                     },
                     &|_: &QueueItem| {
                         FIRED.store(true, AtomicOrdering::SeqCst);
@@ -8192,4 +8213,488 @@ fn a_phone_task_override_stays_on_the_head_and_round_trips() {
         reloaded.items[0].readiness_override,
         Some(preset_override())
     );
+}
+
+// ---- phone task presets: the approval backed by the Board ----
+
+/// The shared digest vector (`ui/test/fixtures/preset-grant.json`).
+fn preset_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../../ui/test/fixtures/preset-grant.json")).unwrap()
+}
+
+/// `preset_board` with its preset approved as it stands, and the card's
+/// frozen run carrying that grant.
+fn approved_board() -> (serde_json::Value, String) {
+    let mut board = preset_board();
+    let digest = preset_digest("P1", &board["projects"][0]["presets"][0]).unwrap();
+    board["projects"][0]["presets"][0]["autoSend"] = serde_json::json!({ "digest": digest });
+    board["cards"][0]["connectorRun"]["autoSend"] = digest.clone().into();
+    (board, digest)
+}
+
+fn preset_authority_claim(grant: &str, step: u32) -> AuthorityClaim {
+    AuthorityClaim {
+        rule: "R1".into(),
+        preset_project: Some("P1".into()),
+        grant: grant.into(),
+        step,
+        event: Some(HANDLE.into()),
+        skeletons: Vec::new(),
+    }
+}
+
+/// The frozen run's second row, as the webview queues it.
+fn preset_step_args() -> QueueAddArgs {
+    serde_json::from_value(serde_json::json!({"session": "s", "cardId": "card", "operationId": "next-op",
+        "cmd": "claude", "dir": "/work", "text": "second", "mode": "chain", "tpl": "R1", "tplIdx": 2,
+        "tplTotal": 2}))
+    .unwrap()
+}
+
+fn preset_authority(grant: &str, step: u32) -> StepAuthority {
+    StepAuthority {
+        rule: "R1".into(),
+        grant: grant.into(),
+        step,
+        class: ContentClass::Fixed,
+        trigger: TriggerClass::Connector,
+        connector: Some(PresetSource {
+            project: "P1".into(),
+            device: "dev_1".into(),
+        }),
+    }
+}
+
+#[test]
+fn the_preset_digest_matches_the_webview_vector() {
+    let fixture = preset_fixture();
+    let (project, preset) = (fixture["projectId"].as_str().unwrap(), &fixture["preset"]);
+    assert_eq!(
+        preset_digest(project, preset).as_deref(),
+        preset["autoSend"]["digest"].as_str()
+    );
+    assert_eq!(
+        crate::ledger::sha(fixture["manifest"].as_str().unwrap().as_bytes()),
+        preset["autoSend"]["digest"]
+    );
+    for (k, step) in preset["steps"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(
+            crate::ledger::sha(step.as_str().unwrap().as_bytes()),
+            fixture["steps"][k]
+        );
+    }
+    // every covered field moves the digest; the presentation fields do not
+    let digest = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut changed = preset.clone();
+        edit(&mut changed);
+        preset_digest(project, &changed)
+    };
+    let stored = preset_digest(project, preset);
+    assert_ne!(preset_digest("P2", preset), stored);
+    assert_ne!(digest(&|p| p["id"] = "R2".into()), stored);
+    assert_ne!(digest(&|p| p["dir"] = "~/elsewhere".into()), stored);
+    assert_ne!(digest(&|p| p["cmd"] = "codex".into()), stored);
+    assert_ne!(digest(&|p| p["steps"][1] = "edited".into()), stored);
+    assert_ne!(
+        digest(&|p| p["steps"].as_array_mut().unwrap().truncate(2)),
+        stored
+    );
+    for field in ["name", "title", "columnId"] {
+        assert_eq!(digest(&|p| p[field] = "other".into()), stored, "{field}");
+    }
+    assert_eq!(digest(&|p| p["firstSend"] = true.into()), stored);
+    assert_eq!(
+        digest(&|p| {
+            p.as_object_mut().unwrap().remove("steps");
+        }),
+        None
+    );
+}
+
+/// Each step of an approved preset's run is admitted against the Board and
+/// the journal, as a fixed step of the Connector trigger.
+#[test]
+fn a_phone_task_step_is_approved_against_the_board_and_the_journal() {
+    let (board, digest) = approved_board();
+    assert_eq!(
+        verify_preset_claim(
+            Some(&board),
+            &preset_authority_claim(&digest, 1),
+            &preset_step_args(),
+            "second",
+            Some(&task_proof())
+        ),
+        Ok(preset_authority(&digest, 1))
+    );
+    // the head row may carry it too; it never needed it
+    assert_eq!(
+        verify_preset_claim(
+            Some(&board),
+            &preset_authority_claim(&digest, 0),
+            &preset_args(),
+            "first",
+            Some(&task_proof())
+        ),
+        Ok(preset_authority(&digest, 0))
+    );
+}
+
+/// Every refusal has its own closed code, and each one admits the row
+/// without the approval.
+#[test]
+fn a_phone_task_approval_claim_is_refused_for_each_missing_fact() {
+    let (board, digest) = approved_board();
+    let (claim, args, proof) = (
+        preset_authority_claim(&digest, 1),
+        preset_step_args(),
+        task_proof(),
+    );
+    let refused = |board: Option<&serde_json::Value>,
+                   claim: &AuthorityClaim,
+                   args: &QueueAddArgs,
+                   text: &str,
+                   proof: Option<&crate::connector::TaskProof>| {
+        verify_preset_claim(board, claim, args, text, proof).err()
+    };
+    assert_eq!(
+        refused(None, &claim, &args, "second", Some(&proof)),
+        Some("board-unreadable")
+    );
+    let mut verbatim = args.clone();
+    verbatim.external_text = true;
+    assert_eq!(
+        refused(Some(&board), &claim, &verbatim, "second", Some(&proof)),
+        Some("verbatim")
+    );
+    let mut no_handle = claim.clone();
+    no_handle.event = None;
+    assert_eq!(
+        refused(Some(&board), &no_handle, &args, "second", Some(&proof)),
+        Some("no-event")
+    );
+    for (project, preset) in [("P2", "R1"), ("P1", "R2")] {
+        let mut other = claim.clone();
+        other.rule = preset.into();
+        other.preset_project = Some(project.into());
+        assert_eq!(
+            refused(Some(&board), &other, &args, "second", Some(&proof)),
+            Some("no-preset")
+        );
+    }
+    // no approval; an approval of another version of the preset (any covered
+    // field edited after it was given); a claim for another grant
+    let mut unapproved = board.clone();
+    unapproved["projects"][0]["presets"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("autoSend");
+    assert_eq!(
+        refused(Some(&unapproved), &claim, &args, "second", Some(&proof)),
+        Some("no-grant")
+    );
+    for (field, value) in [
+        ("dir", serde_json::json!("/elsewhere")),
+        ("cmd", serde_json::json!("claude --resume")),
+        ("steps", serde_json::json!(["first", "second, edited"])),
+        ("steps", serde_json::json!(["first", "second", "third"])),
+    ] {
+        let mut edited = board.clone();
+        edited["projects"][0]["presets"][0][field] = value;
+        assert_eq!(
+            refused(Some(&edited), &claim, &args, "second", Some(&proof)),
+            Some("no-grant"),
+            "{field}"
+        );
+    }
+    assert_eq!(
+        refused(
+            Some(&board),
+            &preset_authority_claim(&"0".repeat(64), 1),
+            &args,
+            "second",
+            Some(&proof)
+        ),
+        Some("stale")
+    );
+    // the step and its text
+    assert_eq!(
+        refused(
+            Some(&board),
+            &preset_authority_claim(&digest, 2),
+            &args,
+            "second",
+            Some(&proof)
+        ),
+        Some("step")
+    );
+    assert_eq!(
+        refused(Some(&board), &claim, &args, "second, edited", Some(&proof)),
+        Some("content")
+    );
+    assert_eq!(
+        refused(
+            Some(&board),
+            &preset_authority_claim(&digest, 0),
+            &args,
+            "second",
+            Some(&proof)
+        ),
+        Some("content"),
+        "another step's text"
+    );
+    // the journal
+    assert_eq!(
+        refused(Some(&board), &claim, &args, "second", None),
+        Some("no-event")
+    );
+    let elsewhere = crate::connector::TaskProof {
+        device_id: "dev_1".into(),
+        card_id: "elsewhere".into(),
+    };
+    assert_eq!(
+        refused(Some(&board), &claim, &args, "second", Some(&elsewhere)),
+        Some("event")
+    );
+    // the card and its frozen run: another session, a run that froze another
+    // grant or none, an already queued run, a row that is not that step
+    let run = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut forged = board.clone();
+        edit(&mut forged);
+        refused(Some(&forged), &claim, &args, "second", Some(&proof))
+    };
+    assert_eq!(
+        run(&|b| b["cards"][0]["session"] = "other".into()),
+        Some("run")
+    );
+    assert_eq!(
+        run(&|b| b["cards"][0]["connectorRun"]["autoSend"] = "0".repeat(64).into()),
+        Some("run")
+    );
+    assert_eq!(
+        run(&|b| {
+            b["cards"][0]["connectorRun"]
+                .as_object_mut()
+                .unwrap()
+                .remove("autoSend");
+        }),
+        Some("run")
+    );
+    assert_eq!(
+        run(&|b| b["cards"][0]["connectorRun"]["initialQueued"] = true.into()),
+        Some("run")
+    );
+    assert_eq!(
+        run(
+            &|b| b["cards"][0]["connectorRun"]["initialSteps"][1]["operationId"] =
+                "other-op".into()
+        ),
+        Some("run")
+    );
+    let mut command = args.clone();
+    command.cmd = "claude --resume".into();
+    assert_eq!(
+        refused(Some(&board), &claim, &command, "second", Some(&proof)),
+        Some("command")
+    );
+}
+
+/// The approval lives exactly as long as its preset version AND the device
+/// that made the run: the Board-side sweep and fence strip it for each of
+/// these, and an unreadable source strips nothing.
+#[test]
+fn a_phone_task_approval_is_swept_and_fenced_against_the_board_and_the_device() {
+    let (board, digest) = approved_board();
+    let row = external_step("e", Some(preset_authority(&digest, 1)));
+    assert_eq!(relied_backing(&row), Some(first_send::Backing::Board));
+    let tasks = phone_tasks(board.clone());
+    assert_eq!(fence(&row, board_sources(&tasks)), Fence::Clear);
+    assert_eq!(
+        fence(&row, first_send::Sources::default()),
+        Fence::Unverified
+    );
+    // settings never decide it, readable or not
+    assert_eq!(
+        fence(&row, (&config_with(vec![])).into()),
+        Fence::Unverified
+    );
+    let mut q = qs(vec![row.clone()]);
+    assert!(any_authority(&q, first_send::Backing::Board));
+    assert!(!any_authority(&q, first_send::Backing::Settings));
+    assert_eq!(revoke_stale(&mut q, &config_with(vec![])), 0);
+    assert_eq!(revoke_stale(&mut q, first_send::Sources::default()), 0);
+    assert_eq!(revoke_stale(&mut q, board_sources(&tasks)), 0);
+    for change in [
+        "unticked", "step", "command", "dir", "deleted", "project", "device",
+    ] {
+        let mut changed = phone_tasks(board.clone());
+        let preset = &mut changed.board["projects"][0]["presets"][0];
+        match change {
+            "unticked" => {
+                preset.as_object_mut().unwrap().remove("autoSend");
+            }
+            "step" => preset["steps"][1] = "second, edited".into(),
+            "command" => preset["cmd"] = "claude --resume".into(),
+            "dir" => preset["dir"] = "/elsewhere".into(),
+            "deleted" => changed.board["projects"][0]["presets"] = serde_json::json!([]),
+            "project" => changed.board["projects"] = serde_json::json!([]),
+            _ => changed.paired = vec!["dev_2".into()],
+        }
+        assert_eq!(
+            fence(&row, board_sources(&changed)),
+            Fence::Revoked,
+            "{change}"
+        );
+        let mut q = qs(vec![row.clone()]);
+        let revision = q.items[0].revision;
+        assert_eq!(revoke_stale(&mut q, board_sources(&changed)), 1, "{change}");
+        assert!(q.items[0].authority.is_none() && q.items[0].revision != revision);
+        assert!(q.items[0].external, "provenance is never rewritten");
+    }
+    // re-approving an edited preset is a new grant: the old rows stay manual
+    let mut reapproved = phone_tasks(board.clone());
+    let preset = &mut reapproved.board["projects"][0]["presets"][0];
+    preset["steps"][1] = "second, edited".into();
+    preset["autoSend"]["digest"] = preset_digest("P1", preset).unwrap().into();
+    assert_eq!(fence(&row, board_sources(&reapproved)), Fence::Revoked);
+    // the Board side never decides a rule's approval
+    let mut q = qs(vec![external_step("e", Some(step_authority(0)))]);
+    assert_eq!(revoke_stale(&mut q, board_sources(&tasks)), 0);
+    assert!(q.items[0].authority.is_some());
+}
+
+/// Revoking the device also takes back the first-send override of the tasks
+/// it created.
+#[test]
+fn revoking_the_device_withdraws_its_first_send_override() {
+    let row = preset_head();
+    let mut tasks = phone_tasks(preset_board());
+    assert_eq!(first_send::fence(&row, board_sources(&tasks)), Fence::Clear);
+    tasks.paired.clear();
+    assert_eq!(
+        first_send::fence(&row, board_sources(&tasks)),
+        Fence::Revoked
+    );
+    let mut q = qs(vec![row]);
+    assert_eq!(first_send::revoke_stale(&mut q, board_sources(&tasks)), 1);
+    assert!(q.items[0].readiness_override.is_none());
+}
+
+/// Each source being unreadable holds only the approvals it backs.
+#[test]
+fn an_unreadable_board_side_holds_only_a_phone_task_approval() {
+    let (_, digest) = approved_board();
+    let stage = |row: QueueItem, obs: &Observations| {
+        let q = qs(vec![row]);
+        serde_json::to_value(plan_item(&q, &q.items[0], NOW, 720, Some(obs))).unwrap()["stage"]
+            .clone()
+    };
+    let readable = seen(NOW - 400);
+    let mut no_board = readable.clone();
+    mark_board_unverified(&mut no_board);
+    let mut no_settings = readable.clone();
+    mark_authority_unverified(&mut no_settings);
+    let phone = || external_step("e", Some(preset_authority(&digest, 1)));
+    let badge = || external_step("e", Some(step_authority(0)));
+    assert_ne!(stage(phone(), &readable), "authority-unverified");
+    assert_eq!(stage(phone(), &no_board), "authority-unverified");
+    assert_ne!(stage(phone(), &no_settings), "authority-unverified");
+    assert_ne!(stage(badge(), &no_board), "authority-unverified");
+    assert_eq!(stage(badge(), &no_settings), "authority-unverified");
+    // without the approval the row is the ordinary external hold
+    assert_eq!(stage(external_step("e", None), &readable), "external");
+}
+
+/// An approved follow-up is sent automatically on the Board side alone,
+/// read under the Board fence; a revoked device or an unticked preset stops
+/// it there; no source sends nothing and strips nothing.
+#[test]
+fn an_approved_phone_task_step_is_sent_under_the_board_fence() {
+    let (_, digest) = approved_board();
+    static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DIGEST.get_or_init(|| digest.clone());
+    let send = |board: &(dyn Fn() -> Option<first_send::PhoneTasks> + Sync)| {
+        let qm = Mutex::new(qs(vec![external_step(
+            "e",
+            Some(preset_authority(DIGEST.get().unwrap(), 1)),
+        )]));
+        let fired = AtomicBool::new(false);
+        let result = send_one(
+            &qm,
+            &AtomicBool::new(false),
+            "s",
+            720,
+            &seen(0),
+            &SendHooks {
+                fire: &|_: &QueueItem| {
+                    fired.store(true, AtomicOrdering::SeqCst);
+                    Ok(())
+                },
+                persist: &ok_persist,
+                kill: &|_: &str| {},
+                board,
+                authority: &|| panic!("settings do not back a phone task approval"),
+            },
+        );
+        let row = qm.lock_or_recover().items.first().cloned();
+        (result, fired.load(AtomicOrdering::SeqCst), row)
+    };
+    static UNDER_FENCE: AtomicBool = AtomicBool::new(false);
+    let (result, fired, _) = send(&|| {
+        UNDER_FENCE.store(crate::documents::board_fence_busy(), AtomicOrdering::SeqCst);
+        Some(phone_tasks(approved_board().0))
+    });
+    assert!(matches!(result, SendResult::Sent { .. }), "{result:?}");
+    assert!(fired && UNDER_FENCE.load(AtomicOrdering::SeqCst));
+    // no source: kept, not sent
+    let (result, fired, row) = send(&|| None);
+    assert_eq!(result, SendResult::Nothing);
+    assert!(!fired && row.unwrap().authority.is_some());
+    // the device was revoked, or the preset unticked: stripped, not sent
+    for revoke_device in [true, false] {
+        let (result, fired, row) = send(&move || {
+            let mut tasks = phone_tasks(approved_board().0);
+            if revoke_device {
+                tasks.paired.clear();
+            } else {
+                tasks.board["projects"][0]["presets"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("autoSend");
+            }
+            Some(tasks)
+        });
+        assert_eq!(result, SendResult::Nothing);
+        let row = row.unwrap();
+        assert!(
+            !fired && row.authority.is_none() && row.external,
+            "{revoke_device}"
+        );
+    }
+}
+
+/// The approval round-trips through queue.json under its closed word, on
+/// the row and on the delivery record that audits it.
+#[test]
+fn a_phone_task_approval_round_trips_with_its_audit_record() {
+    let (_, digest) = approved_board();
+    let mut q = QueueState::default();
+    let mut args = preset_step_args();
+    args.channel_path = true;
+    args.granted = vec![Some(preset_authority(&digest, 1))];
+    add_item(&mut q, args, "second".into()).unwrap();
+    assert!(q.items[0].external);
+    let saved = serde_json::to_value(&q).unwrap();
+    assert_eq!(saved["items"][0]["authority"]["trigger"], "connector");
+    assert_eq!(
+        saved["items"][0]["authority"]["connector"]["device"],
+        "dev_1"
+    );
+    let reloaded: QueueState = serde_json::from_value(saved).unwrap();
+    assert_eq!(
+        reloaded.items[0].authority,
+        Some(preset_authority(&digest, 1))
+    );
+    // a badge approval is written exactly as before
+    let badge = serde_json::to_value(step_authority(0)).unwrap();
+    assert!(badge.get("connector").is_none());
 }

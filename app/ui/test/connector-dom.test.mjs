@@ -79,12 +79,12 @@ test('task session start followed by Board save failure is ambiguous and never r
 
 test('queueing a phone task run claims the frozen first-send choice on the head row alone', async () => {
   const { provider } = await import('../js/board.js');
-  const queue = async firstSend => {
+  const queue = async (firstSend, autoSend = null) => {
     const handle = (firstSend ? 'd' : 'e').repeat(64); const rows = []; let saved = null;
     store.projects = [{ id: 'P1', name: 'P', columns: [{ id: 'C1', name: 'Working' }] }];
     store.cards = [{ id: 'S1', projectId: 'P1', columnId: 'C1', title: 'Remote', desc: '', cmd: 'claude', dir: '/tmp',
       session: 'deck-s-0001', origin: { source: 'connector', key: handle, badge: 'R1' },
-      connectorRun: { handle, presetId: 'R1', initialQueued: false, ...(firstSend ? { firstSend: true } : {}), initialSteps: [
+      connectorRun: { handle, presetId: 'R1', initialQueued: false, ...(firstSend ? { firstSend: true } : {}), ...(autoSend ? { autoSend } : {}), initialSteps: [
         { operationId: 'B0', text: 'first', mode: 'at', at: 10, tpl: 'R1', tplIdx: 1, tplTotal: 2 },
         { operationId: 'B1', text: 'second', mode: 'chain', at: null, tpl: 'R1', tplIdx: 2, tplTotal: 2 }] } }];
     window.__TAURI__ = { core: { invoke: async (cmd, args) => {
@@ -105,6 +105,12 @@ test('queueing a phone task run claims the frozen first-send choice on the head 
   assert.equal(on.saved.cards[0].connectorRun.initialQueued, true, 'queued once, then recorded');
   const off = await queue(false);
   assert.deepEqual(off.rows.map(row => 'firstSend' in row), [false, false]);
+  assert.deepEqual(off.rows.map(row => 'authority' in row), [false, false]);
+  // a frozen approval is claimed by every row with its own step, beside the head's first-send claim
+  const approved = await queue(true, 'a'.repeat(64));
+  assert.deepEqual(approved.rows.map(row => row.authority), [0, 1].map(step =>
+    ({ rule: 'R1', grant: 'a'.repeat(64), step, event: approved.handle, presetProject: 'P1' })));
+  assert.deepEqual(approved.rows.map(row => 'firstSend' in row), [true, false]);
 });
 
 test('native string rejections retain the closed unsupported-target result code', async () => {

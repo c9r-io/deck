@@ -483,6 +483,31 @@ fn external_text_reaches_the_one_admission() {
         .map(|(name, _)| name)
         .collect();
     assert_eq!(minted, ["scheduler/first_send.rs"]);
+    // The approval of a phone task preset is decided the same way: a claim
+    // that names a preset never reads settings; the current Board and the
+    // Connector's journal decide it, in `verify_preset_claim`, and nothing
+    // else can mint the Connector trigger. Being paired grants nothing: the
+    // other Connector commands (a message, a scratchpad copy) carry no claim.
+    let approval = body("scheduler/ops.rs", "admit_authority");
+    assert!(approval.contains("let preset = claim.preset_project.is_some().then(|| {"));
+    assert!(approval.contains("crate::documents::board_authority(),"));
+    assert!(approval.contains(".and_then(crate::connector::task_proof),"));
+    assert!(approval.contains(
+        "let config = preset\n        .is_none()\n        .then(crate::inbound::read_config_strict)"
+    ));
+    assert!(approval.contains("Some((board, task)) => verify_preset_claim("));
+    let minted: Vec<_> = production_sources()
+        .into_iter()
+        .filter(|(_, source)| source.contains("trigger: TriggerClass::Connector,"))
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(minted, ["scheduler/authority.rs"]);
+    let connector: String = production_sources()
+        .into_iter()
+        .filter(|(name, _)| name.starts_with("connector/"))
+        .map(|(_, source)| source)
+        .collect();
+    assert!(!connector.contains("StepAuthority") && !connector.contains("granted"));
     // ...and the verdict is the backend's own (`#[serde(skip)]`), never a
     // caller field, while provenance stays set beside it
     let ops = production_sources()

@@ -189,22 +189,22 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         // first-send readiness override, stops every unsent row that relied
         // on it BEFORE this tick selects anything; unreadable settings
         // neither grant nor revoke (`authority.rs`, `first_send.rs`)
-        // a phone task's override is backed by the Board instead, and is
-        // swept against the current one the same way
+        // a phone task's override and approval are backed by the Board side
+        // instead (the current Board and the devices still paired), and are
+        // swept against it the same way
         let (needs_settings, needs_board) = {
             let q = state.q.lock_or_recover();
+            let relies = |source| any_authority(&q, source) || first_send::any_override(&q, source);
             (
-                any_authority(&q) || first_send::any_override(&q, first_send::Backing::Settings),
-                first_send::any_override(&q, first_send::Backing::Board),
+                relies(first_send::Backing::Settings),
+                relies(first_send::Backing::Board),
             )
         };
         if needs_settings || needs_board {
             let config = needs_settings
                 .then(crate::inbound::read_config_strict)
                 .flatten();
-            let board = needs_board
-                .then(crate::documents::board_authority)
-                .flatten();
+            let board = needs_board.then(first_send::phone_tasks).flatten();
             // no proof either way: rows, approvals and overrides stay;
             // automatic sends that rely on one hold this tick
             if let Some(seen) = listing.as_mut() {
@@ -221,7 +221,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                     board: board.as_ref(),
                 };
                 match with_queue_opt(&state.q, &save_queue, |q| {
-                    let approvals = config.as_ref().map_or(0, |c| revoke_stale(q, c));
+                    let approvals = revoke_stale(q, sources);
                     let overrides = first_send::revoke_stale(q, sources);
                     Ok((approvals + overrides > 0).then_some((approvals, overrides)))
                 }) {
@@ -307,7 +307,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                         fire: &fire_item,
                         persist: &save_queue,
                         kill: &kill_session_quietly,
-                        board: &crate::documents::board_authority,
+                        board: &first_send::phone_tasks,
                         authority: &crate::inbound::read_config_strict,
                     },
                     &ContextHooks {

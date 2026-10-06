@@ -1,0 +1,26 @@
+{
+  "_comment": "Shared phone-task-preset grant vector: scheduler/authority.rs preset_digest and connector-model.js presetGrantDigest must both produce `preset.autoSend.digest` for `preset` in project `projectId`; `steps` are the SHA-256 of each step and `manifest` the exact bytes hashed.",
+  "projectId": "P1",
+  "steps": [
+    "1d745cc6da4b659c29a7d369e3e195b04d9f9f458724cd95c2e677b6f1e655d8",
+    "6813a69cbdc70baa39a78d784ed19ad09bfaac944d2f392809e4122a090f3efa",
+    "8eb6c0936624d6a330abe5d2622e4b06085fb300cf2e54c43ea67786d912074e"
+  ],
+  "manifest": "[\"deck-preset-grant\",1,\"P1\",\"Rpreset01\",\"~/work/app\",\"codex --yolo\",[\"1d745cc6da4b659c29a7d369e3e195b04d9f9f458724cd95c2e677b6f1e655d8\",\"6813a69cbdc70baa39a78d784ed19ad09bfaac944d2f392809e4122a090f3efa\",\"8eb6c0936624d6a330abe5d2622e4b06085fb300cf2e54c43ea67786d912074e\"]]",
+  "preset": {
+    "id": "Rpreset01",
+    "name": "Fix issue",
+    "columnId": "C1",
+    "title": "Remote fix",
+    "dir": "~/work/app",
+    "cmd": "codex --yolo",
+    "steps": [
+      "Review the latest changes and run the tests.",
+      "总结「结果」并给出 \"下一步\" \\ 建议",
+      "Open a PR <draft> & report back — don't merge."
+    ],
+    "autoSend": {
+      "digest": "8d3ab9d37a2c91db9409dea9708ff37662aa39d9128487af14f6a6f35608de86"
+    }
+  }
+}

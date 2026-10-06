@@ -621,9 +621,10 @@ pub(crate) struct SendHooks<'a> {
     /// read the automation-authority source (settings) for the pre-fire
     /// fence (`authority.rs`); `None` = unreadable
     pub(crate) authority: &'a (dyn Fn() -> Option<crate::inbound::Config> + Sync),
-    /// read the current Board for the pre-fire fence of a phone task's
-    /// first-send override (`first_send.rs`); `None` = no current Board
-    pub(crate) board: &'a (dyn Fn() -> Option<serde_json::Value> + Sync),
+    /// read the Board-side source for the pre-fire fence of a phone task's
+    /// first-send override or approval (`first_send::phone_tasks`); `None` =
+    /// no current Board, or the Connector's devices could not be read
+    pub(crate) board: &'a (dyn Fn() -> Option<first_send::PhoneTasks> + Sync),
 }
 
 /// What the pre-fire transaction decided.
@@ -737,9 +738,9 @@ fn send_one_guarded(
         .requested
         .is_none()
         .then(crate::storage::settings_fence);
-    // The Board fence, for the one decision the Board backs (a phone task's
-    // first-send override): the same promise against a Board save that
-    // withdraws the preset's choice. Lock order: settings fence, Board
+    // The Board fence, for the decisions the Board backs (a phone task's
+    // first-send override and its approval): the same promise against a
+    // Board save that withdraws the preset's choice. Lock order: settings fence, Board
     // fence, queue (`documents::board_fence`).
     let board_guard = request
         .requested
@@ -771,13 +772,18 @@ fn send_one_guarded(
         let automatic = request.requested.is_none();
         let overridden =
             automatic && relies_on_readiness_override(&sel, request.activity.get(&sel.session));
-        let board_backed =
-            overridden && first_send::backing(&sel) == Some(first_send::Backing::Board);
-        let config = (automatic && (relies_on_authority(&sel) || (overridden && !board_backed)))
-            .then(|| (h.authority)());
-        let board = board_backed.then(|| (h.board)());
-        if automatic && relies_on_authority(&sel) {
-            match fence(&sel, config.as_ref().and_then(Option::as_ref)) {
+        // each decision reads the one source that backs it, once
+        let approval = automatic.then(|| relied_backing(&sel)).flatten();
+        let policy = overridden.then(|| first_send::backing(&sel)).flatten();
+        let needs = |source| approval == Some(source) || policy == Some(source);
+        let config = needs(first_send::Backing::Settings).then(|| (h.authority)());
+        let board = needs(first_send::Backing::Board).then(|| (h.board)());
+        let sources = first_send::Sources {
+            settings: config.as_ref().and_then(Option::as_ref),
+            board: board.as_ref().and_then(Option::as_ref),
+        };
+        if approval.is_some() {
+            match fence(&sel, sources) {
                 Fence::Clear => {}
                 // unverifiable: keep the row and its approval, send nothing
                 Fence::Unverified => return Ok(None),
@@ -791,10 +797,6 @@ fn send_one_guarded(
             }
         }
         if overridden {
-            let sources = first_send::Sources {
-                settings: config.as_ref().and_then(Option::as_ref),
-                board: board.as_ref().and_then(Option::as_ref),
-            };
             match first_send::fence(&sel, sources) {
                 Fence::Clear => {}
                 // unverifiable: keep the row and its override, send nothing

@@ -57,8 +57,10 @@
 //!   froze the choice and whose head is this row. The Connector's own
 //!   journal must say that handle is an applied `task-create` naming that
 //!   card, from a device that is still paired (`connector::task_proof`).
-//!   Unticking, deleting the preset or its project, or changing the
-//!   preset's command or directory withdraws it.
+//!   Unticking, deleting the preset or its project, changing the preset's
+//!   command or directory, or revoking the device whose command made the
+//!   run withdraws it (`PhoneTasks`: the Board-side source is the current
+//!   Board together with the Connector's paired devices).
 //! - Selection (`select::hold_reason`): the override lifts ONLY the
 //!   first-interaction hold (Claude without an interaction word, Codex
 //!   `Unknown`) and only while this tick could read settings. Needs-input,
@@ -166,21 +168,46 @@ impl FirstSendOrigin {
     }
 }
 
-/// What an override's row is checked against, each `None` when that source
-/// could not be read as current.
+/// What a row's override or approval is checked against, each `None` when
+/// that source could not be read as current.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Sources<'a> {
     pub(crate) settings: Option<&'a Config>,
-    pub(crate) board: Option<&'a serde_json::Value>,
+    pub(crate) board: Option<&'a PhoneTasks>,
+}
+
+impl<'a> From<&'a Config> for Sources<'a> {
+    fn from(config: &'a Config) -> Self {
+        Self {
+            settings: Some(config),
+            board: None,
+        }
+    }
+}
+
+/// The Board-side source: what a phone task's override and approval are
+/// swept and fenced against. The current Board says what its presets allow;
+/// the Connector says which devices are still paired, so that revoking a
+/// device takes back what its tasks have not sent yet. Both or nothing: when
+/// either cannot be read there is no source (`phone_tasks`).
+#[derive(Clone, Debug)]
+pub(crate) struct PhoneTasks {
+    pub(crate) board: serde_json::Value,
+    pub(crate) paired: Vec<String>,
+}
+
+/// The Board-side source as it stands now, or `None` (no proof either way).
+pub(crate) fn phone_tasks() -> Option<PhoneTasks> {
+    Some(PhoneTasks {
+        board: crate::documents::board_authority()?,
+        paired: crate::connector::paired_devices()?,
+    })
 }
 
 impl<'a> Sources<'a> {
     #[cfg(test)]
     pub(crate) fn settings(config: &'a Config) -> Self {
-        Self {
-            settings: Some(config),
-            board: None,
-        }
+        config.into()
     }
 }
 
@@ -304,7 +331,7 @@ fn expand_home(dir: &str) -> Option<String> {
 }
 
 /// Preset `id` of project `project` on `board`.
-fn preset<'a>(
+pub(super) fn preset<'a>(
     board: &'a serde_json::Value,
     project: &str,
     id: &str,
@@ -361,7 +388,9 @@ pub(crate) fn verify_connector(
         return Err("event");
     }
     let dir = preset["dir"].as_str().unwrap_or_default();
-    if !connector_head_matches(board, args, project, &claim.rule, &claim.event, dir) {
+    if connector_step(board, args, project, &claim.rule, &claim.event, dir, 0)
+        .is_none_or(|run| run["firstSend"] != true)
+    {
         return Err("head");
     }
     Ok(ReadinessOverride {
@@ -376,20 +405,20 @@ pub(crate) fn verify_connector(
     })
 }
 
-/// The Board's side of a phone task claim: exactly one card was made from
-/// command `handle` by preset `preset`, it is this row's card, and its
-/// frozen run is still unqueued, froze the choice and opens with this row.
-fn connector_head_matches(
-    board: &serde_json::Value,
+/// The Board's side of a phone task claim, for step `step` (0 = the head):
+/// exactly one card was made from command `handle` by preset `preset`, it is
+/// this row's card, and its frozen run is still unqueued and holds this row
+/// as that step. Returns the frozen run, whose own claims the caller checks.
+pub(super) fn connector_step<'a>(
+    board: &'a serde_json::Value,
     args: &super::ops::QueueAddArgs,
     project: &str,
     preset: &str,
     handle: &str,
     preset_dir: &str,
-) -> bool {
-    let Some(cards) = board.get("cards").and_then(|v| v.as_array()) else {
-        return false;
-    };
+    step: usize,
+) -> Option<&'a serde_json::Value> {
+    let cards = board.get("cards").and_then(|v| v.as_array())?;
     let matching: Vec<_> = cards
         .iter()
         .filter(|c| {
@@ -399,11 +428,11 @@ fn connector_head_matches(
         })
         .collect();
     let [card] = matching.as_slice() else {
-        return false;
+        return None;
     };
     let run = &card["connectorRun"];
-    let head = &run["initialSteps"][0];
-    expand_home(preset_dir).as_deref() == Some(args.dir.as_str())
+    let row = &run["initialSteps"][step];
+    let matches = expand_home(preset_dir).as_deref() == Some(args.dir.as_str())
         && card["id"] == args.card_id
         && card["session"] == args.session
         && card["projectId"] == project
@@ -412,19 +441,22 @@ fn connector_head_matches(
         && run["handle"] == handle
         && run["presetId"] == preset
         && run["initialQueued"] == false
-        && run["firstSend"] == true
-        && head["operationId"].as_str() == args.operation_id.as_deref()
+        && row["operationId"].as_str() == args.operation_id.as_deref()
         && args.operation_id.is_some()
-        && head["mode"] == "at"
-        && head["tplIdx"] == 1
-        && args.tpl_idx == Some(1)
-        && head["tpl"].as_str() == args.tpl.as_deref()
-        && head["at"].as_u64() == args.at
-        && head["text"]
+        && row["mode"] == (if step == 0 { "at" } else { "chain" })
+        && row["mode"] == args.mode.as_str()
+        && !args.review_each
+        && args.group.is_none()
+        && row["tplIdx"] == step + 1
+        && args.tpl_idx == Some(step as u32 + 1)
+        && row["tpl"].as_str() == args.tpl.as_deref()
+        && row["at"].as_u64() == args.at
+        && row["text"]
             .as_str()
             .map(super::ops::normalize_prompt)
             .as_deref()
-            == Some(super::ops::normalize_prompt(&args.text).as_str())
+            == Some(super::ops::normalize_prompt(&args.text).as_str());
+    matches.then_some(run)
 }
 
 /// Clock owner admission requires the committed run plan as well as the
@@ -508,11 +540,13 @@ fn rule_still_allows(config: &Config, i: &QueueItem, o: &ReadinessOverride) -> b
         })
 }
 
-/// Whether the row's override is still backed by its preset (the Board).
-fn preset_still_allows(board: &serde_json::Value, i: &QueueItem, o: &ReadinessOverride) -> bool {
+/// Whether the row's override is still backed by its preset (the Board)
+/// and by a device that is still paired.
+fn preset_still_allows(tasks: &PhoneTasks, i: &QueueItem, o: &ReadinessOverride) -> bool {
     o.connector.as_ref().is_some_and(|target| {
-        preset(board, &target.project, &o.rule)
-            .is_some_and(|preset| preset_allows(preset, &i.cmd, &target.dir))
+        tasks.paired.contains(&target.device)
+            && preset(&tasks.board, &target.project, &o.rule)
+                .is_some_and(|preset| preset_allows(preset, &i.cmd, &target.dir))
     })
 }
 

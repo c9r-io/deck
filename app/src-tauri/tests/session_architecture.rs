@@ -700,8 +700,9 @@ fn settings_writes_and_the_pre_fire_authority_check_share_one_fence() {
         .find(".then(|| (h.authority)())")
         .expect("settings read");
     assert!(taken < read);
-    assert!(held.contains("match fence(&sel, config.as_ref().and_then(Option::as_ref))"));
-    // ...except a phone task's override, which the Board backs: its read
+    assert!(held.contains("match fence(&sel, sources)"));
+    // ...except a phone task's override and approval, which the Board side
+    // backs (each decision reads the one source that backs it): that read
     // happens in the same held region, under the Board fence taken after
     // the settings fence and before the queue lock
     let board_taken = guarded

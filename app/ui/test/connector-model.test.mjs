@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connectorBufferOperationId, connectorFirstSendClaim, connectorId, connectorRunPlan, newlyPairedDevice, normalizeTaskPreset, normalizeTaskPresets, unfinishedConnectorPlans } from '../js/connector-model.js';
+import { readFileSync } from 'node:fs';
+import { connectorAuthorityClaim, presetApproved, presetGrantDigest, presetGrantManifest, withPresetApproval,
+  connectorBufferOperationId, connectorFirstSendClaim, connectorId, connectorRunPlan, newlyPairedDevice, normalizeTaskPreset, normalizeTaskPresets, unfinishedConnectorPlans } from '../js/connector-model.js';
 
 test('a pairing is identified as the one new active device', () => {
   const before = [{ id: 'D1', revoked: false }, { id: 'D2', revoked: true }];
@@ -57,4 +59,53 @@ test('a phone task run freezes its steps and, with a first step, the preset\'s f
   // no steps: nothing to send first, nothing frozen
   assert.deepEqual(connectorRunPlan('h', { ...preset, steps: [], firstSend: true }, [], 10),
     { handle: 'h', presetId: 'R1', initialSteps: [], initialQueued: true });
+});
+
+const grantVector = JSON.parse(readFileSync(new URL('./fixtures/preset-grant.json', import.meta.url), 'utf8'));
+
+test('the preset grant digest matches the backend vector and covers exactly what is sent and where', async () => {
+  const { projectId, preset, steps, manifest } = grantVector;
+  assert.equal(presetGrantManifest(projectId, preset, steps), manifest);
+  assert.equal(await presetGrantDigest(projectId, preset), preset.autoSend.digest);
+  assert.equal(await presetApproved(projectId, preset), true);
+  const digest = edit => presetGrantDigest(projectId, { ...preset, ...edit });
+  for (const edit of [{ id: 'R2' }, { dir: '~/elsewhere' }, { cmd: 'codex' }, { steps: [...preset.steps.slice(0, 2), 'edited'] },
+    { steps: preset.steps.slice(0, 2) }]) {
+    assert.notEqual(await digest(edit), preset.autoSend.digest, JSON.stringify(edit));
+    assert.equal(await presetApproved(projectId, { ...preset, ...edit }), false);
+  }
+  assert.notEqual(await presetGrantDigest('P2', preset), preset.autoSend.digest);
+  for (const edit of [{ name: 'other' }, { title: 'other' }, { columnId: 'C9' }, { firstSend: true }]) {
+    assert.equal(await digest(edit), preset.autoSend.digest, JSON.stringify(edit));
+  }
+  assert.equal(await presetApproved(projectId, { ...preset, autoSend: undefined }), false);
+  assert.equal(await presetApproved(projectId, null), false);
+});
+
+test('approving a preset stores one digest of it as it stands; withdrawing stores nothing', async () => {
+  const plain = { ...grantVector.preset }; delete plain.autoSend;
+  assert.deepEqual(await withPresetApproval(grantVector.projectId, plain, true), grantVector.preset);
+  // an older approval is never carried over an edit
+  const edited = { ...grantVector.preset, cmd: 'claude' };
+  const again = await withPresetApproval(grantVector.projectId, edited, true);
+  assert.notEqual(again.autoSend.digest, grantVector.preset.autoSend.digest);
+  assert.equal(await presetApproved(grantVector.projectId, again), true);
+  assert.equal('autoSend' in await withPresetApproval(grantVector.projectId, grantVector.preset, false), false);
+});
+
+test('a preset keeps an approval only in its closed shape, and a run freezes its digest for each step to claim', () => {
+  const digest = 'a'.repeat(64);
+  assert.deepEqual(normalizeTaskPreset({ ...preset, autoSend: { digest, steps: ['x'] } }, columns), { ...preset, autoSend: { digest } });
+  for (const bad of [true, {}, { digest: 'abc' }, { digest: 'A'.repeat(64) }, digest]) {
+    assert.equal('autoSend' in normalizeTaskPreset({ ...preset, autoSend: bad }, columns), false, JSON.stringify(bad));
+  }
+  const run = connectorRunPlan('h', { ...preset, autoSend: { digest } }, ['B0', 'B1'], 10);
+  assert.equal(run.autoSend, digest);
+  assert.equal('autoSend' in connectorRunPlan('h', preset, ['B0', 'B1'], 10), false);
+  assert.equal('autoSend' in connectorRunPlan('h', { ...preset, steps: [], autoSend: { digest } }, [], 10), false);
+  const card = { projectId: 'P1', connectorRun: run };
+  assert.deepEqual(connectorAuthorityClaim(card, 1),
+    { authority: { rule: 'R1', grant: digest, step: 1, event: 'h', presetProject: 'P1' } });
+  assert.deepEqual(connectorAuthorityClaim({ projectId: 'P1', connectorRun: { ...run, autoSend: undefined } }, 1), {});
+  assert.deepEqual(connectorAuthorityClaim({ projectId: 'P1', connectorRun: { ...run, autoSend: true } }, 1), {});
 });

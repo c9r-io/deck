@@ -8,7 +8,7 @@ import { localCandidates, localParts, noteValid, shortcutTime } from './reminder
 import { $, ctx, genId, inv } from './state.js';
 import { inlineRenameValue, isComposingKeyEvent } from './pure.js';
 import { formatDateTime, t } from './i18n.js';
-import { normalizeTaskPreset, normalizeTaskPresets } from './connector-model.js';
+import { normalizeTaskPreset, normalizeTaskPresets, presetApproved, withPresetApproval } from './connector-model.js';
 import { firstSendNeedsConfirm, firstSendSupported } from './automation-model.js';
 
 /* ---------- confirm dialog (window.confirm is a silent no-op in WKWebView) ---------- */
@@ -135,7 +135,7 @@ export function createBoardExit({ mutateBoard, hold, exited }) {
    on Cancel / Escape / a click outside. `recent` are command chips that only
    FILL the command field — nothing in this dialog runs anything. */
 let pdfResolve = null;
-export function projectDefaultsDialog({ name, dir = '', cmd = '', recent = [], presets = [], columns = [] }) {
+export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = '', recent = [], presets = [], columns = [] }) {
   return new Promise(resolve => {
     if (pdfResolve) pdfResolve(null);
     $('pdf-title').textContent = t('projectDefaults.title', { name });
@@ -166,7 +166,6 @@ export function projectDefaultsDialog({ name, dir = '', cmd = '', recent = [], p
       $('pdf-preset-first-send-unsupported').hidden = !$('pdf-preset-first-send').checked
         || firstSendSupported($('pdf-preset-cmd').value.trim());
     };
-    $('pdf-preset-cmd').oninput = syncFirstSend;
     /* the first-send risk is accepted explicitly, as on a rule: the box
        stays unticked unless the confirmation is answered yes */
     $('pdf-preset-first-send').onchange = async () => {
@@ -187,20 +186,40 @@ export function projectDefaultsDialog({ name, dir = '', cmd = '', recent = [], p
       $('pdf-preset-cmd').value = preset?.cmd || cmdInput.value.trim() || 'codex';
       $('pdf-preset-steps').value = (preset?.steps || []).join('\n');
       $('pdf-preset-first-send').checked = preset?.firstSend === true; syncFirstSend();
+      /* ticked only for an approval of this exact version of the preset */
+      const auto = $('pdf-preset-auto-send'); const opened = editingPreset; auto.checked = false;
+      presetApproved(projectId, preset).then(valid => { if (valid && editingPreset === opened) auto.checked = true; }).catch(() => {});
       const target = $('pdf-preset-column'); target.replaceChildren();
       for (const column of columns) { const option = document.createElement('option'); option.value = column.id; option.textContent = column.name; target.appendChild(option); }
       target.value = preset?.columnId || columns[0]?.id || '';
       $('pdf-preset-delete').hidden = !preset;
       editor.hidden = false; $('pdf-preset-name').focus();
     };
-    const commitPreset = () => {
+    /* the approval covers the directory, the command and every step: an
+       edit to one of them withdraws the tick, as in the rule editor, and the
+       user approves the edited version explicitly (or saves without it) */
+    const withdrawApproval = () => {
+      const box = $('pdf-preset-auto-send');
+      if (!box.checked) return;
+      box.checked = false; toast(t('automation.autoSend.withdrawn'));
+    };
+    $('pdf-preset-dir').oninput = withdrawApproval;
+    $('pdf-preset-steps').oninput = withdrawApproval;
+    $('pdf-preset-cmd').oninput = () => { withdrawApproval(); syncFirstSend(); };
+    /* the digest is computed asynchronously, so commits run one at a time:
+       Done followed at once by Save commits the preset once, not twice */
+    let committing = Promise.resolve(true);
+    const commitPreset = () => (committing = committing.then(commitOpenPreset, commitOpenPreset));
+    const commitOpenPreset = async () => {
       if (!editingPreset) return true;
-      const preset = normalizeTaskPreset({ id: editingPreset, name: $('pdf-preset-name').value,
+      const plain = normalizeTaskPreset({ id: editingPreset, name: $('pdf-preset-name').value,
         columnId: $('pdf-preset-column').value, title: $('pdf-preset-title').value,
         dir: $('pdf-preset-dir').value, cmd: $('pdf-preset-cmd').value,
         steps: $('pdf-preset-steps').value.split('\n'),
         firstSend: $('pdf-preset-first-send').checked }, columns);
-      if (!preset) { toast(t('presets.invalid')); return false; }
+      if (!plain) { toast(t('presets.invalid')); return false; }
+      /* ticked = approve exactly what is being saved */
+      const preset = await withPresetApproval(projectId, plain, $('pdf-preset-auto-send').checked);
       draftPresets = [...draftPresets.filter(value => value.id !== editingPreset), preset];
       editingPreset = null; editor.hidden = true; renderPresets(); return true;
     };
@@ -211,18 +230,18 @@ export function projectDefaultsDialog({ name, dir = '', cmd = '', recent = [], p
       editingPreset = null; editor.hidden = true; renderPresets();
     };
     renderPresets(); editor.hidden = true;
-    const read = () => commitPreset() ? ({ dir: dirInput.value.trim(), cmd: cmdInput.value.trim(),
+    const read = async () => await commitPreset() ? ({ dir: dirInput.value.trim(), cmd: cmdInput.value.trim(),
       ...(draftPresets.length || presets.length ? { presets: draftPresets } : {}) }) : null;
     const done = v => { $('pdf').style.display = 'none'; $('pdf').onkeydown = null; pdfResolve = null; resolve(v); };
     pdfResolve = done;
-    $('pdf-yes').onclick = () => { const value = read(); if (value) done(value); };
+    $('pdf-yes').onclick = async () => { const value = await read(); if (value) done(value); };
     $('pdf-no').onclick = () => done(null);
     $('pdf').onkeydown = e => {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); return; }
       if (e.key === 'Enter' && e.target && e.target.tagName === 'INPUT') {
         if (isComposingKeyEvent(e)) return;
         e.preventDefault(); e.stopPropagation();
-        const value = read(); if (value) done(value);
+        read().then(value => { if (value) done(value); });
       }
     };
     $('pdf').style.display = 'flex';
