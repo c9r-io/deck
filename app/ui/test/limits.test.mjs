@@ -205,7 +205,7 @@ test('link failure reasons: one sentence each, in both languages', () => {
 
 // scheduler/review.rs DELIVERY_WAIT_STAGES: the plan stages at which a
 // delivery waits for a person. The list, the Dock count and the away
-// notification name the same six.
+// notification name the same seven.
 test('held-delivery reasons are one list with the backend', () => {
   assert.deepEqual([...DELIVERY_WAITS], limits.delivery_waits);
   for (const reason of limits.delivery_waits) {

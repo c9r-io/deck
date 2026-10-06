@@ -7522,7 +7522,7 @@ fn delivery_waits_are_the_stages_only_a_person_can_end() {
     let none = HashMap::new();
     let quiet = NOW - 400;
     let waits = |q: &QueueState, obs: Option<&Observations>| {
-        delivery_waits(q, NOW, 720, obs, &none)
+        delivery_waits(q, NOW, 720, obs, &none, &HashSet::new())
             .into_iter()
             .map(|(session, wait)| (session, (wait.item, wait.stage)))
             .collect::<HashMap<_, _>>()
@@ -7615,19 +7615,45 @@ fn a_failed_listing_neither_ends_nor_repeats_a_known_delivery_wait() {
     let mut external = qi("e", "chain");
     external.external = true;
     let q = qs(vec![external]);
-    let known = delivery_waits(&q, NOW, 720, Some(&seen(quiet)), &HashMap::new());
+    let known = delivery_waits(
+        &q,
+        NOW,
+        720,
+        Some(&seen(quiet)),
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(known["s"].stage, "external");
     // no listing this tick: the hold is unknown, the wait is carried
-    assert!(delivery_waits(&q, NOW, 720, None, &HashMap::new()).is_empty());
-    assert_eq!(delivery_waits(&q, NOW, 720, None, &known), known);
+    assert!(delivery_waits(&q, NOW, 720, None, &HashMap::new(), &HashSet::new()).is_empty());
+    assert_eq!(
+        delivery_waits(&q, NOW, 720, None, &known, &HashSet::new()),
+        known
+    );
     // the row was sent or removed: nothing is carried for it
-    assert!(delivery_waits(&qs(vec![]), NOW, 720, None, &known).is_empty());
-    assert!(delivery_waits(&qs(vec![qi("z", "once")]), NOW, 720, None, &known).is_empty());
+    assert!(delivery_waits(&qs(vec![]), NOW, 720, None, &known, &HashSet::new()).is_empty());
+    assert!(delivery_waits(
+        &qs(vec![qi("z", "once")]),
+        NOW,
+        720,
+        None,
+        &known,
+        &HashSet::new()
+    )
+    .is_empty());
     // a state the queue itself holds needs no listing
     let mut review = qi("r", "once");
     review.state = ItemState::Review;
     assert_eq!(
-        delivery_waits(&qs(vec![review]), NOW, 720, None, &HashMap::new())["s"].stage,
+        delivery_waits(
+            &qs(vec![review]),
+            NOW,
+            720,
+            None,
+            &HashMap::new(),
+            &HashSet::new()
+        )["s"]
+            .stage,
         "review"
     );
 }
@@ -7643,7 +7669,7 @@ fn a_first_interaction_hold_and_an_unattributable_codex_are_delivery_waits() {
     let none = HashMap::new();
     let quiet = NOW - 400;
     let stage_of = |q: &QueueState, obs: &Observations| {
-        delivery_waits(q, NOW, 720, Some(obs), &none)
+        delivery_waits(q, NOW, 720, Some(obs), &none, &HashSet::new())
             .get("s")
             .map(|wait| wait.stage)
     };
@@ -7667,7 +7693,8 @@ fn a_first_interaction_hold_and_an_unattributable_codex_are_delivery_waits() {
         Some("codex-signal")
     );
     assert_eq!(stage_of(&q, &seen_codex(quiet, None, Trusted)), None);
-    // an approval that could not be re-read is the machine's to retry
+    // an approval that could not be re-read is the machine's to retry,
+    // until the hold has lasted (the tests below)
     let mut approved = qi("p", "chain");
     approved.external = true;
     approved.authority = Some(step_authority(1));
@@ -7687,9 +7714,19 @@ fn a_first_interaction_hold_and_an_unattributable_codex_are_delivery_waits() {
     assert_eq!(stage_of(&q, &unestablished(quiet)), Some("review"));
     // a failed listing keeps a known live hold and invents none
     let q = qs(vec![bootstrap_row("claude")]);
-    let known = delivery_waits(&q, NOW, 720, Some(&unestablished(quiet)), &none);
-    assert_eq!(delivery_waits(&q, NOW, 720, None, &known), known);
-    assert!(delivery_waits(&q, NOW, 720, None, &none).is_empty());
+    let known = delivery_waits(
+        &q,
+        NOW,
+        720,
+        Some(&unestablished(quiet)),
+        &none,
+        &HashSet::new(),
+    );
+    assert_eq!(
+        delivery_waits(&q, NOW, 720, None, &known, &HashSet::new()),
+        known
+    );
+    assert!(delivery_waits(&q, NOW, 720, None, &none, &HashSet::new()).is_empty());
 }
 
 #[test]
@@ -9094,4 +9131,223 @@ fn a_restored_kept_board_never_restores_a_preset_choice() {
             .iter()
             .all(|row| row.authority.is_none() && row.readiness_override.is_none()));
     }
+}
+
+// ---- an approval that stays unverifiable is brought to the user ----
+
+/// One scheduler tick's attention pass (`thread.rs`): track the holds, then
+/// read the waits with what lasted. Returns the waits and the plan stage and
+/// `lasting` flag `queue_view` would show for row "p".
+fn attention_tick(
+    q: &QueueState,
+    now: u64,
+    obs: Option<&Observations>,
+    since: &mut UnverifiedSince,
+    waits: &mut HashMap<String, DeliveryWait>,
+) -> (Option<&'static str>, serde_json::Value) {
+    let lasting = track_unverified(q, now, 720, obs, since);
+    *waits = delivery_waits(q, now, 720, obs, waits, &lasting);
+    let plan = q
+        .items
+        .iter()
+        .find(|i| i.id == "p")
+        .map(|i| mark_lasting(plan_item(q, i, now, 720, obs), &lasting));
+    (
+        waits.get("s").map(|wait| wait.stage),
+        serde_json::to_value(plan).unwrap(),
+    )
+}
+
+fn approved_step() -> QueueItem {
+    let mut approved = qi("p", "chain");
+    approved.external = true;
+    approved.authority = Some(step_authority(1));
+    approved
+}
+
+/// The gap this closes: an approval source that cannot be read as current
+/// for as long as its cause lasts (settings answered from the backup until
+/// the owner saves, a lost Board) held approved steps with no word to a
+/// user who was away. A hold of a tick or two stays the machine's; one that
+/// lasts becomes a delivery wait, once, and ends with its cause.
+#[test]
+fn an_approval_that_stays_unverifiable_becomes_a_delivery_wait_once_it_lasted() {
+    let quiet = NOW - 400;
+    let q = qs(vec![approved_step()]);
+    let mut unverified = seen(quiet);
+    mark_authority_unverified(&mut unverified);
+    let readable = seen(quiet);
+    let (mut since, mut waits) = (UnverifiedSince::new(), HashMap::new());
+    let tick = TICK_SECS;
+
+    // a transient failure: one or two ticks, then readable again — no wait
+    for k in 0..2 {
+        let (wait, plan) = attention_tick(
+            &q,
+            NOW + k * tick,
+            Some(&unverified),
+            &mut since,
+            &mut waits,
+        );
+        assert_eq!(wait, None, "tick {k}");
+        assert_eq!(plan["stage"], "authority-unverified");
+        assert_eq!(plan["lasting"], false);
+    }
+    let (wait, plan) = attention_tick(&q, NOW + 2 * tick, Some(&readable), &mut since, &mut waits);
+    assert_eq!(wait, None);
+    assert_ne!(plan["stage"], "authority-unverified");
+    assert!(since.is_empty(), "a hold that ended is forgotten");
+
+    // it comes back and stays: the clock starts again, and the wait begins
+    // only when the hold has lasted the whole threshold
+    let start = NOW + 3 * tick;
+    let mut announced_at = None;
+    for k in 0..6 {
+        let now = start + k * tick;
+        let (wait, plan) = attention_tick(&q, now, Some(&unverified), &mut since, &mut waits);
+        let lasted = now - start >= UNVERIFIED_ANNOUNCE_SECS;
+        assert_eq!(wait, lasted.then_some("authority-unverified"), "tick {k}");
+        assert_eq!(plan["lasting"], lasted, "tick {k}: the list says the same");
+        if lasted && announced_at.is_none() {
+            announced_at = Some(k);
+        }
+    }
+    assert_eq!(announced_at, Some(UNVERIFIED_ANNOUNCE_SECS / tick));
+    // the notification key is the row and the stage: every later tick
+    // publishes the same wait, which `notify::own_with` announces once
+    let key = |waits: &HashMap<String, DeliveryWait>| {
+        waits
+            .get("s")
+            .map(|wait| format!("{}:{}", wait.item, wait.stage))
+    };
+    let first = key(&waits);
+    attention_tick(
+        &q,
+        start + 7 * tick,
+        Some(&unverified),
+        &mut since,
+        &mut waits,
+    );
+    assert_eq!(key(&waits), first);
+    assert_eq!(first.as_deref(), Some("p:authority-unverified"));
+
+    // a tick without a pane listing neither ends the wait nor restarts it
+    let (wait, _) = attention_tick(&q, start + 8 * tick, None, &mut since, &mut waits);
+    assert_eq!(wait, Some("authority-unverified"));
+    let (wait, plan) = attention_tick(
+        &q,
+        start + 9 * tick,
+        Some(&unverified),
+        &mut since,
+        &mut waits,
+    );
+    assert_eq!(wait, Some("authority-unverified"));
+    assert_eq!(plan["lasting"], true);
+
+    // the source reads again: the wait is withdrawn at once
+    let (wait, plan) = attention_tick(
+        &q,
+        start + 10 * tick,
+        Some(&readable),
+        &mut since,
+        &mut waits,
+    );
+    assert_eq!(wait, None);
+    assert_eq!(plan["lasting"], false);
+    assert!(since.is_empty());
+}
+
+/// The wait is attention and nothing else: the row, its approval and its
+/// revision are untouched, the hold is exactly as strict as before, and
+/// Send now takes the row whether or not the hold has lasted.
+#[test]
+fn a_lasting_unverified_hold_changes_no_authority_and_keeps_send_now() {
+    let quiet = NOW - 400;
+    let q = qs(vec![approved_step()]);
+    let before = serde_json::to_value(&q.items).unwrap();
+    let mut unverified = seen(quiet);
+    mark_authority_unverified(&mut unverified);
+    let (mut since, mut waits) = (UnverifiedSince::new(), HashMap::new());
+    for k in 0..8 {
+        attention_tick(
+            &q,
+            NOW + k * TICK_SECS,
+            Some(&unverified),
+            &mut since,
+            &mut waits,
+        );
+        let now = NOW + k * TICK_SECS;
+        assert!(
+            select_due(&q, now, 720, &unverified).is_empty(),
+            "tick {k}: a lasting hold releases nothing"
+        );
+        assert_eq!(
+            hold_reason(&q.items[0], unverified.get("s")),
+            Some(Hold::AuthorityUnverified)
+        );
+    }
+    assert_eq!(waits["s"].stage, "authority-unverified");
+    assert_eq!(serde_json::to_value(&q.items).unwrap(), before);
+    // Send now is the user acting: it sends the held row, reads no approval
+    // source, and the wait ends with the row
+    let qm = Mutex::new(qs(vec![approved_step()]));
+    let sent = send_one_safe_requested(
+        &qm,
+        &AtomicBool::new(false),
+        SendRequest {
+            session: "s",
+            now_min: 720,
+            activity: &unverified,
+            requested: Some("p"),
+        },
+        &SendHooks {
+            fire: &|_: &QueueItem| Ok(()),
+            persist: &ok_persist,
+            kill: &|_: &str| {},
+            board: &|| panic!("send-now never consults the Board"),
+            authority: &|| panic!("send-now never consults the fence"),
+        },
+        &ContextHooks {
+            prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                Prepared::Probe(probe_result(
+                    ContextStatus::Ready,
+                    ContextCode::ProcessMatched,
+                    1,
+                ))
+            },
+            final_probe: &|_: &QueueItem| {
+                probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
+            },
+        },
+    );
+    assert!(matches!(sent, SendResult::Sent { .. }), "{sent:?}");
+    let after = qm.lock_or_recover().clone();
+    let (wait, _) = attention_tick(
+        &after,
+        NOW + 9 * TICK_SECS,
+        Some(&unverified),
+        &mut since,
+        &mut waits,
+    );
+    assert_eq!(wait, None, "sent by hand: nothing waits");
+    // a more pressing wait on the same session is the one named
+    let mut checkpoint = qi("r", "once");
+    checkpoint.state = ItemState::Review;
+    let both = qs(vec![approved_step(), checkpoint]);
+    let lasting = HashSet::from(["p".to_string()]);
+    assert_eq!(
+        delivery_waits(
+            &both,
+            NOW,
+            720,
+            Some(&unverified),
+            &HashMap::new(),
+            &lasting
+        )["s"]
+            .stage,
+        "review"
+    );
+    // a row that left the queue is forgotten
+    attention_tick(&qs(vec![]), NOW, Some(&unverified), &mut since, &mut waits);
+    assert!(since.is_empty() && waits.is_empty());
 }

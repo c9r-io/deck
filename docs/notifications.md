@@ -56,14 +56,22 @@ such a row while you are away:
   interaction** (or *Send now*), because its automation did not accept
   sending without one;
 - a row is held because **Codex Signal cannot be attributed** to that Codex
-  process, and waits for *Send now*.
+  process, and waits for *Send now*;
+- a step you approved for automatic sending has been held for about a
+  minute because deck **cannot verify the approval** (the settings or the
+  Board could not be read as your current version — for instance after a
+  damaged file was recovered from its backup), so automatic sending is
+  paused. *Send now* still works.
 
 These are the rows the Needs attention list shows as *Delivery waiting*.
 A wait that passes by itself — a minimum gap, a quiet period, a time of
 day, an earlier row — never notifies, and an agent's own input request is
 announced as the agent's (above), not as a delivery. An approval deck could
 not re-read for a moment is not announced either; it usually returns at the
-next check. A first step whose automation allows sending without readiness
+next check, and only a hold that lasts is announced (the last item above).
+That minute decides when you are told and nothing else: it is not a sign
+that the agent is stuck, that the task failed or that anything was
+approved, revoked or sent. A first step whose automation allows sending without readiness
 is not waiting and is not announced. The last two kinds need no agent
 integration to be announced, so a Codex session without attributable hooks
 still tells you when its list has stopped.

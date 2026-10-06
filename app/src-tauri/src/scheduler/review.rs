@@ -39,6 +39,20 @@
 //!   (`DELIVERY_WAIT_STAGES`). It is Deck's own queue fact, never an agent
 //!   word; it only feeds the away notification and the Dock count
 //!   (`notify.rs`), and releases, retries or sends nothing.
+//! - `authority-unverified` is such a wait only once it has LASTED. A failed
+//!   read of the approval source usually passes by the next tick and is the
+//!   machine's to retry, so it is announced to nobody. But some causes never
+//!   pass by themselves — a settings file answered from its backup until its
+//!   owner saves, one damaged while deck runs, a Board that is lost, a
+//!   Connector state that cannot be read — and then approved steps would
+//!   stop with no word to a user who is away. `track_unverified` (the tick)
+//!   remembers when each row was first seen at that stage; a row held there
+//!   for `UNVERIFIED_ANNOUNCE_SECS` without interruption is a delivery wait
+//!   like the others, announced once and withdrawn when the hold ends, and
+//!   its plan says `lasting` so the list agrees. The duration decides only
+//!   WHEN to tell the user. It is not authority, readiness or a failure of
+//!   the task: nothing is granted, revoked, released or retried by it, and
+//!   Send now is as available as before.
 
 use super::*;
 use crate::datadir::now_epoch;
@@ -422,6 +436,10 @@ pub(crate) struct QueuePlan {
     /// the row carries a first-send readiness override (`first_send.rs`):
     /// its rule allows sending it without first-interaction evidence
     first_send_override: bool,
+    /// an `authority-unverified` hold that has lasted long enough to be
+    /// brought to the user (`track_unverified`); never set by `plan_item`,
+    /// which knows no duration
+    lasting: bool,
 }
 
 pub(crate) fn plan_item(
@@ -491,6 +509,7 @@ pub(crate) fn plan_item(
         gap_until,
         authorized: i.authority.is_some(),
         first_send_override: i.readiness_override.is_some(),
+        lasting: false,
     }
 }
 
@@ -512,16 +531,69 @@ pub(crate) struct DeliveryWait {
 /// never at `first-send`. Time, gap, quiet and "previous row" waits are the
 /// machine's; an agent's own input request is the agent's to announce; an
 /// approval that could not be re-read (`authority-unverified`) usually
-/// returns by the next tick and is left out. Mirrored by the webview
-/// (`limits.json` `delivery_waits`).
-pub(crate) const DELIVERY_WAIT_STAGES: [&str; 6] = [
+/// returns by the next tick, and is a wait only once it has lasted
+/// (`track_unverified`). Mirrored by the webview (`limits.json`
+/// `delivery_waits`).
+pub(crate) const DELIVERY_WAIT_STAGES: [&str; 7] = [
     "ambiguous",
     "failed",
     "review",
     "external",
     "first-send",
     "codex-signal",
+    UNVERIFIED_STAGE,
 ];
+
+const UNVERIFIED_STAGE: &str = "authority-unverified";
+
+/// How long a row must stay held for an unverifiable approval before the
+/// user is told (module header): three scheduler ticks. Attention timing
+/// only — never evidence of authority, readiness or failure.
+pub(crate) const UNVERIFIED_ANNOUNCE_SECS: u64 = 60;
+
+/// The tick's memory of that hold: row id → when it was first seen there.
+pub(crate) type UnverifiedSince = HashMap<String, u64>;
+
+/// Update `since` from this tick's plan and return the rows whose hold has
+/// lasted. A row that left the stage, or the queue, is forgotten, so a hold
+/// that comes back starts again; a tick that could not evaluate holds (no
+/// pane listing, stage `unknown`) neither starts nor ends one.
+pub(crate) fn track_unverified(
+    q: &QueueState,
+    now: u64,
+    minutes: u32,
+    activity: Option<&Observations>,
+    since: &mut UnverifiedSince,
+) -> HashSet<String> {
+    let mut kept = UnverifiedSince::new();
+    for i in &q.items {
+        let first = match plan_item(q, i, now, minutes, activity).stage {
+            UNVERIFIED_STAGE => Some(since.get(&i.id).copied().unwrap_or(now)),
+            "unknown" => since.get(&i.id).copied(),
+            _ => None,
+        };
+        if let Some(first) = first {
+            kept.insert(i.id.clone(), first);
+        }
+    }
+    *since = kept;
+    since
+        .iter()
+        .filter(|(_, first)| now.saturating_sub(**first) >= UNVERIFIED_ANNOUNCE_SECS)
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// The lasting holds the last tick found, for `queue_view`: the panel and
+/// the list read the same answer the notification was decided on.
+static LASTING_UNVERIFIED: std::sync::Mutex<Option<HashSet<String>>> = std::sync::Mutex::new(None);
+
+pub(crate) fn publish_lasting_unverified(lasting: &HashSet<String>) {
+    let mut published = LASTING_UNVERIFIED.lock_or_recover();
+    if published.as_ref() != Some(lasting) {
+        *published = Some(lasting.clone());
+    }
+}
 
 /// session → its most pressing delivery wait, from `plan_item`'s stages.
 /// A tick without a pane listing cannot evaluate a hold (the stage reads
@@ -533,6 +605,7 @@ pub(crate) fn delivery_waits(
     minutes: u32,
     activity: Option<&Observations>,
     previous: &HashMap<String, DeliveryWait>,
+    lasting: &HashSet<String>,
 ) -> HashMap<String, DeliveryWait> {
     let rank = |stage: &str| DELIVERY_WAIT_STAGES.iter().position(|s| *s == stage);
     let mut waits: HashMap<String, DeliveryWait> = HashMap::new();
@@ -541,6 +614,10 @@ pub(crate) fn delivery_waits(
         let stage = plan_item(q, i, now, minutes, activity).stage;
         if stage == "unknown" {
             unknown.insert(i.id.as_str());
+        }
+        // an unverifiable approval is a wait only once it has lasted
+        if stage == UNVERIFIED_STAGE && !lasting.contains(&i.id) {
+            continue;
         }
         let Some(pressing) = rank(stage) else {
             continue;
@@ -564,6 +641,12 @@ pub(crate) fn delivery_waits(
     waits
 }
 
+/// `plan` with `lasting` set when it is one of the lasting holds.
+pub(crate) fn mark_lasting(mut plan: QueuePlan, lasting: &HashSet<String>) -> QueuePlan {
+    plan.lasting = plan.stage == UNVERIFIED_STAGE && lasting.contains(&plan.item);
+    plan
+}
+
 #[derive(Serialize)]
 pub(crate) struct QueueView {
     #[serde(flatten)]
@@ -585,10 +668,15 @@ pub(crate) fn queue_view(q: QueueState) -> QueueView {
             mark_board_unverified(seen);
         }
     }
+    let lasting = LASTING_UNVERIFIED
+        .lock_or_recover()
+        .clone()
+        .unwrap_or_default();
     let plans = q
         .items
         .iter()
         .map(|i| plan_item(&q, i, now, local_minutes(), activity.as_ref()))
+        .map(|plan| mark_lasting(plan, &lasting))
         .collect();
     QueueView { queue: q, plans }
 }

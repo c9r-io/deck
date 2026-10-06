@@ -46,8 +46,11 @@ import { reminderDue } from './reminder-model.js';
 //   (`first-send`) or because Codex Signal cannot be attributed
 //   (`codex-signal`), and the model accepts exactly those two stage words
 //   for a row still in the queue. An approval Deck could not re-read
-//   (`authority-unverified`) usually passes by itself and stays in the panel.
-//   The six words are one list with the backend's (limits.json
+//   (`authority-unverified`) usually passes by itself and stays in the panel;
+//   it is a held delivery only when the backend's plan marks it `lasting`
+//   (review.rs `track_unverified`: the hold outlived its threshold, which
+//   times the notice and proves nothing else). The model never measures that
+//   itself. The seven words are one list with the backend's (limits.json
 //   `delivery_waits`).
 // - Bell: `rang(card)` passes on the backend's `bell` (bell.rs): a program
 //   in a session without agent state rang the terminal bell and nobody has
@@ -60,9 +63,12 @@ import { CARD_QUIET_SECS, effectiveCardStatus, itemDead } from './pure.js';
 
 export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'waiting', 'done', 'followed', 'unavailable', 'stopped', 'reminder', 'reminders']);
 /* most pressing first: one reason per session */
-export const DELIVERY_WAITS = Object.freeze(['ambiguous', 'failed', 'review', 'external', 'first-send', 'codex-signal']);
+export const DELIVERY_WAITS = Object.freeze(['ambiguous', 'failed', 'review', 'external', 'first-send', 'codex-signal', 'authority-unverified']);
 /* the two the backend's plan decides; never read from hook state here */
 const LIVE_DELIVERY_WAITS = Object.freeze(['first-send', 'codex-signal']);
+/* the third, only once the backend says the hold has lasted */
+const liveWait = plan => LIVE_DELIVERY_WAITS.includes(plan.stage)
+  || (plan.stage === 'authority-unverified' && plan.lasting === true);
 
 export function deliveryWaits(items, plans = []) {
   const heads = new Map();
@@ -82,7 +88,7 @@ export function deliveryWaits(items, plans = []) {
   const sessions = new Map(items.map(i => [i.id, i.session]));
   for (const plan of plans || []) {
     const session = plan && sessions.get(plan.item);
-    if (!session || !LIVE_DELIVERY_WAITS.includes(plan.stage)) continue;
+    if (!session || !liveWait(plan)) continue;
     const known = waits.get(session);
     if (!known || DELIVERY_WAITS.indexOf(plan.stage) < DELIVERY_WAITS.indexOf(known)) waits.set(session, plan.stage);
   }

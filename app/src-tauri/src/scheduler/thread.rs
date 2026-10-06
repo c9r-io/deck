@@ -141,6 +141,9 @@ fn publish_delivery_waits(waits: &HashMap<String, DeliveryWait>) {
 pub(crate) fn spawn_scheduler(app: AppHandle) {
     // the delivery waits the last tick published (`review::delivery_waits`)
     let mut waits: HashMap<String, DeliveryWait> = HashMap::new();
+    // when each row was first seen held for an unverifiable approval
+    // (`review::track_unverified`): attention timing, nothing else
+    let mut unverified = UnverifiedSince::new();
     std::thread::spawn(move || loop {
         sleep_until_tick();
         let state = app.state::<Queues>();
@@ -149,6 +152,8 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         flush_dirty(&state.q, &state.dirty, &save_queue);
         if state.q.lock_or_recover().items.is_empty() {
             // nothing queued, nothing waits
+            unverified.clear();
+            publish_lasting_unverified(&HashSet::new());
             if !waits.is_empty() {
                 waits.clear();
                 publish_delivery_waits(&waits);
@@ -265,7 +270,10 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         // just used; it selects, sends and releases nothing.
         let current = {
             let q = state.q.lock_or_recover();
-            delivery_waits(&q, now_epoch(), local_minutes(), listing.as_ref(), &waits)
+            let (now, minutes) = (now_epoch(), local_minutes());
+            let lasting = track_unverified(&q, now, minutes, listing.as_ref(), &mut unverified);
+            publish_lasting_unverified(&lasting);
+            delivery_waits(&q, now, minutes, listing.as_ref(), &waits, &lasting)
         };
         if current != waits {
             waits = current;

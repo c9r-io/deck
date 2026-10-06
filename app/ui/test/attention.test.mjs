@@ -318,6 +318,7 @@ test('a row the backend holds for a first interaction or for Codex Signal is a h
   const items = [
     row('a', 'fresh'), row('b', 'codex'), row('c', 'both', { state: 'review' }), row('d', 'both'),
     row('e', 'machine'), row('f', 'agent'), row('g', 'unverified'), row('h', 'two'), row('i', 'two'),
+    row('j', 'lasting'), row('k', 'lasting-two'), row('l', 'lasting-two'),
   ];
   const plans = [
     { item: 'a', stage: 'first-send' }, { item: 'b', stage: 'codex-signal' },
@@ -325,13 +326,19 @@ test('a row the backend holds for a first interaction or for Codex Signal is a h
     { item: 'e', stage: 'quiet' }, { item: 'f', stage: 'agent' }, { item: 'g', stage: 'authority-unverified' },
     { item: 'h', stage: 'codex-signal' }, { item: 'i', stage: 'first-send' },
     { item: 'gone', stage: 'first-send' }, { stage: 'first-send' }, null,
+    /* an approval Deck cannot verify: a wait only when the backend says the
+       hold has lasted, and the least pressing of the reasons */
+    { item: 'j', stage: 'authority-unverified', lasting: true },
+    { item: 'k', stage: 'authority-unverified', lasting: true }, { item: 'l', stage: 'codex-signal' },
+    { item: 'e', stage: 'quiet', lasting: true },
   ];
   assert.deepEqual(Object.fromEntries(deliveryWaits(items, plans)), {
     fresh: 'first-send', codex: 'codex-signal', both: 'review', two: 'first-send',
+    lasting: 'authority-unverified', 'lasting-two': 'codex-signal',
   });
   assert.deepEqual(Object.fromEntries(deliveryWaits(items)), { both: 'review' }, 'without a plan nothing live is claimed');
   assert.deepEqual(Object.fromEntries(deliveryWaits(items, undefined)), { both: 'review' });
-  assert.deepEqual([...DELIVERY_WAITS], ['ambiguous', 'failed', 'review', 'external', 'first-send', 'codex-signal']);
+  assert.deepEqual([...DELIVERY_WAITS], ['ambiguous', 'failed', 'review', 'external', 'first-send', 'codex-signal', 'authority-unverified']);
   const tracker = trackerOf();
   const card = cards.find(c => c.id === '03');
   tracker.deliveries([row('a', card.session)], [{ item: 'a', stage: 'first-send' }]);
@@ -339,6 +346,12 @@ test('a row the backend holds for a first interaction or for Codex Signal is a h
   assert.equal(attentionBadge(tracker, card), null, 'never the agent badge');
   tracker.deliveries([row('a', card.session)], [{ item: 'a', stage: 'context' }]);
   assert.equal(tracker.waiting(card), null, 'the hold is over when the plan says so');
+  tracker.deliveries([row('a', card.session)], [{ item: 'a', stage: 'authority-unverified' }]);
+  assert.equal(tracker.waiting(card), null, 'a hold that has not lasted stays in the panel');
+  tracker.deliveries([row('a', card.session)], [{ item: 'a', stage: 'authority-unverified', lasting: true }]);
+  assert.equal(tracker.waiting(card), 'authority-unverified');
+  tracker.deliveries([row('a', card.session)], [{ item: 'a', stage: 'context', lasting: false }]);
+  assert.equal(tracker.waiting(card), null, 'and is withdrawn when the approval reads again');
 });
 
 test('a held delivery joins pending after input requests and stays off the badge', () => {

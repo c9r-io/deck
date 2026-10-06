@@ -92,5 +92,5 @@
   "storage_notices": ["storage.privacy", "queue.persist", "queue.load", "history.load", "queue.interrupted", "storage.recovered", "storage.choices-withdrawn"],
   "mcp_local_errors": ["mcp-session-busy", "mcp-runner-stale", "mcp-client-revoked", "mcp-feature-disabled", "mcp-runner-unconfirmed", "mcp-fence-unpersisted"],
   "link_failures": ["link-no-editor", "link-path-missing", "link-not-allowed", "link-open-failed"],
-  "delivery_waits": ["ambiguous", "failed", "review", "external", "first-send", "codex-signal"]
+  "delivery_waits": ["ambiguous", "failed", "review", "external", "first-send", "codex-signal", "authority-unverified"]
 }

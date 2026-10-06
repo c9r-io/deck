@@ -362,7 +362,13 @@ first typed prompt — and never a claim that the agent is ready.
   again. Send-now still works. The scheduler reads settings without ever
   moving the file (`storage::read_typed`), so "unreadable" lasts as long as
   the condition does and never turns into "no settings": only a settings
-  file that is really absent is an empty config that withdraws them.
+  file that is really absent is an empty config that withdraws them. Most
+  failed reads pass by the next tick and are told to nobody. A hold that
+  lasts about a minute without interruption (`review::track_unverified`) is
+  brought to the user like any other held delivery — the Needs attention
+  list, the Dock count and, while away, one notification, all withdrawn when
+  the approval reads again. That duration only times the notice: it grants,
+  revokes, releases and retries nothing.
 - **A backup is recovery material, not authority.** `settings.json.bak` is
   the save before the last one, so it can hold the very rule, approval,
   first-send choice or monitoring switch the last save took away. While the
@@ -406,8 +412,11 @@ first typed prompt — and never a claim that the agent is ready.
   approval (and the first-send override) from that run's unsent rows; a
   re-approval after an edit is a new grant and does not revive them. The
   fence is the Board fence. A device revocation is not a Board write: it is
-  seen by the next sweep and by every pre-fire read that follows it. No
-  current Board (see the first-send section) or an unreadable Connector
+  seen by the next sweep and by every pre-fire read that follows it. A
+  Board recovered from its backup or a kept copy holds no preset choice (see
+  the first-send section), so the approval is stripped from the steps still
+  waiting and they wait for Send now. No committed Board at all (before the
+  webview's load, or while the Board is lost) or an unreadable Connector
   state is an unreadable source: nothing is granted, stripped or sent
   automatically, and the row shows the same "approval cannot be verified"
   hold. Sticky schema v6 covers the preset's grant and the new trigger word

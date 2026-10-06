@@ -29,7 +29,8 @@
 //!   (`scheduler::delivery_waits`: an uncertain delivery, a row that stopped
 //!   retrying, a human checkpoint, external content awaiting send-now, a
 //!   first prompt awaiting an agent interaction, a row held because Codex
-//!   Signal cannot be attributed) with an opaque key per wait. It is a queue fact, not an agent observation:
+//!   Signal cannot be attributed, an approved step held because the
+//!   approval has stayed unverifiable) with an opaque key per wait. It is a queue fact, not an agent observation:
 //!   it reads no hook word, never touches `states`, and its phrase names
 //!   the held delivery, not anything an agent said. A session
 //!   that ENTERS a wait (a key it did not have) is announced once while the
@@ -38,7 +39,10 @@
 //!   Nothing here sends, retries or releases a row. The identifier is still
 //!   the session, so a card has one notification: the newer of an agent's
 //!   and a held delivery's replaces the other, and withdrawing one never
-//!   removes the other.
+//!   removes the other. When a session enters one of Deck's own sources
+//!   (this one or the bell below) a closed `[notify] noticed` line records
+//!   it whether or not anything is posted, so "noticed late" and "not
+//!   allowed to post" can be told apart afterwards.
 //! - **A terminal bell is a fourth source.** The Board poll publishes the
 //!   sessions in which a program rang the bell and nobody has looked since
 //!   (`bell.rs`: only sessions without hook state, never one being watched,
@@ -374,6 +378,14 @@ pub(crate) fn own_with(
         .collect();
     *current = now;
     for session in entered {
+        // when Deck itself noticed it, whether or not anything is posted:
+        // the line that tells "noticed late" from "not allowed to post"
+        applog(&format!(
+            "[notify] noticed {} s={} away={}",
+            source.word(),
+            crate::applog::session_tag(&session),
+            u8::from(away)
+        ));
         if !(n.enabled && away && can_post(native)) {
             continue;
         }
