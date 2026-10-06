@@ -463,8 +463,8 @@ fn native_speech_is_in_process_local_and_content_free() {
 /// The notification bridge talks to UNUserNotificationCenter and nothing
 /// else: no process, no network, no file, no log line, and every entry is
 /// a no-op outside a bundle. An away notification is the card's title, its
-/// project name and one of three fixed phrases (two for an agent, one for a
-/// held delivery), handed over by notify.rs from exactly one call site. A card reminder is the title, the project name
+/// project name and one of four fixed phrases (two for an agent, one for a
+/// held delivery, one for a terminal bell), handed over by notify.rs from exactly one call site. A card reminder is the title, the project name
 /// and one fixed phrase, with two fixed actions; its note never crosses.
 /// The bridge sets no other content field.
 #[test]
@@ -551,15 +551,17 @@ fn native_notifications_are_in_process_and_content_closed() {
         "the call is inside SystemNative::post"
     );
     // the body comes from body_text and nowhere else: once for an agent's
-    // observation, once for a held delivery
+    // observation, once for deck's own sources (a held delivery, a bell)
     assert_eq!(notify.matches("&body_text(").count(), 2);
     for phrase in [
         "asked for your input",
         "a turn has ended",
         "a delivery is waiting",
+        "a program rang the terminal bell",
         "请求了你的输入",
         "一轮已结束",
         "有投递待处理",
+        "程序响了终端铃",
     ] {
         assert_eq!(
             notify.matches(phrase).count(),

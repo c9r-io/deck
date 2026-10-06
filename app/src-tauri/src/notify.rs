@@ -39,6 +39,15 @@
 //!   the session, so a card has one notification: the newer of an agent's
 //!   and a held delivery's replaces the other, and withdrawing one never
 //!   removes the other.
+//! - **A terminal bell is a fourth source.** The Board poll publishes the
+//!   sessions in which a program rang the bell and nobody has looked since
+//!   (`bell.rs`: only sessions without hook state, never one being watched,
+//!   one episode until viewed), with an opaque key per episode. It shares
+//!   the held deliveries' mechanism (`own_with`): announced once on entry
+//!   while the window is away, under the same switch, withdrawn when the
+//!   episode ends (the card was viewed), counted in the Dock. Its phrase
+//!   says a program rang the bell and nothing about what that means. It is
+//!   noticed at the next poll, which the webview drives.
 //! - **Attention, not authority.** The two words are interaction
 //!   observations: `needs-input` = the agent requested input (it may have
 //!   moved on since), `turn-done` = an interaction ended (not task
@@ -57,8 +66,9 @@
 //!   fact that a `turn-done` was viewed (`notify_dismiss`), and the
 //!   settings (`notify_configure`).
 //! - **Content is a closed set.** The title is the card's own title, the
-//!   body is one of three fixed phrases (`body_text`, en / zh-Hans, following
-//!   the locale setting; two for an agent, one for a held delivery) prefixed
+//!   body is one of four fixed phrases (`body_text`, en / zh-Hans, following
+//!   the locale setting; two for an agent, one for a held delivery, one for
+//!   a terminal bell) prefixed
 //!   by the project name. No prompt, output,
 //!   path or free text ever reaches the system, and nothing but closed
 //!   codes reaches app.log (`tests/log_privacy.rs`). A session without a
@@ -113,6 +123,25 @@ const NEEDS_INPUT: &str = "needs-input";
 const TURN_DONE: &str = "turn-done";
 /// Not an agent word: Deck's own "a delivery is held for a person".
 const DELIVERY_WAIT: &str = "delivery-wait";
+/// Not an agent word: the terminal bell rang in a session (`bell.rs`).
+const BELL: &str = "bell";
+
+/// The two sources that are a whole map per observation, session → the
+/// opaque key of its current episode, and share one mechanism (`own_with`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Own {
+    Delivery,
+    Bell,
+}
+
+impl Own {
+    fn word(self) -> &'static str {
+        match self {
+            Own::Delivery => DELIVERY_WAIT,
+            Own::Bell => BELL,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct CardLabel {
@@ -137,6 +166,11 @@ pub(crate) struct Notify {
     /// Sessions whose posted notification is the held-delivery one. Never
     /// in `posted` at the same time: the identifier is shared.
     wait_posted: HashSet<String>,
+    /// Unseen terminal bells: session → the opaque key of that episode.
+    bells: HashMap<String, String>,
+    /// Sessions whose posted notification is the bell one; never in
+    /// `posted` or `wait_posted` at the same time.
+    bell_posted: HashSet<String>,
     /// Announcing transitions per session (a notification was due).
     #[cfg(test)]
     announced: HashMap<String, u32>,
@@ -169,22 +203,27 @@ fn away() -> bool {
     !FOCUSED.load(Ordering::Acquire)
 }
 
-/// The three phrases the system ever shows, per locale, after the project:
-/// two say what an agent reported, one that Deck holds a delivery.
+/// The four phrases the system ever shows, per locale, after the project:
+/// two say what an agent reported, one that Deck holds a delivery, one that
+/// a program rang the bell.
 pub(crate) fn body_text(locale: &str, state: &str, project: &str) -> String {
     let kind = if state == NEEDS_INPUT {
         0
     } else if state == DELIVERY_WAIT {
         2
+    } else if state == BELL {
+        3
     } else {
         1
     };
     let phrase = match (locale == "zh-Hans", kind) {
         (true, 0) => "请求了你的输入",
         (true, 2) => "有投递待处理",
+        (true, 3) => "程序响了终端铃",
         (true, _) => "一轮已结束",
         (false, 0) => "asked for your input",
         (false, 2) => "a delivery is waiting",
+        (false, 3) => "a program rang the terminal bell",
         (false, _) => "a turn has ended",
     };
     if project.is_empty() {
@@ -212,7 +251,8 @@ fn push_badge(n: &Notify, native: &dyn Native) {
         .iter()
         .filter(|(_, seen)| n.enabled && (seen.state == NEEDS_INPUT || unread(seen)))
         .map(|(session, _)| session.clone())
-        .chain(n.waits.keys().filter(|_| n.enabled).cloned());
+        .chain(n.waits.keys().filter(|_| n.enabled).cloned())
+        .chain(n.bells.keys().filter(|_| n.enabled).cloned());
     native.badge(crate::reminder::badge_keys(sessions).len());
 }
 
@@ -272,8 +312,10 @@ pub(crate) fn observe_with(
                 n.sound,
             ) {
                 n.posted.insert(session.to_string());
-                // the shared identifier: this replaced a held-delivery one
+                // the shared identifier: this replaced a held-delivery or
+                // a bell one
                 n.wait_posted.remove(session);
+                n.bell_posted.remove(session);
                 applog(&format!(
                     "[notify] posted {} s={} e={}",
                     seen.state,
@@ -296,23 +338,41 @@ pub(crate) fn waits_with(
     away: bool,
     locale: &str,
 ) {
-    let ended: Vec<String> = n
-        .waits
+    own_with(n, native, Own::Delivery, waits, away, locale);
+}
+
+/// One whole-map observation of an own source (held deliveries, unseen
+/// bells): a key a session did not have is an episode it entered and is
+/// announced once while away; a session whose key is gone or changed left
+/// its episode and that source's notification is withdrawn.
+pub(crate) fn own_with(
+    n: &mut Notify,
+    native: &dyn Native,
+    source: Own,
+    now: HashMap<String, String>,
+    away: bool,
+    locale: &str,
+) {
+    let (current, posted) = match source {
+        Own::Delivery => (&mut n.waits, &mut n.wait_posted),
+        Own::Bell => (&mut n.bells, &mut n.bell_posted),
+    };
+    let ended: Vec<String> = current
         .keys()
-        .filter(|session| waits.get(*session) != n.waits.get(*session))
+        .filter(|session| now.get(*session) != current.get(*session))
         .cloned()
         .collect();
     for session in ended {
-        if n.wait_posted.remove(&session) {
+        if posted.remove(&session) {
             native.remove(&session);
         }
     }
-    let entered: Vec<String> = waits
+    let entered: Vec<String> = now
         .iter()
-        .filter(|(session, key)| n.waits.get(*session) != Some(*key))
+        .filter(|(session, key)| current.get(*session) != Some(*key))
         .map(|(session, _)| session.clone())
         .collect();
-    n.waits = waits;
+    *current = now;
     for session in entered {
         if !(n.enabled && away && can_post(native)) {
             continue;
@@ -323,15 +383,21 @@ pub(crate) fn waits_with(
         if native.post(
             &session,
             &label.title,
-            &body_text(locale, DELIVERY_WAIT, &label.project),
+            &body_text(locale, source.word(), &label.project),
             n.sound,
         ) {
-            // the shared identifier: this replaced an agent one, which is
-            // no longer there for `withdraw` to remove
+            // the shared identifier: this replaced whatever was posted for
+            // the session, which is no longer there for anyone to remove
             n.posted.remove(&session);
-            n.wait_posted.insert(session.clone());
+            n.wait_posted.remove(&session);
+            n.bell_posted.remove(&session);
+            match source {
+                Own::Delivery => n.wait_posted.insert(session.clone()),
+                Own::Bell => n.bell_posted.insert(session.clone()),
+            };
             applog(&format!(
-                "[notify] posted delivery-wait s={}",
+                "[notify] posted {} s={}",
+                source.word(),
                 crate::applog::session_tag(&session)
             ));
         }
@@ -398,6 +464,9 @@ pub(crate) fn configure_with(
             withdraw(n, native, &session);
         }
         for session in std::mem::take(&mut n.wait_posted) {
+            native.remove(&session);
+        }
+        for session in std::mem::take(&mut n.bell_posted) {
             native.remove(&session);
         }
     }
@@ -606,6 +675,28 @@ pub(crate) fn delivery_waits(waits: HashMap<String, String>) {
         away(),
         &locale,
     );
+}
+
+/// The Board poll's unseen bells (`bell.rs`, `own_with`). The same map
+/// again is answered before the locale read.
+pub(crate) fn bells(rung: HashMap<String, String>) {
+    if NOTIFY.lock_or_recover().bells == rung {
+        return;
+    }
+    let locale = crate::documents::locale_setting();
+    own_with(
+        &mut NOTIFY.lock_or_recover(),
+        &SystemNative,
+        Own::Bell,
+        rung,
+        away(),
+        &locale,
+    );
+}
+
+/// The main window is in front (`set_focused`).
+pub(crate) fn focused() -> bool {
+    !away()
 }
 
 pub(crate) fn retain(alive: &HashSet<String>) {
@@ -1305,6 +1396,103 @@ mod tests {
         retain_with(&mut n, &fake, &HashSet::new());
         assert!(fake.calls().is_empty());
         assert_eq!(n.waits.len(), 1);
+    }
+
+    /// A terminal bell is the fourth source and shares the held
+    /// deliveries' mechanism: announced once per episode while away, in the
+    /// interface language, withdrawn when the episode ends, counted in the
+    /// Dock; in front it is counted and never posted later.
+    #[test]
+    fn a_bell_is_announced_once_per_episode_and_withdrawn_when_viewed() {
+        let (mut n, fake) = ready();
+        let s = "deck-card-ab12";
+        own_with(&mut n, &fake, Own::Bell, waits(&[(s, "$1:10")]), true, "en");
+        assert_eq!(
+            fake.calls(),
+            ["post deck-card-ab12 [Fix the parser] [deck · a program rang the terminal bell] sound=false"]
+        );
+        assert_eq!(*fake.badge.borrow(), Some(1));
+        fake.clear();
+        own_with(&mut n, &fake, Own::Bell, waits(&[(s, "$1:10")]), true, "en");
+        assert!(fake.calls().is_empty(), "the same episode is not repeated");
+        // viewed: withdrawn, nothing counted
+        own_with(&mut n, &fake, Own::Bell, waits(&[]), true, "en");
+        assert_eq!(fake.calls(), ["remove deck-card-ab12"]);
+        assert_eq!(*fake.badge.borrow(), Some(0));
+        fake.clear();
+        // a later bell is a new episode
+        own_with(
+            &mut n,
+            &fake,
+            Own::Bell,
+            waits(&[(s, "$1:40")]),
+            true,
+            "zh-Hans",
+        );
+        assert_eq!(
+            fake.calls(),
+            ["post deck-card-ab12 [Fix the parser] [deck · 程序响了终端铃] sound=false"]
+        );
+        // in front: counted, not posted, and not posted on leaving later
+        let (mut n, fake) = ready();
+        own_with(
+            &mut n,
+            &fake,
+            Own::Bell,
+            waits(&[(s, "$1:10")]),
+            false,
+            "en",
+        );
+        assert!(fake.calls().is_empty());
+        assert_eq!(*fake.badge.borrow(), Some(1));
+        own_with(&mut n, &fake, Own::Bell, waits(&[(s, "$1:10")]), true, "en");
+        assert!(fake.calls().is_empty());
+        // the switch off: nothing posted, nothing counted
+        let (mut n, fake) = ready();
+        configure_with(&mut n, &fake, false, false, false);
+        fake.clear();
+        own_with(&mut n, &fake, Own::Bell, waits(&[(s, "$1:10")]), true, "en");
+        assert!(fake.calls().is_empty());
+        assert_eq!(*fake.badge.borrow(), Some(0));
+    }
+
+    /// One card, one notification: a bell and a held delivery replace each
+    /// other, the ending of one never removes the other's notification,
+    /// both count once in the Dock, and turning the switch off withdraws a
+    /// posted bell.
+    #[test]
+    fn a_bell_and_a_held_delivery_share_the_card_without_removing_each_other() {
+        let (mut n, fake) = ready();
+        let s = "deck-card-ab12";
+        waits_with(&mut n, &fake, waits(&[(s, "q1:review")]), true, "en");
+        fake.clear();
+        own_with(&mut n, &fake, Own::Bell, waits(&[(s, "$1:10")]), true, "en");
+        assert_eq!(
+            fake.calls(),
+            ["post deck-card-ab12 [Fix the parser] [deck · a program rang the terminal bell] sound=false"]
+        );
+        assert_eq!(*fake.badge.borrow(), Some(1), "one card, counted once");
+        fake.clear();
+        // the delivery wait ends: the bell's notification is not its to remove
+        waits_with(&mut n, &fake, waits(&[]), true, "en");
+        assert!(fake.calls().is_empty());
+        assert_eq!(*fake.badge.borrow(), Some(1));
+        // the other order: the bell first, then a held delivery replaces it;
+        // viewing the bell then removes nothing
+        let (mut n, fake) = ready();
+        own_with(&mut n, &fake, Own::Bell, waits(&[(s, "$1:10")]), true, "en");
+        waits_with(&mut n, &fake, waits(&[(s, "q1:review")]), true, "en");
+        fake.clear();
+        own_with(&mut n, &fake, Own::Bell, waits(&[]), true, "en");
+        assert!(fake.calls().is_empty());
+        assert_eq!(*fake.badge.borrow(), Some(1));
+        // the switch off withdraws a posted bell
+        let (mut n, fake) = ready();
+        own_with(&mut n, &fake, Own::Bell, waits(&[(s, "$1:10")]), true, "en");
+        fake.clear();
+        configure_with(&mut n, &fake, false, false, false);
+        assert_eq!(fake.calls(), ["remove deck-card-ab12"]);
+        assert_eq!(*fake.badge.borrow(), Some(0));
     }
 
     /// Only the fixed phrase crosses: a wait's key (a row id and a stage)

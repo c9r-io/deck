@@ -174,9 +174,10 @@ pub(crate) fn tmux_conf_text(deck_dir: &std::path::Path) -> String {
          set -g copy-mode-position-style 'reverse'\n\
          set -g copy-mode-position-format ''\n\
          set-environment -g COLORTERM truecolor\n\
-         {}{}",
+         {}{}{}",
         status_sock_env_line(deck_dir),
-        crate::shell_exit::conf_lines()
+        crate::shell_exit::conf_lines(),
+        crate::bell::conf_lines()
     )
 }
 
@@ -524,6 +525,11 @@ pub(crate) fn init_deck_server_with(
     if run(&hook).is_ok() {
         let _ = run(&remain);
     }
+    // Terminal bells as an attention observation (`bell.rs`): one more
+    // global hook that only appends to a bounded server option.
+    let bell = crate::bell::server_setup();
+    let bell: Vec<&str> = bell.iter().map(String::as_str).collect();
+    let _ = run(&bell);
 }
 
 // ---------- pane rows -------------------------------------------------------

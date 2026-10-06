@@ -203,6 +203,16 @@ append cannot be erased by a reader; overflow drops the oldest records and at
 most truncates one, which the strict parser rejects. `kill-session` and
 `kill-server` run no hook and record nothing.
 
+Every Deck server also installs a global `alert-bell` hook (`bell.rs`), by
+the same two routes. Its whole body is one `set-option` that appends
+`b1|$session|@window|%pane|time;` to the server option `@deck_bells`, bounded
+where it is written like the exit ledger and read on the same server line of
+the Board poll's snapshot. It starts no process and removes nothing. It is an
+attention observation only (a program rang the terminal bell; see
+`docs/notifications.md`) and never evidence for retirement or delivery. The
+hook is additive: an older Deck reusing the server never reads the option, so
+the server protocol version is unchanged.
+
 `poll_sessions` classifies each card session as Alive, ExitedNormally or
 Missing (a failed listing is Unavailable). ExitedNormally requires a record
 matching the identity Deck last observed alive in this process — server PID

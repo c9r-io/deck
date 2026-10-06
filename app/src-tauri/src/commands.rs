@@ -506,6 +506,20 @@ pub(crate) struct SessInfo {
     /// `fg` above stays the representative pane's, for the Board's other
     /// uses; the two must not be mixed in an authority decision.
     finish_fg: Option<String>,
+    /// a program in this session rang the terminal bell and nobody has
+    /// looked since (`bell.rs`): attention only, never a status or authority
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    bell: bool,
+}
+
+/// What the bell observation needs beside the listing (`bell.rs`): this
+/// process's bookkeeping, the sessions a pane shows, whether the Deck window
+/// is in front; `rung` receives the sessions with an unseen bell.
+pub(crate) struct BellWatch<'a> {
+    pub(crate) bells: &'a mut crate::bell::Bells,
+    pub(crate) shown: &'a std::collections::HashSet<String>,
+    pub(crate) focused: bool,
+    pub(crate) rung: HashMap<String, String>,
 }
 
 pub(crate) fn tree_mem(
@@ -606,13 +620,23 @@ pub(crate) async fn poll_sessions(
     names: Vec<String>,
     tail_for: Vec<String>,
     checkpoint_shells: bool,
+    panes: tauri::State<'_, crate::pty::PtyState>,
 ) -> Result<Vec<SessInfo>, DeckError> {
+    // a pane shows these sessions right now (`bell.rs`: watched)
+    let shown = panes.attached();
     tauri::async_runtime::spawn_blocking(move || {
         let _activity = crate::session_runtime::activity_guard()?;
         let _deadline = crate::session_runtime::Deadline::until(
             std::time::Instant::now() + std::time::Duration::from_secs(2),
         );
-        poll_from_listing(
+        let mut bells = BELLS.lock_or_recover();
+        let mut watch = BellWatch {
+            bells: &mut bells,
+            shown: &shown,
+            focused: crate::notify::focused(),
+            rung: HashMap::new(),
+        };
+        let infos = poll_observing_bells(
             names,
             tail_for,
             checkpoint_shells,
@@ -620,7 +644,12 @@ pub(crate) async fn poll_sessions(
             crate::procinfo::processes,
             &mut EXIT_EVIDENCE.lock_or_recover(),
             &crate::mcp::manages_tmux_session,
-        )
+            Some(&mut watch),
+        )?;
+        // a failed poll returned above, and one without a server line
+        // repeated the last observation: either way nothing is withdrawn
+        crate::notify::bells(watch.rung);
+        Ok(infos)
     })
     .await
     .map_err(|_| DeckError::new(ErrorKind::Other, "session poll worker failed"))?
@@ -632,12 +661,18 @@ pub(crate) async fn poll_sessions(
 static EXIT_EVIDENCE: std::sync::Mutex<crate::shell_exit::ExitEvidence> =
     std::sync::Mutex::new(crate::shell_exit::ExitEvidence::new());
 
+/// This process's bell bookkeeping (`bell.rs`): memory only, so a Deck
+/// restart takes the ledger it finds as already seen.
+static BELLS: std::sync::LazyLock<std::sync::Mutex<crate::bell::Bells>> =
+    std::sync::LazyLock::new(Default::default);
+
 /// An intentional service restart: nothing that ends from now on may
 /// authorize retirement until it is observed alive again.
 pub(crate) fn forget_exit_identities() {
     EXIT_EVIDENCE.lock_or_recover().forget_all();
 }
 
+#[cfg(test)]
 pub(crate) fn poll_from_listing(
     names: Vec<String>,
     tail_for: Vec<String>,
@@ -646,6 +681,34 @@ pub(crate) fn poll_from_listing(
     processes: impl FnOnce() -> crate::agent_status::ProcessTable,
     evidence: &mut crate::shell_exit::ExitEvidence,
     managed: &dyn Fn(&str) -> bool,
+) -> Result<Vec<SessInfo>, DeckError> {
+    poll_observing_bells(
+        names,
+        tail_for,
+        checkpoint_shells,
+        listing,
+        processes,
+        evidence,
+        managed,
+        None,
+    )
+}
+
+/// One Board poll over one listing. With `bell` it also reads the
+/// snapshot's bell ledger for the requested sessions (`bell.rs`); the tests'
+/// `poll_from_listing` is this without it.
+// One poll, one listing: the closed inputs stay explicit so the production
+// command and the tests run the same body.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn poll_observing_bells(
+    names: Vec<String>,
+    tail_for: Vec<String>,
+    checkpoint_shells: bool,
+    listing: Result<crate::tmux::PaneSnapshot, DeckError>,
+    processes: impl FnOnce() -> crate::agent_status::ProcessTable,
+    evidence: &mut crate::shell_exit::ExitEvidence,
+    managed: &dyn Fn(&str) -> bool,
+    bell: Option<&mut BellWatch<'_>>,
 ) -> Result<Vec<SessInfo>, DeckError> {
     // one listing supplies liveness + activity + pid + fg for every session
     // Log transitions, then propagate failures before reconciling agents,
@@ -695,6 +758,40 @@ pub(crate) fn poll_from_listing(
         crate::agent_status::foreground_generation(&table, pane)
     });
     let mut finish = crate::agent_status::finish_foregrounds(&rows);
+    // Bells of the requested sessions, from the same snapshot. Without a
+    // server line nothing is observed: what the last poll found stands.
+    let rung = match (bell, server.as_ref()) {
+        (Some(watch), Some(server)) => {
+            let mut live: Vec<(&str, &str)> = Vec::new();
+            for row in &rows {
+                if names.contains(&row.session_name)
+                    && !live.iter().any(|(name, _)| *name == row.session_name)
+                {
+                    live.push((&row.session_name, &row.session_id));
+                }
+            }
+            let sessions: Vec<crate::bell::Session> = live
+                .iter()
+                .map(|(name, id)| crate::bell::Session {
+                    name,
+                    id,
+                    reports: agents.contains_key(*name),
+                    watched: watch.focused && watch.shown.contains(*name),
+                })
+                .collect();
+            watch.rung = watch.bells.observe(
+                (server.server_pid, server.server_start),
+                &crate::bell::parse_ledger(&server.bells),
+                &sessions,
+            );
+            watch.rung.clone()
+        }
+        (Some(watch), None) => {
+            watch.rung = watch.bells.rung();
+            watch.rung.clone()
+        }
+        (None, _) => HashMap::new(),
+    };
     let panes = representative_panes(rows);
 
     let roots: HashMap<String, u32> = names
@@ -754,6 +851,7 @@ pub(crate) fn poll_from_listing(
                 episode: pane.and(agents.get(&name)).map(|o| o.episode),
                 episode_viewed: pane.and(agents.get(&name)).is_some_and(|o| o.viewed),
                 finish_fg: pane.and_then(|_| finish.remove(&name)),
+                bell: rung.contains_key(&name),
                 name,
             }
         })
@@ -926,6 +1024,91 @@ mod tests {
         assert_eq!(panes["alpha"].command, "zsh");
         assert!(panes["beta"].in_mode, "copy-mode pane reported as scrolled");
         assert_eq!(panes["beta"].pane_pid, 200);
+    }
+
+    /// The bell observation rides the same snapshot (`bell.rs`): only the
+    /// requested sessions, never one that reports agent state or is being
+    /// watched; the first ledger is the baseline; a poll without a server
+    /// line keeps the last answer; the poll payload omits the field when
+    /// false.
+    #[test]
+    fn poll_reports_an_unseen_bell_from_the_same_snapshot() {
+        let _store = crate::agent_status::STORE_TEST_LOCK.lock_or_recover();
+        let _tracker = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        let pane = |session: &str, id: &str, pane: &str| PaneRow {
+            server_pid: 100,
+            session_id: id.into(),
+            session_name: session.into(),
+            window_id: "@1".into(),
+            pane_id: pane.into(),
+            pane_pid: u32::MAX,
+            command: "zsh".into(),
+            ..PaneRow::default()
+        };
+        let rows = || vec![pane("card", "$1", "%1"), pane("other", "$2", "%2")];
+        let mut bells = crate::bell::Bells::default();
+        let mut evidence = crate::shell_exit::ExitEvidence::new();
+        let mut poll = |ledger: Option<&str>, focused: bool, shown: &[&str]| {
+            let shown: std::collections::HashSet<String> =
+                shown.iter().map(|s| s.to_string()).collect();
+            let mut watch = BellWatch {
+                bells: &mut bells,
+                shown: &shown,
+                focused,
+                rung: HashMap::new(),
+            };
+            let infos = poll_observing_bells(
+                vec!["card".into()],
+                vec![],
+                false,
+                Ok(crate::tmux::PaneSnapshot {
+                    rows: rows(),
+                    server: ledger.and_then(|bells| {
+                        crate::shell_exit::parse_server_line(&format!(
+                            "deck-exits\t100\t5000\t\t{bells}"
+                        ))
+                    }),
+                }),
+                crate::procinfo::processes,
+                &mut evidence,
+                &|_| false,
+                Some(&mut watch),
+            )
+            .unwrap();
+            let mut rung: Vec<String> = watch.rung.into_keys().collect();
+            rung.sort();
+            (
+                infos[0].bell,
+                rung,
+                serde_json::to_value(&infos[0]).unwrap(),
+            )
+        };
+        // what the ledger already held is the baseline
+        let old = "b1|$1|@1|%1|10;";
+        let (bell, rung, json) = poll(Some(old), false, &[]);
+        assert!(!bell && rung.is_empty());
+        assert!(json.get("bell").is_none(), "omitted when false");
+        // a bell in a session that was not asked about is not reported
+        let (bell, rung, _) = poll(Some("b1|$1|@1|%1|10;b1|$2|@1|%2|20;"), false, &[]);
+        assert!(!bell && rung.is_empty());
+        // the card's own bell, with the window in the background
+        let rang = "b1|$1|@1|%1|10;b1|$2|@1|%2|20;b1|$1|@1|%1|30;";
+        let (bell, rung, json) = poll(Some(rang), false, &["card"]);
+        assert!(bell, "an open pane in a background window is not watching");
+        assert_eq!(rung, ["card"]);
+        assert_eq!(json["bell"], true);
+        // no server line: the last answer stands
+        let (bell, rung, _) = poll(None, false, &[]);
+        assert!(bell);
+        assert_eq!(rung, ["card"]);
+        // in front without a pane on it: still unseen
+        assert!(poll(Some(rang), true, &[]).0);
+        // in front with its pane: viewed, and it stays viewed
+        let (bell, rung, _) = poll(Some(rang), true, &["card"]);
+        assert!(!bell && rung.is_empty());
+        assert!(!poll(Some(rang), false, &[]).0);
+        // malformed bell text is no bell and never costs the poll
+        assert!(!poll(Some("garbage;b1|card|x;"), false, &[]).0);
     }
 
     /// Liveness and verified exits come from one snapshot: absence alone,

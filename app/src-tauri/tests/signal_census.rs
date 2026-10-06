@@ -147,7 +147,7 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // the poll hands the word to the webview (status, attention, finish)
     (
         "commands.rs",
-        "poll_from_listing",
+        "poll_observing_bells",
         "agent_status::projections",
         1,
         Producer,
@@ -184,7 +184,7 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // Coverage is explanatory UI only, not an interaction or a new hold.
     (
         "commands.rs",
-        "poll_from_listing",
+        "poll_observing_bells",
         "generation_evidence(",
         1,
         Presentation,
@@ -922,4 +922,97 @@ fn signal_never_writes_content_authority() {
             );
         }
     }
+}
+
+// ------------------------------------------------------- the terminal bell
+
+/// A terminal bell (`bell.rs`) is an attention observation and nothing
+/// else. It is read where the Board poll already reads the snapshot and
+/// shown in the Needs attention list; no scheduler, delivery, lifecycle,
+/// retirement, Connector, MCP or inbound code can see it, the bookkeeping
+/// reads no agent word, and the frontend never lets it reach a card status,
+/// a queue, a close or a move.
+#[test]
+fn a_terminal_bell_is_attention_and_never_reaches_a_side_effect() {
+    let sources = production_sources();
+    let mut readers: Vec<&str> = sources
+        .iter()
+        .filter(|(name, source)| name != "bell.rs" && code_only(source).contains("crate::bell::"))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    readers.sort();
+    assert_eq!(
+        readers,
+        ["commands.rs", "tmux.rs"],
+        "only the Board poll and the server setup name the bell module"
+    );
+    let bell = code_only(
+        &sources
+            .iter()
+            .find(|(name, _)| name == "bell.rs")
+            .expect("bell.rs")
+            .1,
+    );
+    for token in RUST_TOKENS.iter().copied().chain([
+        "agent_status",
+        "Observed",
+        "Hold::",
+        "scheduler",
+        "notify",
+    ]) {
+        assert!(!bell.contains(token), "bell.rs must not read {token}");
+    }
+    // the poll's answer leaves Rust in two places only: the poll payload and
+    // the notification module's own-source entry
+    let commands = code_only(
+        &sources
+            .iter()
+            .find(|(name, _)| name == "commands.rs")
+            .unwrap()
+            .1,
+    );
+    assert_eq!(commands.matches("crate::notify::bells(").count(), 1);
+    assert_eq!(
+        commands.matches("bell: rung.contains_key(&name),").count(),
+        1
+    );
+    for (name, source) in &sources {
+        let code = code_only(source);
+        if name.starts_with("scheduler/")
+            || name.starts_with("connector/")
+            || name.starts_with("mcp/")
+            || [
+                "tmux_lifecycle.rs",
+                "restart.rs",
+                "inbound.rs",
+                "prompt_delivery.rs",
+            ]
+            .contains(&name.as_str())
+        {
+            assert!(
+                !code.contains("bell") && !code.contains("Bell"),
+                "{name} must not know about bells"
+            );
+        }
+    }
+    // the frontend: the model passes the backend's word on, the list shows
+    // it, and nothing else reads it
+    let js = js_sources();
+    let mut frontend: Vec<&str> = js
+        .iter()
+        .filter(|(_, source)| {
+            source.contains(".bell") || source.contains("rang(") || source.contains("'bell'")
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    frontend.sort();
+    assert_eq!(frontend, ["attention-model.js", "attention.js"]);
+    let model = &js
+        .iter()
+        .find(|(name, _)| name == "attention-model.js")
+        .unwrap()
+        .1;
+    assert_eq!(model.matches("info.bell").count(), 1);
+    let badge = js_scope_body(model, "attentionBadge").expect("attentionBadge");
+    assert!(!badge.contains("rang") && !badge.contains("bell"));
 }

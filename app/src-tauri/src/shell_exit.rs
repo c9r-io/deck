@@ -72,7 +72,10 @@ const RECORD_TAG: &str = "x1";
 pub(crate) const SERVER_TAG: &str = "deck-exits";
 /// `display-message` format of the snapshot's server line: server identity
 /// and the whole ledger, read in the same command list as the pane listing.
-pub(crate) const SERVER_FORMAT: &str = "deck-exits\t#{pid}\t#{start_time}\t#{@deck_exits}";
+/// The last field is another module's ledger (`bell.rs`), carried here raw
+/// and never read by this file: one server line serves both.
+pub(crate) const SERVER_FORMAT: &str =
+    "deck-exits\t#{pid}\t#{start_time}\t#{@deck_exits}\t#{@deck_bells}";
 
 /// The `pane-died` hook body: append one record, then remove the dead pane.
 pub(crate) fn pane_died_hook() -> String {
@@ -205,17 +208,22 @@ pub(crate) struct ServerLedger {
     pub(crate) server_pid: u32,
     pub(crate) server_start: u64,
     pub(crate) records: Vec<ExitRecord>,
+    /// the raw bell ledger (`bell.rs` parses it); empty when absent
+    pub(crate) bells: String,
 }
 
 /// Parse the body of a `SERVER_FORMAT` line (framing already removed).
 pub(crate) fn parse_server_line(body: &str) -> Option<ServerLedger> {
-    let mut fields = body.splitn(4, '\t');
+    let mut fields = body.splitn(5, '\t');
     if fields.next()? != SERVER_TAG {
         return None;
     }
     let server_pid: u32 = number(fields.next()?)?;
     let server_start: u64 = number(fields.next()?)?;
     let ledger = fields.next()?;
+    // absent on a line cut after the exit ledger: no bell, never a reason
+    // to lose the exit evidence beside it
+    let bells = fields.next().unwrap_or("");
     if server_pid == 0 {
         return None;
     }
@@ -223,6 +231,7 @@ pub(crate) fn parse_server_line(body: &str) -> Option<ServerLedger> {
         server_pid,
         server_start,
         records: parse_ledger(ledger),
+        bells: bells.to_owned(),
     })
 }
 

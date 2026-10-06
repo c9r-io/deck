@@ -72,6 +72,27 @@ It is information only: a notification never sends, retries or releases a
 row. Each wait is announced once; the notification goes when that wait
 ends. In a list with checkpoints every checked row is its own wait.
 
+### A program rang the terminal bell
+
+A session that reports no agent state — an ordinary shell, a long command,
+an agent without the integration — can still call you: when a program in
+it rings the terminal bell (`make test; printf '\a'`, or a tool set to
+ring when it wants you) and nobody is looking, the card joins the Needs
+attention list as *Bell* and, while you are away, a notification says *a
+program rang the terminal bell*.
+
+- "Nobody is looking" means: the deck window is not in front, or it is in
+  front and no pane shows that card. A bell while you are at deck with the
+  card's pane open is not announced — that is where your own keystrokes
+  ring.
+- One per card until you look: a program that keeps ringing costs one
+  notice. Showing the card with deck in front marks it seen.
+- Sessions with agent state are ignored: the integration says more.
+- deck reads nothing else: not that a command ended or succeeded, not quiet
+  time, not output. The phrase says only that the bell rang.
+- Bells from before deck started are not reported, and a bell is noticed
+  at deck's next poll, not at the instant it rings.
+
 **Away** means the deck window is not focused: hidden with ⌘W, behind
 another app, or on another Space. A notification is posted at the moment
 of the transition into one of the two states; a repeated report of the
@@ -81,14 +102,15 @@ same word posts nothing.
 
 - Title: the card's title; one longer than 512 bytes is shown by its
   first whole characters.
-- Body: the project name and one of three fixed phrases, following the
+- Body: the project name and one of four fixed phrases, following the
   interface language. Two say what the agent reported: *asked for your
   input* or *a turn has ended* (Chinese: 请求了你的输入 / 一轮已结束). One is
-  deck's own: *a delivery is waiting* (有投递待处理).
+  deck's own: *a delivery is waiting* (有投递待处理). One passes on what a
+  program did: *a program rang the terminal bell* (程序响了终端铃).
 
-A card has one notification at a time. If an agent's and a held delivery's
-both apply, the newer one is shown; when one of them ends, the other is
-not removed with it.
+A card has one notification at a time. If more than one applies (an
+agent's, a held delivery's, a bell's), the newest is shown; when one of
+them ends, the others are not removed with it.
 
 Never a prompt, terminal output, a path or any other text. Card titles and
 project names reach the notification only; app.log records closed codes

@@ -30,6 +30,9 @@ use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
+#[path = "../src/bell.rs"]
+#[allow(dead_code)]
+mod bell;
 #[path = "../src/shell_exit.rs"]
 #[allow(dead_code)]
 mod shell_exit;
@@ -3119,4 +3122,179 @@ fn a_dead_pane_is_never_observable_to_any_client() {
     assert!(lines.load(std::sync::atomic::Ordering::Relaxed) > 1000);
     assert_eq!(seen_dead.load(std::sync::atomic::Ordering::Relaxed), 0);
     assert_eq!(shell_exit::parse_ledger(&s.ledger()).len(), 100);
+}
+
+// ---- terminal bells (`bell.rs`) -------------------------------------------
+
+impl Server {
+    /// The raw bell ledger as the Board poll reads it: the server line.
+    fn bell_ledger(&self) -> String {
+        // untrimmed: an empty ledger is an empty last field
+        let raw = self.run_raw_checked(&["display-message", "-p", shell_exit::SERVER_FORMAT]);
+        let line = String::from_utf8(raw).unwrap();
+        shell_exit::parse_server_line(line.trim_end_matches('\n'))
+            .expect("server line")
+            .bells
+    }
+
+    fn ring(&self, target: &str) {
+        self.run_line(target, "printf '\\a'");
+    }
+}
+
+/// The production hook against the bundled tmux: every bell is recorded
+/// with the session it rang in, attached or not; the server line carries the
+/// ledger beside the exit ledger; the production bookkeeping reads it.
+#[test]
+fn the_alert_bell_hook_records_each_bell_where_the_poll_reads_it() {
+    let s = Server::new("bell");
+    // the exit hook too, as on a real server: one server line serves both
+    for setting in shell_exit::server_setup() {
+        s.run_owned(&setting).expect("exit setup");
+    }
+    s.run_owned(&bell::server_setup()).expect("bell hook");
+    s.run(&[
+        "new-session",
+        "-d",
+        "-s",
+        "u",
+        "-x",
+        "80",
+        "-y",
+        "12",
+        "/bin/sh",
+    ]);
+    s.wait_for_prompt("u");
+    let id = |name: &str| {
+        s.run(&[
+            "display-message",
+            "-p",
+            "-t",
+            &format!("={name}:"),
+            "#{session_id}",
+        ])
+    };
+    let (t, u) = (id("t"), id("u"));
+    assert_eq!(s.bell_ledger(), "", "no bell yet");
+
+    // a client attached to `t`, none to `u`: both are recorded
+    let _client = PaneClient::attach(&s, "t");
+    s.ring("=u:");
+    s.ring("=t:");
+    s.ring("=u:");
+    wait_until("three records", || {
+        bell::parse_ledger(&s.bell_ledger()).len() == 3
+    });
+    let records = bell::parse_ledger(&s.bell_ledger());
+    assert_eq!(
+        records
+            .iter()
+            .map(|r| r.session_id.as_str())
+            .collect::<Vec<_>>(),
+        [u.as_str(), t.as_str(), u.as_str()]
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(
+        records.iter().all(|r| r.at <= now && now - r.at < 120),
+        "{records:?}"
+    );
+    assert!(records.windows(2).all(|pair| pair[0].at <= pair[1].at));
+    // the raw value is exactly well-formed records and nothing else
+    assert_eq!(s.bell_ledger().matches(';').count(), 3);
+    // the exit ledger on the same line is untouched by it
+    let raw = s.run_raw_checked(&["display-message", "-p", shell_exit::SERVER_FORMAT]);
+    let line = String::from_utf8(raw).unwrap();
+    assert!(shell_exit::parse_server_line(line.trim_end_matches('\n'))
+        .unwrap()
+        .records
+        .is_empty());
+
+    // the production bookkeeping over this ledger: what it found first is
+    // the baseline; a later bell in an unwatched shell rings once
+    let server = (1, 1);
+    let sessions = |watched: bool| {
+        [
+            bell::Session {
+                name: "t",
+                id: &t,
+                reports: false,
+                watched,
+            },
+            bell::Session {
+                name: "u",
+                id: &u,
+                reports: false,
+                watched: false,
+            },
+        ]
+    };
+    let mut bells = bell::Bells::default();
+    let read = || bell::parse_ledger(&s.bell_ledger());
+    assert!(bells.observe(server, &read(), &sessions(false)).is_empty());
+    sleep(Duration::from_millis(1100)); // the record time is in seconds
+    s.ring("=u:");
+    s.ring("=t:");
+    wait_until("two more records", || read().len() == 5);
+    let rung = bells.observe(server, &read(), &sessions(true));
+    assert_eq!(rung.keys().collect::<Vec<_>>(), ["u"], "t is being watched");
+    assert!(bells
+        .observe(server, &read(), &sessions(false))
+        .contains_key("u"));
+    assert_eq!(bells.observe(server, &read(), &sessions(false)).len(), 1);
+}
+
+/// The ledger is bounded where it is written, and what the bound cuts is
+/// skipped by the parser instead of being misread.
+#[test]
+fn the_bell_ledger_is_bounded_at_its_source() {
+    let s = Server::new("bell-bound");
+    s.run_owned(&bell::server_setup()).expect("bell hook");
+    let record = "b1|$0|@0|%0|1700000000;".len();
+    let rings = bell::LEDGER_LIMIT / record + 12;
+    // one write per bell: tmux coalesces a burst inside a single write
+    s.run_line(
+        "t",
+        &format!("i=0; while [ $i -lt {rings} ]; do printf '\\a'; sleep 0.02; i=$((i+1)); done"),
+    );
+    let ledger = s.bell_ledger();
+    assert!(
+        ledger.len() > bell::LEDGER_LIMIT,
+        "{} bells did not fill it",
+        ledger.len()
+    );
+    assert!(
+        ledger.len() <= bell::LEDGER_LIMIT + record + 8,
+        "{}",
+        ledger.len()
+    );
+    let parsed = bell::parse_ledger(&ledger);
+    let whole = ledger.matches(';').count();
+    assert!(
+        parsed.len() == whole || parsed.len() + 1 == whole,
+        "{} of {whole}",
+        parsed.len()
+    );
+    assert!(parsed.len() >= bell::LEDGER_LIMIT / (record + 8));
+}
+
+/// The tmux.conf form installs the same hook (a new server reads it there).
+#[test]
+fn the_bell_hook_survives_the_conf_file_quoting() {
+    let s = Server::new("bell-conf");
+    let conf = std::env::temp_dir().join(format!("{}.conf", unique_name("deck-test-bell")));
+    std::fs::write(&conf, bell::conf_lines()).unwrap();
+    s.run(&["source-file", conf.to_str().unwrap()]);
+    let _ = std::fs::remove_file(&conf);
+    let hooks = s.run(&["show-hooks", "-g", "alert-bell"]);
+    assert!(
+        hooks.contains("@deck_bells") && hooks.contains("#{window_activity}"),
+        "{hooks}"
+    );
+    s.ring("=t:");
+    wait_until("one record", || {
+        bell::parse_ledger(&s.bell_ledger()).len() == 1
+    });
 }

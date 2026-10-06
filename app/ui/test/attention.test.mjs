@@ -367,3 +367,50 @@ test('a held delivery joins pending after input requests and stays off the badge
   tracker.deliveries([]);
   assert.deepEqual(tracker.counts(cards), before);
 });
+
+test('a terminal bell is the backend\'s word passed on: a pending list row, never a status, a badge or a local guess', () => {
+  const project = { id: 'P', name: 'P', columns: [{ id: 'C', name: 'C' }] };
+  const card = id => ({ id, projectId: 'P', columnId: 'C', title: id, session: `s-${id}`, pinned: false });
+  const cardsNow = [card('shell'), card('agent'), card('quiet'), card('stopped')];
+  const info = (id, extra) => ({ name: `s-${id}`, alive: true, agent: null, idle_secs: 300, ...extra });
+  const tracker = createAttentionTracker();
+  const record = (bells, visible = new Set()) => tracker.record(cardsNow, [
+    info('shell', { bell: bells.includes('shell') }),
+    /* the backend never reports one for these; the model does not trust a slip either */
+    info('agent', { agent: 'working', bell: bells.includes('agent') }),
+    info('quiet', { bell: bells.includes('quiet') }),
+    info('stopped', { alive: false, bell: bells.includes('stopped') }),
+  ], visible, 100);
+  record([]);
+  assert.equal(tracker.rang(cardsNow[0]), false);
+  assert.equal(tracker.counts(cardsNow).pending, 0);
+  const before = cardsNow.map(c => [tracker.category(c), tracker.get(c).status]);
+  record(['shell', 'agent', 'stopped']);
+  assert.deepEqual(cardsNow.map(c => tracker.rang(c)), [true, false, false, false], 'only a live session without agent state');
+  assert.deepEqual(cardsNow.map(c => [tracker.category(c), tracker.get(c).status]), before, 'category and status are untouched');
+  assert.equal(tracker.counts(cardsNow).pending, 1);
+  assert.equal(tracker.matches(cardsNow[0], 'pending'), true);
+  assert.equal(attentionBadge(tracker, cardsNow[0]), null, 'not the card badge');
+  const rows = attentionRows([project], cardsNow, tracker, 'pending');
+  assert.deepEqual(rows.map(row => [row.card.id, row.kind]), [['shell', 'bell']]);
+  /* viewing in the webview clears nothing: only the backend's next answer does */
+  record(['shell'], new Set(['shell']));
+  assert.equal(tracker.rang(cardsNow[0]), true);
+  tracker.saw(cardsNow[0]);
+  assert.equal(tracker.rang(cardsNow[0]), true);
+  record([]);
+  assert.equal(tracker.rang(cardsNow[0]), false);
+  assert.equal(tracker.counts(cardsNow).pending, 0);
+  /* values that are not exactly true are no bell */
+  for (const bell of ['true', 1, {}, null]) {
+    tracker.record(cardsNow, [info('shell', { bell }), info('agent'), info('quiet'), info('stopped')], new Set(), 100);
+    assert.equal(tracker.rang(cardsNow[0]), false, JSON.stringify(bell));
+  }
+  /* order in the pending list: after a held delivery, before an unread ending */
+  const order = createAttentionTracker();
+  const many = [card('done'), card('bell'), card('input')];
+  order.record(many, [info('done', { agent: 'turn-done', episode: 1 }), info('bell', { bell: true }), info('input', { agent: 'needs-input', episode: 2 })], new Set(), 100);
+  assert.deepEqual(attentionRows([project], many, order, 'pending').map(row => row.kind), ['input', 'bell', 'done']);
+  assert.equal(dictionaries.en['attention.bell'], 'Bell');
+  assert.equal(dictionaries['zh-Hans']['attention.bell'], '响过铃');
+});

@@ -19,6 +19,9 @@
 //   `refreshBoardAttention` repaints it in place on every attention refresh,
 //   so viewing an ending clears it without a card rebuild or a status change.
 //   It never reflects native notification delivery.
+// - A terminal bell nobody has looked at (`tracker.rang`, attention-model.js)
+//   is a list row counted in the sidebar's pending number; the row's reason
+//   ends with it. It is not a filter, not the card badge and not a status.
 // - A held delivery (`tracker.waiting`, attention-model.js) is a list row and
 //   a filter, counted in the sidebar's pending number; the row's reason ends
 //   with it. The Board card says it on its queue chip (scheduler.js), not on
@@ -255,7 +258,7 @@ function updateRows() {
     pin.setAttribute('aria-pressed', String(card.pinned === true));
     pin.classList.toggle('active', card.pinned === true);
     row.querySelector('.attention-origin').textContent = `${project.name} / ${column.name}`;
-    row.querySelector('.attention-reason').textContent = (card.pinned === true ? `${t('attention.filter.followed')} · ` : '') + attentionStatusText(card) + (ctx.attention.waiting(card) ? ' · ' + t(`attention.waiting.${ctx.attention.waiting(card)}`) : '') + (card.reminder ? ' · ' + t(card.reminder.due || card.reminder.dueAt <= Date.now() ? 'reminder.due' : 'reminder.pending') : '');
+    row.querySelector('.attention-reason').textContent = (card.pinned === true ? `${t('attention.filter.followed')} · ` : '') + attentionStatusText(card) + (ctx.attention.waiting(card) ? ' · ' + t(`attention.waiting.${ctx.attention.waiting(card)}`) : '') + (ctx.attention.rang(card) ? ' · ' + t('attention.bell') : '') + (card.reminder ? ' · ' + t(card.reminder.due || card.reminder.dueAt <= Date.now() ? 'reminder.due' : 'reminder.pending') : '');
     row.querySelector('.attention-reason').dataset.status = snapshot?.status || 'unknown';
     row.querySelector('.attention-viewed').textContent = sourceText(card);
     row.querySelector('.attention-open').textContent = t(locate ? 'attention.locate' : 'attention.open');

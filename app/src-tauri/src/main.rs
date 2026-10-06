@@ -8,6 +8,7 @@
 mod admission;
 mod agent_status;
 mod applog;
+mod bell;
 mod commands;
 mod connector;
 mod context;

@@ -171,6 +171,13 @@ impl PtyState {
     /// The tmux sessions still belong to the server until the lifecycle
     /// transaction kills it; this only prevents stale PTY-exit events and
     /// releases all ACK waiters.
+    /// The sessions a pane shows right now: each visible pane holds one
+    /// attach here, and nothing else does (the Board's query client is not
+    /// in this map).
+    pub(crate) fn attached(&self) -> std::collections::HashSet<String> {
+        self.map.lock_or_recover().keys().cloned().collect()
+    }
+
     pub(crate) fn detach_all(&self) {
         let mut entries = self.map.lock_or_recover();
         for (_, mut entry) in entries.drain() {

@@ -49,6 +49,13 @@ import { reminderDue } from './reminder-model.js';
 //   (`authority-unverified`) usually passes by itself and stays in the panel.
 //   The six words are one list with the backend's (limits.json
 //   `delivery_waits`).
+// - Bell: `rang(card)` passes on the backend's `bell` (bell.rs): a program
+//   in a session without agent state rang the terminal bell and nobody has
+//   looked since. The backend alone decides it and when it was viewed (the
+//   Deck window in front and a pane showing the card); nothing here infers
+//   or clears it. It joins `pending` and the list like a held delivery, is
+//   never a card status, the card badge or a filter, and says only that the
+//   bell rang — not that anything ended, succeeded or needs input.
 import { CARD_QUIET_SECS, effectiveCardStatus, itemDead } from './pure.js';
 
 export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'waiting', 'done', 'followed', 'unavailable', 'stopped', 'reminder', 'reminders']);
@@ -89,6 +96,7 @@ export function createAttentionTracker() {
   let failed = false;
   let waits = new Map();
   const waiting = card => (card && waits.get(card.session)) || null;
+  const rang = card => get(card)?.bell === true;
   const get = card => {
     const value = card && snapshots.get(card.id);
     return value?.session === card?.session ? value : null;
@@ -105,12 +113,12 @@ export function createAttentionTracker() {
   const matches = (card, filter) => {
     const kind = category(card);
     return filter === 'all' || (filter === 'reminder' ? reminderDue(card) : filter === 'reminders' ? !!card.reminder : false) || (filter === 'followed' ? card.pinned === true
-      : filter === 'pending' ? kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card) || !!waiting(card)
+      : filter === 'pending' ? kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card) || !!waiting(card) || rang(card)
       : filter === 'waiting' ? !!waiting(card)
       : filter === 'unavailable' ? kind === 'unavailable' || kind === 'unknown' : kind === filter);
   };
   return {
-    get, category, matches, waiting,
+    get, category, matches, waiting, rang,
     deliveries(items, plans) { waits = deliveryWaits(items || [], plans || []); },
     record(cards, infos, visible, now) {
       visible = visible || new Set();
@@ -135,6 +143,7 @@ export function createAttentionTracker() {
           session: card.session, alive: info.alive, agent, status,
           codexSignal: info.alive && CODEX_SIGNAL_TRUST.includes(info.codex_signal) ? info.codex_signal : null,
           idle: info.idle_secs ?? null, observedAt: now, stale: false, episode, episodeViewed,
+          bell: info.alive && !agent && info.bell === true,
           seen: episode != null
             ? !!(episodeViewed || visible.has(card.id) || (old?.episode === episode && old.seen))
             : !!((old?.status === status && old?.agent === agent && old.seen) || visible.has(card.id)),
@@ -174,7 +183,7 @@ export function createAttentionTracker() {
         if (kind in counts) counts[kind]++;
         if (card.pinned === true) counts.followed++;
         if (waiting(card)) counts.waiting++;
-        if (kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card) || waiting(card)) counts.pending++;
+        if (kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card) || waiting(card) || rang(card)) counts.pending++;
         if (kind === 'unknown') counts.unavailable++;
       }
       if (cards.some(card => card.reminder)) { counts.reminder = cards.filter(card => reminderDue(card)).length; counts.reminders = cards.filter(card => card.reminder).length; }
@@ -217,6 +226,7 @@ export function attentionRows(projects, cards, tracker, filter) {
         const category = tracker.category(card);
         /* an input request outranks a held delivery; the row names both */
         const kind = category !== 'input' && tracker.waiting(card) ? 'waiting'
+          : tracker.rang(card) ? 'bell'
           : reminderDue(card) && !['input', 'done'].includes(category) ? 'reminder' : filter === 'pending' && !['input', 'done'].includes(category) ? 'followed' : category;
         ordered.push({ card, project, column, kind });
       }
@@ -224,5 +234,5 @@ export function attentionRows(projects, cards, tracker, filter) {
   }
   if (filter === 'reminder' || filter === 'reminders') return ordered.sort((a, b) => a.card.reminder.dueAt - b.card.reminder.dueAt);
   if (filter !== 'pending') return ordered;
-  return ['input', 'waiting', 'done', 'reminder', 'followed'].flatMap(kind => ordered.filter(row => row.kind === kind));
+  return ['input', 'waiting', 'bell', 'done', 'reminder', 'followed'].flatMap(kind => ordered.filter(row => row.kind === kind));
 }
