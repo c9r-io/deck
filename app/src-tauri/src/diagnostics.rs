@@ -363,6 +363,8 @@ const SMOKE_CHECKS: &[&str] = &[
     "attention-exit-generation",
     "attention-fixture",
     "attention-followed-save",
+    "attention-followed-focus",
+    "attention-followed-input",
     "attention-followed-toggle",
     "attention-followed-viewed",
     "attention-followed-unknown",

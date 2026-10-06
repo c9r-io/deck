@@ -306,7 +306,7 @@ body.side-collapsed .side-new .label { display: none; }
 }
 .card-pin:hover { color: var(--text); background: var(--hover); }
 .card-pin.active { color: var(--wait); }
-.card-pin[disabled] { opacity: 0.55; cursor: wait; }
+.card-pin[aria-disabled="true"] { opacity: 0.55; cursor: wait; }
 .card-x {
   flex: none; padding: 1px 5px; border-radius: 4px;
   font-size: 0.923077rem; line-height: 1; color: transparent;

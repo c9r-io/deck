@@ -711,3 +711,17 @@ test('the capture-name row is really hidden when the editor marks it hidden', ()
   const lens = readFileSync(new URL('../js/translation-lens.js', import.meta.url), 'utf8');
   assert.deepEqual(lens.match(/\$\('translation-btn'\)\.hidden = \w+/g), ["$('translation-btn').hidden = false"]);
 });
+
+test('a star is never `disabled` while its save runs: a focused control that becomes disabled loses focus at WebKit\'s next frame', () => {
+  const read = name => readFileSync(new URL(`../js/${name}`, import.meta.url), 'utf8');
+  for (const [file, handler] of [['attention.js', /pin\.onclick = async \(\) => \{[\s\S]*?\n      \};/], ['board.js', /pin\.onclick = async e => \{[\s\S]*?\n  \};/]]) {
+    const body = read(file).match(handler)?.[0];
+    assert.ok(body, `${file}: the star's handler`);
+    assert.doesNotMatch(body, /\.disabled\s*=/, `${file}: busy is aria-disabled`);
+    assert.match(body, /if \(pin\.getAttribute\('aria-disabled'\) === 'true'\) return;/, `${file}: a second activation is ignored`);
+    assert.match(body, /finally \{ pin\.removeAttribute\('aria-disabled'\);/, `${file}: busy always ends`);
+  }
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.match(css, /\.card-pin\[aria-disabled="true"\] \{ opacity: 0\.55; cursor: wait; \}/);
+  assert.doesNotMatch(css, /\.card-pin\[disabled\]/);
+});

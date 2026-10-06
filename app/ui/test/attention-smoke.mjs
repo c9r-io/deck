@@ -49,6 +49,14 @@ export async function runAttentionSmoke() {
       samples.set(spec.id, { spec, card: provider.get(card.id) });
     }
     stage = 1;
+    /* a save that outlasts several frames: WebKit moves focus away from a
+       control that became unfocusable at its next frame, so only a slow save
+       really checks where focus goes when the row leaves */
+    let slowSave = 0;
+    const frames = count => new Promise(resolve => {
+      const step = () => (count-- > 0 ? requestAnimationFrame(step) : resolve());
+      step();
+    });
     let failPoll = false, failSave = false, missing = null, failAttach = null, starts = 0, attaches = 0, polls = 0;
     let attachGate = null, pendingGen = null, pollGate = null;
     const statuses = new Map();
@@ -59,6 +67,7 @@ export async function runAttentionSmoke() {
     });
     const wrappedInvoke = async (command, args) => {
       if (command === 'save_board' && failSave) throw new Error('isolated save failure');
+      if (command === 'save_board' && slowSave) await frames(slowSave);
       if (command === 'start_session') starts++;
       if (command === 'attach_session' && args.name === failAttach) throw new Error('isolated attach failure');
       if (command === 'attach_session') attaches++;
@@ -326,15 +335,24 @@ export async function runAttentionSmoke() {
     pin.focus(); failSave = true;
     await pin.onclick(); failSave = false;
     await report('attention-followed-save', provider.get(followed.id).pinned && pin.isConnected && !pin.disabled
+      && !pin.hasAttribute('aria-disabled')
       && document.activeElement === pin && $('attention-list').querySelectorAll('.attention-row').length === 2);
+    slowSave = 6;
+    const unpinning = pin.onclick();
+    /* while the save runs: busy, still focused, and a second activation does nothing */
+    await frames(3);
+    const busy = pin.getAttribute('aria-disabled') === 'true' && !pin.disabled && document.activeElement === pin;
     await pin.onclick();
-    const removed = !rowOf(followed.id) && !provider.get(followed.id).pinned && $('attention-tools').contains(document.activeElement);
+    await unpinning; slowSave = 0;
+    /* the row left: focus is on the pressed filter, not on the page */
+    await report('attention-followed-focus', busy && !rowOf(followed.id) && !provider.get(followed.id).pinned
+      && $('attention-tools').contains(document.activeElement) && document.activeElement !== document.body);
     await provider.togglePinned(followed.id);
     ctx.attentionFilter = 'pending'; refreshAttention();
     await rowOf(input.id).querySelector('.card-pin').onclick();
-    const stillInput = !!rowOf(input.id) && ctx.attention.category(provider.get(input.id)) === 'input';
+    await report('attention-followed-input', !!rowOf(input.id) && ctx.attention.category(provider.get(input.id)) === 'input');
     await provider.togglePinned(input.id);
-    await report('attention-followed-toggle', removed && stillInput && ctx.attention.counts(store.cards).pending === 5);
+    await report('attention-followed-toggle', ctx.attention.counts(store.cards).pending === 5);
     await openAttentionCard(followed.id); await pollNow();
     backToBoard(); await pollNow();
     await report('attention-followed-viewed', provider.get(followed.id).pinned && !!rowOf(followed.id)

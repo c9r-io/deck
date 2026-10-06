@@ -1600,11 +1600,14 @@ export function cardEl(s) {
     e.stopPropagation();
     closeSession(s.id);
   };
+  /* busy is `aria-disabled`, never `disabled`, so a focused star keeps its
+     focus while the save runs (attention.js has the reason) */
   pin.onclick = async e => {
     e.stopPropagation();
-    pin.disabled = true;
-    const saved = await provider.togglePinned(s.id);
-    if (!saved && pin.isConnected) pin.disabled = false;
+    if (pin.getAttribute('aria-disabled') === 'true') return;
+    pin.setAttribute('aria-disabled', 'true');
+    try { await provider.togglePinned(s.id); }
+    finally { pin.removeAttribute('aria-disabled'); }
   };
   el.addEventListener('click', e => {
     e.stopPropagation();   // don't toggle the board selection underneath

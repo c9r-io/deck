@@ -236,10 +236,16 @@ function updateRows() {
       const el = node('div', 'attention-row'); el.dataset.sid = card.id;
       el.append(node('span', 'attention-card-name'), node('span', 'attention-origin'), node('span', 'attention-reason'), node('span', 'attention-viewed'));
       const pin = node('button', 'card-pin'); pin.type = 'button';
+      /* Busy is `aria-disabled`, never `disabled`: WebKit takes focus away
+         from a focused control that becomes disabled at its next frame, so
+         a save that outlasts one frame left the focus on the page instead
+         of where `updateRows` puts it when the row goes. The star keeps
+         its focus for the whole save; a second activation is ignored. */
       pin.onclick = async () => {
-        pin.disabled = true;
+        if (pin.getAttribute('aria-disabled') === 'true') return;
+        pin.setAttribute('aria-disabled', 'true');
         try { await provider.togglePinned(card.id); }
-        finally { pin.disabled = false; refreshAttention(); }
+        finally { pin.removeAttribute('aria-disabled'); refreshAttention(); }
       };
       el.querySelector('.attention-card-name').append(node('span', 'attention-card-title'), pin);
       const open = node('button', 'btn attention-open'); open.type = 'button';
