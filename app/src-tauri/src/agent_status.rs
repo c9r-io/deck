@@ -298,6 +298,21 @@ struct Entry {
     codex: bool,
 }
 
+impl Entry {
+    /// Still the observation of `row`'s pane: the same session and the same
+    /// pane process.
+    fn of_pane(&self, row: &PaneRow) -> bool {
+        self.session_id == row.session_id && self.pane_pid == row.pane_pid
+    }
+
+    /// Whether `generation`, the pane's foreground generation as read now,
+    /// is the one that reported this observation; `None` when it could not
+    /// be read (no proof either way — each caller says what that means).
+    fn reported_by(&self, generation: Option<ForegroundGeneration>) -> Option<bool> {
+        generation.map(|now| now == self.generation)
+    }
+}
+
 /// Deck-local, process-local attention episode (FR-SI-05): "is this the
 /// same accepted observation that was already surfaced or viewed?". An
 /// opaque counter — never a source id, never Agent truth, never side-effect
@@ -784,14 +799,13 @@ pub(crate) fn finish_foregrounds(rows: &[PaneRow]) -> HashMap<String, String> {
 /// The observation stored for `target` (a pane from `signal_targets`), if
 /// it still belongs to that pane's session and process. The foreground
 /// generation is checked by `reconcile` against a process table; readers
-/// without one (the scheduler tick) only ever get a word that can hold.
+/// without one (the scheduler tick) only ever get a word that can hold. A
+/// reader for which a stale word would do more than hold asks `reporting`.
 pub(crate) fn projected(target: &PaneRow) -> Option<Observation> {
     with_agents(|agents| {
         agents
             .get(&PaneKey::of(target))
-            .filter(|entry| {
-                entry.session_id == target.session_id && entry.pane_pid == target.pane_pid
-            })
+            .filter(|entry| entry.of_pane(target))
             .map(|entry| Observation {
                 state: entry.state,
                 episode: entry.episode,
@@ -814,6 +828,34 @@ pub(crate) fn mark_viewed(session: &str, episode: EpisodeId) -> bool {
             })
             .map(|entry| entry.viewed = true)
             .is_some()
+    })
+}
+
+/// session → whether its Signal target's stored observation still speaks
+/// for the pane NOW, for a reader that runs between polls and so after no
+/// `reconcile` (the Board poll's idle fallback, `commands::poll_idle_tick`).
+/// The same two checks `reconcile` makes, without retiring anything:
+/// `Some(true)` when the observation's pane identity holds and
+/// `generation_now` says its foreground generation is still the one that
+/// reported; `Some(false)` when that generation is another one (the agent
+/// exited or was replaced under the same shell); `None` when the generation
+/// cannot be read, which proves neither. A session with no observation for
+/// its target pane is absent. Executable names play no part.
+pub(crate) fn reporting(
+    rows: &[PaneRow],
+    generation_now: impl Fn(u32) -> Option<ForegroundGeneration>,
+) -> HashMap<String, Option<bool>> {
+    let targets = signal_targets(rows);
+    with_agents(|agents| {
+        targets
+            .into_iter()
+            .filter_map(|(session, row)| {
+                let entry = agents
+                    .get(&PaneKey::of(row))
+                    .filter(|entry| entry.of_pane(row))?;
+                Some((session, entry.reported_by(generation_now(row.pane_pid))))
+            })
+            .collect()
     })
 }
 
@@ -1046,9 +1088,9 @@ pub(crate) fn reconcile(rows: &[PaneRow], table: &ProcessTable) {
             rows.iter()
                 .find(|row| PaneKey::of(row) == *key)
                 .is_some_and(|row| {
-                    row.session_id == entry.session_id
-                        && row.pane_pid == entry.pane_pid
-                        && foreground_generation(table, row.pane_pid) == Some(entry.generation)
+                    entry.of_pane(row)
+                        && entry.reported_by(foreground_generation(table, row.pane_pid))
+                            == Some(true)
                 })
         });
     });

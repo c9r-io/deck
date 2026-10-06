@@ -3220,13 +3220,13 @@ fn the_alert_bell_hook_records_each_bell_where_the_poll_reads_it() {
             bell::Session {
                 name: "t",
                 id: &t,
-                reports: false,
+                reports: Some(false),
                 watched,
             },
             bell::Session {
                 name: "u",
                 id: &u,
-                reports: false,
+                reports: Some(false),
                 watched: false,
             },
         ]

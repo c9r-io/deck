@@ -34,7 +34,15 @@
 //! - a bell counts only for a session whose current tmux `$id` the record
 //!   names (a reused name never inherits a bell) and which has NO agent hook
 //!   state: an agent that reports its state has the better signal, and its
-//!   bells are marked seen so they never surface later;
+//!   bells are marked seen so they never surface later. "Reports" means an
+//!   observation bound to the pane's CURRENT foreground generation — the
+//!   poll reconciles the agent store before it asks, and the idle fallback
+//!   checks the generation itself (`agent_status::reporting`), so a word
+//!   left by an agent that has exited speaks for nothing. When the
+//!   generation cannot be read the observation decides nothing for that
+//!   session: an unseen bell keeps ringing, a new one is neither announced
+//!   (the agent may still be there) nor marked seen (it may be gone), and
+//!   the next observation that can tell decides;
 //! - it does not count while the session is WATCHED — the Deck window is in
 //!   front and a pane shows the card. That is where a person's own keys ring
 //!   (a failed completion, the end of a pager), and what they see needs no
@@ -156,8 +164,10 @@ pub(crate) struct Session<'a> {
     pub(crate) name: &'a str,
     /// tmux `$N`
     pub(crate) id: &'a str,
-    /// an agent hook state is projected for it (its bells are ignored)
-    pub(crate) reports: bool,
+    /// whether an agent hook state speaks for it now (its bells are then
+    /// ignored); `None` when that cannot be told at this observation, which
+    /// decides nothing for the session (module header)
+    pub(crate) reports: Option<bool>,
     /// the Deck window is in front and a pane shows this session
     pub(crate) watched: bool,
 }
@@ -205,12 +215,18 @@ impl Bells {
         self.rung
             .retain(|name, mark| sessions.iter().any(|s| s.name == name && s.id == mark.id));
         for session in sessions {
+            // not known whether an agent still reports for it: nothing of
+            // this session is decided now. Its unseen bell keeps ringing,
+            // and a new one is neither announced nor marked seen.
+            let Some(reports) = session.reports else {
+                continue;
+            };
             let newest = ledger
                 .iter()
                 .filter(|r| r.session_id == session.id && r.at > self.baseline)
                 .map(|r| r.at)
                 .max();
-            if session.reports || session.watched {
+            if reports || session.watched {
                 // ignored, or viewed: nothing of this session is pending,
                 // and what rang so far never surfaces later
                 self.rung.remove(session.name);
@@ -268,7 +284,7 @@ mod tests {
         Session {
             name,
             id,
-            reports: false,
+            reports: Some(false),
             watched: false,
         }
     }
@@ -373,7 +389,7 @@ mod tests {
     fn a_session_that_reports_agent_state_never_rings() {
         let mut bells = Bells::default();
         let agent = [Session {
-            reports: true,
+            reports: Some(true),
             ..shell("a", "$1")
         }];
         assert!(rang(&mut bells, &[], &agent).is_empty());
@@ -385,6 +401,37 @@ mod tests {
         let ledger = [bell("$1", 10), bell("$1", 20)];
         assert_eq!(rang(&mut bells, &ledger, &[shell("a", "$1")]), ["a"]);
         assert!(rang(&mut bells, &ledger, &agent).is_empty());
+    }
+
+    /// An observation that cannot tell whether an agent still reports
+    /// decides nothing for that session: no notice, no seen mark, and an
+    /// episode that was ringing keeps its key.
+    #[test]
+    fn an_undecided_session_keeps_its_state_until_it_can_be_told() {
+        let undecided = [Session {
+            reports: None,
+            ..shell("a", "$1")
+        }];
+        let mut bells = Bells::default();
+        assert!(rang(&mut bells, &[], &undecided).is_empty());
+        let ledger = [bell("$1", 10)];
+        assert!(rang(&mut bells, &ledger, &undecided).is_empty());
+        // not marked seen: once it can be told, the same bell counts
+        assert_eq!(rang(&mut bells, &ledger, &[shell("a", "$1")]), ["a"]);
+        let key = bells.observe(SERVER, &ledger, &[shell("a", "$1")])["a"].clone();
+        // and an undecided observation neither withdraws nor renews it
+        let more = [bell("$1", 10), bell("$1", 20)];
+        assert_eq!(bells.observe(SERVER, &more, &undecided)["a"], key);
+        // undecided, then an agent that does report: ignored for good
+        let mut bells = Bells::default();
+        assert!(rang(&mut bells, &[], &undecided).is_empty());
+        assert!(rang(&mut bells, &ledger, &undecided).is_empty());
+        let agent = [Session {
+            reports: Some(true),
+            ..shell("a", "$1")
+        }];
+        assert!(rang(&mut bells, &ledger, &agent).is_empty());
+        assert!(rang(&mut bells, &ledger, &[shell("a", "$1")]).is_empty());
     }
 
     #[test]

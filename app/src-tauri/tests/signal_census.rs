@@ -81,6 +81,7 @@ const RUST_TOKENS: &[&str] = &[
     "\"working\"",
     "agent_status::projected",
     "agent_status::projections",
+    "agent_status::reporting",
     "generation_evidence(",
     "hold_reason(",
     "agent_holds(",
@@ -152,12 +153,14 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         1,
         Producer,
     ),
-    // the poll's idle fallback: a session with a projection is one whose
-    // bells are ignored (`bell.rs`), exactly as in the poll
+    // the poll's idle fallback: a session whose observation is still bound
+    // to its pane's current foreground generation is one whose bells are
+    // ignored (`bell.rs`), as in the poll after its `reconcile`. No word is
+    // read, only whether one still speaks for the pane.
     (
         "commands.rs",
-        "poll_idle_tick",
-        "agent_status::projections",
+        "observe_bells_idle",
+        "agent_status::reporting",
         1,
         Attention,
     ),
@@ -1013,6 +1016,22 @@ fn a_terminal_bell_is_attention_and_never_reaches_a_side_effect() {
     assert!(commands
         .contains("pub(crate) fn poll_idle_tick(shown: &std::collections::HashSet<String>) {"));
     assert_eq!(callers_of_poll_idle_tick(&sources), ["scheduler/thread.rs"]);
+    // it runs before the tick's empty-queue shortcut: a Deck with nothing
+    // queued still notices a bell while the webview is not polling
+    assert!(
+        thread.find("crate::commands::poll_idle_tick(").unwrap()
+            < thread
+                .find("items.is_empty()")
+                .expect("the empty-queue path"),
+        "the bell fallback must not depend on a queued row"
+    );
+    // the fallback decides "an agent still reports" with the generation
+    // check, never from a bare projection (a word left by an exited agent)
+    let idle = &commands[commands.find("fn poll_idle_tick(").unwrap()
+        ..commands.find("fn observe_bells(").expect("observe_bells")];
+    assert!(idle.contains("crate::agent_status::reporting(rows, generation_now)"));
+    assert!(idle.contains("&crate::agent_status::live_generation,"));
+    assert!(!idle.contains("projections(") && !idle.contains("projected("));
     assert_eq!(
         commands.matches("bell: rung.contains_key(&name),").count(),
         1

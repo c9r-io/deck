@@ -702,9 +702,13 @@ pub(crate) fn idle_poll_sessions(
 /// watched rule and the same hand-over to the notification module as the
 /// poll's — only the driver differs, so a bell rung while the user is away
 /// is noticed without them returning to Deck. It reads nothing else the
-/// poll owns: no liveness, no exit evidence, no agent reconciliation (a
-/// session counts as reporting by its last projection). A snapshot that
-/// fails or carries no server line changes nothing.
+/// poll owns: no liveness, no exit evidence, and it retires nothing from the
+/// agent store. Whether an agent still reports for a session is asked with
+/// the poll's own two checks instead (`agent_status::reporting`: the pane
+/// identity, and the pane's current foreground generation by point reads),
+/// because no `reconcile` has run since the webview stopped; a generation
+/// that cannot be read decides nothing for that session this tick. A
+/// snapshot that fails or carries no server line changes nothing.
 pub(crate) fn poll_idle_tick(shown: &std::collections::HashSet<String>) {
     let Some(names) = idle_poll_sessions(
         LAST_POLL.lock_or_recover().as_ref(),
@@ -729,7 +733,6 @@ pub(crate) fn poll_idle_tick(shown: &std::collections::HashSet<String>) {
     else {
         return;
     };
-    let agents = crate::agent_status::projections(&rows);
     let mut bells = BELLS.lock_or_recover();
     let mut watch = BellWatch {
         bells: &mut bells,
@@ -737,10 +740,29 @@ pub(crate) fn poll_idle_tick(shown: &std::collections::HashSet<String>) {
         focused: crate::notify::focused(),
         rung: HashMap::new(),
     };
-    observe_bells(&mut watch, &server, &rows, &names, &|name| {
-        agents.contains_key(name)
-    });
+    observe_bells_idle(
+        &mut watch,
+        &server,
+        &rows,
+        &names,
+        &crate::agent_status::live_generation,
+    );
     crate::notify::bells(watch.rung);
+}
+
+/// The fallback's observation over one snapshot. `generation_now` reads a
+/// pane's current foreground generation (point reads in production).
+fn observe_bells_idle(
+    watch: &mut BellWatch<'_>,
+    server: &crate::shell_exit::ServerLedger,
+    rows: &[crate::tmux::PaneRow],
+    names: &[String],
+    generation_now: &dyn Fn(u32) -> Option<crate::agent_status::ForegroundGeneration>,
+) {
+    let reporting = crate::agent_status::reporting(rows, generation_now);
+    observe_bells(watch, server, rows, names, &|name| {
+        reporting.get(name).copied().unwrap_or(Some(false))
+    });
 }
 
 /// Bells of the requested sessions from one snapshot's rows and server line
@@ -750,7 +772,7 @@ fn observe_bells(
     server: &crate::shell_exit::ServerLedger,
     rows: &[crate::tmux::PaneRow],
     names: &[String],
-    reports: &dyn Fn(&str) -> bool,
+    reports: &dyn Fn(&str) -> Option<bool>,
 ) {
     let mut live: Vec<(&str, &str)> = Vec::new();
     for row in rows {
@@ -872,8 +894,9 @@ pub(crate) fn poll_observing_bells(
     // server line nothing is observed: what the last poll found stands.
     let rung = match (bell, server.as_ref()) {
         (Some(watch), Some(server)) => {
+            // `reconcile` just ran on this snapshot: a projection is current
             observe_bells(watch, server, &rows, &names, &|name| {
-                agents.contains_key(name)
+                Some(agents.contains_key(name))
             });
             watch.rung.clone()
         }
@@ -1207,7 +1230,9 @@ mod tests {
                 focused,
                 rung: HashMap::new(),
             };
-            observe_bells(&mut watch, &server(ledger), &rows(), &names, &|_| reports);
+            observe_bells(&mut watch, &server(ledger), &rows(), &names, &|_| {
+                Some(reports)
+            });
             watch.rung
         };
         let snapshot = |ledger: &str| crate::tmux::PaneSnapshot {
@@ -1280,8 +1305,304 @@ mod tests {
         let replaced =
             crate::shell_exit::parse_server_line("deck-exits\t200\t9000\t\tb1|$1|@1|%1|60;")
                 .unwrap();
-        observe_bells(&mut watch, &replaced, &rows(), &names, &|_| false);
+        observe_bells(&mut watch, &replaced, &rows(), &names, &|_| Some(false));
         assert!(watch.rung.is_empty(), "what a new server already held");
+    }
+
+    // ---- the idle fallback and an agent observation that went stale ----
+    //
+    // A real record in the production agent store (`agent_status::ingest`
+    // with a kernel peer and a process table), then process facts that
+    // change under it while NO poll runs, so nothing reconciles the store.
+    // The fallback's own judgement of "does an agent still report for this
+    // pane" is what these tests exercise: no precomputed `reports`.
+
+    const AGENT_SERVER: u32 = 4242;
+    const SHELL: u32 = 300;
+    const TTY: u32 = 7;
+
+    fn proc_info(
+        pid: u32,
+        ppid: u32,
+        tty: u32,
+        tty_pgid: u32,
+        start: u64,
+    ) -> crate::procinfo::ProcessInfo {
+        crate::procinfo::ProcessInfo {
+            pid,
+            ppid,
+            pgid: pid,
+            tty,
+            tty_pgid,
+            start_seconds: start,
+            start_micros: 7,
+        }
+    }
+
+    /// The card's pane: its owning shell `SHELL` on `TTY`, with `leader`
+    /// (born at `start`) leading the terminal's foreground group — the
+    /// shell itself when no program runs in front of it.
+    fn pane_world(leader: u32, start: u64) -> crate::agent_status::ProcessTable {
+        let mut table = crate::agent_status::ProcessTable::new();
+        table.insert(AGENT_SERVER, proc_info(AGENT_SERVER, 1, 0, 0, 1));
+        table.insert(SHELL, proc_info(SHELL, AGENT_SERVER, TTY, leader, 1000));
+        if leader != SHELL {
+            table.insert(leader, proc_info(leader, SHELL, TTY, leader, start));
+        }
+        table
+    }
+
+    fn agent_pane(session_id: &str, foreground: &str) -> PaneRow {
+        PaneRow {
+            server_pid: AGENT_SERVER,
+            session_id: session_id.into(),
+            session_name: "card".into(),
+            window_id: "@1".into(),
+            pane_id: "%1".into(),
+            pane_pid: SHELL,
+            window_active: true,
+            pane_active: true,
+            command: foreground.into(),
+            ..PaneRow::default()
+        }
+    }
+
+    /// The agent leading the pane's foreground reports `state` through the
+    /// production admission path (its hook helper is its child).
+    fn agent_reports(state: &str, table: &crate::agent_status::ProcessTable, leader: u32) {
+        let mut table = table.clone();
+        table.insert(9000, proc_info(9000, leader, TTY, leader, 5000));
+        let line = format!(
+            "{{\"v\":1,\"source\":\"claude-code\",\"state\":\"{state}\",\"socket\":\"{}\",\"server_pid\":{AGENT_SERVER},\"pane\":\"%1\"}}",
+            crate::tmux::socket()
+        );
+        let origin = crate::agent_status::Origin {
+            peer: Some(9000),
+            table,
+        };
+        assert_eq!(
+            crate::agent_status::ingest(&line, &origin, || Some(vec![agent_pane("$1", "claude")])),
+            Ok(())
+        );
+    }
+
+    fn agent_server(bells: &str) -> crate::shell_exit::ServerLedger {
+        crate::shell_exit::parse_server_line(&format!(
+            "deck-exits\t{AGENT_SERVER}\t5000\t\t{bells}"
+        ))
+        .unwrap()
+    }
+
+    /// One tick of the fallback over `rows` and `ledger`, with the process
+    /// facts of `table` (`None`: they cannot be read right now).
+    fn idle_tick(
+        bells: &mut crate::bell::Bells,
+        rows: &[PaneRow],
+        ledger: &str,
+        table: Option<&crate::agent_status::ProcessTable>,
+    ) -> HashMap<String, String> {
+        let shown = std::collections::HashSet::new();
+        let mut watch = BellWatch {
+            bells,
+            shown: &shown,
+            focused: false,
+            rung: HashMap::new(),
+        };
+        observe_bells_idle(
+            &mut watch,
+            &agent_server(ledger),
+            rows,
+            &["card".to_string()],
+            &|pane_pid| {
+                table.and_then(|table| crate::agent_status::foreground_generation(table, pane_pid))
+            },
+        );
+        watch.rung
+    }
+
+    /// The webview's poll over `rows`, `ledger` and `table`.
+    fn resumed_poll(
+        bells: &mut crate::bell::Bells,
+        rows: &[PaneRow],
+        ledger: &str,
+        table: &crate::agent_status::ProcessTable,
+        watched: bool,
+    ) -> HashMap<String, String> {
+        let shown: std::collections::HashSet<String> =
+            watched.then(|| "card".to_string()).into_iter().collect();
+        let mut watch = BellWatch {
+            bells,
+            shown: &shown,
+            focused: watched,
+            rung: HashMap::new(),
+        };
+        let table = table.clone();
+        poll_observing_bells(
+            vec!["card".into()],
+            vec![],
+            false,
+            Ok(crate::tmux::PaneSnapshot {
+                rows: rows.to_vec(),
+                server: Some(agent_server(ledger)),
+            }),
+            move || table,
+            &mut crate::shell_exit::ExitEvidence::new(),
+            &|_| false,
+            Some(&mut watch),
+        )
+        .unwrap();
+        watch.rung
+    }
+
+    /// The gap: the webview stops polling, the agent exits (or is replaced)
+    /// while its session, pane and owning shell stay, and a later program in
+    /// that pane rings. The stored agent word no longer speaks for the
+    /// pane, so the fallback reports the bell — and the poll that comes back
+    /// keeps the same episode instead of finding it already "seen".
+    #[test]
+    fn the_idle_fallback_reports_a_bell_after_the_agent_generation_ended() {
+        let _store = crate::agent_status::STORE_TEST_LOCK.lock_or_recover();
+        let _tracker = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        for (case, after) in [
+            ("exited to its shell", pane_world(SHELL, 1000)),
+            ("replaced by another program", pane_world(313, 6000)),
+        ] {
+            crate::agent_status::reset_for_tests();
+            let mut bells = crate::bell::Bells::default();
+            let agent = pane_world(312, 4000);
+            agent_reports("working", &agent, 312);
+            let claude = [agent_pane("$1", "claude")];
+            // the last poll before the webview stopped: baseline, agent live
+            assert!(resumed_poll(&mut bells, &claude, "", &agent, false).is_empty());
+            assert!(
+                crate::agent_status::projections(&claude).contains_key("card"),
+                "{case}: the record is in the production store"
+            );
+            // no poll from here on: nothing reconciles the store
+            let later = [agent_pane("$1", "zsh")];
+            let rang = "b1|$1|@1|%1|50;";
+            let noticed = idle_tick(&mut bells, &later, rang, Some(&after));
+            assert_eq!(
+                noticed.keys().collect::<Vec<_>>(),
+                ["card"],
+                "{case}: a stale agent word must not swallow the bell"
+            );
+            assert!(
+                crate::agent_status::projections(&later).contains_key("card"),
+                "{case}: the fallback retired nothing from the store"
+            );
+            assert_eq!(idle_tick(&mut bells, &later, rang, Some(&after)), noticed);
+            // the webview polls again (and reconciles): the same episode
+            assert_eq!(
+                resumed_poll(&mut bells, &later, rang, &after, false),
+                noticed,
+                "{case}: handed over, not announced twice, not lost"
+            );
+            // viewed, and it stays viewed for both drivers
+            assert!(resumed_poll(&mut bells, &later, rang, &after, true).is_empty());
+            assert!(idle_tick(&mut bells, &later, rang, Some(&after)).is_empty());
+            // a later bell is a new episode
+            let again = "b1|$1|@1|%1|50;b1|$1|@1|%1|60;";
+            let second = idle_tick(&mut bells, &later, again, Some(&after));
+            assert_eq!(second.keys().collect::<Vec<_>>(), ["card"], "{case}");
+            assert_ne!(second, noticed, "{case}");
+        }
+        crate::agent_status::reset_for_tests();
+    }
+
+    /// The agent signal keeps its priority while it is the pane's current
+    /// foreground generation, exactly as on the poll: its bells are ignored
+    /// and never surface later.
+    #[test]
+    fn the_idle_fallback_ignores_bells_while_the_agent_generation_is_current() {
+        let _store = crate::agent_status::STORE_TEST_LOCK.lock_or_recover();
+        let _tracker = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        crate::agent_status::reset_for_tests();
+        let mut bells = crate::bell::Bells::default();
+        let agent = pane_world(312, 4000);
+        agent_reports("working", &agent, 312);
+        let claude = [agent_pane("$1", "claude")];
+        assert!(resumed_poll(&mut bells, &claude, "", &agent, false).is_empty());
+        let rang = "b1|$1|@1|%1|50;";
+        assert!(idle_tick(&mut bells, &claude, rang, Some(&agent)).is_empty());
+        // the agent then exits: its earlier bell stays ignored, a new one counts
+        let gone = pane_world(SHELL, 1000);
+        let shell = [agent_pane("$1", "zsh")];
+        assert!(idle_tick(&mut bells, &shell, rang, Some(&gone)).is_empty());
+        let again = "b1|$1|@1|%1|50;b1|$1|@1|%1|60;";
+        assert_eq!(
+            idle_tick(&mut bells, &shell, again, Some(&gone))
+                .keys()
+                .collect::<Vec<_>>(),
+            ["card"]
+        );
+        // a record that belongs to another session id never speaks for this
+        // pane, whatever the generation reads
+        crate::agent_status::reset_for_tests();
+        let mut bells = crate::bell::Bells::default();
+        agent_reports("working", &agent, 312);
+        let reused = [agent_pane("$9", "claude")];
+        assert!(idle_tick(&mut bells, &reused, "", Some(&agent)).is_empty());
+        assert_eq!(
+            idle_tick(&mut bells, &reused, "b1|$9|@1|%1|70;", Some(&agent))
+                .keys()
+                .collect::<Vec<_>>(),
+            ["card"],
+            "a reused pane id under a new session is not the agent's"
+        );
+        crate::agent_status::reset_for_tests();
+    }
+
+    /// A generation that cannot be read proves nothing either way: the bell
+    /// is neither announced on a guess that the agent is gone nor marked
+    /// seen on a guess that it still reports. It waits for the next
+    /// observation that can tell.
+    #[test]
+    fn the_idle_fallback_decides_nothing_while_the_generation_is_unreadable() {
+        let _store = crate::agent_status::STORE_TEST_LOCK.lock_or_recover();
+        let _tracker = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        let agent = pane_world(312, 4000);
+        let rows = [agent_pane("$1", "claude")];
+        let rang = "b1|$1|@1|%1|50;";
+        // unreadable, then readable and gone: the bell was kept and counts
+        crate::agent_status::reset_for_tests();
+        let mut bells = crate::bell::Bells::default();
+        agent_reports("working", &agent, 312);
+        assert!(resumed_poll(&mut bells, &rows, "", &agent, false).is_empty());
+        assert!(idle_tick(&mut bells, &rows, rang, None).is_empty());
+        assert!(idle_tick(&mut bells, &rows, rang, None).is_empty());
+        let gone = pane_world(SHELL, 1000);
+        assert_eq!(
+            idle_tick(&mut bells, &rows, rang, Some(&gone))
+                .keys()
+                .collect::<Vec<_>>(),
+            ["card"],
+            "not marked seen while unknown"
+        );
+        // an episode already ringing is not withdrawn by an unreadable tick
+        let ringing = idle_tick(&mut bells, &rows, rang, Some(&gone));
+        agent_reports("working", &agent, 312);
+        assert_eq!(idle_tick(&mut bells, &rows, rang, None), ringing);
+        // unreadable, then readable and still the agent: ignored for good
+        crate::agent_status::reset_for_tests();
+        let mut bells = crate::bell::Bells::default();
+        agent_reports("working", &agent, 312);
+        assert!(resumed_poll(&mut bells, &rows, "", &agent, false).is_empty());
+        assert!(idle_tick(&mut bells, &rows, rang, None).is_empty());
+        assert!(idle_tick(&mut bells, &rows, rang, Some(&agent)).is_empty());
+        assert!(idle_tick(&mut bells, &rows, rang, Some(&gone)).is_empty());
+        // a session with no agent record needs no generation at all
+        crate::agent_status::reset_for_tests();
+        let mut bells = crate::bell::Bells::default();
+        let shell = [agent_pane("$1", "zsh")];
+        assert!(idle_tick(&mut bells, &shell, "", None).is_empty());
+        assert_eq!(
+            idle_tick(&mut bells, &shell, rang, None)
+                .keys()
+                .collect::<Vec<_>>(),
+            ["card"]
+        );
+        crate::agent_status::reset_for_tests();
     }
 
     /// The bell observation rides the same snapshot (`bell.rs`): only the
