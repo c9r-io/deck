@@ -20,7 +20,10 @@
 // writes its own change over the automations last known to be in the file
 // (`committedInbound`), never over the copy it was built with: it carries
 // no rule save that did not land, loses none that landed while it waited,
-// and asks for no permission. That baseline is told by the launch's
+// and asks for no permission. One that fails puts back the settings from
+// before it with that baseline's automations, so a rule save that landed
+// while it waited stays in memory and in the next rule save, and a choice
+// or permission that save withdrew stays withdrawn. That baseline is told by the launch's
 // `loadSettings` (the file as loaded; a backup as native hands it over,
 // without channel choices; a first run's none), by `refreshChannelAuthority`
 // and by every save that answered; a load that failed leaves it unknown and
@@ -401,8 +404,10 @@ function announceShortcutChange() {
    a no withdraws it without an error. A choice with `proceed` is shown and
    shared only once its write landed: until then ctx.settings does not hold
    it, so a write that is withdrawn or fails has nothing to take back, and
-   then only its own field is put in, in place. Resolves true when the write
-   landed. */
+   then only its own field is put in, in place. A choice that fails takes its
+   own change back and never an automation the file holds: the settings put
+   back carry the writer's baseline, not the copy from before the choice.
+   Resolves true when the write landed. */
 const commitGenerations = new Map();
 const commitPending = new Set();
 async function commitSettings(choice) {
@@ -437,8 +442,11 @@ async function commitSettings(choice) {
       toast(t(errorKey));
       uev('settings-save-fail');
     } else if (generation === commitGenerations.get(key)) {
-      ctx.settings = previous;
-      apply(previous);
+      /* the settings from before this choice, with the automations the file
+         holds now: `previous` may be older than a rule save that landed
+         while this one waited, and the next rule save is built on these */
+      ctx.settings = committedInbound ? { ...previous, inbound: structuredClone(committedInbound) } : previous;
+      apply(ctx.settings);
       toast(t(errorKey));
       uev('settings-save-fail');
     }

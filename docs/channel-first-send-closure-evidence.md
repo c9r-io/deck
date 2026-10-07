@@ -329,3 +329,71 @@ A 为 `rb`（目录 `/var`、18:30、免就绪首发）：
 | `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在最终的前端源码上运行） |
 
 没有构建应用，没有启动应用或 tmux 服务器。fmt、clippy、245 秒后台载体没有重跑。
+
+## F3.4 普通设置失败对已提交规则的回滚隔离（2026-10-07）
+
+起始 `main` / `bc3adc0` / 工作树干净。生产改动：`app/ui/js/settings.js`（失败分支一处，加契约注释）。测试：`app/ui/test/settings-first-save-dom.test.mjs` 与 `fixtures/first-save-scenes.mjs` 新增 6 个场景。
+
+### 修复前的逐阶段状态（`bc3adc0` 的 `settings.js`，独立进程，只经 `loadSettings()`）
+
+主文件 S0：频道规则 `ra`（`firstSend`，授权 `native-0`）、Clock 规则 `rb`（`/tmp`、09:00）、表情规则 `rs`（`/tmp`、无 `autoSend`）。顺序：A 编辑器保存（已落盘，扣住答复）→ B `setFontScale(1.2)` 排队 → A 答复成功 → B 发出并被拒绝（主文件未写入）→ D 在另一条规则的编辑器里把目录改为 `/opt` 并保存。
+
+A 为 `rb`（目录 `/var`、18:30、免就绪首发）：
+
+| 阶段 | 内存里的 `rb` | 主文件里的 `rb` |
+|---|---|---|
+| A 答复后 | `/var`、1110、免就绪首发 | 同左 |
+| B 被拒绝后 | `/tmp`、540、无 | `/var`、1110、免就绪首发 |
+| D 的请求 | `/tmp`、540、无（`rs` 为 `/opt`） | |
+| D 落盘后 | | `/tmp`、540、无 |
+
+A 为 `rs`（目录 `/var`、批准自动发送）：A 答复后内存与主文件里 `rs` 为 `/var` 且有 `autoSend`；B 被拒绝后内存里 `rs` 为 `/tmp`、无 `autoSend`，主文件不变；随后 D 的保存处理函数抛出 `TypeError: Cannot read properties of undefined (reading 'external')`（见报告“另外发现”）。
+
+A 为 `ra`（撤下首步授权）：
+
+| 阶段 | 内存里的 `ra` | 主文件里的 `ra` |
+|---|---|---|
+| A 答复后 | 无 `firstSend`、无授权 | 同左 |
+| B 被拒绝后 | `firstSend: true`、授权 `native-0` | 无 `firstSend`、无授权 |
+| D 的请求 | `firstSend: true`、授权 `native-0`（`rb` 为 `/opt`） | |
+| D 落盘后（合成原生侧照单写入） | | `firstSend: true`、授权 `native-0` |
+
+三种情况授权请求列表都为空。
+
+### 修复后
+
+同样的三个场景，每一阶段内存里的自动化配置都 `deepEqual` 主文件：B 被拒绝后内存保留 A；D 的请求、落盘后的主文件、D 之后的内存三处都保留 A（`rb` 为 `/var`、1110、免就绪首发；`rs` 为 `/var` 且有 `autoSend`；`ra` 无 `firstSend`、无授权），D 自己的目录修改为 `/opt`。B 自己的字段（字号 1，或快捷键 `Meta+KeyD`）已收回，失败提示 1 次，主文件写入次数在 B 前后不变。
+
+### 同一断言修复前后
+
+| 测试 | 修复前 | 修复后 |
+|---|---|---|
+| `a clock rule save that landed is kept in memory and in the next rule save when a font save fails` | 失败 `the automations in memory are still the ones in the file` | 通过 |
+| `a clock rule save that landed is kept when a shortcut save fails` | 失败，同一断言 | 通过 |
+| `a badge approval that landed is kept in memory and in the next rule save when a font save fails` | 失败，同一断言 | 通过 |
+| `a channel permission withdrawn by a save that landed is not brought back by a failed font save` | 失败，同一断言 | 通过 |
+| `a rule save and a font save that both landed are both kept by the next rule save` | 通过 | 通过 |
+| `a font save that fails alone takes back its own change and leaves every automation and permission` | 通过 | 通过 |
+
+整个文件：修复前 `tests 15 / pass 11 / fail 4`；修复后 `tests 15 / pass 15 / fail 0`。
+
+### 保持性断言
+
+- A、B 都成功：主文件写入 2 次后 D 再写 1 次；D 的请求、主文件、内存里 `rb` 都是 A 的版本，`rs` 为 `/opt`，`ra` 的授权仍是 `native-0`，最终主文件 `fontScale` 1.2。
+- B 单独失败：提示 1 次，内存 `fontScale` 回到 1，主文件未写；随后 D 的请求和主文件里 `ra` 的 `firstSend` 与授权原样、`rb` 原样、授权请求为空；同一个字号设置再保存一次成功。
+
+### 既有异常的核对
+
+在隔离目录建 `66f8874` 的 git worktree，放入当前的场景文件并加一个只做“加载 → 撤销 `rs` 的批准并保存”的临时场景，运行输出 `TypeError: Cannot read properties of undefined (reading 'external')`。worktree 已用 `git worktree remove` 移除；临时场景没有进入仓库。
+
+### 门禁
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check` 全部已跟踪 UI JS/MJS | 通过 |
+| `scripts/ui-tests` | `tests 612 / pass 612 / fail 0`，退出码 0 |
+| `node ui/js/check.mjs` | `ok: 58 modules` |
+| `git diff --check` | 退出码 0 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在最终的前端源码上运行） |
+
+没有构建应用，没有启动应用或 tmux 服务器。fmt、clippy、245 秒后台载体没有重跑。

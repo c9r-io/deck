@@ -439,3 +439,86 @@ F3.1 一节把它写成“只读代码得出，没有运行验证”的短暂不
 ### 提交
 
 本节的生产改动、测试和文档作为一个提交落在本地 `main`，父提交 `fe1cd93`，不带 Co-Authored-By；未推送、未发布、版本未变。
+
+## F3.4 普通设置失败对已提交规则的回滚隔离（2026-10-07）
+
+起始：`main`，HEAD `bc3adc0`，工作树干净。F3.3 处理的“首笔规则保存失败污染后续保存”已关闭，本节不重开。本节检查相反的组合：规则保存 A **成功**，随后普通设置 B 保存**失败**，下一次规则保存 D 是否保留 A。逐阶段证据在 [channel-first-send-closure-evidence.md](channel-first-send-closure-evidence.md) 的同名一节。
+
+### 结论：CONFIRMED，已修复
+
+在 `bc3adc0` 上用独立进程、只经生产 `loadSettings()` 实际复现，两个阶段都属实：
+
+1. **B 失败使内存里的 A 回退。** A（编辑器保存规则）的写入已落盘、尚未答复时，用户改字号（B）。A 答复成功，主文件和内存都是 A 的版本。B 随后被明确拒绝、主文件未写入；B 返回后主文件仍是 A，但内存里的自动化配置回到了 A 之前。
+2. **D 把旧内容写回主文件。** B 结算之后编辑并保存另一条规则，D 的请求和落盘后的主文件里，A 改过的那条规则是 A 之前的版本。
+
+三种 A 都复现：
+
+| A | B 失败后内存 | D 的请求与落盘后的主文件 |
+|---|---|---|
+| Clock 规则改目录、时间、免就绪首发 | 回到原目录、原时间、无免就绪首发 | 同左：A 的保存被撤销 |
+| 表情规则批准自动发送 | 目录回退，`autoSend` 批准消失 | 见下方“另外发现” |
+| 频道规则**撤下**首步授权 | `firstSend` 和授权 `native-0` 重新出现 | D 的请求带着已撤下的 `firstSend` 和授权，合成原生侧照单写入主文件 |
+
+第三行是其中最重的：用户已经成功撤下的选择，被一次无关的失败保存恢复到内存，再由下一次规则保存送回原生一侧。真实原生一侧收到这个旧授权时如何处理，本轮没有验证；合成 IPC 不模拟原生的授权校验。
+
+### 根因（对象引用）
+
+`commitSettings` 对普通设置在排队时记下 `previous = ctx.settings` 并把 `ctx.settings` 换成自己的候选。A 成功时把自己的字段原地放进当时的 `ctx.settings`，也就是 B 的候选对象；`previous` 是更早的对象，没有 A。B 失败执行 `ctx.settings = previous`，恢复的是整份旧对象。之后 `saveRule` 从 `ctx.settings.inbound` 合并出完整规则列表，规则保存不套用写入基线（它自己就是自动化的意图），于是旧内容被写回。
+
+### 最小修复
+
+`app/ui/js/settings.js` 失败分支一处：放回的设置是“这次选择之前的设置，加上写入基线里的自动化配置”，不再是原样的 `previous`。基线只来自加载、刷新和已答复成功的保存（F3.3 的 `fileHolds`），不来自 `previous`，也不来自任何候选。
+
+- **不会复活提前发布候选的问题。** 规则保存仍然在原生答复成功之后才进入共享设置（F3.3 不变）；本次改动只在别的设置失败时读取已提交基线，没有让任何未提交内容更早进入 `ctx.settings`。
+- **B 自己的修改照旧收回**，错误提示照旧一次。
+- **基线未知时不猜。** 加载失败后基线为空，这时失败回滚保持原来的行为（原样放回 `previous`），不把它当成空配置。
+- 没有新的确认步骤、锁或框架；普通设置彼此之间的回滚策略没有改。
+
+### 测试
+
+加在 `app/ui/test/settings-first-save-dom.test.mjs`（场景在 `fixtures/first-save-scenes.mjs`），新增 6 项，文件共 15 项。每个场景仍在自己的 node 进程里运行，只经 `loadSettings()`，没有预先刷新或保存。D 在 B 结算之后开始。
+
+| 必测矩阵 | 测试 | 修复前 | 修复后 |
+|---|---|---|---|
+| 1 Clock，A 成功，字号 B 失败，再保存 R2 | `a clock rule save that landed is kept in memory and in the next rule save when a font save fails` | 失败：`the automations in memory are still the ones in the file` | 通过 |
+| 2 表情规则批准 | `a badge approval that landed is kept in memory and in the next rule save when a font save fails` | 失败，同一断言 | 通过 |
+| 2、6 成功的撤销不被恢复（频道首步授权） | `a channel permission withdrawn by a save that landed is not brought back by a failed font save` | 失败，同一断言 | 通过 |
+| 3 B 换成快捷键 | `a clock rule save that landed is kept when a shortcut save fails` | 失败，同一断言 | 通过 |
+| 4、6 没有 A，B 单独失败；既有授权保持 | `a font save that fails alone takes back its own change and leaves every automation and permission` | 通过 | 通过 |
+| 5 A、B 都成功 | `a rule save and a font save that both landed are both kept by the next rule save` | 通过 | 通过 |
+
+每个失败场景逐处断言：A 答复后内存等于主文件；B 失败后主文件写入次数不变、提示一次、B 自己的字段收回、内存里的自动化配置仍等于主文件；D 恰好一次保存，D 的请求、落盘后的主文件、内存三处都保留 A，D 自己的修改已保存，授权请求为空。
+
+“规则列表不显示旧选择”是通过内存和重新打开编辑器验证的（B 失败后打开该规则，字段是 A 保存的值）。字号保存失败本身不重绘规则列表，没有单独断言列表的 DOM。
+
+### 另外发现，未修复：撤销表情规则批准后规则列表绘制抛异常
+
+矩阵第 2 项原本想用“撤销表情规则批准”做 A，走不通：保存成功后 `renderAutomations` 用还没刷新的批准状态（`valid`）绘制已经没有 `autoSend` 的规则，`approvalText` 读 `rule.autoSend.external` 抛 `TypeError`。保存本身已落盘，但异常从保存处理函数抛出，编辑器不关闭、没有“已保存”提示。
+
+- 这与本轮问题无关，不在批准范围内，**没有修**。表情规则改用“批准”做 A；“成功的撤销不被恢复”改由频道首步授权的场景覆盖。
+- 在 `66f8874` 的工作副本上跑同一操作，同样出现这个 `TypeError`，所以它早于 F3.1–F3.4；抛出位置在那个版本上没有进一步定位。
+- 修复前的第 2 项场景里，B 的回滚还会让这个异常在 D 的保存里出现（内存里批准消失而批准状态仍是 `valid`）；修复后内存不再回退，该场景不触发。
+
+### 门禁（修复后的工作树，实际运行）
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check`（全部已跟踪的 UI JS/MJS） | 通过 |
+| `scripts/ui-tests` | 612 项通过，0 失败（606 加本轮 6），覆盖率门槛与清单通过 |
+| `node ui/js/check.mjs` | 58 个模块通过 |
+| `git diff --check` | 通过 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在最终的前端源码上运行） |
+
+没有改 Rust、IPC 契约、原生投递或构建输入。fmt、clippy 和 245 秒后台载体没有重跑。
+
+### 未执行与遗留
+
+- 没有在真实 WKWebView 里操作；没有使用真实 Slack、Agent、Keychain 或剪贴板。没有启动应用或 tmux 服务器；为核对上面那个既有异常临时建了一个 `66f8874` 的 git worktree（隔离目录），已移除。
+- 加载失败（基线未知）状态下，普通设置失败仍按旧方式整份放回，这个组合没有测试。
+- B 失败时，排在 B 之后、已经乐观显示的**其他普通设置**仍会被一并放回旧值。这是普通设置彼此之间既有的回滚行为，按交接要求没有处理。
+- “同类保存进行中，新保存被静默拒绝”仍未处理。
+- 上面“另外发现”的绘制异常等待裁定。
+
+### 提交
+
+本节的生产改动、测试和文档作为一个提交落在本地 `main`，父提交 `bc3adc0`，不带 Co-Authored-By；未推送、未发布、版本未变。

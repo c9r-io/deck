@@ -88,13 +88,19 @@ const rule = (data, id) => written(data).rules.find(value => value.id === id);
 const granted = data => written(data).channelRules.find(value => value.id === 'ra');
 const BEFORE = JSON.parse(serializeSettings(FILE)).inbound;
 const memory = () => JSON.parse(serializeSettings(ctx.settings)).inbound;
-/* the editor's change to a clock rule (rb) or a badge rule (rs) */
-async function editRule(id) {
+/* the editor's change to a clock rule (rb) or a badge rule (rs), or `change` */
+const open = id => {
   const all = [...ctx.settings.inbound.rules, ...ctx.settings.inbound.channelRules];
   get('auto-list').children[all.findIndex(value => value.id === id)].querySelector('.ar-edit').onclick();
-  get('auto-dir').value = '/var';
-  if (id === 'rb') { get('auto-time').value = '18:30'; get('auto-first-send').checked = true; }
-  else { get('auto-send').checked = true; get('auto-send').fire('change'); }
+};
+async function editRule(id, change = null) {
+  open(id);
+  if (change) change();
+  else {
+    get('auto-dir').value = '/var';
+    if (id === 'rb') { get('auto-time').value = '18:30'; get('auto-first-send').checked = true; }
+    else { get('auto-send').checked = true; get('auto-send').fire('change'); }
+  }
   const done = get('auto-save').onclick();
   do { await turn(); } while (hashing);
   await turn();
@@ -258,6 +264,115 @@ const scenes = {
     assert.equal(JSON.parse(disk.data).fontScale, 1.2);
   },
 };
+/* ---- F3.4: a rule save that landed is not undone by another setting's
+   failed save, in memory or in the next rule save's write ---- */
+const OTHER = {
+  font: { save: () => setFontScale(1.2), own: () => ctx.settings.fontScale, before: 1, wanted: 1.2 },
+  shortcut: { save: () => setShortcut('splitRight', 'Meta+KeyK'), own: () => ctx.settings.shortcuts.splitRight,
+    before: 'Meta+KeyD', wanted: 'Meta+KeyK' },
+};
+const said = () => get('toasts').children.length;
+/* A (the rule edit) is in the file and not answered when B (another
+   setting) is made; A is answered, then B is refused with nothing written */
+async function landedThenRefused(edit, other, { refused = true } = {}) {
+  const held = [{ answer: deferred() }, refused ? deferred() : null];
+  await launch('main', held);
+  const { done: a } = await edit();
+  assert.deepEqual([saves.length, disk.writes.length], [1, 1], 'A is in the file and not answered');
+  const b = OTHER[other].save();
+  await turn();
+  assert.equal(saves.length, 1, 'B waits behind A');
+  held[0].answer.resolve();
+  await a; await turn();
+  assert.equal(saves.length, 2, 'B was sent after A was answered');
+  const landed = memory();
+  assert.deepEqual(landed, written(disk.data), 'A is in memory as it is in the file');
+  const toasts = said();
+  if (refused) held[1].reject('io');
+  await b; await turn();
+  assert.equal(disk.writes.length, refused ? 1 : 2);
+  if (refused) {
+    assert.equal(said(), toasts + 1, 'B\'s failure is said once');
+    assert.equal(OTHER[other].own(), OTHER[other].before, 'B\'s own change is taken back');
+  } else assert.equal(OTHER[other].own(), OTHER[other].wanted);
+  return landed;
+}
+/* D: another rule saved once B has settled; `kept` is asked of every place */
+async function thenAnotherRule(id, landed, kept) {
+  assert.deepEqual(memory(), landed, 'the automations in memory are still the ones in the file');
+  kept(memory(), 'memory after B');
+  const sent = saves.length;
+  const { done } = await editRule(id, () => { get('auto-dir').value = '/opt'; });
+  await done; await turn();
+  assert.equal(saves.length, sent + 1, 'D is one save');
+  const request = written(saves.at(-1).data);
+  kept(request, 'D\'s request');
+  kept(written(disk.data), 'the file after D');
+  kept(memory(), 'memory after D');
+  assert.equal(request.rules.find(value => value.id === id).dir, '/opt', 'D\'s own change is saved');
+  assert.equal(written(disk.data).rules.find(value => value.id === id).dir, '/opt');
+  assert.deepEqual(saves.flatMap(save => save.channelFirstSendRequests || []), []);
+}
+const clockKept = (inbound, where) => {
+  const saved = inbound.rules.find(value => value.id === 'rb');
+  assert.deepEqual([saved.dir, saved.schedule.minute, saved.firstSendWithoutReadiness], ['/var', 1110, true], where);
+};
+Object.assign(scenes, {
+  async landedClock(other, refused = true) {
+    const landed = await landedThenRefused(() => editRule('rb'), other, { refused });
+    clockKept(landed, 'after A');
+    open('rb');
+    assert.equal(get('auto-dir').value, '/var', 'the rule opens as it was saved');
+    get('auto-cancel').onclick();
+    await thenAnotherRule('rs', landed, clockKept);
+    assert.deepEqual(granted(disk.data).firstSendGrant, GRANT);
+    if (!refused) assert.equal(JSON.parse(disk.data).fontScale, 1.2);
+  },
+  'landed-clock-then-font-fails': () => scenes.landedClock('font'),
+  'landed-clock-then-shortcut-fails': () => scenes.landedClock('shortcut'),
+  'landed-clock-then-font-lands': () => scenes.landedClock('font', false),
+  /* A approves a badge rule: the approval that landed stays */
+  async 'landed-approval-then-font-fails'() {
+    const approved = (inbound, where) => {
+      const saved = inbound.rules.find(value => value.id === 'rs');
+      assert.deepEqual([saved.dir, Object.keys(saved.autoSend || {}).sort()], ['/var', ['classes', 'digest', 'external', 'steps']], where);
+    };
+    const landed = await landedThenRefused(() => editRule('rs'), 'font');
+    approved(landed, 'after A');
+    await thenAnotherRule('rb', landed, approved);
+  },
+  /* A withdraws the channel permission: nothing brings it back */
+  async 'withdrawn-channel-permission-then-font-fails'() {
+    const withdrawn = (inbound, where) => assert.deepEqual(
+      [inbound.channelRules[0].firstSend, inbound.channelRules[0].firstSendGrant], [undefined, undefined], where);
+    const landed = await landedThenRefused(() => editRule('ra', () => {
+      assert.equal(get('auto-channel-first-send').checked, true);
+      get('auto-channel-first-send').checked = false; get('auto-channel-first-send').fire('change');
+    }), 'font');
+    withdrawn(landed, 'after A');
+    await thenAnotherRule('rb', landed, withdrawn);
+  },
+  /* no rule save at all: B's failure is B's own, and a permission in the file stays */
+  async 'font-fails-alone'() {
+    const held = [deferred()];
+    await launch('main', held);
+    const toasts = said();
+    const b = setFontScale(1.2);
+    await turn();
+    held[0].reject('io');
+    await b; await turn();
+    assert.equal(said(), toasts + 1);
+    assert.equal(ctx.settings.fontScale, 1);
+    assert.equal(disk.writes.length, 0);
+    const kept = (inbound, where) => {
+      assert.deepEqual(inbound.channelRules, BEFORE.channelRules, where);
+      assert.deepEqual(inbound.rules.find(value => value.id === 'rb'), BEFORE.rules.find(value => value.id === 'rb'), where);
+    };
+    await thenAnotherRule('rs', BEFORE, kept);
+    await setFontScale(1.2);
+    assert.equal(JSON.parse(disk.data).fontScale, 1.2, 'the same setting saves on the next try');
+  },
+});
 const scene = scenes[process.argv[2]];
 if (!scene) { console.error('unknown scene'); process.exit(2); }
 await scene();
