@@ -506,14 +506,14 @@ test('a save started after one was given up is written as its own, behind the sa
   assert.equal(get('auto-editor').hidden, true);
 });
 
-test('a rule save that fails in the file takes back its own rules only, and no later save writes them', async () => {
+test('a rule save that fails in the file was never shared, and no later save writes it', async () => {
   const gates = [deferred(), deferred(), null, null];
   const { saves, disk, before, w0, a, b, c } = await interleaved('rb', gates);
   const toasts = said().length;
   gates[0].resolve();
   await w0; await turn();
   assert.equal(saves.length, 2, 'A was sent');
-  assert.equal(stored('rb').dir, '/var', 'and is shown from then on');
+  assert.equal(stored('rb').dir, '/tmp', 'and is in no shared settings before the file holds it');
   gates[1].reject('io');                               // the file refused A
   await a.done; await b; await c; await turn();
   assert.equal(saves.length, 4);

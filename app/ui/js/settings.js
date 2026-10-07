@@ -13,13 +13,19 @@
 // it waited in the queue is withdrawn there (nothing written, no permission
 // requested, no error shown). Once `proceed` answered yes the write is under
 // way and is not taken back.
-// WHAT CAN STILL BE WITHDRAWN IS NOBODY ELSE'S BASELINE. Such a save keeps
-// its rules to itself until that yes: they enter ctx.settings only then, so
-// no other save can copy them while they wait. A save of another setting
+// WHAT THE FILE DOES NOT HOLD IS NOBODY ELSE'S BASELINE. A rule save keeps
+// its rules to itself until the native save answered that they were written:
+// they enter ctx.settings only then, so no other save can copy a rule save
+// that is waiting, was given up, or was refused. A save of another setting
 // writes its own change over the automations last known to be in the file
 // (`committedInbound`), never over the copy it was built with: it carries
-// neither a rule save given up before its turn nor loses one that was
-// written while it waited, and it asks for no permission.
+// no rule save that did not land, loses none that landed while it waited,
+// and asks for no permission. That baseline is told by the launch's
+// `loadSettings` (the file as loaded; a backup as native hands it over,
+// without channel choices; a first run's none), by `refreshChannelAuthority`
+// and by every save that answered; a load that failed leaves it unknown and
+// writes nothing. It never comes from ctx.settings and is never authority:
+// native decides what a save may keep.
 // The Lens may explicitly download and enable through installTranslationPack;
 // it shares the same settings writer and installation guard as Settings.
 // Navigation and search: the sections and the searchable settings (stable
@@ -250,7 +256,10 @@ export async function loadSettings() {
     const doc = await inv('load_settings');
     if (doc && doc.warning) toast(translateNotice(doc.warning));
     if (doc && doc.data) ctx.settings = parseSettings(doc.data);
+    /* what was loaded is what the writer starts from; a first run holds none */
+    fileHolds(doc && doc.data ? ctx.settings.inbound : normalizeSettings({}).inbound);
   } catch (e) {
+    fileHolds(null);                  // unknown, not empty
     toast(t('error.settingsLoad'));   // NOT a first run — defaults stay in memory only
     uev('settings-load-fail');
   }
@@ -265,14 +274,19 @@ export async function loadSettings() {
 let settingsWriteChain = Promise.resolve();
 let nativeChannelSettings = null;
 let committedInbound = null;   // the automations of the last settings read from or written to the file
+/* The automations the settings file is known to hold: what saves of other
+   settings write, and the channel rules a rule save is answered with. */
+function fileHolds(inbound) {
+  committedInbound = inbound && structuredClone(inbound);
+  nativeChannelSettings = inbound && structuredClone({ channelRules: inbound.channelRules,
+    channelConnection: inbound.channelConnection });
+}
 export function refreshChannelAuthority() {
   const operation = settingsWriteChain.catch(() => {}).then(async () => {
     const loaded = await inv('load_settings');
     if (!loaded?.data) return;
     const canonical = parseSettings(loaded.data);
-    committedInbound = structuredClone(canonical.inbound);
-    nativeChannelSettings = { channelRules: canonical.inbound.channelRules,
-      channelConnection: canonical.inbound.channelConnection };
+    fileHolds(canonical.inbound);
     Object.assign(ctx.settings.inbound, structuredClone(nativeChannelSettings));
     emit('channel-authority');
   });
@@ -293,9 +307,7 @@ function saveSettingsCandidate(candidate, { channelFirstSendRequests = [], chann
       ...(channelFirstSendRequests.length ? { channelFirstSendRequests } : {}) });
     if (typeof saved === 'string') {
       const canonical = normalizeSettings(JSON.parse(saved));
-      committedInbound = structuredClone(canonical.inbound);
-      nativeChannelSettings = { channelRules: canonical.inbound.channelRules,
-        channelConnection: canonical.inbound.channelConnection };
+      fileHolds(canonical.inbound);
       Object.assign(candidate.inbound, structuredClone(nativeChannelSettings));
       if (ctx.settings !== candidate) Object.assign(ctx.settings.inbound, structuredClone(nativeChannelSettings));
     } else committedInbound = structuredClone(candidate.inbound);
@@ -387,9 +399,10 @@ function announceShortcutChange() {
    an older one's rollback; `exclusive` refuses re-entry while that key is
    pending. `proceed` (optional) is asked when the writer reaches this write:
    a no withdraws it without an error. A choice with `proceed` is shown and
-   shared only from that yes: until then ctx.settings does not hold it, and
-   from then only its own field is put in (and taken out again if the write
-   fails), in place. Resolves true when the write landed. */
+   shared only once its write landed: until then ctx.settings does not hold
+   it, so a write that is withdrawn or fails has nothing to take back, and
+   then only its own field is put in, in place. Resolves true when the write
+   landed. */
 const commitGenerations = new Map();
 const commitPending = new Set();
 async function commitSettings(choice) {
@@ -405,27 +418,22 @@ async function commitSettings(choice) {
   const previous = ctx.settings;
   const controls = locked.map($);
   controls.forEach(control => { control.disabled = true; });
-  let replaced = null;   // what a choice with `proceed` took the place of, once it went ahead
-  const proceed = choice.proceed && (() => {
-    if (!choice.proceed()) return false;
-    replaced = { value: ctx.settings[key] };
-    ctx.settings[key] = structuredClone(candidate[key]);
-    apply(ctx.settings);
-    return true;
-  });
-  if (!proceed) { ctx.settings = candidate; apply(candidate); }
+  const held = !!choice.proceed;   // kept out of ctx.settings until its write landed
+  if (!held) { ctx.settings = candidate; apply(candidate); }
   try {
     await saveSettingsCandidate(candidate, { channelIntent: key === 'inbound',
-      channelFirstSendRequests: choice.channelFirstSendRequests || [], proceed: proceed || null });
+      channelFirstSendRequests: choice.channelFirstSendRequests || [], proceed: choice.proceed || null });
+    if (held) {
+      /* only this choice's own field, in place: saves of other fields made
+         meanwhile keep what they changed */
+      ctx.settings[key] = structuredClone(candidate[key]);
+      apply(ctx.settings);
+    }
     await onCommit(candidate);
     return true;
   } catch (error) {
     if (error === WITHDRAWN) return false;   // never shown, never shared: nothing to put back
-    if (replaced) {
-      /* only this choice's own field goes back, in place: saves of other
-         fields queued meanwhile keep what they changed */
-      ctx.settings[key] = replaced.value;
-      apply(ctx.settings);
+    if (held) {
       toast(t(errorKey));
       uev('settings-save-fail');
     } else if (generation === commitGenerations.get(key)) {

@@ -354,3 +354,88 @@ F3.1 一节把它写成“只读代码得出，没有运行验证”的短暂不
 ### 提交
 
 本节的生产改动、测试和文档作为一个提交落在本地 `main`，父提交 `795bebc`，不带 Co-Authored-By；未推送、未发布、版本未变。
+
+## F3.3 正常加载基线与首笔保存失败隔离（2026-10-07）
+
+起始：`main`，HEAD `fe1cd93`，工作树干净。本节只处理 F3.2 之后剩下的一条：生产启动的 `loadSettings()` 没有建立写入基线，本次运行第一笔规则保存失败后，它的内容仍被后面的普通设置保存写进主文件。F3.1、F3.2 的修复保留。逐次写入的证据在 [channel-first-send-closure-evidence.md](channel-first-send-closure-evidence.md) 的同名一节。
+
+### 结论：CONFIRMED，已修复
+
+**上一节有一句结论是错的，在此更正。** F3.2“未执行与遗留”最后一条写的是“任何排在规则保存后面的写入，都会先经过那次规则保存或它前面的写入，所以到它时已经有值”。这只在那次规则保存**成功**时成立。规则保存是本次运行的第一笔保存并且失败时，基线仍然为空。那句话当时标注为“读代码得出，没有单独的测试”，原文保留在上一节。
+
+在 `fe1cd93` 上实际复现的结果比交接里推测的更重：
+
+- **生产初始化与测试初始化确实不同。** 生产启动只调用 `loadSettings()`；`refreshChannelAuthority()` 只在原生发出 `channel-authority-changed` 事件时调用。F3.2 的测试 `scene()` 每次都预先调用 `refreshChannelAuthority()`，失败用例前面还有一笔成功的 W0，两者都替生产建立了基线。
+- **A 失败后 B 带着 A 落盘。** A（第一笔保存，Clock 规则改目录、时间、免就绪首发）被明确拒绝、主文件没有写入；B（改字号）的请求和 B 落盘后的主文件里都是 A 的内容。
+- **C 不纠正，而且之后一直如此。** B 的成功把 A 的内容记成了已提交基线。C 的请求、最终主文件、内存里的规则、以及之后再做的一次字号保存，全部带着 A 的内容。失败的规则变更成了永久配置，界面上也显示为已保存，而用户看到的是保存失败的提示。
+- 表情规则同样：目录和整个 `autoSend` 批准。授权请求列表始终为空。
+
+### 根因
+
+两处叠加。F3.2 让规则保存在 `proceed` 回答“是”时就进入 `ctx.settings`，早于原生写入的结果；在这之后构造的 B、C 把它复制走。F3.2 靠写入基线把它挡在其他保存之外，但基线只由 `refreshChannelAuthority()` 和成功的保存建立，正常启动的 `loadSettings()` 不建立。
+
+### 最小修复
+
+只改 `app/ui/js/settings.js`（加 `automation.js` 头部契约一句）。没有新的存储层、事务框架、确认步骤、后端或 IPC 改动。
+
+1. **规则保存在原生答复“已写入”之后才进入共享设置。** 之前是 `proceed` 回答“是”时放进去、失败再取出来。现在等待中、被取消、被拒绝的规则保存都从未出现在 `ctx.settings` 里，其他保存无从复制，失败时也没有“收回”这一步。这一条不依赖基线是否已知。
+2. **正常加载建立同一份基线。** `loadSettings()` 成功后，用本次加载并规范化的结果建立写入基线；`committedInbound` 和 `nativeChannelSettings` 由同一个小函数一起更新（加载、刷新、保存答复三处共用），不会一个新一个旧。基线从不取自 `ctx.settings`。
+
+按加载来源分别处理：
+
+| 来源 | `ctx.settings` | 写入基线 | 加载是否写文件 |
+|---|---|---|---|
+| 当前主文件 | 文件内容 | 文件里的自动化配置 | 否 |
+| 备份（主文件已被搁置） | 原生交出的内容，频道选择和授权已撤下 | 同一份交出的内容，同样没有频道选择和授权 | 否 |
+| 首次运行（没有文件） | 默认值 | 空的自动化配置 | 否 |
+| 读取失败 | 默认值，仅在内存 | 未知（清空，不是“空配置”） | 否 |
+
+备份一行需要说明：基线不是权威。它只决定“其他设置的保存在自动化这一栏写什么”，而备份加载后本来写的就是这份交出的内容；保存能保留哪些授权仍由原生一侧按当前文件决定。读取失败时基线保持未知，其他设置的保存照旧使用自己的快照，这种状态下的隔离靠上面第 1 条。
+
+一个可见变化：规则保存的内容现在在原生答复之后才出现在规则列表里，之前是发出时。间隔是一次本地写入的时长，期间编辑器仍然开着。
+
+### 测试
+
+新文件 `app/ui/test/settings-first-save-dom.test.mjs` 加 `fixtures/first-save-scenes.mjs`，9 项。**每个场景在自己的 node 进程里运行**，所以不继承其他测试建立的基线，也不依赖执行顺序。场景只调用生产的 `loadSettings()`、编辑器保存按钮、`setFontScale`、`setShortcut`；不调用 `refreshChannelAuthority()`，不预先完成任何保存。合成 IPC 区分“调用发出、主文件被替换、响应返回”，失败用例是主文件未被写入的明确拒绝。
+
+| 必测矩阵 | 测试 | 修复前 | 修复后 |
+|---|---|---|---|
+| 1 首笔 Clock 保存失败，B 已落盘、C 未发出 | `a clock rule save refused as the first save of a run is in no later save's write` | 失败：`B's write does not carry what the refused save wanted` | 通过 |
+| 2 首笔表情规则批准失败 | `a badge rule approval refused as the first save of a run is in no later save's write` | 失败，同一断言 | 通过 |
+| 3 C 也失败 | `with the last queued save failing too, the refused first save is nowhere in the file` | 失败：主文件里是 A 的目录、时间和首发选择 | 通过 |
+| 4 首笔保存成功 | `a first rule save that lands is kept by the saves made while it was under way` | 通过 | 通过 |
+| 5 排队后、发出前取消，且本次运行没有成功过的保存 | `a rule save given up before its turn is in no write when no save of the run has succeeded` | 通过 | 通过 |
+| 6 已有频道授权 | `after a load, a save of another setting keeps a channel permission and asks for none` | 通过 | 通过 |
+| 7 备份加载 | `a backup is loaded without writing, and no later save or load brings its channel permission back` | 通过 | 通过 |
+| 8 读取失败 | `settings that cannot be read are not written over by loading` | 通过 | 通过 |
+| 8 首次运行 | `a first run saves its first setting with one save` | 通过 | 通过 |
+
+修复前 3 项失败、6 项通过；通过的 6 项是保持性测试。F3.2 的一条断言按新契约改了：`a rule save that fails in the file…` 原先断言规则在发出后即显示，现在断言它在落盘前不在共享设置里；测试名相应改为 `…was never shared, and no later save writes it`。F3.1/F3.2 的 22 项和既有首次配置测试全部通过。
+
+各层级的限制：
+
+- 第 7 项里“保存不带回备份的授权”有两层。测试验证的是前端一层：请求里没有频道选择、没有授权、没有授权请求。原生一侧拒绝从备份带回授权是既有的 Rust 测试覆盖的，本轮没有改也没有新增。
+- 第 8 项读取失败只验证了“加载不写文件、失败有提示、默认值只在内存”。读取失败之后的保存是否被原生拒绝，是原生一侧的既有行为，合成 IPC 不模拟。读取失败状态下“规则保存失败不泄漏”没有单独的测试：默认值里没有可编辑的规则，这条靠修复第 1 条，由读代码得出。
+
+### 门禁（修复后的工作树，实际运行）
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check`（全部已跟踪的 UI JS/MJS 加两个新文件） | 通过 |
+| `scripts/ui-tests` | 606 项通过，0 失败（597 加本轮 9），覆盖率门槛与清单通过 |
+| `node ui/js/check.mjs` | 58 个模块通过 |
+| `git diff --check` | 通过 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在最终的前端源码上运行） |
+
+没有改 Rust、IPC 契约或原生输入路径。fmt、clippy 和 245 秒后台载体没有重跑。
+
+### 未执行与遗留
+
+- 没有在真实 WKWebView 里操作；没有使用真实 Slack、Agent、Keychain 或剪贴板。本轮没有启动应用或 tmux 服务器；测试启动的 node 子进程随测试结束，没有需要清理的资源。
+- “同类保存进行中，新保存被静默拒绝”仍未处理。
+- 字号、主题等非可撤回保存仍然是先进入 `ctx.settings` 再写入，它们之间既有的交错行为没有改。有了加载基线之后，它们不再能把彼此未落盘的**自动化**内容带进文件；其他字段照旧。
+- 规则保存的内容仍在入队时合并（见上一节）。
+
+### 提交
+
+本节的生产改动、测试和文档作为一个提交落在本地 `main`，父提交 `fe1cd93`，不带 Co-Authored-By；未推送、未发布、版本未变。

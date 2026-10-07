@@ -259,3 +259,73 @@ node 下的测试 DOM。保存按钮处理函数、`saveRule`、`persistInbound`
 | `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在加入 `automation.js` 头部一句注释和文档之前的工作树上运行；之后重跑了读取前端源码的五个集成测试 `ipc_contract`、`signal_census`、`log_privacy`、`edr_quiet`、`external_admission`，45 项通过） |
 
 没有构建应用，没有启动应用或 tmux 服务器，没有需要清理的进程、socket 或 bundle。fmt、clippy、245 秒后台载体没有重跑。
+
+## F3.3 正常加载基线与首笔保存失败隔离（2026-10-07）
+
+起始 `main` / `fe1cd93` / 工作树干净。生产改动：`app/ui/js/settings.js`，`app/ui/js/automation.js`（头部契约一句）。测试：新增 `app/ui/test/settings-first-save-dom.test.mjs` 和 `app/ui/test/fixtures/first-save-scenes.mjs`（9 项）；`channel-editor-race-dom.test.mjs` 改一条断言和测试名。
+
+### 初始化差异（读代码并 grep 确认）
+
+- `app.js` 的 `boot()` 调用 `loadSettings()`。`fe1cd93` 的 `loadSettings()` 只设置 `ctx.settings`，不碰 `committedInbound` / `nativeChannelSettings`。
+- `refreshChannelAuthority()` 的唯一生产调用点是 `channel-authority-changed` 事件监听。
+- `channel-editor-race-dom.test.mjs` 的 `scene()` 每次调用 `refreshChannelAuthority()`。
+
+### 修复前的实际写入（`fe1cd93` 的 `settings.js`，独立进程，只经 `loadSettings()`）
+
+主文件：频道规则 `ra`（有授权 `native-0`）、Clock 规则 `rb`（`/tmp`、09:00）、表情规则 `rs`（`/tmp`、无 `autoSend`）。顺序：A 编辑器保存（本次运行第一笔 `save_settings`，已发出、扣住）→ B `setFontScale(1.2)` → C `setShortcut` → A 被拒绝且主文件未写入 → B 落盘、扣住响应 → 放行 B、C → 再做一次 `setFontScale(1.3)`。
+
+A 为 `rb`（目录 `/var`、18:30、免就绪首发）：
+
+| 时刻 | 发出的保存 | 主文件被写次数 | 该次请求里的 `rb` | 主文件里的 `rb` |
+|---|---|---|---|---|
+| A 被拒绝，B 已落盘未答复 | 2 | 1 | `dir:/var, minute:1110, firstSendWithoutReadiness:true` | 同左 |
+| C 落盘 | 3 | 2 | `dir:/var, minute:1110, firstSendWithoutReadiness:true` | 同左 |
+| 之后再保存一次字号 | 4 | 3 | 同上 | 同上 |
+
+内存里的 `rb` 同样是 `/var`、1110、免就绪首发。A 为 `rs`（目录 `/var`、勾选自动发送）时，B、C、之后那次保存的请求和主文件、以及内存里，`rs` 都是 `dir:/var` 并带 `autoSend`（键 `classes, digest, external, steps`）。两种情况授权请求列表为空。
+
+### 修复后的同一场景
+
+| 时刻 | 发出的保存 | 主文件被写次数 | 该次请求的自动化配置 | 主文件 |
+|---|---|---|---|---|
+| A 被拒绝，B 已落盘未答复 | 2 | 1 | 整个 `inbound` `deepEqual` 加载时的内容 | `inbound` 等于加载时的内容，`fontScale` 1.2 |
+| C 落盘 | 3 | 2 | 同上 | 同上，快捷键为新值 |
+| 之后再保存一次字号 | 4 | 3 | 同上 | |
+
+内存：规则等于加载时的内容，字号和快捷键是新值；被拒绝的保存的编辑器保持打开。C 也被拒绝的场景：主文件只被写 1 次（B），`inbound` 等于加载时的内容，`fontScale` 1.2。
+
+### 同一断言修复前后
+
+| 测试 | 修复前 | 修复后 |
+|---|---|---|
+| `a clock rule save refused as the first save of a run is in no later save's write` | 失败 `B's write does not carry what the refused save wanted: true !== false` | 通过 |
+| `a badge rule approval refused as the first save of a run is in no later save's write` | 失败，同一断言 | 通过 |
+| `with the last queued save failing too, the refused first save is nowhere in the file` | 失败，主文件 `inbound` 不等于加载时的内容（`/var`、1110、`firstSendWithoutReadiness`） | 通过 |
+| 其余 6 项（首笔成功、提交前取消、授权保持、备份、读取失败、首次运行） | 通过 | 通过 |
+
+合计：修复前 `pass 6 / fail 3`；修复后 `tests 9 / pass 9 / fail 0`。
+
+### 保持性断言
+
+- 首笔保存成功：主文件被写 3 次（A、B、C），三次里 `rb` 都是 `/var`、1110、免就绪首发，`rs` 与加载时相同，`ra` 的授权 ID 都是 `native-0`；最终 `fontScale` 1.2、快捷键为新值；A 的编辑器关闭。
+- 提交前取消：W0（快捷键）已发出，A 排队，B、C 排队，取消 A，W0 被拒绝（本次运行没有任何成功的保存）。发出 3 次保存（W0、B、C），主文件被写 2 次，两次的 `inbound` 都等于加载时的内容。
+- 授权保持：加载后改字号、改快捷键，两次写入的 `inbound` 等于加载时的内容，`ra` 的 `firstSend` 与授权原样，授权请求为空。
+- 备份：加载后主文件字节不变；内存里 `ra` 没有 `firstSend` 和授权，其余规则可用；字号保存发出（所有者的保存可用），请求里 `ra` 没有频道选择和授权、没有授权请求；随后一笔被拒绝的规则保存不出现在下一次写入里；再从主文件加载一次并保存，`ra` 仍然没有授权。
+- 读取失败：没有任何 `save_settings`，有失败提示，内存里是默认值。
+- 首次运行：没有提示，第一次字号保存一次完成，写入的自动化配置为空。
+
+### 层级
+
+每个场景是一个独立的 node 进程（`node fixtures/first-save-scenes.mjs <场景>`，由测试文件 `spawnSync` 启动，退出码 0 为通过）。生产代码：`loadSettings`、设置写入队列、`commitSettings`、编辑器保存按钮与 `saveRule`、`setFontScale`、`setShortcut`。合成：`window.__TAURI__.core.invoke`，其中 `load_settings` 按场景回答主文件、备份（去掉频道选择与授权，模拟原生的交出方式）、首次运行或失败。
+
+### 门禁
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check` 全部已跟踪 UI JS/MJS 加两个新文件 | 通过 |
+| `scripts/ui-tests` | `tests 606 / pass 606 / fail 0`，退出码 0 |
+| `node ui/js/check.mjs` | `ok: 58 modules` |
+| `git diff --check` | 退出码 0 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在最终的前端源码上运行） |
+
+没有构建应用，没有启动应用或 tmux 服务器。fmt、clippy、245 秒后台载体没有重跑。
