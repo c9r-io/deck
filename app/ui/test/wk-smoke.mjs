@@ -3189,3 +3189,12 @@ export async function verifyApproval() {
   const { runApprovalSmoke } = await import('./approval-smoke.mjs');
   return runApprovalSmoke();
 }
+
+// The information layers of the automation editor, the lists panel, project
+// defaults with presets, the reminder dialog and the template manager: what
+// is visible for which state, and that a disclosure touches nothing
+// (ux-layers-smoke.mjs).
+export async function verifyUxLayers() {
+  const { runUxLayersSmoke } = await import('./ux-layers-smoke.mjs');
+  return runUxLayersSmoke();
+}

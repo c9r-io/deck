@@ -85,6 +85,14 @@
 // for the steps as they are. A carried-over approval goes back unchanged.
 // Showing computes and writes nothing.
 //
+// INFORMATION LAYERS: the drawer's head states what an automation is and the
+// one standing constraint; how runs behave is a named disclosure. In the
+// editor every option carries its effect and its risk next to the control,
+// always visible; mechanism and scope notes are named disclosures under it.
+// Opening or closing one reads and writes nothing. The empty-state sentence
+// is shown only while no rule exists AND no editor is open. A first-step box
+// shows what it amounts to for the fields as they are (`syncFirstSendState`).
+//
 // ENTRY POINTS (06 B v01): the Board head keeps ONE persistent action, the
 // "New session ▾" split button. Its menu (`showNewSessionMenu`, built in the
 // shared #ctx with arrow-key navigation) holds "new session now", the two
@@ -135,7 +143,7 @@ import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { persistInbound } from './settings.js';
 import { minToHM, normalizeTemplateStep, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
-import { approveRule, composeRule, finishHintShown, firstSendNeedsConfirm, firstSendSupported, withFirstSend, graceOptions, graceText, grantDetail, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, templateCarriesMessage, triggerText } from './automation-model.js';
+import { approveRule, composeRule, finishHintShown, firstSendNeedsConfirm, firstSendSupported, firstSendText, withFirstSend, graceOptions, graceText, grantDetail, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, templateCarriesMessage, triggerText } from './automation-model.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN } from './settings-model.js';
@@ -310,7 +318,9 @@ function paintAutomations() {
   const list = $('auto-list');
   list.innerHTML = '';
   const rules = rulesOf();
-  if (!rules.length) {
+  /* the empty state teaches what an automation is; with the editor open the
+     user is already making one, so it gives way until the editor closes */
+  if (!rules.length && !editing) {
     const empty = document.createElement('div');
     empty.className = 'auto-empty';
     empty.textContent = t('automation.empty');
@@ -373,6 +383,7 @@ function syncEditor() {
   $('auto-slack-state').textContent = t(slackConnected() ? 'automation.slackOn' : 'automation.slackOffHint');
   $('auto-capture-row').hidden = trigger !== 'channel' || $('auto-match-kind').value !== 'regex';
   syncFinishHint();
+  syncFirstSendState();
   syncApproval();
   syncChannelFirstSend();
 }
@@ -381,7 +392,6 @@ async function syncChannelFirstSend() {
   const revision = ++channelLabelRevision;
   const on = segGet('auto-trigger') === 'channel' && $('auto-channel-first-send').checked;
   const prior = editing?.id && channelRules().find(rule => rule.id === editing.id);
-  $('auto-channel-first-send-hint').hidden = segGet('auto-trigger') !== 'channel';
   const rule = on && readChannelFields(prior, activeProject(), 'preview');
   const changed = on && (channelAcceptanceChanged || !rule || await channelFirstSendNeedsUpdate(rule, prior, activeProject()));
   if (revision !== channelLabelRevision) return;
@@ -394,6 +404,17 @@ async function syncChannelFirstSend() {
 /* automation-model.js finishHintShown */
 function syncFinishHint() {
   $('auto-finish-hint').hidden = !finishHintShown(segGet('auto-trigger'), segGet('auto-finish'));
+  $('auto-finish-keep-hint').hidden = !(segGet('auto-trigger') === 'clock' && segGet('auto-finish') === 'keep');
+}
+
+/* what the first-step box amounts to for the fields as they are: the same
+   words the list shows (automation-model.js `firstSendText`), so an option
+   ticked on a command it cannot reach never reads as in effect */
+function syncFirstSendState() {
+  const state = $('auto-first-send-state');
+  const rule = { firstSendWithoutReadiness: $('auto-first-send').checked, cmd: $('auto-cmd').value.trim() };
+  state.textContent = t('automation.current', { state: firstSendText(rule) });
+  state.classList.toggle('warn', rule.firstSendWithoutReadiness && !firstSendSupported(rule.cmd));
 }
 
 /* the external-content box exists only for a template that carries message
@@ -555,6 +576,7 @@ export function openEditor(rule) {
   channelVerifyStatus(null);
   syncEditor();
   $('auto-editor').hidden = false;
+  if (isOpen()) paintAutomations();
   $(channel ? 'auto-channel-ids' : 'auto-name').focus();
 }
 
@@ -563,6 +585,7 @@ function closeEditor() {
   channelVerifyStatus(null);
   editing = null;
   $('auto-editor').hidden = true;
+  if (isOpen()) paintAutomations();
 }
 
 function readChannelFields(previous, project, newId) {
@@ -923,7 +946,10 @@ export function initAutomation(deps) {
     if (!firstSendNeedsConfirm(false, box.checked)) return;
     box.checked = false;
     if (await confirmDialog(t('automation.firstSend.confirm'))) box.checked = true;
+    syncFirstSendState();
   });
+  $('auto-first-send').addEventListener('change', syncFirstSendState);
+  $('auto-cmd').addEventListener('input', syncFirstSendState);
   for (const id of ['auto-badge', 'auto-dir', 'auto-cmd', 'auto-template', 'auto-review']) {
     $(id).addEventListener(id === 'auto-template' || id === 'auto-review' ? 'change' : 'input', withdrawApproval);
   }
@@ -949,7 +975,7 @@ export function initAutomation(deps) {
     if (editing) closeEditor(); else closeAutomations();
   });
   buildDayControls();
-  onLocaleChange(() => { buildDayControls(); renderAutomations(); });
+  onLocaleChange(() => { buildDayControls(); syncFirstSendState(); renderAutomations(); });
   unsubscribe = provider.subscribe(ev => {
     if (ev === 'projects') withdrawDrifted();
     if (ev === 'projects' || ev === 'list' || ev === 'channel-authority') renderAutomations();

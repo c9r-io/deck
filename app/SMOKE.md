@@ -1064,3 +1064,19 @@ the completion of SHA-256 is scripted, inside that page. No Slack connection,
 agent or session is involved. Snapshots are written to
 `<data dir>/evidence/approval-*.png`; judge with
 `scripts/smoke-verdict <data dir> approval`.
+
+## Information layers (unattended, real WKWebView)
+
+`ux-layers` (`ui/test/ux-layers-smoke.mjs`) walks the automation editor (the
+three triggers, the empty state, the first-step box and its state line), the
+lists panel (one list, several lists, a disclosure kept open across
+re-renders with a draft and the scroll position), the inspection dialog,
+project defaults with phone task presets, the reminder note's byte feedback
+and the template manager's placeholder disclosure, in both languages at 100%
+and 160%. It proves presentation and interface behaviour only: no Slack
+connection, no agent, nothing delivered; the `ux-queue-states` scene repaints
+the panel from a copy of the real queue whose stages the carrier sets.
+Snapshots land in `<data dir>/evidence/`; `ux-m-*` are measurements.
+
+Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-ux.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-ux-UNIQUE DECK_SMOKE_WKWEBVIEW=ux-layers app/run.sh`,
+then `scripts/smoke-verdict <data-dir> ux-layers`.

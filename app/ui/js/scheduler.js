@@ -39,6 +39,12 @@
 // scheduler-model.js, where node tests pin them; this module only places
 // those words in the panel.
 //
+// LAYERS (queue-review.js): a list shows its prompts first, then its send
+// plan; what holds for the whole session is said once above the lists. A
+// row says its own stage; the conditions behind a send are a disclosure.
+// The standing sentence under the form keeps only what is true of every
+// list; a card without a bound program adds the shell warning there.
+//
 // Templates are the project's saved lists (`templates.js` owns them): the
 // panel's 📋 starts a new list from one, a list head's 📋 inserts one into
 // that list or saves the list as a new template, and either menu ends with
@@ -55,7 +61,7 @@
 // returns focus to the terminal; a replacement or a session leave never
 // does. The 📋 popover is fixed to the viewport (the drawer clips and
 // scrolls) and closes with the panel, when the drawer scrolls, and on resize.
-import { isReview, reviewRow, executionPlan, stageText, queueHistory, cancelQueueList } from './queue-review.js';
+import { isReview, listRepeatsOrRule, reviewRow, rowStage, sendPlan, sessionFacts, queueHistory, cancelQueueList } from './queue-review.js';
 import { chainWhenSuffix, contextLabel, fmtWhen, listStartCalls, localizedChainQuietHint, qMeta } from './scheduler-model.js';
 import { $, ctx, inv, listen, state, uev } from './state.js';
 import { blockedBy, chainQuietHint, CHAIN_QUIET_SECS, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, isoDate, isoTime, itemDead, listKey, listRepeats, listScheduleArgs, localEpoch, MAX_QUIET_SECS, MIN_QUIET_SECS, minToHM, nextFire, promptSummary, promptTooltip, quietSecsOf, winHas } from './pure.js';
@@ -63,7 +69,7 @@ export { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, grou
 import { autoGrowField, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { claimSessionTool, registerSessionPopup, registerSessionTool, releaseSessionTool } from './session-tools.js';
 // Board access is injected at boot; the queue view has no view-core imports.
-let provider, pollNow, refreshAttention;
+let provider, pollNow, refreshAttention, ruleOf = () => null;
 import { strToB64 } from './terminal-bytes.js';
 import { openTemplates } from './templates.js';
 import { formatInterval, formatNumber, onLocaleChange, t } from './i18n.js';
@@ -222,8 +228,13 @@ function listRows(g) {
 const withSteps = (rule, steps, operation) =>
   inv('queue_update', { id: rule.id, steps }).catch(() => toast(t('error.operation', { operation })));
 
-function rowEl(r, g, rows, k) {
-  if (isReview(r.item)) return reviewRow(r.item, refreshQueue, () => toggleQueuePanel(false));
+/* whether the automation behind `card` closes it after its program exits
+   (the rule's own choice; nothing here decides or triggers a close) */
+const closesAfterExit = card => !!card?.origin && ruleOf(card.origin)?.finish === 'close';
+
+function rowEl(r, g, rows, k, card) {
+  if (isReview(r.item)) return reviewRow(r.item, refreshQueue, () => toggleQueuePanel(false),
+    { repeats: listRepeatsOrRule(g), closes: closesAfterExit(card) });
   const { first, extra } = promptSummary(r.text);
   const expanded = extra > 0 && expandedRows.has(r.key);
   const row = document.createElement('div');
@@ -310,9 +321,10 @@ function rowEl(r, g, rows, k) {
   }
   const wait = row.querySelector('.q-wait');
   if (wait) {
-    wait.textContent = t('queue.keepWaiting');
+    /* a re-check of the target, nothing more: the wait goes on by itself */
+    wait.textContent = t('queue.recheck');
     wait.onclick = () => refreshItemProbe(i)
-      .then(() => toast(t('queue.waitingContinues')))
+      .then(() => toast(t('queue.recheckDone')))
       .catch(() => toast(t('queue.context.probeFailed')));
   }
   const now = row.querySelector('.q-now');
@@ -344,7 +356,7 @@ function rowEl(r, g, rows, k) {
       await inv('queue_skip', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('queue.skipStep') })));
     };
   }
-  const bits = [stageText(i)];
+  const bits = [rowStage(i)].filter(Boolean);
   if (i.tpl && i.mode !== 'every') bits.push(`tpl·${i.tpl} ${i.tpl_idx}/${i.tpl_total}`);
   if (i.mode === 'chain') bits.push(t('queue.rowQuiet', { quiet: formatInterval(quietSecsOf(i)) }));
   if (i.state === 'ambiguous') {
@@ -417,7 +429,7 @@ function listFooter(g, card) {
   return { foot, quiet };
 }
 
-export function groupEl(g, card, otherLists = 0) {
+export function groupEl(g, card) {
   const rule = listRepeats(g);
   const el = document.createElement('div');
   el.className = 'q-group' + (rule ? ' rule' : '') + (g.head.paused ? ' paused' : '');
@@ -475,10 +487,11 @@ export function groupEl(g, card, otherLists = 0) {
     for (const i of g.rows) inv('queue_remove', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('common.delete') })));
   };
   el.appendChild(head);
-  el.appendChild(executionPlan(g, card, otherLists, refreshQueue));
+  /* the prompts first; how they are sent follows them */
   const rows = listRows(g);
-  rows.forEach((r, k) => el.appendChild(rowEl(r, g, rows, k)));
+  rows.forEach((r, k) => el.appendChild(rowEl(r, g, rows, k, card)));
   el.appendChild(foot);
+  el.appendChild(sendPlan(g, refreshQueue));
   return el;
 }
 
@@ -490,6 +503,9 @@ export function renderQueueUI() {
   if (card) {
     const q = sessionQueue(card.session);
     $('queue-cnt').textContent = q.length || '';
+    /* without a launch command the expected program is whatever is in the
+       foreground when a list is added (context.rs): possibly a shell */
+    $('q-shell-risk').hidden = !!String(card.cmd || '').trim();
     const live = new Set();
     const lists = groupQueue(q);
     for (const i of q) {
@@ -503,7 +519,8 @@ export function renderQueueUI() {
       const list = $('queue-list');
       const focus = document.activeElement?.dataset.queueFocus;
       list.innerHTML = '';
-      for (const g of lists) list.appendChild(groupEl(g, card, lists.length - 1));
+      if (lists.length) list.appendChild(sessionFacts(card, lists.length));
+      for (const g of lists) list.appendChild(groupEl(g, card));
       list.appendChild(queueHistory(card));
       if (focus) {
         const target = [...list.querySelectorAll('[data-queue-focus]')].find(el => el.dataset.queueFocus === focus);
@@ -711,6 +728,7 @@ export function showTplPop(anchor, { insert, save = null }) {
    without a document. */
 export function initScheduler(deps) {
   ({ provider, pollNow, refreshAttention } = deps);
+  if (deps.ruleOf) ruleOf = deps.ruleOf;
   registerSessionTool('queue', closeQueuePanel);
   registerSessionPopup(hideTplPop);
   $('queue-btn').onclick = () => toggleQueuePanel();

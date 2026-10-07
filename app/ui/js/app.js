@@ -18,7 +18,7 @@ import { initTemplates } from './templates.js';
 import { startInbound } from './inbound.js';
 import { drainConnector, initConnector } from './connector.js';
 import { initMcp } from './mcp.js';
-import { initAutomation, startOrphanPruning } from './automation.js';
+import { initAutomation, ruleOf, startOrphanPruning } from './automation.js';
 import { closeDropdownMenu, initDropdowns } from './dropdown.js';
 import { registerSessionPopup } from './session-tools.js';
 import { initAttention, openFromNotification, refreshAttention } from './attention.js';
@@ -341,7 +341,7 @@ function initModules() {
   initTerminalChrome();
   initAttention({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings });
   initLayout();
-  initScheduler({ provider, pollNow, refreshAttention });
+  initScheduler({ provider, pollNow, refreshAttention, ruleOf });
   initBuffer();
   initTranslationLens({ panes, enableTranslation: () => installTranslationPack(true, { confirmed: true }),
     openSettings: () => openSettings({ section: 'terminal', setting: 'local-translation' }) });

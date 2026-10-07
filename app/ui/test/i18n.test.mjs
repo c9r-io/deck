@@ -86,7 +86,11 @@ test('scheduler Chinese copy preserves sent, failed, blocked, ambiguous and quie
   assert.match(t('queue.meta.ambiguous'), /无法确认是否已发送/);
   assert.match(t('queue.quiet.progress', { seconds: 10, total: 180 }), /安静/);
   assert.doesNotMatch(t('queue.quiet.progress', { seconds: 10, total: 180 }), /等待输入|已完成/);
-  assert.match(t('queue.explainer'), /shell/);
+  // the shell risk is said where it applies (a list without an expected
+  // program, a card without a launch command), not as standing copy
+  assert.match(t('queue.plan.compatibility'), /shell/);
+  assert.match(t('queue.shellRisk'), /shell/);
+  assert.match(t('queue.explainer'), /不早于/);
   assert.match(t('queue.context.replaced'), /替换/);
   assert.match(t('queue.context.differentProcess', { process: 'codex' }), /codex.*前台/);
   assert.doesNotMatch(t('queue.quiet.done'), /就绪|可发送/);
@@ -169,7 +173,8 @@ const SIGNAL_COPY_KEYS = Object.freeze([
   'settings.agentHooksHint', 'settings.codexHooksHint', 'settings.notifyAwayHint',
   'queue.signal.working', 'queue.signal.input', 'queue.signal.done', 'queue.signal.none',
   'queue.stage.agent', 'queue.stage.firstSend',
-  'automation.hint', 'automation.finish', 'automation.kv.finish',
+  'automation.hint', 'automation.help.finish', 'automation.help.firstStep', 'queue.plan.signals', 'queue.plan.firstStep',
+  'automation.finish', 'automation.kv.finish',
   'automation.runClosed', 'automation.runCloseFailed',
 ]);
 const SIGNAL_COPY_FAMILIES = Object.freeze(['session.status.', 'queue.signal.']);

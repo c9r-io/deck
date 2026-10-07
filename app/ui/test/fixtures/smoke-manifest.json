@@ -143,6 +143,32 @@
         "approval-exception": { "failureOnly": true }
       }
     },
+    "ux-layers": {
+      "terminal": "done",
+      "checks": {
+        "ux-m-window": {"metric": true},
+        "ux-m-auto-head": {"metric": true},
+        "ux-empty-create": {},
+        "ux-auto-head": {},
+        "ux-auto-clock": {},
+        "ux-auto-slack": {},
+        "ux-auto-channel": {},
+        "ux-first-send": {},
+        "ux-disclosure": {},
+        "ux-auto-layout": {},
+        "ux-m-queue-one": {"metric": true},
+        "ux-queue-one": {},
+        "ux-queue-many": {},
+        "ux-queue-stable": {},
+        "ux-queue-states": {},
+        "ux-review-dialog": {},
+        "ux-presets": {},
+        "ux-m-defaults": {"metric": true},
+        "ux-reminder-bytes": {},
+        "ux-templates": {},
+        "ux-exception": {"failureOnly": true}
+      }
+    },
     "board-lost": {
       "terminal": "done",
       "checks": {

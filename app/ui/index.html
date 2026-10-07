@@ -60,13 +60,24 @@
           <button class="btn primary" id="auto-new" data-i18n="automation.new">＋ New</button>
           <button class="btn icon-btn" id="auto-close" data-i18n-title="automation.closeDrawer" title="Close">✕</button>
         </div>
-        <div class="q-hint auto-hint" data-i18n="automation.hint">Clock and Slack badge automations create sessions. A channel monitor creates one on its first match, then only collects later messages.</div>
+        <div class="q-hint auto-hint" data-i18n="automation.hint">Automations open a new session on a clock schedule or a Slack event and send a template. Deck must be running for them to fire.</div>
+        <details class="set-details auto-help">
+          <summary data-i18n="automation.help">How runs behave</summary>
+          <ul class="help-list">
+            <li data-i18n="automation.help.busy">A clock rule skips a slot while its previous card is still on the Board.</li>
+            <li data-i18n="automation.help.finish">“Close the card” waits until the agent program exits: a turn ending is not the end of its work, so a live agent keeps its card. With inspection on, nothing closes before the last row is inspected.</li>
+            <li data-i18n="automation.help.firstStep">A newly started agent’s first step waits for you by default; unattended sends to Claude or Codex need the Agent status integration.</li>
+            <li data-i18n="automation.help.channel">A channel monitor creates a session on its first match, then only collects later messages into that card.</li>
+            <li data-i18n="automation.help.delivery">A delivery does not prove business success. Every run creates a fresh session; its command may restore its own context.</li>
+          </ul>
+        </details>
         <div id="auto-list"></div>
         <div id="auto-editor" hidden>
           <div class="set-row q-p q-p-clock q-p-slack">
             <label for="auto-name" data-i18n="automation.name">Name</label>
             <input id="auto-name" autocomplete="off" spellcheck="false" maxlength="120" placeholder="morning tests" data-i18n-placeholder="automation.namePlaceholder">
           </div>
+          <h3 class="auto-section" data-i18n="automation.section.trigger">When it runs</h3>
           <div class="set-row">
             <label data-i18n="automation.trigger">Trigger</label>
             <div class="seg" id="auto-trigger" role="radiogroup" aria-label="Trigger" data-i18n-aria-label="automation.trigger">
@@ -106,6 +117,7 @@
             <label for="auto-grace" data-i18n="automation.grace">If missed</label>
             <select id="auto-grace"></select>
           </div>
+          <h3 class="auto-section" data-i18n="automation.section.run">What it runs</h3>
           <div class="set-row">
             <label for="auto-column" data-i18n="automation.column">Group</label>
             <select id="auto-column"></select>
@@ -123,6 +135,37 @@
             <select id="auto-template"></select>
             <button class="btn" id="auto-tpl-manage" type="button" data-i18n="automation.manageTemplates">Templates…</button>
           </div>
+          <h3 class="auto-section" data-i18n="automation.section.send">Sending and inspection</h3>
+          <label class="q-review-option q-p q-p-slack"><input type="checkbox" id="auto-send" aria-describedby="auto-send-hint"><span data-i18n="automation.autoSend.option">Automatically continue approved follow-up steps</span></label>
+          <p class="q-hint opt-note" id="auto-send-check" role="status" hidden></p>
+          <p class="q-hint opt-note q-p q-p-slack" id="auto-send-hint" data-i18n="automation.autoSend.hint">Your reaction approves the run and its first step for that message. The text is read when Deck handles the reaction, so an edit made after you reacted may be what gets sent. With this on, the later steps of this version of the template continue once the agent is safely ready, without a Send now for each. Editing the rule or its template turns this off until you approve again.</p>
+          <details class="set-details opt-note q-p q-p-slack">
+            <summary data-i18n="automation.autoSend.scope">What this approval covers</summary>
+            <ul class="help-list">
+              <li data-i18n="automation.autoSend.scope.pauses">An agent asking for input or permission, and inspection checkpoints, still pause the automation; this approval never answers them for you.</li>
+              <li data-i18n="automation.autoSend.scope.first">The first step is not covered: how it reaches a newly started agent is decided by the separate first-step option.</li>
+            </ul>
+          </details>
+          <label class="q-review-option opt-note q-p q-p-slack" id="auto-send-external-row"><input type="checkbox" id="auto-send-external"><span data-i18n="automation.autoSend.external">Also send steps that contain Slack message content. External messages are untrusted input and may influence the agent.</span></label>
+          <label class="q-review-option q-p q-p-slack q-p-clock"><input type="checkbox" id="auto-first-send" aria-describedby="auto-first-send-hint auto-first-send-state"><span data-i18n="automation.firstSend.option">Send the first step to a newly started agent without waiting for readiness</span></label>
+          <p class="q-hint opt-note opt-risk q-p q-p-slack q-p-clock" id="auto-first-send-hint" data-i18n="automation.firstSend.hint">With this on, Deck starts the agent and sends the first step after a short compatibility wait; later runs no longer wait for you. The wait is not readiness proof: a Trust, Update, sign-in, permission or other startup dialog may receive the text and Enter. Works with Claude, or Codex with --no-daemon.</p>
+          <p class="q-hint opt-note opt-state q-p q-p-slack q-p-clock" id="auto-first-send-state" role="status"></p>
+          <details class="set-details opt-note q-p q-p-slack q-p-clock">
+            <summary data-i18n="automation.firstSend.kept">Checks that still apply</summary>
+            <p data-i18n="automation.firstSend.kept.body">Real blocking conditions and configured inspection checkpoints still apply, and later steps keep their normal checks. This option covers only a newly started agent’s first step; Deck starts the agent with no prompt bytes.</p>
+          </details>
+          <label class="q-review-option q-p q-p-channel"><input type="checkbox" id="auto-channel-first-send" aria-describedby="auto-channel-first-send-hint auto-channel-first-send-facts"><span data-i18n="automation.channelFirstSend.option">Automatically send the first step for future matching channel events</span></label>
+          <p class="q-hint opt-note q-p q-p-channel" id="auto-channel-first-send-hint" data-i18n="automation.channelFirstSend.hint">Ticking this and saving authorizes Deck to send the first step of new runs for future events matching this rule:</p>
+          <ul class="help-list opt-note opt-risk q-p q-p-channel" id="auto-channel-first-send-facts">
+            <li data-i18n="automation.channelFirstSend.fact.scope">Scope: each new collection group may start a run; there is no additional limit on the number of runs.</li>
+            <li data-i18n="automation.channelFirstSend.fact.content">Content: the first step may include outside Slack messages; Deck does not verify that content is safe.</li>
+            <li data-i18n="automation.channelFirstSend.fact.risk">Risk: before any first interaction, a startup dialog may receive the text and Enter.</li>
+            <li data-i18n="automation.channelFirstSend.fact.excludes">Not included: Agent tool permissions, or automatic sending of later template steps.</li>
+            <li data-i18n="automation.channelFirstSend.fact.revoke">After turning it off: only unsent first steps covered by this permission are stopped; Agents keep running and typed text is not retracted.</li>
+          </ul>
+          <label class="q-review-option q-p q-p-clock q-p-slack"><input type="checkbox" id="auto-review" aria-describedby="auto-review-hint"><span data-i18n="queue.review.option">Inspect after every sent row, including the last</span></label>
+          <p class="q-hint opt-note q-p q-p-clock q-p-slack" id="auto-review-hint" data-i18n="automation.review.hint">Applies to runs created from now on, not to existing cards.</p>
+          <h3 class="auto-section q-p q-p-clock q-p-slack" data-i18n="automation.section.card">Keeping the card</h3>
           <div class="set-row q-p q-p-clock q-p-slack">
             <label data-i18n="automation.finish">When done</label>
             <div class="seg" id="auto-finish" role="radiogroup" aria-label="When done" data-i18n-aria-label="automation.finish">
@@ -130,17 +173,8 @@
               <button type="button" data-v="keep" aria-pressed="false" data-i18n="automation.finish.keep">keep it</button>
             </div>
           </div>
-          <p class="q-hint" id="auto-finish-hint" data-i18n="automation.finish.closeHint" hidden>An interactive agent does not exit by itself: its card stays, and this rule's next slot is skipped. To let a run end on its own, make the template's last step exit the program.</p>
-          <label class="q-review-option q-p q-p-clock q-p-slack"><input type="checkbox" id="auto-review"><span data-i18n="queue.review.option">Inspect after every row, including the last</span></label>
-          <label class="q-review-option q-p q-p-slack"><input type="checkbox" id="auto-send"><span data-i18n="automation.autoSend.option">Automatically continue approved follow-up steps</span></label>
-          <p class="q-hint" id="auto-send-check" hidden></p>
-          <p class="q-hint q-p q-p-slack" id="auto-send-hint" data-i18n="automation.autoSend.hint">Your reaction approves the run and its first step for that message. The text is read when Deck handles the reaction, so an edit made after you reacted may be what gets sent. With this on, the later steps of this version of the template continue once the agent is safely ready, without a Send now for each. An agent asking for input or permission and inspection checkpoints still pause the automation. How the first step reaches a newly started agent is the separate option below. Editing the rule or its template turns this off until you approve again.</p>
-          <label class="q-review-option q-p q-p-slack" id="auto-send-external-row"><input type="checkbox" id="auto-send-external"><span data-i18n="automation.autoSend.external">Also send steps that contain Slack message content. External messages are untrusted input and may influence the agent.</span></label>
-          <label class="q-review-option q-p q-p-slack q-p-clock"><input type="checkbox" id="auto-first-send"><span data-i18n="automation.firstSend.option">Send the first step to a newly started agent without waiting for readiness</span></label>
-          <label class="q-review-option q-p q-p-channel"><input type="checkbox" id="auto-channel-first-send"><span data-i18n="automation.channelFirstSend.option">Automatically send the first step for future matching channel events</span></label>
-          <p class="q-hint q-p q-p-channel" id="auto-channel-first-send-hint" data-i18n="automation.channelFirstSend.hint">Saving with this option authorizes the first step of new runs for future events in this rule's scope. The template may include outside Slack messages; Deck does not verify that content is safe. You accept that startup dialogs may receive text and Enter before any first interaction. Each new collection group may start a run; no additional run limit applies. This does not approve Agent tools or automatically send later steps. Turning it off stops unsent authorized first steps; it does not stop Agents or retract input.</p>
-          <p class="q-hint q-p q-p-slack q-p-clock" id="auto-first-send-hint" data-i18n="automation.firstSend.hint">The saved schedule and template express the clock task; your reaction expresses a Slack run. Enable once to accept startup-input risk: later runs need no manual first send. Deck starts with no prompt bytes, then waits briefly for compatibility before sending. This wait is not readiness proof: a Trust, Update, sign-in, permission or other startup dialog may receive the text and Enter. Real blocking conditions and configured review checkpoints still apply. Later steps keep their normal checks. Claude is supported; Codex requires --no-daemon.</p>
-          <p class="q-hint q-p q-p-clock q-p-slack" data-i18n="automation.plan">Creates a new session; the command may restore its own context. Inspection applies only to new runs.</p>
+          <p class="q-hint" id="auto-finish-hint" data-i18n="automation.finish.closeHint" hidden>An interactive agent does not exit by itself: its card stays, and this rule’s next slot is skipped. To let a run end on its own, make the template’s last step exit the program.</p>
+          <p class="q-hint" id="auto-finish-keep-hint" data-i18n="automation.finish.keepHint" hidden>While the kept card is on the Board, this rule’s next slot is skipped; closing that card resumes it.</p>
           <p class="q-hint" id="auto-channel-verify" role="status" hidden></p>
           <div class="set-actions" style="gap:8px">
             <button class="btn" id="auto-cancel" data-i18n="common.cancel">Cancel</button>
@@ -232,7 +266,8 @@
                 <button class="btn primary" id="q-add-btn" data-i18n="common.add">Add</button>
               </div>
             </div>
-            <div class="q-hint" data-i18n="queue.explainer">Prompts are typed into the session at the scheduled moment.</div>
+            <div class="q-hint q-risk" id="q-shell-risk" role="note" data-i18n="queue.shellRisk" hidden>This card has no launch command: if a shell is in the foreground when you add a list, its prompts may be interpreted by that shell.</div>
+            <div class="q-hint" data-i18n="queue.explainer">Times are “not before”: Deck tries to send once the conditions hold and does not promise delivery at that moment. Deck must be running.</div>
           </div>
         </section>
         <section id="buffer-panel" class="session-tool" role="dialog" aria-modal="false" hidden aria-labelledby="buffer-title">
@@ -612,7 +647,10 @@
             <textarea id="tpl-step-text" rows="1" autocomplete="off" spellcheck="false" data-i18n-placeholder="templates.stepPlaceholder" placeholder="add a step"></textarea>
             <button class="btn" id="tpl-step-add" data-i18n="common.add">Add</button>
           </div>
-          <div class="set-hint tpl-wide" data-i18n="templates.placeholders">Placeholders are filled in by an auto-respond rule.</div>
+          <details class="set-details tpl-wide">
+            <summary data-i18n="templates.placeholders.title">Slack message placeholders</summary>
+            <div class="set-hint tpl-wide" data-i18n="templates.placeholders">{{msg.text}} {{msg.from}} {{msg.where}} {{msg.link}} — filled in when a Slack-badge automation uses this template. A step that starts with a slash command hands the message to that skill.</div>
+          </details>
         </div>
       </div>
     </div>
@@ -679,11 +717,21 @@
     <div class="set-row"><label for="pdf-dir" data-i18n="projectDefaults.dir">Default directory</label><input id="pdf-dir" autocomplete="off" spellcheck="false" placeholder="~/work/project"></div>
     <div class="set-row"><label for="pdf-cmd" data-i18n="projectDefaults.cmd">Default command</label><input id="pdf-cmd" autocomplete="off" spellcheck="false" maxlength="200" placeholder="claude"></div>
     <div class="pdf-chips" id="pdf-chips" hidden></div>
-    <p class="set-hint" data-i18n="projectDefaults.hint">Both may stay empty: ＋ / ⌘N then open a shell in your home directory, as today. The command is sent once, when the session is created; reopening a stopped card returns to its shell. “New session in this directory”, “new session in the parent folder” and a split’s “new shell here” keep their own directory and never run it. A new automation starts with these two values filled in; existing rules are untouched.</p>
+    <p class="set-hint" data-i18n="projectDefaults.hint">A new session (＋ / ⌘N) opens a shell in the default directory and sends the default command once. Both may stay empty.</p>
+    <details class="set-details">
+      <summary data-i18n="projectDefaults.scope">Where these apply</summary>
+      <ul class="help-list">
+        <li data-i18n="projectDefaults.scope.empty">Left empty: a shell in your home directory, and no command.</li>
+        <li data-i18n="projectDefaults.scope.once">The command is sent once, when the session is created; reopening a stopped card returns to its shell.</li>
+        <li data-i18n="projectDefaults.scope.others">“New session in this directory”, “new session in the parent folder” and a split’s “new shell here” keep their own directory and never run the command.</li>
+        <li data-i18n="projectDefaults.scope.automation">A new automation starts with these two values filled in; existing rules are untouched.</li>
+      </ul>
+    </details>
     <h3 data-i18n="presets.title">Phone task presets</h3>
     <div id="pdf-presets"></div>
     <button class="btn" type="button" id="pdf-preset-add" data-i18n="presets.add">Add preset</button>
     <div id="pdf-preset-editor" hidden>
+      <h4 class="auto-section" data-i18n="presets.section.fixed">Fixed content</h4>
       <div class="set-row"><label for="pdf-preset-name" data-i18n="presets.name">Name</label><input id="pdf-preset-name" maxlength="120"></div>
       <div class="set-row"><label for="pdf-preset-column" data-i18n="automation.column">Group</label><select id="pdf-preset-column"></select></div>
       <div class="set-row"><label for="pdf-preset-title" data-i18n="presets.cardTitle">Card title</label><input id="pdf-preset-title" maxlength="120"></div>
@@ -691,11 +739,17 @@
       <div class="set-row"><label for="pdf-preset-cmd" data-i18n="automation.cmd">Command</label><input id="pdf-preset-cmd" maxlength="200" placeholder="codex"></div>
       <div class="set-row"><label for="pdf-preset-steps" data-i18n="presets.steps">Initial steps</label><textarea id="pdf-preset-steps" rows="4"></textarea></div>
       <div class="set-hint" data-i18n="presets.hint">One step per line, up to 20. Commands are fixed on this Mac and must launch Codex or Claude.</div>
-      <label class="q-review-option"><input type="checkbox" id="pdf-preset-auto-send"><span data-i18n="automation.autoSend.option">Automatically continue approved follow-up steps</span></label>
-      <div class="set-hint" data-i18n="presets.autoSend.hint">With this on, the later steps of tasks created from the phone with this preset continue once the agent is safely ready, without a Send now for each. What you approve is this preset as it stands: its directory, its command and every step; changing any of them turns this off until you tick it again. An agent that is asking for input or permission still pauses the task. How the first step reaches a newly started agent is the separate choice below. Revoking a paired device takes back the unsent steps of the tasks it created. Messages and scratchpad notes sent from the phone are not covered and always wait for Send now.</div>
-      <label class="q-review-option"><input type="checkbox" id="pdf-preset-first-send"><span data-i18n="automation.firstSend.option">Send the first step to a newly started agent without waiting for readiness</span></label>
-      <div class="set-hint" data-i18n="presets.firstSend.hint">A task created from the phone starts its agent and then waits for your first interaction on this Mac. Enable once to accept startup-input risk for this preset: Deck starts the agent with no prompt bytes, waits briefly for compatibility, then sends the first step. This wait is not readiness proof: a Trust, Update, sign-in, permission or other startup dialog may receive the text and Enter. Later steps keep their normal checks. Claude is supported; Codex requires --no-daemon.</div>
-      <div class="set-hint" id="pdf-preset-first-send-unsupported" data-i18n="automation.firstSend.unsupported" hidden>on, but not used: the command must be Claude, or Codex with --no-daemon</div>
+      <h4 class="auto-section" data-i18n="presets.section.later">Later steps</h4>
+      <label class="q-review-option"><input type="checkbox" id="pdf-preset-auto-send" aria-describedby="pdf-preset-auto-send-hint"><span data-i18n="automation.autoSend.option">Automatically continue approved follow-up steps</span></label>
+      <div class="set-hint opt-note" id="pdf-preset-auto-send-hint" data-i18n="presets.autoSend.hint">With this on, the later steps of tasks created from the phone with this preset continue once the agent is safely ready. What you approve is this preset’s directory, command and every step as they stand; changing any of them needs a new tick. Messages and scratchpad notes sent from the phone are not covered and always wait for Send now.</div>
+      <details class="set-details opt-note">
+        <summary data-i18n="automation.autoSend.scope">What this approval covers</summary>
+        <p data-i18n="presets.autoSend.scope.body">An agent asking for input or permission still pauses the task. Revoking a paired device takes back the unsent steps of the tasks it created. Being paired is not an approval: only this version of the preset, ticked here, is approved. The first step is the separate choice below.</p>
+      </details>
+      <h4 class="auto-section" data-i18n="presets.section.first">First step</h4>
+      <label class="q-review-option"><input type="checkbox" id="pdf-preset-first-send" aria-describedby="pdf-preset-first-send-hint"><span data-i18n="automation.firstSend.option">Send the first step to a newly started agent without waiting for readiness</span></label>
+      <div class="set-hint opt-note opt-risk" id="pdf-preset-first-send-hint" data-i18n="presets.firstSend.hint">By default a task created from the phone starts its agent and then waits for your first interaction on this Mac. With this on, Deck sends the first step after a short compatibility wait. The wait is not readiness proof: a Trust, Update, sign-in, permission or other startup dialog may receive the text and Enter. Later steps keep their normal checks. Works with Claude, or Codex with --no-daemon.</div>
+      <div class="set-hint opt-note opt-state warn" id="pdf-preset-first-send-unsupported" role="status" data-i18n="automation.firstSend.unsupported" hidden>on, but not used: the command must be Claude, or Codex with --no-daemon</div>
       <div class="set-actions"><button class="btn" type="button" id="pdf-preset-delete" data-i18n="common.delete">Delete</button><button class="btn" type="button" id="pdf-preset-done" data-i18n="common.done">Done</button></div>
     </div>
     <div class="cfm-actions">

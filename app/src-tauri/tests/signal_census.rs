@@ -514,25 +514,19 @@ const JS: &[(&str, &str, &str, usize, Class)] = &[
     // the queue panel's hook observation label
     (
         "queue-review.js",
-        "executionPlan",
+        "sessionFacts",
         "'needs-input'",
         1,
         Presentation,
     ),
     (
         "queue-review.js",
-        "executionPlan",
+        "sessionFacts",
         "'turn-done'",
         1,
         Presentation,
     ),
-    (
-        "queue-review.js",
-        "executionPlan",
-        ".agent",
-        1,
-        Presentation,
-    ),
+    ("queue-review.js", "sessionFacts", ".agent", 1, Presentation),
     // an i18n key (`queue.stage.agent`) and an agent CLI name
     ("queue-review.js", "stageKeys", ".agent", 1, NotSignal),
     ("resume-model.js", "resumeCommands", ".agent", 2, NotSignal),

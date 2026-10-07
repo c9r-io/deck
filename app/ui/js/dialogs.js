@@ -1,4 +1,4 @@
-import { localCandidates, localParts, noteValid, shortcutTime } from './reminder-model.js';
+import { localCandidates, localParts, noteValid, REMINDER_NOTE_BYTES, shortcutTime } from './reminder-model.js';
 // dialogs.js — confirm/prompt/choice dialogs, project defaults, toasts, inline rename
 // The settings modal and everything it persists live in settings.js, which
 // imports these primitives; nothing here knows the settings document.
@@ -155,7 +155,23 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
     const renderPresets = () => {
       const list = $('pdf-presets'); list.replaceChildren();
       for (const preset of draftPresets) {
-        const button = document.createElement('button'); button.type = 'button'; button.className = 'btn'; button.textContent = preset.name;
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'btn preset-item';
+        const name = document.createElement('span'); name.className = 'preset-name'; name.textContent = preset.name;
+        /* what the preset amounts to, not its switches: a stored approval
+           counts only for this version of it, and a direct first step only
+           on a command it can reach. Until the digest is compared the line
+           says it is being checked, never on and never off. */
+        const summary = document.createElement('span'); summary.className = 'preset-summary';
+        const first = t(preset.firstSend !== true ? 'presets.first.wait'
+          : firstSendSupported(preset.cmd) ? 'presets.first.direct' : 'presets.first.unsupported');
+        const say = later => { summary.textContent = `${t(later)} · ${first}`; };
+        if (!preset.autoSend) say('presets.later.manual');
+        else {
+          say('presets.later.checking');
+          presetApproved(projectId, preset).then(valid => say(valid ? 'presets.later.auto' : 'presets.later.stale'),
+            () => say('presets.later.unknown'));
+        }
+        button.append(name, summary);
         button.onclick = () => openPreset(preset); list.appendChild(button);
       }
       $('pdf-preset-add').disabled = draftPresets.length >= 50;
@@ -379,7 +395,12 @@ export async function reminderDialog(current, registration = null) {
     }
     form.append(shortcuts, date);
     const fold = document.createElement('select'); fold.id = 'reminder-fold'; form.append(fold);
-    const note = document.createElement('input'); note.type = 'text'; note.id = 'reminder-note'; note.value = current?.note || ''; note.placeholder = t('reminder.note'); form.append(note);
+    const note = document.createElement('input'); note.type = 'text'; note.id = 'reminder-note'; note.value = current?.note || ''; note.placeholder = t('reminder.note');
+    note.setAttribute('aria-label', t('reminder.note')); note.setAttribute('aria-describedby', 'reminder-note-feedback');
+    /* the limit is UTF-8 bytes (reminder.rs), so the feedback counts bytes:
+       nothing is truncated and nothing is saved over the limit */
+    const noteFeedback = document.createElement('p'); noteFeedback.id = 'reminder-note-feedback'; noteFeedback.setAttribute('role', 'status'); noteFeedback.hidden = true;
+    form.append(note, noteFeedback);
     const label = document.createElement('label');
     const inApp = document.createElement('input'); inApp.type = 'checkbox'; inApp.id = 'reminder-in-app'; inApp.checked = current?.inAppOnly === true;
     label.append(inApp, document.createTextNode(t('reminder.inApp'))); form.append(label);
@@ -407,9 +428,15 @@ export async function reminderDialog(current, registration = null) {
     };
     const validate = () => {
       const instant = relativeInstant || (candidates.length === 1 ? candidates[0] : Number(fold.value) || null);
-      const valid = instant > Date.now() && noteValid(note.value);
+      const timeValid = instant > Date.now();
+      const valid = timeValid && noteValid(note.value);
       save.disabled = !valid || (!inApp.checked && !['not-determined', 'authorized', 'provisional'].includes(status));
-      preview.textContent = valid ? `${t('reminder.preview')} ${new Intl.DateTimeFormat(undefined, { timeZone: zone, dateStyle: 'full', timeStyle: 'short' }).format(instant)} (${zone})` : t('reminder.invalid');
+      preview.textContent = timeValid ? `${t('reminder.preview')} ${new Intl.DateTimeFormat(undefined, { timeZone: zone, dateStyle: 'full', timeStyle: 'short' }).format(instant)} (${zone})` : t('reminder.invalid');
+      const used = new TextEncoder().encode(note.value).length; const over = used > REMINDER_NOTE_BYTES;
+      const line = !over && !noteValid(note.value);
+      noteFeedback.hidden = !over && !line && used < REMINDER_NOTE_BYTES * 0.75;
+      noteFeedback.className = over || line ? 'reminder-note-over' : '';
+      noteFeedback.textContent = line ? t('reminder.noteLine') : t(over ? 'reminder.noteOver' : 'reminder.noteUsed', { used, max: REMINDER_NOTE_BYTES });
     };
     date.oninput = update; fold.onchange = validate; note.oninput = validate; inApp.onchange = validate;
     form.onsubmit = event => {

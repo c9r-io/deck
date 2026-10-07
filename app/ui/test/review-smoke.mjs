@@ -107,7 +107,7 @@ export async function runReviewSmoke(restart = false) {
       setLocale(locale); activateTheme({ theme, accent: 'teal' }); applyFontScale(scale); renderQueueUI(); await pause(60);
       const panel = $('queue-body');
       layoutOK &&= panel.scrollWidth <= panel.clientWidth + 1
-        && !!document.querySelector('.q-execution-plan') && !!document.querySelector('.q-history');
+        && !!document.querySelector('.q-send-plan') && !!document.querySelector('.q-history');
     }
     setLocale('zh-Hans'); activateTheme({ theme: 'deck-dark', accent: 'teal' }); applyFontScale(1); renderQueueUI();
     await report('review-layout', layoutOK);

@@ -1203,11 +1203,9 @@ body.side-collapsed #attention-count { margin-left: 0; max-width: 34px; overflow
 /* C v01: local execution evidence and durable human checkpoints. */
 .q-review-option { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-size: 0.923077rem; color: var(--muted); }
 .q-review-option input { flex: none; width: auto; }
-.q-execution-plan { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; padding: 12px; border-top: 1px solid var(--border-soft); background: var(--panel); font-size: 0.923077rem; }
-.q-execution-plan p, .qg-review p { margin: 6px 0; line-height: 1.5; }
+.qg-review p { margin: 6px 0; line-height: 1.5; }
 .q-plan-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.q-plan-stage, .qg-review-status { color: var(--wait); }
-.q-plan-evidence { border-left: 1px solid var(--border-soft); padding-left: 14px; }
+.qg-review-status { color: var(--wait); }
 .qg-review { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 12px; border-top: 1px solid var(--border-soft); background: var(--sel); }
 .qg-review-body { flex: 1 1 260px; min-width: 0; }
 .qg-review-title { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -1218,10 +1216,8 @@ body.side-collapsed #attention-count { margin-left: 0; max-width: 34px; overflow
 .q-history summary { cursor: pointer; color: var(--text); }
 .q-history-record { overflow-wrap: anywhere; color: var(--muted); font-size: 0.846154rem; }
 /* the plan lives in the drawer, which is always narrow: one column */
-#queue-panel .q-execution-plan { grid-template-columns: minmax(0, 1fr); }
-#queue-panel .q-plan-evidence { border-left: 0; padding-left: 0; border-top: 1px solid var(--border-soft); padding-top: 10px; }
 
-.q-execution-plan .q-hint, .qg-review .q-hint { color: var(--muted); }
+.qg-review .q-hint { color: var(--muted); }
 
 /* Voice preferences use the existing settings surface, without a recording. */
 .voice-preferences { min-width: 0; }
@@ -1233,3 +1229,34 @@ html.font-scale-large .voice-language-choices { grid-template-columns: minmax(0,
 
 .reminder-overlay {position:fixed;inset:0;z-index:15000;background:var(--modal-overlay);display:flex;align-items:center;justify-content:center;}
 .reminder-editor {background:var(--panel);padding:24px;border:1px solid var(--border);border-radius:12px;width:min(520px,90vw);display:flex;flex-direction:column;gap:12px;}
+/* Information layers: an option's notes sit under its control, indented to
+   its label; a risk keeps the text colour; disclosures name what they hold. */
+.auto-section { margin: 14px 0 6px; font-size: 0.846154rem; font-weight: 600; letter-spacing: 0.04em; color: var(--faint); border-top: 1px solid var(--border-soft); padding-top: 10px; }
+#auto-editor .auto-section:first-of-type { border-top: 0; padding-top: 0; }
+#auto-editor .auto-section[hidden] { display: none; }
+.opt-note { margin: 0 0 8px 22px; line-height: 1.5; }
+p.opt-note[hidden], ul.opt-note[hidden], details.opt-note[hidden], label.opt-note[hidden] { display: none; }
+.q-hint.opt-risk, .set-hint.opt-risk, .q-hint.q-risk { color: var(--text); }
+.q-hint.q-risk { padding: 4px 0; }
+.opt-state { color: var(--muted); }
+.opt-state.warn, .set-hint.opt-state.warn { color: var(--wait); }
+.help-list { margin: 6px 0 0; padding-left: 18px; line-height: 1.5; }
+.help-list li { margin: 3px 0; }
+ul.help-list.opt-note { margin: 0 0 8px 22px; font-size: 0.846154rem; }
+.set-details.opt-note { margin: 0 0 10px 22px; }
+.set-details p { margin: 6px 0 0; }
+.auto-help { margin: 0 0 8px; }
+#pdf-box .set-hint.opt-note, #pdf-box .set-details.opt-note { margin: 0 0 10px 22px; }
+#pdf-box h4.auto-section { margin: 14px 0 6px; }
+.preset-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; margin-bottom: 6px; text-align: left; height: auto; white-space: normal; }
+.preset-item .preset-summary { font-size: 0.846154rem; color: var(--muted); }
+.q-send-plan { padding: 8px 12px; border-top: 1px solid var(--border-soft); background: var(--panel); font-size: 0.923077rem; }
+.q-send-plan p { margin: 6px 0; line-height: 1.5; }
+.q-session-facts { padding: 0 2px 8px; font-size: 0.923077rem; }
+.q-session-facts p { margin: 4px 0; }
+.q-plan-details { color: var(--muted); margin-top: 6px; }
+.q-plan-details summary { cursor: pointer; width: fit-content; }
+.q-plan-details summary:hover { color: var(--text); }
+.q-plan-details p { margin: 6px 0; line-height: 1.5; }
+#reminder-note-feedback { margin: 0; font-size: 0.884615rem; color: var(--muted); }
+#reminder-note-feedback.reminder-note-over { color: var(--wait); }

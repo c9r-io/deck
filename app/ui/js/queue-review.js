@@ -2,11 +2,22 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 //
 // # Contract
-// - Three read-only projections of `ctx.queueCache`: `stageText` (the
-//   backend's selection stage for an item; a plan older than 40 s reads as
-//   unknown), `executionPlan` (a list's mode, stage and the hook observation
-//   shown APART from the plan and labelled unverified) and `queueHistory`
-//   (the delivery and inspection ledgers: ids and times, no prompt text).
+// - Read-only projections of `ctx.queueCache`: `stageText` (the backend's
+//   selection stage for an item; a plan older than 40 s reads as unknown),
+//   `sendPlan` (a list's inspection mode and its send conditions),
+//   `sessionFacts` (what holds for the whole session, said once: lists that
+//   may interleave, and the hook observation, shown APART from any list and
+//   labelled unverified) and `queueHistory` (the delivery and inspection
+//   ledgers: ids and times, no prompt text).
+// - LAYERS. Always visible: a row's own stage (`rowStage`), a compatibility
+//   target (input may reach a shell), and every hold that needs the user.
+//   On demand, under a named disclosure: how sends are timed, the last target
+//   check, the hook observation. A row that merely waits its turn behind the
+//   row above it says nothing (`rowStage` is empty for a fresh `previous`
+//   stage): the order already says it. Stale, unknown and every other stage
+//   stay on the row. Disclosures remember being open across the panel's
+//   re-renders and carry `data-queue-focus`; opening one fetches, saves and
+//   releases nothing.
 // - `reviewRow` is the one place a checkpoint is released. Inspect asks the
 //   backend for a preview (`queue_review_preview`), shows the next prompt and
 //   the observed vs expected process, and only a confirmed dialog returns
@@ -53,9 +64,17 @@ const button = (id, action, label, run) => {
   return b;
 };
 
-export function stageText(item) {
+const freshPlan = item => {
   const plan = (ctx.queueCache.plans || []).find(p => p.item === item.id);
-  if (!plan || Date.now() / 1000 - plan.checked_at > 40) return t('queue.stage.unknown');
+  return !plan || Date.now() / 1000 - plan.checked_at > 40 ? null : plan;
+};
+
+/* a row's own stage, or '' for a row that only waits its turn in its list */
+export const rowStage = item => (freshPlan(item)?.stage === 'previous' ? '' : stageText(item));
+
+export function stageText(item) {
+  const plan = freshPlan(item);
+  if (!plan) return t('queue.stage.unknown');
   const text = t(stageKeys[plan.stage] || 'queue.stage.unknown', {
     duration: formatInterval(plan.stage === 'gap' ? Math.max(0, plan.gap_until - plan.checked_at) : (plan.quiet_remaining || 0)),
   });
@@ -69,18 +88,23 @@ export async function cancelQueueList(item, refresh) {
   await refresh();
 }
 
-export function reviewRow(item, refresh, viewTerminal) {
+/* `last` describes the list the checkpoint closes: whether it repeats, and
+   whether the card's automation closes it after the program exits. Each
+   consequence is said only where it applies. */
+export function reviewRow(item, refresh, viewTerminal, last = {}) {
   const row = node('div', 'qg-review'); row.dataset.qkey = item.id;
   const body = node('div', 'qg-review-body');
   body.append(node('div', 'qg-review-title', item.text),
-    node('p', 'qg-review-status', t(item.state === 'review' ? 'queue.stage.review' : 'queue.stage.approved')),
-    node('p', 'q-hint', t('queue.review.boundary')));
+    node('p', 'qg-review-status', t(item.state === 'review' ? 'queue.stage.review' : 'queue.stage.approved')));
+  if (item.state === 'review') body.append(node('p', 'q-hint', t('queue.review.boundary')));
   const actions = node('div', 'qg-review-actions');
   actions.append(button(item.id, 'view', t('queue.review.view'), viewTerminal));
   if (item.state === 'review') {
     actions.append(button(item.id, 'confirm', t('queue.review.inspect'), async () => {
       const preview = await inv('queue_review_preview', { id: item.id });
-      const message = preview.next_text == null ? t('queue.review.lastConfirm')
+      const message = preview.next_text == null
+        ? [t('queue.review.lastConfirm'), last.repeats ? t('queue.review.lastRepeat') : '', last.closes ? t('queue.review.lastClose') : '']
+          .filter(Boolean).join('\n\n')
         : t('queue.review.confirm', { prompt: preview.next_text, current: preview.current_process || t('queue.context.noProcess'),
           expected: preview.expected_process || t('queue.review.compatibility') });
       if (!await confirmDialog(message)) return;
@@ -93,9 +117,23 @@ export function reviewRow(item, refresh, viewTerminal) {
   return row;
 }
 
-export function executionPlan(g, card, otherLists, refresh) {
-  const box = node('div', 'q-execution-plan');
-  const schedule = node('div', 'q-plan-conditions');
+/* a disclosure that stays as the user left it across re-renders */
+const opened = new Set();
+function disclosure(key, cls, label) {
+  const details = node('details', cls); details.open = opened.has(key);
+  details.ontoggle = () => { if (details.open) opened.add(key); else opened.delete(key); };
+  const summary = node('summary', '', label); summary.dataset.queueFocus = key;
+  details.append(summary);
+  return details;
+}
+
+export const listRepeatsOrRule = g => g.head.mode === 'every' || !!g.head.rule;
+
+/* A list's send plan: how its rows are released (the inspection mode, a
+   button because it is a choice) and, on demand, the conditions a send
+   waits for. A compatibility target is a risk, so it is said outside. */
+export function sendPlan(g, refresh) {
+  const box = node('div', 'q-send-plan');
   const review = g.rows.some(i => i.review_each);
   const mode = node('div', 'q-plan-mode');
   mode.append(node('strong', '', t('queue.plan')),
@@ -103,21 +141,33 @@ export function executionPlan(g, card, otherLists, refresh) {
       if (!await confirmDialog(t(review ? 'queue.review.disableConfirm' : 'queue.review.enableConfirm'))) return;
       await inv('queue_review_mode', { id: g.head.id, enabled: !review }); await refresh();
     }));
-  schedule.append(mode, node('p', '', t(g.head.mode === 'every' || g.head.rule ? 'queue.plan.repeat' : 'queue.plan.current')),
-    node('p', 'q-hint', t('queue.plan.conditions')),
-    node('p', 'q-plan-stage', stageText(g.rows.find(i => i.state !== 'review-approved') || g.head)),
-    node('p', 'q-hint', t('queue.plan.others', { count: otherLists })));
-  const evidence = node('div', 'q-plan-evidence');
-  const observation = ctx.attention.get(card);
-  const agentKeys = { working: 'queue.signal.working', 'needs-input': 'queue.signal.input', 'turn-done': 'queue.signal.done' };
-  evidence.append(node('strong', '', t('queue.plan.evidence')),
-    node('p', '', t(observation?.stale ? 'queue.stage.unknown' : (agentKeys[observation?.agent] || 'queue.signal.none'))),
-    node('p', 'q-hint', t('queue.plan.unverified')));
-  if (g.head.last_context) evidence.append(node('p', 'q-hint', t('queue.plan.targetTime', {
+  box.append(mode);
+  if (!g.head.expected_process) box.append(node('p', 'q-hint q-risk', t('queue.plan.compatibility')));
+  const details = disclosure(`${g.head.id}:conditions`, 'q-plan-details', t('queue.plan.details'));
+  details.append(node('p', '', t(listRepeatsOrRule(g) ? 'queue.plan.repeat' : 'queue.plan.current')),
+    node('p', '', t('queue.plan.conditions')), node('p', '', t('queue.plan.signals')));
+  if (g.rows.some(i => freshPlan(i)?.stage === 'first-send')) details.append(node('p', '', t('queue.plan.firstStep')));
+  if (g.head.expected_process) details.append(node('p', '', t('queue.plan.expected', { process: g.head.expected_process })));
+  if (g.head.last_context) details.append(node('p', '', t('queue.plan.targetTime', {
     time: new Date(g.head.last_context.checked_at * 1000).toLocaleTimeString(),
   })));
-  evidence.append(node('p', 'q-hint', t(g.head.expected_process ? 'queue.plan.expected' : 'queue.plan.compatibility', { process: g.head.expected_process })));
-  box.append(schedule, evidence); return box;
+  box.append(details);
+  return box;
+}
+
+/* What holds for the session whatever the list: said once, above the lists.
+   Interleaving exists only with more than one list; the hook observation is
+   one per session and is evidence, never a send condition. */
+export function sessionFacts(card, lists) {
+  const box = node('div', 'q-session-facts');
+  if (lists > 1) box.append(node('p', 'q-hint', t('queue.plan.others', { count: lists })));
+  const observation = ctx.attention.get(card);
+  const agentKeys = { working: 'queue.signal.working', 'needs-input': 'queue.signal.input', 'turn-done': 'queue.signal.done' };
+  const state = t(observation?.stale ? 'queue.stage.unknown' : (agentKeys[observation?.agent] || 'queue.signal.none'));
+  const details = disclosure(`${card.id}:observation`, 'q-plan-details', t('queue.observation', { state }));
+  details.append(node('p', '', t('queue.plan.unverified')));
+  box.append(details);
+  return box;
 }
 
 const historyOpen = new Set();
