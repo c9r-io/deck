@@ -341,6 +341,26 @@ Object.assign(scenes, {
     approved(landed, 'after A');
     await thenAnotherRule('rb', landed, approved);
   },
+  /* A takes a badge approval away: nothing brings it back (R1 made this save complete) */
+  async 'withdrawn-approval-then-font-fails'() {
+    const { approveRule } = await import('../../js/automation-model.js');
+    const approved = structuredClone(FILE);
+    approved.inbound.rules[1] = await approveRule(approved.inbound.rules[1], project.templates[0]);
+    disk.data = serializeSettings(approved);
+    assert.ok(rule(disk.data, 'rs').autoSend, 'the file holds an approval');
+    const withdrawn = (inbound, where) => assert.equal(inbound.rules.find(value => value.id === 'rs').autoSend, undefined, where);
+    const landed = await landedThenRefused(() => editRule('rs', () => {
+      assert.equal(get('auto-send').checked, true, 'the editor shows the approval');
+      get('auto-send').checked = false; get('auto-send').fire('change');
+    }), 'font');
+    withdrawn(landed, 'after A');
+    open('rs');
+    assert.equal(get('auto-send').checked, false, 'the rule opens without the approval after B failed');
+    get('auto-cancel').onclick();
+    await thenAnotherRule('rb', landed, withdrawn);
+    open('rs');
+    assert.equal(get('auto-send').checked, false, 'and after D');
+  },
   /* A withdraws the channel permission: nothing brings it back */
   async 'withdrawn-channel-permission-then-font-fails'() {
     const withdrawn = (inbound, where) => assert.deepEqual(

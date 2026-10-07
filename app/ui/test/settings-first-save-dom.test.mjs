@@ -22,6 +22,7 @@ for (const [scene, title] of [
   ['landed-clock-then-font-fails', 'a clock rule save that landed is kept in memory and in the next rule save when a font save fails'],
   ['landed-clock-then-shortcut-fails', 'a clock rule save that landed is kept when a shortcut save fails'],
   ['landed-approval-then-font-fails', 'a badge approval that landed is kept in memory and in the next rule save when a font save fails'],
+  ['withdrawn-approval-then-font-fails', 'a badge approval taken away by a save that landed is not brought back by a failed font save'],
   ['withdrawn-channel-permission-then-font-fails', 'a channel permission withdrawn by a save that landed is not brought back by a failed font save'],
   ['landed-clock-then-font-lands', 'a rule save and a font save that both landed are both kept by the next rule save'],
   ['font-fails-alone', 'a font save that fails alone takes back its own change and leaves every automation and permission'],

@@ -277,8 +277,10 @@ export async function approvalsVoidedBy(rules, projectId, name, before, after) {
 }
 
 /* the approval row of a Slack badge rule's facts, from its `grantDetail`
-   (a bare 'stale' keeps the sentence that names both possibilities) */
-export const approvalText = (rule, state) => t(state === 'valid'
+   (a bare 'stale' keeps the sentence that names both possibilities). A rule
+   that holds no approval is off whatever `state` says: the state may have
+   been computed for the rule as it was. */
+export const approvalText = (rule, state) => t(!rule?.autoSend ? 'automation.autoSend.off' : state === 'valid'
   ? (rule.autoSend.external ? 'automation.autoSend.onExternal' : 'automation.autoSend.on')
   : state === 'stale-template' ? 'automation.autoSend.staleTemplate'
     : state === 'stale-rule' ? 'automation.autoSend.staleRule'

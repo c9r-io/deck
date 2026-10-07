@@ -397,3 +397,65 @@ A 为 `ra`（撤下首步授权）：
 | `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在最终的前端源码上运行） |
 
 没有构建应用，没有启动应用或 tmux 服务器。fmt、clippy、245 秒后台载体没有重跑。
+
+## R1 表情规则撤销批准后的界面一致性（2026-10-08）
+
+起始 `main` / `9acc59e` / 工作树干净。生产改动：`app/ui/js/automation.js`（批准缓存的读取与发布、头部契约），`app/ui/js/automation-model.js`（`approvalText`）。测试：新增 `app/ui/test/automation-approval-dom.test.mjs`（7 项）；`fixtures/first-save-scenes.mjs` 与 `settings-first-save-dom.test.mjs` 各加 1 个场景。
+
+### 读取点（修复前）
+
+| 位置 | 行为 |
+|---|---|
+| `automation.js` `approvals` | `Map<规则 ID, 状态>`，由 `refreshApprovals` 整体替换 |
+| `renderAutomations` | 先同步 `paintAutomations()`，再异步 `refreshApprovals()`；结果返回后只有“是否重绘”受 `renderSeq` 限制，缓存无条件替换 |
+| `ruleEl` → `ruleFacts` → `approvalText(rule, state)` | `state === 'valid'` 时读 `rule.autoSend.external` |
+| `openEditor` | `approvals.get(rule.id) === 'valid'` 时勾选并读 `rule.autoSend.external` |
+| `saveRule` | `persistInbound` 成功后同步调用 `renderAutomations()`，异常向上抛到保存按钮处理函数 |
+
+### 同一断言修复前后（修复前逐项单独运行）
+
+| 测试 | 修复前 | 修复后 |
+|---|---|---|
+| `taking a badge rule's approval away is one save: the list, the editor and the file agree` | 失败 `TypeError: Cannot read properties of undefined (reading 'external')` | 通过 |
+| `an approval computed earlier is not shown or ticked for a rule that no longer has one` | 失败，同一 `TypeError` | 通过 |
+| `an approval result that arrives late, for the rule as it was, changes nothing` | 失败，同一 `TypeError`（发生在撤销保存处，未到迟到结果） | 通过 |
+| `a result that arrives late, for the rule before it was approved, does not hide the approval` | 失败 `AssertionError: the editor still opens approved: saving it would not take the approval away` | 通过 |
+| `approved, approved with message content, changed since, and never approved read as before` | 失败 `AssertionError: not called approved before it was checked against the new steps` | 通过 |
+| `a refused save of the same change leaves the approval that is in the file, and says the save failed` | 通过 | 通过 |
+| `after taking one approval away, saving another rule and approving again all work once each` | 失败，同一 `TypeError` | 通过 |
+| `a badge approval taken away by a save that landed is not brought back by a failed font save`（F3.4 场景） | 失败，同一 `TypeError` | 通过 |
+
+合计：新文件修复前 `pass 1 / fail 6`，修复后 `tests 7 / pass 7 / fail 0`；补回的场景修复前失败、修复后通过。
+
+### 各测试的受控时序
+
+- **缓存滞后**：列表里已批准的 `ra` 排在 `rs` 前面。扣住所有哈希后撤销 `rs` 并保存：保存后的重新计算停在 `ra` 的哈希上，`rs` 的缓存仍是撤销前的 `valid`。此时断言 `rs` 一行显示关闭、编辑器关闭、重新打开两个框都不勾；放行后 `rs` 仍是关闭，`ra` 显示开启。
+- **迟到的旧 valid**：扣住哈希，触发一次重绘（开始计算已批准的 `rs`），撤销并保存（新一轮计算对 `rs` 不需要哈希，立即完成），再放行旧计算。之后列表、编辑器、再一次重绘都不显示开启。
+- **迟到的旧“未批准”**：`ra` 已批准、`rs` 未批准。扣住哈希并触发重绘（旧计算停在 `ra`），解除扣留后批准 `rs` 并保存，等列表显示开启，再放行旧计算。之后打开 `rs` 批准框仍勾选，再一次重绘仍显示开启；保存共 1 次。
+- **保持性**：五条规则依次为固定模板已批准、带消息内容的模板连同外部内容一起批准、批准后规则目录被改、批准后模板不存在、从未批准。列表文案依次为已开启、已开启含消息内容、规则已改、模板已改、关闭；编辑器勾选依次为 `[是,否] [是,是] [否,否] [否,否] [否,否]`。随后改动固定模板的步骤并重绘：计算完成前不显示已开启，完成后显示模板已改，编辑器不勾；全程没有保存。
+
+### 补回的 F3.4 场景（独立进程，只经 `loadSettings()`）
+
+主文件里 `rs` 带有由 `approveRule` 生成的批准。A 在编辑器里取消批准并保存（已落盘、扣住答复）→ B `setFontScale(1.2)` 排队 → A 答复 → B 被拒绝且主文件未写 → D 把 `rb` 的目录改为 `/opt` 并保存。
+
+| 阶段 | `rs.autoSend` |
+|---|---|
+| A 答复后，内存与主文件 | 无 |
+| B 被拒绝后，内存（与主文件 `deepEqual`） | 无；打开编辑器批准框不勾 |
+| D 的请求 | 无 |
+| D 落盘后的主文件 | 无 |
+| D 之后的内存 | 无；打开编辑器批准框不勾 |
+
+D 自己的目录修改已保存，授权请求为空，B 的失败提示 1 次。
+
+### 门禁
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check` 全部已跟踪 UI JS/MJS 加新测试文件 | 通过 |
+| `scripts/ui-tests` | `tests 620 / pass 620 / fail 0`，退出码 0 |
+| `node ui/js/check.mjs` | `ok: 58 modules` |
+| `git diff --check` | 退出码 0 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在最终的前端源码上运行） |
+
+层级：node 下的测试 DOM，不是真实 WKWebView。没有构建或启动应用，没有 tmux 服务器。fmt、clippy、245 秒后台载体没有重跑。

@@ -522,3 +522,83 @@ F3.1 一节把它写成“只读代码得出，没有运行验证”的短暂不
 ### 提交
 
 本节的生产改动、测试和文档作为一个提交落在本地 `main`，父提交 `bc3adc0`，不带 Co-Authored-By；未推送、未发布、版本未变。
+
+## R1 表情规则撤销批准后的界面一致性（2026-10-08）
+
+起始：`main`，HEAD `9acc59e`，工作树干净。F3.1–F3.4 保持关闭，本节不重开。这里处理 F3.4 一节“另外发现”里记下的既有缺陷，那条记录原样保留。它是界面问题：表情规则的批准、撤销、模板批准和调度语义都没有改，后端的撤销没有失效。逐项证据在 [channel-first-send-closure-evidence.md](channel-first-send-closure-evidence.md) 的同名一节。
+
+### 结论：CONFIRMED，已修复；核实时在同一缓存上又确认一个问题，一并修复
+
+**报告的问题。** 在生产保存路径上复现：加载一条已批准的表情规则，列表显示“已开启”；打开编辑器取消批准并保存。先后顺序是：
+
+1. `save_settings` 发出并落盘，请求和主文件里该规则都没有 `autoSend`。
+2. 规则进入内存，`saveRule` 调用 `renderAutomations()` 重绘列表。
+3. 重绘是同步的，用的是还没重新计算的批准缓存（按规则 ID 存，仍是 `valid`）。`approvalText` 读 `rule.autoSend.external`，抛 `TypeError`。
+4. 异常从 `saveRule` 一路抛出保存按钮的处理函数：编辑器不关闭，没有“已保存”提示，列表停在清空后的半成品上，批准状态的重新计算也没有启动。
+
+所以保存是成功的，坏的是之后的界面。没有重复写入。
+
+**同一缓存上的第二个问题（核查入口第 3 条属实）。** 批准状态的计算是异步的，结果整体写回缓存时不看自己是否已经过时；原来只限制了“是否重绘”，没有限制“是否发布”。实际复现的一个后果：一次较早开始的计算（规则当时还没批准）在用户批准并保存之后才返回，把缓存写回“未批准”。此后打开这条规则的编辑器，批准框是没勾的；用户改别的字段再保存，就会在不知情的情况下把刚给的批准去掉。
+
+**`openEditor`（核查入口第 2 条）。** 属实：编辑器用同一份缓存判断是否勾选，然后读 `rule.autoSend.external`。缓存滞后时重新打开刚撤销的规则同样会抛异常。
+
+### 为什么不是只加 `?.external`
+
+只加空值判断不再抛异常，但缓存仍是 `valid`，列表会对一条已经没有批准的规则显示“自动发送已开启”，编辑器会把批准框勾上。那是把崩溃换成错误的显示，而且勾着的框一保存就会重新批准。测试 `an approval computed earlier is not shown or ticked…` 断言的正是显示为关闭、两个框都不勾。
+
+### 最小修复
+
+生产改动只有 `app/ui/js/automation.js` 和 `app/ui/js/automation-model.js`。没有改设置写入器、持久化、后端或授权语义；没有 try/catch 吞异常。
+
+1. **规则当前的事实优先。** 规则没有 `autoSend` 时，列表立即显示既有的“关闭”文案，编辑器两个框都不勾，不等任何哈希。`approvalText` 自己也先看规则。显示层不创建、不补写任何批准。
+2. **缓存结果只对它验证过的状态有效。** 缓存条目同时记下它是针对哪条规则内容和哪份模板步骤算出来的；读取时内容不同就当作没有结果。所以旧规则或旧模板的结果不会用在新状态上。
+3. **过时的计算不发布。** 计算完成时，如果之后已经开始了更新的一次重绘，结果直接丢弃，不写回缓存。复用已有的 `renderSeq`，没有新的代次或缓存管理器。
+
+呈现上的一个变化：批准存在但还没有针对当前规则和模板验证完时，显示为关闭（这是首次打开抽屉时本来就有的保守呈现）。以前模板改动后、重新计算完成前的那一瞬间会继续显示旧的“已开启”；现在先显示关闭，算完后显示“已过期”。规则内容没变的重绘（比如保存了别的规则）不受影响，不会闪。
+
+### 测试
+
+新文件 `app/ui/test/automation-approval-dom.test.mjs`，7 项；另在 `settings-first-save-dom.test.mjs` 补 1 个场景。运行的是生产的保存按钮处理函数、`saveRule`、真实绘制的规则行和其中的批准一行、`openEditor`、设置写入器和 `loadSettings`。批准对象由生产的 `approveRule` 生成。合成的只有原生 IPC 和“哈希何时完成”（受控 promise，不靠 sleep；被扣住的旧计算最后照常返回）。
+
+| 必测 | 测试 | 修复前 | 修复后 |
+|---|---|---|---|
+| 1 真实撤销流程 | `taking a badge rule's approval away is one save: the list, the editor and the file agree` | 失败：`TypeError … reading 'external'` | 通过 |
+| 2 缓存暂时滞后 | `an approval computed earlier is not shown or ticked for a rule that no longer has one` | 失败，同一异常 | 通过 |
+| 3 迟到的旧计算（撤销之后旧的 valid 返回） | `an approval result that arrives late, for the rule as it was, changes nothing` | 失败，同一异常 | 通过 |
+| 3 反方向（批准之后旧的“未批准”返回） | `a result that arrives late, for the rule before it was approved, does not hide the approval` | 失败：`the editor still opens approved…` | 通过 |
+| 4 保持性：固定模板、外部模板、规则已改、模板已改、从未批准 | `approved, approved with message content, changed since, and never approved read as before` | 失败：模板改动后仍显示已开启 | 通过 |
+| 5 保存确实失败 | `a refused save of the same change leaves the approval that is in the file, and says the save failed` | 通过 | 通过 |
+| 6 相邻规则与重复使用 | `after taking one approval away, saving another rule and approving again all work once each` | 失败，同一异常 | 通过 |
+| 7 补回 F3.4 的场景 | `a badge approval taken away by a save that landed is not brought back by a failed font save` | 失败，同一异常 | 通过 |
+
+修复前的结果是逐项单独运行得到的。两点需要说明：
+
+- 第 3 项第一行在修复前是被撤销保存本身的异常挡住的，没有走到“旧结果返回”那一步；真正单独验证“过时结果不发布”的是反方向那一行，它在修复前以断言失败，不是以异常失败。
+- 第 4 项修复前失败的那条断言是本轮新增的呈现要求（模板改动后未验证前不说已开启），其余五种状态的文案和勾选在修复前后相同。
+
+第 1 项的断言：保存 1 次；请求、主文件、内存里该规则都没有 `autoSend`；列表这一行显示关闭；编辑器关闭；“已保存”1 次；没有未处理的 rejection；再打开时两个框都不勾。第 5 项：主文件未写；内存和主文件里批准原样；列表仍显示开启；编辑器保留且框保持用户取消后的状态；没有“已保存”，保存失败提示 1 次。
+
+**补回的 F3.4 场景**：A 成功撤销表情规则批准，B 字号保存被拒绝，D 保存另一条规则。A 之后、B 失败之后、D 的请求、D 落盘后的主文件、D 之后的内存里，该规则都没有 `autoSend`；B 失败后和 D 之后打开它，批准框都不勾。F3.4 的写入器没有改动。
+
+### 门禁（修复后的工作树，实际运行）
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check`（全部已跟踪的 UI JS/MJS 加新测试文件） | 通过 |
+| `scripts/ui-tests` | 620 项通过，0 失败（612 加本轮 8），覆盖率门槛与清单通过 |
+| `node ui/js/check.mjs` | 58 个模块通过 |
+| `git diff --check` | 通过 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在最终的前端源码上运行） |
+
+没有改 Rust、IPC 或投递路径。fmt、clippy 和 245 秒后台载体没有重跑。
+
+### 未执行与遗留
+
+- 全部证据来自 node 下的测试 DOM，没有在真实 WKWebView 里操作。测试 DOM 里一行规则的子元素是按选择器取的固定替身，验证的是写进批准一行的文字，不是真实布局。
+- 没有使用真实 Slack、Agent、Keychain 或剪贴板；没有启动应用或 tmux 服务器，没有需要清理的资源。
+- 缓存的键是规则内容加模板步骤的序列化文本，每次绘制每条表情规则算一次。规则数量很小，没有测量开销。
+- “同类保存进行中，新保存被静默拒绝”等此前记录的遗留没有变化。
+
+### 提交
+
+本节的生产改动、测试和文档作为一个提交落在本地 `main`，父提交 `9acc59e`，不带 Co-Authored-By；未推送、未发布、版本未变。

@@ -64,6 +64,14 @@
 // backlog it would collect while paused has no honest reading, so it is
 // removed instead.
 //
+// A badge rule's approval is shown from the rule first: one without
+// `autoSend` reads as off in the list and unticked in the editor at once,
+// whatever was computed for it earlier. The computed state (valid, stale)
+// is kept with the rule and template steps it was checked against and read
+// only for those; a computation that finishes after a newer render began is
+// dropped. An approval not yet checked against the present rule reads as
+// off, never as on. Showing computes and writes nothing.
+//
 // ENTRY POINTS (06 B v01): the Board head keeps ONE persistent action, the
 // "New session ▾" split button. Its menu (`showNewSessionMenu`, built in the
 // shared #ctx with arrow-key navigation) holds "new session now", the two
@@ -189,9 +197,18 @@ function runLine(run) {
 }
 
 /* rule id → its approval state for the list, computed before a render
-   (hashing is async); a missing entry reads as not approved */
+   (hashing is async), with the rule and template steps it was computed from
+   (`key`). A state is read only for that same rule and steps (`approvalOf`):
+   a rule without an approval is not approved whatever was computed earlier,
+   and a missing or older entry reads as not approved. */
 let approvals = new Map();
 let renderSeq = 0;
+const approvalKey = rule => JSON.stringify([rule, ruleTemplate(rule)?.steps ?? null]);
+function approvalOf(rule) {
+  if (!rule?.autoSend) return 'none';
+  const entry = approvals.get(rule.id);
+  return entry && entry.key === approvalKey(rule) ? entry.detail : 'none';
+}
 
 function ruleTemplate(rule) {
   const project = store.projects.find(p => p.id === rule.projectId);
@@ -234,7 +251,7 @@ function ruleEl(rule) {
   };
   const kv = el.querySelector('.ar-kv');
   const rows = ruleFacts(rule, { columnName: column ? column.name : null, home: ctx.HOME, slackConnected: slackConnected(),
-    approval: approvals.get(rule.id) || 'none' });
+    approval: approvalOf(rule) });
   for (const [key, value] of rows) {
     const k = document.createElement('span'); k.textContent = t(key);
     const v = document.createElement('b'); v.textContent = value; v.title = value;
@@ -254,17 +271,23 @@ export function renderAutomations() {
   paintAutomations();
   /* approval states hash asynchronously: repaint once, if they changed and
      no newer render took over */
-  refreshApprovals().then(changed => {
+  refreshApprovals(seq).then(changed => {
     if (changed && seq === renderSeq && isOpen()) paintAutomations();
   }).catch(() => {});
 }
 
-async function refreshApprovals() {
+/* Compute the approval states for render `seq`. Only the newest render's
+   result is kept: one that finishes after a newer render started was
+   computed from rules as they were, and is dropped unpublished. */
+async function refreshApprovals(seq) {
   const next = new Map();
   for (const rule of rulesOf().filter(r => r.source === 'slack')) {
-    next.set(rule.id, await grantDetail(rule, ruleTemplate(rule)));
+    const key = approvalKey(rule);
+    next.set(rule.id, { key, detail: await grantDetail(rule, ruleTemplate(rule)) });
   }
-  const changed = next.size !== approvals.size || [...next].some(([id, value]) => approvals.get(id) !== value);
+  if (seq !== renderSeq) return false;
+  const same = (a, b) => !!a && a.key === b.key && a.detail === b.detail;
+  const changed = next.size !== approvals.size || [...next].some(([id, value]) => !same(approvals.get(id), value));
   approvals = next;
   return changed;
 }
@@ -440,7 +463,7 @@ export function openEditor(rule) {
   fillTargets(rule);
   $('auto-review').checked = rule?.reviewEach === true;
   segSet('auto-finish', rule ? (rule.finish === 'close' ? 'close' : 'keep') : 'close');
-  const approved = rule?.source === 'slack' && approvals.get(rule.id) === 'valid';
+  const approved = rule?.source === 'slack' && approvalOf(rule) === 'valid';
   $('auto-send').checked = approved;
   $('auto-send-external').checked = approved && rule.autoSend.external === true;
   $('auto-first-send').checked = ['slack', 'clock'].includes(rule?.source) && rule.firstSendWithoutReadiness === true;
