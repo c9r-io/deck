@@ -620,3 +620,106 @@ segSet('auto-finish', b.dataset.v);
 | `cargo fmt --check` | 退出码 0 |
 | `cargo clippy --workspace -- -D warnings` | 退出码 0 |
 | `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略；最终工作树上重跑 `smoke_` 相关 9 项与五个读取前端源码的集成测试 45 项，通过 |
+
+## U1 批准提示与首发复选框局部布局收尾（2026-10-08）
+
+起始 `main` / `6d5af6d` / 工作树干净。
+
+改动范围：
+
+- 生产：`app/ui/style.css`（`#auto-editor input` 排除复选框；`#auto-send-check` 两条规则）。
+- 调试冒烟：`app/ui/test/approval-smoke.mjs`（三个新检查点、模板与字号参数），`app/ui/test/fixtures/smoke-manifest.json`，`app/src-tauri/src/diagnostics.rs`（词表三行），`app/SMOKE.md`。
+- 证据：`docs/evidence/approval-layout-u1/` 九张截图（裁到编辑器面板，半分辨率）。
+
+### 修复前的测量（真实 WKWebView，未修复样式，默认字号，一次性诊断运行）
+
+| 量 | `auto-send` 英 | `auto-first-send` 英 | `auto-review` 英 | `auto-send` 中 | `auto-first-send` 中 | `auto-review` 中 |
+|---|---|---|---|---|---|---|
+| `flex-grow` / `flex-shrink` / `flex-basis` | 1 / 1 / 0 | 1 / 1 / 0 | 1 / 1 / 0 | 1 / 1 / 0 | 1 / 1 / 0 | 1 / 1 / 0 |
+| 计算宽度 px | 80.8 | 0 | 96.2 | 214.1 | 174.1 | 130.8 |
+| 计算高度 px | 12 | 12 | 12 | 12 | 12 | 12 |
+| `min-width` | 0 | 0 | 0 | 0 | 0 | 0 |
+| `display` 非 none / `visibility` visible / `opacity` | 是 / 是 / 1 | 是 / 是 / 1 | 是 / 是 / 1 | 是 / 是 / 1 | 是 / 是 / 1 | 是 / 是 / 1 |
+| 矩形宽 × 高 px | 80.8 × 12 | 0 × 12 | 96.2 × 12 | 214.1 × 12 | 174.1 × 12 | 130.8 × 12 |
+| label 宽 px | 365 | 365 | 365 | 365 | 365 | 365 |
+| 文字 span 宽 × 高 px | 276.2 × 15 | 357 × 30 | 260.8 × 15 | 142.9 × 15 | 182.9 × 15 | 226.2 × 15 |
+| label `scrollWidth` / `clientWidth` | 365 / 365 | 365 / 365 | 365 / 365 | 365 / 365 | 365 / 365 | 365 / 365 |
+| label `overflow` 为 visible | 是 | 是 | 是 | 是 | 是 | 是 |
+| 框左缘距 label 左缘 px | 0 | 0 | 0 | 0 | 0 | 0 |
+| 文字左缘距 label 左缘 px | 88.8 | 8 | 104.2 | 222.1 | 182.1 | 138.8 |
+| 滚动到位后中心点命中该控件 | 是 | 否 | 是 | 是 | 是 | 是 |
+
+英文首发那一行：文字折成两行（高 30），占满 357 像素，复选框宽 0。其他行里复选框被拉宽到剩余空间，文字因此靠右。
+
+### 检查点（`app.log` 原样）
+
+未修复样式（第 1 次运行）的新增检查点：
+
+```
+smoke-check approval-boxes a=-16 b=0
+smoke-check approval-note-apart a=-1 b=0
+smoke-check approval-exception a=-11 b=0
+```
+
+`approval-boxes`：四种组合无一通过，最窄的框 0 像素。`approval-note-apart`：间距 0，字重不更重。首发交互在第 11 阶段超时（英文默认字号下那个框宽 0，无法按到），所以 `approval-first-send` 没有产生。
+
+最终二进制（第 5 次运行）：
+
+```
+smoke-check approval-pending a=1 b=1
+smoke-check approval-press-box a=1 b=1
+smoke-check approval-press-label a=1 b=0
+smoke-check approval-key-space a=1 b=1
+smoke-check approval-save-through a=1 b=1
+smoke-check approval-check-failed a=1 b=1
+smoke-check approval-layout a=1280 b=768
+smoke-check approval-drift a=1 b=1
+smoke-check approval-boxes a=31 b=12
+smoke-check approval-note-apart a=9 b=1
+smoke-check approval-first-send a=7 b=0
+smoke-check done a=1 b=0
+```
+
+`approval-boxes a=31`：16 加四个组合各一位（英文 100%、英文 160%、中文 100%、中文 160%），全部成立；`b=12` 是所有被量的复选框里最窄的宽度。`approval-note-apart a=9`：最小间距 8 像素加 1；`b=1` 字重更重。`approval-first-send a=7`：七步都成立；`b=0` 结束时未勾选。`scripts/smoke-verdict`：`PASS (12/12 expected checkpoints, 12 lines)`，`js-error` / `js-reject` 0 行。
+
+### 载体与运行
+
+| 项目 | 值 |
+|---|---|
+| 源码 | `6d5af6d` 加本节的工作树改动（运行时尚未提交；最终运行之后只改了文档和 `SMOKE.md`） |
+| 最终载体二进制 | 调试构建 `target/debug/deck-app`，SHA-256 `d0152ce4695ccfc3d18f9f9326c0b91a271cebdfc20a3efa75c6b5f2fa0e4e13`，版本 0.7.24，ad-hoc 签名，bundle id `io.c9r.deck.smoke` |
+| 机器 | Mac mini 测试机，macOS 27.0.1 |
+| 最终运行的隔离 | 数据目录 `/private/tmp/deck-verify-vbce5b953/approval/data`，socket `deck-smoke-vbce5b953-approval`，作为启动参数传入；20 秒内确认隔离目录的 `app.log` 出现 |
+| 模式 | `--smoke-wkwebview approval`，用时 44 秒 |
+| 启动时的机器状态 | 未锁屏；HID 空闲 134 秒；前台是别的应用。测试窗口被带到前台 |
+
+### 截图（`docs/evidence/approval-layout-u1/`）
+
+| 文件 | 内容 |
+|---|---|
+| `before-note-en.png` | 修复前，英文默认字号，待核对：提示行与说明连在一起 |
+| `after-note-en.png` | 修复后，同条件：提示行加粗，下方有间距；复选框文字靠左 |
+| `after-note-zh.png` | 修复后，中文，待核对 |
+| `after-note-gone-en.png` | 修复后，核对完成：提示行隐藏，不留空行 |
+| `before-boxes-en-100.png` | 修复前，英文默认字号：外部内容确认和首发两行没有复选框 |
+| `after-boxes-en-100.png` | 修复后，同条件：四个复选框都在 |
+| `after-boxes-en-160.png` | 修复后，英文 160% |
+| `after-boxes-zh-100.png` | 修复后，中文默认字号 |
+| `after-boxes-zh-160.png` | 修复后，中文 160% |
+
+`before-*` 来自第 1 次运行，`after-*` 来自第 5 次运行。截图是 Deck 自己的 WKWebView 内容，不含其他应用。
+
+### 清理
+
+每次运行的 `leftover` 为空。全部结束后从测试机查询：`pgrep -lf deck-verify-` 无结果；`/private/tmp` 下 `deck-verify-` 目录 0 个；tmux socket 目录只有 `deck`；没有 `caffeinate -d -u` 进程；正式版 Deck 进程 PID 10546 仍在；`~/.deck` 时间戳前后相同（`Oct  5 17:59`）。
+
+### 门禁
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check` 全部已跟踪 UI JS/MJS | 通过 |
+| `scripts/ui-tests` | `tests 634 / pass 634 / fail 0`，退出码 0 |
+| `node ui/js/check.mjs` | `ok: 58 modules` |
+| `git diff --check` | 退出码 0 |
+| `cargo fmt --check` / `cargo clippy --workspace -- -D warnings` | 退出码 0 / 退出码 0 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略 |

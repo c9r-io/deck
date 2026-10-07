@@ -978,7 +978,9 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 #auto-editor .set-row { flex-wrap: wrap; }
 #auto-editor .set-row label { width: 76px; }
 #auto-editor .q-days { flex: none; }
-#auto-editor input { flex: 1; min-width: 0; font-size: 0.923077rem; padding: 5px 8px; border-radius: 6px; background: var(--raised); border: 1px solid var(--border); }
+/* text fields fill their row; a tick box keeps its own size (stretched by
+   this rule it was squeezed to nothing beside a label that wraps) */
+#auto-editor input:not([type=checkbox]) { flex: 1; min-width: 0; font-size: 0.923077rem; padding: 5px 8px; border-radius: 6px; background: var(--raised); border: 1px solid var(--border); }
 #auto-editor input[type=time] { flex: none; width: auto; }
 #auto-editor #auto-badge { flex: 0 1 14em; font-family: var(--mono); }
 #auto-editor .auto-editor-hint { margin: 0 0 8px 86px; }
@@ -986,6 +988,11 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 #auto-editor .dd[data-for=auto-unit], #auto-editor .dd[data-for=auto-dom] { flex: none; }
 #auto-editor .seg { flex: none; }
 #auto-editor .q-p[hidden] { display: none; }
+/* the approval's present state (being checked, could not be checked, template
+   changed): set apart from the standing explanation under it by space and
+   weight, not by colour alone; it takes no room while hidden */
+#auto-send-check { margin: 0 0 8px; font-weight: 600; color: var(--muted); }
+#auto-send-check[hidden] { display: none; }
 /* `.set-row` sets a display, which outranks the hidden attribute: the regex
    capture name is marked hidden for the other matchers and stayed on screen */
 #auto-capture-row[hidden] { display: none; }

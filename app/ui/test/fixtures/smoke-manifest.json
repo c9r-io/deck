@@ -137,6 +137,9 @@
         "approval-check-failed": { "b": 1 },
         "approval-layout": {},
         "approval-drift": { "b": 1 },
+        "approval-boxes": { "a": 31 },
+        "approval-note-apart": { "b": 1 },
+        "approval-first-send": { "a": 7 },
         "approval-exception": { "failureOnly": true }
       }
     },

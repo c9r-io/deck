@@ -1047,6 +1047,17 @@ and Chinese neither cut off nor over the box or the buttons
 withdrawing a checked tick (`approval-drift`). `b` on the save checks is the
 number of `save_settings` requests the step made.
 
+It then looks at every tick box of the editor (inspection, approval, message
+content, first send, and the channel trigger's) in English and Chinese at the
+default and the largest font size: each has a real size, lies inside the
+drawer, is what a press at its middle reaches, and has its text beside it,
+and Save and Cancel can be scrolled to (`approval-boxes`: a = 16 + one bit per
+combination that held, b = the narrowest box in px). `approval-note-apart`
+measures the space between the waiting line and the standing explanation
+(a = px + 1) and that the line is heavier (b). `approval-first-send` presses
+the first-send box, its text and Space: turning it on asks once and stays off
+until accepted, turning it off asks nothing (a = the last step that held, of 7).
+
 The presses and the key are AppKit events handed to Deck's own window, so
 WebKit's default actions run; they are not a hand on a mouse or keyboard. Only
 the completion of SHA-256 is scripted, inside that page. No Slack connection,

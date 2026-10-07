@@ -11,6 +11,9 @@
 // (`smoke_native_input`: mouse down/up at the control, a Space key to the
 // focused box): WebKit's own default actions run, nothing here sets
 // `checked` or dispatches `change`. This is not a hand on a mouse.
+// It also looks at every box of the editor (inspection, approval, message
+// content, first send) in English and Chinese at the default and the largest
+// font size, and presses the first-send box the same way.
 // Snapshots (`smoke_native_snapshot`) land in <data dir>/evidence/.
 export async function runApprovalSmoke() {
   const { $, ctx, inv, state, store } = await import('../js/state.js');
@@ -19,6 +22,7 @@ export async function runApprovalSmoke() {
   const { persistInbound } = await import('../js/settings.js');
   const { approveRule } = await import('../js/automation-model.js');
   const { getLocale, setLocale, t } = await import('../js/i18n.js');
+  const { applyFontScale, getFontScale } = await import('../js/font-scale.js');
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (check, budget = 8000) => {
     const deadline = Date.now() + budget;
@@ -40,7 +44,7 @@ export async function runApprovalSmoke() {
   let hold = null; let failing = false; let hashing = 0;
   /* the page's own settings writes, counted where every invoke leaves it */
   const systemFetch = window.fetch; let writes = 0;
-  const locale = getLocale();
+  const locale = getLocale(); const scale = getFontScale();
   let stage = 0;
   try {
     stage = 1;
@@ -101,13 +105,13 @@ export async function runApprovalSmoke() {
        directory of its own, so nothing was ever computed for it; `cold`
        holds every hash from before it is saved. */
     let serial = 0;
-    const seed = async ({ cold = true } = {}) => {
+    const seed = async ({ cold = true, name = TEMPLATE, external = false } = {}) => {
       if (editorOpen()) await press($('auto-cancel'));
       serial += 1;
       const id = `ap${serial}`;
       const rule = await approveRule({ id, source: 'slack', badge: id, name: '', projectId: project.id,
-        columnId: project.columns[0].id, template: TEMPLATE, cmd: 'claude', dir: `/tmp/approval-${serial}`,
-        enabled: true, finish: 'keep' }, template());
+        columnId: project.columns[0].id, template: name, cmd: 'claude', dir: `/tmp/approval-${serial}`,
+        enabled: true, finish: 'keep' }, provider.projects()[0].templates.find(value => value.name === name), { external });
       if (cold) hold = deferred();
       if (!(await persistInbound({ ...ctx.settings.inbound, rules: [rule] }))) throw new Error('seed save failed');
       await openAutomations();
@@ -271,6 +275,104 @@ export async function runApprovalSmoke() {
     await report('approval-drift', held && withdrawn && laidOut && writes - before === 1 && !!after && !after.autoSend,
       held ? (withdrawn ? 1 : 3) : 2, writes - before);
 
+    // 9. every box of the editor is there to be seen and pressed, in both
+    //    languages, at the default and the largest font size; the waiting
+    //    line reads as a state, apart from the standing explanation under it
+    stage = 10;
+    const MESSAGE = 'approval smoke message';
+    await provider.saveTemplate(project.id, MESSAGE, ['Read {{msg.text}}', 'Summarize']);
+    /* a control that came to rest in view: a real size, inside the drawer,
+       and the thing a press at its middle would reach */
+    const reachable = async (el, least = 10) => {
+      el.scrollIntoView({ block: 'center' });
+      await pause(200);
+      const rect = el.getBoundingClientRect();
+      const drawer = $('auto-drawer').getBoundingClientRect();
+      return rect.width >= least && rect.height >= least && rect.left >= drawer.left - 1 && rect.right <= drawer.right + 1
+        && rect.top >= 0 && rect.bottom <= innerHeight
+        && el.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+    };
+    const first = () => $('auto-first-send');
+    let combos = 0; let narrowest = 999; let gap = 999; let heavier = true; let bit = 1;
+    /* the last step's "saved" toast lies over the buttons for a few seconds */
+    await until(() => $('toasts').children.length === 0, 15000);
+    for (const [language, size] of [['en', 1], ['en', 1.6], ['zh-Hans', 1], ['zh-Hans', 1.6]]) {
+      setLocale(language); applyFontScale(size);
+      await pause(300);
+      await seed({ name: MESSAGE, external: true });
+      await openRule();
+      let good = box() === 'cin' && layout();
+      const line = note().getBoundingClientRect(); const standing = $('auto-send-hint').getBoundingClientRect();
+      gap = Math.min(gap, Math.round(standing.top - line.bottom));
+      heavier = heavier && Number(getComputedStyle(note()).fontWeight) > Number(getComputedStyle($('auto-send-hint')).fontWeight);
+      await letGo();
+      good = good && box() === 'c--';
+      for (const el of [$('auto-review'), send(), $('auto-send-external'), first()]) {
+        good = (await reachable(el)) && good;
+        const text = el.closest('label').querySelector('span').getBoundingClientRect();
+        const mark = el.getBoundingClientRect();
+        good = good && text.width > 0 && text.left >= mark.right - 1;
+        narrowest = Math.min(narrowest, Math.round(mark.width));
+      }
+      await reachable(first());
+      await snapshot(`approval-boxes-${language === 'en' ? 'en' : 'zh'}-${size === 1 ? '100' : '160'}`);
+      good = (await reachable($('auto-cancel'), 20)) && (await reachable($('auto-save'), 20)) && good;
+      /* the channel trigger's boxes share the same rule: the ones it shows */
+      await openAutomations({ trigger: 'channel' });
+      await pause(200);
+      for (const el of [$('auto-threads'), $('auto-match-case'), $('auto-channel-first-send')]) {
+        if (!el.offsetParent) continue;
+        good = (await reachable(el)) && good;
+        narrowest = Math.min(narrowest, Math.round(el.getBoundingClientRect().width));
+      }
+      await press($('auto-cancel'));
+      if (good) combos += bit;
+      bit *= 2;
+    }
+    setLocale('en'); applyFontScale(1);
+    await pause(300);
+    // a = 16 + one bit per combination that held (en, en large, zh, zh large); b = the narrowest box, px
+    await report('approval-boxes', combos === 15 && narrowest >= 10, 16 + combos, narrowest);
+    // a = the least space between the waiting line and the explanation, px (+1); b = 1 when it is also heavier
+    await report('approval-note-apart', gap >= 4 && heavier, gap + 1, heavier ? 1 : 0);
+
+    // 10. the first-send box: pressed on the box, on its text, and by Space;
+    //     turning it on asks once, turning it off asks nothing
+    stage = 11;
+    await seed({ cold: false });
+    await openRule();
+    const asked = () => $('cfm').style.display === 'flex';
+    const answer = async yes => { await until(asked, 4000); await press($(yes ? 'cfm-yes' : 'cfm-no')); await until(() => !asked(), 4000); await pause(150); };
+    const quiet = async () => { await pause(350); return !asked(); };
+    let step = 1;
+    let fine = !first().checked && await reachable(first());
+    await press(first()); await until(asked, 4000);
+    fine = fine && !first().checked;                   // not on until the risk is accepted
+    await answer(false);
+    fine = fine && !first().checked;
+    if (fine) step = 2;
+    await press(first()); await answer(true);
+    fine = fine && first().checked;
+    if (fine) step = 3;
+    await press(first());
+    fine = (await quiet()) && fine && !first().checked;   // off again, nothing asked
+    if (fine) step = 4;
+    await press(first().closest('label').querySelector('span')); await answer(true);
+    fine = fine && first().checked && await quiet();   // the text toggles once and asks once
+    if (fine) step = 5;
+    first().focus();
+    await pause(100);
+    await inv('smoke_native_input', { input: { kind: 'key', keyCode: 49, text: ' ' } });
+    fine = (await quiet()) && fine && !first().checked;
+    if (fine) step = 6;
+    first().focus();
+    await pause(100);
+    await inv('smoke_native_input', { input: { kind: 'key', keyCode: 49, text: ' ' } });
+    await answer(false);
+    fine = fine && !first().checked;
+    if (fine) step = 7;
+    await report('approval-first-send', fine, step, first().checked ? 1 : 0);
+
     await report('done', !failed, 1, 0);
   } catch (_) {
     await report('approval-exception', false, stage || 1, hashing);
@@ -282,5 +384,6 @@ export async function runApprovalSmoke() {
     subtle.digest = digest;
     window.fetch = systemFetch;
     setLocale(locale);
+    applyFontScale(scale);
   }
 }
