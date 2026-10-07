@@ -206,3 +206,82 @@ settings、Board、queue 使用粘性 v7；独立 inbox 使用 v2，新读取者
 
 1. **结束七个遗留 tmux 服务器。** 它们的 bundle 已不存在，所以用仓库里现存的 `deck-smoke.app` 自带的同版本 `tmux`（3.7c）按精确 socket 名执行 `kill-server`。结束前逐个核对：元数据 `source` 为 `smoke`，配置与工作目录都在各自的 `/tmp/deck-channel-*` 隔离目录下，前台程序是 `zsh`（一个服务器已没有 pane）。七次 `kill-server` 退出码均为 0；之后服务器 PID `34924 39778 53461 59450 72288 85868 97953` 和 pane shell PID `46656 53572 65064 76988 93960 7141` 都不存在，不带 `--socket` 的 `scripts/edr_runtime.py --json` 返回空清单、退出码 0。没有触碰默认 `deck` / `deck-dev` socket。`/tmp/tmux-501/` 下的失效 socket 文件和 `/tmp/deck-channel-*` 数据目录保留，没有删除。
 2. **已授权频道卡片上的手机入队保持拒绝。** 生产代码不变。`a_follow_up_step_may_repeat_the_head_text` 增加一条断言把它固定下来：手机形状的请求（新 operation、`at`、无 claim）在运行自己的行入队之前和之后都以 `channel first-send claim is missing` 被拒绝，队列不变。实际运行通过；`cargo test --workspace` 1,189 项通过、2 项既有忽略，fmt 与 clippy 通过。
+
+## F3.1 异步编辑身份收尾（2026-10-07）
+
+起始：`main`，HEAD `66f8874`，工作树干净。本节只处理一个新增 P1：频道规则等待 Slack 身份期间切换编辑对象，旧保存误删另一条规则。五项历史发现、原生授权、连接准备和持久化架构都没有重新打开。逐行证据在 [channel-first-send-closure-evidence.md](channel-first-send-closure-evidence.md) 的同名一节。
+
+### 结论：CONFIRMED，已修复
+
+在 `66f8874` 的生产代码上按报告的序列实际复现：编辑频道规则 A 并保存，身份未返回时打开规则 B，再让 A 的身份返回。B 为频道、Clock、表情规则三种情况下，写入的设置里都只剩 A，B 被删除，同时为 A 签发了授权请求。
+
+核实过程中在同一根因上还确认了四个问题，一并修复：
+
+1. **不需要 Slack 等待也能触发。** 表情规则勾选自动发送时，保存要先异步计算批准哈希；在这之间打开另一条规则，同样删除那条规则。
+2. **列表上的暂停按钮会删除正在编辑的规则。** 暂停 Clock 规则 X 时，`saveRule` 把编辑器里的规则 B 当成“被替换的原规则”删掉。这条不需要任何并发。
+3. **旧等待的迟到结果会解开新保存的锁并改写它的提示。** 取消 A 后开始保存 C，A 的结果返回时把 C 正在锁定的控件全部解锁。
+4. **等待期间被删除的规则会被旧保存复活。**
+
+### 根因
+
+`saveRule` 在 `await` 之后才读全局 `editing` 决定“替换哪条原规则”；`openEditor` 不让进行中的保存失效；等待用的锁和提示挂在共享控件上，由迟到的回调无条件恢复；保存按钮里 `editing === saving` 的检查在写入之后，只能防止关错编辑器。
+
+### 最小修复
+
+只改了 `app/ui/js/automation.js` 和 `app/ui/js/settings.js`，没有新的框架、状态机或后端改动。
+
+- **保存意图在第一个 await 之前绑定。** 按下保存时固定一个局部操作对象：所属的编辑（`editing` 本来就是每次打开编辑器新建的对象，直接用作身份）、被替换的原规则 ID、从字段读出的规则内容、首发选择。之后任何地方都不再读全局 `editing` 来决定删除、替换或授权的对象。列表操作（暂停）不属于任何编辑，不替换任何规则。
+- **切换编辑对象使未提交的旧保存失效。** 打开另一条规则、打开新建编辑器、取消、Escape、关闭抽屉都走同一个 `dropSave`：尚未发出的保存被丢弃，之后不写设置、不请求授权，并提示一次“已取消。规则未保存，也没有授予任何权限。”，不弹确认。失焦、窗口被遮挡不触发它。
+- **在真正提交前检查。** 每个 await 之后检查一次；另外 `persistInbound` 新增可选的 `proceed`，由设置写入器在轮到这次写入、发出 `save_settings` 之前询问。排在别的写入后面时失效的保存在这里撤回：不写、不请求授权、内存中的规则恢复原状、不报错。`proceed` 回答“是”之后原生保存已经开始，不假装能撤回；它的结果只关闭和提示自己的编辑器。
+- **合并到最新设置。** 写入时用当时的 `ctx.settings.inbound` 按固定的原规则 ID 做合并，不使用等待前的副本；等待期间保存的其他规则保留。保存开始时存在、等待期间被删除的规则不复活。
+- **迟到回调只清理自己。** 被丢弃的保存在被丢弃的那一刻归还自己锁住的控件和自己的原生保持，之后它的结果什么都不动：不解锁、不改提示、不清取消句柄、不释放别人的保持、不关编辑器。原生保持每个操作只释放一次。共享 Slack transport 没有被关闭或重置。
+
+一个行为变化需要说明：等待以“没有身份”结束（超时、被阻止、失败）时，现在会立即释放这次保存请求的原生保持，以前要等它 90 秒自然到期。
+
+### 测试
+
+新文件 `app/ui/test/channel-editor-race-dom.test.mjs`，14 项。运行的是生产的保存按钮处理函数、列表上真实绘制出来的编辑/暂停按钮、`saveRule` 和真实的设置写入器；只有原生一侧是合成 IPC。身份结果由测试持有的 promise 控制，**不响应取消，最后照常返回**。
+
+同一文件、同一断言：修复前 11 项失败、3 项通过；修复后 14 项全部通过。修复前通过的 3 项是保持性测试（失焦不取消、已发出的写入照常完成、新保存仍可取消）。
+
+| 必测矩阵 | 测试 | 修复前 | 修复后 |
+|---|---|---|---|
+| 1、2 A 等待时打开 B（频道 / Clock / 表情） | `a save waiting for Slack is dropped when another rule (…) is opened` ×3 | 失败：`nothing was saved 1 !== 0` | 通过 |
+| 3 A 等待时打开新建编辑器 | `…when the editor for a new rule is opened` | 失败 | 通过 |
+| 4 取消 A 后保存 C，A 迟到成功 / 迟到失败 | `a canceled save that succeeds/fails late leaves the next save's wait alone` ×2、`the next save is still cancelable…`、`a late failure of a dropped save says nothing…` | 3 项失败 | 通过 |
+| 5 A 已排入写入队列后失效 | `a save queued behind another settings write is not written once its edit is gone` | 失败：`2 !== 1` | 通过 |
+| 6 等待期间其他合法保存；被删除的规则不复活 | `a waiting save that goes ahead keeps what was saved meanwhile and never revives a deleted rule` | 失败：`2 !== 1` | 通过 |
+| 7 零规则首次配置、短暂失败重试、重复点击、显式取消 | 既有 `channel-editor-dom.test.mjs` 5 项，未改动 | 通过 | 通过 |
+| 8 失焦 / 遮挡不取消 | `losing focus or being covered does not give a waiting save up` | 通过 | 通过 |
+| 额外：批准哈希期间切换 | `a save whose approval is still being computed is dropped…` | 失败 | 通过 |
+| 额外：暂停不替换编辑器里的规则 | `pausing a rule from the list never replaces the rule open in the editor` | 失败 | 通过 |
+| 额外：已发出的写入归属原操作 | `a save already sent finishes as its own…` | 通过 | 通过 |
+
+断言覆盖：`save_settings` 实际调用次数、写入的规则 ID、最终规则集合与内容（与事前快照逐字段比较）、授权请求的 `ruleId`、当前编辑器的字段、等待提示与控件锁定状态、`slack_channel_prepare_cancel` 的次数。
+
+第 8 项的层级需要说明：测试向文档、抽屉、编辑器和控件派发 `blur`、`focusout`、`visibilitychange`、`pagehide` 并确认保存照常完成，同时模块里没有监听这些事件的代码。它没有在真实 WKWebView 里遮挡窗口验证。
+
+### 门禁（修复后的工作树，实际运行）
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check`（全部已跟踪的 UI JS/MJS 加新测试文件） | 通过 |
+| `scripts/ui-tests` | 589 项通过，0 失败（575 加本轮 14），覆盖率门槛与清单通过 |
+| `node ui/js/check.mjs` | 58 个模块通过 |
+| `git diff --check` | 通过 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略 |
+
+本轮没有改 Rust、IPC 命令或原生测试。Rust 全量测试仍跑了一次，因为有几项 Rust 测试直接读取前端源码（IPC 名称、日志隐私、架构约束）。fmt 与 clippy 没有重跑：没有 Rust 改动。
+
+**245 秒后台载体没有重跑。** 它验证的是隐藏窗口下的入站、建卡和首步发送，走 `inbound.js`，不经过规则编辑器；本轮改的两个文件是编辑器保存和设置写入器的撤回分支。此前的后台链路记录及其候选身份保留，仍然适用于它所验证的链路，但那次运行的二进制不含本轮的前端改动。本轮新增验证覆盖的是编辑器并发保存，不是真实 Slack 服务。
+
+### 未执行与遗留
+
+- 没有在真实 WKWebView 里手动操作这个序列；没有使用真实 Slack、真实 Agent、真实 Keychain 或剪贴板。本轮没有启动任何应用、tmux 服务器或其他进程，没有需要清理的资源。
+- 原生保存已经发出、尚未返回的那一小段时间里，新编辑器里的保存会被既有的“同类写入进行中”保护拒绝且没有提示。这是修复前就有的行为，窗口是一次本地 IPC 的时长，本轮没有改。
+- 撤回排队中的保存时，内存里的规则在原对象上恢复。如果在“旧保存入队”和“它被撤回”之间还有第三个其他字段的设置保存也排了队，而且不止一个，中间那几次写入会短暂带着旧保存的规则内容落盘，随后被最后一次写入纠正；不产生授权请求。需要三件事在一次本地写入的时长内同时发生，只读代码得出，没有运行验证。
+- 既有行为未改：在编辑器开着的时候从列表删除它正在编辑的规则，再明确按一次保存，会重新创建这条规则。这是之后的一次明确操作，不是迟到的旧保存。
+
+### 提交
+
+本节的生产改动、测试和文档作为一个提交落在本地 `main`，标题 `fix(automation): a rule save belongs to the edit it was started from`，父提交 `66f8874`，不带 Co-Authored-By；未推送、未发布、版本未变。

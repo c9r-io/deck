@@ -8,6 +8,11 @@
 // Native canonical channel grants replace frontend copies after commit;
 // unrelated queued saves preserve that latest native result. A native
 // template retirement emits a content-free refresh even if Board save fails.
+// A rule save may carry `proceed`, asked once when the writer reaches it and
+// before anything is sent: a save whose edit was replaced or given up while
+// it waited in the queue is withdrawn there (nothing written, no permission
+// requested, the rules in memory put back, no error shown). Once `proceed`
+// answered yes the write is under way and is not taken back.
 // The Lens may explicitly download and enable through installTranslationPack;
 // it shares the same settings writer and installation guard as Settings.
 // Navigation and search: the sections and the searchable settings (stable
@@ -265,8 +270,10 @@ export function refreshChannelAuthority() {
   settingsWriteChain = operation;
   return operation;
 }
-function saveSettingsCandidate(candidate, { channelFirstSendRequests = [], channelIntent = false } = {}) {
+const WITHDRAWN = Object.freeze({ withdrawn: true });   // what a write its owner gave up is rejected with
+function saveSettingsCandidate(candidate, { channelFirstSendRequests = [], channelIntent = false, proceed = null } = {}) {
   const operation = settingsWriteChain.catch(() => {}).then(async () => {
+    if (proceed && !proceed()) throw WITHDRAWN;
     // Unrelated queued settings saves must not restore a stale grant or
     // accidentally withdraw one that an earlier explicit save just issued.
     if (!channelIntent && nativeChannelSettings) Object.assign(candidate.inbound, structuredClone(nativeChannelSettings));
@@ -365,7 +372,8 @@ function announceShortcutChange() {
    `locked` controls are disabled until the write settles; `onCommit` runs
    only after the durable write. A newer write of the same `key` supersedes
    an older one's rollback; `exclusive` refuses re-entry while that key is
-   pending. Resolves true when the write landed. */
+   pending. `proceed` (optional) is asked when the writer reaches this write:
+   a no withdraws it without an error. Resolves true when the write landed. */
 const commitGenerations = new Map();
 const commitPending = new Set();
 async function commitSettings(choice) {
@@ -385,11 +393,17 @@ async function commitSettings(choice) {
   apply(candidate);
   try {
     await saveSettingsCandidate(candidate, { channelIntent: key === 'inbound',
-      channelFirstSendRequests: choice.channelFirstSendRequests || [] });
+      channelFirstSendRequests: choice.channelFirstSendRequests || [], proceed: choice.proceed || null });
     await onCommit(candidate);
     return true;
-  } catch (_) {
-    if (generation === commitGenerations.get(key)) {
+  } catch (error) {
+    if (error === WITHDRAWN) {
+      /* only this choice's own field goes back, in place: a write of another
+         field queued meanwhile carries the settings object it was built on */
+      ctx.settings[key] = structuredClone(previous[key]);
+      if (key === 'inbound' && nativeChannelSettings) Object.assign(ctx.settings.inbound, structuredClone(nativeChannelSettings));
+      apply(ctx.settings);
+    } else if (generation === commitGenerations.get(key)) {
       ctx.settings = previous;
       apply(previous);
       toast(t(errorKey));
@@ -952,8 +966,9 @@ async function renderTunnelForClient(client, row, actions) {
 
 /* One durable write for every rule/source change; a failed save leaves the
    previous settings visible instead of a rule the poller never learned. */
-export function persistInbound(inbound, channelFirstSendRequests = []) {
+export function persistInbound(inbound, channelFirstSendRequests = [], { proceed = null } = {}) {
   return commitSettings({
+    proceed,
     key: 'inbound', candidate: normalizeSettings({ ...ctx.settings, inbound }),
     exclusive: true, errorKey: 'error.inboundSave',
     channelFirstSendRequests,

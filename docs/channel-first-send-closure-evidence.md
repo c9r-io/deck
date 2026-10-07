@@ -122,3 +122,69 @@ Rust 测试名省略前缀 `documents::channel_admission_tests::`。
 - 没有清理默认 `deck` / `deck-dev` socket、`~/.deck`、Applications 安装、剪贴板或 Keychain。
 - **未触碰的遗留**：候选阶段七次载体运行的 tmux 服务器仍在运行，PID `34924 39778 53461 59450 72288 85868 97953`，socket 为 `deck-smoke-channel-17913350…` 至 `…1791338522-95938`。原因见报告：当时的清理工具不认识这种 bundle 名，退出码为 0 但什么也没停。它们不是本轮创建的资源，没有处理。
 - **后续（2026-10-07，经用户授权）**：七个服务器已用 `deck-smoke.app` 自带的 `tmux` 3.7c 按精确 socket 名 `kill-server` 结束，退出码均为 0；上述七个 PID 和六个 pane shell PID `46656 53572 65064 76988 93960 7141` 之后都不存在，不带 `--socket` 的清点返回空、退出码 0。失效 socket 文件和 `/tmp/deck-channel-*` 数据目录保留。
+
+## F3.1 异步编辑身份收尾（2026-10-07）
+
+### 被测对象
+
+- 起始 `main` @ `66f8874`，工作树干净。生产改动两个文件：`app/ui/js/automation.js`、`app/ui/js/settings.js`。新测试 `app/ui/test/channel-editor-race-dom.test.mjs`。
+- “修复前”是把这两个文件临时还原为 `66f8874` 的内容（`git stash push` 仅这两个路径，运行后 `git stash pop`），用**最终的测试文件**运行。没有一次性构建，没有接缝。
+- 运行命令：`node --test --test-timeout=8000 test/channel-editor-race-dom.test.mjs`（在 `app/ui` 下）。隔离的 HOME/TMPDIR/ZDOTDIR 与前文相同。
+
+### 修复前实际写入了什么
+
+在 `66f8874` 上执行报告的序列（编辑 A → 保存 → 等待 → 打开 B → A 的身份返回），读取唯一一次 `save_settings` 的参数：
+
+```
+channel  written rules: []  channelRules: ['ra']  requests: [{"ruleId":"ra","external":true,"identity":"verified-identity"}]  editor hidden: false
+clock    written rules: []  channelRules: ['ra']  requests: [{"ruleId":"ra","external":true,"identity":"verified-identity"}]  editor hidden: false
+slack    written rules: []  channelRules: ['ra']  requests: [{"ruleId":"ra","external":true,"identity":"verified-identity"}]  editor hidden: false
+```
+
+三种情况下 `rb` 都从写入的设置里消失。
+
+### 同一断言，修复前后
+
+| 测试 | 修复前 | 修复后 |
+|---|---|---|
+| `a save waiting for Slack is dropped when another rule (channel) is opened: that rule is untouched` | 失败 `nothing was saved`，`1 !== 0` | 通过 |
+| 同上 `(clock)` | 失败，`1 !== 0` | 通过 |
+| 同上 `(slack)` | 失败，`1 !== 0` | 通过 |
+| `a late failure of a dropped save says nothing in the editor that replaced it` | 失败 `assert.ok(editorFree())` | 通过 |
+| `a save waiting for Slack is dropped when the editor for a new rule is opened` | 失败 `assert.ok(editorFree())` | 通过 |
+| `a canceled save that succeeds late leaves the next save's wait alone` | 失败 `the new save is still held and shown as waiting` | 通过 |
+| `a canceled save that fails late leaves the next save's wait alone` | 失败，同上 | 通过 |
+| `the next save is still cancelable after an older save's answer arrived` | 通过 | 通过 |
+| `a save queued behind another settings write is not written once its edit is gone` | 失败 `the queued save was not written`，`2 !== 1` | 通过 |
+| `a waiting save that goes ahead keeps what was saved meanwhile and never revives a deleted rule` | 失败 `only the deletion was written`，`2 !== 1` | 通过 |
+| `losing focus or being covered does not give a waiting save up` | 通过 | 通过 |
+| `a save whose approval is still being computed is dropped when another rule is opened` | 失败，`1 !== 0` | 通过 |
+| `pausing a rule from the list never replaces the rule open in the editor` | 失败 `the rule being edited was not removed` | 通过 |
+| `a save already sent finishes as its own: it closes and reports to no other editor` | 通过 | 通过 |
+
+合计：修复前 `pass 3 / fail 11`，退出码 1；修复后 `pass 14 / fail 0`。
+
+### 各测试的层级与关键断言
+
+- 层级：node 下的测试 DOM；生产的 `initAutomation` 事件接线、保存按钮处理函数、`openAutomations` 绘制出的规则行上的编辑与暂停按钮、`saveRule`、`persistInbound` / `commitSettings` / 设置写入队列全部是生产代码。合成的只有 `window.__TAURI__.core.invoke`：`slack_channel_prepare` 按脚本回答，`save_settings` 可被测试扣住再放行，并只为请求里点名的规则写入授权。
+- 迟到结果：`slack_channel_prepare` 返回测试持有的 promise。取消或切换之后测试才 `resolve` / `reject` 它，所以旧回调确实在失效之后运行。
+- 切换后立即断言新编辑器可用（控件未锁、无等待提示、字段是 B 的值）；旧结果返回后再断言 `save_settings` 0 次、规则集合与事前快照 `deepEqual`、编辑器仍是 B 的；随后在 B 的编辑器里保存一次，只改变 B，A 与事前完全相同。
+- 取消 A 后保存 C：A 的结果返回时，C 仍显示等待、控件仍锁定、提示文本不变、`slack_channel_prepare_cancel` 仍是 1 次；C 的身份返回后恰好一次保存，授权请求的 `ruleId` 是 C，A 没有 `firstSend`。
+- 排队后失效：先让一次无关的 `persistSettings()` 占住写入器并扣住它的 IPC，A 的身份立即返回后入队，然后打开 B，再放行。`save_settings` 总数 1（只有无关的那次），授权请求为空，内存中的规则与事前相同。
+- 已发出的写入：扣住 A 自己的 `save_settings`，期间打开 B，再放行。写入完成且只有 1 次，A 得到授权，B 的内容与事前相同，B 的编辑器没有被关闭，没有新的提示，原生保持在写入后释放 1 次。
+
+### 门禁
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check` 全部已跟踪 UI JS/MJS 加新测试 | 通过 |
+| `scripts/ui-tests` | `tests 589 / pass 589 / fail 0`，退出码 0 |
+| `node ui/js/check.mjs` | `ok: 58 modules` |
+| `git diff --check` | 退出码 0 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略 |
+
+本轮没有构建应用，没有二进制摘要。
+
+### 没有运行的
+
+245 秒后台 WKWebView 载体、fmt、clippy、`test_edr_runtime.py` 没有重跑，理由见报告。没有启动应用或 tmux 服务器，没有创建需要清理的进程、socket 或 bundle。
