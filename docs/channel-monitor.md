@@ -36,7 +36,7 @@ Credential rotation and workspace switching do not themselves cancel already-adm
 
 A run that an older Deck acknowledged before it finished queueing its plan is completed after the upgrade as it would have been: the missing steps are queued as ordinary channel rows, a step already queued or sent is not queued again, and the run gains no first-step permission, even when the rule has since been given one. Deck recognizes such a run by its own record of the event, never by a permission or proof being absent: a run it has no record of, and a permitted run whose claim or proof is gone, are refused.
 
-The queue entry for outside text is shared with badge automations, phone tasks and scratchpad text. While the channel inbox cannot be read, channel runs wait, and rows for a card the current Board shows as another source's are queued as usual. If the Board itself is only a recovered copy at that moment, those rows wait too.
+The queue entry for outside text is shared with badge automations, phone tasks and scratchpad text. While the channel inbox cannot be read, channel runs wait, and rows for a card the current Board shows as another source's are queued as usual. If the Board itself is only a recovered copy at that moment, those rows wait too. Text queued from a phone onto a channel card whose run has first-step permission is refused; this was ruled on 2026-10-07 and is not an oversight.
 
 Card creation still uses `createStarted`. A crash after session start but before card persistence can leave an orphan session; Deck does not automatically adopt a session whose ownership cannot be proven. This is a known product limitation.
 

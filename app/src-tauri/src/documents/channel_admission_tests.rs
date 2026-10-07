@@ -549,10 +549,24 @@ fn a_follow_up_step_may_repeat_the_head_text() {
             );
         }
         assert!(fresh.rows().is_empty());
+
+        // ruled 2026-10-07: text a phone queues onto a permitted channel card
+        // stays refused, before the run's own rows exist and after them
+        let phone = json!({"session":card["session"],"cardId":card["id"],"operationId":"Bphone",
+            "dir":card["dir"],"cmd":card["cmd"],"text":"From the phone","mode":"at","at":now});
+        for queue in [&fresh, &probe] {
+            let refused = queue.external_add(phone.clone()).unwrap_err();
+            assert!(
+                format!("{refused:?}").contains("channel first-send claim is missing"),
+                "{refused:?}"
+            );
+        }
+        assert!(fresh.rows().is_empty());
+        assert_eq!(probe.rows().len(), 3);
     });
 }
 
-// ---------- F2 ---------------------------------------------------------------
+// ---------- F2---------------------------------------------------------------
 
 fn other_sources_survive_inbox_failure(test: &str, damage: fn(&std::path::Path)) {
     in_child(test, |root| {

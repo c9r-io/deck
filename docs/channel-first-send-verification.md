@@ -178,8 +178,8 @@ settings、Board、queue 使用粘性 v7；独立 inbox 使用 v2，新读取者
 
 ### 发现的其他问题
 
-1. **候选阶段的清理没有生效。** `scripts/edr_runtime.py` 只认 `deck-smoke*.app`，不认 `app/run.sh` 为这个模式生成的 `deck-channel-smoke-<后缀>.app`，于是清点结果为空、退出码为 0、什么也没停；`app/run.sh` 打印的清理命令因此对这个模式无效。候选阶段七次运行的 tmux 服务器（各带一个 fixture）至今仍在运行。本轮给工具补上了这种 bundle 与它唯一 socket 的配对识别并加了测试，用它清理了本轮自己的服务器。那七个遗留服务器不是本轮资源，**没有处理**；它们的可执行文件已随 bundle 移入废纸篓，工具现在能认出它们，但会因可执行文件不存在而以退出码 2 报错，不带 `--socket` 的清点在它们被结束之前都会这样。
-2. **已授权频道卡片上的手机入队被拒绝。** 手机端把暂存区条目加入队列时走 `channel_queue_add`，在已授权首发的频道卡片上会得到 `channel first-send claim is missing`。实际探测确认。它不属于五项发现，放宽它等于允许在受约束卡片上新增普通外部 `at` 行，需要产品裁定，本轮没有改。
+1. **候选阶段的清理没有生效。** `scripts/edr_runtime.py` 只认 `deck-smoke*.app`，不认 `app/run.sh` 为这个模式生成的 `deck-channel-smoke-<后缀>.app`，于是清点结果为空、退出码为 0、什么也没停；`app/run.sh` 打印的清理命令因此对这个模式无效。候选阶段七次运行的 tmux 服务器（各带一个 fixture）至今仍在运行。本轮给工具补上了这种 bundle 与它唯一 socket 的配对识别并加了测试，用它清理了本轮自己的服务器。那七个遗留服务器不是本轮资源，**没有处理**；它们的可执行文件已随 bundle 移入废纸篓，工具现在能认出它们，但会因可执行文件不存在而以退出码 2 报错，不带 `--socket` 的清点在它们被结束之前都会这样。 **后续（2026-10-07，经用户授权）**：七个服务器已结束，见下文「收尾后的裁定」。
+2. **已授权频道卡片上的手机入队被拒绝。** 手机端把暂存区条目加入队列时走 `channel_queue_add`，在已授权首发的频道卡片上会得到 `channel first-send claim is missing`。实际探测确认。它不属于五项发现，放宽它等于允许在受约束卡片上新增普通外部 `at` 行，需要产品裁定，本轮没有改。 **裁定（2026-10-07）：保持拒绝。**
 
 ### 遗留限制
 
@@ -199,3 +199,10 @@ settings、Board、queue 使用粘性 v7；独立 inbox 使用 v2，新读取者
 本轮自有的应用、fixture、tmux 服务器已停止，bundle 移入 `~/.Trash/Deck-channel-closure-1791344373/`，PID 与命令见证据摘要。没有触碰默认 `deck` / `deck-dev` socket、真实 Deck 数据、Applications 安装、既有会话、剪贴板或 Keychain。
 
 本地提交在 `main` 上，提交哈希在交付消息中给出；没有 Co-Authored-By，没有推送或发布。
+
+### 收尾后的裁定（2026-10-07）
+
+提交 `dc64144` 之后，用户对两项待决事项作了裁定。
+
+1. **结束七个遗留 tmux 服务器。** 它们的 bundle 已不存在，所以用仓库里现存的 `deck-smoke.app` 自带的同版本 `tmux`（3.7c）按精确 socket 名执行 `kill-server`。结束前逐个核对：元数据 `source` 为 `smoke`，配置与工作目录都在各自的 `/tmp/deck-channel-*` 隔离目录下，前台程序是 `zsh`（一个服务器已没有 pane）。七次 `kill-server` 退出码均为 0；之后服务器 PID `34924 39778 53461 59450 72288 85868 97953` 和 pane shell PID `46656 53572 65064 76988 93960 7141` 都不存在，不带 `--socket` 的 `scripts/edr_runtime.py --json` 返回空清单、退出码 0。没有触碰默认 `deck` / `deck-dev` socket。`/tmp/tmux-501/` 下的失效 socket 文件和 `/tmp/deck-channel-*` 数据目录保留，没有删除。
+2. **已授权频道卡片上的手机入队保持拒绝。** 生产代码不变。`a_follow_up_step_may_repeat_the_head_text` 增加一条断言把它固定下来：手机形状的请求（新 operation、`at`、无 claim）在运行自己的行入队之前和之后都以 `channel first-send claim is missing` 被拒绝，队列不变。实际运行通过；`cargo test --workspace` 1,189 项通过、2 项既有忽略，fmt 与 clippy 通过。

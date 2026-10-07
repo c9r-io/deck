@@ -121,3 +121,4 @@ Rust 测试名省略前缀 `documents::channel_admission_tests::`。
 - 本轮自有进程：应用 `23159`、tmux 服务器 `23172`、fixture `23365`。应用以 `SIGTERM` 停止；tmux 服务器和 fixture 由 `scripts/edr_runtime.py --cleanup --include-foreground --socket deck-smoke-channel-1791343973-22426` 停止，退出码 0，之后三个 PID 都不存在。bundle 移入 `~/.Trash/Deck-channel-closure-1791344373/`。隔离数据目录保留作证据。
 - 没有清理默认 `deck` / `deck-dev` socket、`~/.deck`、Applications 安装、剪贴板或 Keychain。
 - **未触碰的遗留**：候选阶段七次载体运行的 tmux 服务器仍在运行，PID `34924 39778 53461 59450 72288 85868 97953`，socket 为 `deck-smoke-channel-17913350…` 至 `…1791338522-95938`。原因见报告：当时的清理工具不认识这种 bundle 名，退出码为 0 但什么也没停。它们不是本轮创建的资源，没有处理。
+- **后续（2026-10-07，经用户授权）**：七个服务器已用 `deck-smoke.app` 自带的 `tmux` 3.7c 按精确 socket 名 `kill-server` 结束，退出码均为 0；上述七个 PID 和六个 pane shell PID `46656 53572 65064 76988 93960 7141` 之后都不存在，不带 `--socket` 的清点返回空、退出码 0。失效 socket 文件和 `/tmp/deck-channel-*` 数据目录保留。
