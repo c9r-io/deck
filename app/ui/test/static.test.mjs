@@ -449,8 +449,8 @@ test('every reason a channel event stays pending goes through the once-per-run n
   assert.ok(handle.length > 1000 && handle.length < 6000, 'handleChannel is where a channel event is placed or left pending');
   assert.equal((handle.match(/\btoast\(/g) || []).length, 0, 'a direct toast here repeats at every drain');
   // one notice per unacknowledged way out, each with its own sentence
-  assert.deepEqual((handle.match(/pendingNotice\(item, /g) || []).length, 6);
-  for (const key of ['expirySaveFailed', 'eventConflict', 'bufferFull', 'noTemplate', 'blockedCommand', 'blockedTemplate', 'noTarget', 'orphan', 'createFailed']) {
+  assert.deepEqual((handle.match(/pendingNotice\(item, /g) || []).length, 7);
+  for (const key of ['verifyRetry', 'expirySaveFailed', 'eventConflict', 'bufferFull', 'noTemplate', 'blockedCommand', 'blockedTemplate', 'noTarget', 'orphan', 'createFailed']) {
     assert.ok(handle.includes(`'channel.${key}'`), key);
   }
 });
@@ -534,7 +534,9 @@ test("inbound triggers are pulled only once the webview holds the user's Board",
     assert.equal((inbound.match(call) || []).length, (start.match(call) || []).length, String(call));
   }
   assert.deepEqual([(start.match(/\blisten\(/g) || []).length, (start.match(/\bsetInterval\(/g) || []).length], [2, 1]);
-  assert.match(start, /return Promise\.all\(\[drainInbound\(\), drainChannel\(\)\]\);/);
+  assert.match(start, /if \(inboundStart\) return inboundStart;/);
+  assert.match(start, /inboundStart = Promise\.all\(\[channelListener, inboundListener\]\)\.then\(\(\) => Promise\.all\(\[drainInbound\(\), drainChannel\(\)\]\)\);/);
+  assert.match(start, /return inboundStart;/);
 });
 
 test("orphaned rules are dropped only once the webview holds the user's Board", () => {

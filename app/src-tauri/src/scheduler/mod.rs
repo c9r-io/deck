@@ -155,7 +155,10 @@
 //! to JS use camelCase, like `QueueAddArgs`; the full rule is in the
 //! `commands.rs` header.
 
-mod authority;
+pub(crate) mod authority;
+pub(crate) mod channel_first_send;
+#[cfg(test)]
+mod channel_permission_tests;
 pub(crate) mod connector;
 mod delivery;
 pub(crate) mod first_send;
@@ -167,6 +170,7 @@ mod tests;
 mod thread;
 
 pub(crate) use authority::*;
+pub(crate) use channel_first_send::{ChannelFirstSendClaim, ChannelFirstSendConstraint};
 pub(crate) use delivery::*;
 pub(crate) use first_send::{FirstSendClaim, ReadinessOverride};
 pub(crate) use ops::*;
@@ -313,6 +317,10 @@ pub(crate) struct QueueItem {
     /// revocation. Older decks ignore the field and keep holding the row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     readiness_override: Option<ReadinessOverride>,
+    /// Permanent authorization constraint for the head of a native Slack
+    /// channel run. Revocation clears `authorized`, never this marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    channel_first_send: Option<ChannelFirstSendConstraint>,
 }
 
 pub(crate) fn default_state() -> ItemState {
@@ -502,6 +510,12 @@ pub(crate) struct DeliveryRecord {
     /// allowed it (`first_send.rs`) — never "the agent was proven ready".
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     readiness_overridden: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    channel_first_send: Option<ChannelFirstSendConstraint>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    automatic: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -524,6 +538,8 @@ pub(crate) const MAX_QUEUE_OPERATIONS: usize = 10_000;
 /// vanishes mid-flight — finalize must never depend on the item surviving.
 #[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct PendingDelivery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    channel_attempt: Option<channel_first_send::ChannelAttemptAudit>,
     /// the delivery id (matches QueueItem.delivery while in flight)
     id: String,
     snapshot: QueueItem,
@@ -546,6 +562,12 @@ pub(crate) const MAX_TOMBSTONES: usize = 500;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub(crate) struct QueueState {
+    /// Queue rollback may predate even the first operation. Native events
+    /// staged in or before this whole second cannot prove a first attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    channel_recovery_before: Option<u64>,
+    #[serde(skip)]
+    channel_recovery_dirty: bool,
     items: Vec<QueueItem>,
     /// session → when we last injected a prompt
     last_fired: HashMap<String, u64>,
@@ -738,7 +760,11 @@ pub(crate) fn load_queue() -> QueueState {
                 // boot-time: surfaced via storage_warnings
                 storage::warn(storage::StorageNotice::Recovered, w);
             }
-            serde_json::from_str(&o.payload).unwrap_or_default()
+            let mut loaded: QueueState = serde_json::from_str(&o.payload).unwrap_or_default();
+            if o.source == "backup" {
+                constrain_channel_backup_rows(&mut loaded);
+            }
+            loaded
         }
         Ok(None) => QueueState::default(),
         Err(e) => {
@@ -746,12 +772,50 @@ pub(crate) fn load_queue() -> QueueState {
                 storage::StorageNotice::QueueLoad,
                 format!("scheduled prompts could not be loaded: {e}"),
             );
-            QueueState::default()
+            QueueState {
+                channel_recovery_before: Some(crate::datadir::now_epoch()),
+                channel_recovery_dirty: true,
+                ..QueueState::default()
+            }
         }
     };
     migrate_groups(&mut q);
     migrate_context(&mut q);
     q
+}
+
+/// A queue backup predates the last successful queue commit. For a native
+/// channel first-send row that means delivery outcome cannot be derived from
+/// the restored bytes. Preserve its permanent constraint and require the
+/// existing ambiguous-delivery decision instead of presenting revocation as
+/// proof that the prompt was never sent. A sticky staging-time boundary also
+/// covers a backup older than the first operation, including an empty queue.
+fn constrain_channel_backup_rows(queue: &mut QueueState) {
+    queue.channel_recovery_dirty = true;
+    queue.channel_recovery_before = Some(
+        queue
+            .channel_recovery_before
+            .unwrap_or(0)
+            .max(crate::datadir::now_epoch()),
+    );
+    let mut constrained = HashSet::new();
+    for item in queue.items.iter_mut().chain(
+        queue
+            .pending
+            .iter_mut()
+            .map(|pending| &mut pending.snapshot),
+    ) {
+        if let Some(constraint) = item.channel_first_send.as_mut() {
+            constraint.authorized = false;
+            item.state = ItemState::Ambiguous;
+            constrained.insert(item.id.clone());
+        }
+    }
+    for operation in &mut queue.operations {
+        if constrained.contains(&operation.item) {
+            operation.state = OperationState::Uncertain;
+        }
+    }
 }
 
 /// Compatibility migration ignores all legacy policy/agent/hook authority.
@@ -830,3 +894,6 @@ pub(crate) fn save_queue(q: &QueueState) -> Result<(), DeckError> {
     let raw = serde_json::to_string(q).map_err(DeckError::from)?;
     storage::save_typed::<QueueState>(&queue_path(), &raw)
 }
+
+#[cfg(test)]
+pub(crate) use channel_permission_tests::verify_native_channel_fences;

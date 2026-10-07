@@ -30,6 +30,9 @@
 // steps 2..N), is not part of the grant digest, never reaches a channel rule, and reaches Claude or Codex with `--no-daemon` only
 // (`firstSendSupported`). The editor asks for confirmation when it is
 // turned on; turning it off is immediate.
+// Channel first-step permission is separate (`channel-model.js`, native
+// `scheduler/channel_first_send.rs`); its rule facts do not advertise the
+// badge follow-up approval or inherit the clock/badge readiness-only flag.
 import { channelAgentCommand } from './channel-model.js';
 import { badgeTaken, hmToMin, INBOUND_BADGE_RE, INBOUND_PLACEHOLDERS, minToHM, nextScheduleSlot, normalizeTemplateStep } from './pure.js';
 import { DEFAULT_GRACE_MIN, GRACE_CHOICES } from './settings-model.js';
@@ -118,6 +121,8 @@ export function ruleFacts(rule, { columnName = null, home = '', slackConnected =
   } else if (rule.source === 'channel') {
     rows.push(['automation.kv.scope', [...rule.channelIds, ...rule.senderUserIds, ...rule.senderBotIds].join(', ')]);
     rows.push(['automation.kv.idle', rule.idleMinutes === 0 ? t('automation.manualStop') : t('automation.idleValue', { count: formatNumber(rule.idleMinutes) })]);
+    rows.push(['automation.channelFirstSend.scope', t(rule.firstSend === true && rule.firstSendGrant
+      ? 'automation.channelFirstSend.on' : 'automation.channelFirstSend.off')]);
   } else {
     rows.push(['automation.kv.connection', t(slackConnected ? 'automation.slackOn' : 'automation.slackOff')]);
     rows.push(['automation.kv.autoSend', approvalText(rule, approval)]);

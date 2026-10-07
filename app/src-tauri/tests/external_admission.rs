@@ -305,7 +305,7 @@ const ADMISSION_SITES: &[(&str, &str, &str, usize, Entry)] = &[
     ),
     (
         "scheduler/ops.rs",
-        "queue_add",
+        "queue_add_core",
         "add_item_bound(",
         1,
         Entry::Owner,
@@ -362,6 +362,15 @@ const ADMISSION_SITES: &[(&str, &str, &str, usize, Entry)] = &[
         1,
         Entry::Admission,
     ),
+    // Channel head authority is separate from generic step approvals and is
+    // verified only after the closed external admission.
+    (
+        "scheduler/ops.rs",
+        "channel_queue_add",
+        "channel_first_send::admit(",
+        1,
+        Entry::Admission,
+    ),
 ];
 
 #[test]
@@ -375,6 +384,7 @@ fn external_text_reaches_the_one_admission() {
             "expected_process: None",
             ".external = ",
             "admit_authority(",
+            "channel_first_send::admit(",
         ],
         |source, at| source[..at].ends_with("fn ") || source[..at].ends_with("let "),
     );
@@ -389,7 +399,7 @@ fn external_text_reaches_the_one_admission() {
         ops.contains("#[cfg(test)]\npub(crate) fn add_item("),
         "add_item stays test-only"
     );
-    for owner in ["queue_add", "add_reviewed_rows"] {
+    for owner in ["queue_add_core", "add_reviewed_rows"] {
         assert!(
             body("scheduler/ops.rs", owner).contains("validate_add("),
             "{owner} must run validate_add (the externalText gate) before the core"
@@ -453,7 +463,7 @@ fn external_text_reaches_the_one_admission() {
     assert!(validate.contains("if a.authority.is_some() && !a.channel_path {"));
     // Owner requests can obtain only a native-verified clock head policy;
     // request bytes alone never become a row verdict or content authority.
-    for owner in ["queue_add", "queue_add_reviewed_list"] {
+    for owner in ["queue_add_core", "queue_add_reviewed_list"] {
         assert!(body("scheduler/ops.rs", owner).contains("admit_first_send(&mut args);"));
     }
     let first_send = body("scheduler/ops.rs", "admit_first_send");
@@ -545,6 +555,76 @@ fn external_text_reaches_the_one_admission() {
     );
 }
 
+#[test]
+fn channel_head_claim_is_closed_and_native_verdict_is_not_deserializable() {
+    let validate = body("scheduler/ops.rs", "validate_add");
+    assert!(validate.contains("a.channel_first_send.is_some() && !a.channel_path"));
+    let core_callers: Vec<_> = production_sources()
+        .into_iter()
+        .flat_map(|(file, source)| {
+            token_sites(&source, "queue_add_core(")
+                .into_iter()
+                .filter(|&at| !source[..at].ends_with("fn "))
+                .map(|at| (file.clone(), function_at(&source, at)))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(
+        core_callers,
+        [
+            ("scheduler/ops.rs".to_owned(), "queue_add".to_owned()),
+            (
+                "scheduler/ops.rs".to_owned(),
+                "channel_queue_add".to_owned()
+            ),
+        ]
+    );
+    let reviewed = body("scheduler/ops.rs", "channel_queue_add_reviewed_list");
+    assert!(
+        reviewed
+            .find("channel_first_send::reject_reviewed_list(&args)?;")
+            .unwrap()
+            < reviewed.find("queue_add_reviewed_list(state").unwrap()
+    );
+    let external = body("scheduler/ops.rs", "channel_queue_add");
+    assert!(
+        external.find("admit_external(").unwrap()
+            < external.find("channel_first_send::admit(").unwrap()
+    );
+    assert!(
+        external.find("operation_replay(").unwrap()
+            < external.find("channel_first_send::admit(").unwrap()
+    );
+    let sources = production_sources();
+    let ops = &sources
+        .iter()
+        .find(|(name, _)| name == "scheduler/ops.rs")
+        .unwrap()
+        .1;
+    assert!(ops.contains("#[serde(skip)]\n    pub(crate) channel_first_send_granted: Option<ChannelFirstSendConstraint>,"));
+    let verifier = &sources
+        .iter()
+        .find(|(name, _)| name == "scheduler/channel_first_send.rs")
+        .unwrap()
+        .1;
+    for forbidden in [
+        "connector::",
+        "FirstSendOrigin::",
+        "TriggerClass::",
+        "StepAuthority {",
+    ] {
+        assert!(
+            !verifier.contains(forbidden),
+            "channel proof must not borrow {forbidden}"
+        );
+    }
+    assert!(verifier.contains("channel_proof("));
+    assert!(verifier.contains("board_authority()"));
+    assert!(verifier.contains("read_config_strict_result()"));
+    assert!(body("scheduler/ops.rs", "add_item_bound")
+        .contains("channel_first_send: args.channel_first_send_granted"));
+}
+
 // ------------------------------------------- 3. text-carrying Tauri commands
 
 #[derive(Debug, PartialEq)]
@@ -572,6 +652,7 @@ const TEXT_PARAMS: &[&str] = &[
     "prompt:",
     "message:",
     "input:",
+    "envelope:",
     "keys:",
 ];
 
@@ -619,6 +700,13 @@ const TEXT_COMMANDS: &[(&str, &str, Command)] = &[
     ("drops.rs", "save_dropped_file", Command::NotTerminal),
     ("documents.rs", "save_board", Command::NotTerminal),
     ("documents.rs", "save_settings", Command::NotTerminal),
+    // Debug-only synthetic envelope enters the production parser and native
+    // inbox; it cannot directly type or mint a queue-row verdict.
+    (
+        "inbound_channel.rs",
+        "channel_smoke_envelope",
+        Command::NotTerminal,
+    ),
     ("diagnostics.rs", "ui_event", Command::NotTerminal),
 ];
 
@@ -676,7 +764,10 @@ fn every_text_carrying_tauri_command_is_reviewed() {
                 assert!(text.contains("add_reviewed_rows("));
                 assert!(body(file, "add_reviewed_rows").contains("validate_add("));
             }
-            Command::OwnerQueue => assert!(text.contains("validate_add(")),
+            Command::OwnerQueue => {
+                assert!(text.contains("queue_add_core(state, app, args, None, false)"));
+                assert!(body(file, "queue_add_core").contains("validate_add("));
+            }
             _ => assert!(
                 !text.contains("admit_external(") && !text.contains("channel_path"),
                 "{name} is not an admission path"

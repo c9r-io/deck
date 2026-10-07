@@ -17,6 +17,13 @@ later rows then follow the usual rules. Cards are never moved automatically and 
 to Slack. This document is the Slack connection (Settings) and the rules
 that both triggers share; the app's Automations drawer is where rules live.
 
+Channel monitoring has a distinct, off-by-default **automatic first-step
+permission** in that same editor. One save accepts future scoped new runs,
+possible external first-template content and startup-input risk together.
+It is fully revocable even after interaction evidence appears and does not
+authorize follow-up steps or tools. It does not change the badge or clock
+choices described here. See [Channel monitoring](channel-monitor.md).
+
 ## One Slack app
 
 New users create **one Deck Slack app** from Settings → Slack → Create the Slack app. Its unified manifest contains the Reaction user scopes, channel-monitor bot scopes, both event subscriptions, and Socket Mode. Install it to the workspace, then copy the User OAuth Token (`xoxp-…`) for badge triggers, Bot OAuth Token (`xoxb-…`) for channel monitoring, and App-Level Token (`xapp-…`, `connections:write`) for live delivery. Use only the capabilities you want: channel-only users do not need to enter `xoxp`. Tokens are verified with Slack, including installed OAuth scopes, before Keychain storage.

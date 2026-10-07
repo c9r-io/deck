@@ -62,6 +62,11 @@
 //!   not evidence: the generation stays unestablished,
 //!   so every later row is still gated. `relies_on_readiness_override` says
 //!   when a send depends on it (the pre-fire fence and the audit).
+//! - A native channel first-send constraint is checked before readiness. Its
+//!   current authorized head also supplies the narrowly scoped startup-risk
+//!   acceptance; revocation or unreadability holds it as `channel-stopped` or
+//!   `channel-unverified`, and the permanent constraint never becomes an
+//!   ordinary external row.
 //! - A session a SUCCESSFUL listing proves absent is not gated: the row is
 //!   selected so the worker may START it, but for a recognized agent
 //!   starting is not delivery (`delivery::prepare_context_with` returns
@@ -113,6 +118,7 @@ pub(crate) struct Observed {
     /// automatically on a phone task's first-send override or approval,
     /// which that source backs. Nothing else depends on it.
     pub(crate) board_unverified: bool,
+    pub(crate) channel_unverified: bool,
 }
 
 /// The tick could not revalidate approvals: every session's observation
@@ -129,6 +135,12 @@ pub(crate) fn mark_authority_unverified(seen: &mut Observations) {
 pub(crate) fn mark_board_unverified(seen: &mut Observations) {
     for observed in seen.values_mut() {
         observed.board_unverified = true;
+    }
+}
+
+pub(crate) fn mark_channel_unverified(seen: &mut Observations) {
+    for observed in seen.values_mut() {
+        observed.channel_unverified = true;
     }
 }
 
@@ -164,6 +176,7 @@ pub(crate) fn observe_with(
                 claude_interaction: evidence.get(session).is_some_and(|e| e.claude_interaction),
                 authority_unverified: false,
                 board_unverified: false,
+                channel_unverified: false,
             });
     }
     seen
@@ -187,6 +200,8 @@ pub(crate) enum Hold {
     /// the row relies on an approval that could not be revalidated this
     /// tick (plan stage `authority-unverified`); send-now still works
     AuthorityUnverified,
+    ChannelPermission,
+    ChannelUnverified,
 }
 
 /// The recognized interactive agent a row is configured for, if any.
@@ -208,7 +223,10 @@ pub(crate) fn hold_reason(i: &QueueItem, seen: Option<&Observed>) -> Option<Hold
 /// override: without it the first-interaction gate would hold the row, and
 /// with it nothing holds.
 pub(crate) fn relies_on_readiness_override(i: &QueueItem, seen: Option<&Observed>) -> bool {
-    i.readiness_override.is_some()
+    (i.readiness_override.is_some()
+        || i.channel_first_send
+            .as_ref()
+            .is_some_and(|constraint| constraint.authorized))
         && hold_reason_with(i, seen, false) == Some(Hold::FirstInteraction)
         && hold_reason_with(i, seen, true).is_none()
 }
@@ -224,6 +242,15 @@ fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool
     // this one hold — never a hook word, quiet time or elapsed time
     if i.external && i.mode == "chain" && i.authority.is_none() {
         return Some(Hold::External);
+    }
+    if i.channel_first_send
+        .as_ref()
+        .is_some_and(|constraint| !constraint.authorized)
+    {
+        return Some(Hold::ChannelPermission);
+    }
+    if i.channel_first_send.is_some() && seen.is_some_and(|observed| observed.channel_unverified) {
+        return Some(Hold::ChannelUnverified);
     }
     let o = seen?;
     // a failed read of the authority source is no proof the approval
@@ -246,8 +273,13 @@ fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool
         Some(first_send::Backing::Board) => o.board_unverified,
         _ => o.authority_unverified,
     };
-    let overridden =
-        honor_override && i.readiness_override.is_some() && i.mode == "at" && !source_unverified;
+    let channel_override = i
+        .channel_first_send
+        .as_ref()
+        .is_some_and(|constraint| constraint.authorized);
+    let overridden = honor_override
+        && (i.readiness_override.is_some() && !source_unverified || channel_override)
+        && i.mode == "at";
     // Codex: the target's proof or literal `codex` foreground, or a row
     // configured for Codex (a wrapper or `node` foreground) — `Trusted` is
     // its interaction evidence

@@ -3162,6 +3162,12 @@ export async function verifyClockLive() {
   await runClockLiveSmoke();
 }
 
+// Channel monitor first-send after a native-owned four-minute hidden wait.
+export async function verifyChannelFirstSend() {
+  const { runChannelFirstSendSmoke } = await import('./channel-first-send-smoke.mjs');
+  await runChannelFirstSendSmoke();
+}
+
 // The lost Board's way out, on a root the operator seeded with nothing
 // loadable (board-lost-smoke.mjs).
 export async function verifyBoardLost() {

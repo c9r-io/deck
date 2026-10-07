@@ -205,6 +205,15 @@ const KEY_CLASSES: &[&str] = &[
 /// recorded). Process names themselves stay out of the log.
 const FG_CLASSES: &[&str] = &["no-card", "no-fg", "agent", "editor", "repl", "other"];
 const SMOKE_CHECKS: &[&str] = &[
+    "channel-bg-preflight",
+    "channel-bg-config",
+    "channel-bg-hidden",
+    "channel-bg-envelope",
+    "channel-bg-delivered",
+    "channel-bg-fixture",
+    "channel-bg-held",
+    "channel-bg-persisted",
+    "channel-bg-exception",
     "board-lost-offer",
     "board-lost-reoffer",
     "board-lost-exit",

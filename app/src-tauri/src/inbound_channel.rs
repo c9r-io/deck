@@ -18,6 +18,14 @@
 //! envelope or body, far-future event time) are counted and ACKed without
 //! dropping the socket. Message bodies lose bidi controls, zero-width
 //! characters and tag characters before staging (`admission::strip_invisible`).
+//! A rule's channel `firstSend` intent is authorized only by a native grant
+//! bound to its normalized scope, effective Board template head and verified
+//! bot/workspace/Socket-app identity. The inbox activation written after the
+//! successful settings commit is the conservative timestamp boundary; a
+//! matching event is staged with that frozen grant reference and can never
+//! be downgraded to the legacy path. Missing authority is retried without ACK.
+//! Pending/applied evidence is idempotent and Board removal consumes it before
+//! the Board write, so a stale pulled snapshot cannot recreate a canceled run.
 //!
 //! Limits Deck cannot close: an allowlisted bot id admits whatever that bot
 //! forwards (webhooks, forms, alert text), and the agent's own configuration
@@ -40,7 +48,7 @@ use crate::keychain::{self, Slot};
 use crate::sync::LockRecover;
 
 const CONNECTION_ID: &str = "default";
-const FILE_VERSION: u32 = 1;
+const FILE_VERSION: u32 = 2;
 pub(crate) const MAX_RULES: usize = 64;
 pub(crate) const MAX_CHANNELS: usize = 64;
 pub(crate) const MAX_KEYWORDS: usize = 32;
@@ -108,8 +116,46 @@ pub(crate) struct ChannelRule {
     pub(crate) matcher: ChannelMatch,
     #[serde(default = "default_true")]
     pub(crate) include_threads: bool,
+    /// Explicit authorization for the first generated prompt of a channel
+    /// run. The boolean is intent; only a native-issued, current grant below
+    /// is authority.
+    #[serde(default)]
+    pub(crate) first_send: bool,
+    #[serde(default)]
+    pub(crate) first_send_grant: Option<ChannelFirstSendGrant>,
     #[serde(flatten)]
     pub(crate) target: ChannelTarget,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ChannelFirstSendGrant {
+    pub(crate) id: String,
+    pub(crate) digest: String,
+    pub(crate) issued_at_micros: u64,
+    pub(crate) connection_id: String,
+    pub(crate) workspace_id: String,
+    pub(crate) identity_digest: String,
+    pub(crate) dir: String,
+    pub(crate) step_hash: String,
+    pub(crate) class: String,
+    pub(crate) external: bool,
+    pub(crate) version: u32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ChannelFirstSendRequest {
+    pub(crate) rule_id: String,
+    pub(crate) external: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ChannelGrantRef {
+    pub(crate) id: String,
+    pub(crate) digest: String,
+    pub(crate) skeleton: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -166,8 +212,282 @@ fn rule_admitted(rule: &ChannelRule) -> bool {
     rule.enabled && channel_agent_command(&rule.target.cmd).is_some()
 }
 
+fn valid_grant_shape(grant: &ChannelFirstSendGrant) -> bool {
+    local_id(&grant.id, 96)
+        && sha256_hex(&grant.digest)
+        && sha256_hex(&grant.identity_digest)
+        && sha256_hex(&grant.step_hash)
+        && std::path::Path::new(&grant.dir).is_absolute()
+        && grant.dir.len() <= 1024
+        && grant.issued_at_micros > 0
+        && grant.connection_id == CONNECTION_ID
+        && bounded_id(&grant.workspace_id, Some('T'), 64)
+        && matches!(grant.class.as_str(), "fixed" | "bounded")
+        && (grant.class == "fixed" || grant.external)
+        && grant.version == 1
+}
+
+fn sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 pub(crate) fn any_rule_active(cfg: &ChannelConfig) -> bool {
     cfg.rules.iter().any(rule_admitted)
+}
+
+fn sorted_unique(values: &[String]) -> Vec<String> {
+    let mut values = values.to_vec();
+    values.sort();
+    values.dedup();
+    values
+}
+
+pub(crate) fn normalized_dir(dir: &str) -> Option<String> {
+    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned());
+    let dir = dir.trim();
+    let expanded = if dir.is_empty() || dir == "~" {
+        home
+    } else if let Some(rest) = dir.strip_prefix("~/") {
+        home.map(|h| format!("{}/{rest}", h.trim_end_matches('/')))
+    } else {
+        Some(dir.to_owned())
+    }?;
+    let path = std::fs::canonicalize(expanded).ok()?;
+    path.is_dir().then(|| path.to_string_lossy().into_owned())
+}
+
+pub(crate) fn board_template_head(
+    board: &Value,
+    project_id: &str,
+    template_name: &str,
+) -> Option<String> {
+    let project = board["projects"]
+        .as_array()?
+        .iter()
+        .find(|p| p["id"] == project_id)?;
+    let template = project["templates"]
+        .as_array()?
+        .iter()
+        .find(|t| t["name"] == template_name)?;
+    let head = template["steps"].as_array()?.first()?.as_str()?;
+    let head = crate::scheduler::normalize_prompt(head);
+    (!head.is_empty()).then_some(head)
+}
+
+fn grant_manifest(rule: &ChannelRule, grant: &ChannelFirstSendGrant, skeleton: &str) -> Value {
+    let matcher = match rule.matcher.kind.as_str() {
+        "keywords" => serde_json::json!([
+            "keywords",
+            sorted_unique(&rule.matcher.keywords),
+            rule.matcher.case_sensitive,
+        ]),
+        "regex" => serde_json::json!([
+            "regex",
+            rule.matcher.value,
+            rule.matcher.case_sensitive,
+            rule.matcher.group_capture,
+        ]),
+        _ => serde_json::json!(["contains", rule.matcher.value, rule.matcher.case_sensitive,]),
+    };
+    serde_json::json!([
+        "deck-channel-first-send-grant",
+        grant.version,
+        grant.id,
+        grant.issued_at_micros,
+        rule.id,
+        rule.connection_id,
+        sorted_unique(&rule.channel_ids),
+        sorted_unique(&rule.sender_user_ids),
+        sorted_unique(&rule.sender_bot_ids),
+        matcher,
+        rule.include_threads,
+        rule.target.idle_minutes,
+        rule.target.project_id,
+        grant.dir,
+        rule.target.dir.trim(),
+        rule.target.cmd,
+        skeleton,
+        grant.step_hash,
+        grant.class,
+        grant.external,
+        grant.connection_id,
+        grant.workspace_id,
+        grant.identity_digest,
+    ])
+}
+
+pub(crate) fn grant_valid(
+    rule: &ChannelRule,
+    grant: &ChannelFirstSendGrant,
+    board: &Value,
+    identity: &Identity,
+) -> Option<String> {
+    if !rule.enabled
+        || !rule.first_send
+        || !valid_grant_shape(grant)
+        || grant.connection_id != rule.connection_id
+        || grant.workspace_id != identity.team_id
+        || grant.identity_digest != identity_digest(identity)
+        || !crate::scheduler::first_send::supported_command(&rule.target.cmd)
+    {
+        return None;
+    }
+    let skeleton = board_template_head(board, &rule.target.project_id, &rule.target.template)?;
+    let class = if crate::scheduler::authority::has_placeholder(&skeleton) {
+        "bounded"
+    } else {
+        "fixed"
+    };
+    if grant.class != class
+        || leading_message_placeholder(&skeleton)
+        || grant.step_hash != crate::ledger::sha(skeleton.as_bytes())
+        || (class == "bounded" && !grant.external)
+        || grant.digest
+            != crate::ledger::sha(
+                grant_manifest(rule, grant, &skeleton)
+                    .to_string()
+                    .as_bytes(),
+            )
+    {
+        return None;
+    }
+    Some(skeleton)
+}
+
+pub(crate) fn grant_semantically_valid(
+    rule: &ChannelRule,
+    grant: &ChannelFirstSendGrant,
+    board: &Value,
+) -> bool {
+    if !rule.enabled
+        || !rule.first_send
+        || !valid_grant_shape(grant)
+        || grant.connection_id != rule.connection_id
+        || !crate::scheduler::first_send::supported_command(&rule.target.cmd)
+    {
+        return false;
+    }
+    let Some(skeleton) = board_template_head(board, &rule.target.project_id, &rule.target.template)
+    else {
+        return false;
+    };
+    let class = if crate::scheduler::authority::has_placeholder(&skeleton) {
+        "bounded"
+    } else {
+        "fixed"
+    };
+    grant.class == class
+        && !leading_message_placeholder(&skeleton)
+        && grant.step_hash == crate::ledger::sha(skeleton.as_bytes())
+        && (class == "fixed" || grant.external)
+        && grant.digest
+            == crate::ledger::sha(
+                grant_manifest(rule, grant, &skeleton)
+                    .to_string()
+                    .as_bytes(),
+            )
+}
+
+pub(crate) fn issue_grant(
+    rule: &ChannelRule,
+    board: &Value,
+    identity: &Identity,
+    external: bool,
+    issued_at_micros: u64,
+) -> Result<ChannelFirstSendGrant, DeckError> {
+    if !rule.enabled
+        || !rule.first_send
+        || !crate::scheduler::first_send::supported_command(&rule.target.cmd)
+    {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "channel first send is not eligible",
+        ));
+    }
+    let skeleton = board_template_head(board, &rule.target.project_id, &rule.target.template)
+        .ok_or_else(|| {
+            DeckError::new(ErrorKind::Invalid, "channel template head is unavailable")
+        })?;
+    let class = if crate::scheduler::authority::has_placeholder(&skeleton) {
+        "bounded"
+    } else {
+        "fixed"
+    };
+    if leading_message_placeholder(&skeleton) {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "channel template head must begin with user-written text",
+        ));
+    }
+    if class == "bounded" && !external {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "external channel content must be accepted",
+        ));
+    }
+    let dir = normalized_dir(&rule.target.dir).ok_or_else(|| {
+        DeckError::new(
+            ErrorKind::Invalid,
+            "channel startup directory is unavailable",
+        )
+    })?;
+    let mut grant = ChannelFirstSendGrant {
+        id: crate::ledger::random_id("g_", 16)?,
+        digest: String::new(),
+        issued_at_micros,
+        connection_id: CONNECTION_ID.into(),
+        workspace_id: identity.team_id.clone(),
+        identity_digest: identity_digest(identity),
+        dir,
+        step_hash: crate::ledger::sha(skeleton.as_bytes()),
+        class: class.into(),
+        external: class == "bounded" && external,
+        version: 1,
+    };
+    grant.digest = crate::ledger::sha(
+        grant_manifest(rule, &grant, &skeleton)
+            .to_string()
+            .as_bytes(),
+    );
+    Ok(grant)
+}
+
+pub(crate) fn restamp_grant(
+    rule: &ChannelRule,
+    grant: &mut ChannelFirstSendGrant,
+    board: &Value,
+    issued_at_micros: u64,
+) -> Result<(), DeckError> {
+    let skeleton = board_template_head(board, &rule.target.project_id, &rule.target.template)
+        .ok_or_else(|| {
+            DeckError::new(ErrorKind::Invalid, "channel template head is unavailable")
+        })?;
+    grant.issued_at_micros = issued_at_micros;
+    grant.digest = crate::ledger::sha(
+        grant_manifest(rule, grant, &skeleton)
+            .to_string()
+            .as_bytes(),
+    );
+    Ok(())
+}
+
+pub(crate) fn message_micros(ts: &str) -> Option<u64> {
+    let (secs, fraction) = ts.split_once('.')?;
+    if fraction.is_empty() || fraction.len() > 6 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let secs = secs.parse::<u64>().ok()?;
+    let micros = format!("{fraction:0<6}").parse::<u64>().ok()?;
+    secs.checked_mul(1_000_000)?.checked_add(micros)
+}
+
+fn leading_message_placeholder(skeleton: &str) -> bool {
+    regex::Regex::new(r"^\s*\{\{\s*msg\.[a-z]+\s*\}\}")
+        .expect("fixed leading placeholder regex")
+        .is_match(skeleton)
 }
 
 fn compile_matcher(m: &ChannelMatch) -> Result<Option<Regex>, DeckError> {
@@ -299,6 +619,15 @@ pub(crate) fn validate_settings(inbound: &Value) -> Result<(), DeckError> {
                 "channel rule target is invalid",
             ));
         }
+        if r.first_send_grant
+            .as_ref()
+            .is_some_and(|g| !valid_grant_shape(g))
+        {
+            return Err(DeckError::new(
+                ErrorKind::InvalidDoc,
+                "channel first-send grant is invalid",
+            ));
+        }
     }
     Ok(())
 }
@@ -328,6 +657,21 @@ pub(crate) fn read_config() -> ChannelConfig {
     read_config_at(&crate::documents::settings_path())
 }
 
+pub(crate) fn read_config_strict_result() -> Result<ChannelConfig, &'static str> {
+    let doc = crate::storage::read_typed::<crate::documents::SettingsDoc>(
+        &crate::documents::settings_path(),
+    )
+    .map_err(|_| "settings")?
+    .ok_or("settings")?;
+    if doc.source != "main" {
+        return Err("settings");
+    }
+    let value: Value = serde_json::from_str(&doc.payload).map_err(|_| "settings")?;
+    let inbound = value.get("inbound").ok_or("settings")?;
+    validate_settings(inbound).map_err(|_| "settings")?;
+    Ok(config_from_value(Some(inbound)))
+}
+
 /// Read, never moved: settings.json belongs to the webview
 /// (`storage::read_typed`). Only its current version turns monitoring on: a
 /// damaged main file's backup is the save before the last one, so it could
@@ -348,9 +692,38 @@ fn read_config_at(path: &std::path::Path) -> ChannelConfig {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Identity {
-    team_id: String,
-    own_user_id: String,
-    own_bot_id: String,
+    pub(crate) team_id: String,
+    pub(crate) own_user_id: String,
+    pub(crate) own_bot_id: String,
+    /// Socket Mode app id verified by the authenticated `hello`, and then
+    /// matched against each envelope's `api_app_id` by the transport.
+    pub(crate) app_id: String,
+}
+
+static CURRENT_IDENTITY: Mutex<Option<Identity>> = Mutex::new(None);
+
+pub(crate) fn set_current_identity(identity: Option<Identity>) {
+    *CURRENT_IDENTITY.lock_or_recover() = identity;
+}
+
+pub(crate) fn current_identity() -> Option<Identity> {
+    CURRENT_IDENTITY.lock_or_recover().clone()
+}
+
+pub(crate) fn identity_digest(identity: &Identity) -> String {
+    crate::ledger::sha(
+        serde_json::json!([
+            "deck-channel-connection",
+            1,
+            CONNECTION_ID,
+            identity.team_id,
+            identity.own_user_id,
+            identity.own_bot_id,
+            identity.app_id,
+        ])
+        .to_string()
+        .as_bytes(),
+    )
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -541,14 +914,42 @@ pub(crate) struct PendingChannelEvent {
     pub(crate) sender_user_id: Option<String>,
     pub(crate) sender_bot_id: Option<String>,
     pub(crate) occurred_at: u64,
+    /// Native receipt time used for the first-admission freshness bound.
+    /// Version-1 events deserialize as zero and can never carry a grant.
+    #[serde(default)]
+    pub(crate) staged_at: u64,
     pub(crate) body: String,
     pub(crate) target: ChannelTarget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) board_card_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) board_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) first_send_grant: Option<ChannelGrantRef>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 struct Handled {
     id: String,
     at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    board_card_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    board_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    first_send_grant: Option<ChannelGrantRef>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+struct Applied {
+    event: PendingChannelEvent,
+    at: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct GrantActivation {
+    id: String,
+    at_micros: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -559,6 +960,10 @@ struct InboxDoc {
     pending: Vec<PendingChannelEvent>,
     #[serde(default)]
     handled: Vec<Handled>,
+    #[serde(default)]
+    applied: Vec<Applied>,
+    #[serde(default)]
+    grant_activations: Vec<GrantActivation>,
     #[serde(default)]
     last_connected: Option<u64>,
     #[serde(default)]
@@ -571,6 +976,8 @@ impl Default for InboxDoc {
             version: FILE_VERSION,
             pending: Vec::new(),
             handled: Vec::new(),
+            applied: Vec::new(),
+            grant_activations: Vec::new(),
             last_connected: None,
             gap_since: None,
         }
@@ -606,6 +1013,7 @@ fn valid_pending(p: &PendingChannelEvent) -> bool {
             .is_none_or(|s| bounded_id(s, Some('B'), 64))
         && (p.sender_user_id.is_some() || p.sender_bot_id.is_some())
         && p.occurred_at > 0
+        && (p.first_send_grant.is_none() || p.staged_at > 0)
         && !p.body.is_empty()
         && p.body.len() <= MAX_BODY_BYTES
         && p.group_key.len() <= 1024
@@ -613,6 +1021,16 @@ fn valid_pending(p: &PendingChannelEvent) -> bool {
         && p.id == expected_id
         && p.operation_key == format!("channel:{expected_id}")
         && valid_target(&p.target)
+        && p.board_card_id.as_ref().is_none_or(|id| local_id(id, 128))
+        && p.board_session.as_ref().is_none_or(|session| {
+            !session.is_empty() && session.len() <= 128 && !session.chars().any(char::is_control)
+        })
+        && p.first_send_grant.as_ref().is_none_or(|g| {
+            local_id(&g.id, 96)
+                && sha256_hex(&g.digest)
+                && !g.skeleton.is_empty()
+                && g.skeleton.len() <= crate::documents::PRESET_STEP_MAX_BYTES
+        })
 }
 
 fn valid_handled(h: &Handled) -> bool {
@@ -624,6 +1042,10 @@ fn valid_handled(h: &Handled) -> bool {
                 && local_id(event, 128)
                 && local_id(rule, 64)
     ) && h.at > 0
+        && h.board_card_id.as_ref().is_none_or(|id| local_id(id, 128))
+        && h.board_session.as_ref().is_none_or(|session| {
+            !session.is_empty() && session.len() <= 128 && !session.chars().any(char::is_control)
+        })
 }
 
 struct InboxStore {
@@ -635,7 +1057,7 @@ impl InboxStore {
     fn load(path: PathBuf) -> Result<Self, DeckError> {
         let doc = crate::ledger::load_bounded::<InboxDoc>(&path, MAX_FILE_BYTES, "channel inbox")?
             .unwrap_or_default();
-        if doc.version != FILE_VERSION {
+        if !matches!(doc.version, 1 | FILE_VERSION) {
             return Err(DeckError::new(
                 ErrorKind::NewerSchema,
                 "channel inbox is from a newer deck",
@@ -647,11 +1069,26 @@ impl InboxStore {
             .iter()
             .map(|p| &p.id)
             .chain(doc.handled.iter().map(|h| &h.id))
+            .chain(doc.applied.iter().map(|a| &a.event.id))
             .all(|id| identities.insert(id));
         if doc.pending.len() > MAX_PENDING
-            || doc.pending.len().saturating_add(doc.handled.len()) > MAX_LEDGER
+            || doc
+                .pending
+                .len()
+                .saturating_add(doc.handled.len())
+                .saturating_add(doc.applied.len())
+                > MAX_LEDGER
             || doc.pending.iter().any(|p| !valid_pending(p))
             || doc.handled.iter().any(|h| !valid_handled(h))
+            || doc
+                .applied
+                .iter()
+                .any(|a| !valid_pending(&a.event) || a.at == 0)
+            || doc.grant_activations.len() > MAX_RULES * 4
+            || doc
+                .grant_activations
+                .iter()
+                .any(|a| !local_id(&a.id, 96) || a.at_micros == 0)
             || !identities_unique
             || serde_json::to_vec(&doc)
                 .map(|v| v.len())
@@ -702,13 +1139,17 @@ impl InboxStore {
             ));
         }
         self.mutate(|doc| {
+            doc.version = FILE_VERSION;
             doc.handled
                 .retain(|h| h.at.saturating_add(LEDGER_HORIZON_SECS) >= now);
+            doc.applied
+                .retain(|a| a.at.saturating_add(LEDGER_HORIZON_SECS) >= now);
             let known: HashSet<String> = doc
                 .pending
                 .iter()
                 .map(|p| p.id.clone())
                 .chain(doc.handled.iter().map(|h| h.id.clone()))
+                .chain(doc.applied.iter().map(|a| a.event.id.clone()))
                 .collect();
             let mut add: Vec<_> = entries
                 .into_iter()
@@ -721,6 +1162,7 @@ impl InboxStore {
                 .pending
                 .len()
                 .saturating_add(doc.handled.len())
+                .saturating_add(doc.applied.len())
                 .saturating_add(add.len())
                 > MAX_LEDGER
             {
@@ -736,30 +1178,85 @@ impl InboxStore {
 
     fn ack(&mut self, id: &str, now: u64) -> Result<(), DeckError> {
         self.mutate(|doc| {
-            let before = doc.pending.len();
-            doc.pending.retain(|p| p.id != id);
-            if doc.pending.len() == before {
+            doc.version = FILE_VERSION;
+            if doc.handled.iter().any(|h| h.id == id)
+                || doc.applied.iter().any(|a| a.event.id == id)
+            {
+                return Ok(());
+            }
+            let Some(index) = doc.pending.iter().position(|p| p.id == id) else {
                 return Err(DeckError::new(
                     ErrorKind::Missing,
                     "channel event is not pending",
                 ));
-            }
-            doc.handled.push(Handled {
-                id: id.to_string(),
-                at: now,
-            });
+            };
+            let event = doc.pending.remove(index);
+            doc.applied.push(Applied { event, at: now });
             doc.handled
                 .retain(|h| h.at.saturating_add(LEDGER_HORIZON_SECS) >= now);
+            doc.applied
+                .retain(|a| a.at.saturating_add(LEDGER_HORIZON_SECS) >= now);
+            Ok(())
+        })
+    }
+
+    fn cancel(&mut self, id: &str, now: u64) -> Result<(), DeckError> {
+        self.mutate(|doc| {
+            let known = doc.pending.iter().any(|event| event.id == id)
+                || doc.applied.iter().any(|applied| applied.event.id == id)
+                || doc.handled.iter().any(|handled| handled.id == id);
+            if !known {
+                return Err(DeckError::new(
+                    ErrorKind::Missing,
+                    "channel event is unknown",
+                ));
+            }
+            doc.version = FILE_VERSION;
+            let retired = doc
+                .pending
+                .iter()
+                .find(|event| event.id == id)
+                .or_else(|| {
+                    doc.applied
+                        .iter()
+                        .find(|applied| applied.event.id == id)
+                        .map(|applied| &applied.event)
+                })
+                .cloned();
+            doc.pending.retain(|event| event.id != id);
+            doc.applied.retain(|applied| applied.event.id != id);
+            if !doc.handled.iter().any(|handled| handled.id == id) {
+                doc.handled.push(Handled {
+                    id: id.to_owned(),
+                    at: now,
+                    board_card_id: retired
+                        .as_ref()
+                        .and_then(|event| event.board_card_id.clone()),
+                    board_session: retired
+                        .as_ref()
+                        .and_then(|event| event.board_session.clone()),
+                    first_send_grant: retired.and_then(|event| event.first_send_grant),
+                });
+            }
             Ok(())
         })
     }
 }
 
-fn event_entries(cfg: &ChannelConfig, event: &MessageEvent) -> Vec<PendingChannelEvent> {
+fn event_entries_with_identity(
+    cfg: &ChannelConfig,
+    identity: &Identity,
+    event: &MessageEvent,
+    staged_at: u64,
+) -> Result<Vec<PendingChannelEvent>, &'static str> {
+    let board = crate::documents::board_authority();
     cfg.rules
         .iter()
         .filter_map(|rule| {
             let incident = match_rule(rule, event)?;
+            Some((rule, incident))
+        })
+        .map(|(rule, incident)| {
             let id = format!(
                 "{}/{}/{}/{}",
                 CONNECTION_ID, event.team_id, event.event_id, rule.id
@@ -775,7 +1272,37 @@ fn event_entries(cfg: &ChannelConfig, event: &MessageEvent) -> Vec<PendingChanne
                     .map(|s| format!("/{}", crate::slack_api::encode(s)))
                     .unwrap_or_default()
             );
-            Some(PendingChannelEvent {
+            let first_send_grant = match rule.first_send_grant.as_ref() {
+                Some(grant) if rule.first_send => {
+                    let activation = grant_activation(&grant.id).ok_or("authority")?;
+                    if activation != grant.issued_at_micros {
+                        return Err("authority");
+                    }
+                    let skeleton =
+                        grant_valid(rule, grant, board.as_ref().ok_or("authority")?, identity)
+                            .ok_or("authority")?;
+                    Some(ChannelGrantRef {
+                        id: grant.id.clone(),
+                        digest: grant.digest.clone(),
+                        skeleton,
+                    })
+                }
+                None if rule.first_send => return Err("authority"),
+                _ => None,
+            };
+            let mut target = rule.target.clone();
+            if first_send_grant.is_some() {
+                // The approved startup directory is frozen at grant creation.
+                // A missing directory is a retryable launch failure, not a
+                // semantic edit or a reason to redirect a future event.
+                target.dir = rule
+                    .first_send_grant
+                    .as_ref()
+                    .ok_or("authority")?
+                    .dir
+                    .clone();
+            }
+            Ok(PendingChannelEvent {
                 id: id.clone(),
                 operation_key: format!("channel:{id}"),
                 group_key,
@@ -789,11 +1316,31 @@ fn event_entries(cfg: &ChannelConfig, event: &MessageEvent) -> Vec<PendingChanne
                 sender_user_id: event.sender_user_id.clone(),
                 sender_bot_id: event.sender_bot_id.clone(),
                 occurred_at: event.event_time,
+                staged_at,
                 body: event.body.clone(),
-                target: rule.target.clone(),
+                target,
+                board_card_id: None,
+                board_session: None,
+                first_send_grant,
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+fn event_entries(cfg: &ChannelConfig, event: &MessageEvent) -> Vec<PendingChannelEvent> {
+    event_entries_with_identity(
+        cfg,
+        &Identity {
+            team_id: event.team_id.clone(),
+            own_user_id: "UTEST".into(),
+            own_bot_id: "BTEST".into(),
+            app_id: "ATEST".into(),
+        },
+        event,
+        event.event_time,
+    )
+    .unwrap()
 }
 
 #[cfg(test)]
@@ -801,6 +1348,10 @@ fn event_entries(cfg: &ChannelConfig, event: &MessageEvent) -> Vec<PendingChanne
 enum EnvelopeDisposition {
     Ack,
     Retry,
+}
+
+fn retryable_envelope_error(code: &str) -> bool {
+    matches!(code, "authority" | "settings" | "storage" | "capacity")
 }
 
 #[cfg(test)]
@@ -811,8 +1362,10 @@ fn process_envelope(
     text: &str,
     now: u64,
 ) -> EnvelopeDisposition {
-    let Ok(entries) = entries_from_envelope(cfg, identity, text, now) else {
-        return EnvelopeDisposition::Ack;
+    let entries = match entries_from_envelope(cfg, identity, text, now) {
+        Ok(entries) => entries,
+        Err(code) if retryable_envelope_error(code) => return EnvelopeDisposition::Retry,
+        Err(_) => return EnvelopeDisposition::Ack,
     };
     if entries.is_empty() {
         return EnvelopeDisposition::Ack;
@@ -827,7 +1380,7 @@ fn process_envelope(
 /// `Err` is a DETERMINISTIC rejection (oversize envelope or body, an event
 /// time too far in the future): Slack's retry would carry the same bytes, so
 /// the caller counts it and ACKs without disconnecting. Only staging failures
-/// withhold the ACK.
+/// and temporary authority-read failures withhold the ACK.
 fn entries_from_envelope(
     cfg: &ChannelConfig,
     identity: &Identity,
@@ -858,7 +1411,7 @@ fn entries_from_envelope(
     if event.body.len() > MAX_BODY_BYTES {
         return Err("oversize");
     }
-    Ok(event_entries(cfg, &event))
+    event_entries_with_identity(cfg, identity, &event, now)
 }
 
 fn inbox_path() -> PathBuf {
@@ -872,6 +1425,170 @@ fn with_store<T>(f: impl FnOnce(&mut InboxStore) -> Result<T, DeckError>) -> Res
         Ok(store) => f(store),
         Err(e) => Err(e.clone()),
     }
+}
+
+pub(crate) fn channel_proof(id: &str) -> Result<Option<PendingChannelEvent>, DeckError> {
+    with_store(|store| {
+        Ok(store
+            .doc
+            .pending
+            .iter()
+            .find(|event| event.id == id)
+            .cloned()
+            .or_else(|| {
+                store
+                    .doc
+                    .applied
+                    .iter()
+                    .find(|applied| applied.event.id == id)
+                    .map(|applied| applied.event.clone())
+            }))
+    })
+}
+
+pub(crate) fn channel_proof_for_card(
+    card_id: &str,
+) -> Result<Option<PendingChannelEvent>, DeckError> {
+    with_store(|store| {
+        Ok(store
+            .doc
+            .pending
+            .iter()
+            .chain(store.doc.applied.iter().map(|applied| &applied.event))
+            .find(|event| event.board_card_id.as_deref() == Some(card_id))
+            .cloned())
+    })
+}
+
+pub(crate) fn channel_constraint_for_card(
+    card_id: &str,
+) -> Result<Option<(String, bool)>, DeckError> {
+    with_store(|store| {
+        if let Some(event) = store
+            .doc
+            .pending
+            .iter()
+            .chain(store.doc.applied.iter().map(|applied| &applied.event))
+            .find(|event| event.board_card_id.as_deref() == Some(card_id))
+        {
+            return Ok(event
+                .board_session
+                .clone()
+                .map(|session| (session, event.first_send_grant.is_some())));
+        }
+        Ok(store
+            .doc
+            .handled
+            .iter()
+            .find(|handled| handled.board_card_id.as_deref() == Some(card_id))
+            .and_then(|handled| {
+                handled
+                    .board_session
+                    .clone()
+                    .map(|session| (session, handled.first_send_grant.is_some()))
+            }))
+    })
+}
+
+pub(crate) fn bind_board_identity(id: &str, card_id: &str, session: &str) -> Result<(), DeckError> {
+    if !local_id(card_id, 128)
+        || session.is_empty()
+        || session.len() > 128
+        || session.chars().any(char::is_control)
+    {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "channel Board identity is invalid",
+        ));
+    }
+    with_store(|store| {
+        store.mutate(|doc| {
+            let event = if let Some(event) = doc.pending.iter_mut().find(|event| event.id == id) {
+                event
+            } else {
+                &mut doc
+                    .applied
+                    .iter_mut()
+                    .find(|applied| applied.event.id == id)
+                    .ok_or_else(|| DeckError::new(ErrorKind::Missing, "channel event is unknown"))?
+                    .event
+            };
+            if event
+                .board_card_id
+                .as_deref()
+                .is_some_and(|value| value != card_id)
+                || event
+                    .board_session
+                    .as_deref()
+                    .is_some_and(|value| value != session)
+            {
+                return Err(DeckError::new(
+                    ErrorKind::Invalid,
+                    "channel Board identity changed",
+                ));
+            }
+            event.board_card_id = Some(card_id.to_owned());
+            event.board_session = Some(session.to_owned());
+            Ok(())
+        })
+    })
+}
+
+pub(crate) fn pending_exact(id: &str) -> Result<bool, DeckError> {
+    with_store(|store| Ok(store.doc.pending.iter().any(|event| event.id == id)))
+}
+
+pub(crate) fn cancel_event(id: &str) -> Result<(), DeckError> {
+    with_store(|store| store.cancel(id, now_secs()))
+}
+
+#[tauri::command]
+pub(crate) fn channel_check_pending(id: String) -> Result<bool, DeckError> {
+    if id.len() > 512 || !id.starts_with("default/") {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "channel event id is invalid",
+        ));
+    }
+    pending_exact(&id)
+}
+
+pub(crate) fn activate_grant(id: &str, at_micros: u64) -> Result<(), DeckError> {
+    if !local_id(id, 96) || at_micros == 0 {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "channel grant activation is invalid",
+        ));
+    }
+    with_store(|store| {
+        store.mutate(|doc| {
+            doc.version = FILE_VERSION;
+            doc.grant_activations
+                .retain(|activation| activation.id != id);
+            doc.grant_activations.push(GrantActivation {
+                id: id.to_owned(),
+                at_micros,
+            });
+            if doc.grant_activations.len() > MAX_RULES * 4 {
+                doc.grant_activations
+                    .drain(..doc.grant_activations.len() - MAX_RULES * 4);
+            }
+            Ok(())
+        })
+    })
+}
+
+pub(crate) fn grant_activation(id: &str) -> Option<u64> {
+    with_store(|store| {
+        Ok(store
+            .doc
+            .grant_activations
+            .iter()
+            .find(|a| a.id == id)
+            .map(|a| a.at_micros))
+    })
+    .ok()
+    .flatten()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -907,6 +1624,15 @@ fn note_rejected(code: &'static str) {
 #[tauri::command]
 pub(crate) fn channel_pending() -> Result<Vec<PendingChannelEvent>, DeckError> {
     with_store(|s| Ok(s.doc.pending.clone()))
+}
+
+/// Content-free retry signal for durable channel events. The shared inbound
+/// poll thread calls this independently of badge/token state, so a transient
+/// webview queue failure and a restart both get another drain opportunity.
+pub(crate) fn reannounce_pending(app: &AppHandle) {
+    if with_store(|store| Ok(!store.doc.pending.is_empty())).unwrap_or(false) {
+        let _ = app.emit("channel-changed", ());
+    }
 }
 
 #[tauri::command]
@@ -971,8 +1697,12 @@ pub(crate) fn channel_smoke_seed(
             sender_user_id: Some("USMOKE".into()),
             sender_bot_id: None,
             occurred_at,
+            staged_at: occurred_at,
             body: "smoke channel note".into(),
             target: target.clone(),
+            board_card_id: None,
+            board_session: None,
+            first_send_grant: None,
         }
     };
     let at = now_secs();
@@ -1008,6 +1738,141 @@ pub(crate) fn channel_smoke_seed(
     }
     let _ = app.emit("channel-changed", ());
     Ok(ids)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SmokeIdentity {
+    workspace_id: &'static str,
+    own_user_id: &'static str,
+    own_bot_id: &'static str,
+}
+
+#[tauri::command]
+pub(crate) fn channel_smoke_identity() -> Result<SmokeIdentity, DeckError> {
+    if !crate::smoke_faults::enabled()
+        || crate::launch_args::debug_arg("--smoke-wkwebview").as_deref()
+            != Some("channel-first-send")
+    {
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "channel smoke is unavailable",
+        ));
+    }
+    set_current_identity(Some(Identity {
+        team_id: "TSMOKE".into(),
+        own_user_id: "USMOKE".into(),
+        own_bot_id: "BSMOKE".into(),
+        app_id: "ASMOKE".into(),
+    }));
+    Ok(SmokeIdentity {
+        workspace_id: "TSMOKE",
+        own_user_id: "USMOKE",
+        own_bot_id: "BSMOKE",
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SmokeEnvelopeResult {
+    disposition: &'static str,
+    pending_ids: Vec<String>,
+    waited_secs: u64,
+    delivered: bool,
+    held: bool,
+    receipts: u8,
+    persisted_items: usize,
+    persisted_deliveries: usize,
+    persisted_overrides: usize,
+}
+
+#[tauri::command]
+pub(crate) async fn channel_smoke_envelope(
+    envelope: String,
+    delay_secs: u64,
+    app: AppHandle,
+) -> Result<SmokeEnvelopeResult, DeckError> {
+    if !crate::smoke_faults::enabled()
+        || crate::launch_args::debug_arg("--smoke-wkwebview").as_deref()
+            != Some("channel-first-send")
+        || !(245..=300).contains(&delay_secs)
+    {
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "channel smoke is unavailable",
+        ));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_secs(delay_secs));
+        let identity = current_identity().ok_or_else(|| {
+            DeckError::new(ErrorKind::Other, "channel smoke identity is unavailable")
+        })?;
+        let mut value: Value = serde_json::from_str(&envelope)
+            .map_err(|_| DeckError::new(ErrorKind::Invalid, "channel smoke envelope is invalid"))?;
+        let micros = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_micros() as u64)
+            .unwrap_or(1);
+        value["payload"]["event_time"] = Value::from(micros / 1_000_000);
+        value["payload"]["event"]["ts"] =
+            Value::String(format!("{}.{:06}", micros / 1_000_000, micros % 1_000_000));
+        let envelope = value.to_string();
+        let disposition = if handle_message(&app, &identity, &envelope).is_ok() {
+            "ack"
+        } else {
+            "retry"
+        };
+        let pending_ids = channel_pending()?
+            .into_iter()
+            .map(|event| event.id)
+            .collect();
+        let delivery_deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        let mut first_receipt = None;
+        let mut oracle = (0, false, false, 0, 0, 0, 0);
+        while std::time::Instant::now() < delivery_deadline {
+            oracle = crate::smoke_faults::channel_fixture_oracle()?;
+            if oracle.0 >= 1 && oracle.5 >= 1 {
+                first_receipt = Some(std::time::Instant::now());
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        let delivered = first_receipt.is_some();
+        if let Some(at) = first_receipt {
+            let hold_until = at + std::time::Duration::from_secs(75);
+            while std::time::Instant::now() < hold_until {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            oracle = crate::smoke_faults::channel_fixture_oracle()?;
+        }
+        let held = delivered && oracle.0 == 1 && !oracle.2 && oracle.4 >= 1;
+        let result = SmokeEnvelopeResult {
+            disposition,
+            pending_ids,
+            waited_secs: started.elapsed().as_secs(),
+            delivered,
+            held,
+            receipts: oracle.0,
+            persisted_items: oracle.4,
+            persisted_deliveries: oracle.5,
+            persisted_overrides: oracle.6,
+        };
+        // Freeze the native-only verdict before waking the hidden webview to
+        // report it. An IPC response alone need not wake a suspended WK fetch.
+        // This one notification occurs AFTER reception, launch, delivery and
+        // the full later-step observation; it cannot keep that chain alive.
+        let bytes = serde_json::to_vec(&result)
+            .map_err(|_| DeckError::new(ErrorKind::Other, "channel smoke result unavailable"))?;
+        crate::datadir::write_private(
+            &crate::datadir::deck_dir().join("channel-smoke-result.json"),
+            &bytes,
+        )?;
+        let _ = app.emit("channel-changed", ());
+        Ok(result)
+    })
+    .await
+    .map_err(|_| DeckError::new(ErrorKind::Other, "channel smoke worker failed"))?
 }
 
 #[tauri::command]
@@ -1075,6 +1940,7 @@ pub(crate) fn connection_identity(bot: &str) -> Result<Identity, &'static str> {
             .and_then(Value::as_str)
             .ok_or("parse")?
             .to_string(),
+        app_id: String::new(),
     })
 }
 
@@ -1085,9 +1951,15 @@ pub(crate) fn handle_message(
     identity: &Identity,
     text: &str,
 ) -> Result<(), &'static str> {
-    let cfg = read_config();
+    let cfg = read_config_strict_result().inspect_err(|code| {
+        note_rejected(code);
+    })?;
     let entries = match entries_from_envelope(&cfg, identity, text, now_secs()) {
         Ok(entries) => entries,
+        Err(code) if retryable_envelope_error(code) => {
+            note_rejected(code);
+            return Err(code);
+        }
         Err(code) => {
             note_rejected(code);
             return Ok(());
@@ -1119,6 +1991,26 @@ pub(crate) fn transport_disabled() {
     set_disabled();
 }
 
+/// Isolated subprocess fixture: use the production parser, matcher, native
+/// grant freeze, and durable inbox without constructing a GUI or transport.
+#[cfg(test)]
+pub(crate) fn stage_channel_authority_fixture(
+    envelope: &str,
+) -> Result<PendingChannelEvent, DeckError> {
+    let cfg = read_config_strict_result()
+        .map_err(|_| DeckError::new(ErrorKind::Other, "fixture settings unavailable"))?;
+    let identity = current_identity()
+        .ok_or_else(|| DeckError::new(ErrorKind::Other, "fixture identity unavailable"))?;
+    let entries = entries_from_envelope(&cfg, &identity, envelope, now_secs())
+        .map_err(|_| DeckError::new(ErrorKind::Other, "fixture envelope refused"))?;
+    let event = entries
+        .first()
+        .cloned()
+        .ok_or_else(|| DeckError::new(ErrorKind::Missing, "fixture did not match"))?;
+    with_store(|store| store.stage(entries, now_secs()))?;
+    Ok(event)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1141,7 +2033,36 @@ mod tests {
             team_id: "T1".into(),
             own_user_id: "U_SELF".into(),
             own_bot_id: "B_SELF".into(),
+            app_id: "A_TEST".into(),
         }
+    }
+
+    #[test]
+    fn authority_failures_retry_while_deterministic_envelope_rejections_ack() {
+        assert!(retryable_envelope_error("authority"));
+        assert!(retryable_envelope_error("storage"));
+        assert!(!retryable_envelope_error("oversize"));
+        assert!(!retryable_envelope_error("future-event"));
+    }
+
+    #[test]
+    fn slack_message_microseconds_form_a_strict_grant_boundary() {
+        assert_eq!(
+            message_micros("2000000000.123"),
+            Some(2_000_000_000_123_000)
+        );
+        let boundary = message_micros("2000000000.123456").unwrap();
+        assert!(!(message_micros("2000000000.123456").unwrap() > boundary));
+        assert!(message_micros("2000000000.123457").unwrap() > boundary);
+        assert_eq!(message_micros("2000000000.1234567"), None);
+    }
+
+    #[test]
+    fn verified_socket_app_identity_changes_the_grant_identity() {
+        let one = identity();
+        let mut two = one.clone();
+        two.app_id = "A_OTHER".into();
+        assert_ne!(identity_digest(&one), identity_digest(&two));
     }
     fn config() -> ChannelConfig {
         ChannelConfig {
@@ -1591,7 +2512,7 @@ mod tests {
         assert_eq!(store.doc.pending.len(), 1, "retry dedupes per rule");
         let id = store.doc.pending[0].id.clone();
         store.ack(&id, 2_000_000_003).unwrap();
-        assert!(store.doc.pending.is_empty() && store.doc.handled.len() == 1);
+        assert!(store.doc.pending.is_empty() && store.doc.applied.len() == 1);
         assert_eq!(
             process_envelope(
                 &mut store,
@@ -1603,6 +2524,34 @@ mod tests {
             EnvelopeDisposition::Ack
         );
         assert!(store.doc.pending.is_empty(), "handled retry stays deduped");
+    }
+
+    #[test]
+    fn canceled_applied_event_cannot_be_reintroduced_by_a_stale_drain() {
+        let mut store = temp_store("cancel-stale");
+        let event = parse_message(
+            &serde_json::from_str(&envelope(json!({}))).unwrap(),
+            &identity(),
+            2_000_000_001,
+        )
+        .unwrap();
+        let entries = event_entries(&config(), &event);
+        let id = entries[0].id.clone();
+        store.stage(entries.clone(), 2_000_000_001).unwrap();
+        store.ack(&id, 2_000_000_002).unwrap();
+        assert!(store
+            .doc
+            .applied
+            .iter()
+            .any(|applied| applied.event.id == id));
+        store.cancel(&id, 2_000_000_003).unwrap();
+        assert!(store.doc.applied.is_empty());
+        assert!(store.doc.handled.iter().any(|handled| handled.id == id));
+        store.stage(entries, 2_000_000_004).unwrap();
+        assert!(
+            store.doc.pending.is_empty(),
+            "handled proof blocks a stale snapshot"
+        );
     }
 
     #[test]
@@ -1674,11 +2623,17 @@ mod tests {
             .map(|i| Handled {
                 id: format!("default/T1/H{i}/alerts"),
                 at: 2_000_000_001,
+                board_card_id: None,
+                board_session: None,
+                first_send_grant: None,
             })
             .collect();
         let id = store.doc.pending[0].id.clone();
         store.ack(&id, 2_000_000_002).unwrap();
-        assert_eq!(store.doc.handled.len(), MAX_LEDGER);
+        assert_eq!(
+            store.doc.handled.len() + store.doc.applied.len(),
+            MAX_LEDGER
+        );
         assert_eq!(
             process_envelope(
                 &mut store,
@@ -1697,7 +2652,11 @@ mod tests {
             EnvelopeDisposition::Retry,
             "an unknown delivery is backpressured instead of evicting recent dedupe state"
         );
-        assert!(store.doc.handled.iter().any(|h| h.id == id));
+        assert!(store
+            .doc
+            .applied
+            .iter()
+            .any(|applied| applied.event.id == id));
     }
 
     #[test]
@@ -2216,7 +3175,7 @@ mod tests {
             std::fs::write(&path, doc.to_string()).unwrap();
             InboxStore::load(path.clone()).err().unwrap().kind()
         };
-        assert_eq!(err(json!({"version": 2})), ErrorKind::NewerSchema);
+        assert_eq!(err(json!({"version": 3})), ErrorKind::NewerSchema);
         let event = parse_message(
             &serde_json::from_str(&envelope(json!({}))).unwrap(),
             &identity(),

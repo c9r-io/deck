@@ -158,10 +158,18 @@ pub fn declares_test_module(parent: &str, stem: &str) -> bool {
 
 /// A module file is test-only when its parent declares it under
 /// `#[cfg(test)]` (`declares_test_module`): a dedicated `dir/tests.rs` from
-/// `dir.rs` / `dir/mod.rs`, or a pinned `TEST_ONLY_TOP_LEVEL` module from
+/// `dir.rs` / `dir/mod.rs`, the two explicitly pinned channel test modules,
+/// or a pinned `TEST_ONLY_TOP_LEVEL` module from
 /// `main.rs`. Nothing else is ever excluded from the production censuses.
 pub fn is_declared_test_file(name: &str, sources: &[(String, String)]) -> bool {
     let (parents, stem) = match (name.strip_suffix("/tests.rs"), name.strip_suffix(".rs")) {
+        _ if name == "documents/channel_admission_tests.rs" => {
+            (vec!["documents.rs".to_string()], "channel_admission_tests")
+        }
+        _ if name == "scheduler/channel_permission_tests.rs" => (
+            vec!["scheduler/mod.rs".to_string()],
+            "channel_permission_tests",
+        ),
         (Some(dir), _) => (vec![format!("{dir}.rs"), format!("{dir}/mod.rs")], "tests"),
         (None, Some(stem)) if TEST_ONLY_TOP_LEVEL.contains(&stem) => {
             (vec!["main.rs".to_string()], stem)

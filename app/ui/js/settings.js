@@ -4,6 +4,10 @@
 // logs, the settings writer every choice goes through and the ONE commit
 // shape (`commitSettings`: candidate first, rollback on failure) behind
 // every optimistic choice.
+// Explicit channel first-step decisions travel only with the editor's save.
+// Native canonical channel grants replace frontend copies after commit;
+// unrelated queued saves preserve that latest native result. A native
+// template retirement emits a content-free refresh even if Board save fails.
 // The Lens may explicitly download and enable through installTranslationPack;
 // it shares the same settings writer and installation guard as Settings.
 // Navigation and search: the sections and the searchable settings (stable
@@ -27,7 +31,7 @@
 // dialogs.js; set-check's click handler is wired by app.js (which owns
 // update checks) so this module never imports app.js back.
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, ctx, inv, listen, store, uev } from './state.js';
+import { $, ctx, emit, inv, listen, store, uev } from './state.js';
 import { applyTranslations, dictionaries, formatDateTime, formatNumber, getLocale, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import {
   CUSTOMIZABLE_SHORTCUT_ACTIONS, FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP, SHORTCUT_ACTIONS,
@@ -247,9 +251,36 @@ export async function loadSettings() {
 }
 
 let settingsWriteChain = Promise.resolve();
-function saveSettingsCandidate(candidate) {
-  const data = serializeSettings(candidate);
-  const operation = settingsWriteChain.catch(() => {}).then(() => inv('save_settings', { data }));
+let nativeChannelSettings = null;
+export function refreshChannelAuthority() {
+  const operation = settingsWriteChain.catch(() => {}).then(async () => {
+    const loaded = await inv('load_settings');
+    if (!loaded?.data) return;
+    const canonical = parseSettings(loaded.data);
+    nativeChannelSettings = { channelRules: canonical.inbound.channelRules,
+      channelConnection: canonical.inbound.channelConnection };
+    Object.assign(ctx.settings.inbound, structuredClone(nativeChannelSettings));
+    emit('channel-authority');
+  });
+  settingsWriteChain = operation;
+  return operation;
+}
+function saveSettingsCandidate(candidate, { channelFirstSendRequests = [], channelIntent = false } = {}) {
+  const operation = settingsWriteChain.catch(() => {}).then(async () => {
+    // Unrelated queued settings saves must not restore a stale grant or
+    // accidentally withdraw one that an earlier explicit save just issued.
+    if (!channelIntent && nativeChannelSettings) Object.assign(candidate.inbound, structuredClone(nativeChannelSettings));
+    const saved = await inv('save_settings', { data: serializeSettings(candidate),
+      ...(channelFirstSendRequests.length ? { channelFirstSendRequests } : {}) });
+    if (typeof saved === 'string') {
+      const canonical = normalizeSettings(JSON.parse(saved));
+      nativeChannelSettings = { channelRules: canonical.inbound.channelRules,
+        channelConnection: canonical.inbound.channelConnection };
+      Object.assign(candidate.inbound, structuredClone(nativeChannelSettings));
+      if (ctx.settings !== candidate) Object.assign(ctx.settings.inbound, structuredClone(nativeChannelSettings));
+    }
+    return saved;
+  });
   settingsWriteChain = operation;
   return operation;
 }
@@ -353,7 +384,8 @@ async function commitSettings(choice) {
   ctx.settings = candidate;
   apply(candidate);
   try {
-    await saveSettingsCandidate(candidate);
+    await saveSettingsCandidate(candidate, { channelIntent: key === 'inbound',
+      channelFirstSendRequests: choice.channelFirstSendRequests || [] });
     await onCommit(candidate);
     return true;
   } catch (_) {
@@ -920,10 +952,11 @@ async function renderTunnelForClient(client, row, actions) {
 
 /* One durable write for every rule/source change; a failed save leaves the
    previous settings visible instead of a rule the poller never learned. */
-export function persistInbound(inbound) {
+export function persistInbound(inbound, channelFirstSendRequests = []) {
   return commitSettings({
     key: 'inbound', candidate: normalizeSettings({ ...ctx.settings, inbound }),
     exclusive: true, errorKey: 'error.inboundSave',
+    channelFirstSendRequests,
     apply: () => renderInboundSettings(),
     onCommit: () => { inv('inbound_check_now').catch(() => {}); },
   });
@@ -1076,6 +1109,8 @@ export function mcpAuthorizationDialog(projects, options = {}) {
    can be imported without a document. */
 export function initSettings() {
   listen('connector-changed', connectorPairingChanged).catch(() => uev('listen-fail', 'connector-changed'));
+  listen('channel-authority-changed', () => refreshChannelAuthority().catch(() => uev('settings-load-fail')))
+    .catch(() => uev('settings-load-fail'));
 
   $('set-connector-toggle').onclick = async () => {
     const enabled = $('set-connector-toggle').dataset.enabled === 'true';

@@ -1,10 +1,69 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { appliedChannelCard, channelFirstSendNeedsUpdate, channelFirstSendRecipe, channelFirstSendScope } from '../js/channel-model.js';
 import { channelAgentCommand, channelBlockReason, channelDigestId, channelRunExpired, channelSource, channelTemplatePlan, collectingCard, createPendingNotices, nextCollectedAt, normalizeChannelConfig, unfinishedChannelPlans } from '../js/channel-model.js';
 
 const rule = { id: 'R1', enabled: true, channelIds: ['C1'], senderUserIds: ['U1'], senderBotIds: [],
   match: { kind: 'regex', value: 'INC-(?<incident>[0-9]+)', groupCapture: 'incident' }, includeThreads: true,
   projectId: 'P1', columnId: 'C1', dir: '/tmp', cmd: 'claude', template: 'triage', idleMinutes: 30 };
+
+test('channel grants survive normal saves but legacy settings gain no authority', () => {
+  const grant = { id: 'g1', digest: 'd1', stepHash: 'h1' };
+  const normalized = normalizeChannelConfig({ channelRules: [{ ...rule, firstSend: true, firstSendGrant: grant }] }).channelRules[0];
+  assert.equal(normalized.firstSend, true);
+  assert.deepEqual(normalized.firstSendGrant, grant);
+  assert.notEqual(normalized.firstSendGrant, grant);
+  assert.equal(normalizeChannelConfig({ channelRules: [rule] }).channelRules[0].firstSend, undefined);
+});
+
+test('channel first-step comparison ignores sets order, column, name, template rename and later steps', async () => {
+  const project = { templates: [{ name: 'triage', steps: ['Inspect {{msg.text}}', 'Later'] }] };
+  const prior = { ...rule, firstSend: true, firstSendGrant: {
+    stepHash: createHash('sha256').update('Inspect {{msg.text}}').digest('hex'),
+  } };
+  assert.equal(await channelFirstSendNeedsUpdate(prior, prior, project), false);
+  const changed = { ...prior, name: 'Display', columnId: 'C2', channelIds: ['C1', 'C1'] };
+  assert.equal(channelFirstSendScope(changed, project), channelFirstSendScope(prior, project));
+  assert.equal(await channelFirstSendNeedsUpdate(changed, prior, project), false);
+  assert.equal(await channelFirstSendNeedsUpdate(prior, prior, { templates: [{ name: 'triage', steps: ['Inspect {{msg.text}}', 'Changed'] }] }), false);
+  assert.equal(await channelFirstSendNeedsUpdate({ ...prior, template: 'renamed' }, prior,
+    { templates: [...project.templates, { name: 'renamed', steps: ['Inspect {{msg.text}}'] }] }), false);
+  for (const patch of [{ cmd: 'codex --no-daemon' }, { dir: '/tmp/changed' }, { idleMinutes: 5 }, { includeThreads: false },
+    { senderUserIds: ['U2'] }, { match: { kind: 'contains', value: 'changed' } }]) {
+    assert.equal(await channelFirstSendNeedsUpdate({ ...prior, ...patch }, prior, project), true, JSON.stringify(patch));
+  }
+  assert.equal(await channelFirstSendNeedsUpdate(prior, prior, { templates: [{ name: 'triage', steps: ['Different'] }] }), true);
+  assert.equal(await channelFirstSendNeedsUpdate(prior, prior, { templates: [] }), true);
+  assert.equal(await channelFirstSendNeedsUpdate(prior, null, project), true);
+});
+
+test('channel normalization and expansion share native vectors without promoting an empty first step', async () => {
+  const fixture = JSON.parse(await readFile(new URL('./fixtures/channel-first-send.json', import.meta.url), 'utf8'));
+  for (const vector of fixture.vectors) {
+    const project = { templates: [{ name: 'triage', steps: vector.steps }] };
+    const item = { ...vector, id: 'default/T1/E1/R1', target: rule, ...(vector.eligible ? { firstSendGrant: { id: 'g1', digest: 'd1', skeleton: vector.skeleton } } : {}) };
+    assert.equal(channelFirstSendRecipe(rule, project), vector.eligible ? vector.skeleton : null);
+    const plan = channelTemplatePlan(item, project, 100);
+    assert.equal(plan.texts[0], vector.expected);
+    if (vector.eligible) {
+      assert.equal(plan.firstSend.skeleton, vector.skeleton);
+      assert.deepEqual(plan.firstSend, { inboxId: item.id, grantId: 'g1', grantDigest: 'd1', skeleton: vector.skeleton });
+    } else assert.equal(plan.firstSend, undefined);
+  }
+});
+
+test('applied channel evidence survives collection stop, expiry and rule regrouping', () => {
+  const item = { operationKey: 'channel:default/T1/E1/R1', eventId: 'E1', ruleId: 'R1', workspaceId: 'T1', connectionId: 'default', channelId: 'C1' };
+  const card = { channelRun: { collecting: false, groupKey: 'old' }, buffer: { entries: [{ kind: 'external', source: channelSource(item) }] } };
+  assert.equal(appliedChannelCard([card], item), card);
+  for (const patch of [{ ruleId: 'R2' }, { workspaceId: 'T2' }, { eventId: 'E2' }, { connectionId: 'elsewhere' }, { channelId: 'C2' }]) {
+    assert.equal(appliedChannelCard([card], { ...item, ...patch }), undefined);
+  }
+  assert.equal(appliedChannelCard([{ origin: { source: 'channel', key: item.operationKey } }], item)?.origin.key, item.operationKey);
+  assert.equal(appliedChannelCard([], item), undefined);
+});
 
 test('channel settings normalize closed rules while preserving ordinary inbound settings', () => {
   const got = normalizeChannelConfig({ channelConnection: { enabled: true }, channelRules: [rule, rule] });
@@ -112,4 +171,14 @@ test('a pending event is announced once per run, a sentence once per drain, and 
   drain(['e6']);
   drain(['e1', 'e6']);
   assert.equal(notices.tell('e1', 'no target', true), true, 'e1 was forgotten when it left');
+});
+
+test('a staged head keeps its native recipe across a template edit before first drain', () => {
+  const item = { id: 'default/T1/E1/R1', body: 'Original event', channelId: 'C1', target: rule,
+    firstSendGrant: { id: 'g1', digest: 'd1', skeleton: 'Inspect {{msg.text}}' } };
+  const plan = channelTemplatePlan(item, { templates: [{ name: 'triage', steps: ['New first', 'New later'] }] }, 100);
+  assert.deepEqual(plan.texts, ['Inspect Original event', 'New later']);
+  assert.equal(plan.firstSend.skeleton, 'Inspect {{msg.text}}');
+  assert.equal(channelTemplatePlan({ ...item, firstSendGrant: { id: 'g1', digest: 'd1' } },
+    { templates: [{ name: 'triage', steps: ['New first'] }] }, 100).error, 'template');
 });

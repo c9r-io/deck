@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "vectors": [
+    { "steps": ["Inspect {{msg.text}} from {{ msg.from }} in {{msg.where}} {{msg.link}}", "Follow up"], "body": "  alert\r\n\t details  ", "senderUserId": "U1", "channelId": "C1", "skeleton": "Inspect {{msg.text}} from {{ msg.from }} in {{msg.where}} {{msg.link}}", "expected": "Inspect alert details from U1 in C1", "eligible": true },
+    { "steps": ["  Inspect\t{{msg.text}}  \r\nKeep the next line.  ", "Later"], "body": "x   y\n z", "senderBotId": "B1", "channelId": "C1", "skeleton": "Inspect {{msg.text}}\nKeep the next line.", "expected": "Inspect x y z\nKeep the next line.", "eligible": true },
+    { "steps": ["Inspect {{msg.unknown}} and {{{{msg.text}}}}", ""], "body": "item", "channelId": "C1", "skeleton": "Inspect {{msg.unknown}} and {{{{msg.text}}}}", "expected": "Inspect {{msg.unknown}} and {{item}}", "eligible": true },
+    { "steps": ["Inspect {{msg.from}}", "Later"], "body": "!external", "senderUserId": "U1", "senderBotId": "B1", "channelId": "C1", "skeleton": "Inspect {{msg.from}}", "expected": "Inspect U1", "eligible": true },
+    { "steps": [" \r\n\t ", "Legacy next step"], "body": "item", "channelId": "C1", "skeleton": "", "expected": "Legacy next step", "eligible": false },
+    { "steps": ["Inspect 😀 {{msg.text}}"], "body": "a\u00a0\n b\u3000c", "channelId": "C1", "skeleton": "Inspect 😀 {{msg.text}}", "expected": "Inspect 😀 a b\u3000c", "eligible": true },
+    { "steps": ["Inspect {{msg.text}} from {{msg.from}}"], "body": "{{msg.from}} $1 ${name}", "senderUserId": "U1", "channelId": "C1", "skeleton": "Inspect {{msg.text}} from {{msg.from}}", "expected": "Inspect {{msg.from}} $1 ${name} from U1", "eligible": true }
+  ]
+}

@@ -2784,6 +2784,7 @@ mod tests {
         let seen = crate::scheduler::Observed {
             authority_unverified: false,
             board_unverified: false,
+            channel_unverified: false,
             activity: 0,
             agent: projections(rows).get(session).map(|o| o.state),
             codex: trust(rows, table).get(session).copied(),
@@ -2948,6 +2949,7 @@ mod tests {
         let seen = |codex| crate::scheduler::Observed {
             authority_unverified: false,
             board_unverified: false,
+            channel_unverified: false,
             activity: 0,
             agent: Some("turn-done"),
             codex,

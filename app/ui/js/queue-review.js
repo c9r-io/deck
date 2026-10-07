@@ -18,6 +18,8 @@
 //   carry `data-queue-focus` so a re-render can restore focus.
 // - No new Board entry, hook installation, terminal parsing or prompt
 //   history capture lives here.
+// - Channel permission withdrawal and temporarily unverifiable permission
+//   have separate plain-language stages; neither means Agent readiness.
 import { ctx, inv } from './state.js';
 import { t } from './i18n.js';
 import { confirmDialog, toast } from './dialogs.js';
@@ -32,6 +34,8 @@ const stageKeys = {
   quiet: 'queue.stage.quiet', unknown: 'queue.stage.unknown', context: 'queue.stage.context', agent: 'queue.stage.agent',
   'first-send': 'queue.stage.firstSend', external: 'queue.stage.external', 'codex-signal': 'queue.stage.codexSignal',
   'authority-unverified': 'queue.stage.authorityUnverified',
+  'channel-stopped': 'queue.stage.channelStopped',
+  'channel-unverified': 'queue.stage.channelUnverified',
 };
 
 const node = (tag, cls, text) => {

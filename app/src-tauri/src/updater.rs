@@ -2,6 +2,9 @@
 //! compiled endpoint. Tauri owns semver comparison, download, minisign
 //! verification and install; build identity is version + bounded commit.
 //!
+//! Isolated smoke launches return before any update network request and refuse
+//! installation; their disposable carriers never consult production feeds.
+//!
 //! # Contract
 //! Updates have a closed `stable | nightly` setting; missing, unknown or damaged
 //! values normalize to Stable. The webview owns no updater capability or URL.
@@ -118,6 +121,9 @@ pub(crate) async fn check_for_update(
     app: AppHandle,
     channel: String,
 ) -> Result<Option<UpdateInfo>, DeckError> {
+    if crate::smoke_faults::enabled() {
+        return Ok(None);
+    }
     Ok(update_for_channel(&app, &channel)
         .await?
         .map(|update| UpdateInfo {
@@ -136,6 +142,12 @@ pub(crate) async fn install_update(
     channel: String,
     expected_version: String,
 ) -> Result<(), DeckError> {
+    if crate::smoke_faults::enabled() {
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "updates are unavailable in smoke mode",
+        ));
+    }
     if !strict_release_version(&expected_version) {
         return Err(DeckError::new(
             ErrorKind::InvalidDoc,

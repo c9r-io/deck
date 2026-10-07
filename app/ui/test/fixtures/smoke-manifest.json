@@ -191,6 +191,20 @@
         "channel-scope": {}
       }
     },
+    "channel-first-send": {
+      "terminal": "done",
+      "checks": {
+        "channel-bg-preflight": {},
+        "channel-bg-config": {},
+        "channel-bg-hidden": {},
+        "channel-bg-envelope": { "metric": true },
+        "channel-bg-delivered": {},
+        "channel-bg-fixture": {},
+        "channel-bg-held": {},
+        "channel-bg-persisted": {},
+        "channel-bg-exception": { "failureOnly": true }
+      }
+    },
     "connector": {
       "terminal": "done",
       "checks": {

@@ -50,7 +50,56 @@ fn qi(id: &str, mode: &str) -> QueueItem {
         external: false,
         authority: None,
         readiness_override: None,
+        channel_first_send: None,
     }
+}
+
+#[test]
+fn restored_queue_backup_marks_constrained_channel_rows_ambiguous() {
+    let mut row = qi("channel", "at");
+    row.channel_first_send = Some(ChannelFirstSendConstraint {
+        rule: "r".into(),
+        inbox: "default/T/E/r".into(),
+        grant_id: "g".into(),
+        grant_digest: "d".into(),
+        operation: "B1".into(),
+        workspace: "T".into(),
+        authorized: true,
+    });
+    let mut queue = qs(vec![row]);
+    queue.operations.push(QueueOperation {
+        id: "B1".into(),
+        item: "channel".into(),
+        session: "s".into(),
+        card_id: "card-s".into(),
+        fingerprint: "f".into(),
+        state: OperationState::Queued,
+    });
+
+    constrain_channel_backup_rows(&mut queue);
+
+    assert_eq!(queue.items[0].state, ItemState::Ambiguous);
+    assert!(
+        !queue.items[0]
+            .channel_first_send
+            .as_ref()
+            .unwrap()
+            .authorized
+    );
+    assert_eq!(queue.operations[0].state, OperationState::Uncertain);
+    assert!(queue.channel_recovery_before.is_some());
+    let mut empty = QueueState::default();
+    constrain_channel_backup_rows(&mut empty);
+    let boundary = empty.channel_recovery_before;
+    let persisted = std::sync::atomic::AtomicBool::new(false);
+    let booted = boot_queues_with(empty, &|queue| {
+        assert_eq!(queue.channel_recovery_before, boundary);
+        assert!(!queue.channel_recovery_dirty);
+        persisted.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    });
+    assert!(persisted.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(booted.q.lock_or_recover().channel_recovery_before, boundary);
 }
 
 fn rule(every: u64) -> QueueItem {
@@ -71,6 +120,8 @@ fn qs(items: Vec<QueueItem>) -> QueueState {
         reviews: Vec::new(),
         review_completed: HashSet::new(),
         operations: Vec::new(),
+        channel_recovery_before: None,
+        channel_recovery_dirty: false,
     };
     migrate_groups(&mut q);
     q
@@ -623,6 +674,8 @@ fn add_validation_rejects_bad_combinations() {
         granted: Vec::new(),
         first_send: None,
         first_send_granted: None,
+        channel_first_send: None,
+        channel_first_send_granted: None,
     };
     assert!(validate_add(&base()).is_ok());
     let mut a = base();
@@ -731,6 +784,8 @@ fn add_validation_covers_quiet_and_start() {
         granted: Vec::new(),
         first_send: None,
         first_send_granted: None,
+        channel_first_send: None,
+        channel_first_send_granted: None,
     };
     let mut a = base();
     a.quiet_secs = Some(MIN_QUIET_SECS);
@@ -838,6 +893,7 @@ fn a_delete_during_a_send_audits_the_delivery_but_revives_nothing() {
     r.delivery = Some("dX".into());
     let mut q = qs(vec![r]);
     q.pending.push(PendingDelivery {
+        channel_attempt: None,
         id: "dX".into(),
         snapshot: q.items[0].clone(),
     });
@@ -863,6 +919,7 @@ fn a_crash_right_after_a_delete_does_not_revive_anything() {
     r.last_attempt_at = Some(NOW);
     let mut q = qs(vec![r]);
     q.pending.push(PendingDelivery {
+        channel_attempt: None,
         id: "dX".into(),
         snapshot: q.items[0].clone(),
     });
@@ -994,6 +1051,7 @@ fn finalize_without_item_still_audits_via_ledger() {
     a.delivery = Some("d1".into());
     let mut q = qs(vec![a.clone()]);
     q.pending.push(PendingDelivery {
+        channel_attempt: None,
         id: "d1".into(),
         snapshot: q.items[0].clone(),
     });
@@ -1017,6 +1075,7 @@ fn vanished_rule_delivery_spawns_no_steps() {
     r.delivery = Some("d1".into());
     let mut q = qs(vec![r]);
     q.pending.push(PendingDelivery {
+        channel_attempt: None,
         id: "d1".into(),
         snapshot: q.items[0].clone(),
     });
@@ -1034,6 +1093,7 @@ fn note_failed_drops_the_ledger_entry() {
     a.attempts = 1;
     let mut q = qs(vec![a]);
     q.pending.push(PendingDelivery {
+        channel_attempt: None,
         id: "d1".into(),
         snapshot: q.items[0].clone(),
     });
@@ -1052,6 +1112,7 @@ fn recovery_restores_orphaned_ledger_entries_as_ambiguous() {
     a.last_attempt_at = Some(NOW - 5);
     let mut q = qs(vec![]);
     q.pending.push(PendingDelivery {
+        channel_attempt: None,
         id: "dX".into(),
         snapshot: a,
     });
@@ -1106,6 +1167,7 @@ fn orphan_ledger_boot_failure_is_immediately_decidable_and_ack_is_transactional(
     snapshot.delivery = Some("d1".into());
     let mut loaded = qs(vec![]);
     loaded.pending.push(PendingDelivery {
+        channel_attempt: None,
         id: "d1".into(),
         snapshot,
     });
@@ -1933,6 +1995,8 @@ fn add_args(session: &str, text: &str) -> QueueAddArgs {
         granted: Vec::new(),
         first_send: None,
         first_send_granted: None,
+        channel_first_send: None,
+        channel_first_send_granted: None,
     }
 }
 
@@ -1996,6 +2060,46 @@ fn buffer_queue_operation_is_durable_idempotent_evidence() {
     let mut full = add_args("s", "new after full");
     full.operation_id = Some("BnewAfterFull".into());
     assert!(add_item(&mut q, full.clone(), normalize_prompt(&full.text)).is_err());
+}
+
+#[test]
+fn completed_channel_operation_replays_before_missing_directory_normalization() {
+    let mut args = add_args("s", "immutable channel head");
+    args.mode = "at".into();
+    args.at = Some(NOW);
+    args.operation_id = Some("Bchannel1".into());
+    args.dir = "/definitely/missing/deck-channel-replay".into();
+    args.channel_path = true;
+    let text = normalize_prompt(&args.text);
+    let mut state = qs(Vec::new());
+    state.operations.push(QueueOperation {
+        id: "Bchannel1".into(),
+        item: "already-queued".into(),
+        session: args.session.clone(),
+        card_id: args.card_id.clone(),
+        fingerprint: operation_fingerprint(&args, &text),
+        state: OperationState::Queued,
+    });
+
+    assert!(operation_replay(&Mutex::new(state), &args, &text).unwrap());
+}
+
+#[test]
+fn reviewed_list_rejects_channel_first_send_claim() {
+    let mut args = add_args("s", "head");
+    args.channel_path = true;
+    args.channel_first_send = Some(ChannelFirstSendClaim {
+        inbox_id: "default/T/E/r".into(),
+        grant_id: "g".into(),
+        grant_digest: "d".repeat(64),
+        skeleton: "Review alert".into(),
+    });
+    assert_eq!(
+        channel_first_send::reject_reviewed_list(&args)
+            .unwrap_err()
+            .kind(),
+        crate::error::ErrorKind::Invalid
+    );
 }
 
 /// Every user-driven mutation, run twice: once against a healthy disk
@@ -2847,6 +2951,7 @@ fn seen_codex(
             claude_interaction: false,
             authority_unverified: false,
             board_unverified: false,
+            channel_unverified: false,
         },
     )])
 }
@@ -3248,6 +3353,7 @@ fn retry_and_acknowledge_resolve_every_delivery_state_exactly_once() {
     plain.at = Some(NOW);
     let mut q = qs(vec![odd, amb.clone(), plain]);
     q.pending.push(PendingDelivery {
+        channel_attempt: None,
         id: "d-amb".into(),
         snapshot: amb,
     });
@@ -3303,6 +3409,9 @@ fn retry_and_acknowledge_resolve_every_delivery_state_exactly_once() {
         authority: None,
         manual: false,
         readiness_overridden: false,
+        origin: None,
+        channel_first_send: None,
+        automatic: false,
     });
     assert!(acknowledge_ambiguous(&mut q, "gone").is_ok());
     assert!(retry_item(&mut q, "gone").is_ok());
@@ -3319,6 +3428,9 @@ fn retry_and_acknowledge_resolve_every_delivery_state_exactly_once() {
         authority: None,
         manual: false,
         readiness_overridden: false,
+        origin: None,
+        channel_first_send: None,
+        automatic: false,
     });
     assert!(acknowledge_ambiguous(&mut q, "plain").is_ok());
     assert!(
@@ -5930,6 +6042,8 @@ fn the_override_rides_the_external_head_row_only() {
         granted: Vec::new(),
         first_send: Some(first_send_claim()),
         first_send_granted: None,
+        channel_first_send: None,
+        channel_first_send_granted: None,
     };
     assert!(validate_add(&args).is_ok());
     let mut ordinary = qs(vec![]);

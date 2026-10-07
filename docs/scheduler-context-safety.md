@@ -27,6 +27,13 @@ remain intact.
 
 ## Automatic decision model
 
+A head admitted under channel first-step permission must also pass that
+permission check before automatic selection, including when its session is
+absent or already has interaction evidence. Temporary source failures hold
+the original intent; revocation or text editing permanently withdraws that
+row's permission without deleting its channel constraint. It never falls
+back to an ordinary external `at` row. Manual send is a separate user action.
+
 Every delivery uses the following order:
 
 1. Re-select the item and reject pause, edit, removal, card deletion or
@@ -42,6 +49,12 @@ Every delivery uses the following order:
    shell, an agent without hooks, output activity, quiet output and unknown
    agent type do not block compatibility delivery.
 6. Re-select and probe again immediately before persisting firing intent.
+   For a constrained channel head, recheck the current settings grant and
+   authoritative Board/template regardless of whether readiness override is
+   needed. Lock order is settings fence → Board fence → queue lock → save
+   lock. No compatibility wait, network call or paste occurs under those
+   fences. A committed withdrawal before firing intent prevents the send;
+   an already-persisted firing intent may finish once.
 7. After intent, one synchronous tmux command queue loads the literal prompt
    into a private buffer and atomically checks the identity persisted in step 3
    and, when present, the foreground process before literal paste. When a

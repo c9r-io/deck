@@ -31,7 +31,7 @@
 //!   the backend's own selection stage per item (review, review-approved,
 //!   ambiguous, firing, failed, paused, retry, previous, iteration, gap,
 //!   time, agent, external, codex-signal, first-send, authority-unverified,
-//!   quiet, context,
+//!   quiet, context, channel-stopped, channel-unverified,
 //!   unknown) with its observation time and whether the row carries content
 //!   authority, so the webview never derives readiness from hook state.
 //! - `delivery_waits` is the same projection read for attention: per session,
@@ -39,7 +39,8 @@
 //!   (`DELIVERY_WAIT_STAGES`). It is Deck's own queue fact, never an agent
 //!   word; it only feeds the away notification and the Dock count
 //!   (`notify.rs`), and releases, retries or sends nothing.
-//! - `authority-unverified` is such a wait only once it has LASTED. A failed
+//! - `authority-unverified` and `channel-unverified` are waits only once they
+//!   have LASTED. A failed
 //!   read of the approval source usually passes by the next tick and is the
 //!   machine's to retry, so it is announced to nobody. But some causes never
 //!   pass by themselves — a settings file answered from its backup until its
@@ -493,6 +494,8 @@ pub(crate) fn plan_item(
             Hold::External => "external",
             Hold::CodexUnavailable => "codex-signal",
             Hold::AuthorityUnverified => "authority-unverified",
+            Hold::ChannelPermission => "channel-stopped",
+            Hold::ChannelUnverified => "channel-unverified",
         }
     } else if i.mode == "chain" && quiet_remaining.is_some_and(|s| s > 0) {
         "quiet"
@@ -534,10 +537,12 @@ pub(crate) struct DeliveryWait {
 /// returns by the next tick, and is a wait only once it has lasted
 /// (`track_unverified`). Mirrored by the webview (`limits.json`
 /// `delivery_waits`).
-pub(crate) const DELIVERY_WAIT_STAGES: [&str; 7] = [
+pub(crate) const DELIVERY_WAIT_STAGES: [&str; 9] = [
     "ambiguous",
     "failed",
     "review",
+    "channel-stopped",
+    "channel-unverified",
     "external",
     "first-send",
     "codex-signal",
@@ -545,6 +550,10 @@ pub(crate) const DELIVERY_WAIT_STAGES: [&str; 7] = [
 ];
 
 const UNVERIFIED_STAGE: &str = "authority-unverified";
+
+fn unverified_stage(stage: &str) -> bool {
+    matches!(stage, "authority-unverified" | "channel-unverified")
+}
 
 /// How long a row must stay held for an unverifiable approval before the
 /// user is told (module header): three scheduler ticks. Attention timing
@@ -568,7 +577,7 @@ pub(crate) fn track_unverified(
     let mut kept = UnverifiedSince::new();
     for i in &q.items {
         let first = match plan_item(q, i, now, minutes, activity).stage {
-            UNVERIFIED_STAGE => Some(since.get(&i.id).copied().unwrap_or(now)),
+            stage if unverified_stage(stage) => Some(since.get(&i.id).copied().unwrap_or(now)),
             "unknown" => since.get(&i.id).copied(),
             _ => None,
         };
@@ -616,7 +625,7 @@ pub(crate) fn delivery_waits(
             unknown.insert(i.id.as_str());
         }
         // an unverifiable approval is a wait only once it has lasted
-        if stage == UNVERIFIED_STAGE && !lasting.contains(&i.id) {
+        if unverified_stage(stage) && !lasting.contains(&i.id) {
             continue;
         }
         let Some(pressing) = rank(stage) else {
@@ -643,7 +652,7 @@ pub(crate) fn delivery_waits(
 
 /// `plan` with `lasting` set when it is one of the lasting holds.
 pub(crate) fn mark_lasting(mut plan: QueuePlan, lasting: &HashSet<String>) -> QueuePlan {
-    plan.lasting = plan.stage == UNVERIFIED_STAGE && lasting.contains(&plan.item);
+    plan.lasting = unverified_stage(plan.stage) && lasting.contains(&plan.item);
     plan
 }
 
@@ -668,6 +677,17 @@ pub(crate) fn queue_view(q: QueueState) -> QueueView {
             mark_board_unverified(seen);
         }
     }
+    let channel_unverified = q.items.iter().any(|item| {
+        item.channel_first_send
+            .as_ref()
+            .is_some_and(|proof| proof.authorized)
+    }) && (crate::inbound_channel::read_config_strict_result().is_err()
+        || crate::documents::board_authority().is_none());
+    if channel_unverified {
+        if let Some(seen) = activity.as_mut() {
+            mark_channel_unverified(seen);
+        }
+    }
     let lasting = LASTING_UNVERIFIED
         .lock_or_recover()
         .clone()
@@ -675,7 +695,13 @@ pub(crate) fn queue_view(q: QueueState) -> QueueView {
     let plans = q
         .items
         .iter()
-        .map(|i| plan_item(&q, i, now, local_minutes(), activity.as_ref()))
+        .map(|i| {
+            let mut plan = plan_item(&q, i, now, local_minutes(), activity.as_ref());
+            if channel_unverified && i.channel_first_send.is_some() && plan.stage == "context" {
+                plan.stage = "channel-unverified";
+            }
+            plan
+        })
         .map(|plan| mark_lasting(plan, &lasting))
         .collect();
     QueueView { queue: q, plans }

@@ -2,6 +2,9 @@
 //! condition-variable wake, and per-session worker threads. An immediately
 //! woken override worker may wait for startup compatibility without blocking
 //! any other session or pretending that time proves Agent readiness.
+//! Native channel first-send rows are swept only while still authorized.
+//! Revocation is persisted once; source unreadability marks only dependent
+//! observations unverified, and a withdrawn row keeps its permanent hold.
 
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Mutex;
@@ -29,7 +32,8 @@ pub(super) fn boot_queues_with(
                 .iter()
                 .any(|p| !loaded.items.iter().any(|i| i.id == p.snapshot.id))
     };
-    if has_interrupted {
+    let channel_recovery_dirty = std::mem::take(&mut loaded.channel_recovery_dirty);
+    if has_interrupted || channel_recovery_dirty {
         let notes = recover_interrupted(&mut loaded);
         for note in notes {
             storage::warn(storage::StorageNotice::QueueInterrupted, note);
@@ -38,13 +42,23 @@ pub(super) fn boot_queues_with(
         let q = queues.q.lock_or_recover();
         if let Err(e) = persist(&q) {
             queues.dirty.store(true, AtomicOrdering::Relaxed);
-            storage::warn(
-                storage::StorageNotice::QueueInterrupted,
-                format!(
-                    "interrupted deliveries are available to acknowledge or retry now; their recovered state could not be saved yet ({}), so deck will keep retrying",
-                    e.code()
-                ),
-            );
+            if has_interrupted {
+                storage::warn(
+                    storage::StorageNotice::QueueInterrupted,
+                    format!(
+                        "interrupted deliveries are available to acknowledge or retry now; their recovered state could not be saved yet ({}), so deck will keep retrying",
+                        e.code()
+                    ),
+                );
+            } else {
+                storage::warn(
+                    storage::StorageNotice::QueuePersist,
+                    format!(
+                        "channel rollback protection could not be saved yet ({}); deck will retry",
+                        e.code()
+                    ),
+                );
+            }
         }
         drop(q);
         return queues;
@@ -253,6 +267,62 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                         // memory still holds the stale approval: send nothing
                         applog(&format!(
                             "[queue] persist (approval sweep) FAILED ({}) — nothing sent this tick",
+                            e.code()
+                        ));
+                        continue;
+                    }
+                }
+            }
+        }
+        // A native Slack channel run head carries a permanent authorization
+        // constraint independent of readiness. Revoke its automatic
+        // permission when current settings or the current Board disproves
+        // the grant; an unreadable source keeps the proof but holds the row.
+        let needs_channel = state.q.lock_or_recover().items.iter().any(|item| {
+            item.channel_first_send
+                .as_ref()
+                .is_some_and(|constraint| constraint.authorized)
+        });
+        if needs_channel {
+            let _settings_fence = crate::storage::settings_fence();
+            let _board_fence = crate::documents::board_fence();
+            let config = crate::inbound_channel::read_config_strict_result().ok();
+            let board = crate::documents::board_authority();
+            if config.is_none() || board.is_none() {
+                if let Some(seen) = listing.as_mut() {
+                    mark_channel_unverified(seen);
+                }
+            } else {
+                match with_queue_opt(&state.q, &save_queue, |q| {
+                    let mut revoked = 0usize;
+                    for item in q.items.iter_mut().filter(|item| {
+                        item.channel_first_send
+                            .as_ref()
+                            .is_some_and(|constraint| constraint.authorized)
+                    }) {
+                        if matches!(
+                            channel_first_send::standing(item, config.as_ref(), board.as_ref()),
+                            channel_first_send::Standing::Revoked
+                        ) {
+                            if let Some(constraint) = item.channel_first_send.as_mut() {
+                                constraint.authorized = false;
+                            }
+                            item.revision = item.revision.wrapping_add(1);
+                            revoked += 1;
+                        }
+                    }
+                    Ok((revoked > 0).then_some(revoked))
+                }) {
+                    Ok(Some(revoked)) => {
+                        applog(&format!(
+                            "[queue] channel first-send permission withdrawn — {revoked} row(s) now wait for send-now"
+                        ));
+                        let _ = app.emit("queue-changed", ());
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        applog(&format!(
+                            "[queue] persist (channel permission sweep) FAILED ({}) — nothing sent this tick",
                             e.code()
                         ));
                         continue;

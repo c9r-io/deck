@@ -2,6 +2,15 @@
 //! the persisted firing ledger, atomic injection, finalization and crash
 //! recovery. `send_one` is the reference sequence; `send_one_safe` is its
 //! context-safe front half.
+//! A native channel first-send row is fenced against current settings and the
+//! current Board before session creation and again immediately before an
+//! automatic paste. Manual send-now remains an explicit user action. Delivery
+//! records retain content-free channel origin/grant/operation and whether the
+//! readiness compatibility acceptance was actually needed.
+
+//! Channel firing intents also persist the automatic/manual choice and actual
+//! readiness-override dependency. Uncertain recovery preserves these facts
+//! without fabricating a successful delivery.
 
 use serde::Serialize;
 use std::collections::HashSet;
@@ -365,6 +374,11 @@ pub(crate) fn finalize_delivery(
             return;
         }
     };
+    let channel_attempt = q
+        .pending
+        .iter()
+        .find(|pending| pending.id == delivery)
+        .and_then(|pending| pending.channel_attempt.clone());
     q.deliveries.push(DeliveryRecord {
         id: delivery.to_string(),
         item: item_id.to_string(),
@@ -374,8 +388,20 @@ pub(crate) fn finalize_delivery(
         assumed,
         operation_id: item.operation_id.clone(),
         authority: item.authority.clone(),
-        manual: false,
-        readiness_overridden: false,
+        manual: channel_attempt
+            .as_ref()
+            .is_some_and(|attempt| !attempt.automatic),
+        readiness_overridden: channel_attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.readiness_overridden),
+        origin: item
+            .channel_first_send
+            .as_ref()
+            .map(|_| "channel".to_owned()),
+        channel_first_send: item.channel_first_send.clone(),
+        automatic: channel_attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.automatic),
     });
     if let Some(operation_id) = &item.operation_id {
         if let Some(operation) = q.operations.iter_mut().find(|op| &op.id == operation_id) {
@@ -457,6 +483,7 @@ pub(crate) fn finalize_delivery(
                     external: item.external,
                     authority: None,
                     readiness_override: None,
+                    channel_first_send: None,
                 });
             }
         }
@@ -637,6 +664,8 @@ enum PreFire {
     /// the row's first-send readiness override is no longer allowed by its
     /// rule: it was stripped, nothing is sent (`first_send.rs`)
     OverrideWithdrawn,
+    /// The channel grant was revoked; the permanent constraint remains.
+    ChannelWithdrawn,
 }
 
 pub(crate) struct ContextHooks<'a> {
@@ -796,7 +825,7 @@ fn send_one_guarded(
                 }
             }
         }
-        if overridden {
+        if overridden && sel.readiness_override.is_some() {
             match first_send::fence(&sel, sources) {
                 Fence::Clear => {}
                 // unverifiable: keep the row and its override, send nothing
@@ -810,6 +839,23 @@ fn send_one_guarded(
                 }
             }
         }
+        if automatic && sel.channel_first_send.is_some() {
+            let config = crate::inbound_channel::read_config_strict_result().ok();
+            let board = crate::documents::board_authority();
+            match channel_first_send::standing(&sel, config.as_ref(), board.as_ref()) {
+                channel_first_send::Standing::Clear => {}
+                channel_first_send::Standing::Unverified => return Ok(None),
+                channel_first_send::Standing::Revoked => {
+                    if let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) {
+                        if let Some(constraint) = it.channel_first_send.as_mut() {
+                            constraint.authorized = false;
+                        }
+                        it.revision = it.revision.wrapping_add(1);
+                    }
+                    return Ok(Some(PreFire::ChannelWithdrawn));
+                }
+            }
+        }
         let delivery = next_delivery_id();
         let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) else {
             return Ok(None);
@@ -820,6 +866,12 @@ fn send_one_guarded(
         it.delivery = Some(delivery.clone());
         let snapshot = it.clone();
         q.pending.push(PendingDelivery {
+            channel_attempt: snapshot.channel_first_send.as_ref().map(|_| {
+                channel_first_send::ChannelAttemptAudit {
+                    automatic: request.requested.is_none(),
+                    readiness_overridden: overridden,
+                }
+            }),
             id: delivery.clone(),
             snapshot: snapshot.clone(),
         });
@@ -845,6 +897,10 @@ fn send_one_guarded(
             applog(
                 "[queue] first-send policy withdrawn before sending — the first step waits for an agent interaction",
             );
+            return SendResult::Nothing;
+        }
+        Ok(Some(PreFire::ChannelWithdrawn)) => {
+            applog("[queue] channel first-send permission withdrawn before sending — the row waits for send-now");
             return SendResult::Nothing;
         }
         Ok(None) => return SendResult::Nothing,
@@ -876,12 +932,13 @@ fn send_one_guarded(
             ));
             let mut q = qm.lock_or_recover();
             finalize_delivery(&mut q, &item.id, &delivery, now_epoch(), false);
-            if request.requested.is_some() || overridden {
+            if request.requested.is_some() || overridden || item.channel_first_send.is_some() {
                 // audit: the user sent it, not the scheduler — or the
                 // scheduler sent it without interaction evidence because
                 // the rule explicitly allowed that (`first_send.rs`)
                 if let Some(record) = q.deliveries.iter_mut().rfind(|d| d.id == delivery) {
                     record.manual = request.requested.is_some();
+                    record.automatic = request.requested.is_none();
                     record.readiness_overridden = overridden;
                 }
             }
@@ -1084,6 +1141,42 @@ fn send_one_safe_requested_with_stabilization(
     let Some(selected) = selected else {
         return SendResult::Nothing;
     };
+    // Channel permission is fenced once before context preparation as well
+    // as at pre-fire. A revoked/unreadable grant must not auto-start an
+    // absent session and then rely on the later paste fence.
+    if request.requested.is_none() && selected.channel_first_send.is_some() {
+        let _settings = crate::storage::settings_fence();
+        let _board = crate::documents::board_fence();
+        if !qm.lock_or_recover().items.iter().any(|item| {
+            item.id == selected.id
+                && item.revision == selected.revision
+                && item.channel_first_send == selected.channel_first_send
+        }) {
+            return SendResult::Nothing;
+        }
+        let config = crate::inbound_channel::read_config_strict_result().ok();
+        let board = crate::documents::board_authority();
+        match channel_first_send::standing(&selected, config.as_ref(), board.as_ref()) {
+            channel_first_send::Standing::Clear => {}
+            channel_first_send::Standing::Unverified => return SendResult::Nothing,
+            channel_first_send::Standing::Revoked => {
+                let changed = with_queue_opt(qm, h.persist, |q| {
+                    let Some(item) = q.items.iter_mut().find(|item| item.id == selected.id) else {
+                        return Ok(None);
+                    };
+                    if let Some(constraint) = item.channel_first_send.as_mut() {
+                        constraint.authorized = false;
+                    }
+                    item.revision = item.revision.wrapping_add(1);
+                    Ok(Some(()))
+                });
+                if changed.is_err() {
+                    applog("[queue] persist (channel pre-start fence) FAILED — nothing started");
+                }
+                return SendResult::Nothing;
+            }
+        }
+    }
     let cancelled = || {
         let q = qm.lock_or_recover();
         is_cancelled(&q, &selected.session)

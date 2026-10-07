@@ -53,6 +53,10 @@
 //! finish rule cover both triggers.
 //! Credential verification and Keychain writes run on the blocking pool,
 //! serialized independently of the UI thread.
+//! The same native poll thread also reannounces durable channel-monitor
+//! pending work independently of badges and token readiness, and retries the
+//! narrow post-settings-commit channel-grant activation. Both signals are
+//! content-free; neither changes trigger matching or its legacy ledger.
 //!
 //! The CLOCK source (`inbound_clock.rs`, "自动化") is a source whose events
 //! are local-time slots: a `clock` rule carries a `schedule` (a minute of the
@@ -1261,6 +1265,9 @@ fn set_secret(slot: &str, value: &str) -> Result<(), DeckError> {
             },
         )
     })?;
+    if slot == keychain::Slot::SlackBotToken {
+        crate::inbound_channel::set_current_identity(None);
+    }
     if slot == keychain::Slot::SlackAppToken {
         crate::slack_transport::app_credential_saved(!clearing);
     }
@@ -1307,6 +1314,9 @@ pub(crate) fn spawn_inbound(app: AppHandle) {
         let mut failures = 0u32;
         wait_for_tick(Duration::from_secs(5));
         loop {
+            if crate::documents::recover_channel_grant_activations() {
+                let _ = app.emit("channel-authority-changed", ());
+            }
             let cfg = read_config();
             for src in sources.iter_mut() {
                 let badges = cfg.badges(src.id());
@@ -1354,6 +1364,7 @@ pub(crate) fn spawn_inbound(app: AppHandle) {
             if re_emit {
                 let _ = app.emit("inbound-changed", ());
             }
+            crate::inbound_channel::reannounce_pending(&app);
             let _ = with_rt(|rt| std::mem::replace(&mut rt.poll_wanted, false));
             wait_for_tick(POLL_INTERVAL);
         }

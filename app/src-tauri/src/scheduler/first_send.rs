@@ -32,8 +32,11 @@
 //! phone task (Connector `task-create`) uses external admission and stays
 //! external. Only the head of a frozen run may carry this policy, for Claude
 //! or literal Codex --no-daemon. This separate FirstSendOrigin never expands
-//! TriggerClass or content authority. Channel monitors, every other
-//! Connector command, MCP, manual lists and later steps never obtain it.
+//! TriggerClass or content authority. Channel monitors use their separate
+//! native grant and durable row constraint (`channel_first_send.rs`), which
+//! can accept the same startup-readiness risk without creating this override.
+//! Every other Connector command, MCP, manual lists and later steps never
+//! obtain it.
 //!
 //! Two sources, never mixed: a Slack or clock override is backed by
 //! settings.json, a phone task override by the Board (`Backing`). Each row

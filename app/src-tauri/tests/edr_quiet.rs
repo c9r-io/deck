@@ -424,6 +424,28 @@ fn only_a_trailing_test_module_is_left_out_of_the_scan() {
     ];
     assert!(is_declared_test_file("a/tests.rs", &sources));
     assert!(!is_declared_test_file("b/tests.rs", &sources));
+    for (parent, name, stem) in [
+        (
+            "documents.rs",
+            "documents/channel_admission_tests.rs",
+            "channel_admission_tests",
+        ),
+        (
+            "scheduler/mod.rs",
+            "scheduler/channel_permission_tests.rs",
+            "channel_permission_tests",
+        ),
+    ] {
+        let gated = vec![(parent.to_owned(), format!("#[cfg(test)]\nmod {stem};\n"))];
+        assert!(is_declared_test_file(name, &gated));
+        let ungated = vec![(parent.to_owned(), format!("mod {stem};\n"))];
+        assert!(!is_declared_test_file(name, &ungated));
+        let mixed = vec![(
+            parent.to_owned(),
+            format!("#[cfg(test)]\nmod {stem};\nmod {stem};\n"),
+        )];
+        assert!(!is_declared_test_file(name, &mixed));
+    }
 }
 
 #[test]

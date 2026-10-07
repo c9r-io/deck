@@ -149,13 +149,17 @@ pub(crate) struct SmokeSignalFixture {
 }
 
 fn fixture_process_alive(dir: &std::path::Path, name: &str) -> bool {
+    fixture_named_process_alive(dir, name, "signal_fixture")
+}
+
+fn fixture_named_process_alive(dir: &std::path::Path, name: &str, executable: &str) -> bool {
     std::fs::read_to_string(dir.join(name))
         .ok()
         .and_then(|text| text.trim().parse::<u32>().ok())
         .is_some_and(|pid| {
             crate::procinfo::process_start(pid).is_some()
                 && crate::procinfo::argv0(pid)
-                    .is_some_and(|argv0| argv0.rsplit('/').next() == Some("signal_fixture"))
+                    .is_some_and(|argv0| argv0.rsplit('/').next() == Some(executable))
         })
 }
 
@@ -188,6 +192,177 @@ pub(crate) fn smoke_signal_fixture() -> Result<SmokeSignalFixture, DeckError> {
         fixture: text(fixture)?,
         helper: text(helper)?,
         dir: text(dir)?,
+    })
+}
+
+/// Closed, content-free state from the `channel-first-send` smoke's fake
+/// `claude`. `app/run.sh` places the example in the signed carrier's closed
+/// PATH, outside the hardened data tree; this command only reads its private
+/// sentinels and never starts a process.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SmokeChannelFixture {
+    available: bool,
+    environment_private: bool,
+    credentials_cleared: bool,
+    keychain_blocked: bool,
+    ready: bool,
+    alive: bool,
+    receipts: u8,
+    first_matches: bool,
+    second_seen: bool,
+    last_at: u64,
+    persisted_items: usize,
+    persisted_deliveries: usize,
+    persisted_overrides: usize,
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelReceipt {
+    receipts: u8,
+    first_matches: bool,
+    second_seen: bool,
+    last_at: u64,
+}
+
+/// Native-only completion oracle for the background channel smoke. Counts
+/// only this isolated fixture's `claude` row and channel-first-send delivery;
+/// the last count audits the missing-interaction override actually used by
+/// this fixture; one delivered channel head must record one dependency.
+pub(crate) type ChannelFixtureOracle = (u8, bool, bool, u64, usize, usize, usize);
+
+pub(crate) fn channel_fixture_oracle() -> Result<ChannelFixtureOracle, DeckError> {
+    let unavailable = || DeckError::new(ErrorKind::Other, "channel fixture is unavailable");
+    if !enabled()
+        || crate::launch_args::debug_arg("--smoke-wkwebview").as_deref()
+            != Some("channel-first-send")
+    {
+        return Err(unavailable());
+    }
+    let root = crate::datadir::deck_dir();
+    let receipt = std::fs::read(root.join("channel-fixture/receipt.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ChannelReceipt>(&bytes).ok())
+        .unwrap_or_default();
+    let queue = std::fs::read(root.join("queue.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let data = queue
+        .as_ref()
+        .and_then(|v| v.get("data"))
+        .or(queue.as_ref());
+    let persisted_items = data
+        .and_then(|v| v.get("items"))
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter(|v| v.get("cmd").and_then(serde_json::Value::as_str) == Some("claude"))
+                .count()
+        })
+        .unwrap_or(0);
+    let deliveries = data
+        .and_then(|v| v.get("deliveries"))
+        .and_then(serde_json::Value::as_array);
+    let persisted_deliveries = deliveries
+        .map(|values| {
+            values
+                .iter()
+                .filter(|v| {
+                    v.get("channel_first_send")
+                        .is_some_and(serde_json::Value::is_object)
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    let persisted_overrides = deliveries
+        .map(|values| {
+            values
+                .iter()
+                .filter(|v| {
+                    v.get("readiness_overridden")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    Ok((
+        receipt.receipts,
+        receipt.first_matches,
+        receipt.second_seen,
+        receipt.last_at,
+        persisted_items,
+        persisted_deliveries,
+        persisted_overrides,
+    ))
+}
+
+#[tauri::command]
+pub(crate) fn smoke_channel_fixture() -> Result<SmokeChannelFixture, DeckError> {
+    let unavailable = || DeckError::new(ErrorKind::Other, "channel fixture is unavailable");
+    if !enabled()
+        || crate::launch_args::debug_arg("--smoke-wkwebview").as_deref()
+            != Some("channel-first-send")
+    {
+        return Err(unavailable());
+    }
+    let root = crate::datadir::deck_dir();
+    crate::datadir::write_private(
+        &root.join("channel-app.pid"),
+        std::process::id().to_string().as_bytes(),
+    )?;
+    let fixture = crate::launch_args::channel_fixture_bin().map(|bin| bin.join("claude"));
+    let dir = root.join("channel-fixture");
+    let (
+        receipts,
+        first_matches,
+        second_seen,
+        last_at,
+        persisted_items,
+        persisted_deliveries,
+        persisted_overrides,
+    ) = channel_fixture_oracle()?;
+    let environment_private = std::env::var_os("HOME").is_some_and(|v| v == root.join("home"))
+        && std::env::var_os("ZDOTDIR").is_some_and(|v| v == root.join("home"))
+        && std::env::var_os("TMPDIR").is_some_and(|v| v == root.join("tmp"))
+        && fixture.as_ref().is_some_and(|fixture| {
+            std::env::var("PATH").ok().is_some_and(|value| {
+                value == format!("{}:/usr/bin:/bin", fixture.parent().unwrap().display())
+            })
+        });
+    let credentials_cleared = [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "OPENAI_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "CODEX_API_KEY",
+        "OPENAI_ORG_ID",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+    ]
+    .iter()
+    .all(|name| std::env::var_os(name).is_none());
+    Ok(SmokeChannelFixture {
+        available: fixture.as_ref().is_some_and(|path| path.is_file()),
+        environment_private,
+        credentials_cleared,
+        // keychain.rs refuses system Keychain I/O under this same gate.
+        keychain_blocked: enabled(),
+        ready: dir.join("READY").is_file(),
+        alive: fixture_named_process_alive(&dir, "fixture.pid", "claude"),
+        receipts,
+        first_matches,
+        second_seen,
+        last_at,
+        persisted_items,
+        persisted_deliveries,
+        persisted_overrides,
     })
 }
 

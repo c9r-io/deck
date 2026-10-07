@@ -7,6 +7,12 @@
 // template through the ordinary queue, and acks only after every row is
 // queued. The frozen plan lives on the card until then: a queue failure or
 // restart replays stable operation IDs on the same card, never a second card.
+// Channel heads freeze the native pending grant reference, template skeleton
+// and complete launch target. Their permission is distinct from readiness;
+// revocation never converts a constrained head to a legacy external at row.
+// Local channel ACK follows complete enqueue AND durable initialQueued. Any
+// already-applied collected event only retries ACK, even after collection
+// stops or its rule changes. The transport ACK remains native staging only.
 // Reviewed templates enter in one queue transaction; an opted-in run needs
 // an explicit final inspection even if enqueue fails. No hook releases it.
 // A clock item
@@ -51,7 +57,7 @@ import { toast } from './dialogs.js';
 import { planInbound } from './pure.js';
 import { t } from './i18n.js';
 import { bufferLimitError, emptyBuffer, upsertExternal } from './buffer-model.js';
-import { channelBlockReason, channelDigestId, channelRunExpired, channelSource, channelTemplatePlan, collectingCard, createPendingNotices, unfinishedChannelPlans } from './channel-model.js';
+import { appliedChannelCard, channelBlockReason, channelDigestId, channelRunExpired, channelSource, channelTemplatePlan, collectingCard, createPendingNotices, unfinishedChannelPlans } from './channel-model.js';
 import { expandHome, normalizeTemplateStep } from './pure.js';
 import { grantState } from './automation-model.js';
 
@@ -59,6 +65,7 @@ let draining = false;
 let again = false;
 let channelDraining = false;
 let channelAgain = false;
+let inboundStart = null;
 const pendingNotices = createPendingNotices();
 
 /* the reason a channel event stays pending, shown once per run */
@@ -82,7 +89,9 @@ async function reconcileChannelCard(card) {
   try {
     return await provider.queueChannelPlan(card.id, run.groupKey);
   } catch (_) {
-    toast(t('channel.queueFailed')); uev('inbound', 'channel-queue-fail'); return false;
+    // A retry keeps the frozen intent. Announce once, not once per tick.
+    pendingNotice({ id: card.origin?.key || card.id }, 'channel.queueFailed');
+    uev('inbound', 'channel-queue-fail'); return false;
   }
 }
 
@@ -92,12 +101,16 @@ async function ackChannel(id) {
 }
 
 async function handleChannel(item) {
-  const exact = store.cards.find(card => card.origin?.source === 'channel' && card.origin.key === item.operationKey);
+  const exact = appliedChannelCard(store.cards, item);
   if (exact) {
-    await ackChannel(item.id);
-    await reconcileChannelCard(exact);
+    const first = exact.origin?.source === 'channel' && exact.origin.key === item.operationKey;
+    if (!first || await reconcileChannelCard(exact)) await ackChannel(item.id);
     return;
   }
+  // A drain owns only a snapshot. Cancellation may have consumed this event
+  // since it was pulled; native Board persistence checks this again at commit.
+  try { if (!await inv('channel_check_pending', { id: item.id })) return; }
+  catch (_) { pendingNotice(item, 'channel.verifyRetry'); return; }
   for (const card of [...store.cards]) {
     if (channelRunExpired(card.channelRun, Math.floor(Date.now() / 1000))) {
       try { await provider.setChannelRun(card.id, card.channelRun.groupKey, { collecting: false }); }
@@ -140,7 +153,9 @@ async function handleChannel(item) {
   const channelRun = { groupKey: item.groupKey, firstEventId: item.eventId, connectionId: item.connectionId,
     workspaceId: item.workspaceId, channelId: item.channelId, ruleId: item.ruleId,
     lastCollectedAt: Math.floor(Date.now() / 1000), idleMinutes: item.target.idleMinutes, collecting: true,
-    initialSteps, initialQueued: false };
+    initialSteps, initialQueued: false,
+    target: { projectId: project.id, dir: expandHome(item.target.dir, ctx.HOME), cmd: item.target.cmd },
+    ...(plan.firstSend ? { firstSend: plan.firstSend } : {}) };
   try {
     ({ card } = await provider.createStarted({ id, projectId: project.id, columnId: column.id,
       title: plan.title, dir: expandHome(item.target.dir, ctx.HOME), cmd: item.target.cmd,
@@ -150,8 +165,7 @@ async function handleChannel(item) {
     pendingNotice(item, error?.stage === 'orphan' ? 'channel.orphan' : 'channel.createFailed');
     return;
   }
-  await ackChannel(item.id);
-  await reconcileChannelCard(card);
+  if (await reconcileChannelCard(card)) await ackChannel(item.id);
 }
 
 export async function drainChannel() {
@@ -160,10 +174,12 @@ export async function drainChannel() {
   try {
     do {
       channelAgain = false;
-      for (const card of unfinishedChannelPlans(store.cards)) await reconcileChannelCard(card);
       let items;
       try { items = await inv('channel_pending'); } catch (_) { return; }
-      pendingNotices.drain(new Set((items || []).map(item => item.id)));
+      const unfinished = unfinishedChannelPlans(store.cards);
+      pendingNotices.drain(new Set([...(items || []).map(item => item.id),
+        ...unfinished.map(card => card.origin?.key || card.id)]));
+      for (const card of unfinished) await reconcileChannelCard(card);
       for (const item of items || []) await handleChannel(item);
     } while (channelAgain);
   } finally { channelDraining = false; }
@@ -274,9 +290,11 @@ async function handleInbound(item) {
    drains. The events carry no content, so one that came before the listeners
    is covered by those drains; resolves when they have finished. */
 export function startInbound() {
-  listen('channel-changed', drainChannel).catch(() => uev('listen-fail', 'channel-changed'));
-  listen('inbound-changed', drainInbound).catch(() => uev('listen-fail', 'inbound-changed'));
+  if (inboundStart) return inboundStart;
+  const channelListener = listen('channel-changed', drainChannel).catch(() => uev('listen-fail', 'channel-changed'));
+  const inboundListener = listen('inbound-changed', drainInbound).catch(() => uev('listen-fail', 'inbound-changed'));
   const timer = setInterval(() => { drainChannel(); drainInbound(); }, 60_000);
   timer.unref?.();
-  return Promise.all([drainInbound(), drainChannel()]);
+  inboundStart = Promise.all([channelListener, inboundListener]).then(() => Promise.all([drainInbound(), drainChannel()]));
+  return inboundStart;
 }

@@ -1076,3 +1076,39 @@ fn a_terminal_bell_is_attention_and_never_reaches_a_side_effect() {
     let badge = js_scope_body(model, "attentionBadge").expect("attentionBadge");
     assert!(!badge.contains("rang") && !badge.contains("bell"));
 }
+
+#[test]
+fn channel_permission_is_checked_before_interaction_evidence() {
+    let sources = production_sources();
+    let select = &sources
+        .iter()
+        .find(|(name, _)| name == "scheduler/select.rs")
+        .unwrap()
+        .1;
+    let start = select.find("fn hold_reason_with(").unwrap();
+    let selection = &select[start..];
+    assert!(
+        selection.find("Some(Hold::ChannelPermission)").unwrap()
+            < selection.find("let o = seen?;").unwrap()
+    );
+    assert!(
+        selection.find("Some(Hold::ChannelUnverified)").unwrap()
+            < selection.find("let o = seen?;").unwrap()
+    );
+    let verifier = &sources
+        .iter()
+        .find(|(name, _)| name == "scheduler/channel_first_send.rs")
+        .unwrap()
+        .1;
+    for signal in [
+        "agent_status::",
+        "claude_interaction",
+        "CodexSignalTrust",
+        "TURN_DONE",
+    ] {
+        assert!(
+            !verifier.contains(signal),
+            "interaction evidence cannot grant channel permission: {signal}"
+        );
+    }
+}

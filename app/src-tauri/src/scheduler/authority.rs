@@ -542,7 +542,7 @@ fn placeholder_at(s: &str) -> Option<(&str, usize)> {
     Some((name, s.len() - after.len()))
 }
 
-fn has_placeholder(skeleton: &str) -> bool {
+pub(crate) fn has_placeholder(skeleton: &str) -> bool {
     skeleton.char_indices().any(|(i, _)| {
         placeholder_at(&skeleton[i..]).is_some_and(|(n, _)| INBOUND_PLACEHOLDERS.contains(&n))
     })

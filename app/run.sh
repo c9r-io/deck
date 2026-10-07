@@ -26,6 +26,28 @@ if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
     *) echo "DECK_SMOKE_TMUX_SOCKET must start with deck-smoke" >&2; exit 2 ;;
   esac
 fi
+if [ "${DECK_SMOKE_WKWEBVIEW:-}" = channel-first-send ]; then
+  case "$DECK_SMOKE_DATA_DIR:$DECK_SMOKE_TMUX_SOCKET" in
+    /tmp/deck-channel-?*:deck-smoke-channel-?*) ;;
+    *) echo "channel-first-send requires /tmp/deck-channel-* and deck-smoke-channel-*" >&2; exit 2 ;;
+  esac
+  case "$DECK_SMOKE_DATA_DIR" in
+    *[!-A-Za-z0-9_./]*) echo "channel-first-send data path contains unsafe characters" >&2; exit 2 ;;
+    */../*|*/..) echo "channel-first-send data path must not contain parent traversal" >&2; exit 2 ;;
+  esac
+  case "$DECK_SMOKE_TMUX_SOCKET" in
+    *[!a-z0-9-]*) echo "channel-first-send socket must use lowercase letters, digits and hyphens" >&2; exit 2 ;;
+  esac
+  if [ ! -d "$DECK_SMOKE_DATA_DIR" ] || [ -L "$DECK_SMOKE_DATA_DIR" ] \
+    || [ -n "$(/usr/bin/find "$DECK_SMOKE_DATA_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+    echo "channel-first-send requires a new empty non-symlink mktemp directory" >&2
+    exit 2
+  fi
+  # Build the harmless literal `claude` before assembling the carrier. It
+  # lives in the signed app, outside the data tree whose hardening removes
+  # execute bits from ordinary data files.
+  cargo build --example channel_fixture
+fi
 
 cargo build
 
@@ -39,6 +61,12 @@ if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
   APP=target/debug/deck-smoke.app
   BUNDLE_NAME="deck smoke"
   BUNDLE_ID=io.c9r.deck.smoke
+  if [ "${DECK_SMOKE_WKWEBVIEW:-}" = channel-first-send ]; then
+    CHANNEL_SMOKE_SUFFIX=${DECK_SMOKE_TMUX_SOCKET#deck-smoke-channel-}
+    APP="target/debug/deck-channel-smoke-$CHANNEL_SMOKE_SUFFIX.app"
+    BUNDLE_NAME="deck channel smoke $CHANNEL_SMOKE_SUFFIX"
+    BUNDLE_ID="io.c9r.deck.smoke.channel.x$CHANNEL_SMOKE_SUFFIX"
+  fi
 else
   # the in-app updater may have replaced this bundle with a release build whose
   # executable is named deck-app — kill both names and rebuild the bundle fresh
@@ -69,6 +97,13 @@ if [ -f binaries/deck-mcp-aarch64-apple-darwin ]; then
 fi
 if [ -f binaries/deck-mcp-runner-aarch64-apple-darwin ]; then
   cp binaries/deck-mcp-runner-aarch64-apple-darwin "$APP/Contents/MacOS/deck-mcp-runner"
+fi
+if [ "${DECK_SMOKE_WKWEBVIEW:-}" = channel-first-send ]; then
+  mkdir -p "$APP/Contents/MacOS/channel-fixture-bin"
+  cp target/debug/examples/channel_fixture "$APP/Contents/MacOS/channel-fixture-bin/claude"
+  chmod 700 "$APP/Contents/MacOS/channel-fixture-bin/claude"
+  # Sign the nested executable before sealing the containing carrier.
+  codesign --force --sign - "$APP/Contents/MacOS/channel-fixture-bin/claude"
 fi
 VER=$(python3 -c "import json;print(json.load(open('tauri.conf.json'))['version'])")
 cat > "$APP/Contents/Info.plist" <<EOF
@@ -102,14 +137,28 @@ if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
   if [ -n "${DECK_SMOKE_WKWEBVIEW:-}" ]; then
     SMOKE_MODE=$DECK_SMOKE_WKWEBVIEW
     case "$SMOKE_MODE" in
-      run|restart|ambiguous|settings|attention|review|review-restart|voice|translation|translation-native|translation-guard|resume|buffer|buffer-narrow|channel|channel-fault|connector|connector-transport|selection-events|signal-finish|authority-live|empty-start|clock-live|reminder|reminder-native|board-lost) ;;
+      run|restart|ambiguous|settings|attention|review|review-restart|voice|translation|translation-native|translation-guard|resume|buffer|buffer-narrow|channel|channel-fault|channel-first-send|connector|connector-transport|selection-events|signal-finish|authority-live|empty-start|clock-live|reminder|reminder-native|board-lost) ;;
       *) SMOKE_MODE=run ;;
     esac
     # the signal-finish smoke's fake agent: a debug example, never bundled
     if [ "$SMOKE_MODE" = signal-finish ]; then
       cargo build --example signal_fixture
     fi
-    open -n "$APP" --args \
+    OPEN_BACKGROUND=
+    if [ "$SMOKE_MODE" = channel-first-send ]; then
+      FIXTURE_BIN=$(CDPATH= cd -- "$APP/Contents/MacOS/channel-fixture-bin" && pwd -P)
+      mkdir -p "$DECK_SMOKE_DATA_DIR/home" "$DECK_SMOKE_DATA_DIR/tmp" \
+        "$DECK_SMOKE_DATA_DIR/channel-fixture"
+      chmod 700 "$DECK_SMOKE_DATA_DIR" "$DECK_SMOKE_DATA_DIR/home" "$DECK_SMOKE_DATA_DIR/tmp" \
+        "$DECK_SMOKE_DATA_DIR/channel-fixture"
+      # macOS /etc/zprofile runs path_helper for login shells and prepends
+      # host paths. The private user profile restores the closed fixture PATH
+      # afterward, before Deck asks that shell to run literal `claude`.
+      printf '%s\n' "export PATH='$FIXTURE_BIN:/usr/bin:/bin'" > "$DECK_SMOKE_DATA_DIR/home/.zprofile"
+      chmod 600 "$DECK_SMOKE_DATA_DIR/home/.zprofile"
+      OPEN_BACKGROUND=-g
+    fi
+    open $OPEN_BACKGROUND -n "$APP" --args \
       --smoke-data-dir "$DECK_SMOKE_DATA_DIR" \
       --smoke-tmux-socket "$DECK_SMOKE_TMUX_SOCKET" \
       --smoke-wkwebview "$SMOKE_MODE" \

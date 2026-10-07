@@ -8,7 +8,15 @@
 // first character the agent reads). Normalizing keeps a structurally valid
 // rule that fails admission, so a rule saved by an older deck is shown as
 // blocked and can be edited, never silently dropped on the next save.
-import { fillInboundTemplate, inboundTitle, LOCAL_ID_RE } from './pure.js';
+// Channel first-send permission is native-issued, independently revocable
+// authorization for a new run's head. The editor accepts all first-input
+// risks in one save; this module compares semantics for that action, never
+// grants authority. Native pending proof freezes the claim and skeleton;
+// replay does not consult today's rule or template. Empty first steps remain
+// legal for legacy plans but cannot receive first-step permission.
+// Applied scratchpad evidence is checked before collecting/expiry, so an
+// ACK retry cannot promote a later event to a new run.
+import { fillInboundTemplate, inboundTitle, LOCAL_ID_RE, normalizeTemplateStep } from './pure.js';
 
 const CHANNEL_ID = /^[CG][A-Z0-9_-]{0,63}$/;
 const USER_ID = /^[UW][A-Z0-9_-]{0,63}$/;
@@ -79,7 +87,44 @@ export function normalizeChannelRule(raw) {
     || rule.dir.length > 1024 || /[\r\n\0]/.test(rule.dir)
     || !rule.cmd || rule.cmd.length > 200 || /[\r\n\0]/.test(rule.cmd)
     || !rule.template || rule.template.length > 120) return null;
+  // This is a native-issued claim, never a frontend authorization decision.
+  // Keep it intact across ordinary settings saves; native code revalidates it.
+  if (raw.firstSend === true) rule.firstSend = true;
+  if (raw.firstSendGrant && typeof raw.firstSendGrant === 'object' && !Array.isArray(raw.firstSendGrant)) {
+    rule.firstSendGrant = structuredClone(raw.firstSendGrant);
+  }
   return rule;
+}
+
+// Display-only semantic comparison. Native code owns the canonical grant
+// digest and independently checks all sources. Sets are unordered; a template
+// name is only a lookup key, and follow-up edits do not change the first step.
+export function channelFirstSendScope(rule, project) {
+  const template = project?.templates?.find(value => value.name === rule.template);
+  const sorted = values => [...new Set(values || [])].sort();
+  return JSON.stringify({ id: rule.id, projectId: rule.projectId, dir: rule.dir, cmd: rule.cmd,
+    channelIds: sorted(rule.channelIds), senderUserIds: sorted(rule.senderUserIds), senderBotIds: sorted(rule.senderBotIds),
+    match: { kind: rule.match.kind, value: rule.match.value || '', keywords: sorted(rule.match.keywords),
+      caseSensitive: rule.match.caseSensitive === true, groupCapture: rule.match.groupCapture || '' },
+    includeThreads: rule.includeThreads, idleMinutes: rule.idleMinutes,
+    first: template ? normalizeTemplateStep(template.steps[0]) : null });
+}
+
+export function channelFirstSendRecipe(rule, project) {
+  const template = project?.templates?.find(value => value.name === rule.template);
+  const first = template && normalizeTemplateStep(template.steps[0]);
+  // Do not sign steps[0] then send a later step after filtering empty text.
+  if (!first || LEADING_MESSAGE.test(first)) return null;
+  return first;
+}
+
+export async function channelFirstSendNeedsUpdate(rule, previous, project) {
+  if (!previous?.firstSend || !previous.firstSendGrant
+    || channelFirstSendScope(rule, project) !== channelFirstSendScope(previous, project)) return true;
+  const recipe = channelFirstSendRecipe(rule, project);
+  if (!recipe) return true;
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(recipe));
+  return [...new Uint8Array(hash)].map(byte => byte.toString(16).padStart(2, '0')).join('') !== previous.firstSendGrant.stepHash;
 }
 
 export function normalizeChannelConfig(raw) {
@@ -133,6 +178,19 @@ export function collectingCard(cards, item) {
     && card.channelRun?.collecting === true && card.channelRun.groupKey === item.groupKey);
 }
 
+// Application evidence outlives collection. Consult it before expiry/routing:
+// a failed ACK must never turn a collected event into a new run's first event.
+export function appliedChannelCard(cards, item) {
+  return (cards || []).find(card => (card.origin?.source === 'channel'
+    && card.origin.key === item.operationKey) || (card.buffer?.entries || []).some(entry => {
+    const source = entry.source;
+    return entry.kind === 'external' && source?.type === 'channel'
+      && source.eventId === item.eventId && source.rule === item.ruleId
+      && source.workspaceId === item.workspaceId && source.connection === item.connectionId
+      && source.channel === item.channelId;
+  }));
+}
+
 export const unfinishedChannelPlans = cards => (cards || [])
   .filter(card => card.channelRun && !card.channelRun.initialQueued);
 
@@ -140,13 +198,21 @@ export function channelTemplatePlan(item, project, nowSecs) {
   if (!channelAgentCommand(item?.target?.cmd)) return { error: 'command' };
   const template = (project?.templates || []).find(value => value.name === item.target.template);
   if (!template) return { error: 'template' };
-  if (template.steps.some(step => LEADING_MESSAGE.test(String(step)))) return { error: 'template-leading-message' };
+  // A native staged grant freezes the head recipe before frontend draining.
+  // Later template edits cannot rewrite that accepted event's first input.
+  const skeleton = item.firstSendGrant ? normalizeTemplateStep(item.firstSendGrant.skeleton) : null;
+  if (item.firstSendGrant && !skeleton) return { error: 'template' };
+  const steps = skeleton === null ? template.steps : [skeleton, ...template.steps.slice(1)];
+  if (steps.some(step => LEADING_MESSAGE.test(String(step)))) return { error: 'template-leading-message' };
   const msg = { text: item.body, from: item.senderUserId || item.senderBotId || '', where: item.channelId, link: '' };
-  const texts = template.steps.map(step => fillInboundTemplate(step, msg)).filter(Boolean);
+  const texts = steps.map(step => fillInboundTemplate(step, msg)).filter(Boolean);
   if (!texts.length) return { error: 'template' };
   return {
     title: inboundTitle(item.body) || item.channelId,
     texts, template: template.name, at: nowSecs,
+    ...(item.firstSendGrant ? { firstSend: { inboxId: item.id,
+      grantId: item.firstSendGrant.id, grantDigest: item.firstSendGrant.digest,
+      skeleton } } : {}),
   };
 }
 

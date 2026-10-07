@@ -44,13 +44,14 @@ import { reminderDue } from './reminder-model.js';
 //   observation and are NOT derived here: the backend's plan (`plans`,
 //   review.rs `plan_item`) names a row held for a first agent interaction
 //   (`first-send`) or because Codex Signal cannot be attributed
-//   (`codex-signal`), and the model accepts exactly those two stage words
+//   (`codex-signal`), or withdrawn channel permission (`channel-stopped`),
+//   and the model accepts these stage words
 //   for a row still in the queue. An approval Deck could not re-read
-//   (`authority-unverified`) usually passes by itself and stays in the panel;
+//   (`authority-unverified` or `channel-unverified`) usually passes by itself and stays in the panel;
 //   it is a held delivery only when the backend's plan marks it `lasting`
 //   (review.rs `track_unverified`: the hold outlived its threshold, which
 //   times the notice and proves nothing else). The model never measures that
-//   itself. The seven words are one list with the backend's (limits.json
+//   itself. These words are one list with the backend's (limits.json
 //   `delivery_waits`).
 // - Bell: `rang(card)` passes on the backend's `bell` (bell.rs): a program
 //   in a session without agent state rang the terminal bell and nobody has
@@ -63,12 +64,12 @@ import { CARD_QUIET_SECS, effectiveCardStatus, itemDead } from './pure.js';
 
 export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'waiting', 'done', 'followed', 'unavailable', 'stopped', 'reminder', 'reminders']);
 /* most pressing first: one reason per session */
-export const DELIVERY_WAITS = Object.freeze(['ambiguous', 'failed', 'review', 'external', 'first-send', 'codex-signal', 'authority-unverified']);
+export const DELIVERY_WAITS = Object.freeze(['ambiguous', 'failed', 'review', 'channel-stopped', 'channel-unverified', 'external', 'first-send', 'codex-signal', 'authority-unverified']);
 /* the two the backend's plan decides; never read from hook state here */
-const LIVE_DELIVERY_WAITS = Object.freeze(['first-send', 'codex-signal']);
+const LIVE_DELIVERY_WAITS = Object.freeze(['first-send', 'codex-signal', 'channel-stopped']);
 /* the third, only once the backend says the hold has lasted */
 const liveWait = plan => LIVE_DELIVERY_WAITS.includes(plan.stage)
-  || (plan.stage === 'authority-unverified' && plan.lasting === true);
+  || (['authority-unverified', 'channel-unverified'].includes(plan.stage) && plan.lasting === true);
 
 export function deliveryWaits(items, plans = []) {
   const heads = new Map();

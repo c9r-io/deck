@@ -31,6 +31,12 @@
 // `withFirstSend`, scheduler/first_send.rs): ticking it asks for an explicit
 // confirmation of the startup-dialog risk, unticking is immediate, and it
 // is independent of the approval box (which governs the later steps).
+// Channel rules instead expose ONE native-backed first-step permission.
+// Checkbox plus save accepts future scoped run heads, external template
+// content and startup-input risk together; no per-event approval is added.
+// Semantic edits use Save and update first-step permission. Ordinary saves
+// preserve the grant; turning off never prompts. No later step or tool
+// permission is authorized by this switch.
 // This module is only the drawer that lists the CURRENT project's rules of
 // either trigger, edits them through `persistInbound` (one durable settings
 // write), and shows each rule's next slot (clock) or last runs. What a rule
@@ -77,12 +83,12 @@ import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { persistInbound } from './settings.js';
 import { minToHM, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
-import { approveRule, composeRule, finishHintShown, firstSendNeedsConfirm, withFirstSend, graceOptions, graceText, grantDetail, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, templateCarriesMessage, triggerText } from './automation-model.js';
+import { approveRule, composeRule, finishHintShown, firstSendNeedsConfirm, firstSendSupported, withFirstSend, graceOptions, graceText, grantDetail, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, templateCarriesMessage, triggerText } from './automation-model.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN } from './settings-model.js';
 import { openTemplates } from './templates.js';
-import { CHANNEL_IDLE_DEFAULT, channelBlockReason, normalizeChannelRule } from './channel-model.js';
+import { CHANNEL_IDLE_DEFAULT, channelBlockReason, channelFirstSendNeedsUpdate, channelFirstSendRecipe, normalizeChannelRule } from './channel-model.js';
 
 /* the Board, layout and terminal actions this drawer calls, handed in by
    `initAutomation(deps)` so board.js and terminal.js may import this module
@@ -94,6 +100,8 @@ let opener = null;                 // element that opened the drawer; focus retu
 let editing = null;   // null | { id } (existing) | { id: null } (new)
 let runsCache = [];
 let unsubscribe = null;
+let channelAcceptanceChanged = false;
+let channelLabelRevision = 0;
 
 const ordinaryRules = () => ctx.settings?.inbound?.rules || [];
 const channelRules = () => (ctx.settings?.inbound?.channelRules || []).map(rule => ({ ...rule, source: 'channel' }));
@@ -297,6 +305,21 @@ function syncEditor() {
   $('auto-capture-row').hidden = trigger !== 'channel' || $('auto-match-kind').value !== 'regex';
   syncFinishHint();
   syncApproval();
+  syncChannelFirstSend();
+}
+
+async function syncChannelFirstSend() {
+  const revision = ++channelLabelRevision;
+  const on = segGet('auto-trigger') === 'channel' && $('auto-channel-first-send').checked;
+  const prior = editing?.id && channelRules().find(rule => rule.id === editing.id);
+  $('auto-channel-first-send-hint').hidden = segGet('auto-trigger') !== 'channel';
+  const rule = on && readChannelFields(prior, activeProject(), 'preview');
+  const changed = on && (channelAcceptanceChanged || !rule || await channelFirstSendNeedsUpdate(rule, prior, activeProject()));
+  if (revision !== channelLabelRevision) return;
+  const key = changed ? prior?.firstSendGrant
+    ? 'automation.channelFirstSend.saveUpdate' : 'automation.channelFirstSend.saveEnable' : 'common.save';
+  $('auto-save').dataset.i18n = key;
+  $('auto-save').textContent = t(key);
 }
 
 /* automation-model.js finishHintShown */
@@ -352,6 +375,7 @@ function fillTargets(rule) {
 
 export function openEditor(rule) {
   editing = { id: rule ? rule.id : null };
+  channelAcceptanceChanged = false;
   const clock = !rule || rule.source === 'clock';
   const channel = rule?.source === 'channel';
   const schedule = clock && rule ? rule.schedule : { unit: 'day', days: [], minute: 540 };
@@ -387,6 +411,7 @@ export function openEditor(rule) {
   $('auto-send').checked = approved;
   $('auto-send-external').checked = approved && rule.autoSend.external === true;
   $('auto-first-send').checked = ['slack', 'clock'].includes(rule?.source) && rule.firstSendWithoutReadiness === true;
+  $('auto-channel-first-send').checked = channel && rule.firstSend === true && !!rule.firstSendGrant;
   syncEditor();
   $('auto-editor').hidden = false;
   $(channel ? 'auto-channel-ids' : 'auto-name').focus();
@@ -397,6 +422,20 @@ function closeEditor() {
   $('auto-editor').hidden = true;
 }
 
+function readChannelFields(previous, project, newId) {
+  const split = value => value.split(',').map(part => part.trim()).filter(Boolean);
+  const kind = $('auto-match-kind').value;
+  return normalizeChannelRule({ id: previous?.source === 'channel' ? previous.id : newId, enabled: true,
+    connectionId: 'default', channelIds: split($('auto-channel-ids').value),
+    senderUserIds: split($('auto-sender-users').value), senderBotIds: split($('auto-sender-bots').value),
+    match: { kind, ...(kind === 'keywords' ? { keywords: split($('auto-match-value').value) }
+      : { value: $('auto-match-value').value.trim() }), caseSensitive: $('auto-match-case').checked,
+      ...(kind === 'regex' ? { groupCapture: $('auto-match-capture').value.trim() } : {}) },
+    includeThreads: $('auto-threads').checked, projectId: project?.id, columnId: $('auto-column').value,
+    dir: $('auto-dir').value, cmd: $('auto-cmd').value, template: $('auto-template').value,
+    idleMinutes: Number($('auto-idle').value) });
+}
+
 /* the editor → a rule (`composeRule`); null plus a toast when something is
    missing, with focus on the control that needs it */
 function readEditor() {
@@ -404,24 +443,20 @@ function readEditor() {
   if (!project) return null;
   const previous = editing.id ? allRules().find(r => r.id === editing.id) || null : null;
   if (segGet('auto-trigger') === 'channel') {
-    const split = value => value.split(',').map(part => part.trim()).filter(Boolean);
-    const kind = $('auto-match-kind').value;
-    const raw = { id: previous?.source === 'channel' ? previous.id : genId('R'), enabled: true,
-      connectionId: 'default', channelIds: split($('auto-channel-ids').value),
-      senderUserIds: split($('auto-sender-users').value), senderBotIds: split($('auto-sender-bots').value),
-      match: { kind, ...(kind === 'keywords' ? { keywords: split($('auto-match-value').value) }
-        : { value: $('auto-match-value').value.trim() }), caseSensitive: $('auto-match-case').checked,
-        ...(kind === 'regex' ? { groupCapture: $('auto-match-capture').value.trim() } : {}) },
-      includeThreads: $('auto-threads').checked, projectId: project.id, columnId: $('auto-column').value,
-      dir: $('auto-dir').value, cmd: $('auto-cmd').value, template: $('auto-template').value,
-      idleMinutes: Number($('auto-idle').value) };
-    const rule = normalizeChannelRule(raw);
+    const rule = readChannelFields(previous, project, previous?.source === 'channel' ? previous.id : genId('R'));
     if (!rule) { toast(t('automation.invalidChannelRule')); return null; }
     const blocked = channelBlockReason(rule, project);
     if (blocked) {
       toast(t(blocked === 'command' ? 'automation.invalidChannelCommand' : 'automation.invalidChannelTemplate'));
       $(blocked === 'command' ? 'auto-cmd' : 'auto-template').focus();
       return null;
+    }
+    if ($('auto-channel-first-send').checked) {
+      if (!firstSendSupported(rule.cmd) || !channelFirstSendRecipe(rule, project)) {
+        toast(t('automation.channelFirstSend.unsupported')); return null;
+      }
+      rule.firstSend = true;
+      if (previous?.firstSendGrant) rule.firstSendGrant = structuredClone(previous.firstSendGrant);
     }
     return { ...rule, source: 'channel' };
   }
@@ -466,7 +501,10 @@ async function saveRule(rule) {
     const rules = [...ctx.settings.inbound.channelRules.filter(value => value.id !== rule.id && value.id !== editing?.id), stored];
     const inbound = { ...ctx.settings.inbound, channelRules: rules,
       rules: ctx.settings.inbound.rules.filter(value => value.id !== editing?.id) };
-    const ok = await persistInbound(inbound); renderAutomations(); return ok;
+    const previous = channelRules().find(value => value.id === rule.id);
+    const requests = rule.firstSend && (channelAcceptanceChanged || await channelFirstSendNeedsUpdate(rule, previous, activeProject()))
+      ? [{ ruleId: rule.id, external: true }] : [];
+    const ok = await persistInbound(inbound, requests); renderAutomations(); return ok;
   }
   /* a trigger change gives the rule a new id: the old entry goes */
   const rules = mergeRules(ctx.settings.inbound.rules, rule, editing && editing.id);
@@ -597,6 +635,15 @@ export function initAutomation(deps) {
     if (await saveRule(rule)) { closeEditor(); toast(t('automation.saved')); }
   };
   $('auto-send').addEventListener('change', syncApproval);
+  $('auto-channel-first-send').addEventListener('change', () => {
+    channelAcceptanceChanged = $('auto-channel-first-send').checked;
+    syncChannelFirstSend();
+  });
+  for (const id of ['auto-channel-ids', 'auto-sender-users', 'auto-sender-bots', 'auto-match-kind', 'auto-match-value',
+    'auto-match-capture', 'auto-match-case', 'auto-threads', 'auto-idle', 'auto-dir', 'auto-cmd', 'auto-template', 'auto-column']) {
+    $(id).addEventListener('input', syncChannelFirstSend);
+    $(id).addEventListener('change', syncChannelFirstSend);
+  }
   /* the first-send risk is accepted explicitly: the box stays unticked
      unless the confirmation is answered yes; unticking needs nothing */
   $('auto-first-send').addEventListener('change', async () => {
@@ -632,7 +679,7 @@ export function initAutomation(deps) {
   buildDayControls();
   onLocaleChange(() => { buildDayControls(); renderAutomations(); });
   unsubscribe = provider.subscribe(ev => {
-    if (ev === 'projects' || ev === 'list') renderAutomations();
+    if (ev === 'projects' || ev === 'list' || ev === 'channel-authority') renderAutomations();
   });
   listen('inbound-changed', async () => { await refreshRuns(); renderAutomations(); })
     .catch(() => uev('listen-fail', 'inbound-changed'));

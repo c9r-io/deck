@@ -203,6 +203,11 @@ evolution; it makes scope expansion deliberate.
   into an interactive agent. A separately enabled, native-verified Slack badge, clock or phone task
   preset first-send override may send the head row on a later pass after bounded compatibility
   stabilization and current fences; it is not Agent readiness evidence.
+  A channel rule may separately grant fully revocable permission for future
+  scoped events to send a new run's first step. A native-proven channel head
+  retains its authorization constraint after withdrawal or text edits;
+  existing interaction evidence never bypasses that constraint. This does
+  not expand `StepAuthority` / `TriggerClass`, later-step or tool authority.
   No Signal word, quiet
   time or activity ever creates, restores or upgrades authority
   (`tests/signal_census.rs`).
@@ -246,7 +251,14 @@ evolution; it makes scope expansion deliberate.
   v4 so older readers refuse them untouched. Card Reminder intent and blocked
   retirement identities upgrade deck.json to sticky v5. A phone task preset's
   first-send choice or approval (deck.json) and the queue origins they admit
-  (queue.json) upgrade to sticky v6. A rule's choices are backed by settings
+  (queue.json) upgrade to sticky v6. Channel first-step permission,
+  frozen targets/claims, queue constraints,
+  snapshots and audit semantics require sticky v7. Channel inbox v2 protects
+  native staged grant references; v1 entries gain no new permission. A
+  settings backup is handed to the webview without channel grants. Native
+  template edits retire affected grants before the Board write, under
+  settings fence → Board fence → queue lock → storage save lock. A rule's
+  choices are backed by settings
   and a preset's by the Board; for both a backup is recovery material, never
   authority: a Board answered from deck.json.bak, or taken as the way out of
   a lost Board, is handed to the webview without its presets' choices, so no
@@ -301,6 +313,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Lists (the ⏱ panel): queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js`, `ui/js/queue-review.js`, `scheduler/review.rs` |
 | Automation delivery authority: the approval grant (a Slack badge rule's in settings, a phone task preset's in the Board), claim verification at admission, revocation sweep, delivery audit | `scheduler/authority.rs`, `inbound.rs` (`AutoSend`), `ui/js/automation-model.js` (`approveRule` / `grantState`, shared vector `ui/test/fixtures/automation-grant.json`), `ui/js/connector-model.js` (`withPresetApproval`, shared vector `ui/test/fixtures/preset-grant.json`) |
 | Slack badge, clock and phone task preset first-send readiness override (explicit per-rule or per-preset risk acceptance for a run's head row; never readiness evidence), and the Board-side source a preset's choices are swept and fenced against | `scheduler/first_send.rs`, `inbound.rs` (`first_send_without_readiness`), `documents.rs` (`board_authority`, `board_fence`), `ui/js/automation-model.js` (`withFirstSend`), `ui/js/connector-model.js` |
+| Fully revocable Slack channel run-head permission, native staging proof and frozen initial request; one editor decision, no later-step/tool permission | `scheduler/channel_first_send.rs`, `inbound_channel.rs`, `documents.rs`, `ui/js/channel-model.js`, `ui/js/inbound.js`, `ui/js/automation.js` (+ `docs/channel-monitor.md`) |
 | Templates (saved lists, shared by cards and automations) | `ui/js/templates.js` |
 | Needs-attention view (sidebar entry), runtime read state, tab done-dot | `ui/js/attention.js`, `ui/js/attention-model.js` |
 | Away notifications and the Dock badge (Rust-side trigger, closed content, in-process UNUserNotificationCenter bridge) | `notify.rs`, `native/NotificationBridge.swift`, `ui/js/notify-model.js` (+ `docs/notifications.md`) |

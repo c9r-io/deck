@@ -39,6 +39,11 @@
 //!   row admitted here is marked `external` (backend-set, `channel_path`),
 //!   and its follow-up rows wait for the user's send-now (`select.rs`,
 //!   agent hold: no hook word is readiness for external text).
+//!   A native channel-run head may additionally carry `channelFirstSend`.
+//!   Admission binds its exact frozen request, unique Board origin/session,
+//!   native pending/applied event and current revocable grant. The resulting
+//!   queue constraint is permanent: malformed claims fail, revoked or stale
+//!   claims create no automatic permission, and later edits withdraw it.
 //! - `admit_authority` (external commands only, after `admit_external`)
 //!   turns the frozen plan's `authority` claim into the row's verified
 //!   content authority (`authority.rs`) or into nothing; the owner commands
@@ -161,6 +166,7 @@ pub(crate) fn smoke_seed_ambiguous(state: State<'_, Queues>) -> Result<(), DeckE
     let snapshot = item.clone();
     q.pending.clear();
     q.pending.push(PendingDelivery {
+        channel_attempt: None,
         id: delivery,
         snapshot,
     });
@@ -271,6 +277,12 @@ pub(crate) struct QueueAddArgs {
     /// override for this call's FIRST row (none for any later row).
     #[serde(skip)]
     pub(crate) first_send_granted: Option<ReadinessOverride>,
+    /// Dedicated claim for a native Slack channel run head. It is never a
+    /// readiness override and never a StepAuthority claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) channel_first_send: Option<ChannelFirstSendClaim>,
+    #[serde(skip)]
+    pub(crate) channel_first_send_granted: Option<ChannelFirstSendConstraint>,
 }
 
 /// Format (Unicode Cf) characters: invisible, so they must not hide what
@@ -334,6 +346,12 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
         return Err(DeckError::new(
             ErrorKind::Invalid,
             "only an automation's external rows carry an approval",
+        ));
+    }
+    if a.channel_first_send.is_some() && !a.channel_path {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "only a Slack channel head carries channel first-send authority",
         ));
     }
     // A first-send claim is a request, never authority. Both entry paths
@@ -466,7 +484,7 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
     Ok(())
 }
 
-fn operation_fingerprint(args: &QueueAddArgs, normalized_text: &str) -> String {
+pub(crate) fn operation_fingerprint(args: &QueueAddArgs, normalized_text: &str) -> String {
     // Hash the complete normalized intent. A transport retry repeats the
     // original `at`; changing any target, launch context or schedule field is
     // a conflicting reuse of the operation identity.
@@ -505,7 +523,7 @@ pub(crate) fn add_item(
     text: String,
 ) -> Result<(), DeckError> {
     let expected_process = context::expected_from_command(&args.cmd);
-    add_item_bound(q, args, text, None, expected_process)
+    add_item_bound(q, args, text, None, expected_process, None, false)
 }
 
 fn add_item_bound(
@@ -514,10 +532,14 @@ fn add_item_bound(
     text: String,
     binding: Option<PaneIdentity>,
     expected_process: Option<String>,
+    operation_fingerprint_override: Option<String>,
+    force_ambiguous: bool,
 ) -> Result<(), DeckError> {
     if let Some(operation_id) = args.operation_id.as_deref() {
         if let Some(existing) = q.operations.iter().find(|op| op.id == operation_id) {
-            let fingerprint = operation_fingerprint(&args, &text);
+            let fingerprint = operation_fingerprint_override
+                .clone()
+                .unwrap_or_else(|| operation_fingerprint(&args, &text));
             if existing.session == args.session
                 && existing.card_id == args.card_id
                 && existing.fingerprint == fingerprint
@@ -584,9 +606,9 @@ fn add_item_bound(
         q.review_completed.remove(&args.session);
     }
     let operation_id = args.operation_id.clone();
-    let operation_fingerprint = operation_id
-        .as_ref()
-        .map(|_| operation_fingerprint(&args, &text));
+    let operation_fingerprint = operation_id.as_ref().map(|_| {
+        operation_fingerprint_override.unwrap_or_else(|| operation_fingerprint(&args, &text))
+    });
     q.items.push(QueueItem {
         id,
         session: args.session,
@@ -608,7 +630,11 @@ fn add_item_bound(
         fired: 0,
         paused: false,
         last: None,
-        state: default_state(),
+        state: if force_ambiguous {
+            ItemState::Ambiguous
+        } else {
+            default_state()
+        },
         attempts: 0,
         last_error: None,
         last_attempt_at: None,
@@ -638,6 +664,7 @@ fn add_item_bound(
         external: args.channel_path || args.external_text,
         authority: args.granted.first().cloned().flatten(),
         readiness_override: args.first_send_granted,
+        channel_first_send: args.channel_first_send_granted,
     });
     if let (Some(id), Some(fingerprint)) = (operation_id, operation_fingerprint) {
         let item = q.items.last().expect("queue item just appended");
@@ -647,7 +674,11 @@ fn add_item_bound(
             session: item.session.clone(),
             card_id: item.card_id.clone(),
             fingerprint,
-            state: OperationState::Queued,
+            state: if force_ambiguous {
+                OperationState::Uncertain
+            } else {
+                OperationState::Queued
+            },
         });
     }
     Ok(())
@@ -657,7 +688,17 @@ fn add_item_bound(
 pub(crate) fn queue_add(
     state: State<'_, Queues>,
     app: AppHandle,
+    args: QueueAddArgs,
+) -> Result<(), DeckError> {
+    queue_add_core(state, app, args, None, false)
+}
+
+fn queue_add_core(
+    state: State<'_, Queues>,
+    app: AppHandle,
     mut args: QueueAddArgs,
+    operation_fingerprint_override: Option<String>,
+    force_ambiguous: bool,
 ) -> Result<(), DeckError> {
     if !args.channel_path {
         admit_first_send(&mut args);
@@ -670,7 +711,15 @@ pub(crate) fn queue_add(
     // never let the scheduler act on an item the disk doesn't know about
     let creation = context::creation_context(&args.session, &args.cmd);
     with_queue(&state.q, &save_queue, |q| {
-        add_item_bound(q, args, text, creation.binding, creation.expected_process)
+        add_item_bound(
+            q,
+            args,
+            text,
+            creation.binding,
+            creation.expected_process,
+            operation_fingerprint_override,
+            force_ambiguous,
+        )
     })?;
     let _ = app.emit("queue-changed", ());
     Ok(())
@@ -685,14 +734,59 @@ pub(crate) fn channel_queue_add(
     let result = (|| {
         admit_external(&mut args)?;
         let text = normalize_prompt(&args.text);
+        validate_add(&args)?;
+        if operation_replay(&state.q, &args, &text)? {
+            return Ok(());
+        }
+        let request_fingerprint = args
+            .operation_id
+            .as_ref()
+            .map(|_| operation_fingerprint(&args, &text));
+        if args.channel_first_send.is_some() {
+            args.dir = crate::inbound_channel::normalized_dir(&args.dir).ok_or_else(|| {
+                DeckError::new(
+                    ErrorKind::Invalid,
+                    "channel startup directory is unavailable",
+                )
+            })?;
+        }
         admit_authority(&mut args, std::slice::from_ref(&text));
         admit_first_send(&mut args);
-        queue_add(state, app, args)
+        args.channel_first_send_granted =
+            channel_first_send::admit(&args, crate::datadir::now_epoch())?;
+        let recovery_before = state.q.lock_or_recover().channel_recovery_before;
+        let rollback_uncertain = channel_first_send::rollback_uncertain(&args, recovery_before)?;
+        queue_add_core(state, app, args, request_fingerprint, rollback_uncertain)
     })();
     if let Err(error) = &result {
         applog(&format!("[queue] external add failed ({})", error.code()));
     }
     result
+}
+
+pub(crate) fn operation_replay(
+    queue: &Mutex<QueueState>,
+    args: &QueueAddArgs,
+    text: &str,
+) -> Result<bool, DeckError> {
+    let Some(id) = args.operation_id.as_deref() else {
+        return Ok(false);
+    };
+    let q = queue.lock_or_recover();
+    let Some(existing) = q.operations.iter().find(|operation| operation.id == id) else {
+        return Ok(false);
+    };
+    if existing.session == args.session
+        && existing.card_id == args.card_id
+        && existing.fingerprint == operation_fingerprint(args, text)
+    {
+        Ok(true)
+    } else {
+        Err(DeckError::new(
+            ErrorKind::Other,
+            "queue operation identity was already used",
+        ))
+    }
 }
 
 /// The ONE admission for external (non-owner) text into the queue: the card
@@ -895,6 +989,9 @@ pub(crate) fn update_text(q: &mut QueueState, id: &str, text: String) -> Result<
         item.last_context = None;
         // the approved text is gone: an edited external row is send-now only
         item.authority = None;
+        if let Some(constraint) = item.channel_first_send.as_mut() {
+            constraint.authorized = false;
+        }
     }
     Ok(())
 }
@@ -1394,6 +1491,8 @@ pub(super) fn add_reviewed_rows(
             normalized,
             creation.binding.clone(),
             creation.expected_process.clone(),
+            None,
+            false,
         )?;
         if k == 0 {
             group = first_operation
@@ -1417,6 +1516,7 @@ pub(crate) fn channel_queue_add_reviewed_list(
 ) -> Result<(), DeckError> {
     let result = (|| {
         admit_external(&mut args)?;
+        channel_first_send::reject_reviewed_list(&args)?;
         admit_authority(&mut args, &texts);
         admit_first_send(&mut args);
         queue_add_reviewed_list(state, app, args, texts)

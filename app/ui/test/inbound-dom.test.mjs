@@ -53,7 +53,9 @@ test('nothing is pulled until startInbound; it then listens and drains what was 
   // in the backend: nothing listens for it and nothing asks for it.
   await new Promise(resolve => setTimeout(resolve, 5));
   assert.deepEqual([Object.keys(f.heard), f.calls], [[], []]);
-  await startInbound();
+  const starting = startInbound();
+  assert.equal(startInbound(), starting, 'repeated starts reuse the same listener and drain promise');
+  await starting;
   assert.deepEqual(Object.keys(f.heard).sort(), ['channel-changed', 'inbound-changed']);
   // the first drains took what was pending all along: each inbox asked once,
   // the badge's card created, its plan queued, then the acknowledgement
@@ -71,7 +73,7 @@ test('nothing is pulled until startInbound; it then listens and drains what was 
 test('dispatcher preserves reviewed-list atomicity and acks only after enqueue', async () => {
   for (const reviewEach of [false, true]) {
     const f = setup([{ ...item, rule: { ...item.rule, reviewEach } }]);
-    await startInbound();
+    await drainInbound();
     const queued = f.calls.filter(([cmd]) => cmd === (reviewEach ? 'channel_queue_add_reviewed_list' : 'channel_queue_add'));
     assert.equal(queued.length, reviewEach ? 1 : 2);
     assert.equal(f.calls.at(-1)[0], 'inbound_ack');
@@ -390,6 +392,7 @@ test('a legacy staged Channel inbox item drains without any Slack credentials', 
   window.__TAURI__ = { core: { invoke: async cmd => {
     calls.push(cmd);
     if (cmd === 'channel_pending') return [staged];
+    if (cmd === 'channel_check_pending') return true;
   } } };
   // A second pending read terminates the drain; the staged item has already
   // been acknowledged only after the mocked durable Board transaction.
@@ -397,6 +400,7 @@ test('a legacy staged Channel inbox item drains without any Slack credentials', 
   window.__TAURI__.core.invoke = async cmd => {
     calls.push(cmd);
     if (cmd === 'channel_pending') { if (read) return []; read = true; return [staged]; }
+    if (cmd === 'channel_check_pending') return true;
   };
   await drainChannel();
   assert.ok(calls.indexOf('channel_pending') > calls.indexOf('slack_legacy_credentials_clear'), calls.join(','));
@@ -418,6 +422,7 @@ function channelInbox(events) {
   provider.queueChannelPlan = async () => true;
   window.__TAURI__ = { core: { invoke: async (cmd, args) => {
     if (cmd === 'channel_pending') return inbox.pending;
+    if (cmd === 'channel_check_pending') return inbox.pending.some(event => event.id === args.id);
     if (cmd === 'channel_ack') { inbox.acks.push(args.id); inbox.pending = inbox.pending.filter(event => event.id !== args.id); }
   } } };
   return inbox;

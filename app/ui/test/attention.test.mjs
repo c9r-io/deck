@@ -338,7 +338,7 @@ test('a row the backend holds for a first interaction or for Codex Signal is a h
   });
   assert.deepEqual(Object.fromEntries(deliveryWaits(items)), { both: 'review' }, 'without a plan nothing live is claimed');
   assert.deepEqual(Object.fromEntries(deliveryWaits(items, undefined)), { both: 'review' });
-  assert.deepEqual([...DELIVERY_WAITS], ['ambiguous', 'failed', 'review', 'external', 'first-send', 'codex-signal', 'authority-unverified']);
+  assert.deepEqual([...DELIVERY_WAITS], ['ambiguous', 'failed', 'review', 'channel-stopped', 'channel-unverified', 'external', 'first-send', 'codex-signal', 'authority-unverified']);
   const tracker = trackerOf();
   const card = cards.find(c => c.id === '03');
   tracker.deliveries([row('a', card.session)], [{ item: 'a', stage: 'first-send' }]);
@@ -426,4 +426,11 @@ test('a terminal bell is the backend\'s word passed on: a pending list row, neve
   assert.deepEqual(attentionRows([project], many, order, 'pending').map(row => row.kind), ['input', 'bell', 'done']);
   assert.equal(dictionaries.en['attention.bell'], 'Bell');
   assert.equal(dictionaries['zh-Hans']['attention.bell'], '响过铃');
+});
+
+test('channel permission waits use native stages and transient verification stays quiet', () => {
+  const items = [{ id: 'channel-head', session: 'channel-session', mode: 'at', state: 'pending', external: true }];
+  assert.equal(deliveryWaits(items, [{ item: 'channel-head', stage: 'channel-unverified' }]).size, 0);
+  assert.equal(deliveryWaits(items, [{ item: 'channel-head', stage: 'channel-unverified', lasting: true }]).get('channel-session'), 'channel-unverified');
+  assert.equal(deliveryWaits(items, [{ item: 'channel-head', stage: 'channel-stopped' }]).get('channel-session'), 'channel-stopped');
 });

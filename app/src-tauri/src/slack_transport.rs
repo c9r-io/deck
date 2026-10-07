@@ -386,9 +386,12 @@ fn socket_loop(app: AppHandle) {
             }
             (_, b) => b,
         };
-        let identity = bot
+        let mut identity = bot
             .as_ref()
             .and_then(|(t, _)| inbound_channel::connection_identity(t).ok());
+        // A bot auth identity alone is incomplete: the current authority is
+        // published only after Socket Mode verifies its app id in `hello`.
+        inbound_channel::set_current_identity(None);
         if user.is_none() && identity.is_none() {
             wait(Duration::from_secs(60));
             continue;
@@ -418,7 +421,12 @@ fn socket_loop(app: AppHandle) {
                         idle = 0;
                         let value = parse_socket_text(&text)?;
                         if value.get("type").and_then(Value::as_str) == Some("hello") {
-                            expected_app = Some(app_id(&value).ok_or("app-id")?.to_string());
+                            let verified_app = app_id(&value).ok_or("app-id")?.to_string();
+                            expected_app = Some(verified_app.clone());
+                            if let Some(identity) = identity.as_mut() {
+                                identity.app_id = verified_app;
+                                inbound_channel::set_current_identity(Some(identity.clone()));
+                            }
                             CONNECTED.store(true, Ordering::SeqCst);
                             if identity.is_some() {
                                 inbound_channel::transport_connected();
@@ -489,6 +497,7 @@ fn socket_loop(app: AppHandle) {
             }
         })();
         CONNECTED.store(false, Ordering::SeqCst);
+        inbound_channel::set_current_identity(None);
         let code = attempt.err().unwrap_or("socket");
         if identity.is_some() && code != "changed" {
             inbound_channel::transport_disconnected(code);

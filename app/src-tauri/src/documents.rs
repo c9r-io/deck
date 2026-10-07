@@ -47,6 +47,15 @@
 //!   aside is never a new empty Board: with nothing loadable left the load
 //!   fails, and every save is refused while this process holds no committed
 //!   Board (`save_board_at`), each refusal emitting `board-lost`.
+//! - Channel first-send settings are native-issued grants. Ordinary settings
+//!   saves preserve only the exact current grant; explicit rule requests mint
+//!   or update one and return canonical settings. The commit is followed by a
+//!   durable inbox activation whose microsecond time is the message boundary.
+//!   Backup settings durably clear channel intent and grants. An effective Board
+//!   template-head change retires dependent grants under settings -> Board
+//!   fences before the Board write, while unrelated card/follow-up edits do
+//!   not depend on settings readability. Removing its last frozen Board
+//!   evidence consumes the native pending/applied event before persistence.
 //! - The lost Board's way out is the user's explicit choice, never deck's:
 //!   `board_recovery_state` answers why a load failed (`lost` with its one way
 //!   out, `newer`, `other`) and `board_lost_exit` takes the way
@@ -400,6 +409,30 @@ struct ChannelRun {
     initial_steps: Vec<ChannelStep>,
     #[serde(default)]
     initial_queued: bool,
+    #[serde(default)]
+    target: Option<ChannelRunTarget>,
+    #[serde(default)]
+    first_send: Option<ChannelRunFirstSend>,
+    #[serde(default)]
+    first_send_uncertain: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChannelRunTarget {
+    project_id: String,
+    dir: String,
+    cmd: String,
+    session: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChannelRunFirstSend {
+    inbox_id: String,
+    grant_id: String,
+    grant_digest: String,
+    skeleton: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -515,6 +548,25 @@ fn validate_channel_run(
         && run.idle_minutes <= CHANNEL_MAX_IDLE_MINUTES
         && run.initial_steps.len() <= BUFFER_MAX_COPIES
         && buffer.is_some_and(|value| value.collecting == run.collecting)
+        && run.target.as_ref().is_none_or(|target| {
+            bounded_buffer_id(&target.project_id)
+                && !target.dir.is_empty()
+                && target.dir.len() <= PRESET_DIR_MAX_BYTES
+                && !target.dir.chars().any(char::is_control)
+                && crate::admission::channel_agent_command(&target.cmd).is_some()
+                && crate::tmux::validate_session_name(&target.session).is_ok()
+        })
+        && run.first_send.as_ref().is_none_or(|claim| {
+            claim.inbox_id.starts_with("default/")
+                && claim.inbox_id.len() <= 512
+                && !claim.grant_id.is_empty()
+                && claim.grant_id.len() <= 96
+                && sha256_hex(&claim.grant_digest)
+                && !claim.skeleton.is_empty()
+                && claim.skeleton.len() <= PRESET_STEP_MAX_BYTES
+                && run.target.is_some()
+                && !run.initial_steps.is_empty()
+        })
         && run.initial_steps.iter().enumerate().all(|(index, step)| {
             bounded_buffer_id(&step.operation_id)
                 && !step.text.is_empty()
@@ -526,7 +578,11 @@ fn validate_channel_run(
                 && step.tpl_idx == index + 1
                 && step.tpl_total == run.initial_steps.len()
         });
-    let _ = (run.initial_queued, &run.workspace_id);
+    let _ = (
+        run.initial_queued,
+        run.first_send_uncertain,
+        &run.workspace_id,
+    );
     if valid {
         Ok(())
     } else {
@@ -1159,6 +1215,25 @@ fn withdraw_preset_choices(payload: &str) -> Option<String> {
             withdrawn |= preset.remove(choice).is_some();
         }
     }
+    for card in board["cards"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_object_mut)
+    {
+        let Some(run) = card
+            .get_mut("channelRun")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        if run
+            .get("firstSend")
+            .is_some_and(serde_json::Value::is_object)
+        {
+            withdrawn |= run.insert("firstSendUncertain".into(), true.into()) != Some(true.into());
+        }
+    }
     withdrawn.then(|| board.to_string())
 }
 
@@ -1284,8 +1359,37 @@ pub(crate) fn save_board(
             "injected board save failure",
         ));
     }
+    // Validate before a malformed candidate can retire an unrelated grant.
+    serde_json::from_str::<BoardDoc>(&data)
+        .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid board"))?;
     let path = board_path();
-    let saved = save_board_door(&path, &data, &reminder_changes.unwrap_or_default());
+    let _settings_fence = storage::settings_fence();
+    let _board_fence = board_fence();
+    let prior_board = committed_board();
+    let authority_changed = prior_board
+        .as_deref()
+        .is_some_and(|prior| channel_template_heads(prior) != channel_template_heads(&data));
+    let retired = if authority_changed {
+        retire_channel_grants_locked(&data)?
+    } else {
+        false
+    };
+    reconcile_channel_board_evidence(prior_board.as_deref(), &data)?;
+    let saved = save_board_at(
+        &path,
+        &data,
+        &reminder_changes.unwrap_or_default(),
+        prior_board,
+    );
+    if saved.is_ok() {
+        let _ = commit_board(&data, BoardStanding::Current);
+    }
+    drop(_board_fence);
+    drop(_settings_fence);
+    if retired {
+        use tauri::Emitter;
+        let _ = app.emit("channel-authority-changed", ());
+    }
     if saved.is_err() && board_lost_at(&path, committed_board().is_some()).unwrap_or(false) {
         use tauri::Emitter;
         let _ = app.emit(BOARD_LOST_EVENT, ());
@@ -1293,23 +1397,139 @@ pub(crate) fn save_board(
     saved
 }
 
-/// The owner's save at `path`: written and committed under the fence.
-fn save_board_door(
-    path: &std::path::Path,
-    data: &str,
-    claims: &[crate::reminder::Claim],
-) -> Result<(), DeckError> {
-    // held across the disk write and the commit: when this returns, no
-    // automatic send can still begin on what the previous Board said
-    let _fence = board_fence();
-    let saved = save_board_at(path, data, claims, committed_board());
-    if saved.is_ok() {
-        // the owner's save is the current version, whatever was held before
-        let _ = commit_board(data, BoardStanding::Current);
-    }
-    saved
+/// The Board facts a channel grant depends on. Card changes, column/display
+/// names and later template steps do not make ordinary Board saves depend on
+/// settings readability; a project/template deletion or effective head edit
+/// does.
+fn channel_template_heads(data: &str) -> Vec<(String, String, String)> {
+    let Ok(board) = serde_json::from_str::<serde_json::Value>(data) else {
+        return Vec::new();
+    };
+    let mut heads: Vec<_> = board["projects"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|project| {
+            let project_id = project["id"].as_str().unwrap_or_default().to_owned();
+            project["templates"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(move |template| {
+                    Some((
+                        project_id.clone(),
+                        template["name"].as_str()?.to_owned(),
+                        crate::scheduler::normalize_prompt(
+                            template["steps"].as_array()?.first()?.as_str()?,
+                        ),
+                    ))
+                })
+        })
+        .collect();
+    heads.sort();
+    heads
 }
 
+fn channel_board_evidence(data: &str) -> HashSet<String> {
+    channel_board_bindings(data).into_keys().collect()
+}
+
+fn channel_board_bindings(data: &str) -> HashMap<String, (String, String)> {
+    let Ok(board) = serde_json::from_str::<serde_json::Value>(data) else {
+        return HashMap::new();
+    };
+    board["cards"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|card| card["origin"]["source"] == "channel")
+        .flat_map(|card| {
+            let card_id = card["id"].as_str().unwrap_or_default().to_owned();
+            let session = card["session"].as_str().unwrap_or_default().to_owned();
+            let mut ids = Vec::new();
+            if card["origin"]["source"] == "channel" {
+                if let Some(id) = card["origin"]["key"]
+                    .as_str()
+                    .and_then(|key| key.strip_prefix("channel:"))
+                {
+                    ids.push(id.to_owned());
+                }
+            }
+            for entry in card["buffer"]["entries"].as_array().into_iter().flatten() {
+                let source = &entry["source"];
+                if entry["kind"] == "external" && source["type"] == "channel" {
+                    if let (Some(connection), Some(workspace), Some(event), Some(rule)) = (
+                        source["connection"].as_str(),
+                        source["workspaceId"].as_str(),
+                        source["eventId"].as_str(),
+                        source["rule"].as_str(),
+                    ) {
+                        ids.push(format!("{connection}/{workspace}/{event}/{rule}"));
+                    }
+                }
+            }
+            ids.into_iter()
+                .map(move |id| (id, (card_id.clone(), session.clone())))
+        })
+        .collect()
+}
+
+fn reconcile_channel_board_evidence(prior: Option<&str>, next: &str) -> Result<(), DeckError> {
+    // Recovery uncertainty is native provenance. An ordinary Board request
+    // cannot erase it and turn an old frozen head into a fresh admission.
+    if let Some(prior) = prior {
+        let before: serde_json::Value = serde_json::from_str(prior)
+            .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid prior Board"))?;
+        let after: serde_json::Value = serde_json::from_str(next)
+            .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid Board"))?;
+        for card in before["cards"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|card| card["channelRun"]["firstSendUncertain"] == true)
+        {
+            if after["cards"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|next_card| {
+                    next_card["id"] == card["id"]
+                        && next_card["channelRun"]["firstSendUncertain"] != true
+                })
+            {
+                return Err(DeckError::new(
+                    ErrorKind::Invalid,
+                    "channel recovery uncertainty cannot be removed",
+                ));
+            }
+        }
+    }
+    let before = prior.map(channel_board_evidence).unwrap_or_default();
+    let after = channel_board_evidence(next);
+    let bindings = channel_board_bindings(next);
+    for id in after.difference(&before) {
+        if !crate::inbound_channel::pending_exact(id)? {
+            return Err(DeckError::new(
+                ErrorKind::Invalid,
+                "channel event is no longer pending",
+            ));
+        }
+        let (card_id, session) = bindings.get(id).ok_or_else(|| {
+            DeckError::new(ErrorKind::Invalid, "channel Board identity is missing")
+        })?;
+        crate::inbound_channel::bind_board_identity(id, card_id, session)?;
+    }
+    for id in before.difference(&after) {
+        if let Err(error) = crate::inbound_channel::cancel_event(id) {
+            if error.kind() != ErrorKind::Missing {
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The owner's save at `path`: written and committed under the fence.
 /// The Board save at `path`, given the Board this process committed last.
 fn save_board_at(
     path: &std::path::Path,
@@ -1523,31 +1743,367 @@ fn load_settings_at(path: &std::path::Path) -> Result<Option<storage::LoadOutcom
 
 #[tauri::command]
 pub(crate) fn load_settings() -> Result<LoadedDoc, DeckError> {
-    Ok(to_loaded(load_settings_at(&settings_path())?))
+    let mut loaded = to_loaded(load_settings_at(&settings_path())?);
+    if loaded.source == "backup" {
+        // A backup is the version before the last settings save and cannot
+        // restore a withdrawn channel authorization decision. Persist the
+        // feature-local withdrawal before exposing settings to the webview;
+        // re-enabling requires a new explicit grant request.
+        if let Some(stripped) = strip_channel_grants(&loaded.data, true) {
+            let _fence = storage::settings_fence();
+            save_settings_locked_at(&settings_path(), &stripped)?;
+            loaded.data = stripped;
+        }
+    }
+    Ok(loaded)
+}
+
+fn strip_channel_grants(data: &str, clear_choice: bool) -> Option<String> {
+    let mut value: serde_json::Value = serde_json::from_str(data).ok()?;
+    let rules = value.pointer_mut("/inbound/channelRules")?.as_array_mut()?;
+    let mut changed = false;
+    for rule in rules
+        .iter_mut()
+        .filter_map(serde_json::Value::as_object_mut)
+    {
+        changed |= rule.remove("firstSendGrant").is_some();
+        if clear_choice && rule.remove("firstSend").is_some() {
+            changed = true;
+        }
+    }
+    changed.then(|| value.to_string())
+}
+
+fn now_micros() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn current_settings_value(path: &std::path::Path) -> Result<Option<serde_json::Value>, DeckError> {
+    let Some(loaded) = storage::read_typed::<SettingsDoc>(path)? else {
+        return Ok(None);
+    };
+    if loaded.source != "main" {
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "current settings are unavailable",
+        ));
+    }
+    serde_json::from_str(&loaded.payload)
+        .map(Some)
+        .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "settings are invalid"))
+}
+
+fn reconcile_channel_grants(
+    data: &str,
+    current: Option<&serde_json::Value>,
+    requests: &[crate::inbound_channel::ChannelFirstSendRequest],
+) -> Result<String, DeckError> {
+    let mut value: serde_json::Value = serde_json::from_str(data)
+        .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "settings must be valid JSON"))?;
+    let candidate = crate::inbound_channel::config_from_value(value.get("inbound"));
+    let prior = crate::inbound_channel::config_from_value(current.and_then(|v| v.get("inbound")));
+    let board = board_authority();
+    let identity = crate::inbound_channel::current_identity();
+    let mut requested = HashMap::new();
+    for request in requests {
+        if requested
+            .insert(request.rule_id.clone(), request.external)
+            .is_some()
+        {
+            return Err(DeckError::new(
+                ErrorKind::Invalid,
+                "duplicate channel first-send request",
+            ));
+        }
+    }
+    let rules = value
+        .pointer_mut("/inbound/channelRules")
+        .and_then(serde_json::Value::as_array_mut);
+    let Some(rules) = rules else {
+        if requests.is_empty() {
+            return Ok(value.to_string());
+        }
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "channel rule is missing",
+        ));
+    };
+    for raw in rules.iter_mut() {
+        let Some(object) = raw.as_object_mut() else {
+            continue;
+        };
+        let Some(id) = object
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let Some(rule) = candidate.rules.iter().find(|r| r.id == id) else {
+            continue;
+        };
+        let explicit = requested.remove(&id);
+        let enabled = candidate.connection.enabled && rule.enabled && rule.first_send;
+        if !enabled {
+            object.remove("firstSendGrant");
+            object.remove("firstSend");
+            continue;
+        }
+        if let Some(external) = explicit {
+            let board = board
+                .as_ref()
+                .ok_or_else(|| DeckError::new(ErrorKind::Other, "board authority unavailable"))?;
+            let identity = identity.as_ref().ok_or_else(|| {
+                DeckError::new(ErrorKind::Other, "verified Slack identity unavailable")
+            })?;
+            let grant =
+                crate::inbound_channel::issue_grant(rule, board, identity, external, now_micros())?;
+            object.insert("firstSend".into(), serde_json::Value::Bool(true));
+            object.insert(
+                "firstSendGrant".into(),
+                serde_json::to_value(grant)
+                    .map_err(|_| DeckError::new(ErrorKind::Other, "channel grant encode failed"))?,
+            );
+            continue;
+        }
+        let exact_prior = prior
+            .rules
+            .iter()
+            .find(|old| old.id == id)
+            .and_then(|old| old.first_send_grant.as_ref())
+            .filter(|grant| rule.first_send_grant.as_ref() == Some(*grant));
+        if exact_prior.is_some() && board.is_none() {
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                "board authority unavailable",
+            ));
+        }
+        let valid = exact_prior.is_some_and(|grant| {
+            board.as_ref().is_some_and(|board| {
+                crate::inbound_channel::grant_semantically_valid(rule, grant, board)
+            })
+        });
+        if !valid {
+            object.remove("firstSendGrant");
+            object.remove("firstSend");
+        }
+    }
+    if !requested.is_empty() {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "channel rule is missing",
+        ));
+    }
+    Ok(value.to_string())
 }
 
 /// The webview's save. The same full validation as load, before anything
 /// touches disk; a main file damaged while deck was running is set aside
 /// rather than refusing the user (`storage::save_typed_as_owner`).
+#[cfg(test)]
 fn save_settings_at(path: &std::path::Path, data: &str) -> Result<(), DeckError> {
     validate_saved_update_channel(data)?;
     // a revoked automation approval is committed only under the fence the
     // scheduler's pre-fire authority check holds (storage::settings_fence)
     let _fence = storage::settings_fence();
+    save_settings_locked_at(path, data)
+}
+
+fn save_settings_locked_at(path: &std::path::Path, data: &str) -> Result<(), DeckError> {
     serde_json::from_str::<SettingsDoc>(data)
         .map_err(|e| DeckError::classified(format!("refusing to save invalid settings: {e}")))?;
     storage::save_typed_as_owner::<SettingsDoc>(path, data)
 }
 
+/// Retire channel first-send grants whose effective head or security scope no
+/// longer matches the Board candidate. Caller holds the settings fence; this
+/// write intentionally precedes the Board write and is never rolled back if
+/// the later Board write fails.
+fn retire_channel_grants_locked(next_board: &str) -> Result<bool, DeckError> {
+    let next: serde_json::Value = serde_json::from_str(next_board)
+        .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid board"))?;
+    let path = settings_path();
+    let Some(mut settings) = current_settings_value(&path)? else {
+        return Ok(false);
+    };
+    let config = crate::inbound_channel::config_from_value(settings.get("inbound"));
+    let Some(rules) = settings
+        .pointer_mut("/inbound/channelRules")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok(false);
+    };
+    let mut changed = false;
+    for raw in rules
+        .iter_mut()
+        .filter_map(serde_json::Value::as_object_mut)
+    {
+        let Some(id) = raw.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(rule) = config.rules.iter().find(|rule| rule.id == id) else {
+            continue;
+        };
+        let invalid = rule.first_send_grant.as_ref().is_some_and(|grant| {
+            !crate::inbound_channel::grant_semantically_valid(rule, grant, &next)
+        });
+        if invalid {
+            changed |= raw.remove("firstSendGrant").is_some();
+            changed |= raw.remove("firstSend").is_some();
+        }
+    }
+    if changed {
+        save_settings_locked_at(&path, &settings.to_string())?;
+    }
+    Ok(changed)
+}
+
 #[tauri::command]
-pub(crate) fn save_settings(data: String) -> Result<(), DeckError> {
+pub(crate) fn save_settings(
+    data: String,
+    channel_first_send_requests: Option<Vec<crate::inbound_channel::ChannelFirstSendRequest>>,
+) -> Result<String, DeckError> {
     if crate::smoke_faults::take("settings-save") {
         return Err(DeckError::new(
             ErrorKind::Other,
             "injected settings save failure",
         ));
     }
-    save_settings_at(&settings_path(), &data)
+    let path = settings_path();
+    let _settings_fence = storage::settings_fence();
+    let _board_fence = board_fence();
+    let current = current_settings_value(&path)?;
+    let requests = channel_first_send_requests.unwrap_or_default();
+    let canonical = reconcile_channel_grants(&data, current.as_ref(), &requests)?;
+    // First persist the unique inactive intent. Native staging requires a
+    // matching inbox activation, so it grants nothing during this write.
+    validate_saved_update_channel(&canonical)?;
+    save_settings_locked_at(&path, &canonical)?;
+    let needs_activation_repair = serde_json::from_str::<serde_json::Value>(&canonical)
+        .ok()
+        .and_then(|value| value.pointer("/inbound/channelRules").cloned())
+        .and_then(|rules| rules.as_array().cloned())
+        .is_some_and(|rules| {
+            rules.iter().any(|rule| {
+                rule["firstSendGrant"]["id"]
+                    .as_str()
+                    .is_some_and(|id| crate::inbound_channel::grant_activation(id).is_none())
+            })
+        });
+    if requests.is_empty() && !needs_activation_repair {
+        return Ok(canonical);
+    }
+    let committed_at = now_micros();
+    let board = board_authority()
+        .ok_or_else(|| DeckError::new(ErrorKind::Other, "board authority unavailable"))?;
+    let mut final_value: serde_json::Value = serde_json::from_str(&canonical)
+        .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "settings are invalid"))?;
+    let config = crate::inbound_channel::config_from_value(final_value.get("inbound"));
+    let requested: HashSet<_> = requests
+        .iter()
+        .map(|request| request.rule_id.as_str())
+        .collect();
+    let mut activations = Vec::new();
+    if let Some(rules) = final_value
+        .pointer_mut("/inbound/channelRules")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for raw in rules.iter_mut() {
+            let Some(id) = raw["id"].as_str() else {
+                continue;
+            };
+            let existing_grant_id = raw["firstSendGrant"]["id"].as_str();
+            let needs_activation = existing_grant_id.is_some_and(|grant_id| {
+                crate::inbound_channel::grant_activation(grant_id).is_none()
+            });
+            if !requested.contains(id) && !needs_activation {
+                continue;
+            }
+            let rule = config
+                .rules
+                .iter()
+                .find(|rule| rule.id == id)
+                .ok_or_else(|| DeckError::new(ErrorKind::Invalid, "channel rule is missing"))?;
+            let mut grant: crate::inbound_channel::ChannelFirstSendGrant =
+                serde_json::from_value(raw["firstSendGrant"].clone())
+                    .map_err(|_| DeckError::new(ErrorKind::Invalid, "channel grant is missing"))?;
+            crate::inbound_channel::restamp_grant(rule, &mut grant, &board, committed_at)?;
+            activations.push(grant.id.clone());
+            raw["firstSendGrant"] = serde_json::to_value(grant)
+                .map_err(|_| DeckError::new(ErrorKind::Other, "channel grant encode failed"))?;
+        }
+    }
+    if activations.is_empty() {
+        return Ok(canonical);
+    }
+    let final_text = final_value.to_string();
+    save_settings_locked_at(&path, &final_text)?;
+    for id in activations {
+        crate::inbound_channel::activate_grant(&id, committed_at)?;
+    }
+    Ok(final_text)
+}
+
+/// Retry the narrow post-settings-commit activation step without trusting a
+/// webview snapshot. An inactive persisted intent grants nothing; the shared
+/// native inbound poll calls this until a transient inbox write succeeds.
+pub(crate) fn recover_channel_grant_activations() -> bool {
+    let _settings_fence = storage::settings_fence();
+    let _board_fence = board_fence();
+    let path = settings_path();
+    let Ok(Some(mut value)) = current_settings_value(&path) else {
+        return false;
+    };
+    let Some(board) = board_authority() else {
+        return false;
+    };
+    let config = crate::inbound_channel::config_from_value(value.get("inbound"));
+    let committed_at = now_micros();
+    let mut activations = Vec::new();
+    let Some(rules) = value
+        .pointer_mut("/inbound/channelRules")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return false;
+    };
+    for raw in rules.iter_mut() {
+        let Some(id) = raw["id"].as_str() else {
+            continue;
+        };
+        let Some(rule) = config.rules.iter().find(|rule| rule.id == id) else {
+            continue;
+        };
+        let Ok(mut grant) = serde_json::from_value::<crate::inbound_channel::ChannelFirstSendGrant>(
+            raw["firstSendGrant"].clone(),
+        ) else {
+            continue;
+        };
+        if crate::inbound_channel::grant_activation(&grant.id).is_some()
+            || !crate::inbound_channel::grant_semantically_valid(rule, &grant, &board)
+        {
+            continue;
+        }
+        if crate::inbound_channel::restamp_grant(rule, &mut grant, &board, committed_at).is_err() {
+            continue;
+        }
+        activations.push(grant.id.clone());
+        let Ok(encoded) = serde_json::to_value(grant) else {
+            return false;
+        };
+        raw["firstSendGrant"] = encoded;
+    }
+    if activations.is_empty() || save_settings_locked_at(&path, &value.to_string()).is_err() {
+        return false;
+    }
+    let mut activated = false;
+    for id in activations {
+        activated |= crate::inbound_channel::activate_grant(&id, committed_at).is_ok();
+    }
+    activated
 }
 
 fn validate_saved_update_channel(data: &str) -> Result<(), DeckError> {
@@ -1658,8 +2214,49 @@ pub(crate) fn update_channel_setting() -> String {
 pub(crate) use tests::door as test_door;
 
 #[cfg(test)]
+mod channel_admission_tests;
+
+#[cfg(test)]
 mod tests {
+    fn save_board_door(
+        path: &std::path::Path,
+        data: &str,
+        claims: &[crate::reminder::Claim],
+    ) -> Result<(), DeckError> {
+        // held across the disk write and the commit: when this returns, no
+        // automatic send can still begin on what the previous Board said
+        let _fence = board_fence();
+        let saved = save_board_at(path, data, claims, committed_board());
+        if saved.is_ok() {
+            // the owner's save is the current version, whatever was held before
+            let _ = commit_board(data, BoardStanding::Current);
+        }
+        saved
+    }
+
     use super::*;
+
+    #[test]
+    fn restored_settings_backup_withdraws_channel_first_send_intent_and_grant() {
+        let input = serde_json::json!({
+            "inbound": {"channelRules": [
+                {"id":"r1","firstSend":true,"firstSendGrant":{"id":"g"},"keep":1},
+                {"id":"r2","keep":2}
+            ]},
+            "theme":"dark"
+        });
+        let restored = strip_channel_grants(&input.to_string(), true).unwrap();
+        let restored: serde_json::Value = serde_json::from_str(&restored).unwrap();
+        assert!(restored
+            .pointer("/inbound/channelRules/0/firstSend")
+            .is_none());
+        assert!(restored
+            .pointer("/inbound/channelRules/0/firstSendGrant")
+            .is_none());
+        assert_eq!(restored["inbound"]["channelRules"][0]["keep"], 1);
+        assert_eq!(restored["inbound"]["channelRules"][1]["keep"], 2);
+        assert_eq!(restored["theme"], "dark");
+    }
 
     /// The three Board doors on a scratch file, for a test in another module
     /// that drives the real load, save and way out. `hold` serializes every
@@ -1667,6 +2264,7 @@ mod tests {
     /// one back; `restart` forgets it, as a new process would.
     pub(crate) mod door {
         use super::super::*;
+        use super::save_board_door;
 
         static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -3432,7 +4030,8 @@ mod tests {
                     {"id": "R1", "name": "n", "firstSend": true, "autoSend": {"digest": digest}, "later": 1},
                     {"id": "R2", "name": "m", "autoSend": {"digest": digest}}]},
                 {"id": "P2", "name": "side"}],
-            "cards": [{"id": "c", "connectorRun": {"firstSend": true, "autoSend": digest}}],
+            "cards": [{"id": "c", "connectorRun": {"firstSend": true, "autoSend": digest},
+                "channelRun": {"firstSend": {"inboxId":"default/T/E/r"}}}],
             "extension": [1, 2],
         });
         let mut expected = with.clone();
@@ -3441,6 +4040,7 @@ mod tests {
             preset.remove("firstSend");
             preset.remove("autoSend");
         }
+        expected["cards"][0]["channelRun"]["firstSendUncertain"] = true.into();
         let rewritten = withdraw_preset_choices(&with.to_string()).expect("choices were held");
         assert_eq!(json(&rewritten), expected);
         assert_eq!(withdraw_preset_choices(&rewritten), None, "nothing left");

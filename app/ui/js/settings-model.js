@@ -1,6 +1,8 @@
 import { DEFAULT_VOICE_PREFERENCES, normalizeVoicePreferences } from './voice-preferences-model.js';
 // First-send risk acceptance is explicit and per-rule for clock/Slack badge;
 // missing fields stay OFF, independently of reviewEach and Slack AutoSend.
+// Channel first-step permission uses its own native-issued grant preserved
+// by normalizeChannelConfig; normalization never creates a grant.
 import { normalizeChannelConfig } from './channel-model.js';
 import { INBOUND_BADGE_RE, LOCAL_ID_RE } from './pure.js';
 

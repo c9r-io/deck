@@ -6,6 +6,8 @@
 // item is readable only by this user and only after macOS's own access
 // prompt for a new binary. Callers receive the bytes; nothing here logs,
 // returns or interpolates a token into any error string.
+// Unit tests and isolated smoke launches never call the operating-system
+// credential APIs; their optional credential values remain process-local.
 
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
@@ -116,7 +118,7 @@ pub(crate) fn get_checked(slot: Slot) -> Result<Option<String>, DeckError> {
     if let Some(v) = &CACHE.lock_or_recover()[cache_slot(slot)] {
         return Ok(Some(v.clone()));
     }
-    if crate::smoke_faults::enabled() {
+    if cfg!(test) || crate::smoke_faults::enabled() {
         return Ok(None);
     }
     let bytes = match get_generic_password(SERVICE, slot.account()) {
@@ -142,7 +144,7 @@ pub(crate) fn has(slot: Slot) -> bool {
     if CACHE.lock_or_recover()[cache_slot(slot)].is_some() {
         return true;
     }
-    if crate::smoke_faults::enabled() {
+    if cfg!(test) || crate::smoke_faults::enabled() {
         return false;
     }
     ItemSearchOptions::new()
@@ -166,7 +168,7 @@ pub(crate) fn set(slot: Slot, value: &str) -> Result<(), DeckError> {
     if !slot.accepts(value) {
         return Err(DeckError::new(ErrorKind::Other, "shape"));
     }
-    if crate::smoke_faults::enabled() {
+    if cfg!(test) || crate::smoke_faults::enabled() {
         cache_put(slot, Some(value.to_string()));
         return Ok(());
     }
@@ -178,7 +180,7 @@ pub(crate) fn set(slot: Slot, value: &str) -> Result<(), DeckError> {
 
 pub(crate) fn clear(slot: Slot) -> Result<(), DeckError> {
     cache_put(slot, None);
-    if crate::smoke_faults::enabled() {
+    if cfg!(test) || crate::smoke_faults::enabled() {
         return Ok(());
     }
     match delete_generic_password(SERVICE, slot.account()) {
@@ -207,7 +209,7 @@ pub(crate) fn set_mcp_credential(account: &str, value: &str) -> Result<(), DeckE
     {
         return Err(DeckError::new(ErrorKind::Invalid, "invalid MCP credential"));
     }
-    if crate::smoke_faults::enabled() {
+    if cfg!(test) || crate::smoke_faults::enabled() {
         return Ok(());
     }
     set_generic_password(MCP_SERVICE, account, value.as_bytes())
@@ -221,7 +223,7 @@ pub(crate) fn clear_mcp_credential(account: &str) -> Result<(), DeckError> {
             "invalid MCP credential account",
         ));
     }
-    if crate::smoke_faults::enabled() {
+    if cfg!(test) || crate::smoke_faults::enabled() {
         return Ok(());
     }
     match delete_generic_password(MCP_SERVICE, account) {

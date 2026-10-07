@@ -17,7 +17,10 @@
 //!   run, a frozen inbound plan, a task preset, a channel rule, an enabled
 //!   channel connection or an idempotent queue operation; v4 queue.json and
 //!   settings.json that use a clock first send; v5 a Board that holds a
-//!   card reminder or a blocked retirement identity. A settings v2 barrier
+//!   card reminder or a blocked retirement identity; v7 for native channel
+//!   first-send grants, frozen Board runs and constrained queue/delivery
+//!   records. These sources stay v7 even when only their snapshot or audit
+//!   retains the fact. A settings v2 barrier
 //!   precedes the first reviewed queue save, so an old automation finish
 //!   rule never takes a refused queue for an empty one;
 //! - loading is TYPED: a file must parse as JSON, carry a readable envelope
@@ -103,9 +106,10 @@ use std::sync::Mutex;
 // channel/idempotency fields; v4 protects clock readiness origins/policy;
 // v5 protects card reminders and blocked retirement identities; v6 protects
 // a phone task preset's first-send choice and approval and their queue
-// origins.
+// origins; v7 protects channel first-send grants, frozen claims and queue
+// constraints.
 // Ordinary documents keep v1; upgrades are sticky.
-pub const SCHEMA_VERSION: u64 = 6;
+pub const SCHEMA_VERSION: u64 = 7;
 
 /// The two documents whose review fields an old reader could misinterpret as
 /// ordinary state (queue rows it would resend; finish rules it would apply).
@@ -165,6 +169,32 @@ fn uses_phone_task_policy(v: &serde_json::Value) -> bool {
                 || o.values().any(uses_phone_task_policy)
         }
         serde_json::Value::Array(a) => a.iter().any(uses_phone_task_policy),
+        _ => false,
+    }
+}
+
+fn uses_channel_first_send(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(o) => {
+            o.get("channelRules")
+                .and_then(|v| v.as_array())
+                .is_some_and(|rules| {
+                    rules
+                        .iter()
+                        .any(|rule| rule["firstSend"] == true || rule["firstSendGrant"].is_object())
+                })
+                || o.get("channelRun").is_some_and(|run| {
+                    run["firstSend"].is_object()
+                        || run["target"].is_object()
+                        || run["firstSendUncertain"] == true
+                })
+                || o.get("channel_first_send").is_some()
+                || o.get("channel_attempt").is_some()
+                || o.get("channel_recovery_before").is_some()
+                || o.get("channelFirstSend").is_some()
+                || o.values().any(uses_channel_first_send)
+        }
+        serde_json::Value::Array(a) => a.iter().any(uses_channel_first_send),
         _ => false,
     }
 }
@@ -734,33 +764,36 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let feature_version =
-        if matches!(name.as_ref(), "deck.json" | "queue.json") && uses_phone_task_policy(&data) {
-            6
-        } else if name == "deck.json"
-            && data
-                .get("cards")
-                .and_then(|v| v.as_array())
-                .is_some_and(|cards| {
-                    cards.iter().any(|c| {
-                        c.get("reminder").is_some() || c.get("reminderRetirements").is_some()
-                    })
-                })
-        {
-            5
-        } else if matches!(name.as_ref(), "queue.json" | "settings.json")
-            && uses_clock_first_send(&data)
-        {
-            4
-        } else if matches!(name.as_ref(), "deck.json" | "queue.json" | "settings.json")
-            && uses_buffer(&data)
-        {
-            3
-        } else if review_gated(&name) && uses_review(&data) {
-            2
-        } else {
-            1
-        };
+    let feature_version = if matches!(name.as_ref(), "deck.json" | "queue.json" | "settings.json")
+        && uses_channel_first_send(&data)
+    {
+        7
+    } else if matches!(name.as_ref(), "deck.json" | "queue.json") && uses_phone_task_policy(&data) {
+        6
+    } else if name == "deck.json"
+        && data
+            .get("cards")
+            .and_then(|v| v.as_array())
+            .is_some_and(|cards| {
+                cards
+                    .iter()
+                    .any(|c| c.get("reminder").is_some() || c.get("reminderRetirements").is_some())
+            })
+    {
+        5
+    } else if matches!(name.as_ref(), "queue.json" | "settings.json")
+        && uses_clock_first_send(&data)
+    {
+        4
+    } else if matches!(name.as_ref(), "deck.json" | "queue.json" | "settings.json")
+        && uses_buffer(&data)
+    {
+        3
+    } else if review_gated(&name) && uses_review(&data) {
+        2
+    } else {
+        1
+    };
     let mut version = minimum_version.max(feature_version);
     let existing = match std::fs::read(path) {
         Ok(bytes) => {
@@ -1632,6 +1665,55 @@ mod tests {
         .unwrap();
         let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         assert!(raw["schema_version"].as_u64().unwrap() < 6);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn channel_first_send_sources_upgrade_to_sticky_v7_even_when_only_audit_remains() {
+        let dir = tdir("channel-first-send-version");
+        for (index, (name, data)) in [
+            (
+                "settings.json",
+                serde_json::json!({"inbound":{"channelRules":[{"firstSendGrant":{"id":"g"}}]}}),
+            ),
+            (
+                "deck.json",
+                serde_json::json!({"cards":[{"channelRun":{"firstSendUncertain":true}}]}),
+            ),
+            (
+                "queue.json",
+                serde_json::json!({"items":[{"channel_first_send":{"grant_id":"g"}}]}),
+            ),
+            (
+                "queue.json",
+                serde_json::json!({"pending":[{"snapshot":{"channel_first_send":{"grant_id":"g"}}}]}),
+            ),
+            (
+                "queue.json",
+                serde_json::json!({"deliveries":[{"channel_first_send":{"grant_id":"g"}}]}),
+            ),
+            (
+                "queue.json",
+                serde_json::json!({"pending":[{"channel_attempt":{"automatic":true,"readiness_overridden":true}}]}),
+            ),
+            ("queue.json", serde_json::json!({"channel_recovery_before": 1})),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let case = dir.join(index.to_string());
+            std::fs::create_dir_all(&case).unwrap();
+            let path = case.join(name);
+            save_typed::<serde_json::Value>(&path, &data.to_string()).unwrap();
+            let first: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(first["schema_version"], 7, "{name}: {data}");
+            assert!(envelope_payload_for(&first, 6).is_err(), "{name}: {data}");
+            save_typed::<serde_json::Value>(&path, "{}").unwrap();
+            let sticky: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(sticky["schema_version"], 7, "{name}: sticky");
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
     #[test]

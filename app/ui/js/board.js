@@ -2,6 +2,11 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 // Frozen automation heads claim first-send risk acceptance through native
 // source-specific admission: external Slack or owner clock, never later rows.
+// Channel heads additionally claim native run-head permission, independent
+// of readiness. The frozen channel target (including launch directory) and
+// skeleton survive observed cwd/template changes; retries replay that intent.
+// Native Board commits consume pending application evidence before removing
+// its last card/scratchpad copy, and retire grants on semantic head edits.
 // Polls are single-flight with ONE queued follow-up: a poll requested while
 // one is in flight runs after it (its request may predate the caller's event),
 // and every such caller receives the follow-up's promise. The interval tick
@@ -248,6 +253,7 @@ export const provider = {
       ...(connectorRun ? { connectorRun } : {}), ...(inboundPlan ? { inboundPlan } : {}),
       status: 'stopped', mem: null, tail: [],
     };
+    if (card.channelRun?.target) card.channelRun.target.session = card.session;
     let sideEffect;
     try {
       await mutateBoard(async draft => {
@@ -504,7 +510,7 @@ export const provider = {
   },
   async queueChannelPlan(sid, expectedGroupKey) {
     const candidate = this.get(sid);
-    if (!candidate || !channelAgentCommand(candidate.cmd)) {
+    if (!candidate || !channelAgentCommand(candidate.channelRun?.target?.cmd || candidate.cmd)) {
       const error = new Error('channel automation requires a supported agent');
       error.stage = 'unsupported-target';
       throw error;
@@ -515,10 +521,12 @@ export const provider = {
       const run = card?.channelRun;
       if (!card || run?.groupKey !== expectedGroupKey) return { noop: true };
       if (run.initialQueued) { admitted = true; return { noop: true }; }
-      for (const step of run.initialSteps || []) {
-        await inv('channel_queue_add', { args: { session: card.session, cardId: card.id,
-          operationId: step.operationId, dir: card.dir, cmd: card.cmd, text: step.text,
-          mode: step.mode, at: step.at, tpl: step.tpl, tplIdx: step.tplIdx, tplTotal: step.tplTotal } });
+      const target = run.target || card;
+      for (const [index, step] of (run.initialSteps || []).entries()) {
+        await inv('channel_queue_add', { args: { session: target.session, cardId: card.id,
+          operationId: step.operationId, dir: target.dir, cmd: target.cmd, text: step.text,
+          mode: step.mode, at: step.at, tpl: step.tpl, tplIdx: step.tplIdx, tplTotal: step.tplTotal,
+          ...(index === 0 && run.firstSend ? { channelFirstSend: run.firstSend } : {}) } });
       }
       run.initialQueued = true;
       admitted = true;

@@ -261,10 +261,25 @@ fn the_scheduler_names_the_rule_model_only_where_registered() {
         .collect();
     assert_eq!(
         back,
-        [("inbound.rs".to_string(), 1)],
-        "the automation rule model names the scheduler once, to wake it"
+        [("inbound.rs".to_string(), 1), ("inbound_channel.rs".to_string(), 7)],
+        "badge wakes the scheduler; channel reuses only normalization, supported-command and placeholder classification"
     );
     assert!(code_only(&source("inbound.rs")).contains("crate::scheduler::wake_scheduler();"));
+    let channel = code_only(production_region(&source("inbound_channel.rs")));
+    for (helper, count) in [
+        ("normalize_prompt", 1),
+        ("first_send::supported_command", 3),
+        ("authority::has_placeholder", 3),
+    ] {
+        assert_eq!(
+            channel
+                .matches(&format!("crate::scheduler::{helper}("))
+                .count(),
+            count
+        );
+    }
+    assert!(!channel.contains("first_send::verify"));
+    assert!(!channel.contains("StepAuthority"));
 }
 
 /// What the typed-documents door may name, as a closed list: the
@@ -294,10 +309,13 @@ const DOCUMENTS_MAY_NAME: &[(&str, Option<usize>, &str)] = &[
     ),
     (
         "tmux",
-        Some(1),
-        "the session-name rule the runtime enforces on start and attach",
+        Some(2),
+        "validate both card and frozen channel launch session names",
     ),
     ("voice", Some(1), "the closed list of dictation languages"),
+    ("inbound_channel", Some(24), "native channel grant issue/retirement/activation recovery and durable Board-event binding/consumption at the two document save boundaries"),
+    ("scheduler", Some(1), "normalize effective channel template heads with the same queue text contract"),
+
     (
         "inbound",
         Some(1),
@@ -305,8 +323,8 @@ const DOCUMENTS_MAY_NAME: &[(&str, Option<usize>, &str)] = &[
     ),
     (
         "admission",
-        Some(1),
-        "delegation: task-preset commands to the channel admission table",
+        Some(2),
+        "validate task-preset commands and frozen channel targets with the existing admission table",
     ),
     // A Board-domain delegation like the two above: a card's reminder and a
     // save's claims are the reminder module's types (four uses: the card, the
@@ -316,7 +334,7 @@ const DOCUMENTS_MAY_NAME: &[(&str, Option<usize>, &str)] = &[
     // is the observer the reminder module registers.
     (
         "reminder",
-        Some(6),
+        Some(5),
         "delegation: the reminder and claim types and their two validators",
     ),
 ];
@@ -455,10 +473,12 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
         [
             "ensure_review_schema in scheduler/mod.rs save_queue",
             "load_as_owner in documents.rs load_settings_at",
+            "read_typed in documents.rs current_settings_value",
             "read_typed in documents.rs settings_value_at",
             "read_typed in inbound.rs read_config_strict_at",
             "read_typed in inbound_channel.rs read_config_at",
-            "save_typed_as_owner in documents.rs save_settings_at",
+            "read_typed in inbound_channel.rs read_config_strict_result",
+            "save_typed_as_owner in documents.rs save_settings_locked_at",
         ],
         "a settings read outside the webview's load goes through storage::read_typed, which \
          never moves a file; only the owner's load and save and the review barrier may set \
@@ -468,10 +488,14 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
         path_callers("settings_path"),
         [
             "documents.rs load_settings",
+            "documents.rs load_settings",
+            "documents.rs recover_channel_grant_activations",
+            "documents.rs retire_channel_grants_locked",
             "documents.rs save_settings",
             "documents.rs settings_value",
             "inbound.rs read_config_strict",
             "inbound_channel.rs read_config",
+            "inbound_channel.rs read_config_strict_result",
             "scheduler/mod.rs save_queue",
         ],
         "a new reader of settings.json: route it through documents::settings_value, \
@@ -527,7 +551,7 @@ fn only_a_load_a_save_and_the_users_exit_commit_a_board() {
         [
             "documents.rs board_lost_exit_door",
             "documents.rs load_board_door",
-            "documents.rs save_board_door",
+            "documents.rs save_board",
         ],
         "a Board becomes committed by loading it, saving it, or the user's way out of a lost \
          Board (documents::board_lost_exit) — nowhere else"
@@ -535,7 +559,6 @@ fn only_a_load_a_save_and_the_users_exit_commit_a_board() {
     // each door is its command at the one Board path, and nothing else
     for (door, command) in [
         ("load_board_door(", "documents.rs load_board"),
-        ("save_board_door(", "documents.rs save_board"),
         ("board_lost_exit_door(", "documents.rs board_lost_exit"),
     ] {
         assert_eq!(callers_of(door), [command], "{door}");
@@ -692,22 +715,27 @@ fn the_data_directory_has_one_resolver() {
 #[test]
 fn settings_writes_and_the_pre_fire_authority_check_share_one_fence() {
     let documents = source("documents.rs");
-    // the command is the path-bound form of the one function that writes
     let command = source_scan::function_body(&documents, "save_settings").unwrap();
-    assert!(command.contains("save_settings_at(&settings_path(), &data)"));
+    let settings = command.find("storage::settings_fence()").unwrap();
+    let board = command.find("board_fence()").unwrap();
+    let save = command
+        .find("save_settings_locked_at(&path, &canonical)")
+        .unwrap();
+    assert!(settings < board && board < save);
+    for name in [
+        "save_settings_at",
+        "save_board",
+        "recover_channel_grant_activations",
+    ] {
+        let body = source_scan::function_body(&documents, name).unwrap();
+        assert!(body.contains("storage::settings_fence()"), "{name}");
+    }
+    let locked = source_scan::function_body(&documents, "save_settings_locked_at").unwrap();
+    assert!(locked.contains("storage::save_typed_as_owner::<SettingsDoc>"));
+    let board_save = source_scan::function_body(&documents, "save_board").unwrap();
     assert!(
-        !command.contains("storage::"),
-        "the command writes nothing itself"
-    );
-    let save = source_scan::function_body(&documents, "save_settings_at").unwrap();
-    let fence = save
-        .find("storage::settings_fence()")
-        .expect("save_settings takes the fence");
-    assert!(
-        fence
-            < save
-                .find("storage::save_typed_as_owner::<SettingsDoc>")
-                .unwrap()
+        board_save.find("retire_channel_grants_locked").unwrap()
+            < board_save.find("let saved = save_board_at").unwrap()
     );
     let delivery = source("scheduler/delivery.rs");
     let guarded = &delivery[delivery.find("fn send_one_guarded(").unwrap()..];
@@ -742,6 +770,10 @@ fn settings_writes_and_the_pre_fire_authority_check_share_one_fence() {
     assert!(held.contains("settings: config.as_ref().and_then(Option::as_ref),"));
     assert!(held.contains("board: board.as_ref().and_then(Option::as_ref),"));
     assert!(held.contains("match first_send::fence(&sel, sources)"));
+    assert!(held.contains("if overridden && sel.readiness_override.is_some()"));
+    assert!(held.contains("channel_first_send::standing"));
+    assert!(held.contains("inbound_channel::read_config_strict_result"));
+    assert!(held.contains("documents::board_authority"));
 }
 
 /// The server outlives every exit but one. A launch that ends without ever
