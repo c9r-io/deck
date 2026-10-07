@@ -685,6 +685,7 @@ const dictionary = {
   'automation.autoSend.checking': '正在核对已保存的批准…',
   'automation.autoSend.checkFailed': '无法核对已保存的批准',
   'automation.autoSend.checkFailedSave': '未保存：无法核对已保存的批准。取消勾选该选项可不带批准保存，或稍后重试。',
+  'automation.autoSend.templateChanged': '模板在批准后已修改。如需批准当前的步骤，请重新勾选该选项。',
   'automation.kv.firstSend': '新 Agent 的第一步',
   'automation.firstSend.option': '新启动的 Agent 也直接发送第一步',
   'automation.firstSend.hint': '已保存的时钟计划和模板表达了任务意图；Slack 表情表达了该次运行意图。开启一次即接受启动输入风险，后续运行无需手动确认首步。Deck 先启动 Agent，不输入提示，再经过短暂兼容等待发送。等待不代表就绪证明：Trust、Update、登录、权限或其他启动对话框仍可能接收文字和回车。真实阻塞条件与已配置的检查点仍然有效，后续步骤保持原有检查。支持 Claude；Codex 需要 --no-daemon。',

@@ -78,6 +78,11 @@
 // So an ordinary save never takes away an approval because it was not
 // computed yet, and never renews one that turned out stale. A check that
 // fails saves nothing until the user unticks the box or it can be checked.
+// A tick stands for the steps it was made for, whether it carries a saved
+// approval over or is the user's own: when the template's steps change
+// while the editor is open the tick is withdrawn with a line saying so, and
+// a save signs a new approval only from a tick the user made in that editor
+// for the steps as they are. A carried-over approval goes back unchanged.
 // Showing computes and writes nothing.
 //
 // ENTRY POINTS (06 B v01): the Board head keeps ONE persistent action, the
@@ -129,7 +134,7 @@
 import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { persistInbound } from './settings.js';
-import { minToHM, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
+import { minToHM, normalizeTemplateStep, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
 import { approveRule, composeRule, finishHintShown, firstSendNeedsConfirm, firstSendSupported, withFirstSend, graceOptions, graceText, grantDetail, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, templateCarriesMessage, triggerText } from './automation-model.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
@@ -402,6 +407,26 @@ function syncApproval() {
   if (!$('auto-send').checked) $('auto-send-external').checked = false;
 }
 
+/* What the tick in the open editor stands for (`editing.tick`): the steps
+   of the chosen template when it was made, and `stored`, the saved approval
+   it carries over, or null when the user ticked the box in this editor. A
+   tick is good only for those steps: `withdrawDrifted` takes it away when
+   they changed (the template manager saved, renamed or deleted it), and a
+   save signs nothing the user did not tick for. */
+const stepsNow = () => {
+  const template = (activeProject()?.templates || []).find(tp => tp.name === $('auto-template').value);
+  return template ? JSON.stringify(template.steps.map(normalizeTemplateStep)) : null;
+};
+const tickNow = (stored = null) => ({ steps: stepsNow(), stored });
+function withdrawDrifted() {
+  if (!editing?.tick || editing.tick.steps === stepsNow()) return;
+  editing.tick = null;
+  $('auto-send').checked = false;
+  $('auto-send-external').checked = false;
+  approvalNote('automation.autoSend.templateChanged');
+  syncApproval();
+}
+
 function approvalNote(key) {
   $('auto-send-check').hidden = !key;
   $('auto-send-check').textContent = key ? t(key) : '';
@@ -419,11 +444,13 @@ function checkApproval(edit, rule) {
   check.done = grantDetail(rule, ruleTemplate(rule)).then(detail => {
     if (check.settled || editing !== edit) return;
     check.settled = true;
-    const valid = detail === 'valid' && key === approvalKey(rule);
+    const current = key === approvalKey(rule);
+    const valid = detail === 'valid' && current;
     $('auto-send').indeterminate = false;
     $('auto-send').checked = valid;
     $('auto-send-external').checked = valid && rule.autoSend.external === true;
-    approvalNote(null);
+    edit.tick = valid ? tickNow(rule.autoSend) : null;
+    approvalNote(detail === 'valid' && !current ? 'automation.autoSend.templateChanged' : null);
     syncApproval();
   }, () => { if (!check.settled && editing === edit) approvalNote('automation.autoSend.checkFailed'); });
   return check;
@@ -443,6 +470,8 @@ function decideApproval() {
    approves the edited version explicitly (or saves without approval) */
 function withdrawApproval() {
   decideApproval();
+  if (editing) editing.tick = null;
+  approvalNote(null);
   if (!$('auto-send').checked && !$('auto-send-external').checked) return;
   $('auto-send').checked = false;
   $('auto-send-external').checked = false;
@@ -520,6 +549,7 @@ export function openEditor(rule) {
   $('auto-send-external').checked = approved && rule.autoSend.external === true;
   approvalNote(unchecked ? 'automation.autoSend.checking' : null);
   editing.approval = unchecked ? checkApproval(editing, rule) : null;
+  editing.tick = approval === 'valid' ? tickNow(rule.autoSend) : null;
   $('auto-first-send').checked = ['slack', 'clock'].includes(rule?.source) && rule.firstSendWithoutReadiness === true;
   $('auto-channel-first-send').checked = channel && rule.firstSend === true && !!rule.firstSendGrant;
   channelVerifyStatus(null);
@@ -597,15 +627,31 @@ function readEditor() {
   return read.rule;
 }
 
-/* the rule to store: approved against its template when the box is ticked,
-   without any approval otherwise (a stale one never survives a save) */
-async function withApproval(rule) {
+/* What a save is to do about the approval, fixed when Save is pressed
+   (nothing after an await reads the box or the template again): null for no
+   approval; otherwise the template as it is now and either the saved
+   approval the tick carries over (`stored`) or the user's own tick, with the
+   message-content consent as ticked. A tick whose steps moved on is
+   withdrawn first, so it is never signed for steps the user did not see. */
+function approvalIntent(rule) {
+  withdrawDrifted();
+  if (rule.source !== 'slack' || !$('auto-send').checked || !editing?.tick) return null;
+  const template = ruleTemplate(rule);
+  if (!template) return null;
+  return { template: structuredClone(template), stored: editing.tick.stored, external: $('auto-send-external').checked };
+}
+
+/* The rule to store. A saved approval that is carried over goes back as it
+   was, and only while it still covers this rule and these steps; a new one
+   is made only from the user's own tick; without either there is none (a
+   stale one never survives a save). */
+async function withApproval(rule, intent) {
   const plain = { ...rule };
   delete plain.autoSend;
-  if (rule.source !== 'slack' || !$('auto-send').checked) return plain;
-  const template = ruleTemplate(plain);
-  if (!template) return plain;
-  return approveRule(plain, template, { external: $('auto-send-external').checked });
+  if (!intent) return plain;
+  if (!intent.stored) return approveRule(plain, intent.template, { external: intent.external });
+  const kept = { ...plain, autoSend: intent.stored };
+  return (await grantDetail(kept, intent.template)) === 'valid' ? kept : plain;
 }
 
 /* The controls a waiting first-send save holds still: what was read from
@@ -847,14 +893,20 @@ export function initAutomation(deps) {
         if (saving !== op) return;
         if (!check.settled) { toast(t('automation.autoSend.checkFailedSave')); return; }
       }
-      const rule = withFirstSend(await withApproval(read), firstSend);
+      const rule = withFirstSend(await withApproval(read, approvalIntent(read)), firstSend);
       if (saving !== op) return;
       /* a save is reported in, and closes, only the editor it came from */
       if (await saveRule(rule, op) && editing === op.edit) { closeEditor(); toast(t('automation.saved')); }
     } finally { if (saving === op) saving = null; }
   };
-  $('auto-send').addEventListener('change', () => { decideApproval(); syncApproval(); });
-  $('auto-send-external').addEventListener('change', decideApproval);
+  /* the user's own tick is for the steps as they are at that moment */
+  const ticked = () => {
+    decideApproval();
+    editing.tick = $('auto-send').checked ? tickNow() : null;
+    approvalNote(null);
+  };
+  $('auto-send').addEventListener('change', () => { if (editing) ticked(); syncApproval(); });
+  $('auto-send-external').addEventListener('change', () => { if (editing) ticked(); });
   $('auto-channel-first-send').addEventListener('change', () => {
     channelAcceptanceChanged = $('auto-channel-first-send').checked;
     syncChannelFirstSend();
@@ -899,6 +951,7 @@ export function initAutomation(deps) {
   buildDayControls();
   onLocaleChange(() => { buildDayControls(); renderAutomations(); });
   unsubscribe = provider.subscribe(ev => {
+    if (ev === 'projects') withdrawDrifted();
     if (ev === 'projects' || ev === 'list' || ev === 'channel-authority') renderAutomations();
   });
   listen('inbound-changed', async () => { await refreshRuns(); renderAutomations(); })

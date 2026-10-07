@@ -126,6 +126,20 @@
         "rename-restart": {}
       }
     },
+    "approval": {
+      "terminal": "done",
+      "checks": {
+        "approval-pending": {},
+        "approval-press-box": { "b": 1 },
+        "approval-press-label": {},
+        "approval-key-space": {},
+        "approval-save-through": { "b": 1 },
+        "approval-check-failed": { "b": 1 },
+        "approval-layout": {},
+        "approval-drift": { "b": 1 },
+        "approval-exception": { "failureOnly": true }
+      }
+    },
     "board-lost": {
       "terminal": "done",
       "checks": {

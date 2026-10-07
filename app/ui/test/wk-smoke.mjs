@@ -3181,3 +3181,11 @@ export async function verifyReminder() {
 }
 
 export async function verifyReminderNative() { return (await import('./reminder-native-smoke.mjs')).runNativeReminderSmoke(); }
+
+// A badge rule's approval box in the automation editor: the waiting state,
+// real activation of the box and its label, Save across the check, a failed
+// check and the lines' layout (approval-smoke.mjs).
+export async function verifyApproval() {
+  const { runApprovalSmoke } = await import('./approval-smoke.mjs');
+  return runApprovalSmoke();
+}

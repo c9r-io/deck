@@ -163,6 +163,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("reminder", "m.verifyReminder()"),
     ("reminder-native", "m.verifyReminderNative()"),
     ("board-lost", "m.verifyBoardLost()"),
+    ("approval", "m.verifyApproval()"),
 ];
 
 fn smoke_entry(mode: &str) -> &'static str {

@@ -686,6 +686,7 @@ const dictionary = {
   'automation.autoSend.checking': 'checking the saved approval…',
   'automation.autoSend.checkFailed': 'the saved approval could not be checked',
   'automation.autoSend.checkFailedSave': 'Not saved: the saved approval could not be checked. Untick the option to save without it, or try again.',
+  'automation.autoSend.templateChanged': 'The template changed since this was approved. Tick the option again to approve the steps as they are now.',
   'automation.kv.firstSend': 'first step to a new agent',
   'automation.firstSend.option': 'Send the first step to a newly started agent without waiting for readiness',
   'automation.firstSend.hint': 'The saved schedule and template express the clock task; your reaction expresses a Slack run. Enable once to accept startup-input risk: later runs need no manual first send. Deck starts with no prompt bytes, then waits briefly for compatibility before sending. This wait is not readiness proof: a Trust, Update, sign-in, permission or other startup dialog may receive the text and Enter. Real blocking conditions and configured review checkpoints still apply. Later steps keep their normal checks. Claude is supported; Codex requires --no-daemon.',

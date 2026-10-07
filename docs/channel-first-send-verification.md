@@ -680,3 +680,115 @@ F3.1 一节把它写成“只读代码得出，没有运行验证”的短暂不
 ### 提交
 
 本节的生产改动、测试和文档作为一个提交落在本地 `main`，父提交 `97ed5bc`，不带 Co-Authored-By；未推送、未发布、版本未变。
+
+## R1.2 批准版本绑定与真实控件收尾（2026-10-08）
+
+起始：`main`，HEAD `6b15ab8`，工作树干净。本节三项：A 模板漂移，B 真实 WKWebView 控件补验，C 校准 `finish` 遗留。R1、R1.1 的修复保留，F3.1–F3.4 不重开。逐项证据在 [channel-first-send-closure-evidence.md](channel-first-send-closure-evidence.md) 的同名一节，截图在 `docs/evidence/approval-control-r1.2/`。
+
+### A. 模板漂移：CONFIRMED，已修复
+
+**核实。** 规则对模板 M0 有生产 `approveRule` 生成的有效批准，核对已完成，打开编辑器（勾选、非待定）。通过模板管理器的保存入口 `provider.saveTemplate` 把步骤改为 M1，编辑器保持打开；修复前批准框仍然勾着，没有任何提示。不碰批准框，只改名称并保存。保存请求里出现了一份新的 `autoSend`，用生产 `grantDetail` 对 M1 计算为 `valid`：用户没有做任何批准动作，M1 就获得了批准。冷缓存（核对在编辑器打开之后才完成）走同一条路径，结果相同。
+
+**根因。** `withApproval` 只看批准框是否勾着，勾着就用**保存那一刻**的模板调用 `approveRule`。它分不清“这份已保存的批准仍然适用”和“用户刚刚批准了当前版本”。R1.1 之前这条路径就存在。
+
+**最小修复**（`app/ui/js/automation.js`，加一条中英文文案；没有新的持久化类型、后端或写入器改动）：
+
+编辑器给批准框的每一次“勾着”记下它的来历（编辑器的局部状态）：是针对哪份模板步骤，以及它是沿用的已保存批准，还是用户在这个编辑器里自己勾的。
+
+| 勾选的来历 | 保存时 |
+|---|---|
+| 沿用已保存批准（打开时已核对有效，或待定核对后落定为有效） | 原批准原样带回，不重新签发；带回前用固定的输入再核一次它仍覆盖这条规则和这份步骤，否则不带 |
+| 用户在这个编辑器里勾选批准框或外部内容框 | 按按下保存时的规则字段和模板步骤快照签发新批准 |
+| 没有勾选 | 不带批准 |
+
+- **步骤变了就撤下勾选。** 模板管理器保存、改名或删除模板后，打开着的编辑器立即比较步骤；勾选对应的步骤已经不是当前步骤时，取消勾选并在批准框下显示一行：“模板在批准后已修改。如需批准当前的步骤，请重新勾选该选项。”按下保存时再比较一次，所以不依赖那次事件。
+- **新批准只来自用户自己的勾选**，并且只针对勾选当时的步骤。之后步骤再变，那次勾选同样被撤下。
+- **签发用固定输入。** 按下保存时取模板的副本，之后的哈希只用这份副本和已读出的规则字段。
+- **冷、热、核对已完成三条路径进入同一套保存判断。** 待定核对落定为有效时记下的来历与热缓存打开时相同；没有为“已经核对过”保留绕过当前步骤比较的分支。
+- 授权范围的判断沿用 `grantManifest` 覆盖的字段和规范化后的模板步骤。名称、列位置不在其中，改它们不撤下勾选，原批准逐字段保留，仍然一次保存。
+- 普通字段照常保存：步骤变了以后不重新勾选，规则仍然保存，只是不带批准（已过期的批准本来就不授予任何东西）。没有新增确认弹窗。
+
+| 必测 | 测试（`automation-approval-dom.test.mjs`） | 修复前 | 修复后 |
+|---|---|---|---|
+| 1 热缓存，模板改为 M1，普通保存 | `a template changed while the editor is open is not approved by an ordinary save (approval already checked)` | 失败：`the request carries no approval of the new steps` | 通过 |
+| 2 冷缓存核对结束后同样变化 | `… (approval checked after the editor opened)` | 失败，同一断言 | 通过 |
+| 3 展示字段变化，原批准逐字段保留（含外部内容确认） | `an ordinary save keeps the saved approval as it is, with the approval already checked`；冷缓存下由 R1.1 的三项覆盖 | 通过 | 通过 |
+| 4 明确为 M1 重新批准，固定模板与带消息内容的模板 | `ticking the box again approves the steps as they are then, plain or with message content` | 失败（修复前没有撤下勾选和提示） | 通过 |
+| 5 明确批准 M1 后、哈希期间模板变为 M2 | `steps changed after the user approved, while that save is still hashing, are not what gets approved` | 通过 | 通过 |
+| 6 明确撤销、切换编辑器、取消 | `a template change touches no decision the user made and no other editor`；核对失败由 R1.1 的测试覆盖 | 通过 | 通过 |
+
+第 5 项记录的实际请求：批准对 M1 为 `valid`、对 M2 不是 `valid`，列表显示“模板已改”。它在修复前就通过，因为原来的签发也是在调用时同步读取步骤；修复后这一点由显式的副本保证。请求带着一份只覆盖 M1 的批准，而模板已是 M2：这份批准不授予任何东西，本轮没有另外把它去掉。
+
+以上都是前端合成 IPC 下的请求内容。它们说明前端生成了什么批准对象，不说明真实 Agent 执行过新内容。
+
+### B. 真实 WKWebView：8 项 PASS，1 项需说明
+
+新增调试专用冒烟模式 `approval`（`app/ui/test/approval-smoke.mjs`，用法见 `app/SMOKE.md`）。生产的 HTML/CSS/JS 在调试包的真实 WKWebView 里运行，规则保存走真实的原生 `save_settings`，落在隔离数据目录；没有 Slack 连接，没有启动 Agent 或会话。只有两处是脚本控制的，都在页面内：SHA-256 何时完成或失败，以及对离开页面的 `save_settings` 请求计数。发布构建不包含 `ui/test`，也不认这个模式。
+
+**激活方式。** 点击和按键是交给 Deck 自己窗口的 AppKit 事件（既有的 `smoke_native_input`：鼠标按下与抬起、Space 键），由 WebKit 执行默认动作；没有设置 `checked` 或 `indeterminate`，没有派发 `change`，没有调用 `click()`。这不是物理鼠标或键盘，也没有使用 AppleScript、辅助功能权限或系统级输入注入。
+
+| 项 | 检查点 | 结果 |
+|---|---|---|
+| 1 待核对的真实显示，核对后不残留半选 | `approval-pending` | PASS：`checked` 且 `indeterminate`，提示行可见；放行后勾选、非半选、提示行隐藏。截图 `approval-pending-en.png`、`approval-checked-en.png` |
+| 2 按一次复选框即明确撤销，迟到的 valid 不改回，一次保存后无批准 | `approval-press-box` | PASS：`save_settings` 1 次，文件里该规则无 `autoSend`。截图 `approval-unticked.png` |
+| 3 按 label 的文字区域 | `approval-press-label` | PASS：一次按下变为未勾选，没有双重切换，编辑器保持打开，没有确认 |
+| 3 键盘：聚焦后按 Space | `approval-key-space` | PASS：变为未勾选 |
+| 4 核对前按保存，随后放行 | `approval-save-through` | PASS：放行前 0 次写入、编辑器打开；放行后 1 次，文件里批准与原批准逐字段相同，名称已改，编辑器关闭 |
+| 5 核对失败 | `approval-check-failed` | PASS：提示可见，按保存 0 次写入并出现说明，再按一次复选框后保存成功，无需重新打开编辑器。截图 `approval-failed-zh.png` |
+| 6 布局，中英文，最小窗口 | `approval-layout` | PASS（数值检查）：页面内尺寸 1280×768（窗口为仓库最小值 1280×800），提示行无横向截断，不与批准框、说明段落或保存/取消按钮重叠。截图 `approval-pending-zh.png` |
+| A 的真实控件侧 | `approval-drift` | PASS：已核对的勾选在模板保存后被撤下并显示提示，保存 1 次，文件里无 `autoSend`。截图 `approval-template-changed.png` |
+
+`scripts/smoke-verdict` 对这次运行的判定为 `PASS (9/9 expected checkpoints, 9 lines)`，没有 js-error。
+
+**真实载体发现并已修的一个问题。** R1.1 给提示行加了“按触发类型显隐”的两个类。编辑器同步时会按这组类重设 `hidden`，于是每次打开表情规则，空的提示行都被重新显示出来。Node 的测试 DOM 没有这段选择器逻辑，所以看不到。空行没有文字，但它使“提示行是否可见”不再可信。已把这一行移出那一组，只由批准状态控制显隐（`index.html` 一处）。
+
+**看截图得到的观察，未处理：**
+
+- 提示行紧贴在下面那段很长的说明文字上方，字号颜色相同、没有间距，读起来像说明的第一行。没有截断或遮挡，但不醒目。本轮没有改样式。
+- 英文界面下，“Send the first step to a newly started agent…”那一行标签折成两行，截图里看不到它前面的复选框；中文界面下能看到。这是既有布局，与本轮改动无关，我没有进一步核实它是否真的不可见或不可点。
+
+**方法上的限制：**
+
+- 运行在 Mac mini 测试机上。启动时它的 HID 空闲时间是 230 秒，前台是别的应用，说明当时有人在用；按既有约定照常运行，窗口被带到了前台。第七次运行通过，随后用最终二进制跑的第八次也通过（那次空闲时间 94 秒）。前六次未通过：三次是冒烟脚本自身的问题（比较方式、提示遮住按钮时的点击、滚动未停稳），三次指向上面那个提示行显隐问题；没有一次是焦点争用。
+- 第 6 项是矩形与滚动宽度的数值比较加人工看截图，不是像素比对。只在最小窗口尺寸跑过，没有跑更大的窗口或 160% 字号。
+- 核对失败是让页面里的哈希抛错来模拟的。
+
+### C. `finish` 遗留：REFUTED
+
+R1.1 一节“未执行与遗留”最后一条写的是“`finish` 在批准摘要里，但修改它不会取消勾选，保存时按新值重新批准”。**这条不成立，是我没有核实就写下的。** 原文保留在上一节。
+
+反证：`initAutomation` 给 `auto-finish` 的每个按钮接的 `onclick` 是 `if (segGet('auto-finish') !== b.dataset.v) withdrawApproval();`。测试 `changing what happens when the run ends withdraws the tick, from the real buttons` 通过生产接线后的按钮 `onclick` 验证，并且**在修复前的代码上就通过**：
+
+- 已核对有效：`keep → close` 取消勾选；切回 `keep` 不恢复勾选；保存后无批准。`close → keep` 同样取消勾选。
+- 点击当前已选的值：勾选不变。
+- 待核对时：点击已选值不算决定，仍为待定；切换后立即变为未勾选、非待定，之后回来的 valid 不改回；保存后 `finish` 为新值、无批准。
+- 改变 `finish` 后重新勾选并保存：新批准对当前规则和步骤为 `valid`。
+
+没有发现绕过这条处理的其他入口；`finish` 只能通过这两个按钮改。生产代码没有为这一项做改动。
+
+### 门禁（最终工作树，实际运行）
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check`（全部已跟踪的 UI JS/MJS 加新冒烟模块） | 通过 |
+| `scripts/ui-tests` | 634 项通过，0 失败（627 加本轮 7），覆盖率门槛与清单通过 |
+| `node ui/js/check.mjs` | 58 个模块通过 |
+| `git diff --check` | 通过 |
+| `cargo fmt --check` | 通过 |
+| `cargo clippy --workspace -- -D warnings` | 通过 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略；之后在最终工作树上重跑了冒烟清单一致性测试（9 项）和读取前端源码的五个集成测试（45 项），通过 |
+| WKWebView `approval` 模式 | PASS 9/9，在最终二进制上又跑了一次，同样 9/9 |
+
+本轮改了 Rust 的两处表（`main.rs` 的冒烟模式表、`diagnostics.rs` 的检查点词表），都只服务于调试冒烟，所以补跑了 fmt 和 clippy。没有改 IPC 命令、投递或持久化。245 秒后台载体没有重跑。
+
+### 未执行与遗留
+
+- 没有使用真实 Slack、Agent、Keychain 或剪贴板。
+- 物理鼠标和键盘没有验证；见 B 的“激活方式”。
+- 真实载体只验证了规则编辑器这一段，没有用它重跑 F3 或 R1 的其他场景。
+- 既有行为未改：用户自己勾选之后，在同一个编辑器里再改名称等不在授权范围内的字段，保存仍按那次勾选签发；这是明确的批准动作。
+- 上面两条截图观察等待裁定。
+
+### 提交
+
+本节的生产改动、测试、冒烟模式、截图和文档作为一个提交落在本地 `main`，父提交 `6b15ab8`，不带 Co-Authored-By；未推送、未发布、版本未变。

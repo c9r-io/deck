@@ -1029,3 +1029,27 @@ connected agent CUA channel and bounded `ui-request.json` receipts; actual
 UN callbacks and inventory, not receipts alone, certify each action. The
 signed carrier has an early `native-inventory`/`native-cleanup` mode which
 never loads Board or rearms notifications. See `docs/reminder-verification.md`.
+
+## Badge rule approval box (unattended, real WKWebView)
+
+`approval` (`ui/test/approval-smoke.mjs`) opens the automation editor on an
+approved badge rule saved in the isolated data directory and checks the
+approval box where Node cannot: the native half-ticked state while the saved
+approval is being checked and what it settles to (`approval-pending`), one
+press on the box (`approval-press-box`) or on its label
+(`approval-press-label`) and a Space key on the focused box
+(`approval-key-space`) each taking the approval away with nothing to confirm,
+Save pressed before the check answers going on by itself with one write
+(`approval-save-through`), a check that fails saving nothing until the box is
+unticked (`approval-check-failed`), the waiting and failure lines in English
+and Chinese neither cut off nor over the box or the buttons
+(`approval-layout`, a/b = the page's inner size), and a template change
+withdrawing a checked tick (`approval-drift`). `b` on the save checks is the
+number of `save_settings` requests the step made.
+
+The presses and the key are AppKit events handed to Deck's own window, so
+WebKit's default actions run; they are not a hand on a mouse or keyboard. Only
+the completion of SHA-256 is scripted, inside that page. No Slack connection,
+agent or session is involved. Snapshots are written to
+`<data dir>/evidence/approval-*.png`; judge with
+`scripts/smoke-verdict <data dir> approval`.

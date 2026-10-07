@@ -514,3 +514,109 @@ D 自己的目录修改已保存，授权请求为空，B 的失败提示 1 次�
 | `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在最终的前端源码上运行） |
 
 层级：node 下的测试 DOM，不是真实 WKWebView；复选框的半选状态在测试里是一个被读写的属性。没有构建或启动应用，没有 tmux 服务器。fmt、clippy、245 秒后台载体没有重跑。
+
+## R1.2 批准版本绑定与真实控件收尾（2026-10-08）
+
+起始 `main` / `6b15ab8` / 工作树干净。
+
+改动范围：
+
+- 生产前端：`app/ui/js/automation.js`（勾选来历、步骤漂移撤下、保存意图、头部契约），`app/ui/index.html`（提示行移出触发类型显隐组），`app/ui/js/i18n/en.js`、`zh-Hans.js`（各 1 条文案）。
+- 调试冒烟：`app/ui/test/approval-smoke.mjs`（新），`app/ui/test/wk-smoke.mjs`（入口），`app/ui/test/fixtures/smoke-manifest.json`，`app/ui/test/smoke-manifest.test.mjs`，`app/src-tauri/src/main.rs`（模式表一行），`app/src-tauri/src/diagnostics.rs`（检查点词表九行），`app/run.sh`（模式列表），`app/SMOKE.md`。
+- Node 测试：`app/ui/test/automation-approval-dom.test.mjs` 新增 7 项（文件共 21 项）。
+- 证据：`docs/evidence/approval-control-r1.2/` 六张截图（裁到编辑器面板，缩到半分辨率）。
+
+### A. 模板漂移
+
+修复前（`6b15ab8` 的前端，逐项单独运行）与修复后：
+
+| 测试 | 修复前 | 修复后 |
+|---|---|---|
+| `a template changed while the editor is open is not approved by an ordinary save (approval already checked)` | 失败 `the request carries no approval of the new steps` | 通过 |
+| `a template changed while the editor is open is not approved by an ordinary save (approval checked after the editor opened)` | 失败，同一断言 | 通过 |
+| `an ordinary save keeps the saved approval as it is, with the approval already checked` | 通过 | 通过 |
+| `ticking the box again approves the steps as they are then, plain or with message content` | 失败（编辑器状态断言：修复前模板变化后仍勾选且无提示） | 通过 |
+| `steps changed after the user approved, while that save is still hashing, are not what gets approved` | 通过 | 通过 |
+| `a template change touches no decision the user made and no other editor` | 通过 | 通过 |
+| `changing what happens when the run ends withdraws the tick, from the real buttons`（C 项） | 通过 | 通过 |
+
+修复后的读取：
+
+- **热缓存 / 冷缓存，模板改为 M1 后普通保存**：模板保存后编辑器为 `{勾选: 否, 外部: 否, 待定: 否, 提示: 模板在批准后已修改…}`；保存 1 次；请求里该规则没有 `autoSend`，`grantDetail(请求规则, M1)` 不是 `valid`；名称已保存；列表显示关闭；“已保存”1 次。
+- **展示字段**：带外部内容确认的批准，热缓存打开为 `{是, 是, 否, 无}`，只改名称后保存 1 次，请求里的 `autoSend` 与原批准 `deepEqual`，列表显示“已开启（含消息内容）”。
+- **明确重新批准**：模板改为 M1 后勾选批准框，保存 1 次；请求里的批准对 M1 为 `valid`、对 M0 为 `stale-template`，`external` 为 `false`。带消息内容的模板改动后编辑器先被撤下勾选并显示提示，勾选批准框和外部内容框后保存，批准对新步骤为 `valid`，`external` 为 `true`。
+- **批准 M1 后哈希期间变为 M2**：保存 1 次；请求里的批准对 M2 不是 `valid`、对 M1 为 `valid`；列表显示“模板已改”。
+- **不触碰用户的决定和其他编辑器**：明确取消勾选后模板变化，编辑器保持 `{否, 否, 否, 无}`，不出现提示；打开从未批准的规则后模板变化，同样无变化；没有编辑器打开时模板变化，没有保存，没有未处理的 rejection。
+
+模板变化在测试里都通过 `provider.saveTemplate`（模板管理器用的同一个入口：一次 Board 事务，然后发出 `projects`）。
+
+### B. 真实 WKWebView
+
+| 项目 | 值 |
+|---|---|
+| 源码 | `6b15ab8` 加本节的工作树改动（运行时尚未提交；运行之后只改了文档） |
+| 载体二进制 | 调试构建 `target/debug/deck-app`，版本 0.7.24，ad-hoc 签名，bundle id `io.c9r.deck.smoke`。第七次运行（截图来自这次）SHA-256 `2390951b5e4b5c2487bd8f6aa0609ed739df870122a52cbbb76d535e2bf9816f`；门禁之后重新构建的最终二进制 SHA-256 `d56ce985006b8826e69139163bb21130677cdaf13a32e56e19f7c8d3ea19c5ec`，第八次运行用它，前端源码与第七次相同 |
+| 机器 | Mac mini 测试机，macOS 27.0.1 |
+| 隔离 | 第七次：数据目录 `/private/tmp/deck-verify-v641fa47f/approval/data`，socket `deck-smoke-v641fa47f-approval`；第八次：`/private/tmp/deck-verify-v895c5464/approval/data`，`deck-smoke-v895c5464-approval`。都作为启动参数传入；20 秒内确认隔离目录的 `app.log` 出现 |
+| 模式 | `--smoke-wkwebview approval` |
+| 页面尺寸 | 1280×768（窗口 1280×800） |
+
+`app.log` 中的检查点（第七次与第八次逐行相同）：
+
+```
+smoke-check approval-pending a=1 b=1
+smoke-check approval-press-box a=1 b=1
+smoke-check approval-press-label a=1 b=0
+smoke-check approval-key-space a=1 b=1
+smoke-check approval-save-through a=1 b=1
+smoke-check approval-check-failed a=1 b=1
+smoke-check approval-layout a=1280 b=768
+smoke-check approval-drift a=1 b=1
+smoke-check done a=1 b=0
+```
+
+`scripts/smoke-verdict`：`PASS (9/9 expected checkpoints, 9 lines)`；`js-error` / `js-reject` 0 行。保存类检查点的 `b` 是该步骤发出的 `save_settings` 请求数。
+
+截图（`docs/evidence/approval-control-r1.2/`）：
+
+| 文件 | 内容 |
+|---|---|
+| `approval-pending-en.png` | 英文，待核对：原生半选框，下方“checking the saved approval…” |
+| `approval-checked-en.png` | 同一编辑器核对完成：正常勾选，提示行消失 |
+| `approval-unticked.png` | 从待定按一次复选框之后，迟到的 valid 返回之后：未勾选 |
+| `approval-pending-zh.png` | 中文，待核对 |
+| `approval-failed-zh.png` | 中文，核对失败：半选框，下方“无法核对已保存的批准” |
+| `approval-template-changed.png` | 已核对的勾选在模板保存后被撤下，下方显示模板已修改的提示 |
+
+未通过的六次运行（脚本逐次修正，原始日志在隔离目录，未入库）：
+
+| 次 | 停在 | 原因 |
+|---|---|---|
+| 1 | `approval-save-through`、失败场景 | 冒烟脚本：用键顺序敏感的方式比较批准（文件返回的键是排序过的）；失败提示的 toast 盖住了保存按钮，第二次按下落在 toast 上 |
+| 2、3 | `approval-save-through` | 冒烟脚本：名称输入框有焦点时 WebKit 把视图滚回去，保存按钮不在按下的位置 |
+| 4、5、6 | `approval-drift` | 产品：提示行被“按触发类型显隐”的逻辑重新显示（见报告 B），热缓存打开时读到“勾选且提示行可见” |
+
+清理：每次运行结束后先停应用再停它的 tmux 服务器，`pgrep -lf <运行根目录>` 与 socket 目录检查为空后，把运行根目录移到测试机的废纸篓。八次运行的 `leftover` 都为空；全部结束后另从测试机查询，没有来自这些运行根目录的进程。测试机自己的 `~/.deck` 在运行前后的时间戳相同（`Oct  5 17:59`），它上面安装的正式版 Deck 进程（PID 10546）前后都在，没有被触碰。
+
+### C. `finish`
+
+`app/ui/js/automation.js` 中 `auto-finish` 按钮的处理：
+
+```
+if (segGet('auto-finish') !== b.dataset.v) withdrawApproval();
+segSet('auto-finish', b.dataset.v);
+```
+
+`grep` 结果：`segSet('auto-finish', …)` 只出现在这里和 `openEditor` 的初始化里；`finish` 的读取只有 `readEditor` 的 `segGet('auto-finish')`。测试通过 `initAutomation` 接线后的按钮 `onclick` 触发，在修复前后的代码上都通过。
+
+### 门禁
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check` 全部已跟踪 UI JS/MJS 加新冒烟模块 | 通过 |
+| `scripts/ui-tests` | `tests 634 / pass 634 / fail 0`，退出码 0 |
+| `node ui/js/check.mjs` | `ok: 58 modules` |
+| `git diff --check` | 退出码 0 |
+| `cargo fmt --check` | 退出码 0 |
+| `cargo clippy --workspace -- -D warnings` | 退出码 0 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略；最终工作树上重跑 `smoke_` 相关 9 项与五个读取前端源码的集成测试 45 项，通过 |
