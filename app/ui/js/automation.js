@@ -77,6 +77,16 @@
 // group), a "New shell only" item appears while the project has a default
 // command, and "Project defaults…" sits in the manage section. A NEW rule's
 // editor starts from those defaults; existing rules keep their own values.
+// A channel rule's automatic first step is bound to the verified Slack
+// identity, which the native transport publishes only while a channel rule
+// needs it. So the save that turns the option on asks for it first
+// (`channelIdentityForSave`, native `slack_channel_prepare`): the wait is
+// shown in the editor with the read fields held still, `pending` is retried
+// for a bounded time, and the rule is saved with its permission in that same
+// action. Cancel, Escape and closing the drawer give the save up and a
+// result arriving later is dropped; a wait that ends without an identity
+// saves nothing and says so in the editor. Nothing is ever reported saved
+// before the native save returned.
 // This module is a LEAF of the import graph: what it needs from board.js,
 // layout.js and terminal.js arrives through `initAutomation(deps)`.
 import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
@@ -88,7 +98,7 @@ import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN } from './settings-model.js';
 import { openTemplates } from './templates.js';
-import { CHANNEL_IDLE_DEFAULT, channelBlockReason, channelFirstSendNeedsUpdate, channelFirstSendRecipe, normalizeChannelRule } from './channel-model.js';
+import { awaitChannelIdentity, CHANNEL_IDLE_DEFAULT, channelBlockReason, channelFirstSendNeedsUpdate, channelFirstSendRecipe, normalizeChannelRule } from './channel-model.js';
 
 /* the Board, layout and terminal actions this drawer calls, handed in by
    `initAutomation(deps)` so board.js and terminal.js may import this module
@@ -412,12 +422,15 @@ export function openEditor(rule) {
   $('auto-send-external').checked = approved && rule.autoSend.external === true;
   $('auto-first-send').checked = ['slack', 'clock'].includes(rule?.source) && rule.firstSendWithoutReadiness === true;
   $('auto-channel-first-send').checked = channel && rule.firstSend === true && !!rule.firstSendGrant;
+  channelVerifyStatus(null);
   syncEditor();
   $('auto-editor').hidden = false;
   $(channel ? 'auto-channel-ids' : 'auto-name').focus();
 }
 
 function closeEditor() {
+  cancelChannelSaveWait();
+  channelVerifyStatus(null);
   editing = null;
   $('auto-editor').hidden = true;
 }
@@ -495,16 +508,68 @@ async function withApproval(rule) {
   return approveRule(plain, template, { external: $('auto-send-external').checked });
 }
 
+/* The controls a waiting first-send save holds still: what was read from
+   them is what will be saved, so they cannot change under the wait. */
+const CHANNEL_SAVE_LOCKS = ['auto-save', 'auto-new', 'auto-channel-first-send', 'auto-channel-ids', 'auto-sender-users',
+  'auto-sender-bots', 'auto-match-kind', 'auto-match-value', 'auto-match-capture', 'auto-match-case', 'auto-threads',
+  'auto-idle', 'auto-dir', 'auto-cmd', 'auto-template', 'auto-column'];
+const VERIFY_TEXT = { timeout: 'automation.channelFirstSend.verifyTimeout', blocked: 'automation.channelFirstSend.verifyBlocked',
+  failed: 'automation.channelFirstSend.verifyFailed' };
+let channelSaveWait = null;
+
+function channelVerifyStatus(key) {
+  const status = $('auto-channel-verify');
+  status.hidden = !key;
+  status.textContent = key ? t(key) : '';
+}
+
+/* The verified Slack identity for the save in hand, or null when the save
+   does not go ahead (channel-model.js `awaitChannelIdentity`). The wait is
+   shown in the editor and ends on its own; Cancel, Escape and closing the
+   drawer give the save up (`cancelChannelSaveWait`), switching windows does
+   not. A wait that ends without an identity says so in the editor, where it
+   stays until the next save, with every field as it was. */
+async function channelIdentityForSave() {
+  const wait = { canceled: false };
+  channelSaveWait = wait;
+  const locked = [...CHANNEL_SAVE_LOCKS.map($), ...$('auto-trigger').querySelectorAll('button')]
+    .filter(control => !control.disabled);
+  locked.forEach(control => { control.disabled = true; });
+  channelVerifyStatus('automation.channelFirstSend.verifying');
+  const result = await awaitChannelIdentity({ prepare: () => inv('slack_channel_prepare'),
+    canceled: () => wait.canceled, waiting: () => channelVerifyStatus('automation.channelFirstSend.stillVerifying') });
+  locked.forEach(control => { control.disabled = false; });
+  if (channelSaveWait === wait) channelSaveWait = null;
+  if (result.error === 'canceled') return null;
+  channelVerifyStatus(result.identity ? null : VERIFY_TEXT[result.error]);
+  return result.identity || null;
+}
+
+/* the user gave the waiting save up: nothing is saved or granted later */
+function cancelChannelSaveWait() {
+  if (!channelSaveWait) return;
+  channelSaveWait.canceled = true;
+  channelSaveWait = null;
+  inv('slack_channel_prepare_cancel').catch(() => {});
+  toast(t('automation.channelFirstSend.verifyCanceled'));
+}
+
 async function saveRule(rule) {
   if (rule.source === 'channel') {
     const stored = { ...rule }; delete stored.source;
-    const rules = [...ctx.settings.inbound.channelRules.filter(value => value.id !== rule.id && value.id !== editing?.id), stored];
-    const inbound = { ...ctx.settings.inbound, channelRules: rules,
-      rules: ctx.settings.inbound.rules.filter(value => value.id !== editing?.id) };
     const previous = channelRules().find(value => value.id === rule.id);
-    const requests = rule.firstSend && (channelAcceptanceChanged || await channelFirstSendNeedsUpdate(rule, previous, activeProject()))
-      ? [{ ruleId: rule.id, external: true }] : [];
-    const ok = await persistInbound(inbound, requests); renderAutomations(); return ok;
+    const authorize = rule.firstSend && (channelAcceptanceChanged || await channelFirstSendNeedsUpdate(rule, previous, activeProject()));
+    /* the same save prepares the identity its permission is bound to; with
+       the connection up this answers at once */
+    const identity = authorize ? await channelIdentityForSave() : null;
+    if (authorize && !identity) return false;
+    const replaced = editing?.id;
+    const rules = [...ctx.settings.inbound.channelRules.filter(value => value.id !== rule.id && value.id !== replaced), stored];
+    const inbound = { ...ctx.settings.inbound, channelRules: rules,
+      rules: ctx.settings.inbound.rules.filter(value => value.id !== replaced) };
+    const requests = authorize ? [{ ruleId: rule.id, external: true, identity }] : [];
+    try { const ok = await persistInbound(inbound, requests); renderAutomations(); return ok; }
+    finally { if (authorize) inv('slack_channel_prepare_cancel').catch(() => {}); }
   }
   /* a trigger change gives the rule a new id: the old entry goes */
   const rules = mergeRules(ctx.settings.inbound.rules, rule, editing && editing.id);
@@ -629,10 +694,13 @@ export function initAutomation(deps) {
   $('auto-new').onclick = () => openEditor(null);
   $('auto-cancel').onclick = () => closeEditor();
   $('auto-save').onclick = async () => {
+    if (channelSaveWait) return;
     const read = readEditor();
     if (!read) return;
+    const saving = editing;
     const rule = withFirstSend(await withApproval(read), $('auto-first-send').checked);
-    if (await saveRule(rule)) { closeEditor(); toast(t('automation.saved')); }
+    /* a save that waited is closed only if its editor is still the open one */
+    if (await saveRule(rule) && editing === saving) { closeEditor(); toast(t('automation.saved')); }
   };
   $('auto-send').addEventListener('change', syncApproval);
   $('auto-channel-first-send').addEventListener('change', () => {

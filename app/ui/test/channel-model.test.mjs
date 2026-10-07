@@ -182,3 +182,31 @@ test('a staged head keeps its native recipe across a template edit before first 
   assert.equal(channelTemplatePlan({ ...item, firstSendGrant: { id: 'g1', digest: 'd1' } },
     { templates: [{ name: 'triage', steps: ['New first'] }] }, 100).error, 'template');
 });
+
+test('the wait for the Slack identity is bounded, retries only `pending`, and drops a result that arrives after a cancel', async () => {
+  const { awaitChannelIdentity, CHANNEL_PREPARE_ATTEMPTS } = await import('../js/channel-model.js');
+  const run = async (answers, { cancelAfter = Infinity, attempts } = {}) => {
+    let asked = 0; const told = [];
+    const result = await awaitChannelIdentity({ ...(attempts ? { attempts } : {}),
+      prepare: async () => { const answer = answers[asked++] ?? 'pending'; if (typeof answer === 'string') throw answer; return answer; },
+      canceled: () => asked >= cancelAfter, waiting: attempt => told.push(attempt) });
+    return { result, asked, told };
+  };
+  assert.deepEqual(await run([{ identity: 'd1' }]), { result: { identity: 'd1' }, asked: 1, told: [] });
+  assert.deepEqual(await run(['pending', 'pending', { identity: 'd1' }]),
+    { result: { identity: 'd1' }, asked: 3, told: [1, 2] });
+  const never = await run([]);
+  assert.deepEqual([never.result, never.asked, never.told.length], [{ error: 'timeout' }, CHANNEL_PREPARE_ATTEMPTS, CHANNEL_PREPARE_ATTEMPTS - 1]);
+  assert.deepEqual((await run([], { attempts: 2 })).asked, 2);
+  for (const code of ['disabled', 'no-token', 'settings']) {
+    assert.deepEqual(await run([code]), { result: { error: 'blocked' }, asked: 1, told: [] });
+  }
+  for (const answer of ['worker', 'canceled', {}, { identity: '' }, { identity: 7 }, { identity: null }]) {
+    assert.deepEqual((await run([answer])).result, { error: 'failed' });
+  }
+  /* given up while waiting: neither a late identity nor a late error is used */
+  assert.deepEqual((await run([{ identity: 'd1' }], { cancelAfter: 1 })).result, { error: 'canceled' });
+  assert.deepEqual(await run(['pending', { identity: 'd1' }], { cancelAfter: 2 }),
+    { result: { error: 'canceled' }, asked: 2, told: [1] });
+  assert.deepEqual((await run(['disabled'], { cancelAfter: 1 })).result, { error: 'canceled' });
+});

@@ -53,6 +53,40 @@ class EdrRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(app)
         self.assertEqual(app.socket, "deck-smoke-one")
 
+    def test_the_channel_carrier_owns_exactly_its_own_socket(self):
+        # app/run.sh: deck-channel-smoke-<suffix>.app <-> deck-smoke-channel-<suffix>
+        bundle = MODULE.DEBUG_BUNDLES / "deck-channel-smoke-17-42.app/Contents/MacOS"
+        tmux = MODULE.parse_ps_line(
+            f"10 1 00:01 {bundle}/tmux -f /tmp/conf -L deck-smoke-channel-17-42 start-server"
+        )
+        self.assertEqual(
+            MODULE.tmux_candidate(tmux), (str(bundle / "tmux"), "deck-smoke-channel-17-42")
+        )
+        app = MODULE.managed_app(
+            MODULE.parse_ps_line(
+                f"11 1 00:01 {bundle}/deck --smoke-data-dir /tmp/deck-channel-x "
+                "--smoke-tmux-socket deck-smoke-channel-17-42 --smoke-wkwebview channel-first-send"
+            )
+        )
+        self.assertIsNotNone(app)
+        self.assertEqual(app.socket, "deck-smoke-channel-17-42")
+        # another run's socket, an ordinary smoke socket, or no suffix: not this carrier's
+        for socket in ["deck-smoke-channel-17-43", "deck-smoke-one", "deck-smoke-channel-"]:
+            other = MODULE.parse_ps_line(
+                f"12 1 00:01 {bundle}/tmux -L {socket} start-server"
+            )
+            self.assertIsNone(MODULE.tmux_candidate(other), socket)
+            other_app = MODULE.parse_ps_line(
+                f"13 1 00:01 {bundle}/deck --smoke-tmux-socket {socket}"
+            )
+            self.assertIsNone(MODULE.managed_app(other_app), socket)
+        empty = MODULE.DEBUG_BUNDLES / "deck-channel-smoke-.app/Contents/MacOS/tmux"
+        self.assertIsNone(
+            MODULE.tmux_candidate(
+                MODULE.parse_ps_line(f"14 1 00:01 {empty} -L deck-smoke-channel- start-server")
+            )
+        )
+
     def test_production_app_is_not_managed(self):
         process = MODULE.parse_ps_line(
             "99 1 00:01 /Applications/deck.app/Contents/MacOS/deck-app"

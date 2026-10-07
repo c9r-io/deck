@@ -488,7 +488,6 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
         path_callers("settings_path"),
         [
             "documents.rs load_settings",
-            "documents.rs load_settings",
             "documents.rs recover_channel_grant_activations",
             "documents.rs retire_channel_grants_locked",
             "documents.rs save_settings",

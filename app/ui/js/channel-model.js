@@ -226,3 +226,29 @@ export function channelSource(item) {
     ...(item.senderBotId ? { senderBotId: item.senderBotId } : {}),
   };
 }
+
+/* The one save that turns automatic first steps on needs the verified Slack
+   identity, which only the native transport publishes (`slack_channel_prepare`).
+   With the connection up that answers at once. With no channel rule saved yet
+   the transport first has to connect, so the save waits: `pending` is asked
+   again, up to `attempts` native waits, and `waiting` tells the user each
+   time. Anything else ends the wait with a closed reason; `canceled()` is
+   read after every answer, so a result that arrives after the user gave the
+   save up is never used. Nothing here saves or grants: the caller saves only
+   with the identity this returns. */
+export const CHANNEL_PREPARE_ATTEMPTS = 6;
+const PREPARE_BLOCKED = ['disabled', 'no-token', 'settings'];
+export async function awaitChannelIdentity({ prepare, canceled, waiting, attempts = CHANNEL_PREPARE_ATTEMPTS }) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const ready = await prepare();
+      if (canceled()) return { error: 'canceled' };
+      return typeof ready?.identity === 'string' && ready.identity ? { identity: ready.identity } : { error: 'failed' };
+    } catch (error) {
+      if (canceled()) return { error: 'canceled' };
+      if (error !== 'pending') return { error: PREPARE_BLOCKED.includes(error) ? 'blocked' : 'failed' };
+      if (attempt < attempts) waiting(attempt);
+    }
+  }
+  return { error: 'timeout' };
+}

@@ -122,3 +122,39 @@ test('a canceled event in an already-pulled drain snapshot does not create a run
   assert.equal(store.cards.length, 0);
   assert.equal(state.operations.size, 0);
 });
+
+/* What the previous release left behind: it acknowledged the event BEFORE
+   queueing the plan, so after an upgrade the event is no longer pending and
+   the run has neither a frozen target nor a first-send claim. The native
+   admission keeps that run its old rows (documents channel_admission_tests,
+   `a_run_acknowledged_by_an_older_deck_finishes_its_plan`); this is the
+   frontend half: the unfinished plan is replayed with the request the old
+   release would have sent, and only the missing steps are new. */
+test('a run acknowledged by the previous release replays its old requests and finishes', async () => {
+  const state = setup([]);                              // acknowledged: nothing is pending
+  const step = (index, text) => ({ operationId: `Bold${index}`, text, mode: index ? 'chain' : 'at',
+    at: index ? null : 900, tpl: 'triage', tplIdx: index + 1, tplTotal: 2 });
+  const legacy = { id: 'Sold', projectId: 'P1', columnId: 'C1', title: 'old', desc: 'triage', dir: '/tmp/old', cmd: 'claude',
+    session: 'deck-old', launched: true, origin: { source: 'channel', key: 'channel:default/T1/EOLD/R1', badge: 'R1' },
+    buffer: { revision: 1, collecting: true, entries: [] },
+    channelRun: { groupKey: 'default/T1/C1/R1', firstEventId: 'EOLD', connectionId: 'default', workspaceId: 'T1',
+      channelId: 'C1', ruleId: 'R1', lastCollectedAt: 900, idleMinutes: 0, collecting: true, initialQueued: false,
+      initialSteps: [step(0, 'Inspect incident'), step(1, 'Follow up')] } };
+  store.cards = [structuredClone(legacy)];
+  /* its head was queued before the upgrade, with exactly these arguments */
+  state.operations.set('Bold0', { session: 'deck-old', cardId: 'Sold', operationId: 'Bold0', dir: '/tmp/old', cmd: 'claude',
+    text: 'Inspect incident', mode: 'at', at: 900, tpl: 'triage', tplIdx: 1, tplTotal: 2 });
+  await drainChannel();
+  const queued = state.calls.filter(([name]) => name === 'channel_queue_add').map(([, args]) => args.args);
+  assert.deepEqual(queued.map(args => args.operationId), ['Bold0', 'Bold1']);
+  assert.ok(queued.every(args => !('channelFirstSend' in args)), 'an old run asks for no new permission');
+  assert.deepEqual(queued[1], { session: 'deck-old', cardId: 'Sold', operationId: 'Bold1', dir: '/tmp/old', cmd: 'claude',
+    text: 'Follow up', mode: 'chain', at: null, tpl: 'triage', tplIdx: 2, tplTotal: 2 });
+  assert.equal(state.operations.size, 2);
+  assert.equal(store.cards[0].channelRun.initialQueued, true);
+  assert.equal(state.creates, 0, 'no second card');
+  assert.equal(state.calls.some(([name]) => name === 'channel_ack'), false, 'nothing left to acknowledge');
+  state.calls = [];
+  await drainChannel();
+  assert.equal(state.calls.some(([name]) => name === 'channel_queue_add'), false, 'finished once');
+});

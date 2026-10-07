@@ -1,6 +1,16 @@
 //! The sole Slack Socket Mode owner. Consumers never access the WebSocket.
 //! Status reads never request a Socket ticket; only explicit App-token saves
 //! and actual transport connections call apps.connections.open.
+//! The channel identity is published by this loop alone, after bot
+//! `auth.test` and the socket's `hello`. Without a saved active channel rule
+//! the loop has no reason to verify it, so the save that creates the first
+//! rule with automatic first steps asks for it (`slack_channel_prepare`):
+//! the request only makes this loop plan the channel half for a bounded
+//! hold and waits, briefly, for what the loop publishes. It opens nothing
+//! itself, takes no settings, Board or queue fence, and grants nothing;
+//! `save_settings` still issues the grant, against the identity current then.
+//! A hold that lapses or is canceled with no active rule saved drops the
+//! connection it caused.
 //! A Reaction envelope is ACKed before its recoverable Web API fetch; a
 //! matching channel message is ACKed only after durable inbox staging.
 use crate::applog::applog;
@@ -145,6 +155,15 @@ static CONNECTED: AtomicBool = AtomicBool::new(false);
 static APP_VERIFIED: AtomicBool = AtomicBool::new(false);
 static EPOCH: AtomicU64 = AtomicU64::new(1);
 static WAKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+/// Until when (epoch seconds) a first-send save is waiting for the channel
+/// identity; 0 when none is.
+static PREPARE_UNTIL: AtomicU64 = AtomicU64::new(0);
+/// How long one request keeps the channel half planned without a rule.
+const PREPARE_HOLD_SECS: u64 = 90;
+/// How long one request waits before answering `pending`.
+const PREPARE_WAIT: Duration = Duration::from_secs(20);
+/// A loopback socket is accepted only when a unit test asks for it.
+pub(crate) static LOOPBACK_SOCKET: AtomicBool = AtomicBool::new(false);
 const MAX_SOCKET_TEXT: usize = 1024 * 1024;
 
 fn app_valid_fact(present: bool, verified_this_process: bool, connected: bool) -> bool {
@@ -157,6 +176,8 @@ pub(crate) fn connected() -> bool {
 pub(crate) fn app_credential_saved(present: bool) {
     APP_VERIFIED.store(present, Ordering::SeqCst);
 }
+/// `channel_preparing`: a first-send save is waiting for the identity, so
+/// the channel half is planned although no active rule is saved yet.
 fn startup_plan(
     reaction_enabled: bool,
     badges: usize,
@@ -164,17 +185,97 @@ fn startup_plan(
     channel_enabled: bool,
     active_channel_rule: bool,
     bot_present: bool,
+    channel_preparing: bool,
 ) -> (bool, bool) {
     (
         reaction_enabled && badges > 0 && user_present,
-        channel_enabled && active_channel_rule && bot_present,
+        channel_enabled && (active_channel_rule || channel_preparing) && bot_present,
     )
 }
 pub(crate) fn wake() {
     EPOCH.fetch_add(1, Ordering::SeqCst);
+    nudge();
+}
+/// End the loop's current wait without retiring a live connection.
+fn nudge() {
     let (flag, cv) = &WAKE;
     *flag.lock_or_recover() = true;
     cv.notify_all();
+}
+fn preparing() -> bool {
+    PREPARE_UNTIL.load(Ordering::SeqCst) > crate::datadir::now_epoch()
+}
+
+/// The verified channel identity, as the content-free digest a first-send
+/// request names (`documents::save_settings` refuses another).
+#[derive(Serialize)]
+pub(crate) struct ChannelIdentityReady {
+    pub(crate) identity: String,
+}
+
+/// Asked by the one save that turns automatic first steps on. Answers at
+/// once when the identity is already published, the ordinary case. Errors
+/// are closed codes: `disabled` / `no-token` / `settings` need the user
+/// elsewhere, `pending` means the loop is still trying (ask again),
+/// `canceled` that the hold was withdrawn while waiting.
+#[tauri::command]
+pub(crate) async fn slack_channel_prepare() -> Result<ChannelIdentityReady, &'static str> {
+    tauri::async_runtime::spawn_blocking(|| prepare_channel_identity(PREPARE_WAIT))
+        .await
+        .map_err(|_| "worker")?
+}
+
+pub(crate) fn prepare_channel_identity(
+    wait_for: Duration,
+) -> Result<ChannelIdentityReady, &'static str> {
+    let ready = || {
+        inbound_channel::current_identity().map(|identity| ChannelIdentityReady {
+            identity: inbound_channel::identity_digest(&identity),
+        })
+    };
+    if let Some(ready) = ready() {
+        return Ok(ready);
+    }
+    let config = inbound_channel::read_config_strict_result().map_err(|_| "settings")?;
+    if !config.connection.enabled {
+        return Err("disabled");
+    }
+    if !keychain::has(Slot::SlackBotToken) || !keychain::has(Slot::SlackAppToken) {
+        return Err("no-token");
+    }
+    let first = !preparing();
+    PREPARE_UNTIL.store(
+        crate::datadir::now_epoch() + PREPARE_HOLD_SECS,
+        Ordering::SeqCst,
+    );
+    // The first request re-plans a live reaction-only connection; a repeat
+    // only cuts a backoff short, so a slow handshake is never restarted.
+    if first {
+        wake();
+    } else {
+        nudge();
+    }
+    let deadline = std::time::Instant::now() + wait_for;
+    loop {
+        if let Some(ready) = ready() {
+            return Ok(ready);
+        }
+        if !preparing() {
+            return Err("canceled");
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("pending");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The waiting save is over, saved or given up: stop holding the channel
+/// half. With an active rule saved the loop plans it for the rule instead.
+#[tauri::command]
+pub(crate) fn slack_channel_prepare_cancel() {
+    PREPARE_UNTIL.store(0, Ordering::SeqCst);
+    nudge();
 }
 fn wait(d: Duration) {
     let (flag, cv) = &WAKE;
@@ -212,7 +313,9 @@ fn open_url_with(
 }
 fn socket_url(response: &Value) -> Result<String, &'static str> {
     let url = response.get("url").and_then(Value::as_str).ok_or("parse")?;
-    if !confined_socket_url(url) {
+    let loopback =
+        cfg!(test) && LOOPBACK_SOCKET.load(Ordering::SeqCst) && url.starts_with("ws://127.0.0.1:");
+    if !confined_socket_url(url) && !loopback {
         return Err("url");
     }
     Ok(url.to_string())
@@ -323,10 +426,30 @@ fn injected_channel_fault(active: bool) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn spawn(app: AppHandle) {
-    std::thread::spawn(move || socket_loop(app));
+/// The durable channel stage; its `Err` withholds the Slack ACK.
+type ChannelStage = dyn Fn(&inbound_channel::Identity, &str) -> Result<(), &'static str> + Send;
+/// The reaction fetch: envelope, own user id, badges.
+type ReactionFetch = dyn Fn(&Value, &str, &[String]) + Send;
+
+/// Where the one socket hands a routed envelope.
+pub(crate) struct Consumers {
+    pub(crate) channel: Box<ChannelStage>,
+    pub(crate) reaction: Box<ReactionFetch>,
 }
-fn socket_loop(app: AppHandle) {
+
+pub(crate) fn spawn(app: AppHandle) {
+    let reactions = app.clone();
+    let consumers = Consumers {
+        channel: Box::new(move |identity, text| {
+            inbound_channel::handle_message(&app, identity, text)
+        }),
+        reaction: Box::new(move |value, self_id, badges| {
+            inbound_slack::handle_reaction(&reactions, value, self_id, badges)
+        }),
+    };
+    std::thread::spawn(move || socket_loop(consumers));
+}
+pub(crate) fn socket_loop(consumers: Consumers) {
     use tungstenite::stream::MaybeTlsStream;
     let mut backoff = 1u64;
     loop {
@@ -334,13 +457,17 @@ fn socket_loop(app: AppHandle) {
         let cfg = inbound::read_config();
         let badges = cfg.badges("slack");
         let channel_cfg = inbound_channel::read_config();
+        let rule_active = inbound_channel::any_rule_active(&channel_cfg);
+        // the channel half is planned for a waiting first-send save alone
+        let held_for_save = !rule_active && preparing();
         let (reaction_wanted, channel_wanted) = startup_plan(
             cfg.slack_enabled,
             badges.len(),
             keychain::has(Slot::SlackUserToken),
             channel_cfg.connection.enabled,
-            inbound_channel::any_rule_active(&channel_cfg),
+            rule_active,
             keychain::has(Slot::SlackBotToken),
+            held_for_save,
         );
         if !reaction_wanted && !channel_wanted {
             CONNECTED.store(false, Ordering::SeqCst);
@@ -403,13 +530,19 @@ fn socket_loop(app: AppHandle) {
                 let _ = rustls::crypto::ring::default_provider().install_default();
             }
             let (mut ws, _) = tungstenite::connect(url).map_err(|_| "socket")?;
-            if let MaybeTlsStream::Rustls(s) = ws.get_mut() {
-                let _ = s.get_mut().set_read_timeout(Some(Duration::from_secs(5)));
+            match ws.get_mut() {
+                MaybeTlsStream::Rustls(s) => {
+                    let _ = s.get_mut().set_read_timeout(Some(Duration::from_secs(5)));
+                }
+                MaybeTlsStream::Plain(s) => {
+                    let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+                }
+                _ => {}
             }
             let mut expected_app: Option<String> = None;
             let mut idle = 0u32;
             loop {
-                if EPOCH.load(Ordering::SeqCst) != epoch {
+                if EPOCH.load(Ordering::SeqCst) != epoch || (held_for_save && !preparing()) {
                     let _ = ws.close(None);
                     return Err("changed");
                 }
@@ -444,13 +577,7 @@ fn socket_loop(app: AppHandle) {
                             expected,
                             channel_wanted,
                             identity.is_some(),
-                            || {
-                                inbound_channel::handle_message(
-                                    &app,
-                                    identity.as_ref().unwrap(),
-                                    &text,
-                                )
-                            },
+                            || (consumers.channel)(identity.as_ref().unwrap(), &text),
                         )?;
                         // Reaction ACK precedes its recoverable Web API fetch.
                         if let Some(id) = id {
@@ -464,7 +591,7 @@ fn socket_loop(app: AppHandle) {
                                 if let Some(self_id) =
                                     user_identity.get("user_id").and_then(Value::as_str)
                                 {
-                                    inbound_slack::handle_reaction(&app, &value, self_id, &badges);
+                                    (consumers.reaction)(&value, self_id, &badges);
                                 }
                             }
                         }
@@ -634,22 +761,39 @@ mod tests {
     #[test]
     fn startup_supports_reaction_only_channel_only_and_disabled_rules() {
         assert_eq!(
-            startup_plan(true, 1, true, false, false, false),
+            startup_plan(true, 1, true, false, false, false, false),
             (true, false)
         );
         assert_eq!(
-            startup_plan(false, 0, false, true, true, true),
+            startup_plan(false, 0, false, true, true, true, false),
             (false, true)
         );
-        assert_eq!(startup_plan(true, 1, true, true, true, true), (true, true));
         assert_eq!(
-            startup_plan(true, 0, true, true, false, true),
+            startup_plan(true, 1, true, true, true, true, false),
+            (true, true)
+        );
+        assert_eq!(
+            startup_plan(true, 0, true, true, false, true, false),
             (false, false)
         );
         // Legacy channel credentials are absent from the canonical plan.
         assert_eq!(
-            startup_plan(true, 1, true, true, true, false),
+            startup_plan(true, 1, true, true, true, false, false),
             (true, false)
+        );
+        // A waiting first-send save plans the channel half without a rule,
+        // and never without the connection switch or the bot credential.
+        assert_eq!(
+            startup_plan(false, 0, false, true, false, true, true),
+            (false, true)
+        );
+        assert_eq!(
+            startup_plan(false, 0, false, false, false, true, true),
+            (false, false)
+        );
+        assert_eq!(
+            startup_plan(false, 0, false, true, false, false, true),
+            (false, false)
         );
     }
     #[test]
@@ -870,7 +1014,7 @@ mod tests {
             1
         );
         assert_eq!(transport.matches("ws.send(Message::Text(").count(), 1);
-        let runtime = transport.split("fn socket_loop(app:").nth(1).unwrap();
+        let runtime = transport.split("fn socket_loop(consumers:").nth(1).unwrap();
         assert!(
             runtime.find("open_url(&app_token)?").unwrap()
                 < runtime.find("tungstenite::connect(url)").unwrap()

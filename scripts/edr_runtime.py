@@ -64,6 +64,25 @@ def parse_ps_line(line: str) -> Process | None:
         return None
 
 
+CHANNEL_BUNDLE = "deck-channel-smoke-"
+CHANNEL_SOCKET = "deck-smoke-channel-"
+
+
+def smoke_bundle(bundle: str, socket: str) -> bool:
+    """Whether `bundle` is a smoke carrier that owns `socket`.
+
+    The channel first-send carrier (`app/run.sh`) has a bundle of its own per
+    run, `deck-channel-smoke-<suffix>.app`, and owns exactly the socket
+    `deck-smoke-channel-<suffix>`.
+    """
+    if not bundle.endswith(".app"):
+        return False
+    if bundle.startswith(CHANNEL_BUNDLE):
+        suffix = bundle[len(CHANNEL_BUNDLE) : -len(".app")]
+        return bool(suffix) and socket == CHANNEL_SOCKET + suffix
+    return bundle.startswith("deck-smoke")
+
+
 def tmux_candidate(process: Process) -> tuple[str, str] | None:
     if not process.argv:
         return None
@@ -78,14 +97,12 @@ def tmux_candidate(process: Process) -> tuple[str, str] | None:
     if len(relative.parts) != 4 or relative.parts[1:] != ("Contents", "MacOS", "tmux"):
         return None
     bundle = relative.parts[0]
-    if bundle != "deck-dev.app" and not (
-        bundle.startswith("deck-smoke") and bundle.endswith(".app")
-    ):
-        return None
     try:
         socket_at = process.argv.index("-L")
         socket = process.argv[socket_at + 1]
     except (ValueError, IndexError):
+        return None
+    if bundle != "deck-dev.app" and not smoke_bundle(bundle, socket):
         return None
     if socket == "deck-dev" or socket.startswith("deck-smoke-"):
         return executable, socket
@@ -118,16 +135,14 @@ def managed_app(process: Process) -> ManagedApp | None:
     bundle = relative.parts[0]
     if bundle == "deck-dev.app":
         return ManagedApp(process.pid, process.ppid, process.elapsed, "deck-dev")
-    if not (bundle.startswith("deck-smoke") and bundle.endswith(".app")):
-        return None
     try:
         at = process.argv.index("--smoke-tmux-socket")
         socket = process.argv[at + 1]
-        if socket.startswith("deck-smoke-"):
-            return ManagedApp(process.pid, process.ppid, process.elapsed, socket)
-        return None
     except (ValueError, IndexError):
         return None
+    if smoke_bundle(bundle, socket) and socket.startswith("deck-smoke-"):
+        return ManagedApp(process.pid, process.ppid, process.elapsed, socket)
+    return None
 
 
 def run(args: list[str]) -> subprocess.CompletedProcess[str]:

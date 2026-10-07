@@ -9,6 +9,26 @@
 //! and frozen run, and the exact normalized queue request. Automatic delivery
 //! rechecks current settings and Board under the normal settings -> Board ->
 //! queue persist fence. Manual send-now remains the user's explicit action.
+//!
+//! Who must pass this check is decided before the inbox is consulted. The
+//! external entry is shared with badge runs, phone tasks and verbatim
+//! scratchpad text; a request without a claim, for a card the CURRENT Board
+//! names as another source's (no channel origin, no channel run), is not a
+//! channel request, so an inbox that cannot be read does not hold it. Every
+//! other request needs the inbox: a channel card, a card the Board does not
+//! know, a Board that is not current, or any claim fails closed.
+//!
+//! A head is told from a follow-up by identity, not by wording: the native
+//! event's deterministic operation id, the step's position and the frozen
+//! plan. A follow-up of a granted run is admitted only as the exact frozen
+//! `chain` step it is, whatever its text; it may repeat the head's.
+//!
+//! A run the previous release acknowledged before queueing (its inbox entry
+//! is an id and a time, in `handled`, never granted) keeps the admission it
+//! had: plain external rows, no channel permission. That is decided by the
+//! native record of the event together with a Board run that froze no claim,
+//! never by a claim or proof being absent: a run nothing native remembers,
+//! and a granted run that lost its claim, proof or pending event, are refused.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -76,11 +96,37 @@ pub(crate) fn rollback_uncertain(
         .is_some_and(|card| card["channelRun"]["firstSendUncertain"] == true))
 }
 
+/// The current Board names this card as another source's: it is there, its
+/// origin is not a channel event and it carries no channel run.
+fn other_source(board: Option<&serde_json::Value>, card_id: &str) -> bool {
+    board
+        .and_then(|board| board["cards"].as_array())
+        .into_iter()
+        .flatten()
+        .find(|card| card["id"] == card_id)
+        .is_some_and(|card| card["origin"]["source"] != "channel" && card["channelRun"].is_null())
+}
+
+/// The inbox's own record of the card, for a request without a claim.
+/// `Ok(None)` when the inbox cannot be read and the current Board names the
+/// card another source's; any other unreadable case is the caller's error.
+fn native_binding(
+    board: Option<&serde_json::Value>,
+    card_id: &str,
+) -> Result<Option<Option<(String, bool)>>, DeckError> {
+    match crate::inbound_channel::channel_constraint_for_card(card_id) {
+        Ok(binding) => Ok(Some(binding)),
+        Err(_) if other_source(board, card_id) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn reject_reviewed_list(args: &QueueAddArgs) -> Result<(), DeckError> {
-    if args.channel_first_send.is_some()
-        || crate::inbound_channel::channel_constraint_for_card(&args.card_id)?
-            .is_some_and(|(_, granted)| granted)
-    {
+    let granted = args.channel_first_send.is_some()
+        || native_binding(crate::documents::board_authority().as_ref(), &args.card_id)?
+            .flatten()
+            .is_some_and(|(_, granted)| granted);
+    if granted {
         return Err(DeckError::new(
             ErrorKind::Invalid,
             "channel first-send does not support reviewed lists",
@@ -217,8 +263,13 @@ pub(crate) fn admit(
     now: u64,
 ) -> Result<Option<ChannelFirstSendConstraint>, DeckError> {
     let claim = args.channel_first_send.as_ref();
+    let board = crate::documents::board_authority();
     let native_binding = if claim.is_none() {
-        crate::inbound_channel::channel_constraint_for_card(&args.card_id)?
+        match native_binding(board.as_ref(), &args.card_id)? {
+            Some(binding) => binding,
+            // another source's row: the channel inbox has no say in it
+            None => return Ok(None),
+        }
     } else {
         None
     };
@@ -231,7 +282,7 @@ pub(crate) fn admit(
             "channel session identity changed",
         ));
     }
-    let board = match crate::documents::board_authority() {
+    let board = match board {
         Some(board) => board,
         None if claim.is_none() => {
             if native_binding.as_ref().is_some_and(|(_, granted)| *granted) {
@@ -271,9 +322,22 @@ pub(crate) fn admit(
             let key = origin_key.strip_prefix("channel:").ok_or_else(|| {
                 DeckError::new(ErrorKind::Invalid, "channel origin key is malformed")
             })?;
-            crate::inbound_channel::channel_proof(key)?.ok_or_else(|| {
-                DeckError::new(ErrorKind::Invalid, "channel event proof is missing")
-            })?
+            match crate::inbound_channel::channel_proof(key)? {
+                Some(event) => event,
+                // acknowledged by the previous release before its plan was
+                // queued: the rows it always had, and no permission
+                None if card["channelRun"]["firstSend"].is_null()
+                    && crate::inbound_channel::handled_without_grant(key)? =>
+                {
+                    return Ok(None)
+                }
+                None => {
+                    return Err(DeckError::new(
+                        ErrorKind::Invalid,
+                        "channel event proof is missing",
+                    ))
+                }
+            }
         }
     };
     let Some(card) = matching_card(&board, &event, args)? else {
@@ -297,13 +361,11 @@ pub(crate) fn admit(
     let Some(claim) = claim else {
         let head = &card["channelRun"]["initialSteps"][0];
         let expected = operation_id(&event.id);
+        // the head's identity; its wording is not part of it, so a follow-up
+        // may say the same thing
         let head_like = args.operation_id.as_deref() == Some(expected.as_str())
-            || args.tpl_idx == Some(1)
-            || head["text"]
-                .as_str()
-                .map(super::normalize_prompt)
-                .as_deref()
-                == Some(super::normalize_prompt(&args.text).as_str());
+            || args.operation_id.as_deref() == head["operationId"].as_str()
+            || args.tpl_idx == Some(1);
         if event.first_send_grant.is_some() {
             let exact_later = card["channelRun"]["initialSteps"]
                 .as_array()
@@ -317,7 +379,8 @@ pub(crate) fn admit(
                             .map(super::normalize_prompt)
                             .as_deref()
                             == Some(super::normalize_prompt(&args.text).as_str())
-                        && step["mode"] == args.mode
+                        && step["mode"] == "chain"
+                        && args.mode == "chain"
                         && step["at"].as_u64() == args.at
                         && step["tpl"].as_str() == args.tpl.as_deref()
                         && step["tplIdx"].as_u64() == args.tpl_idx.map(u64::from)

@@ -526,7 +526,7 @@ pub(crate) fn add_item(
     add_item_bound(q, args, text, None, expected_process, None, false)
 }
 
-fn add_item_bound(
+pub(super) fn add_item_bound(
     q: &mut QueueState,
     args: QueueAddArgs,
     text: String,

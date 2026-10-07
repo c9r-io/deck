@@ -896,4 +896,4 @@ pub(crate) fn save_queue(q: &QueueState) -> Result<(), DeckError> {
 }
 
 #[cfg(test)]
-pub(crate) use channel_permission_tests::verify_native_channel_fences;
+pub(crate) use channel_permission_tests::{verify_native_channel_fences, QueueProbe};

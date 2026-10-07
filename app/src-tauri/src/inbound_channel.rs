@@ -26,6 +26,15 @@
 //! be downgraded to the legacy path. Missing authority is retried without ACK.
 //! Pending/applied evidence is idempotent and Board removal consumes it before
 //! the Board write, so a stale pulled snapshot cannot recreate a canceled run.
+//! A consumed event's `handled` record keeps whether a grant was ever frozen
+//! for it. An entry without one (the previous release's `{id, at}`, or an
+//! event canceled before any permission applied) never entered the
+//! first-send path; `handled_without_grant` is the native fact admission
+//! uses to finish a run the previous release acknowledged before queueing.
+//! `stage_message` is the durable half the transport's channel consumer runs.
+//! A first-send request may name the identity digest it was made against
+//! (`ChannelFirstSendRequest::identity`); a grant is issued only while that
+//! is still the verified identity.
 //!
 //! Limits Deck cannot close: an allowlisted bot id admits whatever that bot
 //! forwards (webhooks, forms, alert text), and the agent's own configuration
@@ -148,6 +157,20 @@ pub(crate) struct ChannelFirstSendGrant {
 pub(crate) struct ChannelFirstSendRequest {
     pub(crate) rule_id: String,
     pub(crate) external: bool,
+    /// The identity digest the request was made against
+    /// (`slack_channel_prepare`). A grant is issued only while that is still
+    /// the verified identity; absent, the identity current at the save.
+    #[serde(default)]
+    pub(crate) identity: Option<String>,
+}
+
+impl ChannelFirstSendRequest {
+    /// Whether `identity` is the one this request names, or it names none.
+    pub(crate) fn made_against(&self, identity: &Identity) -> bool {
+        self.identity
+            .as_ref()
+            .is_none_or(|expected| *expected == identity_digest(identity))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1490,6 +1513,19 @@ pub(crate) fn channel_constraint_for_card(
     })
 }
 
+/// The event was consumed without ever freezing a grant: acknowledged by the
+/// previous release (an id and a time), or canceled before any permission
+/// applied to it. Such an event never entered the first-send path.
+pub(crate) fn handled_without_grant(id: &str) -> Result<bool, DeckError> {
+    with_store(|store| {
+        Ok(store
+            .doc
+            .handled
+            .iter()
+            .any(|handled| handled.id == id && handled.first_send_grant.is_none()))
+    })
+}
+
 pub(crate) fn bind_board_identity(id: &str, card_id: &str, session: &str) -> Result<(), DeckError> {
     if !local_id(card_id, 128)
         || session.is_empty()
@@ -1951,6 +1987,14 @@ pub(crate) fn handle_message(
     identity: &Identity,
     text: &str,
 ) -> Result<(), &'static str> {
+    if stage_message(identity, text)? {
+        let _ = app.emit("channel-changed", ());
+    }
+    Ok(())
+}
+
+/// The durable half of `handle_message`: `Ok(true)` when something was staged.
+pub(crate) fn stage_message(identity: &Identity, text: &str) -> Result<bool, &'static str> {
     let cfg = read_config_strict_result().inspect_err(|code| {
         note_rejected(code);
     })?;
@@ -1962,11 +2006,11 @@ pub(crate) fn handle_message(
         }
         Err(code) => {
             note_rejected(code);
-            return Ok(());
+            return Ok(false);
         }
     };
     if entries.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     with_store(|store| store.stage(entries, now_secs())).map_err(|e| {
         let code = if e.kind() == ErrorKind::DiskFull {
@@ -1977,8 +2021,7 @@ pub(crate) fn handle_message(
         note_rejected(code);
         code
     })?;
-    let _ = app.emit("channel-changed", ());
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn transport_connected() {

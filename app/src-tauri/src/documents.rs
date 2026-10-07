@@ -49,9 +49,16 @@
 //!   Board (`save_board_at`), each refusal emitting `board-lost`.
 //! - Channel first-send settings are native-issued grants. Ordinary settings
 //!   saves preserve only the exact current grant; explicit rule requests mint
-//!   or update one and return canonical settings. The commit is followed by a
+//!   or update one and return canonical settings. A request that names the
+//!   identity it was made against is refused once another is current. The commit is followed by a
 //!   durable inbox activation whose microsecond time is the message boundary.
-//!   Backup settings durably clear channel intent and grants. An effective Board
+//!   A settings backup is handed to the webview without channel intent or
+//!   grants, and `load_settings` writes nothing: the backup stays a backup
+//!   (so nothing else the last save withdrew becomes current) until its owner
+//!   saves. `save_settings` carries a grant over only from the CURRENT file
+//!   (`current_settings_value`); with none, the save goes ahead and keeps no
+//!   grant, so recovered settings stay saveable and a stale page cannot bring
+//!   a grant back. A main file that cannot be read refuses the save. An effective Board
 //!   template-head change retires dependent grants under settings -> Board
 //!   fences before the Board write, while unrelated card/follow-up edits do
 //!   not depend on settings readability. Removing its last frozen Board
@@ -1746,12 +1753,12 @@ pub(crate) fn load_settings() -> Result<LoadedDoc, DeckError> {
     let mut loaded = to_loaded(load_settings_at(&settings_path())?);
     if loaded.source == "backup" {
         // A backup is the version before the last settings save and cannot
-        // restore a withdrawn channel authorization decision. Persist the
-        // feature-local withdrawal before exposing settings to the webview;
-        // re-enabling requires a new explicit grant request.
+        // restore a withdrawn channel authorization decision: the webview
+        // gets it without the choice and the grant. Nothing is written here.
+        // Writing the recovered document would make everything else the
+        // last save withdrew current again; the backup stays a backup until
+        // its owner saves, and that save keeps no grant (`save_settings`).
         if let Some(stripped) = strip_channel_grants(&loaded.data, true) {
-            let _fence = storage::settings_fence();
-            save_settings_locked_at(&settings_path(), &stripped)?;
             loaded.data = stripped;
         }
     }
@@ -1782,16 +1789,21 @@ fn now_micros() -> u64 {
         .max(1)
 }
 
+/// The settings a save or a retirement may take channel authority from:
+/// the CURRENT file and nothing else. `Ok(None)` says there is none — a
+/// first run, a main file whose content is damaged, or one already set aside
+/// with only its backup left — so no grant is carried over and the owner's
+/// save goes ahead (`storage::save_typed_as_owner` sets the damage aside). A
+/// main file that cannot be READ, or one from a newer deck, is unknown, not
+/// absent: that stays an error and nothing is written over it.
 fn current_settings_value(path: &std::path::Path) -> Result<Option<serde_json::Value>, DeckError> {
-    let Some(loaded) = storage::read_typed::<SettingsDoc>(path)? else {
-        return Ok(None);
+    let loaded = match storage::read_typed::<SettingsDoc>(path) {
+        Ok(Some(loaded)) if loaded.source == "main" => loaded,
+        Ok(_) => return Ok(None),
+        // damaged, and its backup unusable too
+        Err(error) if error.kind() == ErrorKind::Recovery => return Ok(None),
+        Err(error) => return Err(error),
     };
-    if loaded.source != "main" {
-        return Err(DeckError::new(
-            ErrorKind::Other,
-            "current settings are unavailable",
-        ));
-    }
     serde_json::from_str(&loaded.payload)
         .map(Some)
         .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "settings are invalid"))
@@ -1810,10 +1822,7 @@ fn reconcile_channel_grants(
     let identity = crate::inbound_channel::current_identity();
     let mut requested = HashMap::new();
     for request in requests {
-        if requested
-            .insert(request.rule_id.clone(), request.external)
-            .is_some()
-        {
+        if requested.insert(request.rule_id.clone(), request).is_some() {
             return Err(DeckError::new(
                 ErrorKind::Invalid,
                 "duplicate channel first-send request",
@@ -1853,13 +1862,22 @@ fn reconcile_channel_grants(
             object.remove("firstSend");
             continue;
         }
-        if let Some(external) = explicit {
+        if let Some(request) = explicit {
+            let external = request.external;
             let board = board
                 .as_ref()
                 .ok_or_else(|| DeckError::new(ErrorKind::Other, "board authority unavailable"))?;
             let identity = identity.as_ref().ok_or_else(|| {
                 DeckError::new(ErrorKind::Other, "verified Slack identity unavailable")
             })?;
+            // the choice was made against one verified identity; another
+            // one that became current since is not what was accepted
+            if !request.made_against(identity) {
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "verified Slack identity changed",
+                ));
+            }
             let grant =
                 crate::inbound_channel::issue_grant(rule, board, identity, external, now_micros())?;
             object.insert("firstSend".into(), serde_json::Value::Bool(true));

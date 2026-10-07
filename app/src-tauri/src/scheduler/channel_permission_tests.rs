@@ -457,6 +457,7 @@ pub(crate) fn verify_native_channel_fences(
             Some(vec![channel::ChannelFirstSendRequest {
                 rule_id: "R1".into(),
                 external: true,
+                identity: None,
             }]),
         )
         .unwrap();
@@ -638,5 +639,118 @@ fn channel_firing_audit_survives_reload_without_inventing_success() {
         assert_eq!(queue.deliveries[0].automatic, automatic);
         assert_eq!(queue.deliveries[0].manual, !automatic);
         assert_eq!(queue.deliveries[0].readiness_overridden, overridden);
+    }
+}
+
+/// What a disk-backed closure test may read of a row the probe admitted.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ProbeRow {
+    pub(crate) operation: Option<String>,
+    pub(crate) mode: String,
+    pub(crate) external: bool,
+    pub(crate) authority: bool,
+    pub(crate) readiness_override: bool,
+    /// `None`: no channel constraint; `Some(authorized)` otherwise.
+    pub(crate) constraint: Option<bool>,
+}
+
+/// The external queue entries, minus Tauri: each call runs the admission
+/// steps of `channel_queue_add*` in the command's own order against real
+/// settings, Board and inbox files, on a queue this probe owns. No tmux,
+/// network, Agent or clipboard is used.
+pub(crate) struct QueueProbe(std::sync::Mutex<QueueState>);
+
+impl QueueProbe {
+    pub(crate) fn new() -> Self {
+        Self(std::sync::Mutex::new(QueueState::default()))
+    }
+
+    /// `channel_queue_add`: `Ok(true)` appended, `Ok(false)` an exact replay.
+    pub(crate) fn external_add(&self, request: Value) -> Result<bool, DeckError> {
+        let mut args: QueueAddArgs = serde_json::from_value(request).expect("queue request");
+        ops::admit_external(&mut args)?;
+        let text = normalize_prompt(&args.text);
+        validate_add(&args)?;
+        if operation_replay(&self.0, &args, &text)? {
+            return Ok(false);
+        }
+        let fingerprint = args
+            .operation_id
+            .as_ref()
+            .map(|_| operation_fingerprint(&args, &text));
+        if args.channel_first_send.is_some() {
+            args.dir = channel::normalized_dir(&args.dir)
+                .ok_or_else(|| DeckError::new(ErrorKind::Invalid, "directory unavailable"))?;
+        }
+        ops::admit_authority(&mut args, std::slice::from_ref(&text));
+        ops::admit_first_send(&mut args);
+        args.channel_first_send_granted =
+            channel_first_send::admit(&args, crate::datadir::now_epoch())?;
+        let uncertain = channel_first_send::rollback_uncertain(&args, None)?;
+        let expected = crate::context::expected_from_command(&args.cmd);
+        let mut queue = self.0.lock().unwrap();
+        ops::add_item_bound(
+            &mut queue,
+            args,
+            text,
+            None,
+            expected,
+            fingerprint,
+            uncertain,
+        )?;
+        Ok(true)
+    }
+
+    /// `channel_queue_add_reviewed_list`, up to the owner core.
+    pub(crate) fn external_reviewed(&self, request: Value) -> Result<(), DeckError> {
+        let mut args: QueueAddArgs = serde_json::from_value(request).expect("queue request");
+        ops::admit_external(&mut args)?;
+        channel_first_send::reject_reviewed_list(&args)
+    }
+
+    pub(crate) fn rows(&self) -> Vec<ProbeRow> {
+        let queue = self.0.lock().unwrap();
+        queue
+            .items
+            .iter()
+            .map(|item| ProbeRow {
+                operation: item.operation_id.clone(),
+                mode: item.mode.clone(),
+                external: item.external,
+                authority: item.authority.is_some(),
+                readiness_override: item.readiness_override.is_some(),
+                constraint: item.channel_first_send.as_ref().map(|c| c.authorized),
+            })
+            .collect()
+    }
+
+    /// A row the previous release queued: the owner core as it was, with
+    /// the fingerprint of the request as sent (no channel admission existed).
+    pub(crate) fn seed_legacy(&self, request: Value) {
+        let mut args: QueueAddArgs = serde_json::from_value(request).expect("queue request");
+        ops::admit_external(&mut args).unwrap();
+        let text = normalize_prompt(&args.text);
+        let fingerprint = operation_fingerprint(&args, &text);
+        let expected = crate::context::expected_from_command(&args.cmd);
+        let mut queue = self.0.lock().unwrap();
+        ops::add_item_bound(
+            &mut queue,
+            args,
+            text,
+            None,
+            expected,
+            Some(fingerprint),
+            false,
+        )
+        .unwrap();
+    }
+
+    /// The row left the queue (it was sent); its operation record stays.
+    pub(crate) fn sent(&self, operation: &str) {
+        let mut queue = self.0.lock().unwrap();
+        queue
+            .items
+            .retain(|item| item.operation_id.as_deref() != Some(operation));
+        assert!(queue.operations.iter().any(|op| op.id == operation));
     }
 }
