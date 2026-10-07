@@ -95,7 +95,9 @@
 // drop a save that has not been sent (`dropSave`): it writes nothing and
 // asks for no permission, whenever its Slack answer arrives, and it is asked
 // once more by the settings writer when its turn comes (`proceed`), so a
-// save queued behind another write is withdrawn too. Losing focus or being
+// save queued behind another write is withdrawn too. Until that yes the
+// save's rules are in no shared settings object, so no other save can write
+// them in its place (settings.js). Losing focus or being
 // covered drops nothing. A save that goes ahead is merged into the settings
 // as they are then, so rules saved meanwhile stay, and a rule deleted while
 // its save waited stays deleted. A dropped save gives back its own locks and

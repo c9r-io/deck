@@ -20,7 +20,7 @@ const { initAutomation, openAutomations, openEditor } = await import('../js/auto
 const { provider } = await import('../js/board.js');
 const { ctx, state, store } = await import('../js/state.js');
 const { normalizeSettings, serializeSettings } = await import('../js/settings-model.js');
-const { persistInbound, persistSettings, refreshChannelAuthority } = await import('../js/settings.js');
+const { persistInbound, persistSettings, refreshChannelAuthority, setFontScale, setShortcut } = await import('../js/settings.js');
 const get = id => fakeDocument.getElementById(id);
 /* the list is repainted from nothing, as in a browser */
 Object.defineProperty(get('auto-list'), 'innerHTML', { get: () => '', set(value) { if (!value) this.children = []; } });
@@ -50,6 +50,7 @@ const VERIFIED = { identity: 'verified-identity' };
 /* Settings holding channel rule ra and `others`, the drawer open with its
    list painted. `prepare` answers are taken in order; `gates` hold back the
    matching `save_settings` call until the test settles them. */
+const held = [];
 async function scene(others, { prepare = [], gates = [] } = {}) {
   /* whatever an earlier test left waiting is given up, and its locks with it */
   if (get('auto-cancel').onclick) get('auto-cancel').onclick();
@@ -61,11 +62,16 @@ async function scene(others, { prepare = [], gates = [] } = {}) {
     channelRules: rules.filter(rule => rule.source === 'channel').map(({ source, ...rule }) => rule),
     rules: rules.filter(rule => rule.source !== 'channel') } });
   const calls = []; const saves = [];
-  const onDisk = serializeSettings(ctx.settings);
+  /* a failed test must not leave the writer stuck for the next one */
+  for (const gate of held.splice(0)) { gate?.resolve?.(); gate?.answer?.resolve(); }
+  held.push(...gates);
+  gates = [...gates];                                  // the caller keeps its own list
+  /* the settings file: `data` is what it holds, `writes` each content it was given */
+  const disk = { data: serializeSettings(ctx.settings), writes: [] };
   window.__TAURI__ = { event: { listen: async () => {} }, core: { invoke: async (command, args) => {
     calls.push(command);
     if (command === 'inbound_runs') return [];
-    if (command === 'load_settings') return { data: onDisk };
+    if (command === 'load_settings') return { data: disk.data };
     if (command === 'slack_channel_prepare') {
       const next = prepare.shift();
       if (!next) throw 'pending';
@@ -80,7 +86,12 @@ async function scene(others, { prepare = [], gates = [] } = {}) {
       saved.inbound.channelRules.find(rule => rule.id === request.ruleId).firstSendGrant = { id: `native-${saves.length}`,
         digest: 'native-digest', stepHash: createHash('sha256').update('Inspect {{msg.text}}').digest('hex') };
     }
-    return JSON.stringify(saved);
+    /* three separate moments: the call was sent (above), the file holds it
+       (here), the answer returns (after `answer`, when a gate has one) */
+    disk.data = JSON.stringify(saved);
+    disk.writes.push(disk.data);
+    if (gate?.answer) await gate.answer.promise;
+    return disk.data;
   } } };
   initAutomation({ provider, activeProject: () => project, newSessionSummary: () => '', openProjectDefaults() {},
     projectDefaultsSummary: () => '', openSession() {}, newDefaultSession() {} });
@@ -88,7 +99,7 @@ async function scene(others, { prepare = [], gates = [] } = {}) {
   await openAutomations();
   await turn();
   calls.length = 0;
-  return { calls, saves, before: inbound() };
+  return { calls, saves, disk, before: inbound() };
 }
 /* the painted row of a rule, by its position in the project's list */
 const row = id => {
@@ -337,4 +348,181 @@ test('a save already sent finishes as its own: it closes and reports to no other
   assert.equal(get('auto-name').value, 'Morning');
   assert.equal(said().length, toasts, 'nothing is announced in the other editor');
   assert.equal(count(calls, 'slack_channel_prepare_cancel'), 1, 'its hold is released once, after its write');
+});
+
+/* ---- F3.2: a save given up before its turn reaches the file under no other
+   save's name. Every write is read, and the file after each one. ---- */
+const SLACK_RS = { ...OTHERS.slack, id: 'rs' };
+/* how many hashes are still being computed: the scenes below need the rule
+   save in the writer's queue before the next save is made */
+let hashing = 0;
+const digest = crypto.subtle.digest.bind(crypto.subtle);
+crypto.subtle.digest = (...args) => { hashing += 1; return digest(...args).finally(() => { hashing -= 1; }); };
+const written = data => JSON.parse(data);
+const ruleIn = (data, id) => written(data).inbound.rules.find(rule => rule.id === id);
+/* the editor's change to `id`, a clock rule (rb) or a badge rule (rs): what
+   it is sent to do, where it starts, and whether it may send unattended */
+async function editRule(id) {
+  edit(id);
+  get('auto-dir').value = '/var';
+  if (id === 'rb') { get('auto-time').value = '18:30'; get('auto-first-send').checked = true; }
+  else { get('auto-send').checked = true; get('auto-send').fire('change'); }
+  const done = get('auto-save').onclick();
+  do { await turn(); } while (hashing);                // a badge rule's approval is hashed first
+  await turn();
+  return { done };
+}
+const changed = (rule, id) => rule.dir === '/var' || (id === 'rb'
+  ? rule.schedule.minute === 1110 || rule.firstSendWithoutReadiness === true : !!rule.autoSend);
+/* W0 is under way, then A (the rule edit), B (font size) and C (a shortcut)
+   wait behind it, each made by the handler the product uses */
+async function interleaved(id, gates) {
+  const made = await scene([OTHERS.clock, SLACK_RS], { gates });
+  const w0 = setShortcut('toggleSidebar', 'Meta+KeyJ');
+  await turn();
+  assert.equal(made.saves.length, 1, 'W0 was sent and is not answered');
+  const a = await editRule(id);
+  assert.equal(made.saves.length, 1, 'A waits behind W0');
+  const b = setFontScale(1.2);
+  const c = setShortcut('splitRight', 'Meta+KeyK');
+  await turn();
+  return { ...made, w0, a, b, c };
+}
+
+for (const id of ['rb', 'rs']) {
+  const kind = id === 'rb' ? 'clock' : 'badge';
+  test(`a ${kind} rule save given up before its turn is in no other save's write`, async () => {
+    const gates = [deferred(), { answer: deferred() }, deferred()];
+    const { saves, disk, before, w0, a, b, c } = await interleaved(id, gates);
+    const original = before.rules.find(rule => rule.id === id);
+    get('auto-cancel').onclick();                      // A is given up before the writer reached it
+    gates[0].resolve();
+    await w0; await a.done; await turn();
+    /* B is in the file and not answered yet; C has not been sent */
+    assert.equal(saves.length, 2, 'A sent nothing of its own');
+    assert.equal(changed(ruleIn(saves[1].data, id), id), false, 'B\'s write does not carry what A wanted');
+    assert.deepEqual(ruleIn(saves[1].data, id), original);
+    assert.deepEqual(written(saves[1].data).inbound.rules, before.rules, 'every other rule and approval is as it was');
+    assert.deepEqual(ruleIn(disk.data, id), original, 'the file is right without waiting for C');
+    assert.equal(written(disk.data).fontScale, 1.2);
+    gates[1].answer.resolve();
+    await b; await turn();
+    assert.equal(saves.length, 3);
+    assert.deepEqual(ruleIn(saves[2].data, id), original, 'C\'s write does not carry it either');
+    gates[2].resolve();
+    await c; await turn();
+    assert.equal(disk.writes.length, 3);
+    for (const data of disk.writes) assert.deepEqual(written(data).inbound.rules, before.rules);
+    assert.deepEqual(requestsOf(saves), []);
+    assert.equal(written(disk.data).fontScale, 1.2, 'B\'s own change is kept');
+    assert.equal(written(disk.data).shortcuts.splitRight, 'Meta+KeyK', 'C\'s own change is kept');
+    assert.equal(written(disk.data).shortcuts.toggleSidebar, 'Meta+KeyJ');
+    assert.deepEqual(inbound(), before, 'and the rules in memory are as they were');
+  });
+}
+
+test('with the last queued save failing, a save given up earlier is still nowhere in the file', async () => {
+  const gates = [deferred(), null, deferred()];
+  const { saves, disk, before, w0, a, b, c } = await interleaved('rb', gates);
+  edit('rs');                                          // A is given up by opening another rule
+  gates[0].resolve();
+  await w0; await a.done; await b; await turn();
+  gates[2].reject('io');                               // C never reaches the file
+  await c; await turn();
+  assert.equal(saves.length, 3);
+  assert.equal(disk.writes.length, 2, 'W0 and B are all the file was given');
+  assert.deepEqual(written(disk.data).inbound.rules, before.rules);
+  assert.equal(written(disk.data).fontScale, 1.2);
+  assert.deepEqual(inbound(), before);
+});
+
+test('a rule save that goes ahead is kept by the saves queued behind it, and they keep their own', async () => {
+  const gates = [deferred(), null, null, null];
+  const { saves, disk, before, w0, a, b, c } = await interleaved('rb', gates);
+  gates[0].resolve();
+  await w0; assert.equal(await a.done, undefined); await b; await c; await turn();
+  assert.equal(saves.length, 4, 'one write each: W0, A, B, C');
+  assert.deepEqual(ruleIn(saves[0].data, 'rb'), before.rules.find(rule => rule.id === 'rb'), 'W0 was sent before A existed');
+  for (const save of saves.slice(1)) {
+    const rule = ruleIn(save.data, 'rb');
+    assert.deepEqual([rule.dir, rule.schedule.minute, rule.firstSendWithoutReadiness], ['/var', 1110, true]);
+    assert.deepEqual(ruleIn(save.data, 'rs'), before.rules.find(rule => rule.id === 'rs'));
+  }
+  assert.equal(written(disk.data).fontScale, 1.2);
+  assert.equal(written(disk.data).shortcuts.splitRight, 'Meta+KeyK');
+  assert.equal(written(disk.data).shortcuts.toggleSidebar, 'Meta+KeyJ');
+  assert.equal(stored('rb').dir, '/var');
+  assert.equal(ctx.settings.fontScale, 1.2);
+  assert.equal(get('auto-editor').hidden, true, 'its editor closed on its own save');
+});
+
+test('a rule save already sent is not taken back, and the save behind it carries it', async () => {
+  const gates = [deferred(), null];
+  const { saves, disk, before } = await scene([OTHERS.clock, SLACK_RS], { gates });
+  const a = await editRule('rb');
+  assert.equal(saves.length, 1, 'A was sent');
+  edit('rs');                                          // too late to give A up
+  const b = setFontScale(1.2);
+  await turn();
+  gates[0].resolve();
+  await a.done; await b; await turn();
+  assert.equal(saves.length, 2);
+  for (const data of disk.writes) assert.equal(ruleIn(data, 'rb').dir, '/var');
+  assert.deepEqual(ruleIn(disk.data, 'rs'), before.rules.find(rule => rule.id === 'rs'));
+  assert.equal(written(disk.data).fontScale, 1.2);
+  assert.ok(editorFree(), 'the editor opened meanwhile stays open');
+});
+
+test('a permission already given is kept, and not asked for again, by a save of another setting', async () => {
+  const { saves, disk } = await scene([OTHERS.clock], { prepare: [() => VERIFIED] });
+  await (await saveWaiting()).done;
+  assert.equal(stored('ra').firstSendGrant.id, 'native-1');
+  await setFontScale(1.2);
+  await setShortcut('splitRight', 'Meta+KeyK');
+  assert.equal(saves.length, 3);
+  assert.deepEqual(requestsOf(saves.slice(1)), [], 'nothing is asked for again');
+  for (const data of disk.writes) assert.equal(written(data).inbound.channelRules.find(rule => rule.id === 'ra').firstSendGrant.id, 'native-1');
+});
+
+test('a save started after one was given up is written as its own, behind the saves already waiting', async () => {
+  const gates = [deferred(), { answer: deferred() }, null, null];
+  const { saves, disk, before, w0, a, b, c } = await interleaved('rb', gates);
+  get('auto-cancel').onclick();
+  gates[0].resolve();
+  await w0; await a.done; await turn();                // A's turn came and went; B is in the file
+  edit('rs');
+  get('auto-dir').value = '/opt';
+  const next = get('auto-save').onclick();
+  await turn();
+  assert.equal(saves.length, 2, 'the new save waits behind B and C');
+  gates[1].answer.resolve();
+  await b; await c; await next; await turn();
+  assert.equal(saves.length, 4);
+  for (const data of disk.writes.slice(0, 3)) assert.deepEqual(written(data).inbound.rules, before.rules);
+  assert.equal(ruleIn(disk.data, 'rs').dir, '/opt');
+  assert.deepEqual(ruleIn(disk.data, 'rb'), before.rules.find(rule => rule.id === 'rb'), 'what was given up stays out');
+  assert.equal(written(disk.data).fontScale, 1.2);
+  assert.equal(written(disk.data).shortcuts.splitRight, 'Meta+KeyK');
+  assert.equal(get('auto-editor').hidden, true);
+});
+
+test('a rule save that fails in the file takes back its own rules only, and no later save writes them', async () => {
+  const gates = [deferred(), deferred(), null, null];
+  const { saves, disk, before, w0, a, b, c } = await interleaved('rb', gates);
+  const toasts = said().length;
+  gates[0].resolve();
+  await w0; await turn();
+  assert.equal(saves.length, 2, 'A was sent');
+  assert.equal(stored('rb').dir, '/var', 'and is shown from then on');
+  gates[1].reject('io');                               // the file refused A
+  await a.done; await b; await c; await turn();
+  assert.equal(saves.length, 4);
+  assert.equal(disk.writes.length, 3, 'W0, B and C');
+  for (const data of disk.writes) assert.deepEqual(written(data).inbound.rules, before.rules);
+  assert.deepEqual(inbound(), before, 'the rules in memory are the ones in the file');
+  assert.equal(ctx.settings.fontScale, 1.2, 'B\'s change is still in memory');
+  assert.equal(ctx.settings.shortcuts.splitRight, 'Meta+KeyK', 'and C\'s');
+  assert.equal(written(disk.data).fontScale, 1.2);
+  assert.equal(said().slice(toasts).length, 1, 'the failure is said once');
+  assert.equal(get('auto-editor').hidden, false, 'its editor stays open for another try');
 });

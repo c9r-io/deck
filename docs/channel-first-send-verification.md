@@ -285,3 +285,72 @@ settings、Board、queue 使用粘性 v7；独立 inbox 使用 v2，新读取者
 ### 提交
 
 本节的生产改动、测试和文档作为一个提交落在本地 `main`，标题 `fix(automation): a rule save belongs to the edit it was started from`，父提交 `66f8874`，不带 Co-Authored-By；未推送、未发布、版本未变。
+
+## F3.2 撤回候选的跨写入隔离（2026-10-07）
+
+起始：`main`，HEAD `795bebc`，工作树干净。本节只处理 F3.1 留下的一条遗留（上一节“未执行与遗留”第三条，原文保留）：已取消的规则保存虽然不发出自己的写入，它的内容却可能被其他排队的设置保存带进主文件。F3.1 的修复全部保留，没有重新打开五项历史发现、原生授权或其他设置竞态。逐次写入的证据在 [channel-first-send-closure-evidence.md](channel-first-send-closure-evidence.md) 的同名一节。
+
+### 结论：CONFIRMED，已修复
+
+F3.1 一节把它写成“只读代码得出，没有运行验证”的短暂不一致。本轮在 `795bebc` 上实际复现，结论比那条记录更重：
+
+- **只需要一个其他保存，不需要“不止一个”。** 顺序是 W0（改快捷键，已发出、未返回）→ A（编辑器保存规则，排在 W0 后）→ B（改字号）→ C（改另一个快捷键），然后取消 A，再放行。A 自己没有发出 `save_settings`，但 **B 的写入带着 A 的全部变更**，B 完成后主文件里就是 A 的内容。
+- **带进去的是自动化意图和批准，不是无害字段。** A 是 Clock 规则时：启动目录、触发时间、“不等就绪直接发送首步”。A 是表情规则时：启动目录和整个 `autoSend` 批准。授权请求列表为空，但这两类内容本来就不走授权请求。
+- **“最后一次写入纠正”不可依赖。** C 的写入确实把内容改回去，所以只看最终内存或最终文件的测试看不到问题。C 失败时主文件停在 B 的写入上，A 的内容留在文件里。
+
+### 根因
+
+`commitSettings` 在排队之前就把候选整体换成 `ctx.settings`。之后的每个设置保存都从 `ctx.settings` 复制出自己的完整候选，于是把还没提交的规则一起带走。F3.1 的撤回分支只修正撤回那一刻的 `ctx.settings`（也就是最后一个排队候选），修不到更早排队、各自持有快照的候选。既有的 `nativeChannelSettings` 覆盖只管频道规则和连接，不管 `inbound.rules` 里的 Clock / 表情规则。
+
+### 最小修复
+
+只改 `app/ui/js/settings.js` 的写入器（加 `automation.js` 头部一句契约）。没有事务框架、状态机、后端或 IPC 改动。
+
+1. **可撤回的保存在轮到它之前不进入共享设置。** 带 `proceed` 的保存（规则保存）不再提前替换 `ctx.settings`。写入器轮到它、`proceed` 回答“是”的那一刻，才把它自己的字段原地放进 `ctx.settings` 并发出写入。取消的保存从头到尾没有出现在任何共享对象里，其他保存无从复制；撤回时也不再有“恢复内存”这一步。
+2. **其他设置的保存不以自己的快照为自动化的依据。** 写入器记住最近一次从文件读到或写进文件的自动化配置（`committedInbound`，取自 `save_settings` / `load_settings` 返回的原生规范内容）。不是规则保存的写入，在发出前用它替换自己候选里的 `inbound`，再叠加既有的频道授权覆盖。所以它既不带已取消的规则保存，也不会把排在它前面、已经写入的规则保存改回去，并且不带任何授权请求。
+3. **已发出的保存失败时只收回自己的字段。** 规则保存的原生写入失败时，只把它自己的字段原地恢复为放进去之前的值并提示一次；排在后面的保存改过的其他字段留在内存里。
+
+没有新增确认步骤，没有锁住其他设置。规则保存在等待期间不再提前显示在规则列表里；这段时间编辑器本来就开着并显示着它。
+
+### 测试
+
+加在 `app/ui/test/channel-editor-race-dom.test.mjs`，新增 8 项（文件共 22 项）。W0、A、B、C 都由生产入口构造：`setShortcut`、编辑器的保存按钮、`setFontScale`、`setShortcut`。合成 IPC 把一次 `save_settings` 分成三个可分别控制的时刻：调用发出、主文件内容被替换、响应返回。断言落在每一次 `save_settings` 的参数和每一次写入后的主文件上。
+
+| 必测矩阵 | 测试 | 修复前 | 修复后 |
+|---|---|---|---|
+| 1、2、4 Clock 规则 A 提交前取消；B 已落盘、C 未发出时主文件已正确 | `a clock rule save given up before its turn is in no other save's write` | 失败：`B's write does not carry what A wanted` | 通过 |
+| 1、2、5 表情规则 A（批准自动发送）同上 | `a badge rule save given up before its turn is in no other save's write` | 失败，同一断言 | 通过 |
+| 3 C 写入失败 | `with the last queued save failing, a save given up earlier is still nowhere in the file` | 失败：主文件里是 A 的目录、时间和首发选择 | 通过 |
+| 6 A 合法继续 | `a rule save that goes ahead is kept by the saves queued behind it, and they keep their own` | 通过 | 通过 |
+| 7 已有频道授权加无关保存 | `a permission already given is kept, and not asked for again, by a save of another setting` | 通过 | 通过 |
+| 8 A 取消后开始新保存 | `a save started after one was given up is written as its own, behind the saves already waiting` | 失败 | 通过 |
+| 9 A 已发出后“取消” | `a rule save already sent is not taken back, and the save behind it carries it` | 通过 | 通过 |
+| 额外：A 已发出但原生写入失败 | `a rule save that fails in the file takes back its own rules only, and no later save writes them` | 失败 | 通过 |
+
+修复前 8 项中 5 项失败、3 项通过，通过的 3 项是保持性测试。修复前的结果是把每项单独运行得到的：一项失败会让写入队列停在被扣住的写入上，连带后面的测试超时，合在一起跑的数字不反映各项自己的结论。F3.1 原有 14 项修复前后都通过。
+
+第 8 项只验证了“旧保存的轮次已经过去之后”开始的新保存。旧保存还排在队列里时开始的新规则保存，仍被既有的“同类写入进行中”保护静默拒绝，见下方遗留。
+
+### 门禁（修复后的工作树，实际运行）
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check`（全部已跟踪的 UI JS/MJS） | 通过 |
+| `scripts/ui-tests` | 597 项通过，0 失败（589 加本轮 8），覆盖率门槛与清单通过 |
+| `node ui/js/check.mjs` | 58 个模块通过 |
+| `git diff --check` | 通过 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在加入 `automation.js` 头部一句注释和文档之前的工作树上运行；之后重跑了读取前端源码的五个集成测试 `ipc_contract`、`signal_census`、`log_privacy`、`edr_quiet`、`external_admission`，45 项通过） |
+
+没有改 Rust、IPC 契约或原生构建输入。Rust 全量测试跑了一次，原因同上一节（有几项直接读取前端源码）。fmt、clippy 和 245 秒后台载体没有重跑；后台载体验证的链路不经过设置写入器的这段交错。
+
+### 未执行与遗留
+
+- 没有在真实 WKWebView 里操作这个序列；没有使用真实 Slack、Agent、Keychain 或剪贴板。本轮没有启动应用或 tmux 服务器，没有需要清理的资源。
+- **保存排队期间的新规则保存被静默拒绝**（既有，按交接要求未处理）。本轮确认它的范围比 F3.1 记录的宽：不只是原生保存已发出的那一段，已取消的规则保存还排在队列里、没轮到的时候，同样会拒绝新的规则保存、暂停和删除，且没有提示。
+- 规则保存的内容仍然在入队时合并，不是在轮到它时合并。期间别的规则保存进不了队列（上一条），所以规则本身不会过期；但如果原生一侧在这段时间收回了某条频道授权，这次保存带的是入队时的频道规则副本。原生一侧如何处理这种副本，本轮没有验证。
+- 其他设置的非可撤回保存（字号、主题等）仍然是先替换 `ctx.settings` 再写入，它们之间既有的交错行为没有改。
+- `committedInbound` 在本次运行第一次读或写设置之前为空，这时其他设置的保存照旧使用自己的快照。任何排在规则保存后面的写入，都会先经过那次规则保存或它前面的写入，所以到它时已经有值；这是读代码得出的，没有单独的测试。
+
+### 提交
+
+本节的生产改动、测试和文档作为一个提交落在本地 `main`，父提交 `795bebc`，不带 Co-Authored-By；未推送、未发布、版本未变。

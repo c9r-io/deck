@@ -188,3 +188,74 @@ slack    written rules: []  channelRules: ['ra']  requests: [{"ruleId":"ra","ext
 ### 没有运行的
 
 245 秒后台 WKWebView 载体、fmt、clippy、`test_edr_runtime.py` 没有重跑，理由见报告。没有启动应用或 tmux 服务器，没有创建需要清理的进程、socket 或 bundle。
+
+## F3.2 撤回候选的跨写入隔离（2026-10-07）
+
+起始 `main` / `795bebc` / 工作树干净。生产改动：`app/ui/js/settings.js`（写入器），`app/ui/js/automation.js`（头部契约一句）。测试：`app/ui/test/channel-editor-race-dom.test.mjs` 新增 8 项。
+
+### 修复前的实际写入（`795bebc` 的 `settings.js`，同一测试场景）
+
+设置里有频道规则 `ra`、Clock 规则 `rb`（目录 `/tmp`、每天 09:00）、表情规则 `rs`（目录 `/tmp`、无 `autoSend`）。顺序：W0 `setShortcut` 已发出未返回 → A 编辑器保存 → B `setFontScale(1.2)` → C `setShortcut` → 取消 A → 放行 W0，B 落盘后扣住它的响应 → 放行 B → 放行 C。
+
+A 为 Clock 规则 `rb`（目录改 `/var`、时间改 18:30、勾选免就绪首发）：
+
+| 时刻 | `save_settings` 次数 | 该次写入里的 `rb` | 主文件里的 `rb` |
+|---|---|---|---|
+| W0 返回、B 已落盘未返回 | 2（W0、B；A 没有自己的写入） | `dir:/var, minute:1110, firstSendWithoutReadiness:true` | 同左 |
+| B 返回、C 发出 | 3 | `dir:/tmp, minute:540` | |
+| C 落盘 | 3 | | `dir:/tmp, minute:540` |
+
+A 为表情规则 `rs`（目录改 `/var`、勾选自动发送）：B 的写入和当时的主文件里 `rs` 为 `dir:/var`，并带有 `autoSend`（键 `classes, digest, external, steps`）；C 的写入和最终主文件恢复为 `dir:/tmp`、无 `autoSend`。两种情况授权请求列表都为空。
+
+C 写入失败的场景：主文件只收到 W0 和 B 两次写入，停在 B 的内容上，`rb` 为 `/var`、18:30、免就绪首发。
+
+### 修复后的同一场景
+
+| 时刻 | `save_settings` 次数 | 该次写入里的 `rb` / `rs` | 主文件 |
+|---|---|---|---|
+| W0 返回、B 已落盘未返回 | 2 | 与事前逐字段相同，`inbound.rules` 整体 `deepEqual` 事前快照 | 规则与事前相同，`fontScale` 1.2 |
+| B 返回、C 发出 | 3 | 与事前相同 | |
+| C 落盘 | 3 | | 三次写入的 `inbound.rules` 都等于事前快照；`fontScale` 1.2、两个快捷键都是新值；内存中的规则与事前相同 |
+
+C 失败时：主文件收到 2 次写入，规则等于事前快照，`fontScale` 1.2。
+
+### 同一断言修复前后
+
+修复前逐项单独运行（合跑时一项失败会卡住写入队列，使后面的测试超时）；修复后整文件运行。
+
+| 测试 | 修复前 | 修复后 |
+|---|---|---|
+| `a clock rule save given up before its turn is in no other save's write` | 失败 `B's write does not carry what A wanted: true !== false` | 通过 |
+| `a badge rule save given up before its turn is in no other save's write` | 失败，同一断言 | 通过 |
+| `with the last queued save failing, a save given up earlier is still nowhere in the file` | 失败，主文件规则 `deepEqual` 事前快照不成立（`/var`、1110、`firstSendWithoutReadiness`） | 通过 |
+| `a rule save that goes ahead is kept by the saves queued behind it, and they keep their own` | 通过 | 通过 |
+| `a rule save already sent is not taken back, and the save behind it carries it` | 通过 | 通过 |
+| `a permission already given is kept, and not asked for again, by a save of another setting` | 通过 | 通过 |
+| `a save started after one was given up is written as its own, behind the saves already waiting` | 失败，前三次写入的规则不等于事前快照 | 通过 |
+| `a rule save that fails in the file takes back its own rules only, and no later save writes them` | 失败，同上 | 通过 |
+
+合计：新增 8 项修复前 `pass 3 / fail 5`；修复后整文件 `tests 22 / pass 22 / fail 0`。F3.1 的 14 项修复前后都通过。
+
+### 保持性断言
+
+- A 合法继续：恰好 4 次写入（W0、A、B、C）。W0 的写入里 `rb` 是事前内容；A、B、C 三次写入里 `rb` 都是 `/var`、1110、免就绪首发，`rs` 与事前相同；最终主文件 `fontScale` 1.2、两个快捷键为新值；A 的编辑器由它自己的保存关闭。
+- A 已发出后打开另一条规则：A 的写入照常完成，随后 B 的写入里 `rb` 仍是 `/var`，`rs` 与事前相同，新打开的编辑器保持可用。
+- A 已发出但原生写入失败：主文件收到 W0、B、C 三次写入，规则都等于事前快照；内存中的规则等于事前，字号和快捷键的新值仍在内存；失败提示 1 次；A 的编辑器保持打开。
+- 已有频道授权：先签发 `native-1`，再改字号和快捷键。后两次写入没有授权请求，三次写入里 `ra` 的授权 ID 都是 `native-1`。
+- A 取消且轮次已过之后的新保存：前三次写入规则等于事前快照；第四次是新保存自己的写入，`rs` 目录为 `/opt`，`rb` 与事前相同，字号和快捷键保留。
+
+### 层级
+
+node 下的测试 DOM。保存按钮处理函数、`saveRule`、`persistInbound` / `commitSettings` / 写入队列、`setFontScale`、`setShortcut` 是生产代码。合成的只有 `window.__TAURI__.core.invoke`：`save_settings` 的“发出”“主文件被替换”“响应返回”由测试分别放行，写入可被拒绝；`load_settings` 返回主文件当前内容。表情规则的批准哈希由真实的 `crypto.subtle` 计算，测试等它算完再排入 B 和 C。
+
+### 门禁
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check` 全部已跟踪 UI JS/MJS | 通过 |
+| `scripts/ui-tests` | `tests 597 / pass 597 / fail 0`，退出码 0 |
+| `node ui/js/check.mjs` | `ok: 58 modules` |
+| `git diff --check` | 退出码 0 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在加入 `automation.js` 头部一句注释和文档之前的工作树上运行；之后重跑了读取前端源码的五个集成测试 `ipc_contract`、`signal_census`、`log_privacy`、`edr_quiet`、`external_admission`，45 项通过） |
+
+没有构建应用，没有启动应用或 tmux 服务器，没有需要清理的进程、socket 或 bundle。fmt、clippy、245 秒后台载体没有重跑。
