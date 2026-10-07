@@ -33,11 +33,15 @@ const deferred = () => { let settle; const promise = new Promise((resolve, rejec
 const turn = async (times = 4) => { for (let i = 0; i < times; i += 1) await new Promise(resolve => setImmediate(resolve)); };
 /* hashes complete when the test lets them: `hold` keeps every hash asked
    for from now on waiting; `hashing` counts the ones not done yet */
-let hold = null; let hashing = 0;
+let hold = null; let hashing = 0; let failing = false;
 const digest = crypto.subtle.digest.bind(crypto.subtle);
 crypto.subtle.digest = async (...args) => {
   hashing += 1;
-  try { if (hold) await hold.promise; return await digest(...args); } finally { hashing -= 1; }
+  try {
+    if (hold) await hold.promise;
+    if (failing) throw new Error('hash');
+    return await digest(...args);
+  } finally { hashing -= 1; }
 };
 const hashed = async () => { do { await turn(); } while (hashing); await turn(); };
 const failures = [];
@@ -53,8 +57,10 @@ const ON = t('automation.autoSend.on'); const OFF = t('automation.autoSend.off')
 
 /* The file holds `rules`; the launch loads it and the drawer is open with
    every approval computed. `gates` hold back or refuse `save_settings`. */
-async function scene(rules, { gates = [], templates = [FIXED, MESSAGE] } = {}) {
+async function scene(rules, { gates = [], templates = [FIXED, MESSAGE], cold = false } = {}) {
+  failing = false;
   hold?.resolve(); hold = null;
+  await hashed();
   if (get('auto-cancel').onclick) get('auto-cancel').onclick();
   for (const element of ids.values()) element.disabled = false;
   get('auto-drawer').hidden = true;
@@ -78,8 +84,10 @@ async function scene(rules, { gates = [], templates = [FIXED, MESSAGE] } = {}) {
   listeners.clear();                                   // only the drawer's subscribers
   initAutomation({ provider, activeProject: () => project, newSessionSummary: () => '', openProjectDefaults() {},
     projectDefaultsSummary: () => '', openSession() {}, newDefaultSession() {} });
+  /* cold: no approval has been computed when the drawer opens, and none is until the test lets go */
+  if (cold) hold = deferred();
   await openAutomations();
-  await hashed();
+  if (cold) await turn(); else await hashed();
   failures.length = 0;
   return { saves, disk, project, toasts: get('toasts').children.length };
 }
@@ -249,5 +257,172 @@ test('after taking one approval away, saving another rule and approving again al
   edit('rs');
   assert.deepEqual(boxes(), [true, false]);
   get('auto-cancel').onclick();
+  assert.deepEqual(failures, []);
+});
+
+/* ---- R1.1: an approval not checked yet is neither on nor taken away ---- */
+const CHECKING = t('automation.autoSend.checking');
+/* a rule no earlier test computed anything for: the drawer keeps what it
+   computed for a rule and steps it has seen */
+let serial = 0;
+const fresh = (id, over = {}) => badge(id, { dir: `/tmp/r${serial += 1}`, ...over });
+const box = () => ({ checked: get('auto-send').checked, external: get('auto-send-external').checked,
+  waiting: get('auto-send').indeterminate === true, note: get('auto-send-check').hidden ? '' : get('auto-send-check').textContent });
+const letGo = async () => { const held = hold; hold = null; held?.resolve(); await hashed(); };
+const request = (made, id, at = -1) => JSON.parse(made.saves.at(at).data).inbound.rules.find(rule => rule.id === id);
+const rename = name => { get('auto-name').value = name; get('auto-name').fire('input'); };
+
+test('an approved rule opened before its approval was checked keeps the approval through an ordinary save', async () => {
+  const approved = await approveRule(fresh('rs'), FIXED);
+  const made = await scene([approved, CLOCK], { cold: true });
+  const listed = shown('rs');
+  edit('rs');                                          // nothing has been computed for rs yet
+  const opened = box();
+  rename('Renamed');                                   // a name is no part of what the approval covers
+  await letGo();
+  const checked = box();
+  await get('auto-save').onclick();
+  await hashed();
+  assert.equal(made.saves.length, 1, 'one save');
+  assert.deepEqual(request(made, 'rs').autoSend, approved.autoSend, 'the request keeps the approval as it was');
+  assert.deepEqual(onDisk(made.disk, 'rs').autoSend, approved.autoSend);
+  assert.deepEqual(stored('rs').autoSend, approved.autoSend);
+  assert.equal(onDisk(made.disk, 'rs').name, 'Renamed', 'and the edit is saved');
+  assert.equal(listed, CHECKING, 'the list said it was being checked, not off and not on');
+  assert.deepEqual(opened, { checked: true, external: false, waiting: true, note: CHECKING }, 'the editor opened waiting');
+  assert.deepEqual(checked, { checked: true, external: false, waiting: false, note: '' }, 'and ticked once it was checked');
+  assert.equal(shown('rs'), ON);
+  assert.equal(said(made, 'automation.saved'), 1);
+  assert.deepEqual(failures, []);
+});
+
+for (const [kind, make] of [
+  ['an approval', () => approveRule(fresh('rs'), FIXED)],
+  ['an approval that includes message content', () => approveRule(fresh('rs', { template: 'message' }), MESSAGE, { external: true })],
+]) {
+  test(`Save pressed before ${kind} was checked waits for the check and is one save that keeps it`, async () => {
+    const approved = await make();
+    const made = await scene([approved, CLOCK], { cold: true });
+    edit('rs');
+    rename('Renamed');
+    const saving = get('auto-save').onclick();
+    await turn();
+    const early = made.saves.length;
+    await letGo();
+    await saving; await hashed();
+    assert.deepEqual(request(made, 'rs').autoSend, approved.autoSend, 'the approval is kept');
+    assert.equal(early, 0, 'nothing was written while the approval was unknown');
+    assert.equal(made.saves.length, 1, 'the same press completes, once');
+    assert.deepEqual(onDisk(made.disk, 'rs').autoSend, approved.autoSend);
+    assert.equal(onDisk(made.disk, 'rs').name, 'Renamed');
+    assert.equal(get('auto-editor').hidden, true);
+    assert.equal(said(made, 'automation.saved'), 1);
+    assert.deepEqual(failures, []);
+  });
+}
+
+test('unticking while the approval is being checked is the user\'s decision: a late valid does not tick it again', async () => {
+  const made = await scene([await approveRule(fresh('rs'), FIXED), CLOCK], { cold: true });
+  edit('rs');
+  get('auto-send').checked = false; get('auto-send').indeterminate = false; get('auto-send').fire('change');
+  assert.deepEqual(box(), { checked: false, external: false, waiting: false, note: '' });
+  await letGo();                                       // valid, for the rule as it is
+  assert.deepEqual(box(), { checked: false, external: false, waiting: false, note: '' }, 'the answer does not undo the choice');
+  await get('auto-save').onclick();
+  await hashed();
+  assert.equal(made.saves.length, 1);
+  assert.equal(request(made, 'rs').autoSend, undefined);
+  assert.equal(onDisk(made.disk, 'rs').autoSend, undefined);
+  assert.equal(shown('rs'), OFF);
+  assert.deepEqual(failures, []);
+});
+
+test('what the approval covers changing during the check leaves the new version unapproved', async () => {
+  /* a covered field edited while waiting */
+  let made = await scene([await approveRule(fresh('rs'), FIXED), CLOCK], { cold: true });
+  edit('rs');
+  get('auto-dir').value = '/var'; get('auto-dir').fire('input');
+  assert.equal(box().checked, false, 'the edit withdraws the tick, as it always did');
+  await letGo();
+  assert.deepEqual(box(), { checked: false, external: false, waiting: false, note: '' });
+  await get('auto-save').onclick(); await hashed();
+  assert.deepEqual([request(made, 'rs').dir, request(made, 'rs').autoSend], ['/var', undefined]);
+  /* the template edited while waiting: the answer was computed for other steps */
+  made = await scene([await approveRule(fresh('rs'), FIXED), CLOCK], { cold: true });
+  edit('rs');
+  made.project.templates[0].steps[0] = 'Run other checks';
+  await letGo();
+  assert.equal(box().checked, false, 'an answer for the old steps approves nothing');
+  rename('Renamed');
+  await get('auto-save').onclick(); await hashed();
+  assert.equal(request(made, 'rs').autoSend, undefined);
+  /* stale from the start: as before, a stale approval does not survive a save */
+  made = await scene([{ ...await approveRule(fresh('rs'), FIXED), dir: '/elsewhere' }, CLOCK], { cold: true });
+  edit('rs');
+  await letGo();
+  assert.deepEqual(box(), { checked: false, external: false, waiting: false, note: '' });
+  assert.equal(shown('rs'), t('automation.autoSend.staleRule'));
+  assert.deepEqual(failures, []);
+});
+
+test('a check that answers late touches no other editor', async () => {
+  const approved = await approveRule(fresh('ra'), FIXED);
+  const made = await scene([approved, fresh('rn'), CLOCK], { cold: true });
+  edit('ra');
+  edit('rn');                                          // another rule, never approved
+  assert.deepEqual(box(), { checked: false, external: false, waiting: false, note: '' });
+  await letGo();
+  assert.deepEqual(box(), { checked: false, external: false, waiting: false, note: '' }, 'ra\'s answer is not rn\'s');
+  rename('Other');
+  await get('auto-save').onclick(); await hashed();
+  assert.equal(made.saves.length, 1);
+  assert.equal(request(made, 'rn').autoSend, undefined, 'rn is saved unapproved');
+  assert.deepEqual(request(made, 'ra').autoSend, approved.autoSend, 'ra keeps its approval');
+  /* canceled while waiting: the answer finds no editor */
+  hold = deferred();
+  made.project.templates[0].steps.push('One more');    // every approval has to be checked again
+  emit('projects');
+  edit('ra');
+  get('auto-cancel').onclick();
+  await letGo();
+  assert.equal(get('auto-editor').hidden, true);
+  assert.equal(get('auto-save').disabled, false);
+  assert.deepEqual(failures, []);
+});
+
+test('an approval that cannot be checked is neither saved away nor called on', async () => {
+  const approved = await approveRule(fresh('rs'), FIXED);
+  const made = await scene([approved, CLOCK], { cold: true });
+  failing = true;
+  await letGo();
+  const FAILED = t('automation.autoSend.checkFailed');
+  assert.equal(shown('rs'), FAILED, 'the list says it could not be checked');
+  edit('rs');
+  await hashed();
+  assert.deepEqual(box(), { checked: true, external: false, waiting: true, note: FAILED });
+  rename('Renamed');
+  await get('auto-save').onclick(); await hashed();
+  assert.equal(made.saves.length, 0, 'nothing is saved on a guess');
+  assert.equal(said(made, 'automation.saved'), 0);
+  assert.equal(said(made, 'automation.autoSend.checkFailedSave'), 1, 'and the reason is said');
+  assert.equal(get('auto-editor').hidden, false);
+  assert.deepEqual(onDisk(made.disk, 'rs').autoSend, approved.autoSend);
+  /* canceling and trying again once hashing works */
+  get('auto-cancel').onclick();
+  failing = false;
+  emit('projects'); await hashed();
+  assert.equal(shown('rs'), ON);
+  edit('rs');
+  assert.deepEqual(box(), { checked: true, external: false, waiting: false, note: '' });
+  get('auto-cancel').onclick();
+  /* while it cannot be checked, taking it away explicitly still saves */
+  failing = true;
+  made.project.templates[0].steps.push('One more');
+  emit('projects'); await hashed();
+  edit('rs'); await hashed();
+  get('auto-send').checked = false; get('auto-send').indeterminate = false; get('auto-send').fire('change');
+  await get('auto-save').onclick(); await hashed();
+  assert.equal(made.saves.length, 1);
+  assert.equal(onDisk(made.disk, 'rs').autoSend, undefined);
   assert.deepEqual(failures, []);
 });

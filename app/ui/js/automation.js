@@ -69,8 +69,16 @@
 // whatever was computed for it earlier. The computed state (valid, stale)
 // is kept with the rule and template steps it was checked against and read
 // only for those; a computation that finishes after a newer render began is
-// dropped. An approval not yet checked against the present rule reads as
-// off, never as on. Showing computes and writes nothing.
+// dropped. An approval not yet checked against the present rule is neither:
+// the list says it is being checked, and the editor opens with the box held
+// and waiting (indeterminate) and checks it for that editor alone. The
+// answer settles the box only if the user decided nothing meanwhile (the
+// box, or an edit to what the approval covers) and that editor is still
+// open; Save pressed before the answer waits for it and goes on by itself.
+// So an ordinary save never takes away an approval because it was not
+// computed yet, and never renews one that turned out stale. A check that
+// fails saves nothing until the user unticks the box or it can be checked.
+// Showing computes and writes nothing.
 //
 // ENTRY POINTS (06 B v01): the Board head keeps ONE persistent action, the
 // "New session ▾" split button. Its menu (`showNewSessionMenu`, built in the
@@ -199,15 +207,16 @@ function runLine(run) {
 /* rule id → its approval state for the list, computed before a render
    (hashing is async), with the rule and template steps it was computed from
    (`key`). A state is read only for that same rule and steps (`approvalOf`):
-   a rule without an approval is not approved whatever was computed earlier,
-   and a missing or older entry reads as not approved. */
+   a rule without an approval is not approved whatever was computed earlier.
+   A rule that holds one nothing was computed for yet reads as 'checking':
+   not on, and not off either. 'unknown' is a computation that failed. */
 let approvals = new Map();
 let renderSeq = 0;
 const approvalKey = rule => JSON.stringify([rule, ruleTemplate(rule)?.steps ?? null]);
 function approvalOf(rule) {
   if (!rule?.autoSend) return 'none';
   const entry = approvals.get(rule.id);
-  return entry && entry.key === approvalKey(rule) ? entry.detail : 'none';
+  return entry && entry.key === approvalKey(rule) ? entry.detail : 'checking';
 }
 
 function ruleTemplate(rule) {
@@ -283,7 +292,7 @@ async function refreshApprovals(seq) {
   const next = new Map();
   for (const rule of rulesOf().filter(r => r.source === 'slack')) {
     const key = approvalKey(rule);
-    next.set(rule.id, { key, detail: await grantDetail(rule, ruleTemplate(rule)) });
+    next.set(rule.id, { key, detail: await grantDetail(rule, ruleTemplate(rule)).catch(() => 'unknown') });
   }
   if (seq !== renderSeq) return false;
   const same = (a, b) => !!a && a.key === b.key && a.detail === b.detail;
@@ -393,9 +402,47 @@ function syncApproval() {
   if (!$('auto-send').checked) $('auto-send-external').checked = false;
 }
 
+function approvalNote(key) {
+  $('auto-send-check').hidden = !key;
+  $('auto-send-check').textContent = key ? t(key) : '';
+}
+
+/* The stored approval of the rule `edit` opened, checked for that editor.
+   Until the answer the box is the rule's own approval, shown as waiting.
+   The answer settles the box only while that editor is open and the user
+   has decided nothing (`decideApproval`): valid for the rule and template
+   steps as they are now keeps the tick, anything else withdraws it, as an
+   approval known to be stale opens. A check that fails settles nothing. */
+function checkApproval(edit, rule) {
+  const key = approvalKey(rule);
+  const check = { settled: false };
+  check.done = grantDetail(rule, ruleTemplate(rule)).then(detail => {
+    if (check.settled || editing !== edit) return;
+    check.settled = true;
+    const valid = detail === 'valid' && key === approvalKey(rule);
+    $('auto-send').indeterminate = false;
+    $('auto-send').checked = valid;
+    $('auto-send-external').checked = valid && rule.autoSend.external === true;
+    approvalNote(null);
+    syncApproval();
+  }, () => { if (!check.settled && editing === edit) approvalNote('automation.autoSend.checkFailed'); });
+  return check;
+}
+
+/* the user decided about the approval (the box, or an edit to what it
+   covers): a check still under way has nothing left to settle */
+function decideApproval() {
+  const check = editing?.approval;
+  if (!check || check.settled) return;
+  check.settled = true;
+  $('auto-send').indeterminate = false;
+  approvalNote(null);
+}
+
 /* an edit to anything the approval covers withdraws the tick: the user
    approves the edited version explicitly (or saves without approval) */
 function withdrawApproval() {
+  decideApproval();
   if (!$('auto-send').checked && !$('auto-send-external').checked) return;
   $('auto-send').checked = false;
   $('auto-send-external').checked = false;
@@ -463,9 +510,16 @@ export function openEditor(rule) {
   fillTargets(rule);
   $('auto-review').checked = rule?.reviewEach === true;
   segSet('auto-finish', rule ? (rule.finish === 'close' ? 'close' : 'keep') : 'close');
-  const approved = rule?.source === 'slack' && approvalOf(rule) === 'valid';
+  const approval = rule?.source === 'slack' ? approvalOf(rule) : 'none';
+  /* an approval nothing was computed for yet is the rule's own until it is
+     checked: shown as held and waiting, not as on and not as taken away */
+  const unchecked = approval === 'checking' || approval === 'unknown';
+  const approved = approval === 'valid' || unchecked;
   $('auto-send').checked = approved;
+  $('auto-send').indeterminate = unchecked;
   $('auto-send-external').checked = approved && rule.autoSend.external === true;
+  approvalNote(unchecked ? 'automation.autoSend.checking' : null);
+  editing.approval = unchecked ? checkApproval(editing, rule) : null;
   $('auto-first-send').checked = ['slack', 'clock'].includes(rule?.source) && rule.firstSendWithoutReadiness === true;
   $('auto-channel-first-send').checked = channel && rule.firstSend === true && !!rule.firstSendGrant;
   channelVerifyStatus(null);
@@ -785,13 +839,22 @@ export function initAutomation(deps) {
     const firstSend = $('auto-first-send').checked;
     saving = op;
     try {
+      /* an approval still being checked is neither kept nor dropped on a
+         guess: the same press goes on once it is known */
+      const check = op.edit.approval;
+      if (check && !check.settled) {
+        await check.done;
+        if (saving !== op) return;
+        if (!check.settled) { toast(t('automation.autoSend.checkFailedSave')); return; }
+      }
       const rule = withFirstSend(await withApproval(read), firstSend);
       if (saving !== op) return;
       /* a save is reported in, and closes, only the editor it came from */
       if (await saveRule(rule, op) && editing === op.edit) { closeEditor(); toast(t('automation.saved')); }
     } finally { if (saving === op) saving = null; }
   };
-  $('auto-send').addEventListener('change', syncApproval);
+  $('auto-send').addEventListener('change', () => { decideApproval(); syncApproval(); });
+  $('auto-send-external').addEventListener('change', decideApproval);
   $('auto-channel-first-send').addEventListener('change', () => {
     channelAcceptanceChanged = $('auto-channel-first-send').checked;
     syncChannelFirstSend();

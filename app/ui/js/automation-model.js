@@ -282,6 +282,8 @@ export async function approvalsVoidedBy(rules, projectId, name, before, after) {
    been computed for the rule as it was. */
 export const approvalText = (rule, state) => t(!rule?.autoSend ? 'automation.autoSend.off' : state === 'valid'
   ? (rule.autoSend.external ? 'automation.autoSend.onExternal' : 'automation.autoSend.on')
+  : state === 'checking' ? 'automation.autoSend.checking'
+  : state === 'unknown' ? 'automation.autoSend.checkFailed'
   : state === 'stale-template' ? 'automation.autoSend.staleTemplate'
     : state === 'stale-rule' ? 'automation.autoSend.staleRule'
       : state === 'stale' ? 'automation.autoSend.stale' : 'automation.autoSend.off');

@@ -459,3 +459,58 @@ D 自己的目录修改已保存，授权请求为空，B 的失败提示 1 次�
 | `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在最终的前端源码上运行） |
 
 层级：node 下的测试 DOM，不是真实 WKWebView。没有构建或启动应用，没有 tmux 服务器。fmt、clippy、245 秒后台载体没有重跑。
+
+## R1.1 待验证批准与编辑器保存意图隔离（2026-10-08）
+
+起始 `main` / `97ed5bc` / 工作树干净。生产改动：`app/ui/js/automation.js`、`app/ui/js/automation-model.js`、`app/ui/js/i18n/en.js`、`app/ui/js/i18n/zh-Hans.js`（各 3 条文案）、`app/ui/index.html`（提示行 `auto-send-check`）。测试：`app/ui/test/automation-approval-dom.test.mjs` 新增 7 项，`scene()` 增加不等待哈希的冷启动选项。
+
+### 修复前的实际结果（`97ed5bc`，逐项单独运行）
+
+场景：主文件里 `rs` 带 `approveRule(rule, 固定模板)` 生成的批准；打开抽屉前扣住哈希；点列表上的编辑按钮；把名称改为 `Renamed`；放行哈希；按一次保存。
+
+| 读取点 | 结果 |
+|---|---|
+| 保存请求里的 `rs.autoSend` | 无（断言 `the request keeps the approval as it was` 失败） |
+| 先按保存再放行哈希的变体 | 同样丢失（断言 `the approval is kept` 失败） |
+| 带外部内容确认的批准（消息模板，`external: true`） | 同样丢失 |
+| 哈希失败时的列表 | 没有“无法核对”的状态 |
+
+### 同一断言修复前后
+
+| 测试 | 修复前 | 修复后 |
+|---|---|---|
+| `an approved rule opened before its approval was checked keeps the approval through an ordinary save` | 失败 `the request keeps the approval as it was` | 通过 |
+| `Save pressed before an approval was checked waits for the check and is one save that keeps it` | 失败 `the approval is kept` | 通过 |
+| `Save pressed before an approval that includes message content was checked waits for the check and is one save that keeps it` | 失败 `the approval is kept` | 通过 |
+| `unticking while the approval is being checked is the user's decision: a late valid does not tick it again` | 通过 | 通过 |
+| `what the approval covers changing during the check leaves the new version unapproved` | 通过 | 通过 |
+| `a check that answers late touches no other editor` | 通过 | 通过 |
+| `an approval that cannot be checked is neither saved away nor called on` | 失败 `the list says it could not be checked` | 通过 |
+
+合计：新增 7 项修复前 `pass 3 / fail 4`；修复后整文件 `tests 14 / pass 14 / fail 0`。
+
+### 修复后的逐场景读取
+
+- **核对完成后保存**：核对前列表为“正在核对已保存的批准…”；编辑器 `{勾选: 是, 外部: 否, 待定: 是, 提示: 正在核对…}`；放行后 `{是, 否, 否, 无}`；保存 1 次，请求、主文件、内存的 `autoSend` 与原批准 `deepEqual`，名称为 `Renamed`，列表显示开启，“已保存”1 次。
+- **保存先于核对**：按下保存后、放行前 `save_settings` 0 次；放行后共 1 次，`autoSend` 与原批准 `deepEqual`（外部批准的场景里包含 `external: true`），编辑器关闭，“已保存”1 次。
+- **明确撤销**：待定时取消勾选，编辑器立即 `{否, 否, 否, 无}`；放行（结果为 valid）后不变；保存 1 次，请求和主文件无 `autoSend`，列表显示关闭。
+- **语义变化**：
+  - 待定时改目录：勾选被既有规则取消，放行后仍不勾，保存后目录为 `/var`、无 `autoSend`。
+  - 待定时模板步骤被改：放行后不勾，保存后无 `autoSend`。
+  - 批准一开始就过期：放行后不勾，列表显示“规则已改”。
+- **切换与取消**：打开已批准的 `ra`（待定）后立即打开从未批准的 `rn`：编辑器为 `{否, 否, 否, 无}`，放行后不变；保存 `rn` 1 次，`rn` 无 `autoSend`，`ra` 的批准原样。再让所有批准需要重新核对，打开 `ra` 后取消，放行：编辑器保持关闭，保存按钮未被锁住。
+- **核对失败**：列表显示“无法核对已保存的批准”；编辑器 `{是, 否, 是, 无法核对…}`；改名后保存：`save_settings` 0 次，没有“已保存”，失败说明 1 次，编辑器保留，主文件批准原样。取消并恢复哈希后：列表显示开启，编辑器 `{是, 否, 否, 无}`。再次令哈希失败并使批准需重新核对：打开、明确取消勾选、保存，写入 1 次，主文件无 `autoSend`。
+
+全部场景结束时没有未处理的 rejection。
+
+### 门禁
+
+| 门禁 | 结果 |
+|---|---|
+| `node --check` 全部已跟踪 UI JS/MJS | 通过 |
+| `scripts/ui-tests` | `tests 627 / pass 627 / fail 0`，退出码 0 |
+| `node ui/js/check.mjs` | `ok: 58 modules` |
+| `git diff --check` | 退出码 0 |
+| `cargo test --workspace` | 1,189 项通过，0 失败，2 项既有忽略（在最终的前端源码上运行） |
+
+层级：node 下的测试 DOM，不是真实 WKWebView；复选框的半选状态在测试里是一个被读写的属性。没有构建或启动应用，没有 tmux 服务器。fmt、clippy、245 秒后台载体没有重跑。
