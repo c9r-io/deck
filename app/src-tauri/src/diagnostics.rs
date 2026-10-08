@@ -248,6 +248,8 @@ const SMOKE_CHECKS: &[&str] = &[
     "ux-queue-states",
     "ux-review-dialog",
     "ux-presets",
+    "ux-preset-keep",
+    "ux-preset-race",
     "ux-m-defaults",
     "ux-reminder-bytes",
     "ux-templates",

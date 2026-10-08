@@ -134,6 +134,9 @@ export function createBoardExit({ mutateBoard, hold, exited }) {
    Resolves { dir, cmd } (trimmed; blank = no default) on Save / Enter, null
    on Cancel / Escape / a click outside. `recent` are command chips that only
    FILL the command field — nothing in this dialog runs anything. */
+/* how long a save waits for a preset approval's digest before saying it
+   could not be checked (the hash is local; this bounds a broken one) */
+const PRESET_CHECK_MS = 5000;
 let pdfResolve = null;
 export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = '', recent = [], presets = [], columns = [] }) {
   return new Promise(resolve => {
@@ -150,7 +153,15 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
       chips.appendChild(b);
     }
     chips.hidden = !recent.length;
-    let draftPresets = normalizeTaskPresets(presets, columns); let editingPreset = null;
+    let draftPresets = normalizeTaskPresets(presets, columns);
+    /* ONE edit of one preset, from opening it to Done, Delete, another
+       preset or the dialog closing. Three facts stay apart in it: `stored`
+       (the approval the preset came with, carried on unchanged only while
+       it still matches what is saved), `withdrawn` (a covered field was
+       edited, so the stored approval is not carried) and `decision` (the
+       user's own tick or untick, bound to the covered text it was made
+       for). The box is how they are shown, never what a save reads. */
+    let edit = null; let closed = false;
     const editor = $('pdf-preset-editor');
     const renderPresets = () => {
       const list = $('pdf-presets'); list.replaceChildren();
@@ -194,17 +205,36 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
       }
       syncFirstSend();
     };
+    const covered = () => JSON.stringify([$('pdf-preset-dir').value, $('pdf-preset-cmd').value, $('pdf-preset-steps').value]);
+    const approvalNote = key => { const note = $('pdf-preset-auto-send-state'); note.hidden = !key; note.textContent = key ? t(key) : ''; };
+    /* a digest is hashed asynchronously: a wait for one is bounded, and a
+       failure or a timeout is `undefined`, never yes and never no */
+    const settled = promise => new Promise(resolve => {
+      const timer = setTimeout(() => resolve(undefined), PRESET_CHECK_MS);
+      promise.then(value => { clearTimeout(timer); resolve(value); }, () => { clearTimeout(timer); resolve(undefined); });
+    });
     const openPreset = preset => {
-      editingPreset = preset?.id || genId('R');
+      const opened = edit = { id: preset?.id || genId('R'), stored: preset?.autoSend?.digest || '', withdrawn: false, decision: null };
       $('pdf-preset-name').value = preset?.name || '';
       $('pdf-preset-title').value = preset?.title || '';
       $('pdf-preset-dir').value = preset?.dir || dirInput.value.trim();
       $('pdf-preset-cmd').value = preset?.cmd || cmdInput.value.trim() || 'codex';
       $('pdf-preset-steps').value = (preset?.steps || []).join('\n');
       $('pdf-preset-first-send').checked = preset?.firstSend === true; syncFirstSend();
-      /* ticked only for an approval of this exact version of the preset */
-      const auto = $('pdf-preset-auto-send'); const opened = editingPreset; auto.checked = false;
-      presetApproved(projectId, preset).then(valid => { if (valid && editingPreset === opened) auto.checked = true; }).catch(() => {});
+      /* ticked only for an approval of this exact version of the preset.
+         Until that is known the box is neither on nor off, and the answer
+         belongs to THIS edit of THIS text: not to a later edit of the same
+         preset, and not once the user edited a covered field or chose. */
+      const auto = $('pdf-preset-auto-send'); const text = covered();
+      auto.checked = false; auto.indeterminate = !!opened.stored;
+      approvalNote(opened.stored ? 'automation.autoSend.checking' : null);
+      if (opened.stored) settled(presetApproved(projectId, preset)).then(valid => {
+        if (edit !== opened || opened.withdrawn || opened.decision) return;
+        if (covered() !== text) { auto.indeterminate = false; approvalNote(null); opened.withdrawn = true; return; }
+        if (valid === undefined) { approvalNote('automation.autoSend.checkFailed'); return; }
+        auto.indeterminate = false; auto.checked = valid;
+        approvalNote(valid ? null : 'presets.autoSend.stale');
+      });
       const target = $('pdf-preset-column'); target.replaceChildren();
       for (const column of columns) { const option = document.createElement('option'); option.value = column.id; option.textContent = column.name; target.appendChild(option); }
       target.value = preset?.columnId || columns[0]?.id || '';
@@ -212,43 +242,86 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
       editor.hidden = false; $('pdf-preset-name').focus();
     };
     /* the approval covers the directory, the command and every step: an
-       edit to one of them withdraws the tick, as in the rule editor, and the
-       user approves the edited version explicitly (or saves without it) */
+       edit to one of them withdraws it, as in the rule editor, whether it
+       was ticked, chosen a moment ago or still being checked, and the user
+       approves the edited version explicitly (or saves without it) */
     const withdrawApproval = () => {
-      const box = $('pdf-preset-auto-send');
-      if (!box.checked) return;
-      box.checked = false; toast(t('automation.autoSend.withdrawn'));
+      if (!edit) return;
+      const box = $('pdf-preset-auto-send'); const had = box.checked || box.indeterminate === true;
+      edit.withdrawn = true; edit.decision = null;
+      box.checked = false; box.indeterminate = false; approvalNote(null);
+      if (had) toast(t('automation.autoSend.withdrawn'));
     };
     $('pdf-preset-dir').oninput = withdrawApproval;
     $('pdf-preset-steps').oninput = withdrawApproval;
     $('pdf-preset-cmd').oninput = () => { withdrawApproval(); syncFirstSend(); };
+    /* the user's own answer, for the covered text as it stands now: it
+       ends any check still under way */
+    $('pdf-preset-auto-send').onchange = () => {
+      if (!edit) return;
+      const box = $('pdf-preset-auto-send'); box.indeterminate = false; approvalNote(null);
+      edit.decision = { approve: box.checked === true, covered: covered() };
+    };
+    /* What `plain` is saved with: a NEW approval only from the user's tick
+       for exactly this text; the STORED one carried on, digest untouched,
+       only if it is the approval of exactly this text; null for none.
+       `undefined` = could not be told, so nothing may be saved yet. */
+    const approvalFor = async (current, plain) => {
+      if (current.decision) {
+        if (!current.decision.approve) return null;
+        if (current.decision.covered !== covered()) { withdrawApproval(); return undefined; }
+        return (await settled(withPresetApproval(projectId, plain, true)))?.autoSend;
+      }
+      if (current.withdrawn || !current.stored) return null;
+      const stored = { digest: current.stored };
+      const valid = await settled(presetApproved(projectId, { ...plain, autoSend: stored }));
+      if (valid === undefined) { if (edit === current) toast(t('presets.autoSend.checkFailedSave')); return undefined; }
+      return valid ? stored : null;
+    };
     /* the digest is computed asynchronously, so commits run one at a time:
-       Done followed at once by Save commits the preset once, not twice */
+       Done followed at once by Save commits the preset once, not twice.
+       A commit owns nothing while it waits: the edit it started from must
+       still be the open one, with the same fields and the same answer. */
     let committing = Promise.resolve(true);
     const commitPreset = () => (committing = committing.then(commitOpenPreset, commitOpenPreset));
     const commitOpenPreset = async () => {
-      if (!editingPreset) return true;
-      const plain = normalizeTaskPreset({ id: editingPreset, name: $('pdf-preset-name').value,
-        columnId: $('pdf-preset-column').value, title: $('pdf-preset-title').value,
-        dir: $('pdf-preset-dir').value, cmd: $('pdf-preset-cmd').value,
-        steps: $('pdf-preset-steps').value.split('\n'),
-        firstSend: $('pdf-preset-first-send').checked }, columns);
-      if (!plain) { toast(t('presets.invalid')); return false; }
-      /* ticked = approve exactly what is being saved */
-      const preset = await withPresetApproval(projectId, plain, $('pdf-preset-auto-send').checked);
-      draftPresets = [...draftPresets.filter(value => value.id !== editingPreset), preset];
-      editingPreset = null; editor.hidden = true; renderPresets(); return true;
+      for (;;) {
+        const current = edit;
+        if (!current) return true;
+        const fields = () => ({ id: current.id, name: $('pdf-preset-name').value,
+          columnId: $('pdf-preset-column').value, title: $('pdf-preset-title').value,
+          dir: $('pdf-preset-dir').value, cmd: $('pdf-preset-cmd').value,
+          steps: $('pdf-preset-steps').value.split('\n'),
+          firstSend: $('pdf-preset-first-send').checked });
+        const before = JSON.stringify([fields(), current.decision, current.withdrawn]);
+        const plain = normalizeTaskPreset(fields(), columns);
+        if (!plain) { toast(t('presets.invalid')); return false; }
+        const approval = await approvalFor(current, plain);
+        if (edit !== current) return false;
+        if (approval === undefined) return false;
+        if (JSON.stringify([fields(), current.decision, current.withdrawn]) !== before) continue;
+        draftPresets = [...draftPresets.filter(value => value.id !== current.id), approval ? { ...plain, autoSend: approval } : plain];
+        edit = null; editor.hidden = true; renderPresets(); return true;
+      }
     };
     $('pdf-preset-add').onclick = () => openPreset(null);
     $('pdf-preset-done').onclick = commitPreset;
     $('pdf-preset-delete').onclick = () => {
-      draftPresets = draftPresets.filter(value => value.id !== editingPreset);
-      editingPreset = null; editor.hidden = true; renderPresets();
+      if (!edit) return;
+      const id = edit.id; edit = null;
+      draftPresets = draftPresets.filter(value => value.id !== id);
+      editor.hidden = true; renderPresets();
     };
     renderPresets(); editor.hidden = true;
     const read = async () => await commitPreset() ? ({ dir: dirInput.value.trim(), cmd: cmdInput.value.trim(),
       ...(draftPresets.length || presets.length ? { presets: draftPresets } : {}) }) : null;
-    const done = v => { $('pdf').style.display = 'none'; $('pdf').onkeydown = null; pdfResolve = null; resolve(v); };
+    /* closing ends the edit, once: a save or a check that finishes later
+       belongs to nothing, and cannot close a dialog opened since */
+    const done = v => {
+      if (closed) return;
+      closed = true; edit = null;
+      $('pdf').style.display = 'none'; $('pdf').onkeydown = null; pdfResolve = null; resolve(v);
+    };
     pdfResolve = done;
     $('pdf-yes').onclick = async () => { const value = await read(); if (value) done(value); };
     $('pdf-no').onclick = () => done(null);

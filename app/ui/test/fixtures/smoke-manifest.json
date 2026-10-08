@@ -163,6 +163,8 @@
         "ux-queue-states": {},
         "ux-review-dialog": {},
         "ux-presets": {},
+        "ux-preset-keep": {},
+        "ux-preset-race": {},
         "ux-m-defaults": {"metric": true},
         "ux-reminder-bytes": {},
         "ux-templates": {},

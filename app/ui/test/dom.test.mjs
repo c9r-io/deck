@@ -1257,7 +1257,7 @@ test('a preset is approved as it is saved, and an edit to what the approval cove
   let promise = open([existing]);
   await openFirst(existing);
   assert.equal(box.checked, false);
-  box.checked = true;
+  box.checked = true; box.onchange();   // the user's tick is a change event
   let [saved] = await save(promise);
   assert.equal(await presetApproved('P1', saved), true);
   assert.deepEqual({ ...saved, autoSend: undefined }, { ...existing, autoSend: undefined });
@@ -1288,7 +1288,7 @@ test('a preset is approved as it is saved, and an edit to what the approval cove
   promise = open([saved]);
   await openFirst(saved);
   el('pdf-preset-steps').value = 'inspect\nfix it'; el('pdf-preset-steps').oninput();
-  box.checked = true;
+  box.checked = true; box.onchange();
   const [reapproved] = await save(promise);
   assert.notEqual(reapproved.autoSend.digest, saved.autoSend.digest);
   assert.equal(await presetApproved('P1', reapproved), true);

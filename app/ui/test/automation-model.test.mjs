@@ -66,7 +66,7 @@ test('the fact rows name the target, the inspection mode and the trigger\'s own 
   const paused = ruleFacts(clockRule({ enabled: false, reviewEach: true, cmd: '', dir: '' }), { home: '/home', nowSecs });
   assert.equal(paused[0][1], '(column missing) · /home');
   assert.equal(paused[1][1], 'shell only');
-  assert.equal(paused[3][1], 'Inspect after each row');
+  assert.equal(paused[3][1], 'Inspect after each step');
   assert.equal(paused[6][1], 'paused');
   const slack = ruleFacts(slackRule(), { columnName: 'Working', slackConnected: true });
   assert.deepEqual(slack.slice(-3)[0], ['automation.kv.connection', 'connected']);

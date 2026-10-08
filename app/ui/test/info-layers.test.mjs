@@ -235,3 +235,27 @@ test('an unknown attention status keeps its meaning where it shows', () => {
   assert.doesNotMatch(en['attention.hint'], /N\+/, 'said with the unknown state, not as standing copy');
   assert.match(en['attention.hint'], /Viewed does not mean handled/); assert.match(zh['attention.hint'], /已看过不等于已处理/);
 });
+
+test('one prompt in a list is a step in every user-visible string; a line is only a line of text', () => {
+  // the unit a list sends is a "step" (步骤 / 步); "行" and "line" are left for real line breaks
+  const unit = key => /^(queue|templates|automation|presets|attention|inbound|connector|buffer)\./.test(key);
+  const textLines = new Set(['queue.collapsePrompt', 'queue.moreLines', 'templates.moreLines', 'templates.editSize',
+    'templates.nameHint', 'templates.stepPlaceholder', 'presets.hint']);
+  for (const [key, value] of Object.entries(en)) {
+    if (!unit(key) || typeof value !== 'string') continue;
+    assert.doesNotMatch(value, /\brows?\b/i, `en ${key}`);
+    if (!textLines.has(key)) assert.doesNotMatch(value, /\blines?\b/i, `en ${key}`);
+  }
+  for (const [key, value] of Object.entries(zh)) {
+    if (!unit(key) || typeof value !== 'string') continue;
+    // every 行 that is not part of another word (运行, 执行, 命令行 …) counts text lines
+    const bare = value.replace(/放行|运行|执行|进行|自行|行为|并行|可行|命令行|另行|例行|行动|强行|逐行|先行|银行|发行|行内|同行|单行/g, '');
+    if (textLines.has(key)) assert.match(bare, /行文本|多行|每行/, `zh ${key}`);
+    else assert.doesNotMatch(bare, /行/, `zh ${key}`);
+  }
+  for (const key of ['queue.review.confirm', 'queue.review.lastConfirm', 'queue.stage.previous', 'queue.followups', 'queue.review.option']) {
+    assert.match(en[key], /step/, key); assert.match(zh[key], /步/, key);
+  }
+  // the fallback text in the page says the same
+  assert.doesNotMatch(read('index.html').replace(/class="[^"]*"|id="[^"]*"|rows="\d+"/g, ''), /\brows?\b/i);
+});

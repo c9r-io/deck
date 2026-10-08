@@ -1076,6 +1076,12 @@ and the template manager's placeholder disclosure, in both languages at 100%
 and 160%. It proves presentation and interface behaviour only: no Slack
 connection, no agent, nothing delivered; the `ux-queue-states` scene repaints
 the panel from a copy of the real queue whose stages the carrier sets.
+`ux-preset-keep` opens the dialog through the Board's own entry and judges the
+preset the Board holds after each save (kept on an ordinary save, dropped
+after an edit, untouched by Cancel, new after a tick by hand).
+`ux-preset-race` is CONTROLLED: the carrier holds this page's SHA-256 back so
+a stored approval is still being checked while the dialog is used; the dialog,
+the digest and the Board save are production.
 Snapshots land in `<data dir>/evidence/`; `ux-m-*` are measurements.
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-ux.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-ux-UNIQUE DECK_SMOKE_WKWEBVIEW=ux-layers app/run.sh`,

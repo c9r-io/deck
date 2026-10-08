@@ -65,7 +65,7 @@
           <summary data-i18n="automation.help">How runs behave</summary>
           <ul class="help-list">
             <li data-i18n="automation.help.busy">A clock rule skips a slot while its previous card is still on the Board.</li>
-            <li data-i18n="automation.help.finish">“Close the card” waits until the agent program exits: a turn ending is not the end of its work, so a live agent keeps its card. With inspection on, nothing closes before the last row is inspected.</li>
+            <li data-i18n="automation.help.finish">“Close the card” waits until the agent program exits: a turn ending is not the end of its work, so a live agent keeps its card. With inspection on, nothing closes before the last step is inspected.</li>
             <li data-i18n="automation.help.firstStep">A newly started agent’s first step waits for you by default; unattended sends to Claude or Codex need the Agent status integration.</li>
             <li data-i18n="automation.help.channel">A channel monitor creates a session on its first match, then only collects later messages into that card.</li>
             <li data-i18n="automation.help.delivery">A delivery does not prove business success. Every run creates a fresh session; its command may restore its own context.</li>
@@ -163,7 +163,7 @@
             <li data-i18n="automation.channelFirstSend.fact.excludes">Not included: Agent tool permissions, or automatic sending of later template steps.</li>
             <li data-i18n="automation.channelFirstSend.fact.revoke">After turning it off: only unsent first steps covered by this permission are stopped; Agents keep running and typed text is not retracted.</li>
           </ul>
-          <label class="q-review-option q-p q-p-clock q-p-slack"><input type="checkbox" id="auto-review" aria-describedby="auto-review-hint"><span data-i18n="queue.review.option">Inspect after every sent row, including the last</span></label>
+          <label class="q-review-option q-p q-p-clock q-p-slack"><input type="checkbox" id="auto-review" aria-describedby="auto-review-hint"><span data-i18n="queue.review.option">Inspect after every sent step, including the last</span></label>
           <p class="q-hint opt-note q-p q-p-clock q-p-slack" id="auto-review-hint" data-i18n="automation.review.hint">Applies to runs created from now on, not to existing cards.</p>
           <h3 class="auto-section q-p q-p-clock q-p-slack" data-i18n="automation.section.card">Keeping the card</h3>
           <div class="set-row q-p q-p-clock q-p-slack">
@@ -259,7 +259,7 @@
                 </select>
                 <input type="date" id="q-until-d" class="q-p q-p-every q-p-untilc"><input type="time" id="q-until-t" class="q-p q-p-every q-p-untilc">
               </div>
-              <label class="q-review-option"><input type="checkbox" id="q-review"><span data-i18n="queue.review.option">Inspect after every row, including the last</span></label>
+              <label class="q-review-option"><input type="checkbox" id="q-review"><span data-i18n="queue.review.option">Inspect after every sent step, including the last</span></label>
               <div class="q-add">
                 <button class="btn" id="q-tpl" title="Templates — start this list from one" data-i18n-title="queue.templatesTitle">📋</button>
                 <textarea id="q-text" rows="1" placeholder="first line of the new list — ⌘↵ to add" data-i18n-placeholder="queue.placeholder" autocomplete="off" spellcheck="false"></textarea>
@@ -742,6 +742,7 @@
       <h4 class="auto-section" data-i18n="presets.section.later">Later steps</h4>
       <label class="q-review-option"><input type="checkbox" id="pdf-preset-auto-send" aria-describedby="pdf-preset-auto-send-hint"><span data-i18n="automation.autoSend.option">Automatically continue approved follow-up steps</span></label>
       <div class="set-hint opt-note" id="pdf-preset-auto-send-hint" data-i18n="presets.autoSend.hint">With this on, the later steps of tasks created from the phone with this preset continue once the agent is safely ready. What you approve is this preset’s directory, command and every step as they stand; changing any of them needs a new tick. Messages and scratchpad notes sent from the phone are not covered and always wait for Send now.</div>
+      <div class="set-hint opt-note opt-state" id="pdf-preset-auto-send-state" role="status" hidden></div>
       <details class="set-details opt-note">
         <summary data-i18n="automation.autoSend.scope">What this approval covers</summary>
         <p data-i18n="presets.autoSend.scope.body">An agent asking for input or permission still pauses the task. Revoking a paired device takes back the unsent steps of the tasks it created. Being paired is not an approval: only this version of the preset, ticked here, is approved. The first step is the separate choice below.</p>

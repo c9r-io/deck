@@ -17,13 +17,13 @@
 // failing scene never hides the next; snapshots land in <data dir>/evidence/.
 export async function runUxLayersSmoke() {
   const { $, ctx, inv, state } = await import('../js/state.js');
-  const { provider, pollNow, render } = await import('../js/board.js');
+  const { openProjectDefaults, provider, pollNow, render } = await import('../js/board.js');
   const { openSession } = await import('../js/layout.js');
   const { closeAutomations, openAutomations } = await import('../js/automation.js');
   const { refreshQueue, renderQueueUI, toggleQueuePanel } = await import('../js/scheduler.js');
   const { listStartCalls } = await import('../js/scheduler-model.js');
   const { cfmDone, confirmDialog, projectDefaultsDialog, reminderDialog } = await import('../js/dialogs.js');
-  const { withPresetApproval } = await import('../js/connector-model.js');
+  const { presetApproved, withPresetApproval } = await import('../js/connector-model.js');
   const { openTemplates } = await import('../js/templates.js');
   const { getLocale, setLocale, t } = await import('../js/i18n.js');
   const { applyFontScale, getFontScale } = await import('../js/font-scale.js');
@@ -42,10 +42,11 @@ export async function runUxLayersSmoke() {
   };
   const metric = (name, a, b = 0) => inv('ui_event', { code: 'smoke-check', detail: name, a, b });
   const snapshot = name => inv('smoke_native_snapshot', { name }).catch(() => -9);
-  /* a scene: its own verdict, never the end of the run, and no dialog of
-     its own left open over the next one */
+  /* a scene: its own verdict, never the end of the run (a scene that does
+     not return in two minutes has failed), and no dialog of its own left
+     open over the next one */
   const attempt = async body => {
-    try { return (await body()) === true; } catch (_) { return false; } finally {
+    try { return (await Promise.race([body(), pause(120000).then(() => { throw new Error('scene timeout'); })])) === true; } catch (_) { return false; } finally {
       if ($('cfm').style.display === 'flex') cfmDone(false);
       if ($('pdf').style.display === 'flex') $('pdf-no').click();
       document.querySelector('.reminder-overlay .cfm-actions .btn')?.click();
@@ -328,6 +329,118 @@ export async function runUxLayersSmoke() {
         && lines[1] === `${t('presets.later.stale')} · ${t('presets.first.wait')}`
         && lines[2] === `${t('presets.later.manual')} · ${t('presets.first.unsupported')}`;
     }));
+
+    /* ---------- a preset's approval through the real save path ----------
+       The dialog is opened by the Board's own entry and what is judged is
+       the preset the Board holds after the save (the isolated deck.json),
+       with the production digest. Boxes and buttons take native clicks. */
+    const presetColumn = project.columns[0].id;
+    const presetPlain = { id: 'Rux5', name: 'Fix issue', columnId: presetColumn, title: 'Remote fix', dir: '/tmp', cmd: 'claude', steps: ['inspect', 'fix'] };
+    const presetApprovedOnce = await withPresetApproval(project.id, presetPlain, true);
+    const defaultsBefore = { dir: project.dir || '', cmd: project.cmd || '' };
+    const seedPreset = () => provider.setProjectDefaults(project.id, { ...defaultsBefore, presets: [presetApprovedOnce] });
+    const storedPreset = () => (provider.project(project.id).presets || []).find(preset => preset.id === 'Rux5');
+    const presetBox = () => $('pdf-preset-auto-send');
+    const openPresetEditor = async () => {
+      const done = openProjectDefaults(project.id);
+      await until(() => $('pdf').style.display === 'flex' && !!document.querySelector('#pdf-presets button'));
+      await press(document.querySelector('#pdf-presets button'));
+      await until(() => !$('pdf-preset-editor').hidden);
+      return [done];   // boxed: an async function would wait for the dialog itself
+    };
+    /* a dialog that does not close is this scene's failure, not a hung run */
+    const closed = promise => Promise.race([promise, pause(10000).then(() => { throw new Error('dialog still open'); })]);
+    await report('ux-preset-keep', await attempt(async () => {
+      await seedPreset();
+      trace = 1;
+      // an ordinary save keeps the approval it had, digest unchanged
+      let [done] = await openPresetEditor();
+      await until(() => presetBox().checked && !presetBox().indeterminate);
+      type($('pdf-preset-title'), 'Remote fix 2');
+      await press($('pdf-yes')); await closed(done);
+      const kept = storedPreset().title === 'Remote fix 2' && storedPreset().autoSend?.digest === presetApprovedOnce.autoSend.digest
+        && await presetApproved(project.id, storedPreset());
+      trace = 2;
+      // an edit to a step unticks it; Cancel leaves the Board's preset alone
+      [done] = await openPresetEditor();
+      await until(() => presetBox().checked);
+      type($('pdf-preset-steps'), 'inspect\nfix it');
+      const unticked = !presetBox().checked && !presetBox().indeterminate;
+      presetBox().scrollIntoView({ block: 'center' }); await pause(150);
+      await snapshot('ux-preset-withdrawn-zh');
+      await press($('pdf-no'));
+      const cancelled = (await closed(done), storedPreset().steps.join('|') === 'inspect|fix'
+        && storedPreset().autoSend?.digest === presetApprovedOnce.autoSend.digest);
+      trace = 3;
+      // reopened: the cancelled edit is gone and the approval shows again
+      [done] = await openPresetEditor();
+      await until(() => presetBox().checked);
+      const reopened = $('pdf-preset-steps').value === 'inspect\nfix';
+      trace = 4;
+      // the same edit saved without a new tick: no approval for the new steps
+      type($('pdf-preset-steps'), 'inspect\nfix it');
+      await press($('pdf-yes')); await closed(done);
+      const dropped = storedPreset().steps.join('|') === 'inspect|fix it' && !('autoSend' in storedPreset());
+      trace = 5;
+      // ticked by hand for the steps as they are now: a new approval, valid for them
+      [done] = await openPresetEditor(); await pause(300);
+      const off = !presetBox().checked && !presetBox().indeterminate;
+      await press(presetBox());
+      await until(() => presetBox().checked);
+      await press($('pdf-yes')); await closed(done);
+      const again = !!storedPreset().autoSend && storedPreset().autoSend.digest !== presetApprovedOnce.autoSend.digest
+        && await presetApproved(project.id, storedPreset());
+      trace = [kept, unticked, cancelled, reopened, dropped, off, again].reduce((bits, ok, i) => bits | (ok ? 0 : 1 << i), 0) + 100;
+      return kept && unticked && cancelled && reopened && dropped && off && again;
+    }), 1, trace);
+
+    /* CONTROLLED: this page's SHA-256 is held back by the carrier, so the
+       check of a stored approval is still under way while the user acts.
+       Everything else is production: the dialog, the digest once released,
+       the Board save. It is not an external chain of any kind. */
+    await report('ux-preset-race', await attempt(async () => {
+      const subtle = crypto.subtle; const real = subtle.digest.bind(subtle); let gate = null; let held = 0;
+      subtle.digest = async (...args) => { if (gate) { held += 1; await gate.promise; } return real(...args); };
+      const hold = () => { let open; const promise = new Promise(resolve => { open = resolve; }); gate = { promise, open }; };
+      const release = async () => { const g = gate; gate = null; g?.open(); await pause(250); };
+      try {
+        trace = 6;
+        // A: steps edited while the check waits; its late "valid" approves nothing
+        await seedPreset(); hold(); held = 0;
+        let [done] = await openPresetEditor();
+        const checking = presetBox().indeterminate === true && !presetBox().checked && shown($('pdf-preset-auto-send-state')) && held > 0;
+        presetBox().scrollIntoView({ block: 'center' }); await pause(150);
+        await snapshot('ux-preset-checking-zh');
+        type($('pdf-preset-steps'), 'inspect\nfix it');
+        await release();
+        const stays = !presetBox().checked && !presetBox().indeterminate;
+        await press($('pdf-yes')); await closed(done);
+        const a = storedPreset().steps.join('|') === 'inspect|fix it' && !('autoSend' in storedPreset())
+          && !(await presetApproved(project.id, storedPreset()));
+        trace = 7;
+        // B: saved unchanged while the check waits; one save, the approval kept
+        await seedPreset(); hold(); held = 0;
+        [done] = await openPresetEditor();
+        let returned = false; done.then(() => { returned = true; });
+        await press($('pdf-yes')); await pause(400);
+        const waited = !returned && held > 0 && $('pdf').style.display === 'flex';
+        await release(); await closed(done);
+        const b = storedPreset().autoSend?.digest === presetApprovedOnce.autoSend.digest && await presetApproved(project.id, storedPreset());
+        trace = 8;
+        // a save still waiting when the dialog is cancelled writes nothing
+        hold();
+        [done] = await openPresetEditor();
+        type($('pdf-preset-title'), 'Never saved');
+        $('pdf-yes').click(); $('pdf-no').click();
+        await release(); await closed(done); await pause(200);
+        const c = storedPreset().title !== 'Never saved' && storedPreset().autoSend?.digest === presetApprovedOnce.autoSend.digest;
+        trace = [checking, stays, a, waited, b, c].reduce((bits, ok, i) => bits | (ok ? 0 : 1 << i), 0) + 100;
+        return checking && stays && a && waited && b && c;
+      } finally {
+        gate?.open(); gate = null; delete subtle.digest;
+        await provider.setProjectDefaults(project.id, { ...defaultsBefore, presets: [] }).catch(() => {});
+      }
+    }), 1, trace);
 
     /* ---------- reminder: the note limit is bytes, and is feedback ---------- */
     await report('ux-reminder-bytes', await attempt(async () => {
