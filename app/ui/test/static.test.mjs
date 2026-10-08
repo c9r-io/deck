@@ -21,11 +21,28 @@ const production = readdirSync(resolve(root, 'app/ui/js')).filter(name => name.e
 
 // The terminal is the unchanged published @xterm/xterm 5.5.0 artifact; any
 // edit, upgrade or extra vendored file must show up here first.
-test('vendored xterm is byte-identical to the published 5.5.0 build', () => {
+// The vendored terminal is the published 5.5.0 build plus ONE upstream change
+// (docs/vendored-xterm.md). The file list and the digest of what is actually
+// shipped stay pinned; the fixture names the change, and undoing exactly that
+// change must give back the published build, so nothing else can ride along.
+test('vendored xterm is the published 5.5.0 build plus the one pinned upstream change', () => {
   assert.deepEqual(readdirSync(resolve(root, 'app/ui/vendor')).sort(),
     ['addon-fit.js', 'xterm.css', 'xterm.js']);
-  const digest = createHash('sha256').update(readFileSync(resolve(root, 'app/ui/vendor/xterm.js'))).digest('hex');
-  assert.equal(digest, '1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495');
+  const patch = JSON.parse(read('app/ui/test/fixtures/xterm-patch.json'));
+  assert.deepEqual([patch.package, patch.version], ['@xterm/xterm', '5.5.0']);
+  assert.equal(patch.originalSha256, '1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495');
+  assert.equal(patch.patchedSha256, 'c365e94f10448c3b6cedf260b42632162c35b77e84d6ad0eb7054fc34b2a0b78');
+  assert.equal(patch.upstreamCommit, '52e8a75e9f3b0f12cdba71d8c3cfe3a5f4958885');
+  const sha256 = text => createHash('sha256').update(text).digest('hex');
+  const count = (text, part) => text.split(part).length - 1;
+  const vendored = readFileSync(resolve(root, 'app/ui/vendor/xterm.js'), 'utf8');
+  assert.equal(sha256(readFileSync(resolve(root, 'app/ui/vendor/xterm.js'))), patch.patchedSha256);
+  assert.deepEqual([count(vendored, patch.after), count(vendored, patch.before)], [1, 0]);
+  assert.equal(sha256(vendored.replace(patch.after, patch.before)), patch.originalSha256,
+    'Undoing the pinned change must give the published build');
+  assert.match(spawnSync(process.execPath, [resolve(root, 'scripts/patch-vendored-xterm.mjs'), '--verify'],
+    { encoding: 'utf8' }).stdout, /upstream 52e8a75e9f3b/);
+  assert.match(read('docs/vendored-xterm.md'), new RegExp(patch.upstreamCommit));
 });
 
 test('extracted terminal adapters and queue view cannot import the view core', () => {

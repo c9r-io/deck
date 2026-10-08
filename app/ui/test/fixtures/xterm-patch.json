@@ -1,0 +1,11 @@
+{
+  "package": "@xterm/xterm",
+  "version": "5.5.0",
+  "file": "lib/xterm.js",
+  "originalSha256": "1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495",
+  "patchedSha256": "c365e94f10448c3b6cedf260b42632162c35b77e84d6ad0eb7054fc34b2a0b78",
+  "upstreamCommit": "52e8a75e9f3b0f12cdba71d8c3cfe3a5f4958885",
+  "upstreamParent": "9ba6c00a195c95fcf8292a2b9084d91450e5daae",
+  "before": "t=this._isComposing?this._textarea.value.substring(e.start,e.end):this._textarea.value.substring(e.start)",
+  "after": "t=this._isComposing?this._textarea.value.substring(e.start,this._compositionPosition.start):this._textarea.value.substring(e.start)"
+}

@@ -27,7 +27,7 @@ binary is committed together with its new pin.
 
 | Component | License | Source |
 |---|---|---|
-| xterm.js (`xterm.js`, `xterm.css`) | MIT | https://github.com/xtermjs/xterm.js |
+| xterm.js 5.5.0 (`xterm.js`, `xterm.css`); `xterm.js` carries one upstream change, see `docs/vendored-xterm.md` | MIT | https://github.com/xtermjs/xterm.js |
 | @xterm/addon-fit | MIT | https://github.com/xtermjs/xterm.js |
 
 ## Local Translation (optional, offline model pack)
