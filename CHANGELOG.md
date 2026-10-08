@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.26 — 2026-10-09 (Nightly)
+
+- Terminal typing keeps its order: text typed right after starting an input
+  method composition, clearing a selection or returning to the live view no
+  longer overtakes text that was still waiting on an earlier one of those.
+- Typed text belongs to the terminal attachment it was typed into, including
+  text typed while a session is still attaching. If that pane was replaced
+  or removed meanwhile, the text is dropped, never delivered to the
+  replacement.
+- Input methods: when the next composition starts before the previous one's
+  text has been sent, the finished text ends where the new composition
+  begins, so letters of the next composition no longer leak into it (one
+  pinned upstream xterm change, `docs/vendored-xterm.md`).
+
 ## 0.7.25 — 2026-10-08 (Nightly)
 
 - Slack channel rules have one new choice, off by default: let a matching
