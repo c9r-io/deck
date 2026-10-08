@@ -186,13 +186,17 @@ pub(crate) fn start_services(app: &AppHandle) {
         applog(&format!("[extensions] services not started ({code})"));
         return;
     }
+    let mut started = 0usize;
     for service in services() {
         if self::service(service.id).is_none() {
             applog("[extensions] service refused (duplicate-id)");
             continue;
         }
         (service.start)(app.clone());
+        started += 1;
     }
+    // Content-free: a count, never a service name or a credential fact.
+    applog(&format!("[extensions] services started ({started})"));
 }
 
 pub(crate) fn wake_services() {
