@@ -442,6 +442,86 @@ export async function runUxLayersSmoke() {
       }
     }), 1, trace);
 
+    /* CONTROLLED, as above: the carrier holds this page's SHA-256 back, or
+       makes it fail. A save asked for one preset's edit must not take the
+       preset opened while it waited; a new approval that cannot be
+       computed says so in the edit and the same save works afterwards. */
+    const presetById = id => (provider.project(project.id).presets || []).find(preset => preset.id === id);
+    const gatedDigest = () => {
+      const subtle = crypto.subtle; const real = subtle.digest.bind(subtle); const state = { gate: null, failing: false };
+      subtle.digest = async (...args) => { if (state.gate) await state.gate.promise; if (state.failing) throw new Error('digest'); return real(...args); };
+      state.hold = () => { let open; const promise = new Promise(resolve => { open = resolve; }); state.gate = { promise, open }; };
+      state.release = async () => { const g = state.gate; state.gate = null; g?.open(); await pause(300); };
+      state.restore = () => { state.gate?.open(); state.gate = null; delete subtle.digest; };
+      return state;
+    };
+    await report('ux-preset-queue', await attempt(async () => {
+      const digest = gatedDigest();
+      const otherPreset = { id: 'Rux6', name: 'Other', columnId: presetColumn, title: 'Other card', dir: '/tmp', cmd: 'claude', steps: ['look'] };
+      try {
+        trace = 9;
+        await provider.setProjectDefaults(project.id, { ...defaultsBefore, presets: [presetApprovedOnce, otherPreset] });
+        digest.hold();
+        const [done] = await openPresetEditor();          // the approved one
+        let returned = false; done.then(() => { returned = true; });
+        type($('pdf-preset-name'), 'Queued rename');
+        await press($('pdf-preset-done'));                // waits for the held digest
+        await press($('pdf-yes'));                        // asked for the same edit
+        await press(document.querySelectorAll('#pdf-presets button')[1]);
+        await until(() => $('pdf-preset-name').value === 'Other');
+        type($('pdf-preset-steps'), 'look\nand change');
+        await digest.release(); await pause(400);         // nothing else is clicked
+        const open = !returned && $('pdf').style.display === 'flex' && !$('pdf-preset-editor').hidden
+          && $('pdf-preset-steps').value === 'look\nand change';
+        const untouched = presetById('Rux6').steps.join('|') === 'look' && presetById('Rux5').name === 'Fix issue';
+        $('pdf-preset-steps').scrollIntoView({ block: 'center' }); await pause(150);
+        await snapshot('ux-preset-queue-zh');
+        trace = 10;
+        // the user's own save of the other preset then works as usual
+        await press($('pdf-yes')); await closed(done);
+        const saved = presetById('Rux6').steps.join('|') === 'look|and change' && !('autoSend' in presetById('Rux6'))
+          && presetById('Rux5').name === 'Fix issue' && presetById('Rux5').autoSend?.digest === presetApprovedOnce.autoSend.digest
+          && await presetApproved(project.id, presetById('Rux5'));
+        trace = [open, untouched, saved].reduce((bits, ok, i) => bits | (ok ? 0 : 1 << i), 0) + 100;
+        return open && untouched && saved;
+      } finally {
+        digest.restore();
+        await provider.setProjectDefaults(project.id, { ...defaultsBefore, presets: [] }).catch(() => {});
+      }
+    }), 1, trace);
+    await report('ux-preset-mint', await attempt(async () => {
+      const digest = gatedDigest();
+      try {
+        trace = 11;
+        await provider.setProjectDefaults(project.id, { ...defaultsBefore, presets: [presetPlain] });
+        const [done] = await openPresetEditor(); await pause(300);
+        let returned = false; done.then(() => { returned = true; });
+        await press(presetBox());
+        await until(() => presetBox().checked);
+        type($('pdf-preset-title'), 'Remote fix 3');
+        digest.failing = true;
+        await press($('pdf-yes')); await pause(400);
+        const note = $('pdf-preset-auto-send-state');
+        const said = shown(note) && note.textContent === t('presets.autoSend.approveFailedSave');
+        const kept = !returned && $('pdf').style.display === 'flex' && !$('pdf-preset-editor').hidden
+          && presetBox().checked && $('pdf-preset-title').value === 'Remote fix 3';
+        const unsaved = presetById('Rux5').title === 'Remote fix' && !('autoSend' in presetById('Rux5'));
+        presetBox().scrollIntoView({ block: 'center' }); await pause(150);
+        await snapshot('ux-preset-mint-zh');
+        trace = 12;
+        // the digest works again: the same save, no second tick
+        digest.failing = false;
+        await press($('pdf-yes')); await closed(done);
+        const retried = presetById('Rux5').title === 'Remote fix 3' && !!presetById('Rux5').autoSend
+          && await presetApproved(project.id, presetById('Rux5'));
+        trace = [said, kept, unsaved, retried].reduce((bits, ok, i) => bits | (ok ? 0 : 1 << i), 0) + 100;
+        return said && kept && unsaved && retried;
+      } finally {
+        digest.restore();
+        await provider.setProjectDefaults(project.id, { ...defaultsBefore, presets: [] }).catch(() => {});
+      }
+    }), 1, trace);
+
     /* ---------- reminder: the note limit is bytes, and is feedback ---------- */
     await report('ux-reminder-bytes', await attempt(async () => {
       const done = reminderDialog(null);

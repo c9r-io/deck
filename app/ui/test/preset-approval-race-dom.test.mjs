@@ -12,6 +12,7 @@ globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 const { projectDefaultsDialog } = await import('../js/dialogs.js');
 const { presetApproved, withPresetApproval } = await import('../js/connector-model.js');
+const { t } = await import('../js/i18n.js');
 
 const el = id => fakeDocument.getElementById(id);
 const turn = async (times = 4) => { for (let i = 0; i < times; i += 1) await new Promise(resolve => setImmediate(resolve)); };
@@ -190,4 +191,159 @@ test('a save still waiting when the dialog is cancelled saves nothing and leaves
   el('pdf-yes').fire('click'); await releaseHashes();
   assert.deepEqual((await second).presets, [OTHER]);
   assert.deepEqual(failures, []);
+});
+
+/* ---------- which edit a save request belongs to ---------- */
+const note = () => el('pdf-preset-auto-send-state');
+const editorOpen = () => el('pdf').style.display === 'flex' && el('pdf-preset-editor').hidden === false;
+
+test('a save queued behind a waiting one belongs to the edit it was asked for, never to a preset opened since', LIMIT, async () => {
+  await reset(); holdHashes();
+  const dialog = open([approved, OTHER]); openPreset(0);
+  type('pdf-preset-name', 'Renamed');
+  el('pdf-preset-done').fire('click');   // waits for the held digest
+  el('pdf-yes').fire('click');           // asked for the same edit, behind it
+  openPreset(1);
+  type('pdf-preset-steps', 'look\nand change');
+  await releaseHashes();                 // nothing else is clicked
+  assert.equal(await pending(dialog), true, 'the old request did not end the dialog');
+  assert.equal(editorOpen(), true, 'nor close the editor of the other preset');
+  assert.equal(el('pdf-preset-steps').value, 'look\nand change');
+  // the user's own save of the other preset works as usual
+  save(); await releaseHashes();
+  const result = await dialog;
+  assert.deepEqual(only(result, 'R2').steps, ['look', 'and change']);
+  assert.equal('autoSend' in only(result, 'R2'), false);
+  assert.equal(only(result).name, 'Fix issue', 'the abandoned edit saved nothing');
+  assert.equal(only(result).autoSend.digest, approved.autoSend.digest);
+  assert.equal(await presetApproved('P1', only(result)), true);
+});
+
+test('a queued save does not take over the same preset opened again, a new preset after a delete, or a later dialog', LIMIT, async () => {
+  // the same preset id, another edit of it
+  await reset(); holdHashes();
+  let dialog = open([approved]); openPreset(0);
+  el('pdf-preset-done').fire('click'); el('pdf-yes').fire('click');
+  openPreset(0);
+  type('pdf-preset-steps', 'inspect\nfix it');
+  await releaseHashes();
+  assert.equal(await pending(dialog), true);
+  assert.equal(editorOpen(), true);
+  save(); await releaseHashes();
+  let result = await dialog;
+  assert.deepEqual(only(result).steps, ['inspect', 'fix it']);
+  assert.equal('autoSend' in only(result), false);
+  // the edit deleted, a new preset begun
+  await reset(); holdHashes();
+  dialog = open([approved]); openPreset(0);
+  el('pdf-preset-done').fire('click'); el('pdf-yes').fire('click');
+  el('pdf-preset-delete').fire('click');
+  el('pdf-preset-add').fire('click');
+  type('pdf-preset-name', 'Brand new'); type('pdf-preset-title', 'New card'); type('pdf-preset-steps', 'draft');
+  await releaseHashes();
+  assert.equal(await pending(dialog), true);
+  assert.equal(editorOpen(), true);
+  assert.equal(el('pdf-preset-name').value, 'Brand new');
+  save(); await releaseHashes();
+  result = await dialog;
+  assert.deepEqual(result.presets.map(preset => preset.name), ['Brand new']);
+  // cancelled, then another dialog with its own edit
+  await reset(); holdHashes();
+  const first = open([approved]); openPreset(0);
+  el('pdf-preset-done').fire('click'); el('pdf-yes').fire('click');
+  el('pdf-no').fire('click');
+  assert.equal(await first, null);
+  dialog = open([OTHER]); openPreset(0);
+  type('pdf-preset-steps', 'look\nlater');
+  await releaseHashes();
+  assert.equal(await pending(dialog), true);
+  assert.equal(editorOpen(), true);
+  save(); await releaseHashes();
+  assert.deepEqual(only(await dialog, 'R2').steps, ['look', 'later']);
+});
+
+test('Done then Save on one edit, however often clicked, is one save that ends the dialog', LIMIT, async () => {
+  await reset(); holdHashes();
+  const dialog = open([approved]); openPreset(0);
+  type('pdf-preset-name', 'Renamed');
+  el('pdf-preset-done').fire('click'); el('pdf-preset-done').fire('click');
+  el('pdf-yes').fire('click'); el('pdf-yes').fire('click');
+  await releaseHashes();
+  const result = await dialog;
+  assert.deepEqual(result.presets.map(preset => preset.name), ['Renamed']);
+  assert.equal(only(result).autoSend.digest, approved.autoSend.digest);
+  assert.equal(await presetApproved('P1', only(result)), true);
+  assert.equal(el('toasts').children.length, 0);
+});
+
+/* ---------- a new approval that cannot be computed ---------- */
+test('a new approval whose digest fails saves nothing, says so in the edit, and the same save works once it can', LIMIT, async () => {
+  await reset();
+  const dialog = open([M0]); openPreset(0); await turn();
+  click();                               // the user approves these steps
+  type('pdf-preset-name', 'Renamed');
+  failing = true;
+  el('pdf-yes').fire('click'); await releaseHashes();
+  assert.equal(await pending(dialog), true, 'not saved');
+  assert.equal(editorOpen(), true, 'the draft stays open');
+  assert.equal(el('pdf-preset-name').value, 'Renamed');
+  assert.equal(box().checked, true, 'the choice is kept');
+  assert.equal(note().hidden, false, 'the edit says it was not saved');
+  assert.equal(note().textContent, t('presets.autoSend.approveFailedSave'));
+  assert.equal(el('toasts').children.length, 1);
+  // no second tick, no second confirmation: the same save again
+  failing = false;
+  el('pdf-yes').fire('click'); await releaseHashes();
+  const saved = only(await dialog);
+  assert.equal(saved.name, 'Renamed');
+  assert.equal(await presetApproved('P1', saved), true);
+});
+
+test('a new approval whose digest never answers is bounded the same way, and its late answer saves nothing', LIMIT, async () => {
+  await reset(); holdHashes();
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const dialog = open([M0]); openPreset(0); await turn();
+    click();
+    el('pdf-yes').fire('click'); await turn();
+    mock.timers.tick(60_000); await turn();
+    assert.equal(await pending(dialog), true, 'not saved');
+    assert.equal(box().checked, true);
+    assert.equal(note().hidden, false);
+    assert.equal(note().textContent, t('presets.autoSend.approveFailedSave'));
+    assert.equal(el('toasts').children.length, 1);
+    await releaseHashes();               // the digest that timed out answers now
+    assert.equal(await pending(dialog), true, 'a late digest is not a save');
+    el('pdf-yes').fire('click'); await releaseHashes();
+    assert.equal(await presetApproved('P1', only(await dialog)), true);
+  } finally { mock.timers.reset(); await releaseHashes(); }
+});
+
+test('a failed new approval is reported only in the edit that asked for it', LIMIT, async () => {
+  // another preset opened while the digest waited
+  await reset();
+  let dialog = open([M0, OTHER]); openPreset(0); await turn();
+  click(); holdHashes();
+  el('pdf-yes').fire('click'); await turn();
+  failing = true;
+  openPreset(1);
+  await releaseHashes();
+  assert.equal(note().hidden, true, 'no error in the other preset’s editor');
+  assert.equal(el('toasts').children.length, 0);
+  assert.equal(await pending(dialog), true);
+  // the dialog closed, another one open
+  await reset();
+  const first = open([M0]); openPreset(0); await turn();
+  click(); holdHashes();
+  el('pdf-yes').fire('click'); await turn();
+  failing = true;
+  el('pdf-no').fire('click');
+  assert.equal(await first, null);
+  dialog = open([OTHER]); openPreset(0);
+  await releaseHashes();
+  assert.equal(note().hidden, true);
+  assert.equal(el('toasts').children.length, 0);
+  failing = false;
+  save(); await releaseHashes();
+  assert.equal('autoSend' in only(await dialog, 'R2'), false);
 });

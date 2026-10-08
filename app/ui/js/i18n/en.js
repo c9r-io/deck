@@ -1150,6 +1150,7 @@ const dictionary = {
   'presets.later.unknown': 'could not check the approval for later steps',
   'presets.autoSend.stale': 'This preset changed since it was approved, so that approval no longer counts. Tick the option again to approve it as it is now.',
   'presets.autoSend.checkFailedSave': 'Not saved: this preset’s existing approval could not be checked. Save again to retry, or click the option to approve the preset as it is now or to turn it off.',
+  'presets.autoSend.approveFailedSave': 'Not saved: this approval could not be computed. The draft and your tick are kept; save again to retry.',
   'presets.first.wait': 'first step waits for you',
   'presets.first.direct': 'first step is sent directly',
   'presets.first.unsupported': 'direct first step is on, but not used',

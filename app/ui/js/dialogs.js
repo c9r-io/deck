@@ -214,7 +214,7 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
       promise.then(value => { clearTimeout(timer); resolve(value); }, () => { clearTimeout(timer); resolve(undefined); });
     });
     const openPreset = preset => {
-      const opened = edit = { id: preset?.id || genId('R'), stored: preset?.autoSend?.digest || '', withdrawn: false, decision: null };
+      const opened = edit = { id: preset?.id || genId('R'), stored: preset?.autoSend?.digest || '', withdrawn: false, decision: null, commit: null };
       $('pdf-preset-name').value = preset?.name || '';
       $('pdf-preset-title').value = preset?.title || '';
       $('pdf-preset-dir').value = preset?.dir || dirInput.value.trim();
@@ -270,7 +270,12 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
       if (current.decision) {
         if (!current.decision.approve) return null;
         if (current.decision.covered !== covered()) { withdrawApproval(); return undefined; }
-        return (await settled(withPresetApproval(projectId, plain, true)))?.autoSend;
+        /* a new approval that could not be computed is not a save: the
+           tick and the draft stay, the edit that asked says so, and the
+           same save again retries it */
+        const minted = (await settled(withPresetApproval(projectId, plain, true)))?.autoSend;
+        if (!minted && edit === current) { approvalNote('presets.autoSend.approveFailedSave'); toast(t('presets.autoSend.approveFailedSave')); }
+        return minted || undefined;
       }
       if (current.withdrawn || !current.stored) return null;
       const stored = { digest: current.stored };
@@ -278,16 +283,25 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
       if (valid === undefined) { if (edit === current) toast(t('presets.autoSend.checkFailedSave')); return undefined; }
       return valid ? stored : null;
     };
-    /* the digest is computed asynchronously, so commits run one at a time:
-       Done followed at once by Save commits the preset once, not twice.
+    /* A save request belongs to the edit that was open when the user asked
+       for it, decided at the click and never when its turn comes: Done
+       followed at once by Save is ONE commit of that edit (the second
+       request joins the first), and a request whose edit was since
+       replaced, reopened, deleted or closed ends as not saved instead of
+       taking the edit that is open by then. A commit that did not save is
+       forgotten, so the same edit can be saved again.
        A commit owns nothing while it waits: the edit it started from must
        still be the open one, with the same fields and the same answer. */
-    let committing = Promise.resolve(true);
-    const commitPreset = () => (committing = committing.then(commitOpenPreset, commitOpenPreset));
-    const commitOpenPreset = async () => {
+    const commitPreset = () => {
+      const current = edit;
+      if (!current) return Promise.resolve(true);
+      const forget = () => { current.commit = null; };
+      return current.commit ||= commitEdit(current).then(saved => { if (!saved) forget(); return saved; },
+        error => { forget(); throw error; });
+    };
+    const commitEdit = async current => {
       for (;;) {
-        const current = edit;
-        if (!current) return true;
+        if (edit !== current) return false;
         const fields = () => ({ id: current.id, name: $('pdf-preset-name').value,
           columnId: $('pdf-preset-column').value, title: $('pdf-preset-title').value,
           dir: $('pdf-preset-dir').value, cmd: $('pdf-preset-cmd').value,

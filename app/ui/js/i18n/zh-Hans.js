@@ -1149,6 +1149,7 @@ const dictionary = {
   'presets.later.unknown': '无法核对后续步骤的批准',
   'presets.autoSend.stale': '这个预设在批准后改过，原批准已失效。如需批准当前内容，请重新勾选该选项。',
   'presets.autoSend.checkFailedSave': '未保存：无法核对这个预设已有的批准。可再保存一次重试，或点选该选项，明确批准当前内容或关闭。',
+  'presets.autoSend.approveFailedSave': '未保存：这次批准没能算出来。草稿和你的勾选都还在，再保存一次即可重试。',
   'presets.first.wait': '第一步等你交互',
   'presets.first.direct': '第一步直接发送',
   'presets.first.unsupported': '第一步直发已开启但不生效',

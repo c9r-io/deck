@@ -1082,6 +1082,10 @@ after an edit, untouched by Cancel, new after a tick by hand).
 `ux-preset-race` is CONTROLLED: the carrier holds this page's SHA-256 back so
 a stored approval is still being checked while the dialog is used; the dialog,
 the digest and the Board save are production.
+`ux-preset-queue` and `ux-preset-mint` are CONTROLLED the same way (the hash
+held back, or made to fail): a save asked for one preset's edit never takes
+over the preset opened while it waited, and a new approval that cannot be
+computed says so in the edit and is saved by the same save once it can.
 Snapshots land in `<data dir>/evidence/`; `ux-m-*` are measurements.
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-ux.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-ux-UNIQUE DECK_SMOKE_WKWEBVIEW=ux-layers app/run.sh`,
