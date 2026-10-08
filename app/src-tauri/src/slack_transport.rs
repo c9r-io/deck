@@ -1,4 +1,7 @@
 //! The sole Slack Socket Mode owner. Consumers never access the WebSocket.
+//! The loop is started once, by the Slack integration's `start` entry in the
+//! static extension tables (`slack.rs`, `extensions.rs`); `spawn` refuses a
+//! second owner.
 //! Status reads never request a Socket ticket; only explicit App-token saves
 //! and actual transport connections call apps.connections.open.
 //! The channel identity is published by this loop alone, after bot
@@ -437,7 +440,21 @@ pub(crate) struct Consumers {
     pub(crate) reaction: Box<ReactionFetch>,
 }
 
+/// Set by the first `spawn`; the socket loop never ends, so it is never reset.
+static OWNER: AtomicBool = AtomicBool::new(false);
+/// One owner per process: only the first claim succeeds.
+fn claim_owner(owner: &AtomicBool) -> bool {
+    !owner.swap(true, Ordering::SeqCst)
+}
+
+/// Start the one socket loop. Called through the Slack integration's
+/// `start` (`slack.rs`, `extensions::start_services`); a second call starts
+/// nothing.
 pub(crate) fn spawn(app: AppHandle) {
+    if !claim_owner(&OWNER) {
+        applog("[slack] second transport owner refused");
+        return;
+    }
     let reactions = app.clone();
     let consumers = Consumers {
         channel: Box::new(move |identity, text| {
@@ -646,6 +663,30 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::HashSet;
+
+    #[test]
+    fn the_transport_has_one_owner_per_process() {
+        let owner = AtomicBool::new(false);
+        assert!(claim_owner(&owner), "the first start owns the socket loop");
+        assert!(!claim_owner(&owner), "a second start is refused");
+        assert!(!claim_owner(&owner));
+        // the production start is the integration's entry and nothing else
+        let spawn: fn(AppHandle) = spawn;
+        assert!(std::ptr::fn_addr_eq(crate::slack::INTEGRATION.start, spawn));
+        let callers: Vec<String> = [
+            ("main.rs", include_str!("main.rs")),
+            ("inbound.rs", include_str!("inbound.rs")),
+            ("extensions.rs", include_str!("extensions.rs")),
+        ]
+        .iter()
+        .filter(|(_, text)| text.contains("slack_transport::spawn"))
+        .map(|(name, _)| name.to_string())
+        .collect();
+        assert!(
+            callers.is_empty(),
+            "{callers:?} start the transport directly"
+        );
+    }
 
     #[test]
     fn status_does_not_open_socket_tickets_even_on_repeated_reads() {

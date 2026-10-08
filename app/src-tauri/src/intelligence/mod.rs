@@ -4,5 +4,5 @@
 pub(crate) mod pack;
 pub(crate) mod pasteboard;
 mod protected;
-mod provider;
+pub(crate) mod provider;
 pub(crate) mod translation;

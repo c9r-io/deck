@@ -49,6 +49,13 @@
 //! user and app tokens; adding monitoring verifies a new bot token. Cards are
 //! never moved and deck never writes to Slack. Adding a source = one `Source`
 //! impl + one trigger in the drawer; rules/templates/dispatch do not change.
+//! A service's sources, its connection owner, its credential presence rows
+//! and its credential adaptation reach this dispatcher only through the
+//! static extension tables (`extensions.rs`; Slack's entry is `slack.rs`):
+//! this file starts no service connection and verifies no service token.
+//! The clock is the dispatcher's own built-in source. `SOURCES` stays the
+//! closed, persisted source vocabulary, and the settings shape — channel
+//! rules included — is still validated here.
 //! A badge item's ack carries the card it created, so the run ledger and the
 //! finish rule cover both triggers.
 //! Credential verification and Keychain writes run on the blocking pool,
@@ -961,41 +968,23 @@ pub(crate) fn inbound_status() -> InboundStatus {
                 .find(|(s, _)| s == id)
                 .map(|(_, st)| st.clone())
                 .unwrap_or_default();
-            let secrets = match *id {
-                "slack" => vec![
-                    SecretView {
-                        slot: "slack-user-token",
-                        present: keychain::has(keychain::Slot::SlackUserToken),
-                    },
-                    SecretView {
-                        slot: "slack-app-token",
-                        present: keychain::has(keychain::Slot::SlackAppToken),
-                    },
-                    SecretView {
-                        slot: "slack-bot-token",
-                        present: keychain::has(keychain::Slot::SlackBotToken),
-                    },
-                    SecretView {
-                        slot: "slack-channel-bot-token",
-                        present: keychain::has(keychain::Slot::SlackChannelBotToken),
-                    },
-                    SecretView {
-                        slot: "slack-channel-app-token",
-                        present: keychain::has(keychain::Slot::SlackChannelAppToken),
-                    },
-                ],
-                _ => Vec::new(),
-            };
+            // A source a registered service owns reports that service's
+            // credential presence and its connection as it is right now; the
+            // owner's socket changes independently of the 30-second poll.
+            let service = crate::extensions::service(id);
+            let secrets = service.map_or_else(Vec::new, |service| {
+                service
+                    .secrets
+                    .iter()
+                    .map(|(slot, key)| SecretView {
+                        slot,
+                        present: keychain::has(*key),
+                    })
+                    .collect()
+            });
             sources.push(SourceStatusView {
                 id,
-                // The shared socket updates independently of the 30-second
-                // source poll; project its current state instead of a stale
-                // snapshot captured on the previous poll.
-                live: if *id == "slack" {
-                    crate::slack_transport::connected()
-                } else {
-                    st.live
-                },
+                live: service.map_or(st.live, |service| (service.live)()),
                 last_poll: st.last_poll,
                 last_error: st.last_error,
                 secrets,
@@ -1158,10 +1147,9 @@ pub(crate) fn inbound_runs() -> Vec<Run> {
 /// is compiled into deck (never user input) and carries no credential.
 #[tauri::command]
 pub(crate) fn inbound_setup(source: String) -> Result<(), DeckError> {
-    let url = match source.as_str() {
-        "slack" => crate::slack_api::setup_url(),
-        _ => return Err(DeckError::new(ErrorKind::Invalid, "unknown source")),
-    };
+    let service = crate::extensions::service(&source)
+        .ok_or(DeckError::new(ErrorKind::Invalid, "unknown source"))?;
+    let url = (service.setup_url)();
     let status = std::process::Command::new("/usr/bin/open")
         .arg(&url)
         .status()
@@ -1190,90 +1178,19 @@ pub(crate) async fn inbound_set_secret(slot: String, value: String) -> Result<()
 }
 
 fn set_secret(slot: &str, value: &str) -> Result<(), DeckError> {
-    let slot = keychain::Slot::parse(slot).ok_or(DeckError::new(
-        ErrorKind::Invalid,
-        "unknown credential slot",
-    ))?;
-    if !matches!(
-        slot,
-        keychain::Slot::SlackUserToken
-            | keychain::Slot::SlackBotToken
-            | keychain::Slot::SlackAppToken
-    ) {
-        return Err(DeckError::new(
-            ErrorKind::Invalid,
-            "unknown credential slot",
-        ));
-    }
-    let clearing = value.trim().is_empty();
-    if !clearing {
-        let trimmed = value.trim();
-        if !keychain::accepts(slot, trimmed) {
-            return Err(DeckError::new(ErrorKind::Invalid, "shape"));
-        }
-        let verified = (if slot == keychain::Slot::SlackAppToken {
-            crate::slack_transport::open_url(trimmed).map(|_| Value::Null)
-        } else {
-            crate::slack_api::verify(slot, trimmed)
-        })
-        .map_err(|code| {
-            let slack_error = crate::slack_api::last_slack_error();
-            applog(&format!(
-                "[inbound] credential verify FAILED ({code}:{slack_error})"
-            ));
-            // closed codes the frontend maps to messages, never Slack's text
-            DeckError::new(
-                ErrorKind::Other,
-                match code {
-                    "auth" => "auth".to_string(),
-                    "scope" => "scope".to_string(),
-                    "network" | "timeout" | "http" => "network".to_string(),
-                    _ => format!("slack:{slack_error}"),
-                },
-            )
-        })?;
-        if slot == keychain::Slot::SlackBotToken || slot == keychain::Slot::SlackUserToken {
-            let other = if slot == keychain::Slot::SlackBotToken {
-                keychain::Slot::SlackUserToken
-            } else {
-                keychain::Slot::SlackBotToken
-            };
-            if let Some(other_token) = keychain::get(other) {
-                let other_identity = crate::slack_api::verify(other, &other_token)
-                    .map_err(|_| DeckError::new(ErrorKind::Other, "other-credential"))?;
-                let team = verified.get("team_id").and_then(Value::as_str);
-                let other_team = other_identity.get("team_id").and_then(Value::as_str);
-                let enterprise = verified.get("enterprise_id").and_then(Value::as_str);
-                let other_enterprise = other_identity.get("enterprise_id").and_then(Value::as_str);
-                if team.is_none()
-                    || team != other_team
-                    || (enterprise.is_some()
-                        && other_enterprise.is_some()
-                        && enterprise != other_enterprise)
-                {
-                    return Err(DeckError::new(ErrorKind::Other, "workspace"));
-                }
-            }
-        }
-    }
-    keychain::set(slot, value).map_err(|code| {
-        DeckError::new(
-            ErrorKind::Other,
-            match code.message() {
-                "shape" => "shape",
-                _ => "keychain",
-            },
-        )
-    })?;
-    if slot == keychain::Slot::SlackBotToken {
-        crate::inbound_channel::set_current_identity(None);
-    }
-    if slot == keychain::Slot::SlackAppToken {
-        crate::slack_transport::app_credential_saved(!clearing);
-    }
+    // The slot vocabulary is the Keychain's closed one; which service may
+    // store it, and how a candidate is proven, is that service's adaptation.
+    let unknown = || DeckError::new(ErrorKind::Invalid, "unknown credential slot");
+    let slot = keychain::Slot::parse(slot).ok_or_else(unknown)?;
+    let owner = crate::extensions::secret_owner(slot).ok_or_else(unknown)?;
+    (owner.store_secret)(slot, value)?;
     applog(&format!(
         "[inbound] credential {}",
-        if clearing { "cleared" } else { "stored" }
+        if value.trim().is_empty() {
+            "cleared"
+        } else {
+            "stored"
+        }
     ));
     inbound_check_now();
     Ok(())
@@ -1284,9 +1201,9 @@ pub(crate) fn inbound_check_now() {
     let (flag, cv) = wake();
     *flag.lock_or_recover() = true;
     cv.notify_all();
-    // Every inbound settings save wakes the shared Slack transport so it
-    // re-reads credentials and both capability configurations immediately.
-    crate::slack_transport::wake();
+    // Every inbound settings save wakes each service's connection owner so
+    // it re-reads credentials and its capability configuration immediately.
+    crate::extensions::wake_services();
 }
 
 /* ---------- the poller ---------- */
@@ -1307,10 +1224,10 @@ fn wait_for_tick(d: Duration) {
 
 pub(crate) fn spawn_inbound(app: AppHandle) {
     std::thread::spawn(move || {
-        let mut sources: Vec<Box<dyn Source>> = vec![
-            Box::new(crate::inbound_slack::Slack::default()),
-            Box::new(crate::inbound_clock::Clock::default()),
-        ];
+        // Service sources come from the static extension tables; the
+        // clock is the dispatcher's own built-in source.
+        let mut sources = crate::extensions::service_sources();
+        sources.push(Box::new(crate::inbound_clock::Clock::default()));
         let mut failures = 0u32;
         wait_for_tick(Duration::from_secs(5));
         loop {
@@ -1364,7 +1281,7 @@ pub(crate) fn spawn_inbound(app: AppHandle) {
             if re_emit {
                 let _ = app.emit("inbound-changed", ());
             }
-            crate::inbound_channel::reannounce_pending(&app);
+            crate::extensions::reannounce_services(&app);
             let _ = with_rt(|rt| std::mem::replace(&mut rt.poll_wanted, false));
             wait_for_tick(POLL_INTERVAL);
         }
@@ -1377,27 +1294,164 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    #[test]
-    fn app_candidate_is_verified_before_canonical_keychain_write() {
-        let source = include_str!("inbound.rs");
-        let body = source
-            .split("fn set_secret(slot:")
-            .nth(1)
-            .unwrap()
-            .split("#[tauri::command]\npub(crate) fn inbound_check_now")
-            .next()
-            .unwrap();
-        let verify = body.find("slack_transport::open_url(trimmed)").unwrap();
-        let write = body.find("keychain::set(slot, value)").unwrap();
-        assert!(verify < write);
-        assert!(
-            body[verify..write].contains("})?;"),
-            "verification errors return before write"
-        );
-    }
-
     /// Serializes the tests that redirect `TEST_DOC_PATH` or replace `RT`.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /* ---- the dispatcher reaches a service only through the static tables ---- */
+
+    use crate::extensions::{testing, ServiceIntegration};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    thread_local! {
+        static STORED: std::cell::RefCell<Vec<(keychain::Slot, String)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+    static FAKE_WAKES: AtomicUsize = AtomicUsize::new(0);
+    /// A stand-in service under Slack's id: live, no Keychain presence rows,
+    /// and a recording credential adapter that refuses the word "bad".
+    const FAKE_SLACK: ServiceIntegration = ServiceIntegration {
+        id: "slack",
+        sources: Vec::new,
+        start: |_| {},
+        wake: || {
+            FAKE_WAKES.fetch_add(1, Ordering::SeqCst);
+        },
+        live: || true,
+        secrets: &[],
+        settable: &[keychain::Slot::SlackUserToken],
+        store_secret: |slot, value| {
+            if value == "bad" {
+                return Err(DeckError::new(ErrorKind::Other, "auth"));
+            }
+            STORED.with(|stored| stored.borrow_mut().push((slot, value.to_string())));
+            Ok(())
+        },
+        setup_url: String::new,
+        reannounce: |_| {},
+    };
+
+    #[test]
+    fn status_reads_liveness_and_credential_rows_from_the_registered_service() {
+        let _guard = TEST_LOCK.lock_or_recover();
+        let slack = |status: &InboundStatus| {
+            let row = status.sources.iter().find(|s| s.id == "slack").unwrap();
+            (row.live, row.secrets.len())
+        };
+        {
+            let _table = testing::with_services(&[FAKE_SLACK]);
+            assert_eq!(
+                slack(&inbound_status()),
+                (true, 0),
+                "the registered entry answers, not a built-in Slack branch"
+            );
+        }
+        {
+            // negative control: with no service registered the Slack row has
+            // no service-owned facts at all
+            let _table = testing::with_services(&[]);
+            let (_, secrets) = slack(&inbound_status());
+            assert_eq!(secrets, 0);
+        }
+        let status = inbound_status();
+        let row = status.sources.iter().find(|s| s.id == "slack").unwrap();
+        let slots: Vec<&str> = row.secrets.iter().map(|s| s.slot).collect();
+        assert_eq!(
+            slots,
+            [
+                "slack-user-token",
+                "slack-app-token",
+                "slack-bot-token",
+                "slack-channel-bot-token",
+                "slack-channel-app-token"
+            ],
+            "the production reply keeps its five presence rows in order"
+        );
+        let ids: Vec<&str> = status.sources.iter().map(|s| s.id).collect();
+        assert_eq!(ids, SOURCES);
+        let clock = status.sources.iter().find(|s| s.id == "clock").unwrap();
+        assert!(clock.secrets.is_empty());
+    }
+
+    #[test]
+    fn a_credential_is_stored_only_by_the_service_that_owns_its_slot() {
+        let _guard = TEST_LOCK.lock_or_recover();
+        {
+            let _table = testing::with_services(&[FAKE_SLACK]);
+            let wakes = FAKE_WAKES.load(Ordering::SeqCst);
+            set_secret("slack-user-token", "candidate").unwrap();
+            assert_eq!(
+                STORED.with(|stored| stored.borrow().clone()),
+                [(keychain::Slot::SlackUserToken, "candidate".to_string())]
+            );
+            assert!(
+                FAKE_WAKES.load(Ordering::SeqCst) > wakes,
+                "a stored credential wakes the owner"
+            );
+            // the adapter's refusal is the result; nothing is recorded
+            assert_eq!(
+                set_secret("slack-user-token", "bad").unwrap_err().message(),
+                "auth"
+            );
+            assert_eq!(STORED.with(|stored| stored.borrow().len()), 1);
+            // a slot the registered service does not own is unknown here,
+            // even though the production Slack integration owns it
+            assert_eq!(
+                set_secret("slack-bot-token", "x").unwrap_err().message(),
+                "unknown credential slot"
+            );
+        }
+        {
+            let _table = testing::with_services(&[]);
+            assert_eq!(
+                set_secret("slack-user-token", "candidate")
+                    .unwrap_err()
+                    .message(),
+                "unknown credential slot",
+                "no registered owner, no built-in path"
+            );
+        }
+        // the production tables: closed, and nothing outside Slack's three
+        for slot in [
+            "connector-identity",
+            "slack-channel-bot-token",
+            "slack-channel-app-token",
+            "nonsense",
+        ] {
+            let error = set_secret(slot, "x").unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Invalid, "{slot}");
+            assert_eq!(error.message(), "unknown credential slot", "{slot}");
+        }
+        assert_eq!(STORED.with(|stored| stored.borrow().len()), 1);
+    }
+
+    /// Supplementary to the behaviour tests above: the dispatcher's
+    /// production code names no Slack connection, API or source module.
+    #[test]
+    fn the_dispatcher_names_no_service_module() {
+        let source = include_str!("inbound.rs");
+        let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+        for module in ["slack_transport::", "slack_api::", "inbound_slack::Slack"] {
+            let named: Vec<&str> = production
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .filter(|line| line.contains(module))
+                .collect();
+            assert!(named.is_empty(), "{module}: {named:?}");
+        }
+    }
+
+    #[test]
+    fn a_setup_page_exists_only_for_a_registered_service() {
+        for source in ["clock", "notion", ""] {
+            let error = inbound_setup(source.into()).unwrap_err();
+            assert_eq!(error.message(), "unknown source", "{source}");
+        }
+        let _table = testing::with_services(&[]);
+        assert_eq!(
+            inbound_setup("slack".into()).unwrap_err().message(),
+            "unknown source"
+        );
+    }
 
     fn rule(badge: &str) -> Value {
         json!({"id": format!("R-{badge}"), "source": "slack", "badge": badge,

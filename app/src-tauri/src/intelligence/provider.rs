@@ -1,4 +1,8 @@
 //! Narrow typed translation provider. Only Bergamot implements it in Phase 1.
+//! The coordinator (`translation.rs`) never names an engine type: it asks
+//! the static extension tables (`extensions.rs`) for the build's selected
+//! `TranslationProviderEntry` and holds the result as a trait object.
+//! Building an entry loads nothing.
 use crate::error::{DeckError, ErrorKind};
 use std::ffi::{c_char, c_void, CString};
 use std::path::Path;
@@ -8,12 +12,12 @@ fn failure() -> DeckError {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Capabilities {
+pub(crate) struct Capabilities {
     pub source: &'static str,
     pub target: &'static str,
 }
 
-pub(super) trait TranslationProvider: Send {
+pub(crate) trait TranslationProvider: Send {
     fn capabilities(&self) -> Capabilities;
     fn load(&mut self, pack: &Path) -> Result<(), DeckError>;
     fn translate(&mut self, segment: &str) -> Result<String, DeckError>;
@@ -35,8 +39,20 @@ unsafe extern "C" {
     fn deck_bergamot_unload(handle: *mut c_void);
 }
 
+/// One engine as the static extension tables list it.
+pub(crate) struct TranslationProviderEntry {
+    pub(crate) id: &'static str,
+    /// Constructs an unloaded provider.
+    pub(crate) build: fn() -> Box<dyn TranslationProvider>,
+}
+
+pub(crate) const BERGAMOT: TranslationProviderEntry = TranslationProviderEntry {
+    id: "bergamot",
+    build: || Box::new(BergamotProvider::default()),
+};
+
 #[derive(Default)]
-pub(super) struct BergamotProvider {
+struct BergamotProvider {
     handle: Option<*mut c_void>,
 }
 // Only one instance exists behind a Mutex. No handle is shared with another
@@ -213,7 +229,8 @@ mod tests {
         let memory_profile = std::env::var_os("DECK_TRANSLATION_MEMORY_PROFILE").is_some();
         let pack = Path::new(&directory);
         super::super::pack::verify_at(pack).unwrap();
-        let mut provider = BergamotProvider::default();
+        // the constructor the static extension tables register
+        let mut provider = (BERGAMOT.build)();
         let before_kib = crate::procinfo::footprint_kib(std::process::id());
         if memory_profile {
             eprintln!(

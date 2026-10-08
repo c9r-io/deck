@@ -12,7 +12,6 @@ mod protected;
 #[allow(dead_code)]
 mod provider;
 
-use provider::{BergamotProvider, TranslationProvider};
 use std::io::Read;
 use std::path::Path;
 
@@ -28,7 +27,8 @@ fn run(model: &Path, source: &str) -> serde_json::Value {
         return serde_json::json!({"ok": false, "error": "translation-failed"});
     }
     let spans = protected::scan(source);
-    let mut engine = BergamotProvider::default();
+    // the same constructor the static extension tables register
+    let mut engine = (provider::BERGAMOT.build)();
     if engine.load(model).is_err() {
         return serde_json::json!({"ok": false, "error": "translation-model-missing"});
     }

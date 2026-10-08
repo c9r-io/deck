@@ -17,6 +17,7 @@ mod diagnostics;
 mod documents;
 mod drops;
 mod error;
+mod extensions;
 mod history;
 mod inbound;
 mod inbound_channel;
@@ -48,6 +49,7 @@ mod shell_exit;
 mod shell_state;
 #[cfg(test)]
 mod signal_trace;
+mod slack;
 mod slack_api;
 mod slack_transport;
 mod smoke_faults;
@@ -241,7 +243,7 @@ fn main() {
                 reminder::defer_automatic_work(app.handle().clone(), move || {
                     scheduler::spawn_scheduler(handle.clone());
                     inbound::spawn_inbound(handle.clone());
-                    slack_transport::spawn(handle.clone());
+                    extensions::start_services(&handle);
                     connector::spawn_connector(handle.clone());
                     mcp::spawn(handle);
                 });

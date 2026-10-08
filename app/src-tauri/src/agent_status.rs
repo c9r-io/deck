@@ -77,9 +77,12 @@
 //!   word authorizes a side effect: not closing a card, not releasing
 //!   external text into the pane.
 //!
-//! Adding an agent module = one entry in `SOURCES` + an installer that
-//! registers that agent's own hook/notify config to call the same helper
-//! with its own source word. The socket protocol and store are shared.
+//! Adding an agent module = one `AgentAdapter` declaration here + its entry
+//! in the static extension tables (`extensions.rs`): the adapter names the
+//! source word, the hook spec table and style, the hooks file and a closed
+//! proof class. The socket protocol and store are shared. A registered
+//! adapter is only a recognized source word: it earns no Signal, trust,
+//! readiness or remote admission by being listed.
 //!
 //! # Contract
 //! Agent status hooks (`agent_status.rs`, opt-in): agent CLIs report a CLOSED
@@ -198,9 +201,9 @@
 //! allows one notify program only; chain-forwarding it was rejected as too
 //! much surface). Known caveat: Codex's Stop fires when the model ATTEMPTS to
 //! stop, so another Stop hook forcing continuation makes "done" slightly
-//! early. Adding an agent module = one `SOURCES` entry + its own installer
-//! spec calling the same helper with its own source word, behind its own
-//! Settings toggle.
+//! early. Adding an agent module = one `AgentAdapter` (registered in
+//! `extensions.rs`) whose spec table calls the same helper with its own
+//! source word, behind its own Settings toggle.
 
 use std::collections::HashMap;
 
@@ -214,9 +217,6 @@ use std::time::Duration;
 use crate::applog;
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
-
-/// Registered agent modules.
-const SOURCES: &[&str] = &["claude-code", "codex"];
 
 /// Closed state vocabulary — the only words that ever reach the frontend.
 pub(crate) const WORKING: &str = "working";
@@ -694,7 +694,7 @@ pub(crate) fn parse_event(line: &str) -> Result<Event, &'static str> {
     let source = obj
         .get("source")
         .and_then(|v| v.as_str())
-        .filter(|s| SOURCES.contains(s))
+        .filter(|s| crate::extensions::agent(s).is_some())
         .ok_or("unknown-source")?;
     let state = STATES
         .iter()
@@ -973,7 +973,12 @@ pub(crate) fn ingest(
     if !chain.contains(&generation.pid) {
         return Err("generation-mismatch");
     }
-    let codex = event.source == "codex";
+    // The adapter names only which proof class its source belongs to;
+    // whether this event is accepted, and what it proves, is decided here.
+    let class = crate::extensions::agent(&event.source)
+        .ok_or("unknown-source")?
+        .class;
+    let codex = class == SignalClass::Codex;
     if !terminal_continuous(&origin.table, &chain, generation.pid, row.pane_pid) {
         if codex {
             prove_trust(row, generation, CodexSignalTrust::Unavailable);
@@ -1048,7 +1053,7 @@ pub(crate) fn ingest(
     })?;
     if codex {
         prove_trust(row, generation, CodexSignalTrust::Trusted);
-    } else if event.source == "claude-code" && CLAUDE_INTERACTION_WORDS.contains(&event.state) {
+    } else if class == SignalClass::Claude && CLAUDE_INTERACTION_WORDS.contains(&event.state) {
         prove_claude_interaction(row, generation);
     }
     let targeted = signal_targets(&rows)
@@ -2139,34 +2144,50 @@ fn installed_helper_path() -> Result<String, DeckError> {
     helper_path_in(bundle)
 }
 
-/// Each agent module: config path, spec table, source word, hook style,
-/// never-ran message.
-type AgentModule = (
-    Option<PathBuf>,
-    &'static [HookSpec],
-    &'static str,
-    HookStyle,
-    &'static str,
-);
-
-fn agent_modules() -> [AgentModule; 2] {
-    [
-        (
-            claude_settings_path(),
-            CLAUDE_HOOKS,
-            "claude-code",
-            HookStyle::Exec,
-            "Claude Code has never run on this Mac — nothing to configure",
-        ),
-        (
-            codex_hooks_path(),
-            CODEX_HOOKS,
-            "codex",
-            HookStyle::ShellAsync,
-            "Codex has never run on this Mac — nothing to configure",
-        ),
-    ]
+/// Which core-owned generation proof an ACCEPTED event of a source feeds.
+/// A closed pair: the adapter states its class and nothing else. It cannot
+/// declare an event accepted, a generation trusted or a pane ready; `ingest`
+/// applies the pane, ancestry, generation and interaction checks to every
+/// source alike and only then records the proof of that class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SignalClass {
+    /// An accepted interaction word proves a Claude interaction.
+    Claude,
+    /// Terminal continuity decides `CodexSignalTrust` for the generation.
+    Codex,
 }
+
+/// One supported agent: its wire source word (also the Settings toggle's
+/// id), its hook spec table and style, where its hooks file lives, and its
+/// proof class. The static extension tables (`extensions.rs`) list these;
+/// event parsing, the installer, the boot migration and the status view all
+/// select through `extensions::agent` / `extensions::agents`.
+pub(crate) struct AgentAdapter {
+    pub(crate) source: &'static str,
+    class: SignalClass,
+    hooks: &'static [HookSpec],
+    style: HookStyle,
+    config_path: fn() -> Option<PathBuf>,
+    never_ran: &'static str,
+}
+
+pub(crate) const CLAUDE_CODE: AgentAdapter = AgentAdapter {
+    source: "claude-code",
+    class: SignalClass::Claude,
+    hooks: CLAUDE_HOOKS,
+    style: HookStyle::Exec,
+    config_path: claude_settings_path,
+    never_ran: "Claude Code has never run on this Mac — nothing to configure",
+};
+
+pub(crate) const CODEX: AgentAdapter = AgentAdapter {
+    source: "codex",
+    class: SignalClass::Codex,
+    hooks: CODEX_HOOKS,
+    style: HookStyle::ShellAsync,
+    config_path: codex_hooks_path,
+    never_ran: "Codex has never run on this Mac — nothing to configure",
+};
 
 /// Boot migration, the one write outside the Settings toggle: when hooks are
 /// installed but are not what the CURRENT spec describes — a helper other
@@ -2183,8 +2204,16 @@ pub(crate) fn migrate_hooks_on_boot() {
         return;
     };
     let mut legacy_referenced = false;
-    for (path, specs, source, style, never_ran) in agent_modules() {
-        let Some(path) = path else { continue };
+    for adapter in crate::extensions::agents() {
+        let (specs, source, style, never_ran) = (
+            adapter.hooks,
+            adapter.source,
+            adapter.style,
+            adapter.never_ran,
+        );
+        let Some(path) = (adapter.config_path)() else {
+            continue;
+        };
         let Ok(value) = read_settings_value(&path) else {
             continue;
         };
@@ -2258,14 +2287,18 @@ pub(crate) struct AgentHooksStatus {
 
 #[tauri::command]
 pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
-    let installed = |path: Option<PathBuf>, specs: &[HookSpec]| {
-        path.and_then(|p| read_settings_value(&p).ok())
-            .map(|v| hooks_installed(&v, specs))
-            .unwrap_or(false)
+    // The reply keeps its two fixed keys (the Settings toggles); each is
+    // answered from the registered adapter of that source word.
+    let installed = |source: &str| {
+        crate::extensions::agent(source).is_some_and(|adapter| {
+            (adapter.config_path)()
+                .and_then(|path| read_settings_value(&path).ok())
+                .is_some_and(|value| hooks_installed(&value, adapter.hooks))
+        })
     };
     AgentHooksStatus {
-        claude: installed(claude_settings_path(), CLAUDE_HOOKS),
-        codex: installed(codex_hooks_path(), CODEX_HOOKS),
+        claude: installed(CLAUDE_CODE.source),
+        codex: installed(CODEX.source),
     }
 }
 
@@ -2274,12 +2307,16 @@ pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
 /// rewrites deck's own entries and nothing else.
 #[tauri::command]
 pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckError> {
-    let module = agent_modules()
-        .into_iter()
-        .find(|(_, _, source, _, _)| *source == agent)
+    let adapter = crate::extensions::agent(&agent)
         .ok_or(DeckError::new(ErrorKind::Other, "unknown agent"))?;
-    let (path, specs, source, style, never_ran) = module;
-    let path = path.ok_or(DeckError::new(ErrorKind::Other, "no home directory"))?;
+    let (specs, source, style, never_ran) = (
+        adapter.hooks,
+        adapter.source,
+        adapter.style,
+        adapter.never_ran,
+    );
+    let path =
+        (adapter.config_path)().ok_or(DeckError::new(ErrorKind::Other, "no home directory"))?;
     let result = if enable {
         installed_helper_path().and_then(|helper| {
             let edit = HookEdit::Install {
@@ -2499,6 +2536,82 @@ mod tests {
         assert_eq!(report("working", "%3", Some(320), &wrapped, &rows), Ok(()));
         assert_eq!(projection(&rows, "deck-card-ab12"), Some("working"));
         reset_for_tests();
+    }
+
+    #[test]
+    fn a_source_word_is_recognized_only_through_the_registered_adapter() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        const FAKE: AgentAdapter = AgentAdapter {
+            source: "fake-agent",
+            ..CODEX
+        };
+        let builtin = event_line("turn-done", "%3");
+        let fake = builtin.replace("claude-code", "fake-agent");
+        // production tables: the two supported words, nothing else
+        assert!(parse_event(&builtin).is_ok());
+        assert_eq!(parse_event(&fake), Err("unknown-source"));
+        assert_eq!(
+            agent_hooks_set("fake-agent".into(), true)
+                .unwrap_err()
+                .message(),
+            "unknown agent"
+        );
+        assert_eq!(
+            agent_hooks_set("claude".into(), true)
+                .unwrap_err()
+                .message(),
+            "unknown agent",
+            "an executable name is not an adapter"
+        );
+        {
+            let _table = crate::extensions::testing::with_agents(&[FAKE]);
+            assert!(
+                parse_event(&fake).is_ok(),
+                "the parser asks the tables for the word"
+            );
+            // negative control: a built-in word is not accepted by a
+            // hard-coded list once the tables do not carry it
+            assert_eq!(parse_event(&builtin), Err("unknown-source"));
+            // being registered earns nothing: the same pane, ancestry and
+            // generation checks refuse the registered source
+            let rows = [row("deck-card-ab12", "$1", "%3", 300, true, "claude")];
+            let foreign = with_helper(
+                world(&[pane(300, 7, 310, 2000), pane(400, 8, 410, 2000)]),
+                420,
+                410,
+            );
+            let ingest_fake = |pane_id: &str, peer: Option<u32>, table: &ProcessTable| {
+                let origin = Origin {
+                    peer,
+                    table: table.clone(),
+                };
+                ingest(&fake.replace("%3", pane_id), &origin, || {
+                    Some(rows.to_vec())
+                })
+            };
+            assert_eq!(ingest_fake("%3", Some(420), &foreign), Err("foreign-pane"));
+            assert_eq!(ingest_fake("%9", Some(420), &foreign), Err("no-such-pane"));
+            assert_eq!(ingest_fake("%3", None, &foreign), Err("no-peer"));
+            assert!(projections(&rows).is_empty(), "refusals store nothing");
+            // and it is not remote admission either
+            assert_eq!(crate::admission::interactive_agent("fake-agent"), None);
+            assert_eq!(crate::admission::channel_agent_command("fake-agent"), None);
+        }
+        {
+            // a doubly registered word is no word
+            let _table = crate::extensions::testing::with_agents(&[CODEX, CODEX]);
+            assert_eq!(
+                parse_event(&builtin.replace("claude-code", "codex")),
+                Err("unknown-source")
+            );
+        }
+        // admission reads its own closed list of executables, not sources
+        assert_eq!(crate::admission::interactive_agent("claude-code"), None);
+        assert_eq!(
+            crate::admission::interactive_agent("claude"),
+            Some("claude")
+        );
     }
 
     #[test]
