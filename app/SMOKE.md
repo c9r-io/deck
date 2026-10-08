@@ -1067,6 +1067,18 @@ agent or session is involved. Snapshots are written to
 
 ## Information layers (unattended, real WKWebView)
 
+`terminal-input` (`ui/test/terminal-input-smoke.mjs`) checks terminal input
+ordering and target identity through the app's own chain: the webview, the
+real IPC, `pty_write`, and an isolated tmux pane running `cat` with echo off
+as the receiver. It holds back the page's receipt of the `scroll_bottom` and
+`attach_session` replies to look at input that arrives meanwhile (a
+composition during a cleanup, input before the attach reply, a card switched
+away and back, a split losing focus), asks `pty_write` to accept a replaced
+generation, and checks the patched composition boundary by behaviour. Its
+compositions are synthetic events; it is not a system input method test.
+Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-ti.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-ti-UNIQUE DECK_SMOKE_WKWEBVIEW=terminal-input app/run.sh`,
+then `scripts/smoke-verdict <data-dir> terminal-input`.
+
 `ux-layers` (`ui/test/ux-layers-smoke.mjs`) walks the automation editor (the
 three triggers, the empty state, the first-step box and its state line), the
 lists panel (one list, several lists, a disclosure kept open across

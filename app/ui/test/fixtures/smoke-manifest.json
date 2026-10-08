@@ -611,6 +611,21 @@
         "authority-live-setup": {}
       }
     },
+    "terminal-input": {
+      "terminal": "done",
+      "checks": {
+        "ti-backend-refuses-stale": {},
+        "ti-composition-boundary": {},
+        "ti-early-frame": { "b": 1 },
+        "ti-early-input": {},
+        "ti-exception": { "failureOnly": true },
+        "ti-ipc-spy": { "b": 1 },
+        "ti-order-scroll": {},
+        "ti-ready": {},
+        "ti-split-focus": {},
+        "ti-switch-cancels-old": {}
+      }
+    },
     "empty-start": {
       "terminal": "done",
       "checks": {

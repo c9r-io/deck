@@ -3125,6 +3125,13 @@ export async function verifyEmptyStart() {
   await runEmptyStartSmoke();
 }
 
+// Terminal input ordering and target identity through the real IPC and a
+// real pane (terminal-input-smoke.mjs).
+export async function verifyTerminalInput() {
+  const { runTerminalInputSmoke } = await import('./terminal-input-smoke.mjs');
+  await runTerminalInputSmoke();
+}
+
 export async function verifyVoice() {
   const { runVoiceSmoke } = await import('./voice-smoke.mjs');
   await runVoiceSmoke();
