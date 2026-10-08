@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.7.25 — 2026-10-08 (Nightly)
+
+- Slack channel rules have one new choice, off by default: let a matching
+  message send the first step of the run it starts, without waiting for an
+  interaction on the Mac. It covers that first step only (later steps and
+  tools are unchanged), it is bound to the rule and template as approved,
+  and unticking it takes it back, including for steps already waiting.
+- Explanations in the automation editor, the lists panel, the inspection
+  dialog, Project defaults and the template manager are layered: what a
+  choice does and what it risks sit beside the control, the mechanism opens
+  on demand. One thing sent to a session is called a "step" everywhere;
+  "lines" now means lines of text only.
+- A Slack badge rule's approval is shown from the rule itself, is no longer
+  taken away by an ordinary save made before it was checked, and a tick
+  approves only the steps it was made for.
+- A phone task preset's approval is kept, withdrawn or given per edit: steps
+  edited while the saved approval is still being checked are never approved
+  by its late answer, saving unchanged keeps the approval in one save, and a
+  check or a new approval that cannot be computed saves nothing and says so
+  in the editor; saving again retries.
+- A save belongs to the edit it was asked for, in the automation editor and
+  in Project defaults: a save still waiting when you open another rule or
+  preset, reopen the same one, delete it or cancel never saves or closes
+  what you opened since.
+- Settings: a rule save that was given up or refused is not carried into a
+  later save of another setting, and a failed save of another setting does
+  not undo a rule save that landed.
+- The automation editor's tick boxes keep their size next to long labels.
+
 ## 0.7.24 — 2026-10-06 (Nightly)
 
 - Terminal links: Command-click runs a link's default action without opening
