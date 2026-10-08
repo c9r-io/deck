@@ -793,6 +793,9 @@ enum Input {
     Primitive,
     /// Restored transcript bytes written to the pane as OUTPUT.
     Display,
+    /// A `#[cfg(test)]` fixture: fixed test bytes into an unspawned pty that
+    /// only the test reads. Never compiled into the app.
+    Fixture,
 }
 
 const INPUT_TOKENS: &[&str] = &[
@@ -831,6 +834,8 @@ const TERMINAL_INPUT: &[(&str, &str, &str, usize, Input)] = &[
     ),
     ("pty.rs", "attach_session", "take_writer(", 1, Input::Owner),
     ("pty.rs", "pty_write", ".write_all(", 1, Input::Owner),
+    // The real-pty round trip of the pty_write generation check.
+    ("pty.rs", "attach_real", "take_writer(", 1, Input::Fixture),
     // Local physical wheel: bounded numeric coordinates become protocol
     // bytes, never external text; scroll_session applies the MCP input fence.
     (

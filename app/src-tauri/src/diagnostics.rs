@@ -35,7 +35,9 @@
 //! trace (key capture → handler → paste event → `onData` → PTY write, with
 //! missing-stage timers) was retired once its two findings landed (Enter sent
 //! separately after a bracketed paste; a fresh agent settles before the first
-//! paste): a PTY write that fails is still `pty-write-fail`. Only fixed labels
+//! paste): a PTY write that fails is still `pty-write-fail`; a keyboard input
+//! cancelled because its pane or attachment is gone is `pty-write-cancel`
+//! (`pane`, `attachment`, or `backend` when pty_write refused it). Only fixed labels
 //! and character counts enter `app.log`; clipboard text, errors and session
 //! names never do. The redundant key-capture line is retired. Each copy emits
 //! a route and one outcome (or just no-selection); drag finish failures no
@@ -893,6 +895,10 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     ("mirror-desync", DetailPolicy::Closed(&["esc", "plain"])),
     ("ondata", DetailPolicy::Closed(&["desync", "ok"])),
     ("pty-write-fail", DetailPolicy::None),
+    (
+        "pty-write-cancel",
+        DetailPolicy::Closed(&["pane", "attachment", "backend"]),
+    ),
     ("pty-rx", DetailPolicy::None),
     ("keydown", DetailPolicy::Closed(KEY_CLASSES)),
     ("composition", DetailPolicy::Closed(&["start", "end"])),

@@ -26,7 +26,14 @@
 // This module composes terminal-clipboard.js and terminal-links.js with pane
 // selection, diagnostics and context-menu callbacks; those adapters own copy
 // routing and link gestures. Pane teardown disposes their link listeners.
-// terminal-input.js gates input-only effects and preserves cleanup/write ordering.
+// terminal-input.js gates input-only effects and preserves cleanup/write ordering:
+// compositionstart appends its preparation to the pane's input tail, never
+// replaces it. A keyboard input is bound to this pane's attachment generation
+// (`pane.inputGen`: null from the start of an attach until its reply names
+// one). An input whose pane was removed or replaced, or whose generation is
+// no longer the pane's, is cancelled (`pty-write-cancel`), never re-bound;
+// pty_write refuses a named generation that is not the current attachment's.
+// Losing focus or focusing another split cancels nothing.
 // tmux mouse negotiation is enabled for applications. The outer client's
 // mouse-only mode requests are consumed with xterm's public parser so pointer
 // selection remains local; wheel ownership is decided from live pane state.
@@ -50,7 +57,7 @@ import { registerShortcutAction } from './shortcuts.js';
 import { showAttention } from './attention.js';
 import { createMcpSessionUiGate, resetMcpSessionControls } from './mcp-session-ui.js';
 import { refreshInputSource } from './input-source.js';
-import { createTerminalDataHandler } from './terminal-input.js';
+import { appendInputCleanup, createTerminalDataHandler } from './terminal-input.js';
 import { keepLocalTerminalMouse } from './terminal-mouse.js';
 
 const mcpUiGate = createMcpSessionUiGate();
@@ -450,8 +457,15 @@ export function wireTerminalInput(pane, term, host) {
     cancelSelection: diagnostic => cancelTerminalSelection(pane, 'input', diagnostic),
     scrolled: () => !!card()?.scrolled,
     goLive: () => goLive(session),
-    write: bytes => inv('pty_write', { name: session, dataB64: strToB64(bytes) })
-      .catch(() => { uev('pty-write-fail'); }),
+    bind: () => pane.inputGen ?? null,
+    stale: gen => panes.get(session) !== pane ? 'pane'
+      : gen !== null && pane.inputGen !== gen ? 'attachment' : null,
+    cancelled: reason => { uev('pty-write-cancel', reason); },
+    write: (bytes, gen) => inv('pty_write', { name: session, gen, dataB64: strToB64(bytes) })
+      .catch(e => {
+        if (String(e) === 'stale-attachment') uev('pty-write-cancel', 'backend');
+        else uev('pty-write-fail');
+      }),
   }));
   const copyKey = createTerminalCopy({
     selection: pane.selection, term,
@@ -526,7 +540,7 @@ export function wireTerminalInput(pane, term, host) {
      synchronously in the frontend, serialize backend cleanup before onData,
      and never derive committed characters from KeyboardEvent.key. */
   term.textarea.addEventListener('compositionstart', () => {
-    pane.liveQ = pane.selection?.prepareInput() || Promise.resolve();
+    appendInputCleanup(pane, pane.selection?.prepareInput());
   }, true);
 
   wireTerminalLinks(pane, {
@@ -770,7 +784,11 @@ async function attachPane(pane, { allowStart = true } = {}) {
        then confirm the same grid after attach so an earlier pre-attach resize
        rejection cannot remain the resize coordinator's last word. */
     pane.fit.fit();
+    /* a new attachment is being named: input accepted until its reply is
+       bound to no generation, and input bound to the old one stays bound */
+    pane.inputGen = null;
     const gen = await inv('attach_session', { name: card.session, cols: pane.term.cols, rows: pane.term.rows });
+    if (panes.get(card.session) === pane) pane.inputGen = gen;
     pane.invalidateSize();
     await pane.syncSize();
     /* max(): the first pty-data event can arrive BEFORE this invoke resolves;

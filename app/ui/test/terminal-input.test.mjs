@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { isTerminalAutoReply } from '../js/pure.js';
-import { createTerminalDataHandler, terminalInputDiagnostic } from '../js/terminal-input.js';
+import { appendInputCleanup, createTerminalDataHandler, terminalInputDiagnostic } from '../js/terminal-input.js';
 import { keepLocalTerminalMouse } from '../js/terminal-mouse.js';
 const { Terminal } = createRequire(import.meta.url)('../vendor/xterm.js');
+const tick = () => new Promise(resolve => setImmediate(resolve));
 const parse = (term, data) => new Promise(resolve => term.write(data, resolve));
 
 test('vendored xterm status reply passes the production input boundary exactly once', async () => {
@@ -42,6 +43,73 @@ test('real input cleanup queues replies and subsequent input in arrival order', 
   assert.deepEqual(events, [['input', 'a'], ['cancel', { category: 1, length: 1 }], ['input', 'b']]);
   release(); await pane.liveQ;
   assert.deepEqual(events.slice(3), [['write', 'a'], ['write', '\x1b[0n'], ['write', 'b']]);
+  assert.equal(pane.liveQ, null);
+});
+
+test('a new cleanup that rejects first does not let input pass the still pending tail', async () => {
+  const pane = {}, writes = [], unhandled = [];
+  const onUnhandled = error => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  let release, selected = true, scrolled = false;
+  const first = new Promise(resolve => { release = resolve; });
+  const handle = createTerminalDataHandler({ pane, blocked: () => false, onInput: () => {},
+    hasSelection: () => selected, cancelSelection: () => { selected = false; return first; },
+    scrolled: () => scrolled,
+    goLive: () => { scrolled = false; return Promise.reject(new Error('cleanup failed')); },
+    write: data => { writes.push(data); return Promise.resolve(); },
+  });
+  try {
+    handle('a'); await tick();
+    scrolled = true; handle('b'); await tick();
+    handle('c'); await tick();
+    assert.deepEqual(writes, [], 'The early rejection must not bypass the pending tail');
+    release(); await tick(); await tick();
+    assert.deepEqual(writes, ['a', 'b', 'c'], 'Each input is attempted once, in order');
+    assert.equal(pane.liveQ, null);
+    assert.deepEqual(unhandled, []);
+  } finally { process.off('unhandledRejection', onUnhandled); }
+});
+
+test('an appended cleanup keeps the tail, and a finished link never clears a newer tail', async () => {
+  const pane = {}, writes = [];
+  let releaseOld, releaseNew;
+  const handle = createTerminalDataHandler({ pane, blocked: () => false, onInput: () => {},
+    hasSelection: () => false, cancelSelection: () => assert.fail('No selection'),
+    scrolled: () => false, goLive: () => assert.fail('No scroll'),
+    write: data => { writes.push(data); },
+  });
+  appendInputCleanup(pane, new Promise(resolve => { releaseOld = resolve; }));
+  handle('a');
+  appendInputCleanup(pane, new Promise(resolve => { releaseNew = resolve; }));
+  const tail = pane.liveQ;
+  handle('b');
+  releaseNew(); await tick();
+  assert.deepEqual(writes, [], 'The new cleanup finishing first releases nothing');
+  assert.notEqual(pane.liveQ, null);
+  assert.notEqual(pane.liveQ, tail);
+  releaseOld(); await tick(); await tick();
+  assert.deepEqual(writes, ['a', 'b']);
+  assert.equal(pane.liveQ, null);
+  appendInputCleanup(pane, undefined);
+  await tick();
+  assert.equal(pane.liveQ, null, 'A cleanup with nothing to wait for leaves no tail behind');
+});
+
+test('an input keeps the identity it was accepted with and a stale one is cancelled once, never written', async () => {
+  const pane = {}, events = [];
+  let identity = 1, release, scrolled = true;
+  const handle = createTerminalDataHandler({ pane, blocked: () => false, onInput: () => {},
+    hasSelection: () => false, cancelSelection: () => assert.fail('No selection'),
+    scrolled: () => scrolled,
+    goLive: () => { scrolled = false; return new Promise(resolve => { release = resolve; }); },
+    bind: () => identity,
+    stale: bound => bound === identity ? null : 'attachment',
+    cancelled: reason => events.push(['cancel', reason]),
+    write: (data, bound) => { events.push(['write', data, bound]); },
+  });
+  handle('old'); identity = 2; handle('new');
+  release(); await tick(); await tick();
+  assert.deepEqual(events, [['cancel', 'attachment'], ['write', 'new', 2]]);
   assert.equal(pane.liveQ, null);
 });
 

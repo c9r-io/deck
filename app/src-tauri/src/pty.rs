@@ -6,6 +6,10 @@
 //! a newer attachment.
 //! Every webview write first passes the MCP control fence: MCP-owned managed
 //! panes refuse keyboard/paste bytes until the local user takes control.
+//! A keyboard write names the attachment generation its input was bound to;
+//! `pty_write` checks it under the same map lock that selects the writer and
+//! refuses a replaced attachment (`stale-attachment`), so bytes accepted for
+//! one attachment never reach its successor. Other callers pass no generation.
 //!
 //! # Contract
 //! Flow control is END-TO-END. Every event carries the attachment's
@@ -422,9 +426,14 @@ pub(crate) fn pump_gated<F: FnMut(u64, Vec<u8>) -> Result<(), DeckError>>(
 
 #[cfg(test)]
 mod tests {
-    use super::{pump_gated, AckGate, PtyEntry, PtyState, MAX_INFLIGHT_BATCHES};
-    use crate::error::DeckError;
+    use super::{
+        bound_entry, pty_write, pump_gated, AckGate, PtyEntry, PtyState, B64, MAX_INFLIGHT_BATCHES,
+        STALE_ATTACHMENT,
+    };
+    use crate::error::{DeckError, ErrorKind};
     use crate::sync::LockRecover;
+    use base64::Engine;
+    use portable_pty::MasterPty;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc::sync_channel;
     use std::sync::Arc;
@@ -779,6 +788,201 @@ mod tests {
         (sink, killed, gate, pair.slave)
     }
 
+    /// The slave side of a real kernel pty, read by this test: it records
+    /// the bytes it receives and executes nothing.
+    fn slave_reader(master: &(dyn MasterPty + Send)) -> std::fs::File {
+        let fd = master.as_raw_fd().expect("master fd");
+        // SAFETY: `fd` is this test's open pty master; ptsname returns a
+        // NUL-terminated name in static storage, copied before any other call.
+        let path = unsafe {
+            let name = libc::ptsname(fd);
+            assert!(!name.is_null(), "slave tty name");
+            std::ffi::CStr::from_ptr(name)
+                .to_string_lossy()
+                .into_owned()
+        };
+        std::fs::File::open(path).expect("open slave tty")
+    }
+
+    fn read_line(reader: &mut std::io::BufReader<std::fs::File>) -> String {
+        use std::io::BufRead;
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("slave read");
+        line
+    }
+
+    /// One real attachment-shaped entry: the production writer of a real pty
+    /// master, under `generation`, with nothing spawned on the slave.
+    fn attach_real(
+        state: &PtyState,
+        name: &str,
+        generation: u64,
+    ) -> (
+        std::io::BufReader<std::fs::File>,
+        Box<dyn portable_pty::SlavePty + Send>,
+    ) {
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("pty pair");
+        let reader = std::io::BufReader::new(slave_reader(&*pair.master));
+        let writer = pair.master.take_writer().expect("pty writer");
+        let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        state.map.lock_or_recover().insert(
+            name.into(),
+            PtyEntry {
+                writer,
+                master: pair.master,
+                child: Box::new(RecordingChild(killed)),
+                generation,
+                gate: AckGate::new(name.into()),
+            },
+        );
+        (reader, pair.slave)
+    }
+
+    /// The `pty_write` command over real kernel ptys: fixed test bytes reach
+    /// the slave of the attachment they were bound to, in call order; bytes
+    /// bound to a replaced generation are refused and reach neither the
+    /// replacement nor another session. The receiver is this test reading
+    /// the slave tty (canonical mode, so one line per read); no tmux, shell
+    /// or other program is involved.
+    #[test]
+    fn pty_write_reaches_only_the_bound_attachment_in_call_order() {
+        use tauri::Manager;
+        let app = tauri::test::mock_app();
+        app.manage(PtyState::default());
+        let state = || app.state::<PtyState>();
+        let write = |name: &str, gen: Option<u64>, text: &str| {
+            pty_write(state(), name.into(), gen, B64.encode(text))
+        };
+        let (mut a, _slave_a) = attach_real(&state(), "deck-pty-real-a", 7);
+        let (mut b, _slave_b) = attach_real(&state(), "deck-pty-real-b", 8);
+
+        for (gen, text) in [
+            (Some(7), "a-1 \u{4e2d}\u{6587}\n"),
+            (Some(7), "a-2\n"),
+            (None, "a-3\n"),
+        ] {
+            write("deck-pty-real-a", gen, text).expect("current attachment");
+        }
+        write("deck-pty-real-b", Some(8), "b-1\n").expect("current attachment");
+        assert_eq!(read_line(&mut a), "a-1 \u{4e2d}\u{6587}\n");
+        assert_eq!(read_line(&mut a), "a-2\n");
+        assert_eq!(read_line(&mut a), "a-3\n");
+        assert_eq!(read_line(&mut b), "b-1\n");
+
+        // The attachment is replaced after the webview bound its input to
+        // generation 7 and sent the call: the old identity is refused.
+        state().detach("deck-pty-real-a");
+        let (mut replacement, _slave_c) = attach_real(&state(), "deck-pty-real-a", 9);
+        let refused = write("deck-pty-real-a", Some(7), "stale\n").unwrap_err();
+        assert_eq!(refused.message(), STALE_ATTACHMENT);
+        assert_eq!(refused.kind(), ErrorKind::ContextChanged);
+        write("deck-pty-real-a", Some(9), "fresh\n").expect("replacement");
+        assert_eq!(
+            read_line(&mut replacement),
+            "fresh\n",
+            "the replacement received only what was bound to it"
+        );
+        write("deck-pty-real-b", Some(8), "b-2\n").expect("untouched session");
+        assert_eq!(read_line(&mut b), "b-2\n");
+
+        state().detach("deck-pty-real-a");
+        assert_eq!(
+            write("deck-pty-real-a", Some(9), "gone\n")
+                .unwrap_err()
+                .message(),
+            "not attached"
+        );
+    }
+
+    /// The webview's own call shape over the IPC layer: `gen` as a number,
+    /// as null (input accepted before the attach reply) and left out (every
+    /// caller other than keyboard input) all reach `pty_write`, and a stale
+    /// number comes back as the message layout.js matches.
+    #[test]
+    fn pty_write_accepts_the_webview_argument_shapes_over_ipc() {
+        use tauri::ipc::{CallbackFn, InvokeBody};
+        use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
+        use tauri::webview::InvokeRequest;
+        use tauri::Manager;
+
+        let app = mock_builder()
+            .manage(PtyState::default())
+            .invoke_handler(tauri::generate_handler![super::pty_write])
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview");
+        let (mut slave, _keep) = attach_real(&app.state::<PtyState>(), "deck-pty-ipc", 11);
+        let call = |body: serde_json::Value| {
+            get_ipc_response(
+                &webview,
+                InvokeRequest {
+                    cmd: "pty_write".into(),
+                    callback: CallbackFn(0),
+                    error: CallbackFn(1),
+                    url: "tauri://localhost".parse().expect("url"),
+                    body: InvokeBody::Json(body),
+                    headers: Default::default(),
+                    invoke_key: INVOKE_KEY.to_string(),
+                },
+            )
+        };
+        let data = |text: &str| B64.encode(text);
+        for (body, line) in [
+            (
+                serde_json::json!({"name": "deck-pty-ipc", "gen": 11, "dataB64": data("bound\n")}),
+                "bound\n",
+            ),
+            (
+                serde_json::json!({"name": "deck-pty-ipc", "gen": null, "dataB64": data("unbound\n")}),
+                "unbound\n",
+            ),
+            (
+                serde_json::json!({"name": "deck-pty-ipc", "dataB64": data("other caller\n")}),
+                "other caller\n",
+            ),
+        ] {
+            call(body).expect("accepted");
+            assert_eq!(read_line(&mut slave), line);
+        }
+        let refused = call(
+            serde_json::json!({"name": "deck-pty-ipc", "gen": 10, "dataB64": data("stale\n")}),
+        )
+        .expect_err("a replaced generation");
+        assert_eq!(refused, serde_json::json!(STALE_ATTACHMENT));
+    }
+
+    /// The generation is compared on the entry the write is about to use.
+    #[test]
+    fn bound_entry_refuses_a_replaced_generation() {
+        let state = PtyState::default();
+        let (_sink, _killed, _gate, _slave) = attach(&state, "deck-pty-unit-bound", 3);
+        let mut map = state.map.lock_or_recover();
+        assert!(bound_entry(&mut map, "deck-pty-unit-bound", Some(3)).is_ok());
+        assert!(bound_entry(&mut map, "deck-pty-unit-bound", None).is_ok());
+        for stale in [2, 4] {
+            let refused = bound_entry(&mut map, "deck-pty-unit-bound", Some(stale))
+                .err()
+                .expect("a generation that is not the entry's");
+            assert_eq!(refused.message(), STALE_ATTACHMENT);
+        }
+        assert_eq!(
+            bound_entry(&mut map, "deck-pty-unit-none", Some(3))
+                .err()
+                .expect("no entry")
+                .message(),
+            "not attached"
+        );
+    }
+
     /// Resize, ACK and detach each reach exactly the named attachment
     /// under its own generation; detaching kills only that pane client and
     /// releases its gate, and the restart path drains every attachment.
@@ -844,6 +1048,7 @@ mod tests {
 pub(crate) fn pty_write(
     state: State<'_, PtyState>,
     name: String,
+    gen: Option<u64>,
     data_b64: String,
 ) -> Result<(), DeckError> {
     crate::mcp::guard_terminal_input(&name)?;
@@ -852,9 +1057,7 @@ pub(crate) fn pty_write(
         .decode(data_b64)
         .map_err(|e| DeckError::classified(e.to_string()))?;
     let mut map = state.map.lock_or_recover();
-    let entry = map
-        .get_mut(&name)
-        .ok_or(DeckError::new(ErrorKind::Other, "not attached"))?;
+    let entry = bound_entry(&mut map, &name, gen)?;
     entry
         .writer
         .write_all(&bytes)
@@ -864,6 +1067,32 @@ pub(crate) fn pty_write(
         .flush()
         .map_err(|e| DeckError::classified(e.to_string()))
 }
+
+/// The attachment a write is for, chosen under the map lock the write itself
+/// holds. `gen` is the generation the webview bound the input to when it
+/// accepted it; a different current generation means that attachment was
+/// replaced, and the bytes are refused instead of reaching its successor.
+/// `None` (input accepted before an attach named its generation, and every
+/// caller other than keyboard input) keeps the name-only lookup.
+fn bound_entry<'a>(
+    map: &'a mut HashMap<String, PtyEntry>,
+    name: &str,
+    gen: Option<u64>,
+) -> Result<&'a mut PtyEntry, DeckError> {
+    let entry = map
+        .get_mut(name)
+        .ok_or(DeckError::new(ErrorKind::Other, "not attached"))?;
+    match gen {
+        Some(bound) if bound != entry.generation => {
+            Err(DeckError::new(ErrorKind::ContextChanged, STALE_ATTACHMENT))
+        }
+        _ => Ok(entry),
+    }
+}
+
+/// Wire message of a write refused for a replaced attachment (layout.js
+/// logs it as `pty-write-cancel backend`).
+pub(crate) const STALE_ATTACHMENT: &str = "stale-attachment";
 
 #[tauri::command]
 pub(crate) fn pty_resize(
