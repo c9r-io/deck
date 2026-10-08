@@ -347,7 +347,7 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   Mirrored frontend/backend constants (limits, closed vocabularies, id
   and badge spellings) are one list, `ui/test/fixtures/limits.json`,
   checked by `ui/test/limits.test.mjs` and `src/limits_mirror.rs`.
-  Backend gates: `cargo fmt`, `cargo clippy --workspace -D warnings`,
+  Backend gates: `cargo fmt`, `cargo clippy --workspace --all-targets --all-features -D warnings` (the CI form: test code is linted too),
   `cargo test --workspace` (unit + `tests/tmux_contract.rs` against the
   bundled tmux + `tests/log_privacy.rs` + `tests/edr_quiet.rs` +
   `tests/external_admission.rs` (every path that puts non-owner text into

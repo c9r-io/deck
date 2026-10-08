@@ -688,7 +688,7 @@ impl QueueProbe {
             channel_first_send::admit(&args, crate::datadir::now_epoch())?;
         let uncertain = channel_first_send::rollback_uncertain(&args, None)?;
         let expected = crate::context::expected_from_command(&args.cmd);
-        let mut queue = self.0.lock().unwrap();
+        let mut queue = self.0.lock_or_recover();
         ops::add_item_bound(
             &mut queue,
             args,
@@ -709,7 +709,7 @@ impl QueueProbe {
     }
 
     pub(crate) fn rows(&self) -> Vec<ProbeRow> {
-        let queue = self.0.lock().unwrap();
+        let queue = self.0.lock_or_recover();
         queue
             .items
             .iter()
@@ -732,7 +732,7 @@ impl QueueProbe {
         let text = normalize_prompt(&args.text);
         let fingerprint = operation_fingerprint(&args, &text);
         let expected = crate::context::expected_from_command(&args.cmd);
-        let mut queue = self.0.lock().unwrap();
+        let mut queue = self.0.lock_or_recover();
         ops::add_item_bound(
             &mut queue,
             args,
@@ -747,7 +747,7 @@ impl QueueProbe {
 
     /// The row left the queue (it was sent); its operation record stays.
     pub(crate) fn sent(&self, operation: &str) {
-        let mut queue = self.0.lock().unwrap();
+        let mut queue = self.0.lock_or_recover();
         queue
             .items
             .retain(|item| item.operation_id.as_deref() != Some(operation));

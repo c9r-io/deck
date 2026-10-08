@@ -1126,7 +1126,7 @@ impl SlackFixture {
                         .get_mut()
                         .set_read_timeout(Some(Duration::from_millis(50)));
                     let hello = {
-                        let mut state = shared.lock().unwrap();
+                        let mut state = shared.lock_or_recover();
                         state.sockets += 1;
                         if state.hello_app {
                             json!({"type":"hello","connection_info":{"app_id":"A1"}})
@@ -1141,7 +1141,7 @@ impl SlackFixture {
                         return;
                     }
                     loop {
-                        let next = shared.lock().unwrap().outbox.pop();
+                        let next = shared.lock_or_recover().outbox.pop();
                         if let Some(text) = next {
                             if ws.send(tungstenite::Message::Text(text.into())).is_err() {
                                 return;
@@ -1149,7 +1149,7 @@ impl SlackFixture {
                         }
                         match ws.read() {
                             Ok(tungstenite::Message::Text(text)) => {
-                                shared.lock().unwrap().acks.push(text.to_string())
+                                shared.lock_or_recover().acks.push(text.to_string())
                             }
                             Ok(tungstenite::Message::Close(_)) => return,
                             Ok(_) => {}
@@ -1172,10 +1172,7 @@ impl SlackFixture {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                 let mut raw = Vec::new();
                 let mut chunk = [0u8; 4096];
-                loop {
-                    let Ok(n) = stream.read(&mut chunk) else {
-                        break;
-                    };
+                while let Ok(n) = stream.read(&mut chunk) {
                     if n == 0 {
                         break;
                     }
@@ -1195,7 +1192,7 @@ impl SlackFixture {
                 }
                 let request = String::from_utf8_lossy(&raw).into_owned();
                 let (status, body) = {
-                    let mut state = shared.lock().unwrap();
+                    let mut state = shared.lock_or_recover();
                     match state.team {
                         None => (500, json!({"ok":false})),
                         Some(team) if request.starts_with("POST /auth.test") => {
@@ -1221,17 +1218,17 @@ impl SlackFixture {
                 );
             }
         });
-        *crate::slack_api::TEST_API.lock().unwrap() = Some(base);
+        *crate::slack_api::TEST_API.lock_or_recover() = Some(base);
         crate::slack_transport::LOOPBACK_SOCKET.store(true, std::sync::atomic::Ordering::SeqCst);
         Self { state }
     }
 
     fn set(&self, change: impl FnOnce(&mut FixtureState)) {
-        change(&mut self.state.lock().unwrap());
+        change(&mut self.state.lock_or_recover());
     }
 
     fn read<T>(&self, read: impl FnOnce(&FixtureState) -> T) -> T {
-        read(&self.state.lock().unwrap())
+        read(&self.state.lock_or_recover())
     }
 }
 
