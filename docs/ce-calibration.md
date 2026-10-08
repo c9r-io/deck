@@ -31,6 +31,10 @@ the header of the file that owns it.
   contract without turning Deck into an environment/container platform.
   The threat model, the r2 contract and the SB-1..SB-7 gates are kept as
   the ruler for that re-evaluation.
+- **Separate research memo (not approved to start):** an optional Linux
+  isolation direction (Apple container) is recorded in
+  `docs/apple-container-evaluation.md`. It is deferred, meets none of the
+  re-entry conditions above and does not reopen Protected.
 
 | Piece | File | Owns |
 |---|---|---|
