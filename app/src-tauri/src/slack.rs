@@ -183,4 +183,138 @@ mod tests {
             "shape is refused before any network or Keychain call"
         );
     }
+
+    /// Real-service certification, off by default. It runs only when
+    /// `DECK_SLACK_CERT_DIR` names a private directory holding `bot-token`,
+    /// `app-token`, `user-token`, `channel` (a channel id the bot is in),
+    /// `sender` (the user id that will post) and `marker` (digits); an
+    /// operator or driver posts `DECKEXT-<marker>` to that channel once the
+    /// test has written `connected` there. Run it alone: it writes this test
+    /// process's settings.json and never ends the socket loop it starts.
+    /// Nothing here prints a credential or a message body.
+    #[test]
+    fn real_slack_certification_with_explicit_sandbox_credentials() {
+        use crate::sync::LockRecover;
+        use std::time::{Duration, Instant};
+        let Ok(dir) = std::env::var("DECK_SLACK_CERT_DIR") else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        let read = |name: &str| {
+            std::fs::read_to_string(dir.join(name))
+                .unwrap()
+                .trim()
+                .to_string()
+        };
+        let (bot, app, user) = (read("bot-token"), read("app-token"), read("user-token"));
+        let (channel, sender, marker) = (read("channel"), read("sender"), read("marker"));
+        let until = |seconds: u64, done: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(seconds);
+            while Instant::now() < deadline {
+                if done() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            done()
+        };
+        // no other test may point the Web API at a fixture meanwhile
+        let _api = slack_api::TEST_API_LOCK.lock_or_recover();
+        let slack = crate::extensions::service("slack").expect("the registered integration");
+
+        // 1. credential adaptation against the real service
+        let mut forged = bot.clone();
+        let last = if forged.ends_with('a') { 'b' } else { 'a' };
+        forged.pop();
+        forged.push(last);
+        assert_eq!(
+            (slack.store_secret)(Slot::SlackBotToken, &forged)
+                .unwrap_err()
+                .message(),
+            "auth",
+            "a well-shaped token Slack does not know is refused"
+        );
+        assert!(!keychain::has(Slot::SlackBotToken), "and never stored");
+        (slack.store_secret)(Slot::SlackBotToken, &bot).unwrap();
+        (slack.store_secret)(Slot::SlackUserToken, &user).unwrap();
+        (slack.store_secret)(Slot::SlackAppToken, &app).unwrap();
+        for slot in slack.settable {
+            assert!(keychain::has(*slot));
+        }
+        assert!(!(slack.live)(), "storing credentials connects nothing");
+        eprintln!("slack-cert credentials-verified");
+
+        // 2. one saved channel rule; no badge rule
+        let settings = serde_json::json!({"inbound":{
+            "channelConnection":{"enabled":true,"connectionId":"default"},
+            "channelRules":[{"id":"cert","enabled":true,"connectionId":"default",
+                "channelIds":[channel],"senderUserIds":[sender],"senderBotIds":[],
+                "match":{"kind":"regex","value":"DECKEXT-(?<run>[0-9]+)","groupCapture":"run"},
+                "includeThreads":false,"projectId":"P1","columnId":"C1","dir":"~",
+                "cmd":"claude","template":"cert","idleMinutes":0}]}});
+        crate::storage::save_typed::<crate::documents::SettingsDoc>(
+            &crate::documents::settings_path(),
+            &settings.to_string(),
+        )
+        .unwrap();
+
+        // 3. the production socket loop, with the durable stage as the
+        // channel consumer (the half of `handle_message` that needs no window)
+        let consumers = slack_transport::Consumers {
+            channel: Box::new(|identity, text| {
+                inbound_channel::stage_message(identity, text).map(|_| ())
+            }),
+            reaction: Box::new(|_, _, _| {}),
+        };
+        std::thread::spawn(move || slack_transport::socket_loop(consumers));
+        (slack.wake)();
+        assert!(
+            until(90, &|| (slack.live)()
+                && inbound_channel::current_identity().is_some()),
+            "the transport connects and publishes the channel identity"
+        );
+        let identity = inbound_channel::current_identity().unwrap();
+        assert!(identity.team_id.starts_with('T') && identity.app_id.starts_with('A'));
+        eprintln!("slack-cert connected");
+        std::fs::write(dir.join("connected"), "1").unwrap();
+
+        // 4. a real message is staged durably, once
+        let staged = || {
+            inbound_channel::channel_pending()
+                .unwrap()
+                .into_iter()
+                .filter(|event| event.body.contains(&format!("DECKEXT-{marker}")))
+                .collect::<Vec<_>>()
+        };
+        assert!(until(180, &|| !staged().is_empty()), "the message arrives");
+        std::thread::sleep(Duration::from_secs(8));
+        let events = staged();
+        assert_eq!(
+            events.len(),
+            1,
+            "ACKed after staging: no redelivery, no duplicate"
+        );
+        let event = &events[0];
+        assert_eq!(event.rule_id, "cert");
+        assert_eq!(event.channel_id, channel);
+        assert_eq!(event.workspace_id, identity.team_id);
+        assert_eq!(event.sender_user_id.as_deref(), Some(sender.as_str()));
+        assert!(event.first_send_grant.is_none(), "staging grants nothing");
+        assert!(crate::datadir::deck_dir()
+            .join("channel-inbox.json")
+            .is_file());
+        eprintln!("slack-cert staged-once");
+
+        // 5. clearing the app credential stops collection and keeps what
+        // was already durably received
+        (slack.store_secret)(Slot::SlackAppToken, "").unwrap();
+        (slack.wake)();
+        assert!(until(60, &|| !(slack.live)()), "the connection ends");
+        assert!(inbound_channel::current_identity().is_none());
+        assert_eq!(staged().len(), 1, "pending work survives the disconnect");
+        eprintln!("slack-cert disconnected-pending-kept");
+        for slot in slack.settable {
+            keychain::clear(*slot).unwrap();
+        }
+    }
 }
