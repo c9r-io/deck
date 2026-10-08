@@ -13,12 +13,15 @@
 // it still is the tail.
 //
 // Target contract. An input is bound, when it is accepted, to the identity
-// `bind()` returns (layout.js: this pane's attachment generation, or null
-// while an attach has not named one yet). Just before its write, `stale()`
-// decides from that same identity; a stale input is cancelled with one closed
-// reason through `cancelled` and is never moved to another pane or attachment,
-// re-bound or replayed. Each input is ATTEMPTED at most once: a failed write
-// is not retried, and an attempt is not a claim that the bytes were delivered.
+// `bind(reply)` returns (layout.js: an attachment generation, or the pane's
+// own attach request while its reply has not named one yet). An identity that
+// is still being named carries `wait`; that wait joins the tail like a
+// cleanup, so the input and everything after it keep their order. Just before
+// its write, `stale()` decides from that same identity; a stale input is
+// cancelled with one closed reason through `cancelled` and is never moved to
+// another pane or attachment, re-bound or replayed. Each input is ATTEMPTED
+// at most once: a failed write is not retried, and an attempt is not a claim
+// that the bytes were delivered.
 import { isTerminalAutoReply } from './pure.js';
 
 // Content-free onData shape, never a claim about keyboard/paste provenance.
@@ -57,7 +60,8 @@ export function createTerminalDataHandler(deps) {
     if (!reply) onInput(data);
     if (!reply && hasSelection()) appendInputCleanup(pane, cancelSelection(terminalInputDiagnostic(data)));
     if (!reply && scrolled()) appendInputCleanup(pane, goLive());
-    const bound = bind();
+    const bound = bind(reply);
+    if (bound?.wait) appendInputCleanup(pane, bound.wait);
     if (pane.liveQ) {
       const attempt = () => send(data, bound);
       const q = pane.liveQ.then(attempt, attempt).then(settled, settled);

@@ -43,7 +43,8 @@ globalThis.CustomEvent = globalThis.CustomEvent || class { constructor(type, ini
 let trace, gates, anchorCell, activeCell, attachGen = 100;
 const rejections = []; process.on('unhandledRejection', e => rejections.push(String(e)));
 const b64 = s => Buffer.from(s, 'base64').toString('utf8');
-win.__TAURI__ = { event: { listen: async () => () => {} }, core: { invoke: (name, args) => {
+const listeners = {};
+win.__TAURI__ = { event: { listen: async (ev, cb) => { listeners[ev] = cb; return () => {}; } }, core: { invoke: (name, args) => {
   if (name === 'ui_event') { if (args.code === 'pty-write-cancel') trace.push({ layer: 'cancel', reason: args.detail }); if (args.code === 'pty-write-fail') trace.push({ layer: 'write-fail' }); return Promise.resolve(); }
   if (name === 'pty_write') {            // layer 2: order of production write calls
     const text = b64(args.dataB64);
@@ -71,6 +72,11 @@ const { wireTerminalSelection } = await import('../js/selection.js');
 const { panes } = await import('../js/board.js');
 const { store } = await import('../js/state.js');
 const tick = () => new Promise(r => setImmediate(r));
+// initLayout registers the production pty-data listener the frames below go through.
+globalThis.ResizeObserver = class { observe() {} disconnect() {} };
+layout.initLayout();
+await tick();
+assert.equal(typeof listeners['pty-data'], 'function');
 let n = 0;
 
 function fixture({ scrolled = false, session = 'ime-probe-' + (++n), keep = false } = {}) {
@@ -113,6 +119,8 @@ function fixture({ scrolled = false, session = 'ime-probe-' + (++n), keep = fals
     calls: () => trace.filter(x => x.layer === 'pty_write-invoke' && x.session === session).map(x => [x.text, x.gen]),
     cancels: () => trace.filter(x => x.layer === 'cancel').map(x => x.reason),
     attach: () => layout.ensureAttached(pane),
+    frame: (gen, text, seq = 1) => listeners['pty-data']({ payload: { name: session, gen, seq, data: Buffer.from(text).toString('base64') } }),
+    parsed: () => new Promise(resolve => engine.write('', resolve)),
     done() { store.cards.length = 0; panes.clear(); } };
 }
 
@@ -127,6 +135,7 @@ for (const [name, opts, cleanup, second, composition] of [
 ]) test(`write order equals entry order: ${name}`, async () => {
   const f = fixture(opts);
   try {
+    await f.attach();
     if (cleanup === 'terminal_selection_cancel') await f.select();
     f.hold(cleanup);
     f.key('a'); await tick();
@@ -142,6 +151,7 @@ for (const [name, opts, cleanup, second, composition] of [
 test('a composition does not pass an unfinished cleanup, and release writes everything in order', async () => {
   const f = fixture({ scrolled: true });
   try {
+    await f.attach();
     f.hold('scroll_bottom');
     for (const k of ['a', 'b', 'c']) { f.key(k); await tick(); }
     f.compositionstart(); await tick(); f.key('中文'); await tick(); f.key('d'); await tick();
@@ -155,12 +165,14 @@ test('a composition does not pass an unfinished cleanup, and release writes ever
 test('a failed cleanup reply or a failed write is attempted once and leaves the tail usable', async () => {
   let f = fixture({ scrolled: true });
   try {
+    await f.attach();
     f.hold('scroll_bottom');
     f.key('a'); await tick(); await f.release('scroll_bottom', 'reject'); f.key('b'); await tick();
     assert.deepEqual(f.writes(), ['a', 'b']);
     assert.equal(f.pane.liveQ, null);
     done();
     f = fixture({ scrolled: true });
+    await f.attach();
     f.hold('scroll_bottom'); gates.writeFail = true;
     f.key('a'); await tick(); await f.release('scroll_bottom'); gates.writeFail = false; f.key('b'); await tick();
     assert.deepEqual(f.writes(), ['a', 'b'], 'A failed write is not retried');
@@ -173,6 +185,7 @@ test('a failed cleanup reply or a failed write is attempted once and leaves the 
 test('input waiting on a removed pane is cancelled, not written', async () => {
   const f = fixture({ scrolled: true });
   try {
+    await f.attach();
     f.hold('scroll_bottom');
     f.key('旧'); await tick();
     layout.leaveSessionView({ switchingSession: true });
@@ -223,17 +236,87 @@ test('focusing another split cancels nothing on the pane that keeps its attachme
   } finally { done(); }
 });
 
-test('input and an automatic reply before the attach reply are written unbound; later input is bound', async () => {
+// Attach start. Terminal input never names "whichever attachment has this
+// session name": every call below carries one generation.
+test('first attach: early keyboard input waits for its own attach request, the reply follows it, each written once', async () => {
+  const f = fixture();
+  try {
+    f.hold('attach_session'); const attaching = f.attach(); await tick();
+    const gen = attachGen + 1;
+    f.key('x'); await tick();
+    f.frame(gen, 'hello\x1b[5n'); await f.parsed(); await tick();
+    assert.deepEqual(f.calls(), [], 'Nothing is written before the request names its attachment');
+    await f.release('attach_session'); await attaching; await tick();
+    f.key('y'); await tick();
+    assert.deepEqual(f.calls(), [['x', gen], ['\x1b[0n', gen], ['y', gen]]);
+    assert.deepEqual(f.cancels(), []);
+  } finally { done(); }
+});
+
+test('an automatic reply to the first frame is bound to that frame and does not wait for the attach reply', async () => {
+  const f = fixture();
+  try {
+    f.hold('attach_session'); const attaching = f.attach(); await tick();
+    const gen = attachGen + 1;
+    f.frame(gen, '\x1b[5n'); await f.parsed(); await tick();
+    assert.deepEqual(f.calls(), [['\x1b[0n', gen]]);
+    await f.release('attach_session'); await attaching;
+    assert.deepEqual(f.cancels(), []);
+  } finally { done(); }
+});
+
+test('early input whose pane is replaced before its attach reply never reaches the replacement', async () => {
+  const f = fixture();
+  try {
+    f.hold('attach_session'); const attaching = f.attach(); await tick();
+    f.key('旧'); await tick();
+    layout.leaveSessionView({ switchingSession: true });
+    const pending = gates.attach_session.splice(0); delete gates.attach_session;
+    const g = fixture({ session: f.session, keep: true });
+    await g.attach(); g.key('新'); await tick();
+    for (const reply of pending) reply.resolve(g.pane.inputGen - 1);
+    await attaching; await tick(); await tick();
+    assert.deepEqual(g.calls(), [['新', g.pane.inputGen]]);
+    assert.deepEqual(g.cancels(), ['pane']);
+  } finally { done(); }
+});
+
+test('early input whose attach names no attachment is cancelled once, never written', async () => {
   const f = fixture();
   try {
     f.hold('attach_session'); const attaching = f.attach(); await tick();
     f.key('x'); await tick();
-    await new Promise(resolve => f.engine.write('\x1b[5n', resolve)); await tick();
-    assert.deepEqual(f.calls(), [['x', null], ['\x1b[0n', null]]);
-    await f.release('attach_session'); await attaching;
+    await f.release('attach_session', 'reject'); await attaching; await tick();
+    assert.deepEqual(f.calls(), []);
+    assert.deepEqual(f.cancels(), ['attachment']);
     f.key('y'); await tick();
-    assert.deepEqual(f.calls(), [['x', null], ['\x1b[0n', null], ['y', f.pane.inputGen]]);
-    assert.equal(typeof f.pane.inputGen, 'number');
+    assert.deepEqual(f.calls(), [], 'A pane with no attachment has no target');
+    assert.deepEqual(f.cancels(), ['attachment', 'attachment']);
+  } finally { done(); }
+});
+
+test('a reply to a frame of the previous attachment keeps that generation on the new pane', async () => {
+  const f = fixture();
+  try {
+    await f.attach(); const old = f.pane.inputGen;
+    layout.leaveSessionView({ switchingSession: true });
+    const g = fixture({ session: f.session, keep: true });
+    g.hold('attach_session'); const attaching = g.attach(); await tick();
+    g.frame(old, '\x1b[5n', 9); await g.parsed(); await tick();
+    assert.deepEqual(g.calls(), [['\x1b[0n', old]], 'pty_write refuses it once the attachment is replaced');
+    await g.release('attach_session'); await attaching;
+    assert.notEqual(g.pane.inputGen, old);
+  } finally { done(); }
+});
+
+test('an input written before its attachment is replaced is neither recalled nor reported cancelled', async () => {
+  const f = fixture();
+  try {
+    await f.attach(); const gen = f.pane.inputGen;
+    f.key('a'); await tick();
+    layout.leaveSessionView({ switchingSession: true });
+    const g = fixture({ session: f.session, keep: true }); await g.attach(); await tick();
+    assert.deepEqual(f.calls(), [['a', gen]]);
     assert.deepEqual(f.cancels(), []);
   } finally { done(); }
 });

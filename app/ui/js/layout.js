@@ -28,12 +28,18 @@
 // routing and link gestures. Pane teardown disposes their link listeners.
 // terminal-input.js gates input-only effects and preserves cleanup/write ordering:
 // compositionstart appends its preparation to the pane's input tail, never
-// replaces it. A keyboard input is bound to this pane's attachment generation
-// (`pane.inputGen`: null from the start of an attach until its reply names
-// one). An input whose pane was removed or replaced, or whose generation is
-// no longer the pane's, is cancelled (`pty-write-cancel`), never re-bound;
-// pty_write refuses a named generation that is not the current attachment's.
-// Losing focus or focusing another split cancels nothing.
+// replaces it. Terminal input is never sent for "whichever attachment has this
+// name": it is bound when accepted and every pty_write it makes names one
+// generation. A keyboard input takes the pane's generation (`pane.inputGen`),
+// or, from the start of an attach until its reply, that attach REQUEST, whose
+// reply names the generation while the input waits on the pane's tail. An
+// automatic reply takes the generation of the pty-data frame xterm is parsing
+// (`pane.rxGens`), which exists before the attach reply, so it never waits for
+// it. An input whose pane was removed or replaced, whose request named no
+// attachment, or whose generation is no longer the pane's newest is cancelled
+// (`pty-write-cancel`), never re-bound; pty_write refuses a generation that is
+// not the current attachment's. Losing focus or focusing another split
+// cancels nothing.
 // tmux mouse negotiation is enabled for applications. The outer client's
 // mouse-only mode requests are consumed with xterm's public parser so pointer
 // selection remains local; wheel ownership is decided from live pane state.
@@ -457,11 +463,24 @@ export function wireTerminalInput(pane, term, host) {
     cancelSelection: diagnostic => cancelTerminalSelection(pane, 'input', diagnostic),
     scrolled: () => !!card()?.scrolled,
     goLive: () => goLive(session),
-    bind: () => pane.inputGen ?? null,
-    stale: gen => panes.get(session) !== pane ? 'pane'
-      : gen !== null && pane.inputGen !== gen ? 'attachment' : null,
+    bind: reply => {
+      /* a reply answers the frame being parsed; it belongs to that frame's
+         attachment, whatever the pane has attached since */
+      if (reply && pane.rxGens?.length) return { gen: pane.rxGens[0], rx: true };
+      if (pane.inputGen != null) return { gen: pane.inputGen };
+      const request = pane.attachRequest;
+      return request && !request.settled ? { request, wait: request.ready } : { gen: null };
+    },
+    stale: bound => {
+      if (panes.get(session) !== pane) return 'pane';
+      const gen = bound.request ? bound.request.gen : bound.gen;
+      if (gen == null) return 'attachment';
+      if (bound.rx) return gen < Math.max(pane.inputGen || 0, ctx.ptyGens.get(session) || 0) ? 'attachment' : null;
+      return pane.inputGen !== gen ? 'attachment' : null;
+    },
     cancelled: reason => { uev('pty-write-cancel', reason); },
-    write: (bytes, gen) => inv('pty_write', { name: session, gen, dataB64: strToB64(bytes) })
+    write: (bytes, bound) => inv('pty_write', { name: session,
+      gen: bound.request ? bound.request.gen : bound.gen, dataB64: strToB64(bytes) })
       .catch(e => {
         if (String(e) === 'stale-attachment') uev('pty-write-cancel', 'backend');
         else uev('pty-write-fail');
@@ -755,10 +774,22 @@ function paneExited(pane, gen) {
    fresh-shell cleanup — clearing history on a restored or merely-live session
    would eat real scrollback. */
 export function ensureAttached(pane, opts = {}) {
-  if (!pane.attachPromise) pane.attachPromise = attachPane(pane, opts).finally(() => { pane.attachPromise = null; });
+  if (!pane.attachPromise) {
+    /* the identity keyboard input is bound to until the reply names a
+       generation: this request, never "the session's current attachment" */
+    const request = { gen: null, settled: false };
+    request.ready = new Promise(resolve => { request.settle = resolve; });
+    pane.attachRequest = request;
+    pane.inputGen = null;
+    pane.attachPromise = attachPane(pane, opts, request).finally(() => {
+      request.settled = true;
+      request.settle();
+      pane.attachPromise = null;
+    });
+  }
   return pane.attachPromise;
 }
-async function attachPane(pane, { allowStart = true } = {}) {
+async function attachPane(pane, { allowStart = true } = {}, request) {
   const card = provider.get(pane.sid);
   const outcome = { created: false, restored: false, attached: false, commandSent: false };
   if (!card || ctx.tmuxRestarting) return outcome;
@@ -784,11 +815,9 @@ async function attachPane(pane, { allowStart = true } = {}) {
        then confirm the same grid after attach so an earlier pre-attach resize
        rejection cannot remain the resize coordinator's last word. */
     pane.fit.fit();
-    /* a new attachment is being named: input accepted until its reply is
-       bound to no generation, and input bound to the old one stays bound */
-    pane.inputGen = null;
     const gen = await inv('attach_session', { name: card.session, cols: pane.term.cols, rows: pane.term.rows });
-    if (panes.get(card.session) === pane) pane.inputGen = gen;
+    request.gen = gen;
+    if (panes.get(card.session) === pane && pane.attachRequest === request) pane.inputGen = gen;
     pane.invalidateSize();
     await pane.syncSize();
     /* max(): the first pty-data event can arrive BEFORE this invoke resolves;
@@ -1189,7 +1218,12 @@ export function initLayout() {
       ctx.rxLogged++;
       /* ACK only after xterm has actually consumed the bytes — this is what
          bounds the backend's in-flight window (see pty.rs) */
+      /* xterm parses writes in order and calls back after each: the head
+         of this list is the generation of the frame being parsed, which is
+         what an automatic reply produced by that frame is bound to */
+      (p.rxGens ||= []).push(gen);
       p.term.write(u8, () => {
+        p.rxGens.shift();
         inv('pty_ack', { name, gen, seq }).catch(() => {});
         // The first consumed frame may precede the attach reply. Both must
         // name the same generation before a turn can be marked viewed.

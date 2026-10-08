@@ -113,6 +113,27 @@ test('an input keeps the identity it was accepted with and a stale one is cancel
   assert.equal(pane.liveQ, null);
 });
 
+test('an identity that is still being named joins the tail: the input and what follows keep their order', async () => {
+  const pane = {}, events = [];
+  let named;
+  const request = { gen: null, wait: new Promise(resolve => { named = resolve; }) };
+  const handle = createTerminalDataHandler({ pane, blocked: () => false, onInput: () => {},
+    hasSelection: () => false, cancelSelection: () => assert.fail('No selection'),
+    scrolled: () => false, goLive: () => assert.fail('No scroll'),
+    bind: reply => reply ? { gen: 7 } : request.gen == null ? request : { gen: request.gen },
+    stale: bound => bound.gen == null ? 'attachment' : null,
+    cancelled: reason => events.push(['cancel', reason]),
+    write: (data, bound) => { events.push([data, bound.gen]); },
+  });
+  handle('x'); handle('\x1b[0n');
+  await tick();
+  assert.deepEqual(events, [], 'The reply queues behind the waiting input');
+  request.gen = 7; named(); await tick(); await tick();
+  handle('y');
+  assert.deepEqual(events, [['x', 7], ['\x1b[0n', 7], ['y', 7]]);
+  assert.equal(pane.liveQ, null);
+});
+
 test('input shapes are bounded and contain no input content', () => {
   for (const [data, category] of [['', 0], ['secret /private/path 中文', 1], ['\r', 2],
     ['\x1b[A', 3], ['\x1b[200~secret\x1b[201~', 4]]) {
