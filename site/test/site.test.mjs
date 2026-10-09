@@ -53,9 +53,12 @@ test('every route contains no analytics, remote assets, or executable JavaScript
   for (const route of routes) {
     const html = await readFile(path.join(dist, route), 'utf8');
     assert.doesNotMatch(html, /<script\b/i, route);
+    assert.doesNotMatch(html, /<form\b|\son[a-z]+\s*=|javascript:/i, route);
+    assert.doesNotMatch(html, /\b(?:src|poster)=["'](?:https?:)?\/\//i, route);
     assert.doesNotMatch(html, /google-analytics|googletagmanager|cloudflareinsights|plausible|posthog|segment\.com/i, route);
     assert.doesNotMatch(html, /<link[^>]+(?:font|preconnect)/i, route);
-    assert.doesNotMatch(html, /https?:\/\/[^"']+\.(?:js|css|woff2?)/i, route);
+    // Source-reference anchors may point to code; only resource tags load it.
+    assert.doesNotMatch(html, /<(?:link|script|img|source|video|audio|iframe|embed|object)\b[^>]+https?:\/\/[^"']+\.(?:js|css|woff2?)/i, route);
   }
 });
 
@@ -152,6 +155,51 @@ test('Markdown supports stable Unicode anchors, duplicate headings and rejects m
   assert.match(page.html, /id="下一步-2"/);
   assert.throws(() => renderMarkdown('No title.'), /exactly one H1/);
   assert.throws(() => renderMarkdown('# Only a title'), /introductory paragraph/);
+});
+
+test('parallel-session scenario is paired, discoverable and indexed without changing the guide version', async () => {
+  const sitemap = await readFile(path.join(dist, 'sitemap.xml'), 'utf8');
+  const redirects = await readFile(path.join(dist, '_redirects'), 'utf8');
+  for (const locale of ['', 'zh/']) {
+    const route = `/${locale}scenarios/parallel-sessions/`;
+    const other = `/${locale ? '' : 'zh/'}scenarios/parallel-sessions/`;
+    const html = await readFile(path.join(dist, locale, 'scenarios/parallel-sessions/index.html'), 'utf8');
+    const home = await readFile(path.join(dist, locale, 'index.html'), 'utf8');
+    const guide = await readFile(path.join(dist, locale, 'guide/index.html'), 'utf8');
+    assert.ok(html.includes(`<html lang="${locale ? 'zh-Hans' : 'en'}">`));
+    assert.equal([...html.matchAll(/<h1\b/g)].length, 1);
+    assert.ok(html.includes(`rel="canonical" href="${config.siteUrl}${route}"`));
+    assert.ok(html.includes(`hreflang="${locale ? 'en' : 'zh-Hans'}" href="${config.siteUrl}${other}"`));
+    assert.ok(html.includes(`class="language-link" href="${other}"`));
+    assert.ok(html.includes(`property="og:image" content="${config.siteUrl}/assets/og.png"`));
+    assert.match(html, /<meta name="description" content="[^"]+"/);
+    assert.match(html, /<th scope="col">/);
+    assert.ok(home.includes(`href="${route}"`));
+    assert.ok(guide.includes(`href="${route}"`));
+    assert.ok(sitemap.includes(`<loc>${config.siteUrl}${route}</loc>`));
+    assert.ok(redirects.includes(`${route.slice(0, -1)} ${route} 301`));
+    assert.ok(guide.includes(`deck ${config.guideVersion}`));
+  }
+});
+
+test('parallel-session scenario keeps coverage, outcome and restart limits explicit in both languages', async () => {
+  const english = await readFile(path.join(dist, 'scenarios/parallel-sessions/index.html'), 'utf8');
+  const chinese = await readFile(path.join(dist, 'zh/scenarios/parallel-sessions/index.html'), 'utf8');
+  for (const html of [english, chinese]) {
+    assert.match(html, /Codex/);
+    assert.match(html, /\/hooks/);
+    assert.match(html, /dcc3c064404e9eb4d392cb6228ae0b9f2cf14054/);
+  }
+  assert.match(english, /turn ending is not task completion or success/);
+  assert.match(english, /Quiet is not readiness/);
+  assert.match(english, /Input-request hooks do not cover every question/);
+  assert.match(english, /Unread history and missed-event replay are not guaranteed/);
+  assert.match(english, /live status never moves cards/);
+  assert.match(chinese, /本轮结束不等于任务完成或成功/);
+  assert.match(chinese, /安静不代表已准备好接收输入/);
+  assert.match(chinese, /输入请求 hook 也不能覆盖每一种提问/);
+  assert.match(chinese, /不保证保留未读历史，也不保证补回漏掉的事件/);
+  assert.match(chinese, /状态变化不会自动移动卡片/);
 });
 
 test('ChatGPT Secure Tunnel pages render both canonical repo guides with paired navigation', async () => {

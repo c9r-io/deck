@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Several terminals open: find the work that needs you — deck</title>
+  <meta name="description" content="A practical Deck workflow for parallel local terminals and Agent sessions: follow important cards, find reported input requests, read turn endings and check missing signals.">
+  <meta name="theme-color" content="#0d1117">
+  <link rel="canonical" href="{{SITE_URL}}/scenarios/parallel-sessions/">
+  <link rel="alternate" hreflang="en" href="{{SITE_URL}}/scenarios/parallel-sessions/">
+  <link rel="alternate" hreflang="zh-Hans" href="{{SITE_URL}}/zh/scenarios/parallel-sessions/">
+  <link rel="alternate" hreflang="x-default" href="{{SITE_URL}}/scenarios/parallel-sessions/">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/assets/icon-180.png">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="deck">
+  <meta property="og:title" content="Several terminals open: find the work that needs you">
+  <meta property="og:description" content="Follow important cards, act on reported input requests and read results without confusing a turn ending with task success.">
+  <meta property="og:url" content="{{SITE_URL}}/scenarios/parallel-sessions/">
+  <meta property="og:image" content="{{SITE_URL}}/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="deck wordmark beside a local session board with status signals for work across projects">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="{{SITE_URL}}/assets/og.png">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header"><nav class="shell nav" aria-label="Main navigation"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">▦</span>deck</a><div class="nav-links"><a class="guide-link" href="/guide/">Guide</a><a href="{{GITHUB_URL}}">GitHub</a><a class="language-link" href="/zh/scenarios/parallel-sessions/" lang="zh-Hans">中文</a><a class="button primary" href="{{DOWNLOAD_URL}}">Download deck</a></div></nav></header>
+<div class="shell guide-layout">
+  <aside class="guide-sidebar"><details open><summary>Practical guide</summary><nav aria-label="Related guides"><a href="/scenarios/parallel-sessions/" aria-current="page">Parallel sessions</a><a href="/guide/start/">Start a session</a><a href="/guide/attention/">Understand attention</a><a href="/guide/sessions/">Leave and return</a></nav></details></aside>
+  <main id="main" class="guide-article">
+    <p class="eyebrow">Practical guide · Local terminal work</p>
+    <h1>Several terminals open: find the work that needs you</h1>
+    <p>One Agent is reviewing a change, another is investigating a bug, and a shell is running tests. Use Deck to bring the sessions you need to revisit into one view, then open the right terminal to decide what to do.</p>
+    <p>These are example tasks, not a recording. You can follow this workflow with ordinary shells; Agent reports are optional. Each Agent or program still owns its work. Deck helps you choose where to look.</p>
+
+    <h2 id="set-up">1. Give each piece of work its own card</h2>
+    <ol>
+      <li>Select a project in Deck and create a session with <strong>＋</strong>. Run your usual command or installed Agent CLI in its terminal. <a href="/guide/start/">New to Deck? Start here.</a></li>
+      <li>Double-click the title to give the card a useful name, such as “Review change”, “Investigate bug” or “Run tests”. Repeat for your other work.</li>
+      <li>Return to the Board with the back button. The programs keep running. Place cards in the groups that help you find them later; live status never moves cards between groups.</li>
+    </ol>
+    <p>Separate cards make each session easier to identify. Agent status reflects the active pane of a session's current tmux window; it is not a census of every Agent in manually created tmux splits.</p>
+
+    <h2 id="follow">2. Keep important work in view</h2>
+    <p>Click <strong>☆</strong> on a card to <strong>Follow card</strong>. Open <strong>Needs attention</strong> in the sidebar, then use <strong>Followed</strong> to find these cards across projects. This works for the test shell too, without an Agent integration.</p>
+    <p>A star records your intention to return. It does not say the program is waiting, finished or successful. It stays until you unfollow the card, including after viewing its terminal or restarting Deck. Unfollow when you no longer need that manual follow-up; another attention reason can still keep the card in the list.</p>
+
+    <h2 id="reports">3. Add Agent reports when supported</h2>
+    <p>In <strong>Settings</strong>, find the <strong>Claude Code</strong> or <strong>Codex</strong> status integration for the CLI you actually use. Both are off by default. Read the confirmation before enabling: Deck adds hooks to that CLI's configuration. Existing non-Deck hooks are preserved.</p>
+    <p>Use the matching CLI in a Deck session, then check whether it reports a state. Merely enabling an integration is not proof that reports are arriving. CLI event support and configuration affect coverage; other CLIs do not automatically gain explicit input-request or turn-ending reports.</p>
+    <blockquote><p><strong>For Codex:</strong> installed hooks may still need review and trust in Codex <code>/hooks</code>. With a shared background service, Deck may be unable to attribute events reliably to the right terminal. Treat missing reports as a coverage gap. Input-request hooks do not cover every question or MCP elicitation.</p></blockquote>
+
+    <h2 id="choose">4. Choose what to open next</h2>
+    <p>In <strong>Needs attention</strong>, read each row's project and group before opening it. Labels can vary with your installed version; focus on the reported fact.</p>
+    <div class="table-scroll" tabindex="0" role="region" aria-label="Attention signals and next actions"><table>
+      <thead><tr><th scope="col">What you see</th><th scope="col">What to do</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Input requested</strong> (or <strong>Needs input</strong>)</td><td>Open the terminal and read the actual question or permission choice. The report says input was requested; check what the Agent needs now before responding.</td></tr>
+        <tr><td><strong>Turn ended, unread</strong></td><td>Read the result and verify the outcome that matters to you. A turn ending is not task completion or success; the Agent or background work may continue.</td></tr>
+        <tr><td><strong>Followed</strong></td><td>Revisit work you chose to keep visible, including ordinary shells. Inspect the terminal for its current situation.</td></tr>
+        <tr><td><strong>No valid state</strong>, quiet or recent output</td><td>Open the terminal when you need to know. Without a valid Agent report, recent output is activity and quiet is only a lack of output. Quiet is not readiness.</td></tr>
+      </tbody>
+    </table></div>
+    <p>A turn ending becomes read only when the terminal attaches and displays successfully. Opening a card does not answer an input request or prove it was handled. If you separately use a prompt list with human inspection, reading the terminal does not release that checkpoint. <a href="/guide/prompts/#inspect-before-continuing">Inspect before continuing.</a></p>
+
+    <h2 id="gaps">5. Check gaps before relying on an empty list</h2>
+    <ul>
+      <li><strong>No entries:</strong> check <strong>No valid state</strong> and your followed cards. An empty attention list does not prove there is nothing to handle.</li>
+      <li><strong>No Agent reports:</strong> confirm the matching integration and CLI configuration, and inspect the terminal directly. Keep an important card followed while coverage is missing.</li>
+      <li><strong>Old snapshot or failed refresh:</strong> retry the refresh. The last observation may be useful context, but it is not current status.</li>
+      <li><strong>Stopped or stale session:</strong> locate the original card and inspect what is available. Locating it does not prove the process resumed or the task finished.</li>
+    </ul>
+    <p>After handling a session, return to Needs attention; its filter and scroll position are restored. Read markers last only for the current app run. Unread history and missed-event replay are not guaranteed across Deck restarts. The saved follow-up star is separate from that temporary read state.</p>
+    <p>Use the back button to leave a terminal view. <strong>Closing a card ends its session</strong>; do not close one just to clear an unread result. Machine restarts and service restarts can end session processes. <a href="/guide/sessions/">Read the session lifecycle guide before leaving long-running work.</a></p>
+
+    <p class="guide-source">Technical references: <a href="{{GITHUB_URL}}/blob/dcc3c064404e9eb4d392cb6228ae0b9f2cf14054/CLAUDE.md">product boundaries</a> · <a href="{{GITHUB_URL}}/blob/dcc3c064404e9eb4d392cb6228ae0b9f2cf14054/app/ui/js/attention-model.js">attention and read state</a> · <a href="{{FEEDBACK_URL}}">Report an issue</a></p>
+  </main>
+  <aside class="guide-toc"><nav aria-label="On this page"><p>On this page</p><a href="#set-up">Name each session</a><a href="#follow">Follow important cards</a><a href="#reports">Add Agent reports</a><a href="#choose">Choose where to look</a><a href="#gaps">Check missing signals</a></nav></aside>
+</div>
+<footer class="site-footer"><div class="shell footer"><a class="brand" href="/">▦ deck</a><span>Attention across local terminal work.</span><div class="footer-links"><a href="/guide/">Guide</a><a href="/privacy/">Privacy</a><a href="{{GITHUB_URL}}">GitHub</a></div></div></footer>
+</body>
+</html>

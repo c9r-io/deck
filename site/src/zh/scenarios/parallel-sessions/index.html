@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>同时开着几个终端，怎样找到需要你处理的会话 — deck</title>
+  <meta name="description" content="用 Deck 管理并行本地终端和 Agent 会话的实用步骤：关注重要卡片、查找输入请求、阅读本轮结果，并在缺少状态信号时检查原终端。">
+  <meta name="theme-color" content="#0d1117">
+  <link rel="canonical" href="{{SITE_URL}}/zh/scenarios/parallel-sessions/">
+  <link rel="alternate" hreflang="en" href="{{SITE_URL}}/scenarios/parallel-sessions/">
+  <link rel="alternate" hreflang="zh-Hans" href="{{SITE_URL}}/zh/scenarios/parallel-sessions/">
+  <link rel="alternate" hreflang="x-default" href="{{SITE_URL}}/scenarios/parallel-sessions/">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/assets/icon-180.png">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="deck">
+  <meta property="og:title" content="同时开着几个终端，怎样找到需要你处理的会话">
+  <meta property="og:description" content="关注重要卡片，处理已报告的输入请求，再阅读实际结果。本轮结束不等于任务成功。">
+  <meta property="og:url" content="{{SITE_URL}}/zh/scenarios/parallel-sessions/">
+  <meta property="og:image" content="{{SITE_URL}}/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="deck 字标与本地会话看板，展示跨项目工作的状态信号">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="{{SITE_URL}}/assets/og.png">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+<a class="skip-link" href="#main">跳到正文</a>
+<header class="site-header"><nav class="shell nav" aria-label="主导航"><a class="brand" href="/zh/"><span class="brand-mark" aria-hidden="true">▦</span>deck</a><div class="nav-links"><a class="guide-link" href="/zh/guide/">使用指南</a><a href="{{GITHUB_URL}}">GitHub</a><a class="language-link" href="/scenarios/parallel-sessions/" lang="en">EN</a><a class="button primary" href="{{DOWNLOAD_URL}}">下载 deck</a></div></nav></header>
+<div class="shell guide-layout">
+  <aside class="guide-sidebar"><details open><summary>场景指南</summary><nav aria-label="相关指南"><a href="/zh/scenarios/parallel-sessions/" aria-current="page">多个会话同时运行</a><a href="/zh/guide/start/">打开一个会话</a><a href="/zh/guide/attention/">了解待关注</a><a href="/zh/guide/sessions/">离开与返回</a></nav></details></aside>
+  <main id="main" class="guide-article">
+    <p class="eyebrow">场景指南 · 本地终端工作</p>
+    <h1>同时开着几个终端，怎样找到需要你处理的会话</h1>
+    <p>一个 Agent 在审查改动，另一个在排查问题，旁边的 shell 还在跑测试。你可以用 Deck 把需要回头看的会话放到一处，再打开对应终端，判断接下来该做什么。</p>
+    <p>这里使用的是示例任务，并非实际操作录像。普通 shell 也能按这些步骤整理；Agent 状态报告是可选项。每个 Agent 或程序仍负责自己的工作，Deck 帮你找到现在值得查看的会话。</p>
+
+    <h2 id="set-up">1. 给每项工作一张容易辨认的卡片</h2>
+    <ol>
+      <li>在 Deck 中选好项目，用 <strong>＋</strong> 创建会话，在终端里运行平时的命令或已经安装的 Agent CLI。<a href="/zh/guide/start/">第一次使用可先看入门步骤。</a></li>
+      <li>双击标题，把卡片改成便于辨认的名字，例如「审查改动」「排查问题」「运行测试」。其他工作各自新建会话。</li>
+      <li>用返回按钮回到看板，程序会继续运行。按自己的习惯把卡片放进栏目，状态变化不会自动移动卡片。</li>
+    </ol>
+    <p>分成独立卡片后，每个会话更容易找到。Agent 状态对应的是该 session 当前 tmux 窗口的活动窗格，并不会汇总你手动拆分的所有 tmux 窗格里的 Agent。</p>
+
+    <h2 id="follow">2. 把重要卡片留在待关注中</h2>
+    <p>点击卡片上的 <strong>☆</strong>，即可<strong>持续关注</strong>。打开侧边栏的<strong>「待关注」</strong>，再选<strong>「人工关注」</strong>，就能跨项目找到这些卡片。跑测试的普通 shell 也可以这样关注，无需启用 Agent 集成。</p>
+    <p>星标记录的是「我还要回来看」，不表示程序正在等你、已经结束或运行成功。查看终端或重启 Deck 都不会清除这个标记，直到你主动取消关注。不需要继续跟进时再取消；如果卡片还有其他待关注原因，它仍可能留在列表中。</p>
+
+    <h2 id="reports">3. 按需接入 Agent 的状态报告</h2>
+    <p>打开<strong>设置</strong>，找到你实际使用的 <strong>Claude Code</strong> 或 <strong>Codex</strong> 状态集成。两个开关默认关闭。启用前阅读确认说明：Deck 会在对应 CLI 的配置中添加 hook，原有的其他 hook 会保留。</p>
+    <p>接着在 Deck 会话里使用对应 CLI，观察是否收到状态。开关已开启不代表报告一定已经到达；覆盖范围还取决于 CLI 支持的事件和配置。其他 CLI 不会因此自动获得输入请求或本轮结束报告。</p>
+    <blockquote><p><strong>使用 Codex 时：</strong>已安装的 hook 可能仍需在 Codex <code>/hooks</code> 中审查并信任。共享后台服务可能让 Deck 无法把事件可靠归属到正确终端；缺少报告时，应按覆盖不足处理。输入请求 hook 也不能覆盖每一种提问或 MCP elicitation（交互询问）。</p></blockquote>
+
+    <h2 id="choose">4. 按报告的事实决定先看哪里</h2>
+    <p>在<strong>「待关注」</strong>中，先核对条目所属的项目和栏目，再打开会话。不同安装版本的名称可能略有不同，重点是区分它实际报告了什么。</p>
+    <div class="table-scroll" tabindex="0" role="region" aria-label="待关注信号与下一步操作"><table>
+      <thead><tr><th scope="col">看到的情况</th><th scope="col">下一步怎么做</th></tr></thead>
+      <tbody>
+        <tr><td><strong>请求输入</strong>（或<strong>待输入</strong>）</td><td>打开终端，阅读实际问题或权限选项。报告只说明 Agent 发出过请求，回复前先确认它此刻需要什么。</td></tr>
+        <tr><td><strong>结束未读</strong></td><td>阅读结果，核实你关心的目标是否达到。本轮结束不等于任务完成或成功；Agent 或后台工作仍可能继续。</td></tr>
+        <tr><td><strong>人工关注</strong></td><td>回看你主动保留的工作，包括普通 shell。以终端中的实际内容判断当前情况。</td></tr>
+        <tr><td><strong>无有效状态</strong>、安静或近期有输出</td><td>需要了解进展时打开终端。没有有效 Agent 报告时，有输出只说明存在活动，安静只说明一段时间没有输出。安静不代表已准备好接收输入。</td></tr>
+      </tbody>
+    </table></div>
+    <p>终端成功连接并显示后，这次本轮结束才会标为已读。打开卡片不会替你回答输入请求，也不证明请求已经处理。如果你另外使用了带人工检查的 prompt 列表，查看终端也不会放行该检查点。<a href="/zh/guide/prompts/#检查后再继续">了解检查后继续的操作。</a></p>
+
+    <h2 id="gaps">5. 列表为空时，先确认没有漏掉信息</h2>
+    <ul>
+      <li><strong>没有条目：</strong>查看<strong>「无有效状态」</strong>和人工关注的卡片。待关注列表为空，不证明没有事情需要处理。</li>
+      <li><strong>没有 Agent 报告：</strong>核对相应集成和 CLI 配置，再直接查看终端。信号尚不可用时，可以先保留重要卡片的星标。</li>
+      <li><strong>旧快照或刷新失败：</strong>重试刷新。上次的信息可以作为参考，但不能当作当前状态。</li>
+      <li><strong>会话已停止或状态过期：</strong>定位原卡片，检查仍可查看的内容。找到卡片不代表进程已经恢复，更不代表任务已经完成。</li>
+    </ul>
+    <p>处理后返回「待关注」，原来的筛选和滚动位置会恢复。已读记录只在本次应用运行期间有效；重启 Deck 后，不保证保留未读历史，也不保证补回漏掉的事件。保存下来的人工关注星标与这份临时已读记录是两回事。</p>
+    <p>离开终端视图时使用返回按钮。<strong>关闭卡片会结束它的会话</strong>，不要为了清掉未读结果而关闭卡片。机器重启或会话服务重启也可能结束进程。长时间运行工作前，先了解<a href="/zh/guide/sessions/">离开、关闭与恢复的区别</a>。</p>
+
+    <p class="guide-source">技术参考：<a href="{{GITHUB_URL}}/blob/dcc3c064404e9eb4d392cb6228ae0b9f2cf14054/CLAUDE.md">产品边界</a> · <a href="{{GITHUB_URL}}/blob/dcc3c064404e9eb4d392cb6228ae0b9f2cf14054/app/ui/js/attention-model.js">待关注与已读状态</a> · <a href="{{FEEDBACK_URL}}">反馈问题</a></p>
+  </main>
+  <aside class="guide-toc"><nav aria-label="本页目录"><p>本页内容</p><a href="#set-up">给会话命名</a><a href="#follow">关注重要卡片</a><a href="#reports">接入状态报告</a><a href="#choose">决定先看哪里</a><a href="#gaps">检查缺失的信号</a></nav></aside>
+</div>
+<footer class="site-footer"><div class="shell footer"><a class="brand" href="/zh/">▦ deck</a><span>在一处关注本地终端工作。</span><div class="footer-links"><a href="/zh/guide/">使用指南</a><a href="/zh/privacy/">隐私</a><a href="{{GITHUB_URL}}">GitHub</a></div></div></footer>
+</body>
+</html>
