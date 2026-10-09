@@ -1096,6 +1096,11 @@ struct FixtureState {
     sockets: usize,
     outbox: Vec<String>,
     acks: Vec<String>,
+    /// raised to drop every socket accepted before it, without a close frame
+    generation: u64,
+    /// how `apps.connections.open` fails: `network` hangs up without a
+    /// reply, anything else is answered as that Slack error name
+    open_fault: Option<&'static str>,
 }
 
 impl SlackFixture {
@@ -1111,6 +1116,8 @@ impl SlackFixture {
             sockets: 0,
             outbox: Vec::new(),
             acks: Vec::new(),
+            generation: 0,
+            open_fault: None,
         }));
         let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let socket_url = format!("ws://{}", socket.local_addr().unwrap());
@@ -1125,6 +1132,7 @@ impl SlackFixture {
                     let _ = ws
                         .get_mut()
                         .set_read_timeout(Some(Duration::from_millis(50)));
+                    let born = shared.lock_or_recover().generation;
                     let hello = {
                         let mut state = shared.lock_or_recover();
                         state.sockets += 1;
@@ -1141,6 +1149,9 @@ impl SlackFixture {
                         return;
                     }
                     loop {
+                        if shared.lock_or_recover().generation != born {
+                            return;
+                        }
                         let next = shared.lock_or_recover().outbox.pop();
                         if let Some(text) = next {
                             if ws.send(tungstenite::Message::Text(text.into())).is_err() {
@@ -1204,7 +1215,11 @@ impl SlackFixture {
                         }
                         Some(_) if request.starts_with("POST /apps.connections.open") => {
                             state.opens += 1;
-                            (200, json!({"ok":true,"url":socket_url}))
+                            match state.open_fault {
+                                Some("network") => continue,
+                                Some(name) => (200, json!({"ok":false,"error":name})),
+                                None => (200, json!({"ok":true,"url":socket_url})),
+                            }
                         }
                         Some(_) => (404, json!({"ok":false})),
                     }
@@ -1447,6 +1462,169 @@ fn the_first_first_send_rule_is_saved_by_one_save_from_zero_rules() {
                 Some("no-token")
             );
             assert_eq!(slack.read(|s| s.opens), opens);
+        },
+    );
+}
+
+/// Transport faults after an established connection, through the seams the
+/// first-party tables own: credentials are stored by the slot's registered
+/// owner, the settings wake goes through `inbound_check_now`, liveness is
+/// read from `inbound_status`, and the production socket loop talks to the
+/// loopback Slack stand-in. The two status replies the Settings page reads
+/// are compared with the vector its own test renders
+/// (`ui/test/fixtures/channel-fault-status.json`).
+#[test]
+fn a_transport_fault_keeps_the_gap_and_pending_work_through_recovery() {
+    use crate::keychain::Slot;
+    use crate::slack_transport as transport;
+    in_child(
+        "a_transport_fault_keeps_the_gap_and_pending_work_through_recovery",
+        |root| {
+            let dir = root.canonicalize().unwrap().to_string_lossy().into_owned();
+            let slack = SlackFixture::start();
+            commit_current(&closure_board(json!(["Inspect {{msg.text}}"])));
+            for (slot, value) in [
+                (Slot::SlackBotToken, "xoxb-fixture"),
+                (Slot::SlackAppToken, "xapp-fixture"),
+            ] {
+                let owner = crate::extensions::secret_owner(slot).expect("a registered owner");
+                assert_eq!(owner.id, "slack");
+                (owner.store_secret)(slot, value).unwrap();
+            }
+            // the loop starts with nothing to collect and parks for a minute;
+            // only the wake a settings save sends can end that wait in time
+            std::thread::spawn(|| {
+                transport::socket_loop(transport::Consumers {
+                    channel: Box::new(|identity, text| {
+                        channel::stage_message(identity, text).map(|_| ())
+                    }),
+                    reaction: Box::new(|_, _, _| {}),
+                })
+            });
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            assert_eq!(slack.read(|s| s.sockets), 0);
+            let saved = save_settings(channel_settings(&dir, false).to_string(), None).unwrap();
+            assert!(!saved.contains("firstSendGrant"));
+            let live = || {
+                let status = serde_json::to_value(crate::inbound::inbound_status()).unwrap();
+                status["sources"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|source| source["id"] == "slack")
+                    .unwrap()["live"]
+                    .as_bool()
+                    .unwrap()
+            };
+            let status = || serde_json::to_value(channel::channel_status()).unwrap();
+            // both replies as the webview receives them, times reduced to 1
+            let replies = || {
+                let mut channel = status();
+                for key in ["lastConnected", "gapSince"] {
+                    if !channel[key].is_null() {
+                        channel[key] = json!(1);
+                    }
+                }
+                let connection = serde_json::to_value(
+                    tauri::async_runtime::block_on(transport::slack_connection_status()).unwrap(),
+                )
+                .unwrap();
+                json!({"connection": connection, "channel": channel})
+            };
+            let vector: Value = serde_json::from_str(include_str!(
+                "../../../ui/test/fixtures/channel-fault-status.json"
+            ))
+            .unwrap();
+            let deliver = |envelope: &str, event: &str, text: &str| {
+                let micros = now_micros();
+                let now = micros / 1_000_000;
+                slack.set(|s| {
+                    s.outbox.push(
+                        json!({"envelope_id":envelope,"type":"events_api","payload":{
+                    "team_id":"T1","api_app_id":"A1","event_id":event,"event_time":now,
+                    "event":{"type":"message","channel":"C1","user":"UEXTERNAL",
+                        "ts":format!("{}.{:06}",now,micros%1_000_000),"text":text}}})
+                        .to_string(),
+                    )
+                });
+                eventually("the envelope is acknowledged", 10, || {
+                    slack.read(|s| s.acks.iter().any(|ack| ack.contains(envelope)))
+                });
+            };
+            let acked = |envelope: &str| {
+                slack.read(|s| s.acks.iter().filter(|ack| ack.contains(envelope)).count())
+            };
+
+            crate::inbound::inbound_check_now();
+            eventually("connected", 15, || live() && status()["connected"] == true);
+            assert_eq!(status()["gapUnresolved"], false);
+            assert!(status()["lastError"].is_null());
+            let first_message = "INCIDENT one";
+            deliver("ENV1", "E1", first_message);
+            assert_eq!(channel::channel_pending().unwrap().len(), 1);
+            let connected_at = status()["lastConnected"].as_u64().unwrap();
+
+            let mut gap_since = None;
+            for code in ["network", "scope"] {
+                // the socket is lost and the next ticket request fails
+                slack.set(|s| {
+                    s.open_fault = Some(if code == "scope" {
+                        "missing_scope"
+                    } else {
+                        code
+                    });
+                    s.generation += 1;
+                });
+                eventually("disconnected with the closed code", 30, || {
+                    let now = status();
+                    !live() && now["connected"] == false && now["lastError"] == code
+                });
+                let down = status();
+                assert_eq!(down["gapUnresolved"], true);
+                let since = down["gapSince"].as_u64().expect("the gap has a start");
+                assert_eq!(
+                    *gap_since.get_or_insert(since),
+                    since,
+                    "one gap, not a new one"
+                );
+                assert!(channel::current_identity().is_none());
+                assert_eq!(down["pendingCount"], 1, "pending work survives the fault");
+                assert_eq!(replies(), vector[code], "{code}");
+
+                // the fault clears; the settings wake reconnects
+                let sockets = slack.read(|s| s.sockets);
+                slack.set(|s| s.open_fault = None);
+                crate::inbound::inbound_check_now();
+                eventually("reconnected", 30, || {
+                    live() && status()["connected"] == true && slack.read(|s| s.sockets) > sockets
+                });
+                let up = status();
+                assert!(up["lastError"].is_null());
+                assert_eq!(up["gapUnresolved"], true, "reconnecting backfills nothing");
+                assert_eq!(up["gapSince"].as_u64(), gap_since);
+                assert!(up["lastConnected"].as_u64().unwrap() >= connected_at);
+                assert_eq!(up["pendingCount"], 1);
+            }
+            assert_eq!(replies(), vector["recovered"]);
+
+            // Slack redelivers the first event under a new envelope, then a
+            // new event arrives: the first is acknowledged without a second
+            // entry, the second is staged once
+            deliver("ENV2", "E1", first_message);
+            assert_eq!(channel::channel_pending().unwrap().len(), 1);
+            deliver("ENV3", "E2", "INCIDENT two");
+            let pending = channel::channel_pending().unwrap();
+            assert_eq!(pending.len(), 2);
+            for envelope in ["ENV1", "ENV2", "ENV3"] {
+                assert_eq!(acked(envelope), 1, "{envelope}");
+            }
+            assert!(
+                pending.iter().all(|event| event.first_send_grant.is_none()),
+                "a fault and a recovery grant nothing"
+            );
+            let settings = std::fs::read_to_string(settings_path()).unwrap();
+            assert!(!settings.contains("firstSendGrant"));
+            assert_eq!(status()["rejectedCount"], 0);
         },
     );
 }

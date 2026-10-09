@@ -1,0 +1,95 @@
+{
+  "network": {
+    "connection": {
+      "userPresent": false,
+      "botPresent": true,
+      "appPresent": true,
+      "legacyPresent": false,
+      "userValid": false,
+      "botValid": true,
+      "appValid": true,
+      "userError": null,
+      "botError": null,
+      "appError": null,
+      "workspaceMatch": true,
+      "workspace": null,
+      "connected": false,
+      "reactionEnabled": false,
+      "channelEnabled": true,
+      "channelRules": 1
+    },
+    "channel": {
+      "enabled": true,
+      "connected": false,
+      "tokenReady": true,
+      "pendingCount": 1,
+      "lastConnected": 1,
+      "gapSince": 1,
+      "gapUnresolved": true,
+      "rejectedCount": 0,
+      "lastError": "network"
+    }
+  },
+  "scope": {
+    "connection": {
+      "userPresent": false,
+      "botPresent": true,
+      "appPresent": true,
+      "legacyPresent": false,
+      "userValid": false,
+      "botValid": true,
+      "appValid": true,
+      "userError": null,
+      "botError": null,
+      "appError": null,
+      "workspaceMatch": true,
+      "workspace": null,
+      "connected": false,
+      "reactionEnabled": false,
+      "channelEnabled": true,
+      "channelRules": 1
+    },
+    "channel": {
+      "enabled": true,
+      "connected": false,
+      "tokenReady": true,
+      "pendingCount": 1,
+      "lastConnected": 1,
+      "gapSince": 1,
+      "gapUnresolved": true,
+      "rejectedCount": 0,
+      "lastError": "scope"
+    }
+  },
+  "recovered": {
+    "connection": {
+      "userPresent": false,
+      "botPresent": true,
+      "appPresent": true,
+      "legacyPresent": false,
+      "userValid": false,
+      "botValid": true,
+      "appValid": true,
+      "userError": null,
+      "botError": null,
+      "appError": null,
+      "workspaceMatch": true,
+      "workspace": null,
+      "connected": true,
+      "reactionEnabled": false,
+      "channelEnabled": true,
+      "channelRules": 1
+    },
+    "channel": {
+      "enabled": true,
+      "connected": true,
+      "tokenReady": true,
+      "pendingCount": 1,
+      "lastConnected": 1,
+      "gapSince": 1,
+      "gapUnresolved": true,
+      "rejectedCount": 0,
+      "lastError": null
+    }
+  }
+}

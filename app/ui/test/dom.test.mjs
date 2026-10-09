@@ -312,6 +312,40 @@ test('Settings shows how many channel events are pending: the quiet place a once
   assert.match(el('set-channel-status').textContent, / · 1,234 pending/);
 });
 
+test('Settings renders the transport-fault replies the backend produces: not connected, no backfill, the gap and the closed code', async () => {
+  // The vector is what the production socket loop left in `slack_connection_status`
+  // and `channel_status` (documents::channel_admission_tests asserts the same file).
+  const { renderInboundSettings } = await import('../js/settings.js');
+  const { t } = await import('../js/i18n.js');
+  const { readFileSync } = await import('node:fs');
+  const vector = JSON.parse(readFileSync(new URL('./fixtures/channel-fault-status.json', import.meta.url), 'utf8'));
+  const el = id => fakeDocument.getElementById(id);
+  ctx.settings = normalizeSettingsDoc({ inbound: { channelConnection: { enabled: true, connectionId: 'default' } } });
+  let reply = null;
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    if (cmd === 'inbound_status') return { sources: [] };
+    if (cmd === 'slack_connection_status') return reply.connection;
+    if (cmd === 'channel_status') return reply.channel;
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  for (const code of ['network', 'scope']) {
+    reply = vector[code];
+    await renderInboundSettings();
+    const text = el('set-channel-status').textContent;
+    assert.ok(text.includes(t('settings.channelStatus.disconnected')), code);
+    assert.ok(text.includes(t('settings.channelGap')), code);
+    assert.ok(text.includes(t('settings.inboundStatus.error', { code })), code);
+    assert.equal(el('set-slack-transport').textContent, t('settings.slackSocketDisconnected'));
+  }
+  reply = vector.recovered;
+  await renderInboundSettings();
+  const text = el('set-channel-status').textContent;
+  assert.ok(!text.includes(t('settings.channelStatus.disconnected')));
+  assert.ok(text.includes(t('settings.channelGap')), 'a reconnect leaves the gap on the page');
+  assert.ok(!/network|scope/.test(text));
+  assert.equal(el('set-slack-transport').textContent, t('settings.slackSocketConnected'));
+});
+
 test('MCP settings say when the authorization data could not be loaded and offer no control that would fail', async () => {
   const el = id => fakeDocument.getElementById(id);
   window.__TAURI__ = { core: { invoke: async cmd => {
