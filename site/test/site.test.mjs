@@ -49,16 +49,44 @@ test('pages have language, metadata, navigation, and resolved config', async () 
   }
 });
 
+function assertStaticPrivacy(html, route) {
+  assert.doesNotMatch(html, /<script\b/i, route);
+  assert.doesNotMatch(html, /<form\b|\son[a-z]+\s*=|javascript:/i, route);
+  assert.doesNotMatch(html, /\b(?:src|poster)\s*=\s*["'](?:https?:)?\/\//i, route);
+  assert.doesNotMatch(html, /google-analytics|googletagmanager|cloudflareinsights|plausible|posthog|segment\.com/i, route);
+  assert.doesNotMatch(html, /<link[^>]+(?:font|preconnect)/i, route);
+  // Canonical/alternate links and source-reference anchors do not load assets.
+  for (const [tag] of html.matchAll(/<link\b[^>]*>/gi)) {
+    if (/\brel\s*=\s*["'](?:stylesheet|icon|apple-touch-icon|preload|modulepreload|prefetch|dns-prefetch)["']/i.test(tag)) {
+      assert.doesNotMatch(tag, /\bhref\s*=\s*["'](?:https?:)?\/\//i, route);
+    }
+  }
+  assert.doesNotMatch(html, /<(?:link|script|img|source|video|audio|iframe|embed|object)\b[^>]+https?:\/\/[^"']+\.(?:js|css|woff2?)/i, route);
+}
+
 test('every route contains no analytics, remote assets, or executable JavaScript', async () => {
-  for (const route of routes) {
-    const html = await readFile(path.join(dist, route), 'utf8');
-    assert.doesNotMatch(html, /<script\b/i, route);
-    assert.doesNotMatch(html, /<form\b|\son[a-z]+\s*=|javascript:/i, route);
-    assert.doesNotMatch(html, /\b(?:src|poster)=["'](?:https?:)?\/\//i, route);
-    assert.doesNotMatch(html, /google-analytics|googletagmanager|cloudflareinsights|plausible|posthog|segment\.com/i, route);
-    assert.doesNotMatch(html, /<link[^>]+(?:font|preconnect)/i, route);
-    // Source-reference anchors may point to code; only resource tags load it.
-    assert.doesNotMatch(html, /<(?:link|script|img|source|video|audio|iframe|embed|object)\b[^>]+https?:\/\/[^"']+\.(?:js|css|woff2?)/i, route);
+  for (const route of routes) assertStaticPrivacy(await readFile(path.join(dist, route), 'utf8'), route);
+});
+
+test('privacy guard accepts source links but rejects active content and remote resources', () => {
+  assert.doesNotThrow(() => assertStaticPrivacy('<a href="https://github.com/c9r-io/deck/blob/main/app/ui/js/attention-model.js">Source</a><link rel="stylesheet" href="/assets/site.css">', 'source reference'));
+  const forbidden = {
+    'inline script': '<script>alert(1)</script>',
+    'local script': '<script src="/assets/site.js"></script>',
+    'remote script': '<script src="https://example.com/site.js"></script>',
+    'remote stylesheet': '<link rel="stylesheet" href="https://example.com/site.css">',
+    'stylesheet without extension': '<link href="https://example.com/styles" rel="stylesheet">',
+    'protocol-relative stylesheet': '<link rel="stylesheet" href="//example.com/site.css">',
+    'remote image': '<img src="https://example.com/image.png" alt="Example">',
+    'remote video': '<source src="//example.com/demo.mp4">',
+    'remote poster': '<video poster="https://example.com/poster.jpg"></video>',
+    'remote icon': '<link rel="icon" href="https://example.com/favicon.ico">',
+    form: '<form action="/subscribe"><input name="email"></form>',
+    'inline event': '<a href="/" onclick="alert(1)">Home</a>',
+    'script URL': '<a href="javascript:alert(1)">Run</a>',
+  };
+  for (const [name, html] of Object.entries(forbidden)) {
+    assert.throws(() => assertStaticPrivacy(html, name), { code: 'ERR_ASSERTION' }, name);
   }
 });
 
