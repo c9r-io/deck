@@ -1665,9 +1665,10 @@ pub(crate) fn channel_pending() -> Result<Vec<PendingChannelEvent>, DeckError> {
 /// Content-free retry signal for durable channel events. The shared inbound
 /// poll thread calls this independently of badge/token state, so a transient
 /// webview queue failure and a restart both get another drain opportunity.
-pub(crate) fn reannounce_pending(app: &AppHandle) {
+/// The caller emits the named event (`extensions::reannounce_services`).
+pub(crate) fn reannounce_pending(announce: &dyn Fn(&'static str)) {
     if with_store(|store| Ok(!store.doc.pending.is_empty())).unwrap_or(false) {
-        let _ = app.emit("channel-changed", ());
+        announce("channel-changed");
     }
 }
 

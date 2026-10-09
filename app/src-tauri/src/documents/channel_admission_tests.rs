@@ -1628,3 +1628,63 @@ fn a_transport_fault_keeps_the_gap_and_pending_work_through_recovery() {
         },
     );
 }
+
+/// The registered Slack integration's re-announcement, as the inbound poll
+/// calls it: `extensions::reannounce_services` over the production table
+/// reaches `inbound_channel::reannounce_pending`, which names
+/// `channel-changed` for durable pending work whether or not the channel
+/// connection is switched on, and names nothing for an empty inbox.
+#[test]
+fn durable_pending_channel_work_is_reannounced_through_the_registered_service() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    in_child(
+        "durable_pending_channel_work_is_reannounced_through_the_registered_service",
+        |root| {
+            let dir = root.canonicalize().unwrap().to_string_lossy().into_owned();
+            commit_current(&closure_board(json!(["Inspect {{msg.text}}"])));
+            save_settings(channel_settings(&dir, false).to_string(), None).unwrap();
+            let app = tauri::test::mock_app();
+            let heard = std::sync::Arc::new(AtomicUsize::new(0));
+            let count = heard.clone();
+            tauri::Listener::listen(app.handle(), "channel-changed", move |_| {
+                count.fetch_add(1, Ordering::SeqCst);
+            });
+            let pass = || {
+                let before = heard.load(Ordering::SeqCst);
+                crate::extensions::reannounce_services(app.handle());
+                heard.load(Ordering::SeqCst) - before
+            };
+            assert_eq!(pass(), 0, "an empty inbox announces nothing");
+
+            // one matching message through the production parser, matcher
+            // and durable stage; no connection is ever made in this test
+            let micros = now_micros();
+            let now = micros / 1_000_000;
+            let envelope = json!({"envelope_id":"ENV1","type":"events_api","payload":{
+                "team_id":"T1","api_app_id":"A1","event_id":"E1","event_time":now,
+                "event":{"type":"message","channel":"C1","user":"UEXTERNAL",
+                    "ts":format!("{}.{:06}",now,micros%1_000_000),"text":"INCIDENT fixture"}}});
+            assert_eq!(
+                channel::stage_message(&closure_identity(), &envelope.to_string()),
+                Ok(true)
+            );
+            let event = channel::channel_pending().unwrap().remove(0);
+            assert_eq!(pass(), 1, "one service, one event per pass");
+            assert_eq!(pass(), 1, "and again on the next pass while it is pending");
+
+            // the connection is switched off and no socket was ever opened:
+            // what was durably received is still announced
+            let off = json!({"inbound":{"channelConnection":{"enabled":false,"connectionId":"default"},
+                "channelRules":[channel_rule(&dir, false)]}});
+            save_settings(off.to_string(), None).unwrap();
+            assert!(!crate::slack_transport::connected());
+            assert!(!channel::read_config().connection.enabled);
+            assert_eq!(channel::channel_pending().unwrap().len(), 1);
+            assert_eq!(pass(), 1);
+
+            channel::channel_ack(event.id.clone()).unwrap();
+            assert!(channel::channel_pending().unwrap().is_empty());
+            assert_eq!(pass(), 0, "acknowledged work is not announced");
+        },
+    );
+}

@@ -21,9 +21,17 @@ Rules the module header states and its tests pin:
   adds one. The only override is a `cfg(test)` thread-local table.
 - Registered is not enabled, connected, loaded, trusted or authorized. A
   lookup starts nothing and adds no polling, connection or model load.
-- A lookup answers only when exactly one entry carries the id. Unknown or
-  doubly registered ids fail closed at the caller; a contributed trigger
-  source outside the dispatcher's closed `inbound::SOURCES` is refused.
+- An identity is used only when exactly one entry carries it, at every
+  consumer and not only at the lookups; a clash has no winner, first or
+  last. Unknown or doubly registered ids fail closed at the caller. A
+  service id two entries share takes no part in start, wake,
+  re-announcement, source contribution or credential ownership. A trigger
+  source is polled only when one contributed source carries its name, the
+  dispatcher's closed `inbound::SOURCES` names it, and it is not the clock
+  the dispatcher appends itself. A clash removes only the identities in it;
+  a malformed table also starts no connection owner. This is a rule about
+  compiled-in tables: the shipped tables have no clash, and nothing a user
+  does can create one.
 - Extensions run with the application's own trust. Module visibility is an
   architecture constraint, not a security boundary: there is no sandbox, no
   dynamic loading, and no compatibility with any plugin ecosystem.

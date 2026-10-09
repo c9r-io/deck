@@ -21,12 +21,19 @@
 //!   word earns Signal only through the pane, generation and interaction
 //!   checks of `agent_status::ingest`. Remote admission
 //!   (`admission.rs`) does not read these tables.
-//! - No silent fallback: a lookup answers only when EXACTLY one entry
-//!   carries the id. An unknown or doubly registered id is `None` / an
-//!   error at every caller, a contributed trigger source outside the
-//!   dispatcher's closed `inbound::SOURCES` or repeating one is refused,
-//!   and `check` states the whole rule for the unit test that pins the
-//!   production tables.
+//! - No silent fallback, and no winner in a clash: an identity is used only
+//!   when EXACTLY one entry carries it, never the first or the last of
+//!   several. That holds for every consumer, not only the lookups: an
+//!   unknown or doubly registered id is `None` / an error at every caller;
+//!   a service id two entries share is left out of start, wake,
+//!   re-announcement, source contribution and credential ownership
+//!   (`unambiguous_services`); a source name is polled only when one
+//!   contributed source carries it, `inbound::SOURCES` names it and it is
+//!   not one the dispatcher supplies itself (`inbound::BUILT_IN_SOURCES`,
+//!   the clock); a whole-table agent pass skips a shared source word
+//!   (`unambiguous_agents`). A clash removes only the identities in it.
+//!   `check` states the whole rule for the unit test that pins the
+//!   production tables, and a malformed table starts no connection owner.
 //! - A service integration hands the core only what the fields below name.
 //!   It gets no Board, queue, PTY or authority entry from this module; the
 //!   dispatcher (`inbound.rs`), the settings writer and the scheduler keep
@@ -44,7 +51,7 @@ use crate::error::{DeckError, ErrorKind};
 use crate::inbound::Source;
 use crate::intelligence::provider::{TranslationProvider, TranslationProviderEntry};
 use crate::keychain::Slot;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 /// One external service: its one connection owner, the trigger sources it
 /// contributes to the dispatcher, and its credential adaptation.
@@ -68,8 +75,9 @@ pub(crate) struct ServiceIntegration {
     pub(crate) store_secret: fn(Slot, &str) -> Result<(), DeckError>,
     /// The compiled-in "create an app" page of the service.
     pub(crate) setup_url: fn() -> String,
-    /// Content-free re-announcement of the service's own durable pending work.
-    pub(crate) reannounce: fn(&AppHandle),
+    /// Content-free re-announcement of the service's own durable pending
+    /// work: the service names the event, the host emits it.
+    pub(crate) reannounce: fn(&dyn Fn(&'static str)),
 }
 
 /// The selected translation engine. A build has exactly one.
@@ -99,7 +107,7 @@ pub(crate) fn services() -> &'static [ServiceIntegration] {
     SERVICES
 }
 
-pub(crate) fn agents() -> &'static [AgentAdapter] {
+fn agents() -> &'static [AgentAdapter] {
     #[cfg(test)]
     if let Some(table) = TEST_AGENTS.with(|cell| cell.get()) {
         return table;
@@ -126,15 +134,27 @@ pub(crate) fn service(id: &str) -> Option<&'static ServiceIntegration> {
     exactly_one(services(), id, |s| s.id)
 }
 
+/// The services every dispatch reaches, in table order: an id two entries
+/// share selects neither of them.
+fn unambiguous_services() -> impl Iterator<Item = &'static ServiceIntegration> {
+    services().iter().filter(|s| service(s.id).is_some())
+}
+
 /// The service that lets the user store `slot`, only when exactly one does.
 pub(crate) fn secret_owner(slot: Slot) -> Option<&'static ServiceIntegration> {
-    let mut owners = services().iter().filter(|s| s.settable.contains(&slot));
+    let mut owners = unambiguous_services().filter(|s| s.settable.contains(&slot));
     let first = owners.next()?;
     owners.next().is_none().then_some(first)
 }
 
 pub(crate) fn agent(source: &str) -> Option<&'static AgentAdapter> {
     exactly_one(agents(), source, |a| a.source)
+}
+
+/// The adapters a whole-table pass visits, in table order: a source word
+/// two entries share selects neither of them.
+pub(crate) fn unambiguous_agents() -> impl Iterator<Item = &'static AgentAdapter> {
+    agents().iter().filter(|a| agent(a.source).is_some())
 }
 
 /// Builds the selected engine. Nothing is loaded: the coordinator loads the
@@ -146,27 +166,36 @@ pub(crate) fn translation_provider() -> Result<Box<dyn TranslationProvider>, Dec
 }
 
 /// Every trigger source the registered services contribute, in table order.
-/// A source the dispatcher's closed vocabulary does not name, or a second
-/// source under one name, is refused here instead of polled.
+/// A name is polled only when exactly one contributed source carries it, the
+/// dispatcher's closed vocabulary names it and the host does not supply it
+/// itself; every other source is refused here, never the first or the last
+/// of a clash.
 pub(crate) fn service_sources() -> Vec<Box<dyn Source>> {
-    let mut out: Vec<Box<dyn Source>> = Vec::new();
-    for service in services() {
-        if self::service(service.id).is_none() {
-            applog("[extensions] service refused (duplicate-id)");
-            continue;
-        }
-        for source in (service.sources)() {
-            let id = source.id();
-            if !crate::inbound::SOURCES.contains(&id) {
-                applog("[extensions] source refused (unknown-source)");
-            } else if out.iter().any(|seen| seen.id() == id) {
-                applog("[extensions] source refused (duplicate-source)");
-            } else {
-                out.push(source);
-            }
-        }
+    if services().len() != unambiguous_services().count() {
+        applog("[extensions] service refused (duplicate-id)");
     }
-    out
+    let all: Vec<Box<dyn Source>> = unambiguous_services()
+        .flat_map(|service| (service.sources)())
+        .collect();
+    let names: Vec<&'static str> = all.iter().map(|source| source.id()).collect();
+    all.into_iter()
+        .filter(|source| {
+            let id = source.id();
+            let refused = if !crate::inbound::SOURCES.contains(&id) {
+                Some("unknown-source")
+            } else if crate::inbound::BUILT_IN_SOURCES.contains(&id) {
+                Some("reserved-source")
+            } else if names.iter().filter(|name| **name == id).count() != 1 {
+                Some("duplicate-source")
+            } else {
+                None
+            };
+            if let Some(code) = refused {
+                applog(&format!("[extensions] source refused ({code})"));
+            }
+            refused.is_none()
+        })
+        .collect()
 }
 
 /// The production tables against the well-formedness rule.
@@ -187,11 +216,7 @@ pub(crate) fn start_services(app: &AppHandle) {
         return;
     }
     let mut started = 0usize;
-    for service in services() {
-        if self::service(service.id).is_none() {
-            applog("[extensions] service refused (duplicate-id)");
-            continue;
-        }
+    for service in unambiguous_services() {
         (service.start)(app.clone());
         started += 1;
     }
@@ -200,14 +225,18 @@ pub(crate) fn start_services(app: &AppHandle) {
 }
 
 pub(crate) fn wake_services() {
-    for service in services() {
+    for service in unambiguous_services() {
         (service.wake)();
     }
 }
 
-pub(crate) fn reannounce_services(app: &AppHandle) {
-    for service in services() {
-        (service.reannounce)(app);
+/// One pass over the services with durable pending work of their own; each
+/// names the content-free event the window is sent.
+pub(crate) fn reannounce_services<R: tauri::Runtime>(app: &AppHandle<R>) {
+    for service in unambiguous_services() {
+        (service.reannounce)(&|event| {
+            let _ = app.emit(event, ());
+        });
     }
 }
 
@@ -242,6 +271,12 @@ fn check_tables(
     }
     if !unique(&source_ids) {
         return Err("duplicate-source");
+    }
+    if source_ids
+        .iter()
+        .any(|id| crate::inbound::BUILT_IN_SOURCES.contains(id))
+    {
+        return Err("reserved-source");
     }
     if source_ids
         .iter()
@@ -311,6 +346,7 @@ mod tests {
     }
 
     static WAKES: AtomicUsize = AtomicUsize::new(0);
+    static REANNOUNCES: AtomicUsize = AtomicUsize::new(0);
     const fn fake(id: &'static str, sources: fn() -> Vec<Box<dyn Source>>) -> ServiceIntegration {
         ServiceIntegration {
             id,
@@ -324,7 +360,10 @@ mod tests {
             settable: &[],
             store_secret: |_, _| Ok(()),
             setup_url: String::new,
-            reannounce: |_| {},
+            reannounce: |announce| {
+                REANNOUNCES.fetch_add(1, Ordering::SeqCst);
+                announce("fake-changed");
+            },
         }
     }
     fn slack_source() -> Vec<Box<dyn Source>> {
@@ -468,23 +507,101 @@ mod tests {
         );
     }
 
-    #[test]
-    fn contributed_sources_outside_the_closed_vocabulary_are_refused() {
-        const MIXED: &[ServiceIntegration] = &[
-            fake("notion", unknown_source),
-            fake("slack", repeated_source),
-        ];
-        let _table = testing::with_services(MIXED);
-        let ids: Vec<&str> = service_sources().iter().map(|s| s.id()).collect();
-        assert_eq!(ids, ["slack"], "unknown refused, the repeat refused");
+    fn clock_source() -> Vec<Box<dyn Source>> {
+        vec![Box::new(Named("clock"))]
+    }
+    fn polled() -> Vec<&'static str> {
+        service_sources().iter().map(|s| s.id()).collect()
     }
 
     #[test]
-    fn waking_reaches_every_registered_service_and_nothing_else() {
+    fn a_source_name_is_polled_only_when_exactly_one_registered_source_carries_it() {
+        {
+            const UNKNOWN: &[ServiceIntegration] =
+                &[fake("notion", unknown_source), fake("slack", slack_source)];
+            let _table = testing::with_services(UNKNOWN);
+            assert_eq!(polled(), ["slack"], "the unknown name alone is refused");
+        }
+        {
+            const REPEATED: &[ServiceIntegration] = &[fake("slack", repeated_source)];
+            let _table = testing::with_services(REPEATED);
+            assert!(polled().is_empty(), "one service, the same name twice");
+        }
+        {
+            const SHARED: &[ServiceIntegration] =
+                &[fake("a", slack_source), fake("b", slack_source)];
+            let _table = testing::with_services(SHARED);
+            assert!(polled().is_empty(), "two services, one name");
+        }
+        {
+            // the host appends its own clock after the service sources
+            const CLOCK: &[ServiceIntegration] =
+                &[fake("a", clock_source), fake("slack", slack_source)];
+            let _table = testing::with_services(CLOCK);
+            assert_eq!(polled(), ["slack"], "a service never supplies the clock");
+            assert_eq!(
+                check_tables(CLOCK, AGENT_ADAPTERS, TRANSLATION_PROVIDERS, "bergamot"),
+                Err("reserved-source")
+            );
+        }
+    }
+
+    #[test]
+    fn a_service_id_two_entries_share_takes_no_part_in_dispatch() {
         const TWO: &[ServiceIntegration] = &[fake("a", Vec::new), fake("b", Vec::new)];
-        let _table = testing::with_services(TWO);
-        let before = WAKES.load(Ordering::SeqCst);
-        wake_services();
-        assert_eq!(WAKES.load(Ordering::SeqCst) - before, 2);
+        const SHARED: &[ServiceIntegration] = &[
+            fake("a", Vec::new),
+            ServiceIntegration {
+                settable: &[Slot::SlackUserToken],
+                ..fake("slack", slack_source)
+            },
+            fake("slack", Vec::new),
+        ];
+        let woken = |table: &'static [ServiceIntegration]| {
+            let _table = testing::with_services(table);
+            let before = WAKES.load(Ordering::SeqCst);
+            wake_services();
+            WAKES.load(Ordering::SeqCst) - before
+        };
+        assert_eq!(woken(TWO), 2, "every distinct service is woken once");
+        assert_eq!(woken(SHARED), 1, "neither entry of the shared id is woken");
+        // the host emits what each remaining service names, once per pass
+        let app = tauri::test::mock_app();
+        let heard = std::sync::Arc::new(AtomicUsize::new(0));
+        let count = heard.clone();
+        tauri::Listener::listen(app.handle(), "fake-changed", move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+        let announced = |table: &'static [ServiceIntegration]| {
+            let _table = testing::with_services(table);
+            let (calls, events) = (
+                REANNOUNCES.load(Ordering::SeqCst),
+                heard.load(Ordering::SeqCst),
+            );
+            reannounce_services(app.handle());
+            (
+                REANNOUNCES.load(Ordering::SeqCst) - calls,
+                heard.load(Ordering::SeqCst) - events,
+            )
+        };
+        assert_eq!(announced(TWO), (2, 2));
+        assert_eq!(announced(SHARED), (1, 1));
+        assert_eq!(announced(&[]), (0, 0));
+        {
+            const AGENT_TWICE: &[AgentAdapter] = &[
+                crate::agent_status::CODEX,
+                crate::agent_status::CLAUDE_CODE,
+                crate::agent_status::CODEX,
+            ];
+            let _table = testing::with_agents(AGENT_TWICE);
+            let visited: Vec<&str> = unambiguous_agents().map(|a| a.source).collect();
+            assert_eq!(visited, ["claude-code"], "a whole-table pass skips both");
+        }
+        let _table = testing::with_services(SHARED);
+        assert!(polled().is_empty());
+        assert!(
+            secret_owner(Slot::SlackUserToken).is_none(),
+            "an ambiguous service owns no credential slot"
+        );
     }
 }

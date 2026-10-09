@@ -128,6 +128,9 @@ use crate::storage;
 use crate::sync::LockRecover;
 
 pub(crate) const SOURCES: &[&str] = &["slack", "clock"];
+/// The sources the dispatcher appends itself (`spawn_inbound`); a registered
+/// service never supplies one of these names.
+pub(crate) const BUILT_IN_SOURCES: &[&str] = &["clock"];
 const MAX_RUNS: usize = 200;
 /// Closed vocabulary of what became of a run.
 const RUN_OUTCOMES: &[&str] = &["running", "closed", "skipped"];
@@ -1329,6 +1332,35 @@ mod tests {
         setup_url: String::new,
         reannounce: |_| {},
     };
+
+    /// Source pin only: the poll thread needs a real window handle, so what
+    /// its loop calls is read from the text. What that call does is tested
+    /// with a mock runtime in `extensions::tests` and
+    /// `documents::channel_admission_tests`.
+    #[test]
+    fn the_poll_loop_reannounces_through_the_tables_once_per_tick_and_owns_the_clock() {
+        let source = include_str!("inbound.rs");
+        let body = source
+            .split("pub(crate) fn spawn_inbound(app: AppHandle) {")
+            .nth(1)
+            .unwrap()
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert_eq!(
+            body.matches("crate::extensions::reannounce_services(&app);")
+                .count(),
+            1
+        );
+        assert!(!body.contains("inbound_channel::"), "no direct Slack path");
+        assert_eq!(
+            body.matches("crate::extensions::service_sources()").count(),
+            1
+        );
+        assert_eq!(body.matches("inbound_clock::Clock::default()").count(), 1);
+        use crate::inbound_clock::Clock;
+        assert_eq!(BUILT_IN_SOURCES, [Clock::default().id()]);
+    }
 
     #[test]
     fn status_reads_liveness_and_credential_rows_from_the_registered_service() {

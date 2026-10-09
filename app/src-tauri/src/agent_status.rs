@@ -2204,7 +2204,7 @@ pub(crate) fn migrate_hooks_on_boot() {
         return;
     };
     let mut legacy_referenced = false;
-    for adapter in crate::extensions::agents() {
+    for adapter in crate::extensions::unambiguous_agents() {
         let (specs, source, style, never_ran) = (
             adapter.hooks,
             adapter.source,
