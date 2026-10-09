@@ -246,3 +246,137 @@ Not covered, and why:
 | voice, buffer, attention, review, reminder, board-lost | none | not affected |
 
 These are impact statements, not runs.
+
+## Correction round: registration clashes and the re-announcement seam (2026-10-09)
+
+Tested source: `ea5a065a151b7bdf75343b1140ef51392994943c`
+(`fix(extensions): an identity two entries share is used by no consumer …`).
+It changes production code, so the real-app evidence from the `b1c4547`
+binary is not relabelled: the affected modes were run again on a binary
+built from `ea5a065`.
+
+### The gap
+
+A contract defect in how compiled-in tables are consumed. The shipped
+tables have no clash and no user action can create one; no user-reachable
+fault is claimed. Reproduced with the `cfg(test)` table override and
+side-effect-free counters, before the fix
+(`E/logs/conflict-repro/before-fix.log`, `before-fix-each-case.log`):
+
+| Malformed table | Before the fix | `check` said |
+|---|---|---|
+| one service, the same source name twice | the first was polled | `duplicate-source` |
+| two services, one source name | the first was polled | `duplicate-source` |
+| a service contributing `clock` | polled next to the host's own clock | nothing (`Ok`) |
+| two entries under one service id | both woken; the one with a settable slot owned the credential | `duplicate-service` |
+
+`check`'s error stopped only `start_services`; `spawn_inbound`,
+`wake_services`, `reannounce_services` and `secret_owner` read the table
+on their own. The re-announcement loop had the same shape as the wake
+loop; it could not be called from a test then (its callback took a window
+handle), so it is shown fixed, not shown broken.
+
+### The fix (`app/src-tauri/src`)
+
+- `extensions.rs:139` `unambiguous_services`: the services whose id exactly
+  one entry carries. Used by `secret_owner` (`:144`), `service_sources`
+  (`:173`), `start_services` (`:213`), `wake_services` (`:227`),
+  `reannounce_services` (`:235`).
+- `service_sources`: a name is kept only when one contributed source
+  carries it, `inbound::SOURCES` names it and it is not in
+  `inbound::BUILT_IN_SOURCES` (`inbound.rs:133`, the clock);
+  `check_tables` names the last case `reserved-source` (`:279`).
+- `extensions.rs:156` `unambiguous_agents`, used by the one whole-table
+  agent pass, `agent_status::migrate_hooks_on_boot` (`agent_status.rs:2207`).
+  That function returns early outside a release build, so only the iterator
+  is tested.
+- `ServiceIntegration.reannounce` is now `fn(&dyn Fn(&'static str))`
+  (`extensions.rs:80`): the service names the event, the host emits it.
+  `inbound_channel::reannounce_pending` (`inbound_channel.rs:1669`) keeps
+  its condition (durable pending work exists) and its event
+  (`channel-changed`). `reannounce_services` is generic over the runtime so
+  a test can call it. No IPC, setting, event name, order or authority
+  changed for the shipped tables.
+
+A clash removes only the identities in it; a malformed table still starts
+no connection owner (unchanged).
+
+### Tests and negative controls
+
+- `extensions::tests::a_source_name_is_polled_only_when_exactly_one_registered_source_carries_it`
+  and `…::a_service_id_two_entries_share_takes_no_part_in_dispatch`:
+  failed before the fix, pass after. The second also counts wake calls,
+  re-announcement calls and emitted events on a mock runtime, and the agent
+  pass.
+- Re-announcement, in two layers:
+  1. Dispatch and the existing pending behaviour, by behaviour:
+     `documents::channel_admission_tests::durable_pending_channel_work_is_reannounced_through_the_registered_service`
+     calls `extensions::reannounce_services` over the production table on a
+     mock runtime with a listener: nothing for an empty inbox, exactly one
+     `channel-changed` per pass while an event staged by the production
+     `stage_message` is pending, still one with the channel connection
+     switched off and no socket ever opened, nothing after `channel_ack`.
+  2. That the poll thread makes that call once per tick:
+     `inbound::tests::the_poll_loop_reannounces_through_the_tables_once_per_tick_and_owns_the_clock`,
+     a source pin. The thread needs a real window handle, so this link is
+     not exercised by behaviour.
+
+`E/mutations-conflict/` (each restored afterwards):
+
+| Mutation | Failing test |
+|---|---|
+| R1 Slack's `reannounce` is a no-op | `durable_pending_…` |
+| R2 the host does not call the callback | `durable_pending_…`, `a_service_id_…` |
+| R3 re-announcement requires the connection to be enabled | `durable_pending_…` |
+| R4 re-announcement walks the raw table | `a_service_id_…` |
+| R5 wake walks the raw table | `a_service_id_…` |
+| R6 `secret_owner` ignores an id clash | `a_service_id_…` |
+| R7 the clock is not reserved | `a_source_name_…` |
+| R8 a source clash keeps one | `a_source_name_…` |
+| R9 the poll loop drops the call | `the_poll_loop_…` (source pin) |
+| R10 the agent pass walks the raw table | `a_service_id_…` |
+
+Of the original nine, M2 and M9 edited lines this fix rewrote; R6–R8
+replace them. The other seven edit lines unchanged in `ea5a065` and were
+not rerun.
+
+### Gates on `ea5a065` (`E/logs/gates-cand-ea5a065-cov/`)
+
+fmt, `node --check`, `scripts/ui-tests`, `check.mjs`, CI-form clippy: exit
+0. `cargo llvm-cov` in the `gate.yml` form: exit 0, lines 83.65 %,
+functions 81.66 %, regions 84.66 %; `deck-app` 1004 passed, 0 failed, 2
+ignored; `extensions.rs` lines 89.05 %, functions 87.67 %. Same deviations
+as the closure round (no `DECK_CE_*`, offline, isolated `HOME`). Not run:
+the Python script tests, `check-workflows`, `cargo audit`, Full Local
+parity, packaging, any release gate.
+
+### Real application on the `ea5a065` binary
+
+Debug `deck-app` SHA-256
+`05fb79429b1b42884f04e9e1d82d62f03fd52130d375002ebd7733804d1e6468`, staged
+frontend equal to `app/ui`; Mac mini, run `v3c027808`
+(`E/scripts/smoke-cand-ea5a065/`): `settings` 7/7, `channel` 3/3,
+`empty-start` 5/5, `approval` 12/12, `signal-finish` 8/8, all PASS;
+`[extensions] services started (1)` in the fetched logs; no leftover
+process; that machine's `~/.deck` listing, `deck` socket and running Deck
+the same before and after. The run took the foreground while another app
+was in front. Not rerun on this binary: `connector`, `run`, `ambiguous`,
+`restart` and the three translation scenarios. Every launch crosses the
+changed start and source functions, which the five rerun modes exercised;
+what those other modes check beyond launch touches no changed function.
+Their evidence stays that of the `b1c4547` binary and is not evidence
+about this one.
+The real Bergamot and real Slack runs were not repeated: translation
+source is unchanged; the Slack run's path now goes through the changed
+`secret_owner` and `wake_services`, which the loopback test above and the
+transport-fault test cover on `ea5a065`.
+
+### Statement corrected: tmux
+
+The closure round's note that no tmux was started is wrong as written.
+No tmux server was started by hand, but the Rust suite starts isolated
+ones itself (`tests/tmux_contract.rs`, unique `-L` names under the
+isolated `TMPDIR`; each `Server` guard runs `kill-server` and removes its
+socket on drop). After the closure round nobody looked for leftovers.
+After this round's coverage run a process listing showed no tmux process
+with the isolated `TMPDIR` in its arguments; sockets were not inspected.
