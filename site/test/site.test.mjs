@@ -49,6 +49,15 @@ test('pages have language, metadata, navigation, and resolved config', async () 
   }
 });
 
+function assertLocalCss(source, file) {
+  // Also works on HTML style blocks/attributes. Decode quoted attribute URLs
+  // and remove CSS comments before checking either form of resource loading.
+  const css = source.replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/&quot;|&#0*34;|&#x0*22;/gi, '"')
+    .replace(/&apos;|&#0*39;|&#x0*27;/gi, "'");
+  assert.doesNotMatch(css, /@import\s*["']\s*(?:https?:)?\/\/|url\s*\(\s*["']?\s*(?:https?:)?\/\//i, file);
+}
+
 function assertStaticPrivacy(html, route) {
   assert.doesNotMatch(html, /<script\b/i, route);
   assert.doesNotMatch(html, /<form\b|\son[a-z]+\s*=|javascript:/i, route);
@@ -61,7 +70,10 @@ function assertStaticPrivacy(html, route) {
       assert.doesNotMatch(tag, /\bhref\s*=\s*["'](?:https?:)?\/\//i, route);
     }
   }
-  assert.doesNotMatch(html, /<(?:link|script|img|source|video|audio|iframe|embed|object)\b[^>]+https?:\/\/[^"']+\.(?:js|css|woff2?)/i, route);
+  // Keep the original global CSS/font rule, including inline style sources.
+  assert.doesNotMatch(html, /https?:\/\/[^"']+\.(?:css|woff2?)/i, route);
+  assert.doesNotMatch(html, /<(?:link|script|img|source|video|audio|iframe|embed|object)\b[^>]+https?:\/\/[^"']+\.js/i, route);
+  assertLocalCss(html, route);
 }
 
 test('every route contains no analytics, remote assets, or executable JavaScript', async () => {
@@ -81,12 +93,40 @@ test('privacy guard accepts source links but rejects active content and remote r
     'remote video': '<source src="//example.com/demo.mp4">',
     'remote poster': '<video poster="https://example.com/poster.jpg"></video>',
     'remote icon': '<link rel="icon" href="https://example.com/favicon.ico">',
+    'inline CSS import': '<style>@import url("https://cdn.example.com/site.css");</style>',
+    'inline CSS string import': '<style>@import "//cdn.example.com/styles";</style>',
+    'inline CSS image': '<style>body { background: url(https://cdn.example.com/image.png); }</style>',
+    'style attribute image': '<div style="background: url(//cdn.example.com/image.png)"></div>',
+    'style attribute quoted image': '<div style="background: url(&quot;https://cdn.example.com/image.png&quot;)"></div>',
     form: '<form action="/subscribe"><input name="email"></form>',
     'inline event': '<a href="/" onclick="alert(1)">Home</a>',
     'script URL': '<a href="javascript:alert(1)">Run</a>',
   };
   for (const [name, html] of Object.entries(forbidden)) {
     assert.throws(() => assertStaticPrivacy(html, name), { code: 'ERR_ASSERTION' }, name);
+  }
+});
+
+test('built site stylesheet contains no remote CSS imports or resource URLs', async () => {
+  assertLocalCss(await readFile(path.join(dist, 'assets/site.css'), 'utf8'), 'assets/site.css');
+});
+
+test('CSS guard allows local assets but rejects remote imports and URLs', () => {
+  for (const css of ['@import "./local.css";', 'body { background: url(/assets/poster.jpg); }', 'body { color: #fff; }']) {
+    assert.doesNotThrow(() => assertLocalCss(css, 'local CSS'));
+  }
+  const forbidden = [
+    '@import url("https://cdn.example.com/site.css");',
+    '@import "https://cdn.example.com/styles";',
+    "@import '//cdn.example.com/styles';",
+    'body { background-image: url(https://cdn.example.com/image.png); }',
+    'body { background: url("//cdn.example.com/image.png"); }',
+    '@font-face { src: url(https://cdn.example.com/font.woff2); }',
+    '@IMPORT URL(\n "HTTPS://cdn.example.com/styles");',
+    'body { background: url(/* comment */https://cdn.example.com/image.png); }',
+  ];
+  for (const css of forbidden) {
+    assert.throws(() => assertLocalCss(css, 'remote CSS'), { code: 'ERR_ASSERTION' }, css);
   }
 });
 
