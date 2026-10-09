@@ -75,7 +75,7 @@ foreground of the test machine while another app was in front.
 | Mode | What it shows for this change | Result |
 |---|---|---|
 | `settings` | Settings sections render and navigate on the candidate | PASS 7/7 |
-| `channel` | synthetic envelope → production parser → durable inbox → Board card; `[extensions] services started (1)` in the log | PASS 3/3 |
+| `channel` | channel settings and rule editor; seeded events → production parser → durable inbox → the webview's drain, which keeps them pending because the target command is runtime-blocked (no card, session or queue row); `[extensions] services started (1)` in the log. Corrected in the closure round: this mode creates no Board card | PASS 3/3 |
 | `signal-finish` | harmless fixture helper → `agent_status` ingest through the adapter table → run finish | PASS 8/8 |
 | `connector`, `empty-start`, `approval` | Connector, the clock route and approval unaffected | PASS 5/5, 5/5, 12/12 |
 | `run`, `ambiguous`, `restart` | general regression, queue ambiguity, restart | PASS 94/94, 2/2, 2/2 |
@@ -118,3 +118,131 @@ reminder and board-lost modes were not run.
   the window event.
 
 No real agent was run; Signal used the bundled fixture helper only.
+
+## Closure round (2026-10-09)
+
+Final tested source: `a869fbe5ff524e056d334c5337cb41aa828967a1`
+(`test(slack): transport faults after a live connection …`). Since
+`b1c4547641443a496127511a3ad2bb0089168ff2` it adds test code only:
+`src/documents/channel_admission_tests.rs` (a `cfg(test)` module),
+`ui/test/dom.test.mjs` and `ui/test/fixtures/channel-fault-status.json`.
+`2059695` before it and the commit carrying this section are documents.
+
+### What earlier evidence still applies
+
+- Real WKWebView runs were made on the debug binary built from `b1c4547`
+  (SHA-256 `b1bac3bf7dc6e127e65d62863c0a853d8e3b505877e9ad3592811fa4400dfb65`).
+  `git diff b1c4547 a869fbe` touches no production Rust, no `ui/js`, no
+  native or vendored source, no manifest or lock file. A debug bundle also
+  embeds `ui/test`, so a debug binary built from `a869fbe` is not
+  byte-equal to the tested one: it differs by two files the smoke runner
+  never loads. The runs were not repeated and no `a869fbe` debug binary
+  was built.
+- The real Bergamot run was made on `de60a7b`. `git diff de60a7b a869fbe`
+  is empty for `src/intelligence`, `src/extensions.rs`, `native/`,
+  `vendor/`, `build.rs`, `Cargo.toml` and `Cargo.lock`; the only Rust
+  change between them outside the new test is inside `slack.rs`'s test
+  module.
+- The nine bypass mutations edit lines unchanged since `f3e9918`.
+- Rerun on `a869fbe` because test code changed: the whole Rust gate in its
+  coverage form and the frontend gates (below).
+
+### Gates run on `a869fbe` (isolated `HOME`/`TMPDIR`, offline, clean tree before and after)
+
+Logs: `E/logs/gates-cand-a869fbe-cov/` (`summary.txt` has every exit code).
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all --check` | exit 0 |
+| `node --check` on `ui/js`, `ui/js/i18n`, `ui/test` | exit 0 |
+| `scripts/ui-tests` (coverage thresholds and inventory) | exit 0 |
+| `node app/ui/js/check.mjs` | exit 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | exit 0 |
+| `cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 -- --test-threads=1` (the `gate.yml` command, cargo-llvm-cov 0.8.5) | exit 0; lines 83.60 %, functions 81.52 %, regions 84.61 %; `deck-app` 1002 passed, 0 failed, 2 ignored; every other target green |
+
+Per file in that run (lines / functions): `extensions.rs` 81.68 / 79.66,
+`slack_transport.rs` 87.05 / 77.55, `inbound.rs` 93.67 / 90.60,
+`agent_status.rs` 94.72 / 95.36, `intelligence/translation.rs`
+70.12 / 66.67, `intelligence/provider.rs` 27.23 / 65.00 (the native engine
+runs only in the opt-in certification test), `slack.rs` 36.45 / 36.84 (its
+largest function is the opt-in real-service test, which returns at once
+without `DECK_SLACK_CERT_DIR`). The thresholds are workspace totals; no
+file was excluded and no threshold changed.
+
+The `DECK_CE_*` variables the CI step binds were not set, so the Full
+Local B-admission probe wrote no evidence. Not run at all:
+`scripts/check-workflows`, `cargo audit`, the Full Local parity steps,
+the Python script tests on this commit (they passed on `b1c4547`; nothing
+they read changed), packaging, signing, any release or compatibility
+gate. This is not a passed CI run.
+
+### Channel transport faults, by assertion
+
+New test: `documents::channel_admission_tests::
+a_transport_fault_keeps_the_gap_and_pending_work_through_recovery`. It
+runs the production `slack_transport::socket_loop` against the existing
+loopback Slack stand-in (`SlackFixture`: `auth.test`,
+`apps.connections.open`, one Socket Mode endpoint). Credentials are stored
+through `extensions::secret_owner(slot).store_secret`; the loop is parked
+with nothing to collect and leaves that wait only on the wake
+`inbound::inbound_check_now` sends through `extensions::wake_services`;
+liveness is read from `inbound::inbound_status`
+(`extensions::service("slack").live`). The fault is a real one at the
+protocol level: the stand-in drops the socket without a close frame and
+the next ticket request either gets no reply (`network`) or Slack's
+`missing_scope` (`scope`).
+
+| # | Assertion | Evidence | Layer |
+|---|---|---|---|
+| 1 | network fault after a live connection | the test: `connected:false`, `lastError:"network"`, service not live | Rust, production loop, loopback protocol |
+| 2 | scope fault after a live connection | the test, second pass: `lastError:"scope"` | same |
+| 3a | production status says disconnected, the code, an unresolved gap | the test compares `slack_connection_status` and `channel_status`, as serialized for the webview, with `ui/test/fixtures/channel-fault-status.json` | same |
+| 3b | Settings shows not connected (no backfill), the gap, the code | `ui/test/dom.test.mjs` renders that same file through the production `settings.js`, `slack-connection-model.js` and `i18n.js`; `i18n.test.mjs` pins the "no backfill" wording | node, production modules, fake DOM |
+| 3c | the same row inside a real WKWebView with a live fault | BLOCKED | — |
+| 4 | clearing the fault reconnects | the test: a new socket, `connected:true`, `lastError:null` | Rust |
+| 5 | the gap stays after reconnecting | the test: `gapUnresolved:true`, `gapSince` equal to the first fault's across both faults | Rust |
+| 6 | no wrong ACK, duplicate, lost pending work or new authority | the test: three envelopes acknowledged once each, a redelivered event adds no second inbox entry, one pending entry through both faults, no `firstSendGrant` on any entry or in settings, `rejectedCount` 0. A failed durable stage sends no ACK: `slack_transport::tests::fake_socket_interleaves_consumers_and_never_acks_failed_stage` and `shared_ack_contract_stages_channel_first_and_keeps_reaction_recoverable` (unchanged) | Rust |
+
+Negative controls (`E/mutations-closure/`, each restored afterwards):
+
+| Mutation | Result |
+|---|---|
+| C1 `inbound_status` reads the poll's liveness instead of the service's | test fails: `timed out: connected` |
+| C2 a reconnect clears `gap_since` | test fails: `reconnecting backfills nothing` |
+| C3 the socket loop does not report a drop | test fails: `timed out: disconnected with the closed code` |
+| C4 `inbound_check_now` does not wake the services | test fails: `timed out: connected` |
+| C5 Settings omits the gap | `dom.test.mjs` fails on `network` |
+
+Not covered, and why:
+
+- 3c. `LOOPBACK_SOCKET` and `TEST_API` exist only under `cfg(test)`, so the
+  application binary reaches a fault state only from a real Slack
+  connection. That needs real tokens typed into the isolated window (this
+  round uses none), or a debug-only alternative Slack address in the
+  binary, which was not added: it would be a service address setting.
+- The debug-only branch `injected_channel_fault` (it returns the code from
+  inside the read loop) was not executed; the test reaches the same two
+  codes through real protocol failures instead.
+- Board card creation from a channel event was not exercised in a window,
+  with or without a fault: the real-app `channel` mode (PASS on `b1c4547`)
+  seeds events whose target is runtime-blocked and checks that they stay
+  pending with no card. The inbox holds one entry per event; the creation
+  path (`inbound.js`, `provider.createStarted`) is unchanged and is covered
+  by the frontend unit tests only.
+- Read from the code, not tested: when `auth.test` fails as well (a total
+  outage), the loop waits 60 s per attempt without reporting again, so the
+  status keeps the socket-drop code (`socket`, `closed` or `stalled`), not
+  `network`. Same in the baseline.
+- The `reannounce` seam is not in this test (it needs a window handle); the
+  real-app `channel` mode runs with the poll loop that calls it.
+
+### Real-app modes not run: effect of this change
+
+| Mode | Paths of this change it crosses | Covered by |
+|---|---|---|
+| `channel-first-send` | service start, channel staging, grant freeze, card creation | `channel` (real app, up to the pending drain; no card); `the_first_first_send_rule_is_saved_by_one_save_from_zero_rules` (production loop, loopback); grant code unchanged |
+| `authority-live`, `clock-live` | `inbound_status`, source list (`service_sources` + Clock) | `approval`, `empty-start` (real app); `inbound::tests` registry tests |
+| pasteboard-driven translation matrix | coordinator → registered provider | three `translation-native` setup scenarios (real app, real engine); pasteboard and Lens code unchanged |
+| voice, buffer, attention, review, reminder, board-lost | none | not affected |
+
+These are impact statements, not runs.
