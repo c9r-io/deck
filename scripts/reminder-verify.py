@@ -148,7 +148,7 @@ def macmini_main(args):
         macos = contents / 'MacOS'; resources = contents / 'Resources'
         macos.mkdir(parents=True); resources.mkdir()
         shutil.copy2(TAURI / 'target/debug/deck-app', macos / 'deck')
-        for name in ['tmux', 'deck-status-helper', 'deck-mcp', 'deck-mcp-runner']:
+        for name in ['tmux', 'deck-status-helper', 'deck-lifecycle-helper', 'deck-mcp', 'deck-mcp-runner']:
             source = TAURI / 'binaries' / f'{name}-aarch64-apple-darwin'
             if source.exists(): shutil.copy2(source, macos / name)
         version = json.loads((TAURI / 'tauri.conf.json').read_text())['version']
@@ -792,7 +792,7 @@ class LocalCarrier:
             (resources / 'deck-smoke-launch.json').write_text(json.dumps({'--smoke-data-dir':str(self.data),'--smoke-tmux-socket':self.socket,'--smoke-wkwebview':'reminder-native'}))
             (resources / 'reminder-smoke-owner').write_text(self.run_id)
             shutil.copy2(binary, mac / 'deck')
-            for name in ['tmux','deck-status-helper','deck-mcp','deck-mcp-runner']:
+            for name in ['tmux','deck-status-helper','deck-lifecycle-helper','deck-mcp','deck-mcp-runner']:
                 shutil.copy2(TAURI / 'binaries' / (name+'-aarch64-apple-darwin'), mac / name)
             version = json.loads((TAURI / 'tauri.conf.json').read_text())['version']
             with (self.app / 'Contents/Info.plist').open('wb') as stream:

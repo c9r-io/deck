@@ -614,6 +614,33 @@ impl Queues {
     }
 }
 
+/// A queue holding one waiting row per session, for a test in another
+/// module that runs the real restart pause and its real persistence.
+#[cfg(test)]
+pub(crate) fn waiting_for_tests(sessions: &[&str]) -> QueueState {
+    let items: Vec<serde_json::Value> = sessions
+        .iter()
+        .enumerate()
+        .map(|(index, session)| {
+            serde_json::json!({
+                "id": format!("row-{index}"), "session": session, "dir": "/tmp", "cmd": "",
+                "text": "a waiting prompt", "mode": "chain", "at": null, "added": 1,
+            })
+        })
+        .collect();
+    serde_json::from_value(serde_json::json!({ "items": items, "last_fired": {} }))
+        .expect("a valid queue")
+}
+
+/// (session, paused) of every row, for the same tests.
+#[cfg(test)]
+pub(crate) fn paused_for_tests(q: &QueueState) -> Vec<(String, bool)> {
+    q.items
+        .iter()
+        .map(|item| (item.session.clone(), item.paused))
+        .collect()
+}
+
 /// Persist-then-commit: EVERY user-driven queue mutation runs inside this.
 ///
 /// The shared state is cloned, the mutation runs on the CANDIDATE only, the

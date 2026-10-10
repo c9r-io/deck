@@ -10,7 +10,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$TAURI/target/release/deck-app" "$APP/Contents/MacOS/deck"
 cp "$TAURI/icons/icon.icns" "$APP/Contents/Resources/deck.icns"
-for pair in tmux deck-status-helper deck-mcp deck-mcp-runner; do
+for pair in tmux deck-status-helper deck-lifecycle-helper deck-mcp deck-mcp-runner; do
   source="$TAURI/binaries/$pair-aarch64-apple-darwin"
   test -f "$source"
   cp "$source" "$APP/Contents/MacOS/$pair"

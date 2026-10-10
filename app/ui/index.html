@@ -476,6 +476,16 @@
               <div class="set-hint" data-i18n="settings.codexHooksHint">Off by default. If enabled, deck adds four hooks to ~/.codex/hooks.json so cards can show “input requested” and “turn ended”. Your own hooks and notify program keep working alongside. Hooks send only a fixed status word, the pane id and the agent’s opaque turn id — never prompts, output, or paths. Turning this off removes exactly those hooks. Codex running on its shared background service (the default since 0.157) does not expose enough per-client identity for deck to safely attribute a hook to a terminal: deck rejects those events rather than guessing, so those cards show no agent status and lists hold their automatic sends (send-now still works). Installed hooks still need to be reviewed and trusted in Codex /hooks. For a new session, codex --no-daemon offers an optional compatible path without shared-server session behavior.</div>
             </details>
           </div>
+          <div class="set-group" id="set-item-claude-reentry" data-setting-id="claude-reentry" tabindex="-1">
+            <div class="set-row">
+              <label for="set-claude-reentry" data-i18n="settings.claudeReentry">Claude session re-entry observation</label>
+              <input type="checkbox" id="set-claude-reentry">
+            </div>
+            <details class="set-details">
+              <summary data-i18n="settings.details">Learn more</summary>
+              <div class="set-hint" data-i18n="settings.claudeReentryHint">Off by default, and separate from the Claude Code agent status above. If enabled, deck adds session start and session end hooks to ~/.claude/settings.json so that a shell service restart can offer to reopen the Claude sessions you select. The hooks tell deck when a Claude session starts or ends and which session it is; deck uses that only during such a restart, keeps it in memory, and discards it at any other time. Each restart still asks which sessions to reopen. Turning this off removes exactly those hooks.</div>
+            </details>
+          </div>
           <div class="set-group" id="set-item-away-notifications" data-setting-id="away-notifications" tabindex="-1" role="group" aria-labelledby="set-item-away-notifications-title">
             <h3 class="set-group-title" id="set-item-away-notifications-title" data-i18n="settings.group.awayNotifications">Away notifications</h3>
             <div class="set-row">
@@ -664,12 +674,18 @@
 <div id="tmux-lifecycle-modal">
   <div id="tmux-lifecycle-box" role="dialog" aria-modal="true" aria-labelledby="tmux-lifecycle-title">
     <div id="tmux-lifecycle-title" data-i18n="tmux.title">Shell service restart required</div>
-    <div id="tmux-lifecycle-message"></div>
-    <div id="tmux-impact-list"></div>
+    <div id="tmux-lifecycle-body">
+      <div id="tmux-lifecycle-message"></div>
+      <div id="tmux-impact-list"></div>
+      <div id="tmux-reentry" hidden></div>
+      <div id="tmux-progress" role="status" aria-live="polite" hidden></div>
+      <div id="tmux-result" hidden></div>
+    </div>
     <div class="tmux-lifecycle-actions">
       <button class="btn" id="tmux-view-sessions" data-i18n="tmux.viewSessions">View affected sessions</button>
       <button class="btn" id="tmux-later" data-i18n="tmux.later">Later</button>
       <button class="btn cfm-danger" id="tmux-restart" data-i18n="tmux.restart">Restart service</button>
+      <button class="btn primary" id="tmux-done" data-i18n="common.done" style="display:none">Done</button>
     </div>
   </div>
 </div>

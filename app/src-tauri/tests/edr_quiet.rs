@@ -733,6 +733,7 @@ fn connector_owns_the_only_production_tcp_listener() {
         "mcp-adapter/src/main.rs",
         "mcp-runner/src/main.rs",
         "status-helper/src/main.rs",
+        "lifecycle-helper/src/main.rs",
     ] {
         let source = std::fs::read_to_string(manifest(sidecar)).unwrap();
         assert_eq!(
@@ -853,6 +854,7 @@ fn local_sockets_are_a_reviewed_list_and_nothing_binds_a_datagram() {
         "mcp-adapter/src/main.rs",
         "mcp-runner/src/main.rs",
         "status-helper/src/main.rs",
+        "lifecycle-helper/src/main.rs",
     ] {
         let source = std::fs::read_to_string(manifest(sidecar)).unwrap();
         check(sidecar, production_region(&source), SIDECAR_UNIX_LISTENERS);
@@ -916,6 +918,58 @@ fn bundled_status_helper_has_no_process_or_persistence_surface() {
     }
     assert!(constructor_sites(&helper, "Command").is_empty());
     assert!(spawn_vocabulary_violations("status-helper", &helper).is_empty());
+}
+
+/// The second hook helper (re-entry lifecycle receipts) is held to exactly
+/// the status helper's surface: it spawns nothing, persists nothing, and —
+/// a separate closed family — never reads the status helper's one payload
+/// field nor forwards any payload key but a native session id and one
+/// closed word.
+#[test]
+fn bundled_lifecycle_helper_has_no_process_or_persistence_surface() {
+    let helper = std::fs::read_to_string(manifest("lifecycle-helper/src/main.rs")).unwrap();
+    for forbidden in [
+        "Command::new(",
+        "CommandBuilder::new(",
+        "Process(",
+        "NSTask",
+        "launchctl",
+        "LaunchAgents",
+        "LaunchDaemons",
+        "SMAppService",
+        "File::create",
+        "fs::write",
+        "OpenOptions",
+        "println!",
+        "eprintln!",
+        "TcpStream",
+        "UnixListener",
+    ] {
+        assert!(
+            !production_region(&helper).contains(forbidden),
+            "lifecycle helper introduced {forbidden}"
+        );
+    }
+    assert!(constructor_sites(&helper, "Command").is_empty());
+    assert!(spawn_vocabulary_violations("lifecycle-helper", &helper).is_empty());
+    // it is bundled like the status helper and built from its own crate
+    let conf = std::fs::read_to_string(manifest("tauri.conf.json")).unwrap();
+    assert!(conf.contains("\"binaries/deck-lifecycle-helper\""));
+    let build = std::fs::read_to_string(manifest("build.rs")).unwrap();
+    assert!(build.contains("\"deck-lifecycle-helper\""));
+    // the status helper's payload contract is not widened for re-entry
+    let status = std::fs::read_to_string(manifest("status-helper/src/main.rs")).unwrap();
+    for word in [
+        "session_id",
+        "nativeSessionId",
+        "agent-lifecycle",
+        "SessionEnd",
+    ] {
+        assert!(
+            !production_region(&status).contains(word),
+            "the status helper must not learn {word}"
+        );
+    }
 }
 
 #[test]

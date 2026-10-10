@@ -3197,6 +3197,15 @@ export async function verifyApproval() {
   return runApprovalSmoke();
 }
 
+// "Reopen Agent session" in the shell service restart modal, against scripted
+// backend answers: the preview, the per-restart policy, the startup
+// configuration note, one request and the result list. Nothing is restarted
+// (reentry-smoke.mjs).
+export async function verifyReentry() {
+  const { runReentrySmoke } = await import('./reentry-smoke.mjs');
+  return runReentrySmoke();
+}
+
 // The information layers of the automation editor, the lists panel, project
 // defaults with presets, the reminder dialog and the template manager: what
 // is visible for which state, and that a disclosure touches nothing

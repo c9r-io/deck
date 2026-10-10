@@ -15,7 +15,7 @@ const { formatDateTime } = await import('../js/i18n.js');
 const {
   connectorPairingChanged, initSettings, renderConnectorSettings, mcpAuthorizationDialog, persistSessionRestoreChoice, persistUpdateChannelChoice,
   persistThemeChoice, filterSettings, renderMcpSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
-  locateSetting, openSettings, refreshEditors, persistAgentHooksChoice,
+  locateSetting, openSettings, refreshEditors, persistAgentHooksChoice, persistClaudeReentryChoice,
 } = await import('../js/settings.js');
 const { normalizeSettings: normalizeSettingsDoc } = await import('../js/settings-model.js');
 const { ctx, store } = await import('../js/state.js');
@@ -874,6 +874,107 @@ test('away notifications name the agent-status dependency only when both hooks a
   box.fire('keydown', { key: 'Escape' });
   await open(null);
   assert.equal(dependency.hidden, true, 'an unreadable state makes no claim');
+  box.fire('keydown', { key: 'Escape' });
+});
+
+test('an older hook status response cannot overwrite the latest Settings switches', async () => {
+  ctx.settings = normalizeSettingsDoc({ notifyAway: true });
+  const box = fakeDocument.getElementById('settings-box');
+  const dependency = fakeDocument.getElementById('set-notify-dependency');
+  const switches = ['set-agent-hooks', 'set-codex-hooks', 'set-claude-reentry']
+    .map(id => fakeDocument.getElementById(id));
+  for (const older of [{ claude: false, codex: true, claude_reentry: false }, null]) {
+    const answers = [];
+    const calls = settingsBackend({
+      agent_hooks_status: () => new Promise(resolve => { answers.push(resolve); }),
+      notify_status: () => 'authorized',
+    });
+    await openSettings();
+    box.fire('keydown', { key: 'Escape' });
+    await openSettings();
+    assert.equal(answers.length, 2);
+    answers[1]({ claude: true, codex: false, claude_reentry: true });
+    await tick(); await tick();
+    assert.deepEqual(switches.map(node => node.checked), [true, false, true]);
+    answers[0](older);
+    await tick(); await tick();
+    assert.deepEqual(switches.map(node => node.checked), [true, false, true], 'the newer read wins');
+    assert.equal(dependency.hidden, true);
+    assert.ok(!calls.includes('agent_hooks_set') && !calls.includes('agent_lifecycle_hooks_set'), 'reads install nothing');
+    box.fire('keydown', { key: 'Escape' });
+  }
+});
+
+test('Claude session re-entry observation follows only claude_reentry and its own command', async () => {
+  ctx.settings = normalizeSettingsDoc({});
+  const box = fakeDocument.getElementById('settings-box');
+  const reentry = fakeDocument.getElementById('set-claude-reentry');
+  const claude = fakeDocument.getElementById('set-agent-hooks');
+  const open = async status => {
+    settingsBackend({ agent_hooks_status: () => status });
+    await openSettings();
+    await tick(); await tick();
+  };
+  // derived from the backend's one field, never from the status hooks
+  for (const [status, expected] of [
+    [{ claude: true, codex: true }, false],
+    [{ claude: true, codex: false, claude_reentry: false }, false],
+    [{ claude: false, codex: false, claude_reentry: true }, true],
+    [{ claude: true, codex: false, claude_reentry: 'yes' }, false],
+    [null, false],
+  ]) {
+    await open(status);
+    assert.equal(reentry.checked, expected, JSON.stringify(status));
+    assert.equal(claude.checked, !!status?.claude, 'the status switch shows its own field');
+    box.fire('keydown', { key: 'Escape' });
+  }
+
+  // the Claude Code status switch does not move it, in either direction
+  await open({ claude: false, codex: false, claude_reentry: false });
+  let calls = settingsBackend();
+  let sent = [];
+  window.__TAURI__.core.invoke = (invoke => async (cmd, args) => { sent.push([cmd, args]); return invoke(cmd, args); })(window.__TAURI__.core.invoke);
+  claude.checked = true;
+  const status = persistAgentHooksChoice('claude-code', 'set-agent-hooks', 'settings.agentHooksEnableConfirm');
+  cfmDone(true);
+  await status;
+  assert.deepEqual(calls, ['agent_hooks_set']);
+  assert.equal(reentry.checked, false, 'enabling agent status does not enable re-entry observation');
+
+  // its own explicit opt-in: confirmation first, then its own command
+  sent = [];
+  reentry.checked = true;
+  const declined = persistClaudeReentryChoice();
+  cfmDone(false);
+  await declined;
+  assert.equal(reentry.checked, false);
+  assert.deepEqual(sent, [], 'a declined confirmation writes nothing');
+  reentry.checked = true;
+  const enabling = persistClaudeReentryChoice();
+  cfmDone(true);
+  await enabling;
+  assert.deepEqual(sent, [['agent_lifecycle_hooks_set', { enable: true }]]);
+  assert.equal(reentry.checked, true);
+  assert.equal(reentry.disabled, false);
+  assert.equal(claude.checked, true, 'the status switch is untouched');
+  claude.checked = false;
+  await persistAgentHooksChoice('claude-code', 'set-agent-hooks', 'settings.agentHooksEnableConfirm');
+  assert.equal(reentry.checked, true, 'removing agent status hooks does not remove re-entry observation');
+
+  // turning it off asks nothing; a refusal (a dev or smoke build) puts the box back
+  sent = [];
+  reentry.checked = false;
+  await persistClaudeReentryChoice();
+  assert.deepEqual(sent, [['agent_lifecycle_hooks_set', { enable: false }]]);
+  settingsBackend({ agent_lifecycle_hooks_set: () => { throw new Error('agent hooks are unavailable in this build'); } });
+  reentry.checked = true;
+  const refused = persistClaudeReentryChoice();
+  cfmDone(true);
+  await refused;
+  assert.equal(reentry.checked, false, 'a refused change is not shown as made');
+  assert.equal(reentry.disabled, false);
+  assert.equal(claude.checked, false);
+  assert.deepEqual(Object.keys(ctx.settings).filter(key => /reentry/i.test(key)), [], 'no settings key holds the choice');
   box.fire('keydown', { key: 'Escape' });
 });
 

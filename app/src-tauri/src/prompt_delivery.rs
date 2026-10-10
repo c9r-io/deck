@@ -8,8 +8,10 @@
 //! has just exited has not), and a shell never receives an unmarked prompt.
 //! Prompt bytes travel only on stdin, never in process arguments, environment
 //! variables or temporary files. Buffer loading and guarded paste share a batch.
-//! Every entry, including injected transports, holds shared session activity
-//! through cleanup and Enter. Transport injection cannot bypass restart exclusion.
+//! Every entry, including injected transports, holds session activity through
+//! cleanup and Enter: shared for a delivery, or the restart's own exclusive
+//! guard handed in as a witness (`deliver_exclusive`, the re-entry launch).
+//! Transport injection cannot bypass restart exclusion.
 //! MCP-managed panes also pass the shared MCP control fence, so scheduler,
 //! voice, Connector-derived, and other literal delivery cannot bypass takeover.
 use crate::context::{self, PaneIdentity, RawProbe};
@@ -73,6 +75,27 @@ pub(crate) fn deliver_with(
     transport: &impl Transport,
 ) -> Result<LiteralOutcome, DeckError> {
     let _activity = crate::session_runtime::activity_guard()?;
+    transfer(request, transport)
+}
+
+/// The same guarded transfer for the ONE caller that already owns session
+/// activity exclusively: the restart's re-entry launch
+/// (`agent_reentry::launch`). The exclusive guard is the argument, so this
+/// cannot run beside a delivery or outside a restart, and it never takes the
+/// shared guard the exclusive holder would block on.
+pub(crate) fn deliver_exclusive(
+    request: LiteralRequest<'_>,
+    transport: &impl Transport,
+    _held: &std::sync::RwLockWriteGuard<'static, ()>,
+) -> Result<LiteralOutcome, DeckError> {
+    transfer(request, transport)
+}
+
+/// The transfer both entries share; the caller holds session activity.
+fn transfer(
+    request: LiteralRequest<'_>,
+    transport: &impl Transport,
+) -> Result<LiteralOutcome, DeckError> {
     let LiteralRequest {
         session,
         pane,

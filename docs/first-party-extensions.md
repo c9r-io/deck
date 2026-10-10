@@ -89,6 +89,23 @@ Kept coupled on purpose:
 - A translation engine: a `TranslationProvider` implementation, its entry,
   and changing `TRANSLATION_ENGINE` (one engine per build).
 
+## Optional re-entry capability of an agent adapter
+
+`AgentAdapter` has one more narrow, optional, static field: `reentry`
+(`agent_reentry::ReentryCapability`), `Some` for `CLAUDE_CODE` and `None`
+for `CODEX`. It holds certified compatibility facts (version/digest pairs),
+the supported launch grammar, the login shell the launch sink is
+certified against and a pure constructor of the exact-id request. Like
+every entry here it is source code and registered is not enabled, approved
+or trusted: the adapter has no pane, PTY, queue, Board or authority handle,
+cannot approve an entry, cannot choose the bypass override and cannot launch.
+The core (`agent_reentry/mod.rs`) owns eligibility, the user's per-restart
+approval, the once-only launch and every result. The lifecycle hooks an
+adapter declares (`lifecycle_hooks`) are a second ownership family beside
+its Signal hooks, installed only by their own explicit opt-in. Adding a
+certified release is adding one fact row; it is not a version range, a
+database or an automatic upgrade.
+
 ## Compatibility and withdrawal
 
 No settings key, source id, rule id, queue, inbox or ledger field changed;

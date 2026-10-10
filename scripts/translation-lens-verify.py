@@ -232,7 +232,7 @@ def build_bundle():
     macos.mkdir(parents=True)
     resources.mkdir()
     shutil.copy2(TAURI / "target/debug/deck-app", macos / "deck")
-    for name in ("tmux", "deck-status-helper"):
+    for name in ("tmux", "deck-status-helper", "deck-lifecycle-helper"):
         shutil.copy2(TAURI / f"binaries/{name}-aarch64-apple-darwin", macos / name)
     shutil.copy2(TAURI / "icons/icon.icns", resources / "deck.icns")
     version = json.loads((TAURI / "tauri.conf.json").read_text())["version"]

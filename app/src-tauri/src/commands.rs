@@ -19,6 +19,11 @@
 //! omitted independently of liveness. Closing an already-absent session is
 //! successful, including tmux's `no current target` reply on a reachable
 //! server with no sessions; other tmux failures still reject the close.
+//! `create_session` is the one pane-creating body. `start_session` gates it
+//! with the lifecycle creation guard; `create_reentry_shell` is its
+//! command-less form for the restart transaction, which already owns that
+//! operation and the exclusive activity guard and therefore takes neither.
+//! It creates the shell only: an Agent request is never part of this path.
 //!
 //! # Wire naming (all commands, not only this file's)
 //! A NEW struct returned to JS is `#[serde(rename_all = "camelCase")]`
@@ -144,6 +149,11 @@ pub(crate) fn tmux_available() -> bool {
             .unwrap_or(false)
     })
 }
+
+/// A tmux call on the server a session is created in, and one that carries
+/// bytes on stdin. Production passes deck's own (`tmux`, `tmux_with_stdin`).
+pub(crate) type TmuxRun<'a> = &'a dyn Fn(&[&str]) -> Result<String, DeckError>;
+pub(crate) type TmuxStdin<'a> = &'a dyn Fn(&[&str], &[u8]) -> Result<String, DeckError>;
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct StartSessionResult {
@@ -279,13 +289,65 @@ pub(crate) fn start_session(
         });
     }
     let gate_ms = t0.elapsed().as_millis();
+    create_session(
+        &tmux,
+        &tmux_with_stdin,
+        &name,
+        &dir,
+        &cmd,
+        restore_shell,
+        false,
+        t0,
+        gate_ms,
+    )
+}
+
+/// One command-less shell for a card the user approved for re-entry, in
+/// exactly `dir`, with the ordinary stdout transcript restore. Called by the
+/// restart transaction, which already owns the lifecycle operation and the
+/// exclusive activity guard — so this takes neither. It never borrows an
+/// existing session, never falls back to another directory and never sends
+/// a command: the Agent request is the launch sink's own, separate input.
+pub(crate) fn create_reentry_shell(
+    run: TmuxRun<'_>,
+    stdin: TmuxStdin<'_>,
+    name: &str,
+    dir: &std::path::Path,
+    restore_shell: bool,
+) -> Result<(), DeckError> {
+    let t0 = std::time::Instant::now();
+    validate_session_name(name)?;
+    let dir = dir
+        .to_str()
+        .ok_or(DeckError::new(ErrorKind::NotDir, "not a directory"))?;
+    if run(&["has-session", "-t", &session_target(name)]).is_ok() {
+        return Err(DeckError::new(ErrorKind::Other, "session-exists"));
+    }
+    create_session(run, stdin, name, dir, "", restore_shell, true, t0, 0).map(|_| ())
+}
+
+/// Create the session after the caller's gate. `exact_dir` keeps the pane in
+/// the requested directory even when a checkpoint remembers another one.
+#[allow(clippy::too_many_arguments)]
+fn create_session(
+    run: TmuxRun<'_>,
+    stdin: TmuxStdin<'_>,
+    name: &str,
+    dir: &str,
+    cmd: &str,
+    restore_shell: bool,
+    exact_dir: bool,
+    t0: std::time::Instant,
+    gate_ms: u128,
+) -> Result<StartSessionResult, DeckError> {
     // A checkpoint is consulted only for a command-less, user-opened shell.
     // Its cwd may have advanced far beyond the card's original launch dir.
     // Missing directories fall back safely to the persisted card path.
-    let recovery = crate::shell_state::snapshot_for_start(&name, &cmd, restore_shell);
-    let requested_dir = expand_tilde(&dir);
+    let recovery = crate::shell_state::snapshot_for_start(name, cmd, restore_shell);
+    let requested_dir = expand_tilde(dir);
     let dir = recovery
         .as_ref()
+        .filter(|_| !exact_dir)
         .map(|snapshot| snapshot.cwd.clone())
         .filter(|cwd| std::path::Path::new(cwd).is_dir())
         .unwrap_or(requested_dir);
@@ -304,7 +366,7 @@ pub(crate) fn start_session(
                 Err(error) => {
                     applog(&format!(
                         "[shell-state] bootstrap unavailable for {} ({})",
-                        crate::applog::session_tag(&name),
+                        crate::applog::session_tag(name),
                         error.code()
                     ));
                     None
@@ -315,55 +377,55 @@ pub(crate) fn start_session(
         // The pane is created exactly like a clean shell (tmux's own login
         // shell, no command). `new-session -P` returns THIS pane's tty; never
         // let an attached control client's ambient target choose the device.
-        let args = restore_start_args(&name, &dir, &bootstrap.buffer);
+        let args = restore_start_args(name, &dir, &bootstrap.buffer);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let restored_start = tmux_with_stdin(&args, &bootstrap.output).and_then(|output| {
+        let restored_start = stdin(&args, &bootstrap.output).and_then(|output| {
             let tty = restore_tty(&output)?;
             let emit = restore_emit_args(&bootstrap.buffer, &tty);
             let emit: Vec<&str> = emit.iter().map(String::as_str).collect();
-            tmux(&emit)
+            run(&emit)
         });
         match restored_start {
             Ok(output) => (Ok(output), true),
             Err(error) => {
-                let _ = tmux(&["delete-buffer", "-b", &bootstrap.buffer]);
+                let _ = run(&["delete-buffer", "-b", &bootstrap.buffer]);
                 applog(&format!(
                     "[shell-state] restore start unavailable for {} ({}); starting a clean shell",
-                    crate::applog::session_tag(&name),
+                    crate::applog::session_tag(name),
                     error.code()
                 ));
                 // the sequence may have failed after the pane already existed
-                if tmux(&["has-session", "-t", &session_target(&name)]).is_ok() {
+                if run(&["has-session", "-t", &session_target(name)]).is_ok() {
                     (Ok(String::new()), false)
                 } else {
-                    (tmux(&["new-session", "-d", "-s", &name, "-c", &dir]), false)
+                    (run(&["new-session", "-d", "-s", name, "-c", &dir]), false)
                 }
             }
         }
     } else {
-        (tmux(&["new-session", "-d", "-s", &name, "-c", &dir]), false)
+        (run(&["new-session", "-d", "-s", name, "-c", &dir]), false)
     };
     if let Err(error) = start {
-        applog(&start_failure_line(&name, "create", &error));
+        applog(&start_failure_line(name, "create", &error));
         return Err(error);
     }
     let created_ms = t0.elapsed().as_millis();
     if !cmd.trim().is_empty() {
-        if let Err(error) = tmux(&["send-keys", "-t", &pane_target(&name), &cmd, "Enter"]) {
+        if let Err(error) = run(&["send-keys", "-t", &pane_target(name), cmd, "Enter"]) {
             // The pane exists but never got its launch command. A failed
             // start persists no card, so a surviving session would be an
             // orphan the Board can neither show nor close.
-            let _ = tmux(&["kill-session", "-t", &session_target(&name)]);
-            let _ = crate::shell_state::clear_snapshot(&name);
-            applog(&start_failure_line(&name, "command", &error));
+            let _ = run(&["kill-session", "-t", &session_target(name)]);
+            let _ = crate::shell_state::clear_snapshot(name);
+            applog(&start_failure_line(name, "command", &error));
             return Err(error);
         }
     }
     if recovery.is_some() {
-        crate::shell_state::note_recovered(&name);
+        crate::shell_state::note_recovered(name);
     }
     applog(&start_timing_line(
-        &name,
+        name,
         [gate_ms, created_ms, t0.elapsed().as_millis()],
         restored,
     ));

@@ -44,6 +44,11 @@
 // background `detect_editors` answers, keeping the saved choice selected.
 // Away notifications name their dependency on agent-status hooks inline
 // when both are known to be off; nothing is switched on for the user.
+// Claude session re-entry observation is its own explicit opt-in: the box
+// shows `claude_reentry` of `agent_hooks_status` (the backend derives it from
+// the installed lifecycle hooks; there is no settings key), is written only
+// by `agent_lifecycle_hooks_set`, and neither follows nor moves the Claude
+// Code agent-status switch.
 // Voice preferences commit through the settings writer before notifying the
 // recorder; edits never request microphone access or download language assets.
 // Enabling Phone Connector needs an explicit danger confirmation that states
@@ -533,14 +538,16 @@ export async function openSettings(target) {
   if (ctx.settings.notifyAway) inv('notify_status').then(renderNotifyStatus).catch(() => {});
   $('set-agent-hooks').checked = false;
   $('set-codex-hooks').checked = false;
+  $('set-claude-reentry').checked = false;
   agentHooksKnown = null;
   renderNotifyDependency();
   const hooksGeneration = ++agentHooksGeneration;
   inv('agent_hooks_status')
     .then(status => {
+      if (hooksGeneration !== agentHooksGeneration || !status || typeof status !== 'object') return;
       $('set-agent-hooks').checked = !!(status && status.claude);
       $('set-codex-hooks').checked = !!(status && status.codex);
-      if (hooksGeneration !== agentHooksGeneration || !status || typeof status !== 'object') return;
+      $('set-claude-reentry').checked = !!status && status.claude_reentry === true;
       agentHooksKnown = { claude: status.claude === true, codex: status.codex === true };
       renderNotifyDependency();
     })
@@ -703,6 +710,33 @@ export async function persistAgentHooksChoice(agent, boxId, confirmKey) {
     uev('settings-save-fail');
   } finally {
     agentHooksPending = false;
+    box.disabled = false;
+  }
+}
+
+/* Claude session re-entry observation: one explicit opt-in of its own. The
+   box shows what the backend derived from the installed lifecycle hooks and
+   is written by its own command; the agent-status switches never move it. */
+let claudeReentryPending = false;
+export async function persistClaudeReentryChoice() {
+  if (claudeReentryPending) return;
+  const box = $('set-claude-reentry');
+  const desired = box.checked;
+  if (desired && !(await confirmDialog(t('settings.claudeReentryEnableConfirm')))) {
+    box.checked = false;
+    return;
+  }
+  claudeReentryPending = true;
+  box.disabled = true;
+  try {
+    await inv('agent_lifecycle_hooks_set', { enable: desired });
+    toast(t(desired ? 'settings.claudeReentryEnabled' : 'settings.claudeReentryDisabled'));
+  } catch (_) {
+    box.checked = !desired;
+    toast(t('error.agentHooks'));
+    uev('settings-save-fail');
+  } finally {
+    claudeReentryPending = false;
     box.disabled = false;
   }
 }
@@ -1381,6 +1415,8 @@ export function initSettings() {
 
   $('set-codex-hooks').onchange = () =>
     persistAgentHooksChoice('codex', 'set-codex-hooks', 'settings.codexHooksEnableConfirm');
+
+  $('set-claude-reentry').onchange = persistClaudeReentryChoice;
 
   $('set-notify-away').onchange = persistNotifyChoice;
   $('set-notify-sound').onchange = persistNotifyChoice;

@@ -4,8 +4,11 @@ import base64
 import importlib.util
 import io
 import json
+import os
+import plistlib
 import re
 import runpy
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -671,6 +674,207 @@ class ReleaseChannelTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(out, "")
         self.assertIn("invalid numeric version", err)
+
+
+@unittest.skipUnless(sys.platform == "darwin", "check-edr-binary reads a bundle with PlistBuddy and strings")
+class EdrBinaryBundleTests(unittest.TestCase):
+    """scripts/check-edr-binary against local fixture bundles.
+
+    The lifecycle helper is required exactly when the bundle's own application
+    executable names it: a candidate built before the helper existed stays
+    acceptable at promotion, and a bundle that can use the helper cannot ship
+    without it. A helper that is present is always scanned. The fixtures are
+    synthetic text files; what a real release executable carries is measured
+    separately on a local release build, never assumed here.
+    """
+
+    SCRIPT = ROOT / "scripts" / "check-edr-binary"
+    HELPER = "deck-lifecycle-helper"
+    # The three spellings an application executable may carry the name in:
+    # today's two literals of agent_status.rs and the dedicated marker.
+    EVIDENCE = {
+        "name": HELPER,
+        "hook-marker": f"deck.app/Contents/MacOS/{HELPER}",
+        "requires-marker": f"deck-bundle-requires:{HELPER}",
+    }
+    OLD_SIDECARS = ("deck-status-helper", "deck-mcp", "deck-mcp-runner")
+    CLEAN_HELPER = "fixture lifecycle helper\n"
+    # spelled in two parts so that this file never holds a scanned token whole
+    FORBIDDEN = "launch" + "ctl"
+
+    def bundle(self, root: Path, name: str, *, app_names_helper: bool | str, helper: str | None, **other: str) -> Path:
+        """`app_names_helper`: False, True (the hook marker) or an EVIDENCE key."""
+        app = root / f"{name}.app"
+        macos = app / "Contents" / "MacOS"
+        macos.mkdir(parents=True)
+        with (app / "Contents" / "Info.plist").open("wb") as stream:
+            plistlib.dump({"CFBundleExecutable": "deck"}, stream)
+        key = "hook-marker" if app_names_helper is True else app_names_helper
+        marker = f"{self.EVIDENCE[key]}\n" if key else ""
+        (macos / "deck").write_text("fixture application executable\n" + marker + other.get("deck", ""))
+        for sidecar in self.OLD_SIDECARS:
+            (macos / sidecar).write_text(f"fixture sidecar {sidecar}\n" + other.get(sidecar, ""))
+        if helper is not None:
+            (macos / self.HELPER).write_text(helper)
+        return app
+
+    def check(self, app: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([str(self.SCRIPT), str(app)], capture_output=True, text=True, timeout=60)
+
+    def test_a_new_bundle_without_the_helper_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for key in self.EVIDENCE:
+                missing = self.check(self.bundle(root, f"missing-{key}", app_names_helper=key, helper=None))
+                self.assertEqual(missing.returncode, 1, key)
+                self.assertIn(f"references {self.HELPER}, but the bundle does not contain it", missing.stderr, key)
+                self.assertNotIn("vocabulary clean", missing.stdout, key)
+            # the name inside a longer run of text, as a linker lays constants out
+            packed = self.check(self.bundle(root, "packed", app_names_helper=False, helper=None,
+                                            deck=f"agent-status{self.HELPER}deck.app/Contents\n"))
+            self.assertEqual(packed.returncode, 1)
+
+    def test_a_new_bundle_with_the_helper_has_the_helper_scanned(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for key in self.EVIDENCE:
+                complete = self.check(self.bundle(root, f"new-{key}", app_names_helper=key, helper=self.CLEAN_HELPER))
+                self.assertEqual(complete.returncode, 0, complete.stderr)
+                self.assertIn(f"/MacOS/{self.HELPER}", complete.stdout, "a present helper is among the scanned files")
+                for sidecar in ("deck", *self.OLD_SIDECARS):
+                    self.assertIn(f"/MacOS/{sidecar}", complete.stdout, sidecar)
+            dirty = self.check(self.bundle(root, "new-dirty", app_names_helper=True,
+                                           helper=self.CLEAN_HELPER + self.FORBIDDEN + " load\n"))
+            self.assertEqual(dirty.returncode, 1)
+            self.assertIn(f"{self.HELPER} contains forbidden EDR token: {self.FORBIDDEN}", dirty.stderr)
+
+    def test_a_bundle_from_before_the_helper_is_never_rejected_for_lacking_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            old = self.check(self.bundle(root, "old", app_names_helper=False, helper=None))
+            self.assertEqual((old.returncode, old.stderr), (0, ""))
+            self.assertIn("EDR binary vocabulary clean", old.stdout)
+            self.assertNotIn(self.HELPER, old.stdout, "nothing is scanned that the bundle does not have")
+            # the older status helper's name is not evidence of the newer one
+            near = self.check(self.bundle(root, "old-near", app_names_helper=False, helper=None,
+                                          deck="deck.app/Contents/MacOS/deck-status-helper\ndeck-lifecycle\n"))
+            self.assertEqual((near.returncode, near.stderr), (0, ""))
+
+    def test_a_helper_inside_an_old_looking_bundle_is_still_scanned(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            clean = self.check(self.bundle(root, "old-with", app_names_helper=False, helper=self.CLEAN_HELPER))
+            self.assertEqual(clean.returncode, 0, clean.stderr)
+            self.assertIn(f"/MacOS/{self.HELPER}", clean.stdout)
+            dirty = self.check(self.bundle(root, "old-dirty", app_names_helper=False,
+                                           helper=self.CLEAN_HELPER + self.FORBIDDEN + " load\n"))
+            self.assertEqual(dirty.returncode, 1)
+            self.assertIn(f"{self.HELPER} contains forbidden EDR token: {self.FORBIDDEN}", dirty.stderr)
+            # a helper that is not a regular file is not a scanned helper, in
+            # an old-looking bundle as much as in a new one
+            for name, names_helper in (("old-odd", False), ("new-odd", True)):
+                odd = self.bundle(root, name, app_names_helper=names_helper, helper=None)
+                (odd / "Contents" / "MacOS" / self.HELPER).mkdir()
+                self.assertNotEqual(self.check(odd).returncode, 0, name)
+                dangling = self.bundle(root, f"{name}-link", app_names_helper=names_helper, helper=None)
+                (dangling / "Contents" / "MacOS" / self.HELPER).symlink_to("nowhere")
+                self.assertNotEqual(self.check(dangling).returncode, 0, name)
+
+    def test_an_application_executable_that_decides_nothing_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # with and without a helper: the helper's presence does not excuse it
+            for name, helper in (("unreadable", None), ("unreadable-with", self.CLEAN_HELPER)):
+                if os.geteuid() == 0:
+                    break  # the superuser reads a mode-0 file
+                app = self.bundle(root, name, app_names_helper=False, helper=helper)
+                executable = app / "Contents" / "MacOS" / "deck"
+                executable.chmod(0)
+                try:
+                    result = self.check(app)
+                finally:
+                    executable.chmod(0o600)
+                self.assertEqual(result.returncode, 1, name)
+                self.assertIn("could not be read to decide", result.stderr, name)
+                self.assertNotIn("vocabulary clean", result.stdout, name)
+            empty = self.bundle(root, "empty", app_names_helper=False, helper=None)
+            (empty / "Contents" / "MacOS" / "deck").write_text("")
+            result = self.check(empty)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("is empty and cannot decide", result.stderr)
+            gone = self.bundle(root, "gone", app_names_helper=False, helper=None)
+            (gone / "Contents" / "MacOS" / "deck").unlink()
+            self.assertNotEqual(self.check(gone).returncode, 0)
+            folder = self.bundle(root, "folder", app_names_helper=False, helper=None)
+            (folder / "Contents" / "MacOS" / "deck").unlink()
+            (folder / "Contents" / "MacOS" / "deck").mkdir()
+            self.assertNotEqual(self.check(folder).returncode, 0)
+            plistless = self.bundle(root, "plistless", app_names_helper=False, helper=None)
+            (plistless / "Contents" / "Info.plist").unlink()
+            self.assertNotEqual(self.check(plistless).returncode, 0)
+
+    def test_one_bare_executable_is_scanned_without_the_bundle_rule(self) -> None:
+        """The form gate.yml uses on target/release/deck-app: a file, no bundle."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for key in self.EVIDENCE:
+                bare = root / f"deck-app-{key}"
+                bare.write_text(f"fixture bare executable\n{self.EVIDENCE[key]}\n")
+                result = self.check(bare)
+                self.assertEqual((result.returncode, result.stderr), (0, ""), key)
+                self.assertEqual(result.stdout.strip(), f"EDR binary vocabulary clean: {bare}", key)
+            old = root / "deck-app-old"
+            old.write_text("fixture bare executable\n")
+            self.assertEqual(self.check(old).returncode, 0)
+            dirty = root / "deck-app-dirty"
+            dirty.write_text(f"fixture bare executable\n{self.FORBIDDEN}\n")
+            result = self.check(dirty)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(f"contains forbidden EDR token: {self.FORBIDDEN}", result.stderr)
+            self.assertNotEqual(self.check(root / "absent").returncode, 0)
+
+    def test_the_older_sidecars_stay_required_and_scanned(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for sidecar in self.OLD_SIDECARS:
+                gone = self.bundle(root, f"without-{sidecar}", app_names_helper=False, helper=None)
+                (gone / "Contents" / "MacOS" / sidecar).unlink()
+                self.assertNotEqual(self.check(gone).returncode, 0, sidecar)
+                dirty = self.check(self.bundle(root, f"dirty-{sidecar}", app_names_helper=False, helper=None,
+                                               **{sidecar: self.FORBIDDEN + "\n"}))
+                self.assertEqual(dirty.returncode, 1, sidecar)
+                self.assertIn(f"{sidecar} contains forbidden EDR token", dirty.stderr)
+            dirty_app = self.check(self.bundle(root, "dirty-app", app_names_helper=True, helper="fixture\n",
+                                               deck=self.FORBIDDEN + "\n"))
+            self.assertEqual(dirty_app.returncode, 1)
+            self.assertIn("/MacOS/deck contains forbidden EDR token", dirty_app.stderr)
+
+    def test_the_source_still_holds_the_evidence_the_rule_reads(self) -> None:
+        """The source still holds the evidence the rule reads.
+
+        Either the helper's file name is a constant that live code reads at run
+        time (it is joined onto the executable's directory to find the sidecar),
+        or the dedicated `#[used]` marker is present. A source that has neither
+        would let a new bundle pass for an old one. This is a source pin: that
+        a linked release executable keeps the bytes is measured on a build, not
+        proven here, and `#[used]` alone does not promise it.
+        """
+        source = (ROOT / "app" / "src-tauri" / "src" / "agent_status.rs").read_text()
+        runtime_literal = (
+            f'const LIFECYCLE_HELPER_NAME: &str = "{self.HELPER}";' in source
+            and re.search(r"\.join\(\s*LIFECYCLE_HELPER_NAME\s*\)", source) is not None
+        )
+        used_marker = re.search(
+            r'#\[used\]\s*(?:pub(?:\([a-z]+\))? )?static \w+: \[u8; \d+\] = \*b"'
+            + re.escape(self.EVIDENCE["requires-marker"]) + '";',
+            source,
+        ) is not None
+        self.assertTrue(runtime_literal or used_marker)
+        script = self.SCRIPT.read_text()
+        self.assertIn(f"grep -F -c -- {self.HELPER}", script)
+        self.assertIn(self.EVIDENCE["requires-marker"], script, "the script documents the marker it also accepts")
+        for spelling in self.EVIDENCE.values():
+            self.assertIn(self.HELPER, spelling)
 
 
 if __name__ == "__main__":

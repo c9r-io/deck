@@ -793,6 +793,11 @@ enum Input {
     Primitive,
     /// Restored transcript bytes written to the pane as OUTPUT.
     Display,
+    /// The restart's re-entry launch: text Deck itself rebuilds from a frozen
+    /// executable reference and a kernel-attributed native session id, sent
+    /// once into a shell that operation created, on the user's confirmation
+    /// of that restart. Never external text, a saved command or a prompt.
+    Reentry,
     /// A `#[cfg(test)]` fixture: fixed test bytes into an unspawned pty that
     /// only the test reads. Never compiled into the app.
     Fixture,
@@ -801,6 +806,7 @@ enum Input {
 const INPUT_TOKENS: &[&str] = &[
     "prompt_delivery::deliver(",
     "prompt_delivery::deliver_with(",
+    "prompt_delivery::deliver_exclusive(",
     "paste-buffer",
     "load-buffer",
     "set-buffer",
@@ -847,33 +853,40 @@ const TERMINAL_INPUT: &[(&str, &str, &str, usize, Input)] = &[
     ),
     (
         "prompt_delivery.rs",
-        "deliver_with",
+        "transfer",
         "paste-buffer",
         1,
         Input::Primitive,
     ),
     (
         "prompt_delivery.rs",
-        "deliver_with",
+        "transfer",
         "load-buffer",
         1,
         Input::Primitive,
     ),
     (
         "prompt_delivery.rs",
-        "deliver_with",
+        "transfer",
         "send-keys",
         1,
         Input::Primitive,
     ),
     (
         "commands.rs",
-        "start_session",
+        "create_session",
         "send-keys",
         1,
         Input::Config,
     ),
     ("restart.rs", "exit_keys", "send-keys", 1, Input::Config),
+    (
+        "agent_reentry/launch.rs",
+        "send_once",
+        "prompt_delivery::deliver_exclusive(",
+        1,
+        Input::Reentry,
+    ),
     (
         "commands.rs",
         "restore_start_args",
@@ -911,6 +924,87 @@ fn every_terminal_input_site_is_reviewed() {
         scroll.find("guard_terminal_input(&name)?").unwrap()
             < scroll.find("negotiated_args(").unwrap()
     );
+    // The re-entry launch: its text is rebuilt from closed fields, it needs
+    // the restart's exclusive guard as a witness, it runs after the entry's
+    // one slot was consumed, and the shell creator it follows never sends a
+    // command of its own.
+    let launch =
+        std::fs::read_to_string(source_scan::manifest("src/agent_reentry/launch.rs")).unwrap();
+    let send = body("agent_reentry/launch.rs", "send_once");
+    for required in [
+        "held,",
+        "require_paste_mode: true",
+        "require_bracketed: true",
+        "expected_process: Some(shell)",
+    ] {
+        assert!(
+            send.contains(required),
+            "the re-entry launch keeps {required}"
+        );
+    }
+    let primitive =
+        std::fs::read_to_string(source_scan::manifest("src/prompt_delivery.rs")).unwrap();
+    assert!(
+        primitive.contains("_held: &std::sync::RwLockWriteGuard<'static, ()>,"),
+        "the exclusive entry takes the restart's guard as its witness"
+    );
+    let line = body("agent_reentry/launch.rs", "command_line");
+    assert!(line.contains("is_ascii_alphanumeric() || b == b'-'"));
+    assert!(line.contains("char::is_control"));
+    assert_eq!(
+        launch.matches("send_once(").count() - launch.matches("fn send_once(").count(),
+        0,
+        "launch.rs never calls its own sink"
+    );
+    let core = std::fs::read_to_string(source_scan::manifest("src/agent_reentry/mod.rs")).unwrap();
+    let core = core
+        .split("#[cfg(test)]\npub(crate) fn reset_for_tests")
+        .next()
+        .unwrap();
+    assert_eq!(
+        core.matches("launch::send_once(").count(),
+        1,
+        "one call site"
+    );
+    let consumed = core
+        .find("entry.slot = Slot::Consumed;")
+        .expect("slot consumed");
+    assert!(
+        consumed < core.find("launch::send_once(").unwrap(),
+        "the launch slot is consumed before the transport"
+    );
+    assert_eq!(
+        core.matches("Slot::Armed").count(),
+        2,
+        "armed at freeze, read once, never re-armed"
+    );
+    assert!(body("commands.rs", "create_reentry_shell")
+        .contains("create_session(run, stdin, name, dir, \"\","));
+    // The card binding is read under the Board writer's fence and the
+    // transport runs inside that same fenced section, after the slot was
+    // consumed there.
+    let fenced = core.find("(env.fenced)(").expect("the fenced section");
+    let section = &core[fenced..core.find("launch::send_once(").unwrap()];
+    for required in [
+        "Self::bound(env, entry)",
+        "entry.client.executable.same_state()",
+        "entry.slot = Slot::Consumed;",
+    ] {
+        assert!(section.contains(required), "inside the fence: {required}");
+    }
+    // The exact shell generation is asked for at the paste and at the Enter.
+    let transport = launch
+        .split("impl prompt_delivery::Transport for EnvTransport")
+        .nth(1)
+        .expect("the launch transport");
+    assert_eq!(
+        transport
+            .matches("edge_exact(self.env, self.target)")
+            .count(),
+        2
+    );
+    assert!(body("agent_reentry/launch.rs", "edge_exact").contains("live_generation("));
+    assert!(body("tmux_lifecycle.rs", "restart_transaction_on").contains("plan.reopen("));
     // The phone's direct path uses the same agent predicate as the queue.
     let native = body("connector/native.rs", "execute_native");
     let send = native

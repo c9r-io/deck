@@ -90,6 +90,10 @@ fi
 if [ -f binaries/deck-status-helper-aarch64-apple-darwin ]; then
   cp binaries/deck-status-helper-aarch64-apple-darwin "$APP/Contents/MacOS/deck-status-helper"
 fi
+# agent-hook session lifecycle helper, built by build.rs into binaries/ (dmg parity)
+if [ -f binaries/deck-lifecycle-helper-aarch64-apple-darwin ]; then
+  cp binaries/deck-lifecycle-helper-aarch64-apple-darwin "$APP/Contents/MacOS/deck-lifecycle-helper"
+fi
 # MCP adapter and managed terminal runner, built by build.rs into binaries/.
 # They remain ordinary signed bundle sidecars and are never installed globally.
 if [ -f binaries/deck-mcp-aarch64-apple-darwin ]; then
@@ -137,7 +141,7 @@ if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
   if [ -n "${DECK_SMOKE_WKWEBVIEW:-}" ]; then
     SMOKE_MODE=$DECK_SMOKE_WKWEBVIEW
     case "$SMOKE_MODE" in
-      run|restart|ambiguous|settings|attention|review|review-restart|voice|translation|translation-native|translation-guard|resume|buffer|buffer-narrow|channel|channel-fault|channel-first-send|connector|connector-transport|selection-events|signal-finish|authority-live|empty-start|clock-live|reminder|reminder-native|board-lost|approval|ux-layers|terminal-input) ;;
+      run|restart|ambiguous|settings|attention|review|review-restart|voice|translation|translation-native|translation-guard|resume|buffer|buffer-narrow|channel|channel-fault|channel-first-send|connector|connector-transport|selection-events|signal-finish|authority-live|empty-start|clock-live|reminder|reminder-native|board-lost|approval|reentry|ux-layers|terminal-input) ;;
       *) SMOKE_MODE=run ;;
     esac
     # the signal-finish smoke's fake agent: a debug example, never bundled

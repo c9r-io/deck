@@ -810,11 +810,19 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
   position: fixed; inset: 0; z-index: 72; display: none;
   background: var(--modal-overlay); align-items: flex-start; justify-content: center;
 }
+/* The box is bounded by the window and only its body scrolls: the title and
+   the actions stay reachable at the 1280×800 minimum however long the
+   re-entry list or its result is. A review that shows no re-entry content
+   keeps the position and width it always had; restart-reentry.js sets
+   `.reentry` only while it shows something in the box. */
 #tmux-lifecycle-box {
-  margin-top: 12vh; width: 520px; max-width: calc(100vw - 40px);
+  margin-top: 12vh; width: 520px; max-width: calc(100vw - 40px); max-height: 84vh;
+  display: flex; flex-direction: column; box-sizing: border-box;
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 12px; padding: 18px; box-shadow: 0 16px 48px var(--shadow-modal);
 }
+#tmux-lifecycle-box.reentry { margin-top: 8vh; width: 560px; }
+#tmux-lifecycle-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 #tmux-lifecycle-title { font-size: 1.15385rem; font-weight: 600; margin-bottom: 9px; }
 #tmux-lifecycle-message { color: var(--muted); font-size: 1rem; line-height: 1.55; }
 #tmux-impact-list {
@@ -824,7 +832,41 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .tmux-impact-row { padding: 7px 0; border-bottom: 1px solid var(--border-soft); font-size: 0.923077rem; }
 .tmux-impact-row:last-child { border-bottom: 0; }
 .tmux-impact-meta { color: var(--muted); font-size: 0.846154rem; margin-top: 2px; }
-.tmux-lifecycle-actions { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+.tmux-lifecycle-actions { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
+#tmux-reentry[hidden], #tmux-progress[hidden], #tmux-result[hidden] { display: none; }
+#tmux-reentry { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-soft); font-size: 0.923077rem; }
+.reentry-heading { font-weight: 600; font-size: 1rem; }
+.reentry-summary { color: var(--muted); margin: 3px 0 8px; }
+.reentry-setup { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; color: var(--muted); }
+.reentry-setup span { flex: 1; min-width: 0; }
+.reentry-list {
+  max-height: 132px; overflow-y: auto; margin: 6px 0 10px;
+  border: 1px solid var(--border-soft); border-radius: 7px; padding: 3px 10px;
+}
+.reentry-result-list { max-height: 44vh; }
+.reentry-choice { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; min-width: 0; }
+/* a checkbox or a radio, not a text field: the general `input` width (100%) would take the whole row from its label */
+.reentry-choice input { flex: none; width: auto; margin: 0; align-self: center; }
+.reentry-off { padding-left: 21px; color: var(--muted); }
+/* long card names wrap inside the row; they never push a control out */
+.reentry-choice-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.reentry-note { flex: none; max-width: 55%; color: var(--muted); font-size: 0.846154rem; text-align: right; overflow-wrap: anywhere; }
+.reentry-policy { border: 1px solid var(--border-soft); border-radius: 7px; margin: 0 0 10px; padding: 4px 10px 8px; min-width: 0; }
+.reentry-policy legend { padding: 0 5px; font-weight: 600; }
+.reentry-hint { color: var(--muted); font-size: 0.846154rem; line-height: 1.45; margin: 0 0 4px 21px; overflow-wrap: anywhere; }
+.reentry-warning { color: var(--wait); }
+.reentry-notes { color: var(--muted); font-size: 0.846154rem; line-height: 1.5; }
+.reentry-more summary { cursor: pointer; }
+#tmux-progress { margin-top: 12px; font-size: 0.923077rem; }
+.reentry-stage { color: var(--muted); padding: 2px 0; }
+.reentry-stage.current { color: var(--text); font-weight: 600; }
+.reentry-result-row { padding: 6px 0; border-bottom: 1px solid var(--border-soft); }
+.reentry-result-row:last-child { border-bottom: 0; }
+.reentry-result-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.reentry-mark { flex: none; width: 13px; text-align: center; }
+.reentry-result-row.warn .reentry-mark { color: var(--wait); }
+.reentry-result-row.pending .reentry-mark { color: var(--muted); }
+.reentry-open { flex: none; padding: 3px 9px; font-size: 0.846154rem; }
 #tmux-view-sessions { margin-right: auto; }
 .tmux-diag { font-family: var(--mono); font-size: 0.807692rem; color: var(--muted); line-height: 1.55; overflow-wrap: anywhere; }
 

@@ -489,8 +489,14 @@ fn capture(observation: &ShellObservation) -> Result<ShellSnapshot, DeckError> {
 /// Explicit restart bypasses the periodic throttle and waits for durable writes.
 /// Advance the epoch so a periodic capture made before agent exit cannot later
 /// overwrite the resume hint. The existing IO/epoch guard still honors clear.
+///
+/// `list` and `run` are the restart's own reads of the server it is about to
+/// replace (`restart::prepare` hands on what it was given), so the capture
+/// and the restart can never look at two different servers.
 pub(crate) fn checkpoint_before_restart(
     rows: &[crate::tmux::PaneRow],
+    list: &dyn Fn() -> Result<Vec<crate::tmux::PaneRow>, DeckError>,
+    run: &dyn Fn(&[String]) -> Result<String, DeckError>,
     progress: &dyn Fn(&str, usize, usize),
 ) -> Result<(), DeckError> {
     let epoch = {
@@ -499,7 +505,7 @@ pub(crate) fn checkpoint_before_restart(
         tracker.epoch
     };
     let began = std::time::Instant::now();
-    let mut snapshots = capture_restart_rows(rows)?;
+    let mut snapshots = capture_restart_rows(rows, list, run)?;
     // Settle all panes together, not 100ms per card. Compare the bounded text
     // twice; a still-changing tail gets one more observation, then aborts.
     let mut stable = snapshots.is_empty();
@@ -509,7 +515,7 @@ pub(crate) fn checkpoint_before_restart(
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
         crate::session_runtime::check_deadline()?;
-        let next = capture_restart_rows(rows)?;
+        let next = capture_restart_rows(rows, list, run)?;
         stable = snapshots
             .iter()
             .zip(&next)
@@ -547,8 +553,12 @@ pub(crate) fn checkpoint_before_restart(
     crate::session_runtime::check_deadline()
 }
 
-fn capture_restart_rows(rows: &[crate::tmux::PaneRow]) -> Result<Vec<ShellSnapshot>, DeckError> {
-    if !crate::tmux::unchanged_rows(rows, &crate::tmux::list_panes()?) {
+fn capture_restart_rows(
+    rows: &[crate::tmux::PaneRow],
+    list: &dyn Fn() -> Result<Vec<crate::tmux::PaneRow>, DeckError>,
+    run: &dyn Fn(&[String]) -> Result<String, DeckError>,
+) -> Result<Vec<ShellSnapshot>, DeckError> {
+    if !crate::tmux::unchanged_rows(rows, &list()?) {
         return Err(DeckError::new(
             ErrorKind::Recovery,
             "tmux-restart-snapshot-target-changed",
@@ -571,14 +581,14 @@ fn capture_restart_rows(rows: &[crate::tmux::PaneRow]) -> Result<Vec<ShellSnapsh
         }
         if checkpoint_eligible(&observation) {
             // Capture the verified pane, not whichever pane is now selected.
-            let raw = tmux(&[
-                "capture-pane",
-                "-p",
-                "-J",
-                "-t",
-                &row.pane_id,
-                "-S",
-                &format!("-{MAX_TRANSCRIPT_LINES}"),
+            let raw = run(&[
+                "capture-pane".into(),
+                "-p".into(),
+                "-J".into(),
+                "-t".into(),
+                row.pane_id.clone(),
+                "-S".into(),
+                format!("-{MAX_TRANSCRIPT_LINES}"),
             ])?;
             let snapshot = ShellSnapshot {
                 session: observation.session,
@@ -1120,9 +1130,14 @@ mod tests {
         assert!(tracker.last_schedule >= now_epoch().saturating_sub(5));
         drop(tracker);
         assert_eq!(
-            checkpoint_before_restart(&[], &|_, _, _| {})
-                .unwrap_err()
-                .kind(),
+            checkpoint_before_restart(
+                &[],
+                &crate::tmux::list_panes,
+                &|_| Err(DeckError::new(ErrorKind::Other, "not reached")),
+                &|_, _, _| {}
+            )
+            .unwrap_err()
+            .kind(),
             ErrorKind::TmuxMissing
         );
     }

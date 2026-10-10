@@ -95,7 +95,11 @@
 //! an EDR persistence signature, and a dev build once overwrote it with an
 //! ad-hoc-signed binary that Claude Code then executed on every event. Only
 //! a release-location install can enable hooks; dev/smoke builds get an
-//! error and never touch agent config. `migrate_hooks_on_boot` (release
+//! error and never touch agent config.
+//! Explicit debug re-entry experiments may instead read/write their bound
+//! project Lifecycle hook file. Signal/global installation and boot migration
+//! keep the ordinary location restrictions; observation remains file-derived.
+//! `migrate_hooks_on_boot` (release
 //! installs only) rewrites installed entries that are not what the CURRENT
 //! spec describes — `hooks_are_current` compares deck's WHOLE hook and the
 //! matcher of its group (event, matcher, helper path, style, args) and
@@ -204,6 +208,28 @@
 //! early. Adding an agent module = one `AgentAdapter` (registered in
 //! `extensions.rs`) whose spec table calls the same helper with its own
 //! source word, behind its own Settings toggle.
+//!
+//! # A second, separate family on the same socket and the same edit engine
+//! Re-entry (`agent_reentry`) needs a native session id, which the status
+//! helper's payload contract must never carry. So it does not extend that
+//! helper: a second bundled helper, `deck-lifecycle-helper`, speaks its own
+//! closed protocol family (`agent_reentry::lifecycle`), and `handle_stream`
+//! dispatches by family before the Signal parser sees a byte — a lifecycle
+//! line never reaches `parse_event`, `ingest`, the store, interactions,
+//! episodes, notifications or any Signal consumer, and a Signal line never
+//! reaches the lifecycle mailbox. An older app that does not know the
+//! family refuses the line as an unknown Signal state.
+//! Hook ownership is per `Family` (`Signal`: `deck-status-helper`,
+//! `Lifecycle`: `deck-lifecycle-helper`, each with its own marker). Install,
+//! currency check, uninstall and boot migration act on ONE family's hooks:
+//! the status toggle never adds or removes `SessionStart`/`SessionEnd`,
+//! `agent_lifecycle_hooks_set` (the separate, explicit "Claude session
+//! re-entry observation" opt-in) never touches the status hooks, and boot
+//! migration repairs the lifecycle hooks only where they already are
+//! installed — a user of the status hooks is never enrolled. The same
+//! release-location rule, byte-preserving text edit, mode and symlink
+//! handling apply to both. An adapter's optional `reentry` capability is
+//! static data: registered is not enabled, approved or trusted.
 
 use std::collections::HashMap;
 
@@ -274,6 +300,16 @@ pub(crate) struct ForegroundGeneration {
     pid: u32,
     start_seconds: u64,
     start_micros: u32,
+}
+
+impl ForegroundGeneration {
+    pub(crate) fn pid(&self) -> u32 {
+        self.pid
+    }
+    /// The leader's birth instant, as `procinfo::process_start` reads it.
+    pub(crate) fn birth(&self) -> (u64, u32) {
+        (self.start_seconds, self.start_micros)
+    }
 }
 
 /// One accepted observation, bound to the pane generation that reported it.
@@ -867,60 +903,9 @@ pub(crate) fn projections(rows: &[PaneRow]) -> HashMap<String, Observation> {
         .collect()
 }
 
-/// How far up from the reporting process the pane's process may be. A hook
-/// is the agent's child (or a `sh -c` wrapper's grandchild) under the
-/// pane's shell; 32 hops is far beyond any real layering.
-const ORIGIN_HOPS: usize = 32;
-
-/// What the listener read while the helper was still connected: the
-/// kernel's peer pid and one process-table snapshot. The peer's ancestry,
-/// the pane's foreground leader and its birth instant all come from this one
-/// snapshot, so the compared facts describe the same instant.
-pub(crate) struct Origin {
-    pub(crate) peer: Option<u32>,
-    pub(crate) table: ProcessTable,
-}
-
-/// Terminal continuity (the Codex shared-daemon FR): from the reporting
-/// helper up to the pane's foreground leader, every process is on the
-/// pane's controlling terminal — except the ONE process group the agent
-/// detached the hook into. Runtime proof (Claude Code 2.1.283, Codex
-/// 0.157.0 embedded): both spawn each hook in a fresh session, so the hook
-/// (its `sh` and the helper) has no terminal and leads its own group, and
-/// that group leader's parent is the agent on the pane's tty. That leading
-/// run is allowed only when it is terminal-less, is all the helper's group,
-/// and ends at the group's leader; everything above it must hold the pane's
-/// non-zero tty. In the blocked 0.157.1 and 0.160.0 certifications, the shared
-/// app-server daemon is a second terminal-less group between the hook and
-/// the TUI that started it, so its
-/// hooks fail here even though the starter pane passes `foreign-pane` and
-/// the generation check. Deck does not claim the discontinuity IS a daemon;
-/// any topology it cannot prove this way fails closed. One snapshot, no
-/// extra reads. Accepted residual: an agent host that ran hooks inside its
-/// OWN terminal-less group (no new group per hook) would look like a hook
-/// wrapper; neither certified shared-daemon topology does.
-fn terminal_continuous(table: &ProcessTable, chain: &[u32], leader: u32, pane_pid: u32) -> bool {
-    let Some(tty) = table.get(&pane_pid).map(|p| p.tty).filter(|tty| *tty != 0) else {
-        return false;
-    };
-    let Some(end) = chain.iter().position(|pid| *pid == leader) else {
-        return false;
-    };
-    let Some(segment) = chain.get(..=end).and_then(|pids| {
-        pids.iter()
-            .map(|pid| table.get(pid))
-            .collect::<Option<Vec<_>>>()
-    }) else {
-        return false;
-    };
-    let hook_group = segment[0].pgid;
-    let detached = segment.iter().take_while(|p| p.tty != tty).count();
-    let (hook, above) = segment.split_at(detached);
-    hook.iter().all(|p| p.tty == 0 && p.pgid == hook_group)
-        && hook.last().is_none_or(|top| top.pid == hook_group)
-        && !above.is_empty()
-        && above.iter().all(|p| p.tty == tty)
-}
+use crate::agent_origin::{terminal_continuous, ORIGIN_HOPS};
+// Re-exported: existing callers and tests name the origin through this module.
+pub(crate) use crate::agent_origin::Origin;
 
 /// Validate one wire line and commit it to the store. Admission, in order:
 /// a kernel peer (`no-peer`), a pane of this server generation
@@ -1180,6 +1165,21 @@ const DROP_REASONS: &[&str] = &[
     "interaction-mismatch",
     "duplicate-interaction",
     "identity-downgrade",
+    // the lifecycle family (`agent_reentry::lifecycle`), same closed log
+    "lifecycle-oversize",
+    "lifecycle-bad-json",
+    "lifecycle-bad-family",
+    "lifecycle-bad-version",
+    "lifecycle-unknown-source",
+    "lifecycle-bad-id",
+    "lifecycle-bad-field",
+    "lifecycle-no-peer",
+    "lifecycle-foreign-helper",
+    "lifecycle-foreign-client",
+    "lifecycle-foreign-pane",
+    "lifecycle-terminal-discontinuity",
+    "lifecycle-late",
+    "lifecycle-overflow",
 ];
 
 /// How often the drop summary may be written.
@@ -1243,6 +1243,25 @@ fn handle_stream(mut stream: UnixStream, drops: &mut Drops) {
     if line.is_empty() {
         return;
     }
+    // A separate closed protocol family on the same socket: a lifecycle
+    // receipt of the re-entry operation in flight. It is verified and
+    // recorded while the helper is still connected (the close below is its
+    // ACK) and never reaches the Signal parser, store or any consumer.
+    if crate::agent_reentry::lifecycle::is_family(&line) {
+        let result = lifecycle_receipt(&line, &stream);
+        drop(stream);
+        // Without an operation every client's start and end lands here all
+        // day long: that ordinary case is dropped without a line.
+        if let Some(reason) = result
+            .err()
+            .filter(|reason| *reason != "lifecycle-no-lease")
+        {
+            for line in drops.observe(Some(reason), std::time::Instant::now()) {
+                applog(&line);
+            }
+        }
+        return;
+    }
     // The helper stays connected until deck closes the stream, so its
     // ancestry and the pane's foreground generation are read from one
     // snapshot while it is alive; the (slow) pane listing runs after the
@@ -1260,6 +1279,24 @@ fn handle_stream(mut stream: UnixStream, drops: &mut Drops) {
     }
 }
 
+/// One lifecycle line: nothing is read from the kernel unless a lease is
+/// armed; with one, the claim is attributed from a snapshot taken now.
+fn lifecycle_receipt(line: &str, stream: &UnixStream) -> Result<(), &'static str> {
+    use crate::agent_reentry::lifecycle;
+    if !lifecycle::armed() {
+        return Err("lifecycle-no-lease");
+    }
+    let wire = lifecycle::parse(line, |source| {
+        crate::extensions::agent(source).is_some_and(|adapter| adapter.reentry.is_some())
+    })?;
+    let table = crate::procinfo::processes();
+    lifecycle::receive(
+        wire,
+        crate::procinfo::peer_pid(stream),
+        &lifecycle::Kernel::live(&table),
+    )
+}
+
 pub(crate) fn listen_at(path: &Path) -> Result<UnixListener, DeckError> {
     let _ = std::fs::remove_file(path); // stale socket from a previous run
     let listener =
@@ -1268,6 +1305,28 @@ pub(crate) fn listen_at(path: &Path) -> Result<UnixListener, DeckError> {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     Ok(listener)
+}
+
+/// The production accept-and-handle step on a test socket: the re-entry
+/// integration tests feed real helper connections through `handle_stream`.
+#[cfg(test)]
+pub(crate) fn serve_for_tests(
+    listener: UnixListener,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let mut drops = Drops::new(std::time::Instant::now());
+    while !stop.load(std::sync::atomic::Ordering::Acquire) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).expect("blocking stream");
+                handle_stream(stream, &mut drops);
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
 }
 
 /// Accept loop for the status socket. One deck instance owns the data dir
@@ -1315,6 +1374,51 @@ const LEGACY_HELPER_MARKER: &str = ".deck/bin/deck-status-helper";
 
 const HELPER_NAME: &str = "deck-status-helper";
 
+/// The lifecycle helper's marker: a second, separate ownership family.
+const LIFECYCLE_HELPER_MARKER: &str = "deck.app/Contents/MacOS/deck-lifecycle-helper";
+const LIFECYCLE_HELPER_NAME: &str = "deck-lifecycle-helper";
+/// Read by `scripts/check-edr-binary`: an application that carries this
+/// expects the lifecycle helper beside it, so a bundle without the helper is
+/// rejected, while a bundle built before the helper existed (no such bytes)
+/// stays valid. `#[used]` asks the compiler to keep this in the object file
+/// although no code reads it; the language does not promise that a linker
+/// keeps it. It was found in a local release build (lto, strip) and is a
+/// second piece of evidence only: the scan already finds the helper's name
+/// in `LIFECYCLE_HELPER_NAME`, which live code reads.
+#[used]
+static BUNDLE_REQUIRES_LIFECYCLE_HELPER: [u8; 42] = *b"deck-bundle-requires:deck-lifecycle-helper";
+
+/// Which of deck's two hook families an edit owns. Each family installs,
+/// updates, removes and migrates ONLY hooks carrying its own helper marker:
+/// turning the status hooks off never removes the lifecycle hooks, turning
+/// re-entry observation off never removes the status hooks, and neither
+/// touches a hook the user wrote. Having one family never enrolls the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Family {
+    /// `deck-status-helper`: the closed Signal words.
+    Signal,
+    /// `deck-lifecycle-helper`: native session start/end receipts.
+    Lifecycle,
+}
+
+impl Family {
+    fn owns(self, command: &str) -> bool {
+        match self {
+            Family::Signal => {
+                command.contains(HELPER_MARKER) || command.contains(LEGACY_HELPER_MARKER)
+            }
+            Family::Lifecycle => command.contains(LIFECYCLE_HELPER_MARKER),
+        }
+    }
+
+    fn helper_name(self) -> &'static str {
+        match self {
+            Family::Signal => HELPER_NAME,
+            Family::Lifecycle => LIFECYCLE_HELPER_NAME,
+        }
+    }
+}
+
 /// One deck hook: (event, optional matcher, state word).
 type HookSpec = (&'static str, Option<&'static str>, &'static str);
 
@@ -1338,6 +1442,13 @@ const CLAUDE_HOOKS: &[HookSpec] = &[
 /// `Stop` fires when the model attempts to stop — another Stop hook may
 /// force continuation, so "done" can be slightly early; `Interrupt` maps to
 /// turn-done so an Esc-interrupted card settles instead of staying "working".
+/// Claude Code lifecycle receipts for re-entry (the Lifecycle family): the
+/// third field is the helper's event word, not a Signal state.
+const CLAUDE_LIFECYCLE_HOOKS: &[HookSpec] = &[
+    ("SessionStart", None, "session-start"),
+    ("SessionEnd", None, "session-end"),
+];
+
 const CODEX_HOOKS: &[HookSpec] = &[
     ("UserPromptSubmit", None, "working"),
     ("PermissionRequest", None, "needs-input"),
@@ -1355,6 +1466,9 @@ pub(crate) enum HookStyle {
     /// Codex shell form with `"async": true` so the fire-and-forget helper
     /// never blocks a turn; exec form is not documented there.
     ShellAsync,
+    /// Exec form with a one-second hook timeout: a lifecycle receipt is
+    /// synchronous with the client's exit and must never stretch it.
+    ExecBrief,
 }
 
 /// One deck hook object in the agent's document shape.
@@ -1363,6 +1477,9 @@ fn hook_value(style: HookStyle, helper: &str, source: &str, state: &str) -> serd
         HookStyle::Exec => serde_json::json!({
             "type": "command", "command": helper, "args": [source, state], "timeout": 10
         }),
+        HookStyle::ExecBrief => serde_json::json!({
+            "type": "command", "command": helper, "args": [source, state], "timeout": 1
+        }),
         HookStyle::ShellAsync => serde_json::json!({
             "type": "command", "command": format!("\"{helper}\" {source} {state}"),
             "timeout": 10, "async": true
@@ -1370,14 +1487,10 @@ fn hook_value(style: HookStyle, helper: &str, source: &str, state: &str) -> serd
     }
 }
 
-fn command_is_ours(command: &str) -> bool {
-    command.contains(HELPER_MARKER) || command.contains(LEGACY_HELPER_MARKER)
-}
-
-fn hook_is_ours(hook: &serde_json::Value) -> bool {
+fn hook_is_ours(family: Family, hook: &serde_json::Value) -> bool {
     hook.get("command")
         .and_then(|c| c.as_str())
-        .is_some_and(command_is_ours)
+        .is_some_and(|command| family.owns(command))
 }
 
 /// The hooks of one group.
@@ -1390,20 +1503,20 @@ fn entry_hooks(entry: &serde_json::Value) -> impl Iterator<Item = &serde_json::V
 }
 
 /// The group carries a deck hook (it may carry the user's as well).
-fn entry_is_ours(entry: &serde_json::Value) -> bool {
-    entry_hooks(entry).any(hook_is_ours)
+fn entry_is_ours(family: Family, entry: &serde_json::Value) -> bool {
+    entry_hooks(entry).any(|hook| hook_is_ours(family, hook))
 }
 
 /// Take deck's hooks out of one event's list, hook by hook: a hook the user
 /// keeps in the same group stays where it is, and a group goes only when
 /// taking deck's hooks out left it without any.
-fn strip_ours(list: &mut Vec<serde_json::Value>) {
+fn strip_ours(family: Family, list: &mut Vec<serde_json::Value>) {
     list.retain_mut(|entry| {
         let Some(hooks) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
             return true;
         };
         let before = hooks.len();
-        hooks.retain(|hook| !hook_is_ours(hook));
+        hooks.retain(|hook| !hook_is_ours(family, hook));
         hooks.len() == before || !hooks.is_empty()
     });
 }
@@ -1431,7 +1544,20 @@ fn spec_entry(
 /// exists per event, so it cannot see a spec change — a narrowed matcher, a
 /// moved bundle, a legacy `~/.deck/bin` path, a shell-form hook where exec
 /// form is expected. This is the predicate boot migration repairs against.
+#[cfg(test)]
 pub(crate) fn hooks_are_current(
+    root: &serde_json::Value,
+    specs: &[HookSpec],
+    source: &str,
+    style: HookStyle,
+    helper: &str,
+) -> bool {
+    hooks_are_current_of(Family::Signal, root, specs, source, style, helper)
+}
+
+/// `hooks_are_current` for one ownership family.
+fn hooks_are_current_of(
+    family: Family,
     root: &serde_json::Value,
     specs: &[HookSpec],
     source: &str,
@@ -1448,7 +1574,7 @@ pub(crate) fn hooks_are_current(
             .flatten()
             .flat_map(|entry| {
                 entry_hooks(entry)
-                    .filter(|hook| hook_is_ours(hook))
+                    .filter(|hook| hook_is_ours(family, hook))
                     .map(|hook| (entry.get("matcher").cloned(), hook.clone()))
             })
             .collect()
@@ -1476,7 +1602,21 @@ pub(crate) fn hooks_are_current(
 /// taken out first (document-wide, so an event a previous deck version
 /// registered and this one no longer does cannot linger) and the current
 /// specs are written, each in a group of its own, in the agent's `style`.
+#[cfg(test)]
 pub(crate) fn hooks_with_install(
+    root: serde_json::Value,
+    specs: &[HookSpec],
+    source: &str,
+    style: HookStyle,
+    helper: &str,
+) -> Result<serde_json::Value, DeckError> {
+    hooks_with_install_of(Family::Signal, root, specs, source, style, helper)
+}
+
+/// `hooks_with_install` for one ownership family: only that family's hooks
+/// are taken out before its specs are written.
+fn hooks_with_install_of(
+    family: Family,
     mut root: serde_json::Value,
     specs: &[HookSpec],
     source: &str,
@@ -1501,7 +1641,7 @@ pub(crate) fn hooks_with_install(
             continue;
         };
         let before = list.len();
-        strip_ours(list);
+        strip_ours(family, list);
         if list.is_empty() && before > 0 {
             emptied.push(event.clone());
         }
@@ -1528,7 +1668,13 @@ pub(crate) fn hooks_with_install(
 /// Remove every deck-authored hook, and with it the group, the event list
 /// and the `hooks` key that this left empty. An empty list or an empty
 /// `hooks` the user wrote is theirs and stays.
-pub(crate) fn hooks_with_uninstall(mut root: serde_json::Value) -> serde_json::Value {
+#[cfg(test)]
+pub(crate) fn hooks_with_uninstall(root: serde_json::Value) -> serde_json::Value {
+    hooks_with_uninstall_of(Family::Signal, root)
+}
+
+/// `hooks_with_uninstall` for one ownership family.
+fn hooks_with_uninstall_of(family: Family, mut root: serde_json::Value) -> serde_json::Value {
     let mut emptied_all = false;
     if let Some(hooks) = root.get_mut("hooks").and_then(|h| h.as_object_mut()) {
         let mut emptied = Vec::new();
@@ -1537,7 +1683,7 @@ pub(crate) fn hooks_with_uninstall(mut root: serde_json::Value) -> serde_json::V
                 continue;
             };
             let before = list.len();
-            strip_ours(list);
+            strip_ours(family, list);
             if list.is_empty() && before > 0 {
                 emptied.push(event.clone());
             }
@@ -1558,6 +1704,11 @@ pub(crate) fn hooks_with_uninstall(mut root: serde_json::Value) -> serde_json::V
 /// Installed = every deck hook event carries a marker hook; a partial
 /// install reads as OFF so re-enabling repairs it.
 pub(crate) fn hooks_installed(root: &serde_json::Value, specs: &[HookSpec]) -> bool {
+    hooks_installed_of(Family::Signal, root, specs)
+}
+
+/// `hooks_installed` for one ownership family.
+fn hooks_installed_of(family: Family, root: &serde_json::Value, specs: &[HookSpec]) -> bool {
     let Some(hooks) = root.get("hooks").and_then(|h| h.as_object()) else {
         return false;
     };
@@ -1565,7 +1716,7 @@ pub(crate) fn hooks_installed(root: &serde_json::Value, specs: &[HookSpec]) -> b
         hooks
             .get(*event)
             .and_then(|l| l.as_array())
-            .is_some_and(|list| list.iter().any(entry_is_ours))
+            .is_some_and(|list| list.iter().any(|entry| entry_is_ours(family, entry)))
     })
 }
 
@@ -1824,9 +1975,11 @@ enum Stripped {
 
 /// One group without deck's hooks: the user's hooks stay, as written, in
 /// what is left of it (`strip_ours`, on the text).
-fn group_stripped(text: &str, group: &Item) -> Option<Stripped> {
+fn group_stripped(family: Family, text: &str, group: &Item) -> Option<Stripped> {
     let value: serde_json::Value = serde_json::from_str(text.get(group.value.clone())?).ok()?;
-    let ours: Vec<bool> = entry_hooks(&value).map(hook_is_ours).collect();
+    let ours: Vec<bool> = entry_hooks(&value)
+        .map(|hook| hook_is_ours(family, hook))
+        .collect();
     if !ours.contains(&true) {
         return Some(Stripped::Same);
     }
@@ -1859,7 +2012,12 @@ fn group_stripped(text: &str, group: &Item) -> Option<Stripped> {
 /// One event's list without deck's hooks and, on install, with deck's group
 /// at its end. `Gone`: taking deck's hooks out emptied the list, so the
 /// event goes with it.
-fn list_edited(text: &str, list: &Span, add: Option<&serde_json::Value>) -> Option<Stripped> {
+fn list_edited(
+    family: Family,
+    text: &str,
+    list: &Span,
+    add: Option<&serde_json::Value>,
+) -> Option<Stripped> {
     if text.as_bytes().get(list.start) != Some(&b'[') {
         // not a list: nothing of deck's is in it, and the value engine has
         // already refused to add to it
@@ -1869,7 +2027,7 @@ fn list_edited(text: &str, list: &Span, add: Option<&serde_json::Value>) -> Opti
     let mut kept = Vec::new();
     let mut changed = false;
     for group in &old {
-        kept.push(match group_stripped(text, group)? {
+        kept.push(match group_stripped(family, text, group)? {
             Stripped::Same => Some(text[group.whole.clone()].to_string()),
             Stripped::Changed(group) => {
                 changed = true;
@@ -1896,7 +2054,13 @@ fn list_edited(text: &str, list: &Span, add: Option<&serde_json::Value>) -> Opti
 
 /// The document's text after `edit`. `None` when the text is not laid out
 /// the way this reads it; the caller then leaves the file alone.
+#[cfg(test)]
 fn hooks_text_edited(text: &str, edit: HookEdit) -> Option<String> {
+    hooks_text_edited_of(Family::Signal, text, edit)
+}
+
+/// `hooks_text_edited` for one ownership family.
+fn hooks_text_edited_of(family: Family, text: &str, edit: HookEdit) -> Option<String> {
     let bytes = text.as_bytes();
     let start = skip_space(bytes, 0);
     if bytes.get(start) != Some(&b'{') {
@@ -1952,20 +2116,22 @@ fn hooks_text_edited(text: &str, edit: HookEdit) -> Option<String> {
     for event in &events {
         let name = event.key.as_deref()?;
         let add = specs.iter().find(|spec| spec.0 == name).and_then(&group);
-        kept.push(match list_edited(text, &event.value, add.as_ref())? {
-            Stripped::Same => own(event),
-            Stripped::Changed(list) => {
-                changed = true;
-                Some(format!(
-                    "{}{list}",
-                    &text[event.whole.start..event.value.start]
-                ))
-            }
-            Stripped::Gone => {
-                changed = true;
-                None
-            }
-        });
+        kept.push(
+            match list_edited(family, text, &event.value, add.as_ref())? {
+                Stripped::Same => own(event),
+                Stripped::Changed(list) => {
+                    changed = true;
+                    Some(format!(
+                        "{}{list}",
+                        &text[event.whole.start..event.value.start]
+                    ))
+                }
+                Stripped::Gone => {
+                    changed = true;
+                    None
+                }
+            },
+        );
     }
     let lead = layout(text, &hooks.value, &events).lead;
     let mut added = Vec::new();
@@ -2006,7 +2172,17 @@ fn hooks_text_edited(text: &str, edit: HookEdit) -> Option<String> {
 /// engine decides the result; the text is the owner's original with deck's
 /// part changed, and it must parse back to exactly that result or the file
 /// is left alone. A file that does not exist yet has no text to keep.
+#[cfg(test)]
 fn hooks_file_edited(original: Option<&str>, edit: HookEdit) -> Result<Option<String>, DeckError> {
+    hooks_file_edited_of(Family::Signal, original, edit)
+}
+
+/// `hooks_file_edited` for one ownership family.
+fn hooks_file_edited_of(
+    family: Family,
+    original: Option<&str>,
+    edit: HookEdit,
+) -> Result<Option<String>, DeckError> {
     let value = settings_value(original)?;
     let next = match edit {
         HookEdit::Install {
@@ -2015,12 +2191,12 @@ fn hooks_file_edited(original: Option<&str>, edit: HookEdit) -> Result<Option<St
             style,
             helper,
         } => {
-            if hooks_are_current(&value, specs, source, style, helper) {
+            if hooks_are_current_of(family, &value, specs, source, style, helper) {
                 return Ok(None);
             }
-            hooks_with_install(value.clone(), specs, source, style, helper)?
+            hooks_with_install_of(family, value.clone(), specs, source, style, helper)?
         }
-        HookEdit::Uninstall => hooks_with_uninstall(value.clone()),
+        HookEdit::Uninstall => hooks_with_uninstall_of(family, value.clone()),
     };
     if next == value {
         return Ok(None);
@@ -2029,7 +2205,7 @@ fn hooks_file_edited(original: Option<&str>, edit: HookEdit) -> Result<Option<St
         let pretty = serde_json::to_string_pretty(&next).map_err(DeckError::from)?;
         return Ok(Some(format!("{pretty}\n")));
     };
-    hooks_text_edited(original, edit)
+    hooks_text_edited_of(family, original, edit)
         .filter(|edited| {
             serde_json::from_str::<serde_json::Value>(edited).is_ok_and(|value| value == next)
         })
@@ -2106,8 +2282,16 @@ fn write_agent_config(path: &Path, bytes: &[u8], never_ran: &str) -> Result<(), 
 
 /// The helper a hook command may name: the sidecar inside `bundle`, which
 /// must exist and must be quotable as one double-quoted shell word.
+#[cfg(test)]
 fn helper_path_in(bundle: &Path) -> Result<String, DeckError> {
-    let helper = bundle.join("Contents").join("MacOS").join(HELPER_NAME);
+    family_helper_path_in(bundle, Family::Signal)
+}
+
+fn family_helper_path_in(bundle: &Path, family: Family) -> Result<String, DeckError> {
+    let helper = bundle
+        .join("Contents")
+        .join("MacOS")
+        .join(family.helper_name());
     if !helper.is_file() {
         return Err(DeckError::new(
             ErrorKind::Other,
@@ -2137,11 +2321,66 @@ fn helper_path_in(bundle: &Path) -> Result<String, DeckError> {
 /// CLI execute an unsigned binary. Such builds cannot install hooks and
 /// never touch the agent's config at boot.
 fn installed_helper_path() -> Result<String, DeckError> {
+    installed_family_helper_path(Family::Signal)
+}
+
+fn installed_family_helper_path(family: Family) -> Result<String, DeckError> {
+    if matches!(family, Family::Lifecycle) {
+        if let Some(_config) = crate::launch_args::reentry_project_config()
+            .map_err(|reason| DeckError::new(ErrorKind::Other, reason))?
+        {
+            let exe = std::env::current_exe().map_err(DeckError::from)?;
+            let bundle = crate::tmux_lifecycle::app_bundle_root(&exe)
+                .ok_or(DeckError::new(ErrorKind::Other, "missing isolated carrier"))?;
+            return family_helper_path_in(bundle, family);
+        }
+    }
     let exe = std::env::current_exe().map_err(DeckError::from)?;
     let bundle = crate::tmux_lifecycle::app_bundle_root(&exe)
         .filter(|bundle| crate::tmux_lifecycle::stable_installed_bundle(bundle))
         .ok_or(DeckError::new(ErrorKind::Other, "agent status hooks can only be installed from /Applications/deck.app or ~/Applications/deck.app"))?;
-    helper_path_in(bundle)
+    family_helper_path_in(bundle, family)
+}
+
+/// The lifecycle helper a receipt's reporter must be executing: the sidecar
+/// beside this very executable (the installed bundle in a release, the
+/// development bundle otherwise). Only its file identity is ever compared.
+pub(crate) fn bundled_lifecycle_helper() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join(LIFECYCLE_HELPER_NAME)).filter(|helper| helper.is_file())
+}
+
+/// Whether the user has opted in to re-entry observation: the Lifecycle
+/// family's hooks are in Claude Code's settings. Derived from that file,
+/// never stored twice. Installed is not "taking effect": only a receipt of
+/// the real exit ever counts.
+pub(crate) fn lifecycle_observation_installed() -> bool {
+    match crate::launch_args::reentry_project_config() {
+        Ok(Some(path)) => {
+            return read_settings_value(&path).ok().is_some_and(|value| {
+                bundled_lifecycle_helper().is_some_and(|helper| {
+                    hooks_are_current_of(
+                        Family::Lifecycle,
+                        &value,
+                        CLAUDE_LIFECYCLE_HOOKS,
+                        CLAUDE_CODE.source,
+                        HookStyle::ExecBrief,
+                        &helper.to_string_lossy(),
+                    ) && hooks_installed_of(Family::Lifecycle, &value, CLAUDE_LIFECYCLE_HOOKS)
+                })
+            });
+        }
+        Err(_) => return false,
+        Ok(None) => {}
+    }
+    crate::extensions::agent(CLAUDE_CODE.source).is_some_and(|adapter| {
+        !adapter.lifecycle_hooks.is_empty()
+            && (adapter.config_path)()
+                .and_then(|path| read_settings_value(&path).ok())
+                .is_some_and(|value| {
+                    hooks_installed_of(Family::Lifecycle, &value, adapter.lifecycle_hooks)
+                })
+    })
 }
 
 /// Which core-owned generation proof an ACCEPTED event of a source feeds.
@@ -2169,6 +2408,12 @@ pub(crate) struct AgentAdapter {
     style: HookStyle,
     config_path: fn() -> Option<PathBuf>,
     never_ran: &'static str,
+    /// The Lifecycle family's hooks (empty: none). Installed only by the
+    /// separate re-entry observation opt-in, never with the Signal hooks.
+    lifecycle_hooks: &'static [HookSpec],
+    /// Optional static re-entry capability. `None`: this agent is never
+    /// re-entered automatically. `Some` is not enabled, approved or trusted.
+    pub(crate) reentry: Option<&'static crate::agent_reentry::ReentryCapability>,
 }
 
 pub(crate) const CLAUDE_CODE: AgentAdapter = AgentAdapter {
@@ -2178,6 +2423,8 @@ pub(crate) const CLAUDE_CODE: AgentAdapter = AgentAdapter {
     style: HookStyle::Exec,
     config_path: claude_settings_path,
     never_ran: "Claude Code has never run on this Mac — nothing to configure",
+    lifecycle_hooks: CLAUDE_LIFECYCLE_HOOKS,
+    reentry: Some(&crate::agent_reentry::claude::CAPABILITY),
 };
 
 pub(crate) const CODEX: AgentAdapter = AgentAdapter {
@@ -2187,6 +2434,8 @@ pub(crate) const CODEX: AgentAdapter = AgentAdapter {
     style: HookStyle::ShellAsync,
     config_path: codex_hooks_path,
     never_ran: "Codex has never run on this Mac — nothing to configure",
+    lifecycle_hooks: &[],
+    reentry: None,
 };
 
 /// Boot migration, the one write outside the Settings toggle: when hooks are
@@ -2217,6 +2466,32 @@ pub(crate) fn migrate_hooks_on_boot() {
         let Ok(value) = read_settings_value(&path) else {
             continue;
         };
+        // The Lifecycle family is migrated only where the user already
+        // enabled it: a user with the status hooks alone is never enrolled.
+        // A missing lifecycle helper leaves those entries exactly as they are.
+        if !adapter.lifecycle_hooks.is_empty()
+            && hooks_installed_of(Family::Lifecycle, &value, adapter.lifecycle_hooks)
+        {
+            let migrated = installed_family_helper_path(Family::Lifecycle).and_then(|helper| {
+                let edit = HookEdit::Install {
+                    specs: adapter.lifecycle_hooks,
+                    source,
+                    style: HookStyle::ExecBrief,
+                    helper: &helper,
+                };
+                hooks_set_of(Family::Lifecycle, &path, edit, never_ran)
+            });
+            match migrated {
+                Ok(false) => {}
+                Ok(true) => applog(&format!(
+                    "[agent-hooks] {source} lifecycle entries rewritten to the current spec"
+                )),
+                Err(e) => applog(&format!(
+                    "[agent-hooks] {source} lifecycle migration FAILED ({})",
+                    e.code()
+                )),
+            }
+        }
         if !hooks_installed(&value, specs) {
             continue;
         }
@@ -2272,8 +2547,18 @@ fn retire_legacy_helper_copy() {
 /// Apply one edit to an agent's hooks file. Says whether the file was
 /// written: it is not when it already is what the edit asks for.
 fn hooks_set(path: &Path, edit: HookEdit, never_ran: &str) -> Result<bool, DeckError> {
+    hooks_set_of(Family::Signal, path, edit, never_ran)
+}
+
+/// `hooks_set` for one ownership family.
+fn hooks_set_of(
+    family: Family,
+    path: &Path,
+    edit: HookEdit,
+    never_ran: &str,
+) -> Result<bool, DeckError> {
     let original = read_settings_text(path)?;
-    match hooks_file_edited(original.as_deref(), edit)? {
+    match hooks_file_edited_of(family, original.as_deref(), edit)? {
         Some(text) => write_agent_config(path, text.as_bytes(), never_ran).map(|()| true),
         None => Ok(false),
     }
@@ -2283,6 +2568,8 @@ fn hooks_set(path: &Path, edit: HookEdit, never_ran: &str) -> Result<bool, DeckE
 pub(crate) struct AgentHooksStatus {
     claude: bool,
     codex: bool,
+    /// The separate re-entry observation opt-in (Lifecycle family).
+    claude_reentry: bool,
 }
 
 #[tauri::command]
@@ -2299,6 +2586,7 @@ pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
     AgentHooksStatus {
         claude: installed(CLAUDE_CODE.source),
         codex: installed(CODEX.source),
+        claude_reentry: lifecycle_observation_installed(),
     }
 }
 
@@ -2307,6 +2595,12 @@ pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
 /// rewrites deck's own entries and nothing else.
 #[tauri::command]
 pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckError> {
+    if crate::launch_args::debug_arg("--smoke-reentry-config").is_some() {
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "Signal hook editing is unavailable in this experiment",
+        ));
+    }
     let adapter = crate::extensions::agent(&agent)
         .ok_or(DeckError::new(ErrorKind::Other, "unknown agent"))?;
     let (specs, source, style, never_ran) = (
@@ -2345,6 +2639,51 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
     result
 }
 
+/// The user's explicit opt-in to Claude session re-entry observation: adds
+/// or removes ONLY the Lifecycle family's `SessionStart`/`SessionEnd` hooks.
+/// The status hooks, the user's hooks and every other byte stay; a release
+/// install is required exactly as for the status hooks, so a development or
+/// smoke build never edits the agent's settings.
+#[tauri::command]
+pub(crate) fn agent_lifecycle_hooks_set(enable: bool) -> Result<(), DeckError> {
+    let adapter = crate::extensions::agent(CLAUDE_CODE.source)
+        .filter(|adapter| adapter.reentry.is_some() && !adapter.lifecycle_hooks.is_empty())
+        .ok_or(DeckError::new(ErrorKind::Other, "unknown agent"))?;
+    let path = match crate::launch_args::reentry_project_config()
+        .map_err(|reason| DeckError::new(ErrorKind::Other, reason))?
+    {
+        Some(path) => path,
+        None => {
+            (adapter.config_path)().ok_or(DeckError::new(ErrorKind::Other, "no home directory"))?
+        }
+    };
+    let result = if enable {
+        installed_family_helper_path(Family::Lifecycle).and_then(|helper| {
+            let edit = HookEdit::Install {
+                specs: adapter.lifecycle_hooks,
+                source: adapter.source,
+                style: HookStyle::ExecBrief,
+                helper: &helper,
+            };
+            hooks_set_of(Family::Lifecycle, &path, edit, adapter.never_ran)
+        })
+    } else {
+        hooks_set_of(
+            Family::Lifecycle,
+            &path,
+            HookEdit::Uninstall,
+            adapter.never_ran,
+        )
+    }
+    .map(|_written| ());
+    applog(&format!(
+        "[agent-hooks] lifecycle {} {}",
+        if enable { "install" } else { "remove" },
+        result.as_ref().map_or_else(|e| e.code(), |()| "ok")
+    ));
+    result
+}
+
 // ---------- tests -------------------------------------------------------------
 
 /// Tests that touch the process-wide agent store run one at a time, in this
@@ -2355,6 +2694,94 @@ pub(crate) static STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The isolated bundle basename must preserve production ownership, not
+    /// merely produce entries that the installer can write successfully.
+    #[test]
+    fn isolated_project_lifecycle_hooks_round_trip_through_production_ownership() {
+        let helper = "/private/tmp/deck-reentry-ab12/deck.app/Contents/MacOS/deck-lifecycle-helper";
+        let edit = HookEdit::Install {
+            specs: CLAUDE_LIFECYCLE_HOOKS,
+            source: CLAUDE_CODE.source,
+            style: HookStyle::ExecBrief,
+            helper,
+        };
+        let installed = hooks_file_edited_of(Family::Lifecycle, Some("{}\n"), edit)
+            .unwrap()
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&installed).unwrap();
+        assert!(hooks_installed_of(
+            Family::Lifecycle,
+            &value,
+            CLAUDE_LIFECYCLE_HOOKS
+        ));
+        assert!(hooks_are_current_of(
+            Family::Lifecycle,
+            &value,
+            CLAUDE_LIFECYCLE_HOOKS,
+            CLAUDE_CODE.source,
+            HookStyle::ExecBrief,
+            helper
+        ));
+        assert!(
+            hooks_file_edited_of(Family::Lifecycle, Some(&installed), edit)
+                .unwrap()
+                .is_none()
+        );
+        let removed =
+            hooks_file_edited_of(Family::Lifecycle, Some(&installed), HookEdit::Uninstall)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&removed).unwrap(),
+            serde_json::json!({})
+        );
+        let wrong = installed.replace("/deck.app/", "/deck-reentry.app/");
+        assert!(!hooks_installed_of(
+            Family::Lifecycle,
+            &serde_json::from_str::<serde_json::Value>(&wrong).unwrap(),
+            CLAUDE_LIFECYCLE_HOOKS
+        ));
+    }
+
+    /// Not a test of its own: prints, for review, a settings document that
+    /// holds the Lifecycle family's two hooks for the helper file named in
+    /// `DECK_M1_HELPER`. Each entry is built by `spec_entry`, the function
+    /// an install writes its entries with, in the lifecycle style; only the
+    /// outer `hooks` object is assembled here. Nothing is installed and no
+    /// settings file is read or written: `agent_lifecycle_hooks_set` and its
+    /// release-location rule are not involved. Standard error says whether
+    /// this build would recognise those hooks as its own install — a helper
+    /// outside a `deck.app` bundle is not, so such a file can never satisfy
+    /// `lifecycle_observation_installed`.
+    #[test]
+    #[ignore = "run only to generate the native certification's project hook file"]
+    fn lifecycle_hook_file_for_review() {
+        let Ok(helper) = std::env::var("DECK_M1_HELPER") else {
+            return;
+        };
+        let mut hooks = serde_json::Map::new();
+        for spec in CLAUDE_LIFECYCLE_HOOKS {
+            hooks.insert(
+                spec.0.to_string(),
+                serde_json::json!([spec_entry(
+                    HookStyle::ExecBrief,
+                    &helper,
+                    CLAUDE_CODE.source,
+                    spec
+                )]),
+            );
+        }
+        let document = serde_json::json!({ "hooks": hooks });
+        eprintln!(
+            "recognised-as-this-builds-install={}",
+            hooks_installed_of(Family::Lifecycle, &document, CLAUDE_LIFECYCLE_HOOKS)
+        );
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&document).expect("a JSON document")
+        );
+    }
 
     const HELPER: &str = "/Applications/deck.app/Contents/MacOS/deck-status-helper";
 
@@ -3880,7 +4307,12 @@ mod tests {
     fn hook_status_command_returns_both_closed_agent_fields() {
         let status = serde_json::to_value(agent_hooks_status()).unwrap();
         let object = status.as_object().unwrap();
-        assert_eq!(object.len(), 2);
+        // the two Signal toggles, plus the separate re-entry observation
+        // opt-in (the Lifecycle family): three closed booleans, nothing else
+        assert_eq!(object.len(), 3);
+        assert!(object
+            .get("claude_reentry")
+            .is_some_and(serde_json::Value::is_boolean));
         assert!(object
             .get("claude")
             .is_some_and(serde_json::Value::is_boolean));
@@ -5249,5 +5681,462 @@ mod tests {
         // the test binary is not a release install: no hook may name it
         let error = installed_helper_path().unwrap_err();
         assert!(error.message().contains("/Applications/deck.app"));
+    }
+
+    // ---------- two ownership families: Signal and Lifecycle ----------------
+
+    const LIFECYCLE_HELPER: &str = "/Applications/deck.app/Contents/MacOS/deck-lifecycle-helper";
+    const LIFECYCLE_INSTALL: HookEdit = HookEdit::Install {
+        specs: CLAUDE_LIFECYCLE_HOOKS,
+        source: "claude-code",
+        style: HookStyle::ExecBrief,
+        helper: LIFECYCLE_HELPER,
+    };
+
+    fn family_edit(family: Family, text: &str, edit: HookEdit) -> Option<String> {
+        hooks_file_edited_of(family, Some(text), edit).expect("an editable document")
+    }
+
+    fn document(text: &str) -> serde_json::Value {
+        serde_json::from_str(text).expect("a JSON document")
+    }
+
+    /// The user's own hooks: one under an event the lifecycle family also
+    /// uses, one under an event the Signal family also uses.
+    const USER_HOOKS: &str = r#"{
+    "model": "opus",
+    "hooks": {
+        "SessionStart": [
+            { "hooks": [ { "type": "command", "command": "/usr/local/bin/mine start" } ] }
+        ],
+        "Stop": [ { "hooks": [ { "type": "command", "command": "/usr/local/bin/mine stop", "timeout": 5 } ] } ]
+    }
+ }"#;
+
+    #[test]
+    fn each_hook_family_installs_and_removes_only_its_own_hooks() {
+        let signal = family_edit(Family::Signal, USER_HOOKS, CLAUDE_INSTALL).unwrap();
+        let both = family_edit(Family::Lifecycle, &signal, LIFECYCLE_INSTALL).unwrap();
+        let value = document(&both);
+        assert!(hooks_installed_of(Family::Signal, &value, CLAUDE_HOOKS));
+        assert!(hooks_installed_of(
+            Family::Lifecycle,
+            &value,
+            CLAUDE_LIFECYCLE_HOOKS
+        ));
+        // the lifecycle hook: exec form, the closed event word, one second
+        assert_eq!(
+            value["hooks"]["SessionEnd"],
+            serde_json::json!([{ "hooks": [{
+                "type": "command", "command": LIFECYCLE_HELPER,
+                "args": ["claude-code", "session-end"], "timeout": 1
+            }] }])
+        );
+        // beside the user's own SessionStart group, not instead of it
+        let starts = value["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(starts.len(), 2);
+        assert_eq!(
+            starts[0]["hooks"][0]["command"],
+            "/usr/local/bin/mine start"
+        );
+        assert_eq!(starts[1]["hooks"][0]["args"][1], "session-start");
+        // asking again writes nothing
+        assert_eq!(
+            family_edit(Family::Lifecycle, &both, LIFECYCLE_INSTALL),
+            None
+        );
+        assert_eq!(family_edit(Family::Signal, &both, CLAUDE_INSTALL), None);
+
+        // Turning the status hooks off keeps the lifecycle hooks and the
+        // user's: the result is what installing lifecycle alone gives.
+        let without_signal = family_edit(Family::Signal, &both, HookEdit::Uninstall).unwrap();
+        let lifecycle_only = family_edit(Family::Lifecycle, USER_HOOKS, LIFECYCLE_INSTALL).unwrap();
+        assert_eq!(document(&without_signal), document(&lifecycle_only));
+        assert!(hooks_installed_of(
+            Family::Lifecycle,
+            &document(&without_signal),
+            CLAUDE_LIFECYCLE_HOOKS
+        ));
+        assert!(!without_signal.contains("deck-status-helper"));
+        assert!(without_signal.contains("/usr/local/bin/mine stop"));
+
+        // Turning re-entry observation off keeps the status hooks and the
+        // user's, byte for byte.
+        assert_eq!(
+            family_edit(Family::Lifecycle, &both, HookEdit::Uninstall).unwrap(),
+            signal
+        );
+        // with both families gone the owner's bytes are back
+        assert_eq!(
+            family_edit(Family::Lifecycle, &without_signal, HookEdit::Uninstall).unwrap(),
+            USER_HOOKS
+        );
+        assert_eq!(
+            family_edit(Family::Signal, &signal, HookEdit::Uninstall).unwrap(),
+            USER_HOOKS
+        );
+    }
+
+    #[test]
+    fn a_status_hook_user_is_never_enrolled_in_lifecycle_observation() {
+        let signal = family_edit(Family::Signal, USER_HOOKS, CLAUDE_INSTALL).unwrap();
+        let value = document(&signal);
+        assert!(!hooks_installed_of(
+            Family::Lifecycle,
+            &value,
+            CLAUDE_LIFECYCLE_HOOKS
+        ));
+        assert!(value["hooks"].get("SessionEnd").is_none());
+        assert_eq!(value["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
+        // the Signal family's own repair (what boot migration applies) of a
+        // moved bundle adds no lifecycle hook either
+        let moved = HookEdit::Install {
+            specs: CLAUDE_HOOKS,
+            source: "claude-code",
+            style: HookStyle::Exec,
+            helper: "/Users/u/Applications/deck.app/Contents/MacOS/deck-status-helper",
+        };
+        let repaired = document(&family_edit(Family::Signal, &signal, moved).unwrap());
+        assert!(!hooks_installed_of(
+            Family::Lifecycle,
+            &repaired,
+            CLAUDE_LIFECYCLE_HOOKS
+        ));
+        assert!(!repaired.to_string().contains("deck-lifecycle-helper"));
+        // removing a family that is not there writes nothing
+        assert_eq!(
+            family_edit(Family::Lifecycle, &signal, HookEdit::Uninstall),
+            None
+        );
+        assert_eq!(
+            family_edit(Family::Lifecycle, USER_HOOKS, HookEdit::Uninstall),
+            None
+        );
+        // neither family touches a file it cannot read as JSON
+        for family in [Family::Signal, Family::Lifecycle] {
+            assert!(hooks_file_edited_of(family, Some("{ not json"), HookEdit::Uninstall).is_err());
+            assert!(hooks_file_edited_of(family, Some("{ not json"), LIFECYCLE_INSTALL).is_err());
+        }
+    }
+
+    #[test]
+    fn a_moved_bundle_updates_the_lifecycle_hooks_and_keeps_a_user_hook_in_their_group() {
+        // the user put a hook of their own into deck's lifecycle group
+        let installed = family_edit(Family::Lifecycle, USER_HOOKS, LIFECYCLE_INSTALL).unwrap();
+        let mut value = document(&installed);
+        let end = value["hooks"]["SessionEnd"][0]["hooks"]
+            .as_array_mut()
+            .unwrap();
+        end.push(serde_json::json!({ "type": "command", "command": "/usr/local/bin/mine end" }));
+        let mixed = serde_json::to_string_pretty(&value).unwrap();
+        let stale = HookEdit::Install {
+            specs: CLAUDE_LIFECYCLE_HOOKS,
+            source: "claude-code",
+            style: HookStyle::ExecBrief,
+            helper: "/Users/u/Applications/deck.app/Contents/MacOS/deck-lifecycle-helper",
+        };
+        assert!(hooks_are_current_of(
+            Family::Lifecycle,
+            &document(&mixed),
+            CLAUDE_LIFECYCLE_HOOKS,
+            "claude-code",
+            HookStyle::ExecBrief,
+            LIFECYCLE_HELPER
+        ));
+        let moved = document(&family_edit(Family::Lifecycle, &mixed, stale).unwrap());
+        let text = moved.to_string();
+        for event in ["SessionStart", "SessionEnd"] {
+            let ours: Vec<&str> = moved["hooks"][event]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|group| group["hooks"].as_array().unwrap())
+                .filter_map(|hook| hook["command"].as_str())
+                .filter(|command| command.contains("deck-lifecycle-helper"))
+                .collect();
+            assert_eq!(
+                ours,
+                ["/Users/u/Applications/deck.app/Contents/MacOS/deck-lifecycle-helper"],
+                "{event}"
+            );
+        }
+        assert!(
+            text.contains("/usr/local/bin/mine end"),
+            "the user's hook stays"
+        );
+        // and removal leaves that hook, in its group, behind
+        let removed =
+            document(&family_edit(Family::Lifecycle, &mixed, HookEdit::Uninstall).unwrap());
+        assert_eq!(
+            removed["hooks"]["SessionEnd"][0]["hooks"],
+            serde_json::json!([{ "type": "command", "command": "/usr/local/bin/mine end" }])
+        );
+        assert!(!removed.to_string().contains("deck-lifecycle-helper"));
+    }
+
+    #[test]
+    fn only_claude_declares_a_reentry_capability_and_lifecycle_hooks() {
+        let claude = crate::extensions::agent("claude-code").expect("registered");
+        assert!(claude.reentry.is_some());
+        assert_eq!(claude.lifecycle_hooks.len(), 2);
+        let codex = crate::extensions::agent("codex").expect("registered");
+        assert!(codex.reentry.is_none(), "Codex is never re-entered");
+        assert!(codex.lifecycle_hooks.is_empty());
+        assert!(crate::extensions::agent("fake-agent").is_none());
+        // the two helpers are two markers: neither family owns the other's
+        for (family, command, owns) in [
+            (Family::Signal, HELPER, true),
+            (Family::Signal, LIFECYCLE_HELPER, false),
+            (Family::Lifecycle, LIFECYCLE_HELPER, true),
+            (Family::Lifecycle, HELPER, false),
+            (
+                Family::Lifecycle,
+                "/Users/u/.deck/bin/deck-status-helper",
+                false,
+            ),
+            (
+                Family::Signal,
+                "/Users/u/.deck/bin/deck-status-helper",
+                true,
+            ),
+        ] {
+            assert_eq!(family.owns(command), owns, "{family:?} {command}");
+        }
+        // a development build cannot install either family
+        assert!(agent_lifecycle_hooks_set(true).is_err());
+    }
+
+    /// Not a test of its own: the child of
+    /// `the_production_read_entries_answer_from_a_real_home_and_environment`.
+    /// It calls the three production read entries of the re-entry assembly
+    /// exactly as production does — nothing is handed in — in whatever home
+    /// and environment it was started with, runs the production assembly
+    /// over their answers, and prints closed words.
+    #[test]
+    #[ignore = "run only as a child process, in a home and an environment its parent made"]
+    fn production_read_entries_child() {
+        if std::env::var_os("DECK_READ_ENTRIES_CHILD").is_none() {
+            return;
+        }
+        let (Some(home), Some(capability)) = (
+            dirs::home_dir(),
+            crate::extensions::agent(CLAUDE_CODE.source).and_then(|adapter| adapter.reentry),
+        ) else {
+            return println!("ENTRIES unavailable");
+        };
+        let helper = bundled_lifecycle_helper();
+        let installed = lifecycle_observation_installed();
+        let baseline = crate::procinfo::own_baseline_supported(&home, capability.grammar);
+        // the assembly reads no pane here: its tmux is never called
+        let tmux = |_: &[&str]| Err(DeckError::new(ErrorKind::Tmux, "not called"));
+        let tmux_stdin = |_: &[&str], _: &[u8]| Err(DeckError::new(ErrorKind::Tmux, "not called"));
+        let (observes, assembled_baseline) = crate::tmux_lifecycle::assemble_reentry_env(
+            &crate::tmux_lifecycle::ReentryParts {
+                tmux: &tmux,
+                tmux_stdin: &tmux_stdin,
+                socket: "unused",
+                capability,
+                helper: helper.clone(),
+                hooks_installed: installed,
+                home: &home,
+                baseline,
+            },
+            |env| (env.observation, env.baseline),
+        );
+        println!(
+            "ENTRIES settings-say-installed={installed} helper-beside-the-executable={} baseline-supported={baseline} assembly-observes={observes} assembly-baseline={assembled_baseline}",
+            helper.is_some()
+        );
+    }
+
+    /// The three read entries the re-entry assembly takes its facts from —
+    /// the user-level opt-in, the helper beside the executable, the baseline
+    /// of this process's environment — were handed to every earlier test and
+    /// to every native stage as explicit values. Here each one answers by
+    /// itself, in a child process whose home, environment and directory this
+    /// test made; the real home and the real Claude settings are never read.
+    ///
+    /// What the missing-helper cells show is the layer they call: the
+    /// assembly does not observe. Nothing here runs a restart.
+    #[test]
+    fn the_production_read_entries_answer_from_a_real_home_and_environment() {
+        use std::path::Path;
+        let root = std::env::temp_dir().join(format!("deck-read-entries-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let exe = std::env::current_exe().expect("test executable");
+        // this test binary under two directories: one with a file of the
+        // helper's name beside it, one without
+        let (with, without) = (root.join("with-helper"), root.join("without-helper"));
+        for dir in [&with, &without] {
+            std::fs::create_dir_all(dir).expect("directory");
+            std::fs::hard_link(&exe, dir.join("entries"))
+                .or_else(|_| std::fs::copy(&exe, dir.join("entries")).map(|_| ()))
+                .expect("a copy of the test binary");
+        }
+        std::fs::write(with.join(LIFECYCLE_HELPER_NAME), b"").expect("helper name");
+        // settings documents built by the production entry builder
+        let document = |helper: &str, specs: &[HookSpec]| {
+            let mut hooks = serde_json::Map::new();
+            for spec in specs {
+                hooks.insert(
+                    spec.0.to_string(),
+                    serde_json::json!([spec_entry(
+                        HookStyle::ExecBrief,
+                        helper,
+                        CLAUDE_CODE.source,
+                        spec
+                    )]),
+                );
+            }
+            serde_json::json!({ "hooks": hooks })
+        };
+        let signal = document(
+            "/Applications/deck.app/Contents/MacOS/deck-status-helper",
+            CLAUDE_HOOKS,
+        );
+        let lifecycle = document(
+            "/Applications/deck.app/Contents/MacOS/deck-lifecycle-helper",
+            CLAUDE_LIFECYCLE_HOOKS,
+        );
+        assert!(hooks_installed(&signal, CLAUDE_HOOKS));
+        assert!(!hooks_installed_of(
+            Family::Lifecycle,
+            &signal,
+            CLAUDE_LIFECYCLE_HOOKS
+        ));
+        assert!(hooks_installed_of(
+            Family::Lifecycle,
+            &lifecycle,
+            CLAUDE_LIFECYCLE_HOOKS
+        ));
+        let home = |name: &str, settings: Option<&serde_json::Value>| {
+            let home = root.join(name);
+            std::fs::create_dir_all(home.join(".claude")).expect("home");
+            if let Some(settings) = settings {
+                std::fs::write(
+                    home.join(".claude").join("settings.json"),
+                    serde_json::to_string_pretty(settings).expect("document"),
+                )
+                .expect("settings");
+            }
+            home
+        };
+        let (none, only_signal, opted_in) = (
+            home("home-no-settings", None),
+            home("home-signal-only", Some(&signal)),
+            home("home-lifecycle", Some(&lifecycle)),
+        );
+        let answer = |dir: &Path, home: &Path, extra: &[(&str, &str)]| -> String {
+            let out = std::process::Command::new(dir.join("entries"))
+                .args([
+                    "--exact",
+                    "agent_status::tests::production_read_entries_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("HOME", home)
+                .env("PATH", "/usr/bin:/bin")
+                .env("DECK_READ_ENTRIES_CHILD", "1")
+                .envs(extra.iter().copied())
+                .output()
+                .expect("the child process");
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .find_map(|line| line.strip_prefix("ENTRIES "))
+                .unwrap_or("no answer")
+                .to_string()
+        };
+        let line = |installed: bool, helper: bool, baseline: bool, observes: bool| {
+            format!(
+                "settings-say-installed={installed} helper-beside-the-executable={helper} baseline-supported={baseline} assembly-observes={observes} assembly-baseline={baseline}"
+            )
+        };
+        // no settings file: nothing is installed, with or without a helper
+        assert_eq!(
+            answer(&without, &none, &[]),
+            line(false, false, true, false)
+        );
+        assert_eq!(answer(&with, &none, &[]), line(false, true, true, false));
+        // only the Signal family's hooks: not an opt-in to observation
+        assert_eq!(
+            answer(&with, &only_signal, &[]),
+            line(false, true, true, false)
+        );
+        // the Lifecycle family's hooks and the helper: the assembly observes
+        assert_eq!(answer(&with, &opted_in, &[]), line(true, true, true, true));
+        // the same opt-in without a helper beside the executable: it does not
+        assert_eq!(
+            answer(&without, &opted_in, &[]),
+            line(true, false, true, false)
+        );
+        // an environment that carries a refused name is not a supported baseline
+        for refused in [
+            ("CLAUDE_CONFIG_DIR", "/elsewhere"),
+            ("ANTHROPIC_BASE_URL", "x"),
+            ("CLAUDE_CODE_USE_BEDROCK", "1"),
+            ("AWS_BEARER_TOKEN_BEDROCK", "x"),
+        ] {
+            assert_eq!(
+                answer(&with, &opted_in, &[refused]),
+                line(true, true, false, true),
+                "{}",
+                refused.0
+            );
+        }
+        // a name that is not refused changes nothing
+        assert_eq!(
+            answer(&with, &opted_in, &[("DISABLE_AUTOUPDATER", "1")]),
+            line(true, true, true, true)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Not a test of its own: for a tool outside this crate that must agree
+    /// with the lifecycle writer. In every directory under the one
+    /// `DECK_HOOK_WRITER_OUT` names it applies the writer the Settings toggle
+    /// calls (`hooks_set_of` with the registered adapter's lifecycle specs)
+    /// to that directory's `settings.json` — which may be absent — once to
+    /// install and once to uninstall, and keeps a copy of the file after
+    /// each step. It reads and writes nothing outside that directory.
+    #[test]
+    #[ignore = "run only by a tool that names an output directory"]
+    fn lifecycle_hook_writer_steps() {
+        let (Some(out), Ok(helper)) = (
+            std::env::var_os("DECK_HOOK_WRITER_OUT").map(std::path::PathBuf::from),
+            std::env::var("DECK_HOOK_WRITER_HELPER"),
+        ) else {
+            return;
+        };
+        let adapter = crate::extensions::agent(CLAUDE_CODE.source).expect("the Claude adapter");
+        let install = HookEdit::Install {
+            specs: adapter.lifecycle_hooks,
+            source: adapter.source,
+            style: HookStyle::ExecBrief,
+            helper: &helper,
+        };
+        let mut cases: Vec<std::path::PathBuf> = std::fs::read_dir(&out)
+            .expect("the output directory")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.is_dir())
+            .collect();
+        cases.sort();
+        for case in cases {
+            let path = case.join("settings.json");
+            let step = |edit: HookEdit, keep: &str| {
+                let wrote = hooks_set_of(Family::Lifecycle, &path, edit, adapter.never_ran);
+                if path.exists() {
+                    std::fs::copy(&path, case.join(keep)).expect("keep a copy");
+                }
+                wrote.map_or_else(|e| e.code().to_string(), |wrote| wrote.to_string())
+            };
+            let installed = step(install, "after-install.json");
+            let again = step(install, "after-second-install.json");
+            let removed = step(HookEdit::Uninstall, "after-uninstall.json");
+            println!(
+                "WRITER case={} install-wrote={installed} second-install-wrote={again} uninstall-wrote={removed}",
+                case.file_name().unwrap_or_default().to_string_lossy()
+            );
+        }
     }
 }

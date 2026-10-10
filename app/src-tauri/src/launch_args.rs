@@ -1,6 +1,96 @@
 //! Launch arguments. `--debug-logging` is the one flag a release build honours;
 //! every `--smoke-*` value is read only by debug bundles (`debug_arg`), so
 //! the isolated WKWebView smoke can never redirect a shipped deck.
+//! The explicit re-entry experiment additionally binds its project settings,
+//! private data/socket and bundle to one temporary root; invalid input exits
+//! before any data access. It preserves the real HOME and never uses fixtures.
+
+/// A narrowly scoped, debug-only project hook file. No global config fallback
+/// is allowed when this explicit experiment argument is present.
+pub(crate) fn reentry_project_config() -> Result<Option<std::path::PathBuf>, &'static str> {
+    if !cfg!(debug_assertions) {
+        return Ok(None);
+    }
+    let Some(config) = debug_arg("--smoke-reentry-config") else {
+        if command_flag("--smoke-reentry-config") {
+            return Err("incomplete reentry isolation");
+        }
+        return Ok(None);
+    };
+    let data = debug_arg("--smoke-data-dir").ok_or("missing isolated data")?;
+    let socket = debug_arg("--smoke-tmux-socket").ok_or("missing isolated socket")?;
+    if debug_arg("--smoke-wkwebview").is_some() {
+        return Err("reentry experiment cannot use fixtures");
+    }
+    let exe = std::env::current_exe().map_err(|_| "missing carrier")?;
+    validate_reentry_paths(&data, &socket, &config, &exe).map(Some)
+}
+
+fn validate_reentry_paths(
+    data: &str,
+    socket: &str,
+    config: &str,
+    exe: &std::path::Path,
+) -> Result<std::path::PathBuf, &'static str> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::path::{Component, Path};
+    let data = Path::new(data);
+    let root = data.parent().ok_or("missing experiment root")?;
+    let root_name = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("invalid root")?;
+    let suffix = root_name
+        .strip_prefix("deck-reentry-")
+        .ok_or("invalid root")?;
+    if suffix.is_empty()
+        || !suffix.bytes().all(|b| b.is_ascii_hexdigit())
+        || root.parent() != Some(Path::new("/private/tmp"))
+        || data != root.join("data")
+        || socket != format!("deck-smoke-reentry-{suffix}")
+        || socket.len() > 48
+        || Path::new(config) != root.join("work/.claude/settings.json")
+        || exe != root.join("deck.app/Contents/MacOS/deck")
+    {
+        return Err("reentry isolation binding mismatch");
+    }
+    for path in [root, data, Path::new(config), exe] {
+        if path.components().any(|c| matches!(c, Component::ParentDir))
+            || std::fs::canonicalize(path).ok().as_deref() != Some(path)
+        {
+            return Err("reentry path must be canonical and unlinked");
+        }
+    }
+    for path in [root, data, &root.join("work"), &root.join("work/.claude")] {
+        let m = std::fs::symlink_metadata(path).map_err(|_| "missing isolated directory")?;
+        if !m.is_dir() || m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 {
+            return Err("isolated directory must be user owned and private");
+        }
+    }
+    let m = std::fs::symlink_metadata(config).map_err(|_| "missing project settings")?;
+    if !m.is_file()
+        || m.uid() != unsafe { libc::geteuid() }
+        || m.mode() & 0o077 != 0
+        || m.len() > 65536
+    {
+        return Err("invalid project settings file");
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(config).map_err(|_| "unreadable project settings")?)
+            .map_err(|_| "invalid project settings JSON")?;
+    if !value.is_object() {
+        return Err("project settings must be an object");
+    }
+    let helper = exe
+        .parent()
+        .ok_or("missing carrier")?
+        .join("deck-lifecycle-helper");
+    let m = std::fs::symlink_metadata(&helper).map_err(|_| "missing lifecycle helper")?;
+    if !m.is_file() || m.file_type().is_symlink() || m.permissions().mode() & 0o111 == 0 {
+        return Err("invalid lifecycle helper");
+    }
+    Ok(Path::new(config).to_path_buf())
+}
 
 /// Exact boolean launch flag. Unlike the isolated smoke arguments below,
 /// --debug-logging is intentionally available in release builds so a
@@ -99,6 +189,10 @@ pub(crate) fn channel_fixture_bin() -> Option<std::path::PathBuf> {
 }
 
 pub(crate) fn configure_isolated_carrier() {
+    if let Err(reason) = reentry_project_config() {
+        eprintln!("isolated reentry refused: {reason}");
+        std::process::exit(2);
+    }
     if !cfg!(debug_assertions) {
         return;
     }
@@ -194,8 +288,60 @@ pub(crate) fn configure_isolated_carrier() {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn reentry_paths_require_one_private_root_and_real_helper() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::path::PathBuf::from(format!(
+            "/private/tmp/deck-reentry-{:x}",
+            std::process::id()
+        ));
+        assert!(!root.exists());
+        for dir in [
+            "",
+            "data",
+            "work",
+            "work/.claude",
+            "deck.app/Contents/MacOS",
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::set_permissions(root.join(dir), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let exe = root.join("deck.app/Contents/MacOS/deck");
+        let config = root.join("work/.claude/settings.json");
+        let helper = exe.parent().unwrap().join("deck-lifecycle-helper");
+        std::fs::write(&exe, b"inert carrier").unwrap();
+        std::fs::write(&config, b"{}").unwrap();
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let data = root.join("data").to_string_lossy().into_owned();
+        let socket = format!("deck-smoke-reentry-{:x}", std::process::id());
+        let config_text = config.to_string_lossy();
+        let check = || super::validate_reentry_paths(&data, &socket, &config_text, &exe);
+        assert!(check().is_err(), "missing helper refuses");
+        std::fs::write(&helper, b"inert helper").unwrap();
+        assert!(check().is_err(), "non-executable helper refuses");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(check().unwrap(), config);
+        assert!(super::validate_reentry_paths(&data, "deck", &config_text, &exe).is_err());
+        assert!(
+            super::validate_reentry_paths("/Users/u/.deck", &socket, &config_text, &exe).is_err()
+        );
+        assert!(super::validate_reentry_paths(
+            &data,
+            &socket,
+            "/Users/u/.claude/settings.json",
+            &exe
+        )
+        .is_err());
+        std::fs::write(&config, b"not JSON").unwrap();
+        assert!(check().is_err(), "malformed configuration refuses");
+        std::fs::remove_file(&config).unwrap();
+        assert!(check().is_err(), "missing configuration refuses");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn release_or_test_process_has_no_isolated_carrier_arguments() {
         assert!(super::debug_arg("--smoke-data-dir").is_none());
         assert!(super::debug_arg("--smoke-tmux-socket").is_none());
+        assert!(super::reentry_project_config().unwrap().is_none());
     }
 }

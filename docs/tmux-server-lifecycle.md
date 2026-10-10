@@ -287,3 +287,137 @@ Local Network usage string says that terminal tools may access services the
 user chooses; deck does not claim to scan the network and does not reset or
 bypass macOS privacy controls. Signed updater tests must verify both the new
 server metadata and the helper's kernel-loaded image after replacement.
+
+## Reopen Agent session (optional post phase of an explicit restart)
+
+**Status: implemented and enabled in code.** Ordinary tests use a stand-in
+client. Native evidence is per release, each stage run once by a test
+controller that calls the production transaction. On the real Claude 2.1.294:
+how the production checks read a bare and a bypass-flag launch (stages S and
+B), and ONE Policy A restart transaction over two such clients (stage M1: both
+entries confirmed). On the real Claude 2.1.296: the same launch readings, ONE
+Policy A transaction (M1, with a `/clear`), ONE Policy B transaction over three
+clients (M2: the two bypass launches asked with the override, the bare one
+without it, all confirmed; the client lowered to plan mode before the restart
+showed bypass after it, as read from its pane by the experiment's operator)
+and ONE transaction whose new shell exported a refused name (M3: one request,
+not confirmed, the client kept). Local isolated application validation on
+2.1.296 passed in follow-up 33: real UI → IPC → production assembly → restart
+→ real Claude/helper → post-check → UI result, ONE successful Policy A
+transaction. It used an ad-hoc debug carrier, private data/socket, real HOME
+and an explicitly validated project lifecycle configuration. Only the debug
+SHA-256 dependency was optimized; deadlines and identity checks were unchanged.
+Not verified: formal release installation and global hook opt-in/migration,
+Policy B and the refused-name path on 2.1.294, anything Deck itself knows of the
+effective permission after a re-entry, Developer ID, notarization, Gatekeeper
+and the published carrier. The WKWebView
+`reentry` smoke paints the dialog from scripted answers. As an ad-hoc signed
+debug carrier on the test machine it failed its layout checkpoint twice (the
+dialog's checkboxes and radios took the general `input` width, and the
+section overflowed sideways) and, with that rule repaired, passed once: 15 of 15
+checkpoints, English and Chinese, the default 1280×800 window. One passing
+run says nothing about other window sizes, the larger font scale, the signed
+carrier or the transaction itself. The record of what each piece of
+evidence is lives in the module header of `agent_reentry/claude.rs`.
+
+**Launch context: limited checks before, confirmation after** (the user's
+ruling). The environment a new shell's startup files leave behind cannot be
+read before the request is typed, by any interface Deck may use. So:
+
+- *Before the one request* a bounded set of conditions must hold: the exact
+  card, pane, server, pid and birth; the frozen executable and a working
+  directory that still exists; the old client gone; the ticked cards and the
+  chosen policy as bound now; a supported launch profile of the OLD client;
+  the exact input edge of the new shell; and a supported baseline — what Deck
+  hands its server and the one home variable tmux gives the pane. That
+  variable is read by name and answers one of four things (set, removed,
+  absent, unavailable); the global scope is asked only when the session scope
+  positively does not mention it, and a removal, a failure, a timeout or an
+  ambiguous answer refuses the launch.
+- *The accepted window*: the startup files may have changed the environment,
+  and the request may already have run in it — with native effects — when
+  that is found out. Nothing is typed to probe it, no environment is copied
+  or assigned on the command line, and no launcher is added.
+- *After the launch* an entry is confirmed only when the receipt arrived, the
+  reporting client is still the pane's foreground generation, and that exact
+  process executes the frozen file, was started with exactly the request this
+  operation built, in a launch environment with the expected home and no
+  refused name, in the frozen directory. The image and the directory are
+  facts of the instant they are read; arguments and environment are the
+  launch image the kernel kept from the exec. None of this is evidence of the
+  configuration the client loaded or of its effective permission.
+
+A missing client, an unreadable launch image, a mismatch, or a missing or
+conflicting receipt is `unconfirmed` with its own reason
+(`launch-unconfirmed`, `context-unverified`, `context-changed`). That is a
+statement about confirmation only — not that nothing happened and not a
+rollback. The started client is left for the user: not killed, not typed
+into again, not retried. The server replacement stays settled.
+
+A restart the user confirms may also reopen selected Claude sessions. This is
+an addition to the transaction above, never a change of it:
+
+1. **Preview** (`agent_reentry_preview`, read-only): every live card session
+   is classified from its live foreground process — a shell, an unsupported
+   foreground, or a candidate (a direct, certified Claude client in a
+   one-window, one-pane session, with its launch profile `bypass` or
+   `ordinary`). Candidates are unticked by default; the default policy is A.
+   The reply carries card id, session, closed codes and a single-use token;
+   no native id, pid, path or digest.
+2. **Freeze** (inside the restart's guards, before any exit key): the token
+   is consumed and each ticked card is read again. A card, pane, server,
+   foreground generation, executable or working directory that is not the
+   previewed one refuses the whole restart as `tmux-server-impact-changed`;
+   an approval is never rebound.
+3. **Exit**: the frozen panes take the existing graceful-exit path and its
+   shared two seconds, including a certified client that runs under its
+   release's file name. An entry continues only with BOTH its final receipt
+   (`SessionEnd`, `prompt-input-exit`, attributed by the kernel to that exact
+   client) and its old client generation gone. A missing receipt skips that
+   card. A client that does not exit — including one that gave the terminal
+   back to its shell but is still alive, or whose exit cannot be proven — is
+   the existing `AgentTimeout` for the whole restart: no pause, no kill.
+4. **Replacement**: unchanged, including the durable queue pause before the
+   kill and the content-free intent. Its read-back settles "the shell service
+   restarted" and nothing later rewrites that.
+5. **Post phase** (one shared share, an implementation default to be
+   validated, not a per-card budget or a promise): for each sealed entry a
+   command-less shell is created in the client's working directory with the
+   ordinary transcript restore; its input edge is positively verified; then,
+   under the Board writer's fence, the card's binding is read again, the
+   one launch slot is consumed and one request is pasted and submitted, with
+   the exact shell generation asked of the kernel at the paste and again at
+   the Enter; a
+   `SessionStart` receipt with source `resume` and the same id from the new
+   foreground client, together with the post-launch check of that client
+   described above, confirms the entry. Everything else is a per-card
+   result: not attempted, refused before launch, known not launched, or
+   unconfirmed. Nothing is retried.
+
+Policy A adds nothing to `--resume <id>`. Policy B is that restart's explicit
+reauthorization: the bypass flag is added only for ticked cards whose client
+was shown as a bypass launch and is read as one again at freeze. It applies
+again even if the user lowered permissions while the session ran — the dialog
+says so before confirmation — and it is not stored.
+
+What it is not: the task is not resumed by Deck, no prompt is sent, model and
+added directories are left to the Agent, queues stay paused, no readiness,
+Signal or authority is created, no card moves, and a client the user opened
+elsewhere with the same session is outside every check. After a crash nothing
+re-enters: the plan, the ids and the launch slots were process memory.
+
+## Security and privacy boundary of re-entry
+
+The lifecycle helper is a second bundled sidecar with its own closed wire; it
+forwards a native session id and one closed word, never a payload, prompt,
+path or model, and logs nothing. The host attributes a receipt by kernel
+facts while the helper is connected and keeps it only for the armed lease of
+the running operation. Logs and replies carry closed codes, counts and the
+existing hashed session tag. The executable and working-directory references
+never leave the process, and the started client's arguments and environment
+are compared inside `procinfo` against Deck's own expectations: only a closed
+answer leaves it. The card binding is read from the Board this process
+committed last as authority (`documents::board_authority`), under the Board
+writer's fence; a Board answered from a backup names no card. Same-user code inside the client's own process tree
+can still misreport; that residual is accepted for this one user-confirmed
+side effect and extends to nothing else.

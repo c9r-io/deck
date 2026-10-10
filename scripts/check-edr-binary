@@ -15,12 +15,60 @@ else
   info="$target_path/Contents/Info.plist"
   test -f "$info"
   executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info")
-  targets=(
-    "$target_path/Contents/MacOS/$executable"
-    "$target_path/Contents/MacOS/deck-status-helper"
-    "$target_path/Contents/MacOS/deck-mcp"
-    "$target_path/Contents/MacOS/deck-mcp-runner"
-  )
+  macos="$target_path/Contents/MacOS"
+  targets=("$macos/$executable" "$macos/deck-status-helper")
+  # deck-lifecycle-helper is a sidecar that older bundles never had, and an
+  # immutable candidate built before it existed is still re-checked here at
+  # promotion, so it can never become unconditionally required. Whether THIS
+  # bundle must carry it is read from the bundle itself, with no network and
+  # no version table: the application executable is searched for the helper's
+  # file name. Two things put that name there, and either one is enough:
+  #   - today's literals in agent_status.rs: LIFECYCLE_HELPER_NAME, joined
+  #     onto the executable's directory at run time, and
+  #     LIFECYCLE_HELPER_MARKER, compared against hook commands. Both are
+  #     string DATA read by live code, not symbols: `strip` removes symbol
+  #     and debug tables only, and LTO may drop a constant only together with
+  #     every use of it, that is, only from an application that no longer
+  #     uses the helper. Measured on a local release build (lto, strip);
+  #   - a dedicated marker, `deck-bundle-requires:deck-lifecycle-helper`,
+  #     a `#[used]` static. `#[used]` keeps it in the object file; whether
+  #     the final link keeps it is not promised by the language, only
+  #     observed in a local release build. It ends in the same name, so the
+  #     one search below finds it when it is there, and the rule does not
+  #     rest on it: the literals above are enough.
+  # The name is 21 bytes, far past the eight `strings` may miss. Therefore:
+  #   - helper file present         -> always scanned like every other sidecar,
+  #                                    whatever the application says;
+  #   - absent, name in the app     -> the bundle is incomplete: rejected;
+  #   - absent, name not in the app -> a bundle from before the helper: accepted.
+  # An application executable that is empty or cannot be read as strings
+  # decides nothing and is rejected rather than taken for an old bundle. The
+  # one-executable form above never applies this rule: a bare file has no
+  # bundle to be incomplete.
+  lifecycle="$macos/deck-lifecycle-helper"
+  test -f "$macos/$executable"
+  if [ ! -s "$macos/$executable" ]; then
+    echo "$macos/$executable is empty and cannot decide whether deck-lifecycle-helper is required" >&2
+    exit 1
+  fi
+  set +e
+  strings -a "$macos/$executable" | LC_ALL=C grep -F -c -- deck-lifecycle-helper >/dev/null
+  evidence=("${PIPESTATUS[@]}")
+  set -e
+  # strings must succeed; grep answers 0 (named), 1 (not named) or an error.
+  if [ "${evidence[0]}" -ne 0 ] || [ "${evidence[1]}" -gt 1 ]; then
+    echo "$macos/$executable could not be read to decide whether deck-lifecycle-helper is required" >&2
+    exit 1
+  fi
+  if [ -e "$lifecycle" ] || [ -L "$lifecycle" ]; then
+    # Present in any form: it joins the scanned files, where anything but a
+    # regular file fails below. An old-looking application does not excuse it.
+    targets+=("$lifecycle")
+  elif [ "${evidence[1]}" -eq 0 ]; then
+    echo "$macos/$executable references deck-lifecycle-helper, but the bundle does not contain it" >&2
+    exit 1
+  fi
+  targets+=("$macos/deck-mcp" "$macos/deck-mcp-runner")
 fi
 for target in "${targets[@]}"; do
   test -f "$target"

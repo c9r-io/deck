@@ -41,6 +41,22 @@
 //! A server that already ran, one with a session, and every other exit are
 //! never touched; a stop that fails leaves the server running.
 //!
+//! An explicit restart may carry the user's approval to reopen selected
+//! Agent sessions (`agent_reentry`). `restart_transaction_on` then freezes
+//! that approval against the validated listing before any exit key, hands
+//! the frozen certified panes to the graceful exit, seals their final
+//! sessions, and — only after the replacement was read back — runs the
+//! post phase. The two conclusions are independent: everything up to the
+//! read-back keeps the existing `RestartFailure` contract and the eight
+//! second budget; the post phase has its own shared share
+//! (`agent_reentry::POST_BUDGET`), cannot turn a replaced server into a
+//! failed restart, and reports per card (`RestartReply`). The lifecycle
+//! file's `RestartIntent` stays the server intent alone: no Agent id,
+//! approval, policy or command is ever written, so a crash recovers the
+//! server boundary and re-enters nothing. `agent_reentry_preview` and
+//! `agent_reentry_operation` are read-only; a request id that names a known
+//! operation is answered from memory and executes nothing.
+//!
 //! Every tmux-facing step (`probe_server_on`, `start_current_server_on`,
 //! `wait_for_old_server_exit_on`, `clean_confirmed_intent_socket_on`,
 //! `complete_restart_on`, `retire_started_server_on`) and the lifecycle file
@@ -822,16 +838,31 @@ fn restart_panes_on(
 /// Preserve both pane checks around agent preparation. The second server
 /// probe fences identity changes; the final pane read catches a new pane
 /// before the replacement intent is written.
+#[cfg(test)]
 fn prepare_restart_on(
     server: &ServerHandle<'_>,
     snapshot: &ServerSnapshot,
     restore_shells: bool,
     progress: &dyn Fn(&str, usize, usize),
 ) -> Result<ServerSnapshot, DeckError> {
+    prepare_restart_with(server, snapshot, restore_shells, &[], progress)
+}
+
+/// `certified`: the panes the re-entry transaction froze as certified
+/// direct clients; the exit path treats exactly those as Claude.
+fn prepare_restart_with(
+    server: &ServerHandle<'_>,
+    snapshot: &ServerSnapshot,
+    restore_shells: bool,
+    certified: &[tmux::PaneRow],
+    progress: &dyn Fn(&str, usize, usize),
+) -> Result<ServerSnapshot, DeckError> {
     let prepared_rows = crate::restart::prepare(
         &snapshot.panes,
         restore_shells,
+        certified,
         &|| restart_panes_on(server, snapshot),
+        server.run_owned,
         progress,
     )?;
     let post_exit = match probe_server_on(server) {
@@ -932,10 +963,6 @@ fn safe_stale_socket(
                     && metadata.ino() == expected_inode
             })
             .unwrap_or(false)
-}
-
-fn clean_confirmed_intent_socket(intent: &RestartIntent) -> Result<(), DeckError> {
-    clean_confirmed_intent_socket_on(&deck_server(), intent)
 }
 
 fn clean_confirmed_intent_socket_on(
@@ -1229,35 +1256,56 @@ fn try_operation() -> Result<MutexGuard<'static, ()>, DeckError> {
 pub(crate) fn reconcile_on_boot() {
     let _guard = OPERATION.lock_or_recover();
     let build = current_build();
+    reconcile_on(
+        &deck_server(),
+        &build,
+        &|| start_missing_server_at_boot(&build),
+        &tmux::init_deck_server,
+    );
+}
+
+/// The boot reconcile against any server: finish or drop a restart intent
+/// left on disk, then start, reuse or replace the server. `start_missing`
+/// starts a server where none exists (the boot gate's remembers it, so that
+/// exactly that one can be given back); `reuse` applies the reuse defaults
+/// to a compatible running server. The lifecycle file holds a server intent and
+/// nothing else, so nothing here can start, exit or type into an Agent.
+fn reconcile_on(
+    server: &ServerHandle<'_>,
+    build: &CurrentBuildIdentity,
+    start_missing: &dyn Fn() -> Result<ServerSnapshot, DeckError>,
+    reuse: &dyn Fn(),
+) {
     if build.source == SourceCategory::Transient {
         applog("[tmux-lifecycle] transient release source; server creation disabled");
         return;
     }
+    let write = |disk: &LifecycleDisk| write_disk_at(&server.lifecycle_file, disk);
 
-    let mut disk = read_disk();
+    let mut disk = read_disk_at(&server.lifecycle_file);
     if let Some(intent) = disk.operation.clone() {
-        if intent.build_key == build_key(&build) {
-            match probe_server() {
+        if intent.build_key == build_key(build) {
+            match probe_server_on(server) {
                 Probe::Reachable(snapshot) if restart_intent_still_matches(&intent, &snapshot) => {
-                    let _ = complete_restart(&build, &snapshot, "restartCompleted");
+                    let _ = complete_restart_on(server, build, &snapshot, "restartCompleted");
                     return;
                 }
                 Probe::Absent => {
-                    if let Err(error) = clean_confirmed_intent_socket(&intent) {
+                    if let Err(error) = clean_confirmed_intent_socket_on(server, &intent) {
                         applog(&format!(
                             "[tmux-lifecycle] restart socket recovery paused ({})",
                             error.code()
                         ));
                         return;
                     }
-                    if let Ok(fresh) = start_missing_server_at_boot(&build) {
+                    if let Ok(fresh) = start_missing() {
                         disk.operation = None;
                         disk.deferred_build = None;
                         disk.notice = Some(LifecycleNotice {
                             code: "restartCompleted".into(),
-                            build_key: build_key(&build),
+                            build_key: build_key(build),
                         });
-                        let _ = write_disk(&disk);
+                        let _ = write(&disk);
                         applog(&format!(
                             "[tmux-lifecycle] recovered restart new_pid={}",
                             fresh.pid
@@ -1266,41 +1314,41 @@ pub(crate) fn reconcile_on_boot() {
                     return;
                 }
                 Probe::Reachable(snapshot)
-                    if compatible_state(&build, &snapshot.metadata)
+                    if compatible_state(build, &snapshot.metadata)
                         == CompatibilityState::CompatibleCurrentBuild =>
                 {
                     disk.operation = None;
                     disk.deferred_build = None;
-                    let _ = write_disk(&disk);
+                    let _ = write(&disk);
                     return;
                 }
                 _ => {
                     // An unexpected replacement is never killed under an old
                     // confirmation. Drop the intent and require a fresh review.
                     disk.operation = None;
-                    let _ = write_disk(&disk);
+                    let _ = write(&disk);
                 }
             }
         } else {
             disk.operation = None;
-            let _ = write_disk(&disk);
+            let _ = write(&disk);
         }
     }
 
-    match probe_server() {
+    match probe_server_on(server) {
         Probe::Absent => {
-            if let Err(error) = start_missing_server_at_boot(&build) {
+            if let Err(error) = start_missing() {
                 applog(&format!(
                     "[tmux-lifecycle] initial server start failed ({})",
                     error.code()
                 ));
             }
         }
-        Probe::Reachable(snapshot) => match compatible_state(&build, &snapshot.metadata) {
+        Probe::Reachable(snapshot) => match compatible_state(build, &snapshot.metadata) {
             CompatibilityState::CompatibleCurrentBuild
-            | CompatibilityState::CompatibleDifferentBuild => tmux::init_deck_server(),
+            | CompatibilityState::CompatibleDifferentBuild => reuse(),
             state if should_auto_replace(state, snapshot.sessions.len()) => {
-                let _ = complete_restart(&build, &snapshot, "emptyServerReplaced");
+                let _ = complete_restart_on(server, build, &snapshot, "emptyServerReplaced");
             }
             state => {
                 applog(&format!(
@@ -1471,6 +1519,146 @@ pub(crate) fn acknowledge_tmux_lifecycle_notice() -> Result<(), DeckError> {
     write_disk(&disk)
 }
 
+/// What one restart call settled. The server conclusion stands on its own:
+/// `replaced` is true once the replacement was read back, whatever the
+/// re-entry entries say, and `reentry` is `None` for a shell-only restart.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RestartReply {
+    server: ServerStatus,
+    replaced: bool,
+    reentry: Option<crate::agent_reentry::ReentryResult>,
+}
+
+/// (card id, session) of every card on the Board this process committed
+/// last, as AUTHORITY (`documents::board_authority`): the user's current
+/// version, read from the Board door's own copy. `None` while there is no
+/// committed Board or it is a recovered one — a backup is recovery
+/// material, never the ground for an input. Called under
+/// `documents::board_fence` for the launch, where the commit it sees and
+/// the input it allows cannot be reordered.
+fn board_cards() -> Option<Vec<(String, String)>> {
+    let board = crate::documents::board_authority()?;
+    Some(
+        board["cards"]
+            .as_array()?
+            .iter()
+            .filter_map(|card| {
+                Some((
+                    card["id"].as_str()?.to_owned(),
+                    card["session"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())?
+                        .to_owned(),
+                ))
+            })
+            .collect(),
+    )
+}
+
+/// What the one re-entry environment is assembled from. Production fills it
+/// in `with_reentry_env`; the integration tests fill it with a throwaway
+/// server and a stand-in capability and get the SAME assembly: the Board
+/// reader, the Board fence, the shell creator and the login shell are not
+/// among the parts and cannot be replaced.
+pub(crate) struct ReentryParts<'a> {
+    pub(crate) tmux: &'a dyn Fn(&[&str]) -> Result<String, DeckError>,
+    pub(crate) tmux_stdin: crate::agent_reentry::TmuxStdin<'a>,
+    pub(crate) socket: &'a str,
+    pub(crate) capability: &'a crate::agent_reentry::ReentryCapability,
+    /// The bundled lifecycle helper, when this build has one.
+    pub(crate) helper: Option<PathBuf>,
+    /// The lifecycle hooks are installed (the user's explicit opt-in).
+    pub(crate) hooks_installed: bool,
+    pub(crate) home: &'a Path,
+    /// What the process that starts this server hands it is a supported
+    /// baseline (`procinfo::own_baseline_supported` for deck's own server).
+    pub(crate) baseline: bool,
+}
+
+/// Run `work` with the re-entry environment assembled from `parts`.
+pub(crate) fn assemble_reentry_env<R>(
+    parts: &ReentryParts<'_>,
+    work: impl FnOnce(&crate::agent_reentry::Env) -> R,
+) -> R {
+    let observation = parts.helper.is_some() && parts.hooks_installed;
+    let helper = parts.helper.clone().unwrap_or_default();
+    let login_shell = crate::procinfo::login_shell().unwrap_or_default();
+    let create = |name: &str, dir: &Path, restore: bool| {
+        crate::commands::create_reentry_shell(parts.tmux, parts.tmux_stdin, name, dir, restore)
+    };
+    // Lock order: this runs inside the restart, which already holds the
+    // lifecycle operation and the exclusive activity guard (both try-locks,
+    // never waited on). The Board fence is taken after them and released
+    // before anything else is taken; nothing that holds the Board fence
+    // waits for either guard, and no queue or settings lock is taken while
+    // it is held here. A Board save takes the settings fence first and the
+    // Board fence second; this path never takes the settings fence.
+    let fenced = |work: &mut dyn FnMut()| {
+        let _fence = crate::documents::board_fence();
+        work()
+    };
+    work(&crate::agent_reentry::Env {
+        tmux: parts.tmux,
+        tmux_stdin: parts.tmux_stdin,
+        socket: parts.socket,
+        cards: &board_cards,
+        capability: parts.capability,
+        helper: &helper,
+        home: parts.home,
+        login_shell: &login_shell,
+        observation,
+        baseline: parts.baseline,
+        fenced: &fenced,
+        create_shell: &create,
+    })
+}
+
+/// Run `work` with production's one re-entry environment: deck's own tmux
+/// server, the committed Board, Claude's registered capability, the bundled
+/// lifecycle helper and the user's home. `None` when no adapter has the
+/// capability or the home is unknown.
+fn with_reentry_env<R>(work: impl FnOnce(&crate::agent_reentry::Env) -> R) -> Option<R> {
+    let capability = crate::extensions::agent(crate::agent_status::CLAUDE_CODE.source)?.reentry?;
+    let home = dirs::home_dir()?;
+    Some(assemble_reentry_env(
+        &ReentryParts {
+            tmux: &tmux,
+            tmux_stdin: &tmux::tmux_with_stdin,
+            socket: tmux::socket(),
+            capability,
+            helper: crate::agent_status::bundled_lifecycle_helper(),
+            hooks_installed: crate::agent_status::lifecycle_observation_installed(),
+            home: &home,
+            baseline: crate::procinfo::own_baseline_supported(&home, capability.grammar),
+        },
+        work,
+    ))
+}
+
+fn reentry_unavailable() -> DeckError {
+    DeckError::new(ErrorKind::Other, "reentry-unavailable")
+}
+
+/// The restart dialog's provisional candidates and a single-use token. Reads
+/// only; starts, exits and types nothing.
+#[tauri::command]
+pub(crate) async fn agent_reentry_preview() -> Result<crate::agent_reentry::PreviewView, DeckError>
+{
+    tauri::async_runtime::spawn_blocking(|| {
+        with_reentry_env(crate::agent_reentry::preview).ok_or_else(reentry_unavailable)?
+    })
+    .await
+    .map_err(|_| DeckError::new(ErrorKind::Other, "reentry-preview-failed"))?
+}
+
+/// The known facts of one restart's re-entry, by its request id. Read-only:
+/// it never starts, repeats or continues anything.
+#[tauri::command]
+pub(crate) fn agent_reentry_operation(request_id: String) -> crate::agent_reentry::OperationView {
+    crate::agent_reentry::operation(&request_id)
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Preserve the existing flat IPC confirmation fields.
 pub(crate) async fn restart_tmux_server(
@@ -1483,15 +1671,32 @@ pub(crate) async fn restart_tmux_server(
     force: bool,
     restore_shells: bool,
     request_id: String,
-) -> Result<ServerStatus, DeckError> {
+    reentry: Option<crate::agent_reentry::Approval>,
+) -> Result<RestartReply, DeckError> {
     use tauri::{Emitter, Manager};
+    // A request id names at most one operation. A repeated invoke reads what
+    // that operation settled and executes nothing: no exit, no replacement,
+    // no launch.
+    if let Some(result) = crate::agent_reentry::known(&request_id) {
+        return Ok(RestartReply {
+            server: tmux_server_status()?,
+            replaced: result.server_replaced,
+            reentry: Some(result),
+        });
+    }
     // Tauri's synchronous command handler would block the webview event loop
     // during exit hooks. All IO, deadlines and guards belong to this worker.
     let started = std::time::Instant::now();
+    // The basic restart keeps its eight seconds. Approved re-entry adds one
+    // shared post share AFTER the replacement; the worker bounds each phase
+    // itself, so this outer limit only bounds the IPC wait.
+    let limit = started
+        + crate::restart::TOTAL_BUDGET
+        + reentry
+            .as_ref()
+            .map_or(Duration::ZERO, |_| crate::agent_reentry::POST_BUDGET);
     tauri::async_runtime::spawn_blocking(move || {
-        crate::session_runtime::run_bounded(started + crate::restart::TOTAL_BUDGET, move || {
-            let _deadline =
-                crate::session_runtime::Deadline::until(started + crate::restart::TOTAL_BUDGET);
+        crate::session_runtime::run_bounded(limit, move || {
             let progress = |phase: &str, completed: usize, total: usize| {
                 let _ = app.emit(
                     "tmux-restart-progress",
@@ -1502,17 +1707,39 @@ pub(crate) async fn restart_tmux_server(
                 );
             };
             applog("[tmux-restart] begin prepare_budget_ms=3000 total_budget_ms=8000");
+            let pty_state = app.state::<crate::pty::PtyState>();
+            let queues = app.state::<crate::scheduler::Queues>();
+            let server = deck_server();
             let result = restart_tmux_server_inner(
-                &app.state::<crate::pty::PtyState>(),
-                &app.state::<crate::scheduler::Queues>(),
-                expected_pid,
-                expected_started_at,
-                expected_impact_token,
-                expected_session_count,
-                expected_pane_count,
+                &RestartGlue {
+                    server: &server,
+                    build: current_build(),
+                    acquire: &|| {
+                        Ok(RestartGuards {
+                            _operation: try_operation()?,
+                            activity: crate::session_runtime::exclusive()?,
+                        })
+                    },
+                    blockers: &restart_constraints,
+                    detach: &|| pty_state.detach_all(),
+                    pause: &|sessions| {
+                        crate::scheduler::pause_for_server_restart(&queues, sessions)
+                    },
+                    reentry: &|work| with_reentry_env(|env| work(env)).is_some(),
+                    post_budget: crate::agent_reentry::POST_BUDGET,
+                },
+                RestartExpectation {
+                    pid: expected_pid,
+                    started_at: expected_started_at,
+                    impact_token: expected_impact_token,
+                    session_count: expected_session_count,
+                    pane_count: expected_pane_count,
+                },
                 force,
                 restore_shells,
                 started,
+                &request_id,
+                reentry.as_ref(),
                 &progress,
             );
             applog(&format!(
@@ -1555,25 +1782,63 @@ fn require_no_restart_blockers(blockers: &[RestartBlocker]) -> Result<(), DeckEr
     }
 }
 
+/// Runs its argument with the re-entry environment; `false` when none exists.
+type WithReentryEnv<'a> = &'a dyn Fn(&mut dyn FnMut(&crate::agent_reentry::Env)) -> bool;
+
+/// The operation gate and the exclusive activity guard one restart holds
+/// from its first check to the end of its post phase.
+struct RestartGuards {
+    _operation: MutexGuard<'static, ()>,
+    activity: std::sync::RwLockWriteGuard<'static, ()>,
+}
+
+/// Everything a restart reaches outside its own control flow. Production
+/// builds exactly one in `restart_tmux_server` (deck's server, the real
+/// gates, PTY state, queues and re-entry environment); the integration
+/// tests run the SAME `restart_tmux_server_inner` with a throwaway server.
+struct RestartGlue<'a> {
+    server: &'a ServerHandle<'a>,
+    build: CurrentBuildIdentity,
+    acquire: &'a dyn Fn() -> Result<RestartGuards, DeckError>,
+    blockers: &'a dyn Fn() -> Result<Vec<RestartBlocker>, DeckError>,
+    detach: &'a dyn Fn(),
+    /// Persist the queue pause for these sessions; an error stops the
+    /// restart before any kill.
+    pause: &'a dyn Fn(&[String]) -> Result<usize, DeckError>,
+    /// Run `work` with the re-entry environment; `false` when there is none.
+    reentry: WithReentryEnv<'a>,
+    post_budget: Duration,
+}
+
+/// What the user's confirmation named.
+struct RestartExpectation {
+    pid: u32,
+    started_at: u64,
+    impact_token: String,
+    session_count: u32,
+    pane_count: u32,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn restart_tmux_server_inner(
-    pty_state: &crate::pty::PtyState,
-    queues: &crate::scheduler::Queues,
-    expected_pid: u32,
-    expected_started_at: u64,
-    expected_impact_token: String,
-    expected_session_count: u32,
-    expected_pane_count: u32,
+    glue: &RestartGlue<'_>,
+    expected: RestartExpectation,
     force: bool,
     restore_shells: bool,
     started: std::time::Instant,
+    request_id: &str,
+    reentry: Option<&crate::agent_reentry::Approval>,
     progress: &dyn Fn(&str, usize, usize),
-) -> Result<ServerStatus, DeckError> {
+) -> Result<RestartReply, DeckError> {
+    let server = glue.server;
+    // The basic restart's whole budget. It ends with the replacement: the
+    // post phase below installs its own scope and never waits under this one.
+    let basic_deadline =
+        crate::session_runtime::Deadline::until(started + crate::restart::TOTAL_BUDGET);
     let preparation_deadline =
         crate::session_runtime::Deadline::until(started + crate::restart::PREPARE_BUDGET);
-    let _guard = try_operation()?;
-    let _activity = crate::session_runtime::exclusive()?;
-    require_no_restart_blockers(&restart_constraints()?)?;
+    let guards = (glue.acquire)()?;
+    require_no_restart_blockers(&(glue.blockers)()?)?;
     // The query client is still an attached tmux client. Stop it before
     // capturing/rechecking restart impact so it cannot keep the old server
     // alive or perturb attached-client counts during replacement.
@@ -1581,18 +1846,25 @@ fn restart_tmux_server_inner(
     if APP_UPDATE_INSTALLING.load(Ordering::Acquire) {
         return Err(DeckError::new(ErrorKind::Other, "app-update-installing"));
     }
-    let build = current_build();
+    let build = glue.build.clone();
     if !source_can_create(&build) {
         return Err(DeckError::new(
             ErrorKind::Tmux,
             "tmux-server-source-unstable",
         ));
     }
-    let snapshot = match probe_server() {
+    let status = |build: CurrentBuildIdentity, probe: Probe| {
+        status_from_probe_with(build, probe, read_disk_at(&server.lifecycle_file))
+    };
+    let snapshot = match probe_server_on(server) {
         Probe::Reachable(snapshot) => snapshot,
         Probe::Absent => {
-            start_current_server(&build)?;
-            return Ok(status_from_probe(build, probe_server()));
+            start_current_server_on(server, &build)?;
+            return Ok(RestartReply {
+                server: status(build, probe_server_on(server)),
+                replaced: false,
+                reentry: None,
+            });
         }
         Probe::Unreachable => {
             return Err(DeckError::new(ErrorKind::Tmux, "tmux-server-unreachable"))
@@ -1606,13 +1878,17 @@ fn restart_tmux_server_inner(
                 | CompatibilityState::CompatibleDifferentBuild
         )
     {
-        return Ok(status_from_probe(build, Probe::Reachable(snapshot)));
+        return Ok(RestartReply {
+            server: status(build, Probe::Reachable(snapshot)),
+            replaced: false,
+            reentry: None,
+        });
     }
-    if snapshot.pid != expected_pid
-        || snapshot.started_at != expected_started_at
-        || snapshot.sessions.len() as u32 != expected_session_count
-        || snapshot.pane_count() != expected_pane_count
-        || snapshot.impact_token != expected_impact_token
+    if snapshot.pid != expected.pid
+        || snapshot.started_at != expected.started_at
+        || snapshot.sessions.len() as u32 != expected.session_count
+        || snapshot.pane_count() != expected.pane_count
+        || snapshot.impact_token != expected.impact_token
     {
         return Err(DeckError::restart(RestartFailure::ImpactChanged));
     }
@@ -1622,32 +1898,286 @@ fn restart_tmux_server_inner(
         snapshot.pane_count(),
         started.elapsed().as_millis()
     ));
-    pty_state.detach_all();
+    let pause = || {
+        let paused = (glue.pause)(
+            &snapshot
+                .sessions
+                .iter()
+                .map(|s| s.name.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        applog(&format!(
+            "[tmux-restart] queue-paused count={paused} elapsed_ms={}",
+            started.elapsed().as_millis()
+        ));
+        Ok(())
+    };
+    let mut phases = Some(Phases {
+        basic: basic_deadline,
+        preparation: preparation_deadline,
+    });
+    let mut transaction = |env: Option<&crate::agent_reentry::Env>| {
+        restart_transaction_on(
+            server,
+            &build,
+            &snapshot,
+            restore_shells,
+            started,
+            phases.take().expect("the transaction runs once"),
+            env.zip(reentry)
+                .map(|(env, approval)| (env, request_id, approval)),
+            glue.post_budget,
+            &guards.activity,
+            glue.detach,
+            &pause,
+            progress,
+        )
+    };
+    let (fresh, result) = match reentry {
+        Some(_) => {
+            let mut settled = None;
+            if !(glue.reentry)(&mut |env| settled = Some(transaction(Some(env)))) {
+                return Err(reentry_unavailable());
+            }
+            settled.ok_or_else(reentry_unavailable)??
+        }
+        None => transaction(None)?,
+    };
+    Ok(RestartReply {
+        server: status(build, Probe::Reachable(Box::new(fresh))),
+        replaced: true,
+        reentry: result,
+    })
+}
+
+/// The two deadline scopes of the basic restart, handed over so the
+/// transaction ends each where the phase ends.
+struct Phases {
+    basic: crate::session_runtime::Deadline,
+    preparation: crate::session_runtime::Deadline,
+}
+
+/// From a validated snapshot to the settled restart, against any server:
+/// freeze the approval → graceful exit → seal the final sessions → pause the
+/// queues → replace the server (settled here) → reopen approved entries.
+/// An `Err` is always from before the replacement was read back and keeps
+/// the existing restart failures; after it nothing can fail the restart.
+/// `detach` and `pause` are the caller's PTY and queue steps.
+#[allow(clippy::too_many_arguments)]
+fn restart_transaction_on(
+    server: &ServerHandle<'_>,
+    build: &CurrentBuildIdentity,
+    snapshot: &ServerSnapshot,
+    restore_shells: bool,
+    started: std::time::Instant,
+    phases: Phases,
+    reentry: Option<(
+        &crate::agent_reentry::Env,
+        &str,
+        &crate::agent_reentry::Approval,
+    )>,
+    post_budget: Duration,
+    held: &std::sync::RwLockWriteGuard<'static, ()>,
+    detach: &dyn Fn(),
+    pause: &dyn Fn() -> Result<(), DeckError>,
+    progress: &dyn Fn(&str, usize, usize),
+) -> Result<(ServerSnapshot, Option<crate::agent_reentry::ReentryResult>), DeckError> {
+    // Freeze the user's approval against the listing just validated, before
+    // any exit key: an approved target that is no longer the previewed one
+    // refuses the whole restart here. The plan lives in this worker's memory
+    // only; dropping it on any return below settles the operation's result.
+    let mut plan = match reentry {
+        Some((env, request_id, approval)) => Some(crate::agent_reentry::freeze(
+            env,
+            request_id,
+            approval,
+            &snapshot.panes,
+        )?),
+        None => None,
+    };
+    let certified = plan
+        .as_ref()
+        .map(crate::agent_reentry::Plan::certified_rows)
+        .unwrap_or_default();
+    detach();
     // Foreground changes caused by graceful exit are expected. Refresh the
     // content-free intent so crash recovery compares the post-exit identity.
-    let post_exit = prepare_restart_on(&deck_server(), &snapshot, restore_shells, progress)?;
-    let paused = crate::scheduler::pause_for_server_restart(
-        queues,
-        &snapshot
-            .sessions
-            .iter()
-            .map(|s| s.name.clone())
-            .collect::<Vec<_>>(),
-    )?;
-    applog(&format!(
-        "[tmux-restart] queue-paused count={paused} elapsed_ms={}",
-        started.elapsed().as_millis()
-    ));
+    let post_exit = prepare_restart_with(server, snapshot, restore_shells, &certified, progress)?;
+    // Every agent is back at its shell: seal each approved entry's final
+    // session (its exit receipt AND its old client generation gone).
+    if let (Some(plan), Some((env, _, _))) = (plan.as_mut(), reentry) {
+        plan.seal_exits(env)?;
+    }
+    pause()?;
     crate::session_runtime::check_deadline()?;
-    drop(preparation_deadline);
-    let _replace_deadline = crate::session_runtime::Deadline::until(
+    drop(phases.preparation);
+    let replace_deadline = crate::session_runtime::Deadline::until(
         (std::time::Instant::now() + Duration::from_secs(5))
             .min(started + crate::restart::TOTAL_BUDGET),
     );
     progress("replacing", 0, 0);
-    pty_state.detach_all();
-    let fresh = complete_restart(&build, &post_exit, "restartCompleted")?;
-    Ok(status_from_probe(build, Probe::Reachable(Box::new(fresh))))
+    detach();
+    let fresh = complete_restart_on(server, build, &post_exit, "restartCompleted")?;
+    // The server conclusion is settled here and is never rewritten below.
+    drop(replace_deadline);
+    drop(phases.basic);
+    let (Some(mut plan), Some((env, request_id, _))) = (plan, reentry) else {
+        return Ok((fresh, None));
+    };
+    plan.server_replaced();
+    // The post phase: one shared share for every approved entry's shell,
+    // single launch and receipt. Nothing in it can fail the restart; each
+    // entry settles on its own, and the queues stay paused.
+    let post_end = std::time::Instant::now() + post_budget;
+    {
+        let _post_deadline = crate::session_runtime::Deadline::until(post_end);
+        plan.reopen(env, fresh.pid, restore_shells, post_end, held, progress);
+    }
+    drop(plan);
+    Ok((fresh, crate::agent_reentry::known(request_id)))
+}
+
+/// What a re-entry integration test injects into the production restart.
+#[cfg(test)]
+pub(crate) struct TestRestart<'a> {
+    pub(crate) run: &'a dyn Fn(&[&str]) -> Result<String, DeckError>,
+    pub(crate) socket_name: &'a str,
+    pub(crate) lifecycle_file: &'a Path,
+    pub(crate) restore_shells: bool,
+    pub(crate) env: &'a crate::agent_reentry::Env<'a>,
+    pub(crate) request_id: &'a str,
+    pub(crate) approval: Option<&'a crate::agent_reentry::Approval>,
+    pub(crate) post_budget: Duration,
+    /// `true`: the real operation gate and exclusive activity guard.
+    /// `false`: private locks of the same types, so a transaction that runs
+    /// for seconds does not refuse every other test's delivery as busy.
+    pub(crate) real_guards: bool,
+    pub(crate) detach: &'a dyn Fn(),
+    pub(crate) pause: &'a dyn Fn(&[String]) -> Result<usize, DeckError>,
+    pub(crate) progress: &'a dyn Fn(&str, usize, usize),
+}
+
+/// The production `restart_tmux_server_inner` against a throwaway server:
+/// the same gate order, probe, impact validation, transaction and reply.
+/// Returns the old server pid with the reply.
+#[cfg(test)]
+pub(crate) fn restart_for_tests(test: TestRestart<'_>) -> Result<(u32, RestartReply), DeckError> {
+    let run = test.run;
+    let run_owned = |args: &[String]| {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run(&refs)
+    };
+    let none = || None;
+    let server = ServerHandle {
+        run,
+        run_owned: &run_owned,
+        owned_client: &none,
+        socket_name: test.socket_name,
+        lifecycle_file: test.lifecycle_file.to_path_buf(),
+    };
+    let Probe::Reachable(snapshot) = probe_server_on(&server) else {
+        return Err(DeckError::new(ErrorKind::Tmux, "tmux-server-unreachable"));
+    };
+    let acquire = || -> Result<RestartGuards, DeckError> {
+        if test.real_guards {
+            return Ok(RestartGuards {
+                _operation: try_operation()?,
+                activity: crate::session_runtime::exclusive()?,
+            });
+        }
+        let operation: &'static Mutex<()> = Box::leak(Box::new(Mutex::new(())));
+        let activity: &'static std::sync::RwLock<()> =
+            Box::leak(Box::new(std::sync::RwLock::new(())));
+        Ok(RestartGuards {
+            _operation: operation.lock_or_recover(),
+            activity: activity.write().expect("private activity lock"),
+        })
+    };
+    let started = std::time::Instant::now();
+    let reply = restart_tmux_server_inner(
+        &RestartGlue {
+            server: &server,
+            build: current_build(),
+            acquire: &acquire,
+            blockers: &|| Ok(Vec::new()),
+            detach: test.detach,
+            pause: test.pause,
+            reentry: &|work| {
+                work(test.env);
+                true
+            },
+            post_budget: test.post_budget,
+        },
+        RestartExpectation {
+            pid: snapshot.pid,
+            started_at: snapshot.started_at,
+            impact_token: snapshot.impact_token.clone(),
+            session_count: snapshot.sessions.len() as u32,
+            pane_count: snapshot.pane_count(),
+        },
+        true,
+        test.restore_shells,
+        started,
+        test.request_id,
+        test.approval,
+        test.progress,
+    )?;
+    Ok((snapshot.pid, reply))
+}
+
+/// The production boot reconcile (`reconcile_on`) against a throwaway
+/// server and its own lifecycle file, as a fresh process would run it.
+#[cfg(test)]
+pub(crate) fn reconcile_for_tests(
+    run: &dyn Fn(&[&str]) -> Result<String, DeckError>,
+    socket_name: &str,
+    lifecycle_file: &Path,
+    reuse: &dyn Fn(),
+) {
+    let run_owned = |args: &[String]| {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run(&refs)
+    };
+    let none = || None;
+    let server = ServerHandle {
+        run,
+        run_owned: &run_owned,
+        owned_client: &none,
+        socket_name,
+        lifecycle_file: lifecycle_file.to_path_buf(),
+    };
+    let build = current_build();
+    reconcile_on(
+        &server,
+        &build,
+        &|| start_current_server_on(&server, &build),
+        reuse,
+    );
+}
+
+/// The restart intent a lifecycle file holds, as (old server pid, pane
+/// count), and its notice code: what a test may know about the file.
+#[cfg(test)]
+pub(crate) fn lifecycle_file_for_tests(path: &Path) -> (Option<(u32, u32)>, Option<String>) {
+    let disk = read_disk_at(path);
+    (
+        disk.operation
+            .map(|intent| (intent.old_pid, intent.pane_count)),
+        disk.notice.map(|notice| notice.code),
+    )
+}
+
+#[cfg(test)]
+impl RestartReply {
+    pub(crate) fn parts(
+        self,
+    ) -> (
+        Option<u32>,
+        bool,
+        Option<crate::agent_reentry::ReentryResult>,
+    ) {
+        (self.server.server_pid, self.replaced, self.reentry)
+    }
 }
 
 #[cfg(test)]

@@ -54,6 +54,8 @@ export const SETTING_ITEMS = Object.freeze([
     ['tmux', 'server', '服务', '重启']),
   item('agent-status', 'agents', ['settings.group.agentStatus', 'settings.agentHooks', 'settings.codexHooks'],
     ['hook', 'hooks', 'needs input', 'turn finished', '钩子', '等待输入']),
+  item('claude-reentry', 'agents', ['settings.claudeReentry'],
+    ['re-entry', 'reentry', 'reopen', 'lifecycle', '重入', '重新进入']),
   item('away-notifications', 'agents', ['settings.group.awayNotifications', 'settings.notifyAway', 'settings.notifySound'],
     ['notification', 'notifications', 'notify', 'alert', 'badge', 'dock', 'sound', '通知', '提醒', '徽标', '提示', '声音']),
   item('slack-reactions', 'integrations', ['settings.slack', 'settings.channelMonitor', 'settings.inboundUserToken', 'settings.channelBotToken', 'settings.inboundAppToken'],

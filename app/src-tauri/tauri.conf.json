@@ -29,7 +29,7 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
-    "externalBin": ["binaries/tmux", "binaries/deck-status-helper", "binaries/deck-mcp", "binaries/deck-mcp-runner"],
+    "externalBin": ["binaries/tmux", "binaries/deck-status-helper", "binaries/deck-lifecycle-helper", "binaries/deck-mcp", "binaries/deck-mcp-runner"],
     "icon": ["icons/icon.icns", "icons/icon.png"],
     "createUpdaterArtifacts": true,
     "macOS": {

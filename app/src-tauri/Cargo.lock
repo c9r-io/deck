@@ -647,6 +647,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "deck-lifecycle-helper"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "deck-mcp"
 version = "0.7.26"
 dependencies = [

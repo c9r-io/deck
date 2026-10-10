@@ -143,6 +143,26 @@
         "approval-exception": { "failureOnly": true }
       }
     },
+    "reentry": {
+      "terminal": "done",
+      "checks": {
+        "reentry-zero": {},
+        "reentry-preview": { "a": 4 },
+        "reentry-policy-default": { "a": 1 },
+        "reentry-policy-bypass": { "a": 1, "b": 1 },
+        "reentry-context-note": { "a": 15, "b": 1 },
+        "reentry-layout": { "a": 7 },
+        "reentry-layout-en": { "metric": true },
+        "reentry-layout-zh": { "metric": true },
+        "reentry-request": { "a": 1, "b": 3 },
+        "reentry-result": { "a": 1, "b": 3 },
+        "reentry-no-retry": { "a": 15, "b": 0 },
+        "reentry-settled": { "a": 1, "b": 2 },
+        "reentry-no-native": {},
+        "reentry-ipc": { "a": 1, "b": 0 },
+        "reentry-exception": { "failureOnly": true }
+      }
+    },
     "ux-layers": {
       "terminal": "done",
       "checks": {

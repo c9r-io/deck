@@ -9,7 +9,7 @@ license = "MIT"
 # fmt/clippy/test invocation in CI. Each sidecar remains a separate package;
 # build.rs uses isolated target dirs before tauri_build runs.
 [workspace]
-members = ["status-helper", "mcp-runner", "mcp-adapter"]
+members = ["status-helper", "lifecycle-helper", "mcp-runner", "mcp-adapter"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

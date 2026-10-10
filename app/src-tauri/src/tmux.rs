@@ -191,10 +191,22 @@ pub(crate) fn tmux_conf_text(deck_dir: &std::path::Path) -> String {
 /// v0.4.16 "board all gray / no separators" bug: dev builds launched from a
 /// terminal inherited the shell's LANG and never reproduced it.) pty.rs
 /// sets the same for the attach client.
+///
+/// The pin alone does not make the client UTF-8 when the process inherited
+/// `LC_ALL` or `LC_CTYPE` with a non-UTF-8 value: tmux reads those first.
+/// Every client deck starts therefore also carries
+/// `tmux_clients::UTF8_CLIENT`, which sets the client's own flag and touches
+/// no environment.
 pub(crate) fn tmux(args: &[&str]) -> Result<String, DeckError> {
     let conf = tmux_conf();
     captured_output(
-        Command::new(tmux_program()?).args(["-f", &conf, "-L", socket()]),
+        Command::new(tmux_program()?).args([
+            crate::tmux_clients::UTF8_CLIENT,
+            "-f",
+            &conf,
+            "-L",
+            socket(),
+        ]),
         args,
     )
 }
@@ -236,7 +248,13 @@ pub(super) fn captured_output<S: AsRef<std::ffi::OsStr>>(
 pub(crate) fn tmux_with_stdin(args: &[&str], input: &[u8]) -> Result<String, DeckError> {
     let conf = tmux_conf();
     let mut command = Command::new(tmux_program()?);
-    command.args(["-f", &conf, "-L", socket()]);
+    command.args([
+        crate::tmux_clients::UTF8_CLIENT,
+        "-f",
+        &conf,
+        "-L",
+        socket(),
+    ]);
     command_with_stdin(&mut command, args, input)
 }
 
@@ -389,7 +407,13 @@ fn bounded_stdin_output(
 pub(crate) fn tmux_owned(args: &[String]) -> Result<String, DeckError> {
     let conf = tmux_conf();
     captured_output(
-        Command::new(tmux_program()?).args(["-f", &conf, "-L", socket()]),
+        Command::new(tmux_program()?).args([
+            crate::tmux_clients::UTF8_CLIENT,
+            "-f",
+            &conf,
+            "-L",
+            socket(),
+        ]),
         args,
     )
 }
@@ -404,7 +428,13 @@ pub(crate) fn tmux_batch(args: &[String]) -> String {
     };
     let conf = tmux_conf();
     Command::new(tmux_sidecar)
-        .args(["-f", &conf, "-L", socket()])
+        .args([
+            crate::tmux_clients::UTF8_CLIENT,
+            "-f",
+            &conf,
+            "-L",
+            socket(),
+        ])
         .args(args)
         .env("LANG", "en_US.UTF-8") // see tmux(): C locale mangles output
         .output()
@@ -1017,7 +1047,13 @@ impl TmuxQueryChannel {
         }
         let session = first.session_name.clone();
         let mut child = Command::new(program)
-            .args(["-f", conf, "-L", socket_name])
+            .args([
+                crate::tmux_clients::UTF8_CLIENT,
+                "-f",
+                conf,
+                "-L",
+                socket_name,
+            ])
             .args(crate::tmux_clients::query_client_args(&session_target(
                 &session,
             )))
@@ -1300,9 +1336,24 @@ pub(crate) fn query_channel_connected() -> bool {
 /// argv; `kill(2)` spawns nothing and only such a process can match.
 fn reap_orphaned_query_clients(program: &str, conf: &str, socket_name: &str) {
     let query = crate::tmux_clients::query_client_args("=");
-    let mut prefix = vec![program, "-f", conf, "-L", socket_name];
+    let mut prefix = vec![
+        program,
+        crate::tmux_clients::UTF8_CLIENT,
+        "-f",
+        conf,
+        "-L",
+        socket_name,
+    ];
     prefix.extend_from_slice(&query[..query.len() - 1]);
-    let orphans = crate::procinfo::orphans_running(program, &prefix, "=");
+    // a query client an earlier build of this bundle left behind was started
+    // without the UTF-8 flag: the same argv less that one word
+    let earlier: Vec<&str> = prefix
+        .iter()
+        .copied()
+        .filter(|word| *word != crate::tmux_clients::UTF8_CLIENT)
+        .collect();
+    let mut orphans = crate::procinfo::orphans_running(program, &prefix, "=");
+    orphans.extend(crate::procinfo::orphans_running(program, &earlier, "="));
     for pid in &orphans {
         // SAFETY: kill(2) on a pid just matched above; no memory involved.
         unsafe { libc::kill(*pid as libc::pid_t, libc::SIGTERM) };

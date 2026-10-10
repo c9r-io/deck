@@ -29,15 +29,44 @@ fn managed_creation_and_final_restart_check_share_the_lifecycle_gate() {
     assert!(creation.contains("tmux_lifecycle::session_creation_guard()?"));
     let lifecycle = source("tmux_lifecycle.rs");
     let restart = &lifecycle[lifecycle.find("fn restart_tmux_server_inner(").unwrap()..];
-    let gate = restart.find("let _guard = try_operation()?").unwrap();
+    // The restart reaches its gates and feature blockers through one glue
+    // value (so the same function runs against a throwaway server in tests).
+    // The order inside it is unchanged: gates, then the blocker check, then
+    // the first tmux impact.
+    let gate = restart.find("let guards = (glue.acquire)()?;").unwrap();
     let blockers = restart
-        .find("require_no_restart_blockers(&restart_constraints()?)?")
+        .find("require_no_restart_blockers(&(glue.blockers)()?)?")
         .unwrap();
     let destructive = restart.find("tmux::stop_query_channel()").unwrap();
     assert!(
         gate < blockers && blockers < destructive,
         "the final blocker check must run inside the shared gate before tmux impact"
     );
+    // Production's one glue value is built in the command itself, from the
+    // real operation gate, the real exclusive activity guard and the
+    // registered feature guard, and nothing else builds one outside tests.
+    let command = &lifecycle[lifecycle
+        .find("pub(crate) async fn restart_tmux_server(")
+        .unwrap()
+        ..lifecycle.find("fn restart_tmux_server_inner(").unwrap()];
+    for required in [
+        "_operation: try_operation()?,",
+        "activity: crate::session_runtime::exclusive()?,",
+        "blockers: &restart_constraints,",
+        "server: &server,",
+        "let server = deck_server();",
+    ] {
+        assert!(command.contains(required), "production glue: {required}");
+    }
+    let built: Vec<usize> = lifecycle
+        .match_indices("&RestartGlue {")
+        .map(|(at, _)| at)
+        .collect();
+    let test_only = lifecycle
+        .find("#[cfg(test)]\npub(crate) fn restart_for_tests(")
+        .expect("the test entry is compiled for tests only");
+    assert_eq!(built.len(), 2, "production's glue and the test entry's");
+    assert!(built[0] < test_only && test_only < built[1]);
 }
 
 fn is_ident(byte: u8) -> bool {
@@ -684,6 +713,7 @@ fn the_data_directory_has_one_resolver() {
     );
     for (file, function) in [
         ("status-helper/src/main.rs", "socket_path"),
+        ("lifecycle-helper/src/main.rs", "socket_path"),
         ("mcp-adapter/src/main.rs", "parse_args"),
     ] {
         let text = std::fs::read_to_string(source_scan::manifest(file)).unwrap();
@@ -806,20 +836,43 @@ fn only_a_response_only_exit_gives_back_the_server_its_boot_gate_started() {
     );
     assert_eq!(handler.matches("retire_boot_server").count(), 1);
 
+    // The boot gate hands its reconcile ONE way to start a server from
+    // nothing — the remembering one — and the reconcile uses only that, for
+    // both of its starts.
     assert_eq!(
         callers_of("start_missing_server_at_boot("),
-        [
-            "tmux_lifecycle.rs reconcile_on_boot",
-            "tmux_lifecycle.rs reconcile_on_boot"
-        ],
-        "the boot gate remembers both of its starts from nothing"
+        ["tmux_lifecycle.rs reconcile_on_boot"],
+        "the boot gate's start from nothing is the remembering one"
     );
     let lifecycle = code_only(production_region(&source("tmux_lifecycle.rs")));
     let gate = source_scan::function_body(&lifecycle, "reconcile_on_boot").unwrap();
     assert!(
-        !gate.contains("start_current_server("),
+        !gate.contains("start_current_server"),
         "a start in the boot gate that is not remembered could never be given back"
     );
+    let reconcile = source_scan::function_body(&lifecycle, "reconcile_on").unwrap();
+    assert_eq!(
+        reconcile.matches("start_missing()").count(),
+        2,
+        "the reconcile remembers both of its starts from nothing"
+    );
+    assert!(
+        !reconcile.contains("start_current_server"),
+        "the reconcile starts a server only through what the gate handed it"
+    );
+    // its callers: the boot gate, and the test-only entry that runs the same
+    // reconcile on a throwaway server
+    assert_eq!(
+        lifecycle.matches("reconcile_on(").count(),
+        3,
+        "the reconcile has its definition, the boot gate's call and the test entry's"
+    );
+    assert!(
+        source("tmux_lifecycle.rs").contains("#[cfg(test)]\npub(crate) fn reconcile_for_tests("),
+        "the other caller of the reconcile exists in test builds only"
+    );
+    let entry = source_scan::function_body(&lifecycle, "reconcile_for_tests").unwrap();
+    assert_eq!(entry.matches("reconcile_on(").count(), 1);
     let creation = source_scan::function_body(&lifecycle, "session_creation_guard").unwrap();
     assert!(
         creation.contains("start_current_server(&build)?")

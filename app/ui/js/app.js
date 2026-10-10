@@ -31,6 +31,11 @@ import { cancelTerminalSelection } from './selection.js';
 import { closeManagedForRestart, managedBlockers } from './restart-managed.js';
 import { initTranslationLens } from './translation-lens.js';
 import { persistSettings } from './settings.js';
+import { afterManagedClose, awaitReentryResult, reentryRequest, responseLost, restartOutcome } from './reentry-model.js';
+import {
+  currentReentryPlan, initReentry, lockReentry, reentryConfirmLabel, reentryResultShown, refreshReentry,
+  showReentryPreview, showReentryProgress, showReentryResult, showRestartProgress,
+} from './restart-reentry.js';
 
 setLocale('system');
 activateTheme({ theme: 'deck-dark', accent: 'teal' });
@@ -148,21 +153,112 @@ function showTmuxLifecycle(status, manual = false) {
     });
   if (!ctx.settings.sessionRestore) $('tmux-lifecycle-message').textContent += '\n' + t('tmux.restoreOff');
   if (managedBlockers(status).length) $('tmux-lifecycle-message').textContent += '\n' + t('tmux.managedExplanation');
-  $('tmux-restart').textContent = t(managedBlockers(status).length ? 'tmux.closeManagedRestart' : 'tmux.restart');
   renderImpactList(status);
   $('tmux-lifecycle-modal').dataset.manual = manual && !status.pendingRestart ? 'true' : 'false';
+  // every review starts from an empty re-entry plan; the preview fills it
+  showReentryPreview(null);
+  setLifecycleResultMode(false);
   $('tmux-lifecycle-modal').style.display = 'flex';
   // The destructive action is never the default focus and Enter has no
   // acceptance path for this modal.
   $('tmux-later').focus();
+  loadReentryPreview(status);
 }
 
-async function refreshTmuxLifecycle({ prompt = false } = {}) {
+/* The confirm button names what one click will do: the selected re-entry
+   count when there is one, the managed closure when the review lists it. */
+function renderRestartLabel() {
+  const label = reentryConfirmLabel();
+  $('tmux-restart').textContent = ctx.tmuxRestarting ? t('tmux.restarting')
+    : label ? t(label.key, label.params)
+      : t(managedBlockers(ctx.tmuxServerStatus).length ? 'tmux.closeManagedRestart' : 'tmux.restart');
+}
+
+/* The result list replaces the review in the same modal: only "Done" is left. */
+function setLifecycleResultMode(on) {
+  for (const id of ['tmux-lifecycle-message', 'tmux-later', 'tmux-restart']) $(id).style.display = on ? 'none' : '';
+  $('tmux-done').style.display = on ? '' : 'none';
+  if (on) {
+    $('tmux-impact-list').style.display = 'none';
+    $('tmux-view-sessions').style.display = 'none';
+  }
+}
+
+function closeLifecycleModal() {
+  $('tmux-lifecycle-modal').style.display = 'none';
+  showReentryPreview(null);
+  setLifecycleResultMode(false);
+}
+
+/* The re-entry preview of the review that is open (reentry-model.js). It is
+   asked for again at every review and after every attempt that did not
+   complete; an answer for an earlier review is dropped. A preview that
+   cannot be read leaves the plain shell-only restart. */
+let previewGeneration = 0;
+async function loadReentryPreview(status) {
+  const generation = ++previewGeneration;
+  if (!window.__TAURI__ || !(status?.sessionCount > 0)) return;
+  let preview = null;
+  try { preview = await inv('agent_reentry_preview'); } catch (_) { preview = null; }
+  if (generation !== previewGeneration || ctx.tmuxRestarting || reentryResultShown()
+      || $('tmux-lifecycle-modal').style.display !== 'flex') return;
+  showReentryPreview(preview);
+}
+
+/* "Open card" of a result entry: the ordinary navigation, nothing replayed
+   and no command sent. The card is read first; a stopped one opens as any
+   stopped card does (a plain shell), except while the backend was still
+   settling this restart's entries: then it may be creating that very shell,
+   so the card is only shown. */
+let resultPending = false;
+async function openResultCard(cardId) {
+  const pending = resultPending;
+  closeLifecycleModal();
+  const card = provider.get(cardId);
+  if (!card) return;
+  switchProject(card.projectId);
+  await pollNow();
+  const current = provider.get(cardId);
+  if (!current || (pending && current.status === 'stopped')) return;
+  openSession(current.id);
+}
+
+function presentReentryResult(outcome, { focus = true } = {}) {
+  setLifecycleResultMode(true);
+  const view = showReentryResult(outcome);
+  resultPending = view.pending;
+  $('tmux-lifecycle-modal').style.display = 'flex';
+  if (focus) $('tmux-done').focus();
+  return view;
+}
+
+/* A result whose operation is still running is shown at once, with its
+   unsettled entries in progress, and then FOLLOWED: a bounded read-only poll
+   repaints the same list as entries settle. Nothing is invoked again. When
+   the poll ends and the operation is still running, the list says that those
+   results are still pending. A list the user left, or that another restart
+   replaced, is no longer followed. */
+let resultFollow = 0;
+async function followReentryResult(requestId, shown) {
+  const follow = ++resultFollow;
+  const live = () => follow === resultFollow && reentryResultShown();
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  let latest = shown.result;
+  const known = await awaitReentryResult({
+    requestId, invoke: inv, wait, active: live,
+    onRead: result => { latest = result; presentReentryResult({ ...shown, result }, { focus: false }); },
+  });
+  if (!live()) return;
+  latest = known.result || latest;
+  presentReentryResult({ ...shown, result: latest, pollEnded: latest?.state !== 'complete' }, { focus: false });
+}
+
+async function refreshTmuxLifecycle({ prompt = false, quiet = false } = {}) {
   if (!window.__TAURI__) return null;
   try {
     ctx.tmuxServerStatus = await inv('tmux_server_status');
     renderTmuxDiagnostics();
-    if (ctx.tmuxServerStatus.notice) {
+    if (ctx.tmuxServerStatus.notice && !quiet) {
       toast(t(`tmux.notice.${ctx.tmuxServerStatus.notice}`));
       inv('acknowledge_tmux_lifecycle_notice').catch(() => {});
       ctx.tmuxServerStatus.notice = null;
@@ -176,7 +272,10 @@ async function refreshTmuxLifecycle({ prompt = false } = {}) {
 
 async function deferTmuxRestart() {
   if (ctx.tmuxRestarting) return;
-  $('tmux-lifecycle-modal').style.display = 'none';
+  const result = reentryResultShown();
+  closeLifecycleModal();
+  // leaving the result list is not "Later": that restart already ran
+  if (result) return;
   if (!ctx.tmuxServerStatus?.pendingRestart) return;
   try {
     ctx.tmuxServerStatus = await inv('defer_tmux_restart');
@@ -189,21 +288,31 @@ async function deferTmuxRestart() {
 async function restartTmuxServer() {
   const review = ctx.tmuxServerStatus;
   if (!review || ctx.tmuxRestarting) return;
+  if (reentryResultShown()) return;
+  resultFollow++;   // an earlier result is no longer followed
   ctx.tmuxRestarting = true;
   renderTmuxDiagnostics(review);
+  // what the user saw at the click is what is asked for; nothing changes it now
+  const plan = currentReentryPlan();
+  const wanted = !!reentryRequest(plan);
+  lockReentry(true);
   $('tmux-restart').disabled = true;
   $('tmux-later').disabled = true;
   $('tmux-view-sessions').disabled = true;
-  $('tmux-restart').textContent = t('tmux.restarting');
+  renderRestartLabel();
   stopPolling();
   let detachedSessions = [];
   let replacementStarted = false;
   let invokedStatus = null;
+  let reentry = null;
+  let finished = false;
   const requestId = genId('R');
   let unlisten = null;
   const began = performance.now();
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   try {
-    const status = managedBlockers(review).length
+    const closing = managedBlockers(review);
+    const status = closing.length
       ? await closeManagedForRestart(review, {
         readStatus: () => inv('tmux_server_status'),
         getCard: id => provider.get(id),
@@ -213,6 +322,16 @@ async function restartTmuxServer() {
       : review;
     if ((status.restartBlockers || []).length) throw new Error('tmux-restart-mcp-managed-sessions');
     ctx.tmuxServerStatus = status;
+    reentry = reentryRequest(plan);
+    if (reentry && closing.length) {
+      /* the managed cards are gone: the selection is asked for against a
+         FRESH preview, and only when that is the reviewed list without them */
+      let fresh;
+      try { fresh = await inv('agent_reentry_preview'); } catch (_) { throw new Error('reentry-preview-expired'); }
+      const carried = afterManagedClose(plan, fresh, closing.map(item => item.cardId));
+      if (carried.changed) throw new Error('reentry-preview-expired');
+      reentry = carried.request;
+    }
     detachedSessions = [...panes.keys()];
     // Backend validates the reviewed attached-client counts before detaching.
     leaveSessionView({ detach: false });
@@ -222,12 +341,12 @@ async function restartTmuxServer() {
       const progress = event.payload;
       if (progress.requestId === requestId && progress.phase === 'replacing') replacementStarted = true;
       if (!ctx.tmuxRestarting || progress.requestId !== requestId || performance.now() - began < 300) return;
-      const key = { exiting: 'tmux.progress.exiting', saving: 'tmux.progress.saving', replacing: 'tmux.progress.replacing' }[progress.phase];
-      if (key) $('tmux-restart').textContent = t(key, progress);
+      // shell-only: the button's per-phase text; the stage list needs a re-entry request
+      showRestartProgress(progress, !!reentry);
     });
     await prepareCardsForServerRestart(status.sessions || []);
     invokedStatus = status;
-    const restarted = await inv('restart_tmux_server', {
+    const outcome = restartOutcome(await inv('restart_tmux_server', {
       expectedPid: status.serverPid || 0,
       expectedStartedAt: status.serverStartedAt || 0,
       expectedImpactToken: status.impactToken || '',
@@ -236,41 +355,84 @@ async function restartTmuxServer() {
       force: !status.pendingRestart,
       restoreShells: !!ctx.settings.sessionRestore,
       requestId,
-    });
-    if (restarted.serverPid === status.serverPid && restarted.serverStartedAt === status.serverStartedAt) {
-      throw new Error('tmux-server-impact-changed');
-    }
+      reentry,
+    }));
+    const restarted = outcome.server;
+    if (!restarted) throw new Error('tmux-restart-answer-unreadable');
+    const moved = restarted.serverPid !== status.serverPid || restarted.serverStartedAt !== status.serverStartedAt;
+    if (!outcome.replaced && !moved && !outcome.result) throw new Error('tmux-server-impact-changed');
     ctx.tmuxServerStatus = restarted;
-    markSessionsStoppedForServerRestart();
-    render();
-    $('tmux-lifecycle-modal').style.display = 'none';
-    toast(t('tmux.restartComplete'));
-    inv('acknowledge_tmux_lifecycle_notice').catch(() => {});
+    const replaced = outcome.replaced || moved;
+    /* A confirmed replacement stops every session the old server held. A
+       card whose re-entry got a new shell is not special-cased: its session
+       is read live again by the ordinary poll that `finally` restarts. */
+    if (replaced) {
+      markSessionsStoppedForServerRestart();
+      render();
+      inv('acknowledge_tmux_lifecycle_notice').catch(() => {});
+    }
+    finished = true;
+    if (!reentry) {
+      closeLifecycleModal();
+      toast(t('tmux.restartComplete'));
+    } else {
+      /* the backend worker may still be settling entries: they are shown as
+         in progress and followed by reading, never by invoking again */
+      const shown = { replaced, result: outcome.result, requested: reentry.cards };
+      const view = presentReentryResult(shown);
+      if (view.toast) toast(t(view.toast));
+      if (view.pending) followReentryResult(requestId, shown).catch(() => {});
+    }
   } catch (error) {
     const message = error?.message || String(error);
-    const key = {
-      'managed-review-changed': 'tmux.impactChanged',
-      'managed-status-unavailable': 'tmux.managedStatusUnavailable',
-      'managed-reminder-protected': 'tmux.reminderProtected',
-      'managed-close-rejected': 'tmux.managedCloseRejected',
-      'managed-close-ambiguous': 'tmux.managedCloseAmbiguous',
-      'tmux-restart-mcp-managed-sessions': 'tmux.managedStillBlocked',
-      'tmux-server-impact-changed': 'tmux.impactChanged',
-      'tmux-restart-agent-timeout': 'tmux.agentTimeout',
-      'tmux-restart-snapshot-failed': 'tmux.snapshotFailed',
-      'tmux-restart-busy': 'tmux.restartBusy',
-      'tmux-restart-timeout': 'tmux.restartTimeout',
-    }[message] || 'tmux.restartFailed';
-    toast(t(key, { card: error?.cardId || '?', count: error?.protectedCount || error?.closedCount || 0 }));
-    const observed = await refreshTmuxLifecycle();
-    if (invokedStatus && (observed
+    /* A restart that asked for re-entry and got no readable answer may still
+       have run: read what the backend knows about this request before saying
+       anything, and never send the restart again to find out. */
+    const lost = !!invokedStatus && responseLost(message, !!reentry);
+    const known = lost ? await awaitReentryResult({ requestId, invoke: inv, wait }) : null;
+    const observed = await refreshTmuxLifecycle({ quiet: lost });
+    const moved = !!invokedStatus && (observed
       ? (observed.serverPid !== invokedStatus.serverPid || observed.serverStartedAt !== invokedStatus.serverStartedAt)
-      : replacementStarted)) {
+      : replacementStarted);
+    const replaced = moved || known?.result?.serverReplaced === true;
+    if (replaced) {
       markSessionsStoppedForServerRestart();
       render();
     }
-    if (message !== 'tmux-restart-timeout') {
-      if (ctx.tmuxServerStatus?.pendingRestart) showTmuxLifecycle(ctx.tmuxServerStatus, false);
+    if (lost && (known.result || replaced)) {
+      // known facts in the result list; a completed replacement is never the failure toast
+      finished = true;
+      if (replaced) {
+        inv('acknowledge_tmux_lifecycle_notice').catch(() => {});
+        if (ctx.tmuxServerStatus) ctx.tmuxServerStatus.notice = null;
+      }
+      // the bounded read above is over: what still runs is said to be pending
+      const view = presentReentryResult({ replaced, result: known.result, requested: reentry.cards, pollEnded: true });
+      if (view.toast) toast(t(view.toast));
+    } else {
+      const key = {
+        'managed-review-changed': 'tmux.impactChanged',
+        'managed-status-unavailable': 'tmux.managedStatusUnavailable',
+        'managed-reminder-protected': 'tmux.reminderProtected',
+        'managed-close-rejected': 'tmux.managedCloseRejected',
+        'managed-close-ambiguous': 'tmux.managedCloseAmbiguous',
+        'tmux-restart-mcp-managed-sessions': 'tmux.managedStillBlocked',
+        'tmux-server-impact-changed': 'tmux.impactChanged',
+        'reentry-preview-expired': 'tmux.impactChanged',
+        'tmux-restart-agent-timeout': 'tmux.agentTimeout',
+        'tmux-restart-snapshot-failed': 'tmux.snapshotFailed',
+        'tmux-restart-busy': 'tmux.restartBusy',
+        'tmux-restart-timeout': 'tmux.restartTimeout',
+      }[message] || 'tmux.restartFailed';
+      toast(t(key, { card: error?.cardId || '?', count: error?.protectedCount || error?.closedCount || 0 }));
+      if (message !== 'tmux-restart-timeout') {
+        if (ctx.tmuxServerStatus?.pendingRestart) showTmuxLifecycle(ctx.tmuxServerStatus, false);
+        /* a changed review of a restart that asked for re-entry is asked
+           again from the fresh status, also when the restart was the user's
+           own (nothing pending); a shell-only restart keeps its earlier path */
+        else if (wanted && observed && ['tmux-server-impact-changed', 'reentry-preview-expired', 'managed-review-changed'].includes(message)
+            && $('tmux-lifecycle-modal').style.display === 'flex') showTmuxLifecycle(observed, true);
+      }
     }
   } finally {
     unlisten?.();
@@ -279,7 +441,14 @@ async function restartTmuxServer() {
     $('tmux-restart').disabled = false;
     $('tmux-later').disabled = false;
     $('tmux-view-sessions').disabled = false;
-    $('tmux-restart').textContent = t(managedBlockers(ctx.tmuxServerStatus).length ? 'tmux.closeManagedRestart' : 'tmux.restart');
+    showReentryProgress(null);
+    /* an attempt that did not complete leaves no selection behind: the review
+       that stays open is given a fresh preview, so nothing is ever resent */
+    if (!finished) {
+      showReentryPreview(null);
+      if ($('tmux-lifecycle-modal').style.display === 'flex') loadReentryPreview(ctx.tmuxServerStatus);
+    }
+    renderRestartLabel();
     renderTmuxDiagnostics();
     startPolling();
   }
@@ -349,6 +518,13 @@ function initModules() {
   initConnector();
   initMcp();
   initAutomation({ activeProject, newSessionSummary, openProjectDefaults, projectDefaultsSummary, provider, openSession, newDefaultSession });
+  initReentry({
+    titleOf: id => provider.get(id)?.title ?? null,
+    openCard: openResultCard,
+    openSetup: () => { closeLifecycleModal(); openSettings({ section: 'agents', setting: 'claude-reentry' }); },
+    changed: renderRestartLabel,
+    managed: () => managedBlockers(ctx.tmuxServerStatus).length > 0,
+  });
   wireChrome();
 }
 
@@ -499,6 +675,7 @@ export async function boot() {
   if (visible) await revealThemedWindow();
   state.projectId = store.projects[0].id;
   render();
+  refreshReentry();   // a restart review opened before the Board loaded gets its card titles
   /* A launch the system made to deliver "remind in 1 hour" while deck was not
      running (reminder.rs, response-only launch): transact that answer and
      nothing else. The backend then ends the process, or says that deck stays
@@ -572,6 +749,8 @@ function wireChrome() {
 
   $('tmux-restart').onclick = restartTmuxServer;
 
+  $('tmux-done').onclick = closeLifecycleModal;
+
   $('tmux-view-sessions').onclick = () => {
     const list = $('tmux-impact-list');
     const showing = list.style.display === 'block';
@@ -581,6 +760,11 @@ function wireChrome() {
 
   document.addEventListener('keydown', event => {
     if ($('tmux-lifecycle-modal').style.display !== 'flex') return;
+    // the result list only closes: Enter on "Done" and Escape both leave it
+    if (reentryResultShown() && !ctx.tmuxRestarting) {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeLifecycleModal(); }
+      return;
+    }
     if (ctx.tmuxRestarting && (event.key === 'Enter' || event.key === 'Escape')) {
       event.preventDefault(); event.stopPropagation(); return;
     }
@@ -620,6 +804,8 @@ function wireChrome() {
     renderPendingUpdate();
     renderBuildIdentity();
     renderTmuxDiagnostics();
+    refreshReentry();
+    renderRestartLabel();
     render();
     refreshQueue();
   });

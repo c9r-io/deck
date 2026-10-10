@@ -317,7 +317,8 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Templates (saved lists, shared by cards and automations) | `ui/js/templates.js` |
 | Needs-attention view (sidebar entry), runtime read state, tab done-dot | `ui/js/attention.js`, `ui/js/attention-model.js` |
 | Away notifications and the Dock badge (Rust-side trigger, closed content, in-process UNUserNotificationCenter bridge) | `notify.rs`, `native/NotificationBridge.swift`, `ui/js/notify-model.js` (+ `docs/notifications.md`) |
-| Agent status hooks (closed state words, bundled helper) | `agent_status.rs`, `src-tauri/status-helper/` |
+| Agent status hooks (closed state words, bundled helper), per-family hook ownership (Signal / Lifecycle) | `agent_status.rs`, `agent_origin.rs` (shared kernel origin of a hook report), `src-tauri/status-helper/` |
+| Reopen Agent session on an intentional shell-service restart (Claude only; transaction memory, exact native session, once-only launch, Policy A default / Policy B per-restart bypass reauthorization; never task, readiness or authority) | `agent_reentry/` (contract in `mod.rs`; `claude.rs` vendor facts, `lifecycle.rs` receipts, `launch.rs` the one input site), `src-tauri/lifecycle-helper/`, `procinfo.rs` (narrow qualification), `tmux_lifecycle.rs` (`restart_transaction_on`), `ui/js/reentry-model.js`, `restart-reentry.js` (+ `docs/tmux-server-lifecycle.md`, `docs/first-party-extensions.md`) |
 | Static first-party extension tables (service integrations, agent adapters, translation providers; compiled in, exactly-one lookups, registered ≠ enabled/trusted/authorized) and the Slack integration descriptor | `extensions.rs`, `slack.rs` (+ `docs/first-party-extensions.md`) |
 | Automations: inbound sources (Slack badge, clock), dispatcher, Keychain | `inbound.rs`, `inbound_slack.rs`, `inbound_clock.rs`, `keychain.rs`, `ui/js/inbound.js` (+ `docs/auto-respond.md`) |
 | Remote-agent admission policy (`claude`/`codex` with simple shell-safe arguments, invisible-character stripping) shared by channels, Connector and external queue rows | `admission.rs` (pinned by `tests/external_admission.rs`) |
@@ -441,6 +442,48 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   command (`project.cmd`), taken by ＋ / ⌘N / "New session now" and sent by
   that first start; "New shell only" and every context entry (in this
   directory, parent folder, new shell in a split) create shells.
+  One more program start exists and it never reads the card's command
+  (enabled in code; native evidence is per release, and every stage ran
+  once, by a test controller that calls the production transaction. On
+  Claude 2.1.294: how the production checks read a bare and a bypass-flag
+  launch — stages S and B, discrete samples of a client started outside
+  Deck — and ONE Policy A restart transaction over two such clients —
+  stage M1: both entries confirmed, each request the frozen executable with
+  `--resume` and the session that client exited in. On Claude 2.1.296: the
+  same launch readings; ONE Policy A transaction (M1, with a `/clear`);
+  ONE Policy B transaction over three clients (M2: the two bypass launches
+  were asked with the override before `--resume`, the bare one without it,
+  all three confirmed; the one that had been lowered to plan mode showed
+  bypass again — a reauthorization, read from the pane by the experiment's
+  operator, not by Deck); and ONE transaction whose new shell exported a
+  refused name (M3: one request, not confirmed, the client left running).
+  Local isolated application validation on 2.1.296 passed in follow-up 33:
+  real UI → IPC → production assembly → restart → real Claude/helper →
+  post-check → UI result, ONE successful Policy A transaction. The ad-hoc
+  debug carrier used private data/socket, real HOME and an explicit validated
+  project lifecycle configuration; its SHA-256 dependency was optimized,
+  with identity checks and deadlines unchanged. Not verified: formal release
+  installation, global hook opt-in/migration, Policy B and the
+  refused-name path on 2.1.294, anything Deck itself would know about the
+  permission after a re-entry, Developer ID, notarization, Gatekeeper and the
+  published carrier. The WKWebView
+  `reentry` smoke paints the dialog from scripted answers: in an ad-hoc
+  debug carrier it failed its layout checkpoint twice and, after one
+  stylesheet repair, passed once — the dialog's presentation at the
+  default window, nothing about the transaction): when
+  the user confirms a shell-service restart AND ticks cards to reopen,
+  `agent_reentry` types exactly one request into the shell it created for
+  each sealed entry — the frozen certified executable with `--resume <the
+  native session that client exited in>`, plus the bypass flag only under
+  that restart's explicit Policy B for a client that was launched with it.
+  No prompt, no "continue", no saved command, no replayed argv; one attempt,
+  never repeated after a timeout, a lost reply or a crash; nothing is
+  remembered for the next restart, and a confirmed entry is not readiness,
+  authority or task progress (`agent_reentry/mod.rs`). The request is typed
+  after a bounded set of checks; what the new shell's startup files export
+  cannot be read beforehand (the user accepted that window), so the started
+  client is checked afterwards and a mismatch only means "not confirmed" —
+  the start is never undone, retyped or retried.
 - **A card is persisted only after its session started.** `provider.createStarted`
   starts tmux inside the Board transaction and kills it if the write fails; a
   directory that no longer exists (`NotDir`) asks the user (cancel / edit the

@@ -236,7 +236,13 @@ pub(crate) fn attach_session(
 
     let conf = tmux_conf();
     let mut cmd = CommandBuilder::new(tmux_program()?);
-    cmd.args(["-f", &conf, "-L", socket()]);
+    cmd.args([
+        crate::tmux_clients::UTF8_CLIENT,
+        "-f",
+        &conf,
+        "-L",
+        socket(),
+    ]);
     cmd.args(crate::tmux_clients::pane_client_args(&session_target(
         &name,
     )));

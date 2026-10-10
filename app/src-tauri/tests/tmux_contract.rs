@@ -675,7 +675,15 @@ fn attach_query_client(s: &Server, session: &str, extra: &[&str]) -> Child {
     let target = format!("={session}");
     let [mode, attach, rest @ ..] = tmux_clients::query_client_args(&target);
     let mut child = Command::new(tmux_bin())
-        .args(["-f", "/dev/null", "-L", &s.0, mode, attach])
+        .args([
+            tmux_clients::UTF8_CLIENT,
+            "-f",
+            "/dev/null",
+            "-L",
+            &s.0,
+            mode,
+            attach,
+        ])
         .args(extra)
         .args(rest)
         .env("LANG", "en_US.UTF-8")
@@ -720,7 +728,7 @@ impl PaneClient {
             .expect("open pane pty");
         let target = format!("={session}");
         let mut cmd = portable_pty::CommandBuilder::new(tmux_bin());
-        cmd.args(["-f", "/dev/null", "-L", &s.0]);
+        cmd.args([tmux_clients::UTF8_CLIENT, "-f", "/dev/null", "-L", &s.0]);
         cmd.args(tmux_clients::pane_client_args(&target));
         cmd.env("TERM", "xterm-256color");
         cmd.env("LANG", "en_US.UTF-8");
@@ -2205,6 +2213,294 @@ fn format_tabs_survive_only_with_utf8_locale() {
         "C locale sanitizes tabs to '_' — if this ever stops failing without \
          LANG, the pinned env in tmux()/pty.rs is merely redundant"
     );
+}
+
+/// Locales a deck process may INHERIT beside the `LANG` it pins for its tmux
+/// children. `LC_ALL` and `LC_CTYPE` outrank `LANG`, so under each of these
+/// tmux takes a client for a non-UTF-8 one unless the client says otherwise.
+const INHERITED_NON_UTF8: &[&[(&str, &str)]] = &[
+    &[("LANG", "en_US.UTF-8"), ("LC_ALL", "C")],
+    &[("LANG", "en_US.UTF-8"), ("LC_CTYPE", "C")],
+    &[("LANG", "en_US.UTF-8"), ("LC_ALL", "POSIX")],
+    &[("LANG", "en_US.UTF-8"), ("LC_CTYPE", "POSIX")],
+    &[("LANG", "en_US.UTF-8"), ("LC_ALL", "en_US.ISO8859-1")],
+    &[("LANG", "C")],
+    &[],
+];
+
+/// One tmux client on `socket` whose whole locale environment is `locale`,
+/// with or without the flag every production client carries.
+fn client_under(socket: &str, locale: &[(&str, &str)], utf8_flag: bool) -> Command {
+    let mut c = Command::new(tmux_bin());
+    c.env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .envs(locale.iter().copied());
+    if utf8_flag {
+        c.arg(tmux_clients::UTF8_CLIENT);
+    }
+    c.args(["-f", "/dev/null", "-L", socket]);
+    c
+}
+
+fn stdout_of(mut command: Command) -> String {
+    String::from_utf8_lossy(&command.output().expect("tmux spawn").stdout).into_owned()
+}
+
+/// The defect and its repair, on the output deck parses: under every
+/// inherited non-UTF-8 locale a client without the flag loses its tab
+/// separators and its non-ASCII text, and a client with the flag prints both
+/// byte for byte — the lifecycle probe's three fields included.
+#[test]
+fn an_inherited_non_utf8_locale_mangles_command_output_unless_the_client_carries_the_utf8_flag() {
+    let s = Server::new("locale-flag");
+    let text = "a\tb 中文 é";
+    let probe = "#{pid}\t#{start_time}\t#{socket_path}";
+    for locale in INHERITED_NON_UTF8 {
+        let print = |flag: bool, what: &str| {
+            let mut c = client_under(&s.0, locale, flag);
+            c.args(["display-message", "-p", "-t", "t", what]);
+            stdout_of(c)
+        };
+        let bare = print(false, text);
+        assert!(
+            bare.contains("a_b") && !bare.contains('\t') && !bare.contains("中文"),
+            "{locale:?} without the flag: {bare:?}"
+        );
+        assert_eq!(
+            print(false, probe).trim_end().split('\t').count(),
+            1,
+            "{locale:?}"
+        );
+        assert_eq!(print(true, text).trim_end_matches('\n'), text, "{locale:?}");
+        assert_eq!(
+            print(true, probe).trim_end().split('\t').count(),
+            3,
+            "{locale:?}"
+        );
+        let mut list = client_under(&s.0, locale, true);
+        list.args(["list-panes", "-a", "-F", "#{session_name}\t#{pane_id}\t中"]);
+        assert_eq!(stdout_of(list).trim_end(), "t\t%0\t中", "{locale:?}");
+    }
+    // a UTF-8 locale needs no flag, and the flag changes nothing there
+    for flag in [false, true] {
+        let mut c = client_under(&s.0, &[("LANG", "en_US.UTF-8")], flag);
+        c.args(["display-message", "-p", "-t", "t", text]);
+        assert_eq!(stdout_of(c).trim_end_matches('\n'), text);
+    }
+}
+
+/// The flag is a client flag, not an environment. A server FIRST CREATED by
+/// a client that carries it hands out the same global environment, and the
+/// shell of its first pane has the same locale, as a server created without
+/// it. What the creating process inherited (here `LC_ALL=C`) is still what
+/// the user's shell gets: the flag makes deck's own reading right and
+/// rewrites nobody's locale.
+#[test]
+fn the_utf8_flag_changes_neither_a_new_servers_environment_nor_its_panes_locale() {
+    let inherited: &[(&str, &str)] = &[("LANG", "en_US.UTF-8"), ("LC_ALL", "C")];
+    let utf8: &[(&str, &str)] = &[("LANG", "en_US.UTF-8")];
+    let seen = |flag: bool| -> (String, String) {
+        let s = Server(unique_name(if flag {
+            "deck-test-locale-with"
+        } else {
+            "deck-test-locale-without"
+        }));
+        let mut create = client_under(&s.0, inherited, flag);
+        create.args([
+            "start-server",
+            ";",
+            "new-session",
+            "-d",
+            "-s",
+            "t",
+            "-x",
+            "80",
+            "-y",
+            "12",
+            "/bin/sh",
+        ]);
+        assert!(create.status().expect("tmux spawn").success());
+        s.wait_for_prompt("t");
+        let ask = |args: &[&str]| {
+            let mut c = client_under(&s.0, utf8, false);
+            c.args(args);
+            stdout_of(c)
+        };
+        let mut environment: Vec<String> = ask(&["show-environment", "-g"])
+            .lines()
+            .filter(|line| line.starts_with("LANG=") || line.starts_with("LC_"))
+            .map(str::to_string)
+            .collect();
+        environment.sort();
+        ask(&[
+            "send-keys",
+            "-t",
+            "t",
+            "echo \"L=${LC_ALL-unset}:${LANG-unset}:${LC_CTYPE-unset}=\"",
+            "Enter",
+        ]);
+        let answered = |screen: &str| {
+            screen
+                .lines()
+                .find(|line| line.starts_with("L=") && !line.contains('$'))
+                .map(str::to_string)
+        };
+        wait_until("the pane shell's locale line", || {
+            answered(&ask(&["capture-pane", "-p", "-t", "t"])).is_some()
+        });
+        (
+            environment.join("|"),
+            answered(&ask(&["capture-pane", "-p", "-t", "t"])).unwrap_or_default(),
+        )
+    };
+    let (with, without) = (seen(true), seen(false));
+    assert_eq!(with, without);
+    assert_eq!(
+        with,
+        (
+            "LANG=en_US.UTF-8|LC_ALL=C".to_string(),
+            "L=C:en_US.UTF-8:unset=".to_string()
+        )
+    );
+}
+
+/// A visible pane is a tty attach. Under an inherited non-UTF-8 locale tmux
+/// draws the pane's non-ASCII text as `_` — unless the attach carries the
+/// flag, as `pty::attach_session` does.
+#[test]
+fn a_pane_attach_under_an_inherited_non_utf8_locale_draws_non_ascii_text_only_with_the_utf8_flag() {
+    let s = Server::new("locale-attach");
+    // octal escapes: the shell's own echo of the command holds no non-ASCII byte
+    s.run(&[
+        "send-keys",
+        "-t",
+        "t",
+        "printf 'Z\\344\\270\\255\\346\\226\\207Z\\n'",
+        "Enter",
+    ]);
+    wait_until("the non-ASCII line", || {
+        s.run(&["capture-pane", "-p", "-t", "t"]).contains("Z中文Z")
+    });
+    let drawn = |flag: bool| -> String {
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("open pane pty");
+        let mut cmd = portable_pty::CommandBuilder::new(tmux_bin());
+        if flag {
+            cmd.arg(tmux_clients::UTF8_CLIENT);
+        }
+        cmd.args(["-f", "/dev/null", "-L", &s.0]);
+        cmd.args(tmux_clients::pane_client_args("=t"));
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("LANG", "en_US.UTF-8");
+        cmd.env("LC_ALL", "C");
+        // tmux takes ANY client that has `TMUX` in its environment for a
+        // UTF-8 one, whatever its locale says; this suite may itself run
+        // inside a tmux pane, and deck's own process normally does not
+        cmd.env_remove("TMUX");
+        cmd.env_remove("TMUX_PANE");
+        let mut child = pair.slave.spawn_command(cmd).expect("spawn pane client");
+        drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().expect("pane reader");
+        let (sender, chunks) = std::sync::mpsc::channel();
+        let drain = std::thread::spawn(move || {
+            let mut bytes = [0u8; 4096];
+            while let Ok(count) = reader.read(&mut bytes) {
+                if count == 0 || sender.send(bytes[..count].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut seen = Vec::new();
+        let until = std::time::Instant::now() + Duration::from_millis(2500);
+        while std::time::Instant::now() < until
+            && !String::from_utf8_lossy(&seen).contains("Z中文Z")
+        {
+            if let Ok(chunk) = chunks.recv_timeout(Duration::from_millis(100)) {
+                seen.extend(chunk);
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(pair.master);
+        let _ = drain.join();
+        String::from_utf8_lossy(&seen).into_owned()
+    };
+    let with = drawn(true);
+    assert!(with.contains("Z中文Z"), "with the flag: {with:?}");
+    let without = drawn(false);
+    assert!(
+        !without.contains("中文") && without.contains("Z_"),
+        "without the flag: {without:?}"
+    );
+}
+
+/// The Board's query client is a control-mode client, and its replies are
+/// sanitized like any other client's: the compiled `list-panes` query keeps
+/// its tab separators under an inherited non-UTF-8 locale only with the flag.
+#[test]
+fn the_query_client_keeps_its_tab_separators_under_an_inherited_non_utf8_locale_only_with_the_utf8_flag(
+) {
+    let s = Server::new("locale-query");
+    let reply = |flag: bool| -> String {
+        let mut c = client_under(&s.0, &[("LANG", "en_US.UTF-8"), ("LC_ALL", "C")], flag);
+        c.args(tmux_clients::query_client_args("=t"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = c.spawn().expect("spawn query control client");
+        let mut stdin = child.stdin.take().expect("query client stdin");
+        stdin
+            .write_all(b"list-panes -a -F \"#{session_name}\t#{pane_id}\"\n")
+            .expect("send the query");
+        stdin.flush().expect("send the query");
+        sleep(Duration::from_millis(700));
+        // end of input: the control client detaches and exits
+        drop(stdin);
+        String::from_utf8_lossy(&child.wait_with_output().expect("query client").stdout)
+            .into_owned()
+    };
+    let with = reply(true);
+    assert!(with.contains("t\t%0"), "with the flag: {with:?}");
+    let without = reply(false);
+    assert!(
+        without.contains("t_%0") && !without.contains("t\t%0"),
+        "without the flag: {without:?}"
+    );
+}
+
+/// Every place production starts a tmux client carries the flag: six in
+/// `tmux.rs` (one of them the argv the orphan matcher compares) and the pane
+/// attach in `pty.rs`. None starts a client with `-f <conf> -L` alone.
+#[test]
+fn every_production_tmux_client_carries_the_utf8_flag() {
+    let production = |source: &str| -> String {
+        source
+            .split("\n#[cfg(test)]\nmod tests")
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect()
+    };
+    let flagged = "crate::tmux_clients::UTF8_CLIENT,\"-f\",";
+    for (name, text, sites) in [
+        ("tmux.rs", production(include_str!("../src/tmux.rs")), 6),
+        ("pty.rs", production(include_str!("../src/pty.rs")), 1),
+    ] {
+        assert_eq!(text.matches(flagged).count(), sites, "{name}");
+        assert_eq!(
+            text.matches("\"-f\",&conf,\"-L\"").count()
+                + text.matches("\"-f\",conf,\"-L\"").count(),
+            sites,
+            "{name}"
+        );
+    }
 }
 
 /// Cross-screen selection delegates anchor, endpoint, repaint and wrap

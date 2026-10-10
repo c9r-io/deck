@@ -287,7 +287,7 @@ def main():
     shutil.copy2(target / "debug/deck-app", macos / "deck")
     result["hostBinarySHA256"] = hashlib.sha256((macos / "deck").read_bytes()).hexdigest()
     binaries = ROOT / "app/src-tauri/binaries"
-    for name in ("tmux", "deck-status-helper", "deck-mcp", "deck-mcp-runner"):
+    for name in ("tmux", "deck-status-helper", "deck-lifecycle-helper", "deck-mcp", "deck-mcp-runner"):
         matches = list(binaries.glob(name + "-aarch64-apple-darwin"))
         if matches:
             shutil.copy2(matches[0], macos / name)

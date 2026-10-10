@@ -6,6 +6,8 @@
 //! (atomic persistence + logs), history (completion), commands (the rest).
 
 mod admission;
+mod agent_origin;
+mod agent_reentry;
 mod agent_status;
 mod applog;
 mod bell;
@@ -166,6 +168,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("reminder-native", "m.verifyReminderNative()"),
     ("board-lost", "m.verifyBoardLost()"),
     ("approval", "m.verifyApproval()"),
+    ("reentry", "m.verifyReentry()"),
     ("ux-layers", "m.verifyUxLayers()"),
     ("terminal-input", "m.verifyTerminalInput()"),
 ];
@@ -499,6 +502,9 @@ fn main() {
             drops::save_dropped_file,
             agent_status::agent_hooks_status,
             agent_status::agent_hooks_set,
+            agent_status::agent_lifecycle_hooks_set,
+            tmux_lifecycle::agent_reentry_preview,
+            tmux_lifecycle::agent_reentry_operation,
             inbound::inbound_status,
             inbound::inbound_pending,
             inbound::inbound_ack,

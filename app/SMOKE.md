@@ -436,7 +436,117 @@ All automated tests use `deck-smoke*` sockets. Never point a smoke command at
 `-L deck`, never delete `~/.deck`, and do not use a production card/session as
 a fixture.
 
+### Reopen Agent session review (WKWebView mode `reentry`)
+
+Mode `reentry` (`ui/test/reentry-smoke.mjs`, listed in
+`ui/test/fixtures/smoke-manifest.json`) renders the restart dialog's re-entry
+section in the real webview from scripted IPC answers: the candidate list
+and launch profiles, Policy A as the default, the Policy B warning and
+count, the single context note, the three result presentations
+(confirmed, unconfirmed with its reason, still running) and the absence of
+any retry control or native identity. It never reaches the backend's
+`restart_tmux_server`, creates or stops no session and types into no pane.
+Run it like every other mode (fresh `DECK_SMOKE_DATA_DIR`, unique
+`DECK_SMOKE_TMUX_SOCKET`, `DECK_SMOKE_WKWEBVIEW=reentry app/run.sh`) and judge
+it with `scripts/smoke-verdict <data-dir> reentry`.
+
+It has run three times, all on the test machine on 2026-10-10, as an ad-hoc
+signed debug carrier at the default 1280×800 window. The first two runs
+FAILED: every checkpoint matched the manifest except `reentry-layout`
+(`a=-4`, expected `7`: neither language's modal passed the carrier's own
+reachability test). The second run's layout items (below) named the one term
+that did not hold: the section overflowed sideways, by 16 px in English and
+20 px in Chinese. The dialog's checkboxes and radios were taking the
+stylesheet's general `input` width (100%); `.reentry-choice input` now sets
+`width: auto`. The third run PASSED, 15 of 15 checkpoints: every term held in
+both languages, in the tick of the assertion and after the page settled, with
+no sideways overflow. That is one passing run. Other window sizes, the larger
+font scale and the signed carrier have not been run.
+
+Start the carrier with the environment the app would really get. The first
+two runs were started from a shell that had exported `LC_ALL=C` for its own
+parsing, and both logged `[tmux-lifecycle] initial server start failed (tmux)`
+at boot; in the second the page read the status `CorruptOrUnreachable` while
+a server was running. The third run, started without that variable, booted
+`CompatibleCurrentBuild` and logged no such line. Three runs support the
+explanation and do not isolate it. Deck pins only `LANG` for its tmux
+children, so an inherited `LC_ALL` or `LC_CTYPE` still reaches them: that is
+a product-side gap, recorded and not fixed.
+
+`reentry-layout` is one sum. Beside it the carrier writes what the sum is
+made of, as numbers, under two measurement names: `reentry-layout-en` and
+`reentry-layout-zh`, one line per item (`a` = the item, `b` = its value).
+The items and their units are the closed tables of
+`ui/test/reentry-layout.mjs`: the window, the modal's frame, its scrolling
+body and the confirming action, the section's horizontal overflow, and for
+the policy, every scope note and the details their box and the four parts of
+the `inside` test. Each language is sampled in the tick of the assertion and
+again after the page settled (items + 1000). They are `metric` checkpoints:
+never compared with anything, so they neither fail a run nor pass one, and
+no text of the page is among them. `describeLayout` in the same file turns
+an `app.log` into a readable table.
+
+The mode proves nothing about the real transaction. That is covered by the
+Rust integration tests with a stand-in client and the native campaigns
+(`agent_reentry/claude.rs`, module header). Follow-up 33 additionally passed
+local isolated real-application Policy A validation; it does not certify
+release installation or global hook migration.
+
 ### Graceful agent exit and restart timing
+
+The opt-in local re-entry experiment uses a separate debug bundle named
+`deck.app` under `/private/tmp/deck-reentry-<hex>`, a distinct bundle ID,
+`--smoke-data-dir <root>/data`, `--smoke-tmux-socket deck-smoke-reentry-<hex>`,
+and `--smoke-reentry-config <root>/work/.claude/settings.json`. All bindings
+must be complete and canonical, directories private and user-owned, the
+project configuration a private JSON object, and the bundled lifecycle helper
+present and executable. Invalid bindings exit before data initialization.
+Release builds ignore this project configuration entry. Ordinary debug and
+release hook installation restrictions remain unchanged.
+
+This entry redirects only lifecycle hook editing and observation reading to
+the actual project file, using the production hook editor and ownership
+checks. It preserves the real HOME and authentication; it does not enable
+observation by fiat or substitute the restart transaction, launch sink,
+receipt validation, or context checks. Signal hook editing is refused in this
+experiment. Do not invoke the normal `app/run.sh` branch for this carrier:
+its process cleanup can affect an installed instance.
+
+Before starting Claude, use the real Settings UI to install observation,
+reopen Settings and verify ON, uninstall and verify OFF on reopening, then
+install and verify ON again. Check that global hook configuration is unchanged.
+The generic confirmation text still names the global Claude file; the debug
+entry writes only its validated project file. This distinction must be recorded
+in the experiment evidence. This test is local isolated application evidence,
+not certification of release installation or global hook migration.
+
+From `app/src-tauri`, build this debug carrier with
+`cargo --config 'profile.dev.package.sha2.opt-level=3' build --locked --offline --bin deck-app`.
+This optimizes only hashing, preserves debug assertions and does not change
+the release profile. Full SHA-256 reads, file-state checks and the production
+15-second post-phase budget remain unchanged. Follow-up 33's first unoptimized
+carrier refused re-entry at that deadline and launched no replacement. The
+separate full-read timing samples and the optimized carrier's success support
+a debug hashing cost explanation; no in-app hash timing trace was collected.
+The read-only ignored test
+`certified_image_reread_fits_the_production_post_budget` accepts only an explicit
+`DECK_REENTRY_EXECUTABLE_PROBE` path and a production-certified digest; it starts
+no client. For an authorized future experiment, run it explicitly from the
+same directory with the same dependency optimization (replace the placeholder
+with the already verified absolute executable path):
+
+```sh
+DECK_REENTRY_EXECUTABLE_PROBE='<certified-absolute-executable>' \
+  cargo --config 'profile.dev.package.sha2.opt-level=3' test --locked --offline \
+  --bin deck-app procinfo::tests::certified_image_reread_fits_the_production_post_budget \
+  -- --ignored --exact
+```
+
+The initial full read establishes the reference before the test's deadline;
+only its second full read is asserted against the production budget. The
+reported test duration includes both reads, so the unoptimized passing sample
+is a cost measurement, not a reproduction of the application's refusal.
+Do not extend deadlines or replace a full hash with metadata.
 
 - [ ] In an isolated build, enable terminal output recovery and create test
       Claude Code and Codex sessions. Restart while idle, while running, with

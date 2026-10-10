@@ -2,13 +2,18 @@
 //! Exit keys are guarded by the observed tmux generation and foreground name.
 //! A timeout before kill-server aborts: elapsed time never proves a saved resume.
 //! The lifecycle supplies the pane reader so a verified, reachable empty
-//! server can be checked without treating tmux's missing pane target as loss.
+//! server can be checked without treating tmux's missing pane target as loss,
+//! and the key sender of the same server handle.
+//! A client that runs under its release's file name (tmux then shows a
+//! version, and argv[0] is a path) is exited as Claude only when the re-entry
+//! transaction froze that exact pane as a certified direct client
+//! (`certified`): never by a version-shaped name, never for another pane.
 use std::time::{Duration, Instant};
 
 use crate::applog::{applog, session_tag};
 use crate::error::{DeckError, ErrorKind, RestartFailure};
 use crate::session_runtime::{check_deadline, Deadline};
-use crate::tmux::{self, same_pane, unchanged_rows, PaneRow};
+use crate::tmux::{same_pane, unchanged_rows, PaneRow};
 
 pub(crate) const PREPARE_BUDGET: Duration = Duration::from_secs(3);
 pub(crate) const TOTAL_BUDGET: Duration = Duration::from_secs(8);
@@ -130,7 +135,9 @@ fn exit_agents(
 pub(crate) fn prepare(
     reviewed: &[PaneRow],
     save_shells: bool,
+    certified: &[PaneRow],
     list: &dyn Fn() -> Result<Vec<PaneRow>, DeckError>,
+    send: &dyn Fn(&[String]) -> Result<String, DeckError>,
     progress: &dyn Fn(&str, usize, usize),
 ) -> Result<Vec<PaneRow>, DeckError> {
     check_deadline()?;
@@ -150,7 +157,13 @@ pub(crate) fn prepare(
             .and_then(|device| crate::procinfo::foreground_leader(&processes, device))
             .and_then(crate::procinfo::argv0)
             .and_then(|s| crate::context::sanitize_process(&s));
-        if let Some(kind) = agent(&row.command, argv.as_deref()) {
+        // The frozen certified fact of this exact pane and foreground name,
+        // not a guess from the name itself.
+        let frozen = certified
+            .iter()
+            .any(|known| same_pane(known, row) && known.command == row.command)
+            .then_some(Agent::Claude);
+        if let Some(kind) = agent(&row.command, argv.as_deref()).or(frozen) {
             // Only a sanitized executable may enter the tmux format expression.
             if crate::context::sanitize_process(&row.command).as_deref() != Some(&row.command) {
                 return Err(error("tmux-restart-agent-unrecognized"));
@@ -168,7 +181,7 @@ pub(crate) fn prepare(
             .count()
             .saturating_sub(total)
     ));
-    exit_agents(targets, EXIT_BUDGET, list, &tmux::tmux_owned, progress)?;
+    exit_agents(targets, EXIT_BUDGET, list, send, progress)?;
     if total > 0 && !save_shells {
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -183,14 +196,16 @@ pub(crate) fn prepare(
     }
     progress("saving", 0, final_rows.len());
     if save_shells {
-        crate::shell_state::checkpoint_before_restart(&final_rows, progress).map_err(|e| {
-            applog(&format!(
-                "[tmux-restart] snapshot-failed code={} elapsed_ms={}",
-                e.code(),
-                started.elapsed().as_millis()
-            ));
-            DeckError::restart(RestartFailure::SnapshotFailed)
-        })?;
+        crate::shell_state::checkpoint_before_restart(&final_rows, list, send, progress).map_err(
+            |e| {
+                applog(&format!(
+                    "[tmux-restart] snapshot-failed code={} elapsed_ms={}",
+                    e.code(),
+                    started.elapsed().as_millis()
+                ));
+                DeckError::restart(RestartFailure::SnapshotFailed)
+            },
+        )?;
     }
     applog(&format!(
         "[tmux-restart] prepared agents={total} restore_enabled={save_shells} elapsed_ms={}",
@@ -242,6 +257,7 @@ mod tests {
         );
     }
     use crate::session_runtime::bounded_output;
+    use crate::tmux;
     use std::os::unix::fs::FileTypeExt;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};

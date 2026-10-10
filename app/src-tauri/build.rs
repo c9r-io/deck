@@ -1,7 +1,8 @@
 /// Build signed bundle sidecars before tauri validates `externalBin`.
 /// A separate target directory avoids the cargo-in-cargo workspace lock.
-/// None is installed under the user's home directory: status-helper is used
-/// by explicit agent hooks, deck-mcp is a user-launched STDIO adapter, and
+/// None is installed under the user's home directory: status-helper and
+/// lifecycle-helper are used by explicit agent hooks (two separate closed
+/// protocol families), deck-mcp is a user-launched STDIO adapter, and
 /// deck-mcp-runner exists only as an MCP-managed tmux pane process.
 fn build_sidecars() {
     let triple = std::env::var("TARGET").expect("cargo sets TARGET");
@@ -26,6 +27,12 @@ fn build_sidecars() {
             "status-helper/Cargo.toml",
             "deck-status-helper",
             "status-helper/target",
+        ),
+        (
+            "lifecycle-helper",
+            "lifecycle-helper/Cargo.toml",
+            "deck-lifecycle-helper",
+            "lifecycle-helper/target",
         ),
         (
             "mcp-runner",

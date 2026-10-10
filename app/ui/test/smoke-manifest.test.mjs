@@ -29,6 +29,7 @@ const CARRIERS = {
   'authority-smoke.mjs': ['authority-live', 'empty-start'],
   'board-lost-smoke.mjs': ['board-lost'],
   'approval-smoke.mjs': ['approval'],
+  'reentry-smoke.mjs': ['reentry'],
   'ux-layers-smoke.mjs': ['ux-layers'],
   'terminal-input-smoke.mjs': ['terminal-input'],
 };

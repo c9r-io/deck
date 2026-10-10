@@ -103,6 +103,68 @@ test('channel monitor disconnect copy never promises reaction catch-up', () => {
   assert.equal(t('settings.channelStatus.disconnected'), '未连接（无历史回填）');
 });
 
+/* "Reopen Agent session" (重新进入 Agent 会话) is about the Agent's own NATIVE
+   session, a different object from deck's session (which stays "session" in
+   zh). 会话 is allowed for that object only, in exactly these strings; a key
+   that is not listed here follows the rule like the rest of the dictionary,
+   whatever its namespace. Each entry says why it names the native session. */
+const NATIVE_SESSION_KEYS = new Map([
+  ['settings.claudeReentry', 'the setting is named after the Claude session whose start and end it observes'],
+  ['settings.claudeReentryHint', 'Claude session start/end hooks and the Claude sessions offered for reopening'],
+  ['settings.claudeReentryEnableConfirm', 'the Claude session a client is in when it starts or exits'],
+  ['settings.claudeReentryEnabled', 'names the setting (Claude session re-entry observation)'],
+  ['settings.claudeReentryDisabled', 'names the setting (Claude session re-entry observation)'],
+  ['reentry.heading', 'the product action: reopen the Agent session'],
+  ['reentry.summary', 'counts Claude sessions that can be reopened'],
+  ['reentry.summary.none', 'no Agent session can be reopened'],
+  ['reentry.summary.unavailable', 'counts Claude sessions that were found'],
+  ['reentry.setupHint', 'quotes the setting name (Claude session re-entry observation)'],
+  ['reentry.policy.bypass', 'Claude sessions launched with a bypass profile'],
+  ['reentry.policy.bypassNone', 'Claude sessions launched with a bypass profile'],
+  ['reentry.policy.bypassWarning', 'permissions reduced inside the running Claude session (approved sentence)'],
+  ['reentry.policy.scope', 'the selected, verified Claude sessions of this restart'],
+  ['reentry.policy.bypassUnavailable', 'the selected Claude sessions and their launch profile'],
+  ['reentry.policy.unknownCount', 'the selected Claude sessions whose launch profile is unverified'],
+  ['reentry.note.scope', 'the native session a client was in when it exited'],
+  ['reentry.note.otherClients', 'the same native session open in another terminal or device'],
+  ['reentry.confirm', 'the number of Agent sessions the click reopens'],
+  ['reentry.confirmManaged', 'the Agent sessions the click reopens; the MCP ones it closes are deck sessions and say "session"'],
+  ['reentry.stage.preparing', 'the stage that prepares the selected Agent sessions for re-entry: their clients exit and the session each ended in is read (approved wording)'],
+  ['reentry.stage.reopening', 'the stage that reopens the Agent sessions'],
+  ['reentry.result.confirmed', 'the Claude session that was reopened'],
+  ['reentry.result.confirmedOrdinary', 'the Claude session that was reopened'],
+  ['reentry.reason.final-session-unconfirmed', 'the native session the client ended in'],
+  ['reentry.reason.native-session-not-found', 'the original native session Claude could not find'],
+  ['reentry.reason.user-action-required', 'the Claude session that asks for the user during its startup'],
+]);
+// The two agent-status hints predate this rule and stay as they were.
+const SESSION_TERM_LEGACY = /^settings.(agentHooks|codexHooks)/;
+
+/** Keys of a zh dictionary that say 会话 without being allowed to. */
+function sessionTermViolations(zh) {
+  return Object.entries(zh)
+    .filter(([key, value]) => /会话/.test(value) && !SESSION_TERM_LEGACY.test(key) && !NATIVE_SESSION_KEYS.has(key))
+    .map(([key]) => key);
+}
+
+test('会话 names only the Agent native session, in an enumerated list of strings', () => {
+  const zh = dictionaries['zh-Hans'];
+  assert.deepEqual(sessionTermViolations(zh), []);
+  // the list is exact: every entry exists, says 会话, and carries its reason
+  for (const [key, reason] of NATIVE_SESSION_KEYS) {
+    assert.match(zh[key] ?? '', /会话/, `${key} is listed but does not use the term`);
+    assert.match(key, /^(?:reentry\.|settings\.claudeReentry)/, `${key}: only re-entry copy is about a native session`);
+    assert.ok(reason.length > 10, key);
+  }
+  // no namespace is exempt: a new re-entry or settings string is held to the rule
+  for (const key of ['reentry.future', 'reentry.result.future', 'reentry.reason.future', 'settings.claudeReentryFuture', 'tmux.future']) {
+    assert.deepEqual(sessionTermViolations({ ...zh, [key]: '此会话已保存' }), [key], key);
+  }
+  // an allowed string does not cover its neighbours, and saying "session" is always fine
+  assert.deepEqual(sessionTermViolations({ 'reentry.heading': '重新进入 Agent 会话', 'reentry.headingNote': '会话', 'reentry.kind.shell': 'Shell session' }),
+    ['reentry.headingNote']);
+});
+
 /* 06 B v01: one name per object. The page is 看板 / Board, a column is
    栏目 / group, a session is "session" in both languages, a split is 窗格 /
    pane; the automation editor's two rows are not both "触发". */
@@ -117,8 +179,18 @@ test('every object has exactly one name in each dictionary', () => {
   }
   for (const key of ['app.board', 'session.back', 'error.boardLoad', 'error.projectSave', 'error.sessionSave'])
     assert.match(zh[key], /看板/, key);
+  /* Everything except the two agent-hook hints follows the 会话 rule, and
+     inside the re-entry copy only the enumerated keys below may say it. */
+  assert.deepEqual(sessionTermViolations(zh), [], 'zh keeps "session" untranslated');
   const zhAll = Object.entries(zh).filter(([k]) => !/^settings.(agentHooks|codexHooks)/.test(k)).map(([, v]) => v).join('\n');
-  assert.doesNotMatch(zhAll, /会话/, 'zh keeps "session" untranslated');
+  // deck's own session keeps its one name inside the re-entry copy too
+  for (const key of ['reentry.kind.shell', 'reentry.reason.multiple-panes', 'reentry.reason.identity-unavailable',
+    'reentry.reason.impact-changed', 'reentry.confirmManaged']) assert.match(zh[key], /session/, key);
+  // the first progress stage is about the Agent sessions being reopened (approved wording)
+  assert.equal(zh['reentry.stage.preparing'], '准备会话');
+  assert.equal(en['reentry.stage.preparing'], 'Preparing sessions');
+  assert.equal(zh['reentry.policy.bypassWarning'], '如果你在会话运行过程中降低过权限，这个选项会再次启用 bypass。');
+  assert.equal(en['reentry.policy.bypassWarning'], 'If you reduced permissions during the session, this option will enable bypass again.');
   assert.doesNotMatch(zhAll, /个 pane|当前 pane/, 'zh calls a pane 窗格');
   assert.notEqual(zh['automation.trigger'], zh['automation.when']);
   assert.equal(zh['app.sessions'], 'session');

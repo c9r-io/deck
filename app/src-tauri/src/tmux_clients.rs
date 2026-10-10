@@ -21,12 +21,25 @@
 //! with no client, with this query client, and with this query client plus a
 //! PTY pane client, so any change here is exercised under all three.
 
+/// Every tmux client deck starts says it is a UTF-8 client itself instead of
+/// leaving that to the locale it inherits. tmux takes a client's UTF-8 flag
+/// from `LC_ALL`, then `LC_CTYPE`, then `LANG`. For a client that is not
+/// UTF-8 it replaces every control character of command output — the tab
+/// separators deck parses — and every non-ASCII byte by `_`, and a pane
+/// attach draws non-ASCII text as `_`. Pinning `LANG` (`tmux::tmux`) covers a
+/// process with no locale at all, but an inherited `LC_ALL=C` or
+/// `LC_CTYPE=C` outranks it. The flag sets that one client flag and nothing
+/// else: no environment is changed, so a server's global environment and the
+/// locale of a new pane's shell stay exactly what they would have been.
+/// Callers put it first: `<tmux> -u -f <conf> -L <socket> …`.
+pub(crate) const UTF8_CLIENT: &str = "-u";
+
 /// `-f` flags of the query client, exactly as tmux reports them back in
 /// `#{client_flags}` (comma-separated, order-free).
 pub(crate) const QUERY_CLIENT_FLAGS: &str = "ignore-size,no-output";
 
 /// Control-mode attach of the Board's query client to `target` (an exact
-/// `=session` target). Callers prepend `-f <conf> -L <socket>`.
+/// `=session` target). Callers prepend `-u -f <conf> -L <socket>`.
 pub(crate) fn query_client_args(target: &str) -> [&str; 6] {
     [
         "-C",
@@ -39,7 +52,7 @@ pub(crate) fn query_client_args(target: &str) -> [&str; 6] {
 }
 
 /// Ordinary tty attach of a visible pane to `target` (an exact `=session`
-/// target), run inside a PTY. Callers prepend `-f <conf> -L <socket>`.
+/// target), run inside a PTY. Callers prepend `-u -f <conf> -L <socket>`.
 pub(crate) fn pane_client_args(target: &str) -> [&str; 3] {
     ["attach-session", "-t", target]
 }
