@@ -1,0 +1,609 @@
+{
+  "checks": [
+    {
+      "peer_pid": 97025,
+      "event": "UserPromptSubmit",
+      "phase": "A-only",
+      "session_id": "session-01",
+      "turn_id": "turn-01",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97031,
+      "event": "Stop",
+      "phase": "A-only",
+      "session_id": "session-01",
+      "turn_id": "turn-01",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97046,
+      "event": "UserPromptSubmit",
+      "phase": "B-only",
+      "session_id": "session-02",
+      "turn_id": "turn-02",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97045,
+      "event": "SessionStart",
+      "phase": "B-only",
+      "session_id": "session-02",
+      "turn_id": null,
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97075,
+      "event": "Stop",
+      "phase": "B-only",
+      "session_id": "session-02",
+      "turn_id": "turn-02",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97090,
+      "event": "UserPromptSubmit",
+      "phase": "overlap",
+      "session_id": "session-01",
+      "turn_id": "turn-03",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97095,
+      "event": "UserPromptSubmit",
+      "phase": "overlap",
+      "session_id": "session-02",
+      "turn_id": "turn-04",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97168,
+      "event": "Stop",
+      "phase": "overlap",
+      "session_id": "session-01",
+      "turn_id": "turn-03",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97170,
+      "event": "Stop",
+      "phase": "overlap",
+      "session_id": "session-02",
+      "turn_id": "turn-04",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97231,
+      "event": "UserPromptSubmit",
+      "phase": "approval",
+      "session_id": "session-02",
+      "turn_id": "turn-05",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97258,
+      "event": "PermissionRequest",
+      "phase": "approval",
+      "session_id": "session-02",
+      "turn_id": "turn-05",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97313,
+      "event": "UserPromptSubmit",
+      "phase": "interrupt",
+      "session_id": "session-01",
+      "turn_id": "turn-06",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97315,
+      "event": "Stop",
+      "phase": "approval",
+      "session_id": "session-02",
+      "turn_id": "turn-05",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97321,
+      "event": "Interrupt",
+      "phase": "interrupt",
+      "session_id": "session-01",
+      "turn_id": "turn-06",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97385,
+      "event": "UserPromptSubmit",
+      "phase": "subsequent",
+      "session_id": "session-01",
+      "turn_id": "turn-07",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": null
+    },
+    {
+      "peer_pid": 97392,
+      "event": "UserPromptSubmit",
+      "phase": "subsequent",
+      "session_id": "session-02",
+      "turn_id": "turn-08",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      }
+    },
+    {
+      "peer_pid": 97402,
+      "event": "Stop",
+      "phase": "subsequent",
+      "session_id": "session-01",
+      "turn_id": "turn-07",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      }
+    },
+    {
+      "peer_pid": 97421,
+      "event": "Stop",
+      "phase": "subsequent",
+      "session_id": "session-02",
+      "turn_id": "turn-08",
+      "pane_marker": "%0",
+      "socket_marker": "A",
+      "A": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      }
+    },
+    {
+      "peer_pid": 97436,
+      "event": "SessionStart",
+      "phase": "embedded-1",
+      "session_id": "session-03",
+      "turn_id": null,
+      "pane_marker": "%2",
+      "socket_marker": "E",
+      "A": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": true
+      }
+    },
+    {
+      "peer_pid": 97437,
+      "event": "UserPromptSubmit",
+      "phase": "embedded-1",
+      "session_id": "session-03",
+      "turn_id": "turn-09",
+      "pane_marker": "%2",
+      "socket_marker": "E",
+      "A": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": true
+      }
+    },
+    {
+      "peer_pid": 97466,
+      "event": "Stop",
+      "phase": "embedded-1",
+      "session_id": "session-03",
+      "turn_id": "turn-09",
+      "pane_marker": "%2",
+      "socket_marker": "E",
+      "A": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": true
+      }
+    },
+    {
+      "peer_pid": 97536,
+      "event": "UserPromptSubmit",
+      "phase": "embedded-2",
+      "session_id": "session-03",
+      "turn_id": "turn-10",
+      "pane_marker": "%2",
+      "socket_marker": "E",
+      "A": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": true
+      }
+    },
+    {
+      "peer_pid": 97541,
+      "event": "Stop",
+      "phase": "embedded-2",
+      "session_id": "session-03",
+      "turn_id": "turn-10",
+      "pane_marker": "%2",
+      "socket_marker": "E",
+      "A": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "B": {
+        "pane_ancestry": false,
+        "foreground_ancestry": false,
+        "terminal_continuity": false
+      },
+      "E": {
+        "pane_ancestry": true,
+        "foreground_ancestry": true,
+        "terminal_continuity": true
+      }
+    }
+  ],
+  "turns": [
+    {
+      "session_id": "session-01",
+      "turn_id": "turn-01",
+      "phase": "A-only",
+      "events": [
+        "UserPromptSubmit",
+        "Stop"
+      ],
+      "start": 1791440222.925975,
+      "end": 1791440225.13361
+    },
+    {
+      "session_id": "session-02",
+      "turn_id": "turn-02",
+      "phase": "B-only",
+      "events": [
+        "UserPromptSubmit",
+        "Stop"
+      ],
+      "start": 1791440237.519383,
+      "end": 1791440239.1970549
+    },
+    {
+      "session_id": "session-01",
+      "turn_id": "turn-03",
+      "phase": "overlap",
+      "events": [
+        "UserPromptSubmit",
+        "Stop"
+      ],
+      "start": 1791440249.657669,
+      "end": 1791440274.625362
+    },
+    {
+      "session_id": "session-02",
+      "turn_id": "turn-04",
+      "phase": "overlap",
+      "events": [
+        "UserPromptSubmit",
+        "Stop"
+      ],
+      "start": 1791440250.2949498,
+      "end": 1791440274.8747299
+    },
+    {
+      "session_id": "session-02",
+      "turn_id": "turn-05",
+      "phase": "approval",
+      "events": [
+        "UserPromptSubmit",
+        "PermissionRequest",
+        "Stop"
+      ],
+      "start": 1791440293.987493,
+      "end": 1791440327.049858
+    },
+    {
+      "session_id": "session-01",
+      "turn_id": "turn-06",
+      "phase": "interrupt",
+      "events": [
+        "UserPromptSubmit",
+        "Interrupt"
+      ],
+      "start": 1791440326.705589,
+      "end": 1791440329.726665
+    },
+    {
+      "session_id": "session-01",
+      "turn_id": "turn-07",
+      "phase": "subsequent",
+      "events": [
+        "UserPromptSubmit",
+        "Stop"
+      ],
+      "start": 1791440342.9475431,
+      "end": 1791440344.9158452
+    },
+    {
+      "session_id": "session-02",
+      "turn_id": "turn-08",
+      "phase": "subsequent",
+      "events": [
+        "UserPromptSubmit",
+        "Stop"
+      ],
+      "start": 1791440343.5884821,
+      "end": 1791440345.663566
+    },
+    {
+      "session_id": "session-03",
+      "turn_id": "turn-09",
+      "phase": "embedded-1",
+      "events": [
+        "UserPromptSubmit",
+        "Stop"
+      ],
+      "start": 1791440361.511137,
+      "end": 1791440363.354101
+    },
+    {
+      "session_id": "session-03",
+      "turn_id": "turn-10",
+      "phase": "embedded-2",
+      "events": [
+        "UserPromptSubmit",
+        "Stop"
+      ],
+      "start": 1791440381.766185,
+      "end": 1791440383.977769
+    }
+  ]
+}

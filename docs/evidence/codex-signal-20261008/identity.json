@@ -1,0 +1,54 @@
+{
+  "tag_name": "rust-v0.161.0",
+  "published_at": "2026-10-07T15:58:45Z",
+  "prerelease": false,
+  "draft": false,
+  "html_url": "https://github.com/openai/codex/releases/tag/rust-v0.161.0",
+  "date": "2026-10-08",
+  "tag_object": "7e21416b38834816c224ea0dfd135c3de94b2f15",
+  "commit": "979011409de0a60b52f179721948e65531d26144",
+  "baseline_commit": "a956835d020762cb2b570053af06f643a11c0ecc",
+  "binary_path": "<homebrew-cask>/codex/0.161.0/bin/codex",
+  "binary_version": "codex-cli 0.161.0",
+  "binary_sha256": "12ac11d2c7eee27cfae34393986d7b7c9ed0dea537cb749831cdd7033893e6de",
+  "daemon_binary_sha256": "12ac11d2c7eee27cfae34393986d7b7c9ed0dea537cb749831cdd7033893e6de",
+  "source_comparison": [
+    {
+      "path": "codex-rs/hooks/src/schema.rs",
+      "sha256_0160": "162735b4d0c021c911cb3939b6130d2aad90cf5f865069a17b97c0cf02c53e14",
+      "sha256_0161": "162735b4d0c021c911cb3939b6130d2aad90cf5f865069a17b97c0cf02c53e14",
+      "byte_identical": true
+    },
+    {
+      "path": "codex-rs/hooks/src/registry.rs",
+      "sha256_0160": "793ce20b5eb5129c15baa138f9f4496427118b6db3120174b72bfc5071fa6ac3",
+      "sha256_0161": "793ce20b5eb5129c15baa138f9f4496427118b6db3120174b72bfc5071fa6ac3",
+      "byte_identical": true
+    },
+    {
+      "path": "codex-rs/hooks/src/engine/command_runner.rs",
+      "sha256_0160": "2e435c10dbfd32f6f4ad62bdd214b42bbf13cfcd034c074b6e44ddfd3ad72f24",
+      "sha256_0161": "2e435c10dbfd32f6f4ad62bdd214b42bbf13cfcd034c074b6e44ddfd3ad72f24",
+      "byte_identical": true
+    },
+    {
+      "path": "codex-rs/app-server-transport/src/transport/unix_socket.rs",
+      "sha256_0160": "9dfe2f4428e7e21f5c7d9469f608d4c9777be4cefeb3cac65470130e7214bff3",
+      "sha256_0161": "9dfe2f4428e7e21f5c7d9469f608d4c9777be4cefeb3cac65470130e7214bff3",
+      "byte_identical": true
+    },
+    {
+      "path": "codex-rs/app-server-protocol/src/protocol/v1.rs",
+      "sha256_0160": "e0642bd1bc7dbe5e24d508420471d705d5688efe8df3a8b40e3af22be55d7754",
+      "sha256_0161": "e0642bd1bc7dbe5e24d508420471d705d5688efe8df3a8b40e3af22be55d7754",
+      "byte_identical": true
+    },
+    {
+      "path": "codex-rs/app-server-protocol/src/protocol/v2/thread_data.rs",
+      "sha256_0160": "9a8efb37ada6e50008e42cca74e71679a7d9e9a98b2f5c59be0504f8bf37a8db",
+      "sha256_0161": "9a8efb37ada6e50008e42cca74e71679a7d9e9a98b2f5c59be0504f8bf37a8db",
+      "byte_identical": true
+    }
+  ],
+  "stable_release_rechecked_at_utc": "2026-10-08T06:30:42.940589+00:00"
+}

@@ -1,0 +1,9 @@
+auth_elicitation                         stable             true
+daemon_auto_start                        stable             true
+default_mode_request_user_input          under development  false
+exec_permission_approvals                under development  false
+guardian_approval                        stable             true
+hooks                                    stable             true
+mcp_oauth_refresh_coordination           under development  false
+tool_call_mcp_elicitation                stable             true
+write_stdin_approval                     stable             true

@@ -1,0 +1,40 @@
+{
+  "prepared_date": "2026-10-10",
+  "historical_experiment_date": "2026-10-08",
+  "new_experiments": 0,
+  "original_sha256": {
+    "docs/codex-signal-certification-20261008.md": "62958ad0f5bc40859e4596c483c275ac8bfd6b9b22dfa9b5490696bc56564b04",
+    "docs/evidence/codex-signal-20261008/README.md": "5dcfb8ce2b2f070f48f06210eadcc4bb4f11847c8649415e6e0cd8d2700b7c90",
+    "docs/evidence/codex-signal-20261008/analysis.json": "f44beb3e27c2738a0f73e6d339d6a932b44b654dd4e1ef2d87182f881a80e713",
+    "docs/evidence/codex-signal-20261008/cleanup.json": "099e4c1a07dd46e427d01d0090b93caad7faac2f88c8ca5e02922c1091484aae",
+    "docs/evidence/codex-signal-20261008/events.jsonl": "474748e532ee66ec477b71fe06bfd7a5c46a723c97d6646dafa03562f262b25c",
+    "docs/evidence/codex-signal-20261008/features.txt": "3487d097a3b00b3eda6bfe418c33f7cbab127c03c0c2d23bdbc4861672dae9fd",
+    "docs/evidence/codex-signal-20261008/hook-helper.py": "7d40e36ebcbb3f0fd7420e530248aae352702b582bce911f8c4abf2390050ada",
+    "docs/evidence/codex-signal-20261008/identity.json": "6fc7ab72859306af38eb500b9b137a1c74400aaefb703edfffaf009eabcb1a87",
+    "docs/evidence/codex-signal-20261008/listener.py": "b43899a01886c026283194a36c232765d873a1f72d680d12bc17488748711a2b",
+    "docs/evidence/codex-signal-20261008/pre-cleanup.json": "01a484b0878a8d10fbbba7ca7bdfc1cb43e48b03608e579a240d890565452317",
+    "docs/evidence/codex-signal-20261008/process-snapshot.py": "6ae9acc40b9fcbf097800420042dfb4ff80f1f34bd1028fbe237d9c4d10e5cfb",
+    "docs/evidence/codex-signal-20261008/schema-summary.json": "4ac14ea1bbb860e510078200282b6b322c14044ade0aa8b049d8c79c5996bdb3",
+    "docs/evidence/codex-signal-20261008/stop-result.json": "33aa82a63af71b70407e1c8392a3d1098fa6fecb5db05e5a52ef660ebe9a91b8",
+    "docs/evidence/codex-signal-20261008/verify-evidence.py": "e818586871db3778209445bf17b2a45dff4fb076991bdbb253ba08dc2f6ee08b"
+  },
+  "transformations": {
+    "session_and_turn_ids": "Injective deterministic aliases shared across events.jsonl and analysis.json; original IDs and private mapping retained locally, not committed.",
+    "identity_binary_path": "Local installation path replaced by a labeled placeholder; version/digests unchanged.",
+    "pre_cleanup_paths": "Local UID, socket hash and experiment path replaced by labeled placeholders; process records unchanged.",
+    "archived_collector_scripts": "Archive notice only; original source retained locally.",
+    "report": "Separate historical investigation from documentation publication; correct local source links and date-limit stable-release claims."
+  },
+  "unchanged_evidence_semantics": [
+    "process PID/parent/PGID/tty/foreground and birth values",
+    "event order and timing",
+    "version/digest and pinned upstream revisions",
+    "all attribution results and cleanup outcomes"
+  ],
+  "derived_sha256": {
+    "docs/evidence/codex-signal-20261008/events.jsonl": "e1f193cb84f6c42b1180014dd502366402c0f5b6c95deb5e568561c41c860c3a",
+    "docs/evidence/codex-signal-20261008/analysis.json": "520a24179de7318d8acf30b9e612880d581279a39d2d17072eb324f29ce57f06",
+    "docs/evidence/codex-signal-20261008/identity.json": "94ef89889b2dec7531dc54da5096aa3174c7bd6c175f149ae58c7ad4ef97fac2",
+    "docs/evidence/codex-signal-20261008/pre-cleanup.json": "077d337a4a7774452d27c3ed0debb2571926b27d8dbad99237a64533ed8879d1"
+  }
+}

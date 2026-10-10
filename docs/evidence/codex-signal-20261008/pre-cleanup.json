@@ -1,0 +1,96 @@
+{
+  "processes": [
+    {
+      "pid": 96460,
+      "ppid": 1,
+      "pgid": 96460,
+      "tty": 0,
+      "tpgid": 0,
+      "sec": 1791440039,
+      "usec": 408542
+    },
+    {
+      "pid": 96461,
+      "ppid": 96460,
+      "pgid": 96461,
+      "tty": 268435459,
+      "tpgid": 96466,
+      "sec": 1791440039,
+      "usec": 413249
+    },
+    {
+      "pid": 96466,
+      "ppid": 96461,
+      "pgid": 96466,
+      "tty": 268435459,
+      "tpgid": 96466,
+      "sec": 1791440039,
+      "usec": 426994
+    },
+    {
+      "pid": 96476,
+      "ppid": 96466,
+      "pgid": 96476,
+      "tty": 0,
+      "tpgid": 0,
+      "sec": 1791440042,
+      "usec": 123146
+    },
+    {
+      "pid": 96583,
+      "ppid": 96460,
+      "pgid": 96583,
+      "tty": 268435460,
+      "tpgid": 96587,
+      "sec": 1791440075,
+      "usec": 75533
+    },
+    {
+      "pid": 96587,
+      "ppid": 96583,
+      "pgid": 96587,
+      "tty": 268435460,
+      "tpgid": 96587,
+      "sec": 1791440075,
+      "usec": 99269
+    },
+    {
+      "pid": 97001,
+      "ppid": 89585,
+      "pgid": 97001,
+      "tty": 0,
+      "tpgid": 0,
+      "sec": 1791440211,
+      "usec": 583263
+    },
+    {
+      "pid": 97126,
+      "ppid": 96476,
+      "pgid": 97126,
+      "tty": 0,
+      "tpgid": 0,
+      "sec": 1791440251,
+      "usec": 930449
+    },
+    {
+      "pid": 97389,
+      "ppid": 96460,
+      "pgid": 97389,
+      "tty": 268435461,
+      "tpgid": 97395,
+      "sec": 1791440343,
+      "usec": 533906
+    },
+    {
+      "pid": 97395,
+      "ppid": 97389,
+      "pgid": 97395,
+      "tty": 268435461,
+      "tpgid": 97395,
+      "sec": 1791440344,
+      "usec": 177499
+    }
+  ],
+  "physical_socket": "<private-temp>/codex-daemon-<uid>/<experiment-socket-hash>",
+  "alias": "<experiment-root>/codex/app-server-control/app-server-control.sock"
+}

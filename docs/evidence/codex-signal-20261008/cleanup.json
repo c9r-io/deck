@@ -1,0 +1,16 @@
+{
+  "owned_process_generations_remaining": [],
+  "temporary_home_absent": true,
+  "credential_copy_absent": true,
+  "tmux_socket_absent": true,
+  "hook_listener_socket_absent": true,
+  "daemon_alias_absent": true,
+  "physical_daemon_socket_absent": true,
+  "exact_physical_lock_absent": true,
+  "shared_uid_directory_preserved": true,
+  "daemon_stop_exit": 0,
+  "product_changes": false,
+  "investigation_root_absent": true,
+  "final_owned_generation_recheck": [],
+  "verified_at_utc": "2026-10-08T06:31:21.912330+00:00"
+}
