@@ -5,17 +5,28 @@ documents used to carry into `reports/`, a git-ignored working directory no
 checkout has. It is a summary: the raw logs, screenshots and run records stay
 outside the repository.
 
-**Verdict: PASS WITH OPEN QUESTIONS.** The feature's transaction passed its
-representative validation on a real Claude Code (2.1.295, a release no
-earlier table ever named) through the test controller and through the real
-application, under both policies. In a follow-up the same day it passed
-again on Claude Code 2.1.296 in a real window at a stable location, with the
-hook file of the home it ran under and no debug exemption, both policies, a
-queued prompt and a relaunch in between (kind **L** below). The installed
-path proper — a RELEASE build at `/Applications/deck.app` — is verified for
-the hook families and their migration, and is **not** verified for a
-transaction with a real client. macOS 26, notarization and a published
-carrier are unverified.
+**Verdict: PASS WITH OPEN QUESTIONS, for what ran.** The feature's
+transaction passed its representative validation on a real Claude Code
+(2.1.295, a release no earlier table ever named) through the test controller
+and through the real application, under both policies: a debug bundle in a
+private directory, project-level hooks. In a follow-up the same day it passed
+again on Claude Code 2.1.296 in a real window: a DEBUG carrier at a stable
+location under a relocated home, with the hook file of that home and no debug
+exemption, both policies, a queued prompt and a relaunch in between (kind
+**L** below). Under a relocated home the hook families were exercised too:
+the Settings switches in a debug carrier, the launch-time migration in a
+Developer-ID-signed RELEASE carrier.
+
+What did not run, each a separate item below: **anything at
+`/Applications/deck.app`**; a transaction in a release build, at any place;
+the three macOS 26 items; notarization and Gatekeeper acceptance.
+
+Three places are kept apart throughout (`README.md`, "Scope words"): a
+**private directory**; a **relocated home**, `<home>/Applications/deck.app`
+with `<home>` under `/private/tmp` — a stable location by the product's own
+rule, but not a person's home; and **`/Applications/deck.app`**, the
+installed path, with a person's home, their real hook file and their login
+keychain.
 
 Wording used here, and what it does not mean:
 
@@ -31,15 +42,19 @@ Wording used here, and what it does not mean:
 
 ## What ran, by kind of evidence
 
-Four kinds, never merged:
+Six kinds, never merged. The place and the build are part of each.
 
-| Kind | What it is |
-| --- | --- |
-| **T** automated tests | The gate's coverage step (`cargo llvm-cov --workspace --all-targets --all-features … -- --test-threads=1`) and the frontend suite, on the commit that carries this file. Stand-in agent, real bundled helper, real bundled tmux. |
-| **C** controller + real Claude | A test controller calling the production transaction with real Claude 2.1.295 clients, real home, project-level hooks. 2026-10-11, before this round. Reused, not rerun. |
-| **A** real application + real Claude | An ad-hoc signed DEBUG bundle in a private directory, isolated data directory and socket, project-level hooks (the debug-only experiment configuration), real home, operated through its window. 2026-10-11, before this round. Reused, not rerun. |
-| **R** release carrier / stable location | This round. A private Developer-ID-signed release carrier and a debug carrier, each at `<home>/Applications/deck.app` under a home relocated into `/private/tmp` on the test machine. No real Claude, no person's home. |
-| **L** live window + real Claude | This round's follow-up. A DEBUG carrier (ad-hoc signed) at `<home>/Applications/deck.app` under a relocated home on the test machine (macOS 27.0.1), which is a stable location by the product's own rule: the hooks are that home's `.claude/settings.json`, written by the Settings switches, with no project-level file and no debug experiment configuration. Real Claude Code 2.1.296, signed in under that home by the owner. The page clicks the real dialog (`reentry-live`, `reentry-live-relaunch` in `app/SMOKE.md`); a runner outside reads the process table. Not a release build, not `/Applications`, not a person's home. |
+| Kind | Place | Build | What it is |
+| --- | --- | --- | --- |
+| **T** automated tests | — | test binaries | The gate's coverage step (`cargo llvm-cov --workspace --all-targets --all-features … -- --test-threads=1`) and the frontend suite, on the commit that carries this file. Stand-in agent, real bundled helper, real bundled tmux. |
+| **C** controller + real Claude | — | test controller | A test controller calling the production transaction with real Claude 2.1.295 clients, real home, project-level hooks. 2026-10-11, before this round. Reused, not rerun. |
+| **A** real application + real Claude | private directory | debug, ad-hoc signed | Isolated data directory and socket, project-level hooks (the debug-only experiment configuration), real home, operated through its window. 2026-10-11, before this round. Reused, not rerun. |
+| **Rr** release carrier | relocated home | RELEASE, Developer ID signed, not notarized | This round. The launch-time migration, with no click. No real Claude, no window operation. |
+| **Rd** debug carrier, the Settings switches | relocated home | debug, ad-hoc signed | This round. The page clicks the two Claude switches in the real window (`hooks-live`). No real Claude. |
+| **L** live window + real Claude | relocated home | debug, ad-hoc signed | This round's follow-up, on the test machine (macOS 27.0.1). The hooks are that home's `.claude/settings.json`, written by the Settings switches, with no project-level file and no debug experiment configuration. Real Claude Code 2.1.296, signed in under that home by the owner. The page clicks the real dialog (`reentry-live`, `reentry-live-relaunch` in `app/SMOKE.md`); a runner outside reads the process table. |
+
+No kind ran at `/Applications/deck.app`, and no kind ran a transaction in a
+release build.
 
 ## The transaction (C and A, reused)
 
@@ -78,14 +93,14 @@ retry control. It starts no Claude and its restart never reaches the backend.
 One passing run says nothing about other window sizes, the larger font scale,
 a signed carrier or the transaction.
 
-## This round (R)
+## This round (Rr, Rd)
 
 Source and artifacts are identified in `README.md` of this directory.
 
 ### A session that cannot be chosen because observation is off
 
-Found while reading the installed path: with re-entry observation off (the
-default) the backend turned every candidate into "unsupported —
+Found while reading the code behind the Settings switch: with re-entry
+observation off (the default) the backend turned every candidate into "unsupported —
 re-entry context could not be verified", so the dialog's own "observation is
 off, open Settings" hint could never appear against the real backend.
 `agent_reentry::read_preview` now keeps such an entry a candidate; the view
@@ -93,7 +108,8 @@ says `lifecycleObservation: false`, nothing is selectable, no token is kept,
 and an approval for it is still refused (`reentry-preview-expired`). An
 unsupported baseline or login shell still makes the entry unsupported.
 Pinned by `only_a_direct_client_of_the_product_in_a_supported_launch_shape_is_a_candidate`
-(T). Not seen in a release window (no UI operator, below).
+(T). Seen in the real window of a debug carrier in the follow-up (L,
+`relive-hint`); not seen in a release window (no one to operate it, below).
 
 ### The private release carrier
 
@@ -112,10 +128,17 @@ identity of the build machine, hardened runtime, no secure timestamp.
 | Gatekeeper, `spctl -a -vv -t exec` | **rejected, source=Unnotarized Developer ID** |
 | `xcrun stapler validate` | no ticket |
 
-So: release profile PASS, Developer ID signature PASS, **notarization UNRUN**
-(nothing was sent to Apple; it needs credentials and an authorization this
-round did not have), Gatekeeper acceptance not claimed, public release not
-attempted.
+Four properties, none standing for another:
+
+| Property | Status | Basis |
+| --- | --- | --- |
+| Release profile | **PASS** | the provenance check: all six executables are this checkout's release build; the executable names no `ui/test` asset |
+| Developer ID signature | **PASS** | each executable verifies strictly by itself, the bundle verifies deep and strict, the leaf authority is a Developer ID Application certificate of the installed Deck's team; hardened runtime; signed on the build machine without a secure timestamp |
+| Notarization | **UNRUN** | nothing was sent to Apple; it needs credentials and an authorization this round did not have; no ticket is stapled |
+| Gatekeeper | **assessed: rejected** ("Unnotarized Developer ID") | `spctl`. Acceptance is UNRUN. The carrier ran on the test machine all the same because a file copied over SSH carries no quarantine attribute: no launch in this document was a Gatekeeper decision |
+
+A public release was not attempted. The follow-up's live run (L) used a debug
+carrier with an ad-hoc signature: none of the four rows is about it.
 
 ### Launch-time migration, release carrier, no click
 
@@ -153,14 +176,20 @@ of 8.
 
 The user's three hooks and two other keys were identical at every step.
 
-### Identity on this OS
+### Identity, and macOS 26 as three separate items
 
 The identity mechanism has no version conditional (`procinfo/code_identity.rs`
-has only `cfg(target_os = "macos")`). Its tests run in the gate on macOS
-27.0.1 (this round) with C fixtures signed at test time, `/bin/ls` as an
-Apple-signed negative and the test binary itself. **macOS 26: UNRUN** — the
-two machines available are 27.0.1; the gate's `macos-26` runner needs a push,
-which this round was not authorized to make.
+has only `cfg(target_os = "macos")`). On macOS 27.0.1 its tests ran in the
+gate (C fixtures signed at test time, `/bin/ls` as an Apple-signed negative
+and the test binary itself), and it admitted real Claude Code 2.1.295 and
+2.1.296 clients in the runs above. Both machines available are 27.0.1. On
+macOS 26 nothing ran, and that is three items, not one:
+
+| Item on macOS 26 | Status | What would close it, and what would not |
+| --- | --- | --- |
+| The automated gate | **UNRUN** | `gate.yml` runs its `checks`, `rust` and `release` jobs on `macos-26` runners, but none of this history is pushed, and a push was not authorized. A green run closes what those jobs execute: the test suites (the identity mechanism's own tests with their test-time fixtures among them), clippy, the release build and its checks. It closes nothing below |
+| Native identity of a real client | **BLOCKED** | the production check, Security.framework validating a running Claude Code image and its file against the product's requirement, on macOS 26. The gate runs no real client. It needs a macOS 26 machine with Claude Code on it |
+| The transaction in a real window with a real client | **BLOCKED** | no macOS 26 machine. The debug-carrier run of kind L, on such a machine |
 
 ## The transaction in the real window with real clients (L)
 
@@ -223,22 +252,31 @@ before and after and did not change.
 
 ## The eleven acceptance items
 
-`T` `C` `A` `R` as above. "formal" = a release build at
-`/Applications/deck.app` with the person's real home and global hook file.
+One column per place and build. "—" means that kind of evidence does not
+speak to the item; UNRUN means nothing stood in the way but it was not run;
+BLOCKED means something outside the code stands in the way.
 
-| # | Item | Evidence | Formal |
-| --- | --- | --- | --- |
-| 1 | Global lifecycle hook opt-in / opt-out in Settings | T; **R real window PASS** (debug carrier, stable location under a relocated home) | BLOCKED |
-| 2 | Upgrade or path migration of existing lifecycle hooks | T (edit engine); **R release carrier PASS** (M1, M2 older form, M4) | BLOCKED at `/Applications` |
-| 3 | User hooks intact; the two switches independent | T; **R PASS** (every step and scenario) | BLOCKED |
-| 4 | A user without lifecycle hooks is not enrolled by migration | T; **R release carrier PASS** (M2, M3) | BLOCKED at `/Applications` |
-| 5 | Policy A sends no bypass | T; C PASS; A PASS; **L PASS** (after a relaunch, on clients that had carried the flag) | BLOCKED |
-| 6 | Policy B sends bypass only to chosen, eligible launches, including bypass-then-plan; accurate wording | T; C PASS; A PASS; **L PASS** (flag on B and C, not on A; the real result rows) | BLOCKED |
-| 7 | The exact final session, also after `/clear` | T; C PASS (one card after `/clear`); A PASS without `/clear`; **L PASS** (A resumed in the second of its two sessions) | BLOCKED |
-| 8 | One start per entry; an unknown outcome is not resent | T (`unknown_outcomes_are_never_retried` and the source scan in `tests/external_admission.rs`); no second request in C or A; **L**: one result line and one new client per entry in both restarts. No real run had an unknown outcome | BLOCKED |
-| 9 | A non-empty queue stays paused across restart and re-entry | T (`a_waiting_queue_row_is_paused_on_disk_before_the_kill_and_stays_paused_after_reentry`, crash matrix); **L PASS** (one queued prompt, paused by restart 1, still paused and unsent after restart 2 and a relaunch) | BLOCKED |
-| 10 | The next preview and a relaunch do not inherit Policy B | T; **L PASS** (the review after Policy B, and the review after a relaunch, both start from the ordinary policy with nothing ticked; no document holds the policy) | BLOCKED |
-| 11 | Unsupported and unconfirmable cases said as they are; a restarted service not reported as a failure | T; the observation-off presentation was wrong and is fixed (above); **L PASS** for the cases it staged (observation off; a foreground program that is no Agent; a program Deck cannot read; "Shell service restarted" above the rows). No real run staged a timeout or an unconfirmed entry | BLOCKED |
+| # | Item | Tests (T) | Private directory, debug (C, A) | Relocated home, DEBUG carrier (Rd, L) | Relocated home, RELEASE carrier (Rr) | `/Applications/deck.app`, release |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | Global lifecycle hook opt-in / opt-out in Settings | pass | — (project-level hooks there) | **PASS** (Rd: 8 of 8; L switched both on through the page) | UNRUN: a release window needs a person | BLOCKED |
+| 2 | Upgrade or path migration of existing lifecycle hooks | pass (edit engine) | — | not run | **PASS** (M1, M2 older form, M4) | BLOCKED |
+| 3 | User hooks intact; the two switches independent | pass | — | **PASS** (every step of Rd; L kept the client's own keys) | **PASS** for the migration (user hooks and keys unchanged in M1–M4); the switches UNRUN | BLOCKED |
+| 4 | A user without lifecycle hooks is not enrolled by migration | pass | — | not run | **PASS** (M2, M3) | BLOCKED |
+| 5 | Policy A sends no bypass | pass | C PASS; A PASS | **L PASS** (after a relaunch, on clients that had carried the flag) | UNRUN | BLOCKED |
+| 6 | Policy B sends bypass only to chosen, eligible launches, including bypass-then-plan; accurate wording | pass | C PASS; A PASS | **L PASS** (flag on B and C, not on A; the real result rows) | UNRUN | BLOCKED |
+| 7 | The exact final session, also after `/clear` | pass | C PASS (one card after `/clear`); A PASS without `/clear` | **L PASS** (A resumed in the second of its two sessions) | UNRUN | BLOCKED |
+| 8 | One start per entry; an unknown outcome is not resent | pass (`unknown_outcomes_are_never_retried` and the source scan in `tests/external_admission.rs`) | no second request in C or A | **L**: one result line and one new client per entry in both restarts | UNRUN | BLOCKED |
+| 9 | A non-empty queue stays paused across restart and re-entry | pass (`a_waiting_queue_row_is_paused_on_disk_before_the_kill_and_stays_paused_after_reentry`, crash matrix) | — (A's queues were empty) | **L PASS** (one queued prompt, paused by restart 1, still paused and unsent after restart 2 and a relaunch) | UNRUN | BLOCKED |
+| 10 | The next preview and a relaunch do not inherit Policy B | pass | — | **L PASS** (the review after Policy B, and the review after a relaunch, both start from the ordinary policy with nothing ticked; no document holds the policy) | UNRUN | BLOCKED |
+| 11 | Unsupported and unconfirmable cases said as they are; a restarted service not reported as a failure | pass; the observation-off presentation was wrong and is fixed (above) | — | **L PASS** for the cases it staged (observation off; a foreground program that is no Agent; a program Deck cannot read; "Shell service restarted" above the rows) | UNRUN | BLOCKED |
+
+In no place and no build did a real run have an unknown outcome, a timeout
+or an unconfirmed entry: for item 8's second half and for those cases of
+item 11 the tests are the only evidence.
+
+Items 5–11 in the release column are one run, the one described under "A
+release transaction: what it needs, exactly". Items 1 and 3 (the switches)
+would be seen in the same window.
 
 Where the policy could be stored, checked against the code rather than
 against a file that does not exist: a restart with re-entry writes
@@ -249,7 +287,7 @@ inside one request, is read once and is kept in no document; results live in
 process memory for at most ten minutes. An earlier "persistence probe" that
 looked at a settings file the isolated root never had is not counted.
 
-## Why the formal path is blocked
+## Why nothing ran at `/Applications/deck.app`
 
 A release build ignores every isolation argument: it uses `~/.deck`, the tmux
 socket `deck` and the global `~/.claude/settings.json`, and a transaction
@@ -259,18 +297,81 @@ needs a real, signed-in Claude under that same home.
   `/Applications/deck.app` and in use; replacing it means ending its sessions
   and parking its data, which is the owner's decision.
 - The test machine's instructions forbid an executable under its real home,
-  so `~/Applications/deck.app` is not available there either, and its Claude
-  was not signed in when last asked.
+  so `~/Applications/deck.app` is not available there either.
 - A relocated home (this round's method) gives a build a stable location and
-  its own files. A real Claude under it has no account until someone signs
-  it in there, which the owner did for the follow-up (kind L).
-- A release build has no smoke driver, and this round had no desktop UI
-  tool: its switches and dialog need a person or a UI operator. That is why
-  the follow-up's transaction ran in a debug carrier, and why the release
-  build's own transaction is still open. A private Developer-ID-signed
-  release carrier that relocates itself through its own `LSEnvironment` was
-  built, placed on the test machine and checked to stay inside its directory
-  when opened like any application; nobody operated it and it was removed.
+  its own files without touching either. It is a different place, and its
+  results are recorded as such.
+
+## A release transaction: what it needs, exactly
+
+Evaluated in the final round, after the cleanup mechanism was in place
+(`README.md`, "Final bounded round"). Not run: no real client was started
+for it.
+
+It cannot be run from a build session alone. A release build has no smoke
+driver, so its switches and its dialog need clicks, and nothing available
+there can make them: asked without prompting, `AXIsProcessTrusted`,
+`CGPreflightPostEventAccess`, `CGPreflightListenEventAccess` and
+`CGPreflightScreenCaptureAccess` all answered false, on the build machine
+and over SSH on the test machine. It needs a person twice: to authorize a
+sign-in, and at the window.
+
+The carrier. Everything here except the registry was built and opened once
+in the follow-up, then removed unused:
+
+1. The release profile of the commit: `cargo build --release --locked`, then
+   `tauri build --bundles app` with updater artifacts off, then
+   `scripts/sidecar_provenance.py check --profile release --bundle`.
+2. A private bundle identifier, and an `LSEnvironment` of three values in
+   its `Info.plist`: `HOME=<root>/home`, `TMUX_TMPDIR=<root>/t`, and
+   `DISABLE_AUTOUPDATER=1` for the clients its panes start. Signed inside-out
+   with a Developer ID identity (LaunchServices refuses `LSEnvironment` in an
+   unsigned bundle) and verified piece by piece. The executables are the
+   release build's, unchanged; this is not the published bundle and not a
+   switch in the product.
+3. Placed at `<root>/home/Applications/deck.app` on the test machine, where
+   `<root>` is a short directory under `/private/tmp` with a registry
+   (`scripts/edr_runtime.py experiment init`). Opened once and registered:
+   the application by its pid, its server by `<root>/t/tmux-<uid>/deck`.
+
+The client:
+
+4. A keychain of its own for that home (not named `login.keychain-db`),
+   unlocked in the GUI session; `claude auth login` in a shell that has
+   `USER` and `LOGNAME`. **The owner authorizes it in a browser.**
+5. Trust for the two working directories and the bypass warning, accepted
+   once in a client outside the carrier.
+
+The window. **A person, about a dozen actions**; labels as the English UI
+shows them:
+
+6. Settings → Agents → "Claude session re-entry observation": on, confirm.
+7. Two ordinary cards. In the first, `cd ~/work/a && claude`; in the second,
+   `cd ~/work/b && claude --dangerously-skip-permissions`. One one-word
+   prompt in each; in the first then `/clear` and a second prompt.
+8. In the first card's Lists panel: "not before" set to the next day, one
+   prompt, ⌘↵.
+9. Settings → Terminal → "Shell service" → "Restart service". In the review:
+   "Select all candidates", "Reapply bypass to 1 session(s) launched with
+   bypass", then "Restart and reopen 2 session(s)".
+10. Quit the application and open it again. The same restart, this time
+    with "Reopen all without reapplying bypass".
+
+What is read from outside after steps 7, 9 and 10, typing into nothing: the
+process table (each pane's client and its arguments), the names of the
+session files per directory, the carrier's own `app.log` lines
+`[agent-reentry] frozen`, `sealed`, `entry`, `complete` and
+`[tmux-restart] queue-paused`, and `queue.json`.
+
+What that run would show: items 5–10 in a release build under a relocated
+home — the session after `/clear`, the flag only under Policy B and only on
+the client launched with it, one request per entry, the queued prompt paused
+and unsent, no policy kept. What it would not: `/Applications/deck.app`,
+notarization, Gatekeeper, macOS 26. What the window says would be the
+operator's reading, not a machine check.
+
+The end: `experiment cleanup`, the client signed out, the keychain deleted,
+the root removed (not moved to the Trash: it held a credential store).
 
 ## Accepted residual risks
 

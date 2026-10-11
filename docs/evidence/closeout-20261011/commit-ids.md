@@ -1,20 +1,24 @@
 # Commit ids cited in the evidence documents
 
 Nineteen commits of this history were recreated on 2026-10-11, before anything
-was published, because ONE of them (the second row below) carried a
+was published, because ONE of them (the first row below) carried a
 machine-local fallback as its author and committer identity instead of the
 identity every other commit carries. Only that identity changed. Every
 recreated commit has the same tree, the same message and the same author and
 committer dates as the commit it replaces; the ids differ because a commit's
 id covers its parent and its identity lines.
 
-Documents written before the correction cite the EARLIER ids and were left as
-written: `docs/evidence/first-party-extensions-20261009/README.md`,
-`docs/evidence/closeout-20261011/README.md` (including its base commit
-`a0fe806…`), `docs/evidence/closeout-20261011/reentry-acceptance.md` and
-`docs/codex-signal-certification-20261008.md`. An earlier id does not exist
-in the published history; this table is how to find the commit it meant.
-Documents written after the correction cite the ids of the right column.
+Two documents written before the correction cite the EARLIER ids and were
+left as written: `docs/evidence/first-party-extensions-20261009/README.md`
+and `docs/codex-signal-certification-20261008.md`. The raw records of those
+rounds, which no checkout has, use them too.
+`docs/evidence/closeout-20261011/README.md` cited earlier ids until the final
+round of 2026-10-11 and was then brought to the ids of this history; where a
+run is identified by the commit it ran on, it names the earlier id beside
+the current one. `reentry-acceptance.md` cites no commit id. An earlier id
+does not exist in the published history; this table is how to find the
+commit it meant. Documents written after the correction cite the ids of the
+right column.
 
 | Cited as (earlier id) | Id in this history | Subject |
 | --- | --- | --- |

@@ -420,9 +420,12 @@ the real window. Its follow-up ran the transaction itself in a real window
 with real Claude Code 2.1.296 clients, in a debug carrier at a stable
 location under a relocated home with that home's hook file: Policy B, the
 review after it, a relaunch, Policy A, a queued prompt that stayed paused,
-and the session after `/clear`. A release build's own transaction at
-`/Applications/deck.app`, an unknown or unconfirmed outcome in a real
-application, notarization and macOS 26 remain open. See the
+and the session after `/clear`. Still open, each on its own: a transaction
+in a release build (under a relocated home, and at `/Applications/deck.app`,
+where nothing ran at all); an unknown or unconfirmed outcome in a real
+application; notarization and Gatekeeper acceptance; and on macOS 26 the
+automated gate, native identity of a real client, and a transaction in a
+real window. See the
 [acceptance summary](evidence/closeout-20261011/reentry-acceptance.md)
 for the matrix, source provenance and the limits of this validation.
 This is representative validation, not a version allowlist or release approval.

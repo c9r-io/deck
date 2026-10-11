@@ -121,7 +121,9 @@ exercised natively are evidence, not a runtime condition. The header of
 [acceptance summary](evidence/closeout-20261011/reentry-acceptance.md)
 records the new identity mechanism's completed representative P3 on Claude
 2.1.295: A/B through both the controller and the isolated real application,
-and a later run on 2.1.296 in a real window at a stable location.
+and a later run on 2.1.296 in a real window, in a debug carrier at a stable
+location under a relocated home. No transaction ran in a release build, and
+nothing ran at `/Applications/deck.app`.
 That result does not certify untested platforms or a published carrier.
 
 ## Compatibility and withdrawal

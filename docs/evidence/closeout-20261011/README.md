@@ -1,24 +1,33 @@
 # Close-out evidence, 2026-10-11
 
-Three things were closed out in one round on top of `a0fe806`:
+Work on three things, on top of `f1cad64`, and where each stands. The state
+is the list of separate acceptance items in "Verdict". Several of them are
+BLOCKED or UNRUN, so nothing here says that the three are finished.
 
 - **A. Shared build outputs** — the sidecar pollution: a coverage run left
   instrumented helpers in `binaries/` and an ordinary build went on packaging
-  them. Fixed, with standing checks.
+  them. Fixed, with standing checks; two further gaps in the same area were
+  closed later the same day.
 - **B. The first-party Slack integration in the real window** — a sandbox
   Slack app, its real Socket Mode connection and real messages, through the
-  registered integration, in a real WKWebView.
-- **C. Claude session re-entry on the installed path** — the hook families,
-  their migration and a private signed release carrier. The transaction with
-  a real client at the formal location stays open. Its acceptance summary is
-  [reentry-acceptance.md](reentry-acceptance.md).
+  registered integration, in a real WKWebView of a debug carrier.
+- **C. Claude session re-entry** — the hook families, their migration and
+  the transaction itself, in carriers under a relocated home. Nothing ran at
+  `/Applications/deck.app`, and no transaction ran in a release build. Its
+  acceptance summary is [reentry-acceptance.md](reentry-acceptance.md).
 
-A **follow-up** the same evening is recorded here too, marked as such: the
-owner asked whether the change was complete (one more gap in A was found and
-closed, and the committed tree passed the gate from a clean worktree), then
-asked for the re-entry transaction to be run without a person at the window
-(done in a real window with real clients; see the verdict and
-[reentry-acceptance.md](reentry-acceptance.md)).
+Three rounds are recorded, each marked where it matters:
+
+- **the round** (13:16–14:45): A, B and C as first run;
+- **the follow-up** the same evening: the owner asked whether the change was
+  complete (one more gap in A was found and closed, and the committed tree
+  passed the gate from a clean worktree), then asked for the re-entry
+  transaction to be run without a person at the window (done in a debug
+  carrier with real clients);
+- **the final bounded round** (from 19:26): the verification rules of A, a
+  check of the package that actually runs, the incident's guard as a tracked
+  mechanism, and the scope of this document, which had claimed more than ran
+  in several places ("What this document claimed too widely").
 
 This is a summary a clean checkout can read. Raw logs, fetched documents and
 run scripts are in `reports/closeout-20261011/`, a git-ignored working
@@ -42,23 +51,40 @@ evidence from an earlier round that was not executed again.
   means the client entered the named session — not that a task continued.
 - Missing evidence is written as BLOCKED or UNRUN, never as a defect of the
   feature, and an ad-hoc signature is never written as a Developer ID one.
+- Three places a build ran from, or did not, are kept apart:
+  - a **private directory**: a debug bundle in a build or temporary
+    directory with a smoke data directory. Not a stable location;
+  - a **relocated home**: `<home>/Applications/deck.app`, where `<home>` is
+    a directory under `/private/tmp` handed to the process as `HOME`. That
+    is a stable location by the product's own rule
+    (`stable_installed_bundle`), and that home's `.claude/settings.json` is
+    the global hook file the product edits. It is not a person's home and
+    it is not `/Applications`;
+  - **`/Applications/deck.app`**: the installed path, with a person's home,
+    their real hook file and their login keychain. **Nothing in this
+    document ran there.**
+- Four properties of a carrier are kept apart: its build profile (debug or
+  release), its signature (ad-hoc or Developer ID), notarization, and
+  Gatekeeper's verdict. One of them never stands for another.
+- A green CI run closes the items its jobs execute and no other.
 
 ## Source and artifacts
 
 | | |
 | --- | --- |
-| Base commit | `a0fe80685fb8f684e4658238cfa3a8c8fa018abb` (`main`, clean at the start) |
-| Commit carrying this round | the commit that adds this file (`git log -1 -- docs/evidence/closeout-20261011/README.md`); not pushed, not tagged, not released |
+| Base commit | `f1cad6466da8b56035a97f0a7d138ad0cd0a746b` (`main`, clean at the start) |
+| Commits | the round: `d54d7ce`, `06fb0b5`, `02fa839`, `b7518af`, `e25774d`. The follow-up: `9e0bad3`, `c9d78f5`, `0aeee77`. The final round: `8dc8778`, `39537a2` and the commit that last changed this file. `b664fc6` holds the id table. None is pushed, tagged or released: `origin/main` is `dcc3c06`, and every commit after it exists in this clone only |
 | Machines | build and Slack driver: macOS 27.0.1 (26A434), arm64. Real windows: the Mac mini test machine, macOS 27.0.1 (26A434), arm64 |
 | Toolchain | cargo 1.97.1, cargo-llvm-cov 0.8.5, tauri-cli 2.11.4 |
 | Debug carriers | `target/debug/deck-app` of the working tree in an ad-hoc signed bundle, identifier `io.c9r.deck.smoke`; plain sidecars (checked before every assembly) |
 | Release carrier | the tauri bundler's release bundle, identifier changed to `io.c9r.deck.smoke`, Developer ID signed, not notarized; plain release sidecars, no `ui/test` inside |
 
-The commit ids in this file and in the older evidence documents are the ids
-the commits had when the text was written. Nineteen commits were recreated
-afterwards with identical content to correct one commit's author identity;
-[commit-ids.md](commit-ids.md) maps every cited id to the id in this
-history.
+The commit ids in this file are the ids of this history. At 19:21, before
+anything was published, nineteen commits were recreated with identical
+content to correct one commit's author identity. Evidence gathered before
+that ran on commits with the same trees under earlier ids, and this file
+cited those until the final round; [commit-ids.md](commit-ids.md) maps every
+earlier id, for the raw records and the older documents that still use them.
 
 Which source each piece of evidence ran on (a diff digest is the SHA-256 of
 `git diff HEAD` at that moment; the untracked files it does not cover are
@@ -71,25 +97,41 @@ named):
 | C. release carrier, its signature matrix, migration M1–M4 | diff `d9f31a04…`; production source equal to the commit except a comment in `agent_reentry/claude.rs` |
 | C. `hooks-live` | the tree before the last formatting and documentation edits; production source equal to the commit except that comment |
 | B. final Slack run, final gate | the committed tree. Only the two files of this directory were written after them; the final Slack carrier's executable was `db975446…` |
-| Follow-up: A's second fix, the clean-worktree gate | commit `f9df0ca`; the gate ran in a detached worktree of exactly that commit (cold build, its own target directories) |
-| Follow-up: C's live transaction | the code of commit `5274067`: its tracked changes (diff `56c261b7…`) and the scenario file (`17e5336b…`) are byte for byte what the run used; `app/SMOKE.md` was written after it. Carrier executable `efbcdeaa…`, debug, ad-hoc signed |
-| Follow-up: gate with the new scenario | the working tree that became `5274067` |
+| Follow-up: A's second fix, the clean-worktree gate | commit `9e0bad3` (then `f9df0ca`: the same tree); the gate ran in a detached worktree of exactly that commit (cold build, its own target directories) |
+| Follow-up: C's live transaction | the code of commit `c9d78f5` (then `5274067`): its tracked changes (diff `56c261b7…`) and the scenario file (`17e5336b…`) are byte for byte what the run used; `app/SMOKE.md` was written after it. Carrier executable `efbcdeaa…`, debug, ad-hoc signed |
+| Follow-up: gate with the new scenario | the working tree that became `c9d78f5` |
+| Final round: tests, negative controls, the launch through `app/run.sh`, the translation carrier's assembly, the gate | commit `39537a2` (which contains `8dc8778`); only documents differed from it while the gate ran |
 
 ## Verdict
 
-| Part | Verdict |
-| --- | --- |
-| A. Shared build outputs | **PASS** — reproduced, fixed, sequence 68 of 68 checks, packaging guarded |
-| B. Slack in the real window | **PASS** on macOS 27 with a debug carrier — all six items; limits in B |
-| C. Re-entry, hook families and migration | **PASS** for what ran (release carrier and real window under a relocated home) |
-| C. Re-entry, transaction in a real window with real clients (follow-up) | **PASS** on macOS 27 — a debug carrier at a stable location under a relocated home, that home's hook file, Claude Code 2.1.296 signed in there by the owner: both policies, `/clear`, a queued prompt, a second review and a relaunch |
-| C. Re-entry, transaction in a RELEASE build at `/Applications/deck.app` | **BLOCKED** — a release build has no smoke driver and there was no UI operator; the owner's installed Deck is in the way on both machines |
-| C. macOS 26 | **BLOCKED** — no machine; the gate's runner needs a push that was not authorized |
-| C. Notarization, Gatekeeper acceptance, public carrier | **UNRUN** — not authorized; Gatekeeper's verdict on the carrier is recorded as "rejected, unnotarized" |
-| Architecture and regression checks | **PASS** — final gate below |
+One row per acceptance item. "Where" says which build ran from which place;
+a row never speaks for a place or a build it does not name.
 
-One incident happened on the test machine during C; it is recorded in
-"Incident" and is not softened by anything above.
+| Item | Status | Where it ran, and what it does not cover |
+| --- | --- | --- |
+| A1. Shared build outputs: the pollution reproduced and fixed | **PASS** | this checkout, macOS 27.0.1: sequence 68 of 68 checks |
+| A2. The staged frontend takes no dot entry of the source tree (follow-up) | **PASS** | test and its negative control; a debug build after the fix |
+| A3. Verification follows the same staging contract (final round) | **PASS** | tests on one fixture read by both sides; the real `ui-dist/` of this checkout judged by it |
+| A4. A package is checked again after it is copied, before it runs (final round) | **PASS** | `app/run.sh`: a real isolated launch; the translation carrier: its real assembly, and refused twice with a foreign sidecar; negative controls in the tests. The release workflows' own bundle checks run in CI and did not run here |
+| B. Slack in the real window, six items | **PASS** | DEBUG carrier (ad-hoc signed) in a private directory, macOS 27.0.1, one sandbox workspace. A release build: UNRUN |
+| C1. The two Settings switches for Claude's hooks, in the real window | **PASS** | DEBUG carrier, relocated home. A release window: UNRUN. `/Applications/deck.app`: BLOCKED |
+| C2. Launch-time migration of existing hooks | **PASS** | RELEASE carrier (Developer ID signed, not notarized), relocated home, no click. `/Applications/deck.app`: BLOCKED |
+| C3. The transaction in a real window with real clients (follow-up) | **PASS** | DEBUG carrier (ad-hoc signed), relocated home, that home's hook file, macOS 27.0.1, Claude Code 2.1.296 signed in there by the owner: both policies, `/clear`, a queued prompt, a second review and a relaunch |
+| C4. The transaction in a RELEASE build, relocated home | **UNRUN** | a release build has no smoke driver, and this environment has no way to operate a window; it needs a person at the window and a sign-in. The exact steps are in [reentry-acceptance.md](reentry-acceptance.md) |
+| C5. The transaction in a RELEASE build at `/Applications/deck.app` | **BLOCKED** | the owner's installed Deck is in use on both machines; replacing it is the owner's decision. Also needs everything C4 needs |
+| C6. An unknown or unconfirmed outcome, or an agent that does not exit in time, in a real application | **UNRUN** | tests only; no real run produced one |
+| macOS 26: the automated gate | **UNRUN** | nothing after `origin/main` (`dcc3c06`) was pushed, so the `macos-26` runners never built this code |
+| macOS 26: native identity of a real client | **BLOCKED** | no macOS 26 machine; the gate runs no real client, so a green gate would not close this |
+| macOS 26: the transaction in a real window | **BLOCKED** | no macOS 26 machine |
+| Release carrier: release profile | **PASS** | every executable of the carrier is this checkout's release build (provenance check); no `ui/test` inside |
+| Release carrier: Developer ID signature | **PASS** | each executable verifies by itself, the bundle verifies deep and strict, hardened runtime; signed on the build machine, no secure timestamp |
+| Release carrier: notarization | **UNRUN** | nothing was sent to Apple; not authorized |
+| Release carrier: Gatekeeper | **assessed, rejected** | `spctl` says "Unnotarized Developer ID". The carriers ran only because a file copied over SSH carries no quarantine attribute, so no launch here was a Gatekeeper decision. Acceptance: UNRUN |
+| Experiment cleanup: only what a run registered and can prove is its own is stopped (final round) | **PASS** for what ran | tests with real tmux servers and a sentinel, negative controls, a harmless fixture on the test machine, one live cleanup on the build machine. The two runners moved onto it were not run again |
+| Architecture and regression checks | **PASS** | the gates below, on macOS 27.0.1 |
+
+One incident happened on the test machine during C. It is recorded in
+"Incident"; what it destroyed stays destroyed and no row above softens it.
 
 ## A. Shared build outputs
 
@@ -135,11 +177,13 @@ ran, what `binaries/` then held):
   `scripts/package-compat-candidate` (before, and on the finished bundle),
   `scripts/translation-lens-verify.py`, `nightly.yml` and `release.yml` (on
   the built bundle), and `gate.yml` after the coverage step (the tests must
-  have run the coverage run's own instrumented sidecars).
+  have run the coverage run's own instrumented sidecars). In this round
+  `app/run.sh` and `translation-lens-verify.py` checked only BEFORE the
+  copy; the final round added the check of the finished bundle.
 - Tests: `tests/shared_output.rs` (13: the rule against cargo's
   modification-time check, and a source pin that `build.rs` writes through
   the module), `scripts/test_sidecar_provenance.py` (18, in the gate's
-  unittest step).
+  unittest step). After the final round: 15 and 31.
 
 What the fix cannot do, by construction: keep a package right when a
 DIFFERENT context builds between a build and its packaging step (an editor
@@ -190,7 +234,7 @@ this round included — compiled those files into the executable (27 of their
 names were readable in the release executable). A clean checkout never had
 the directory: CI builds and every published build were not affected.
 
-Fixed in `f9df0ca`: `stage_tree` leaves out an entry of the SOURCE tree whose
+Fixed in `9e0bad3`: `stage_tree` leaves out an entry of the SOURCE tree whose
 name starts with a dot, at any depth; the tree in place is still read whole,
 so a `ui-dist/` staged with such entries is staged again. One new test
 (`dot_entries_of_the_source_tree_are_never_staged`); with the filter removed
@@ -198,13 +242,14 @@ in a copy of the module that test fails and the other 13 pass. After the fix
 a debug build stages no dot entry and the executable carries none of the
 names. The provenance check does not look for this in a packaged executable
 (asset names cannot be listed from the binary); the rule and its test are
-the guard.
+the guard. The two scripts that compare `ui-dist/` with the source did not
+follow this rule yet; that is item 1 of the final round.
 
 The other things that were checked for completeness: every file of the round
 is tracked and nothing it needs is ignored; no tracked document links into
 `reports/`; the frontend and script gates pass in a plain export of the
 commit; and the gate's coverage step passes in a detached worktree of
-`f9df0ca` built from nothing (below). Not part of this round by the
+`9e0bad3` built from nothing (below). Not part of this round by the
 repository's own convention: `CHANGELOG.md` and the version, which are
 written by the release commit.
 
@@ -281,11 +326,16 @@ connected, the gap still said, the documents identical in every id.
 ## C. Re-entry
 
 See [reentry-acceptance.md](reentry-acceptance.md): the reused transaction
-evidence, this round's release carrier and its signature matrix, the
-launch-time migration scenarios M1–M4, the Settings switches in the real
-window, the eleven items one by one, and why the formal path is blocked.
-The follow-up's transaction with real clients in a real window is its
-section "The transaction in the real window with real clients (L)".
+evidence, this round's release carrier and its four separate properties,
+the launch-time migration scenarios M1–M4, the Settings switches in the real
+window, the eleven items one by one with a column per place and build, the
+three macOS 26 items, and what a release transaction needs. The follow-up's
+transaction with real clients in a real window is its section "The
+transaction in the real window with real clients (L)".
+
+Everything of C that ran, ran under a relocated home or in a private
+directory. The release carrier ran the migration and nothing else; the
+transaction ran in debug carriers only.
 
 ## Architecture and regression checks
 
@@ -337,9 +387,9 @@ test — fixed); one new unit test failed once on its own fixture (fixed).
 
 | What | Exit | Result |
 | --- | --- | --- |
-| The coverage step in a detached worktree of `f9df0ca`, built from nothing | 0 | 1417 passed, 0 failed, 12 ignored; lines 85.05 %, functions 82.90 %; coverage-context provenance 0; no `.profraw` left in the tree |
-| `python3 -m unittest` (the gate's list), `node --check`, `scripts/ui-tests`, `check.mjs` in a plain export of `f9df0ca` | 0 | 134 passed; the others exit 0 |
-| On the tree that became `5274067`: `cargo fmt --all --check`, CI-form clippy | 0 | |
+| The coverage step in a detached worktree of `9e0bad3`, built from nothing | 0 | 1417 passed, 0 failed, 12 ignored; lines 85.05 %, functions 82.90 %; coverage-context provenance 0; no `.profraw` left in the tree |
+| `python3 -m unittest` (the gate's list), `node --check`, `scripts/ui-tests`, `check.mjs` in a plain export of `9e0bad3` | 0 | 134 passed; the others exit 0 |
+| On the tree that became `c9d78f5`: `cargo fmt --all --check`, CI-form clippy | 0 | |
 | Same tree: the coverage step | 0 | 1417 passed, 0 failed, 12 ignored; lines 85.05 %, functions 82.90 % |
 | Same tree: coverage-context provenance; then an ordinary debug build and the debug provenance check | 0 | the ordinary build after the coverage run put its own sidecars and frontend back |
 | Same tree: `scripts/ui-tests`, `node --check`, `check.mjs`, `python3 -m unittest`, `scripts/check-workflows` | 0 | 743 passed; 134 passed |
@@ -354,19 +404,230 @@ had a keychain of its own, and the first such keychain could not be unlocked
 because of its file name (both are setup facts, written down in
 `app/SMOKE.md`).
 
+## Final bounded round
+
+Asked for, in this order: the verification rule that still looked at dot
+entries; a provenance check of the package that actually runs; the incident's
+guard as a tracked, reusable mechanism; the scope of this document; and only
+then the most valuable release transaction. Commits `8dc8778` and `39537a2`.
+
+### 1. Verification follows the staging contract
+
+`build/shared_output.rs` stages no entry of `app/ui` whose name starts with a
+dot, at any depth. `scripts/translation-lens-verify.py` and
+`scripts/translation-setup-verify.py` still compared every file of `app/ui`
+with `ui-dist/`: one `.DS_Store` in the source made them report a frontend
+mismatch, and neither noticed a file in `ui-dist/` that the source no longer
+had.
+
+`scripts/sidecar_provenance.py staged --profile debug|release` reads the
+source by the same contract and reports three things apart: a file missing
+from the staging, a file staged with other bytes, and anything staged that
+does not belong there (a dot entry, a file the source no longer has,
+`ui/test` in a release staging). Both scripts and `app/run.sh` ask it. The
+consistency check was not switched off: an ordinary file that differs or is
+missing still fails.
+
+The contract is one fixture, `tests/fixtures/staging-contract.json`: twelve
+source paths, among them `.DS_Store`, `test/.DS_Store`, an editor's swap file
+and two nested hidden directories, and what a debug and a release staging of
+them must hold. The Rust test stages the fixture with the build's own module;
+the Python test judges it with the checker.
+
+| What ran | Result |
+| --- | --- |
+| `tests/shared_output.rs` | 15 passed (one new: the fixture is what the module stages) |
+| `scripts/test_sidecar_provenance.py`, the staging cases | 6 passed: the contract holds; a missing file, a changed file, a dot entry in the staging, a file the source no longer has, and `ui/test` in a release staging are each reported |
+| Negative controls, in copies of the tree | staging dot entries in the module, and dropping the "does not belong" report in the checker, each fails a test |
+| The real `ui-dist/` of this checkout | `staged frontend ok`: the debug staging of `app/ui`, 171 files |
+
+### 2. The package that runs is checked
+
+`app/run.sh` and `translation-lens-verify.py` checked `binaries/` before the
+copy and never what was copied. An editor's `cargo check`, a release build or
+a coverage run can write `binaries/` in between, and the bundle then runs
+their sidecar.
+
+- `app/bundle.sh` (new, sourced by `app/run.sh`) holds the three steps: check
+  the shared outputs, copy, check the finished and signed bundle against this
+  debug build. `run.sh` refuses to open a bundle that fails the last one.
+- `translation-lens-verify.py` checks its assembled, signed carrier the same
+  way before any run. That carrier holds two of the four built sidecars.
+  `check --sidecars` names the ones a package must carry: both are checked
+  with tmux and the executable, and a third sidecar that got in would be
+  checked too, never skipped.
+- Coverage is as it was: the gate's coverage-context check and the
+  instrumented sidecars it requires did not change.
+
+| What ran | Result |
+| --- | --- |
+| `scripts/test_sidecar_provenance.py`, the packaging cases | 7 passed. The negative controls put a coverage sidecar, and a release sidecar, into `binaries/` AFTER the first check passed, run the launcher's own copy function, and require the last check to refuse the bundle |
+| Negative controls, in copies of the tree | removing the last check, and skipping a sidecar that was not named, each fails a test |
+| `app/run.sh`, one real isolated launch on the build machine | first check ok (5 files in `binaries/`, 171 staged files); bundle signed; last check ok (6 files in the bundle); opened through LaunchServices; it booted into its own data directory |
+| The translation carrier's own assembly with the real build outputs, no launch | every check ok; the bundle holds the executable, tmux and the two helpers (4 files) |
+| The same assembly, with a release-profile helper and then a coverage-instrumented helper handed to the copy after the first check had passed | refused both times: "the assembled bundle does not hold this debug build" |
+
+Not run: the translation verification's window runs, and the release
+workflows.
+
+### 3. Experiment resources: registered when started, stopped only when proven
+
+The guard that followed the incident lived in a git-ignored runner. It is now
+the tracked tool's, and the rule is in `AGENTS.md`.
+
+- `scripts/edr_runtime.py` addresses no tmux server by its socket name. The
+  reviewed development/smoke inventory resolves a name to the full path
+  `tmux -L` would use from this environment and stops a server only while
+  that path still answers as the very pid it inspected. The caller's own
+  `TMUX` is handed to no command.
+- `experiment init | add-server | add-process | show | stop | cleanup` keeps a
+  registry in the experiment's root directory. A server is its full socket
+  path inside the root, the pid the server itself reports there, and that
+  process's start time and executable. Before anything is stopped every entry
+  is verified again. A missing field, another process under the pid, another
+  pid on the socket, a path or a link that leaves the root, a root that is
+  not a directory of its own under a temporary directory, or a socket,
+  program or root that belongs to an installed Deck or to a person's home
+  refuses the WHOLE cleanup: exit 3, nothing stopped. What runs from the root
+  without having been registered is reported (exit 1), not stopped. A pid
+  alone, a path prefix alone, or a socket name is never enough.
+- `scripts/test-compat-candidate`, the gate's macOS 14 launch check, ended
+  with the same by-name kill of `deck`; the new scan over the tracked scripts
+  found it. It now asks the server on the full socket path which process it
+  is and stops it only when that is the candidate's own tmux.
+- Two rules over the tracked scripts, as tests: none names the installed
+  product's socket, and every script that stops a tmux server is on a
+  register that says how it names it.
+
+| What ran | Result |
+| --- | --- |
+| `scripts/test_edr_runtime.py` | 29 passed. Real tmux servers in directories of the test's own, always by full path. The registered server is stopped; a sentinel server beside it that no registry names is still there after every case; a socket outside the root, a link out of the root, a reused pid, a changed program, another pid on the socket, an incomplete or foreign registry, and what looks like an installed Deck are each refused with nothing stopped, and the last of them without one command being run |
+| Negative controls, in copies of the tool | 16 guards removed one at a time; the tests failed each time |
+| The tool on the test machine, read there from standard input, against a harmless fixture (a copy of the pinned tmux, a fixture server on a socket named like a release carrier's inside its root, a sentinel beside it) | registered; the sentinel's socket, a person's home as root and a missing root refused (exit 3); cleanup stopped the fixture and nothing else; the installed Deck's shell service had the same pid and start time before and after. Nothing was pointed at the installed Deck |
+| The reviewed cleanup on the build machine, live, after the launch of item 2 | application and server stopped, verified by pid; the installed Deck's processes identical before and after |
+
+The runners that started carriers on the test machine are git-ignored working
+files. The two that would be used again (the release carrier's migration and
+the live transaction) now put the carrier's socket directory inside the root
+and stop things only through the registry; they were **not run again** after
+that change. The two others refuse to run.
+
+### 4. What this document claimed too widely
+
+Corrected in this round, so that a reader of an earlier copy can see what
+changed:
+
+- The opening said three things "were closed out". Several items were
+  BLOCKED or UNRUN then and are now.
+- C was headed "on the installed path", and the acceptance summary said the
+  installed path proper was "verified for the hook families and their
+  migration". What ran was a release carrier and a debug carrier under a
+  relocated home. Nothing ran at `/Applications/deck.app`. The eleven-item
+  table had one "Formal" column; it now has a column per place and build.
+- "macOS 26" was one item. It is three: the automated gate, native identity
+  of a real client, and the transaction in a real window.
+- "Notarization, Gatekeeper acceptance, public carrier" was one row. Release
+  profile, Developer ID signature, notarization and Gatekeeper are four.
+- The resources table said the test machine's own state, the installed
+  Deck's shell service included, was "as before the follow-up". That is true
+  of the follow-up's own baseline, which was taken after the incident. It
+  undoes nothing; see "Incident".
+- "Incident" said the runners now stop only their own server. That guard was
+  in files no checkout has; item 3 replaces it.
+
+### 5. The release transaction: evaluated, not run
+
+Asked for last: a minimal Policy A / Policy B transaction in a RELEASE build
+at an isolated stable location, with global hooks, real Claude and the real
+UI. Evaluated after items 1–4:
+
+- It can be placed safely. A release carrier at
+  `<home>/Applications/deck.app` under a relocated home relocates itself
+  through its own `LSEnvironment` (it must be Developer ID signed for that;
+  the follow-up opened such a carrier once with a plain `open` and found its
+  data, socket and hook file inside its directory), with its tmux socket
+  directory inside the experiment
+  root and every process in the root's registry. That is packaging around an
+  unchanged release executable, not a switch in the product, and it replaces
+  nothing the owner uses.
+- It cannot be operated from here. A release build ignores every smoke
+  argument, so its switches and its dialog need clicks. Asked without
+  prompting, `AXIsProcessTrusted`, `CGPreflightPostEventAccess`,
+  `CGPreflightListenEventAccess` and `CGPreflightScreenCaptureAccess` all
+  answer false for a process started from the build session, on the build
+  machine and over SSH on the test machine, and the session has no
+  desktop-control tool.
+- It needs the owner twice: to authorize the Claude sign-in for the relocated
+  home in a browser, and to operate the window for about a dozen actions.
+
+So C4 is UNRUN, with a person as its missing input. No real client was
+started for it in this round. The exact steps are in
+[reentry-acceptance.md](reentry-acceptance.md), "A release transaction: what
+it needs, exactly".
+
+### Gates of the final round
+
+On commit `39537a2`, macOS 27.0.1, with the same isolation as before
+(`--offline` added to the CI forms; nothing else differs):
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `cargo fmt --all --check` | 0 | |
+| `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings` | 0 | |
+| `cargo llvm-cov --workspace --all-targets --all-features --locked --offline --fail-under-lines 75 --fail-under-functions 75 -- --test-threads=1` | 0 | 1418 passed, 0 failed, 12 ignored; lines 85.05 %, functions 82.90 % |
+| `python3 scripts/sidecar_provenance.py check --profile debug --coverage --binaries` | 0 | the coverage run's own instrumented sidecars; no `.profraw` left in the tree |
+| then `cargo build`, `sidecar_provenance.py check --profile debug --binaries`, `sidecar_provenance.py staged --profile debug` | 0 | the ordinary build put its own sidecars and frontend back: 5 files, 171 staged files |
+| `scripts/ui-tests` | 0 | 743 passed, 0 failed |
+| `node --check` on every frontend and test module; `node app/ui/js/check.mjs` | 0 | 153 files; 60 modules, identifiers resolve |
+| `python3 -m unittest` (the gate's list) | 0 | 169 passed (134 before this round: 13 more in `test_sidecar_provenance.py`, 22 more in `test_edr_runtime.py`) |
+| `scripts/check-workflows`, `scripts/test-smoke-guard` | 0 | |
+
+No assertion, threshold or exclusion was relaxed. The documents of this
+directory and two paragraphs in `docs/` were written after the coverage step
+started; no test reads them. Not run in this round because nothing they
+cover changed: the Swift bridge scripts, the RustSec audits, the Tunnel
+Helper suite, the Full Local parity lanes. Not runnable here: the macOS 14
+launch check, whose script changed (item 3) and whose cleanup function was
+exercised against fixtures only.
+
+Failures met on the way, with what they were: the first run of the new
+`test_edr_runtime.py` cases had two errors of the test's own (it copied
+`/bin/sleep` with its file flags) and one true finding, the by-name kill in
+`scripts/test-compat-candidate`; one negative control was not caught at first
+(a root outside a temporary directory) and a test was added for it; a count
+the register test kept of its own lines was wrong after a test was added.
+
 ## Incident
 
 At 14:12 on the test machine, the cleanup of the migration runner ran
 `tmux -L deck kill-server` with the carrier's tmux but WITHOUT the run's own
 socket directory. A release build always names its socket `deck`, so the
 command reached the socket of the Deck formally installed on that machine
-and stopped its shell service (the server started on Oct 10 16:55). Its
-sessions ended and cannot be brought back; the application itself kept
-running and its `~/.deck` was not opened. The run's "state as before" line
-was wrong: it recorded the application process but not its tmux server.
-The owner was told at once. The runners now stop only a server whose
-command path is under the run's root, with the socket directory in the same
-command, and record every process of the installed bundle.
+and stopped its shell service (the server started on Oct 10 16:55).
+
+**What was lost, and stays lost.** Every session of that shell service
+ended: the shells, and whatever was running in them. They cannot be brought
+back. The application itself kept running and its `~/.deck` was not opened,
+so the Board was not changed and its cards were left stopped. Nothing later
+in this document restores any of this, and no later "unchanged" line covers
+it: the baselines of the follow-up and of the final round were taken AFTER
+the incident, against the shell service the owner's own use started at
+17:32.
+
+The run's "state as before" line was wrong: it recorded the application
+process but not its tmux server. The owner was told at once.
+
+What changed because of it:
+
+- The same afternoon, in the git-ignored runners: a server was stopped only
+  when its command path was under the run's root, with the socket directory
+  in the same command, and every process of the installed bundle was
+  recorded before and after. No checkout has those files.
+- In the final round, tracked: the registry and its verified cleanup in
+  `scripts/edr_runtime.py`, the rule in `AGENTS.md` ("Experiment
+  resources"), and the regressions in `scripts/test_edr_runtime.py`. The
+  same words, `tmux -L deck kill-server`, were found in one tracked script
+  and removed from it (item 3).
 
 ## Resources and cleanup
 
@@ -376,22 +637,33 @@ Created this round and removed or left as stated:
 | --- | --- |
 | Slack test app and its tokens, private test channel (sandbox workspace) | app deleted (its bot token then answered `account_inactive`); channel archived, which is reversible; the workspace's three existing apps were not opened and its sidebar is as it was |
 | Separate browser profile holding the owner's Slack sign-in | signed out of the workspace; that browser instance quit by its own pid; profile directory removed |
-| Test machine: three smoke roots, one relocated-home root per C run, their tmux servers | servers stopped; roots moved to that machine's Trash (recoverable); no process left |
+| Test machine: three smoke roots, one relocated-home root per C run, their tmux servers | servers stopped; roots moved to that machine's Trash (recoverable); no process of the round left. The installed Deck's shell service was NOT as before: see "Incident" |
 | Test machine: Claude's own record of the directories the Slack rule started it in | not looked for beyond a count of matching project directories (0) |
 | Build machine: carrier staging directories, private token files, isolated cargo home, probe directories | removed by exact path |
 | `app/src-tauri/target/` (release, debug and coverage products) | left; `binaries/` and `ui-dist/` are the ordinary debug build |
 | Follow-up, test machine: a private Developer-ID-signed release carrier that relocates itself (`LSEnvironment`), opened once to check that it stays inside its directory | never used by the owner; its root removed |
 | Follow-up, test machine: the root of the live run (relocated home with the client's sign-in in a keychain of its own, two data directories, the debug carrier) | client signed out, both sign-in items and the keychain deleted, root removed (not moved to the Trash: it held a credential store); no process and no socket of the run left |
-| Follow-up, test machine: the machine's own state | its hook file digest, keychain list, `~/.deck` and installed Deck's shell service are as they were before the follow-up |
+| Follow-up, test machine: the machine's own state | its hook file digest, keychain list, `~/.deck` and installed Deck's shell service are as they were at the START of the follow-up. That baseline was taken after the incident: the shell service it names is the one the owner's own use started at 17:32, not the one the incident stopped |
 | Follow-up, build machine: a separate browser profile holding the owner's Claude authorization | that browser instance quit by its own pid; profile and the two private files (address, code) removed |
 | Follow-up, build machine: detached worktree, export, isolated cargo home, carrier staging directories, probe material | removed by exact path |
+| Final round, test machine: the fixture for the registry tool (a copy of the pinned tmux, a fixture server, a sentinel server, two registry files, in two directories under `/private/tmp`) | both servers stopped through the tool; both directories removed by exact path; no process of the round left |
+| Final round, build machine: one isolated smoke launch through `app/run.sh` | application and server stopped with the reviewed cleanup and verified by pid; its data directory and its stale socket file removed by exact path |
+| Final round, build machine: test fixtures and tree copies of the negative controls under `/private/tmp`, the isolated cargo home and temporary directory | removed by their makers or by exact path |
+| Seen on the build machine and left alone | stale `deck-smoke-*` socket files of earlier rounds in the default tmux directory. None is this round's, and nothing answers on this round's names |
 
 ## Open items
 
 | Item | Why it is open | Smallest thing that closes it |
 | --- | --- | --- |
-| Re-entry transaction (items 5–11) in a RELEASE build at `/Applications/deck.app` | a release build has no smoke driver, so its dialog needs a person or a UI operator; the owner's Deck is installed and in use on both machines | a person or a UI tool operating a release build once; the debug-carrier run of the follow-up is the same transaction at the same kind of location |
-| An unknown or unconfirmed outcome, an agent that does not exit in time, in a real application | no real run produced one; tests only | a fault staged on purpose in a later run |
-| macOS 26 | no machine | a push so the gate runs on its `macos-26` runner, or a macOS 26 machine |
-| Notarization and Gatekeeper acceptance of a carrier | not authorized; needs Apple credentials | an authorization to submit a private carrier |
+| C4. The transaction in a RELEASE build under a relocated home | a release build has no smoke driver and this environment cannot operate a window; a real client there needs the owner's sign-in | the steps of [reentry-acceptance.md](reentry-acceptance.md), once, with a person at the window |
+| C5. The transaction in a RELEASE build at `/Applications/deck.app` | the owner's Deck is installed and in use on both machines | the owner's decision to park their installation, or a machine without one; then the same steps |
+| C6. An unknown or unconfirmed outcome, or an agent that does not exit in time, in a real application | no real run produced one; tests only | a fault staged on purpose in a later run |
+| macOS 26: the automated gate | none of this history is pushed | a push, when authorized. It closes what the gate's jobs run, and nothing below |
+| macOS 26: native identity of a real client | no machine; CI runs no real client | a macOS 26 machine with Claude Code on it |
+| macOS 26: the transaction in a real window | no machine | the same machine and the follow-up's debug-carrier run |
+| Notarization of a carrier | not authorized; needs Apple credentials | an authorization to submit a private carrier |
+| Gatekeeper acceptance | follows notarization; no launch here was a Gatekeeper decision | a notarized, stapled carrier assessed with `spctl` and opened once with a quarantine attribute |
+| The new cleanup of `scripts/test-compat-candidate` on macOS 14 | that script runs only in the gate's macOS 14 job; here its function ran against fixtures | the same push |
+| The two runners moved onto the registry | not run since they were changed | the next run of either |
+| The translation verification's window runs | only its bundle assembly was exercised in the final round | one run of `scripts/translation-lens-verify.py` |
 | Slack in a release build; the `channel-scope` fault and a pending event across a quit in the window | no smoke driver in release; not part of this run | an operator pasting tokens into a release window; a later run |
