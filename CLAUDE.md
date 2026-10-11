@@ -389,7 +389,7 @@ Chromium testing of the mock catches none of these; verify in the real app.
   attempt, never retried; a client is admitted by verified code identity,
   never a release list; a confirmed entry is not readiness, authority or task
   progress. Contract: `agent_reentry/mod.rs`; evidence and limits:
-  `reports/agent-reentry-forward-compat/acceptance.md`.
+  `docs/evidence/closeout-20261011/reentry-acceptance.md`.
 - **A card is persisted only after its session started**
   (`provider.createStarted` kills the session if the write fails; a missing
   directory asks the user, never leaves a stopped card).

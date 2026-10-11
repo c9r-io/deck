@@ -519,7 +519,7 @@ cards) and one isolated real-application UI transaction (one/three cards).
 Both B samples included a bypass launch lowered to plan before reauthorization.
 The application used the debug entry below; an earlier B preparation stopped
 on a CUA timeout before Claude started, and its failure record is retained.
-See the [acceptance summary](../reports/agent-reentry-forward-compat/acceptance.md)
+See the [acceptance summary](../docs/evidence/closeout-20261011/reentry-acceptance.md)
 for the four evidence cells. P3 is complete with evidence limits; macOS 26
 and formal release installation remain unverified. This does not turn the
 scripted WK mode into native transaction evidence or authorize another run.

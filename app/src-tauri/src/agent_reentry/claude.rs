@@ -48,7 +48,12 @@
 //! The releases below were exercised natively while this feature was
 //! written. The record says what was shown and what was not; it admits and
 //! refuses nothing at runtime, and adding a release is not maintenance this
-//! module needs. The pieces must not be merged with each other:
+//! module needs. The `reports/…` and `followup-…` names below are those
+//! rounds' working records: they were never part of the repository
+//! (`reports/` is git-ignored) and a checkout does not have them. What a
+//! checkout can read is the acceptance summary,
+//! `docs/evidence/closeout-20261011/reentry-acceptance.md`.
+//! The pieces must not be merged with each other:
 //! - **2.1.294**, four pieces:
 //!   - a probe carrier, not Deck (`reports/agent-reentry-native-probe/
 //!     batch-294-20261009`): the exit receipt chain, an exact-id resume

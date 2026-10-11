@@ -411,8 +411,15 @@ remains UNRUN. The application samples had empty queues; the controller's
 nonempty paused-queue evidence is separate. Stale terminal frames and an
 invalid independent policy-persistence probe are recorded, not counted as
 passes. Existing automated tests cover resetting the policy for a new preview.
-See the [acceptance summary](../reports/agent-reentry-forward-compat/acceptance.md)
-for direct report links, source provenance and the limits of this validation.
+The 2026-10-11 close-out added, on a private Developer-ID-signed release
+carrier and a debug carrier under a relocated home: the launch-time hook
+migration (an install moved to another location is rewritten, a user with
+the status hooks alone is not enrolled, a user's own hooks are untouched,
+nothing happens away from a stable location) and both Settings switches in
+the real window. `/Applications/deck.app` itself, a transaction with a
+non-empty queue in the real application, notarization and macOS 26 remain
+open. See the [acceptance summary](evidence/closeout-20261011/reentry-acceptance.md)
+for the matrix, source provenance and the limits of this validation.
 This is representative validation, not a version allowlist or release approval.
 
 The native evidence that follows is historical. It was gathered while
@@ -445,7 +452,7 @@ checkpoints, English and Chinese, the default 1280×800 window. One passing
 run says nothing about other window sizes, the larger font scale, the signed
 carrier or the transaction itself. A further run on 2026-10-11 passed 15/15
 with the current A/B result wording; see
-[round-2 §5.4](../reports/agent-reentry-forward-compat/round-2.md).
+[the acceptance summary](evidence/closeout-20261011/reentry-acceptance.md#the-dialog-in-the-real-window).
 The module header of `agent_reentry/claude.rs` retains the historical native
 campaigns; the acceptance summary above records the current P3 evidence.
 

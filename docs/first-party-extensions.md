@@ -118,7 +118,7 @@ contract; such a change shows as clients that are not offered, or as a
 request that is typed once and not confirmed. The releases that were
 exercised natively are evidence, not a runtime condition. The header of
 `agent_reentry/claude.rs` records the historical campaigns; the current
-[acceptance summary](../reports/agent-reentry-forward-compat/acceptance.md)
+[acceptance summary](evidence/closeout-20261011/reentry-acceptance.md)
 records the new identity mechanism's completed representative P3 on Claude
 2.1.295: A/B through both the controller and the isolated real application.
 That result does not certify untested platforms or a published carrier.
