@@ -121,7 +121,6 @@ const NATIVE_SESSION_KEYS = new Map([
   ['reentry.setupHint', 'quotes the setting name (Claude session re-entry observation)'],
   ['reentry.policy.bypass', 'Claude sessions launched with a bypass profile'],
   ['reentry.policy.bypassNone', 'Claude sessions launched with a bypass profile'],
-  ['reentry.policy.bypassWarning', 'permissions reduced inside the running Claude session (approved sentence)'],
   ['reentry.policy.scope', 'the selected, verified Claude sessions of this restart'],
   ['reentry.policy.bypassUnavailable', 'the selected Claude sessions and their launch profile'],
   ['reentry.policy.unknownCount', 'the selected Claude sessions whose launch profile is unverified'],
@@ -131,8 +130,8 @@ const NATIVE_SESSION_KEYS = new Map([
   ['reentry.confirmManaged', 'the Agent sessions the click reopens; the MCP ones it closes are deck sessions and say "session"'],
   ['reentry.stage.preparing', 'the stage that prepares the selected Agent sessions for re-entry: their clients exit and the session each ended in is read (approved wording)'],
   ['reentry.stage.reopening', 'the stage that reopens the Agent sessions'],
-  ['reentry.result.confirmed', 'the Claude session that was reopened'],
-  ['reentry.result.confirmedOrdinary', 'the Claude session that was reopened'],
+  ['reentry.result.confirmed', 'the Claude session whose re-entry was confirmed (approved sentence)'],
+  ['reentry.result.confirmedOrdinary', 'the Claude session whose re-entry was confirmed'],
   ['reentry.reason.final-session-unconfirmed', 'the native session the client ended in'],
   ['reentry.reason.native-session-not-found', 'the original native session Claude could not find'],
   ['reentry.reason.user-action-required', 'the Claude session that asks for the user during its startup'],
@@ -189,8 +188,19 @@ test('every object has exactly one name in each dictionary', () => {
   // the first progress stage is about the Agent sessions being reopened (approved wording)
   assert.equal(zh['reentry.stage.preparing'], '准备会话');
   assert.equal(en['reentry.stage.preparing'], 'Preparing sessions');
-  assert.equal(zh['reentry.policy.bypassWarning'], '如果你在会话运行过程中降低过权限，这个选项会再次启用 bypass。');
-  assert.equal(en['reentry.policy.bypassWarning'], 'If you reduced permissions during the session, this option will enable bypass again.');
+  // the approved sentences of policy B, word for word: what choosing it does,
+  // and what a confirmed entry says — a flag that was sent, never a
+  // permission that is in effect
+  assert.equal(zh['reentry.policy.bypassWarning'], '如果运行期间降低过权限，此次重新施加 bypass 会再次启用 bypass。');
+  assert.equal(en['reentry.policy.bypassWarning'], 'If you lowered permissions while the session ran, reapplying bypass now will enable bypass again.');
+  assert.equal(zh['reentry.result.confirmed'], '已确认重新进入 Claude 会话；已按本次授权发送 bypass 参数。');
+  assert.equal(en['reentry.result.confirmed'], 'Claude session re-entry confirmed. The bypass flag was sent as authorized.');
+  assert.equal(zh['reentry.warning.bypass-reauthorized'], 'Deck 未独立验证 Claude 当前有效权限。');
+  assert.equal(zh['reentry.result.unconfirmed'], '已尝试发送重入请求，结果未确认');
+  for (const [key, value] of [...Object.entries(zh), ...Object.entries(en)].filter(([key]) => key.startsWith('reentry.'))) {
+    assert.doesNotMatch(value, /已恢复|权限已验证|有效权限为|bypass (?:was |is )?restored|permission (?:was |is )?verified|bypass is (?:on|active|in effect)/i, key);
+    assert.doesNotMatch(value, /sha-?256|digest|摘要|认证版本|未经认证|certified|[0-9]+\.[0-9]+\.[0-9]{2,}/i, key);
+  }
   assert.doesNotMatch(zhAll, /个 pane|当前 pane/, 'zh calls a pane 窗格');
   assert.notEqual(zh['automation.trigger'], zh['automation.when']);
   assert.equal(zh['app.sessions'], 'session');

@@ -44,7 +44,7 @@
 //! An explicit restart may carry the user's approval to reopen selected
 //! Agent sessions (`agent_reentry`). `restart_transaction_on` then freezes
 //! that approval against the validated listing before any exit key, hands
-//! the frozen certified panes to the graceful exit, seals their final
+//! the frozen clients' panes to the graceful exit, seals their final
 //! sessions, and — only after the replacement was read back — runs the
 //! post phase. The two conclusions are independent: everything up to the
 //! read-back keeps the existing `RestartFailure` contract and the eight
@@ -848,19 +848,20 @@ fn prepare_restart_on(
     prepare_restart_with(server, snapshot, restore_shells, &[], progress)
 }
 
-/// `certified`: the panes the re-entry transaction froze as certified
-/// direct clients; the exit path treats exactly those as Claude.
+/// `frozen`: the panes the re-entry transaction froze as direct clients of
+/// the product, each by its running code; the exit path treats exactly
+/// those as Claude.
 fn prepare_restart_with(
     server: &ServerHandle<'_>,
     snapshot: &ServerSnapshot,
     restore_shells: bool,
-    certified: &[tmux::PaneRow],
+    frozen: &[tmux::PaneRow],
     progress: &dyn Fn(&str, usize, usize),
 ) -> Result<ServerSnapshot, DeckError> {
     let prepared_rows = crate::restart::prepare(
         &snapshot.panes,
         restore_shells,
-        certified,
+        frozen,
         &|| restart_panes_on(server, snapshot),
         server.run_owned,
         progress,
@@ -1641,12 +1642,18 @@ fn reentry_unavailable() -> DeckError {
 }
 
 /// The restart dialog's provisional candidates and a single-use token. Reads
-/// only; starts, exits and types nothing.
+/// only; starts, exits and types nothing. Answered in bounded time: the
+/// environment is assembled and read on the preview's one worker, and a
+/// check there that does not return leaves this command with a timeout and
+/// no token (`agent_reentry::preview_bounded`).
 #[tauri::command]
 pub(crate) async fn agent_reentry_preview() -> Result<crate::agent_reentry::PreviewView, DeckError>
 {
     tauri::async_runtime::spawn_blocking(|| {
-        with_reentry_env(crate::agent_reentry::preview).ok_or_else(reentry_unavailable)?
+        crate::agent_reentry::preview_bounded(|| {
+            with_reentry_env(crate::agent_reentry::read_preview)
+                .unwrap_or_else(|| Err(reentry_unavailable()))
+        })
     })
     .await
     .map_err(|_| DeckError::new(ErrorKind::Other, "reentry-preview-failed"))?
@@ -1688,13 +1695,16 @@ pub(crate) async fn restart_tmux_server(
     // during exit hooks. All IO, deadlines and guards belong to this worker.
     let started = std::time::Instant::now();
     // The basic restart keeps its eight seconds. Approved re-entry adds one
-    // shared post share AFTER the replacement; the worker bounds each phase
-    // itself, so this outer limit only bounds the IPC wait.
+    // shared post share AFTER the replacement and the confirmation's own
+    // share after that; the worker bounds each phase itself, so this outer
+    // limit only bounds the IPC wait. A check that cannot be interrupted and
+    // outlives it leaves the worker holding the operation gate, the activity
+    // guard and the plan until it returns — its answer then confirms nothing.
     let limit = started
         + crate::restart::TOTAL_BUDGET
-        + reentry
-            .as_ref()
-            .map_or(Duration::ZERO, |_| crate::agent_reentry::POST_BUDGET);
+        + reentry.as_ref().map_or(Duration::ZERO, |_| {
+            crate::agent_reentry::POST_BUDGET + crate::agent_reentry::CONFIRM_SHARE
+        });
     tauri::async_runtime::spawn_blocking(move || {
         crate::session_runtime::run_bounded(limit, move || {
             let progress = |phase: &str, completed: usize, total: usize| {
@@ -1913,8 +1923,8 @@ fn restart_tmux_server_inner(
         Ok(())
     };
     let mut phases = Some(Phases {
-        basic: basic_deadline,
         preparation: preparation_deadline,
+        basic: basic_deadline,
     });
     let mut transaction = |env: Option<&crate::agent_reentry::Env>| {
         restart_transaction_on(
@@ -1951,10 +1961,14 @@ fn restart_tmux_server_inner(
 }
 
 /// The two deadline scopes of the basic restart, handed over so the
-/// transaction ends each where the phase ends.
+/// transaction ends each where the phase ends. A deadline scope restores
+/// what was in force when it was opened, so scopes must end innermost
+/// first: `preparation` (opened second) is declared — and so dropped —
+/// before `basic` when a refusal ends the transaction early. In the other
+/// order the thread would keep the basic deadline after the call.
 struct Phases {
-    basic: crate::session_runtime::Deadline,
     preparation: crate::session_runtime::Deadline,
+    basic: crate::session_runtime::Deadline,
 }
 
 /// From a validated snapshot to the settled restart, against any server:
@@ -1995,14 +2009,14 @@ fn restart_transaction_on(
         )?),
         None => None,
     };
-    let certified = plan
+    let frozen = plan
         .as_ref()
-        .map(crate::agent_reentry::Plan::certified_rows)
+        .map(crate::agent_reentry::Plan::frozen_rows)
         .unwrap_or_default();
     detach();
     // Foreground changes caused by graceful exit are expected. Refresh the
     // content-free intent so crash recovery compares the post-exit identity.
-    let post_exit = prepare_restart_with(server, snapshot, restore_shells, &certified, progress)?;
+    let post_exit = prepare_restart_with(server, snapshot, restore_shells, &frozen, progress)?;
     // Every agent is back at its shell: seal each approved entry's final
     // session (its exit receipt AND its old client generation gone).
     if let (Some(plan), Some((env, _, _))) = (plan.as_mut(), reentry) {
@@ -2026,13 +2040,11 @@ fn restart_transaction_on(
     };
     plan.server_replaced();
     // The post phase: one shared share for every approved entry's shell,
-    // single launch and receipt. Nothing in it can fail the restart; each
-    // entry settles on its own, and the queues stay paused.
+    // single launch and receipt, then the confirmation's own short share
+    // (`Plan::reopen` installs both deadlines). Nothing in it can fail the
+    // restart; each entry settles on its own, and the queues stay paused.
     let post_end = std::time::Instant::now() + post_budget;
-    {
-        let _post_deadline = crate::session_runtime::Deadline::until(post_end);
-        plan.reopen(env, fresh.pid, restore_shells, post_end, held, progress);
-    }
+    plan.reopen(env, fresh.pid, restore_shells, post_end, held, progress);
     drop(plan);
     Ok((fresh, crate::agent_reentry::known(request_id)))
 }

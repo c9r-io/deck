@@ -75,7 +75,7 @@ test('candidates start unchecked with policy A, nothing is focused, and policy B
   click(inputs(section, 'checkbox')[1]);
   assert.equal(inputs(section, 'radio')[1].disabled, false);
   assert.ok(texts(section).includes('Reapply bypass to 1 session(s) launched with bypass'));
-  assert.ok(texts(section).includes('If you reduced permissions during the session, this option will enable bypass again.'));
+  assert.ok(texts(section).includes('If you lowered permissions while the session ran, reapplying bypass now will enable bypass again.'));
   assert.ok(texts(section).includes('Applies only to selected, verified sessions in this restart. This choice is not saved.'));
   click(inputs(section, 'radio')[1]);
   assert.deepEqual(reentryRequest(currentReentryPlan()), { token: 'T1', cards: ['A', 'B'], policy: 'reapply-bypass' });
@@ -170,9 +170,12 @@ test('the result list replaces the review, names the server outcome first and of
   const result = box('tmux-result');
   assert.equal(result.hidden, false);
   const said = texts(result);
-  assert.ok(said.includes('project A — Claude session reopened'));
-  assert.ok(said.includes('project B — Claude session reopened without a bypass override'));
-  assert.ok(said.includes(`${titles.get('C')} — Re-entry was requested, but could not be confirmed`));
+  assert.ok(said.includes('project A — Claude session re-entry confirmed. The bypass flag was sent as authorized.'));
+  assert.ok(said.includes('Deck did not independently verify Claude’s current effective permission.'));
+  assert.ok(said.includes('project B — Claude session re-entry confirmed. No bypass flag was added.'));
+  assert.ok(said.includes(`${titles.get('C')} — Re-entry was attempted, but the outcome is unknown`));
+  // the page says what was sent, never that a permission is in effect
+  assert.ok(!said.some(line => /bypass (?:was |is )?(?:restored|reapplied)|permission (?:was |is )?verified|bypass is (?:on|active|in effect)/i.test(line)));
   assert.ok(said.includes('Queues remain paused.'));
   const actions = buttons(result);
   assert.deepEqual(actions.map(button => button.textContent), ['Open card', 'Open card', 'Open card']);
@@ -251,7 +254,7 @@ test('the startup configuration note is in the confirmation once, under either p
   click(inputs(section, 'radio')[1]);
   assert.equal(inputs(section, 'radio')[1].checked, true, 'policy B');
   assert.deepEqual([count(section, note), count(section, help)], [1, 1]);
-  assert.equal(count(section, 'If you reduced permissions during the session, this option will enable bypass again.'), 1, 'the mandatory sentence stays');
+  assert.equal(count(section, 'If you lowered permissions while the session ran, reapplying bypass now will enable bypass again.'), 1, 'the mandatory sentence stays');
   // the help is inside the one disclosure, which starts closed and is no control
   const disclosures = walk(section).filter(item => item.tagName === 'DETAILS');
   assert.equal(disclosures.length, 1);
@@ -265,7 +268,7 @@ test('the startup configuration note is in the confirmation once, under either p
   refreshReentry();
   assert.deepEqual([count(section, '重新进入会使用新 shell 的启动配置；若配置已变化，可能需要手动检查。'),
     count(section, '部分差异只有在启动后才能发现。发现差异时 Deck 不会自动重试，也不会撤销已经发生的启动。'),
-    count(section, '如果你在会话运行过程中降低过权限，这个选项会再次启用 bypass。')], [1, 1, 1]);
+    count(section, '如果运行期间降低过权限，此次重新施加 bypass 会再次启用 bypass。')], [1, 1, 1]);
   setLocale('en');
   refreshReentry();
   // nothing selectable: neither the note nor the disclosure
@@ -344,12 +347,12 @@ test('a running result shows unsettled entries as in progress and follows them t
   assert.equal(live.pending, true);
   assert.equal(box('tmux-lifecycle-title').textContent, 'Shell service restarted');
   let said = texts(result);
-  assert.ok(said.includes('project A — Claude session reopened without a bypass override'));
+  assert.ok(said.includes('project A — Claude session re-entry confirmed. No bypass flag was added.'));
   assert.ok(said.includes('project B — Reopening…'));
   assert.ok(said.includes(`${titles.get('C')} — Reopening…`), 'a missing flag in a running operation is not settled');
   assert.ok(said.includes('1 reopened · 2 in progress · 0 to check'));
   assert.ok(said.includes('Deck is still reopening some sessions. This list updates as their results arrive.'));
-  assert.ok(!said.some(line => /not known|could not be confirmed|before trying again|not attempted/i.test(line)), 'nothing reads as a final result');
+  assert.ok(!said.some(line => /not known|could not be confirmed|outcome is unknown|before trying again|not attempted/i.test(line)), 'nothing reads as a final result');
   assert.ok(said.includes('…'), 'the in-progress mark');
 
   // the bounded poll ended and the worker still runs
@@ -357,7 +360,7 @@ test('a running result shows unsettled entries as in progress and follows them t
     entry('A', 'confirmed', { settled: true }), entry('B', 'unconfirmed', { settled: true }), entry('C', 'unconfirmed', { settled: false }),
   ] } });
   said = texts(result);
-  assert.ok(said.includes('project B — Re-entry was requested, but could not be confirmed'));
+  assert.ok(said.includes('project B — Re-entry was attempted, but the outcome is unknown'));
   assert.ok(said.includes('Open this card to check the current client before trying again.'));
   assert.ok(said.includes(`${titles.get('C')} — The result is still pending`));
   assert.ok(said.includes('Open this card later to see how it ended.'));

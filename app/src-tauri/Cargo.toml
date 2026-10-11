@@ -54,3 +54,12 @@ tauri = { version = "2", default-features = false, features = ["test"] }
 [profile.release]
 lto = true
 strip = true
+
+# The re-entry transaction reads and hashes a client's whole executable
+# (about 240 MB) inside bounded phases (`procinfo::ExecutableRef`). Left
+# unoptimized, the SHA-256 crate takes about nine seconds for one read and a
+# debug build cannot finish the post phase's re-read inside its fifteen
+# seconds; optimized it takes under half a second, as in a release build.
+# Only this one dependency's code generation changes — no budget, no check.
+[profile.dev.package.sha2]
+opt-level = 3

@@ -99,7 +99,8 @@ export async function runReentrySmoke() {
   const operation = (state, last) => ({
     requestId: UUID, state, serverReplaced: true, ...planted, entries: [
       resultEntry('RA1', 'deck-atlas-a1', 'confirmed', { clientObserved: true, warnings: ['bypass-reauthorized'] }),
-      resultEntry('RB1', 'deck-borealis-b1', 'unconfirmed', { reason: 'context-changed', clientObserved: true }),
+      // an entry that is NOT confirmed and still carries the bypass mark: the page must say nothing about a flag for it
+      resultEntry('RB1', 'deck-borealis-b1', 'unconfirmed', { reason: 'context-changed', clientObserved: true, warnings: ['bypass-reauthorized'] }),
       last,
     ],
   });
@@ -258,7 +259,7 @@ export async function runReentrySmoke() {
       && all(section(), '.reentry-warning').filter(node => node.textContent === t('reentry.policy.bypassWarning')).length === 1
       && visible(section().querySelector('.reentry-warning'))
       && saidOnce(section(), t('reentry.policy.unknownCount', { count: 1 })) === 1;
-    const english = warned() && t('reentry.policy.bypassWarning') === 'If you reduced permissions during the session, this option will enable bypass again.';
+    const english = warned() && t('reentry.policy.bypassWarning') === 'If you lowered permissions while the session ran, reapplying bypass now will enable bypass again.';
     noted += noteOnce() ? 2 : 0;
     /* the note, the policy and the action that confirms can all be reached at this window's size */
     const reachable = () => {
@@ -278,7 +279,7 @@ export async function runReentrySmoke() {
     setLocale('zh-Hans');
     await pause(200);
     capture();
-    const chinese = warned() && t('reentry.policy.bypassWarning') === '如果你在会话运行过程中降低过权限，这个选项会再次启用 bypass。'
+    const chinese = warned() && t('reentry.policy.bypassWarning') === '如果运行期间降低过权限，此次重新施加 bypass 会再次启用 bypass。'
       && $('tmux-restart').textContent === t('reentry.confirm', { count: 3 });
     noted += noteOnce() && t('reentry.note.context') === '重新进入会使用新 shell 的启动配置；若配置已变化，可能需要手动检查。' ? 4 : 0;
     laidOut += reachable() ? 2 : 0;
@@ -329,7 +330,17 @@ export async function runReentrySmoke() {
     const head = index => resultRows()[index].querySelector('.reentry-result-head .reentry-choice-text').textContent;
     const hints = index => all(resultRows()[index], '.reentry-hint').map(node => node.textContent);
     const line = (card, key) => t('reentry.result.line', { card, result: t(key) });
+    /* what a confirmed Policy B entry says, word for word; and what no other row may speak of */
+    const CONFIRMED_B = {
+      en: ['deck-atlas-a1 — Claude session re-entry confirmed. The bypass flag was sent as authorized.',
+        'Deck did not independently verify Claude’s current effective permission.'],
+      zh: ['deck-atlas-a1 — 已确认重新进入 Claude 会话；已按本次授权发送 bypass 参数。', 'Deck 未独立验证 Claude 当前有效权限。'],
+    };
+    const confirmedB = language => head(0) === CONFIRMED_B[language][0] && hints(0).join('|') === CONFIRMED_B[language][1];
+    const FLAG_WORDS = /bypass|permission|flag|权限|参数/i;
+    const othersSilent = () => resultRows().length === 3 && [1, 2].every(index => !FLAG_WORDS.test(resultRows()[index].textContent));
     const three = tones() === 'ok,warn,pending'
+      && confirmedB('en') && othersSilent()
       && $('tmux-lifecycle-title').textContent === t('reentry.result.restarted')
       && head(0) === line('deck-atlas-a1', 'reentry.result.confirmed')
       && hints(0).join('|') === t('reentry.warning.bypass-reauthorized')
@@ -357,6 +368,7 @@ export async function runReentrySmoke() {
     await pause(1300);                                 // longer than one poll interval: nothing reads or asks again
     capture();
     const settledRows = tones() === 'ok,warn,warn'
+      && confirmedB('en') && othersSilent()
       && head(2) === line(t('reentry.unknownCard'), 'reentry.result.startedUnconfirmed')
       && hints(2).join('|') === t('reentry.reason.context-unverified')
       && hints(1).join('|') === t('reentry.reason.context-changed')
@@ -366,7 +378,8 @@ export async function runReentrySmoke() {
     setLocale('zh-Hans');
     await pause(200);
     capture();
-    const settledChinese = hints(1).join('|') === 'Claude 已启动，但启动配置与预期不同；请打开卡片检查。'
+    const settledChinese = confirmedB('zh') && othersSilent()
+      && hints(1).join('|') === 'Claude 已启动，但启动配置与预期不同；请打开卡片检查。'
       && hints(2).join('|') === 'Claude 已启动，但无法核实其启动配置；请打开卡片检查。';
     quiet += closedOnly() ? 4 : 0;
     setLocale('en');

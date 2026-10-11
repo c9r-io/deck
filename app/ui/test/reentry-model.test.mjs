@@ -48,11 +48,11 @@ test('policy B counts only the selected entries launched with bypass', () => {
   assert.deepEqual(planView(all, { managed: true }).confirm, { key: 'reentry.confirmManaged', params: { count: 3 } });
   setLocale('en');
   assert.deepEqual(view.bypass.notes.map(say), [
-    'If you reduced permissions during the session, this option will enable bypass again.',
+    'If you lowered permissions while the session ran, reapplying bypass now will enable bypass again.',
     'Applies only to selected, verified sessions in this restart. This choice is not saved.',
   ]);
   setLocale('zh-Hans');
-  assert.equal(say(view.bypass.notes[0]), '如果你在会话运行过程中降低过权限，这个选项会再次启用 bypass。');
+  assert.equal(say(view.bypass.notes[0]), '如果运行期间降低过权限，此次重新施加 bypass 会再次启用 bypass。');
   setLocale('en');
   // the count follows the selection, not the list
   const withoutA = withSelection(all, 'A', false);
@@ -207,17 +207,30 @@ test('two confirmed and one unconfirmed after a replacement is "restarted", neve
   assert.equal(view.toast, 'tmux.restartComplete');
   assert.notEqual(view.toast, 'tmux.restartFailed');
   assert.deepEqual(view.rows.map(row => [row.cardId, row.tone, say(row.line)]), [
-    ['A', 'ok', 'Claude session reopened'],
-    ['B', 'ok', 'Claude session reopened without a bypass override'],
-    ['C', 'warn', 'Re-entry was requested, but could not be confirmed'],
+    ['A', 'ok', 'Claude session re-entry confirmed. The bypass flag was sent as authorized.'],
+    ['B', 'ok', 'Claude session re-entry confirmed. No bypass flag was added.'],
+    ['C', 'warn', 'Re-entry was attempted, but the outcome is unknown'],
   ]);
-  assert.deepEqual(view.rows[0].details.map(say), ['Bypass was reapplied as authorized for this restart.']);
+  // the one thing added for B: what Deck did NOT establish
+  assert.deepEqual(view.rows[0].details.map(say), ['Deck did not independently verify Claude’s current effective permission.']);
+  assert.deepEqual(view.rows[1].details, []);
   assert.deepEqual(view.rows[2].details.map(say), ['Open this card to check the current client before trying again.']);
   assert.deepEqual(view.summary, { key: 'reentry.result.summary', params: { confirmed: 2, other: 1 } });
   assert.ok(view.footer.map(say).includes('Queues remain paused.'));
-  // what is said about a session never claims more than "reopened"
+  // what is said about a session never claims more than a confirmed re-entry
+  // and a flag that was sent: nothing is resumed, ready, restored or verified
   const said = [say(view.title), ...view.rows.flatMap(row => [say(row.line), ...row.details.map(say)])].join(' ');
-  assert.doesNotMatch(said, /did not complete|resumed|ready|restored|continued/i);
+  assert.doesNotMatch(said, /did not complete|resumed|ready|restored|continued|permission (?:was |is )?verified|bypass is (?:on|active)/i);
+  setLocale('zh-Hans');
+  assert.deepEqual(view.rows.map(row => say(row.line)), [
+    '已确认重新进入 Claude 会话；已按本次授权发送 bypass 参数。',
+    '已确认重新进入 Claude 会话；未追加 bypass 参数。',
+    '已尝试发送重入请求，结果未确认',
+  ]);
+  assert.deepEqual(view.rows[0].details.map(say), ['Deck 未独立验证 Claude 当前有效权限。']);
+  const zhSaid = view.rows.flatMap(row => [say(row.line), ...row.details.map(say)]).join(' ');
+  assert.doesNotMatch(zhSaid, /已恢复|权限已验证|已重新施加/);
+  setLocale('en');
 });
 
 test('a replacement that did not happen is titled so, with the exited agents said separately', () => {
@@ -262,19 +275,19 @@ test('"Claude started" is said only for an unconfirmed entry whose client was ob
   const lines = view.rows.map(row => say(row.line));
   assert.deepEqual(lines, [
     'Claude started, but re-entry could not be confirmed',
-    'Re-entry was requested, but could not be confirmed',
+    'Re-entry was attempted, but the outcome is unknown',
     'Claude was not started',
     'Claude was not started',
     'Re-entry was not attempted',
     'The re-entry result is not known',
   ]);
   assert.equal(lines.filter(line => /Claude started/.test(line)).length, 1);
-  assert.deepEqual(view.rows[4].details.map(say), ['The final session could not be confirmed. Claude was not automatically started.']);
+  assert.deepEqual(view.rows[4].details.map(say), ['The session Claude exited in could not be confirmed. Claude was not automatically started.']);
 });
 
 test('every closed reason and warning has its sentence in both languages; an unknown code shows no raw text', () => {
-  const reasons = ['unsupported-agent', 'multiple-panes', 'identity-unavailable', 'executable-unavailable', 'final-session-unconfirmed',
-    'exit-timeout', 'impact-changed', 'launch-refused', 'launch-unconfirmed', 'context-changed', 'context-unverified',
+  const reasons = ['unsupported-agent', 'multiple-panes', 'identity-unavailable', 'executable-unavailable', 'check-incomplete',
+    'final-session-unconfirmed', 'exit-timeout', 'impact-changed', 'launch-refused', 'launch-unconfirmed', 'context-changed', 'context-unverified',
     'native-session-not-found', 'user-action-required', 'bypass-not-reapplied'];
   for (const reason of reasons) {
     const [row] = projectResult({ replaced: true, result: reentryResult(complete([entry('A', 'not-attempted', { reason })])) }).rows;
@@ -413,7 +426,7 @@ test('a lost response is looked up read-only and the restart is never invoked ag
 const running = (entries, serverReplaced = true) => ({ requestId: 'R1', state: 'running', serverReplaced, entries });
 const wording = view => [say(view.title), say(view.summary), ...view.notes.map(say),
   ...view.rows.flatMap(row => [say(row.line), ...row.details.map(say)])].join('\n');
-const FINAL_WORDING = /not known|could not be confirmed|未知|无法确认|before trying again|再次尝试|not attempted|未尝试|not started|未启动/i;
+const FINAL_WORDING = /not known|could not be confirmed|outcome is unknown|未知|无法确认|结果未确认|before trying again|再次尝试|not attempted|未尝试|not started|未启动/i;
 
 test('an unsettled entry of a running operation is in progress, never a result', () => {
   // the backend's own "not yet" shapes: explicit false, a missing flag, and an outcome it already wrote down
@@ -462,7 +475,7 @@ test('a complete operation settles every entry, with or without the flag', () =>
   setLocale('en');
   assert.equal(view.pending, false);
   assert.deepEqual(view.rows.map(row => say(row.line)), [
-    'Re-entry was requested, but could not be confirmed', 'Re-entry was not attempted', 'Claude session reopened without a bypass override',
+    'Re-entry was attempted, but the outcome is unknown', 'Re-entry was not attempted', 'Claude session re-entry confirmed. No bypass flag was added.',
     'The re-entry result is not known', 'The re-entry result is not known',
   ]);
   assert.ok(view.rows.every(row => row.tone !== 'pending'));
@@ -583,6 +596,77 @@ test('a preview whose rows are all unsupported or shells offers nothing to reope
   const mixedPlan = withAllSelected(reentryPlan({ ...preview, entries: [known, candidate('A', 'bypass')] }), true);
   assert.deepEqual(reentryRequest(mixedPlan), { token: 'T9', cards: ['A'], policy: POLICY_ORDINARY });
   assert.equal(planView(mixedPlan).rows[0].note.key, 'reentry.reason.identity-unavailable');
+});
+
+test('a release no list names shows the same plan as a known one, and nothing about a release reaches the page', () => {
+  // what a backend could say about two releases of the product: the same
+  // facts. Whatever else rides along — a digest, a version, a "certified"
+  // flag — is not a field this contract names, so it changes nothing.
+  const facts = token => ({
+    token, lifecycleObservation: true,
+    entries: [candidate('A', 'bypass'), candidate('B', 'ordinary'), { cardId: 'C', session: 'deck-C', kind: 'unsupported', reason: 'check-incomplete', launchProfile: null }],
+  });
+  const known = facts('T-known');
+  const fresh = facts('T-new');
+  fresh.version = '9.9.999';
+  fresh.certified = false;
+  fresh.entries = fresh.entries.map(entry => ({
+    ...entry, version: '9.9.999', certified: false, digest: 'c9b5341637becbd423ddffc5b254afb645682a3868cb708bbc6cc0e7bb419937',
+    reason: entry.reason, note: 'not certified for this version',
+  }));
+  const views = [known, fresh].map(preview => {
+    const plan = withPolicy(selectAll(reentryPlan(preview)), POLICY_BYPASS);
+    return { counts: planCounts(plan), view: planView(plan), request: { ...reentryRequest(plan), token: null } };
+  });
+  assert.deepEqual(views[0], views[1], 'the same availability, the same A/B counts, the same request');
+  assert.deepEqual(views[1].counts, { candidates: 2, candidateBypass: 1, selected: 2, bypass: 1, unknown: 0 });
+  assert.equal(views[1].view.policy, POLICY_BYPASS, 'B needs a selected bypass launch and nothing about a release');
+  for (const locale of ['en', 'zh-Hans']) {
+    setLocale(locale);
+    const { view } = views[1];
+    const shown = [say(view.summary), say(view.bypass.label), ...view.bypass.notes.map(say), ...view.notes.map(say), ...view.help.map(say),
+      ...view.rows.map(row => say(row.note)), say(view.confirm)].join('\n');
+    assert.doesNotMatch(shown, /9\.9\.999|c9b53416|certif|认证|digest|摘要|sha|版本|version/i, locale);
+    // the one sentence a user must have read before choosing B, once
+    assert.equal(view.bypass.notes.filter(note => note.key === 'reentry.policy.bypassWarning').length, 1);
+  }
+  setLocale('en');
+});
+
+test('a check that did not finish is said as that, never as a changed program, and a result names no flag it cannot vouch for', () => {
+  // the preview row
+  const plan = reentryPlan({ token: 'T', lifecycleObservation: true, entries: [
+    { cardId: 'U', session: 'deck-U', kind: 'unsupported', reason: 'check-incomplete', launchProfile: null },
+    { cardId: 'X', session: 'deck-X', kind: 'unsupported', reason: 'executable-unavailable', launchProfile: null },
+  ] });
+  const rows = planView(plan).rows;
+  assert.deepEqual(rows.map(row => row.note.key), ['reentry.reason.check-incomplete', 'reentry.reason.executable-unavailable']);
+  setLocale('zh-Hans');
+  assert.equal(say(rows[0].note), '未能完成重入条件检查，未自动重新进入。');
+  assert.equal(say(rows[1].note), '原 Claude 程序已改变或不可用，未自动重新进入。');
+  assert.doesNotMatch(say(rows[0].note), /改变|不可用/, 'an unfinished check does not say the program changed');
+  setLocale('en');
+  assert.equal(say(rows[0].note), 'The re-entry checks could not be completed. The session was not reopened automatically.');
+  assert.doesNotMatch(say(rows[0].note), /changed|unavailable/i);
+  // the result row of an entry that was not attempted for that reason
+  const [late] = projectResult({ replaced: true, result: reentryResult(complete([entry('A', 'not-attempted', { reason: 'check-incomplete', shell: false })])) }).rows;
+  assert.deepEqual([say(late.line), ...late.details.map(say)], ['Re-entry was not attempted', 'The re-entry checks could not be completed. The session was not reopened automatically.']);
+  // An entry that is not confirmed never says a flag was sent, whatever
+  // marks ride on it: only a confirmed entry is given the bypass sentence.
+  const marked = projectResult({ replaced: true, result: reentryResult(complete([
+    entry('B', 'unconfirmed', { reason: 'launch-unconfirmed', warnings: ['bypass-reauthorized'] }),
+    entry('C', 'unconfirmed', { reason: 'context-changed', clientObserved: true, warnings: ['bypass-reauthorized'] }),
+    entry('D', 'known-no-launch-failure', { reason: 'launch-refused', warnings: ['bypass-reauthorized'] }),
+  ])) });
+  for (const locale of ['en', 'zh-Hans']) {
+    setLocale(locale);
+    for (const row of marked.rows) {
+      const said = [say(row.line), ...row.details.map(say)].join(' ');
+      assert.doesNotMatch(said, /flag was sent|发送 bypass 参数|sent as authorized|已按本次授权|bypass|permission|权限/i, `${locale} ${row.cardId}`);
+    }
+  }
+  setLocale('en');
+  assert.equal(say(marked.rows[0].line), 'Re-entry was attempted, but the outcome is unknown');
 });
 
 test('the display guard refuses native-looking strings', () => {

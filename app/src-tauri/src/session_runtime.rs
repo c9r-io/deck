@@ -2,7 +2,11 @@
 //! Activity excludes intentional server replacement; workers keep their guards
 //! until all transport/cleanup/finalization ends. Deadline scopes belong to
 //! the current OS thread only. Spawned workers must install their own scope
-//! (run_bounded does); scopes cannot be moved across threads or async tasks.
+//! (bounded_worker does, and run_bounded through it); scopes cannot be moved
+//! across threads or async tasks. A scope decides nothing by itself: a call
+//! that cannot be interrupted is bounded for its CALLER only by a worker the
+//! caller stops waiting for, and for its RESULT only by asking the scope
+//! after the call returned.
 //! This module knows no panes, agents, snapshots, scheduler or restart policy.
 //! Existing IPC error codes remain stable for callers.
 use crate::applog::applog;
@@ -47,8 +51,49 @@ pub(crate) fn check_deadline() -> Result<(), DeckError> {
 pub(crate) fn deadline_active() -> bool {
     DEADLINE.with(|deadline| deadline.get().is_some())
 }
+/// A deadline no test reaches: for tests of code that asks for a deadline
+/// owner and whose subject is not the deadline.
+#[cfg(test)]
+pub(crate) fn test_phase() -> Deadline {
+    Deadline::until(Instant::now() + Duration::from_secs(300))
+}
 fn error(code: &str) -> DeckError {
     DeckError::new(ErrorKind::Tmux, code)
+}
+
+/// Why a bounded worker gave its caller no answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unanswered {
+    /// `end` passed first. The worker is still running and keeps everything
+    /// it holds; whatever it returns later reaches nobody.
+    Late,
+    /// The worker could not be started, or ended without an answer.
+    Failed,
+}
+
+/// Run `work` on its own thread, under a deadline scope that ends at `end`,
+/// and wait for its answer no longer than until `end`. A call inside `work`
+/// that cannot be interrupted is not interrupted: the caller is answered
+/// `Late`, the worker goes on owning what it took, and its eventual answer
+/// is dropped with the channel. One call starts at most one thread.
+pub(crate) fn bounded_worker<T: Send + 'static>(
+    name: &'static str,
+    end: Instant,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Unanswered> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let _deadline = Deadline::until(end);
+            let _ = tx.send(work());
+        })
+        .map_err(|_| Unanswered::Failed)?;
+    match rx.recv_timeout(end.saturating_duration_since(Instant::now())) {
+        Ok(answer) => Ok(answer),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(Unanswered::Late),
+        Err(_) => Err(Unanswered::Failed),
+    }
 }
 
 /// Bound the IPC response even if local filesystem IO is stalled. The worker
@@ -59,22 +104,15 @@ pub(crate) fn run_bounded<T: Send + 'static>(
     end: Instant,
     work: impl FnOnce() -> Result<T, DeckError> + Send + 'static,
 ) -> Result<T, DeckError> {
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    std::thread::Builder::new()
-        .name("deck-shell-restart".into())
-        .spawn(move || {
-            let _deadline = Deadline::until(end);
-            let result = check_deadline().and_then(|_| work());
-            let _ = tx.send(result);
-        })
-        .map_err(|_| error("tmux-restart-worker-failed"))?;
-    match rx.recv_timeout(end.saturating_duration_since(Instant::now())) {
+    match bounded_worker("deck-shell-restart", end, move || {
+        check_deadline().and_then(|_| work())
+    }) {
         Ok(result) => result,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+        Err(Unanswered::Late) => {
             applog("[tmux-restart] watchdog-timeout worker-retains-guards");
             Err(DeckError::restart(RestartFailure::Deadline))
         }
-        Err(_) => Err(error("tmux-restart-worker-failed")),
+        Err(Unanswered::Failed) => Err(error("tmux-restart-worker-failed")),
     }
 }
 

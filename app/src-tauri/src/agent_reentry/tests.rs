@@ -15,6 +15,7 @@
 //! launched client recorded for itself.
 
 use super::*;
+use crate::procinfo::identity_fixture as fixture;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::Command;
@@ -44,8 +45,8 @@ use LaunchProfile::{Bypass, Ordinary, Unknown, Unsupported};
 use Policy::{Ordinary as PolicyA, ReapplyBypass as PolicyB};
 
 /// The mixed three cards: A started with bypass, B ordinary, C ordinary
-/// (running in plan). The final permission of all three is unknown on the
-/// certified release, and no field of `Scope` could even carry it.
+/// (running in plan). The final permission of all three is unknown, and no
+/// field of `Scope` could even carry it.
 #[test]
 fn policy_a_never_adds_the_override_and_policy_b_adds_it_only_to_the_bypass_launch() {
     let cards = [Bypass, Ordinary, Ordinary];
@@ -64,7 +65,7 @@ fn policy_a_never_adds_the_override_and_policy_b_adds_it_only_to_the_bypass_laun
 /// the user picked B after the stated warning: bypass is applied AGAIN. This
 /// is a reauthorization for this restart, not a preserved final state.
 #[test]
-fn bypass_launch_profile_is_reauthorized_after_runtime_downgrade() {
+fn the_override_is_decided_by_the_launch_profile_and_no_final_mode() {
     assert_eq!(
         decide(scope(PolicyB, Bypass, Bypass)),
         Decision::Reenter {
@@ -241,7 +242,7 @@ fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
     reset_for_tests();
     let me = std::process::id();
     let birth = crate::procinfo::process_start(me).expect("own birth");
-    let exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+    let own = ExecutableRef::of_this_test();
     let entry = |card: &str, client_birth: (u64, u32)| Entry {
         view: EntryView {
             card_id: card.into(),
@@ -258,7 +259,7 @@ fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
         client: Client {
             pid: me,
             birth: client_birth,
-            executable: ExecutableRef::read(&exe).expect("own executable"),
+            executable: own.clone(),
             profile: Ordinary,
             additional_dirs: false,
             cwd: DirRef::for_tests(&std::env::temp_dir()),
@@ -286,7 +287,7 @@ fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
     for (index, id) in [(0, ID_A), (1, ID_B)] {
         lifecycle::arm(
             index,
-            lifecycle::Lease::exit(2, "%0", (3, (1, 1)), (me, birth)),
+            lifecycle::Lease::exit(2, "%0", (3, (1, 1)), (me, birth), own.clone()),
         );
         lifecycle::record_for_tests(
             index,
@@ -331,7 +332,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
     let me = std::process::id();
     let birth = crate::procinfo::process_start(me).expect("own birth");
     let gone = (birth.0 + 1, birth.1);
-    let exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+    let own = ExecutableRef::of_this_test();
     let entry = |card: &str| Entry {
         view: EntryView {
             card_id: card.into(),
@@ -348,7 +349,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
         client: Client {
             pid: me,
             birth: gone,
-            executable: ExecutableRef::read(&exe).expect("own executable"),
+            executable: own.clone(),
             profile: Bypass,
             additional_dirs: false,
             cwd: DirRef::for_tests(&std::env::temp_dir()),
@@ -374,7 +375,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
     for (index, id) in [(0, ID_A), (1, ID_A), (2, ID_C)] {
         lifecycle::arm(
             index,
-            lifecycle::Lease::exit(2, "%0", (3, (1, 1)), (me, gone)),
+            lifecycle::Lease::exit(2, "%0", (3, (1, 1)), (me, gone), own.clone()),
         );
         lifecycle::record_for_tests(
             index,
@@ -501,14 +502,82 @@ fn board_json(cards: &[(String, String)]) -> String {
 
 const SAVED_COMMAND: &str = "SENTINEL-SAVED-COMMAND --dangerously-skip-permissions";
 
-fn built(relative: &str) -> PathBuf {
-    let exe = std::env::current_exe().expect("test executable");
-    let debug = exe
-        .parent()
-        .and_then(Path::parent)
-        .expect("target profile dir");
-    std::fs::canonicalize(debug.join(relative))
-        .unwrap_or_else(|_| panic!("{relative} is built with the tests"))
+/// The stand-in client as a program: `examples/fake_reentry_agent.rs`
+/// compiled by itself — one call of the `rustc` beside the cargo that runs
+/// these tests, and nothing but the standard library.
+///
+/// It is not cargo's own build of that example. Cargo builds an example as
+/// a program only when no target is named: under `--all-targets` (the
+/// gate's form) every example becomes a test harness and no program is
+/// left, and under `--bin` examples are not built at all. Asking cargo for
+/// the example from inside a test is no way out either: that build is this
+/// package's, so it runs the package's build script (sidecars, native
+/// bridges) beside the running tests.
+///
+/// Kept in the profile directory under the digest of the source: an edited
+/// example is another program, an unedited one is compiled once.
+fn standin_program() -> PathBuf {
+    static PROGRAM: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PROGRAM
+        .get_or_init(|| {
+            use sha2::{Digest, Sha256};
+            let source =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/fake_reentry_agent.rs");
+            let text = std::fs::read(&source).expect("the stand-in's source");
+            let digest: String = Sha256::digest(&text)[..8]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let exe = std::env::current_exe().expect("test executable");
+            let profile = exe
+                .parent()
+                .and_then(Path::parent)
+                .expect("target profile dir");
+            let dir = profile.join(format!("reentry-standin-{digest}"));
+            let program = dir.join("fake_reentry_agent");
+            if !program.is_file() {
+                std::fs::create_dir_all(&dir).expect("the stand-in's directory");
+                // complete or absent: another test process may be compiling it too
+                let staged = dir.join(format!("fake_reentry_agent.{}.tmp", std::process::id()));
+                let rustc = std::env::var_os("CARGO")
+                    .map(|cargo| PathBuf::from(cargo).with_file_name("rustc"))
+                    .filter(|rustc| rustc.is_file())
+                    .unwrap_or_else(|| PathBuf::from("rustc"));
+                let output = Command::new(&rustc)
+                    .args(["--edition", "2021", "--crate-type", "bin"])
+                    .args(["--crate-name", "fake_reentry_agent"])
+                    .args(["-C", "debuginfo=0", "-o"])
+                    .arg(&staged)
+                    .arg(&source)
+                    .output()
+                    .unwrap_or_else(|error| panic!("{}: {error}", rustc.display()));
+                assert!(
+                    output.status.success(),
+                    "examples/fake_reentry_agent.rs compiles by itself: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                std::fs::rename(&staged, &program).expect("the compiled stand-in");
+            }
+            std::fs::canonicalize(&program).expect("the compiled stand-in")
+        })
+        .clone()
+}
+
+/// The signing identifier every stand-in client of these tests carries:
+/// "the test product". An ad-hoc signature with no certificate — it stands
+/// in for a product's identity and proves nothing about Anthropic's.
+const AGENT_IDENTIFIER: &str = "io.c9r.deck.test.fake-reentry-agent";
+/// What precedes the build tag inside the stand-in client's file.
+const BUILD_MARKER: &[u8] = b"DECK-FAKE-REENTRY-AGENT-BUILD:";
+
+/// A build of the stand-in client at `dest`: the compiled example, with
+/// `tag` as its build tag — so two tags are two contents, two digests
+/// and two code directories — signed ad hoc under `identifier`.
+fn agent_build(dest: &Path, tag: &str, identifier: &str) {
+    std::fs::create_dir_all(dest.parent().expect("a build has a directory")).unwrap();
+    std::fs::copy(standin_program(), dest).expect("the built stand-in");
+    fixture::retag(dest, BUILD_MARKER, tag);
+    fixture::sign(dest, identifier);
 }
 
 const ID_A: &str = "aaaaaaaa-0000-4000-8000-000000000001";
@@ -518,6 +587,9 @@ const ID_X: &str = "dddddddd-0000-4000-8000-000000000004";
 
 impl World {
     fn new() -> Self {
+        // before anything is created: a stand-in that does not compile fails
+        // here and leaves no directory behind
+        standin_program();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         // short on purpose: unix socket paths are limited to ~100 bytes
         let base = PathBuf::from(format!("/tmp/deck-rt-{}-{seq}", std::process::id()));
@@ -537,7 +609,11 @@ impl World {
         reset_for_tests();
         let held = crate::documents::test_door::hold();
         let base = std::fs::canonicalize(base).expect("canonical world dir");
-        let agent = built("examples/fake_reentry_agent");
+        // this world's own signed build of the stand-in client
+        let agent = base.join("bin").join("fake_reentry_agent");
+        if owner {
+            agent_build(&agent, "build-0", AGENT_IDENTIFIER);
+        }
         let helper = std::fs::canonicalize(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("binaries/deck-lifecycle-helper-aarch64-apple-darwin"),
@@ -554,7 +630,7 @@ impl World {
         let world = Self {
             socket: socket.to_string(),
             owner,
-            capability: Box::leak(Box::new(Self::capability_for(&[&agent]))),
+            capability: Self::capability(),
             agent,
             helper,
             home: base.clone(),
@@ -713,60 +789,38 @@ impl World {
             .is_some_and(|(pid, foreground)| foreground.pid() != pid)
     }
 
-    /// The capability of ONE release that is not in the production table:
-    /// the candidate of a native certification. Its only fact is the exact
-    /// digest the driver froze; the file must have that digest and must not
-    /// be a production fact already. Launcher name, grammar, login shell and
-    /// request builder are production's own: nothing about how a client is
-    /// read, asked or checked is the candidate's. Production code never
-    /// sees this capability unless a test hands it in.
-    fn candidate_capability(
-        binary: &Path,
-        version: &str,
-        sha256: &str,
-    ) -> Option<ReentryCapability> {
-        let digest = ExecutableRef::read(binary)?.digest_hex();
-        let numbered = !version.is_empty()
-            && version
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || byte == b'.');
-        if digest != sha256 || !numbered || claude::CAPABILITY.certified(&digest).is_some() {
-            return None;
-        }
-        let fact = CertifiedFact {
-            version: Box::leak(version.to_string().into_boxed_str()),
-            sha256: Box::leak(digest.into_boxed_str()),
-        };
-        Some(ReentryCapability {
-            facts: Box::leak(vec![fact].into_boxed_slice()),
-            launcher: claude::CAPABILITY.launcher,
-            grammar: claude::CAPABILITY.grammar,
-            login_shell: claude::CAPABILITY.login_shell,
-            request: claude::CAPABILITY.request,
-        })
-    }
-
-    /// A capability whose certified facts are exactly these test binaries.
-    fn capability_for(binaries: &[&Path]) -> ReentryCapability {
-        let facts: Vec<CertifiedFact> = binaries
-            .iter()
-            .map(|binary| CertifiedFact {
-                version: "2.1.294",
-                sha256: Box::leak(
-                    ExecutableRef::read(binary)
-                        .expect("readable test agent")
-                        .digest_hex()
-                        .into_boxed_str(),
-                ),
-            })
-            .collect();
-        ReentryCapability {
-            facts: Box::leak(facts.into_boxed_slice()),
+    /// The stand-in capability: the TEST product's requirement (every
+    /// build `agent_build` signs under `AGENT_IDENTIFIER`), the stand-in's
+    /// launcher name, and production's own grammar, login shell and request
+    /// builder. It names no build: which file a client runs, what that file
+    /// is called and what it contains are not part of it, exactly as in
+    /// production's. Production code never sees it unless a test hands it in.
+    fn capability() -> &'static ReentryCapability {
+        static STANDIN: std::sync::OnceLock<ReentryCapability> = std::sync::OnceLock::new();
+        STANDIN.get_or_init(|| ReentryCapability {
+            product: fixture::product(AGENT_IDENTIFIER),
             launcher: "fake_reentry_agent",
             grammar: claude::CAPABILITY.grammar,
             login_shell: "zsh",
             request: claude::CAPABILITY.request,
+        })
+    }
+
+    /// A stand-in capability for a binary a native driver names: the product
+    /// "exactly that file's own signing identifier". Refused (`None`) for a
+    /// file that is production's product — a real client is never judged by
+    /// a stand-in's looser requirement.
+    fn standin_capability(binary: &Path) -> Option<&'static ReentryCapability> {
+        if ExecutableRef::read(binary, claude::CAPABILITY.product).is_ok() {
+            return None;
         }
+        Some(Box::leak(Box::new(ReentryCapability {
+            product: fixture::product_of(binary),
+            launcher: claude::CAPABILITY.launcher,
+            grammar: claude::CAPABILITY.grammar,
+            login_shell: claude::CAPABILITY.login_shell,
+            request: claude::CAPABILITY.request,
+        })))
     }
 
     fn command(&self) -> Command {
@@ -1009,6 +1063,19 @@ impl World {
                     .any(|arg| arg.contains("send-keys") && arg.ends_with("Enter"))
             })
             .count()
+    }
+
+    /// The pid of the process in the foreground of `session`'s pane.
+    fn foreground_pid(&self, session: &str) -> u32 {
+        let pane = self
+            .raw(&["display-message", "-p", "-t", session, "#{pane_pid}"])
+            .expect("the session's pane")
+            .trim()
+            .parse::<u32>()
+            .expect("a pane pid");
+        crate::agent_status::live_generation(pane)
+            .expect("a foreground generation")
+            .pid()
     }
 
     fn server_pid(&self) -> u32 {
@@ -1527,18 +1594,32 @@ fn an_approval_that_no_longer_names_the_previewed_target_refuses_the_restart() {
     assert_eq!(world.server_pid(), old);
 }
 
-/// What qualifies and what does not is read from the live client only.
+/// What qualifies and what does not is read from the live client only: its
+/// running code decides whose it is — under any file name and for any
+/// content — and its launch image decides whether the shape is supported.
 #[test]
-fn only_a_direct_certified_client_in_a_supported_launch_shape_is_a_candidate() {
+fn only_a_direct_client_of_the_product_in_a_supported_launch_shape_is_a_candidate() {
     let world = World::new();
-    // another build under the certified file name: same name, other digest
+    // another build of the SAME product under the launcher's name: other
+    // content, another digest, the same signer and product
     let other = world.base.join("other").join("fake_reentry_agent");
-    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
-    let mut bytes = std::fs::read(&world.agent).unwrap();
-    bytes.extend_from_slice(b"another build");
-    std::fs::write(&other, bytes).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o755)).unwrap();
+    agent_build(&other, "build-1", AGENT_IDENTIFIER);
+    // the same program signed as ANOTHER product, under the launcher's name
+    let foreign = world.base.join("foreign").join("fake_reentry_agent");
+    agent_build(&foreign, "build-0", "io.c9r.deck.test.another-product");
+    // the product's own build with bytes after its signature: no longer
+    // intact signed code, though it still runs under that name
+    let appended = world.base.join("appended").join("fake_reentry_agent");
+    agent_build(&appended, "build-0", AGENT_IDENTIFIER);
+    {
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&appended)
+            .unwrap()
+            .write_all(b"another build")
+            .unwrap();
+    }
     world.card(
         "ok",
         "",
@@ -1565,6 +1646,8 @@ fn only_a_direct_certified_client_in_a_supported_launch_shape_is_a_candidate() {
     world.card("config", "", Some("CLAUDE_CONFIG_DIR=/x {agent}"));
     world.card("wrapper", "", Some("/usr/bin/time {agent}"));
     world.card("build", "", Some(&format!("'{}'", other.display())));
+    world.card("foreign", "", Some(&format!("'{}'", foreign.display())));
+    world.card("appended", "", Some(&format!("'{}'", appended.display())));
     world.card(
         "dirs",
         "",
@@ -1589,6 +1672,8 @@ fn only_a_direct_certified_client_in_a_supported_launch_shape_is_a_candidate() {
     // a supported exact resume is classified again; its id is dropped
     assert_eq!(read("ok"), cell("candidate", "-", "ordinary"));
     assert_eq!(read("dirs"), cell("candidate", "-", "bypass"));
+    // another build of the product is the product: no list has to name it
+    assert_eq!(read("build"), cell("candidate", "-", "ordinary"));
     // a wrapper is the foreground leader: the client is not a direct launch
     assert_eq!(
         read("wrapper"),
@@ -1601,10 +1686,16 @@ fn only_a_direct_certified_client_in_a_supported_launch_shape_is_a_candidate() {
             "{card}"
         );
     }
-    assert_eq!(
-        read("build"),
-        cell("unsupported", "executable-unavailable", "-")
-    );
+    // the launcher's name and a working lifecycle hook make nothing the
+    // product: another signer's product, and a file that is no longer
+    // intact signed code
+    for card in ["foreign", "appended"] {
+        assert_eq!(
+            read(card),
+            cell("unsupported", "identity-unavailable", "-"),
+            "{card}"
+        );
+    }
     assert_eq!(read("shell"), cell("unsupported", "multiple-panes", "-"));
     // without the observation opt-in there is no candidate and no token to confirm
     world.observation.set(false);
@@ -1621,18 +1712,18 @@ fn only_a_direct_certified_client_in_a_supported_launch_shape_is_a_candidate() {
     assert_eq!(error.message(), "reentry-preview-expired");
 }
 
-/// A certified client that runs under its release's file name: tmux shows a
-/// version and argv[0] is a path, so the name-based exit path does not know
-/// it. The frozen certified fact of that exact pane does — and the request
+/// A client that runs under its release's file name: tmux shows a version
+/// and argv[0] is a path, so the name-based exit path does not know it, and
+/// no name this feature holds matches it. What was frozen for that exact
+/// pane — a client qualified by its running code — does, and the request
 /// names that exact file, not anything `PATH` would find.
 #[test]
-fn a_certified_client_under_its_version_name_is_exited_and_reentered_by_its_exact_file() {
-    let mut world = World::new();
+fn a_client_under_its_version_name_is_exited_and_reentered_by_its_exact_file() {
+    let world = World::new();
     let versions = world.base.join("versions");
     std::fs::create_dir_all(&versions).unwrap();
     let release = versions.join("2.1.294");
     std::fs::copy(&world.agent, &release).unwrap();
-    world.capability = Box::leak(Box::new(World::capability_for(&[&release])));
     let quoted = format!("'{}'", release.display());
     world.card(
         "a",
@@ -1687,11 +1778,10 @@ fn a_certified_client_under_its_version_name_is_exited_and_reentered_by_its_exac
 /// directory is used instead.
 #[test]
 fn a_changed_executable_or_a_lost_directory_after_the_exit_is_never_launched() {
-    let mut world = World::new();
+    let world = World::new();
     let release = world.base.join("versions").join("2.1.294");
     std::fs::create_dir_all(release.parent().unwrap()).unwrap();
     std::fs::copy(&world.agent, &release).unwrap();
-    world.capability = Box::leak(Box::new(World::capability_for(&[&release, &world.agent])));
     let quoted = format!("'{}'", release.display());
     world.card("exe", &format!("session={ID_A}"), Some(&quoted));
     world.card("dir", &format!("session={ID_B}"), Some("{agent}"));
@@ -1703,11 +1793,10 @@ fn a_changed_executable_or_a_lost_directory_after_the_exit_is_never_launched() {
             Some(&approval),
             Duration::from_secs(8),
             &|| {
-                // an "update" puts another build at the same path
-                let mut bytes = std::fs::read(&release).unwrap();
-                bytes.extend_from_slice(b"updated");
+                // an "update" puts another, validly signed build of the same
+                // product at the same path
                 let staged = release.with_extension("new");
-                std::fs::write(&staged, bytes).unwrap();
+                agent_build(&staged, "build-updated", AGENT_IDENTIFIER);
                 std::fs::rename(&staged, &release).unwrap();
                 std::fs::remove_dir_all(world.base.join("cards").join("dir")).unwrap();
                 Ok(())
@@ -1874,17 +1963,25 @@ fn a_real_helper_that_is_not_the_leased_clients_child_is_refused() {
         stream.read_to_string(&mut text).unwrap();
         let wire = lifecycle::parse(text.trim_end(), |source| source == "claude-code")
             .expect("the real helper writes a valid line");
-        let table = crate::procinfo::processes();
-        let verdict = lifecycle::receive(
-            wire,
-            crate::procinfo::peer_pid(&stream),
-            &lifecycle::Kernel::live(&table),
-        );
+        // as the receipt worker does: the lease the line names, then the
+        // verification under the receipt's own deadline
+        let deadline = Instant::now() + lifecycle::RECEIPT_BUDGET;
+        let verdict = lifecycle::claim(wire).and_then(|claim| {
+            let _budget = crate::session_runtime::Deadline::until(deadline);
+            lifecycle::receive(
+                claim,
+                crate::procinfo::peer_pid(&stream),
+                deadline,
+                &lifecycle::Kernel::live(),
+            )
+        });
         drop(stream);
         let _ = child.wait();
         assert!(lifecycle::seal(0).is_empty(), "nothing was recorded");
         verdict
     };
+    // the client's own executable: what an exit lease of it is bound to
+    let executable = ExecutableRef::for_tests(&world.agent);
     // the exact leased pane and client, reported by a helper this test
     // process started: the pane's shell is not in its ancestry
     let exact = lifecycle::Lease::exit(
@@ -1892,6 +1989,7 @@ fn a_real_helper_that_is_not_the_leased_clients_child_is_refused() {
         &row.pane_id,
         (row.pane_pid, shell_birth),
         (client.pid(), client.birth()),
+        executable.clone(),
     );
     assert_eq!(report(exact).unwrap_err(), "lifecycle-foreign-pane");
     // a lease whose shell generation is not the live one (a reused pid)
@@ -1900,6 +1998,7 @@ fn a_real_helper_that_is_not_the_leased_clients_child_is_refused() {
         &row.pane_id,
         (row.pane_pid, (shell_birth.0 + 1, shell_birth.1)),
         (client.pid(), client.birth()),
+        executable.clone(),
     );
     assert_eq!(report(reused).unwrap_err(), "lifecycle-foreign-pane");
     // a lease for another server generation that has the same pane id
@@ -1908,6 +2007,7 @@ fn a_real_helper_that_is_not_the_leased_clients_child_is_refused() {
         &row.pane_id,
         (row.pane_pid, shell_birth),
         (client.pid(), client.birth()),
+        executable,
     );
     assert_eq!(report(other).unwrap_err(), "lifecycle-no-lease");
 }
@@ -2924,6 +3024,1182 @@ fn a_restored_transcript_precedes_the_one_request() {
     let _ = crate::shell_state::clear_snapshot("tr");
 }
 
+// ---------- forward compatibility: no release is named ---------------------------
+//
+// The stand-in builds below differ in the label of their file, in their
+// content and so in their digest and code directory. "Known" is only the
+// name of a label that was once on a list (2.1.296): nothing at runtime
+// knows it, none of these files is that release, and a passing run is no
+// native evidence about any release.
+
+/// One build of the stand-in under a release-like file name of `world`.
+fn release(world: &World, label: &str, tag: &str) -> PathBuf {
+    let path = world.base.join("versions").join(label);
+    agent_build(&path, tag, AGENT_IDENTIFIER);
+    path
+}
+
+/// A label that was once listed, and a build tag for it.
+const KNOWN: (&str, &str) = ("2.1.296", "build-known");
+/// A label, a file name and a content that no list anywhere names.
+const NEW: (&str, &str) = ("9.9.999", "build-new");
+
+/// The queue rows of a file: (session, paused).
+type QueueRows = Vec<(String, bool)>;
+
+/// What one restart over a bypass launch (card `a`) and an ordinary launch
+/// (card `b`) of ONE build did, as far as a test may know it.
+struct Run {
+    digest: String,
+    /// The launch profile the preview showed for each card.
+    profiles: Vec<String>,
+    /// The lines handed to the paste transport, the executable as `<exe>`.
+    requests: Vec<String>,
+    /// The arguments each NEW client recorded for itself.
+    launched: Vec<String>,
+    enters: usize,
+    result: ReentryResult,
+    /// Every card's pane is on the replaced server with a client in front.
+    new_generation: bool,
+    /// The queue rows on disk when the old server was killed, and at the end.
+    queue: (QueueRows, QueueRows),
+    /// The result as it crosses IPC.
+    json: String,
+}
+
+fn bypass_and_ordinary((label, tag): (&str, &str), policy: Policy) -> Run {
+    let world = World::new();
+    let binary = release(&world, label, tag);
+    let quoted = format!("'{}'", binary.display());
+    world.card(
+        "a",
+        &format!("session={ID_A}"),
+        Some(&format!("{quoted} {BYPASS}")),
+    );
+    world.card("b", &format!("session={ID_B}"), Some(&quoted));
+    let queues = crate::scheduler::Queues::new(crate::scheduler::waiting_for_tests(&["a", "b"]));
+    let on_disk = || queue_rows_at(&crate::scheduler::queue_path());
+    let at_kill = std::rc::Rc::new(RefCell::new(Vec::new()));
+    *world.intercept.borrow_mut() = Some(Box::new({
+        let at_kill = at_kill.clone();
+        move |args, _| {
+            if args.first() == Some(&"kill-server") {
+                *at_kill.borrow_mut() = on_disk();
+            }
+            None
+        }
+    }));
+    let (token, view) = world.preview();
+    let profiles = view["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            assert_eq!(entry["kind"], "candidate", "{label}");
+            entry["launchProfile"].as_str().unwrap().to_string()
+        })
+        .collect();
+    let old = world.server_pid();
+    let approval = world.approval(&token, &["a", "b"], policy);
+    let (was, now, result) = world
+        .restart_full(
+            "req-run",
+            Some(&approval),
+            Duration::from_secs(8),
+            false,
+            &|| {},
+            &|sessions| crate::scheduler::pause_for_server_restart(&queues, sessions),
+            &|_, _, _| {},
+        )
+        .expect("restart");
+    assert_eq!(was, old);
+    assert_ne!(now, old, "the server was replaced");
+    let result = result.expect("a re-entry result");
+    let rows = crate::tmux::list_panes_with(&|args| world.raw(args)).unwrap();
+    let run = Run {
+        digest: ExecutableRef::for_tests(&binary).digest_hex(),
+        profiles,
+        requests: world
+            .pasted()
+            .iter()
+            .map(|line| line.replace(&quoted, "<exe>"))
+            .collect(),
+        launched: world.launches()[2..].to_vec(),
+        enters: world.enters(),
+        new_generation: rows.len() == 2
+            && rows
+                .iter()
+                .all(|row| row.server_pid == now && world.foreground_is_child(&row.session_name)),
+        queue: (at_kill.borrow().clone(), on_disk()),
+        json: serde_json::to_string(&result).unwrap(),
+        result,
+    };
+    assert_eq!(
+        crate::scheduler::paused_for_tests(&queues.q.lock_or_recover()),
+        run.queue.1,
+        "memory and disk agree"
+    );
+    run
+}
+
+/// The one expectation every build is held to, under either policy.
+fn assert_reentered(run: &Run, policy: Policy) {
+    let bypass = policy == Policy::ReapplyBypass;
+    let flag = if bypass {
+        format!("{BYPASS} ")
+    } else {
+        String::new()
+    };
+    assert_eq!(run.profiles, ["bypass", "ordinary"]);
+    // the exact words, in order, once per entry — and what each client got
+    assert_eq!(
+        run.requests,
+        [
+            format!("<exe> {flag}--resume {ID_A}"),
+            format!("<exe> --resume {ID_B}")
+        ]
+    );
+    assert_eq!(
+        run.launched,
+        [format!("{flag}--resume {ID_A}"), format!("--resume {ID_B}")]
+    );
+    assert_eq!(run.enters, 2, "one Enter per entry, none after a receipt");
+    for text in run.requests.iter().chain(&run.launched) {
+        for never in [
+            "--permission-mode",
+            "default",
+            "--model",
+            "--add-dir",
+            "--continue",
+            "SENTINEL",
+        ] {
+            assert!(!text.contains(never), "{text}: {never}");
+        }
+        assert!(bypass || !text.contains(BYPASS), "{text}");
+    }
+    assert!(run.result.server_replaced);
+    assert_eq!(run.result.state, OperationState::Complete);
+    for card in ["a", "b"] {
+        let entry = entry(&run.result, card);
+        assert_eq!(entry.outcome, Outcome::Confirmed, "{card}");
+        assert!(
+            entry.shell && entry.client_observed && entry.settled,
+            "{card}"
+        );
+    }
+    let expected: &[Warning] = if bypass {
+        &[Warning::BypassReauthorized]
+    } else {
+        &[]
+    };
+    assert_eq!(entry(&run.result, "a").warnings, expected);
+    assert!(entry(&run.result, "b").warnings.is_empty());
+    assert!(run.new_generation, "the clients are the new generation's");
+    // paused before the kill and still paused: a confirmed entry releases nothing
+    let paused = [("a".to_string(), true), ("b".to_string(), true)];
+    assert_eq!(run.queue.0, paused);
+    assert_eq!(run.queue.1, paused);
+    // Deck says that a flag was sent — never that a permission is in effect —
+    // and names no id, digest or release
+    for never in [
+        "permission",
+        "effective",
+        "verified",
+        "restored",
+        "digest",
+        "sha",
+        "version",
+        ID_A,
+        ID_B,
+        run.digest.as_str(),
+    ] {
+        assert!(!run.json.contains(never), "the result says {never}");
+    }
+}
+
+#[test]
+fn known_client_reenters_under_policy_a() {
+    assert_reentered(
+        &bypass_and_ordinary(KNOWN, Policy::Ordinary),
+        Policy::Ordinary,
+    );
+}
+
+/// The flag is sent again, before `--resume`. What permission is then in
+/// effect is not something any result of Deck's says.
+#[test]
+fn known_bypass_launch_is_reauthorized_under_policy_b() {
+    assert_reentered(
+        &bypass_and_ordinary(KNOWN, Policy::ReapplyBypass),
+        Policy::ReapplyBypass,
+    );
+}
+
+/// A build no list names — another label, another file name, another
+/// digest — is the product by its signature, and re-enters with nothing
+/// added to any table: the capability is the one every other test uses.
+#[test]
+fn new_digest_with_matching_contract_reenters_under_policy_a() {
+    let run = bypass_and_ordinary(NEW, Policy::Ordinary);
+    assert_reentered(&run, Policy::Ordinary);
+    assert_eq!(run.digest.len(), 64);
+}
+
+/// The same build under Policy B: the override needs a bypass launch that
+/// was previewed and frozen, and no list of its own.
+#[test]
+fn new_digest_with_matching_contract_reenters_under_policy_b() {
+    assert_reentered(
+        &bypass_and_ordinary(NEW, Policy::ReapplyBypass),
+        Policy::ReapplyBypass,
+    );
+}
+
+/// Two releases of the product side by side in ONE restart. Their label,
+/// file name and content differ — and so do their digests; nothing else
+/// about what is previewed, asked and confirmed does.
+#[test]
+fn a_release_that_differs_in_label_name_and_digest_keeps_both_policies() {
+    let world = World::new();
+    let builds = [KNOWN, NEW].map(|(label, tag)| release(&world, label, tag));
+    let quoted = builds
+        .each_ref()
+        .map(|path| format!("'{}'", path.display()));
+    let ids = [[ID_A, ID_B], [ID_C, ID_X]];
+    for (build, quoted) in quoted.iter().enumerate() {
+        world.card(
+            &format!("bypass-{build}"),
+            &format!("session={}", ids[build][0]),
+            Some(&format!("{quoted} {BYPASS}")),
+        );
+        world.card(
+            &format!("plain-{build}"),
+            &format!("session={}", ids[build][1]),
+            Some(quoted.as_str()),
+        );
+    }
+    let digests = builds
+        .each_ref()
+        .map(|path| ExecutableRef::for_tests(path).digest_hex());
+    assert_ne!(digests[0], digests[1], "two contents");
+    assert_ne!(builds[0].file_name(), builds[1].file_name());
+    let (token, view) = world.preview();
+    let shown: Vec<(String, String)> = view["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["kind"].as_str().unwrap().to_string(),
+                entry["launchProfile"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown[..2],
+        shown[2..],
+        "the same preview for either release"
+    );
+    assert_eq!(
+        shown[..2],
+        [("candidate", "bypass"), ("candidate", "ordinary")]
+            .map(|(kind, profile)| (kind.to_string(), profile.to_string()))
+    );
+    let cards = ["bypass-0", "plain-0", "bypass-1", "plain-1"];
+    let approval = world.approval(&token, &cards, Policy::ReapplyBypass);
+    let (_, _, result) = world
+        .restart_with(
+            "req-two",
+            Some(&approval),
+            Duration::from_secs(10),
+            &|| Ok(()),
+            &|_, _, _| {},
+        )
+        .expect("restart");
+    let result = result.unwrap();
+    let pasted = world.pasted();
+    for build in 0..2 {
+        let (bypass, plain) = (format!("bypass-{build}"), format!("plain-{build}"));
+        assert_eq!(entry(&result, &bypass).outcome, Outcome::Confirmed);
+        assert_eq!(entry(&result, &plain).outcome, Outcome::Confirmed);
+        assert_eq!(
+            entry(&result, &bypass).warnings,
+            [Warning::BypassReauthorized]
+        );
+        assert!(entry(&result, &plain).warnings.is_empty());
+        // each request names ITS release's exact file
+        assert_eq!(
+            pasted[build * 2..build * 2 + 2],
+            [
+                format!("{} {BYPASS} --resume {}", quoted[build], ids[build][0]),
+                format!("{} --resume {}", quoted[build], ids[build][1]),
+            ]
+        );
+    }
+    assert_eq!(pasted.len(), 4);
+    assert_eq!(world.enters(), 4);
+}
+
+/// The launcher's name, a release-like path, a working lifecycle hook and
+/// receipts of the right shape make nothing the product. A client signed
+/// as another product, one whose file is no longer intact signed code, and
+/// one that still runs an old image while its path already holds a valid
+/// build are never candidates under either policy; an approval that names
+/// them is void, and they are never started.
+#[test]
+fn untrusted_client_never_gains_reentry_from_receipts() {
+    let world = World::new();
+    let good = release(&world, NEW.0, NEW.1);
+    let foreign = world.base.join("foreign").join("fake_reentry_agent");
+    agent_build(&foreign, NEW.1, "io.c9r.deck.test.another-product");
+    let appended = world.base.join("appended").join("fake_reentry_agent");
+    agent_build(&appended, NEW.1, AGENT_IDENTIFIER);
+    {
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&appended)
+            .unwrap()
+            .write_all(b"tail")
+            .unwrap();
+    }
+    let swapped = world.base.join("swapped").join("fake_reentry_agent");
+    agent_build(&swapped, "build-old", AGENT_IDENTIFIER);
+    let launch = |path: &Path| format!("'{}' {BYPASS}", path.display());
+    world.card("good", &format!("session={ID_A}"), Some(&launch(&good)));
+    world.card(
+        "foreign",
+        &format!("session={ID_B}"),
+        Some(&launch(&foreign)),
+    );
+    world.card(
+        "appended",
+        &format!("session={ID_C}"),
+        Some(&launch(&appended)),
+    );
+    world.card(
+        "swapped",
+        &format!("session={ID_X}"),
+        Some(&launch(&swapped)),
+    );
+    // the old image keeps running; its path now holds a valid new build
+    let staged = swapped.with_extension("new");
+    agent_build(&staged, NEW.1, AGENT_IDENTIFIER);
+    std::fs::rename(&staged, &swapped).unwrap();
+    // every one of them reported its start through the real helper
+    assert_eq!(world.launches().len(), 4);
+    let (_, view) = world.preview();
+    let read = |card: &str| {
+        let entry = view["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["cardId"] == format!("card-{card}"))
+            .unwrap_or_else(|| panic!("{card} is previewed"));
+        (
+            entry["kind"].as_str().unwrap().to_string(),
+            entry["reason"].as_str().unwrap_or("-").to_string(),
+            entry["launchProfile"].as_str().unwrap_or("-").to_string(),
+        )
+    };
+    let cell = |kind: &str, reason: &str, profile: &str| {
+        (kind.to_string(), reason.to_string(), profile.to_string())
+    };
+    assert_eq!(read("good"), cell("candidate", "-", "bypass"));
+    assert_eq!(
+        read("foreign"),
+        cell("unsupported", "identity-unavailable", "-")
+    );
+    assert_eq!(
+        read("appended"),
+        cell("unsupported", "identity-unavailable", "-")
+    );
+    assert_eq!(
+        read("swapped"),
+        cell("unsupported", "executable-unavailable", "-")
+    );
+    // an approval that names any of them is void as a whole, under A and B
+    let old = world.server_pid();
+    for (request, cards, policy) in [
+        ("r-foreign", vec!["good", "foreign"], Policy::ReapplyBypass),
+        ("r-appended", vec!["appended"], Policy::Ordinary),
+        ("r-swapped", vec!["swapped"], Policy::ReapplyBypass),
+    ] {
+        let (token, _) = world.preview();
+        let error = world
+            .restart(request, &world.approval(&token, &cards, policy))
+            .unwrap_err();
+        assert_eq!(error.message(), "reentry-preview-expired", "{request}");
+        assert_eq!(world.server_pid(), old, "{request}");
+        assert!(world.pasted().is_empty(), "{request}");
+    }
+    // the one trusted client alone: it is re-entered, and nobody else is
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["good"], Policy::ReapplyBypass);
+    let (_, _, result) = world.restart("r-good", &approval).expect("restart");
+    let result = result.unwrap();
+    assert_eq!(result.entries.len(), 1, "one entry: the approved card");
+    assert_eq!(entry(&result, "good").outcome, Outcome::Confirmed);
+    assert_eq!(
+        world.pasted(),
+        [format!("'{}' {BYPASS} --resume {ID_A}", good.display())]
+    );
+    assert_eq!(world.enters(), 1);
+    // four starts of the user's own and the one resume: nothing else ran
+    assert_eq!(world.launches().len(), 5);
+    for card in ["foreign", "appended", "swapped"] {
+        assert!(!world.has_session(card), "no shell was created for {card}");
+    }
+}
+
+/// A build no list names whose hooks no longer run as the client's direct
+/// child. Where the old client's end comes through one more process, no
+/// final session exists and nothing is started; where only the new
+/// client's start does, the one request was typed and is never confirmed.
+#[test]
+fn changed_hook_topology_fails_at_its_observation_boundary() {
+    let world = World::new();
+    let quoted = format!("'{}'", release(&world, NEW.0, NEW.1).display());
+    world.card(
+        "end",
+        &format!("session={ID_A}\nhooks=wrap-end"),
+        Some(&quoted),
+    );
+    world.card(
+        "start",
+        &format!("session={ID_B}\nhooks=wrap-start"),
+        Some(&quoted),
+    );
+    world.card("direct", &format!("session={ID_C}"), Some(&quoted));
+    let (token, view) = world.preview();
+    assert!(view["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["kind"] == "candidate"));
+    let approval = world.approval(&token, &["end", "start", "direct"], Policy::Ordinary);
+    let (_, _, result) = world
+        .restart_with(
+            "req-topology",
+            Some(&approval),
+            Duration::from_secs(5),
+            &|| Ok(()),
+            &|_, _, _| {},
+        )
+        .expect("the restart itself succeeded");
+    let result = result.unwrap();
+    assert!(result.server_replaced);
+    let end = entry(&result, "end");
+    assert_eq!(end.outcome, Outcome::NotAttempted);
+    assert_eq!(end.reason, Some(Reason::FinalSessionUnconfirmed));
+    assert!(!end.shell && !world.has_session("end"));
+    let start = entry(&result, "start");
+    assert_eq!(start.outcome, Outcome::Unconfirmed);
+    assert_eq!(start.reason, Some(Reason::LaunchUnconfirmed));
+    assert!(
+        start.shell && start.client_observed,
+        "started, left as it is"
+    );
+    assert_eq!(entry(&result, "direct").outcome, Outcome::Confirmed);
+    assert_eq!(
+        world.pasted(),
+        [
+            format!("{quoted} --resume {ID_B}"),
+            format!("{quoted} --resume {ID_C}")
+        ],
+        "one request each for the two that had a final session"
+    );
+    assert_eq!(world.enters(), 2, "nothing was typed again");
+    assert_eq!(world.launches().len(), 5, "three starts and two resumes");
+}
+
+/// A build no list names whose lifecycle payload lost, renamed or retyped
+/// the session id, or uses a word this build does not know. At the old
+/// client's end that leaves no final session and nothing is started; at the
+/// new client's start the one request is not confirmed. Fields this feature
+/// does not read — new ones included — change nothing.
+#[test]
+fn changed_required_lifecycle_fields_fail_closed() {
+    let world = World::new();
+    let quoted = format!("'{}'", release(&world, NEW.0, NEW.1).display());
+    let variants = ["no-id", "renamed", "typed", "word"];
+    let ends: Vec<String> = variants.iter().map(|v| format!("end-{v}")).collect();
+    let starts: Vec<String> = variants.iter().map(|v| format!("start-{v}")).collect();
+    let id = |n: usize| format!("eeeeeeee-0000-4000-8000-00000000000{n}");
+    for (n, (card, variant)) in ends.iter().zip(variants).enumerate() {
+        world.card(
+            card,
+            &format!("session={}\nend-payload={variant}", id(n)),
+            Some(&quoted),
+        );
+    }
+    for (n, (card, variant)) in starts.iter().zip(variants).enumerate() {
+        world.card(
+            card,
+            &format!("session={}\nstart-payload={variant}", id(n + 4)),
+            Some(&quoted),
+        );
+    }
+    // unrelated fields, one of them with a value no release has today
+    world.card(
+        "extra",
+        &format!("session={ID_A}\nfinal-mode=a_mode_of_a_later_release"),
+        Some(&quoted),
+    );
+    let (token, _) = world.preview();
+    let mut cards: Vec<&str> = ends.iter().chain(&starts).map(String::as_str).collect();
+    cards.push("extra");
+    let approval = world.approval(&token, &cards, Policy::Ordinary);
+    let (_, _, result) = world
+        .restart_with(
+            "req-fields",
+            Some(&approval),
+            Duration::from_secs(7),
+            &|| Ok(()),
+            &|_, _, _| {},
+        )
+        .expect("the restart itself succeeded");
+    let result = result.unwrap();
+    assert!(result.server_replaced);
+    for card in &ends {
+        let skipped = entry(&result, card);
+        assert_eq!(skipped.outcome, Outcome::NotAttempted, "{card}");
+        assert_eq!(skipped.reason, Some(Reason::FinalSessionUnconfirmed));
+        assert!(!skipped.shell && !world.has_session(card), "{card}");
+    }
+    for card in &starts {
+        let asked = entry(&result, card);
+        assert_eq!(asked.outcome, Outcome::Unconfirmed, "{card}");
+        assert_eq!(asked.reason, Some(Reason::LaunchUnconfirmed), "{card}");
+        assert!(asked.shell && asked.client_observed, "{card}");
+    }
+    assert_eq!(entry(&result, "extra").outcome, Outcome::Confirmed);
+    let pasted = world.pasted();
+    assert_eq!(
+        pasted.len(),
+        5,
+        "four unconfirmed requests and one confirmed"
+    );
+    for (n, line) in pasted[..4].iter().enumerate() {
+        assert_eq!(*line, format!("{quoted} --resume {}", id(n + 4)));
+    }
+    assert_eq!(world.enters(), 5);
+}
+
+/// Policy B over clients that were NOT started with bypass: an ordinary
+/// launch stays an ordinary request, whatever its permission mode, its
+/// saved card command or its native payload says, and a launch shape that
+/// is not supported is not a candidate at all. Nothing gets the flag.
+#[test]
+fn policy_b_does_not_upgrade_a_non_bypass_launch() {
+    let world = World::new();
+    let quoted = format!("'{}'", release(&world, NEW.0, NEW.1).display());
+    world.card("plain", &format!("session={ID_A}"), Some(&quoted));
+    world.card(
+        "plan",
+        &format!("session={ID_B}"),
+        Some(&format!("{quoted} --permission-mode plan")),
+    );
+    world.card(
+        "accept",
+        &format!("session={ID_C}"),
+        Some(&format!("{quoted} --permission-mode acceptEdits")),
+    );
+    world.card(
+        "mode",
+        &format!("session={ID_X}"),
+        Some(&format!("{quoted} --permission-mode bypassPermissions")),
+    );
+    assert!(
+        SAVED_COMMAND.contains(BYPASS),
+        "every saved command says bypass"
+    );
+    let (token, view) = world.preview();
+    let shown: Vec<(&str, &str)> = view["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["kind"].as_str().unwrap(),
+                entry["launchProfile"].as_str().unwrap_or("-"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("candidate", "ordinary"),
+            ("candidate", "ordinary"),
+            ("candidate", "ordinary"),
+            ("unsupported", "-")
+        ]
+    );
+    let approval = world.approval(&token, &["plain", "plan", "accept"], Policy::ReapplyBypass);
+    let (_, _, result) = world.restart("req-ordinary-b", &approval).expect("restart");
+    let result = result.unwrap();
+    for card in ["plain", "plan", "accept"] {
+        let entry = entry(&result, card);
+        assert_eq!(entry.outcome, Outcome::Confirmed, "{card}");
+        assert!(
+            entry.warnings.is_empty(),
+            "{card}: nothing was reauthorized"
+        );
+    }
+    assert_eq!(
+        world.pasted(),
+        [ID_A, ID_B, ID_C].map(|id| format!("{quoted} --resume {id}"))
+    );
+    assert_eq!(
+        world.launches()[4..],
+        [ID_A, ID_B, ID_C].map(|id| format!("--resume {id}"))
+    );
+    assert!(
+        !world.has_session("mode"),
+        "the unsupported launch is not reopened"
+    );
+    // an approval that names the unsupported launch is void, under B as under A
+    let (token, _) = world.preview();
+    let error = world
+        .restart(
+            "req-unsupported-b",
+            &world.approval(&token, &["mode"], Policy::ReapplyBypass),
+        )
+        .unwrap_err();
+    assert_eq!(error.message(), "reentry-preview-expired");
+}
+
+/// The approval names ONE executable. When another validly signed build
+/// takes its place — before the freeze, between the exit and the input, or
+/// only as what the started client turns out to run — the approval is never
+/// carried over to it: the restart is refused, the entry is not launched,
+/// or the one launch is not confirmed. Nothing is frozen again and nothing
+/// is tried twice.
+#[test]
+fn executable_changes_never_rebind_an_approval() {
+    // before the freeze: the whole restart is refused before any exit key
+    {
+        let world = World::new();
+        let binary = release(&world, NEW.0, NEW.1);
+        world.card(
+            "a",
+            &format!("session={ID_A}"),
+            Some(&format!("'{}' {BYPASS}", binary.display())),
+        );
+        let (token, _) = world.preview();
+        let staged = binary.with_extension("new");
+        agent_build(&staged, "build-newer", AGENT_IDENTIFIER);
+        std::fs::rename(&staged, &binary).unwrap();
+        let old = world.server_pid();
+        let approval = world.approval(&token, &["a"], Policy::ReapplyBypass);
+        let error = world.restart("req-early", &approval).unwrap_err();
+        assert_eq!(error.message(), "tmux-server-impact-changed");
+        assert!(
+            !crate::session_runtime::deadline_active(),
+            "a refused restart leaves none of its deadlines on the thread"
+        );
+        assert_eq!(world.server_pid(), old, "nothing was replaced");
+        assert!(world.pasted().is_empty());
+        assert_eq!(world.launches().len(), 1);
+        // the approval is spent, and the client that still runs the old
+        // image is not offered again as if it were the new build. (Under a
+        // release's file name nothing hints at what it is: it is simply a
+        // foreground this feature does not take for the product.)
+        let again = world.restart("req-early-2", &approval).unwrap_err();
+        assert_eq!(again.message(), "reentry-preview-expired");
+        let (_, view) = world.preview();
+        assert_eq!(view["entries"][0]["kind"], "unsupported");
+        assert_eq!(view["entries"][0]["reason"], "unsupported-agent");
+    }
+    // between the exit and the input: nothing is started, no shell is made
+    {
+        let world = World::new();
+        let binary = release(&world, NEW.0, NEW.1);
+        world.card(
+            "a",
+            &format!("session={ID_A}"),
+            Some(&format!("'{}' {BYPASS}", binary.display())),
+        );
+        let (token, _) = world.preview();
+        let approval = world.approval(&token, &["a"], Policy::ReapplyBypass);
+        let (_, _, result) = world
+            .restart_with(
+                "req-middle",
+                Some(&approval),
+                Duration::from_secs(8),
+                &|| {
+                    let staged = binary.with_extension("new");
+                    agent_build(&staged, "build-newer", AGENT_IDENTIFIER);
+                    std::fs::rename(&staged, &binary).unwrap();
+                    Ok(())
+                },
+                &|_, _, _| {},
+            )
+            .expect("the restart itself succeeded");
+        let result = result.unwrap();
+        assert!(result.server_replaced);
+        let changed = entry(&result, "a");
+        assert_eq!(changed.outcome, Outcome::NotAttempted);
+        assert_eq!(changed.reason, Some(Reason::ExecutableUnavailable));
+        assert!(!changed.shell && !world.has_session("a"));
+        assert!(world.pasted().is_empty(), "the new build was never asked");
+        assert_eq!(world.launches().len(), 1);
+    }
+    // only found after the launch: the started client is another build
+    {
+        let world = World::new();
+        let binary = release(&world, NEW.0, NEW.1);
+        let other = release(&world, "9.9.1000", "build-newer");
+        world.card(
+            "a",
+            &format!("session={ID_A}\nresume=exec:{}", other.display()),
+            Some(&format!("'{}' {BYPASS}", binary.display())),
+        );
+        let (token, _) = world.preview();
+        let approval = world.approval(&token, &["a"], Policy::ReapplyBypass);
+        let (_, _, result) = world
+            .restart_with(
+                "req-late-change",
+                Some(&approval),
+                Duration::from_secs(4),
+                &|| Ok(()),
+                &|_, _, _| {},
+            )
+            .expect("the restart itself succeeded");
+        let result = result.unwrap();
+        let started = entry(&result, "a");
+        assert_eq!(started.outcome, Outcome::Unconfirmed);
+        assert_eq!(started.reason, Some(Reason::LaunchUnconfirmed));
+        assert!(started.shell && started.client_observed, "left running");
+        assert!(
+            started.warnings.is_empty(),
+            "no flag is said to have been sent"
+        );
+        assert_eq!(
+            world.pasted(),
+            [format!("'{}' {BYPASS} --resume {ID_A}", binary.display())],
+            "the one request named the frozen file"
+        );
+        assert_eq!(world.enters(), 1);
+        // its own start, the asked resume, and the other build that took over
+        assert_eq!(world.launches().len(), 3);
+    }
+}
+
+/// The leased old client replaces its image with another validly signed
+/// build of the product, under the same pid, and THAT program reports the
+/// final session. Pid and birth instant are the frozen ones; the running
+/// code is not, so its report names nothing: no final session, no shell and
+/// no request for that card, while the card beside it is re-entered.
+#[test]
+fn an_exit_reported_by_another_image_under_the_frozen_pid_names_no_final_session() {
+    let world = World::new();
+    let binary = release(&world, NEW.0, NEW.1);
+    let other = release(&world, "9.9.1000", "build-newer");
+    let quoted = format!("'{}'", binary.display());
+    world.card(
+        "swapped",
+        &format!("session={ID_A}\nexit=exec:{}", other.display()),
+        Some(&quoted),
+    );
+    world.card("kept", &format!("session={ID_B}"), Some(&quoted));
+    let rows = crate::tmux::list_panes_with(&|args| world.raw(args)).unwrap();
+    let old = rows
+        .iter()
+        .find(|row| row.session_name == "swapped")
+        .and_then(|row| crate::agent_status::live_generation(row.pane_pid))
+        .expect("the old client");
+    let (token, view) = world.preview();
+    assert!(view["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["kind"] == "candidate"));
+    let approval = world.approval(&token, &["swapped", "kept"], Policy::Ordinary);
+    let (_, _, result) = world
+        .restart("req-exit-image", &approval)
+        .expect("the restart itself succeeded");
+    let result = result.unwrap();
+    assert!(result.server_replaced);
+    // the frozen generation did exit: what is missing is its final session
+    assert_eq!(
+        crate::procinfo::generation_liveness(old.pid(), old.birth()),
+        crate::procinfo::Liveness::Gone
+    );
+    let swapped = entry(&result, "swapped");
+    assert_eq!(swapped.outcome, Outcome::NotAttempted);
+    assert_eq!(swapped.reason, Some(Reason::FinalSessionUnconfirmed));
+    assert!(!swapped.shell && !world.has_session("swapped"));
+    assert_eq!(entry(&result, "kept").outcome, Outcome::Confirmed);
+    assert_eq!(world.pasted(), [format!("{quoted} --resume {ID_B}")]);
+    assert_eq!(world.enters(), 1);
+    assert_eq!(world.launches().len(), 3, "two starts and the one resume");
+}
+
+/// A resume receipt for another id, with another source, two answers of
+/// which the later one is right, and a client that entered and left: none
+/// confirms, no answer is picked as the winner, and each request was typed
+/// once.
+#[test]
+fn mismatched_resume_receipts_never_confirm() {
+    let world = World::new();
+    let quoted = format!("'{}'", release(&world, NEW.0, NEW.1).display());
+    for (card, id, resume) in [
+        ("wrong", ID_A, format!("wrong:{ID_X}")),
+        ("source", ID_B, "startup".to_string()),
+        ("both", ID_C, format!("both:{ID_X}")),
+        (
+            "left",
+            "ffffffff-0000-4000-8000-000000000005",
+            "leave".to_string(),
+        ),
+    ] {
+        world.card(
+            card,
+            &format!("session={id}\nresume={resume}"),
+            Some(&quoted),
+        );
+    }
+    let (token, _) = world.preview();
+    let cards = ["wrong", "source", "both", "left"];
+    let approval = world.approval(&token, &cards, Policy::Ordinary);
+    let (_, _, result) = world
+        .restart_with(
+            "req-receipts",
+            Some(&approval),
+            Duration::from_secs(6),
+            &|| Ok(()),
+            &|_, _, _| {},
+        )
+        .expect("the restart itself succeeded");
+    let result = result.unwrap();
+    assert!(result.server_replaced);
+    for card in cards {
+        let unconfirmed = entry(&result, card);
+        assert_eq!(unconfirmed.outcome, Outcome::Unconfirmed, "{card}");
+        assert_eq!(
+            unconfirmed.reason,
+            Some(Reason::LaunchUnconfirmed),
+            "{card}"
+        );
+    }
+    assert_eq!(world.pasted().len(), 4);
+    assert_eq!(world.enters(), 4);
+    assert_eq!(
+        world.launches().len(),
+        8,
+        "four starts, four resumes, no more"
+    );
+}
+
+/// Started with bypass and lowered while running: whatever the client's
+/// last word about its permission mode is — plan, nothing at all, bypass —
+/// its launch profile is still bypass, and under Policy B this restart
+/// sends the flag again. The final mode is read by nothing and gates
+/// nothing.
+#[test]
+fn bypass_launch_profile_is_reauthorized_after_runtime_downgrade() {
+    let world = World::new();
+    let quoted = format!("'{}'", release(&world, NEW.0, NEW.1).display());
+    let launch = format!("{quoted} {BYPASS}");
+    world.card(
+        "lowered",
+        &format!("session={ID_A}\nfinal-mode=plan"),
+        Some(&launch),
+    );
+    world.card(
+        "silent",
+        &format!("session={ID_B}\nfinal-mode=absent"),
+        Some(&launch),
+    );
+    world.card("kept", &format!("session={ID_C}"), Some(&launch));
+    let (token, view) = world.preview();
+    assert!(view["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["launchProfile"] == "bypass"));
+    let cards = ["lowered", "silent", "kept"];
+    let approval = world.approval(&token, &cards, Policy::ReapplyBypass);
+    let (_, _, result) = world.restart("req-lowered", &approval).expect("restart");
+    let result = result.unwrap();
+    for card in cards {
+        let entry = entry(&result, card);
+        assert_eq!(entry.outcome, Outcome::Confirmed, "{card}");
+        assert_eq!(entry.warnings, [Warning::BypassReauthorized], "{card}");
+    }
+    assert_eq!(
+        world.pasted(),
+        [ID_A, ID_B, ID_C].map(|id| format!("{quoted} {BYPASS} --resume {id}")),
+        "the flag, then the resume, for each"
+    );
+    assert_eq!(
+        world.launches()[3..],
+        [ID_A, ID_B, ID_C].map(|id| format!("{BYPASS} --resume {id}"))
+    );
+}
+
+/// Policy A over every launch shape that qualifies and every last word
+/// about a permission mode: each request is the executable, `--resume` and
+/// the id. No bypass, no permission mode, no model, nothing of the old
+/// client's own arguments.
+#[test]
+fn policy_a_never_adds_a_permission_override() {
+    let world = World::new();
+    let quoted = format!("'{}'", release(&world, NEW.0, NEW.1).display());
+    let id = |n: usize| format!("abababab-0000-4000-8000-00000000000{n}");
+    let shapes = [
+        (format!("{quoted} {BYPASS}"), "final-mode=plan"),
+        (format!("{quoted} {BYPASS}"), "final-mode=absent"),
+        (format!("{quoted} {BYPASS}"), "final-mode=bypassPermissions"),
+        (quoted.clone(), "final-mode=default"),
+        (
+            format!("{quoted} --permission-mode plan"),
+            "final-mode=plan",
+        ),
+        (format!("{quoted} --permission-mode acceptEdits"), ""),
+        (format!("{quoted} --permission-mode default"), ""),
+        (format!("{quoted} --model opus {BYPASS}"), ""),
+    ];
+    let cards: Vec<String> = (0..shapes.len()).map(|n| format!("shape-{n}")).collect();
+    for (n, (launch, mode)) in shapes.iter().enumerate() {
+        world.card(
+            &cards[n],
+            &format!("session={}\n{mode}", id(n)),
+            Some(launch),
+        );
+    }
+    let (token, _) = world.preview();
+    let names: Vec<&str> = cards.iter().map(String::as_str).collect();
+    let approval = world.approval(&token, &names, Policy::Ordinary);
+    let (_, _, result) = world
+        .restart_with(
+            "req-a",
+            Some(&approval),
+            Duration::from_secs(14),
+            &|| Ok(()),
+            &|_, _, _| {},
+        )
+        .expect("restart");
+    let result = result.unwrap();
+    let expected: Vec<String> = (0..shapes.len())
+        .map(|n| format!("{quoted} --resume {}", id(n)))
+        .collect();
+    assert_eq!(world.pasted(), expected);
+    assert_eq!(
+        world.launches()[shapes.len()..],
+        (0..shapes.len())
+            .map(|n| format!("--resume {}", id(n)))
+            .collect::<Vec<_>>()[..]
+    );
+    for card in &cards {
+        let entry = entry(&result, card);
+        assert_eq!(entry.outcome, Outcome::Confirmed, "{card}");
+        assert!(entry.warnings.is_empty(), "{card}");
+    }
+    assert_eq!(world.enters(), shapes.len());
+}
+
+/// Policy B reaches the ticked cards of THIS preview and no other: a bypass
+/// launch that was not ticked gets no shell and no request, a card created
+/// after the preview cannot be named, and neither an earlier preview's
+/// token nor a second use of this approval starts anything.
+#[test]
+fn unapproved_cards_never_receive_bypass() {
+    let world = World::new();
+    let quoted = format!("'{}'", release(&world, NEW.0, NEW.1).display());
+    let launch = format!("{quoted} {BYPASS}");
+    world.card("ticked", &format!("session={ID_A}"), Some(&launch));
+    world.card("unticked", &format!("session={ID_B}"), Some(&launch));
+    let old = world.server_pid();
+    let (stale, _) = world.preview();
+    let (token, view) = world.preview();
+    assert!(view["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["launchProfile"] == "bypass"));
+    // an earlier preview's token is not this approval
+    let error = world
+        .restart(
+            "req-stale",
+            &world.approval(&stale, &["ticked", "unticked"], Policy::ReapplyBypass),
+        )
+        .unwrap_err();
+    assert_eq!(error.message(), "reentry-preview-expired");
+    // that refusal spent the current preview as well: preview again
+    drop(token);
+    let (token, _) = world.preview();
+    // a bypass card that appears after the preview is not part of it
+    world.card("later", &format!("session={ID_C}"), Some(&launch));
+    let error = world
+        .restart(
+            "req-later",
+            &world.approval(&token, &["ticked", "later"], Policy::ReapplyBypass),
+        )
+        .unwrap_err();
+    assert_eq!(error.message(), "reentry-preview-expired");
+    assert_eq!(world.server_pid(), old);
+    assert!(world.pasted().is_empty());
+    // the one ticked card
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["ticked"], Policy::ReapplyBypass);
+    let (_, _, result) = world.restart("req-ticked", &approval).expect("restart");
+    let result = result.unwrap();
+    assert_eq!(result.entries.len(), 1, "one entry: the ticked card");
+    assert_eq!(entry(&result, "ticked").outcome, Outcome::Confirmed);
+    assert_eq!(world.pasted(), [format!("{launch} --resume {ID_A}")]);
+    assert_eq!(world.enters(), 1);
+    for card in ["unticked", "later"] {
+        assert!(!world.has_session(card), "no shell for {card}");
+    }
+    assert_eq!(world.launches().len(), 4, "three starts and the one resume");
+    // the approval is spent: another operation gets nothing from it
+    let again = world.restart("req-ticked-2", &approval).unwrap_err();
+    assert_eq!(again.message(), "reentry-preview-expired");
+    assert_eq!(world.pasted().len(), 1);
+}
+
+/// A launch profile that could not be read is never taken for bypass, and
+/// nothing else is read in its place: not the card's saved command, not a
+/// permission mode the native payload names.
+#[test]
+fn unknown_launch_profiles_never_authorize_bypass() {
+    for (preview, frozen) in [
+        (Unknown, Unknown),
+        (Unknown, Bypass),
+        (Bypass, Unknown),
+        (Ordinary, Unknown),
+    ] {
+        for proven in [true, false] {
+            let mut read = scope(PolicyB, preview, frozen);
+            read.context_proven = proven;
+            assert_ne!(
+                bypass_of(decide(read)),
+                Some(true),
+                "{preview:?} {frozen:?} {proven}"
+            );
+        }
+        // without an independently proven context it is not re-entered at all
+        let mut unproven = scope(PolicyB, preview, Unknown);
+        unproven.context_proven = false;
+        assert_eq!(
+            decide(unproven),
+            Decision::Skip(Reason::IdentityUnavailable)
+        );
+    }
+    assert_eq!(profile_word(Unknown), "unknown");
+    assert_eq!(profile_word(Unsupported), "unknown");
+    // an ordinary launch whose saved command and whose payloads all say
+    // bypass: under Policy B it is asked without the flag
+    let world = World::new();
+    let quoted = format!("'{}'", release(&world, NEW.0, NEW.1).display());
+    world.card(
+        "a",
+        &format!("session={ID_A}\nfinal-mode=bypassPermissions"),
+        Some(&quoted),
+    );
+    assert!(SAVED_COMMAND.contains(BYPASS));
+    let (token, view) = world.preview();
+    assert_eq!(view["entries"][0]["launchProfile"], "ordinary");
+    let approval = world.approval(&token, &["a"], Policy::ReapplyBypass);
+    let (_, _, result) = world.restart("req-unknown", &approval).expect("restart");
+    let result = result.unwrap();
+    assert_eq!(entry(&result, "a").outcome, Outcome::Confirmed);
+    assert!(entry(&result, "a").warnings.is_empty());
+    assert_eq!(world.pasted(), [format!("{quoted} --resume {ID_A}")]);
+}
+
+/// Every way an outcome can be unknown — a lost paste reply, a refused
+/// Enter, no receipt, a receipt that arrives after the operation closed —
+/// uses the entry's one slot and is never followed by a second request:
+/// not by the operation, not by reading its result, not by using the
+/// approval again, and not after the process forgot everything.
+#[test]
+fn unknown_outcomes_are_never_retried() {
+    let world = World::new();
+    let quoted = format!("'{}'", release(&world, NEW.0, NEW.1).display());
+    world.card("lost", &format!("session={ID_A}"), Some(&quoted));
+    world.card("enter", &format!("session={ID_B}"), Some(&quoted));
+    world.card(
+        "silent",
+        &format!("session={ID_C}\nresume=silent"),
+        Some(&quoted),
+    );
+    world.card(
+        "late",
+        &format!("session={ID_X}\nresume=late:5000"),
+        Some(&quoted),
+    );
+    let (token, _) = world.preview();
+    let cards = ["lost", "enter", "silent", "late"];
+    let approval = world.approval(&token, &cards, Policy::Ordinary);
+    let pastes = std::cell::Cell::new(0);
+    let enters = std::cell::Cell::new(0);
+    *world.intercept.borrow_mut() = Some(Box::new(move |args, input| {
+        if input.is_some() {
+            pastes.set(pastes.get() + 1);
+            // the first entry's paste reply is lost
+            return (pastes.get() == 1)
+                .then(|| Err(DeckError::new(ErrorKind::Other, "reply lost")));
+        }
+        let enter = args
+            .iter()
+            .any(|arg| arg.contains("send-keys") && arg.ends_with("Enter"));
+        if enter {
+            enters.set(enters.get() + 1);
+        }
+        // the second entry's Enter is refused
+        (enter && enters.get() == 1).then(|| Ok("deck-context-refused\n".into()))
+    }));
+    let (_, _, result) = world
+        .restart_with(
+            "req-unknown-outcomes",
+            Some(&approval),
+            Duration::from_secs(4),
+            &|| Ok(()),
+            &|_, _, _| {},
+        )
+        .expect("the restart itself succeeded");
+    *world.intercept.borrow_mut() = None;
+    let result = result.unwrap();
+    assert!(result.server_replaced);
+    assert_eq!(result.state, OperationState::Complete);
+    for card in cards {
+        let unknown = entry(&result, card);
+        assert_eq!(unknown.outcome, Outcome::Unconfirmed, "{card}");
+        assert_eq!(unknown.reason, Some(Reason::LaunchUnconfirmed), "{card}");
+        assert!(unknown.shell, "{card}: its shell is kept");
+    }
+    let (pasted, entered, launched) =
+        (world.pasted().len(), world.enters(), world.launches().len());
+    assert_eq!(pasted, 4, "one paste per entry");
+    assert_eq!(entered, 3, "the lost paste was not followed by an Enter");
+    assert_eq!(
+        launched, 6,
+        "four starts and the two clients that did start"
+    );
+    // reading the operation, again and again, executes nothing
+    for _ in 0..3 {
+        assert_eq!(known("req-unknown-outcomes"), Some(result.clone()));
+        assert!(operation("req-unknown-outcomes").known);
+    }
+    // the late answer arrives after the operation closed: nobody takes it
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(known("req-unknown-outcomes"), Some(result.clone()));
+    assert!(!lifecycle::armed(), "no lease is left to land on");
+    // the approval again, and the same request id again: nothing starts
+    for request in ["req-unknown-outcomes", "req-unknown-outcomes-2"] {
+        let again = world.restart(request, &approval).unwrap_err();
+        assert_eq!(again.message(), "reentry-preview-expired", "{request}");
+    }
+    // a process that forgot everything (a crash) replays nothing either
+    reset_for_tests();
+    assert!(!operation("req-unknown-outcomes").known);
+    assert_eq!(world.pasted().len(), pasted);
+    assert_eq!(world.enters(), entered);
+}
+
 // ---------- native certification, step 0: a read-only probe ------------------------
 
 /// Not a test of its own: the read-only probe of native certification step
@@ -2932,18 +4208,18 @@ fn a_restored_transcript_precedes_the_one_request() {
 /// PRODUCTION qualification (`inspect`, `procinfo::qualify_client`) and the
 /// PRODUCTION post-launch check (`procinfo::check_launch`) about that exact
 /// process, with the production capability (`claude::CAPABILITY`: its
-/// names, grammar, certified facts and request builder) and nothing looser.
+/// product requirement, grammar and request builder) and nothing looser.
 /// It types nothing, starts nothing and prints one line of closed words,
 /// pids, births and counts — never an argument, an environment entry, a
 /// path or a native id.
 ///
-/// To test the DRIVER without the certified client, the driver may name a
+/// To test the DRIVER without a real client, the driver may name a
 /// harmless stand-in binary. The same production functions then run with a
-/// stand-in capability built exactly as the integration tests build theirs
-/// (that binary's own digest, the production grammar and request builder),
-/// and every line says `capability=stand-in`: such a line is about the
-/// driver and is never evidence about the certified client. A binary whose
-/// digest is a production fact is refused as a stand-in.
+/// stand-in capability (the product "that binary's own signing identifier",
+/// the production grammar and request builder), and every line says
+/// `capability=stand-in`: such a line is about the driver and is never
+/// evidence about a real client. A binary that IS production's product is
+/// refused as a stand-in.
 #[test]
 #[ignore = "run only by the native certification driver, against a process it started"]
 fn native_step0_probe() {
@@ -2958,34 +4234,18 @@ fn native_step0_probe() {
         return;
     };
     let (home, cwd) = (PathBuf::from(home), PathBuf::from(cwd));
+    // the checks below ask for a deadline owner; the preview's share is one
+    let _phase = crate::session_runtime::Deadline::until(Instant::now() + PREVIEW_BUDGET);
     let standin = var("DECK_N0_STANDIN").map(PathBuf::from);
-    if let Some(binary) = &standin {
-        let production = ExecutableRef::read(binary)
-            .is_none_or(|read| claude::CAPABILITY.certified(&read.digest_hex()).is_some());
-        if production {
-            return println!("N0 stage={stage} capability=refused");
-        }
-    }
-    // the candidate of a certification: its path, version label and frozen digest
-    let candidate = var("DECK_N0_CANDIDATE").map(PathBuf::from);
-    let capability: &ReentryCapability = match (&standin, &candidate) {
-        (Some(binary), _) => Box::leak(Box::new(World::capability_for(&[binary.as_path()]))),
-        (None, Some(binary)) => {
-            let Some(capability) = World::candidate_capability(
-                binary,
-                &var("DECK_N0_CANDIDATE_VERSION").unwrap_or_default(),
-                &var("DECK_N0_CANDIDATE_SHA").unwrap_or_default(),
-            ) else {
-                return println!("N0 stage={stage} capability=refused");
-            };
-            Box::leak(Box::new(capability))
-        }
-        (None, None) => &claude::CAPABILITY,
+    let capability: &ReentryCapability = match &standin {
+        Some(binary) => match World::standin_capability(binary) {
+            Some(capability) => capability,
+            None => return println!("N0 stage={stage} capability=refused"),
+        },
+        None => &claude::CAPABILITY,
     };
     let which = if standin.is_some() {
         "stand-in"
-    } else if candidate.is_some() {
-        "candidate"
     } else {
         "production"
     };
@@ -3045,25 +4305,26 @@ fn native_step0_probe() {
     let read = crate::procinfo::qualify_client(
         pid,
         birth,
-        &capability.image_names(),
-        &home,
-        capability.grammar,
-        None,
+        &ClientSpec {
+            product: capability.product,
+            launcher: capability.launcher,
+            grammar: capability.grammar,
+            home: &home,
+        },
+        &[],
     );
     let (qualified, executable) = match read {
         ClientRead::Gone => ("qualify=gone".to_string(), None),
-        ClientRead::NotNamed => ("qualify=not-named".to_string(), None),
-        ClientRead::Named(read) => (
+        ClientRead::NotProduct { named, why } => {
+            (format!("qualify=not-product/{why:?} named={named}"), None)
+        }
+        ClientRead::Product(read) => (
             format!(
-                "qualify=named executable={} certified={} profile={:?} dirs={} cwd={}",
-                if read.executable.is_some() {
-                    "read"
-                } else {
-                    "unread"
+                "qualify=product executable={} profile={:?} dirs={} cwd={}",
+                match &read.executable {
+                    Ok(_) => "bound".to_string(),
+                    Err(why) => format!("{why:?}"),
                 },
-                read.executable
-                    .as_ref()
-                    .is_some_and(|exe| capability.certified(&exe.digest_hex()).is_some()),
                 read.profile,
                 read.additional_dirs,
                 match &read.cwd {
@@ -3072,7 +4333,7 @@ fn native_step0_probe() {
                     Some(_) => "other",
                 },
             ),
-            read.executable,
+            read.executable.ok(),
         ),
     };
     // the production preview classification of this pane
@@ -3080,7 +4341,7 @@ fn native_step0_probe() {
         capability,
         &home,
         &|_| Err(DeckError::new(ErrorKind::Tmux, "no tmux in this probe")),
-        |env| inspect(env, row, 1, None),
+        |env| inspect(env, row, 1, &[]),
     );
     let checked = executable.as_ref().map(|executable| {
         crate::procinfo::check_launch(
@@ -3481,7 +4742,7 @@ fn native_m1_tap() {
 /// the real operation and activity gates) for every card: under Policy A,
 /// or — when the driver names it (stage M2) — under Policy B, this
 /// restart's explicit bypass reauthorization. The capability is
-/// production's and the client the certified binary unless the driver names
+/// production's and the client Anthropic's product unless the driver names
 /// a stand-in; a binary that does not fit the mode is refused.
 ///
 /// It prints closed facts only — check names, outcomes, reason codes, pids,
@@ -3560,23 +4821,14 @@ fn native_m1_transact() {
             println!("M1 check={name} {verdict} {detail}");
         }
     };
-    // Three modes, each with its own kind of binary: a stand-in (never a
-    // certified binary), production's capability (a certified binary and
-    // nothing else), or the candidate of a certification — the exact digest
-    // the driver froze, which is not a production fact.
-    let certified = ExecutableRef::read(&client)
-        .is_some_and(|read| claude::CAPABILITY.certified(&read.digest_hex()).is_some());
-    let candidate = var("DECK_M1_CANDIDATE_SHA");
-    let capability: Option<&'static ReentryCapability> = match (standin, &candidate) {
-        (true, None) if !certified => Some(Box::leak(Box::new(World::capability_for(&[&client])))),
-        (false, None) if certified => Some(&claude::CAPABILITY),
-        (false, Some(sha256)) => World::candidate_capability(
-            &client,
-            &var("DECK_M1_CANDIDATE_VERSION").unwrap_or_default(),
-            sha256,
-        )
-        .map(|capability| &*Box::leak(Box::new(capability))),
-        _ => None,
+    // Two modes, each with its own kind of binary: a stand-in (never
+    // production's product) under its own stand-in capability, or a real
+    // client — any release of the product — under production's capability.
+    let product = ExecutableRef::read(&client, claude::CAPABILITY.product).is_ok();
+    let capability: Option<&'static ReentryCapability> = match standin {
+        true => World::standin_capability(&client),
+        false if product => Some(&claude::CAPABILITY),
+        false => None,
     };
     let Some(capability) = capability else {
         println!("M1 refused=client-does-not-fit-the-mode");
@@ -3609,13 +4861,7 @@ fn native_m1_transact() {
     });
     println!(
         "M1 capability={} cards={} policy={}",
-        if standin {
-            "stand-in"
-        } else if candidate.is_some() {
-            "candidate"
-        } else {
-            "production"
-        },
+        if standin { "stand-in" } else { "production" },
         cards.len(),
         if policy == Policy::ReapplyBypass {
             "reapply-bypass"
@@ -4345,26 +5591,192 @@ fn a_controller_killed_at_any_phase_leaves_no_replay_and_no_agent_data() {
     }
 }
 
-/// Three cards share one binary. Its content is read in full once in the
-/// post phase — not once or twice per card — and the freeze reuses the
-/// previewed reference; each entry still checks the file's exact state right
-/// before its own input.
+/// Cards that share one binary: the preview reads its content and validates
+/// its signature ONCE, the freeze reads and validates nothing, and the post
+/// phase reads the content once more — equal content is the same signed
+/// code, so there is no second validation. Every client is still bound to
+/// that one reference on its own, at every phase.
 #[test]
 fn cards_that_share_a_binary_read_its_content_once_per_restart() {
+    use crate::procinfo::{DYNAMIC_CHECKS, FULL_READS, STATIC_VALIDATIONS};
     let world = World::new();
     for (card, id) in [("a", ID_A), ("b", ID_B), ("c", ID_C)] {
         world.card(card, &format!("session={id}"), Some("{agent}"));
     }
+    let counts = || {
+        (
+            FULL_READS.with(std::cell::Cell::get),
+            STATIC_VALIDATIONS.with(std::cell::Cell::get),
+            DYNAMIC_CHECKS.with(std::cell::Cell::get),
+        )
+    };
+    let before = counts();
     let (token, _) = world.preview();
+    let previewed = counts();
+    assert_eq!(previewed.0 - before.0, 1, "one full read for three clients");
+    assert_eq!(previewed.1 - before.1, 1, "one full signature validation");
+    // the first client: is it the product, then its binding; the others: their binding
+    assert_eq!(previewed.2 - before.2, 4, "each client bound on its own");
     let approval = world.approval(&token, &["a", "b", "c"], Policy::Ordinary);
-    let before = crate::procinfo::FULL_READS.with(std::cell::Cell::get);
     let (_, _, result) = world.restart("req-shared", &approval).expect("restart");
-    let reads = crate::procinfo::FULL_READS.with(std::cell::Cell::get) - before;
+    let after = counts();
     let result = result.unwrap();
     for card in ["a", "b", "c"] {
         assert_eq!(entry(&result, card).outcome, Outcome::Confirmed, "{card}");
     }
-    assert_eq!(reads, 1, "one full read for three entries of one binary");
+    assert_eq!(
+        after.0 - previewed.0,
+        1,
+        "one full read for three entries of one binary"
+    );
+    assert_eq!(after.1 - previewed.1, 0, "no second signature validation");
+    println!(
+        "COUNT restart dynamic_checks_on_the_worker={}",
+        after.2 - previewed.2
+    );
+    assert!(
+        after.2 - previewed.2 >= 6,
+        "every client is bound again at the freeze and after its launch"
+    );
+}
+
+/// Clears this thread's read stall when dropped, a failed assertion included.
+struct Stall;
+
+impl Stall {
+    fn set(time: Duration) -> Self {
+        crate::procinfo::READ_STALL.with(|stall| stall.set(Some(time)));
+        Self
+    }
+}
+
+impl Drop for Stall {
+    fn drop(&mut self) {
+        crate::procinfo::READ_STALL.with(|stall| stall.set(None));
+    }
+}
+
+/// The post phase's re-read of the frozen program cannot be interrupted. When
+/// it outlives the phase, nothing is created and nothing is typed, and the
+/// entry says that the check did not finish — not that the program changed.
+/// When it returns in time but leaves less than one attempt's share, no shell
+/// is created for a request that could no longer be made.
+#[test]
+fn a_program_check_that_outlives_its_phase_types_nothing_and_is_not_called_a_change() {
+    for (stall, reason) in [
+        (Duration::from_millis(3600), Reason::CheckIncomplete),
+        (Duration::from_millis(2000), Reason::LaunchRefused),
+    ] {
+        let world = World::new();
+        world.card("a", &format!("session={ID_A}"), Some("{agent}"));
+        let (token, _) = world.preview();
+        let approval = world.approval(&token, &["a"], Policy::Ordinary);
+        let stalled = RefCell::new(None);
+        let started = Instant::now();
+        let (_, _, result) = world
+            .restart_with(
+                "req-late",
+                Some(&approval),
+                Duration::from_secs(3),
+                // after the exit, before the replacement: every full read
+                // on this worker stalls from here on
+                &|| {
+                    *stalled.borrow_mut() = Some(Stall::set(stall));
+                    Ok(())
+                },
+                &|_, _, _| {},
+            )
+            .expect("the restart itself succeeded");
+        drop(stalled);
+        assert!(started.elapsed() >= stall, "the read was waited for");
+        let result = result.unwrap();
+        assert!(result.server_replaced, "{reason:?}");
+        assert_eq!(result.state, OperationState::Complete);
+        let late = entry(&result, "a");
+        assert_eq!(late.outcome, Outcome::NotAttempted, "{reason:?}");
+        assert_eq!(late.reason, Some(reason));
+        assert!(
+            !late.shell && !world.has_session("a"),
+            "no shell: {reason:?}"
+        );
+        assert!(world.pasted().is_empty(), "{reason:?}");
+        assert_eq!(world.enters(), 0, "{reason:?}");
+        assert_eq!(world.launches().len(), 1, "only the user's own start");
+        // the operation is over: the same approval starts nothing
+        let again = world.restart("req-late-2", &approval).unwrap_err();
+        assert_eq!(again.message(), "reentry-preview-expired");
+    }
+}
+
+/// The preview is bounded and runs one at a time. A program whose read does
+/// not finish inside the preview's share is shown as not checked — never as
+/// a candidate and never as changed — and a preview does not start its reads
+/// beside one that is still running.
+#[test]
+fn a_preview_that_cannot_finish_its_checks_says_so_and_previews_run_one_at_a_time() {
+    use crate::session_runtime::Deadline;
+    let world = World::new();
+    world.card("a", &format!("session={ID_A}"), Some("{agent}"));
+    let (token, view) = {
+        let _stall = Stall::set(Duration::from_millis(700));
+        let _phase = Deadline::until(Instant::now() + Duration::from_millis(350));
+        world.preview()
+    };
+    assert_eq!(view["entries"][0]["kind"], "unsupported");
+    assert_eq!(view["entries"][0]["reason"], "check-incomplete");
+    assert!(view["entries"][0]["launchProfile"].is_null());
+    // what was not checked cannot be approved
+    let error = world
+        .restart(
+            "r-unchecked",
+            &world.approval(&token, &["a"], Policy::Ordinary),
+        )
+        .unwrap_err();
+    assert_eq!(error.message(), "reentry-preview-expired");
+    assert!(world.pasted().is_empty());
+    // unhurried, the same client is a candidate
+    let (_, view) = world.preview();
+    assert_eq!(view["entries"][0]["kind"], "candidate");
+    // While one preview holds the turn, another reads nothing. It waits for
+    // the turn no longer than its OWN limit — the holder's is ten seconds
+    // away — and says busy.
+    let turn = Turn::take(Instant::now() + PREVIEW_BUDGET).expect("a free turn");
+    let reads = crate::procinfo::FULL_READS.with(std::cell::Cell::get);
+    let checks = crate::procinfo::DYNAMIC_CHECKS.with(std::cell::Cell::get);
+    let own = Duration::from_millis(200);
+    let asked = Instant::now();
+    let busy = world.with_env(|env| preview_by(env, asked + own));
+    let waited = asked.elapsed();
+    assert_eq!(busy.unwrap_err().message(), "reentry-preview-busy");
+    assert!(
+        waited >= own && waited < own + Duration::from_secs(2),
+        "waited to its own limit and not to the holder's: {waited:?}"
+    );
+    assert_eq!(
+        crate::procinfo::FULL_READS.with(std::cell::Cell::get),
+        reads
+    );
+    assert_eq!(
+        crate::procinfo::DYNAMIC_CHECKS.with(std::cell::Cell::get),
+        checks
+    );
+    drop(turn);
+    // a holder that is already past its own deadline is stalled: the next
+    // preview is refused at once instead of waiting for it
+    let stalled = Turn::take(Instant::now() + Duration::from_millis(30)).expect("a free turn");
+    while Instant::now() < stalled.end {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let asked = Instant::now();
+    // the caller's own limit is far away: it is not what refuses
+    let refused = world.with_env(|env| preview_by(env, asked + Duration::from_secs(3)));
+    assert_eq!(refused.unwrap_err().message(), "reentry-preview-busy");
+    assert!(
+        asked.elapsed() < Duration::from_millis(500),
+        "not waited for"
+    );
+    drop(stalled);
+    assert_eq!(world.preview().1["entries"][0]["kind"], "candidate");
 }
 
 /// The production shell creator on a private server: exactly the requested
@@ -4403,4 +5815,1225 @@ fn the_production_shell_creator_makes_one_command_less_shell_in_the_exact_direct
     assert!(create("gone", &world.base.join("missing"), false).is_err());
     assert!(!world.has_session("gone"), "no fallback directory");
     assert!(create("bad name", &dir, false).is_err());
+}
+
+// ---------- a validation that cannot be interrupted, and answers late ----------
+//
+// `procinfo::identity_hold` keeps back the truthful answer of chosen dynamic
+// validations: the call returns late, or not until the test lets it. What is
+// tested below is what each caller does with that — the full-read stall tests
+// above are about another call.
+
+use crate::procinfo::identity_hold as hold;
+
+/// This world's re-entry environment, assembled on whichever thread runs the
+/// returned closure: what the preview's own worker is handed in production
+/// (`tmux_lifecycle::agent_reentry_preview`), with this world's server.
+fn remote_read(world: &World) -> impl FnOnce() -> Result<Previewed, DeckError> + Send + 'static {
+    let tmux = world.remote();
+    let (socket, helper, home) = (
+        world.socket.clone(),
+        world.helper.clone(),
+        world.home.clone(),
+    );
+    let (capability, observation, baseline) = (
+        world.capability,
+        world.observation.get(),
+        world.baseline.get(),
+    );
+    move || {
+        crate::tmux_lifecycle::assemble_reentry_env(
+            &crate::tmux_lifecycle::ReentryParts {
+                tmux: &tmux,
+                tmux_stdin: &|_, _| Err(DeckError::new(ErrorKind::Tmux, "a preview types nothing")),
+                socket: &socket,
+                capability,
+                helper: Some(helper),
+                hooks_installed: observation,
+                home: &home,
+                baseline,
+            },
+            read_preview,
+        )
+    }
+}
+
+/// The token of the one preview that can be confirmed right now.
+fn kept_token() -> Option<String> {
+    with_registry(|registry| {
+        registry
+            .preview
+            .as_ref()
+            .map(|preview| preview.token.clone())
+    })
+}
+
+/// R1, preview. The check of a client's program ends in a validation that
+/// cannot be interrupted, and a deadline scope does not answer the caller.
+/// Read on the calling thread, a validation that answers "yes" after the
+/// preview's share names no candidate. Asked through the preview's worker —
+/// as the command asks — a validation that does not return leaves the caller
+/// with a timeout AT its deadline and keeps nothing: the earlier preview is
+/// neither replaced nor revived, the stalled worker keeps the turn so that no
+/// second thread or read starts beside it, and what it finally returns has
+/// no receiver.
+#[test]
+fn a_preview_whose_validation_does_not_return_is_answered_in_time_and_keeps_nothing() {
+    use crate::procinfo::{DYNAMIC_CHECKS, FULL_READS};
+    use crate::session_runtime::Deadline;
+    let world = World::new();
+    world.card("a", &format!("session={ID_A}"), Some("{agent}"));
+    let client = world.foreground_pid("a");
+    let (_, view) = world.preview();
+    assert_eq!(view["entries"][0]["kind"], "candidate");
+    {
+        // the validation answers yes, after the preview's share
+        let me = std::thread::current().id();
+        let held = hold::install(
+            move |pid| pid == client && std::thread::current().id() == me,
+            hold::Until::DeadlinePassed,
+        );
+        let before = (
+            FULL_READS.with(std::cell::Cell::get),
+            DYNAMIC_CHECKS.with(std::cell::Cell::get),
+        );
+        let (token, view) = {
+            let _phase = Deadline::until(Instant::now() + Duration::from_millis(300));
+            world.preview()
+        };
+        assert_eq!(held.entered(), 1, "asked once");
+        assert_eq!(
+            (
+                FULL_READS.with(std::cell::Cell::get),
+                DYNAMIC_CHECKS.with(std::cell::Cell::get)
+            ),
+            (before.0, before.1 + 1),
+            "nothing is read or asked after a late answer"
+        );
+        assert_eq!(view["entries"][0]["kind"], "unsupported");
+        assert_eq!(view["entries"][0]["reason"], "check-incomplete");
+        assert!(view["entries"][0]["launchProfile"].is_null());
+        // what was not checked in time cannot be approved
+        let error = world
+            .restart(
+                "r-late-preview",
+                &world.approval(&token, &["a"], Policy::Ordinary),
+            )
+            .unwrap_err();
+        assert_eq!(error.message(), "reentry-preview-expired");
+        assert!(world.pasted().is_empty());
+        assert_eq!(
+            world.foreground_pid("a"),
+            client,
+            "the client was left alone"
+        );
+    }
+    // an earlier preview the dialog may still be showing
+    let (earlier, view) = world.preview();
+    assert_eq!(view["entries"][0]["kind"], "candidate");
+    assert_eq!(kept_token().as_deref(), Some(earlier.as_str()));
+    // through the worker: the validation answers yes and does not return
+    let held = hold::install(
+        move |pid| pid == client && std::thread::current().name() == Some("deck-reentry-preview"),
+        hold::Until::Released,
+    );
+    let budget = Duration::from_millis(600);
+    let asked = Instant::now();
+    let error = preview_within(budget, remote_read(&world)).unwrap_err();
+    let waited = asked.elapsed();
+    assert_eq!(error.message(), "reentry-preview-timeout");
+    assert!(
+        waited >= budget && waited < budget + Duration::from_secs(2),
+        "answered at the deadline, not when the validation returns: {waited:?}"
+    );
+    assert!(
+        held.wait_entered(1, Duration::from_secs(5)),
+        "the worker is inside the validation"
+    );
+    assert_eq!(
+        kept_token().as_deref(),
+        Some(earlier.as_str()),
+        "a timeout keeps nothing and drops nothing"
+    );
+    // the stalled worker still owns the turn: the next preview is refused at
+    // once and starts neither a thread nor a validation beside it
+    let asked = Instant::now();
+    let busy = preview_within(budget, remote_read(&world)).unwrap_err();
+    assert_eq!(busy.message(), "reentry-preview-busy");
+    assert!(
+        asked.elapsed() < Duration::from_millis(400),
+        "not waited for"
+    );
+    assert_eq!(held.entered(), 1, "no validation beside the stalled one");
+    // the validation returns at last: its answer reaches nobody
+    held.release();
+    world.wait("the stalled preview to end", || {
+        PREVIEW_TURN.lock_or_recover().is_none()
+    });
+    assert_eq!(
+        kept_token().as_deref(),
+        Some(earlier.as_str()),
+        "a late answer is not a preview"
+    );
+    assert_eq!(held.entered(), 1, "and nothing was asked again");
+    drop(held);
+    // unhurried, the worker's preview is the one that is kept
+    let view = preview_within(PREVIEW_BUDGET, remote_read(&world)).expect("an unhurried preview");
+    let view = serde_json::to_value(&view).unwrap();
+    assert_eq!(view["entries"][0]["kind"], "candidate");
+    assert_eq!(kept_token().as_deref(), view["token"].as_str());
+}
+
+/// R1, freeze with the previewed reference reused. Nothing is read again, so
+/// the one call that can take time is the binding's validation — and it
+/// answers "yes" after the preparation ended. That freezes nothing: the
+/// restart ends as its own timeout, not as a target that changed, before a
+/// lease is armed and before any exit key; the client is still running, the
+/// server is the old one, the approval is used up and nothing is asked twice.
+#[test]
+fn a_freeze_whose_validation_answers_late_is_the_restarts_timeout_before_any_exit_key() {
+    use crate::procinfo::{DYNAMIC_CHECKS, FULL_READS, STATIC_VALIDATIONS};
+    let world = World::new();
+    world.card("a", &format!("session={ID_A}"), Some("{agent}"));
+    let client = world.foreground_pid("a");
+    let server = world.server_pid();
+    let (token, view) = world.preview();
+    assert_eq!(view["entries"][0]["kind"], "candidate");
+    let approval = world.approval(&token, &["a"], Policy::Ordinary);
+    let counts = || {
+        (
+            FULL_READS.with(std::cell::Cell::get),
+            STATIC_VALIDATIONS.with(std::cell::Cell::get),
+            DYNAMIC_CHECKS.with(std::cell::Cell::get),
+        )
+    };
+    let me = std::thread::current().id();
+    let held = hold::install(
+        move |pid| pid == client && std::thread::current().id() == me,
+        hold::Until::DeadlinePassed,
+    );
+    let before = counts();
+    let started = Instant::now();
+    let error = world.restart("req-late-freeze", &approval).unwrap_err();
+    let took = started.elapsed();
+    let after = counts();
+    assert_eq!(
+        error.message(),
+        "tmux-restart-timeout",
+        "a check that did not finish is not a target that changed"
+    );
+    assert!(
+        took >= crate::restart::PREPARE_BUDGET
+            && took < crate::restart::PREPARE_BUDGET + Duration::from_secs(2),
+        "the preparation's own deadline: {took:?}"
+    );
+    assert_eq!(
+        (after.0 - before.0, after.1 - before.1, after.2 - before.2),
+        (0, 0, 1),
+        "the reference was reused; one validation, never asked again"
+    );
+    assert_eq!(held.entered(), 1);
+    // nothing crossed the side-effect boundary
+    assert!(
+        !world
+            .calls
+            .borrow()
+            .iter()
+            .any(|(args, _)| args.iter().any(|arg| arg.contains("C-d"))),
+        "no exit key"
+    );
+    assert!(world.pasted().is_empty());
+    assert_eq!(world.enters(), 0);
+    assert_eq!(world.server_pid(), server, "the server was not replaced");
+    assert_eq!(world.foreground_pid("a"), client, "the client still runs");
+    assert_eq!(world.launches().len(), 1);
+    assert!(!lifecycle::armed(), "no lease was armed");
+    assert!(known("req-late-freeze").is_none(), "no operation exists");
+    // the approval was used: it starts nothing again, and asks nothing
+    drop(held);
+    let before = counts();
+    let again = world.restart("req-late-freeze-2", &approval).unwrap_err();
+    assert_eq!(again.message(), "reentry-preview-expired");
+    assert_eq!(counts(), before);
+    assert_eq!(world.foreground_pid("a"), client);
+    // and the same client is the same candidate for a new preview
+    assert_eq!(world.preview().1["entries"][0]["kind"], "candidate");
+}
+
+/// R1, the started client's final check. The receipt arrived and the client
+/// is in the foreground; the check of what it runs answers "matches" after
+/// the confirmation's share. That confirms nothing — under either policy,
+/// and without a word about a bypass flag — and it is not called a change.
+/// While the check is stalled the entry is in progress, never a result. The
+/// client that was started is left alone, the one request is never made
+/// again, and the settled result does not move afterwards.
+#[test]
+fn a_final_check_that_answers_late_confirms_nothing_and_is_never_asked_again() {
+    for policy in [Policy::Ordinary, Policy::ReapplyBypass] {
+        let world = World::new();
+        let launch = match policy {
+            Policy::Ordinary => "{agent}".to_string(),
+            Policy::ReapplyBypass => format!("{{agent}} {BYPASS}"),
+        };
+        world.card("a", &format!("session={ID_A}"), Some(&launch));
+        let old = world.foreground_pid("a");
+        let (token, view) = world.preview();
+        assert_eq!(view["entries"][0]["kind"], "candidate", "{policy:?}");
+        let approval = world.approval(&token, &["a"], policy);
+        // The transaction's own thread validates a process that is not the
+        // old client exactly once it checks the client it started.
+        let me = std::thread::current().id();
+        let held = hold::install(
+            move |pid| pid != old && std::thread::current().id() == me,
+            hold::Until::DeadlinePassed,
+        );
+        let request = "req-late-final";
+        let (seen, stalled) = std::sync::mpsc::channel();
+        let settled = std::thread::scope(|scope| {
+            // what the operation says of the entry WHILE its check is stalled
+            scope.spawn(|| {
+                if held.wait_entered(1, Duration::from_secs(40)) {
+                    let _ = seen.send(known(request));
+                }
+            });
+            world.restart_with(
+                request,
+                Some(&approval),
+                Duration::from_secs(4),
+                &|| Ok(()),
+                &|_, _, _| {},
+            )
+        });
+        let (_, _, result) = settled.expect("the restart itself succeeded");
+        let result = result.expect("a re-entry result");
+        assert!(result.server_replaced, "{policy:?}");
+        assert_eq!(result.state, OperationState::Complete);
+        let late = entry(&result, "a");
+        assert_eq!(late.outcome, Outcome::Unconfirmed, "{policy:?}");
+        assert_eq!(
+            late.reason,
+            Some(Reason::ContextUnverified),
+            "{policy:?}: not verified in time — neither confirmed nor changed"
+        );
+        assert!(late.shell && late.client_observed && late.settled);
+        assert!(
+            !late.warnings.contains(&Warning::BypassReauthorized),
+            "{policy:?}: an unconfirmed entry says nothing about the flag"
+        );
+        let during = stalled
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the entry was seen while its check was stalled")
+            .expect("the operation is known while it runs");
+        assert_eq!(during.state, OperationState::Running);
+        let pending = entry(&during, "a");
+        assert_eq!(
+            (pending.outcome, pending.reason, pending.settled),
+            (Outcome::Unconfirmed, Some(Reason::LaunchUnconfirmed), false),
+            "{policy:?}: in progress while stalled, never a confirmation"
+        );
+        // one request, one Enter, one started client — and it was left alone
+        let pasted = world.pasted();
+        assert_eq!(pasted.len(), 1, "{policy:?}");
+        assert_eq!(
+            pasted[0].contains(BYPASS),
+            policy == Policy::ReapplyBypass,
+            "{policy:?}"
+        );
+        assert_eq!(world.enters(), 1);
+        assert_eq!(world.launches().len(), 2);
+        let started = world.foreground_pid("a");
+        assert!(world.foreground_is_child("a") && started != old);
+        assert_eq!(held.entered(), 1, "one validation, never asked again");
+        // the result is settled: the late answer moved nothing, then or later
+        drop(held);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(known(request).as_ref(), Some(&result));
+        assert_eq!(world.enters(), 1);
+        assert_eq!(world.launches().len(), 2);
+        assert_eq!(
+            world.foreground_pid("a"),
+            started,
+            "not undone, not restarted"
+        );
+    }
+}
+
+/// One more connection on the shared status socket, written and read to the
+/// listener's close: how long the accept loop took to serve it.
+fn served(socket: &Path, line: &str) -> Duration {
+    use std::io::{Read, Write};
+    let asked = Instant::now();
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the status socket");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream.write_all(line.as_bytes()).unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut rest = Vec::new();
+    stream
+        .read_to_end(&mut rest)
+        .expect("closed by the listener");
+    asked.elapsed()
+}
+
+/// R2, the shared listener. The exit receipts of two clients arrive; the
+/// receipt worker's validation of the first answers "yes" and does not
+/// return. The accept loop does not wait for it: a Signal line and another
+/// lifecycle line are each served at once. The worker is ONE: the second
+/// receipt waits behind the first and starts no validation. Neither helper
+/// is acknowledged in time, so no final session is named, no entry is
+/// attempted and nothing is typed. When the validation returns, its late
+/// "yes" writes nothing, the receipt that waited is refused unread, and
+/// nothing is asked again.
+#[test]
+fn a_receipt_whose_validation_does_not_return_holds_one_worker_and_never_the_listener() {
+    let world = World::new();
+    world.card("a", &format!("session={ID_A}"), Some("{agent}"));
+    world.card("b", &format!("session={ID_B}"), Some("{agent}"));
+    let clients = [world.foreground_pid("a"), world.foreground_pid("b")];
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["a", "b"], Policy::Ordinary);
+    // whichever thread validates an old client from here on, except the
+    // transaction's own: in production that is the receipt worker alone
+    let me = std::thread::current().id();
+    let held = hold::install(
+        move |pid| clients.contains(&pid) && std::thread::current().id() != me,
+        hold::Until::Released,
+    );
+    let socket = world.base.join("status.sock");
+    let lifecycle_line = format!(
+        r#"{{"protocol":"agent-lifecycle","v":1,"source":"claude-code","event":"session-start","nativeSessionId":"{ID_X}","startSource":"resume","socket":"{}","server_pid":1,"pane":"%0"}}"#,
+        world.socket
+    );
+    let probed = std::cell::Cell::new(false);
+    let request = "req-stalled-receipt";
+    let (_, _, result) = world
+        .restart_with(
+            request,
+            Some(&approval),
+            Duration::from_secs(3),
+            // after the exits were sealed: the worker is still inside its
+            // first validation, and both helpers have stopped waiting
+            &|| {
+                assert!(
+                    held.wait_entered(1, Duration::from_secs(5)),
+                    "the receipt worker is validating"
+                );
+                for line in ["{\"v\":1,\"source\":\"nobody\"}\n", &lifecycle_line] {
+                    let took = served(&socket, line);
+                    assert!(
+                        took < Duration::from_secs(1),
+                        "the accept loop waited for the validation: {took:?}"
+                    );
+                }
+                assert_eq!(held.entered(), 1, "the second receipt started nothing");
+                probed.set(true);
+                Ok(())
+            },
+            &|_, _, _| {},
+        )
+        .expect("the restart itself succeeded");
+    assert!(probed.get());
+    let result = result.expect("a re-entry result");
+    assert!(result.server_replaced);
+    for card in ["a", "b"] {
+        let skipped = entry(&result, card);
+        assert_eq!(skipped.outcome, Outcome::NotAttempted, "{card}");
+        assert_eq!(
+            skipped.reason,
+            Some(Reason::FinalSessionUnconfirmed),
+            "{card}"
+        );
+        assert!(!skipped.shell, "{card}");
+    }
+    assert!(world.pasted().is_empty());
+    assert_eq!(world.enters(), 0);
+    assert_eq!(world.launches().len(), 2, "only the user's own two starts");
+    // the validation returns, long after its receipt's budget
+    held.release();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        held.entered(),
+        1,
+        "the receipt that waited is refused unread; nothing is asked again"
+    );
+    assert_eq!(known(request).as_ref(), Some(&result));
+    assert!(world.pasted().is_empty());
+    assert_eq!(world.launches().len(), 2);
+    // the listener is still serving
+    assert!(served(&socket, "{\"v\":1}\n") < Duration::from_secs(1));
+}
+
+/// R2, the launch receipt. The started client reports its resume; the
+/// receipt worker's validation of that client answers "yes" and does not
+/// return. No fact is written while the lease is armed, the entry ends as
+/// "attempted, outcome unknown", and the one request is never made again —
+/// not while the worker is stalled and not when its late answer finds the
+/// lease sealed.
+#[test]
+fn a_launch_receipt_whose_validation_does_not_return_confirms_nothing_and_sends_nothing_twice() {
+    let world = World::new();
+    world.card("a", &format!("session={ID_A}"), Some("{agent}"));
+    let old = world.foreground_pid("a");
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["a"], Policy::Ordinary);
+    // whichever thread validates the started client, except the
+    // transaction's own: in production that is the receipt worker alone
+    let me = std::thread::current().id();
+    let held = hold::install(
+        move |pid| pid != old && std::thread::current().id() != me,
+        hold::Until::Released,
+    );
+    let request = "req-stalled-launch-receipt";
+    let (_, _, result) = world
+        .restart_with(
+            request,
+            Some(&approval),
+            Duration::from_secs(3),
+            &|| Ok(()),
+            &|_, _, _| {},
+        )
+        .expect("the restart itself succeeded");
+    let result = result.expect("a re-entry result");
+    assert!(result.server_replaced);
+    let unknown = entry(&result, "a");
+    assert_eq!(unknown.outcome, Outcome::Unconfirmed);
+    assert_eq!(unknown.reason, Some(Reason::LaunchUnconfirmed));
+    assert!(unknown.shell && unknown.client_observed);
+    assert_eq!(held.entered(), 1, "the worker validated the started client");
+    assert_eq!(world.pasted().len(), 1);
+    assert_eq!(world.enters(), 1);
+    assert_eq!(world.launches().len(), 2);
+    let started = world.foreground_pid("a");
+    // the late answer: the lease is sealed, the budget is long over
+    held.release();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(held.entered(), 1, "nothing is asked again");
+    assert_eq!(
+        known(request).as_ref(),
+        Some(&result),
+        "nothing was rewritten"
+    );
+    assert_eq!(world.enters(), 1);
+    assert_eq!(world.launches().len(), 2);
+    assert_eq!(
+        world.foreground_pid("a"),
+        started,
+        "the started client is left alone"
+    );
+}
+
+/// R1, what is read before a call of unknown length is not evidence of
+/// after it. The started client reports, is in the foreground, and its
+/// final check begins; WHILE that check runs the client is stopped and the
+/// shell takes the terminal back. The check itself answers "matches" in
+/// time — the process is alive and runs the frozen file — and the entry is
+/// still not confirmed: the client is not the pane's foreground at the
+/// instant it would be.
+#[test]
+fn a_client_that_leaves_the_foreground_during_its_final_check_is_not_confirmed() {
+    let world = World::new();
+    world.card("a", &format!("session={ID_A}"), Some("{agent}"));
+    let old = world.foreground_pid("a");
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["a"], Policy::Ordinary);
+    let me = std::thread::current().id();
+    let held = hold::install(
+        move |pid| pid != old && std::thread::current().id() == me,
+        hold::Until::Released,
+    );
+    let left = AtomicBool::new(false);
+    let started = std::sync::Mutex::new(None);
+    let settled = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            if held.wait_entered(1, Duration::from_secs(40)) {
+                let client = held.pids()[0];
+                let birth = crate::procinfo::process_start(client);
+                let shell = crate::procinfo::process(client).map_or(0, |info| info.ppid);
+                *started.lock_or_recover() = Some((client, birth));
+                // SAFETY: a stop signal to the stand-in this test started.
+                unsafe { libc::kill(client as libc::pid_t, libc::SIGSTOP) };
+                let until = Instant::now() + Duration::from_secs(5);
+                while Instant::now() < until && !left.load(Ordering::Acquire) {
+                    let shell_in_front = crate::agent_status::live_generation(shell)
+                        .is_some_and(|foreground| foreground.pid() == shell);
+                    left.store(shell_in_front, Ordering::Release);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            held.release();
+        });
+        world.restart_with(
+            "req-left-during-final",
+            Some(&approval),
+            Duration::from_secs(8),
+            &|| Ok(()),
+            &|_, _, _| {},
+        )
+    });
+    assert!(
+        left.load(Ordering::Acquire),
+        "the shell took the terminal back while the check was running"
+    );
+    let (_, _, result) = settled.expect("the restart itself succeeded");
+    let result = result.expect("a re-entry result");
+    let entered = entry(&result, "a");
+    assert_eq!(entered.outcome, Outcome::Unconfirmed);
+    assert_eq!(
+        entered.reason,
+        Some(Reason::LaunchUnconfirmed),
+        "alive and matching, and not the foreground when it would be confirmed"
+    );
+    assert!(entered.shell);
+    assert_eq!(world.pasted().len(), 1);
+    assert_eq!(world.enters(), 1);
+    assert_eq!(world.launches().len(), 2);
+    // the stopped stand-in is this test's own: end that exact generation
+    let stopped = *started.lock_or_recover();
+    if let Some((client, Some(birth))) = stopped {
+        if crate::procinfo::process_start(client) == Some(birth) {
+            // SAFETY: the generation was read again just above.
+            unsafe { libc::kill(client as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+}
+
+/// R1, a client that runs under its release's file name. Its first question
+/// — whose code is this running image — answers after the preview's share.
+/// Nothing is then known about it: that is a check that did not finish, and
+/// not "an agent this feature does not support", which would be a statement
+/// about a program nobody identified.
+#[test]
+fn a_late_answer_about_a_client_under_a_release_file_name_is_a_check_that_did_not_finish() {
+    use crate::session_runtime::Deadline;
+    let world = World::new();
+    let binary = release(&world, NEW.0, NEW.1);
+    world.card(
+        "a",
+        &format!("session={ID_A}"),
+        Some(&format!("'{}'", binary.display())),
+    );
+    let client = world.foreground_pid("a");
+    // unhurried: a candidate, by its code and whatever its file is called
+    assert_eq!(world.preview().1["entries"][0]["kind"], "candidate");
+    let me = std::thread::current().id();
+    let held = hold::install(
+        move |pid| pid == client && std::thread::current().id() == me,
+        hold::Until::DeadlinePassed,
+    );
+    let (_, view) = {
+        let _phase = Deadline::until(Instant::now() + Duration::from_millis(300));
+        world.preview()
+    };
+    assert_eq!(held.entered(), 1, "asked once");
+    assert_eq!(view["entries"][0]["kind"], "unsupported");
+    assert_eq!(view["entries"][0]["reason"], "check-incomplete");
+    assert!(view["entries"][0]["launchProfile"].is_null());
+}
+
+/// One entry never reports, so the receipts are waited for until the post
+/// share ends. The other entry reported long before that: its confirmation
+/// has a share of its own after the wait and is not lost to the entry that
+/// stayed silent.
+#[test]
+fn an_entry_that_never_reports_does_not_cost_another_its_confirmation() {
+    let world = World::new();
+    world.card("a", &format!("session={ID_A}"), Some("{agent}"));
+    world.card(
+        "b",
+        &format!("session={ID_B}\nresume=silent"),
+        Some("{agent}"),
+    );
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["a", "b"], Policy::Ordinary);
+    let post = Duration::from_secs(6);
+    let started = Instant::now();
+    let (_, _, result) = world
+        .restart_with(
+            "req-one-silent",
+            Some(&approval),
+            post,
+            &|| Ok(()),
+            &|_, _, _| {},
+        )
+        .expect("the restart itself succeeded");
+    assert!(
+        started.elapsed() >= post,
+        "the receipts were waited for until the post share ended"
+    );
+    let result = result.expect("a re-entry result");
+    let confirmed = entry(&result, "a");
+    assert_eq!(
+        (confirmed.outcome, confirmed.reason),
+        (Outcome::Confirmed, None),
+        "confirmed in the confirmation's own share"
+    );
+    let silent = entry(&result, "b");
+    assert_eq!(
+        (silent.outcome, silent.reason),
+        (Outcome::Unconfirmed, Some(Reason::LaunchUnconfirmed))
+    );
+    assert_eq!(world.pasted().len(), 2);
+    assert_eq!(world.enters(), 2);
+    assert_eq!(world.launches().len(), 4);
+}
+
+// ---------- the receipts end at the post deadline; the confirmation is its own share ----------
+//
+// Each of these decides the order of its threads itself — by a kept-back
+// validation, a pause before the seal, or a file the stand-in client waits
+// for — and none waits for a race to happen.
+
+/// What a test wants done on the restart's own thread after the receipts'
+/// wait ended and before they are sealed: the window a slow thread leaves
+/// there. Run once.
+static BEFORE_SEAL: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
+
+/// Called by `Plan::reopen` at that point (tests only).
+pub(super) fn before_seal() {
+    // taken out first: the lock is not held while a test's pause runs
+    let pause = BEFORE_SEAL.lock_or_recover().take();
+    if let Some(pause) = pause {
+        pause();
+    }
+}
+
+/// A pause before the seal, for as long as this lives; removed when dropped,
+/// run or not.
+struct BeforeSeal;
+
+impl BeforeSeal {
+    fn install(pause: impl Fn() + Send + 'static) -> Self {
+        *BEFORE_SEAL.lock_or_recover() = Some(Box::new(pause));
+        Self
+    }
+}
+
+impl Drop for BeforeSeal {
+    fn drop(&mut self) {
+        BEFORE_SEAL.lock_or_recover().take();
+    }
+}
+
+/// Wait until the stand-in clients have made `count` of the reports a test
+/// asked them for (`resume=on:` / `then=`): their hooks ran and returned.
+/// `false` when that did not happen in a generous time.
+fn reports_made(log: &Path, count: usize) -> bool {
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        let made = std::fs::read_to_string(log).map_or(0, |text| text.lines().count());
+        if made >= count {
+            return true;
+        }
+        if Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The first card reported in time and its final check is running — kept
+/// back. The second card had not reported when the post share ended, and
+/// reports NOW: after the post deadline, with all of its own receipt budget.
+/// It is not counted. The second card ends as "no receipt" — not as a check
+/// that ran late, and not as a confirmation — its client is left alone,
+/// nothing is sent again, and the stored result does not move. The first
+/// card keeps its own result.
+#[test]
+fn a_receipt_after_the_post_deadline_is_not_counted_while_another_entrys_check_runs() {
+    let world = World::new();
+    world.card("a", &format!("session={ID_A}"), Some("{agent}"));
+    let gate = world.base.join("cards").join("b").join("report-now");
+    world.card(
+        "b",
+        &format!("session={ID_B}\nresume=on:{}", gate.display()),
+        Some("{agent}"),
+    );
+    let old = [world.foreground_pid("a"), world.foreground_pid("b")];
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["a", "b"], Policy::Ordinary);
+    // The transaction's own thread validates a process that is not an old
+    // client exactly when it checks a client it started; card a's is first.
+    let me = std::thread::current().id();
+    let held = hold::install(
+        move |pid| !old.contains(&pid) && std::thread::current().id() == me,
+        hold::Until::Released,
+    );
+    let reported = world.home.join("reported.log");
+    let post = Duration::from_secs(6);
+    let request = "req-receipt-after-post";
+    let reopening = std::cell::Cell::new(None);
+    let let_go = std::sync::Mutex::new(None);
+    let settled = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            // Card a's check began: the wait for the receipts is over, and
+            // it ended at the post deadline, because card b was silent.
+            if held.wait_entered(1, Duration::from_secs(60)) {
+                std::fs::write(&gate, b"").expect("the gate");
+                if reports_made(&reported, 1) {
+                    *let_go.lock_or_recover() = Some(Instant::now());
+                }
+            }
+            held.release();
+        });
+        world.restart_with(
+            request,
+            Some(&approval),
+            post,
+            &|| Ok(()),
+            &|phase, _, _| {
+                if phase == "reopening" && reopening.get().is_none() {
+                    reopening.set(Some(Instant::now()));
+                }
+            },
+        )
+    });
+    let (_, _, result) = settled.expect("the restart itself succeeded");
+    let result = result.expect("a re-entry result");
+    let let_go = let_go
+        .lock_or_recover()
+        .expect("card b reported while card a's check was running");
+    let late = entry(&result, "b");
+    assert_eq!(
+        (late.outcome, late.reason),
+        (Outcome::Unconfirmed, Some(Reason::LaunchUnconfirmed)),
+        "no receipt counts after the post deadline"
+    );
+    assert!(late.shell && late.client_observed && late.settled);
+    // Card a: confirmed by its own check — unless this test's own pause used
+    // up the confirmation's share, which is then what the entry says.
+    let confirm_end = reopening.get().expect("the post phase began") + post + CONFIRM_SHARE;
+    let first = entry(&result, "a");
+    match (first.outcome, first.reason) {
+        (Outcome::Confirmed, None) => {}
+        (Outcome::Unconfirmed, Some(Reason::ContextUnverified)) => assert!(
+            let_go + Duration::from_millis(300) >= confirm_end,
+            "let go {:?} before the share ended, and not confirmed",
+            confirm_end - let_go
+        ),
+        other => panic!("card a: {other:?}"),
+    }
+    // one request each, and nothing after it
+    assert_eq!(world.pasted().len(), 2);
+    assert_eq!(world.enters(), 2);
+    assert_eq!(world.launches().len(), 4);
+    assert!(
+        world.foreground_is_child("b"),
+        "the late client is left alone"
+    );
+    assert_eq!(known(request).as_ref(), Some(&result));
+}
+
+/// The window between the post deadline and the seal. The restart's thread
+/// is past the wait — the post share is over — and has not sealed yet: the
+/// lease is still armed. The client reports in that window, with all of its
+/// own receipt budget. Nothing is recorded: what closes the receipts is the
+/// deadline, not how soon the thread gets to seal.
+#[test]
+fn a_receipt_between_the_post_deadline_and_the_seal_is_not_counted() {
+    let world = World::new();
+    let gate = world.base.join("cards").join("b").join("report-now");
+    world.card(
+        "b",
+        &format!("session={ID_B}\nresume=on:{}", gate.display()),
+        Some("{agent}"),
+    );
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["b"], Policy::Ordinary);
+    let reported = world.home.join("reported.log");
+    let (paused, at_the_seal) = std::sync::mpsc::channel();
+    let (go, gone) = std::sync::mpsc::channel::<()>();
+    let _pause = BeforeSeal::install(move || {
+        let _ = paused.send(Instant::now());
+        let _ = gone.recv_timeout(Duration::from_secs(60));
+    });
+    let post = Duration::from_secs(4);
+    let request = "req-receipt-before-seal";
+    let made = AtomicBool::new(false);
+    let asked = Instant::now();
+    let (settled, paused_at) = std::thread::scope(|scope| {
+        let (gate, reported, made) = (&gate, &reported, &made);
+        let pause = scope.spawn(move || {
+            let at = at_the_seal.recv_timeout(Duration::from_secs(60)).ok();
+            if at.is_some() {
+                assert!(lifecycle::armed(), "not sealed yet: the lease is armed");
+                std::fs::write(gate, b"").expect("the gate");
+                made.store(reports_made(reported, 1), Ordering::Release);
+            }
+            let _ = go.send(());
+            at
+        });
+        let settled = world.restart_with(request, Some(&approval), post, &|| Ok(()), &|_, _, _| {});
+        (settled, pause.join().expect("the pause ended"))
+    });
+    let (_, _, result) = settled.expect("the restart itself succeeded");
+    let result = result.expect("a re-entry result");
+    let paused_at = paused_at.expect("the restart reached the seal");
+    assert!(
+        paused_at >= asked + post,
+        "the wait ended at the post deadline, not before"
+    );
+    assert!(
+        made.load(Ordering::Acquire),
+        "the client reported in the window"
+    );
+    let late = entry(&result, "b");
+    assert_eq!(
+        (late.outcome, late.reason),
+        (Outcome::Unconfirmed, Some(Reason::LaunchUnconfirmed)),
+        "a receipt after the post deadline is not counted, sealed or not"
+    );
+    assert!(late.shell && late.client_observed);
+    assert_eq!(world.pasted().len(), 1);
+    assert_eq!(world.enters(), 1);
+    assert_eq!(world.launches().len(), 2);
+    assert_eq!(known(request).as_ref(), Some(&result));
+}
+
+/// The receipts were complete long before the post deadline, so they were
+/// sealed then — for every entry at once. While the first card's check is
+/// kept back, the second card's client reports again: a resume of ANOTHER
+/// session, which would have made its record a conflict. It arrives after
+/// the seal and changes nothing: the second card is confirmed from what was
+/// sealed, nothing is sent again, and the stored result does not move.
+#[test]
+fn a_receipt_after_the_seal_changes_nothing_that_was_sealed() {
+    let world = World::new();
+    world.card("a", &format!("session={ID_A}"), Some("{agent}"));
+    let gate = world.base.join("cards").join("b").join("report-again");
+    world.card(
+        "b",
+        &format!("session={ID_B}\nthen={ID_X}:{}", gate.display()),
+        Some("{agent}"),
+    );
+    let old = [world.foreground_pid("a"), world.foreground_pid("b")];
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["a", "b"], Policy::Ordinary);
+    let me = std::thread::current().id();
+    let held = hold::install(
+        move |pid| !old.contains(&pid) && std::thread::current().id() == me,
+        hold::Until::Released,
+    );
+    let reported = world.home.join("reported.log");
+    // far away: the receipts end by being complete, not by this deadline
+    let post = Duration::from_secs(40);
+    let request = "req-receipt-after-seal";
+    let made = AtomicBool::new(false);
+    let asked = Instant::now();
+    let settled = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            // card a's check began: every entry was sealed just before it
+            if held.wait_entered(1, Duration::from_secs(60)) {
+                std::fs::write(&gate, b"").expect("the gate");
+                made.store(reports_made(&reported, 1), Ordering::Release);
+            }
+            held.release();
+        });
+        world.restart_with(request, Some(&approval), post, &|| Ok(()), &|_, _, _| {})
+    });
+    let (_, _, result) = settled.expect("the restart itself succeeded");
+    assert!(
+        asked.elapsed() < post,
+        "the receipts were complete before the post deadline"
+    );
+    assert!(
+        made.load(Ordering::Acquire),
+        "card b reported again while card a's check was running"
+    );
+    let result = result.expect("a re-entry result");
+    for card in ["a", "b"] {
+        let confirmed = entry(&result, card);
+        assert_eq!(
+            (confirmed.outcome, confirmed.reason),
+            (Outcome::Confirmed, None),
+            "{card}: confirmed from the sealed set"
+        );
+    }
+    assert_eq!(world.pasted().len(), 2);
+    assert_eq!(world.enters(), 2);
+    assert_eq!(world.launches().len(), 4);
+    assert_eq!(known(request).as_ref(), Some(&result));
+}
+
+// ---------- a preview is published under its turn ---------------------------------
+
+/// What one preview's read returns, without a world: nothing to inspect,
+/// and a token a test can name.
+fn canned(token: &str) -> Previewed {
+    Previewed {
+        view: PreviewView {
+            token: token.into(),
+            lifecycle_observation: true,
+            entries: Vec::new(),
+        },
+        kept: Some(Preview {
+            token: token.into(),
+            made: Instant::now(),
+            entries: Vec::new(),
+        }),
+    }
+}
+
+/// Wait until `count` previews are parked waiting for the turn. `otherwise`
+/// is asked meanwhile, and what it answers fails the test: what a preview
+/// that did NOT wait did instead.
+fn waiting_for_the_turn(count: usize, otherwise: impl Fn() -> Option<&'static str>) {
+    let until = Instant::now() + Duration::from_secs(30);
+    while TURN_WAITERS.load(Ordering::SeqCst) < count {
+        if let Some(instead) = otherwise() {
+            panic!("{instead}");
+        }
+        assert!(
+            Instant::now() < until,
+            "no preview came to wait for the turn"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// As if the turn had passed — with no instant in which it was free — to a
+/// preview that asked later: what a waiter sees when somebody else took the
+/// turn before it could. The same slot, held, with a later deadline.
+fn succeeded_by(turn: &mut Turn, end: Instant) {
+    *PREVIEW_TURN.lock_or_recover() = Some(end);
+    turn.end = end;
+    PREVIEW_FREED.notify_all();
+}
+
+const UNHURRIED: Duration = Duration::from_secs(60);
+
+/// The first preview's worker has finished reading and its caller has the
+/// answer and has not published it; a second preview asks now. It cannot
+/// read — let alone publish — before the first is published: it waits for
+/// the turn. So the two are published in the order they were read, and the
+/// preview that can be confirmed in the end is the one that was read last;
+/// the older result never replaces it.
+#[test]
+fn a_preview_is_published_before_the_next_one_reads_and_never_over_a_newer_one() {
+    let _lock = TEST_LOCK.lock_or_recover();
+    reset_for_tests();
+    let (first, turn) =
+        read_in_turn(Instant::now() + UNHURRIED, || Ok(canned("first"))).expect("answered in time");
+    assert_eq!(kept_token(), None, "read, and not published yet");
+    std::thread::scope(|scope| {
+        let (entered, reading) = std::sync::mpsc::channel();
+        let (proceed, kept_back) = std::sync::mpsc::channel::<()>();
+        let second = scope.spawn(move || {
+            preview_within(UNHURRIED, move || {
+                let _ = entered.send(());
+                let _ = kept_back.recv();
+                Ok(canned("second"))
+            })
+        });
+        waiting_for_the_turn(1, || {
+            reading
+                .try_recv()
+                .is_ok()
+                .then_some("the second preview read while the first was not published")
+        });
+        assert_eq!(kept_token(), None);
+        // the first is published; only now can the second read
+        let view = turn.publish(first).expect("published inside its limit");
+        assert_eq!(view.token, "first");
+        reading
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the second preview reads once the first was published");
+        assert_eq!(
+            kept_token().as_deref(),
+            Some("first"),
+            "published first: the one that can be confirmed while the second reads"
+        );
+        proceed.send(()).expect("the second preview is reading");
+        let view = second
+            .join()
+            .expect("the second preview ended")
+            .expect("published");
+        assert_eq!(view.token, "second");
+    });
+    assert_eq!(
+        kept_token().as_deref(),
+        Some("second"),
+        "the preview read last is the one that can be confirmed"
+    );
+    assert!(
+        PREVIEW_TURN.lock_or_recover().is_none(),
+        "every turn was given back"
+    );
+    reset_for_tests();
+}
+
+/// What a deadline does to each party. A preview that waits for the turn
+/// leaves at its OWN limit and reads nothing. A preview whose answer is in
+/// hand and whose limit passes before it is published is not published: the
+/// earlier preview is neither replaced nor revived, and a request that came
+/// meanwhile was refused at once, not kept waiting for a holder that could
+/// no longer answer in time.
+#[test]
+fn a_preview_past_its_limit_is_not_published_and_a_waiter_leaves_at_its_own_limit() {
+    let _lock = TEST_LOCK.lock_or_recover();
+    reset_for_tests();
+    let read = Arc::new(AtomicBool::new(false));
+    let reading = |token: &'static str| {
+        let read = read.clone();
+        move || {
+            read.store(true, Ordering::Release);
+            Ok(canned(token))
+        }
+    };
+    // an unpublished preview holds the turn, with a minute to go
+    let (first, turn) =
+        read_in_turn(Instant::now() + UNHURRIED, || Ok(canned("first"))).expect("answered in time");
+    let own = Duration::from_millis(300);
+    let asked = Instant::now();
+    let waited_out = preview_within(own, reading("waiter"));
+    let waited = asked.elapsed();
+    assert_eq!(waited_out.unwrap_err().message(), "reentry-preview-busy");
+    assert!(
+        waited >= own && waited < own + Duration::from_secs(2),
+        "it left at its own limit: {waited:?}"
+    );
+    assert!(!read.load(Ordering::Acquire), "and read nothing");
+    assert_eq!(kept_token(), None);
+    // the holder was not disturbed
+    assert_eq!(turn.publish(first).expect("published").token, "first");
+    assert_eq!(kept_token().as_deref(), Some("first"));
+    // answered in time, published too late
+    let limit = Instant::now() + Duration::from_secs(1);
+    let (late, turn) = read_in_turn(limit, || Ok(canned("late"))).expect("answered in time");
+    while Instant::now() < limit {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let asked = Instant::now();
+    let refused = preview_within(UNHURRIED, reading("beside"));
+    assert_eq!(refused.unwrap_err().message(), "reentry-preview-busy");
+    assert!(
+        asked.elapsed() < Duration::from_secs(2),
+        "a holder past its deadline is not waited for"
+    );
+    assert!(!read.load(Ordering::Acquire));
+    let error = turn.publish(late).unwrap_err();
+    assert_eq!(error.message(), "reentry-preview-timeout");
+    assert_eq!(
+        kept_token().as_deref(),
+        Some("first"),
+        "neither replaced nor revived"
+    );
+    assert!(PREVIEW_TURN.lock_or_recover().is_none(), "the turn is free");
+    // unhurried, the next preview is the one that can be confirmed
+    let view = preview_within(UNHURRIED, reading("next")).expect("published");
+    assert_eq!(view.token, "next");
+    assert!(read.load(Ordering::Acquire));
+    assert_eq!(kept_token().as_deref(), Some("next"));
+    reset_for_tests();
+}
+
+/// A worker that outlived its caller. The caller is answered at its limit;
+/// the worker goes on reading and still has the turn, so no second read and
+/// no second thread starts beside it. When its read returns at last, nothing
+/// is published — it has no caller to publish — and the one turn it gives
+/// back is its own: the next preview takes a turn of its own and is the one
+/// that can be confirmed.
+#[test]
+fn a_worker_that_outlived_its_caller_publishes_nothing_and_gives_back_its_own_turn() {
+    let _lock = TEST_LOCK.lock_or_recover();
+    reset_for_tests();
+    let (earlier, turn) = read_in_turn(Instant::now() + UNHURRIED, || Ok(canned("earlier")))
+        .expect("answered in time");
+    turn.publish(earlier).expect("published");
+    let (entered, reading) = std::sync::mpsc::channel();
+    let (proceed, kept_back) = std::sync::mpsc::channel::<()>();
+    let budget = Duration::from_millis(300);
+    let asked = Instant::now();
+    let timed_out = preview_within(budget, move || {
+        let _ = entered.send(());
+        let _ = kept_back.recv();
+        Ok(canned("stalled"))
+    });
+    let waited = asked.elapsed();
+    assert_eq!(timed_out.unwrap_err().message(), "reentry-preview-timeout");
+    assert!(
+        waited >= budget && waited < budget + Duration::from_secs(2),
+        "answered at its limit: {waited:?}"
+    );
+    reading
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the worker is inside its read");
+    assert_eq!(kept_token().as_deref(), Some("earlier"));
+    // the stalled worker has the turn: nothing reads beside it
+    let beside = Arc::new(AtomicBool::new(false));
+    let asked = Instant::now();
+    let busy = preview_within(UNHURRIED, {
+        let beside = beside.clone();
+        move || {
+            beside.store(true, Ordering::Release);
+            Ok(canned("beside"))
+        }
+    });
+    assert_eq!(busy.unwrap_err().message(), "reentry-preview-busy");
+    assert!(asked.elapsed() < Duration::from_secs(2), "not waited for");
+    assert!(!beside.load(Ordering::Acquire), "no second read");
+    assert!(
+        PREVIEW_TURN.lock_or_recover().is_some(),
+        "the turn is the stalled worker's"
+    );
+    // its read returns at last
+    proceed.send(()).expect("the worker is still reading");
+    let until = Instant::now() + Duration::from_secs(30);
+    while PREVIEW_TURN.lock_or_recover().is_some() {
+        assert!(Instant::now() < until, "the late worker gave its turn back");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        kept_token().as_deref(),
+        Some("earlier"),
+        "a late result is not published"
+    );
+    // the next preview: a turn of its own, published under it
+    let (next, turn) =
+        read_in_turn(Instant::now() + UNHURRIED, || Ok(canned("next"))).expect("answered in time");
+    assert!(PREVIEW_TURN.lock_or_recover().is_some());
+    assert_eq!(turn.publish(next).expect("published").token, "next");
+    assert_eq!(kept_token().as_deref(), Some("next"));
+    assert!(PREVIEW_TURN.lock_or_recover().is_none());
+    reset_for_tests();
+}
+
+/// Previews that keep coming do not keep a waiter waiting. The turn is held
+/// and — as far as the waiter can see — passes three times to a preview that
+/// asked later, each with a later deadline, without ever being free. The
+/// waiter still leaves at its own limit, having read nothing.
+#[test]
+fn the_wait_for_the_turn_ends_at_the_callers_own_limit_whoever_takes_the_turn_next() {
+    let _lock = TEST_LOCK.lock_or_recover();
+    reset_for_tests();
+    let mut turn = Turn::take(Instant::now() + Duration::from_secs(5)).expect("a free turn");
+    let own = Duration::from_millis(800);
+    let read = Arc::new(AtomicBool::new(false));
+    let (result, waited) = std::thread::scope(|scope| {
+        let waiter = scope.spawn({
+            let read = read.clone();
+            move || {
+                let asked = Instant::now();
+                let result = preview_within(own, move || {
+                    read.store(true, Ordering::Release);
+                    Ok(canned("waiter"))
+                });
+                (result, asked.elapsed())
+            }
+        });
+        for later in [6, 7, 8] {
+            waiting_for_the_turn(1, || None);
+            succeeded_by(&mut turn, Instant::now() + Duration::from_secs(later));
+        }
+        waiter.join().expect("the waiter ended")
+    });
+    assert_eq!(result.unwrap_err().message(), "reentry-preview-busy");
+    assert!(
+        waited >= own && waited < own + Duration::from_secs(2),
+        "its own limit, and no holder's: {waited:?}"
+    );
+    assert!(!read.load(Ordering::Acquire), "it read nothing");
+    drop(turn);
+    assert!(PREVIEW_TURN.lock_or_recover().is_none());
+    reset_for_tests();
 }

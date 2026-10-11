@@ -42,6 +42,16 @@
 // a client it found started. Those two reasons carry their own advice (open
 // the card and check), so the "before trying again" line is not added to
 // them. Nothing here says resumed, ready or restored, and no row offers a retry.
+// Three things about a bypass request are never merged. A CONFIRMED entry the
+// backend marks `bypass-reauthorized` says that the session was re-entered and
+// that the bypass flag was sent as authorized — the backend gives that mark
+// only when the started client's own arguments matched the request — and its
+// one detail line says that Deck did not verify the permission in effect.
+// Nothing says bypass was restored or is on. An entry that is not confirmed
+// says only that re-entry was attempted: it never says a flag was delivered.
+// `check-incomplete` is a check that did not finish; it is worded as that and
+// never as a program that changed. No row names a release, a digest or a
+// certification: the page has no such field to show.
 // Every entry carries `settled`: its outcome is final. An entry is settled
 // when the backend says so or when the whole operation is `complete`; a
 // missing flag in a `running` operation is NOT settled. An unsettled entry is
@@ -90,6 +100,7 @@ const REASON_KEYS = {
   'identity-unavailable': 'reentry.reason.identity-unavailable',
   'executable-unavailable': 'reentry.reason.executable-unavailable',
   'final-session-unconfirmed': 'reentry.reason.final-session-unconfirmed',
+  'check-incomplete': 'reentry.reason.check-incomplete',
   'exit-timeout': 'reentry.reason.exit-timeout',
   'impact-changed': 'reentry.reason.impact-changed',
   'launch-refused': 'reentry.reason.launch-refused',
@@ -368,7 +379,10 @@ function pendingRow(base, pollEnded) {
 function resultRow(entry, running, pollEnded) {
   const base = { cardId: entry.cardId, session: entry.session, shell: entry.shell };
   if (running && entry.settled !== true) return pendingRow(base, pollEnded);
-  const warnings = warningLines(entry.warnings);
+  // the bypass mark belongs to a confirmed entry alone: nothing about a flag
+  // is said for an entry whose request may never have arrived
+  const warnings = warningLines(entry.outcome === 'confirmed' ? entry.warnings
+    : entry.warnings.filter(code => code !== 'bypass-reauthorized'));
   const reason = own(REASON_KEYS, entry.reason);
   if (entry.outcome === 'confirmed') {
     return { ...base, tone: 'ok', details: warnings,

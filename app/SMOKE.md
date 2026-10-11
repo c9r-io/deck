@@ -450,8 +450,20 @@ Run it like every other mode (fresh `DECK_SMOKE_DATA_DIR`, unique
 `DECK_SMOKE_TMUX_SOCKET`, `DECK_SMOKE_WKWEBVIEW=reentry app/run.sh`) and judge
 it with `scripts/smoke-verdict <data-dir> reentry`.
 
-It has run three times, all on the test machine on 2026-10-10, as an ad-hoc
-signed debug carrier at the default 1280×800 window. The first two runs
+The result list is compared word for word where the wording is the
+contract: a confirmed Policy B entry must read exactly "Claude session
+re-entry confirmed. The bypass flag was sent as authorized." with the one
+detail line "Deck did not independently verify Claude’s current effective
+permission." (and their Chinese sentences), and no other row — the
+unconfirmed one, which the script even hands the bypass mark, and the one
+still running — may contain a word about a flag or a permission, in either
+language, while the operation runs or after it settled.
+
+It has run four times, all on the test machine, as an ad-hoc signed debug
+carrier at the default 1280×800 window. The fourth run (2026-10-11, the
+wording checks above included) PASSED, 15 of 15 checkpoints; it is the only
+run of the current result wording. The first three were on 2026-10-10. The
+first two of them
 FAILED: every checkpoint matched the manifest except `reentry-layout`
 (`a=-4`, expected `7`: neither language's modal passed the carrier's own
 reachability test). The second run's layout items (below) named the one term
@@ -460,8 +472,8 @@ that did not hold: the section overflowed sideways, by 16 px in English and
 stylesheet's general `input` width (100%); `.reentry-choice input` now sets
 `width: auto`. The third run PASSED, 15 of 15 checkpoints: every term held in
 both languages, in the tick of the assertion and after the page settled, with
-no sideways overflow. That is one passing run. Other window sizes, the larger
-font scale and the signed carrier have not been run.
+no sideways overflow. That is two passing runs, one for each wording. Other
+window sizes, the larger font scale and the signed carrier have not been run.
 
 Start the carrier with the environment the app would really get. The first
 two runs were started from a shell that had exported `LC_ALL=C` for its own
@@ -490,7 +502,22 @@ The mode proves nothing about the real transaction. That is covered by the
 Rust integration tests with a stand-in client and the native campaigns
 (`agent_reentry/claude.rs`, module header). Follow-up 33 additionally passed
 local isolated real-application Policy A validation; it does not certify
-release installation or global hook migration.
+release installation or global hook migration, and it ran while a client was
+still admitted by a list of release digests. The first three runs of this
+mode were of an earlier result wording; only the fourth covers the current
+one (a confirmed Policy B entry says the bypass flag was sent as authorized;
+an entry that is not confirmed says re-entry was attempted).
+
+On 2026-10-11, the new identity mechanism completed representative P3 on
+real Claude 2.1.295: A/B each passed one controller transaction (two/three
+cards) and one isolated real-application UI transaction (one/three cards).
+Both B samples included a bypass launch lowered to plan before reauthorization.
+The application used the debug entry below; an earlier B preparation stopped
+on a CUA timeout before Claude started, and its failure record is retained.
+See the [acceptance summary](../reports/agent-reentry-forward-compat/acceptance.md)
+for the four evidence cells. P3 is complete with evidence limits; macOS 26
+and formal release installation remain unverified. This does not turn the
+scripted WK mode into native transaction evidence or authorize another run.
 
 ### Graceful agent exit and restart timing
 
@@ -521,32 +548,43 @@ in the experiment evidence. This test is local isolated application evidence,
 not certification of release installation or global hook migration.
 
 From `app/src-tauri`, build this debug carrier with
-`cargo --config 'profile.dev.package.sha2.opt-level=3' build --locked --offline --bin deck-app`.
-This optimizes only hashing, preserves debug assertions and does not change
-the release profile. Full SHA-256 reads, file-state checks and the production
-15-second post-phase budget remain unchanged. Follow-up 33's first unoptimized
-carrier refused re-entry at that deadline and launched no replacement. The
-separate full-read timing samples and the optimized carrier's success support
-a debug hashing cost explanation; no in-app hash timing trace was collected.
-The read-only ignored test
-`certified_image_reread_fits_the_production_post_budget` accepts only an explicit
-`DECK_REENTRY_EXECUTABLE_PROBE` path and a production-certified digest; it starts
-no client. For an authorized future experiment, run it explicitly from the
-same directory with the same dependency optimization (replace the placeholder
-with the already verified absolute executable path):
+`cargo build --locked --offline --bin deck-app`. `Cargo.toml` optimizes the
+SHA-256 dependency in the dev profile (`[profile.dev.package.sha2]`): debug
+assertions stay, the release profile is untouched, and the full SHA-256
+reads, the file-state checks, the full signature validation and the
+production 15-second post-phase budget are unchanged. Without that
+optimization one read of the 240 MB client takes about nine seconds and the
+post phase's re-read does not finish (follow-up 33's first carrier; it is
+now reported as `check-incomplete`, not as a changed program).
+
+A client is admitted by its code identity, not by a list of releases
+(`docs/tmux-server-lifecycle.md`). Two read-only ignored tests measure and
+check that against a real executable the operator names; neither starts a
+client or sends one anything, and neither prints a path, an argument or a
+digest. Run them from the same directory (replace the placeholders with
+already verified absolute paths):
 
 ```sh
-DECK_REENTRY_EXECUTABLE_PROBE='<certified-absolute-executable>' \
-  cargo --config 'profile.dev.package.sha2.opt-level=3' test --locked --offline \
-  --bin deck-app procinfo::tests::certified_image_reread_fits_the_production_post_budget \
-  -- --ignored --exact
+# digest, full signature validation, a reference plus the post phase's
+# re-read under one production deadline; with a pid, its dynamic binding
+DECK_REENTRY_EXECUTABLE_PROBE='<absolute-executable>' \
+  cargo test --locked --offline --bin deck-app \
+  procinfo::tests::executable_qualification_cost_fits_the_production_budgets \
+  -- --ignored --exact --nocapture
+
+# the production requirement: files that must be the product, files that
+# must not be, and one already running client (its HOME for the profile)
+DECK_REENTRY_PRODUCT_ACCEPT='<client-executable>[:<another>]' \
+DECK_REENTRY_PRODUCT_REJECT='<some-other-signed-executable>' \
+DECK_REENTRY_PROCESS_PROBE='<pid>' DECK_REENTRY_PROCESS_HOME="$HOME" \
+  cargo test --locked --offline --bin deck-app \
+  agent_reentry::claude::tests::the_production_requirement_on_named_real_executables_and_processes \
+  -- --ignored --exact --nocapture
 ```
 
-The initial full read establishes the reference before the test's deadline;
-only its second full read is asserted against the production budget. The
-reported test duration includes both reads, so the unoptimized passing sample
-is a cost measurement, not a reproduction of the application's refusal.
-Do not extend deadlines or replace a full hash with metadata.
+The measurements are printed before anything is judged. Do not extend
+deadlines, replace a full hash with metadata, or skip a validation to make
+a carrier pass.
 
 - [ ] In an isolated build, enable terminal output recovery and create test
       Claude Code and Codex sessions. Restart while idle, while running, with

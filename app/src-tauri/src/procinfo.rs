@@ -16,14 +16,45 @@
 //! poll — and `qualify_client` reduces its argv and environment HERE against
 //! a static `LaunchGrammar`. What leaves is a closed `LaunchProfile`, one boolean, and
 //! two bounded references: the process's real executable file
-//! (`ExecutableRef`: path, file identity, SHA-256) and its kernel working
-//! directory (`DirRef`). The raw argv, the environment, any token, and any
-//! value of a recognized flag are dropped inside the reduction and reach no
-//! caller, callback, log or `Debug` output; neither reference prints its
-//! path. A profile describes how that client was STARTED, never its current
-//! or final permission mode.
+//! (`ExecutableRef`: path, file identity, SHA-256, validated code identity)
+//! and its kernel working directory (`DirRef`). The raw argv, the
+//! environment, any token, and any value of a recognized flag are dropped
+//! inside the reduction and reach no caller, callback, log or `Debug`
+//! output; neither reference prints its path. A profile describes how that
+//! client was STARTED, never its current or final permission mode.
+//!
+//! Whose code a process is, and that it executes the referenced file, is
+//! asked of Security.framework in this process (`code_identity`, a private
+//! child module: its header is the contract of those checks). Three kinds of
+//! fact are kept apart everywhere below: what the KERNEL says of a process
+//! (generation, image path, launch image, directory), what the DISK holds
+//! (file state, content digest, signature) and what Security proves of the
+//! RUNNING image (`binding`). A file name, a version, a path, a signature
+//! that validates on disk or a digest never stands in for the third; a
+//! digest is compared only with itself, inside one transaction.
+//!
+//! The third kind is asked by a call that cannot be interrupted. It is made
+//! only for a caller that owns a deadline, and its answer exists only when
+//! it returned inside that deadline (`validated`): a late "yes" is no
+//! binding and no product, and it is not "another program" either. The
+//! deadline bounds the answer, never the call — a caller that must stay
+//! responsive asks from a worker it can stop waiting for.
+
+mod code_identity;
 
 use std::collections::HashMap;
+
+pub(crate) use code_identity::ProductIdentity;
+use code_identity::{CodeIdentity, OnDisk, Running};
+
+/// Test support of the code-identity checks: stand-in products and signed
+/// fixture programs, and what the tests count and inject on their thread.
+#[cfg(test)]
+pub(crate) use code_identity::fixture as identity_fixture;
+#[cfg(test)]
+pub(crate) use code_identity::hold as identity_hold;
+#[cfg(test)]
+pub(crate) use code_identity::{DYNAMIC_CHECKS, STATIC_VALIDATIONS};
 
 /// `e_tdev` of a process without a controlling terminal.
 #[cfg(target_os = "macos")]
@@ -363,7 +394,7 @@ pub(crate) fn orphans_running(exec: &str, prefix: &[&str], last_prefix: &str) ->
 
 // ---------- re-entry qualification (exact target, low frequency) -------------
 
-/// The launch shapes one certified client supports, stated by its adapter as
+/// The launch shapes a client is supported in, stated by its adapter as
 /// static data. The reduction of a live argv/environment against it happens
 /// in this module only; nothing here is a callback that could carry a raw
 /// argument out.
@@ -509,19 +540,36 @@ fn reduce_launch(
     (profile, directories)
 }
 
-// How many full content reads this thread started (the cost tests).
+// How many full content reads this thread started (the cost tests), and how
+// long each of this thread's next full reads stalls before its first byte
+// (the tests of a read that cannot be interrupted and returns late).
 #[cfg(test)]
 thread_local! {
     pub(crate) static FULL_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static READ_STALL: std::cell::Cell<Option<std::time::Duration>> = const { std::cell::Cell::new(None) };
 }
 
 /// The largest executable the qualification will hash.
 const MAX_EXECUTABLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// One real executable file as it was when read: where it is, which file it
-/// is, and what it contains. `Debug` prints none of it.
+/// Why an executable reference could not be made, or no longer holds. The
+/// two are different facts and are worded differently for the user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unavailable {
+    /// Positively not the referenced program: the path names no regular
+    /// file of its own, the file's state or content is another one, what it
+    /// holds is not valid code of the product, or the process does not
+    /// execute it.
+    Changed,
+    /// The read or the validation did not finish — its phase ended, or the
+    /// file, the kernel or Security gave no answer. No proof either way.
+    Unverified,
+}
+
+/// One file state: where the file is, which file it is, and what it
+/// contains.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct ExecutableRef {
+struct FileState {
     path: std::path::PathBuf,
     device: u64,
     inode: u64,
@@ -534,28 +582,35 @@ pub(crate) struct ExecutableRef {
     sha256: [u8; 32],
 }
 
-impl std::fmt::Debug for ExecutableRef {
+impl std::fmt::Debug for FileState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ExecutableRef(..)")
+        f.write_str("FileState(..)")
     }
 }
 
-impl ExecutableRef {
+impl FileState {
     /// The file at `path` if it is a regular file that names itself (no
-    /// link on the way), read and hashed now.
-    pub(crate) fn read(path: &std::path::Path) -> Option<Self> {
+    /// link on the way), read in full and hashed now.
+    fn read(path: &std::path::Path) -> Result<Self, Unavailable> {
         use sha2::Digest;
         use std::io::Read;
         use std::os::unix::fs::MetadataExt;
-        if !path.is_absolute() || std::fs::canonicalize(path).ok()?.as_path() != path {
-            return None;
+        let named = path.is_absolute()
+            && std::fs::canonicalize(path).is_ok_and(|real| real.as_path() == path);
+        if !named {
+            return Err(Unavailable::Changed);
         }
         #[cfg(test)]
-        FULL_READS.with(|reads| reads.set(reads.get() + 1));
-        let mut file = std::fs::File::open(path).ok()?;
-        let before = file.metadata().ok()?;
+        {
+            FULL_READS.with(|reads| reads.set(reads.get() + 1));
+            if let Some(stall) = READ_STALL.with(std::cell::Cell::get) {
+                std::thread::sleep(stall);
+            }
+        }
+        let mut file = std::fs::File::open(path).map_err(|_| Unavailable::Changed)?;
+        let before = file.metadata().map_err(|_| Unavailable::Unverified)?;
         if !before.is_file() || before.size() > MAX_EXECUTABLE_BYTES {
-            return None;
+            return Err(Unavailable::Changed);
         }
         let mut hasher = sha2::Sha256::new();
         let mut buffer = vec![0u8; 1 << 20];
@@ -564,31 +619,15 @@ impl ExecutableRef {
                 Ok(0) => break,
                 Ok(n) => hasher.update(&buffer[..n]),
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => return None,
+                Err(_) => return Err(Unavailable::Unverified),
             }
             // Bounded by size above and by the caller's deadline here: a
             // read that outlives its phase yields no reference at all.
             if crate::session_runtime::check_deadline().is_err() {
-                return None;
+                return Err(Unavailable::Unverified);
             }
         }
-        // the path must still name the file that was hashed
-        let after = std::fs::symlink_metadata(path).ok()?;
-        let identity = |m: &std::fs::Metadata| {
-            (
-                m.dev(),
-                m.ino(),
-                m.size(),
-                m.mtime(),
-                m.mtime_nsec(),
-                m.ctime(),
-                m.ctime_nsec(),
-            )
-        };
-        if !after.is_file() || identity(&after) != identity(&before) {
-            return None;
-        }
-        Some(Self {
+        let state = Self {
             path: path.to_path_buf(),
             device: before.dev(),
             inode: before.ino(),
@@ -596,31 +635,19 @@ impl ExecutableRef {
             modified: (before.mtime(), before.mtime_nsec()),
             changed: (before.ctime(), before.ctime_nsec()),
             sha256: hasher.finalize().into(),
-        })
+        };
+        // the path must still name the file that was hashed
+        if state.at(path) {
+            Ok(state)
+        } else {
+            Err(Unavailable::Changed)
+        }
     }
 
-    /// Lowercase hex SHA-256 of the file's content.
-    pub(crate) fn digest_hex(&self) -> String {
-        self.sha256.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
-    /// The path still names the same file with the same content (re-read).
-    pub(crate) fn unchanged(&self) -> bool {
-        Self::read(&self.path).is_some_and(|now| now == *self)
-    }
-
-    /// The path still names the very file state that was hashed: same device
-    /// and inode, same size, same modification AND change instants. The
-    /// content is not re-read; this is valid only as a follow-up to a full
-    /// read of this reference in the same operation, and any write, rename,
-    /// replacement or metadata change since then fails it.
-    pub(crate) fn same_state(&self) -> bool {
-        self.same_file_at(&self.path)
-    }
-
-    /// `path` is this reference's path and still names the same file state
-    /// (the content is not re-read).
-    fn same_file_at(&self, path: &std::path::Path) -> bool {
+    /// `path` is this state's path and names the very file state that was
+    /// hashed: same device and inode, same size, same modification AND
+    /// change instants. The content is not read.
+    fn at(&self, path: &std::path::Path) -> bool {
         use std::os::unix::fs::MetadataExt;
         path == self.path
             && std::fs::symlink_metadata(path).is_ok_and(|meta| {
@@ -630,11 +657,210 @@ impl ExecutableRef {
                     && (meta.ctime(), meta.ctime_nsec()) == self.changed
             })
     }
+}
+
+/// One real executable file as it was when read: where it is, which file it
+/// is, what it contains (SHA-256 of the whole file) and what its signature
+/// validated as — the code identity of one product, validated in full
+/// (`code_identity::on_disk`). The digest is this transaction's proof that
+/// the content is still the same; it is never looked up anywhere, and no
+/// digest is "known" or "unknown". The signature says whose code it is and
+/// lets a process be bound to it; it is never taken for the content. `Debug`
+/// prints none of it.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ExecutableRef {
+    file: FileState,
+    code: CodeIdentity,
+}
+
+impl std::fmt::Debug for ExecutableRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ExecutableRef(..)")
+    }
+}
+
+impl ExecutableRef {
+    /// The file at `path` as code of `product`: read and hashed in full,
+    /// then its signature validated in full against the product's
+    /// requirement, for one and the same file state. Both are uncancellable
+    /// once started; the caller's deadline is asked after each, and an
+    /// answer that arrived late is discarded, not used.
+    pub(crate) fn read(
+        path: &std::path::Path,
+        product: &ProductIdentity,
+    ) -> Result<Self, Unavailable> {
+        let file = FileState::read(path)?;
+        let code = match code_identity::on_disk(path, product) {
+            OnDisk::Valid(code) => code,
+            OnDisk::Invalid => return Err(Unavailable::Changed),
+            OnDisk::Unreadable => return Err(Unavailable::Unverified),
+        };
+        if crate::session_runtime::check_deadline().is_err() {
+            return Err(Unavailable::Unverified);
+        }
+        // the signature was validated for the file state that was hashed
+        if !file.at(path) {
+            return Err(Unavailable::Changed);
+        }
+        Ok(Self { file, code })
+    }
+
+    /// Lowercase hex SHA-256 of the file's content (tests: production
+    /// compares a digest only with itself, through `unchanged`).
+    #[cfg(test)]
+    pub(crate) fn digest_hex(&self) -> String {
+        self.file
+            .sha256
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    /// The path still names the same file with the same content: the whole
+    /// file is read and hashed again. Equal content is the same signed
+    /// code, so the signature is not validated a second time.
+    pub(crate) fn unchanged(&self) -> Result<(), Unavailable> {
+        if FileState::read(&self.file.path)? == self.file {
+            Ok(())
+        } else {
+            Err(Unavailable::Changed)
+        }
+    }
+
+    /// The path still names the very file state that was hashed: same device
+    /// and inode, same size, same modification AND change instants. The
+    /// content is not re-read; this is valid only as a follow-up to a full
+    /// read of this reference in the same operation, and any write, rename,
+    /// replacement or metadata change since then fails it.
+    pub(crate) fn same_state(&self) -> bool {
+        self.file.at(&self.file.path)
+    }
+
+    /// `path` is this reference's path and still names the same file state
+    /// (the content is not re-read).
+    fn same_file_at(&self, path: &std::path::Path) -> bool {
+        self.file.at(path)
+    }
 
     /// The launch target: this exact absolute path, for the launch sink only.
     pub(crate) fn path(&self) -> &std::path::Path {
-        &self.path
+        &self.file.path
     }
+
+    /// The reference of `path` under the product "exactly this file's own
+    /// signing identifier" (tests: any signed file can stand in).
+    #[cfg(test)]
+    pub(crate) fn for_tests(path: &std::path::Path) -> Self {
+        Self::read(path, code_identity::fixture::product_of(path)).expect("a signed test file")
+    }
+
+    /// The reference of the running test executable, read once per process
+    /// (tests that only need SOME real reference).
+    #[cfg(test)]
+    pub(crate) fn of_this_test() -> Self {
+        static OWN: std::sync::OnceLock<ExecutableRef> = std::sync::OnceLock::new();
+        OWN.get_or_init(|| {
+            Self::for_tests(&std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap())
+        })
+        .clone()
+    }
+}
+
+/// Whether one exact process generation executes one referenced file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Binding {
+    /// The generation executes exactly the referenced code, and its path
+    /// names the referenced file state.
+    Bound,
+    /// No such process generation (exited, or the pid was reused).
+    Gone,
+    /// It executes something else, or its path no longer holds the
+    /// referenced file state.
+    Other,
+    /// The kernel or Security gave no answer, or none inside the caller's
+    /// deadline: no proof either way.
+    Unreadable,
+}
+
+/// One dynamic validation, for a caller that owns a deadline.
+///
+/// The call cannot be interrupted, so three things decide whether its answer
+/// exists at all: the calling thread has a deadline scope (a validation
+/// nobody bounded is not made — `None`, and nothing was asked), that
+/// deadline has not passed when the call would start (`None`, nothing was
+/// asked), and it has not passed when the call returned. An answer that
+/// arrived late is dropped whatever it was: a late "this is the product" is
+/// not a product, and it is not a different program either — the caller
+/// hears "no answer". The scope does not shorten the call; who stops waiting
+/// for it, and what the stalled thread goes on holding, is each caller's own
+/// worker (`session_runtime::bounded_worker`).
+fn validated(check: impl FnOnce() -> Running) -> Option<Running> {
+    use crate::session_runtime::{check_deadline, deadline_active};
+    if !deadline_active() || check_deadline().is_err() {
+        return None;
+    }
+    let answer = check();
+    check_deadline().is_ok().then_some(answer)
+}
+
+/// Whether the process `pid` born at `birth` executes, right now, exactly
+/// the code `executable` refers to, from the file state it refers to.
+///
+/// Four fences around one running-code fact. The generation (pid and birth
+/// instant), the kernel's path of the running image and the file's state at
+/// that path are read BEFORE and AFTER; in between Security validates the
+/// process dynamically against the reference's own code directory
+/// (`code_identity::running`). The generation and the path are what the
+/// kernel says of the process; the file state is a disk fact; only the
+/// validation in the middle is a fact about the image in memory. It is the
+/// one that fails for an old image whose path already holds another validly
+/// signed file, and for an exec into another image under the same pid and
+/// birth instant. No file content is read.
+///
+/// The validation is made only under the caller's deadline and its answer
+/// counts only when it returned inside it (`validated`); otherwise this is
+/// `Unreadable` — never `Bound`, and never `Other` either.
+#[cfg(target_os = "macos")]
+pub(crate) fn binding(pid: u32, birth: (u64, u32), executable: &ExecutableRef) -> Binding {
+    let alive = || process_start(pid) == Some(birth);
+    let here = || image_path(pid).is_some_and(|image| executable.same_file_at(&image));
+    if !alive() {
+        return Binding::Gone;
+    }
+    if !here() {
+        return if alive() {
+            Binding::Other
+        } else {
+            Binding::Gone
+        };
+    }
+    let Some(running) = validated(|| code_identity::running(pid, &executable.code)) else {
+        return Binding::Unreadable;
+    };
+    if !alive() {
+        return Binding::Gone;
+    }
+    if !here() {
+        return Binding::Other;
+    }
+    match running {
+        Running::Is => Binding::Bound,
+        Running::IsNot | Running::Diverged => Binding::Other,
+        Running::Unreadable => Binding::Unreadable,
+    }
+}
+
+/// Whether the process `pid` born at `birth` is, right now, at the
+/// referenced file: the generation exists and the kernel's path of its image
+/// names the referenced file state. Kernel reads and one `lstat` — no
+/// validation, nothing that can stall. It proves nothing about the image in
+/// memory by itself; it is what a caller asks AGAIN after a `binding` whose
+/// validation took time, so that the generation and the file are facts of
+/// the instant it acts on.
+#[cfg(target_os = "macos")]
+pub(crate) fn at_executable(pid: u32, birth: (u64, u32), executable: &ExecutableRef) -> bool {
+    process_start(pid) == Some(birth)
+        && image_path(pid).is_some_and(|image| executable.same_file_at(&image))
 }
 
 /// A directory reference read from the kernel. `Debug` prints none of it.
@@ -714,44 +940,90 @@ fn working_dir(pid: u32) -> Option<DirRef> {
     path.is_absolute().then_some(DirRef(path))
 }
 
+/// What a process must be to qualify as a client: its adapter's static
+/// statements and the home it must have been started under.
+pub(crate) struct ClientSpec<'a> {
+    /// Whose code it must be. This, validated against the running image, is
+    /// the ONLY thing that admits a process: no file name, version, path or
+    /// digest does, and none refuses one.
+    pub(crate) product: &'a ProductIdentity,
+    /// The launcher's own file name. A HINT for wording a refusal — "this
+    /// looks like a client that could not be identified" — never a ground
+    /// for admitting a process and never one for refusing it.
+    pub(crate) launcher: &'a str,
+    pub(crate) grammar: &'a LaunchGrammar,
+    pub(crate) home: &'a std::path::Path,
+}
+
 /// What one exact client process qualifies as.
 #[derive(Debug)]
 pub(crate) struct ClientQualification {
-    /// The real file it runs, read and hashed; `None` when it cannot be
-    /// established (gone, replaced, not a regular file).
-    pub(crate) executable: Option<ExecutableRef>,
+    /// The real file it runs — read and hashed in full, its signature
+    /// validated as the product, and THIS generation bound to it — or why
+    /// there is no such reference.
+    pub(crate) executable: Result<ExecutableRef, Unavailable>,
     pub(crate) profile: LaunchProfile,
     /// A directory flag was present at launch (an observation, not a list).
     pub(crate) additional_dirs: bool,
     pub(crate) cwd: Option<DirRef>,
 }
 
-/// One exact process, asked whether it is a named client and how it started.
+/// Why a process is not taken for the product.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NotProduct {
+    /// Its code is another signer's or another product's.
+    Other,
+    /// It does not run what its path holds now: no file's identity is its own.
+    Diverged,
+    /// The kernel or Security gave no answer, or none inside the caller's
+    /// deadline. Nothing is known about the process.
+    Unreadable,
+}
+
+/// One exact process, asked whether it is the product and how it started.
 #[derive(Debug)]
 pub(crate) enum ClientRead {
     /// No such process generation (exited, or the pid was reused).
     Gone,
-    /// Its executable carries none of the wanted names; nothing was hashed.
-    NotNamed,
-    Named(ClientQualification),
+    /// Its running code was not shown to be the product's; nothing was
+    /// hashed. `named`: its image or argv[0] carries the launcher's name —
+    /// said only so that a refusal can be worded, and proof of nothing.
+    NotProduct {
+        named: bool,
+        why: NotProduct,
+    },
+    Product(ClientQualification),
 }
 
 fn name_of(path: &std::path::Path) -> Option<&str> {
     path.file_name().and_then(|name| name.to_str())
 }
 
-/// Qualify the process `pid` born at `birth`: is its executable (by file
-/// name, or by argv[0]'s basename) one of `names`, which file is it, how was
-/// it started and where does it run. The generation is checked before and
-/// after every read; a process that changed in between reads as `Gone`.
+/// Qualify the process `pid` born at `birth`: is it the product, which file
+/// does it run, how was it started and where.
+///
+/// The order is cost and proof. The cheap question comes first — does the
+/// running image, validated dynamically, satisfy the product's requirement
+/// (`code_identity::running_product`)? Only then is its file read and hashed
+/// in full and its signature validated in full (`ExecutableRef::read`), and
+/// only a generation BOUND to that reference (`binding`) keeps it. A
+/// reference in `known` that was validated for this very file state, in this
+/// same operation, is reused instead of reading the file again; the binding
+/// of this generation to it is still checked on its own, every time. The
+/// generation is checked before and after; a process that changed in between
+/// reads as `Gone`.
+///
+/// Both dynamic validations here — the first question and the binding — are
+/// made under the caller's deadline and count only inside it (`validated`).
+/// One that did not answer in time is `NotProduct { why: Unreadable }` or an
+/// `Unverified` reference: the process is never taken for the product on a
+/// late answer, and nothing is read or hashed after one.
 #[cfg(target_os = "macos")]
 pub(crate) fn qualify_client(
     pid: u32,
     birth: (u64, u32),
-    names: &[&str],
-    home: &std::path::Path,
-    grammar: &LaunchGrammar,
-    known: Option<&ExecutableRef>,
+    spec: &ClientSpec<'_>,
+    known: &[ExecutableRef],
 ) -> ClientRead {
     let alive = || process_start(pid) == Some(birth);
     if !alive() {
@@ -766,27 +1038,43 @@ pub(crate) fn qualify_client(
         .as_ref()
         .and_then(|(_, argv, _)| argv.first())
         .and_then(|argv0| name_of(std::path::Path::new(argv0)));
-    let named = |name: Option<&str>| name.is_some_and(|name| names.contains(&name));
-    if !named(name_of(&image)) && !named(argv_name) {
-        return ClientRead::NotNamed;
-    }
-    let (profile, additional_dirs) = match (&parsed, home.to_str()) {
-        (Some((_, argv, env)), Some(home)) => reduce_launch(argv, env, home, grammar),
-        _ => (LaunchProfile::Unknown, false),
+    let named = [name_of(&image), argv_name].contains(&Some(spec.launcher));
+    let reused = known
+        .iter()
+        .find(|known| known.code.is_of(spec.product) && known.same_file_at(&image));
+    let executable = match reused {
+        Some(known) => Ok(known.clone()),
+        None => {
+            let not = match validated(|| code_identity::running_product(pid, spec.product)) {
+                Some(Running::Is) => None,
+                Some(Running::IsNot) => Some(NotProduct::Other),
+                Some(Running::Diverged) => Some(NotProduct::Diverged),
+                Some(Running::Unreadable) | None => Some(NotProduct::Unreadable),
+            };
+            if let Some(why) = not {
+                return if alive() {
+                    ClientRead::NotProduct { named, why }
+                } else {
+                    ClientRead::Gone
+                };
+            }
+            ExecutableRef::read(&image, spec.product)
+        }
     };
-    // A reference read moments ago for this very file (same path, device,
-    // inode, size and modification instant) is reused instead of hashing
-    // the file again inside the restart's preparation budget; the launch
-    // re-reads the content in full (`ExecutableRef::unchanged`).
-    let executable = match known.filter(|known| known.same_file_at(&image)) {
-        Some(known) => Some(known.clone()),
-        None => ExecutableRef::read(&image),
+    let executable = executable.and_then(|executable| match binding(pid, birth, &executable) {
+        Binding::Bound => Ok(executable),
+        Binding::Unreadable => Err(Unavailable::Unverified),
+        Binding::Other | Binding::Gone => Err(Unavailable::Changed),
+    });
+    let (profile, additional_dirs) = match (&parsed, spec.home.to_str()) {
+        (Some((_, argv, env)), Some(home)) => reduce_launch(argv, env, home, spec.grammar),
+        _ => (LaunchProfile::Unknown, false),
     };
     let cwd = working_dir(pid);
     if !alive() || image_path(pid).as_deref() != Some(image.as_path()) {
         return ClientRead::Gone;
     }
-    ClientRead::Named(ClientQualification {
+    ClientRead::Product(ClientQualification {
         executable,
         profile,
         additional_dirs,
@@ -867,8 +1155,9 @@ fn judge_launch(argv: &[&str], env: &[&str], expect: &LaunchExpectation<'_>) -> 
 /// Whether the process `pid` born at `birth` is the client this operation
 /// asked for, as far as the kernel shows it — and what that evidence is:
 ///
-/// - **image** and **working directory** are read NOW (the file the process
-///   executes at this instant, the directory it is in at this instant);
+/// - **image** and **working directory** are read NOW: the code the process
+///   executes at this instant, bound to the frozen file by a dynamic
+///   validation (`binding`), and the directory it is in at this instant;
 /// - **arguments** and **environment** are the launch image the kernel kept
 ///   from the exec: what the process was started with. They are not its
 ///   current configuration, and a process can overwrite that area itself.
@@ -877,6 +1166,11 @@ fn judge_launch(argv: &[&str], env: &[&str], expect: &LaunchExpectation<'_>) -> 
 /// home, with no refused name, executing the frozen file in the frozen
 /// directory when looked at". It does not mean any file the client read
 /// afterwards, any setting it loaded, or its effective permission.
+///
+/// The image is validated twice, before and after the other reads, each
+/// under the caller's deadline (`binding`): a validation that did not answer
+/// inside it makes the whole answer `Unreadable` — not `Matches`, and not
+/// `OtherImage`.
 ///
 /// The raw arguments and environment are parsed and dropped here; only the
 /// closed `LaunchCheck` leaves, and no callback sees them.
@@ -887,15 +1181,11 @@ pub(crate) fn check_launch(
     expect: &LaunchExpectation<'_>,
 ) -> LaunchCheck {
     let alive = || process_start(pid) == Some(birth);
-    if !alive() {
-        return LaunchCheck::Gone;
-    }
-    if !runs_executable(pid, birth, expect.executable) {
-        return if alive() {
-            LaunchCheck::OtherImage
-        } else {
-            LaunchCheck::Gone
-        };
+    match binding(pid, birth, expect.executable) {
+        Binding::Bound => {}
+        Binding::Gone => return LaunchCheck::Gone,
+        Binding::Other => return LaunchCheck::OtherImage,
+        Binding::Unreadable => return LaunchCheck::Unreadable,
     }
     #[cfg(test)]
     if LAUNCH_IMAGE_UNREADABLE.with(std::cell::Cell::get) {
@@ -911,9 +1201,11 @@ pub(crate) fn check_launch(
     };
     let judged = judge_launch(&argv, &env, expect);
     let cwd = working_dir(pid);
-    // every read above was of this generation, still executing this file
-    if !alive() || !runs_executable(pid, birth, expect.executable) {
-        return LaunchCheck::Gone;
+    // every read above was of this generation, still executing this code
+    match binding(pid, birth, expect.executable) {
+        Binding::Bound => {}
+        Binding::Unreadable => return LaunchCheck::Unreadable,
+        Binding::Gone | Binding::Other => return LaunchCheck::Gone,
     }
     match (judged, cwd) {
         (LaunchCheck::Matches, None) => LaunchCheck::Unreadable,
@@ -934,20 +1226,16 @@ pub(crate) fn launch_image_shape_for_tests(pid: u32) -> Option<(usize, usize)> {
     Some((argv.len(), env.len()))
 }
 
-/// Whether the process `pid` born at `birth` is executing exactly the file
-/// `executable` refers to (same path, same file identity).
+/// Whether the process `pid` born at `birth` executes exactly the code
+/// `executable` refers to, from the file state it refers to (`binding`).
+/// Anything short of a positive binding is `false`, an answer that came
+/// after the caller's deadline included. Kernel reads and one dynamic
+/// validation; no file content is read. The validation cannot be
+/// interrupted: a caller that must stay responsive asks from a worker it
+/// does not wait for (the lifecycle receipts do).
 #[cfg(target_os = "macos")]
 pub(crate) fn runs_executable(pid: u32, birth: (u64, u32), executable: &ExecutableRef) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    process_start(pid) == Some(birth)
-        && image_path(pid).is_some_and(|image| {
-            image == executable.path
-                && std::fs::symlink_metadata(&image).is_ok_and(|meta| {
-                    meta.is_file()
-                        && meta.dev() == executable.device
-                        && meta.ino() == executable.inode
-                })
-        })
+    binding(pid, birth, executable) == Binding::Bound
 }
 
 /// Whether `pid` is executing the very file at `path` (file identity).
@@ -1485,7 +1773,7 @@ mod tests {
         const OTHER: &str = "831c5908-251a-4388-b3a3-4719ad442bce";
         const FLAG: &str = "--dangerously-skip-permissions";
         let exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
-        let executable = ExecutableRef::read(&exe).unwrap();
+        let executable = ExecutableRef::for_tests(&exe);
         let cwd = DirRef::for_tests(std::path::Path::new("/"));
         let judge = |argv: &[&str], env: &[&str], wanted: &[&str]| {
             let wanted: Vec<String> = wanted.iter().map(|word| word.to_string()).collect();
@@ -1565,11 +1853,13 @@ mod tests {
     /// is read for one exact generation, and each mismatch has its own answer.
     #[test]
     fn a_real_process_is_checked_by_generation_image_request_and_directory() {
+        // these checks ask for a deadline owner; the deadline is not the subject
+        let _phase = crate::session_runtime::test_phase();
         let me = std::process::id();
         let birth = process_start(me).expect("own birth");
         let exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
-        let executable = ExecutableRef::read(&exe).unwrap();
-        let other = ExecutableRef::read(&std::fs::canonicalize("/bin/ls").unwrap()).unwrap();
+        let executable = ExecutableRef::for_tests(&exe);
+        let other = ExecutableRef::for_tests(&std::fs::canonicalize("/bin/ls").unwrap());
         let own_words: Vec<String> = std::env::args().skip(1).collect();
         let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME"));
         let here = working_dir(me).expect("own directory");
@@ -1638,10 +1928,10 @@ mod tests {
         assert!(parse_procargs2_image(&bad).is_none());
     }
 
-    /// The executable reference follows no link, notices a replaced file and
-    /// prints nothing about where or what it is.
+    /// A file state follows no link, notices a replaced file and is one
+    /// content: the half of an executable reference that is about the disk.
     #[test]
-    fn an_executable_reference_is_one_real_file_and_notices_any_change() {
+    fn a_file_state_is_one_real_file_and_notices_any_change() {
         let dir = std::env::temp_dir().join(format!("deck-exe-ref-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
@@ -1649,51 +1939,48 @@ mod tests {
         std::fs::write(&real, b"first build").unwrap();
         let link = dir.join("claude");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        let reference = ExecutableRef::read(&real).expect("a regular file");
+        let state = FileState::read(&real).expect("a regular file");
+        let same = |state: &FileState| FileState::read(&state.path).as_ref() == Ok(state);
         // SHA-256 of the bytes just written
-        assert_eq!(reference.digest_hex(), {
+        assert_eq!(state.sha256.as_slice(), {
             use sha2::Digest;
-            sha2::Sha256::digest(b"first build")
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
+            sha2::Sha256::digest(b"first build").as_slice().to_vec()
         });
-        assert_eq!(reference.digest_hex().len(), 64);
-        assert!(reference.unchanged());
-        assert_eq!(reference.path(), real);
-        // a launcher link is never the reference, and a relative path never
-        assert!(ExecutableRef::read(&link).is_none());
-        assert!(ExecutableRef::read(std::path::Path::new("2.1.294")).is_none());
-        assert!(ExecutableRef::read(&dir).is_none());
-        assert_eq!(format!("{reference:?}"), "ExecutableRef(..)");
+        assert!(same(&state) && state.at(&real));
+        // a launcher link is never the file, and a relative path never
+        for other in [link.as_path(), std::path::Path::new("2.1.294"), &dir] {
+            assert_eq!(FileState::read(other).err(), Some(Unavailable::Changed));
+        }
+        assert!(!state.at(&link));
         assert_eq!(format!("{:?}", DirRef(dir.clone())), "DirRef(..)");
         // the link is moved to another release: the frozen file is unchanged
         let other = dir.join("2.1.295");
         std::fs::write(&other, b"second build").unwrap();
         std::fs::remove_file(&link).unwrap();
         std::os::unix::fs::symlink(&other, &link).unwrap();
-        assert!(reference.unchanged());
+        assert!(same(&state));
         // the same version rebuilt in place: another file, another content
         std::fs::write(dir.join("staged"), b"other bytes").unwrap();
         std::fs::rename(dir.join("staged"), &real).unwrap();
-        assert!(!reference.unchanged());
+        assert!(!same(&state) && !state.at(&real));
         std::fs::remove_file(&real).unwrap();
-        assert!(!reference.unchanged());
+        assert_eq!(FileState::read(&real).err(), Some(Unavailable::Changed));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A rewrite of the same size that puts the modification time back is
     /// still another file state (the change instant cannot be set back) and
-    /// another content; a deadline that has passed yields no reference.
+    /// another content; a deadline that has passed yields no state, and that
+    /// is "not finished", never "changed".
     #[test]
-    fn a_same_size_rewrite_and_an_expired_deadline_never_pass_as_the_reference() {
+    fn a_same_size_rewrite_and_an_expired_deadline_never_pass_as_the_file_state() {
         let dir = std::env::temp_dir().join(format!("deck-exe-same-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         let file = dir.join("2.1.294");
         std::fs::write(&file, b"build-AAAA").unwrap();
-        let reference = ExecutableRef::read(&file).expect("a regular file");
-        assert!(reference.same_state() && reference.unchanged());
+        let state = FileState::read(&file).expect("a regular file");
+        assert!(state.at(&file));
         let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
         // the change instant has a coarse clock on some volumes
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1706,70 +1993,549 @@ mod tests {
         let now = std::fs::metadata(&file).unwrap();
         assert_eq!(now.len(), 10, "same size");
         assert_eq!(now.modified().unwrap(), modified, "same modification time");
-        assert!(!reference.same_state(), "the cheap check sees the rewrite");
-        assert!(!reference.unchanged(), "the full read sees the rewrite");
-        // a fresh reference of the rewritten file is another reference
-        let rewritten = ExecutableRef::read(&file).expect("still a regular file");
-        assert_ne!(rewritten.digest_hex(), reference.digest_hex());
-        assert!(rewritten != reference);
+        assert!(!state.at(&file), "the cheap check sees the rewrite");
+        // a fresh state of the rewritten file is another state
+        let rewritten = FileState::read(&file).expect("still a regular file");
+        assert_ne!(rewritten.sha256, state.sha256);
+        assert!(rewritten != state);
         // a read under an expired deadline gives nothing, never a partial hash
         {
             let _expired = crate::session_runtime::Deadline::until(std::time::Instant::now());
-            assert!(ExecutableRef::read(&file).is_none());
-            assert!(!rewritten.unchanged());
+            assert_eq!(FileState::read(&file).err(), Some(Unavailable::Unverified));
             // the cheap state check reads no content and is not a hash
-            assert!(rewritten.same_state());
+            assert!(rewritten.at(&file));
         }
-        assert!(rewritten.unchanged());
+        assert_eq!(FileState::read(&file).as_ref(), Ok(&rewritten));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Read-only carrier preflight: the real certified image must finish its
-    /// complete re-read inside the unchanged production post-phase budget.
-    /// An unoptimized SHA-256 dependency can exhaust that budget in debug.
+    use super::identity_fixture::{self as fixture, Process};
+
+    /// An executable reference is a file state AND the product's validated
+    /// code: text, another product's code, a link and a missing file make
+    /// none, and a reference notices a change of content the way its file
+    /// state does. Nothing about it is printed.
     #[test]
-    #[ignore = "requires an explicitly supplied certified executable; no client is started"]
-    fn certified_image_reread_fits_the_production_post_budget() {
+    fn an_executable_reference_is_valid_product_code_in_one_file_state() {
+        let dir = fixture::directory("reference");
+        let product = fixture::product(fixture::IDENTIFIER);
+        let program = dir.join("2.1.300");
+        fixture::build(&program, "build-A", &[], fixture::IDENTIFIER);
+        let reference = ExecutableRef::read(&program, product).expect("valid product code");
+        assert_eq!(reference.path(), program);
+        assert_eq!(reference.digest_hex().len(), 64);
+        assert!(reference.same_state());
+        assert_eq!(reference.unchanged(), Ok(()));
+        assert_eq!(format!("{reference:?}"), "ExecutableRef(..)");
+        // a file that is not code of the product is no reference, whatever it is named
+        std::fs::write(dir.join("claude"), b"#!/bin/sh\n").unwrap();
+        let foreign = dir.join("foreign");
+        fixture::build(&foreign, "build-A", &[], fixture::OTHER_IDENTIFIER);
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&program, &link).unwrap();
+        for other in [dir.join("claude"), foreign, link, dir.join("missing")] {
+            assert_eq!(
+                ExecutableRef::read(&other, product).err(),
+                Some(Unavailable::Changed),
+                "{other:?}"
+            );
+        }
+        // the same product rebuilt at the same path: another reference
+        let staged = dir.join("staged");
+        fixture::build(&staged, "build-B", &[], fixture::IDENTIFIER);
+        std::fs::rename(&staged, &program).unwrap();
+        assert!(!reference.same_state());
+        assert_eq!(reference.unchanged(), Err(Unavailable::Changed));
+        let rebuilt = ExecutableRef::read(&program, product).expect("the new build");
+        assert!(rebuilt != reference);
+        assert_ne!(rebuilt.digest_hex(), reference.digest_hex());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A read or a validation that outlives its phase yields no reference,
+    /// and that is "not finished" — never "changed". A validation that
+    /// answers late is discarded even when its answer was "valid".
+    #[test]
+    fn a_reference_that_is_not_finished_inside_its_phase_is_unverified_not_changed() {
+        use super::code_identity::{Fault, FAULT, STATIC_VALIDATIONS};
+        let dir = fixture::directory("deadline");
+        let product = fixture::product(fixture::IDENTIFIER);
+        let program = dir.join("client");
+        fixture::build(&program, "build-A", &[], fixture::IDENTIFIER);
+        let reference = ExecutableRef::read(&program, product).expect("valid product code");
+        {
+            // the phase ended before the read
+            let _expired = crate::session_runtime::Deadline::until(std::time::Instant::now());
+            assert_eq!(
+                ExecutableRef::read(&program, product).err(),
+                Some(Unavailable::Unverified)
+            );
+            assert_eq!(reference.unchanged(), Err(Unavailable::Unverified));
+            // the cheap state check reads no content and is not a hash
+            assert!(reference.same_state());
+        }
+        {
+            // the read fits, the uncancellable validation returns after the end
+            let validated = STATIC_VALIDATIONS.with(std::cell::Cell::get);
+            let end = std::time::Instant::now() + std::time::Duration::from_millis(150);
+            let _phase = crate::session_runtime::Deadline::until(end);
+            FAULT.with(|fault| fault.set(Some(Fault::Slow(std::time::Duration::from_millis(400)))));
+            let late = ExecutableRef::read(&program, product);
+            FAULT.with(|fault| fault.set(None));
+            assert!(
+                std::time::Instant::now() >= end,
+                "the validation ran past the end"
+            );
+            assert_eq!(STATIC_VALIDATIONS.with(std::cell::Cell::get), validated + 1);
+            assert_eq!(late.err(), Some(Unavailable::Unverified));
+        }
+        // Security answers nothing: unverified as well
+        FAULT.with(|fault| fault.set(Some(Fault::Unreadable)));
+        let unanswered = ExecutableRef::read(&program, product);
+        FAULT.with(|fault| fault.set(None));
+        assert_eq!(unanswered.err(), Some(Unavailable::Unverified));
+        assert_eq!(reference.unchanged(), Ok(()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The binding of ONE generation to ONE reference: its pid and birth
+    /// instant, the kernel's path of its image, that file's state and the
+    /// code it executes. Each can be the one that does not hold.
+    #[test]
+    fn a_binding_is_one_generation_one_path_one_file_state_and_one_running_code() {
+        // these checks ask for a deadline owner; the deadline is not the subject
+        let _phase = crate::session_runtime::test_phase();
+        let dir = fixture::directory("binding");
+        let product = fixture::product(fixture::IDENTIFIER);
+        let program = dir.join("client");
+        fixture::build(&program, "build-A", &[], fixture::IDENTIFIER);
+        let reference = ExecutableRef::read(&program, product).expect("valid product code");
+        let (mut process, _) = Process::start(&program, None).expect("the fixture runs");
+        let pid = process.pid();
+        let birth = process_start(pid).expect("its birth instant");
+        assert_eq!(binding(pid, birth, &reference), Binding::Bound);
+        assert!(runs_executable(pid, birth, &reference));
+        // another generation under the same pid: what a reused pid looks like
+        assert_eq!(
+            binding(pid, (birth.0 + 1, birth.1), &reference),
+            Binding::Gone
+        );
+        // the same content at another path is another file
+        let copy = dir.join("copy");
+        std::fs::copy(&program, &copy).unwrap();
+        let elsewhere = ExecutableRef::read(&copy, product).expect("the copy validates");
+        assert_eq!(elsewhere.digest_hex(), reference.digest_hex());
+        assert_eq!(binding(pid, birth, &elsewhere), Binding::Other);
+        // started through a link, the kernel still names the real file
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&program, &link).unwrap();
+        let (linked, _) = Process::start(&link, None).expect("the link runs");
+        let linked_birth = process_start(linked.pid()).unwrap();
+        assert_eq!(
+            binding(linked.pid(), linked_birth, &reference),
+            Binding::Bound
+        );
+        drop(linked);
+        // Security answers nothing: no binding, and not "another image"
+        super::code_identity::FAULT
+            .with(|fault| fault.set(Some(super::code_identity::Fault::Unreadable)));
+        let unanswered = binding(pid, birth, &reference);
+        super::code_identity::FAULT.with(|fault| fault.set(None));
+        assert_eq!(unanswered, Binding::Unreadable);
+        // an exec into another signed image, under the same pid and birth
+        let next = dir.join("next");
+        fixture::build(&next, "build-B", &[], fixture::IDENTIFIER);
+        let next_reference = ExecutableRef::read(&next, product).expect("the next build");
+        assert_eq!(process.exec(&next).as_deref(), Some("build-B"));
+        let now = process_start(pid).expect("still that pid");
+        assert_eq!(binding(pid, now, &reference), Binding::Other);
+        assert_eq!(binding(pid, now, &next_reference), Binding::Bound);
+        assert!(!runs_executable(pid, birth, &reference));
+        // gone: its generation names nothing
+        drop(process);
+        assert_eq!(binding(pid, now, &next_reference), Binding::Gone);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A dynamic validation cannot be interrupted, so it is made only for a
+    /// caller that owns a deadline. Without one, or with one that has
+    /// already passed, nothing is asked of Security and the answer is "no
+    /// answer": never a binding, and never another image.
+    #[test]
+    fn a_dynamic_validation_is_made_only_for_a_caller_that_owns_a_deadline() {
+        use super::code_identity::DYNAMIC_CHECKS;
+        let dir = fixture::directory("owner");
+        let product = fixture::product(fixture::IDENTIFIER);
+        let program = dir.join("client");
+        fixture::build(&program, "build-A", &[], fixture::IDENTIFIER);
+        let reference = ExecutableRef::read(&program, product).expect("valid product code");
+        let (process, _) = Process::start(&program, None).expect("the fixture runs");
+        let pid = process.pid();
+        let birth = process_start(pid).expect("its birth instant");
+        let spec = ClientSpec {
+            product,
+            launcher: "client",
+            grammar: &GRAMMAR,
+            home: std::path::Path::new("/nonexistent"),
+        };
+        let asked = || DYNAMIC_CHECKS.with(std::cell::Cell::get);
+        let unowned = |label: &str| {
+            let before = asked();
+            assert_eq!(
+                binding(pid, birth, &reference),
+                Binding::Unreadable,
+                "{label}"
+            );
+            assert!(!runs_executable(pid, birth, &reference), "{label}");
+            assert!(
+                matches!(
+                    qualify_client(pid, birth, &spec, &[]),
+                    ClientRead::NotProduct {
+                        why: NotProduct::Unreadable,
+                        ..
+                    }
+                ),
+                "{label}"
+            );
+            assert!(
+                matches!(
+                    qualify_client(pid, birth, &spec, std::slice::from_ref(&reference)),
+                    ClientRead::Product(ClientQualification {
+                        executable: Err(Unavailable::Unverified),
+                        ..
+                    })
+                ),
+                "{label}"
+            );
+            assert_eq!(asked(), before, "{label}: nothing was asked of Security");
+        };
+        assert!(!crate::session_runtime::deadline_active());
+        unowned("no deadline");
+        {
+            let _expired = crate::session_runtime::Deadline::until(std::time::Instant::now());
+            unowned("an expired deadline");
+        }
+        // the kernel-only question needs no owner, and is not a binding
+        assert!(at_executable(pid, birth, &reference));
+        assert!(!at_executable(pid, (birth.0 + 1, birth.1), &reference));
+        let _phase = crate::session_runtime::test_phase();
+        let before = asked();
+        assert_eq!(binding(pid, birth, &reference), Binding::Bound);
+        assert_eq!(asked(), before + 1, "one validation for one binding");
+        drop(process);
+        assert!(!at_executable(pid, birth, &reference), "gone");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The two running-code questions are asked nowhere but through
+    /// `validated`: a call added beside it would be a validation whose
+    /// answer nobody bounds.
+    #[test]
+    fn every_dynamic_validation_is_asked_through_its_deadline_owner() {
+        let source = include_str!("procinfo.rs");
+        let production = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("the production part");
+        for question in ["code_identity::running(", "code_identity::running_product("] {
+            let asked = production.matches(question).count();
+            let owned = production
+                .matches(&format!("validated(|| {question}"))
+                .count();
+            assert!(
+                asked == 1 && owned == 1,
+                "{question}: asked {asked} time(s), {owned} through `validated`"
+            );
+        }
+    }
+
+    /// The validation answers "yes, exactly this code" — after the caller's
+    /// deadline. A late yes is no answer: no binding, no product, no match;
+    /// and it is not "another image" or "changed" either. Nothing is read or
+    /// hashed after it, and nothing is asked a second time.
+    #[test]
+    fn a_validation_that_answers_after_its_deadline_is_no_answer_and_not_another_image() {
+        use super::code_identity::{hold, DYNAMIC_CHECKS};
+        use std::time::{Duration, Instant};
+        let dir = fixture::directory("late");
+        let product = fixture::product(fixture::IDENTIFIER);
+        let program = dir.join("client");
+        fixture::build(&program, "build-A", &[], fixture::IDENTIFIER);
+        let reference = ExecutableRef::read(&program, product).expect("valid product code");
+        let (process, _) = Process::start(&program, None).expect("the fixture runs");
+        let pid = process.pid();
+        let birth = process_start(pid).expect("its birth instant");
+        let cwd = working_dir(pid).expect("its directory");
+        let spec = ClientSpec {
+            product,
+            launcher: "client",
+            grammar: &GRAMMAR,
+            home: std::path::Path::new("/nonexistent"),
+        };
+        // every validation of this process, on this thread, answers
+        // truthfully and returns only when the thread's deadline has passed
+        let me = std::thread::current().id();
+        let held = hold::install(
+            move |target| target == pid && std::thread::current().id() == me,
+            hold::Until::DeadlinePassed,
+        );
+        let asked = || DYNAMIC_CHECKS.with(std::cell::Cell::get);
+        let late = |what: &str, work: &dyn Fn()| {
+            let (before, entered) = (asked(), held.entered());
+            let end = Instant::now() + Duration::from_millis(120);
+            let _phase = crate::session_runtime::Deadline::until(end);
+            work();
+            assert!(Instant::now() >= end, "{what}: waited for past the end");
+            assert_eq!(
+                (asked() - before, held.entered() - entered),
+                (1, 1),
+                "{what}: one validation, answered once, never asked again"
+            );
+        };
+        late("binding", &|| {
+            assert_eq!(binding(pid, birth, &reference), Binding::Unreadable)
+        });
+        late("runs", &|| {
+            assert!(!runs_executable(pid, birth, &reference))
+        });
+        // the first question of a qualification: nothing is read after it
+        let reads = FULL_READS.with(std::cell::Cell::get);
+        late("product", &|| {
+            assert!(matches!(
+                qualify_client(pid, birth, &spec, &[]),
+                ClientRead::NotProduct {
+                    why: NotProduct::Unreadable,
+                    ..
+                }
+            ))
+        });
+        assert_eq!(FULL_READS.with(std::cell::Cell::get), reads);
+        // a reference that is reused: its binding is unverified, not changed
+        late("reused", &|| {
+            assert!(matches!(
+                qualify_client(pid, birth, &spec, std::slice::from_ref(&reference)),
+                ClientRead::Product(ClientQualification {
+                    executable: Err(Unavailable::Unverified),
+                    ..
+                })
+            ))
+        });
+        // the started client's check: neither a match nor another image
+        let words: Vec<String> = Vec::new();
+        late("launch", &|| {
+            assert_eq!(
+                check_launch(
+                    pid,
+                    birth,
+                    &LaunchExpectation {
+                        executable: &reference,
+                        words: &words,
+                        home: std::path::Path::new("/nonexistent"),
+                        grammar: &GRAMMAR,
+                        cwd: &cwd,
+                    },
+                ),
+                LaunchCheck::Unreadable
+            )
+        });
+        // in time, the same questions are answered
+        drop(held);
+        let _phase = crate::session_runtime::test_phase();
+        assert_eq!(binding(pid, birth, &reference), Binding::Bound);
+        assert!(matches!(
+            qualify_client(pid, birth, &spec, std::slice::from_ref(&reference)),
+            ClientRead::Product(ClientQualification {
+                executable: Ok(_),
+                ..
+            })
+        ));
+        drop(process);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The old process still runs build A; its path already holds build B,
+    /// another validly signed file of the same product. The reference made
+    /// before the replacement no longer names the file at that path, and the
+    /// one made after it names a file the process does not execute.
+    #[test]
+    fn an_old_process_is_bound_to_neither_reference_of_a_replaced_path() {
+        // these checks ask for a deadline owner; the deadline is not the subject
+        let _phase = crate::session_runtime::test_phase();
+        let dir = fixture::directory("replaced-path");
+        let product = fixture::product(fixture::IDENTIFIER);
+        let program = dir.join("2.1.300");
+        fixture::build(&program, "build-A", &[], fixture::IDENTIFIER);
+        let before = ExecutableRef::read(&program, product).expect("build A");
+        let (process, _) = Process::start(&program, None).expect("the fixture runs");
+        let pid = process.pid();
+        let birth = process_start(pid).unwrap();
+        assert_eq!(binding(pid, birth, &before), Binding::Bound);
+        let staged = dir.join("staged");
+        fixture::build(&staged, "build-B", &[], fixture::IDENTIFIER);
+        std::fs::rename(&staged, &program).unwrap();
+        // the file alone is valid product code, and the kernel still reports
+        // the old process at this very path
+        let after = ExecutableRef::read(&program, product).expect("build B validates");
+        assert_eq!(image_path(pid).as_deref(), Some(program.as_path()));
+        assert_eq!(binding(pid, birth, &before), Binding::Other);
+        assert_eq!(binding(pid, birth, &after), Binding::Other);
+        // and the qualification of that process finds no reference for it
+        let spec = ClientSpec {
+            product,
+            launcher: "claude",
+            grammar: &GRAMMAR,
+            home: std::path::Path::new("/nonexistent"),
+        };
+        assert!(matches!(
+            qualify_client(pid, birth, &spec, &[]),
+            ClientRead::NotProduct {
+                named: false,
+                why: NotProduct::Diverged
+            }
+        ));
+        // a reference handed in as known is not a way around the binding
+        assert!(matches!(
+            qualify_client(pid, birth, &spec, std::slice::from_ref(&after)),
+            ClientRead::Product(ClientQualification {
+                executable: Err(Unavailable::Changed),
+                ..
+            })
+        ));
+        drop(process);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Read-only cost of qualifying one real executable, against the
+    /// unchanged production budgets: the whole-file digest, the full
+    /// signature validation, and a complete reference followed by the post
+    /// phase's full re-read under ONE post-phase deadline. Names no client
+    /// and starts none; with `DECK_REENTRY_PROCESS_PROBE` it also times the
+    /// dynamic binding of that one already running process. Every measure
+    /// is printed before anything is judged.
+    #[test]
+    #[ignore = "requires an explicitly supplied executable; no client is started"]
+    fn executable_qualification_cost_fits_the_production_budgets() {
+        // these checks ask for a deadline owner; the deadline is not the subject
+        let _phase = crate::session_runtime::test_phase();
+        use super::code_identity::{on_disk, OnDisk};
         let path = std::path::PathBuf::from(
             std::env::var_os("DECK_REENTRY_EXECUTABLE_PROBE")
                 .expect("explicit read-only executable probe"),
         );
-        let reference = ExecutableRef::read(&path).expect("complete certified image read");
-        assert!(crate::agent_reentry::claude::CAPABILITY
-            .certified(&reference.digest_hex())
-            .is_some());
-        let started = std::time::Instant::now();
-        let _deadline =
-            crate::session_runtime::Deadline::until(started + crate::agent_reentry::POST_BUDGET);
-        assert!(
-            reference.unchanged(),
-            "full image re-read inside the deadline"
+        let product = fixture::product_of(&path);
+        let timed = |work: &mut dyn FnMut()| {
+            let started = std::time::Instant::now();
+            work();
+            started.elapsed()
+        };
+        let mut state = None;
+        let digest = timed(&mut || state = FileState::read(&path).ok());
+        let mut valid = false;
+        let signature = timed(&mut || valid = matches!(on_disk(&path, product), OnDisk::Valid(_)));
+        println!(
+            "COST bytes={} digest_ms={} digest_complete={} signature_ms={} signature_valid={valid}",
+            std::fs::metadata(&path).unwrap().len(),
+            digest.as_millis(),
+            state.is_some(),
+            signature.as_millis(),
         );
-        assert!(started.elapsed() < crate::agent_reentry::POST_BUDGET);
+        // what one post phase asks of one distinct binary, under its deadline
+        let started = std::time::Instant::now();
+        let (made, reread) = {
+            let _deadline = crate::session_runtime::Deadline::until(
+                started + crate::agent_reentry::POST_BUDGET,
+            );
+            let made = ExecutableRef::read(&path, product);
+            let reread = made.as_ref().ok().map(ExecutableRef::unchanged);
+            (made.map(|_| ()), reread)
+        };
+        let total = started.elapsed();
+        println!(
+            "COST reference_and_reread_ms={} reference={made:?} reread={reread:?} post_budget_ms={}",
+            total.as_millis(),
+            crate::agent_reentry::POST_BUDGET.as_millis()
+        );
+        let bound = std::env::var("DECK_REENTRY_PROCESS_PROBE")
+            .ok()
+            .and_then(|pid| pid.parse::<u32>().ok())
+            .map(|pid| {
+                let reference = ExecutableRef::read(&path, product).expect("a reference");
+                let birth = process_start(pid).expect("the named process exists");
+                let mut answers = Vec::new();
+                let first = timed(&mut || answers.push(binding(pid, birth, &reference)));
+                let rest = timed(&mut || {
+                    for _ in 0..20 {
+                        answers.push(binding(pid, birth, &reference));
+                    }
+                });
+                println!(
+                    "COST binding_first_us={} binding_next20_us={} bound={}/{}",
+                    first.as_micros(),
+                    rest.as_micros(),
+                    answers.iter().filter(|a| **a == Binding::Bound).count(),
+                    answers.len()
+                );
+                answers.iter().all(|answer| *answer == Binding::Bound)
+            });
+        assert!(state.is_some() && valid, "the file reads and validates");
+        assert_eq!(made, Ok(()), "a complete reference");
+        assert_eq!(
+            reread,
+            Some(Ok(())),
+            "the full re-read fits the same deadline"
+        );
+        assert!(total < crate::agent_reentry::POST_BUDGET);
+        assert_ne!(bound, Some(false), "the named process is bound to the file");
     }
 
     /// This very process, qualified: its generation, file and working
-    /// directory are read; another birth instant is another process.
+    /// directory are read; another birth instant is another process. Its
+    /// name admits nothing and refuses nothing: the product's requirement
+    /// decides, under whatever name the file has.
     #[test]
     fn qualifying_reads_one_exact_generation_and_nothing_by_name_alone() {
+        // these checks ask for a deadline owner; the deadline is not the subject
+        let _phase = crate::session_runtime::test_phase();
         let me = std::process::id();
         let birth = process_start(me).expect("own birth");
         let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         let exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
         let name = exe.file_name().unwrap().to_str().unwrap().to_string();
+        let own = fixture::product_of(&exe);
+        let spec = |product, launcher| ClientSpec {
+            product,
+            launcher,
+            grammar: &GRAMMAR,
+            home: &home,
+        };
+        let names = name.as_str();
         assert!(matches!(
-            qualify_client(me, (birth.0 + 1, birth.1), &[&name], &home, &GRAMMAR, None),
+            qualify_client(me, (birth.0 + 1, birth.1), &spec(own, names), &[]),
             ClientRead::Gone
         ));
-        assert!(matches!(
-            qualify_client(me, birth, &["claude", "2.1.294"], &home, &GRAMMAR, None),
-            ClientRead::NotNamed
-        ));
-        let ClientRead::Named(read) = qualify_client(me, birth, &[&name], &home, &GRAMMAR, None)
+        // carrying the launcher's name is not being the product, and nothing
+        // is hashed to find that out; the name is reported as a hint only
+        let reads = FULL_READS.with(std::cell::Cell::get);
+        let other = fixture::product(fixture::IDENTIFIER);
+        for (launcher, named) in [(names, true), ("claude", false)] {
+            assert!(matches!(
+                qualify_client(me, birth, &spec(other, launcher), &[]),
+                ClientRead::NotProduct { named: hint, why: NotProduct::Other } if hint == named
+            ));
+        }
+        assert_eq!(FULL_READS.with(std::cell::Cell::get), reads);
+        // being the product under ANOTHER name than the launcher's: admitted
+        let ClientRead::Product(unnamed) = qualify_client(me, birth, &spec(own, "claude"), &[])
         else {
-            panic!("named by its own file name");
+            panic!("the product, whatever its file is called");
         };
-        let executable = read.executable.expect("own executable is a regular file");
+        assert!(unnamed.executable.is_ok());
+        let reads = FULL_READS.with(std::cell::Cell::get);
+        let ClientRead::Product(read) = qualify_client(me, birth, &spec(own, names), &[]) else {
+            panic!("the product by its own signature");
+        };
+        assert_eq!(FULL_READS.with(std::cell::Cell::get), reads + 1);
+        let executable = read.executable.expect("own executable is bound");
         assert_eq!(executable.path(), exe);
         assert!(runs_executable(me, birth, &executable));
         assert!(!runs_executable(me, (birth.0 + 1, birth.1), &executable));
@@ -1784,6 +2550,30 @@ mod tests {
             LaunchProfile::Unsupported | LaunchProfile::Ordinary
         ));
         assert!(!format!("{:?}", executable).contains(&name));
+        // a reference validated for this very file state is reused: no second
+        // read of the content, and the binding is still asked for
+        let checks = super::code_identity::DYNAMIC_CHECKS.with(std::cell::Cell::get);
+        let known = std::slice::from_ref(&executable);
+        let ClientRead::Product(again) = qualify_client(me, birth, &spec(own, names), known) else {
+            panic!("qualified again");
+        };
+        assert_eq!(again.executable.as_ref(), Ok(&executable));
+        assert_eq!(FULL_READS.with(std::cell::Cell::get), reads + 1);
+        assert_eq!(
+            super::code_identity::DYNAMIC_CHECKS.with(std::cell::Cell::get),
+            checks + 1
+        );
+        // a reference of another product is not reused for this one
+        let foreign = [ExecutableRef::for_tests(
+            &std::fs::canonicalize("/bin/ls").unwrap(),
+        )];
+        let reads = FULL_READS.with(std::cell::Cell::get);
+        let ClientRead::Product(fresh) = qualify_client(me, birth, &spec(own, names), &foreign)
+        else {
+            panic!("qualified with a foreign reference at hand");
+        };
+        assert_eq!(fresh.executable.as_ref(), Ok(&executable));
+        assert_eq!(FULL_READS.with(std::cell::Cell::get), reads + 1);
     }
 
     #[test]

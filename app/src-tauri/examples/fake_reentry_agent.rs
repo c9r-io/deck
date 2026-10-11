@@ -18,17 +18,98 @@
 //! stops itself (alive, no longer the foreground); `chdir` leaves the working
 //! directory before reporting; `reexec:` replaces this process's image with
 //! the same program and other arguments (same pid, another launch image)
-//! and then reports the session it was ORIGINALLY asked to resume. The
-//! helper's path is the one line of `$HOME/helper-path`. `also=<program>`
+//! and then reports the session it was ORIGINALLY asked to resume;
+//! `resume=exec:<program>` replaces it with ANOTHER program — another build
+//! at another path — under the same pid, which then reports that session;
+//! `exit=exec:<program>` does the same at the exit, and the other program
+//! reports the final session and leaves; `resume=both:<uuid>` reports a
+//! resume of that other id and then of the asked one; `resume=late:<ms>`
+//! reports the asked one that many milliseconds after it started;
+//! `resume=on:<file>` reports the asked one only once that file exists, so a
+//! test decides the instant. `then=<uuid>:<file>` makes a client that was
+//! resumed report a resume of that OTHER id as well, once that file exists:
+//! a later, conflicting answer. Each of the two appends a line to
+//! `$HOME/reported.log` when its hook has returned. The
+//! helper's path is the one line of `$HOME/helper-path`.
+//!
+//! What a hook is handed and how it is run can be changed too, to stand for
+//! a native client whose contract moved: `end-payload=` / `start-payload=`
+//! with `no-id` (no session id), `renamed` (the id under another key),
+//! `typed` (the id as a number) or `word` (a reason or source this build
+//! does not know); `final-mode=<word>` puts that permission mode into every
+//! payload and `final-mode=absent` leaves the field out; `hooks=wrap-end` /
+//! `hooks=wrap-start` run that hook through one more process, so the helper
+//! is the client's grandchild. `also=<program>`
 //! makes a fresh start run that program once as one more hook, with a status
 //! hook's arguments: a stand-in for the Signal hook a user's own settings
 //! put beside the lifecycle pair. `ui=<directory>` makes it draw screens for
 //! a test of an operator's reading of the pane (`Ui`), and `keys=<file>`
 //! makes it write down every byte it is sent.
+//!
+//! This file uses nothing but the standard library (`sys` below declares
+//! the few C calls it makes): the re-entry tests compile it by itself with
+//! `rustc` (`tests.rs`, `standin_program`), because cargo builds an example
+//! as a program only when a run names no target. Cargo still builds, formats
+//! and lints it as this package's example.
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+
+/// The C calls of this program, with macOS's own layouts and values
+/// (`<sys/termios.h>`, `<poll.h>`, `<signal.h>`).
+mod sys {
+    use std::os::raw::{c_int, c_short, c_uint, c_ulong};
+
+    pub const TCSANOW: c_int = 0;
+    pub const POLLIN: c_short = 0x0001;
+    pub const SIGSTOP: c_int = 17;
+
+    /// `struct termios`: four flag words, twenty control characters, two speeds.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct Termios {
+        flags: [c_ulong; 4],
+        control: [u8; 20],
+        speeds: [c_ulong; 2],
+    }
+
+    impl Termios {
+        pub const ZERO: Self = Self {
+            flags: [0; 4],
+            control: [0; 20],
+            speeds: [0; 2],
+        };
+    }
+
+    /// `struct pollfd`.
+    #[repr(C)]
+    pub struct PollFd {
+        pub fd: c_int,
+        pub events: c_short,
+        pub revents: c_short,
+    }
+
+    extern "C" {
+        pub fn setsid() -> c_int;
+        pub fn tcgetattr(fd: c_int, termios: *mut Termios) -> c_int;
+        pub fn tcsetattr(fd: c_int, actions: c_int, termios: *const Termios) -> c_int;
+        pub fn cfmakeraw(termios: *mut Termios);
+        pub fn raise(signal: c_int) -> c_int;
+        pub fn poll(fds: *mut PollFd, count: c_uint, timeout: c_int) -> c_int;
+    }
+}
+
+/// The sixteen bytes after the colon are this file's build tag. A test may
+/// overwrite them in a COPY of the built file before signing that copy:
+/// another build of the same stand-in — other content, another digest and
+/// code directory, the same behaviour.
+#[used]
+static BUILD_TAG: [u8; 46] = *b"DECK-FAKE-REENTRY-AGENT-BUILD:0000000000000000";
+
+/// Set for the program an exiting client replaced itself with: the session
+/// that client was in.
+const EXITING: &str = "FAKE_REENTRY_EXITING";
 
 fn plan() -> std::collections::HashMap<String, String> {
     std::fs::read_to_string("fake-agent.plan")
@@ -43,27 +124,87 @@ fn home() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
+/// Set for the one more process of `hooks=wrap-…`: the hook program it runs.
+const WRAPPING: &str = "FAKE_REENTRY_WRAPPING";
+
+/// Wait until a test creates `file`.
+fn wait_for(file: &str) {
+    while !std::path::Path::new(file).exists() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// Write down that a report a test asked for has been made: its hook ran
+/// and returned.
+fn reported(what: &str) {
+    if let Ok(mut log) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(home().join("reported.log"))
+    {
+        let _ = writeln!(log, "{what}");
+    }
+}
+
 /// Run the lifecycle helper the way the native client runs a hook: a direct
 /// child in its own session without a terminal, the payload on stdin, and
 /// wait for it. The payload carries extra fields a helper must never read.
+/// The plan may change what the payload says about the session and the
+/// event, and put one more process between the client and the helper.
 fn hook(event: &str, session: &str, word: &str) {
     let Ok(helper) = std::fs::read_to_string(home().join("helper-path")) else {
         return;
     };
-    let key = if event == "session-start" {
-        "source"
+    let plan = plan();
+    let start = event == "session-start";
+    let key = if start { "source" } else { "reason" };
+    let variant = plan
+        .get(if start {
+            "start-payload"
+        } else {
+            "end-payload"
+        })
+        .map(String::as_str)
+        .unwrap_or_default();
+    let id = match variant {
+        "no-id" => String::new(),
+        "renamed" => format!(r#""sessionId":"{session}","#),
+        "typed" => r#""session_id":12345,"#.to_string(),
+        _ => format!(r#""session_id":"{session}","#),
+    };
+    let word = if variant == "word" {
+        "a_word_of_a_later_release"
     } else {
-        "reason"
+        word
+    };
+    let mode = match plan.get("final-mode").map(String::as_str) {
+        Some("absent") => String::new(),
+        Some(mode) => format!(r#","permission_mode":"{mode}""#),
+        None => r#","permission_mode":"bypassPermissions""#.to_string(),
     };
     let payload = format!(
-        r#"{{"session_id":"{session}","{key}":"{word}","transcript_path":"/SENTINEL/transcript","cwd":"/SENTINEL/cwd","prompt":"SENTINEL-PROMPT","model":"SENTINEL-MODEL","permission_mode":"bypassPermissions"}}"#
+        r#"{{{id}"{key}":"{word}","transcript_path":"/SENTINEL/transcript","cwd":"/SENTINEL/cwd","prompt":"SENTINEL-PROMPT","model":"SENTINEL-MODEL"{mode}}}"#
     );
-    run_hook(helper.trim(), event, &payload);
+    let wrapped = plan.get("hooks").map(String::as_str)
+        == Some(if start { "wrap-start" } else { "wrap-end" });
+    match std::env::current_exe() {
+        // one more process: this program again, which runs the helper as
+        // ITS child — the helper is then the client's grandchild
+        Ok(me) if wrapped => run_hook_as(
+            Command::new(me).env(WRAPPING, helper.trim()),
+            event,
+            &payload,
+        ),
+        _ => run_hook(helper.trim(), event, &payload),
+    }
 }
 
 /// One hook program, run as the native client runs any hook of any family.
 fn run_hook(program: &str, word: &str, payload: &str) {
-    let mut command = Command::new(program);
+    run_hook_as(&mut Command::new(program), word, payload)
+}
+
+fn run_hook_as(command: &mut Command, word: &str, payload: &str) {
     command
         .args(["claude-code", word])
         .stdin(Stdio::piped())
@@ -72,7 +213,7 @@ fn run_hook(program: &str, word: &str, payload: &str) {
     // SAFETY: setsid(2) is async-signal-safe and only detaches the child.
     unsafe {
         command.pre_exec(|| {
-            libc::setsid();
+            sys::setsid();
             Ok(())
         });
     }
@@ -135,21 +276,35 @@ impl Ui {
     }
 }
 
-fn raw_terminal() -> Option<libc::termios> {
+fn raw_terminal() -> Option<sys::Termios> {
     // SAFETY: plain termios calls on this process's own stdin.
     unsafe {
-        let mut saved = std::mem::zeroed::<libc::termios>();
-        if libc::tcgetattr(0, &mut saved) != 0 {
+        let mut saved = sys::Termios::ZERO;
+        if sys::tcgetattr(0, &mut saved) != 0 {
             return None;
         }
         let mut raw = saved;
-        libc::cfmakeraw(&mut raw);
-        libc::tcsetattr(0, libc::TCSANOW, &raw);
+        sys::cfmakeraw(&mut raw);
+        sys::tcsetattr(0, sys::TCSANOW, &raw);
         Some(saved)
     }
 }
 
 fn main() {
+    std::hint::black_box(&BUILD_TAG);
+    // the other program of `exit=exec:`: report the final session and leave
+    if let Ok(session) = std::env::var(EXITING) {
+        return hook("session-end", &session, "prompt_input_exit");
+    }
+    // the one more process of `hooks=wrap-…`: run the hook program as a
+    // child of THIS process, hand it the payload, wait and leave
+    if let Ok(program) = std::env::var(WRAPPING) {
+        let _ = Command::new(program)
+            .args(std::env::args().skip(1))
+            .env_remove(WRAPPING)
+            .status();
+        return;
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let plan = plan();
     if let Ok(mut log) = std::fs::OpenOptions::new()
@@ -183,12 +338,20 @@ fn main() {
                 .exec();
         }
     }
+    if let (Some(id), Some(program), None) = (
+        resumed.as_ref(),
+        plan.get("resume").and_then(|r| r.strip_prefix("exec:")),
+        asked.as_ref(),
+    ) {
+        // the SAME request, another program: returns only when the exec failed
+        let _ = Command::new(program).args(&args).env(REEXEC, id).exec();
+    }
     let mut session = asked.or_else(|| resumed.clone()).unwrap_or(fresh);
     let saved = raw_terminal();
     let restore = || {
         if let Some(saved) = saved {
             // SAFETY: restores the attributes read above.
-            unsafe { libc::tcsetattr(0, libc::TCSANOW, &saved) };
+            unsafe { sys::tcsetattr(0, sys::TCSANOW, &saved) };
         }
     };
     match (resumed.is_some(), plan.get("resume").map(String::as_str)) {
@@ -197,6 +360,23 @@ fn main() {
         (true, Some("startup")) => hook("session-start", &session, "startup"),
         (true, Some(other)) if other.starts_with("wrong:") => {
             hook("session-start", &other["wrong:".len()..], "resume")
+        }
+        // a resume of another id, and then of the asked one: two answers
+        (true, Some(other)) if other.starts_with("both:") => {
+            hook("session-start", &other["both:".len()..], "resume");
+            hook("session-start", &session, "resume");
+        }
+        // the right answer, that many milliseconds too late
+        (true, Some(other)) if other.starts_with("late:") => {
+            let wait = other["late:".len()..].parse().unwrap_or(0);
+            std::thread::sleep(std::time::Duration::from_millis(wait));
+            hook("session-start", &session, "resume");
+        }
+        // the right answer, at the instant a test chooses
+        (true, Some(other)) if other.starts_with("on:") => {
+            wait_for(&other["on:".len()..]);
+            hook("session-start", &session, "resume");
+            reported("on");
         }
         // enters and is gone at once, its end never reported
         (true, Some("vanish")) => {
@@ -210,7 +390,7 @@ fn main() {
             hook("session-start", &session, "resume");
             restore();
             // SAFETY: stops this process; nothing else is touched.
-            unsafe { libc::raise(libc::SIGSTOP) };
+            unsafe { sys::raise(sys::SIGSTOP) };
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
@@ -226,6 +406,18 @@ fn main() {
             return;
         }
         (true, _) => hook("session-start", &session, "resume"),
+    }
+    // one more answer, later and about another session: when a test says so
+    if let (true, Some((other, file))) = (
+        resumed.is_some(),
+        plan.get("then").and_then(|then| then.split_once(':')),
+    ) {
+        let (other, file) = (other.to_string(), file.to_string());
+        std::thread::spawn(move || {
+            wait_for(&file);
+            hook("session-start", &other, "resume");
+            reported("then");
+        });
     }
     if resumed.is_none() {
         for next in plan
@@ -287,13 +479,13 @@ fn main() {
     });
     loop {
         if let Some(ms) = ui.as_ref().and_then(|ui| ui.screen().0) {
-            let mut key = libc::pollfd {
+            let mut key = sys::PollFd {
                 fd: 0,
-                events: libc::POLLIN,
+                events: sys::POLLIN,
                 revents: 0,
             };
             // SAFETY: one valid pollfd for this process's own stdin.
-            if unsafe { libc::poll(&mut key, 1, ms) } == 0 {
+            if unsafe { sys::poll(&mut key, 1, ms) } == 0 {
                 if let Some(ui) = ui.as_mut() {
                     ui.next();
                 }
@@ -332,13 +524,21 @@ fn main() {
     }
     match exit.as_str() {
         "no-end" => {}
+        // leaves as another program under the same pid, which reports the
+        // final session: returns only when the exec failed
+        other if other.starts_with("exec:") => {
+            restore();
+            let _ = Command::new(&other["exec:".len()..])
+                .env(EXITING, &session)
+                .exec();
+        }
         // reports its final session, then stops itself: the shell takes the
         // foreground back while this exact process stays alive
         "suspend" => {
             hook("session-end", &session, "prompt_input_exit");
             restore();
             // SAFETY: stops this process; nothing else is touched.
-            unsafe { libc::raise(libc::SIGSTOP) };
+            unsafe { sys::raise(sys::SIGSTOP) };
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }

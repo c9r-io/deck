@@ -18,15 +18,53 @@
 //! the helper is still connected: the peer executes the bundled lifecycle
 //! helper; its DIRECT parent is the lease's client (the frozen old pid and
 //! birth instant for an exit lease; for a launch lease a child of the new
-//! shell that is the pane's foreground leader and executes the frozen
-//! executable); the pane's shell generation is in the ancestry; the chain is
+//! shell that is the pane's foreground leader) and that client is BOUND to
+//! the frozen executable — its running image, not its pid, its name or its
+//! path alone (`procinfo::runs_executable`: kernel reads and one dynamic
+//! validation, no file content read). An old client that replaced
+//! its image under the same pid and birth instant reports nothing, and
+//! neither does a started client that runs another build. The pane's shell
+//! generation is in the ancestry; the chain is
 //! terminal-continuous (`agent_origin`); the claimed server pid and pane are
-//! the lease's. The WHOLE attribution — current foreground generation,
-//! helper and client identity, ancestry, terminal continuity — is made a
-//! second time on a fresh snapshot before the stream is closed (the close is
-//! the helper's ACK), and the write requires the very arming that was
-//! verified (`Lease::serial`): a lease sealed or re-armed meanwhile takes
-//! nothing. A lease keeps at most `MAX_FACTS` facts; one more marks its
+//! the lease's.
+//!
+//! **Before the ACK means after the last call that can take time.** The
+//! dynamic validation cannot be interrupted, and how long it takes is not
+//! this module's to promise. So it is made ONCE, between two attributions,
+//! and the second one — the helper's generation and file, the client's
+//! generation, image path and foreground, the pane's shell, the ancestry,
+//! the terminal chain — is read from a snapshot taken AFTER the validation
+//! returned, immediately before the write. A snapshot older than that call
+//! is never evidence that something still holds.
+//!
+//! **What a claim is bound to, and where that is checked.** A claim is taken
+//! from one mailbox and one arming, and it can be written to nothing else.
+//! Under the mailbox lock that writes the fact — not only when the claim was
+//! taken or queued — all of this must hold:
+//! - the mailbox is the very operation the claim was taken from
+//!   (`Mailbox::operation`, a number this process gives each `begin` and
+//!   never uses again). The next operation numbers its armings from one
+//!   again, and may arm the same entry for the same pane, shell and client:
+//!   a claim that outlived its operation in the queue or inside the
+//!   validation is still refused there;
+//! - the lease is the very arming that was claimed (`Lease::serial`, counted
+//!   inside one operation: a lease sealed or armed again takes nothing);
+//! - the time is inside BOTH limits: the receipt's own budget
+//!   (`RECEIPT_BUDGET`, from the instant its line was read) and, for a launch
+//!   lease, the end of the phase it was armed for (`Phase::Launch::closes`,
+//!   the restart's post deadline). The second does not wait for anybody to
+//!   seal: a lease whose phase is over takes nothing from that instant on,
+//!   however late the coordinator gets to it, and whatever is left of the
+//!   receipt's own budget.
+//!
+//! An answer that arrives after either limit is refused as late, a positive
+//! one included. That the helper gives up waiting by itself is not what
+//! refuses a late fact; this is. The coordinator, for its part, confirms
+//! from a set it sealed for every entry at one instant (`seal_all`), before
+//! its first check of a started client: no entry's record depends on how
+//! long another entry's check takes.
+//!
+//! A lease keeps at most `MAX_FACTS` facts; one more marks its
 //! record incomplete (`Event::Overflow`), and an incomplete record names no
 //! final session and confirms no entry. An event without a matching lease is
 //! dropped: there is no session registry, no "latest id", and nothing here
@@ -38,14 +76,25 @@
 //! that residual is accepted for this one user-approved side effect and
 //! extends to nothing else.
 //!
-//! The listener thread calls `receive` and takes no restart guard: it does
-//! bounded kernel reads and one short mailbox lock, never tmux, never a
-//! shell, Board or queue call.
+//! **Who waits for the validation.** Not the status listener: that thread
+//! serves every agent's Signal on the same socket, and of a lifecycle line
+//! it does only `claim` — one short mailbox lock — before it hands the
+//! connection to the one receipt worker and goes back to accepting
+//! (`agent_status::Receipts`: one thread, one bounded queue; a full queue
+//! drops the receipt). The worker calls `receive` under the receipt's
+//! deadline and takes no restart guard, no Board fence and no queue lock:
+//! kernel reads, that one validation and two short mailbox locks — never a
+//! full read or hash of a file, never tmux, never a shell. A validation that
+//! does not return holds that one worker and nothing else; receipts queued
+//! behind it are refused as late, unread, when it does, and each is at worst
+//! an entry that is not confirmed or a final session that is not named —
+//! never a second request.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::de::{Deserializer, MapAccess, Visitor};
 
@@ -229,11 +278,23 @@ pub(crate) fn parse(line: &str, known_source: impl Fn(&str) -> bool) -> Result<W
 
 #[derive(Clone, Debug)]
 enum Phase {
-    /// Armed before the first exit key: only the frozen old client reports.
-    Exit { client: Generation },
+    /// Armed before the first exit key: only the frozen old client reports,
+    /// and only while it still executes the frozen executable (an exec
+    /// inside the same pid and birth instant is another program).
+    Exit {
+        client: Generation,
+        executable: ExecutableRef,
+    },
     /// Armed before the launch transport: only a foreground child of the new
-    /// shell that executes the frozen executable reports.
-    Launch { executable: ExecutableRef },
+    /// shell that executes the frozen executable reports, and only until
+    /// `closes` — the end of the restart's post share. From that instant the
+    /// lease takes nothing, sealed or not: what closes the phase is the
+    /// clock, read under the lock that writes, and never how soon the
+    /// coordinator gets to seal.
+    Launch {
+        executable: ExecutableRef,
+        closes: Instant,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -242,35 +303,63 @@ pub(crate) struct Lease {
     pane: String,
     shell: Generation,
     phase: Phase,
-    /// Assigned when armed. A verification that started under one arming
-    /// can never be written under a later one, even for the same entry,
-    /// pane and shell.
+    /// Assigned when armed, counted from one inside each operation. A
+    /// verification that started under one arming can never be written
+    /// under a later one, even for the same entry, pane and shell. It says
+    /// nothing across operations: that is `Mailbox::operation`.
     serial: u64,
 }
 
 impl Lease {
-    pub(crate) fn exit(server_pid: u32, pane: &str, shell: Generation, client: Generation) -> Self {
-        Self {
-            server_pid,
-            pane: pane.to_string(),
-            shell,
-            phase: Phase::Exit { client },
-            serial: 0,
-        }
-    }
-
-    pub(crate) fn launch(
+    pub(crate) fn exit(
         server_pid: u32,
         pane: &str,
         shell: Generation,
+        client: Generation,
         executable: ExecutableRef,
     ) -> Self {
         Self {
             server_pid,
             pane: pane.to_string(),
             shell,
-            phase: Phase::Launch { executable },
+            phase: Phase::Exit { client, executable },
             serial: 0,
+        }
+    }
+
+    /// A launch lease that takes receipts until `closes`.
+    pub(crate) fn launch(
+        server_pid: u32,
+        pane: &str,
+        shell: Generation,
+        executable: ExecutableRef,
+        closes: Instant,
+    ) -> Self {
+        Self {
+            server_pid,
+            pane: pane.to_string(),
+            shell,
+            phase: Phase::Launch { executable, closes },
+            serial: 0,
+        }
+    }
+
+    /// The frozen executable this lease's client must be executing.
+    fn executable(&self) -> &ExecutableRef {
+        match &self.phase {
+            Phase::Exit { executable, .. } | Phase::Launch { executable, .. } => executable,
+        }
+    }
+
+    /// The instant this lease's phase is over, when the phase has one. An
+    /// exit lease has none of its own: its client reports only while it is
+    /// alive, the entry goes on only once that generation is gone
+    /// (`Plan::seal_exits`), and the restart asks its own deadline after the
+    /// seal, before anything is replaced.
+    fn closes(&self) -> Option<Instant> {
+        match &self.phase {
+            Phase::Exit { .. } => None,
+            Phase::Launch { closes, .. } => Some(*closes),
         }
     }
 }
@@ -280,6 +369,9 @@ impl Lease {
 const MAX_FACTS: usize = 64;
 
 struct Mailbox {
+    /// Which operation this mailbox is: `OPENED` when it was begun. No other
+    /// mailbox of this process ever has the same number.
+    operation: u64,
     socket: String,
     helper: PathBuf,
     /// entry index → its one armed lease (re-armed for the launch phase)
@@ -290,10 +382,17 @@ struct Mailbox {
 
 static MAILBOX: Mutex<Option<Mailbox>> = Mutex::new(None);
 static ARRIVED: Condvar = Condvar::new();
+/// How many mailboxes this process has begun. In memory only: it names an
+/// operation to the claims taken from it and to nothing else, and it is
+/// neither a registry nor anything a later process reads.
+static OPENED: AtomicU64 = AtomicU64::new(0);
 
-/// Open the mailbox of one operation. Any earlier content is discarded.
+/// Open the mailbox of one operation. Any earlier content is discarded, and
+/// every claim taken from an earlier mailbox is void from here on: this one
+/// is another operation, whatever its leases turn out to be.
 pub(crate) fn begin(socket: &str, helper: &Path) {
     *MAILBOX.lock_or_recover() = Some(Mailbox {
+        operation: OPENED.fetch_add(1, Ordering::Relaxed) + 1,
         socket: socket.to_string(),
         helper: helper.to_path_buf(),
         leases: HashMap::new(),
@@ -327,6 +426,22 @@ pub(crate) fn seal(entry: usize) -> Vec<Fact> {
         .map(|mailbox| {
             mailbox.leases.remove(&entry);
             mailbox.facts.remove(&entry).unwrap_or_default()
+        })
+        .unwrap_or_default()
+}
+
+/// Seal every entry at one instant: all leases are removed under one lock,
+/// so from here on no receipt is written for any of them, and what each
+/// gathered is returned by entry. The confirmation works on this set and on
+/// nothing that arrives after it — one entry's check, however long it takes,
+/// leaves no other entry's lease open behind it.
+pub(crate) fn seal_all() -> HashMap<usize, Vec<Fact>> {
+    MAILBOX
+        .lock_or_recover()
+        .as_mut()
+        .map(|mailbox| {
+            mailbox.leases.clear();
+            std::mem::take(&mut mailbox.facts)
         })
         .unwrap_or_default()
 }
@@ -371,25 +486,41 @@ fn generation(table: &ProcessTable, pid: u32) -> Option<Generation> {
         .map(|info| (pid, (info.start_seconds, info.start_micros)))
 }
 
+/// How long one receipt may take from the instant its line was read to the
+/// instant its fact is written — the wait for the worker included. It is
+/// shorter than the helper's own wait for the close (`SOCKET_BUDGET`, 500 ms,
+/// in the lifecycle helper), so a fact is never written for a helper that
+/// has stopped waiting; that is checked from the kernel as well, not assumed
+/// from this number.
+pub(crate) const RECEIPT_BUDGET: Duration = Duration::from_millis(400);
+
 /// The kernel reads one attribution needs. Production is `Kernel::live`;
 /// tests supply process tables that describe a topology exactly.
 pub(crate) struct Kernel<'a> {
-    /// The snapshot taken when the line was read, helper still connected.
-    pub(crate) table: &'a ProcessTable,
-    /// A fresh snapshot for the re-check immediately before the ACK.
-    pub(crate) again: &'a dyn Fn() -> ProcessTable,
+    /// A process-table snapshot, taken when asked.
+    pub(crate) snapshot: &'a dyn Fn() -> ProcessTable,
     /// The process executes the bundled lifecycle helper (file identity).
     pub(crate) runs_helper: &'a dyn Fn(u32, &Path) -> bool,
-    /// The process generation executes exactly this frozen executable.
+    /// The process generation exists and its image path names this frozen
+    /// executable's file state (`procinfo::at_executable`). Kernel reads
+    /// only: it cannot stall, and it proves nothing about the image in
+    /// memory.
+    pub(crate) at_executable: &'a dyn Fn(Generation, &ExecutableRef) -> bool,
+    /// The process generation executes exactly this frozen executable
+    /// (`procinfo::runs_executable`: one dynamic validation of the running
+    /// image, no file content read). This is the ONE call here that cannot
+    /// be interrupted.
     pub(crate) runs_executable: &'a dyn Fn(Generation, &ExecutableRef) -> bool,
 }
 
-impl<'a> Kernel<'a> {
-    pub(crate) fn live(table: &'a ProcessTable) -> Self {
+impl Kernel<'static> {
+    pub(crate) fn live() -> Self {
         Self {
-            table,
-            again: &crate::procinfo::processes,
+            snapshot: &crate::procinfo::processes,
             runs_helper: &crate::procinfo::runs_file,
+            at_executable: &|client, executable| {
+                crate::procinfo::at_executable(client.0, client.1, executable)
+            },
             runs_executable: &|client, executable| {
                 crate::procinfo::runs_executable(client.0, client.1, executable)
             },
@@ -397,22 +528,34 @@ impl<'a> Kernel<'a> {
     }
 }
 
+/// Who reported, as one snapshot shows it: the helper's own generation and
+/// its client's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Seen {
+    reporter: Generation,
+    client: Generation,
+}
+
 /// Everything that must hold for `peer` to be the lease's client's own
-/// report, read from ONE table. Returns that client generation.
+/// report, as far as it can be read without waiting: ONE table, the helper's
+/// file identity and the client's image path. Returns who reported.
 fn attribute(
     lease: &Lease,
     helper: &Path,
     peer: u32,
     table: &ProcessTable,
     kernel: &Kernel,
-) -> Result<Generation, &'static str> {
-    let reporter = table.get(&peer).ok_or("lifecycle-no-peer")?;
+) -> Result<Seen, &'static str> {
+    // The helper as a generation, not a pid: the number alone could be
+    // somebody else by the time it is read again.
+    let reporter = generation(table, peer).ok_or("lifecycle-no-peer")?;
     if !(kernel.runs_helper)(peer, helper) {
         return Err("lifecycle-foreign-helper");
     }
     // The helper's direct parent is the client: a hook run by a tool shell,
     // a subagent or a wrapper has another parent and proves nothing here.
-    let client = generation(table, reporter.ppid).ok_or("lifecycle-foreign-client")?;
+    let parent = table.get(&peer).map_or(0, |info| info.ppid);
+    let client = generation(table, parent).ok_or("lifecycle-foreign-client")?;
     let chain = crate::procinfo::ancestry_in(table, peer, crate::agent_origin::ORIGIN_HOPS);
     if generation(table, lease.shell.0) != Some(lease.shell) || !chain.contains(&lease.shell.0) {
         return Err("lifecycle-foreign-pane");
@@ -423,62 +566,129 @@ fn attribute(
     if (foreground.pid(), foreground.birth()) != client {
         return Err("lifecycle-foreign-client");
     }
-    match &lease.phase {
-        Phase::Exit { client: frozen } => {
-            if client != *frozen {
-                return Err("lifecycle-foreign-client");
-            }
-        }
-        Phase::Launch { executable } => {
-            let direct = table
-                .get(&client.0)
-                .is_some_and(|info| info.ppid == lease.shell.0);
-            if !direct || !(kernel.runs_executable)(client, executable) {
-                return Err("lifecycle-foreign-client");
-            }
-        }
+    let expected = match &lease.phase {
+        Phase::Exit { client: frozen, .. } => client == *frozen,
+        Phase::Launch { .. } => table
+            .get(&client.0)
+            .is_some_and(|info| info.ppid == lease.shell.0),
+    };
+    if !expected || !(kernel.at_executable)(client, lease.executable()) {
+        return Err("lifecycle-foreign-client");
     }
     if !crate::agent_origin::terminal_continuous(table, &chain, client.0, lease.shell.0) {
         return Err("lifecycle-terminal-discontinuity");
     }
-    Ok(client)
+    Ok(Seen { reporter, client })
 }
 
-/// Attribute one claim to an armed lease by kernel facts, while the helper
-/// is still connected, and record it. The error is a closed reason.
+/// One claim that names an armed lease of the operation in flight: the
+/// lease as it was armed when the line was read, and the operation it was
+/// armed in. Still only a claim, and a claim on that operation alone.
+pub(crate) struct Claim {
+    wire: Wire,
+    /// The mailbox this claim was taken from (`Mailbox::operation`).
+    operation: u64,
+    entry: usize,
+    lease: Lease,
+    helper: PathBuf,
+}
+
+/// The lease `wire` names, if one is armed. One short mailbox lock and
+/// nothing else: this is all of a lifecycle line the status listener itself
+/// does (`agent_status::handle_stream`).
+pub(crate) fn claim(wire: Wire) -> Result<Claim, &'static str> {
+    let mailbox = MAILBOX.lock_or_recover();
+    let mailbox = mailbox.as_ref().ok_or("lifecycle-no-lease")?;
+    if wire.socket != mailbox.socket {
+        return Err("lifecycle-no-lease");
+    }
+    let (entry, lease) = mailbox
+        .leases
+        .iter()
+        .find(|(_, lease)| lease.server_pid == wire.server_pid && lease.pane == wire.pane)
+        .ok_or("lifecycle-no-lease")?;
+    Ok(Claim {
+        operation: mailbox.operation,
+        entry: *entry,
+        lease: lease.clone(),
+        helper: mailbox.helper.clone(),
+        wire,
+    })
+}
+
+/// Attribute one claim to its lease by kernel facts and record it, or refuse
+/// it with a closed reason. `deadline` is the instant the fact must be
+/// written by (`RECEIPT_BUDGET` after the line was read); the caller closes
+/// the stream — the helper's ACK — only after this returns.
 ///
-/// The whole attribution is made twice: on the snapshot taken with the
-/// line, and again on a fresh snapshot immediately before the write (the
-/// caller closes the stream — the helper's ACK — only after this returns).
-/// Both must name the same client. The write then requires the very arming
-/// that was verified: a lease sealed or re-armed in between takes nothing.
-pub(crate) fn receive(wire: Wire, peer: Option<u32>, kernel: &Kernel) -> Result<(), &'static str> {
-    let (entry, lease, helper) = {
-        let mailbox = MAILBOX.lock_or_recover();
-        let mailbox = mailbox.as_ref().ok_or("lifecycle-no-lease")?;
-        if wire.socket != mailbox.socket {
-            return Err("lifecycle-no-lease");
-        }
-        let (entry, lease) = mailbox
-            .leases
-            .iter()
-            .find(|(_, lease)| lease.server_pid == wire.server_pid && lease.pane == wire.pane)
-            .ok_or("lifecycle-no-lease")?;
-        (*entry, lease.clone(), mailbox.helper.clone())
-    };
+/// The one call that can take time is the dynamic validation of the client's
+/// running image, and it cannot be interrupted. So the order is:
+///
+/// 1. who reported, from a snapshot taken now (`attribute`);
+/// 2. that validation, ONCE;
+/// 3. everything of step 1 AGAIN, from a snapshot taken after the validation
+///    returned: the helper is the same generation, still alive and still the
+///    bundled helper; its client is the same generation, still at the frozen
+///    file, still the pane's foreground, in the same pane, shell and terminal
+///    chain. What was true before a call of unknown length is not evidence
+///    of what is true before the ACK;
+/// 4. the write, under the mailbox lock, only into the very operation the
+///    claim was taken from, only for the very arming that was claimed (a
+///    lease sealed or armed again takes nothing) and only in time: inside
+///    the receipt's budget AND before the lease's phase ended. All three are
+///    asked under that lock, with the clock read there.
+///
+/// An answer that arrives after either limit is refused as late whatever it
+/// says — also a positive one, and never as a client that is somebody
+/// else's. Nothing is retried, and nothing here waits for anything but that
+/// one validation.
+pub(crate) fn receive(
+    claim: Claim,
+    peer: Option<u32>,
+    deadline: Instant,
+    kernel: &Kernel,
+) -> Result<(), &'static str> {
+    let Claim {
+        wire,
+        operation,
+        entry,
+        lease,
+        helper,
+    } = claim;
     let peer = peer.ok_or("lifecycle-no-peer")?;
-    let client = attribute(&lease, &helper, peer, kernel.table, kernel)?;
-    // Before the ACK: the same attribution on what the kernel says NOW. A
-    // client that lost the foreground, exited, or was replaced since the
-    // line was read is late, whatever was true a moment ago.
-    let now = (kernel.again)();
-    if attribute(&lease, &helper, peer, &now, kernel) != Ok(client) {
+    // Both limits hold for one receipt, and the earlier one decides: its own
+    // budget, and the end of the phase its lease was armed for.
+    let deadline = lease.closes().map_or(deadline, |phase| phase.min(deadline));
+    let late = || Instant::now() >= deadline;
+    // waited for the worker too long: nothing is read for it
+    if late() {
         return Err("lifecycle-late");
     }
+    let seen = attribute(&lease, &helper, peer, &(kernel.snapshot)(), kernel)?;
+    let bound = (kernel.runs_executable)(seen.client, lease.executable());
+    if late() {
+        return Err("lifecycle-late");
+    }
+    if !bound {
+        return Err("lifecycle-foreign-client");
+    }
+    // Before the ACK: the same attribution on what the kernel says NOW,
+    // after the validation. A helper that left, a client that lost the
+    // foreground, exited or was replaced meanwhile is late.
+    if attribute(&lease, &helper, peer, &(kernel.snapshot)(), kernel) != Ok(seen) {
+        return Err("lifecycle-late");
+    }
+    let client = seen.client;
     let mut mailbox = MAILBOX.lock_or_recover();
-    let mailbox = mailbox.as_mut().ok_or("lifecycle-no-lease")?;
-    // the very arming that was verified, not a successor of it
-    if mailbox.leases.get(&entry).map(|now| now.serial) != Some(lease.serial) {
+    // The operation this claim was taken from, and no later one: the next
+    // operation counts its armings from one again and may arm this entry for
+    // the same pane, shell and client. Its mailbox is not this claim's.
+    let mailbox = mailbox
+        .as_mut()
+        .filter(|mailbox| mailbox.operation == operation)
+        .ok_or("lifecycle-no-lease")?;
+    // the very arming that was claimed, not a successor of it, and in time
+    if late() || mailbox.leases.get(&entry).map(|now| now.serial) != Some(lease.serial) {
         return Err("lifecycle-late");
     }
     let facts = mailbox.facts.entry(entry).or_default();
@@ -770,41 +980,41 @@ mod tests {
     fn without_an_operation_or_a_matching_lease_an_event_is_dropped() {
         let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
         end_mailbox_for_test();
-        let table = crate::procinfo::processes();
         let me = Some(std::process::id());
         let wire = || parse(&start("resume"), |source| source == "claude-code").unwrap();
         assert_eq!(
-            receive(wire(), me, &Kernel::live(&table)).unwrap_err(),
+            received(wire(), me, &Kernel::live()).unwrap_err(),
             "lifecycle-no-lease"
         );
         assert!(!armed());
         begin("deck", Path::new("/nonexistent/deck-lifecycle-helper"));
         assert_eq!(
-            receive(wire(), me, &Kernel::live(&table)).unwrap_err(),
+            received(wire(), me, &Kernel::live()).unwrap_err(),
             "lifecycle-no-lease"
         );
         // a lease for another server generation that reuses the pane id
-        arm(0, Lease::exit(9999, "%7", (1, (1, 1)), (2, (2, 2))));
+        let own = ExecutableRef::of_this_test;
+        arm(0, Lease::exit(9999, "%7", (1, (1, 1)), (2, (2, 2)), own()));
         assert!(armed());
         assert_eq!(
-            receive(wire(), me, &Kernel::live(&table)).unwrap_err(),
+            received(wire(), me, &Kernel::live()).unwrap_err(),
             "lifecycle-no-lease"
         );
         // the right pane, another socket
-        arm(0, Lease::exit(4242, "%7", (1, (1, 1)), (2, (2, 2))));
+        arm(0, Lease::exit(4242, "%7", (1, (1, 1)), (2, (2, 2)), own()));
         let mut foreign = wire();
         foreign.socket = "deck-dev".into();
         assert_eq!(
-            receive(foreign, me, &Kernel::live(&table)).unwrap_err(),
+            received(foreign, me, &Kernel::live()).unwrap_err(),
             "lifecycle-no-lease"
         );
         // the right claim from a process that is not the bundled helper
         assert_eq!(
-            receive(wire(), None, &Kernel::live(&table)).unwrap_err(),
+            received(wire(), None, &Kernel::live()).unwrap_err(),
             "lifecycle-no-peer"
         );
         assert_eq!(
-            receive(wire(), me, &Kernel::live(&table)).unwrap_err(),
+            received(wire(), me, &Kernel::live()).unwrap_err(),
             "lifecycle-foreign-helper"
         );
         assert!(peek(0).is_empty());
@@ -815,6 +1025,17 @@ mod tests {
 
     fn end_mailbox_for_test() {
         super::end();
+    }
+
+    /// `claim` and `receive` in one step, with a budget no test here reaches
+    /// unless it means to.
+    fn received(wire: Wire, peer: Option<u32>, kernel: &Kernel) -> Result<(), &'static str> {
+        receive(
+            claim(wire)?,
+            peer,
+            Instant::now() + Duration::from_secs(30),
+            kernel,
+        )
     }
 
     // ---------- attribution on exact process topologies ----------------------
@@ -852,7 +1073,7 @@ mod tests {
     }
 
     fn exit_lease() -> Lease {
-        Lease::exit(4242, "%7", SHELL, CLIENT)
+        Lease::exit(4242, "%7", SHELL, CLIENT, ExecutableRef::of_this_test())
     }
 
     fn end_wire(id: &str) -> Wire {
@@ -869,6 +1090,35 @@ mod tests {
         .unwrap()
     }
 
+    /// A kernel whose first snapshot is `table` and whose every later one
+    /// is `again()` — what it says after the validation, right before the
+    /// ACK. The helper is the bundled one and the client is at the frozen
+    /// file and bound to it, unless a test says otherwise.
+    struct Scripted<'a> {
+        table: &'a ProcessTable,
+        again: &'a dyn Fn() -> ProcessTable,
+        snapshots: std::cell::Cell<usize>,
+    }
+
+    impl<'a> Scripted<'a> {
+        fn new(table: &'a ProcessTable, again: &'a dyn Fn() -> ProcessTable) -> Self {
+            Self {
+                table,
+                again,
+                snapshots: std::cell::Cell::new(0),
+            }
+        }
+
+        fn snapshot(&self) -> ProcessTable {
+            self.snapshots.set(self.snapshots.get() + 1);
+            if self.snapshots.get() == 1 {
+                self.table.clone()
+            } else {
+                (self.again)()
+            }
+        }
+    }
+
     /// `receive` on `table`, with `again` as the kernel's answer right
     /// before the ACK.
     fn attributed(
@@ -876,23 +1126,33 @@ mod tests {
         table: &ProcessTable,
         again: &dyn Fn() -> ProcessTable,
     ) -> Result<(), &'static str> {
-        receive(
+        let script = Scripted::new(table, again);
+        received(
             wire,
             Some(30),
             &Kernel {
-                table,
-                again,
+                snapshot: &|| script.snapshot(),
                 runs_helper: &|_, _| true,
+                at_executable: &|_, _| true,
                 runs_executable: &|_, _| true,
             },
         )
     }
 
     fn with_lease(lease: Lease, work: impl FnOnce()) {
+        with_mailbox(|| {
+            arm(0, lease);
+            work();
+        });
+    }
+
+    /// One operation's mailbox, with nothing armed, for the time `work`
+    /// runs. A test whose lease carries an instant of its own arms it in
+    /// here: the wait for the tests' lock is then not part of that time.
+    fn with_mailbox(work: impl FnOnce()) {
         let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
         end_mailbox_for_test();
         begin("deck", Path::new("/nonexistent/deck-lifecycle-helper"));
-        arm(0, lease);
         work();
         end_mailbox_for_test();
     }
@@ -914,17 +1174,385 @@ mod tests {
                 }]
             );
             // a helper that is not the bundled one is nobody's report
-            let foreign = receive(
+            let again = || topology(CLIENT.0);
+            let script = Scripted::new(&table, &again);
+            let foreign = received(
                 end_wire(ID),
                 Some(30),
                 &Kernel {
-                    table: &table,
-                    again: &|| topology(CLIENT.0),
+                    snapshot: &|| script.snapshot(),
                     runs_helper: &|_, _| false,
+                    at_executable: &|_, _| true,
                     runs_executable: &|_, _| true,
                 },
             );
             assert_eq!(foreign.unwrap_err(), "lifecycle-foreign-helper");
+            assert_eq!(peek(0).len(), 1);
+        });
+    }
+
+    /// The leased old client is still that pid and birth instant, but it no
+    /// longer executes the frozen executable (an exec in place, or a file
+    /// that is not what runs): its exit report names nothing — when it is
+    /// not at the frozen file, when its running image does not validate, or
+    /// when it has left that file by the time the validation returned. The
+    /// validation is asked ONCE per receipt, and not at all for a client
+    /// that is positively somewhere else.
+    #[test]
+    fn an_old_client_that_no_longer_executes_the_frozen_executable_reports_nothing() {
+        with_lease(exit_lease(), || {
+            let table = topology(CLIENT.0);
+            let again = || topology(CLIENT.0);
+            let (validated, placed) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+            let report = |at: &dyn Fn(usize) -> bool, runs: bool| {
+                validated.set(0);
+                placed.set(0);
+                let script = Scripted::new(&table, &again);
+                received(
+                    end_wire(ID),
+                    Some(30),
+                    &Kernel {
+                        snapshot: &|| script.snapshot(),
+                        runs_helper: &|_, _| true,
+                        at_executable: &|client, _| {
+                            assert_eq!(client, CLIENT, "asked of the leased generation");
+                            placed.set(placed.get() + 1);
+                            at(placed.get())
+                        },
+                        runs_executable: &|client, _| {
+                            assert_eq!(client, CLIENT, "asked of the leased generation");
+                            validated.set(validated.get() + 1);
+                            runs
+                        },
+                    },
+                )
+            };
+            // another file at its path: refused before any validation
+            assert_eq!(
+                report(&|_| false, true).unwrap_err(),
+                "lifecycle-foreign-client"
+            );
+            assert_eq!((placed.get(), validated.get()), (1, 0));
+            // at the frozen file, and its running image is not that code
+            assert_eq!(
+                report(&|_| true, false).unwrap_err(),
+                "lifecycle-foreign-client"
+            );
+            assert_eq!((placed.get(), validated.get()), (1, 1));
+            // bound when the line was read, elsewhere before the ACK
+            assert_eq!(report(&|nth| nth == 1, true).unwrap_err(), "lifecycle-late");
+            assert_eq!(
+                (placed.get(), validated.get()),
+                (2, 1),
+                "placed at both readings, validated once"
+            );
+            assert!(peek(0).is_empty());
+            // bound, and still there after the validation: recorded
+            assert_eq!(report(&|_| true, true), Ok(()));
+            assert_eq!((placed.get(), validated.get()), (2, 1));
+            assert_eq!(final_session(&peek(0)).as_deref(), Some(ID));
+        });
+    }
+
+    /// What `receive` is handed while its one validation runs: a kernel
+    /// whose answers change DURING that call, and a clock that may run out
+    /// in it. Each case is positive when the line is read and positive in
+    /// the validation's own answer; none may leave a fact behind.
+    struct During<'a> {
+        /// What the kernel says after the validation returned.
+        after: &'a dyn Fn() -> ProcessTable,
+        /// Run inside the validation, before it answers.
+        meanwhile: &'a dyn Fn(),
+        /// The helper is still the bundled one after the validation.
+        helper_after: bool,
+    }
+
+    fn during(case: During, deadline: Instant) -> (Result<(), &'static str>, usize) {
+        let table = topology(CLIENT.0);
+        let validations = std::cell::Cell::new(0);
+        let returned = std::cell::Cell::new(false);
+        let result = claim(end_wire(ID)).and_then(|claim| {
+            receive(
+                claim,
+                Some(30),
+                deadline,
+                &Kernel {
+                    snapshot: &|| {
+                        if returned.get() {
+                            (case.after)()
+                        } else {
+                            table.clone()
+                        }
+                    },
+                    runs_helper: &|_, _| !returned.get() || case.helper_after,
+                    at_executable: &|_, _| true,
+                    runs_executable: &|_, _| {
+                        validations.set(validations.get() + 1);
+                        (case.meanwhile)();
+                        returned.set(true);
+                        true
+                    },
+                },
+            )
+        });
+        (result, validations.get())
+    }
+
+    fn far() -> Instant {
+        Instant::now() + Duration::from_secs(30)
+    }
+
+    /// The helper stops waiting — exits, or its pid is another process by
+    /// then — while the client's code is being validated. The validation
+    /// answers yes; the fact is not written, because nobody is waiting for
+    /// the ACK it would be.
+    #[test]
+    fn a_helper_that_leaves_during_the_validation_reports_nothing() {
+        with_lease(exit_lease(), || {
+            let nothing = || {};
+            // exited: the pid is in no table any more
+            let exited = || {
+                let mut now = topology(CLIENT.0);
+                now.remove(&30);
+                now
+            };
+            // exited and its pid given to another child of the same client
+            let reused = || {
+                let mut now = topology(CLIENT.0);
+                now.get_mut(&30).unwrap().start_seconds += 1;
+                now
+            };
+            // exited and reparented, the client still in the foreground
+            let orphaned = || {
+                let mut now = topology(CLIENT.0);
+                now.get_mut(&30).unwrap().ppid = 1;
+                now
+            };
+            for (what, after) in [
+                ("exited", &exited as &dyn Fn() -> ProcessTable),
+                ("reused", &reused),
+                ("orphaned", &orphaned),
+            ] {
+                let (result, validations) = during(
+                    During {
+                        after,
+                        meanwhile: &nothing,
+                        helper_after: true,
+                    },
+                    far(),
+                );
+                assert_eq!(result.unwrap_err(), "lifecycle-late", "{what}");
+                assert_eq!(validations, 1, "{what}: validated once, never again");
+            }
+            // the pid now runs something that is not the bundled helper
+            let same = || topology(CLIENT.0);
+            let (result, _) = during(
+                During {
+                    after: &same,
+                    meanwhile: &nothing,
+                    helper_after: false,
+                },
+                far(),
+            );
+            assert_eq!(result.unwrap_err(), "lifecycle-late");
+            assert!(peek(0).is_empty(), "no late fact");
+            // the same receipt with nothing changing is a fact
+            let (result, validations) = during(
+                During {
+                    after: &same,
+                    meanwhile: &nothing,
+                    helper_after: true,
+                },
+                far(),
+            );
+            assert_eq!((result, validations), (Ok(()), 1));
+            assert_eq!(final_session(&peek(0)).as_deref(), Some(ID));
+        });
+    }
+
+    /// The client loses the foreground, exits, or is another generation
+    /// under its pid while its code is being validated: the answer was
+    /// about a moment that is over.
+    #[test]
+    fn a_foreground_or_generation_that_changes_during_the_validation_reports_nothing() {
+        with_lease(exit_lease(), || {
+            let nothing = || {};
+            let shell_took_over = || topology(SHELL.0);
+            let client_gone = || {
+                let mut now = topology(SHELL.0);
+                now.remove(&CLIENT.0);
+                now
+            };
+            let client_replaced = || {
+                let mut now = topology(CLIENT.0);
+                now.get_mut(&CLIENT.0).unwrap().start_seconds += 1;
+                now
+            };
+            let shell_replaced = || {
+                let mut now = topology(CLIENT.0);
+                now.get_mut(&SHELL.0).unwrap().start_seconds += 1;
+                now
+            };
+            // another program between the helper and the terminal
+            let chain_broken = || {
+                let mut now = topology(CLIENT.0);
+                now.get_mut(&30).unwrap().tty = 9;
+                now
+            };
+            for (what, after) in [
+                (
+                    "shell foreground",
+                    &shell_took_over as &dyn Fn() -> ProcessTable,
+                ),
+                ("client gone", &client_gone),
+                ("client replaced", &client_replaced),
+                ("shell replaced", &shell_replaced),
+                ("chain broken", &chain_broken),
+            ] {
+                let (result, validations) = during(
+                    During {
+                        after,
+                        meanwhile: &nothing,
+                        helper_after: true,
+                    },
+                    far(),
+                );
+                assert_eq!(result.unwrap_err(), "lifecycle-late", "{what}");
+                assert_eq!(validations, 1, "{what}");
+            }
+            assert!(peek(0).is_empty(), "no late fact");
+        });
+    }
+
+    /// The lease is sealed, or sealed and armed again, while the client's
+    /// code is being validated: the answer belongs to an arming that is
+    /// over. Nothing is written — not into the sealed entry, and not into
+    /// the successor, which is the same entry, pane, shell and client.
+    #[test]
+    fn a_lease_sealed_or_armed_again_during_the_validation_takes_nothing() {
+        with_lease(exit_lease(), || {
+            let same = || topology(CLIENT.0);
+            let rearm = || {
+                assert!(seal(0).is_empty());
+                arm(0, exit_lease());
+            };
+            let (result, validations) = during(
+                During {
+                    after: &same,
+                    meanwhile: &rearm,
+                    helper_after: true,
+                },
+                far(),
+            );
+            assert_eq!((result, validations), (Err("lifecycle-late"), 1));
+            assert!(armed(), "the successor is armed");
+            assert!(peek(0).is_empty(), "and took nothing");
+            let sealed = || {
+                assert!(seal(0).is_empty());
+            };
+            let (result, _) = during(
+                During {
+                    after: &same,
+                    meanwhile: &sealed,
+                    helper_after: true,
+                },
+                far(),
+            );
+            assert_eq!(result.unwrap_err(), "lifecycle-late");
+            assert!(!armed());
+            assert!(seal(0).is_empty(), "nothing to seal a second time");
+            // the whole operation ended meanwhile: no mailbox to write to
+            arm(0, exit_lease());
+            let ended = || super::end();
+            let (result, _) = during(
+                During {
+                    after: &same,
+                    meanwhile: &ended,
+                    helper_after: true,
+                },
+                far(),
+            );
+            assert_eq!(result.unwrap_err(), "lifecycle-no-lease");
+            begin("deck", Path::new("/nonexistent/deck-lifecycle-helper"));
+        });
+    }
+
+    /// The validation answers yes — after the receipt's budget. A late yes
+    /// is refused like every other late answer, and a late no is called
+    /// late, not "somebody else's client". A receipt whose budget is already
+    /// over when it is looked at costs no kernel read at all.
+    #[test]
+    fn a_validation_that_answers_after_the_budget_is_refused_whatever_it_says() {
+        with_lease(exit_lease(), || {
+            let same = || topology(CLIENT.0);
+            let slow = || std::thread::sleep(Duration::from_millis(60));
+            let (result, validations) = during(
+                During {
+                    after: &same,
+                    meanwhile: &slow,
+                    helper_after: true,
+                },
+                Instant::now() + Duration::from_millis(20),
+            );
+            assert_eq!((result, validations), (Err("lifecycle-late"), 1));
+            assert!(peek(0).is_empty(), "a late yes writes nothing");
+            // a late no
+            let table = topology(CLIENT.0);
+            let script = Scripted::new(&table, &same);
+            let late_no = receive(
+                claim(end_wire(ID)).unwrap(),
+                Some(30),
+                Instant::now() + Duration::from_millis(20),
+                &Kernel {
+                    snapshot: &|| script.snapshot(),
+                    runs_helper: &|_, _| true,
+                    at_executable: &|_, _| true,
+                    runs_executable: &|_, _| {
+                        slow();
+                        false
+                    },
+                },
+            );
+            assert_eq!(late_no.unwrap_err(), "lifecycle-late");
+            // already over when the worker reaches it: nothing is asked
+            let asked = std::cell::Cell::new(0);
+            let count = || asked.set(asked.get() + 1);
+            let stale = receive(
+                claim(end_wire(ID)).unwrap(),
+                Some(30),
+                Instant::now(),
+                &Kernel {
+                    snapshot: &|| {
+                        count();
+                        topology(CLIENT.0)
+                    },
+                    runs_helper: &|_, _| {
+                        count();
+                        true
+                    },
+                    at_executable: &|_, _| {
+                        count();
+                        true
+                    },
+                    runs_executable: &|_, _| {
+                        count();
+                        true
+                    },
+                },
+            );
+            assert_eq!(stale.unwrap_err(), "lifecycle-late");
+            assert_eq!(asked.get(), 0, "an expired receipt reads nothing");
+            assert!(peek(0).is_empty());
+            // in time, the same receipt is a fact
+            let (result, _) = during(
+                During {
+                    after: &same,
+                    meanwhile: &|| {},
+                    helper_after: true,
+                },
+                far(),
+            );
+            assert_eq!(result, Ok(()));
             assert_eq!(peek(0).len(), 1);
         });
     }
@@ -1059,35 +1687,41 @@ mod tests {
     /// the frozen executable and holds the foreground reports.
     #[test]
     fn a_launch_lease_takes_only_the_new_shells_direct_foreground_client() {
-        let executable =
-            ExecutableRef::read(&std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap())
-                .expect("own executable");
-        with_lease(Lease::launch(4242, "%7", SHELL, executable), || {
+        let executable = ExecutableRef::of_this_test();
+        with_lease(Lease::launch(4242, "%7", SHELL, executable, far()), || {
             let table = topology(CLIENT.0);
-            let kernel = |runs: bool| Kernel {
-                table: &table,
-                again: &|| topology(CLIENT.0),
-                runs_helper: &|_, _| true,
-                runs_executable: if runs { &|_, _| true } else { &|_, _| false },
+            let again = || topology(CLIENT.0);
+            let report = |table: &ProcessTable, at: bool, runs: bool| {
+                let script = Scripted::new(table, &again);
+                received(
+                    resume_wire(ID),
+                    Some(30),
+                    &Kernel {
+                        snapshot: &|| script.snapshot(),
+                        runs_helper: &|_, _| true,
+                        at_executable: if at { &|_, _| true } else { &|_, _| false },
+                        runs_executable: if runs { &|_, _| true } else { &|_, _| false },
+                    },
+                )
             };
+            // a client started from another file, or running another image
             assert_eq!(
-                receive(resume_wire(ID), Some(30), &kernel(false)).unwrap_err(),
+                report(&table, false, true).unwrap_err(),
                 "lifecycle-foreign-client"
             );
-            assert_eq!(receive(resume_wire(ID), Some(30), &kernel(true)), Ok(()));
+            assert_eq!(
+                report(&table, true, false).unwrap_err(),
+                "lifecycle-foreign-client"
+            );
+            assert!(peek(0).is_empty());
+            assert_eq!(report(&table, true, true), Ok(()));
             assert_eq!(reentry(&peek(0), ID), Receipt::Entered(CLIENT));
             // a client that is the shell's grandchild is not a direct launch
             let mut wrapped = topology(CLIENT.0);
             wrapped.insert(15, process(15, SHELL.0, 15, TTY, CLIENT.0));
             wrapped.get_mut(&CLIENT.0).unwrap().ppid = 15;
-            let nested = Kernel {
-                table: &wrapped,
-                again: &|| topology(CLIENT.0),
-                runs_helper: &|_, _| true,
-                runs_executable: &|_, _| true,
-            };
             assert_eq!(
-                receive(resume_wire(ID), Some(30), &nested).unwrap_err(),
+                report(&wrapped, true, true).unwrap_err(),
                 "lifecycle-foreign-client"
             );
         });
@@ -1098,10 +1732,8 @@ mod tests {
     /// incomplete, the report is refused, and nothing is confirmed.
     #[test]
     fn a_record_that_overflows_confirms_nothing() {
-        let executable =
-            ExecutableRef::read(&std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap())
-                .expect("own executable");
-        with_lease(Lease::launch(4242, "%7", SHELL, executable), || {
+        let executable = ExecutableRef::of_this_test();
+        with_lease(Lease::launch(4242, "%7", SHELL, executable, far()), || {
             let table = topology(CLIENT.0);
             let again = || topology(CLIENT.0);
             for _ in 0..MAX_FACTS {
@@ -1132,5 +1764,267 @@ mod tests {
             assert!(attributed(end_wire(ID), &table, &again).is_err());
             assert_eq!(final_session(&seal(0)), None);
         });
+    }
+
+    // ---------- a claim is its own operation's, and its phase's ---------------
+
+    /// The next operation, begun exactly as the last one was: the same
+    /// socket and helper, and the same entry armed with `lease` — which is
+    /// its first arming, so its serial is the one the last operation's first
+    /// arming had.
+    fn next_operation(lease: Lease) {
+        super::end();
+        begin("deck", Path::new("/nonexistent/deck-lifecycle-helper"));
+        arm(0, lease);
+    }
+
+    /// A kernel on the certified topology in which nothing changes and
+    /// every answer is yes; `validated` counts the validations.
+    fn settled(claim: Claim, validated: &std::cell::Cell<usize>) -> Result<(), &'static str> {
+        receive(
+            claim,
+            Some(30),
+            far(),
+            &Kernel {
+                snapshot: &|| topology(CLIENT.0),
+                runs_helper: &|_, _| true,
+                at_executable: &|_, _| true,
+                runs_executable: &|_, _| {
+                    validated.set(validated.get() + 1);
+                    true
+                },
+            },
+        )
+    }
+
+    /// A claim waits for the worker while its operation ends and the next
+    /// one begins and arms the same entry for the same pane, shell and
+    /// client — with the same serial, because every operation counts from
+    /// one. Everything the kernel says about the old claim is still true and
+    /// its budget is far from over. It is refused all the same, under the
+    /// lock that writes: the next operation's mailbox takes nothing from it,
+    /// and takes its own claim as before.
+    #[test]
+    fn a_claim_that_waited_across_operations_is_refused_by_the_next_ones_mailbox() {
+        with_lease(exit_lease(), || {
+            let validated = std::cell::Cell::new(0);
+            let waiting = claim(end_wire(ID)).expect("the armed lease");
+            let (operation, serial) = (waiting.operation, waiting.lease.serial);
+            next_operation(exit_lease());
+            let own = claim(end_wire(OTHER)).expect("the next operation's lease");
+            assert_eq!(
+                (own.entry, own.lease.serial),
+                (waiting.entry, serial),
+                "the same entry and the same local serial"
+            );
+            assert_ne!(own.operation, operation, "another operation");
+            assert_eq!(settled(waiting, &validated), Err("lifecycle-no-lease"));
+            assert_eq!(validated.get(), 1, "verified in full, and still refused");
+            assert!(armed(), "the next operation's lease is untouched");
+            assert!(peek(0).is_empty(), "and its mailbox took nothing");
+            // the next operation's own claim is a fact, as ever
+            assert_eq!(settled(own, &validated), Ok(()));
+            assert_eq!(final_session(&peek(0)).as_deref(), Some(OTHER));
+            assert_eq!(peek(0).len(), 1);
+            // and a claim of an operation that is simply over has no mailbox
+            let last = claim(end_wire(ID)).expect("armed");
+            super::end();
+            assert_eq!(settled(last, &validated), Err("lifecycle-no-lease"));
+        });
+    }
+
+    /// The same, with the old claim INSIDE its one validation while the
+    /// operations change: the validation answers yes, the kernel still says
+    /// what it said, and the write finds another operation's mailbox.
+    #[test]
+    fn a_claim_validated_across_operations_is_refused_by_the_next_ones_mailbox() {
+        with_lease(exit_lease(), || {
+            let same = || topology(CLIENT.0);
+            let replaced = || next_operation(exit_lease());
+            let (result, validations) = during(
+                During {
+                    after: &same,
+                    meanwhile: &replaced,
+                    helper_after: true,
+                },
+                far(),
+            );
+            assert_eq!((result, validations), (Err("lifecycle-no-lease"), 1));
+            assert!(armed(), "the next operation is armed");
+            assert!(peek(0).is_empty(), "and took nothing");
+            // armed again INSIDE the next operation: the old claim's serial
+            // is behind, the operation is still not its own
+            let rearmed = || {
+                next_operation(exit_lease());
+                assert!(seal(0).is_empty());
+                arm(0, exit_lease());
+            };
+            let (result, _) = during(
+                During {
+                    after: &same,
+                    meanwhile: &rearmed,
+                    helper_after: true,
+                },
+                far(),
+            );
+            assert_eq!(result.unwrap_err(), "lifecycle-no-lease");
+            assert!(peek(0).is_empty());
+            // the operation in flight takes its own claim
+            let (result, validations) = during(
+                During {
+                    after: &same,
+                    meanwhile: &|| {},
+                    helper_after: true,
+                },
+                far(),
+            );
+            assert_eq!((result, validations), (Ok(()), 1));
+            assert_eq!(final_session(&peek(0)).as_deref(), Some(ID));
+        });
+    }
+
+    fn launch_lease(closes: Instant) -> Lease {
+        Lease::launch(4242, "%7", SHELL, ExecutableRef::of_this_test(), closes)
+    }
+
+    /// A launch lease stops taking facts when its phase ends, by the clock
+    /// and whoever has or has not sealed it. The line was read in time and
+    /// the receipt's own budget is far from over; the validation answers
+    /// yes after the phase ended: nothing is written. And in the window
+    /// between the end of the phase and the seal — the lease still armed —
+    /// a receipt with all of its own budget left is refused without a
+    /// single kernel read.
+    #[test]
+    fn a_launch_lease_takes_nothing_after_its_phase_whatever_is_left_of_the_receipts_budget() {
+        with_mailbox(|| {
+            // read before the phase's end is fixed: the first reference a
+            // test process makes is a full read of its own executable
+            let executable = ExecutableRef::of_this_test();
+            let closes = Instant::now() + Duration::from_millis(300);
+            arm(0, Lease::launch(4242, "%7", SHELL, executable, closes));
+            let validated = std::cell::Cell::new(0);
+            let claimed = claim(resume_wire(ID)).expect("armed, inside its phase");
+            let result = receive(
+                claimed,
+                Some(30),
+                far(),
+                &Kernel {
+                    snapshot: &|| topology(CLIENT.0),
+                    runs_helper: &|_, _| true,
+                    at_executable: &|_, _| true,
+                    runs_executable: &|_, _| {
+                        validated.set(validated.get() + 1);
+                        assert!(Instant::now() < closes, "asked inside the phase");
+                        // answers yes, after the phase ended
+                        while Instant::now() < closes {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        true
+                    },
+                },
+            );
+            assert_eq!(result.unwrap_err(), "lifecycle-late");
+            assert_eq!(validated.get(), 1);
+            assert!(armed(), "nobody sealed it: the lease is still there");
+            assert!(peek(0).is_empty(), "and it took nothing");
+            // the window before the seal: the phase is over, the lease armed
+            let asked = std::cell::Cell::new(0);
+            let count = || asked.set(asked.get() + 1);
+            let after = receive(
+                claim(resume_wire(ID)).expect("still armed"),
+                Some(30),
+                far(),
+                &Kernel {
+                    snapshot: &|| {
+                        count();
+                        topology(CLIENT.0)
+                    },
+                    runs_helper: &|_, _| {
+                        count();
+                        true
+                    },
+                    at_executable: &|_, _| {
+                        count();
+                        true
+                    },
+                    runs_executable: &|_, _| {
+                        count();
+                        true
+                    },
+                },
+            );
+            assert_eq!(after.unwrap_err(), "lifecycle-late");
+            assert_eq!(asked.get(), 0, "a closed phase reads nothing");
+            assert!(seal_all().is_empty(), "what is sealed then holds nothing");
+        });
+        // inside its phase, the same receipt is a fact
+        with_lease(launch_lease(far()), || {
+            let validated = std::cell::Cell::new(0);
+            let claimed = claim(resume_wire(ID)).expect("armed");
+            assert_eq!(settled(claimed, &validated), Ok(()));
+            assert_eq!(reentry(&peek(0), ID), Receipt::Entered(CLIENT));
+        });
+        // an exit lease has no phase of its own to end
+        assert_eq!(exit_lease().closes(), None);
+        let closes = far();
+        assert_eq!(launch_lease(closes).closes(), Some(closes));
+    }
+
+    /// Every entry is sealed at one instant. What each gathered until then
+    /// is handed out by entry; a claim that was already taken — its receipt
+    /// waiting, or inside its validation — writes nothing afterwards, a new
+    /// line names no lease, and there is nothing to seal a second time.
+    #[test]
+    fn sealing_every_entry_closes_all_of_them_at_once() {
+        let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+        end_mailbox_for_test();
+        begin("deck", Path::new("/nonexistent/deck-lifecycle-helper"));
+        arm(0, launch_lease(far()));
+        // a second entry: another pane of the same server
+        arm(
+            1,
+            Lease::launch(4242, "%8", SHELL, ExecutableRef::of_this_test(), far()),
+        );
+        let other_pane = |id: &str| {
+            let mut wire = resume_wire(id);
+            wire.pane = "%8".into();
+            wire
+        };
+        let validated = std::cell::Cell::new(0);
+        assert_eq!(settled(claim(resume_wire(ID)).unwrap(), &validated), Ok(()));
+        // taken before the seal, settled after it
+        let waiting = claim(other_pane(OTHER)).expect("the second entry's lease");
+        assert_eq!(waiting.entry, 1);
+        // inside its validation when the seal comes
+        let table = topology(CLIENT.0);
+        let sealed = std::cell::RefCell::new(None);
+        let during_validation = receive(
+            claim(other_pane(THIRD)).expect("the second entry's lease"),
+            Some(30),
+            far(),
+            &Kernel {
+                snapshot: &|| table.clone(),
+                runs_helper: &|_, _| true,
+                at_executable: &|_, _| true,
+                runs_executable: &|_, _| {
+                    *sealed.borrow_mut() = Some(seal_all());
+                    true
+                },
+            },
+        );
+        assert_eq!(during_validation.unwrap_err(), "lifecycle-late");
+        let sealed = sealed.into_inner().expect("sealed inside the validation");
+        assert_eq!(sealed.len(), 1, "one entry had gathered anything");
+        assert_eq!(reentry(&sealed[&0], ID), Receipt::Entered(CLIENT));
+        assert!(!armed(), "no lease is left");
+        assert_eq!(settled(waiting, &validated), Err("lifecycle-late"));
+        assert_eq!(
+            claim(resume_wire(ID)).err(),
+            Some("lifecycle-no-lease"),
+            "a line that arrives after the seal names nothing"
+        );
+        assert!(seal_all().is_empty(), "nothing was written after the seal");
+        assert!(peek(0).is_empty() && peek(1).is_empty());
+        end_mailbox_for_test();
     }
 }

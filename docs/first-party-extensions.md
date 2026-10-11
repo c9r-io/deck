@@ -93,18 +93,35 @@ Kept coupled on purpose:
 
 `AgentAdapter` has one more narrow, optional, static field: `reentry`
 (`agent_reentry::ReentryCapability`), `Some` for `CLAUDE_CODE` and `None`
-for `CODEX`. It holds certified compatibility facts (version/digest pairs),
-the supported launch grammar, the login shell the launch sink is
-certified against and a pure constructor of the exact-id request. Like
+for `CODEX`. It holds the product's code requirement — whose code a client
+must be, with no release, version or digest in it — the supported launch
+grammar, the login shell the launch sink is written against and a pure
+constructor of the exact-id request. Like
 every entry here it is source code and registered is not enabled, approved
 or trusted: the adapter has no pane, PTY, queue, Board or authority handle,
 cannot approve an entry, cannot choose the bypass override and cannot launch.
 The core (`agent_reentry/mod.rs`) owns eligibility, the user's per-restart
 approval, the once-only launch and every result. The lifecycle hooks an
 adapter declares (`lifecycle_hooks`) are a second ownership family beside
-its Signal hooks, installed only by their own explicit opt-in. Adding a
-certified release is adding one fact row; it is not a version range, a
-database or an automatic upgrade.
+its Signal hooks, installed only by their own explicit opt-in.
+
+A new release of the product needs no change here. A client is admitted by
+its code identity — the requirement above, validated by Security.framework
+against the running image and its file (`procinfo.rs`,
+`procinfo/code_identity.rs`) — and by what the transaction itself observes
+of the narrow native contract: the old client's launch image, its end
+receipt, the new client's resume receipt and launch image. There is no list
+of releases, no version range, no downloaded or learned compatibility data
+and no probe of a client's `--help` or `--version`. What does need an
+adapter change is a change of the product's signing identity or of that
+contract; such a change shows as clients that are not offered, or as a
+request that is typed once and not confirmed. The releases that were
+exercised natively are evidence, not a runtime condition. The header of
+`agent_reentry/claude.rs` records the historical campaigns; the current
+[acceptance summary](../reports/agent-reentry-forward-compat/acceptance.md)
+records the new identity mechanism's completed representative P3 on Claude
+2.1.295: A/B through both the controller and the isolated real application.
+That result does not certify untested platforms or a published carrier.
 
 ## Compatibility and withdrawal
 

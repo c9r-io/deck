@@ -28,7 +28,7 @@
 //!   positively verified (`wait_ready`): the exact new pane generation, not
 //!   dead, not in copy mode, the pane's own process in the foreground, that
 //!   process executing the user's login shell — which must be the system's
-//!   own build of the certified shell — in the expected working directory,
+//!   own build of the supported shell — in the expected working directory,
 //!   the pane's tmux environment handing over the expected home, and the
 //!   line editor's bracketed-paste mode on. A
 //!   live shell process, quiet time or any Signal is not that evidence. A
@@ -81,16 +81,16 @@ pub(crate) fn command_line(executable: &Path, words: &[String]) -> Option<String
 
 const READY_FORMAT: &str = "#{pid}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_in_mode}\t#{bracket_paste_flag}\t#{pane_current_command}";
 
-/// The certified shell's name, when the user's login shell is that shell.
+/// The supported shell's name, when the user's login shell is that shell.
 fn shell_name(env: &Env) -> Option<&'static str> {
-    let certified = env.capability.login_shell;
-    (env.login_shell.file_name().and_then(|name| name.to_str()) == Some(certified))
-        .then_some(certified)
+    let supported = env.capability.login_shell;
+    (env.login_shell.file_name().and_then(|name| name.to_str()) == Some(supported))
+        .then_some(supported)
 }
 
 /// Everything about the launch that is known before the restart: the
 /// baseline Deck hands over is a supported one, and the login shell is the
-/// system's own build of the certified shell. Shown in the preview and
+/// system's own build of the supported shell. Shown in the preview and
 /// required at freeze, so a setup that is known to be unsupported is never
 /// discovered after the exit. It says nothing about the shell's startup
 /// files: those run later and are the accepted window (module header).
@@ -220,7 +220,8 @@ pub(crate) fn wait_ready(env: &Env, target: &Target, end: Instant) -> bool {
 }
 
 /// The new client against what this operation asked for, once it exists:
-/// the exact generation executes the frozen executable, was started with
+/// the exact generation is bound to the frozen executable (its running image
+/// validated against that file's code identity), was started with
 /// exactly the request words this operation built, in a launch environment
 /// with the expected home and no refused name, and is in the frozen
 /// directory. The comparison happens inside procinfo; this module hands in

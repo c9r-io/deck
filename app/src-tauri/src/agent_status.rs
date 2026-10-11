@@ -219,6 +219,16 @@
 //! episodes, notifications or any Signal consumer, and a Signal line never
 //! reaches the lifecycle mailbox. An older app that does not know the
 //! family refuses the line as an unknown Signal state.
+//! The two families share the accept loop and nothing after it. A lifecycle
+//! receipt is verified by the kernel's view of the client's running code,
+//! a call that cannot be interrupted; the accept loop is every agent's
+//! Signal path, so it never makes that call: it names the lease (one short
+//! lock) and hands the connection to ONE receipt worker over a bounded
+//! queue without waiting (`Receipts`). A receipt that takes long, or never
+//! returns, delays no Signal and starts no further thread; receipts that
+//! pile up behind it are refused — a full queue at once, a waited one when
+//! its own deadline has passed — and a refused receipt is only an entry
+//! that is not confirmed.
 //! Hook ownership is per `Family` (`Signal`: `deck-status-helper`,
 //! `Lifecycle`: `deck-lifecycle-helper`, each with its own marker). Install,
 //! currency check, uninstall and boot migration act on ONE family's hooks:
@@ -237,7 +247,7 @@ use crate::tmux::PaneRow;
 use std::io::Read;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::applog;
@@ -1179,6 +1189,7 @@ const DROP_REASONS: &[&str] = &[
     "lifecycle-foreign-pane",
     "lifecycle-terminal-discontinuity",
     "lifecycle-late",
+    "lifecycle-busy",
     "lifecycle-overflow",
 ];
 
@@ -1236,7 +1247,108 @@ impl Drops {
     }
 }
 
-fn handle_stream(mut stream: UnixStream, drops: &mut Drops) {
+/// Count one handled line, and log what is due for it.
+fn note(drops: &Mutex<Drops>, refused: Option<&'static str>) {
+    let lines = drops
+        .lock_or_recover()
+        .observe(refused, std::time::Instant::now());
+    for line in lines {
+        applog(&line);
+    }
+}
+
+/// How many lifecycle receipts may wait for the receipt worker: as many as
+/// one lease keeps facts. Each is one accepted connection and one claim; one
+/// more is dropped, not queued.
+const RECEIPT_QUEUE: usize = 64;
+
+/// One lifecycle receipt on its way to the receipt worker.
+struct Receipt {
+    claim: crate::agent_reentry::lifecycle::Claim,
+    /// Open until the receipt is settled: its close is the helper's ACK.
+    stream: UnixStream,
+    peer: Option<u32>,
+    /// The instant the fact must be written by, counted from the line.
+    deadline: std::time::Instant,
+}
+
+impl Receipt {
+    /// Settle this receipt on the worker: verify and record it, or refuse
+    /// it, under its own deadline (`lifecycle::receive`). Whether its claim
+    /// is still the operation's — the one it was taken from, the arming it
+    /// named, inside its budget and its phase — is asked there, under the
+    /// lock that writes, however long the receipt waited in the queue.
+    fn settle(self, kernel: &crate::agent_reentry::lifecycle::Kernel) -> Result<(), &'static str> {
+        let Receipt {
+            claim,
+            stream,
+            peer,
+            deadline,
+        } = self;
+        let result = {
+            let _deadline = crate::session_runtime::Deadline::until(deadline);
+            crate::agent_reentry::lifecycle::receive(claim, peer, deadline, kernel)
+        };
+        // recorded or refused: only now is the helper released
+        drop(stream);
+        result
+    }
+}
+
+/// The ONE worker that verifies lifecycle receipts, and the bounded queue in
+/// front of it.
+///
+/// Verifying a receipt ends in a dynamic validation of the client's running
+/// code, and that call cannot be interrupted. The status listener is every
+/// agent's Signal path, so it never makes that call and never waits for it:
+/// it hands the connection over without blocking (`hand`) and goes back to
+/// accepting. However long one validation takes, what it holds is this one
+/// thread: receipts behind it wait in a queue of `RECEIPT_QUEUE`, a full
+/// queue refuses the next one at once, and every receipt that waited past
+/// its own deadline is refused unread when the worker reaches it
+/// (`lifecycle::receive`). No thread is started per receipt, nothing is
+/// retried, and no identity is remembered from one receipt to the next.
+struct Receipts {
+    queue: std::sync::mpsc::SyncSender<Receipt>,
+}
+
+impl Receipts {
+    /// Start the worker. Its handle is for an orderly end (tests); dropped,
+    /// the thread lives as long as this queue does.
+    fn start(drops: Arc<Mutex<Drops>>) -> (Self, Option<std::thread::JoinHandle<()>>) {
+        use crate::agent_reentry::lifecycle;
+        Self::start_with(move |receipt| {
+            note(&drops, receipt.settle(&lifecycle::Kernel::live()).err());
+        })
+    }
+
+    /// The queue and its one worker, which settles each receipt with
+    /// `settle`, one after the other.
+    fn start_with(
+        settle: impl Fn(Receipt) + Send + 'static,
+    ) -> (Self, Option<std::thread::JoinHandle<()>>) {
+        let (queue, waiting) = std::sync::mpsc::sync_channel::<Receipt>(RECEIPT_QUEUE);
+        // A worker that cannot be started takes the queue's other end with
+        // it: every receipt is then refused at `hand`.
+        let worker = std::thread::Builder::new()
+            .name("deck-lifecycle-receipts".into())
+            .spawn(move || {
+                for receipt in waiting {
+                    settle(receipt);
+                }
+            })
+            .ok();
+        (Self { queue }, worker)
+    }
+
+    /// Hand one receipt to the worker without waiting for it. A refused
+    /// receipt is dropped with its connection: nothing was recorded for it.
+    fn hand(&self, receipt: Receipt) -> Result<(), &'static str> {
+        self.queue.try_send(receipt).map_err(|_| "lifecycle-busy")
+    }
+}
+
+fn handle_stream(mut stream: UnixStream, drops: &Mutex<Drops>, receipts: &Receipts) {
     let Some(line) = read_first_line(&mut stream) else {
         return;
     };
@@ -1244,21 +1356,19 @@ fn handle_stream(mut stream: UnixStream, drops: &mut Drops) {
         return;
     }
     // A separate closed protocol family on the same socket: a lifecycle
-    // receipt of the re-entry operation in flight. It is verified and
-    // recorded while the helper is still connected (the close below is its
-    // ACK) and never reaches the Signal parser, store or any consumer.
+    // receipt of the re-entry operation in flight. It never reaches the
+    // Signal parser, store or any consumer, and it is not verified on this
+    // thread: the connection goes to the receipt worker, which records the
+    // fact — or refuses it — while the helper is still connected, and whose
+    // close of the stream is the helper's ACK.
     if crate::agent_reentry::lifecycle::is_family(&line) {
-        let result = lifecycle_receipt(&line, &stream);
-        drop(stream);
         // Without an operation every client's start and end lands here all
         // day long: that ordinary case is dropped without a line.
-        if let Some(reason) = result
+        if let Some(reason) = lifecycle_receipt(&line, stream, receipts)
             .err()
             .filter(|reason| *reason != "lifecycle-no-lease")
         {
-            for line in drops.observe(Some(reason), std::time::Instant::now()) {
-                applog(&line);
-            }
+            note(drops, Some(reason));
         }
         return;
     }
@@ -1274,27 +1384,36 @@ fn handle_stream(mut stream: UnixStream, drops: &mut Drops) {
     // categorized, content-free, and bounded — a hostile local writer
     // must not be able to grow app.log without limit
     let result = ingest(&line, &origin, || crate::tmux::list_panes().ok());
-    for line in drops.observe(result.err(), std::time::Instant::now()) {
-        applog(&line);
-    }
+    note(drops, result.err());
 }
 
-/// One lifecycle line: nothing is read from the kernel unless a lease is
-/// armed; with one, the claim is attributed from a snapshot taken now.
-fn lifecycle_receipt(line: &str, stream: &UnixStream) -> Result<(), &'static str> {
+/// One lifecycle line, as far as the listener itself goes: nothing unless a
+/// lease is armed; with one, the closed parse, the lease the line names (one
+/// short mailbox lock) and the hand-over. No kernel read and no validation
+/// happens here, so this returns in bounded time whatever a client's
+/// program does. `Ok` means handed over, not recorded.
+fn lifecycle_receipt(
+    line: &str,
+    stream: UnixStream,
+    receipts: &Receipts,
+) -> Result<(), &'static str> {
     use crate::agent_reentry::lifecycle;
+    // the receipt's whole budget starts where its line was read
+    let deadline = std::time::Instant::now() + lifecycle::RECEIPT_BUDGET;
     if !lifecycle::armed() {
         return Err("lifecycle-no-lease");
     }
     let wire = lifecycle::parse(line, |source| {
         crate::extensions::agent(source).is_some_and(|adapter| adapter.reentry.is_some())
     })?;
-    let table = crate::procinfo::processes();
-    lifecycle::receive(
-        wire,
-        crate::procinfo::peer_pid(stream),
-        &lifecycle::Kernel::live(&table),
-    )
+    let claim = lifecycle::claim(wire)?;
+    let peer = crate::procinfo::peer_pid(&stream);
+    receipts.hand(Receipt {
+        claim,
+        stream,
+        peer,
+        deadline,
+    })
 }
 
 pub(crate) fn listen_at(path: &Path) -> Result<UnixListener, DeckError> {
@@ -1317,15 +1436,21 @@ pub(crate) fn serve_for_tests(
     listener
         .set_nonblocking(true)
         .expect("nonblocking listener");
-    let mut drops = Drops::new(std::time::Instant::now());
+    let drops = Arc::new(Mutex::new(Drops::new(std::time::Instant::now())));
+    let (receipts, worker) = Receipts::start(drops.clone());
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
         match listener.accept() {
             Ok((stream, _)) => {
                 stream.set_nonblocking(false).expect("blocking stream");
-                handle_stream(stream, &mut drops);
+                handle_stream(stream, &drops, &receipts);
             }
             Err(_) => std::thread::sleep(Duration::from_millis(5)),
         }
+    }
+    // an orderly end: the worker settles what it was handed, then stops
+    drop(receipts);
+    if let Some(worker) = worker {
+        let _ = worker.join();
     }
 }
 
@@ -1341,10 +1466,12 @@ pub(crate) fn spawn_listener() {
                 return;
             }
         };
-        let mut drops = Drops::new(std::time::Instant::now());
+        let drops = Arc::new(Mutex::new(Drops::new(std::time::Instant::now())));
+        // one receipt worker beside this thread, for as long as it accepts
+        let (receipts, _) = Receipts::start(drops.clone());
         for stream in listener.incoming() {
             match stream {
-                Ok(stream) => handle_stream(stream, &mut drops),
+                Ok(stream) => handle_stream(stream, &drops, &receipts),
                 Err(_) => std::thread::sleep(Duration::from_secs(1)),
             }
         }
@@ -4719,6 +4846,366 @@ mod tests {
         drop(listener);
         let _ = std::fs::remove_dir_all(&dir);
         reset_for_tests();
+    }
+
+    /// The hand-over to the receipt worker never waits and never grows.
+    /// While the one worker is inside a verification that does not return,
+    /// exactly `RECEIPT_QUEUE` further receipts wait; the next one is
+    /// refused at once and its connection is closed; nothing else runs
+    /// beside the one verification. When it returns, the same worker settles
+    /// the queue in order.
+    #[test]
+    fn the_receipt_queue_is_bounded_and_the_hand_over_never_waits() {
+        use crate::agent_reentry::lifecycle;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Instant;
+        let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+        crate::agent_reentry::reset_for_tests();
+        lifecycle::begin("deck", Path::new("/nonexistent/deck-lifecycle-helper"));
+        lifecycle::arm(
+            0,
+            lifecycle::Lease::exit(
+                4242,
+                "%7",
+                (1, (1, 1)),
+                (2, (2, 2)),
+                crate::procinfo::ExecutableRef::of_this_test(),
+            ),
+        );
+        let line = concat!(
+            r#"{"protocol":"agent-lifecycle","v":1,"source":"claude-code","#,
+            r#""event":"session-end","nativeSessionId":"aaaaaaaa-0000-4000-8000-000000000001","#,
+            r#""endReason":"prompt-input-exit","socket":"deck","server_pid":4242,"pane":"%7"}"#
+        );
+        // a receipt and the helper's end of its connection
+        let receipt = || {
+            let (ours, theirs) = UnixStream::pair().expect("a connection");
+            // set while both ends are open: macOS refuses it afterwards
+            theirs
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("a read timeout");
+            let wire = lifecycle::parse(line, |_| true).expect("a valid line");
+            let receipt = Receipt {
+                claim: lifecycle::claim(wire).expect("the armed lease"),
+                stream: ours,
+                peer: None,
+                deadline: Instant::now() + Duration::from_secs(60),
+            };
+            (receipt, theirs)
+        };
+        let (entered, at_work) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let settled = Arc::new(AtomicUsize::new(0));
+        let threads = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let (receipts, worker) = Receipts::start_with({
+            let (settled, threads) = (settled.clone(), threads.clone());
+            let held = Mutex::new(held);
+            move |receipt| {
+                let _ = entered.send(());
+                // does not return until the test lets it
+                let _ = held.lock_or_recover().recv();
+                threads
+                    .lock_or_recover()
+                    .insert(std::thread::current().id());
+                settled.fetch_add(1, Ordering::SeqCst);
+                drop(receipt);
+            }
+        });
+        let receipts = Arc::new(receipts);
+        let mut helpers = Vec::new();
+        let (first, helper) = receipt();
+        helpers.push(helper);
+        assert_eq!(receipts.hand(first), Ok(()));
+        at_work
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the worker took the first receipt");
+        for _ in 0..RECEIPT_QUEUE {
+            let (queued, helper) = receipt();
+            helpers.push(helper);
+            assert_eq!(receipts.hand(queued), Ok(()), "a waiting receipt");
+        }
+        // one more than the queue holds: asked from another thread, so that
+        // a hand-over that waited would be seen instead of hanging the test
+        let (extra, mut refused) = receipt();
+        let (answered, answer) = std::sync::mpsc::channel();
+        let asking = std::thread::spawn({
+            let receipts = receipts.clone();
+            move || {
+                let _ = answered.send(receipts.hand(extra));
+            }
+        });
+        let verdict = answer.recv_timeout(Duration::from_secs(2));
+        assert_eq!(
+            verdict,
+            Ok(Err("lifecycle-busy")),
+            "a full queue refuses at once; the hand-over never waits"
+        );
+        assert_eq!(
+            refused.read(&mut [0u8; 1]).expect("the refused connection"),
+            0,
+            "a refused receipt's connection is closed"
+        );
+        assert_eq!(
+            settled.load(Ordering::SeqCst),
+            0,
+            "nothing ran beside the one verification"
+        );
+        // the verification returns: the same worker settles what waited
+        drop(release);
+        asking.join().expect("the hand-over thread ended");
+        let receipts = Arc::try_unwrap(receipts)
+            .ok()
+            .expect("the hand-over thread is done");
+        drop(receipts);
+        worker
+            .expect("the worker was started")
+            .join()
+            .expect("the worker ended");
+        assert_eq!(settled.load(Ordering::SeqCst), RECEIPT_QUEUE + 1);
+        assert_eq!(threads.lock_or_recover().len(), 1, "one worker thread");
+        drop(helpers);
+        lifecycle::end();
+    }
+
+    /// The production receipt worker (`Receipts`, `Receipt::settle`,
+    /// `lifecycle::receive`) on a kernel that says yes to everything about
+    /// the certified topology, and whose every validation waits until the
+    /// test lets it answer: the one call that cannot be interrupted, with
+    /// the test deciding what happens while it runs.
+    struct HeldWorker {
+        receipts: Receipts,
+        worker: Option<std::thread::JoinHandle<()>>,
+        /// One message per validation that began.
+        validating: std::sync::mpsc::Receiver<()>,
+        /// One message lets one validation answer.
+        answer: std::sync::mpsc::Sender<()>,
+        /// What each receipt was settled as, in the order they were settled.
+        settled: std::sync::mpsc::Receiver<Result<(), &'static str>>,
+        /// The helpers' ends of the connections, kept open.
+        helpers: Vec<UnixStream>,
+    }
+
+    const LEASED_SHELL: (u32, (u64, u32)) = (10, (100, 1));
+    const LEASED_CLIENT: (u32, (u64, u32)) = (20, (200, 2));
+    const LEASED_HELPER: u32 = 30;
+
+    impl HeldWorker {
+        fn start() -> Self {
+            use crate::agent_reentry::lifecycle;
+            let (began, validating) = std::sync::mpsc::channel();
+            let (answer, answered) = std::sync::mpsc::channel::<()>();
+            let (results, settled) = std::sync::mpsc::channel();
+            let (receipts, worker) = Receipts::start_with(move |receipt: Receipt| {
+                // the pane's shell, the client in the terminal's foreground,
+                // and the helper as the client's direct child
+                let process = |pid: u32, ppid: u32, tty: u32, foreground: u32| ProcessInfo {
+                    pid,
+                    ppid,
+                    pgid: pid,
+                    tty,
+                    tty_pgid: foreground,
+                    start_seconds: u64::from(pid) * 10,
+                    start_micros: pid / 10,
+                };
+                let table: ProcessTable = [
+                    process(LEASED_SHELL.0, 1, 7, LEASED_CLIENT.0),
+                    process(LEASED_CLIENT.0, LEASED_SHELL.0, 7, LEASED_CLIENT.0),
+                    process(LEASED_HELPER, LEASED_CLIENT.0, 0, 0),
+                ]
+                .into_iter()
+                .map(|info| (info.pid, info))
+                .collect();
+                let result = receipt.settle(&lifecycle::Kernel {
+                    snapshot: &|| table.clone(),
+                    runs_helper: &|_, _| true,
+                    at_executable: &|_, _| true,
+                    runs_executable: &|_, _| {
+                        let _ = began.send(());
+                        let _ = answered.recv();
+                        true
+                    },
+                });
+                let _ = results.send(result);
+            });
+            Self {
+                receipts,
+                worker,
+                validating,
+                answer,
+                settled,
+                helpers: Vec::new(),
+            }
+        }
+
+        /// One receipt of the operation in flight — its line read now, its
+        /// claim taken now, a budget of its own that no test here reaches —
+        /// handed to the worker.
+        fn hand(&mut self, line: &str) {
+            use crate::agent_reentry::lifecycle;
+            let (ours, theirs) = UnixStream::pair().expect("a connection");
+            let wire = lifecycle::parse(line, |_| true).expect("a valid line");
+            let receipt = Receipt {
+                claim: lifecycle::claim(wire).expect("an armed lease"),
+                stream: ours,
+                peer: Some(LEASED_HELPER),
+                deadline: std::time::Instant::now() + Duration::from_secs(60),
+            };
+            self.helpers.push(theirs);
+            assert_eq!(self.receipts.hand(receipt), Ok(()));
+        }
+
+        fn validation_began(&self) {
+            self.validating
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the worker is inside a validation");
+        }
+
+        fn let_answer(&self) {
+            self.answer.send(()).expect("the worker is running");
+        }
+
+        fn next_settled(&self) -> Result<(), &'static str> {
+            self.settled
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the worker settled a receipt")
+        }
+
+        fn stop(self) {
+            drop(self.receipts);
+            if let Some(worker) = self.worker {
+                worker.join().expect("the worker ended");
+            }
+        }
+    }
+
+    fn lifecycle_line(event: &str, id: &str) -> String {
+        format!(
+            r#"{{"protocol":"agent-lifecycle","v":1,"source":"claude-code",{event},"nativeSessionId":"{id}","socket":"deck","server_pid":4242,"pane":"%7"}}"#
+        )
+    }
+
+    /// One operation's claims are no other operation's. Two receipts of an
+    /// operation are with the worker — one inside its validation, one
+    /// waiting in the queue — when that operation ends and the next begins,
+    /// arming the same entry for the same pane, shell and client with the
+    /// same serial (every operation counts its armings from one). Both old
+    /// receipts are verified in full, positively, inside their budgets; both
+    /// are refused where the fact would be written, and the next operation's
+    /// mailbox holds only what its own receipt recorded.
+    #[test]
+    fn a_receipt_of_an_ended_operation_is_refused_from_the_queue_and_from_its_validation() {
+        use crate::agent_reentry::lifecycle;
+        let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+        crate::agent_reentry::reset_for_tests();
+        let begin_operation = || {
+            lifecycle::end();
+            lifecycle::begin("deck", Path::new("/nonexistent/deck-lifecycle-helper"));
+            lifecycle::arm(
+                0,
+                lifecycle::Lease::exit(
+                    4242,
+                    "%7",
+                    LEASED_SHELL,
+                    LEASED_CLIENT,
+                    crate::procinfo::ExecutableRef::of_this_test(),
+                ),
+            );
+        };
+        let exit = |id: &str| {
+            lifecycle_line(
+                r#""event":"session-end","endReason":"prompt-input-exit""#,
+                id,
+            )
+        };
+        const VALIDATING: &str = "aaaaaaaa-0000-4000-8000-000000000001";
+        const QUEUED: &str = "bbbbbbbb-0000-4000-8000-000000000002";
+        const OWN: &str = "cccccccc-0000-4000-8000-000000000003";
+        begin_operation();
+        let mut worker = HeldWorker::start();
+        worker.hand(&exit(VALIDATING));
+        worker.validation_began();
+        worker.hand(&exit(QUEUED));
+        // the operation ends; the next one begins, arms and is reported to
+        begin_operation();
+        worker.hand(&exit(OWN));
+        // the old claim that was inside its validation
+        worker.let_answer();
+        assert_eq!(worker.next_settled(), Err("lifecycle-no-lease"));
+        // the old claim that waited in the queue: verified, and refused
+        worker.validation_began();
+        assert!(
+            lifecycle::peek(0).is_empty(),
+            "nothing of the ended operation reached the next one's mailbox"
+        );
+        worker.let_answer();
+        assert_eq!(worker.next_settled(), Err("lifecycle-no-lease"));
+        assert!(lifecycle::peek(0).is_empty());
+        // the next operation's own receipt, behind them in the same queue
+        worker.validation_began();
+        worker.let_answer();
+        assert_eq!(worker.next_settled(), Ok(()));
+        let facts = lifecycle::seal(0);
+        assert_eq!(facts.len(), 1, "exactly its own fact");
+        assert_eq!(lifecycle::final_session(&facts).as_deref(), Some(OWN));
+        worker.stop();
+        lifecycle::end();
+    }
+
+    /// A receipt is handed to the worker before the post share ends and its
+    /// validation answers yes after it — the lease still armed, nobody having
+    /// sealed it, the receipt's own budget far from over. Nothing is
+    /// written, and what is sealed afterwards holds nothing of it. Inside
+    /// its phase the same receipt is a fact.
+    #[test]
+    fn a_receipt_validated_across_the_post_deadline_is_not_written() {
+        use crate::agent_reentry::lifecycle;
+        use std::time::Instant;
+        let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+        crate::agent_reentry::reset_for_tests();
+        // read before any phase's end is fixed: the first reference a test
+        // process makes is a full read of its own executable
+        let executable = crate::procinfo::ExecutableRef::of_this_test();
+        let arm_until = |closes: Instant| {
+            lifecycle::end();
+            lifecycle::begin("deck", Path::new("/nonexistent/deck-lifecycle-helper"));
+            lifecycle::arm(
+                0,
+                lifecycle::Lease::launch(4242, "%7", LEASED_SHELL, executable.clone(), closes),
+            );
+        };
+        const ID: &str = "aaaaaaaa-0000-4000-8000-000000000001";
+        let resume = lifecycle_line(r#""event":"session-start","startSource":"resume""#, ID);
+        // long enough for the worker to be inside the validation before it
+        let closes = Instant::now() + Duration::from_secs(1);
+        arm_until(closes);
+        let mut worker = HeldWorker::start();
+        worker.hand(&resume);
+        worker.validation_began();
+        assert!(Instant::now() < closes, "handed over inside the phase");
+        while Instant::now() < closes {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // the post share is over; the validation answers yes now
+        worker.let_answer();
+        assert_eq!(worker.next_settled(), Err("lifecycle-late"));
+        assert!(lifecycle::armed(), "the lease was never sealed");
+        assert!(
+            lifecycle::seal_all().is_empty(),
+            "the sealed set holds nothing of it"
+        );
+        // the same receipt inside its phase
+        arm_until(Instant::now() + Duration::from_secs(60));
+        worker.hand(&resume);
+        worker.validation_began();
+        worker.let_answer();
+        assert_eq!(worker.next_settled(), Ok(()));
+        let sealed = lifecycle::seal_all();
+        assert_eq!(
+            lifecycle::reentry(&sealed[&0], ID),
+            lifecycle::Receipt::Entered(LEASED_CLIENT)
+        );
+        worker.stop();
+        lifecycle::end();
     }
 
     #[test]

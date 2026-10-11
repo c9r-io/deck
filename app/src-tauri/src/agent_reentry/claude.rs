@@ -1,7 +1,6 @@
-//! Claude Code's re-entry knowledge: the compatibility facts (rows of
-//! version and digest; what each row is backed by is stated below), the
-//! native session id shape, the supported launch grammar, the closed
-//! lifecycle words and the PURE construction of an exact-id request.
+//! Claude Code's re-entry knowledge: whose code a client must be, the native
+//! session id shape, the supported launch grammar, the closed lifecycle
+//! words and the PURE construction of an exact-id request.
 //!
 //! # Contract
 //! Everything here is static data or a pure function. This module holds no
@@ -13,11 +12,44 @@
 //! prompt, `--continue`, `--fork-session`, permission-mode or environment
 //! word can be produced, and no observed argv is ever replayed.
 //!
-//! Compatibility facts are a short list of (version, SHA-256) pairs. What
-//! each row is backed by is three different things and must not be merged,
-//! and the native evidence of one row is never the evidence of another:
-//! - **Native evidence for 2.1.294**, four pieces that must not be merged
-//!   with each other either:
+//! # Compatibility: an identity and a narrow contract, not a list of releases
+//! Nothing here names a release. A client is admitted by FIVE separate
+//! facts, none of which stands in for another:
+//! - **Executable identity** — `PRODUCT`: Claude Code as Anthropic signs it,
+//!   validated by Security.framework against the running image and its file
+//!   (`procinfo::qualify_client`). The file's SHA-256 is this transaction's
+//!   proof that the content stayed the same; it is compared only with
+//!   itself and is never looked up. A release this build has never seen is
+//!   the product all the same. A signature, a file name, a version, a path,
+//!   a lifecycle event or the user's approval alone is none of this.
+//! - **Native protocol** — the narrow part of the public CLI and hook
+//!   contract this feature uses: `--resume <id>`, the bypass flag before
+//!   it, `SessionStart` (source) and `SessionEnd` (reason) with a session
+//!   id, hooks run as the client's direct child. What is checked is what
+//!   THIS transaction observes of it: the old client's own launch image
+//!   (`GRAMMAR`), its applicable end receipt, and the new client's resume
+//!   receipt and launch image. A release that changed any of that shows it
+//!   there and is not launched, or is launched once and not confirmed; a
+//!   release that kept the same shapes and changed their meaning cannot be
+//!   told apart by any interface this feature may use. The user accepted
+//!   that residual; it is not a reason to list releases again.
+//! - **Launch profile** — how the old client was started (`LaunchProfile`).
+//! - **User authorization** — this restart's ticked cards and policy.
+//! - **Confirmation** — the consumed slot, the resume receipt of the new
+//!   foreground client and the post-launch check of its image and request.
+//!
+//! Policy B needs nothing more than Policy A beyond a `Bypass` launch
+//! profile that was previewed and read again at freeze. There is no
+//! per-release list for the override either, and the final permission mode
+//! gates nothing (`SessionEnd` on 2.1.294 carries no such field; it was not
+//! examined on 2.1.296).
+//!
+//! # Historical native evidence (what was run, never a runtime gate)
+//! The releases below were exercised natively while this feature was
+//! written. The record says what was shown and what was not; it admits and
+//! refuses nothing at runtime, and adding a release is not maintenance this
+//! module needs. The pieces must not be merged with each other:
+//! - **2.1.294**, four pieces:
 //!   - a probe carrier, not Deck (`reports/agent-reentry-native-probe/
 //!     batch-294-20261009`): the exit receipt chain, an exact-id resume
 //!     WITHOUT any override, and that a resume without an override does not
@@ -45,11 +77,8 @@
 //!     neither carried the bypass flag. Deck's helper ran from project-level
 //!     hooks as the client's direct child, and the exit and entry receipts
 //!     were attributed by `lifecycle::receive`.
-//! - **Native evidence for 2.1.296**
-//!   (`reports/agent-reentry-implementation/followup-22.md`), every stage
-//!   run once by the same test controller, which was handed a capability
-//!   for exactly this digest; the row entered the table below only after
-//!   all of them:
+//! - **2.1.296** (`reports/agent-reentry-implementation/followup-22.md`),
+//!   every stage run once by the same test controller:
 //!   - launch metadata: six clients started outside Deck, bare or with only
 //!     the bypass flag, read as `Ordinary` / `Bypass` and matched the
 //!     production checks after the start and at the session stage — one of
@@ -87,7 +116,10 @@
 //!   Stages S and B are discrete read-only samples of a client started
 //!   outside Deck; neither is a transaction. Every transaction above ran
 //!   once, not repeated, and what ran it was this feature's code inside a
-//!   test binary, not the application.
+//!   test binary, not the application. All of them ran while a client was
+//!   still admitted by a list of release digests: they are evidence about
+//!   the native contract and the transaction, not about the identity
+//!   checks that replaced that list.
 //! - **Local isolated application evidence for 2.1.296**
 //!   (`reports/agent-reentry-implementation/followup-33.md`): real Deck UI,
 //!   IPC and production assembly completed ONE successful Policy A re-entry
@@ -96,14 +128,25 @@
 //!   only its SHA-256 dependency, and used an explicitly validated project
 //!   lifecycle configuration, real HOME, private data/socket and its own
 //!   ad-hoc signed bundled helper. No controller or scripted answer drove the
-//!   transaction. This is not release installation or global hook migration.
-//! - **Fake integration** (`agent_reentry/tests.rs`, a stand-in client):
-//!   Deck's own helper, lease attribution, launch sink and both request
-//!   shapes, including `--dangerously-skip-permissions --resume <id>`.
-//! - **Not certified yet**:
+//!   transaction. This is not release installation or global hook migration,
+//!   and it too ran under the list of release digests.
+//! - **The identity checks** (`procinfo`, `procinfo/code_identity.rs`):
+//!   their mechanism is proven by tests against real processes and ad-hoc
+//!   signed fixtures; that `PRODUCT` accepts Anthropic's real signature and
+//!   refuses other signers is the explicit, read-only test in this file
+//!   (`the_production_requirement_on_named_real_executables_and_processes`:
+//!   run against three installed releases — one of them never listed — two
+//!   other Developer ID programs and one running client). No restart
+//!   transaction with a real client has run on them.
+//! - **Fake integration** (`agent_reentry/tests.rs`, a stand-in client
+//!   signed ad hoc as a test product): Deck's own helper, lease
+//!   attribution, launch sink and both request shapes, including
+//!   `--dangerously-skip-permissions --resume <id>`, for a build no list
+//!   names.
+//! - **Not shown natively**:
 //!   - on 2.1.294: the request WITH the override and any Policy B
 //!     transaction, and a refused environment name — those ran on 2.1.296
-//!     only;
+//!     only. Under this module's contract that absence refuses nothing;
 //!   - on either release: a launch image that cannot be read (such an entry
 //!     ends `Unconfirmed`, `context-unverified`, never confirmed; no natural
 //!     way to produce it was found);
@@ -123,30 +166,26 @@
 //!   window (`followup-20.md`). That is one passing run of the dialog's
 //!   presentation: no restart, no client, no other window size or font
 //!   scale, and not the signed carrier.
-//!
-//! So a row means "this exact binary has the native evidence listed for it
-//! above", not more. Adding a release is adding one row after its own
-//! native evidence, never a version range and never a lookup through
-//! `PATH`. The final permission mode is NOT observable on 2.1.294
-//! (`SessionEnd` carries no such field; not examined on 2.1.296); that
-//! absence gates nothing.
 
-use super::{CertifiedFact, ReentryCapability};
-use crate::procinfo::LaunchGrammar;
+use super::ReentryCapability;
+use crate::procinfo::{LaunchGrammar, ProductIdentity};
 
-/// Releases this feature is written against, each with its own native
-/// evidence (see the module header for what that evidence is per row, what
-/// is fake integration and what is not certified yet). Two rows today.
-const CERTIFIED: &[CertifiedFact] = &[
-    CertifiedFact {
-        version: "2.1.294",
-        sha256: "def0d15e64dd7d89621f88d28214f885b1c38b0ddd69762fb8593e34915d6d53",
-    },
-    CertifiedFact {
-        version: "2.1.296",
-        sha256: "c9b5341637becbd423ddffc5b254afb645682a3868cb708bbc6cc0e7bb419937",
-    },
-];
+/// Whose code a client must be: Claude Code as Anthropic signs it. This is
+/// the designated requirement the product's own signature states — the
+/// signing identifier, a chain to Apple's root through the Developer ID
+/// authority, a Developer ID Application leaf, and Anthropic's Team. None of
+/// it names a release, a digest or a leaf certificate, so a new release and
+/// a renewed certificate satisfy it unchanged; another signer, another
+/// product of the same Team, an ad-hoc or unsigned file do not. It is
+/// evaluated by Security.framework against the code itself
+/// (`procinfo::qualify_client`), never compared as text with a field read
+/// from a file.
+const PRODUCT: ProductIdentity = ProductIdentity {
+    requirement: "identifier \"com.anthropic.claude-code\" and anchor apple generic \
+        and certificate 1[field.1.2.840.113635.100.6.2.6] exists \
+        and certificate leaf[field.1.2.840.113635.100.6.1.13] exists \
+        and certificate leaf[subject.OU] = \"Q6L2SF6YDW\"",
+};
 
 const BYPASS: &str = "--dangerously-skip-permissions";
 const RESUME: &str = "--resume";
@@ -180,10 +219,9 @@ pub(crate) fn native_id_ok(id: &str) -> bool {
 }
 
 /// The argument words of an exact-id request, in the one order this build
-/// produces. Without the override, that request ran against both real
-/// releases (stage M1 of each, module header). With it, it ran once against
-/// 2.1.296 (stage M2); on 2.1.294 that order is exercised by the fake
-/// integration only. `None` for anything that is not a native session id.
+/// produces: the override, when the core granted it, before `--resume`.
+/// (What ran natively in that order is the module header's record.) `None`
+/// for anything that is not a native session id.
 fn request(native_id: &str, bypass: bool) -> Option<Vec<String>> {
     if !native_id_ok(native_id) {
         return None;
@@ -198,7 +236,7 @@ fn request(native_id: &str, bypass: bool) -> Option<Vec<String>> {
 }
 
 pub(crate) const CAPABILITY: ReentryCapability = ReentryCapability {
-    facts: CERTIFIED,
+    product: &PRODUCT,
     launcher: "claude",
     grammar: &GRAMMAR,
     login_shell: "zsh",
@@ -295,36 +333,306 @@ mod tests {
         }
     }
 
+    /// The releases that were exercised natively while this feature was
+    /// written (module header), as version label and file digest. A label
+    /// for tests and reports: production code holds no such list.
+    const HISTORICAL: &[(&str, &str)] = &[
+        (
+            "2.1.294",
+            "def0d15e64dd7d89621f88d28214f885b1c38b0ddd69762fb8593e34915d6d53",
+        ),
+        (
+            "2.1.296",
+            "c9b5341637becbd423ddffc5b254afb645682a3868cb708bbc6cc0e7bb419937",
+        ),
+    ];
+
+    /// The production half of a source file: everything before its trailing
+    /// test module.
+    fn production(source: &'static str) -> &'static str {
+        source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("a source file")
+    }
+
+    /// No release is named at runtime: the capability has a product and no
+    /// list, and no production source of this feature holds a historical
+    /// digest, a version label as data, or a lookup of a file digest. Putting
+    /// a "known digest" condition back fails here before it fails the
+    /// transaction tests for a build no list names.
     #[test]
-    fn the_certified_facts_are_the_two_releases_with_native_evidence() {
-        assert_eq!(CERTIFIED.len(), 2);
-        assert_eq!(CERTIFIED[0].version, "2.1.294");
-        assert_eq!(CERTIFIED[1].version, "2.1.296");
-        assert!(CERTIFIED.iter().all(|fact| fact.sha256.len() == 64));
-        assert_ne!(CERTIFIED[0].sha256, CERTIFIED[1].sha256);
-        // a digest names its own release and no other
-        for (digest, version) in [
+    fn no_release_is_named_at_runtime() {
+        let ReentryCapability {
+            product: _,
+            launcher: _,
+            grammar: _,
+            login_shell: _,
+            request: _,
+        } = CAPABILITY;
+        let sources = [
+            ("claude.rs", production(include_str!("claude.rs"))),
+            ("mod.rs", production(include_str!("mod.rs"))),
+            ("launch.rs", production(include_str!("launch.rs"))),
+            ("lifecycle.rs", production(include_str!("lifecycle.rs"))),
+            ("procinfo.rs", production(include_str!("../procinfo.rs"))),
             (
-                "def0d15e64dd7d89621f88d28214f885b1c38b0ddd69762fb8593e34915d6d53",
-                "2.1.294",
+                "code_identity.rs",
+                production(include_str!("../procinfo/code_identity.rs")),
             ),
-            (
-                "c9b5341637becbd423ddffc5b254afb645682a3868cb708bbc6cc0e7bb419937",
-                "2.1.296",
-            ),
+        ];
+        for (name, source) in sources {
+            let code: String = source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            for (version, digest) in HISTORICAL {
+                assert!(!code.contains(digest), "{name} holds a release digest");
+                assert!(
+                    !code.contains(&format!("\"{version}\"")),
+                    "{name} holds a release label as data"
+                );
+            }
+            // a digest is compared with itself (`unchanged`), never looked up
+            for lookup in [
+                "digest_hex()",
+                "certified(",
+                "CertifiedFact",
+                "image_names(",
+            ] {
+                assert!(!code.contains(lookup), "{name} must not contain {lookup}");
+            }
+        }
+        // the one definition of the digest's hex form is test-only
+        let procinfo = include_str!("../procinfo.rs");
+        let at = procinfo
+            .find("pub(crate) fn digest_hex(&self)")
+            .expect("the hex form");
+        assert!(procinfo[..at].trim_end().ends_with("#[cfg(test)]"));
+        assert_eq!(HISTORICAL.len(), 2);
+        assert!(HISTORICAL.iter().all(|(_, digest)| digest.len() == 64));
+    }
+
+    use crate::procinfo::{
+        identity_fixture as fixture, ClientRead, ClientSpec, ExecutableRef, NotProduct,
+        ProductIdentity, Unavailable,
+    };
+    use std::path::Path;
+
+    /// The same requirement with one clause changed: what another signer's
+    /// or another product's requirement would be.
+    fn variant(from: &str, to: &str) -> &'static ProductIdentity {
+        assert!(PRODUCT.requirement.contains(from), "{from}");
+        Box::leak(Box::new(ProductIdentity {
+            requirement: Box::leak(PRODUCT.requirement.replace(from, to).into_boxed_str()),
+        }))
+    }
+
+    /// What the production requirement is: the product, its signer and the
+    /// chain to Apple — and no release, digest or code directory.
+    #[test]
+    fn the_product_requirement_names_the_product_its_signer_and_no_release() {
+        let text = PRODUCT.requirement;
+        for clause in [
+            "identifier \"com.anthropic.claude-code\"",
+            "anchor apple generic",
+            "certificate 1[field.1.2.840.113635.100.6.2.6] exists",
+            "certificate leaf[field.1.2.840.113635.100.6.1.13] exists",
+            "certificate leaf[subject.OU] = \"Q6L2SF6YDW\"",
         ] {
-            assert_eq!(
-                CAPABILITY.certified(digest).map(|fact| fact.version),
-                Some(version)
+            assert!(text.contains(clause), "{clause}");
+        }
+        assert_eq!(
+            text.matches(" and ").count(),
+            4,
+            "five clauses, all required"
+        );
+        for release in ["cdhash", "2.1.", " or ", "info["] {
+            assert!(!text.contains(release), "{release}");
+        }
+        assert!(HISTORICAL.iter().all(|(_, digest)| !text.contains(digest)));
+    }
+
+    /// Through the production functions, with no real client: nothing that
+    /// Anthropic did not sign as Claude Code is the product — a file and a
+    /// running process that CLAIM its signing identifier and carry its
+    /// launcher's name included. (Ad-hoc fixtures and system programs; that
+    /// the requirement accepts Anthropic's real signature is the explicit
+    /// test below.)
+    #[test]
+    fn the_production_requirement_refuses_everything_anthropic_did_not_sign() {
+        // these checks ask for a deadline owner; the deadline is not the subject
+        let _phase = crate::session_runtime::test_phase();
+        let dir = fixture::directory("production");
+        let claimed = dir.join("claude");
+        fixture::build(&claimed, "build-A", &[], "com.anthropic.claude-code");
+        // the claim is really there, and a requirement of that identifier alone takes it
+        let by_name = fixture::product("com.anthropic.claude-code");
+        assert!(ExecutableRef::read(&claimed, by_name).is_ok());
+        let refused = |path: &Path| ExecutableRef::read(path, &PRODUCT).err();
+        assert_eq!(refused(&claimed), Some(Unavailable::Changed));
+        // Apple's own signature: a valid chain to Apple's root, not this signer or product
+        assert_eq!(refused(Path::new("/bin/ls")), Some(Unavailable::Changed));
+        let unsigned = dir.join("unsigned");
+        std::fs::copy(&claimed, &unsigned).unwrap();
+        fixture::unsign(&unsigned);
+        assert_eq!(refused(&unsigned), Some(Unavailable::Changed));
+        // the running claim: named like the launcher, not the product
+        let (process, _) = fixture::Process::start(&claimed, None).expect("the fixture runs");
+        let birth = crate::procinfo::process_start(process.pid()).unwrap();
+        let read = crate::procinfo::qualify_client(
+            process.pid(),
+            birth,
+            &ClientSpec {
+                product: &PRODUCT,
+                launcher: CAPABILITY.launcher,
+                grammar: &GRAMMAR,
+                home: Path::new("/nonexistent"),
+            },
+            &[],
+        );
+        // named like the launcher — which is said, and is not what refused it
+        assert!(
+            matches!(
+                read,
+                ClientRead::NotProduct {
+                    named: true,
+                    why: NotProduct::Other
+                }
+            ),
+            "{read:?}"
+        );
+        drop(process);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The production requirement against REAL material the caller names,
+    /// read-only: files that must be the product (`DECK_REENTRY_PRODUCT_ACCEPT`,
+    /// `:`-separated absolute paths), files that must not be
+    /// (`DECK_REENTRY_PRODUCT_REJECT`), and one already running client
+    /// (`DECK_REENTRY_PROCESS_PROBE`, a pid) that the production
+    /// qualification must take for the product and bind to its file. It
+    /// starts nothing, sends nothing and prints closed words, counts and
+    /// milliseconds — never a path, an argument or a digest.
+    #[test]
+    #[ignore = "requires explicitly named real executables or processes; starts no client"]
+    fn the_production_requirement_on_named_real_executables_and_processes() {
+        // these checks ask for a deadline owner; the deadline is not the subject
+        let _phase = crate::session_runtime::test_phase();
+        let listed = |name: &str| -> Vec<std::path::PathBuf> {
+            std::env::var(name)
+                .map(|list| list.split(':').map(std::path::PathBuf::from).collect())
+                .unwrap_or_default()
+        };
+        let other_team = variant("\"Q6L2SF6YDW\"", "\"AAAAAAAAAA\"");
+        let other_product = variant("com.anthropic.claude-code", "com.anthropic.other-product");
+        let mut failed = 0;
+        for (index, path) in listed("DECK_REENTRY_PRODUCT_ACCEPT").iter().enumerate() {
+            let started = std::time::Instant::now();
+            let made = ExecutableRef::read(path, &PRODUCT);
+            let reference_ms = started.elapsed().as_millis();
+            let started = std::time::Instant::now();
+            let reread = made.as_ref().ok().map(ExecutableRef::unchanged);
+            let reread_ms = started.elapsed().as_millis();
+            let historical = made.as_ref().is_ok_and(|made| {
+                HISTORICAL
+                    .iter()
+                    .any(|(_, digest)| *digest == made.digest_hex())
+            });
+            let clauses = (
+                ExecutableRef::read(path, other_team).err(),
+                ExecutableRef::read(path, other_product).err(),
+            );
+            let ok = made.is_ok()
+                && reread == Some(Ok(()))
+                && clauses == (Some(Unavailable::Changed), Some(Unavailable::Changed));
+            failed += usize::from(!ok);
+            println!(
+                "ACCEPT[{index}] product={} in_historical_table={historical} reference_ms={reference_ms} reread={reread:?} reread_ms={reread_ms} other_team={:?} other_product={:?}",
+                made.as_ref().map(|_| "yes").unwrap_or("NO"),
+                clauses.0,
+                clauses.1,
             );
         }
-        assert!(CAPABILITY
-            .certified("def0d15e64dd7d89621f88d28214f885b1c38b0ddd69762fb8593e34915d6d53")
-            .is_some());
-        // same version, another digest: not certified
-        assert!(CAPABILITY.certified(&"0".repeat(64)).is_none());
-        assert!(CAPABILITY.certified("2.1.294").is_none());
-        assert!(CAPABILITY.certified("2.1.296").is_none());
+        for (index, path) in listed("DECK_REENTRY_PRODUCT_REJECT").iter().enumerate() {
+            let made = ExecutableRef::read(path, &PRODUCT);
+            // it is somebody's valid code: only then is the refusal about WHOSE
+            let own = ExecutableRef::read(path, fixture::product_of(path)).is_ok();
+            failed += usize::from(made.as_ref().err() != Some(&Unavailable::Changed) || !own);
+            println!(
+                "REJECT[{index}] product={} valid_as_its_own={own}",
+                match &made {
+                    Ok(_) => "YES".to_string(),
+                    Err(why) => format!("no/{why:?}"),
+                }
+            );
+        }
+        if let Some(pid) = std::env::var("DECK_REENTRY_PROCESS_PROBE")
+            .ok()
+            .and_then(|pid| pid.parse::<u32>().ok())
+        {
+            let home = std::path::PathBuf::from(
+                std::env::var_os("DECK_REENTRY_PROCESS_HOME").unwrap_or_default(),
+            );
+            let birth = crate::procinfo::process_start(pid).expect("the named process exists");
+            let spec = |product| ClientSpec {
+                product,
+                launcher: CAPABILITY.launcher,
+                grammar: &GRAMMAR,
+                home: &home,
+            };
+            let started = std::time::Instant::now();
+            let read = crate::procinfo::qualify_client(pid, birth, &spec(&PRODUCT), &[]);
+            let qualify_ms = started.elapsed().as_millis();
+            let bound = match &read {
+                ClientRead::Product(read) => read.executable.as_ref().ok().cloned(),
+                _ => None,
+            };
+            let rebinding = bound.as_ref().map(|executable| {
+                let started = std::time::Instant::now();
+                let answers = (0..20)
+                    .filter(|_| crate::procinfo::runs_executable(pid, birth, executable))
+                    .count();
+                (answers, started.elapsed().as_micros() / 20)
+            });
+            let not_it = |product| {
+                matches!(
+                    crate::procinfo::qualify_client(pid, birth, &spec(product), &[]),
+                    ClientRead::NotProduct {
+                        why: NotProduct::Other,
+                        ..
+                    }
+                )
+            };
+            let others = (not_it(other_team), not_it(other_product));
+            failed += usize::from(
+                rebinding.map(|(bound, _)| bound) != Some(20) || others != (true, true),
+            );
+            println!(
+                "PROCESS qualify={} qualify_ms={qualify_ms} rebinding_bound_of_20={:?} rebinding_mean_us={:?} other_team_refused={} other_product_refused={}",
+                match &read {
+                    ClientRead::Gone => "gone".to_string(),
+                    ClientRead::NotProduct { why, .. } => format!("not-product/{why:?}"),
+                    ClientRead::Product(read) => format!(
+                        "product executable={} profile={:?}",
+                        match &read.executable {
+                            Ok(_) => "bound".to_string(),
+                            Err(why) => format!("{why:?}"),
+                        },
+                        read.profile
+                    ),
+                },
+                rebinding.map(|(bound, _)| bound),
+                rebinding.map(|(_, mean)| mean),
+                others.0,
+                others.1,
+            );
+        }
+        assert_eq!(
+            failed, 0,
+            "every named file and process answered as required"
+        );
     }
 
     #[test]

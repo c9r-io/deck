@@ -6,8 +6,9 @@
 //! and the key sender of the same server handle.
 //! A client that runs under its release's file name (tmux then shows a
 //! version, and argv[0] is a path) is exited as Claude only when the re-entry
-//! transaction froze that exact pane as a certified direct client
-//! (`certified`): never by a version-shaped name, never for another pane.
+//! transaction froze that exact pane as a direct client of the product, by
+//! its running code (`frozen`): never by a version-shaped name, never for
+//! another pane.
 use std::time::{Duration, Instant};
 
 use crate::applog::{applog, session_tag};
@@ -135,7 +136,7 @@ fn exit_agents(
 pub(crate) fn prepare(
     reviewed: &[PaneRow],
     save_shells: bool,
-    certified: &[PaneRow],
+    frozen: &[PaneRow],
     list: &dyn Fn() -> Result<Vec<PaneRow>, DeckError>,
     send: &dyn Fn(&[String]) -> Result<String, DeckError>,
     progress: &dyn Fn(&str, usize, usize),
@@ -157,13 +158,14 @@ pub(crate) fn prepare(
             .and_then(|device| crate::procinfo::foreground_leader(&processes, device))
             .and_then(crate::procinfo::argv0)
             .and_then(|s| crate::context::sanitize_process(&s));
-        // The frozen certified fact of this exact pane and foreground name,
-        // not a guess from the name itself.
-        let frozen = certified
+        // What the re-entry transaction froze for this exact pane and
+        // foreground name — a client qualified by its running code — not a
+        // guess from the name itself.
+        let reentered = frozen
             .iter()
             .any(|known| same_pane(known, row) && known.command == row.command)
             .then_some(Agent::Claude);
-        if let Some(kind) = agent(&row.command, argv.as_deref()).or(frozen) {
+        if let Some(kind) = agent(&row.command, argv.as_deref()).or(reentered) {
             // Only a sanitized executable may enter the tmux format expression.
             if crate::context::sanitize_process(&row.command).as_deref() != Some(&row.command) {
                 return Err(error("tmux-restart-agent-unrecognized"));

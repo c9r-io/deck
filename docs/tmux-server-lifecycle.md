@@ -291,8 +291,134 @@ server metadata and the helper's kernel-loaded image after replacement.
 ## Reopen Agent session (optional post phase of an explicit restart)
 
 **Status: implemented and enabled in code.** Ordinary tests use a stand-in
-client. Native evidence is per release, each stage run once by a test
-controller that calls the production transaction. On the real Claude 2.1.294:
+client signed ad hoc as a test product.
+
+**No release is named.** A client is admitted by its code identity, not by
+a list: the adapter states Claude Code's code requirement (Anthropic's
+signing identity, no release, version or digest), and Security.framework
+validates it inside Deck's process — `codesign`, `spctl` and the client's
+own `--help`/`--version` are never run — in two different ways that are not
+merged. On DISK, the file's signature is validated in full, every page of
+the executable included. For the RUNNING image, the process is validated
+dynamically against that file's code directory: the kernel's record of what
+the process executes must be what the file holds. A client counts only
+while its exact generation is bound to the frozen reference — its pid and
+birth instant, the kernel's image path, the file's state and that dynamic
+validation, read before and after. That is what refuses an old process
+whose path already holds another validly signed build, and an exec into
+another image under the same pid and birth instant (which the birth instant
+does not notice). The file's SHA-256 is this transaction's proof that the
+content stayed the same; it is compared only with itself and never looked
+up. So a release this build has never seen is admitted on the same facts as
+any other, under either policy. A change of the signing identity or of the
+narrow native contract (the resume flag, the bypass flag before it, the
+session id and the start source / end reason of the lifecycle hooks, hooks
+run as the client's direct child) is an adapter change; a release that kept
+those shapes and changed their meaning cannot be told apart by any
+interface this feature may use — an accepted residual, not a reason to list
+releases again.
+
+The reads and validations cannot be interrupted — the dynamic validation
+of a running image included. Three rules hold for each of them, on every
+path:
+
+- **An owner.** Each runs under a deadline its caller owns: the preview's
+  ten-second share, the restart's preparation, a lifecycle receipt's 400 ms,
+  the post share (asked again after the re-read, before a shell is created)
+  and the confirmation's own one-second share after it. A dynamic
+  validation nobody owns is not made.
+- **A late answer is no answer.** The deadline is asked after the call
+  returned, and a positive answer that arrived late is dropped like any
+  other: no candidate, nothing frozen (the restart ends as its own timeout
+  before any exit key), no receipt recorded, no entry confirmed. What was
+  read before such a call — the process table, the pane's foreground — is
+  read again after it, before anything is committed.
+- **The caller is answered anyway.** A deadline does not shorten the call,
+  so each caller stops waiting through a worker: the preview on one worker
+  that holds the preview's turn while it reads and nothing else; the restart
+  on its worker,
+  which keeps the operation gate, the activity guard and the plan; the
+  receipts on ONE receipt worker beside the status listener, behind a
+  bounded queue — the listener itself, every agent's Signal path, never
+  makes or awaits that call. A stalled thread keeps what it owns until its
+  call returns and its answer then reaches nobody; nothing is retried and no
+  second worker starts beside it.
+
+Three things are each fixed to one instant, so that an answer that is late
+for its own boundary never arrives at the next one:
+
+- **A receipt belongs to one operation and one arming.** A lifecycle line is
+  a claim on the operation in flight when it was read. Where the fact is
+  written — under the mailbox lock, not only when the claim was queued — the
+  mailbox must be that very operation (a number this process gives each
+  operation and never uses again), the lease that very arming, and the time
+  inside both the receipt's own 400 ms and the phase the lease was armed
+  for. A claim that outlived its operation in the queue or inside its
+  validation is refused there even when the next operation armed the same
+  card, pane, shell and client. Nothing of this is written to disk.
+- **The receipts end at the post deadline.** A launch lease stops taking
+  facts at that instant by the clock, sealed or not, and every entry is
+  sealed together before the first check of a started client. The
+  confirmation's one-second share is time for those checks alone: it never
+  lengthens the time a receipt may arrive in, and an entry is confirmed from
+  the sealed set. A receipt that comes later — also a conflicting one —
+  changes nothing that was settled and leads to no second request.
+- **A preview is published under its turn.** One preview reads at a time,
+  and what it read becomes the preview that can be confirmed at one instant:
+  one write, made by the caller that was answered in time, while it still
+  holds the turn it read under. So previews are published in the order they
+  were read, and a result that was read earlier never replaces a later one.
+  A caller waits for the turn no longer than its own ten seconds, counted
+  from when it asked, however many previews follow each other; a worker that
+  outlived its caller publishes nothing and gives back only its own turn.
+
+A check that did not finish is reported as `check-incomplete` before a
+launch and `context-unverified` after one — never as a candidate, a
+confirmation or a changed program (`executable-unavailable` and
+`context-changed` are the positive findings). A validation that never
+returns therefore costs one thread and, for a restart in flight, its gate
+and guard until the process ends: no guard is released under a running
+operation. The cost on the 240 MB client, measured in the release profile
+with the file in the page cache: about 0.42 s for the digest, 0.09 s for the
+full signature validation, and under 2 ms for each dynamic binding (3.5 ms
+for the first one this process makes). A debug build needs its SHA-256
+dependency optimized (`[profile.dev.package.sha2]` in `Cargo.toml`) to stay
+inside the post phase, and then measures the same.
+
+Evidence for the identity checks: tests on real processes with ad-hoc
+signed fixtures (the mechanism), and one explicit read-only run of the
+production requirement against three installed releases — one of them
+never listed anywhere — two other Developer ID programs and one running
+client. Representative P3 validation of the new mechanism completed on
+2026-10-11 with real Claude 2.1.295, whose digest was never in that list:
+
+| Policy | Test controller calling the production transaction | Isolated real application, UI and IPC |
+| --- | --- | --- |
+| A | PASS: one transaction, two cards, no bypass override | PASS: one transaction, one card, no bypass override |
+| B | PASS: one transaction, three cards, two bypass overrides | PASS: one transaction, three cards, two bypass overrides |
+
+Both B samples included a bypass launch lowered to plan before the restart.
+The application used an ad-hoc debug carrier, private data/socket, real HOME
+and project lifecycle hooks. Its earlier B preparation stopped on a CUA
+timeout before any Claude launch or restart; that record is retained.
+Requests and new generations were sampled independently; exact final-session
+receipt attribution also relies on the production confirmation checks, not
+an exported wire trace. Native permission indicators are operator observations,
+not Deck's independent verification of effective permissions.
+
+P3 is complete with evidence limits (PASS WITH OPEN QUESTIONS). macOS 26
+remains UNRUN. The application samples had empty queues; the controller's
+nonempty paused-queue evidence is separate. Stale terminal frames and an
+invalid independent policy-persistence probe are recorded, not counted as
+passes. Existing automated tests cover resetting the policy for a new preview.
+See the [acceptance summary](../reports/agent-reentry-forward-compat/acceptance.md)
+for direct report links, source provenance and the limits of this validation.
+This is representative validation, not a version allowlist or release approval.
+
+The native evidence that follows is historical. It was gathered while
+admission was still a list of release digests, each stage run once by a
+test controller that calls the production transaction, and it says nothing
+about the identity checks. On the real Claude 2.1.294:
 how the production checks read a bare and a bypass-flag launch (stages S and
 B), and ONE Policy A restart transaction over two such clients (stage M1: both
 entries confirmed). On the real Claude 2.1.296: the same launch readings, ONE
@@ -317,8 +443,11 @@ dialog's checkboxes and radios took the general `input` width, and the
 section overflowed sideways) and, with that rule repaired, passed once: 15 of 15
 checkpoints, English and Chinese, the default 1280×800 window. One passing
 run says nothing about other window sizes, the larger font scale, the signed
-carrier or the transaction itself. The record of what each piece of
-evidence is lives in the module header of `agent_reentry/claude.rs`.
+carrier or the transaction itself. A further run on 2026-10-11 passed 15/15
+with the current A/B result wording; see
+[round-2 §5.4](../reports/agent-reentry-forward-compat/round-2.md).
+The module header of `agent_reentry/claude.rs` retains the historical native
+campaigns; the acceptance summary above records the current P3 evidence.
 
 **Launch context: limited checks before, confirmation after** (the user's
 ruling). The environment a new shell's startup files leave behind cannot be
@@ -359,21 +488,26 @@ an addition to the transaction above, never a change of it:
 
 1. **Preview** (`agent_reentry_preview`, read-only): every live card session
    is classified from its live foreground process — a shell, an unsupported
-   foreground, or a candidate (a direct, certified Claude client in a
-   one-window, one-pane session, with its launch profile `bypass` or
-   `ordinary`). Candidates are unticked by default; the default policy is A.
-   The reply carries card id, session, closed codes and a single-use token;
-   no native id, pid, path or digest.
+   foreground, or a candidate (a direct client whose running code is the
+   product's and is bound to its file, in a one-window, one-pane session,
+   with its launch profile `bypass` or `ordinary`). Clients that share a
+   binary read and validate it once; each is bound to it on its own.
+   Candidates are unticked by default; the default policy is A. The reply
+   carries card id, session, closed codes and a single-use token; no native
+   id, pid, path, digest, signer or release.
 2. **Freeze** (inside the restart's guards, before any exit key): the token
    is consumed and each ticked card is read again. A card, pane, server,
    foreground generation, executable or working directory that is not the
    previewed one refuses the whole restart as `tmux-server-impact-changed`;
-   an approval is never rebound.
+   an approval is never rebound, and an executable that changed is never
+   frozen again under it. The previewed reference is reused only for that
+   exact file state; each client is bound to it again.
 3. **Exit**: the frozen panes take the existing graceful-exit path and its
-   shared two seconds, including a certified client that runs under its
-   release's file name. An entry continues only with BOTH its final receipt
+   shared two seconds, including a client that runs under its release's
+   file name. An entry continues only with BOTH its final receipt
    (`SessionEnd`, `prompt-input-exit`, attributed by the kernel to that exact
-   client) and its old client generation gone. A missing receipt skips that
+   client while it still executes the frozen executable) and its old client
+   generation gone. A missing receipt skips that
    card. A client that does not exit — including one that gave the terminal
    back to its shell but is still alive, or whose exit cannot be proven — is
    the existing `AgentTimeout` for the whole restart: no pause, no kill.
@@ -389,8 +523,9 @@ an addition to the transaction above, never a change of it:
    the exact shell generation asked of the kernel at the paste and again at
    the Enter; a
    `SessionStart` receipt with source `resume` and the same id from the new
-   foreground client, together with the post-launch check of that client
-   described above, confirms the entry. Everything else is a per-card
+   foreground client, recorded before this share ended, together with the
+   post-launch check of that client described above, confirms the entry.
+   Everything else is a per-card
    result: not attempted, refused before launch, known not launched, or
    unconfirmed. Nothing is retried.
 
@@ -398,7 +533,13 @@ Policy A adds nothing to `--resume <id>`. Policy B is that restart's explicit
 reauthorization: the bypass flag is added only for ticked cards whose client
 was shown as a bypass launch and is read as one again at freeze. It applies
 again even if the user lowered permissions while the session ran — the dialog
-says so before confirmation — and it is not stored.
+says so before confirmation — and it is not stored. Both policies rest on
+the same identity and contract facts: there is no list of releases for the
+override either, and the client's last permission mode is read by nothing.
+A confirmed Policy B entry says that the session was re-entered and that
+the bypass flag was sent as authorized; Deck does not read the permission
+in effect and says so. An entry that is not confirmed says only that
+re-entry was attempted.
 
 What it is not: the task is not resumed by Deck, no prompt is sent, model and
 added directories are left to the Agent, queues stay paused, no readiness,
