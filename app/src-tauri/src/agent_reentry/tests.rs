@@ -4135,6 +4135,15 @@ fn unknown_launch_profiles_never_authorize_bypass() {
 /// uses the entry's one slot and is never followed by a second request:
 /// not by the operation, not by reading its result, not by using the
 /// approval again, and not after the process forgot everything.
+///
+/// The times belong together. Four entries are launched one after another,
+/// and an entry is attempted only while the post share still has
+/// `ATTEMPT_FLOOR` (1.5 s) left: with a 4 s share all four had to be started
+/// within 2.5 s, which a hosted CI runner did not always manage (the last
+/// entry then is, correctly, refused before its launch, and this test is not
+/// about that). With 8 s the four have 6.5 s. The late receipt comes 8.5 s
+/// after its client started, so always after the post share ended, and at
+/// the latest 15 s after that share began: the wait below ends after that.
 #[test]
 fn unknown_outcomes_are_never_retried() {
     let world = World::new();
@@ -4148,7 +4157,7 @@ fn unknown_outcomes_are_never_retried() {
     );
     world.card(
         "late",
-        &format!("session={ID_X}\nresume=late:5000"),
+        &format!("session={ID_X}\nresume=late:8500"),
         Some(&quoted),
     );
     let (token, _) = world.preview();
@@ -4176,7 +4185,7 @@ fn unknown_outcomes_are_never_retried() {
         .restart_with(
             "req-unknown-outcomes",
             Some(&approval),
-            Duration::from_secs(4),
+            Duration::from_secs(8),
             &|| Ok(()),
             &|_, _, _| {},
         )
@@ -4205,7 +4214,7 @@ fn unknown_outcomes_are_never_retried() {
         assert!(operation("req-unknown-outcomes").known);
     }
     // the late answer arrives after the operation closed: nobody takes it
-    std::thread::sleep(Duration::from_millis(2500));
+    std::thread::sleep(Duration::from_millis(7500));
     assert_eq!(known("req-unknown-outcomes"), Some(result.clone()));
     assert!(!lifecycle::armed(), "no lease is left to land on");
     // the approval again, and the same request id again: nothing starts
