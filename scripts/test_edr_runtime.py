@@ -265,6 +265,24 @@ class ExperimentTests(Fixture):
         self.assertTrue(self.alive(self.tmux, self.socket, self.server), "stopping one resource stopped the server too")
         self.assertTrue(self.sentinel_alive())
 
+    def test_a_process_started_by_its_bare_name_is_registered_from_any_directory(self):
+        # found in use: a keep-awake started as `caffeinate` shows no path, and the tool, run from a
+        # person's home, resolved the bare name against that home and refused its own experiment's process
+        self.register()
+        process = subprocess.Popen(["sleep", "600"])
+        self.naps.append(process)
+        self.assertEqual(MODULE.identity(process.pid)[1], "sleep")
+        added = subprocess.run([sys.executable, str(PATH), "experiment", "add-process", "--pid", str(process.pid),
+                                "--root", str(self.root)], capture_output=True, text=True, timeout=60, cwd=str(ACCOUNT_HOME))
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        done = self.tool("stop", "--pid", str(process.pid))
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIsNotNone(process.wait(timeout=5))
+        # a path is still judged: the same name under an installed location is not an experiment's
+        with self.assertRaisesRegex(MODULE.Refused, "is inside /Applications"):
+            MODULE.not_formal_process("/Applications/deck.app/Contents/MacOS/sleep", "sleep 600")
+        MODULE.not_formal_process("sleep", "sleep 600")
+
     def test_what_runs_from_the_root_unregistered_is_reported_and_left_running(self):
         self.register()
         other_socket = self.root / "other.sock"

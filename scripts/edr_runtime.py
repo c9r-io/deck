@@ -402,9 +402,13 @@ def identity(pid: int) -> tuple[str, str, str] | None:
 
 
 def not_formal_process(executable: str, command: str) -> None:
-    reason = formal(Path(os.path.realpath(executable)))
-    if reason:
-        raise Refused(f"the process is not an experiment's: {reason}")
+    # A program started by its bare name (`caffeinate`, `sleep`) shows no path. There is no place to judge
+    # then, and resolving the name against this tool's own directory would invent one; its pid, start time
+    # and name are still its identity.
+    if executable.startswith("/"):
+        reason = formal(Path(os.path.realpath(executable)))
+        if reason:
+            raise Refused(f"the process is not an experiment's: {reason}")
     if f"{account_home()}/.deck/" in command:
         raise Refused("the process names the account's own ~/.deck: it is an installed Deck's")
 
