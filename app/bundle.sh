@@ -18,7 +18,7 @@ DECK_BUNDLE_SIDECARS="deck-status-helper deck-lifecycle-helper deck-mcp deck-mcp
 # The Pi observer's files (app/src-tauri/resources/pi, the same closed list as
 # tauri.conf.json `bundle.resources` and agent_pi/config.rs RESOURCES): text
 # the Pi process loads from the bundle, never an executable of deck's own.
-DECK_BUNDLE_PI_RESOURCES="observer.ts signal.ts"
+DECK_BUNDLE_PI_RESOURCES="observer.ts signal.ts lifecycle.ts both.ts"
 
 # The shared outputs are this checkout's debug build: the sidecars, the
 # executable and the staged frontend.

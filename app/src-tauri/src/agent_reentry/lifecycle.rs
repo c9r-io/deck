@@ -8,10 +8,23 @@
 //! the existing 0600 status socket:
 //! `{protocol:"agent-lifecycle", v:1, source, event, nativeSessionId,
 //! startSource | endReason, [finalPermission], socket, server_pid, pane}`.
-//! `parse` accepts exactly that: a known family and version, one valid
-//! lowercase UUID, closed words, no unknown key, no duplicate key, no
-//! field of the other event, at most `MAX_LINE` bytes. There is no payload,
-//! prompt, tool, transcript, path, model or free-form field to carry.
+//! `parse` accepts exactly that: a known family and version, closed keys, no
+//! unknown key, no duplicate key, at most `MAX_LINE` bytes, and a source
+//! that HAS a receipt contract. There is no payload, prompt, tool,
+//! transcript, path, model or free-form field to carry.
+//!
+//! **What a receipt means is its source's, not this module's.** A source
+//! that may send receipts declares a `ReceiptContract` on its re-entry
+//! capability (`ReentryCapability::receipts`; today only Claude Code,
+//! `claude.rs`): the pure decoding of its own words and its own native id
+//! into its closed tag of `Event`, and the two reducers over a lease's
+//! record (`final_session`, `entered`). This module owns the wire framing,
+//! the origin and kernel attribution, the lease, the queue, the deadlines,
+//! the mailbox and every fence below, and it keeps a record without reading
+//! what its facts say: a source without a contract can send no receipt, and
+//! one source's id or word is never judged by another's rule. Registering a
+//! source, or giving it another kind of observation (`observe_pi` below),
+//! gives it no contract.
 //!
 //! A line is a CLAIM. `receive` turns it into a fact only for an armed
 //! lease of the running operation, and only by what the kernel says while
@@ -98,7 +111,6 @@ use std::time::{Duration, Instant};
 
 use serde::de::{Deserializer, MapAccess, Visitor};
 
-use super::claude::{EndReason, StartSource};
 use crate::agent_status::ProcessTable;
 use crate::procinfo::ExecutableRef;
 use crate::sync::LockRecover;
@@ -108,13 +120,40 @@ const MAX_LINE: usize = 1024;
 
 type Generation = (u32, (u64, u32));
 
+/// What one fact of a lease's record is. A receipt carries its source's own
+/// closed tag — built and read only by that source's `ReceiptContract`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Event {
-    Start(StartSource),
-    End(EndReason),
+    /// A receipt of Claude Code, in Claude's own words (`claude.rs`).
+    Claude(super::claude::Told),
     /// Not a wire event: the lease's record reached its bound and at least
     /// one fact was not kept.
     Overflow,
+}
+
+/// The source's own words of one line, as they were written: closed keys,
+/// values its contract closes. Borrowed from the line for the decoding only.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Words<'a> {
+    pub(crate) event: Option<&'a str>,
+    pub(crate) native_id: Option<&'a str>,
+    pub(crate) start_source: Option<&'a str>,
+    pub(crate) end_reason: Option<&'a str>,
+    pub(crate) final_permission: Option<&'a str>,
+}
+
+/// What one source's lifecycle receipts mean: static data of its
+/// `ReentryCapability`, pure functions only. A source without one sends no
+/// receipt (`parse`), whatever else Deck observes of it.
+pub(crate) struct ReceiptContract {
+    /// The event a line's words name and its native id, each by the
+    /// source's own rule; the error is a closed reason.
+    pub(crate) decode: fn(&Words) -> Result<(Event, String), &'static str>,
+    /// The final native session of an exited client, from the record of its
+    /// exit lease.
+    pub(crate) final_session: fn(&[Fact]) -> Option<String>,
+    /// What a launch lease's record says about entering the wanted session.
+    pub(crate) entered: fn(&[Fact], &str) -> Receipt,
 }
 
 /// One validated wire line: still only a claim.
@@ -198,7 +237,12 @@ pub(crate) fn is_family(line: &str) -> bool {
 }
 
 /// Closed validation at the trust boundary; the error is a closed reason.
-pub(crate) fn parse(line: &str, known_source: impl Fn(&str) -> bool) -> Result<Wire, &'static str> {
+/// `contract` is the receipt contract of a source word, if that source has
+/// one: the framing is checked here, the words and the id by that contract.
+pub(crate) fn parse(
+    line: &str,
+    contract: impl Fn(&str) -> Option<&'static ReceiptContract>,
+) -> Result<Wire, &'static str> {
     if line.len() > MAX_LINE {
         return Err("lifecycle-oversize");
     }
@@ -213,35 +257,18 @@ pub(crate) fn parse(line: &str, known_source: impl Fn(&str) -> bool) -> Result<W
     if fields.version != Some(1) {
         return Err("lifecycle-bad-version");
     }
-    if !fields.source.as_deref().is_some_and(known_source) {
-        return Err("lifecycle-unknown-source");
-    }
-    let native_id = fields
-        .native_id
-        .filter(|id| super::claude::native_id_ok(id))
-        .ok_or("lifecycle-bad-id")?;
-    // The optional final permission is a closed diagnostic word. It is
-    // validated and then dropped: nothing in this build reads it.
-    if fields
-        .final_permission
+    let contract = fields
+        .source
         .as_deref()
-        .is_some_and(|word| !matches!(word, "bypass" | "non-bypass" | "unknown"))
-    {
-        return Err("lifecycle-bad-field");
-    }
-    let event = match (
-        fields.event.as_deref(),
-        fields.start_source.as_deref(),
-        fields.end_reason.as_deref(),
-    ) {
-        (Some("session-start"), Some(source), None) if fields.final_permission.is_none() => {
-            Event::Start(super::claude::start_source(source).ok_or("lifecycle-bad-field")?)
-        }
-        (Some("session-end"), None, Some(reason)) => {
-            Event::End(super::claude::end_reason(reason).ok_or("lifecycle-bad-field")?)
-        }
-        _ => return Err("lifecycle-bad-field"),
-    };
+        .and_then(contract)
+        .ok_or("lifecycle-unknown-source")?;
+    let (event, native_id) = (contract.decode)(&Words {
+        event: fields.event.as_deref(),
+        native_id: fields.native_id.as_deref(),
+        start_source: fields.start_source.as_deref(),
+        end_reason: fields.end_reason.as_deref(),
+        final_permission: fields.final_permission.as_deref(),
+    })?;
     let socket = fields
         .socket
         .filter(|socket| {
@@ -715,60 +742,175 @@ pub(crate) fn receive(
     Ok(())
 }
 
-fn complete(facts: &[Fact]) -> bool {
+/// A record that kept every fact it was sent. An incomplete one names no
+/// final session and confirms no entry, whatever its source's reducers
+/// would read from the facts that were kept.
+pub(crate) fn complete(facts: &[Fact]) -> bool {
     !facts.iter().any(|fact| fact.event == Event::Overflow)
 }
 
-/// The final native session of an exited client: the id of its applicable
-/// end (`prompt-input-exit`), which must be the LAST fact and the only such
-/// id. `clear`, `resume`, `logout` and `other` ends switch or name nothing;
-/// two different final ids never resolve to the later one, and an
-/// incomplete record names nothing.
-pub(crate) fn final_session(facts: &[Fact]) -> Option<String> {
-    let last = facts.last()?;
-    if !complete(facts) || last.event != Event::End(EndReason::PromptInputExit) {
-        return None;
-    }
-    facts
-        .iter()
-        .filter(|fact| fact.event == Event::End(EndReason::PromptInputExit))
-        .all(|fact| fact.native_id == last.native_id)
-        .then(|| last.native_id.clone())
-}
-
+/// What a launch lease's record says about entering the wanted session
+/// (`ReceiptContract::entered`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Receipt {
     Pending,
     /// Exactly one client reported, and all it reported is entering the
-    /// wanted session through a resume. Carries that client generation so
-    /// the coordinator can check it is still the pane's foreground.
+    /// wanted session. Carries that client generation so the coordinator
+    /// can check it is still the pane's foreground.
     Entered(Generation),
     /// Another id, another source, an end, a second client or an
     /// incomplete record: not confirmed.
     Conflict,
 }
 
-/// What the launch-phase facts say about entering `wanted`.
-pub(crate) fn reentry(facts: &[Fact], wanted: &str) -> Receipt {
-    let Some(first) = facts.first() else {
-        return Receipt::Pending;
-    };
-    let entered = complete(facts)
-        && facts.iter().all(|fact| {
-            fact.client == first.client
-                && fact.native_id == wanted
-                && fact.event == Event::Start(StartSource::Resume)
-        });
-    if entered {
-        Receipt::Entered(first.client)
-    } else {
-        Receipt::Conflict
+// ---------- Pi: an observed native session, never a receipt ------------------------
+//
+// Pi has no receipt contract and takes no part in anything above. A verified
+// Pi observer stream that carries the lifecycle capability (`agent_pi`)
+// says which native session its runtime is in. That is an OBSERVATION with
+// the trust ceiling of Signal: the kernel proved which process said it, and
+// nothing proves whose code that process runs. So it is kept apart by
+// construction: its own type and its own store, no lease of an operation, no
+// conversion into a `Fact`, nothing an operation's coordinator or a
+// source's reducers ever read. It names no session to resume, confirms no
+// entry and makes Pi no candidate for re-entry.
+//
+// One record per live observer lease, in memory only: the current native id
+// (Pi's own shape, `agent_pi::PiNativeId`) and the last thing the runtime
+// said of it — a start or a teardown with Pi's own reason, or a snapshot. It is gone with its lease — a reset, the end of the
+// stream, another foreground, the capability turned off, a Deck restart —
+// and is never rebuilt from disk. A runtime that contradicts itself (a
+// second start, another id, or a teardown of a session it never reported)
+// loses its record instead of having one of the two readings picked. The
+// id is compared, never logged, shown, written or sent anywhere.
+
+use crate::agent_pi::{PiNativeId, SessionEvent};
+use crate::agent_status::{ForegroundGeneration, PaneKey};
+
+struct PiObserved {
+    key: PaneKey,
+    generation: ForegroundGeneration,
+    id: PiNativeId,
+    /// The last thing this runtime said of its session. A snapshot is what
+    /// the API said after a reconnect: neither a start nor a resume. A
+    /// teardown is the runtime's own word — `quit` is not proof that the
+    /// process is gone.
+    last: SessionEvent,
+}
+
+impl PiObserved {
+    fn torn_down(&self) -> bool {
+        matches!(self.last, SessionEvent::Shutdown(_))
     }
+}
+
+static PI_SESSIONS: Mutex<Option<HashMap<u64, PiObserved>>> = Mutex::new(None);
+
+fn with_pi<R>(f: impl FnOnce(&mut HashMap<u64, PiObserved>) -> R) -> R {
+    f(PI_SESSIONS
+        .lock_or_recover()
+        .get_or_insert_with(HashMap::new))
+}
+
+/// One verified lifecycle frame of the observer lease `lease`, bound to its
+/// pane and foreground generation by the transport that calls this. `Err`
+/// when the frame contradicts what that lease reported before: the record
+/// is then removed, and the transport ends the stream.
+pub(crate) fn observe_pi(
+    lease: u64,
+    key: &PaneKey,
+    generation: ForegroundGeneration,
+    event: SessionEvent,
+    id: &PiNativeId,
+) -> Result<(), &'static str> {
+    with_pi(|sessions| {
+        let known = sessions.get_mut(&lease);
+        let consistent = match (event, known) {
+            // the first thing a runtime says of its session
+            (SessionEvent::Start(_) | SessionEvent::Snapshot, None) => {
+                sessions.insert(
+                    lease,
+                    PiObserved {
+                        key: key.clone(),
+                        generation,
+                        id: id.clone(),
+                        last: event,
+                    },
+                );
+                true
+            }
+            // what the API says again, for the session already known
+            (SessionEvent::Snapshot, Some(known)) => known.id == *id && !known.torn_down(),
+            (SessionEvent::Shutdown(_), Some(known)) if known.id == *id && !known.torn_down() => {
+                known.last = event;
+                true
+            }
+            // a second start in one runtime, a teardown of another session
+            // or of none: neither reading is picked
+            _ => false,
+        };
+        if consistent {
+            Ok(())
+        } else {
+            sessions.remove(&lease);
+            Err("bad-lifecycle")
+        }
+    })
+}
+
+/// The lease is over, or may no longer observe sessions: its record goes.
+pub(crate) fn forget_pi(lease: u64) {
+    with_pi(|sessions| sessions.remove(&lease));
+}
+
+/// What a card may say about its Pi's native session: one closed word, and
+/// only while a live observer of the pane's CURRENT foreground generation
+/// reported a session and no teardown. The id never leaves this module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PiSession {
+    Observed,
+}
+
+pub(crate) fn pi_session(key: &PaneKey, generation: ForegroundGeneration) -> Option<PiSession> {
+    with_pi(|sessions| {
+        sessions
+            .values()
+            .any(|known| known.key == *key && known.generation == generation && !known.torn_down())
+            .then_some(PiSession::Observed)
+    })
+}
+
+/// What a test may ask about the records: (lease, id, the last event).
+#[cfg(test)]
+pub(crate) fn pi_sessions_for_tests() -> Vec<(u64, String, SessionEvent)> {
+    with_pi(|sessions| {
+        let mut all: Vec<_> = sessions
+            .iter()
+            .map(|(lease, known)| (*lease, known.id.as_str().to_owned(), known.last))
+            .collect();
+        all.sort_by_key(|record| record.0);
+        all
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn reset_pi_for_tests() {
+    with_pi(|sessions| sessions.clear());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Claude Code's contract is the one the record is read by here
+    use crate::agent_reentry::claude::{
+        self, entered as reentry, final_session, EndReason, StartSource,
+    };
+
+    /// The contract lookup of a table that registers Claude Code alone.
+    fn claude_only(source: &str) -> Option<&'static ReceiptContract> {
+        (source == "claude-code").then_some(&claude::RECEIPTS)
+    }
 
     const ID: &str = "731c5908-251a-4388-b3a3-4719ad442bce";
     const OTHER: &str = "8e8889c6-251a-4388-b3a3-4719ad442bce";
@@ -796,8 +938,8 @@ mod tests {
 
     #[test]
     fn the_wire_accepts_exactly_the_two_closed_shapes() {
-        let wire = parse(&start("resume"), |source| source == "claude-code").unwrap();
-        assert_eq!(wire.event, Event::Start(StartSource::Resume));
+        let wire = parse(&start("resume"), claude_only).unwrap();
+        assert_eq!(wire.event, claude::started(StartSource::Resume));
         assert_eq!(
             (
                 wire.native_id.as_str(),
@@ -808,16 +950,14 @@ mod tests {
             (ID, "deck", 4242, "%7")
         );
         assert_eq!(
-            parse(&end("prompt-input-exit"), |source| source == "claude-code")
-                .unwrap()
-                .event,
-            Event::End(EndReason::PromptInputExit)
+            parse(&end("prompt-input-exit"), claude_only).unwrap().event,
+            claude::ended(EndReason::PromptInputExit)
         );
         let with_permission = end("clear").replace(
             r#""endReason":"clear""#,
             r#""endReason":"clear","finalPermission":"unknown""#,
         );
-        assert!(parse(&with_permission, |source| source == "claude-code").is_ok());
+        assert!(parse(&with_permission, claude_only).is_ok());
         assert!(is_family(&start("resume")));
         assert!(!is_family(
             r#"{"v":1,"source":"claude-code","state":"working"}"#
@@ -899,11 +1039,7 @@ mod tests {
             ("\u{0}".to_string(), "lifecycle-bad-json"),
         ];
         for (line, reason) in cases {
-            assert_eq!(
-                parse(&line, |source| source == "claude-code").unwrap_err(),
-                reason,
-                "{line}"
-            );
+            assert_eq!(parse(&line, claude_only).unwrap_err(), reason, "{line}");
         }
     }
 
@@ -914,17 +1050,17 @@ mod tests {
         use EndReason::{Logout, PromptInputExit};
         use StartSource::Startup;
         let facts = vec![
-            fact(Event::Start(Startup), ID),
-            fact(Event::End(EndReason::Clear), ID),
-            fact(Event::Start(StartSource::Clear), OTHER),
-            fact(Event::End(EndReason::Resume), OTHER),
-            fact(Event::Start(StartSource::Resume), THIRD),
-            fact(Event::End(PromptInputExit), THIRD),
+            fact(claude::started(Startup), ID),
+            fact(claude::ended(EndReason::Clear), ID),
+            fact(claude::started(StartSource::Clear), OTHER),
+            fact(claude::ended(EndReason::Resume), OTHER),
+            fact(claude::started(StartSource::Resume), THIRD),
+            fact(claude::ended(PromptInputExit), THIRD),
         ];
         assert_eq!(final_session(&facts).as_deref(), Some(THIRD));
         // the same final fact twice is one fact
         let mut repeated = facts.clone();
-        repeated.push(fact(Event::End(PromptInputExit), THIRD));
+        repeated.push(fact(claude::ended(PromptInputExit), THIRD));
         assert_eq!(final_session(&repeated).as_deref(), Some(THIRD));
         // no applicable end: a clear, resume, logout or other end names nothing
         for reason in [
@@ -933,24 +1069,24 @@ mod tests {
             Logout,
             EndReason::Other,
         ] {
-            assert_eq!(final_session(&[fact(Event::End(reason), ID)]), None);
+            assert_eq!(final_session(&[fact(claude::ended(reason), ID)]), None);
         }
         assert_eq!(final_session(&facts[..5]), None, "a start is not an exit");
         assert_eq!(final_session(&[]), None);
         // two different final ids never resolve to the later one
         let mut conflicting = facts.clone();
-        conflicting.push(fact(Event::End(PromptInputExit), OTHER));
+        conflicting.push(fact(claude::ended(PromptInputExit), OTHER));
         assert_eq!(final_session(&conflicting), None);
         // something after the final end makes it not final
         let mut trailing = facts;
-        trailing.push(fact(Event::Start(Startup), OTHER));
+        trailing.push(fact(claude::started(Startup), OTHER));
         assert_eq!(final_session(&trailing), None);
     }
 
     #[test]
     fn only_a_resume_of_the_same_id_by_one_client_is_an_entry() {
         use StartSource::*;
-        let entered = fact(Event::Start(Resume), ID);
+        let entered = fact(claude::started(Resume), ID);
         assert_eq!(reentry(&[], ID), Receipt::Pending);
         assert_eq!(
             reentry(std::slice::from_ref(&entered), ID),
@@ -961,11 +1097,11 @@ mod tests {
             Receipt::Entered((100, (1, 1)))
         );
         for other in [
-            fact(Event::Start(Resume), OTHER),
-            fact(Event::Start(Startup), ID),
-            fact(Event::Start(Clear), ID),
-            fact(Event::Start(StartSource::Other), ID),
-            fact(Event::End(EndReason::PromptInputExit), ID),
+            fact(claude::started(Resume), OTHER),
+            fact(claude::started(Startup), ID),
+            fact(claude::started(Clear), ID),
+            fact(claude::started(StartSource::Other), ID),
+            fact(claude::ended(EndReason::PromptInputExit), ID),
         ] {
             assert_eq!(reentry(std::slice::from_ref(&other), ID), Receipt::Conflict);
             // a switch or an exit after the entry makes it ambiguous
@@ -981,7 +1117,7 @@ mod tests {
         let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
         end_mailbox_for_test();
         let me = Some(std::process::id());
-        let wire = || parse(&start("resume"), |source| source == "claude-code").unwrap();
+        let wire = || parse(&start("resume"), claude_only).unwrap();
         assert_eq!(
             received(wire(), me, &Kernel::live()).unwrap_err(),
             "lifecycle-no-lease"
@@ -1077,17 +1213,11 @@ mod tests {
     }
 
     fn end_wire(id: &str) -> Wire {
-        parse(&end("prompt-input-exit").replace(ID, id), |source| {
-            source == "claude-code"
-        })
-        .unwrap()
+        parse(&end("prompt-input-exit").replace(ID, id), claude_only).unwrap()
     }
 
     fn resume_wire(id: &str) -> Wire {
-        parse(&start("resume").replace(ID, id), |source| {
-            source == "claude-code"
-        })
-        .unwrap()
+        parse(&start("resume").replace(ID, id), claude_only).unwrap()
     }
 
     /// A kernel whose first snapshot is `table` and whose every later one
@@ -1168,7 +1298,7 @@ mod tests {
             assert_eq!(
                 peek(0),
                 [Fact {
-                    event: Event::End(EndReason::PromptInputExit),
+                    event: claude::ended(EndReason::PromptInputExit),
                     native_id: ID.into(),
                     client: CLIENT,
                 }]
@@ -2026,5 +2156,265 @@ mod tests {
         assert!(seal_all().is_empty(), "nothing was written after the seal");
         assert!(peek(0).is_empty() && peek(1).is_empty());
         end_mailbox_for_test();
+    }
+
+    // ---------- Pi: an observed session is never a receipt ----------
+
+    mod pi {
+        use super::super::*;
+        use crate::agent_pi::{ShutdownReason, StartReason};
+
+        fn pane(id: &str) -> PaneKey {
+            PaneKey::of(&crate::tmux::PaneRow {
+                server_pid: 42,
+                pane_id: id.into(),
+                ..crate::tmux::PaneRow::default()
+            })
+        }
+
+        fn generation(pid: u32) -> ForegroundGeneration {
+            ForegroundGeneration::of(pid, (2000, 0))
+        }
+
+        fn id(text: &str) -> PiNativeId {
+            match crate::agent_pi::parse_frame(&format!(
+                r#"{{"protocol":"pi-observer","v":1,"source":"pi","seq":1,"event":"snapshot","nativeSessionId":"{text}"}}"#
+            )) {
+                Ok(crate::agent_pi::Frame::Lifecycle {
+                    native: crate::agent_pi::NativeId::Kept(id),
+                    ..
+                }) => id,
+                other => panic!("{other:?}"),
+            }
+        }
+
+        /// What a lease's runtime says is kept per lease, read back only as
+        /// one closed word for the pane's CURRENT generation, and forgotten
+        /// with the lease. An id Claude's rule would refuse is kept: it is
+        /// Pi's, judged by Pi's rule, and it never meets Claude's.
+        #[test]
+        fn one_record_per_lease_read_as_one_word_and_gone_with_the_lease() {
+            let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+            reset_pi_for_tests();
+            let (a, b) = (pane("%1"), pane("%2"));
+            let native = id("fixture.custom-ID_123");
+            assert!(!crate::agent_reentry::claude::native_id_ok(native.as_str()));
+            assert_eq!(pi_session(&a, generation(310)), None);
+            assert_eq!(
+                observe_pi(
+                    7,
+                    &a,
+                    generation(310),
+                    SessionEvent::Start(StartReason::Startup),
+                    &native
+                ),
+                Ok(())
+            );
+            assert_eq!(pi_session(&a, generation(310)), Some(PiSession::Observed));
+            // another generation of that pane, and another pane, read nothing
+            assert_eq!(pi_session(&a, generation(311)), None);
+            assert_eq!(pi_session(&b, generation(310)), None);
+            // the same session in a second pane is a second, independent record
+            assert_eq!(
+                observe_pi(8, &b, generation(410), SessionEvent::Snapshot, &native),
+                Ok(())
+            );
+            assert_eq!(
+                pi_sessions_for_tests(),
+                [
+                    (
+                        7,
+                        "fixture.custom-ID_123".to_string(),
+                        SessionEvent::Start(StartReason::Startup)
+                    ),
+                    (
+                        8,
+                        "fixture.custom-ID_123".to_string(),
+                        SessionEvent::Snapshot
+                    ),
+                ]
+            );
+            // a snapshot of the session already known changes nothing
+            assert_eq!(
+                observe_pi(7, &a, generation(310), SessionEvent::Snapshot, &native),
+                Ok(())
+            );
+            // the teardown is the runtime's word: no session is observed after it
+            assert_eq!(
+                observe_pi(
+                    7,
+                    &a,
+                    generation(310),
+                    SessionEvent::Shutdown(ShutdownReason::Quit),
+                    &native
+                ),
+                Ok(())
+            );
+            assert_eq!(pi_session(&a, generation(310)), None);
+            assert_eq!(
+                pi_sessions_for_tests()[0].2,
+                SessionEvent::Shutdown(ShutdownReason::Quit)
+            );
+            assert_eq!(
+                pi_session(&b, generation(410)),
+                Some(PiSession::Observed),
+                "B is not A"
+            );
+            forget_pi(7);
+            forget_pi(8);
+            forget_pi(8);
+            assert!(pi_sessions_for_tests().is_empty());
+            assert_eq!(
+                serde_json::to_value(PiSession::Observed).unwrap(),
+                "observed"
+            );
+        }
+
+        /// A runtime that contradicts itself loses its record: neither of two
+        /// readings is picked.
+        #[test]
+        fn a_runtime_that_contradicts_itself_loses_its_record() {
+            let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+            reset_pi_for_tests();
+            let a = pane("%1");
+            let (first, other) = (id("session-one"), id("session-two"));
+            let start = SessionEvent::Start(StartReason::Startup);
+            let quit = SessionEvent::Shutdown(ShutdownReason::Quit);
+            let cases: [(&str, Vec<(SessionEvent, &PiNativeId)>); 6] = [
+                (
+                    "a second start without a teardown",
+                    vec![
+                        (start, &first),
+                        (SessionEvent::Start(StartReason::Resume), &other),
+                    ],
+                ),
+                (
+                    "the same start twice",
+                    vec![(start, &first), (start, &first)],
+                ),
+                (
+                    "a snapshot of another session",
+                    vec![(start, &first), (SessionEvent::Snapshot, &other)],
+                ),
+                (
+                    "a teardown of another session",
+                    vec![(start, &first), (quit, &other)],
+                ),
+                ("a teardown of none", vec![(quit, &first)]),
+                (
+                    "a second teardown",
+                    vec![(start, &first), (quit, &first), (quit, &first)],
+                ),
+            ];
+            for (what, frames) in cases {
+                reset_pi_for_tests();
+                let (last, before) = frames.split_last().unwrap();
+                for (event, native) in before {
+                    assert_eq!(
+                        observe_pi(7, &a, generation(310), *event, native),
+                        Ok(()),
+                        "{what}"
+                    );
+                }
+                assert_eq!(
+                    observe_pi(7, &a, generation(310), last.0, last.1),
+                    Err("bad-lifecycle"),
+                    "{what}"
+                );
+                assert!(
+                    pi_sessions_for_tests().is_empty(),
+                    "{what}: the record is gone"
+                );
+                assert_eq!(pi_session(&a, generation(310)), None, "{what}");
+            }
+            // a start after a contradiction is a first start again
+            assert_eq!(observe_pi(7, &a, generation(310), start, &other), Ok(()));
+            reset_pi_for_tests();
+        }
+
+        /// An observation is no receipt. With an operation in flight and a
+        /// lease armed for the very same pane, what Pi's observer reports
+        /// reaches no mailbox, and a receipt line that names source `pi` is
+        /// refused: Pi has no contract. The reverse holds too: a receipt
+        /// writes no observation.
+        #[test]
+        fn an_observation_reaches_no_mailbox_and_pi_has_no_receipt_contract() {
+            let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+            reset_pi_for_tests();
+            begin("deck", Path::new("/nonexistent/helper"));
+            let executable = ExecutableRef::of_this_test();
+            arm(
+                0,
+                Lease::exit(42, "%1", (300, (1000, 0)), (310, (2000, 0)), executable),
+            );
+            assert!(armed());
+            let native = id("731c5908-251a-4388-b3a3-4719ad442bce");
+            for event in [
+                SessionEvent::Start(StartReason::Resume),
+                SessionEvent::Shutdown(ShutdownReason::Quit),
+            ] {
+                assert_eq!(
+                    observe_pi(7, &pane("%1"), generation(310), event, &native),
+                    Ok(())
+                );
+            }
+            assert!(
+                peek(0).is_empty(),
+                "the armed lease of that very pane holds nothing"
+            );
+            assert!(seal_all().values().all(Vec::is_empty));
+            // the production lookup: only a source whose adapter has a re-entry
+            // capability has a contract, and Pi's adapter has none
+            let contract = |source: &str| {
+                crate::extensions::agent(source)
+                    .and_then(|adapter| adapter.reentry)
+                    .map(|capability| capability.receipts)
+            };
+            assert!(contract("claude-code").is_some());
+            assert!(contract("pi").is_none() && contract("codex").is_none());
+            let line = r#"{"protocol":"agent-lifecycle","v":1,"source":"pi","event":"session-start","nativeSessionId":"731c5908-251a-4388-b3a3-4719ad442bce","startSource":"resume","socket":"deck","server_pid":42,"pane":"%1"}"#;
+            assert_eq!(
+                parse(line, contract).unwrap_err(),
+                "lifecycle-unknown-source"
+            );
+            assert!(parse(&line.replace("\"pi\"", "\"claude-code\""), contract).is_ok());
+            end();
+            // the store of observations is not the mailbox's: an operation's end leaves it
+            assert_eq!(pi_sessions_for_tests().len(), 1);
+            reset_pi_for_tests();
+            // and the two are separate in the source: the Pi section names
+            // neither the mailbox nor a fact, and nothing above it names Pi's store
+            let source = include_str!("lifecycle.rs");
+            let production = &source[..source.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+            let (receipts, observation) = production
+                .split_once("// ---------- Pi: an observed native session, never a receipt")
+                .expect("the Pi section");
+            let code = |text: &str| -> String {
+                text.lines()
+                    .filter(|line| !line.trim_start().starts_with("//"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            for word in [
+                "MAILBOX", "Fact", "Claim", "Lease", "Wire", "Receipt", "ARRIVED", "facts",
+            ] {
+                assert!(
+                    !code(observation).contains(word),
+                    "the Pi section uses {word}"
+                );
+            }
+            for word in [
+                "PI_SESSIONS",
+                "PiObserved",
+                "observe_pi",
+                "forget_pi",
+                "PiNativeId",
+            ] {
+                assert!(
+                    !code(receipts).contains(word),
+                    "the receipt half uses {word}"
+                );
+            }
+        }
     }
 }

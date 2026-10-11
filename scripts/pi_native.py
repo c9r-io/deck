@@ -49,6 +49,7 @@ FIXTURES = REPO / "scripts/pi"
 TMUX = REPO / "app/src-tauri/binaries/tmux-aarch64-apple-darwin"
 NPM_PACKAGE = Path.home() / ".local/lib/node_modules/@earendil-works/pi-coding-agent"
 ENTRY = "Contents/Resources/pi/signal.ts"
+OBSERVER_FILES = ("observer.ts", "signal.ts", "lifecycle.ts", "both.ts")
 
 # What the account's own Pi settings could look like: other keys, the user's
 # own entries, Pi's own two-space layout. Deck's entry is added by the real
@@ -81,6 +82,11 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: file.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def status(signal: bool, lifecycle: bool, installation: str) -> dict:
+    """Pi's part of the Settings status reply."""
+    return {"pi": signal, "pi_lifecycle": lifecycle, "pi_installation": installation}
 
 
 def alive(pid: int) -> bool:
@@ -148,7 +154,12 @@ class Tap:
             for event in reversed(self.events):
                 if "now" in event:
                     return event["now"]
-        return {"store": {}, "leases": [], "ended": [], "drops": {}, "announced": {}, "streams": 0, "pending": 0}
+        return {"store": {}, "leases": [], "ended": [], "sessions": [], "drops": {}, "announced": {}, "streams": 0, "pending": 0}
+
+    def session(self, name: str) -> dict | None:
+        """What the live lease of this card's Pi said of its native session, if anything."""
+        lease = self.lease(name)
+        return next((item for item in self.now()["sessions"] if lease and item["lease"] == lease["lease"]), None)
 
     def ended(self, session: str) -> list[str]:
         """Why this card's leases ended, in order: the closed words production writes to app.log."""
@@ -385,7 +396,7 @@ class Run:
                 raise SystemExit(f"{needed} is not a file")
         shutil.copy2(test_binary, self.app)
         shutil.copy2(TMUX, self.tmux)
-        for name in ("observer.ts", "signal.ts"):
+        for name in OBSERVER_FILES:
             shutil.copyfile(RESOURCES / name, (self.bundle / ENTRY).parent / name)
         for name in ("fixture.ts", "delayed-ui.ts"):
             shutil.copyfile(FIXTURES / name, self.fixture / name)
@@ -405,7 +416,7 @@ class Run:
                 "version": version(str(self.rt / "pi" / "pi"), "--version"),
                 "pi_sha256": sha256(self.rt / "pi" / "pi"),
             },
-            "observer_sha256": {name: sha256(RESOURCES / name) for name in ("observer.ts", "signal.ts")},
+            "observer_sha256": {name: sha256(RESOURCES / name) for name in OBSERVER_FILES},
             "tmux_sha256": sha256(TMUX),
             "deck_head": subprocess.run(["/usr/bin/git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(),
         }
@@ -435,7 +446,7 @@ class Run:
         tap = self.tap
         ready = tap.ready
         self.check("A08", "this backend is a stable install only under the relocated home",
-                   ready["settings"] == {"pi": False, "pi_installation": "absent"} and ready["socket"] == "deck-dev",
+                   ready["settings"] == status(False, False, "absent") and ready["socket"] == "deck-dev",
                    settings=ready["settings"])
         before = self.settings.read_bytes()
         self.facts["settings_before_sha256"] = hashlib.sha256(before).hexdigest()
@@ -445,7 +456,7 @@ class Run:
         expected = json.loads(before)
         expected["extensions"].append(self.entry)
         self.check("A08", "the Settings command wrote Deck's one entry into Pi's own settings",
-                   reply["ok"] and reply["status"] == {"pi": True, "pi_installation": "current"} and document == expected,
+                   reply["ok"] and reply["status"] == status(True, False, "current") and document == expected,
                    reply={"ok": reply["ok"], "error": reply["error"], "status": reply["status"]})
         inserted = ",\n    " + json.dumps(self.entry)
         self.check("A05", "every byte the user wrote is where it was; only the entry was added",
@@ -778,7 +789,7 @@ class Run:
         reply = tap.ask("signal", enable=False)
         withdrawn = tap.first(lambda e: "now" in e and e["now"]["leases"] == [] and e["now"]["store"] == {}, "the withdrawal", 5, mark)
         self.check("A25", "turning the switch off withdraws every Pi observation at once",
-                   reply["ok"] and reply["status"] == {"pi": False, "pi_installation": "absent"}
+                   reply["ok"] and reply["status"] == status(False, False, "absent")
                    and withdrawn["wall"] - asked < 1000 and tap.changes(a.session, mark) == [None] and tap.changes(b.session, mark) == [None]
                    and all(tap.ended(p.session)[-1] == "capability-disabled" for p in (a, b)),
                    milliseconds=round(withdrawn["wall"] - asked))
@@ -803,7 +814,7 @@ class Run:
         reply = tap.ask("signal", enable=True)
         time.sleep(3.0)
         self.check("A08", "turned on again: the file names the entry, and the Pis that loaded before it are still not connected",
-                   reply["ok"] and reply["status"] == {"pi": True, "pi_installation": "current"}
+                   reply["ok"] and reply["status"] == status(True, False, "current")
                    and self.settings.read_bytes() == current and tap.now()["leases"] == [])
         a.type("/reload")
         self.bound(a)
@@ -865,7 +876,7 @@ class Run:
             expect_nothing("A21", pane, "the entry throws while Pi loads it")
         observer.write_bytes(kept)
         self.check("A21", "the bundle's files are again what this build ships",
-                   all((resources / name).read_bytes() == (RESOURCES / name).read_bytes() for name in ("observer.ts", "signal.ts")))
+                   all((resources / name).read_bytes() == (RESOURCES / name).read_bytes() for name in OBSERVER_FILES))
         # a boot migration moves an entry of the other stable location and enrolls nobody
         self.settings.write_text(text.replace(json.dumps(self.entry), json.dumps("/Applications/deck.app/" + ENTRY)))
         moved = tap.ask("migrate")
@@ -948,8 +959,192 @@ class Run:
                    card["fg"] == "node" and not card["scheduler"].get("pi") and "pi_signal" not in card and card["agent"] is None, card=card)
         self.until("node to exit", lambda: not alive(node), 15)
 
+    # ---- P2: the native session a Pi runtime is in --------------------------------
+
+    def entry_of(self, name: str) -> str:
+        return str((self.bundle / ENTRY).with_name(name))
+
+    def started(self, pane: Pane, mark: int) -> dict:
+        """The last session start Pi itself logged for this pane's process since `mark`."""
+        return [e for e in pane.events(mark) if e["event"] == "session_start"][-1]
+
+    def observed(self, pane: Pane, timeout: float = 30) -> dict:
+        return self.until(f"{pane.session}: a session observation", lambda: self.tap.session(pane.session), timeout)
+
+    def session_file(self, native: str) -> Path:
+        named = [path for path in self.sessions.rglob("*.jsonl") if native in path.name]
+        if named:
+            return named[0]
+        return next(path for path in self.sessions.rglob("*.jsonl") if native in path.read_text(errors="replace")[:600])
+
+    def replaced(self, pane: Pane, command: str, reason: str, ac: str, label: str, same_id: bool | None = None) -> dict:
+        """One in-process session change: Pi tears a runtime down and starts another."""
+        tap = self.tap
+        before, old = self.observed(pane), tap.lease(pane.session)["lease"]
+        source, mark = self.source_mark(), tap.mark()
+        pane.type(command)
+        self.until(f"{pane.session}: a new lease after {command.split()[0]}",
+                   lambda: (tap.lease(pane.session) or {}).get("lease", old) != old and tap.session(pane.session), 30)
+        time.sleep(0.4)
+        said = [(e["event"], e.get("reason")) for e in pane.events(source) if e["event"].startswith("session_")]
+        native, now = self.started(pane, source), self.observed(pane)
+        torn = any(item["lease"] == old and item["last"] == f"shutdown-{reason}"
+                   for event in tap.since(mark) if "now" in event for item in event["now"]["sessions"])
+        self.facts.setdefault("teardown_seen_before_the_reset", {})[f"{pane.runtime}:{reason}"] = torn
+        same = now["id"] == before["id"]
+        self.check(ac, f"{pane.runtime}: {label}: Pi's own reasons, the id Pi names, a new lease, the old one ended by its reset",
+                   said == [("session_shutdown", reason), ("session_start", reason)] and now["id"] == native["id"]
+                   and now["last"] == f"start-{reason}" and tap.ended(pane.session)[-1] == f"reset-{reason}"
+                   and (same_id is None or same == same_id),
+                   said=said, last=now["last"], same_id_as_before=same, ended=tap.ended(pane.session)[-1:])
+        return now
+
+    def native_sessions(self) -> None:
+        tap, a, b = self.tap, self.a, self.b
+        for pane in (a, b):
+            pane.quit()
+        every = [json.loads(line) for number in range(1, self.taps + 1)
+                 for line in (self.logs / f"tap-{number}.jsonl").read_text().splitlines()]
+        self.check("B01", "with work status alone no session was ever named: no id reached Deck",
+                   all(not event["now"].get("sessions") for event in every if "now" in event))
+        # the second switch: the ONE entry is replaced where it stood
+        before = self.settings.read_text()
+        reply = tap.ask("lifecycle", enable=True)
+        self.check("B01", "session observation is a second switch on the same entry: one entry, now the one that carries both",
+                   reply["ok"] and reply["status"] == status(True, True, "current")
+                   and before.count(json.dumps(self.entry)) == 1
+                   and self.settings.read_text() == before.replace(json.dumps(self.entry), json.dumps(self.entry_of("both.ts"))),
+                   status=reply["status"])
+        # a session started with Pi: startup
+        source = self.source_mark()
+        a.launch()
+        self.bound(a)
+        first, seen = self.started(a, source), self.observed(a)
+        card = tap.card(a.session)
+        self.check("B03", "npm: the session Pi started in is observed, with Pi's own reason, and the card says only that one is observed",
+                   seen["id"] == first["id"] and first["reason"] == "startup" and seen["last"] == "start-startup"
+                   and card.get("pi_session") == "observed" and card["pi_signal"] == "connected", last=seen["last"])
+        self.one_run("B03", a, "a run in the first session", "hello fixture")
+        self.check("B02", "a run changes nothing about the observed session", self.observed(a)["id"] == first["id"])
+        ids = [first["id"]]
+        second = self.replaced(a, "/fx-new", "new", "B03", "a new session", same_id=False)
+        ids.append(second["id"])
+        self.one_run("B03", a, "a run in the second session", "hello fixture")
+        third = self.replaced(a, "/fx-fork", "fork", "B03", "a fork", same_id=False)
+        ids.append(third["id"])
+        self.check("B03", "new and fork each named a session of its own", len(set(ids)) == 3)
+        back = self.replaced(a, f"/fx-resume {self.session_file(first['id'])}", "resume", "B03", "a resume while Pi runs")
+        self.check("B03", "the resumed session is the first one, by the id Pi names", back["id"] == first["id"])
+        self.replaced(a, "/reload", "reload", "B05", "a reload: another runtime in the same session", same_id=True)
+        # quit: the runtime's own word; then a session named on the command line starts as a startup
+        source, mark, lease = self.source_mark(), tap.mark(), tap.lease(a.session)["lease"]
+        pid = a.pid
+        a.quit()
+        self.until("the quit lease to end", lambda: tap.lease(a.session) is None, 10)
+        said = [(e["event"], e.get("reason")) for e in self.source(source) if e.get("pid") == pid and e["event"].startswith("session_")]
+        self.check("B07", "npm: a quit is the runtime's teardown, said by Pi and ended by its reset; nothing of it is kept",
+                   said == [("session_shutdown", "quit")] and tap.ended(a.session)[-1] == "reset-quit"
+                   and not any(item["lease"] == lease for item in tap.now()["sessions"]))
+        source = self.source_mark()
+        a.launch(flags=("--session", str(self.session_file(first["id"]))))
+        self.bound(a)
+        named, seen = self.started(a, source), self.observed(a)
+        self.check("B04", "npm: a session named on the command line starts as a startup: Deck does not call it a resume",
+                   named["reason"] == "startup" and named["id"] == first["id"] and seen["id"] == first["id"]
+                   and seen["last"] == "start-startup", reason=named["reason"], last=seen["last"])
+        # the same session in a second pane: two processes, two leases, two observations
+        source = self.source_mark()
+        b.launch(flags=("--session", str(self.session_file(first["id"]))))
+        self.bound(b)
+        other = self.observed(b)
+        self.check("B06", "one session in two panes is two observations, each of its own process and lease",
+                   other["id"] == first["id"] == self.observed(a)["id"] and other["lease"] != self.observed(a)["lease"]
+                   and len(tap.now()["sessions"]) == 2)
+        # a Pi that dies without a word: no teardown is observed or invented
+        mark, lease, pid = tap.mark(), tap.lease(b.session)["lease"], b.pid
+        b.type("/fx-crash")
+        self.until("the killed Pi to be gone", lambda: not alive(pid) and tap.lease(b.session) is None, 15)
+        b.key("Enter")
+        self.until("the shell in front again", lambda: b.foreground() == "zsh", 10)
+        b.pid = None
+        torn = any(item["lease"] == lease and item["last"].startswith("shutdown")
+                   for event in tap.since(mark) if "now" in event for item in event["now"]["sessions"])
+        self.check("B07", "standalone: a Pi killed without a shutdown: the stream's end is all there is, no teardown and no quit",
+                   not torn and tap.ended(b.session)[-1] == "eof" and len(tap.now()["sessions"]) == 1
+                   and self.observed(a)["id"] == first["id"], ended=tap.ended(b.session)[-1:])
+        # what the command line can name, on the standalone build
+        for flags, label, expect in (
+            (("--session", str(self.sessions / "not-there.jsonl")), "a session path that does not exist creates a session", "new"),
+            (("--session-id", "fixture.custom-ID_123"), "a session id of the user's own, not a UUID, is kept as it is", "custom"),
+            (("--session", "00000000-0000-4000-8000-00000000dead"), "a session id that does not exist starts no Pi", "none"),
+        ):
+            source = self.source_mark()
+            b.launch(flags=flags, expect_start=expect != "none")
+            if expect == "none":
+                time.sleep(1.0)
+                self.check("B04", f"standalone: {label}: no hello, no observation",
+                           b.gone() and tap.lease(b.session) is None and len(tap.now()["sessions"]) == 1)
+                b.pid = None
+                continue
+            self.bound(b)
+            named, seen = self.started(b, source), self.observed(b)
+            ok = seen["id"] == named["id"] and named["reason"] == "startup" and seen["last"] == "start-startup"
+            if expect == "new":
+                ok = ok and named["id"] not in ids
+            else:
+                ok = ok and named["id"] == "fixture.custom-ID_123"
+            ids.append(named["id"])
+            self.check("B04" if expect == "new" else "B02", f"standalone: {label}", ok, reason=named["reason"])
+            b.quit()
+        # session observation alone: no work status, and a run says nothing on the card
+        a.quit()
+        reply = tap.ask("signal", enable=False)
+        self.check("B01", "work status off, session observation on: the one entry is the one that observes sessions only",
+                   reply["ok"] and reply["status"] == status(False, True, "current")
+                   and json.loads(self.settings.read_text())["extensions"][-1] == self.entry_of("lifecycle.ts"))
+        source, mark = self.source_mark(), tap.mark()
+        b.launch()
+        self.bound(b)
+        seen = self.observed(b)
+        b.type("hello fixture")
+        self.until("a run Deck is not told of", lambda: "agent_settled" in b.names(source), 20)
+        time.sleep(1.0)
+        card = tap.card(b.session)
+        self.check("B01", "standalone: session observation alone reports a session and no run: the card has no word",
+                   seen["id"] == self.started(b, source)["id"] and tap.changes(b.session, mark) == [] and card["agent"] is None
+                   and card.get("pi_session") == "observed" and card["pi_signal"] == "unavailable"
+                   and card["scheduler"]["pi"], card=card)
+        # Deck restarts: nothing is restored; the running Pi says what its API says now, as a snapshot
+        native = seen["id"]
+        self.registry("stop", "--pid", str(tap.process.pid))
+        self.until("the old backend to be gone", lambda: tap.process.poll() is not None, 10)
+        time.sleep(1.5)
+        tap = self.backend()
+        self.check("B08", "a restarted Deck knows no session: nothing is read back from disk",
+                   tap.now()["sessions"] == [])
+        self.bound(b, 40)
+        again = self.observed(b)
+        self.check("B08", "the running Pi's observer reports the session it is in NOW, as a snapshot and never as a start",
+                   again["id"] == native and again["last"] == "snapshot", last=again["last"])
+        # off: the observation is gone at once, and the user's file is theirs again
+        mark = tap.mark()
+        reply = tap.ask("lifecycle", enable=False)
+        gone = tap.first(lambda e: "now" in e and e["now"]["sessions"] == [] and e["now"]["leases"] == [], "the withdrawal", 5, mark)
+        self.check("B08", "session observation turned off: every record is gone at once and Deck's entry with it",
+                   reply["ok"] and reply["status"] == status(False, False, "absent") and bool(gone)
+                   and tap.ended(b.session)[-1] == "capability-disabled"
+                   and json.loads(self.settings.read_text())["extensions"] == json.loads(self.original_settings)["extensions"])
+        b.quit()
+        # the ids stayed where they may be: this run's private trace, Pi's own files, and nowhere else
+        public = json.dumps(self.results) + json.dumps(self.facts) + self.settings.read_text()
+        kept = [path for path in (self.root / "deck").rglob("*") if path.is_file()]
+        leaked = [native for native in set(ids) if native in public
+                  or any(native.encode() in path.read_bytes() for path in kept)]
+        self.check("B08", "no native session id is in Deck's data directory, Pi's settings or this run's summary",
+                   leaked == [] and len(set(ids)) >= 4, sessions_seen=len(set(ids)), leaked=len(leaked))
+
     SCENARIOS = ("settings_loop", "start_both", "boundaries", "viewed", "dialogs", "together", "inactive_pane", "reload",
-                 "frozen", "restart", "disable", "not_loaded", "out_of_order", "endings")
+                 "frozen", "restart", "disable", "not_loaded", "out_of_order", "endings", "native_sessions")
 
     def all(self) -> None:
         only = set(self.args.only.split(",")) if self.args.only else None

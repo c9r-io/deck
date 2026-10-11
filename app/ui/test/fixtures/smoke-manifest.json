@@ -307,7 +307,8 @@
         "pi-attention": {},
         "pi-send-now": {},
         "pi-disabled": {},
-        "pi-reload": {}
+        "pi-reload": {},
+        "pi-session": {}
       }
     },
     "reentry-live": {

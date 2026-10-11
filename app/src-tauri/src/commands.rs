@@ -559,6 +559,13 @@ pub(crate) struct SessInfo {
     /// only: no attention episode, no hold depends on its value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pi_signal: Option<crate::agent_status::PiCoverage>,
+    /// `observed` while a live Pi observer of the SAME Signal target's
+    /// foreground generation reports which native session it is in
+    /// (`agent_reentry::lifecycle::pi_session`). The id itself never leaves
+    /// the backend. Explanatory only: it is no state, no attention and no
+    /// promise that Deck can reopen that session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pi_session: Option<crate::agent_reentry::lifecycle::PiSession>,
     /// the Deck-local attention episode of that same observation
     /// (`agent_status::Observation`): opaque, never a source id, never
     /// authority. None without an observation.
@@ -1034,6 +1041,7 @@ pub(crate) fn poll_observing_bells(
                 agent: pane.and(agents.get(&name)).map(|o| o.state),
                 codex_signal: pane.and(evidence.get(&name)).and_then(|e| e.codex),
                 pi_signal: pane.and(evidence.get(&name)).and_then(|e| e.pi_signal),
+                pi_session: pane.and(evidence.get(&name)).and_then(|e| e.pi_session),
                 episode: pane.and(agents.get(&name)).map(|o| o.episode),
                 episode_viewed: pane.and(agents.get(&name)).is_some_and(|o| o.viewed),
                 finish_fg: pane.and_then(|_| finish.remove(&name)),

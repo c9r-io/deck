@@ -292,7 +292,7 @@ fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
         lifecycle::record_for_tests(
             index,
             lifecycle::Fact {
-                event: lifecycle::Event::End(claude::EndReason::PromptInputExit),
+                event: claude::ended(claude::EndReason::PromptInputExit),
                 native_id: id.to_string(),
                 client: (me, birth),
             },
@@ -323,7 +323,7 @@ fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
 #[test]
 fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
     assert_eq!(
-        lifecycle::final_session(&[]),
+        claude::final_session(&[]),
         None,
         "no receipt, no final session"
     );
@@ -380,7 +380,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
         lifecycle::record_for_tests(
             index,
             lifecycle::Fact {
-                event: lifecycle::Event::End(claude::EndReason::PromptInputExit),
+                event: claude::ended(claude::EndReason::PromptInputExit),
                 native_id: id.to_string(),
                 client: (me, gone),
             },
@@ -803,6 +803,7 @@ impl World {
             grammar: claude::CAPABILITY.grammar,
             login_shell: "zsh",
             request: claude::CAPABILITY.request,
+            receipts: claude::CAPABILITY.receipts,
         })
     }
 
@@ -820,6 +821,7 @@ impl World {
             grammar: claude::CAPABILITY.grammar,
             login_shell: claude::CAPABILITY.login_shell,
             request: claude::CAPABILITY.request,
+            receipts: claude::CAPABILITY.receipts,
         })))
     }
 
@@ -1981,8 +1983,10 @@ fn a_real_helper_that_is_not_the_leased_clients_child_is_refused() {
         stream.set_nonblocking(false).unwrap();
         let mut text = String::new();
         stream.read_to_string(&mut text).unwrap();
-        let wire = lifecycle::parse(text.trim_end(), |source| source == "claude-code")
-            .expect("the real helper writes a valid line");
+        let wire = lifecycle::parse(text.trim_end(), |source| {
+            (source == "claude-code").then_some(&claude::RECEIPTS)
+        })
+        .expect("the real helper writes a valid line");
         // as the receipt worker does: the lease the line names, then the
         // verification under the receipt's own deadline
         let deadline = Instant::now() + lifecycle::RECEIPT_BUDGET;
@@ -4717,10 +4721,12 @@ fn native_m1_tap() {
                         info.pid, info.start_seconds, info.start_micros
                     )
                 });
-        let fact = match lifecycle::parse(line, |source| source == "claude-code") {
+        let fact = match lifecycle::parse(line, |source| {
+            (source == "claude-code").then_some(&claude::RECEIPTS)
+        }) {
             Ok(wire) => {
                 let (event, word) = match wire.event {
-                    lifecycle::Event::Start(source) => (
+                    lifecycle::Event::Claude(claude::Told::Start(source)) => (
                         "session-start",
                         match source {
                             claude::StartSource::Startup => "startup",
@@ -4730,7 +4736,7 @@ fn native_m1_tap() {
                             claude::StartSource::Other => "other",
                         },
                     ),
-                    lifecycle::Event::End(reason) => (
+                    lifecycle::Event::Claude(claude::Told::End(reason)) => (
                         "session-end",
                         match reason {
                             claude::EndReason::Clear => "clear",

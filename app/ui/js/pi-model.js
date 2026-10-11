@@ -4,9 +4,10 @@
 // names the sentences for them.
 //
 // # Settings
-// `agent_hooks_status` carries `pi` (the work-status switch) and
-// `pi_installation` (the state of Deck's one entry in Pi's own settings
-// file). Both are derived from that file by the backend; nothing here keeps
+// `agent_hooks_status` carries `pi` (the work-status switch), `pi_lifecycle`
+// (the session-observation switch) and `pi_installation` (the state of
+// Deck's one entry in Pi's own settings file). All are derived from that
+// file by the backend; nothing here keeps
 // a copy, and a word this build does not know is no state at all: the switch
 // is then shown off and cannot be used. "Configured" is never shown as
 // "connected": whether a running Pi has loaded the observer is known only
@@ -24,10 +25,15 @@
 // and no badge, and nothing here derives readiness from it: a recognized Pi
 // is never sent to automatically, whatever its coverage (the backend's plan
 // names that hold, `pi-input-unverified`).
+// `pi_session` is `observed` while a live observer reports which native
+// session its Pi is in. The id never reaches the webview. It adds one line
+// to the card's explanation and nothing else: it is no state, and it never
+// means that Deck can reopen that session.
 // Part of deck's no-build frontend: native ES modules, no bundler.
 
 export const PI_INSTALLATIONS = Object.freeze(['absent', 'current', 'needs-reload', 'conflict', 'unreadable', 'unsupported-location']);
 export const PI_COVERAGE = Object.freeze(['connected', 'unavailable', 'incompatible']);
+export const PI_SESSION = Object.freeze(['observed']);
 
 const NOTE_KEYS = Object.freeze({
   current: 'settings.pi.note.current',
@@ -54,15 +60,20 @@ const own = (map, code) => (typeof code === 'string' && Object.hasOwn(map, code)
  *  `installation` is null for a word this build does not know. */
 export function piStatus(status) {
   const installation = PI_INSTALLATIONS.includes(status?.pi_installation) ? status.pi_installation : null;
-  return { signal: installation != null && status.pi === true, installation };
+  return {
+    signal: installation != null && status.pi === true,
+    lifecycle: installation != null && status.pi_lifecycle === true,
+    installation,
+  };
 }
 
-/** The Settings row: whether the switch is on, whether it can be used, and
- *  the one note under it (a dictionary key, or null). */
+/** The Settings rows: whether each switch is on, whether they can be used,
+ *  and the one note under them (a dictionary key, or null). */
 export function piSettingsView(status) {
-  const { signal, installation } = piStatus(status);
+  const { signal, lifecycle, installation } = piStatus(status);
   return {
     signal,
+    lifecycle,
     // a build that may not write Pi's settings, or a state it cannot name
     usable: installation != null && installation !== 'unsupported-location',
     note: installation == null ? 'settings.pi.note.unknown' : own(NOTE_KEYS, installation),
@@ -97,11 +108,18 @@ export function piStatusKey(snapshot) {
   return own(STATUS_KEYS, piCoverage(snapshot));
 }
 
+/** Whether a live observer reports this card's native Pi session. */
+export function piSessionObserved(snapshot) {
+  return !!snapshot?.alive && PI_SESSION.includes(snapshot.piSession);
+}
+
 /** The lines of the card's "Why?" dialog for a Pi, or null when the card has
  *  nothing to explain. The limited-coverage note stands under every state,
  *  a real `working` or `turn-done` included. */
 export function piDetailKeys(snapshot) {
   const coverage = piCoverage(snapshot);
   if (!coverage) return null;
-  return [HINT_KEYS[coverage], 'signal.pi.hold'];
+  const lines = [HINT_KEYS[coverage], 'signal.pi.hold'];
+  if (piSessionObserved(snapshot)) lines.push('signal.pi.session');
+  return lines;
 }

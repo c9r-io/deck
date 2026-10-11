@@ -51,6 +51,14 @@
 //!   nothing pane-bound and needs no listing: an idle Pi causes no tmux
 //!   call. Frames that were already waiting when a listing is taken share
 //!   it; each still gets its own kernel reads.
+//! - **Sessions.** A `lifecycle` frame needs the lifecycle capability, of the
+//!   stream and of the settings, and is handed to `agent_reentry::lifecycle::
+//!   observe_pi` with the lease it came on: an observation, kept apart from
+//!   every re-entry receipt. A frame that contradicts what the lease already
+//!   reported is refused (`bad-lifecycle`) and its record is gone; an id
+//!   longer than this build keeps is acknowledged and not kept. A signal
+//!   frame on a stream without the signal capability, and a lifecycle frame
+//!   on one without the lifecycle capability, are refused.
 //! - **Runs.** `working` opens run `n + 1` and only while no run is open;
 //!   `turn-done` closes the open run and names it. Anything else — a run
 //!   that goes back, a second start, an ending of another run — is refused:
@@ -247,6 +255,7 @@ fn end(lease: u64, code: &'static str) {
         let entry = registry.live_mut(lease)?;
         entry.over = Some(code);
         crate::agent_status::pi_lost(&entry.key, entry.generation, lease);
+        crate::agent_reentry::lifecycle::forget_pi(lease);
         entry.wake.notify_one();
         Some(entry.session.clone())
     });
@@ -550,6 +559,25 @@ fn reset_code(reason: ResetReason) -> &'static str {
     }
 }
 
+/// The closed word a session observation is logged with: what the runtime
+/// said happened and Pi's own reason for it.
+fn session_word(event: super::SessionEvent) -> &'static str {
+    use super::{SessionEvent, ShutdownReason, StartReason};
+    match event {
+        SessionEvent::Start(StartReason::Startup) => "start-startup",
+        SessionEvent::Start(StartReason::Reload) => "start-reload",
+        SessionEvent::Start(StartReason::New) => "start-new",
+        SessionEvent::Start(StartReason::Resume) => "start-resume",
+        SessionEvent::Start(StartReason::Fork) => "start-fork",
+        SessionEvent::Shutdown(ShutdownReason::Quit) => "shutdown-quit",
+        SessionEvent::Shutdown(ShutdownReason::Reload) => "shutdown-reload",
+        SessionEvent::Shutdown(ShutdownReason::New) => "shutdown-new",
+        SessionEvent::Shutdown(ShutdownReason::Resume) => "shutdown-resume",
+        SessionEvent::Shutdown(ShutdownReason::Fork) => "shutdown-fork",
+        SessionEvent::Snapshot => "snapshot",
+    }
+}
+
 fn committed(
     world: &World,
     lease: u64,
@@ -613,6 +641,27 @@ fn committed(
             }
             let (rows, row) = pane.ok_or("pane-changed")?;
             crate::agent_status::pi_signal(rows, row, generation, lease, *run, *state);
+        }
+        if let Frame::Lifecycle { event, native, .. } = frame {
+            if !entry.capabilities.lifecycle {
+                return Err("capability-disabled");
+            }
+            match native {
+                super::NativeId::Kept(id) => {
+                    crate::agent_reentry::lifecycle::observe_pi(
+                        lease, &entry.key, generation, *event, id,
+                    )?;
+                    // Pi's own closed word and a session tag: never the id
+                    applog(&format!(
+                        "[agent-pi] session {} s={}",
+                        session_word(*event),
+                        session_tag(&entry.session)
+                    ));
+                }
+                // well formed and longer than this build keeps: nothing is
+                // cut short or stood in for it, and nothing is observed
+                super::NativeId::Unsupported => crate::agent_reentry::lifecycle::forget_pi(lease),
+            }
         }
         entry.next_seq += 1;
         Ok(seq)

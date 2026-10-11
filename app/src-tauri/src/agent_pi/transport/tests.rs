@@ -1039,6 +1039,207 @@ fn frames_sent_just_before_the_stream_ends_are_answered_before_the_end() {
     assert_eq!(probe::ended()[1], ("deck-a".to_string(), "eof"));
 }
 
+fn hello_with(pane: &str, signal: bool, lifecycle: bool) -> String {
+    frame_line(serde_json::json!({
+        "socket": "deck", "server_pid": 42, "pane": pane, "observerVersion": 1,
+        "piVersion": "1.1.0", "mode": "tui",
+        "capabilities": { "signal": signal, "lifecycle": lifecycle }
+    }))
+}
+
+const BOTH: Capabilities = Capabilities {
+    signal: true,
+    lifecycle: true,
+};
+const LIFECYCLE: Capabilities = Capabilities {
+    signal: false,
+    lifecycle: true,
+};
+
+fn sessions() -> Vec<(u64, String, crate::agent_pi::SessionEvent)> {
+    crate::agent_reentry::lifecycle::pi_sessions_for_tests()
+}
+
+/// Session observation is its own capability on the same stream: a stream
+/// may report only what its hello claimed AND the settings enable, a
+/// lifecycle-only stream reports no run, a signal-only stream names no
+/// session, and what a lease observed is gone with the lease.
+#[test]
+fn session_frames_need_their_own_capability_and_are_gone_with_the_lease() {
+    use crate::agent_pi::{ShutdownReason, StartReason};
+    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+    let _guard = fresh();
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+    let shared = two_panes();
+    *shared.enabled.lock_or_recover() = BOTH;
+    let (service, reasons) = service(&shared, Bounds::LIVE);
+    let rows = || shared.rows.lock_or_recover().clone().unwrap();
+    let observed = |session: &str| {
+        agent_status::generation_evidence(
+            &rows(),
+            |pane| agent_status::foreground_generation(&shared.table.lock_or_recover(), pane),
+            |_| None,
+        )
+        .get(session)
+        .and_then(|evidence| evidence.pi_session)
+    };
+    let start = |seq: u64, id: &str| serde_json::json!({"seq": seq, "event": "start", "nativeSessionId": id, "reason": "startup"});
+
+    // A carries both capabilities on ONE stream; B only session observation
+    let mut a = Client::open(&service, &hello_with("%1", true, true), 310);
+    assert!(a.accepted());
+    let mut b = Client::open(&service, &hello_with("%2", false, true), 410);
+    assert!(b.accepted());
+    a.send(start(1, "session-one"));
+    assert_eq!(a.ack(), Some(1));
+    a.send(serde_json::json!({"seq": 2, "run": 1, "state": "working"}));
+    assert_eq!(a.ack(), Some(2));
+    b.send(start(1, "session-one"));
+    assert_eq!(b.ack(), Some(1));
+    // one session in two panes: two leases, two records, nothing merged
+    let known = sessions();
+    assert_eq!(known.len(), 2);
+    assert!(known[0].0 != known[1].0 && known.iter().all(|k| k.1 == "session-one"));
+    assert_eq!(
+        known[0].2,
+        crate::agent_pi::SessionEvent::Start(StartReason::Startup)
+    );
+    assert_eq!(
+        observed("deck-a"),
+        Some(crate::agent_reentry::lifecycle::PiSession::Observed)
+    );
+    assert_eq!(
+        observed("deck-b"),
+        Some(crate::agent_reentry::lifecycle::PiSession::Observed)
+    );
+    // a session is no Signal: B's card has no word, A's word came from its run
+    let projected = agent_status::projections(&rows());
+    assert_eq!(projected.get("deck-a").map(|o| o.state), Some("working"));
+    assert!(!projected.contains_key("deck-b"));
+    // a lifecycle-only stream may report no run
+    b.send(serde_json::json!({"seq": 2, "run": 1, "state": "working"}));
+    assert_eq!(b.reply().unwrap()["refused"], "capability-disabled");
+    until("B's record to go with its lease", || sessions().len() == 1);
+    assert_eq!(observed("deck-b"), None);
+    assert!(!agent_status::projections(&rows()).contains_key("deck-b"));
+
+    // the teardown, then the reset: the reason is kept until the lease ends
+    a.send(serde_json::json!({"seq": 3, "event": "shutdown", "nativeSessionId": "session-one", "reason": "quit"}));
+    assert_eq!(a.ack(), Some(3));
+    assert_eq!(
+        sessions()[0].2,
+        crate::agent_pi::SessionEvent::Shutdown(ShutdownReason::Quit)
+    );
+    assert_eq!(
+        observed("deck-a"),
+        None,
+        "a runtime that said it is going observes no session"
+    );
+    a.send(serde_json::json!({"seq": 4, "reason": "quit"}));
+    assert_eq!(a.ack(), Some(4));
+    until("A's lease to end", || probe::live() == 0);
+    assert!(
+        sessions().is_empty(),
+        "nothing of a lease that is over is kept"
+    );
+
+    // a signal-only stream names no session
+    *shared.enabled.lock_or_recover() = BOTH;
+    let mut signal_only = Client::open(&service, &hello_with("%1", true, false), 310);
+    assert!(signal_only.accepted());
+    signal_only.send(start(1, "session-one"));
+    assert_eq!(
+        signal_only.reply().unwrap()["refused"],
+        "capability-disabled"
+    );
+    assert!(sessions().is_empty());
+    until("its lease to end", || probe::live() == 0);
+
+    // a hello may claim session observation only while the settings enable it
+    *shared.enabled.lock_or_recover() = SIGNAL;
+    let mut refused = Client::open(&service, &hello_with("%1", true, true), 310);
+    assert_eq!(refused.reply().unwrap()["refused"], "capability-disabled");
+    let mut refused = Client::open(&service, &hello_with("%1", false, true), 310);
+    assert_eq!(refused.reply().unwrap()["refused"], "capability-disabled");
+    // and with it enabled alone, a lifecycle-only stream binds and Signal does not
+    *shared.enabled.lock_or_recover() = LIFECYCLE;
+    let mut refused = Client::open(&service, &hello_with("%1", true, false), 310);
+    assert_eq!(refused.reply().unwrap()["refused"], "capability-disabled");
+    let mut only = Client::open(&service, &hello_with("%1", false, true), 310);
+    assert!(only.accepted());
+    only.send(start(1, "session-two"));
+    assert_eq!(only.ack(), Some(1));
+    assert_eq!(
+        observed("deck-a"),
+        Some(crate::agent_reentry::lifecycle::PiSession::Observed)
+    );
+    // turned off in Settings: the record goes at once, not at the next frame
+    enabled_changed(Capabilities::NONE);
+    assert!(sessions().is_empty());
+    assert_eq!(observed("deck-a"), None);
+    assert_eq!(only.reply().unwrap()["refused"], "capability-disabled");
+    assert!(reasons
+        .lock_or_recover()
+        .iter()
+        .all(|reason| *reason == "pi-capability-disabled"));
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+}
+
+/// What a runtime reports about its session is checked against what the
+/// same lease reported before, and an id is Pi's own shape or nothing.
+#[test]
+fn a_session_frame_that_contradicts_its_lease_ends_the_stream() {
+    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+    let _guard = fresh();
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+    let shared = two_panes();
+    *shared.enabled.lock_or_recover() = BOTH;
+    let (service, reasons) = service(&shared, Bounds::LIVE);
+    let open = || {
+        let mut client = Client::open(&service, &hello_with("%1", true, true), 310);
+        assert!(client.accepted());
+        client
+    };
+    // a second start in one runtime
+    let mut client = open();
+    client.send(serde_json::json!({"seq": 1, "event": "start", "nativeSessionId": "one", "reason": "startup"}));
+    assert_eq!(client.ack(), Some(1));
+    client.send(serde_json::json!({"seq": 2, "event": "start", "nativeSessionId": "two", "reason": "resume"}));
+    assert_eq!(client.reply().unwrap()["refused"], "bad-lifecycle");
+    until("the lease to end", || probe::live() == 0);
+    assert!(sessions().is_empty(), "neither reading is kept");
+    // a teardown of a session it never reported
+    let mut client = open();
+    client.send(serde_json::json!({"seq": 1, "event": "shutdown", "nativeSessionId": "one", "reason": "quit"}));
+    assert_eq!(client.reply().unwrap()["refused"], "bad-lifecycle");
+    until("the lease to end", || probe::live() == 0);
+    // an id that is not Pi's shape is no frame at all
+    let mut client = open();
+    client.send(
+        serde_json::json!({"seq": 1, "event": "snapshot", "nativeSessionId": "../sessions/x"}),
+    );
+    assert_eq!(client.reply().unwrap()["refused"], "bad-native-id");
+    until("the lease to end", || probe::live() == 0);
+    // an id longer than this build keeps is acknowledged and not kept: never cut short
+    let mut client = open();
+    client.send(serde_json::json!({"seq": 1, "event": "start", "nativeSessionId": "a".repeat(257), "reason": "startup"}));
+    assert_eq!(client.ack(), Some(1));
+    assert!(sessions().is_empty());
+    client.send(
+        serde_json::json!({"seq": 2, "event": "snapshot", "nativeSessionId": "a".repeat(256)}),
+    );
+    assert_eq!(client.ack(), Some(2));
+    assert_eq!(sessions()[0].1.len(), 256);
+    drop(client);
+    until("the lease to end", || probe::live() == 0);
+    assert!(sessions().is_empty());
+    assert_eq!(
+        *reasons.lock_or_recover(),
+        ["pi-bad-lifecycle", "pi-bad-lifecycle", "pi-bad-native-id"]
+    );
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+}
+
 #[test]
 fn a_line_that_breaks_the_wire_is_refused_and_ends_the_stream() {
     let _guard = fresh();

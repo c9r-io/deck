@@ -54,7 +54,7 @@ TAURI = REPO / "app/src-tauri"
 FIXTURES = REPO / "scripts/pi"
 ENTRY = "Contents/Resources/pi/signal.ts"
 CHECKS = ("pi-clean", "pi-enable", "pi-run-created", "pi-connected", "pi-hold", "pi-turn-done", "pi-attention",
-          "pi-send-now", "pi-disabled", "pi-reload", "done")
+          "pi-send-now", "pi-disabled", "pi-reload", "pi-session", "done")
 # The user's own Pi settings: other keys, their own entries (one of them the
 # fixture provider, an extension of "theirs"), Pi's two-space layout. Deck's
 # entry is added by the real switch and by nothing in this file.
@@ -299,12 +299,21 @@ class Run:
         self.check("Send now delivered the row's text once", at("pi-send-now")["pane"].count(self.marker) == 1
                    and counts("pi-send-now", "agent_settled") == 3)
         log = (self.data / "app.log").read_text(errors="replace") if (self.data / "app.log").exists() else ""
+        self.check("session observation on and off again: the same bytes as before it was turned on",
+                   at("pi-session")["settings"] == at("pi-reload")["settings"])
         wanted = ("[agent-pi] signal install ok", "[agent-pi] observer bound s=", "[agent-status] pi working s=",
-                  "[agent-status] pi turn-done s=", "(capability-disabled)", "[agent-pi] signal remove ok")
+                  "[agent-status] pi turn-done s=", "(capability-disabled)", "[agent-pi] signal remove ok",
+                  "[agent-pi] lifecycle install ok", "signal=1 lifecycle=1", "[agent-pi] session start-reload s=",
+                  "[agent-pi] lifecycle remove ok")
         self.check("app.log holds the production's closed lines for each step",
                    all(text in log for text in wanted), missing=[text for text in wanted if text not in log])
-        leaks = [text for text in (self.marker, str(self.root), "fixture response", "hello fixture") if text in log]
-        self.check("and nothing of the prompt, the paths or Pi's answer", leaks == [], leaked=len(leaks))
+        natives = sorted({item["id"] for item in self.source() if item.get("id")})
+        leaks = [text for text in (self.marker, str(self.root), "fixture response", "hello fixture", *natives) if text in log]
+        self.check("and nothing of the prompt, the paths, Pi's answer or a native session id",
+                   leaks == [] and len(natives) >= 1, leaked=len(leaks), sessions_seen=len(natives))
+        kept = [path for path in self.data.rglob("*") if path.is_file() and self.pi_fixture not in path.parents]
+        self.check("no native session id is in Deck's data directory",
+                   not any(native.encode() in path.read_bytes() for native in natives for path in kept), files=len(kept))
 
     def carry_out(self) -> dict:
         """Launch, watch, judge and clean up, on the machine the root is on. The summary, written to the root."""

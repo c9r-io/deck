@@ -22,7 +22,7 @@ SPEC.loader.exec_module(MODULE)
 
 TRIPLE = "aarch64-apple-darwin"
 # the Pi observer's files (app/bundle.sh DECK_BUNDLE_PI_RESOURCES)
-PI_RESOURCES = ("observer.ts", "signal.ts")
+PI_RESOURCES = ("observer.ts", "signal.ts", "lifecycle.ts", "both.ts")
 # Literals, not the tool's own table: a wrong table must fail these tests.
 BUILT = {
     "deck-status-helper": "status-helper",

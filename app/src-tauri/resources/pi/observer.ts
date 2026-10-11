@@ -1,17 +1,19 @@
 // observer.ts — Deck's read-only observer for the Pi coding agent.
 //
-// Pi loads the entry beside this file (`signal.ts`) from the signed Deck
-// bundle; it calls `deckPiObserver` with its capability bits and nothing
-// else. This file is the whole implementation. The backend half and the wire
-// contract are `app/src-tauri/src/agent_pi.rs`.
+// Pi loads ONE of the three entries beside this file (`signal.ts`,
+// `lifecycle.ts`, `both.ts`) from the signed Deck bundle; each calls
+// `deckPiObserver` with its two capability bits and nothing else. This file is
+// the whole implementation. The backend half and the wire contract are
+// `app/src-tauri/src/agent_pi.rs`.
 //
 // # Contract
 // - Content-free. It subscribes to `session_start`, `session_shutdown` and,
 //   with the signal capability, `agent_start` and `agent_settled`. It never
 //   subscribes to an event that carries a prompt, messages, a title, a tool
-//   call or a result, and never reads one. The session manager is never
-//   touched: no session id, path, cwd, model, transcript or environment
-//   value other than the three routing variables is read.
+//   call or a result, and never reads one. With the lifecycle capability it
+//   reads ONE value through Pi's public API, the native session id; without
+//   it the session manager is never touched. No path, cwd, model, transcript
+//   or environment value other than the three routing variables is read.
 // - Observation only. It registers no tool, command, provider, shortcut or
 //   flag, sends no message, starts, switches or forks no session, runs no
 //   tool or process, and opens no network connection. Its one output is one
@@ -27,8 +29,8 @@
 //   The factory registers callbacks and starts nothing; the connection is
 //   opened by `session_start`.
 // - Protocol `pi-observer` v1, one JSON line per frame, at most 1024 bytes.
-//   `hello` first; then `signal`, `reset` and `ping`, numbered from 1
-//   without a gap. ONE frame waits for its acknowledgement at a time.
+//   `hello` first; then `signal`, `lifecycle`, `reset` and `ping`, numbered
+//   from 1 without a gap. ONE frame waits for its acknowledgement at a time.
 //   An acknowledgement that takes more than two seconds, a refusal, an
 //   unexpected line or a full queue closes the connection and forgets what
 //   was queued: nothing queued is ever sent on a later connection.
@@ -39,11 +41,17 @@
 //   the middle of a run reports that run as its run 1, and a connection
 //   accepted while idle reports nothing until the next start. An ending
 //   that happened while disconnected is never reported afterwards.
+// - With the lifecycle capability the first connection reports the session
+//   this runtime started in (`start`, with Pi's own reason); a later
+//   connection reports only what the API says now (`snapshot`), never a
+//   start again. `session_shutdown` reads the id once more, then reports
+//   `shutdown` with Pi's reason.
 // - `session_shutdown` marks this runtime disposed before anything else:
 //   timers stop, later callbacks do nothing, and nothing reconnects. The
-//   last frame (`reset`, with Pi's own reason) gets at most 100 ms; then the
-//   socket is closed whatever was acknowledged. Deck treats a missing last
-//   frame as a lost connection.
+//   last frames (`shutdown` with the lifecycle capability, then `reset`,
+//   each with Pi's own reason) get at most 100 ms; then the socket is closed
+//   whatever was acknowledged. Deck treats a missing last frame as a lost
+//   connection.
 // - A callback never throws into Pi and never waits for the socket. An
 //   internal error disposes this runtime's observer. The factory does not
 //   throw either: Pi refuses to start when an extension fails to load, so
@@ -54,7 +62,7 @@
 //   capability is turned off in Deck, this Pi release is not supported)
 //   ends the observer until Pi loads its extensions again.
 //
-// The files here are JavaScript in TypeScript's syntax subset on purpose:
+// The four files are JavaScript in TypeScript's syntax subset on purpose:
 // Pi loads them as they are, and Deck's gates check them without a compiler.
 import fs from "node:fs";
 import net from "node:net";
@@ -71,7 +79,10 @@ const SHUTDOWN_DRAIN_MS = 100;
 const QUEUE_LIMIT = 8;
 /* a Unix socket address holds 104 bytes on macOS, the terminator included */
 const MAX_SOCKET_PATH = 103;
+/* an id longer than this is not sent at all; Deck keeps at most 256 bytes */
+const MAX_NATIVE_ID = 512;
 
+const START_REASONS = ["startup", "reload", "new", "resume", "fork"];
 const SHUTDOWN_REASONS = ["quit", "reload", "new", "resume", "fork"];
 /* refusals that hold for as long as this runtime lives */
 const FINAL_REFUSALS = [
@@ -115,10 +126,13 @@ const closedWord = (words, word) => (words.includes(word) ? word : null);
 /** The extension factory of one entry. `piVersion` is Pi's exported VERSION. */
 export function deckPiObserver(capabilities, piVersion) {
   const signal = capabilities.signal === true;
+  const lifecycle = capabilities.lifecycle === true;
   return function deckPiObserverFactory(pi) {
     let disposed = false;
     let ended = false; // a final refusal: nothing reconnects in this runtime
     let target = null;
+    let sessions = null; // this runtime's session manager, lifecycle only
+    let first = null; // the start this runtime may report on its first connection
     let active = false; // a run started and has not settled
     let socket = null;
     let accepted = false;
@@ -131,6 +145,15 @@ export function deckPiObserver(capabilities, piVersion) {
     let retry = null;
     let attempt = 0;
     let drained = null;
+
+    const nativeId = (manager) => {
+      try {
+        const id = manager.getSessionId();
+        return typeof id === "string" && id.length > 0 && id.length <= MAX_NATIVE_ID ? id : null;
+      } catch (_) {
+        return null;
+      }
+    };
 
     const stopTimers = () => {
       if (ping) clearInterval(ping);
@@ -202,6 +225,13 @@ export function deckPiObserver(capabilities, piVersion) {
     const onAccepted = () => {
       accepted = true;
       attempt = 0;
+      if (lifecycle) {
+        const start = first;
+        first = null;
+        const id = start ? start.id : nativeId(sessions);
+        if (id && start) push({ event: "start", nativeSessionId: id, reason: start.reason });
+        else if (id) push({ event: "snapshot", nativeSessionId: id });
+      }
       if (signal && active) {
         run = 1;
         push({ run, state: "working" });
@@ -240,7 +270,9 @@ export function deckPiObserver(capabilities, piVersion) {
 
     const connect = () => {
       if (disposed || ended || socket || !target) return;
+      // a connection that did not carry the start never reports it later
       if (!privateSocket(target.path)) {
+        first = null;
         reconnect();
         return;
       }
@@ -248,6 +280,7 @@ export function deckPiObserver(capabilities, piVersion) {
       try {
         which = net.createConnection({ path: target.path });
       } catch (_) {
+        first = null;
         reconnect();
         return;
       }
@@ -267,7 +300,7 @@ export function deckPiObserver(capabilities, piVersion) {
           observerVersion: OBSERVER_VERSION,
           piVersion,
           mode: "tui",
-          capabilities: { signal, lifecycle: false },
+          capabilities: { signal, lifecycle },
         };
         if (!write(which, hello, 0)) drop(which);
       });
@@ -284,13 +317,19 @@ export function deckPiObserver(capabilities, piVersion) {
           onLine(which, line);
         }
       });
-      which.on("error", () => drop(which));
-      which.on("close", () => drop(which));
+      const lost = () => {
+        if (socket === which) first = null;
+        drop(which);
+      };
+      which.on("error", lost);
+      which.on("close", lost);
     };
 
     const dispose = () => {
       disposed = true;
       stopTimers();
+      first = null;
+      sessions = null;
     };
 
     /* an internal error ends this runtime's observer and never reaches Pi */
@@ -306,11 +345,17 @@ export function deckPiObserver(capabilities, piVersion) {
       }
     };
 
-    const onStart = guarded((_event, ctx) => {
+    const onStart = guarded((event, ctx) => {
       if (target || ctx.mode !== "tui") return;
       if (typeof piVersion !== "string" || !/^[0-9A-Za-z.+-]{1,32}$/.test(piVersion)) return;
       target = route(process.env);
       if (!target) return;
+      if (lifecycle) {
+        sessions = ctx.sessionManager;
+        const id = nativeId(sessions);
+        const reason = closedWord(START_REASONS, event.reason);
+        first = id && reason ? { id, reason } : null;
+      }
       connect();
     });
 
@@ -328,7 +373,9 @@ export function deckPiObserver(capabilities, piVersion) {
       if (accepted && run > 0) push({ run, state: "turn-done" });
     });
 
-    const onShutdown = guarded((event) => {
+    const onShutdown = guarded((event, ctx) => {
+      // the last id, read before this runtime is disposed
+      const id = lifecycle && target ? nativeId(ctx.sessionManager) : null;
       const which = socket;
       const connected = accepted;
       dispose();
@@ -340,6 +387,7 @@ export function deckPiObserver(capabilities, piVersion) {
       const reason = closedWord(SHUTDOWN_REASONS, event.reason);
       // what was queued and not sent belongs to a runtime that is over
       queue = [];
+      if (lifecycle && id && reason) queue.push({ event: "shutdown", nativeSessionId: id, reason });
       queue.push({ reason: reason || "fault" });
       return new Promise((resolve) => {
         let finished = false;

@@ -484,6 +484,14 @@
               <summary data-i18n="settings.details">Learn more</summary>
               <div class="set-hint" data-i18n="settings.piSignalHint">Off by default. Shows when work starts and when an interaction ends. Deck currently cannot reliably observe when Pi is waiting for input, so automatic sending to Pi sessions is paused. If enabled, deck adds one entry to the extensions list in Pi’s settings file that names a read-only extension inside the Deck app; your other settings and extensions are preserved. It reports a fixed status word and the pane id — never prompts, output, or paths. Turning this off removes exactly that entry. A running Pi follows when it next starts or reloads.</div>
             </details>
+            <div class="set-row">
+              <label for="set-pi-lifecycle" data-i18n="settings.piLifecycle">Pi session observation</label>
+              <input type="checkbox" id="set-pi-lifecycle">
+            </div>
+            <details class="set-details">
+              <summary data-i18n="settings.details">Learn more</summary>
+              <div class="set-hint" data-i18n="settings.piLifecycleHint">Off by default. Observes which native Pi session currently runs in a terminal. This installation does not support reopening Pi sessions automatically. A separate choice from Pi work status: it reports no work status. If enabled, deck’s entry in Pi’s settings file names the read-only extension that also reports the session’s id to deck on this Mac; deck keeps it in memory only while that Pi runs, and never shows, logs or stores it. Turning this off removes it again. A running Pi follows when it next starts or reloads.</div>
+            </details>
           </div>
           <div class="set-group" id="set-item-claude-reentry" data-setting-id="claude-reentry" tabindex="-1">
             <div class="set-row">

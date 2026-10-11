@@ -234,6 +234,11 @@ pub(crate) struct ReentryCapability {
     pub(crate) login_shell: &'static str,
     /// Argument words for (exact id, bypass override decided by the core).
     pub(crate) request: fn(&str, bool) -> Option<Vec<String>>,
+    /// What this source's lifecycle receipts mean: the decoding of its own
+    /// words and id, and the reducers over a lease's record
+    /// (`lifecycle::ReceiptContract`). Without a capability a source has no
+    /// contract and can send no receipt.
+    pub(crate) receipts: &'static lifecycle::ReceiptContract,
 }
 
 // ---------- closed vocabulary -------------------------------------------------
@@ -1381,7 +1386,7 @@ impl Plan {
             if entry.view.reason.is_some() {
                 continue;
             }
-            entry.final_id = lifecycle::final_session(&facts);
+            entry.final_id = (env.capability.receipts.final_session)(&facts);
             if entry.final_id.is_none() {
                 entry.view.reason = Some(Reason::FinalSessionUnconfirmed);
             } else if !entry.client.cwd.is_dir() {
@@ -1495,7 +1500,7 @@ impl Plan {
                 }
                 let facts = lifecycle::peek(index);
                 let wanted = entry.final_id.as_deref().unwrap_or_default();
-                match lifecycle::reentry(&facts, wanted) {
+                match (env.capability.receipts.entered)(&facts, wanted) {
                     lifecycle::Receipt::Pending => pending = true,
                     // Settled as confirmed only below, from the sealed
                     // facts, so a conflicting fact that arrives while other
@@ -1552,7 +1557,7 @@ impl Plan {
                 continue;
             }
             let wanted = entry.final_id.as_deref().unwrap_or_default();
-            let entered = match lifecycle::reentry(&facts, wanted) {
+            let entered = match (env.capability.receipts.entered)(&facts, wanted) {
                 lifecycle::Receipt::Entered(client) => Some(client),
                 _ => None,
             };

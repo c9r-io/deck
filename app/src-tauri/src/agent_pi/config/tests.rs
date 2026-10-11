@@ -124,6 +124,7 @@ fn enabling_and_disabling_returns_every_layout_to_its_bytes() {
             site.status(),
             Status {
                 signal: true,
+                lifecycle: false,
                 installation: Installation::Current
             },
             "{name}"
@@ -356,6 +357,7 @@ fn the_user_s_own_disabling_entry_wins() {
         site.status(),
         Status {
             signal: true,
+            lifecycle: false,
             installation: Installation::Conflict
         }
     );
@@ -467,6 +469,7 @@ fn a_bundle_that_is_not_a_stable_install_writes_nothing() {
         site.status(),
         Status {
             signal: true,
+            lifecycle: false,
             installation: Installation::UnsupportedLocation
         }
     );
@@ -482,6 +485,7 @@ fn a_bundle_that_is_not_a_stable_install_writes_nothing() {
         site.status(),
         Status {
             signal: false,
+            lifecycle: false,
             installation: Installation::UnsupportedLocation
         }
     );
@@ -526,7 +530,7 @@ fn a_path_is_written_only_for_this_build_s_own_files() {
     }
     assert_eq!(
         RESOURCES.map(|(name, _)| name),
-        ["observer.ts", "signal.ts"],
+        ["observer.ts", "signal.ts", "lifecycle.ts", "both.ts"],
         "the closed list of bundled observer files"
     );
 }
@@ -641,4 +645,147 @@ fn a_repeated_key_is_refused_wherever_it_is() {
     for (_, text) in layouts() {
         assert_eq!(strict(&text), serde_json::from_str::<Value>(&text).ok());
     }
+}
+
+/// The two switches are ONE entry: turning one replaces the entry by the one
+/// that carries the resulting pair, in one write, and both off leaves none.
+/// Neither switch turns the other on.
+#[test]
+fn two_switches_are_one_entry_that_carries_the_pair() {
+    let site = Site::new("pair");
+    let original = "{\n  \"extensions\": [\n    \"./mine.ts\"\n  ],\n  \"theme\": \"dark\"\n}\n";
+    site.write(original);
+    let entry = |variant| entry_path(&site.place.owned[0], variant).unwrap();
+    let switch = |capability, on| apply(&site.place, Edit::Set(capability, on));
+    let owned = || -> Vec<String> {
+        site.value()["extensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e.as_str())
+            .filter(|e| e.contains("deck.app"))
+            .map(str::to_owned)
+            .collect()
+    };
+    let status = || status_in(&site.place, |_| false);
+    // session observation alone: its own entry, and no work status
+    assert!(switch(Capability::Lifecycle, true).unwrap());
+    assert_eq!(owned(), [entry(Variant::Lifecycle)]);
+    assert_eq!(
+        (status().signal, status().lifecycle, status().installation),
+        (false, true, Installation::Current)
+    );
+    assert_eq!(
+        enabled_in(&site.place),
+        Capabilities {
+            signal: false,
+            lifecycle: true
+        }
+    );
+    // work status too: ONE entry, replaced where it stood
+    assert!(switch(Capability::Signal, true).unwrap());
+    assert_eq!(owned(), [entry(Variant::Both)]);
+    assert_eq!((status().signal, status().lifecycle), (true, true));
+    assert_eq!(
+        site.text(),
+        original.replace(
+            "\"./mine.ts\"",
+            &format!(
+                "\"./mine.ts\",\n    {}",
+                serde_json::to_string(&entry(Variant::Both)).unwrap()
+            )
+        ),
+        "every other byte is where it was"
+    );
+    // asking for what is there writes nothing
+    assert!(!switch(Capability::Signal, true).unwrap());
+    assert!(!switch(Capability::Lifecycle, true).unwrap());
+    // session observation off: work status stays, in one write
+    assert!(switch(Capability::Lifecycle, false).unwrap());
+    assert_eq!(owned(), [entry(Variant::Signal)]);
+    assert_eq!((status().signal, status().lifecycle), (true, false));
+    // and off: the user's file, byte for byte
+    assert!(switch(Capability::Signal, false).unwrap());
+    assert_eq!(site.text(), original);
+    assert_eq!(enabled_in(&site.place), Capabilities::NONE);
+    assert!(!switch(Capability::Lifecycle, false).unwrap());
+}
+
+/// Several of Deck's entries would load several observers: none is admitted,
+/// the status says conflict, and the next switch — or the boot migration —
+/// leaves the one entry that carries what they carried together.
+#[test]
+fn several_entries_of_deck_s_are_a_conflict_until_one_carries_them() {
+    let site = Site::new("several");
+    let entry = |root: usize, variant| entry_path(&site.place.owned[root], variant).unwrap();
+    let both_written = |first: &str, second: &str| {
+        format!(
+            "{{\n  \"extensions\": [\n    {},\n    \"./mine.ts\",\n    {}\n  ]\n}}\n",
+            serde_json::to_string(first).unwrap(),
+            serde_json::to_string(second).unwrap()
+        )
+    };
+    site.write(&both_written(
+        &entry(0, Variant::Signal),
+        &entry(0, Variant::Lifecycle),
+    ));
+    assert_eq!(
+        status_in(&site.place, |_| false).installation,
+        Installation::Conflict
+    );
+    assert_eq!(
+        enabled_in(&site.place),
+        Capabilities::NONE,
+        "two observers: none is admitted"
+    );
+    // the boot migration merges them into the one entry that carries the pair
+    assert!(apply(&site.place, Edit::Migrate).unwrap());
+    assert_eq!(
+        site.value()["extensions"],
+        serde_json::json!([entry(0, Variant::Both), "./mine.ts"])
+    );
+    assert_eq!(
+        enabled_in(&site.place),
+        Capabilities {
+            signal: true,
+            lifecycle: true
+        }
+    );
+    // the same from a switch, with entries of both stable locations
+    site.write(&both_written(
+        &entry(1, Variant::Lifecycle),
+        &entry(0, Variant::Signal),
+    ));
+    assert_eq!(
+        status_in(&site.place, |_| false).installation,
+        Installation::Conflict
+    );
+    assert!(apply(&site.place, Edit::Set(Capability::Signal, false)).unwrap());
+    assert_eq!(
+        site.value()["extensions"],
+        serde_json::json!([entry(0, Variant::Lifecycle), "./mine.ts"]),
+        "what the others carried stays, in this bundle's one entry"
+    );
+    // an entry of the other location alone is moved with its capabilities
+    site.write(&format!(
+        "{{\n  \"extensions\": [\n    {}\n  ]\n}}\n",
+        serde_json::to_string(&entry(1, Variant::Both)).unwrap()
+    ));
+    assert!(apply(&site.place, Edit::Migrate).unwrap());
+    assert_eq!(
+        site.value()["extensions"],
+        serde_json::json!([entry(0, Variant::Both)])
+    );
+    // the user's disabling of ANY of the three files keeps everything off
+    site.write(&format!(
+        "{{\n  \"extensions\": [\n    {},\n    {}\n  ]\n}}\n",
+        serde_json::to_string(&format!("-{}", entry(0, Variant::Lifecycle))).unwrap(),
+        serde_json::to_string(&entry(0, Variant::Signal)).unwrap()
+    ));
+    assert_eq!(enabled_in(&site.place), Capabilities::NONE);
+    assert_eq!(
+        apply(&site.place, Edit::Set(Capability::Lifecycle, true)).unwrap_err(),
+        "pi-config-conflict"
+    );
+    assert!(!apply(&site.place, Edit::Migrate).unwrap());
 }

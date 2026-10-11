@@ -4,9 +4,10 @@
 //!
 //! Deck owns attention around work; the Agent owns the work. This adapter
 //! observes two boundaries Pi itself declares — an agent run started, an
-//! agent run settled. It reads no prompt, message, title, tool call, result,
-//! transcript or session id, sends Pi nothing but acknowledgements, and
-//! starts, steers or resumes nothing.
+//! agent run settled — and, separately, which native session a Pi runtime is
+//! in. It reads no prompt, message, title, tool call, result or transcript,
+//! sends Pi nothing but acknowledgements, and starts, steers or resumes
+//! nothing.
 //!
 //! # Contract
 //! - **What is supported, and what is not.** Pi 1.1.x gives an extension a
@@ -32,17 +33,17 @@
 //!   says which process connected (pid and birth instant, the pane's
 //!   foreground leader, its terminal). The backend names one accepted
 //!   connection (a lease, never reused). The observer counts its runs inside
-//!   that connection. None of them is a native interaction id, and Pi's
-//!   native session id is not read at all. What a line SAYS about its pane,
-//!   server, version or mode is a claim.
+//!   that connection. Pi's native session id is a fourth thing, used only by
+//!   the lifecycle capability and never as an interaction id. What a line
+//!   SAYS about its pane, server, version or mode is a claim.
 //! - **The wire** (`parse_hello`, `parse_frame`): one JSON object per line,
 //!   at most `MAX_LINE` bytes, protocol `pi-observer`, version 1, source
-//!   `pi`. Exactly four shapes, told apart by their exact key sets:
+//!   `pi`. Exactly five shapes, told apart by their exact key sets:
 //!   `hello` (`socket`, `server_pid`, `pane`, `observerVersion`, `piVersion`,
 //!   `mode`, `capabilities{signal,lifecycle}`), `signal` (`seq`, `run`,
-//!   `state`), `reset` (`seq`, `reason`) and `ping` (`seq`). A hello may
-//!   claim only capabilities Pi's settings enable; this build has the signal
-//!   capability alone. An unknown or repeated key, a missing one, a number that
+//!   `state`), `reset` (`seq`, `reason`), `lifecycle` (`seq`, `event`,
+//!   `nativeSessionId`, and `reason` for `start` and `shutdown` only) and
+//!   `ping` (`seq`). An unknown or repeated key, a missing one, a number that
 //!   is negative, fractional or beyond 2^53-1, an unknown word, another
 //!   protocol version or mode is refused; nothing is repaired. There is no
 //!   field for a prompt, a title, a path, a model or free text. The replies
@@ -81,6 +82,9 @@ const WIRE_VERSION: u64 = 1;
 const OBSERVER_VERSION: u64 = 1;
 /// The largest integer a JavaScript client can count to without a gap.
 const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+/// The longest native session id this build keeps. A longer one is reported
+/// as unsupported, never cut short and never hashed into something else.
+pub(crate) const MAX_NATIVE_ID: usize = 256;
 
 /// Pi's registration. No re-entry capability: Pi is never started,
 /// re-entered or resumed by Deck.
@@ -91,16 +95,17 @@ pub(crate) const PI: AgentAdapter = AgentAdapter {
     reentry: None,
 };
 
-/// What a Pi observer may do, each capability behind its own switch.
+/// One of the two things a Pi observer may do, each behind its own switch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Capability {
     /// Run boundaries: `working` and `turn-done`.
     Signal,
+    /// The native session a runtime is in.
+    Lifecycle,
 }
 
 /// A set of capabilities: what an entry carries, what the settings enable,
-/// what a stream may still do. The wire names two bits; this build's entry
-/// carries the first.
+/// what a stream may still do.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Capabilities {
     pub(crate) signal: bool,
@@ -125,6 +130,7 @@ impl Capabilities {
     pub(crate) fn with(mut self, capability: Capability, on: bool) -> Self {
         match capability {
             Capability::Signal => self.signal = on,
+            Capability::Lifecycle => self.lifecycle = on,
         }
         self
     }
@@ -148,6 +154,82 @@ pub(crate) enum ResetReason {
     Reload,
     Quit,
     Fault,
+}
+
+/// Pi's `session_start` reasons. `Startup` is also what a client started
+/// with `--session` reports: it does not say "resumed".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartReason {
+    Startup,
+    Reload,
+    New,
+    Resume,
+    Fork,
+}
+
+/// Pi's `session_shutdown` reasons. `Quit` is the runtime's teardown, not
+/// proof that the process is gone; the others are not an exit at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShutdownReason {
+    Quit,
+    Reload,
+    New,
+    Resume,
+    Fork,
+}
+
+/// One lifecycle observation as the wire carries it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionEvent {
+    /// This runtime started in a session.
+    Start(StartReason),
+    /// This runtime is being torn down.
+    Shutdown(ShutdownReason),
+    /// What the API says now, read after a reconnect: neither a start nor a
+    /// resume, and never reported as one.
+    Snapshot,
+}
+
+/// A native Pi session id: Pi's own character set (`--session-id` accepts
+/// more than a UUID), at most `MAX_NATIVE_ID` bytes. Never Claude's shape,
+/// never a path, and never anything Deck made.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct PiNativeId(String);
+
+#[cfg(test)]
+impl PiNativeId {
+    /// The id as text, for a test that compares it with what Pi itself
+    /// said. Production compares ids and never takes one out.
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The id a lifecycle frame names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum NativeId {
+    Kept(PiNativeId),
+    /// Well formed and longer than this build keeps.
+    Unsupported,
+}
+
+/// `[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?`, as Pi itself validates a
+/// session id.
+fn native_id(text: &str) -> Option<NativeId> {
+    let bytes = text.as_bytes();
+    let edge = |b: &u8| b.is_ascii_alphanumeric();
+    let shaped = bytes.first().is_some_and(edge)
+        && bytes.last().is_some_and(edge)
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    shaped.then(|| {
+        if bytes.len() <= MAX_NATIVE_ID {
+            NativeId::Kept(PiNativeId(text.to_string()))
+        } else {
+            NativeId::Unsupported
+        }
+    })
 }
 
 /// Pi's exported version, as far as this build needs to know it.
@@ -195,15 +277,32 @@ pub(crate) struct Hello {
 /// One frame after the hello.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Frame {
-    Signal { seq: u64, run: u64, state: RunState },
-    Reset { seq: u64, reason: ResetReason },
-    Ping { seq: u64 },
+    Signal {
+        seq: u64,
+        run: u64,
+        state: RunState,
+    },
+    Reset {
+        seq: u64,
+        reason: ResetReason,
+    },
+    Lifecycle {
+        seq: u64,
+        event: SessionEvent,
+        native: NativeId,
+    },
+    Ping {
+        seq: u64,
+    },
 }
 
 impl Frame {
     pub(crate) fn seq(&self) -> u64 {
         match self {
-            Frame::Signal { seq, .. } | Frame::Reset { seq, .. } | Frame::Ping { seq } => *seq,
+            Frame::Signal { seq, .. }
+            | Frame::Reset { seq, .. }
+            | Frame::Lifecycle { seq, .. }
+            | Frame::Ping { seq } => *seq,
         }
     }
 }
@@ -224,6 +323,8 @@ struct Fields {
     run: Option<u64>,
     state: Option<String>,
     reason: Option<String>,
+    event: Option<String>,
+    native_id: Option<String>,
 }
 
 fn put<T, E: serde::de::Error>(slot: &mut Option<T>, value: T) -> Result<(), E> {
@@ -300,6 +401,8 @@ impl<'de> Visitor<'de> for FieldsVisitor {
                 "run" => put(&mut fields.run, map.next_value()?)?,
                 "state" => put(&mut fields.state, map.next_value()?)?,
                 "reason" => put(&mut fields.reason, map.next_value()?)?,
+                "event" => put(&mut fields.event, map.next_value()?)?,
+                "nativeSessionId" => put(&mut fields.native_id, map.next_value()?)?,
                 _ => return Err(A::Error::custom("unknown key")),
             }
         }
@@ -356,6 +459,8 @@ pub(crate) fn parse_hello(line: &str) -> Result<Hello, &'static str> {
         run: None,
         state: None,
         reason: None,
+        event: None,
+        native_id: None,
         ..
     } = fields(line)?
     else {
@@ -409,6 +514,8 @@ pub(crate) fn parse_frame(line: &str) -> Result<Frame, &'static str> {
         run,
         state,
         reason,
+        event,
+        native_id: id,
         socket: None,
         server_pid: None,
         pane: None,
@@ -422,9 +529,9 @@ pub(crate) fn parse_frame(line: &str) -> Result<Frame, &'static str> {
         return Err("bad-frame");
     };
     let seq = count(seq)?;
-    match (run, state, reason) {
-        (None, None, None) => Ok(Frame::Ping { seq }),
-        (Some(run), Some(state), None) => Ok(Frame::Signal {
+    match (run, state, reason, event, id) {
+        (None, None, None, None, None) => Ok(Frame::Ping { seq }),
+        (Some(run), Some(state), None, None, None) => Ok(Frame::Signal {
             seq,
             run: count(Some(run))?,
             state: match state.as_str() {
@@ -433,7 +540,7 @@ pub(crate) fn parse_frame(line: &str) -> Result<Frame, &'static str> {
                 _ => return Err("bad-frame"),
             },
         }),
-        (None, None, Some(reason)) => Ok(Frame::Reset {
+        (None, None, Some(reason), None, None) => Ok(Frame::Reset {
             seq,
             reason: match reason.as_str() {
                 "new" => ResetReason::New,
@@ -445,6 +552,33 @@ pub(crate) fn parse_frame(line: &str) -> Result<Frame, &'static str> {
                 _ => return Err("bad-frame"),
             },
         }),
+        (None, None, reason, Some(event), Some(id)) => {
+            let event = match (event.as_str(), reason.as_deref()) {
+                ("start", Some(reason)) => SessionEvent::Start(match reason {
+                    "startup" => StartReason::Startup,
+                    "reload" => StartReason::Reload,
+                    "new" => StartReason::New,
+                    "resume" => StartReason::Resume,
+                    "fork" => StartReason::Fork,
+                    _ => return Err("bad-frame"),
+                }),
+                ("shutdown", Some(reason)) => SessionEvent::Shutdown(match reason {
+                    "quit" => ShutdownReason::Quit,
+                    "reload" => ShutdownReason::Reload,
+                    "new" => ShutdownReason::New,
+                    "resume" => ShutdownReason::Resume,
+                    "fork" => ShutdownReason::Fork,
+                    _ => return Err("bad-frame"),
+                }),
+                ("snapshot", None) => SessionEvent::Snapshot,
+                _ => return Err("bad-frame"),
+            };
+            Ok(Frame::Lifecycle {
+                seq,
+                event,
+                native: native_id(&id).ok_or("bad-native-id")?,
+            })
+        }
         _ => Err("bad-frame"),
     }
 }
@@ -471,6 +605,7 @@ pub(crate) const REFUSALS: &[&str] = &[
     "bad-frame",
     "bad-version",
     "bad-mode",
+    "bad-native-id",
     "unsupported-pi-version",
     "other-server",
     "no-peer",
@@ -486,6 +621,7 @@ pub(crate) const REFUSALS: &[&str] = &[
     "busy",
     "bad-seq",
     "bad-run",
+    "bad-lifecycle",
     "late",
     "stale",
 ];
@@ -496,6 +632,7 @@ pub(crate) fn drop_reason(code: &'static str) -> &'static str {
         "bad-frame" => "pi-bad-frame",
         "bad-version" => "pi-bad-version",
         "bad-mode" => "pi-bad-mode",
+        "bad-native-id" => "pi-bad-native-id",
         "unsupported-pi-version" => "pi-unsupported-pi-version",
         "other-server" => "pi-other-server",
         "no-peer" => "pi-no-peer",
@@ -512,6 +649,7 @@ pub(crate) fn drop_reason(code: &'static str) -> &'static str {
         "bad-seq" => "pi-bad-seq",
         "bad-run" => "pi-bad-run",
         "late" => "pi-late",
+        "bad-lifecycle" => "pi-bad-lifecycle",
         "stale" => "pi-stale",
         _ => "other",
     }

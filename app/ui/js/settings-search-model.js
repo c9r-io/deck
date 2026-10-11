@@ -52,7 +52,7 @@ export const SETTING_ITEMS = Object.freeze([
     ['restore', 'resume', 'snapshot', '恢复', '快照']),
   item('shell-service', 'terminal', ['tmux.service', 'tmux.restart'],
     ['tmux', 'server', '服务', '重启']),
-  item('agent-status', 'agents', ['settings.group.agentStatus', 'settings.agentHooks', 'settings.codexHooks', 'settings.piSignal'],
+  item('agent-status', 'agents', ['settings.group.agentStatus', 'settings.agentHooks', 'settings.codexHooks', 'settings.piSignal', 'settings.piLifecycle'],
     ['hook', 'hooks', 'needs input', 'turn finished', 'pi', '钩子', '等待输入']),
   item('claude-reentry', 'agents', ['settings.claudeReentry'],
     ['re-entry', 'reentry', 'reopen', 'lifecycle', '重入', '重新进入']),

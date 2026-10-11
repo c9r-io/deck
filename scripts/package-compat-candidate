@@ -23,7 +23,7 @@ for pair in tmux deck-status-helper deck-lifecycle-helper deck-mcp deck-mcp-runn
 done
 # The Pi observer's files (the list tauri.conf.json `bundle.resources` names).
 mkdir -p "$APP/Contents/Resources/pi"
-for name in observer.ts signal.ts; do
+for name in observer.ts signal.ts lifecycle.ts both.ts; do
   test -f "$TAURI/resources/pi/$name"
   cp "$TAURI/resources/pi/$name" "$APP/Contents/Resources/pi/$name"
 done

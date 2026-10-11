@@ -1,4 +1,4 @@
-// signal.ts — Deck's Pi observer with the signal capability: when an
+// signal.ts — Deck's Pi observer with the signal capability alone: when an
 // agent run starts and when it has settled. No native session id is read.
 // The implementation and its contract are `observer.ts`.
 import { VERSION } from "@earendil-works/pi-coding-agent";

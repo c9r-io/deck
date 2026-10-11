@@ -51,6 +51,9 @@
 // switch names the entry's state (configured is never shown as connected),
 // a build that may not write Pi's settings cannot use the switch, and a
 // refusal has its own sentence for each closed code.
+// Pi session observation is a second, separate switch on the same entry
+// (`pi_lifecycle`, written by `agent_pi_lifecycle_set`): it turns on no work
+// status, and nothing it observes lets Deck reopen a Pi session.
 // Claude session re-entry observation is its own explicit opt-in: the box
 // shows `claude_reentry` of `agent_hooks_status` (the backend derives it from
 // the installed lifecycle hooks; there is no settings key), is written only
@@ -729,27 +732,42 @@ export async function persistAgentHooksChoice(agent, boxId, confirmKey) {
    read) shows the switch off and unusable, with no note. */
 let piPending = false;
 function renderPiSettings(status) {
-  const view = status ? piSettingsView(status) : { signal: false, usable: false, note: null };
+  const view = status ? piSettingsView(status) : { signal: false, lifecycle: false, usable: false, note: null };
   const box = $('set-pi-hooks');
   box.checked = view.signal;
   box.disabled = piPending || !view.usable;
+  const session = $('set-pi-lifecycle');
+  session.checked = view.lifecycle;
+  session.disabled = piPending || !view.usable;
   const note = $('set-pi-note');
   note.hidden = !view.note;
   note.textContent = view.note ? t(view.note) : '';
 }
-export async function persistPiChoice() {
+/* One of Pi's two switches. Each is its own choice with its own
+   confirmation; both are one entry in Pi's settings file, so while one is
+   being written neither can be used. */
+const PI_SWITCHES = {
+  signal: { box: 'set-pi-hooks', confirm: 'settings.piSignalEnableConfirm', on: 'settings.piSignalEnabled', off: 'settings.piSignalDisabled',
+    write: enable => inv('agent_hooks_set', { agent: 'pi', enable }) },
+  lifecycle: { box: 'set-pi-lifecycle', confirm: 'settings.piLifecycleEnableConfirm', on: 'settings.piLifecycleEnabled', off: 'settings.piLifecycleDisabled',
+    write: enable => inv('agent_pi_lifecycle_set', { enable }) },
+};
+export const persistPiChoice = () => persistPiSwitch('signal');
+export const persistPiLifecycle = () => persistPiSwitch('lifecycle');
+async function persistPiSwitch(which) {
   if (piPending) return;
-  const box = $('set-pi-hooks');
+  const spec = PI_SWITCHES[which];
+  const box = $(spec.box);
   const desired = box.checked;
-  if (desired && !(await confirmDialog(t('settings.piSignalEnableConfirm')))) {
+  if (desired && !(await confirmDialog(t(spec.confirm)))) {
     box.checked = false;
     return;
   }
   piPending = true;
-  box.disabled = true;
+  for (const each of Object.values(PI_SWITCHES)) $(each.box).disabled = true;
   try {
-    await inv('agent_hooks_set', { agent: 'pi', enable: desired });
-    toast(t(desired ? 'settings.piSignalEnabled' : 'settings.piSignalDisabled'));
+    await spec.write(desired);
+    toast(t(desired ? spec.on : spec.off));
   } catch (error) {
     box.checked = !desired;
     toast(t(piErrorKey(typeof error === 'string' ? error : error?.message)));
@@ -1466,6 +1484,7 @@ export function initSettings() {
   $('set-claude-reentry').onchange = persistClaudeReentryChoice;
 
   $('set-pi-hooks').onchange = persistPiChoice;
+  $('set-pi-lifecycle').onchange = persistPiLifecycle;
 
   $('set-notify-away').onchange = persistNotifyChoice;
   $('set-notify-sound').onchange = persistNotifyChoice;

@@ -119,7 +119,6 @@ fn the_hello_is_one_closed_shape() {
     refused(&|l| l["seq"] = 1.into(), "bad-frame");
     refused(&|l| l["state"] = "working".into(), "bad-frame");
     refused(&|l| l["nativeSessionId"] = "abc".into(), "bad-frame");
-    refused(&|l| l["event"] = "start".into(), "bad-frame");
     for key in [
         "socket",
         "server_pid",
@@ -180,7 +179,7 @@ fn the_version_is_compatibility_and_nothing_else() {
 }
 
 #[test]
-fn frames_are_three_closed_shapes() {
+fn frames_are_four_closed_shapes() {
     assert_eq!(
         parse_frame(&frame(serde_json::json!({"seq": 1}))),
         Ok(Frame::Ping { seq: 1 })
@@ -218,17 +217,40 @@ fn frames_are_three_closed_shapes() {
             Ok(Frame::Reset { seq: 4, reason })
         );
     }
-    // a session id has no frame in this build: nothing of it can arrive
+    let lifecycle = |body: serde_json::Value| parse_frame(&frame(body));
+    assert_eq!(
+        lifecycle(
+            serde_json::json!({"seq": 5, "event": "start", "nativeSessionId": "abc", "reason": "startup"})
+        ),
+        Ok(Frame::Lifecycle {
+            seq: 5,
+            event: SessionEvent::Start(StartReason::Startup),
+            native: NativeId::Kept(PiNativeId("abc".into()))
+        })
+    );
+    assert_eq!(
+        lifecycle(serde_json::json!({"seq": 5, "event": "shutdown", "nativeSessionId": "abc", "reason": "quit"}))
+            .map(|f| f.seq()),
+        Ok(5)
+    );
+    assert!(matches!(
+        lifecycle(serde_json::json!({"seq": 5, "event": "snapshot", "nativeSessionId": "abc"})),
+        Ok(Frame::Lifecycle {
+            event: SessionEvent::Snapshot,
+            ..
+        })
+    ));
+    // a word of the other event, a reason on a snapshot, no reason on a start
     for body in [
-        serde_json::json!({"seq": 5, "event": "start", "nativeSessionId": "abc", "reason": "startup"}),
-        serde_json::json!({"seq": 5, "event": "snapshot", "nativeSessionId": "abc"}),
+        serde_json::json!({"seq": 5, "event": "start", "nativeSessionId": "abc", "reason": "quit"}),
+        serde_json::json!({"seq": 5, "event": "shutdown", "nativeSessionId": "abc", "reason": "startup"}),
+        serde_json::json!({"seq": 5, "event": "snapshot", "nativeSessionId": "abc", "reason": "startup"}),
+        serde_json::json!({"seq": 5, "event": "start", "nativeSessionId": "abc"}),
+        serde_json::json!({"seq": 5, "event": "end", "nativeSessionId": "abc", "reason": "quit"}),
+        serde_json::json!({"seq": 5, "event": "start", "reason": "startup"}),
         serde_json::json!({"seq": 5, "nativeSessionId": "abc"}),
     ] {
-        assert_eq!(
-            parse_frame(&frame(body.clone())),
-            Err("bad-frame"),
-            "{body}"
-        );
+        assert_eq!(lifecycle(body.clone()), Err("bad-frame"), "{body}");
     }
 }
 
@@ -336,6 +358,52 @@ fn a_frame_carries_no_field_of_another_shape_and_no_content() {
 }
 
 #[test]
+fn a_native_id_is_pi_s_own_shape_and_never_cut_short() {
+    let named = |id: &str| {
+        parse_frame(&frame(
+            serde_json::json!({"seq": 1, "event": "snapshot", "nativeSessionId": id}),
+        ))
+    };
+    let kept = |id: &str| {
+        Ok(Frame::Lifecycle {
+            seq: 1,
+            event: SessionEvent::Snapshot,
+            native: NativeId::Kept(PiNativeId(id.to_string())),
+        })
+    };
+    // Pi's default (a UUIDv7) and what `--session-id` accepts
+    for id in [
+        "0199e3a4-7c2b-7f31-9a50-3b2c1d0e4f5a",
+        "probe.custom-ID_123",
+        "a",
+        "A9",
+    ] {
+        assert_eq!(named(id), kept(id), "{id}");
+        // Claude's validator would refuse most of them: the two never mix
+        if id != "0199e3a4-7c2b-7f31-9a50-3b2c1d0e4f5a" {
+            assert!(!crate::agent_reentry::claude::native_id_ok(id), "{id}");
+        }
+    }
+    for id in [
+        "", "-a", "a-", ".a", "a.", "a b", "a/b", "../x", "a\u{e9}", "a\n", "a;b",
+    ] {
+        assert_eq!(named(id), Err("bad-native-id"), "{id:?}");
+    }
+    let longest = "a".repeat(MAX_NATIVE_ID);
+    assert_eq!(named(&longest), kept(&longest));
+    let longer = "a".repeat(MAX_NATIVE_ID + 1);
+    assert_eq!(
+        named(&longer),
+        Ok(Frame::Lifecycle {
+            seq: 1,
+            event: SessionEvent::Snapshot,
+            native: NativeId::Unsupported
+        }),
+        "reported as unsupported, not shortened"
+    );
+}
+
+#[test]
 fn replies_are_three_closed_lines() {
     assert_eq!(
         accepted_line(),
@@ -381,7 +449,7 @@ fn capability_sets_compose_without_a_third_value() {
     assert!(signal.within(both) && !both.within(signal));
     assert!(signal.signal && !signal.lifecycle);
     assert!(!Capabilities::NONE.any() && Capabilities::NONE.within(signal));
-    assert_eq!(signal.with(Capability::Signal, false), Capabilities::NONE);
+    assert_eq!(both.with(Capability::Lifecycle, false), signal);
 }
 
 mod native {
@@ -398,8 +466,14 @@ mod native {
     //! - the Board poll's body (`commands::poll_from_listing`: reconcile, the
     //!   projection, the coverage word) on the one-shot form of the same
     //!   snapshot, at the webview's interval;
-    //! - the Settings commands (`agent_hooks_set("pi", …)`, `agent_hooks_status`),
-    //!   the boot migration and the dismiss command (`notify_dismiss`);
+    //! - the Settings commands (`agent_hooks_set("pi", …)`,
+    //!   `agent_pi_lifecycle_set`, `agent_hooks_status`), the boot migration
+    //!   and the dismiss command (`notify_dismiss`);
+    //! - the session observations a lifecycle stream wrote
+    //!   (`agent_reentry::lifecycle`). Their native ids appear in this
+    //!   harness's trace so a run can compare them with what Pi itself
+    //!   logged; that trace stays in the experiment root and is never
+    //!   committed;
     //! - what the scheduler asks before it sends (`generation_evidence` by point
     //!   reads, `pi_foreground`).
     //!
@@ -503,12 +577,13 @@ mod native {
     }
 
     /// The Signal part of one poll's payload, as the webview receives it.
-    const POLL_KEYS: [&str; 10] = [
+    const POLL_KEYS: [&str; 11] = [
         "name",
         "alive",
         "fg",
         "agent",
         "pi_signal",
+        "pi_session",
         "codex_signal",
         "episode",
         "episode_viewed",
@@ -606,11 +681,16 @@ mod native {
             .into_iter()
             .map(|(session, code)| json!({ "session": session, "code": code }))
             .collect();
+        let sessions: Vec<Value> = crate::agent_reentry::lifecycle::pi_sessions_for_tests()
+            .into_iter()
+            .map(|(lease, id, last)| json!({ "lease": lease, "id": id, "last": said(last) }))
+            .collect();
         json!({
             "store": store,
             "streams": probe::streams(),
             "leases": leases,
             "ended": ended,
+            "sessions": sessions,
             "pending": probe::pending(),
             "drops": drops.counts(),
             "announced": announced,
@@ -620,7 +700,21 @@ mod native {
     /// Pi's part of the Settings status command's reply.
     fn settings() -> Value {
         let status = serde_json::to_value(agent_status::agent_hooks_status()).unwrap_or_default();
-        json!({ "pi": status.get("pi"), "pi_installation": status.get("pi_installation") })
+        json!({
+            "pi": status.get("pi"),
+            "pi_lifecycle": status.get("pi_lifecycle"),
+            "pi_installation": status.get("pi_installation"),
+        })
+    }
+
+    /// The last thing a runtime said of its session, as one closed word.
+    fn said(event: crate::agent_pi::SessionEvent) -> String {
+        use crate::agent_pi::SessionEvent;
+        match event {
+            SessionEvent::Start(reason) => format!("start-{reason:?}").to_lowercase(),
+            SessionEvent::Shutdown(reason) => format!("shutdown-{reason:?}").to_lowercase(),
+            SessionEvent::Snapshot => "snapshot".into(),
+        }
     }
 
     /// One command of the driver; the reply's body.
@@ -645,6 +739,15 @@ mod native {
             "signal" => {
                 let enable = command.get("enable").and_then(Value::as_bool) == Some(true);
                 let result = agent_status::agent_hooks_set(crate::agent_pi::SOURCE.into(), enable);
+                json!({
+                    "ok": result.is_ok(),
+                    "error": result.err().map(|error| error.message().to_owned()),
+                    "status": settings(),
+                })
+            }
+            "lifecycle" => {
+                let enable = command.get("enable").and_then(Value::as_bool) == Some(true);
+                let result = crate::agent_pi::config::agent_pi_lifecycle_set(enable);
                 json!({
                     "ok": result.is_ok(),
                     "error": result.err().map(|error| error.message().to_owned()),

@@ -30,9 +30,14 @@ writeFileSync(join(loaded, 'node_modules/@earendil-works/pi-coding-agent/package
   JSON.stringify({ name: '@earendil-works/pi-coding-agent', type: 'module', exports: './index.js' }));
 writeFileSync(join(loaded, 'node_modules/@earendil-works/pi-coding-agent/index.js'), 'export const VERSION = "1.1.0";\n');
 copyFileSync(join(resources, 'observer.ts'), join(loaded, 'observer.mjs'));
-writeFileSync(join(loaded, 'signal.mjs'), entryText.replace('"./observer.ts"', '"./observer.mjs"'));
+const entries = {};
+for (const name of ['signal', 'lifecycle', 'both']) {
+  const text = readFileSync(join(resources, `${name}.ts`), 'utf8');
+  writeFileSync(join(loaded, `${name}.mjs`), text.replace('"./observer.ts"', '"./observer.mjs"'));
+  entries[name] = { text, factory: (await import(pathToFileURL(join(loaded, `${name}.mjs`)).href)).default };
+}
 const observer = await import(pathToFileURL(join(loaded, 'observer.mjs')).href);
-const entry = (await import(pathToFileURL(join(loaded, 'signal.mjs')).href)).default;
+const entry = entries.signal.factory;
 
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 async function until(what, predicate, ms = 4000) {
@@ -132,13 +137,16 @@ async function started(name, mode = 'auto') {
   return { server, host };
 }
 
-test('the entry is two imports and one call, and both files load as plain JavaScript', () => {
-  assert.equal(entryText.split('\n').filter(line => line && !line.startsWith('//')).join('\n'), [
-    'import { VERSION } from "@earendil-works/pi-coding-agent";',
-    'import { deckPiObserver } from "./observer.ts";',
-    'export default deckPiObserver({ signal: true, lifecycle: false }, VERSION);',
-  ].join('\n'));
-  assert.equal(typeof entry, 'function');
+test('each entry is two imports and one call, and the files load as plain JavaScript', () => {
+  for (const [name, signal, lifecycle] of [['signal', true, false], ['lifecycle', false, true], ['both', true, true]]) {
+    assert.equal(entries[name].text.split('\n').filter(line => line && !line.startsWith('//')).join('\n'), [
+      'import { VERSION } from "@earendil-works/pi-coding-agent";',
+      'import { deckPiObserver } from "./observer.ts";',
+      `export default deckPiObserver({ signal: ${signal}, lifecycle: ${lifecycle} }, VERSION);`,
+    ].join('\n'), name);
+    assert.equal(typeof entries[name].factory, 'function');
+  }
+  assert.equal(entryText, entries.signal.text);
   assert.deepEqual(Object.keys(observer).sort(), ['deckPiObserver', 'privateSocket', 'route']);
 });
 
@@ -507,4 +515,127 @@ test('an error inside a callback ends the observer and never reaches Pi', async 
   await sleep(200);
   assert.equal(fresh.connections.length, 0);
   await fresh.close();
+});
+
+/* ---------- session observation: the lifecycle capability ---------- */
+
+/** A context whose session manager answers `getSessionId` and records any
+ *  other thing asked of it. */
+function sessionContext(host, id) {
+  const state = { id, asked: 0 };
+  const manager = new Proxy({}, {
+    get(_target, name) {
+      if (name === 'getSessionId') return () => { state.asked += 1; if (state.id instanceof Error) throw state.id; return state.id; };
+      if (typeof name === 'string') host.touched.push(`sessionManager.${name}`);
+      return undefined;
+    },
+  });
+  const ctx = new Proxy({}, {
+    get(_target, name) {
+      if (name === 'mode') return 'tui';
+      if (name === 'sessionManager') return manager;
+      if (typeof name === 'string') host.touched.push(`ctx.${name}`);
+      return undefined;
+    },
+  });
+  return { state, ctx };
+}
+
+async function observing(which, id, reason = 'startup') {
+  const server = deck(`lifecycle-${which}`);
+  await server.listening;
+  const host = pi();
+  entries[which].factory(host.api);
+  route(routed(server));
+  const session = sessionContext(host, id);
+  host.emit('session_start', { reason }, session.ctx);
+  return { server, host, session };
+}
+const common = { protocol: 'pi-observer', v: 1, source: 'pi' };
+
+test('without the lifecycle capability the session manager is never asked', async () => {
+  const { server, host, session } = await observing('signal', 'session-one');
+  host.emit('agent_start', undefined, session.ctx);
+  await until('the start', () => server.frames().length === 1);
+  host.emit('agent_settled', undefined, session.ctx);
+  await until('the ending', () => server.frames().length === 2);
+  await host.emit('session_shutdown', { reason: 'quit' }, session.ctx);
+  await until('the stream to close', () => server.connections[0].closed);
+  assert.equal(session.state.asked, 0);
+  assert.deepEqual(server.connections[0].lines[0].capabilities, { signal: true, lifecycle: false });
+  assert.ok(server.connections[0].lines.every(line => !('nativeSessionId' in line) && !('event' in line)));
+  assert.deepEqual(host.touched, []);
+  await server.close();
+});
+
+test('the session a runtime starts in, what the API says after a reconnect, and its teardown', async () => {
+  const { server, host, session } = await observing('both', 'session-one', 'resume');
+  await until('the start', () => server.frames().length === 1);
+  assert.deepEqual(server.connections[0].lines[0].capabilities, { signal: true, lifecycle: true });
+  assert.deepEqual(server.frames()[0], { ...common, seq: 1, event: 'start', nativeSessionId: 'session-one', reason: 'resume' });
+  // both capabilities are ONE stream with one numbering
+  host.emit('agent_start', undefined, session.ctx);
+  await until('the run', () => server.frames().length === 2);
+  assert.deepEqual(server.frames()[1], { ...common, seq: 2, run: 1, state: 'working' });
+  // the connection is lost; the next one says what the API says NOW, as a snapshot, never a start again
+  session.state.id = 'session-two';
+  server.connections[0].socket.destroy();
+  await until('the second connection', () => server.connections.length === 2, 3000);
+  await until('its frames', () => server.frames(1).length === 2);
+  assert.deepEqual(server.frames(1), [
+    { ...common, seq: 1, event: 'snapshot', nativeSessionId: 'session-two' },
+    { ...common, seq: 2, run: 1, state: 'working' },
+  ]);
+  // the teardown: the id is read once more, then the shutdown and the reset with Pi's reason
+  session.state.id = 'session-three';
+  await host.emit('session_shutdown', { reason: 'fork' }, session.ctx);
+  await until('the stream to close', () => server.connections[1].closed);
+  assert.deepEqual(server.frames(1).slice(2), [
+    { ...common, seq: 3, event: 'shutdown', nativeSessionId: 'session-three', reason: 'fork' },
+    { ...common, seq: 4, reason: 'fork' },
+  ]);
+  assert.deepEqual(host.touched, [], 'nothing but the mode and the session id was read');
+  await server.close();
+});
+
+test('session observation alone subscribes to no run and reports none', async () => {
+  const { server, host, session } = await observing('lifecycle', 'fixture.custom-ID_123');
+  assert.deepEqual([...host.handlers.keys()], ['session_start', 'session_shutdown']);
+  await until('the start', () => server.frames().length === 1);
+  assert.deepEqual(server.connections[0].lines[0].capabilities, { signal: false, lifecycle: true });
+  assert.deepEqual(server.frames()[0], { ...common, seq: 1, event: 'start', nativeSessionId: 'fixture.custom-ID_123', reason: 'startup' });
+  await host.emit('session_shutdown', { reason: 'quit' }, session.ctx);
+  await until('the stream to close', () => server.connections[0].closed);
+  assert.deepEqual(server.frames().slice(1).map(frame => frame.event ?? `reset:${frame.reason}`), ['shutdown', 'reset:quit']);
+  await server.close();
+});
+
+test('an id or a reason the observer cannot vouch for is not sent', async () => {
+  // a start reason Pi does not have: only what the API says is reported, as a snapshot
+  const odd = await observing('lifecycle', 'session-one', 'restored');
+  await until('the snapshot', () => odd.server.frames().length === 1);
+  assert.deepEqual(odd.server.frames()[0], { ...common, seq: 1, event: 'snapshot', nativeSessionId: 'session-one' });
+  // a shutdown reason Pi does not have: no shutdown is claimed, the stream is withdrawn as a fault
+  await odd.host.emit('session_shutdown', { reason: 'exit' }, odd.session.ctx);
+  await until('the stream to close', () => odd.server.connections[0].closed);
+  assert.deepEqual(odd.server.frames().slice(1), [{ ...common, seq: 2, reason: 'fault' }]);
+  await odd.server.close();
+  // no id, an id that is no string, one too long to send, a manager that throws: nothing is said of a session
+  for (const id of ['', null, 42, 'a'.repeat(513), new Error('no session')]) {
+    const { server, host, session } = await observing('lifecycle', id);
+    await until('the hello', () => server.connections[0]?.lines.length === 1);
+    await sleep(150);
+    assert.deepEqual(server.frames(), [], String(id).slice(0, 12));
+    assert.doesNotThrow(() => host.emit('session_shutdown', { reason: 'quit' }, session.ctx));
+    await until('the stream to close', () => server.connections[0].closed);
+    assert.ok(server.frames().every(frame => !('nativeSessionId' in frame)));
+    await server.close();
+  }
+  // the longest id that is sent at all (Deck keeps at most 256 bytes and says so itself)
+  const long = await observing('lifecycle', 'a'.repeat(512));
+  await until('the start', () => long.server.frames().length === 1);
+  assert.equal(long.server.frames()[0].nativeSessionId.length, 512);
+  assert.ok(JSON.stringify(long.server.frames()[0]).length <= 1024);
+  await long.host.emit('session_shutdown', { reason: 'quit' }, long.session.ctx);
+  await long.server.close();
 });

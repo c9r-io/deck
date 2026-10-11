@@ -1,6 +1,7 @@
 //! Claude Code's re-entry knowledge: whose code a client must be, the native
 //! session id shape, the supported launch grammar, the closed lifecycle
-//! words and the PURE construction of an exact-id request.
+//! words with what a record of them means (`RECEIPTS`) and the PURE
+//! construction of an exact-id request.
 //!
 //! # Contract
 //! Everything here is static data or a pure function. This module holds no
@@ -172,6 +173,7 @@
 //!   presentation: no restart, no client, no other window size or font
 //!   scale, and not the signed carrier.
 
+use super::lifecycle::{self, Event, Fact, Receipt, ReceiptContract, Words};
 use super::ReentryCapability;
 use crate::procinfo::{LaunchGrammar, ProductIdentity};
 
@@ -246,7 +248,100 @@ pub(crate) const CAPABILITY: ReentryCapability = ReentryCapability {
     grammar: &GRAMMAR,
     login_shell: "zsh",
     request,
+    receipts: &RECEIPTS,
 };
+
+/// What Claude Code's lifecycle receipts mean (`lifecycle::ReceiptContract`):
+/// the decoding of its words and its id, and the two reducers over a
+/// lease's record. `lifecycle.rs` frames, attributes, bounds and keeps the
+/// record; what a fact says is read here and nowhere else.
+pub(crate) const RECEIPTS: ReceiptContract = ReceiptContract {
+    decode,
+    final_session,
+    entered,
+};
+
+/// One receipt of Claude Code: a native `SessionStart` or `SessionEnd`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Told {
+    Start(StartSource),
+    End(EndReason),
+}
+
+/// The fact a native `SessionStart` of this source is.
+pub(crate) fn started(source: StartSource) -> Event {
+    Event::Claude(Told::Start(source))
+}
+
+/// The fact a native `SessionEnd` of this source is.
+pub(crate) fn ended(reason: EndReason) -> Event {
+    Event::Claude(Told::End(reason))
+}
+
+/// One line's words as Claude Code writes them: one valid lowercase UUID,
+/// closed words, no field of the other event. The optional final permission
+/// is a closed diagnostic word: validated, then dropped — nothing in this
+/// build reads it.
+fn decode(words: &Words) -> Result<(Event, String), &'static str> {
+    let native_id = words
+        .native_id
+        .filter(|id| native_id_ok(id))
+        .ok_or("lifecycle-bad-id")?;
+    if words
+        .final_permission
+        .is_some_and(|word| !matches!(word, "bypass" | "non-bypass" | "unknown"))
+    {
+        return Err("lifecycle-bad-field");
+    }
+    let event = match (words.event, words.start_source, words.end_reason) {
+        (Some("session-start"), Some(source), None) if words.final_permission.is_none() => {
+            started(start_source(source).ok_or("lifecycle-bad-field")?)
+        }
+        (Some("session-end"), None, Some(reason)) => {
+            ended(end_reason(reason).ok_or("lifecycle-bad-field")?)
+        }
+        _ => return Err("lifecycle-bad-field"),
+    };
+    Ok((event, native_id.to_owned()))
+}
+
+/// The final native session of an exited client: the id of its applicable
+/// end (`prompt-input-exit`), which must be the LAST fact and the only such
+/// id. `clear`, `resume`, `logout` and `other` ends switch or name nothing;
+/// two different final ids never resolve to the later one, and an
+/// incomplete record names nothing.
+pub(crate) fn final_session(facts: &[Fact]) -> Option<String> {
+    let exit = ended(EndReason::PromptInputExit);
+    let last = facts.last()?;
+    if !lifecycle::complete(facts) || last.event != exit {
+        return None;
+    }
+    facts
+        .iter()
+        .filter(|fact| fact.event == exit)
+        .all(|fact| fact.native_id == last.native_id)
+        .then(|| last.native_id.clone())
+}
+
+/// What the launch-phase facts say about entering `wanted`: exactly one
+/// client reported, and all it reported is entering that session through a
+/// resume.
+pub(crate) fn entered(facts: &[Fact], wanted: &str) -> Receipt {
+    let Some(first) = facts.first() else {
+        return Receipt::Pending;
+    };
+    let entered = lifecycle::complete(facts)
+        && facts.iter().all(|fact| {
+            fact.client == first.client
+                && fact.native_id == wanted
+                && fact.event == started(StartSource::Resume)
+        });
+    if entered {
+        Receipt::Entered(first.client)
+    } else {
+        Receipt::Conflict
+    }
+}
 
 /// Native `SessionStart` sources as the lifecycle wire spells them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -374,6 +469,7 @@ mod tests {
             grammar: _,
             login_shell: _,
             request: _,
+            receipts: _,
         } = CAPABILITY;
         let sources = [
             ("claude.rs", production(include_str!("claude.rs"))),

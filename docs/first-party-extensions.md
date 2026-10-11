@@ -69,9 +69,9 @@ Kept coupled on purpose:
 - `inbound::SOURCES` (`slack`, `clock`) stays the closed, persisted source
   vocabulary; the clock stays the dispatcher's built-in source.
 - `agent_hooks_status` keeps fixed reply keys (`claude`, `codex`,
-  `claude_reentry`, and Pi's `pi` with `pi_installation`), and the
+  `claude_reentry`, and Pi's `pi`, `pi_lifecycle` and `pi_installation`), and the
   frontend Settings sections, Slack connection panel and Lens are
-  unchanged apart from Pi's own row. No frontend registry exists: the backend IPC contract did not
+  unchanged apart from Pi's own two rows. No frontend registry exists: the backend IPC contract did not
   change, so a frontend table would only be a second description.
 - `admission::interactive_agent` (executable names) is a separate closed
   list from the adapters' source words.
@@ -99,7 +99,12 @@ Kept coupled on purpose:
 `AgentAdapter` has one more narrow, optional, static field: `reentry`
 (`agent_reentry::ReentryCapability`), `Some` for `CLAUDE_CODE` and `None`
 for `CODEX` and `PI` (neither way Pi is installed lets Deck prove whose
-code a client is). It holds the product's code requirement — whose code a client
+code a client is). What a source's lifecycle receipts mean is part of that
+capability (`receipts`, a `lifecycle::ReceiptContract`): a source without
+one can send no receipt. Pi's optional session observation
+(`agent_pi_lifecycle_set`, `lifecycle::observe_pi`) is not a receipt and
+gives Pi no contract: it says which native session a running Pi is in, in
+memory only, and makes Pi no candidate for re-entry. It holds the product's code requirement — whose code a client
 must be, with no release, version or digest in it — the supported launch
 grammar, the login shell the launch sink is written against and a pure
 constructor of the exact-id request. Like

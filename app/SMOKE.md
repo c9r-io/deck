@@ -74,6 +74,16 @@ python3 scripts/pi_native.py --test-binary <that executable> \
       found nothing left. `<root>/result.json` is the summary (closed words,
       counts, relations); `<root>/logs/` is the private trace and holds
       native session ids: it is never committed.
+- [ ] Session observation (the second switch) is covered in the same run:
+      the one entry replaced by the one that carries both capabilities; the
+      session Pi started in; a new session, a fork, a resume and a reload in
+      the running Pi (npm install), each with Pi's own reason and the id Pi
+      names; quit against a killed Pi; a session named on the command line
+      (a startup, never called a resume), a path or an id that does not
+      exist, an id of the user's own; one session in two panes; session
+      observation without work status; a Deck restart (a snapshot, never a
+      start); the switch off. Native ids are compared inside the private
+      trace and appear nowhere else.
 - [ ] The run covers both runtimes for: the Settings command writing Deck's
       one entry and taking it out again byte for byte; hello and lease per
       pane; ordinary, retried, queued, continued and settlement-started
@@ -813,7 +823,7 @@ python3 scripts/pi-live-verify.py --runtime npm            # the npm install of 
 python3 scripts/pi-live-verify.py --runtime standalone --standalone <unpacked official build>
 ```
 
-- [ ] Exit 0 for both runtimes. The page reports eleven checkpoints: the
+- [ ] Exit 0 for both runtimes. The page reports twelve checkpoints: the
       switch off and clean; on through its confirmation; a clock automation's
       run that starts Pi; Pi connected with limited coverage and no attention
       of its own; the run's first step HELD at `pi-input-unverified` through
@@ -821,14 +831,17 @@ python3 scripts/pi-live-verify.py --runtime standalone --standalone <unpacked of
       that ends while the Board is in front counted once as unread; the held
       row delivered once by Send now; the switch turned off while Pi runs
       (the card's word gone at once, a further Pi run adding none); on again,
-      connected only after Pi's own `/reload`.
+      connected only after Pi's own `/reload`; session observation turned on
+      (a connected Pi keeps its earlier setting until its reload, then the
+      card's payload says `observed` and nothing of the session), and off.
 - [ ] The operator's own checks, which the page cannot make: Pi's settings
       byte for byte at each step (the user's bytes, plus Deck's one entry,
       minus exactly that entry, the same bytes again), the held row's text
       absent from the pane and Pi's provider never asked until a person
       typed, that text present exactly once after Send now, the production's
-      closed app.log lines for each step and nothing of a prompt, a path or
-      an answer in that log, and the machine's own Deck unchanged.
+      closed app.log lines for each step and nothing of a prompt, a path, an
+      answer or a native session id in that log or in Deck's data directory,
+      and the machine's own Deck unchanged.
 - [ ] The window takes the foreground and keyboard focus for about two
       minutes. A locked screen stops the page's timers and the run with
       them; with `--host <ssh alias>` the same root is moved to the same path

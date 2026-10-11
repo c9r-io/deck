@@ -1118,7 +1118,7 @@ fn bergamot_bridge_is_an_in_process_data_only_boundary() {
 // ---------------------------------------------------------------- Pi observer
 
 /// The Pi observer's files, as every packaging path must name them.
-const PI_OBSERVER_FILES: &[&str] = &["observer.ts", "signal.ts"];
+const PI_OBSERVER_FILES: &[&str] = &["observer.ts", "signal.ts", "lifecycle.ts", "both.ts"];
 
 /// The only import lines a Pi observer file may hold.
 const PI_IMPORTS: &[&str] = &[
@@ -1133,8 +1133,12 @@ const PI_IMPORTS: &[&str] = &[
 const PI_MEMBERS: &[(&str, &[&str])] = &[
     // Pi's extension API: subscribing, and nothing else
     ("pi", &["on"]),
-    // the event context: the run mode word
-    ("ctx", &["mode"]),
+    // the event context: the run mode word and, behind the lifecycle
+    // capability only (pinned below), the session manager
+    ("ctx", &["mode", "sessionManager"]),
+    // of the session manager: the native session id, and nothing else
+    ("manager", &["getSessionId"]),
+    ("sessions", &[]),
     // an event: Pi's own closed reason word
     ("event", &["reason"]),
     ("fs", &["lstatSync", "statSync"]),
@@ -1207,9 +1211,12 @@ const PI_FORBIDDEN: &[&str] = &[
     "setActiveTools",
     "setModel",
     "modelRegistry",
-    "sessionManager",
-    "getSessionId",
     "getSessionFile",
+    "getSessionDir",
+    "getSessionName",
+    "getHeader",
+    "getLeafId",
+    "getTree",
     "getEntries",
     "getBranch",
     "getSystemPrompt",
@@ -1346,6 +1353,22 @@ fn pi_observer_violations(name: &str, source: &str) -> Vec<String> {
                 violations.push(format!("{name}: lacks `{imported}`"));
             }
         }
+        // The native session id is the ONE value read through the session
+        // manager, in one place, and the manager is reached only behind the
+        // lifecycle capability: at the session start and at the shutdown.
+        let reads = [
+            "        const id = manager.getSessionId();",
+            "      if (lifecycle) {\n        sessions = ctx.sessionManager;",
+            "      const id = lifecycle && target ? nativeId(ctx.sessionManager) : null;",
+        ];
+        if source.matches("getSessionId").count() != 1
+            || source.matches("sessionManager").count() != 2
+            || reads.iter().any(|read| !source.contains(read))
+        {
+            violations.push(format!(
+                "{name}: the session manager is read outside the lifecycle capability"
+            ));
+        }
     } else {
         // an entry is its two imports and one call, and nothing else
         let code: Vec<String> = source
@@ -1356,6 +1379,8 @@ fn pi_observer_violations(name: &str, source: &str) -> Vec<String> {
             .collect();
         let expected = match name {
             "signal.ts" => pi_entry_lines(true, false),
+            "lifecycle.ts" => pi_entry_lines(false, true),
+            "both.ts" => pi_entry_lines(true, true),
             _ => Vec::new(),
         };
         if code != expected {
@@ -1404,7 +1429,11 @@ fn the_pi_observer_holds_to_its_closed_vocabulary() {
         "pi.on(\"turn_start\", () => {});",
         "pi.on(name, () => {});",
         "const id = ctx.sessionManager.getSessionId();",
+        "const again = nativeId(ctx.sessionManager);",
         "const file = ctx.sessionManager.getSessionFile();",
+        "const file = manager.getSessionFile();",
+        "const entries = sessions.getEntries();",
+        "const name = manager.getSessionName();",
         "ctx.ui.notify(\"x\");",
         "const dir = ctx.cwd;",
         "ctx.abort();",
@@ -1453,6 +1482,15 @@ fn the_pi_observer_holds_to_its_closed_vocabulary() {
             "if (target) return;",
         ),
         ("pi.on(\"agent_settled\"", "pi.on(\"agent_end\""),
+        // the session manager outside the lifecycle capability
+        (
+            "      if (lifecycle) {\n        sessions = ctx.sessionManager;",
+            "      {\n        sessions = ctx.sessionManager;",
+        ),
+        (
+            "const id = lifecycle && target ? nativeId(ctx.sessionManager) : null;",
+            "const id = target ? nativeId(ctx.sessionManager) : null;",
+        ),
     ] {
         assert!(observer.contains(from), "{from}");
         assert!(
@@ -1460,12 +1498,36 @@ fn the_pi_observer_holds_to_its_closed_vocabulary() {
             "{from}"
         );
     }
-    // an entry is exactly its imports and its one call
+    // an entry is exactly its imports and its one call, with ITS capabilities
+    for (name, own, other) in [
+        (
+            "signal.ts",
+            "signal: true, lifecycle: false",
+            "signal: true, lifecycle: true",
+        ),
+        (
+            "lifecycle.ts",
+            "signal: false, lifecycle: true",
+            "signal: true, lifecycle: true",
+        ),
+        (
+            "both.ts",
+            "signal: true, lifecycle: true",
+            "signal: true, lifecycle: false",
+        ),
+    ] {
+        let entry = pi_observer_file(name);
+        assert!(entry.contains(own), "{name}");
+        assert!(
+            !pi_observer_violations(name, &entry.replace(own, other)).is_empty(),
+            "{name}"
+        );
+    }
     let entry = pi_observer_file("signal.ts");
     for changed in [
         entry.replace(
             "signal: true, lifecycle: false",
-            "signal: true, lifecycle: true",
+            "signal: false, lifecycle: false",
         ),
         format!("{entry}\nexport const extra = 1;\n"),
         entry.replace(
@@ -1486,10 +1548,9 @@ fn the_pi_observer_s_files_are_one_closed_list_everywhere() {
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     listed.sort();
-    assert_eq!(
-        listed, PI_OBSERVER_FILES,
-        "resources/pi holds exactly these"
-    );
+    let mut wanted = PI_OBSERVER_FILES.to_vec();
+    wanted.sort_unstable();
+    assert_eq!(listed, wanted, "resources/pi holds exactly these");
     // what the build compiles in and verifies before it writes a path
     let config = production_sources()
         .into_iter()
@@ -1504,7 +1565,7 @@ fn the_pi_observer_s_files_are_one_closed_list_everywhere() {
         })
         .collect();
     compiled.sort_unstable();
-    assert_eq!(compiled, PI_OBSERVER_FILES);
+    assert_eq!(compiled, wanted);
     assert!(config.contains("const RESOURCE_DIR: &str = \"Contents/Resources/pi\";"));
     // the release bundle (tauri), the debug carriers and the compatibility
     // candidate: the same names, into the same directory
@@ -1519,12 +1580,13 @@ fn the_pi_observer_s_files_are_one_closed_list_everywhere() {
         .map(|(from, to)| (from.clone(), to.as_str().unwrap().to_string()))
         .collect();
     mapped.sort();
-    let wanted: Vec<(String, String)> = PI_OBSERVER_FILES
+    let mut bundled: Vec<(String, String)> = PI_OBSERVER_FILES
         .iter()
         .map(|name| (format!("resources/pi/{name}"), format!("pi/{name}")))
         .collect();
+    bundled.sort();
     assert_eq!(
-        mapped, wanted,
+        mapped, bundled,
         "tauri.conf.json bundles the list and nothing else"
     );
     let names = PI_OBSERVER_FILES.join(" ");

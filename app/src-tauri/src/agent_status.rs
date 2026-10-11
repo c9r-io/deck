@@ -260,6 +260,11 @@
 //! (`PiCoverage`: `connected` is LIMITED coverage — work started, an
 //! interaction ended, never an input request; `unavailable` claims no
 //! cause; `incompatible` is a release this build does not know).
+//! With the separate lifecycle capability the same stream may also say
+//! which native session its runtime is in; that goes to `agent_reentry::
+//! lifecycle::observe_pi` and never into this store. All a card learns of
+//! it is the closed word `Evidence::pi_session` (`observed`): no id, no
+//! state, no episode, no hold lifted.
 //! `pi_signal` writes one run boundary — `working` or `turn-done`, the only
 //! two words the closed `agent_pi::RunState` has — into the SAME store,
 //! under `InteractionKey::PiRun { lease, run }`, with the same episode,
@@ -759,6 +764,11 @@ pub(crate) struct Evidence {
     /// What may be said about that Pi's Signal coverage (`None`: not a
     /// recognized Pi). A name alone reads `Unavailable`.
     pub(crate) pi_signal: Option<PiCoverage>,
+    /// A live observer of this generation reported which native session its
+    /// runtime is in (`agent_reentry::lifecycle::pi_session`). An
+    /// observation with Signal's trust ceiling: it explains, and it makes
+    /// Pi neither re-enterable nor ready for input.
+    pub(crate) pi_session: Option<crate::agent_reentry::lifecycle::PiSession>,
 }
 
 /// Evidence per session's Signal target, bound to its CURRENT foreground
@@ -793,6 +803,9 @@ pub(crate) fn generation_evidence(
                     claude_interaction: proven.is_some_and(|r| r.claude_interaction),
                     pi,
                     pi_signal: pi.then_some(observed.unwrap_or(PiCoverage::Unavailable)),
+                    pi_session: now.and_then(|generation| {
+                        crate::agent_reentry::lifecycle::pi_session(&PaneKey::of(row), generation)
+                    }),
                 };
                 (session, evidence)
             })
@@ -1505,6 +1518,8 @@ const DROP_REASONS: &[&str] = &[
     "pi-busy",
     "pi-bad-seq",
     "pi-bad-run",
+    "pi-bad-lifecycle",
+    "pi-bad-native-id",
     "pi-late",
     "pi-stale",
 ];
@@ -1733,8 +1748,12 @@ fn lifecycle_receipt(
     if !lifecycle::armed() {
         return Err("lifecycle-no-lease");
     }
+    // a source may send receipts only when its adapter's re-entry
+    // capability declares what they mean
     let wire = lifecycle::parse(line, |source| {
-        crate::extensions::agent(source).is_some_and(|adapter| adapter.reentry.is_some())
+        crate::extensions::agent(source)
+            .and_then(|adapter| adapter.reentry)
+            .map(|capability| capability.receipts)
     })?;
     let claim = lifecycle::claim(wire)?;
     let peer = crate::procinfo::peer_pid(&stream);
@@ -3107,9 +3126,10 @@ pub(crate) struct AgentHooksStatus {
     codex: bool,
     /// The separate re-entry observation opt-in (Lifecycle family).
     claude_reentry: bool,
-    /// Pi's switch and the state of its one extension entry, both derived
-    /// from Pi's own settings file (`agent_pi::config`).
+    /// Pi's two switches and the state of its one extension entry, all
+    /// derived from Pi's own settings file (`agent_pi::config`).
     pi: bool,
+    pi_lifecycle: bool,
     pi_installation: crate::agent_pi::config::Installation,
 }
 
@@ -3137,6 +3157,7 @@ pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
         codex: installed(CODEX.source),
         claude_reentry: lifecycle_observation_installed(),
         pi: pi.signal,
+        pi_lifecycle: pi.lifecycle,
         pi_installation: pi.installation,
     }
 }
@@ -4877,10 +4898,13 @@ mod tests {
         let status = serde_json::to_value(agent_hooks_status()).unwrap();
         let object = status.as_object().unwrap();
         // the two Signal toggles, the separate re-entry observation opt-in
-        // (the Lifecycle family), and Pi's switch with the closed state of
-        // its one settings entry: four booleans and one word, nothing else
-        assert_eq!(object.len(), 5);
+        // (the Lifecycle family), and Pi's two switches with the closed
+        // state of its one settings entry: five booleans and one word
+        assert_eq!(object.len(), 6);
         assert!(object.get("pi").is_some_and(serde_json::Value::is_boolean));
+        assert!(object
+            .get("pi_lifecycle")
+            .is_some_and(serde_json::Value::is_boolean));
         let installation = object
             .get("pi_installation")
             .and_then(serde_json::Value::as_str)
@@ -4905,6 +4929,15 @@ mod tests {
                 .message(),
             "pi-config-unsupported-location"
         );
+        // the session-observation switch is Pi's own command, under the same rule
+        for enable in [true, false] {
+            assert_eq!(
+                crate::agent_pi::config::agent_pi_lifecycle_set(enable)
+                    .unwrap_err()
+                    .message(),
+                "pi-config-unsupported-location"
+            );
+        }
         assert_eq!(
             agent_hooks_set(crate::agent_pi::SOURCE.into(), false)
                 .unwrap_err()
@@ -5358,7 +5391,8 @@ mod tests {
             theirs
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .expect("a read timeout");
-            let wire = lifecycle::parse(line, |_| true).expect("a valid line");
+            let wire = lifecycle::parse(line, |_| Some(&crate::agent_reentry::claude::RECEIPTS))
+                .expect("a valid line");
             let receipt = Receipt {
                 claim: lifecycle::claim(wire).expect("the armed lease"),
                 stream: ours,
@@ -5517,7 +5551,8 @@ mod tests {
         fn hand(&mut self, line: &str) {
             use crate::agent_reentry::lifecycle;
             let (ours, theirs) = UnixStream::pair().expect("a connection");
-            let wire = lifecycle::parse(line, |_| true).expect("a valid line");
+            let wire = lifecycle::parse(line, |_| Some(&crate::agent_reentry::claude::RECEIPTS))
+                .expect("a valid line");
             let receipt = Receipt {
                 claim: lifecycle::claim(wire).expect("an armed lease"),
                 stream: ours,
@@ -5620,7 +5655,10 @@ mod tests {
         assert_eq!(worker.next_settled(), Ok(()));
         let facts = lifecycle::seal(0);
         assert_eq!(facts.len(), 1, "exactly its own fact");
-        assert_eq!(lifecycle::final_session(&facts).as_deref(), Some(OWN));
+        assert_eq!(
+            crate::agent_reentry::claude::final_session(&facts).as_deref(),
+            Some(OWN)
+        );
         worker.stop();
         lifecycle::end();
     }
@@ -5675,7 +5713,7 @@ mod tests {
         assert_eq!(worker.next_settled(), Ok(()));
         let sealed = lifecycle::seal_all();
         assert_eq!(
-            lifecycle::reentry(&sealed[&0], ID),
+            crate::agent_reentry::claude::entered(&sealed[&0], ID),
             lifecycle::Receipt::Entered(LEASED_CLIENT)
         );
         worker.stop();
@@ -7195,6 +7233,9 @@ mod tests {
     fn the_listener_hands_a_pi_stream_to_the_pi_transport_and_to_nothing_else() {
         use crate::agent_pi::transport::{Bounds, Service, World};
         use std::io::{BufRead, Write};
+        // the mailbox is one per process: this test begins and ends an
+        // operation, so it holds the lock every receipt test holds
+        let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
         let _guard = STORE_TEST_LOCK.lock_or_recover();
         reset_for_tests();
         let hello = serde_json::json!({

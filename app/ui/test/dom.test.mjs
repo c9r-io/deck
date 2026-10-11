@@ -16,6 +16,7 @@ const {
   connectorPairingChanged, initSettings, renderConnectorSettings, mcpAuthorizationDialog, persistSessionRestoreChoice, persistUpdateChannelChoice,
   persistThemeChoice, filterSettings, renderMcpSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
   locateSetting, openSettings, refreshEditors, persistAgentHooksChoice, persistClaudeReentryChoice, persistPiChoice,
+  persistPiLifecycle,
 } = await import('../js/settings.js');
 const { normalizeSettings: normalizeSettingsDoc } = await import('../js/settings-model.js');
 const { ctx, store } = await import('../js/state.js');
@@ -975,6 +976,82 @@ test('Claude session re-entry observation follows only claude_reentry and its ow
   assert.equal(reentry.disabled, false);
   assert.equal(claude.checked, false);
   assert.deepEqual(Object.keys(ctx.settings).filter(key => /reentry/i.test(key)), [], 'no settings key holds the choice');
+  box.fire('keydown', { key: 'Escape' });
+});
+
+test('Pi session observation is its own switch, written by its own command, and neither moves the other', async () => {
+  ctx.settings = normalizeSettingsDoc({});
+  const box = fakeDocument.getElementById('settings-box');
+  const signal = fakeDocument.getElementById('set-pi-hooks');
+  const session = fakeDocument.getElementById('set-pi-lifecycle');
+  const toasts = fakeDocument.getElementById('toasts');
+  let state = { pi: true, pi_lifecycle: false, pi_installation: 'current' };
+  let sent = [];
+  const backend = overrides => {
+    settingsBackend({ agent_hooks_status: () => state, ...overrides });
+    window.__TAURI__.core.invoke = (invoke => async (cmd, args) => { sent.push([cmd, args]); return invoke(cmd, args); })(window.__TAURI__.core.invoke);
+  };
+  backend({});
+  await openSettings();
+  await tick(); await tick();
+  assert.deepEqual([signal.checked, session.checked, session.disabled], [true, false, false]);
+  // the two answers of the backend are shown as they are, in every combination
+  for (const [pi, lifecycle] of [[false, true], [true, true], [false, false]]) {
+    box.fire('keydown', { key: 'Escape' });
+    state = { pi, pi_lifecycle: lifecycle, pi_installation: pi || lifecycle ? 'current' : 'absent' };
+    await openSettings();
+    await tick(); await tick();
+    assert.deepEqual([signal.checked, session.checked], [pi, lifecycle]);
+  }
+  // a build that may not write Pi's settings can use neither switch
+  box.fire('keydown', { key: 'Escape' });
+  state = { pi: false, pi_lifecycle: true, pi_installation: 'unsupported-location' };
+  await openSettings();
+  await tick(); await tick();
+  assert.deepEqual([session.checked, session.disabled, signal.disabled], [true, true, true]);
+  box.fire('keydown', { key: 'Escape' });
+  state = { pi: true, pi_lifecycle: false, pi_installation: 'current' };
+  await openSettings();
+  await tick(); await tick();
+
+  // enabling asks first, with its own question; declined, nothing is written
+  sent = [];
+  session.checked = true;
+  const declined = persistPiLifecycle();
+  assert.match(fakeDocument.getElementById('cfm-msg').textContent, /Enable Pi session observation\?/);
+  assert.match(fakeDocument.getElementById('cfm-msg').textContent, /does not reopen Pi sessions automatically/);
+  cfmDone(false);
+  await declined;
+  assert.equal(session.checked, false);
+  assert.deepEqual(sent, []);
+  // confirmed: Pi's own lifecycle command and nothing of the work-status one
+  backend({ agent_pi_lifecycle_set: () => { state = { pi: true, pi_lifecycle: true, pi_installation: 'needs-reload' }; return null; } });
+  sent = [];
+  session.checked = true;
+  const enabling = persistPiLifecycle();
+  cfmDone(true);
+  await enabling;
+  assert.deepEqual(sent, [['agent_pi_lifecycle_set', { enable: true }], ['agent_hooks_status', undefined]]);
+  assert.deepEqual([signal.checked, session.checked], [true, true], 'the work-status switch did not move');
+  assert.match(fakeDocument.getElementById('set-pi-note').textContent, /still runs with the earlier setting/);
+  assert.match(toasts.children.at(-1).textContent, /Pi session observation configured/);
+  assert.deepEqual(Object.keys(ctx.settings).filter(key => /^pi(?=[A-Z_]|$)|agentPi/.test(key)), [], 'no settings key holds the choice');
+  // turning it off asks nothing and leaves work status on
+  backend({ agent_pi_lifecycle_set: () => { state = { pi: true, pi_lifecycle: false, pi_installation: 'current' }; return null; } });
+  sent = [];
+  session.checked = false;
+  await persistPiLifecycle();
+  assert.deepEqual(sent[0], ['agent_pi_lifecycle_set', { enable: false }]);
+  assert.deepEqual([signal.checked, session.checked], [true, false]);
+  assert.match(toasts.children.at(-1).textContent, /Pi session observation removed/);
+  // a refusal: its own sentence, and both switches show what the file still says
+  backend({ agent_pi_lifecycle_set: () => { throw 'pi-config-conflict'; } });
+  session.checked = true;
+  const refused = persistPiLifecycle();
+  cfmDone(true);
+  await refused;
+  assert.deepEqual([signal.checked, session.checked], [true, false]);
+  assert.match(toasts.children.at(-1).textContent, /Pi’s settings disable Deck’s extension/);
   box.fire('keydown', { key: 'Escape' });
 });
 

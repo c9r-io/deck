@@ -1,25 +1,28 @@
-//! Pi's one settings entry: whether Pi loads Deck's bundled observer entry.
-//! The Settings switch is derived from it and written through it; nothing
-//! else stores it.
+//! Pi's one settings entry: which of Deck's three bundled observer entries
+//! Pi loads, if any. The two Settings switches are derived from it and
+//! written through it; nothing else stores them.
 //!
 //! # Contract
 //! - **One source of truth, in Pi's own file.** Pi's agent-directory
 //!   `settings.json` has an `extensions` array. Deck owns at most ONE string
-//!   in it: the absolute path of an observer entry (`signal.ts`) inside the
-//!   Deck bundle (`<bundle>/Contents/Resources/pi/`). The entry that is
-//!   there IS the switch; no entry is off. Deck keeps no boolean of its own,
-//!   and the backend's admission asks this file too (`enabled`).
+//!   in it: the absolute path of `signal.ts`, `lifecycle.ts` or `both.ts`
+//!   inside the Deck bundle (`<bundle>/Contents/Resources/pi/`). Which one is
+//!   there IS the pair of switches; no entry is both off. Deck keeps no
+//!   boolean of its own, and the backend's admission asks this file too
+//!   (`enabled`). Turning one switch replaces the entry by the one that
+//!   carries the resulting pair, in one write: there is never a moment with
+//!   two entries or with a capability nobody asked for.
 //! - **Nothing executable under the home directory.** The observer's code
 //!   stays in the signed bundle; the settings file gets a path. Before a
-//!   path is written, the files it leads to must be regular files in that
-//!   bundle with exactly the bytes this build was compiled with.
+//!   path is written, the four files it leads to must be regular files in
+//!   that bundle with exactly the bytes this build was compiled with.
 //! - **Only from a stable install.** A write needs Deck to run from
 //!   `/Applications/deck.app` or `~/Applications/deck.app`
 //!   (`tmux_lifecycle::stable_installed_bundle`), turning a switch off
 //!   included. A development or smoke bundle reads the file and writes
 //!   nothing (`unsupported-location`).
-//! - **Ownership is an exact path.** An entry is Deck's when it equals an
-//!   observer entry file under one of the two stable bundle locations —
+//! - **Ownership is an exact path.** An entry is Deck's when it equals one
+//!   of those three files under one of the two stable bundle locations —
 //!   never a file name, a substring or a pattern. Every other string in the
 //!   array, every other key and every other byte of the file is the user's
 //!   and stays as written: the text is edited in place with the span tools
@@ -35,11 +38,10 @@
 //!   this". While the array holds such an entry for one of Deck's paths,
 //!   nothing Deck does enables an observer: a switch is refused, the boot
 //!   migration writes nothing, and the backend admits none (`enabled`).
-//! - **One observer, never two.** Several entries of Deck's (the same file
-//!   under both stable locations) would make Pi load several observers. That
-//!   is `conflict`: the backend admits none of them, and the next switch —
-//!   or the boot migration — replaces them with the one entry that carries
-//!   their capabilities together.
+//! - **One observer, never two.** Several entries of Deck's would make Pi
+//!   load several observers. That is `conflict`: the backend admits none of
+//!   them, and the next switch — or the boot migration — replaces them with
+//!   the one entry that carries their capabilities together.
 //! - **Boot migration moves, it never enrolls.** It rewrites entries that
 //!   are already there to this bundle's path (a moved install), keeping the
 //!   capabilities they carried. No entry, or a disabling one: nothing.
@@ -67,27 +69,29 @@ use crate::applog::applog;
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 
-/// A bundled entry: the capabilities it carries.
+/// One of the three bundled entries: the capability pair it carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Variant {
     Signal,
+    Lifecycle,
+    Both,
 }
 
 impl Variant {
-    const ALL: [Variant; 1] = [Variant::Signal];
+    const ALL: [Variant; 3] = [Variant::Signal, Variant::Lifecycle, Variant::Both];
 
     fn file(self) -> &'static str {
         match self {
             Variant::Signal => "signal.ts",
+            Variant::Lifecycle => "lifecycle.ts",
+            Variant::Both => "both.ts",
         }
     }
 
     pub(crate) fn capabilities(self) -> Capabilities {
-        match self {
-            Variant::Signal => Capabilities {
-                signal: true,
-                lifecycle: false,
-            },
+        Capabilities {
+            signal: matches!(self, Variant::Signal | Variant::Both),
+            lifecycle: matches!(self, Variant::Lifecycle | Variant::Both),
         }
     }
 
@@ -101,12 +105,17 @@ impl Variant {
 
 /// The observer's files as this build was compiled with them: what a bundle
 /// must hold, byte for byte, before a path into it is written anywhere.
-pub(crate) const RESOURCES: [(&str, &str); 2] = [
+pub(crate) const RESOURCES: [(&str, &str); 4] = [
     (
         "observer.ts",
         include_str!("../../resources/pi/observer.ts"),
     ),
     ("signal.ts", include_str!("../../resources/pi/signal.ts")),
+    (
+        "lifecycle.ts",
+        include_str!("../../resources/pi/lifecycle.ts"),
+    ),
+    ("both.ts", include_str!("../../resources/pi/both.ts")),
 ];
 
 /// Where the observer's files are inside a bundle.
@@ -133,10 +142,11 @@ pub(crate) enum Installation {
     UnsupportedLocation,
 }
 
-/// The switch and the entry's state, both read from the file.
+/// The two switches and the entry's state, all read from the file.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Status {
     pub(crate) signal: bool,
+    pub(crate) lifecycle: bool,
     pub(crate) installation: Installation,
 }
 
@@ -209,7 +219,7 @@ fn entry_path(bundle: &Path, variant: Variant) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The observer's files in `bundle` are regular files with this build's bytes.
+/// The four files in `bundle` are regular files with this build's bytes.
 fn resources_present(bundle: &Path) -> bool {
     RESOURCES.iter().all(|(name, content)| {
         let path = bundle.join(RESOURCE_DIR).join(name);
@@ -596,6 +606,7 @@ fn status_in(place: &Place, mismatched: impl FnOnce(Capabilities) -> bool) -> St
     };
     Status {
         signal: capabilities.signal,
+        lifecycle: capabilities.lifecycle,
         installation,
     }
 }
@@ -654,7 +665,7 @@ pub(crate) fn enabled() -> Capabilities {
     capabilities
 }
 
-/// The switch and the entry's state (`agent_hooks_status`).
+/// The two switches and the entry's state (`agent_hooks_status`).
 pub(crate) fn status() -> Status {
     place()
         .map(|place| status_in(&place, super::transport::mismatched))
@@ -673,6 +684,7 @@ pub(crate) fn set(capability: Capability, enable: bool) -> Result<(), DeckError>
         "[agent-pi] {} {} {}",
         match capability {
             Capability::Signal => "signal",
+            Capability::Lifecycle => "lifecycle",
         },
         if enable { "install" } else { "remove" },
         result.as_ref().map_or_else(|e| e.code(), |_| "ok")
@@ -682,6 +694,17 @@ pub(crate) fn set(capability: Capability, enable: bool) -> Result<(), DeckError>
         super::transport::settings_changed();
     }
     result.map(|_written| ())
+}
+
+/// The lifecycle switch's own command: observing Pi's native session is an
+/// opt-in of its own, beside the signal switch (`agent_hooks_set`). It
+/// turns on no Signal, and nothing it observes makes Pi re-enterable.
+#[tauri::command]
+pub(crate) fn agent_pi_lifecycle_set(enable: bool) -> Result<(), DeckError> {
+    if crate::extensions::agent(super::SOURCE).is_none() {
+        return Err(DeckError::new(ErrorKind::Other, "unknown agent"));
+    }
+    set(Capability::Lifecycle, enable)
 }
 
 /// The boot migration (stable installs only): entries that are there are

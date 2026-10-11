@@ -128,7 +128,7 @@ export default function (pi) {
   pi.registerCommand("fx-crash", { handler: async () => { process.kill(process.pid, "SIGKILL"); } });
 
   pi.registerCommand("fx-new", { handler: async (_, ctx) => { await ctx.newSession(); } });
-  pi.registerCommand("fx-resume", { handler: async (_, ctx) => { await ctx.switchSession(process.env.FIXTURE_RESUME); } });
+  pi.registerCommand("fx-resume", { handler: async (text, ctx) => { await ctx.switchSession(text || process.env.FIXTURE_RESUME); } });
   pi.registerCommand("fx-fork", { handler: async (_, ctx) => {
     const entry = ctx.sessionManager.getBranch().find((e) => e.type === "message" && e.message.role === "user");
     if (entry) await ctx.fork(entry.id);
