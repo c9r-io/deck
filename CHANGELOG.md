@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.8.0 — 2026-10-11 (Nightly)
+
+- New, off by default: when you restart the background shell service, Deck
+  can reopen the Claude Code sessions that were running in your cards. Turn
+  on "Claude session re-entry observation" in Settings → Agents &
+  notifications; it adds session start and session end hooks to
+  `~/.claude/settings.json` (your other settings and hooks are kept), and
+  turning it off removes exactly those. The restart review then lists the
+  sessions that can be reopened. You tick the ones you want, and after the
+  restart each ticked card runs Claude again in the session it was in when it
+  exited, also after `/clear`.
+- What reopening does and does not do: one start per session and no retry,
+  nothing is typed into the reopened client, and queued prompts stay paused.
+  "Re-entry confirmed" means the client entered that session; it does not
+  mean a task continued. Only the session is reopened: tasks, temporary
+  settings and extra working directories are Claude's to restore.
+- Permissions on reopening are your choice for that one restart. By default
+  Deck adds no permission flag. If a session was launched with
+  `--dangerously-skip-permissions` you can choose to reapply it for the
+  selected sessions; the review says how many that is, and warns that this
+  turns bypass back on where you had lowered it while the session ran. The
+  choice is not saved and the next review starts from the default.
+- A Claude client is offered for reopening by what its running program is,
+  verified by macOS code signing, not by a list of versions: a Claude Code
+  release this build has never seen is treated like any other. A session
+  Deck cannot verify is listed with the reason and is not reopened, and when
+  observation is off the review says so and offers to open Settings.
+  Reopening needs zsh, the macOS default, as your account's login shell;
+  with another one the review lists the sessions and reopens none.
+- The hooks Deck adds to `~/.claude/settings.json` follow the application:
+  after Deck is installed to another location, the next launch rewrites its
+  own entries to the new path. Your own hooks are never changed, and a user
+  who only has the status hooks is not enrolled in re-entry observation.
+- Slack, the agent adapters for Claude Code and Codex, and local translation
+  are now registered in one place inside the application. Nothing changes in
+  how they are set up or used, and no setting or saved data is migrated.
+- For people who build from source: debug, release and coverage builds of
+  one checkout no longer package each other's helpers or frontend, files
+  whose names start with a dot in `app/ui` are no longer built into the
+  application, and `app/run.sh` checks the bundle it assembled and refuses
+  to open one that is not this debug build.
+
 ## 0.7.26 — 2026-10-09 (Nightly)
 
 - Terminal typing keeps its order: text typed right after starting an input
