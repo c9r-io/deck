@@ -285,256 +285,107 @@ Tauri 2 macOS app. Frontend `app/ui/` is a no-build set of native ES modules
 loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 `app/src-tauri/src/`. The contract for each area is in the named module header.
 
-| Area | Module (contract in its header) |
+| Area | Modules |
 |---|---|
-| Board state, one persist-before-commit transaction queue | `ui/js/persistence.js`, `state.js` (shared slots), `pure.js` (DOM-free logic) |
-| Typed documents, envelope, quarantine-first recovery | `storage.rs`, `documents.rs` |
-| Private data dir (0700/0600 by construction), atomic writes, pruning | `datadir.rs` |
-| Bounded durable state documents (bounded read/decode, capped atomic write, ids, SHA-256 hex) shared by the MCP ledger, the Connector journal and the channel inbox | `ledger.rs` |
-| One error type: closed `ErrorKind` + message, string on the wire | `error.rs` |
-| app.log writer, session tags, log migration | `applog.rs` |
-| Log redaction scanner (`sanitize_log`, `redact_credentials`) | `redact.rs` |
-| Single-instance flock, launch flags / debug-only smoke args | `instance_lock.rs`, `launch_args.rs` |
-| Session start/kill, poll (status, memory footprint, preview rows), clipboard write | `commands.rs` |
-| tmux sidecar, socket, server conf; long-lived client argv (query client, pane attach) shared with the contract suite's client-topology matrix | `tmux.rs`, `tmux_clients.rs` |
-| Server lifecycle: protocol metadata, reuse/replace, restart transaction, channel sockets | `tmux_lifecycle.rs`, `restart.rs` (exit/restart policy), `session_runtime.rs` (shared guards and deadlines) (+ `docs/tmux-server-lifecycle.md`) |
-| Verified shell-exit evidence (tmux `pane-died` ledger, identity-bound Alive / ExitedNormally / Missing; absence is never retirement authority) | `shell_exit.rs` (+ `docs/tmux-server-lifecycle.md`) |
-| PTY attach bridge with end-to-end flow control | `pty.rs` |
-| Opt-in MCP terminal control: local grants/ledger/fencing, STDIO adapter, visible pane runner, Board bridge | `mcp/` (contract in `mcp/mod.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/` (shared contract JSON), `ui/js/mcp.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`) |
-| Controlled Execution calibration (CE1): frozen corpus, probe, A1/B harness, the ONE certification aggregator (evidence only; verdicts come from the aggregator) | `scripts/ce/`, `scripts/ce_parity.py`, `scripts/ce_verdict.py`, `mcp/tests.rs` `ce1_probe_*` (+ `docs/ce-calibration.md`) |
-| Native on-device voice input typed straight into the pane (one mic, one bound pane, no draft), shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice.js`, `voice-model.js`, `voice-target.js`, `voice-settings.js` (+ `docs/voice-input.md`) |
-| Optional local translation, focus-bounded pasteboard observation, and the session companion Lens (Live view / Copied text tabs; unattended acceptance `scripts/translation-lens-verify.py`) | `native/BergamotBridge.cpp`, `native/PasteboardBridge.swift`, `vendor/bergamot/`, `intelligence/`, `ui/js/local-intelligence.js`, `translation-lens.js`, `translation-lens-model.js` (+ `docs/translation-lens.md`) |
-| Terminal scroll + token-bound selection lease commands | `terminal.rs`, `terminal_selection.rs`, `terminal_scroll.rs` |
-| Pointer/selection authority, overlay, wheel routing (frontend) | `ui/js/selection.js`, `layout.js` |
-| Completion bar, links, context menus, the ONE new-session path (start first, persist after; project defaults for ＋/⌘N, context entries keep their directory and never a command) | `ui/js/terminal.js` (`newSession` / `newDefaultSession`), `provider.createStarted` + `openProjectDefaults` in `board.js`, `projectDefaults` / `newSessionPlan` in `pure.js`, `links.rs` |
-| Terminal link parsing and xterm adapter, copy routing and clipboard, PTY byte codecs | `ui/js/terminal-links-model.js`, `terminal-links.js`, `terminal-clipboard.js`, `terminal-bytes.js`; composed by `layout.js` |
-| Dropdowns (deck's own listbox over every `<select>`) | `ui/js/dropdown.js` |
-| Settings modal: sections and search, the ONE settings writer, font scale, shortcuts, theme/locale/channel choices, inbound/Connector/MCP settings; dialog primitives (confirm, choice, prompt, toast, inline rename, project defaults) stay separate; the section list, stable setting ids and search rules are DOM-free | `ui/js/settings.js`, `ui/js/settings-search-model.js`, `ui/js/dialogs.js` |
-| Lists (the ⏱ panel): queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js`, `ui/js/queue-review.js`, `scheduler/review.rs` |
-| Automation delivery authority: the approval grant (a Slack badge rule's in settings, a phone task preset's in the Board), claim verification at admission, revocation sweep, delivery audit | `scheduler/authority.rs`, `inbound.rs` (`AutoSend`), `ui/js/automation-model.js` (`approveRule` / `grantState`, shared vector `ui/test/fixtures/automation-grant.json`), `ui/js/connector-model.js` (`withPresetApproval`, shared vector `ui/test/fixtures/preset-grant.json`) |
-| Slack badge, clock and phone task preset first-send readiness override (explicit per-rule or per-preset risk acceptance for a run's head row; never readiness evidence), and the Board-side source a preset's choices are swept and fenced against | `scheduler/first_send.rs`, `inbound.rs` (`first_send_without_readiness`), `documents.rs` (`board_authority`, `board_fence`), `ui/js/automation-model.js` (`withFirstSend`), `ui/js/connector-model.js` |
-| Fully revocable Slack channel run-head permission, native staging proof and frozen initial request; one editor decision, no later-step/tool permission | `scheduler/channel_first_send.rs`, `inbound_channel.rs`, `documents.rs`, `ui/js/channel-model.js`, `ui/js/inbound.js`, `ui/js/automation.js` (+ `docs/channel-monitor.md`) |
-| Templates (saved lists, shared by cards and automations) | `ui/js/templates.js` |
-| Needs-attention view (sidebar entry), runtime read state, tab done-dot | `ui/js/attention.js`, `ui/js/attention-model.js` |
-| Away notifications and the Dock badge (Rust-side trigger, closed content, in-process UNUserNotificationCenter bridge) | `notify.rs`, `native/NotificationBridge.swift`, `ui/js/notify-model.js` (+ `docs/notifications.md`) |
-| Agent status hooks (closed state words, bundled helper), per-family hook ownership (Signal / Lifecycle) | `agent_status.rs`, `agent_origin.rs` (shared kernel origin of a hook report), `src-tauri/status-helper/` |
-| Reopen Agent session on an intentional shell-service restart (Claude only; transaction memory, exact native session, once-only launch, Policy A default / Policy B per-restart bypass reauthorization; never task, readiness or authority) | `agent_reentry/` (contract in `mod.rs`; `claude.rs` vendor facts, `lifecycle.rs` receipts, `launch.rs` the one input site), `src-tauri/lifecycle-helper/`, `procinfo.rs` (narrow qualification; a client is admitted by its code identity, never by a list of releases), `tmux_lifecycle.rs` (`restart_transaction_on`), `ui/js/reentry-model.js`, `restart-reentry.js` (+ `docs/tmux-server-lifecycle.md`, `docs/first-party-extensions.md`) |
-| Static first-party extension tables (service integrations, agent adapters, translation providers; compiled in, exactly-one lookups, registered ≠ enabled/trusted/authorized) and the Slack integration descriptor | `extensions.rs`, `slack.rs` (+ `docs/first-party-extensions.md`) |
-| Automations: inbound sources (Slack badge, clock), dispatcher, Keychain | `inbound.rs`, `inbound_slack.rs`, `inbound_clock.rs`, `keychain.rs`, `ui/js/inbound.js` (+ `docs/auto-respond.md`) |
-| Remote-agent admission policy (`claude`/`codex` with simple shell-safe arguments, invisible-character stripping) shared by channels, Connector and external queue rows | `admission.rs` (pinned by `tests/external_admission.rs`) |
-| Automations drawer (both triggers), run finish, the Board's `New session ▾` menu and ↻ chip | `ui/js/automation.js` (rules are inbound rules; the Slack connection stays in Settings; finish close lives in the `board.js` poll; the head keeps ONE persistent action — automations and templates open from that menu, a list's 📋 menu, the automation editor or the project tab menu) |
-| Shell restart recovery (bounded transcript projection) | `shell_state.rs` |
-| Updates (closed stable/nightly, one endpoint each) | `updater.rs`, `relaunch.rs` |
-| Structured diagnostics, ui_event whitelist, exports | `diagnostics.rs` |
+| Board state, the one transaction queue | `ui/js/persistence.js`, `state.js`, `pure.js` |
+| Typed documents, envelopes, recovery | `storage.rs`, `documents.rs` |
+| Private data dir, atomic writes; bounded durable state | `datadir.rs`, `ledger.rs` |
+| Error type | `error.rs` |
+| app.log, redaction, diagnostics | `applog.rs`, `redact.rs`, `diagnostics.rs` |
+| Single instance, launch flags | `instance_lock.rs`, `launch_args.rs` |
+| Session start/kill, poll | `commands.rs` |
+| tmux sidecar and long-lived clients | `tmux.rs`, `tmux_clients.rs` |
+| tmux server lifecycle, restart, verified shell exit, restart recovery | `tmux_lifecycle.rs`, `restart.rs`, `session_runtime.rs`, `shell_exit.rs`, `shell_state.rs` (+ `docs/tmux-server-lifecycle.md`) |
+| PTY attach bridge | `pty.rs` |
+| MCP terminal control | `mcp/` (contract in `mcp/mod.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/`, `ui/js/mcp.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`) |
+| Controlled Execution calibration (CE1) | `scripts/ce/`, `scripts/ce_parity.py`, `scripts/ce_verdict.py`, `mcp/tests.rs` `ce1_probe_*` (+ `docs/ce-calibration.md`) |
+| Voice input, shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice*.js` (+ `docs/voice-input.md`) |
+| Local translation, pasteboard observation, Lens | `native/BergamotBridge.cpp`, `native/PasteboardBridge.swift`, `vendor/bergamot/`, `intelligence/`, `ui/js/local-intelligence.js`, `translation-lens*.js` (+ `docs/translation-lens.md`) |
+| Terminal scroll, selection, links, clipboard | `terminal.rs`, `terminal_selection.rs`, `terminal_scroll.rs`, `links.rs`, `ui/js/selection.js`, `layout.js`, `terminal-links*.js`, `terminal-clipboard.js`, `terminal-bytes.js` |
+| Completion bar, context menus, the ONE new-session path | `ui/js/terminal.js` (`newSession`), `board.js` (`provider.createStarted`), `pure.js` (`newSessionPlan`) |
+| Settings (the ONE settings writer), dialogs, dropdowns | `ui/js/settings.js`, `settings-search-model.js`, `dialogs.js`, `dropdown.js` |
+| Lists (the ⏱ panel), delivery state machine | `scheduler/`, `context.rs`, `ui/js/scheduler.js`, `queue-review.js` (+ `docs/scheduler-context-safety.md`) |
+| Automation authority and first-send overrides | `scheduler/authority.rs`, `first_send.rs`, `channel_first_send.rs`, `inbound_channel.rs`, `ui/js/automation-model.js`, `connector-model.js`, `channel-model.js` (+ `docs/channel-monitor.md`) |
+| Automations: inbound sources, drawer, templates, Keychain | `inbound.rs`, `inbound_slack.rs`, `inbound_clock.rs`, `keychain.rs`, `ui/js/inbound.js`, `automation.js`, `templates.js` (+ `docs/auto-respond.md`) |
+| External admission policy | `admission.rs` (pinned by `tests/external_admission.rs`) |
+| Needs-attention view, away notifications, Dock badge | `ui/js/attention.js`, `attention-model.js`, `notify.rs`, `native/NotificationBridge.swift`, `ui/js/notify-model.js` (+ `docs/notifications.md`) |
+| Card Reminders | `reminder.rs`, `ui/js/reminder-model.js` (+ `docs/card-reminders.md`) |
+| Agent status hooks | `agent_status.rs`, `agent_origin.rs`, `src-tauri/status-helper/` |
+| Agent re-entry on a shell-service restart | `agent_reentry/` (contract in `mod.rs`), `src-tauri/lifecycle-helper/`, `procinfo.rs`, `procinfo/code_identity.rs`, `ui/js/reentry-model.js`, `restart-reentry.js` |
+| First-party extension tables | `extensions.rs`, `slack.rs` (+ `docs/first-party-extensions.md`) |
+| Updates | `updater.rs`, `relaunch.rs` |
 | File drop / image paste | `drops.rs` |
-| Process facts without spawning `ps`; whose code a process is and that it executes one referenced file (in-process Security.framework, no `codesign`/`spctl` spawn) | `procinfo.rs`, `procinfo/code_identity.rs` |
-| Card Reminder intent, revision-fenced system projection and blocked retirement | `reminder.rs`, `native/NotificationBridge.swift`, `ui/js/reminder-model.js`, Board/persistence/dialogs (+ `docs/card-reminders.md`) |
-| Debug/isolated-smoke fault injection; debug-only native driver (own-window AppKit input, own-webview snapshots, own-window minimum-size read, general-pasteboard guard, named test pasteboard) | `smoke_faults.rs`, `smoke_native.rs`, `native/SmokeBridge.swift` (compiled into debug profiles only) |
+| Smoke fault injection, native driver (debug profiles only) | `smoke_faults.rs`, `smoke_native.rs`, `native/SmokeBridge.swift` |
 
-Status semantics (card colour) are documented on `effectiveCardStatus` in
-`pure.js`: agent state outranks the 15s output heuristic.
+Card colour: `effectiveCardStatus` in `pure.js` (agent state outranks the 15s
+output heuristic).
 
 ### Run and gates
 
-- Run: `app/run.sh` — builds, wraps the binary in a minimal .app, launches via
-  `open`. `~/.deck/app.log` (0600) collects backend + frontend diagnostics;
-  maintainer-only verbose frontend events are enabled with
-  `app/run.sh --debug-logging` (no user setting). Production debug:
-  `tmux -L deck ls`; source bundles use `tmux -L deck-dev ls`.
-- Frontend gates: `node --check` · `scripts/ui-tests` (node:test + coverage
-  thresholds and a source/coverage inventory; WKWebView-bound modules are excluded and covered by the smoke) ·
-  `node ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`;
-  import cycles only inside board/layout/terminal — a leaf module
-  takes what it needs from the core through `init*(deps)`).
-  Mirrored frontend/backend constants (limits, closed vocabularies, id
-  and badge spellings) are one list, `ui/test/fixtures/limits.json`,
-  checked by `ui/test/limits.test.mjs` and `src/limits_mirror.rs`.
-  Backend gates: `cargo fmt`, `cargo clippy --workspace --all-targets --all-features -D warnings` (the CI form: test code is linted too),
-  `cargo test --workspace` (unit + `tests/tmux_contract.rs` against the
-  bundled tmux + `tests/log_privacy.rs` + `tests/edr_quiet.rs` +
-  `tests/external_admission.rs` (every path that puts non-owner text into
-  a queue or pane is pinned and must pass `admit_external`) +
-  `tests/ipc_contract.rs` (JS `inv` names ↔ registered commands) + the
-  status helper). `src-tauri/Cargo.toml` is the one workspace root; the compiler
-  is pinned by `rust-toolchain.toml` at the repository root and the same
-  version in every workflow (`scripts/test_release_tools.py` checks).
-- PTY smoke test (headless): `cargo run --example pty_smoke`
-- The vendored terminal is `@xterm/xterm` 5.5.0 plus exactly ONE pinned
-  upstream change (composition commit boundary, `docs/vendored-xterm.md`).
-  The published and the shipped SHA-256, the change itself and the
-  `ui/vendor/` file list are pinned by the "vendored xterm" test in
-  `ui/test/static.test.mjs`; `scripts/patch-vendored-xterm.mjs` rebuilds or
-  verifies the file. Any further vendor edit is a separately authorized,
-  separately pinned exception, never a quiet change.
-- WKWebView release regression (debug bundles only): launch with a fresh
-  absolute `DECK_SMOKE_DATA_DIR`, unique `DECK_SMOKE_TMUX_SOCKET`, and
-  `DECK_SMOKE_WKWEBVIEW=1 app/run.sh`. The production modules run inside the
-  real bundled WKWebView; results are closed numeric `smoke-check` events in
-  that isolated directory's `app.log`, judged by
-  `scripts/smoke-verdict <data-dir> <mode>` against
-  `ui/test/fixtures/smoke-manifest.json` (exit 0 = green). Release builds
-  ignore these debug-only arguments, and the harness must never point at
-  `~/.deck`.
+- Run: `app/run.sh` (`--debug-logging` for verbose frontend events). Log:
+  `~/.deck/app.log`. tmux: `tmux -L deck ls` (production), `-L deck-dev`
+  (source bundles).
+- Frontend gates: `node --check` · `scripts/ui-tests` · `node ui/js/check.mjs`.
+- Backend gates: `cargo fmt`, `cargo clippy --workspace --all-targets
+  --all-features -D warnings` (the CI form), `cargo test --workspace`.
+  `src-tauri/Cargo.toml` is the one workspace root; the compiler is pinned by
+  `rust-toolchain.toml`.
+- Mirrored frontend/backend constants are one list,
+  `ui/test/fixtures/limits.json`.
+- The vendored xterm carries exactly ONE pinned upstream change
+  (`docs/vendored-xterm.md`); any further vendor edit needs separate
+  authorization and its own pin.
+- WKWebView smoke (debug bundles only): fresh absolute `DECK_SMOKE_DATA_DIR`,
+  unique `DECK_SMOKE_TMUX_SOCKET`, `DECK_SMOKE_WKWEBVIEW=1 app/run.sh`; judge
+  with `scripts/smoke-verdict <data-dir> <mode>` (exit 0 = green). Never point
+  it at `~/.deck`.
 
 ### WKWebView / Tauri gotchas (each cost a real bug)
 
-- Force Touch can open macOS Look Up on button text despite `user-select:none`.
-  `app.js` cancels `webkitmouseforcewillbegin` for buttons and their descendants;
-  keep ordinary pointer/click events and editable/terminal text untouched.
-  App-surface `contextmenu` cancels WebKit's browser menu without stopping
-  propagation to Deck's own card/project context-menu handlers. Real form
-  fields retain native editing menus; xterm's hidden textarea does not.
-- `body { user-select: none }` makes WebKit refuse keyboard input in any
-  textarea/input that inherits it — including xterm's hidden helper textarea
-  (symptom: terminal renders, chips inject fine, typing does nothing). Keep the
-  `input, textarea { -webkit-user-select: text }` override.
-- macOS windows must set `"dragDropEnabled": false` in tauri.conf.json or the
-  native file-drop handler swallows all HTML5 drag events (symptom: cards can't
-  be dragged between boards). Chromium-based testing of the mock never catches
-  either issue — verify webview-specific behavior in the real app.
-- A menu-less macOS app gets no standard Edit actions, so ⌘C/⌘V are implemented
-  inside xterm's attachCustomKeyEventHandler via navigator.clipboard.
-- Inline rename is a one-shot edit lifecycle: Enter commits once (and removes
-  the editor before async persistence), Escape restores without persistence,
-  blur commits once, and composition/`keyCode 229` Enter is ignored. Persistence
-  failure rolls every visible title back with an explicit toast.
-- Terminal path menus resolve parent directories in Rust without invoking a
-  shell: quoted/relative/absolute/Unicode paths and optional `:line[:column]`
-  suffixes are normalized against the canonical session cwd, but a literal
-  existing colon-number filename wins. New-session-in-parent starts tmux before
-  the Board transaction and kills only that new session on save failure.
-- The frontend is embedded at COMPILE time and cargo does not track it: without
-  the whole-directory `cargo:rerun-if-changed=../ui` line in build.rs (never a
-  list of its entries), UI-only edits build in 1s as a no-op and the app
-  silently runs the previous UI. (Bit us: command capture appeared broken
-  because the binary shipped a stale frontend.)
-  build.rs stages `ui/` into the gitignored `src-tauri/ui-dist/` that
-  `frontendDist` points at; release profiles leave `ui/test` out of the
-  bundle, debug profiles keep it for the WKWebView smoke. Never edit `ui-dist`.
-  The tauri CLI refuses to start cargo when `frontendDist` is missing, so
-  `beforeBuildCommand` is a bare `mkdir -p` of it (bit us: the first 0.5.15
-  nightly build failed on a clean runner while `app/run.sh`, which calls
-  cargo directly, never hit it).
-- Tauri v2 requires `src-tauri/capabilities/default.json` granting `core:default`
-  or `event.listen` is REFUSED with a silent promise rejection — invoke (JS→Rust)
-  works, events (Rust→JS) never arrive, so the terminal receives no output while
-  everything else looks healthy. The boot-time deck-ping self-test in ui/index.html
-  catches this class of failure; keep it. Always `.catch(ulog)` on listen().
+Chromium testing of the mock catches none of these; verify in the real app.
+
+- `body { user-select: none }` makes WebKit refuse keyboard input in inheriting
+  fields, xterm's hidden textarea included (terminal renders, typing does
+  nothing). Keep the `input, textarea { -webkit-user-select: text }` override.
+- `"dragDropEnabled": false` in `tauri.conf.json`, or the native file-drop
+  handler swallows HTML5 drag events (cards can't be dragged).
+- A menu-less macOS app has no Edit actions: ⌘C/⌘V live in xterm's
+  `attachCustomKeyEventHandler`.
+- The frontend is embedded at compile time and cargo does not track it: keep
+  the whole-directory `cargo:rerun-if-changed=../ui` in `build.rs`, or UI edits
+  silently ship the previous UI. `build.rs` stages `ui/` into the gitignored
+  `src-tauri/ui-dist/`; never edit it. `beforeBuildCommand` must `mkdir -p` it
+  or the tauri CLI fails on a clean runner.
+- `src-tauri/capabilities/default.json` must grant `core:default`, or
+  `event.listen` is silently refused: invoke works, events never arrive, the
+  terminal gets no output. Keep the boot-time deck-ping self-test; always
+  `.catch(ulog)` on `listen()`.
 
 ## Invariants
 
-- **Minimum supported window size: 1280×800 points** (`tauri.conf.json`
-  `minWidth`/`minHeight`, pinned by `ui/test/static.test.mjs`; the window
-  manager is the only enforcement, and it binds user resizes, not programmatic
-  ones). Sizes below are outside the supported product envelope: no layout
-  work targets them and no smoke certifies them; the old small-viewport CSS
-  stays only as free defensive degradation.
-- Ordinary sessions are started with a plain shell + `send-keys` of the command,
-  NOT by exec'ing the command, so the session survives agent exit and scrollback
-  stays inspectable. The explicit exception is an MCP-managed session, whose
-  pane executable is the signed `deck-mcp-runner`, never `deck-app`.
-- **A launch command is sent once.** The durable card flag `launched` records
-  it; reopening a stopped card starts the shell only (`pure.js` `startCommand`),
-  never the program. Boards without the field read as launched. The scheduler's
-  delivery start is the one path that still starts a dead session with the
-  command, because the list asked for that program. A manually created card
-  gets a command from exactly one place: the project's optional default
-  command (`project.cmd`), taken by ＋ / ⌘N / "New session now" and sent by
-  that first start; "New shell only" and every context entry (in this
-  directory, parent folder, new shell in a split) create shells.
-  One more program start exists and it never reads the card's command
-  (enabled in code. It names no release: a client is admitted by its code
-  identity — Anthropic's signature as Claude Code, validated in this
-  process against the running image AND its file, and bound to the exact
-  process generation (`procinfo.rs`, `procinfo/code_identity.rs`) — so a
-  release this build has never seen needs no change of Deck, under either
-  policy. A file name, a version, a path, a signature that validates on
-  disk, a lifecycle receipt or the user's approval never stands in for that
-  identity; the file's SHA-256 only proves, inside one transaction, that
-  the content stayed the same. Those identity checks are proven by tests
-  on real processes with ad-hoc signed fixtures, and were run read-only
-  against three installed releases — one of them never listed anywhere —
-  two other Developer ID programs and one running client. On 2026-10-11,
-  representative validation of the new identity mechanism passed on real
-  Claude 2.1.295, whose digest was never in the historical list: ONE A and
-  ONE B transaction through the test controller (two and three cards), and
-  ONE A and ONE B through the isolated real application's UI and IPC (one
-  and three cards). Both B samples included a bypass launch lowered to plan
-  before reauthorization. The application used an ad-hoc debug carrier,
-  private data/socket and project lifecycle hooks. An earlier B preparation
-  stopped on a CUA timeout before starting Claude; its record is retained.
-  P3 is complete with evidence limits, not a per-release gate or release
-  approval; macOS 26 remains UNRUN. See the
-  [acceptance summary](reports/agent-reentry-forward-compat/acceptance.md)
-  for the four evidence cells and remaining limits. The native evidence
-  below is historical: it was gathered on two releases while admission was
-  still a list of release digests, every stage ran once, by a test
-  controller that calls the production transaction, and it says nothing
-  about the identity checks. On
-  Claude 2.1.294: how the production checks read a bare and a bypass-flag
-  launch — stages S and B, discrete samples of a client started outside
-  Deck — and ONE Policy A restart transaction over two such clients —
-  stage M1: both entries confirmed, each request the frozen executable with
-  `--resume` and the session that client exited in. On Claude 2.1.296: the
-  same launch readings; ONE Policy A transaction (M1, with a `/clear`);
-  ONE Policy B transaction over three clients (M2: the two bypass launches
-  were asked with the override before `--resume`, the bare one without it,
-  all three confirmed; the one that had been lowered to plan mode showed
-  bypass again — a reauthorization, read from the pane by the experiment's
-  operator, not by Deck); and ONE transaction whose new shell exported a
-  refused name (M3: one request, not confirmed, the client left running).
-  Local isolated application validation on 2.1.296 passed in follow-up 33:
-  real UI → IPC → production assembly → restart → real Claude/helper →
-  post-check → UI result, ONE successful Policy A transaction. The ad-hoc
-  debug carrier used private data/socket, real HOME and an explicit validated
-  project lifecycle configuration; its SHA-256 dependency was optimized,
-  with identity checks and deadlines unchanged. Not verified: formal release
-  installation, global hook opt-in/migration, Policy B and the
-  refused-name path on 2.1.294, anything Deck itself would know about the
-  permission after a re-entry, Developer ID, notarization, Gatekeeper and the
-  published carrier. The WKWebView
-  `reentry` smoke paints the dialog from scripted answers: its earlier
-  layout checkpoint failed twice and passed after a stylesheet repair;
-  the 2026-10-11 rerun passed 15/15 with the current A/B result wording.
-  That is presentation evidence at the default window, separate from the
-  native P3 transactions): when
-  the user confirms a shell-service restart AND ticks cards to reopen,
-  `agent_reentry` types exactly one request into the shell it created for
-  each sealed entry — the frozen executable with `--resume <the
-  native session that client exited in>`, plus the bypass flag only under
-  that restart's explicit Policy B for a client that was launched with it.
-  No prompt, no "continue", no saved command, no replayed argv; one attempt,
-  never repeated after a timeout, a lost reply or a crash; nothing is
-  remembered for the next restart, and a confirmed entry is not readiness,
-  authority or task progress (`agent_reentry/mod.rs`). The request is typed
-  after a bounded set of checks; what the new shell's startup files export
-  cannot be read beforehand (the user accepted that window), so the started
-  client is checked afterwards and a mismatch only means "not confirmed" —
-  the start is never undone, retyped or retried. A check of the program
-  that did not finish inside its phase is said as that, never as a program
-  that changed, and nothing is typed after it. Those checks end in calls
-  that cannot be interrupted: each has a deadline its caller owns, an
-  answer that arrives after it — a positive one included — names no
-  candidate, freezes nothing, records no receipt and confirms no entry, and
-  the caller is answered in time by a worker that keeps what it holds; the
-  status listener never makes such a call itself. A receipt is recorded only
-  into the operation and the arming it was claimed from, and only before the
-  post share ended — the confirmation's own share is never more time for a
-  receipt; a preview becomes the one that can be confirmed at one instant,
-  under the turn it was read in. Under Policy B a confirmed
-  entry says that the bypass flag was sent, never that a permission is in
-  effect — Deck does not read one.
-- **A card is persisted only after its session started.** `provider.createStarted`
-  starts tmux inside the Board transaction and kills it if the write fails; a
-  directory that no longer exists (`NotDir`) asks the user (cancel / edit the
-  project defaults / a shell in `$HOME`) and never leaves a stopped card behind.
-- **MCP shell authority is separate from Phone Connector.** MCP uses its own
-  disabled-by-default 0600 state/socket, client/project grants, operation and
-  job ids, generations, leases, and control epochs. It never accepts a Phone
-  token or operation kind. Board intents still go through
-  `provider.createStarted` / `provider.close`; jobs run in the visible tmux
-  pane's signed runner. Structured launch argv is visible in ordinary process
-  metadata and must not contain secrets. See `mcp/mod.rs` and
-  `docs/mcp-architecture.md`.
-- Use harmless card commands (e.g. `while true; do date; sleep 1; done`) when
-  testing — a card whose command is `claude` will really launch Claude Code.
+- **Minimum window 1280×800 points** (`tauri.conf.json`, pinned by
+  `ui/test/static.test.mjs`). Smaller sizes are unsupported: no layout work,
+  no smoke.
+- Ordinary sessions start a plain shell and `send-keys` the command, never
+  exec it, so the session survives agent exit. Exception: an MCP-managed
+  session's pane executable is the signed `deck-mcp-runner`, never `deck-app`.
+- **A launch command is sent once** (card flag `launched`; `pure.js`
+  `startCommand`). Reopening a stopped card starts the shell only. The
+  scheduler's delivery start is the one path that restarts a dead session
+  with its command. A manual card's command comes only from `project.cmd`;
+  "New shell only" and every context entry create shells.
+- **Agent re-entry is the one other program start, and never reads the card's
+  command.** On a confirmed shell-service restart with ticked cards it types
+  one request per entry: the frozen executable with `--resume <native
+  session>`, plus the bypass flag only under that restart's Policy B. One
+  attempt, never retried; a client is admitted by verified code identity,
+  never a release list; a confirmed entry is not readiness, authority or task
+  progress. Contract: `agent_reentry/mod.rs`; evidence and limits:
+  `reports/agent-reentry-forward-compat/acceptance.md`.
+- **A card is persisted only after its session started**
+  (`provider.createStarted` kills the session if the write fails; a missing
+  directory asks the user, never leaves a stopped card).
+- **MCP shell authority is separate from Phone Connector**: own state, grants
+  and epochs; never a Phone token. See `mcp/mod.rs`, `docs/mcp-architecture.md`.
+- Test with harmless card commands (`while true; do date; sleep 1; done`): a
+  card whose command is `claude` really launches Claude Code.
