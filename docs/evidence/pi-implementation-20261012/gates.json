@@ -97,5 +97,6 @@
   "the tunnel-helper crate's own gate",
   "the older-runtime launch check of the release carrier",
   "a signed, notarized bundle"
- ]
+ ],
+ "wkwebview_note": "both runs repeated on the final tree after the review field was renamed; test machine macOS 27.0.1 arm64"
 }
