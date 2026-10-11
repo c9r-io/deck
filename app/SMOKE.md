@@ -94,7 +94,12 @@ entry in `app/ui/test/fixtures/smoke-manifest.json` and lists every
 missing, negative or unexpected checkpoint. The modes are `run` (the
 default; `DECK_SMOKE_WKWEBVIEW=1`), `settings`, `attention`, `resume`,
 `review` → `review-restart`, `voice`, `buffer`, `channel`, `connector`,
-`channel-fault` (real Slack sandbox tokens), `connector-transport` (stays
+`channel-fault` (real Slack sandbox tokens), `channel-live` →
+`channel-live-replay` (a real Slack sandbox app and someone posting
+messages; see "Slack channel monitor against the real service"),
+`hooks-live` (a home of its own; see "Claude hook switches on the global
+settings file"),
+`connector-transport` (stays
 open for the Swift transport test; see `connector/ios/README.md`), and two
 that relaunch a finished `run` root: `ambiguous` (relaunch with
 `app/run.sh --smoke-fault queue-save` so the boot repair write fails) and
@@ -651,7 +656,10 @@ a carrier pass.
 ### Slack channel transport faults
 
 - [ ] Start only an isolated data root that already has the sandbox channel
-      credentials and rule, with `DECK_SMOKE_WKWEBVIEW=channel-fault`. The
+      rule and switch, with `DECK_SMOKE_WKWEBVIEW=channel-fault`, and paste
+      the sandbox bot and app tokens into Settings within the mode's first
+      three minutes: a smoke launch keeps credentials in process memory only,
+      so no root "has" them. The
       runner arms the closed debug-only `channel-network` and `channel-scope`
       faults in turn; it does not disable Wi-Fi/VPN or write to Slack.
 - [ ] For each fault, Settings shows not connected/no backfill, an unresolved
@@ -661,6 +669,81 @@ a carrier pass.
       Slack's live configuration constraint and the Web API
       `missing_scope -> scope` contract test. Do not report it as a successful
       live scope removal when Slack requires the scope for a configured event.
+
+### Slack channel monitor against the real service
+
+`channel-live` is the whole loop in one launch, in the real window, against
+a sandbox Slack app: credentials, rule, connection, real messages to one
+card, a fault after the connection, recovery, and Slack's redelivery of an
+event Deck could not make durable. `channel-live-replay` is the same root
+launched again. Neither is part of an unattended run: both need a sandbox
+workspace, a Slack app created from Deck's manifest that no other Deck is
+connected to (Slack hands each event to ONE connection of an app), a test
+channel the bot is a member of, and someone — or a driver following
+`app.log` — to post the messages.
+
+- [ ] Prepare `/private/tmp/deck-live-<12 hex>/` (mode 700) with an empty
+      `work/` directory and a `params` file (mode 600): one JSON object
+      `{"bot": "xoxb-…", "app": "xapp-…", "channel": "C…", "sender": "U…",
+      "marker": "<6–16 lowercase letters or digits>"}`, hex-encoded, in lines
+      of at most 64 characters. Write `live-<12 hex>` to
+      `<data dir>/translation-fixture/scenario` and launch with
+      `DECK_SMOKE_WKWEBVIEW=channel-live`. Never launch this root without a
+      smoke mode: a mode-less debug launch reads the login Keychain.
+- [ ] The page reads `params` through a card of its own isolated tmux server
+      and closes that card; remove the file once `live-params` is logged. The
+      tokens then go in through the Settings fields' own handlers (stored in
+      process memory only) and the rule is saved by the Automations editor
+      with `claude` as its command and `work/` as its directory.
+- [ ] Each `smoke-check live-want a=<n> b=<seconds>` line asks for ONE
+      top-level message starting `DECKLIVE-<marker> <n> ` in the test channel
+      from the allowed sender within those seconds. Message 3 is asked for
+      while the connection is down.
+- [ ] Expected: message 1 creates one card whose two template steps are
+      queued as external rows and not sent; message 2 joins that card; under
+      the injected `channel-network` fault Settings says not connected / no
+      backfill, the unresolved gap and `network`; after the fault is cleared
+      the connection returns and the gap stays; message 4 joins the card;
+      with `channel-inbox-save` armed once, message 5 is refused without an
+      ACK (the socket is dropped with `capacity`) and arrives again by
+      Slack's own redelivery, once. `live-late` only
+      records whether Slack later delivered message 3 (a=2) or not (a=1):
+      Deck asks for no history either way. No rule, queue row or delivery
+      gains a first-send choice, a grant or authority at any point.
+- [ ] The rule starts the real `claude` in the card's pane (no prompt is
+      sent to it). Stop the isolated tmux server after the run.
+- [ ] Quit, relaunch the same root and socket with
+      `DECK_SMOKE_WKWEBVIEW=channel-live-replay` and paste nothing: still one
+      card with the same messages, the same external rows, the gap still
+      said, nothing connected, nothing granted.
+- [ ] Judge each launch with `scripts/smoke-verdict <data dir> <mode>` before
+      the next one, then delete the sandbox app (that revokes its tokens).
+
+### Claude hook switches on the global settings file
+
+`hooks-live` clicks the two Claude switches of Settings → Agents & notifications
+(status hooks, re-entry observation) and their confirmations in the real
+window. Hooks are installed only from `/Applications/deck.app` or
+`~/Applications/deck.app`, and this mode writes the GLOBAL
+`~/.claude/settings.json`, so it is never run under a person's home.
+
+- [ ] Give the carrier a home of its own: a private directory holding
+      `.claude/settings.json` with a few hooks and keys of "the user's", and
+      the debug carrier at `<that home>/Applications/deck.app`. Launch it with
+      `env -i /usr/bin/open -n --env HOME=<that home> <carrier> --args
+      --smoke-data-dir … --smoke-tmux-socket deck-smoke-… --smoke-wkwebview
+      hooks-live`.
+- [ ] Copy the settings file after every `smoke-check hooks-*` line (each is
+      followed by a six-second pause). Expected: unchanged after `hooks-clean`
+      and `hooks-decline`; two `deck-lifecycle-helper` entries (SessionStart,
+      SessionEnd) and no status entry after `hooks-life-on`; three
+      `deck-status-helper` entries beside them after `hooks-signal-on`; the
+      lifecycle entries gone and the status entries kept after
+      `hooks-life-off`; the file byte for byte as it was after
+      `hooks-signal-off`. The user's own hooks and keys are there at every
+      step.
+- [ ] `scripts/smoke-verdict <data dir> hooks-live` judges the switches and
+      the derived state; the file comparison is the operator's.
 
 ### Connector post-accept recovery
 

@@ -258,6 +258,43 @@
         "channel-scope": {}
       }
     },
+    "channel-live": {
+      "terminal": "done",
+      "checks": {
+        "live-clean": {},
+        "live-params": {"a": 5},
+        "live-credentials": {"a": 1, "b": 1},
+        "live-rule": {},
+        "live-connected": {},
+        "live-want": {"a": [1, 2, 3, 4, 5]},
+        "live-card": {"a": 1, "b": 2},
+        "live-append": {"a": 1, "b": 2},
+        "live-fault": {},
+        "live-recovered": {"a": 1, "b": 0},
+        "live-late": {"metric": true},
+        "live-resume": {"a": 1},
+        "live-redelivery": {},
+        "live-authority": {"a": 1, "b": 2}
+      }
+    },
+    "channel-live-replay": {
+      "terminal": "done",
+      "checks": {
+        "live-replay": {"a": 1}
+      }
+    },
+    "hooks-live": {
+      "terminal": "done",
+      "checks": {
+        "hooks-clean": {},
+        "hooks-decline": {},
+        "hooks-life-on": {},
+        "hooks-signal-on": {},
+        "hooks-life-off": {},
+        "hooks-reopen": {},
+        "hooks-signal-off": {}
+      }
+    },
     "channel-first-send": {
       "terminal": "done",
       "checks": {

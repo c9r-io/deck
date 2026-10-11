@@ -3175,6 +3175,28 @@ export async function verifyChannelFirstSend() {
   await runChannelFirstSendSmoke();
 }
 
+// The Slack integration against the real service: the operator's sandbox
+// credentials through the Settings fields, a rule through the editor, real
+// messages to one card, a fault after the connection, recovery and Slack's
+// own redelivery (channel-live-smoke.mjs). The replay mode is the same root
+// launched again with no credentials.
+export async function verifyChannelLive() {
+  const { runChannelLiveSmoke } = await import('./channel-live-smoke.mjs');
+  await runChannelLiveSmoke();
+}
+
+export async function verifyChannelLiveReplay() {
+  const { runChannelLiveReplaySmoke } = await import('./channel-live-smoke.mjs');
+  await runChannelLiveReplaySmoke();
+}
+
+// The two Claude hook families through the Settings switches, on the global
+// settings file of a home the operator gave this carrier (hooks-live-smoke.mjs).
+export async function verifyHooksLive() {
+  const { runHooksLiveSmoke } = await import('./hooks-live-smoke.mjs');
+  await runHooksLiveSmoke();
+}
+
 // The lost Board's way out, on a root the operator seeded with nothing
 // loadable (board-lost-smoke.mjs).
 export async function verifyBoardLost() {
