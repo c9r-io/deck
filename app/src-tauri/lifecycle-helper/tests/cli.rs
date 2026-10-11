@@ -54,12 +54,16 @@ impl Drop for Private {
     }
 }
 
-/// The helper in a deck pane's environment and nothing else.
+/// The helper in a deck pane's environment and nothing else. Under
+/// `cargo llvm-cov` one more variable goes along: it tells the instrumented
+/// helper where its counters belong. Without it they are written into this
+/// crate's directory and the report never sees `main` run.
 fn helper(home: &Private, args: &[&str]) -> Command {
     let mut command = Command::new(HELPER);
     command
         .args(args)
         .env_clear()
+        .envs(std::env::var_os("LLVM_PROFILE_FILE").map(|file| ("LLVM_PROFILE_FILE", file)))
         .env("HOME", &home.0)
         .env("TMUX", TMUX)
         .env("TMUX_PANE", "%7")

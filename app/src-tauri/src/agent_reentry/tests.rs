@@ -1951,6 +1951,8 @@ fn a_real_helper_that_is_not_the_leased_clients_child_is_refused() {
         let mut child = Command::new(&world.helper)
             .args(["claude-code", "session-end"])
             .env_clear()
+            // where an instrumented helper's counters belong (`cargo llvm-cov`)
+            .envs(std::env::var_os("LLVM_PROFILE_FILE").map(|file| ("LLVM_PROFILE_FILE", file)))
             .env("HOME", &world.base)
             .env("DECK_STATUS_SOCK", &path)
             .env(

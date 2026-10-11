@@ -6522,6 +6522,8 @@ mod tests {
                     "--nocapture",
                 ])
                 .env_clear()
+                // where this instrumented child's counters belong (`cargo llvm-cov`)
+                .envs(std::env::var_os("LLVM_PROFILE_FILE").map(|file| ("LLVM_PROFILE_FILE", file)))
                 .env("HOME", home)
                 .env("PATH", "/usr/bin:/bin")
                 .env("DECK_READ_ENTRIES_CHILD", "1")
