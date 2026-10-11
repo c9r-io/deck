@@ -15,11 +15,14 @@ location under a relocated home, with the hook file of that home and no debug
 exemption, both policies, a queued prompt and a relaunch in between (kind
 **L** below). Under a relocated home the hook families were exercised too:
 the Settings switches in a debug carrier, the launch-time migration in a
-Developer-ID-signed RELEASE carrier.
+Developer-ID-signed RELEASE carrier. Last, the transaction ran once in such
+a release carrier under a relocated home, with the owner operating its
+window (kind **Lr**): Policy B, then the ordinary policy after the
+application had been started again.
 
 What did not run, each a separate item below: **anything at
-`/Applications/deck.app`**; a transaction in a release build, at any place;
-the three macOS 26 items; notarization and Gatekeeper acceptance.
+`/Applications/deck.app`**; the Settings switches in a release window; the
+three macOS 26 items; notarization and Gatekeeper acceptance.
 
 Three places are kept apart throughout (`README.md`, "Scope words"): a
 **private directory**; a **relocated home**, `<home>/Applications/deck.app`
@@ -42,7 +45,7 @@ Wording used here, and what it does not mean:
 
 ## What ran, by kind of evidence
 
-Six kinds, never merged. The place and the build are part of each.
+Seven kinds, never merged. The place and the build are part of each.
 
 | Kind | Place | Build | What it is |
 | --- | --- | --- | --- |
@@ -53,8 +56,9 @@ Six kinds, never merged. The place and the build are part of each.
 | **Rd** debug carrier, the Settings switches | relocated home | debug, ad-hoc signed | This round. The page clicks the two Claude switches in the real window (`hooks-live`). No real Claude. |
 | **L** live window + real Claude | relocated home | debug, ad-hoc signed | This round's follow-up, on the test machine (macOS 27.0.1). The hooks are that home's `.claude/settings.json`, written by the Settings switches, with no project-level file and no debug experiment configuration. Real Claude Code 2.1.296, signed in under that home by the owner. The page clicks the real dialog (`reentry-live`, `reentry-live-relaunch` in `app/SMOKE.md`); a runner outside reads the process table. |
 
-No kind ran at `/Applications/deck.app`, and no kind ran a transaction in a
-release build.
+| **Lr** release window + real Claude | relocated home | RELEASE, Developer ID signed, not notarized | The final round, on the test machine (macOS 27.0.1). The hooks are that home's `.claude/settings.json`, as the carrier's launch-time migration rewrote them. Real Claude Code 2.1.296, signed in under that home by the owner. A PERSON, the owner, made the cards, queued a prompt and operated the restart review twice; a runner outside typed into the cards through the carrier's tmux server, read the process table, and ended and reopened the application once. No smoke driver exists in a release build. |
+
+No kind ran at `/Applications/deck.app`.
 
 ## The transaction (C and A, reused)
 
@@ -138,7 +142,9 @@ Four properties, none standing for another:
 | Gatekeeper | **assessed: rejected** ("Unnotarized Developer ID") | `spctl`. Acceptance is UNRUN. The carrier ran on the test machine all the same because a file copied over SSH carries no quarantine attribute: no launch in this document was a Gatekeeper decision |
 
 A public release was not attempted. The follow-up's live run (L) used a debug
-carrier with an ad-hoc signature: none of the four rows is about it.
+carrier with an ad-hoc signature: none of the four rows is about it. The
+final round's release carrier (Lr) was built from `18e38bb` and signed the
+same way; the same checks gave the same four answers for it.
 
 ### Launch-time migration, release carrier, no click
 
@@ -258,25 +264,25 @@ BLOCKED means something outside the code stands in the way.
 
 | # | Item | Tests (T) | Private directory, debug (C, A) | Relocated home, DEBUG carrier (Rd, L) | Relocated home, RELEASE carrier (Rr) | `/Applications/deck.app`, release |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Global lifecycle hook opt-in / opt-out in Settings | pass | — (project-level hooks there) | **PASS** (Rd: 8 of 8; L switched both on through the page) | UNRUN: a release window needs a person | BLOCKED |
-| 2 | Upgrade or path migration of existing lifecycle hooks | pass (edit engine) | — | not run | **PASS** (M1, M2 older form, M4) | BLOCKED |
-| 3 | User hooks intact; the two switches independent | pass | — | **PASS** (every step of Rd; L kept the client's own keys) | **PASS** for the migration (user hooks and keys unchanged in M1–M4); the switches UNRUN | BLOCKED |
-| 4 | A user without lifecycle hooks is not enrolled by migration | pass | — | not run | **PASS** (M2, M3) | BLOCKED |
-| 5 | Policy A sends no bypass | pass | C PASS; A PASS | **L PASS** (after a relaunch, on clients that had carried the flag) | UNRUN | BLOCKED |
-| 6 | Policy B sends bypass only to chosen, eligible launches, including bypass-then-plan; accurate wording | pass | C PASS; A PASS | **L PASS** (flag on B and C, not on A; the real result rows) | UNRUN | BLOCKED |
-| 7 | The exact final session, also after `/clear` | pass | C PASS (one card after `/clear`); A PASS without `/clear` | **L PASS** (A resumed in the second of its two sessions) | UNRUN | BLOCKED |
-| 8 | One start per entry; an unknown outcome is not resent | pass (`unknown_outcomes_are_never_retried` and the source scan in `tests/external_admission.rs`) | no second request in C or A | **L**: one result line and one new client per entry in both restarts | UNRUN | BLOCKED |
-| 9 | A non-empty queue stays paused across restart and re-entry | pass (`a_waiting_queue_row_is_paused_on_disk_before_the_kill_and_stays_paused_after_reentry`, crash matrix) | — (A's queues were empty) | **L PASS** (one queued prompt, paused by restart 1, still paused and unsent after restart 2 and a relaunch) | UNRUN | BLOCKED |
-| 10 | The next preview and a relaunch do not inherit Policy B | pass | — | **L PASS** (the review after Policy B, and the review after a relaunch, both start from the ordinary policy with nothing ticked; no document holds the policy) | UNRUN | BLOCKED |
-| 11 | Unsupported and unconfirmable cases said as they are; a restarted service not reported as a failure | pass; the observation-off presentation was wrong and is fixed (above) | — | **L PASS** for the cases it staged (observation off; a foreground program that is no Agent; a program Deck cannot read; "Shell service restarted" above the rows) | UNRUN | BLOCKED |
+| 1 | Global lifecycle hook opt-in / opt-out in Settings | pass | — (project-level hooks there) | **PASS** (Rd: 8 of 8; L switched both on through the page) | UNRUN: Lr used the migration, not the switch | BLOCKED |
+| 2 | Upgrade or path migration of existing lifecycle hooks | pass (edit engine) | — | not run | **PASS** (Rr: M1, M2 older form, M4; Lr: entries naming another installation rewritten at launch, then used by real clients) | BLOCKED |
+| 3 | User hooks intact; the two switches independent | pass | — | **PASS** (every step of Rd; L kept the client's own keys) | **PASS** for the migration (Rr: user hooks and keys unchanged in M1–M4; Lr: the client's own keys unchanged); the switches UNRUN | BLOCKED |
+| 4 | A user without lifecycle hooks is not enrolled by migration | pass | — | not run | **PASS** (Rr: M2, M3) | BLOCKED |
+| 5 | Policy A sends no bypass | pass | C PASS; A PASS | **L PASS** (after a relaunch, on clients that had carried the flag) | **Lr PASS** (after the application was started again; b had carried the flag since restart 1) | BLOCKED |
+| 6 | Policy B sends bypass only to chosen, eligible launches, including bypass-then-plan; accurate wording | pass | C PASS; A PASS | **L PASS** (flag on B and C, not on A; the real result rows) | **Lr PASS** for what was sent (flag on b, not on a; `bypass=1`). No bypass-then-plan card in Lr; the wording was read by the owner, not recorded | BLOCKED |
+| 7 | The exact final session, also after `/clear` | pass | C PASS (one card after `/clear`); A PASS without `/clear` | **L PASS** (A resumed in the second of its two sessions) | **Lr PASS** (a resumed in the second of its two own sessions; b in its one) | BLOCKED |
+| 8 | One start per entry; an unknown outcome is not resent | pass (`unknown_outcomes_are_never_retried` and the source scan in `tests/external_admission.rs`) | no second request in C or A | **L**: one result line and one new client per entry in both restarts | **Lr**: one result line and one new client per entry in both restarts | BLOCKED |
+| 9 | A non-empty queue stays paused across restart and re-entry | pass (`a_waiting_queue_row_is_paused_on_disk_before_the_kill_and_stays_paused_after_reentry`, crash matrix) | — (A's queues were empty) | **L PASS** (one queued prompt, paused by restart 1, still paused and unsent after restart 2 and a relaunch) | **Lr PASS** (one queued prompt, `queue-paused count=1` at restart 1, still paused, never attempted and unsent after restart 2) | BLOCKED |
+| 10 | The next preview and a relaunch do not inherit Policy B | pass | — | **L PASS** (the review after Policy B, and the review after a relaunch, both start from the ordinary policy with nothing ticked; no document holds the policy) | **Lr PASS** across a restart of the application (the review was left as it came up and the transaction carried `bypass=0`; no document holds the policy). The review directly after Policy B was not opened | BLOCKED |
+| 11 | Unsupported and unconfirmable cases said as they are; a restarted service not reported as a failure | pass; the observation-off presentation was wrong and is fixed (above) | — | **L PASS** for the cases it staged (observation off; a foreground program that is no Agent; a program Deck cannot read; "Shell service restarted" above the rows) | not staged in Lr (both restarts: `finish result=ok`, every entry confirmed) | BLOCKED |
 
 In no place and no build did a real run have an unknown outcome, a timeout
 or an unconfirmed entry: for item 8's second half and for those cases of
 item 11 the tests are the only evidence.
 
-Items 5–11 in the release column are one run, the one described under "A
-release transaction: what it needs, exactly". Items 1 and 3 (the switches)
-would be seen in the same window.
+The release column's Lr entries are one run, described under "The
+transaction in a release carrier (Lr)". What its window said was read by the
+owner and not recorded; the entries rest on what was sent and what ran.
 
 Where the policy could be stored, checked against the code rather than
 against a file that does not exist: a restart with re-entry writes
@@ -302,76 +308,117 @@ needs a real, signed-in Claude under that same home.
   its own files without touching either. It is a different place, and its
   results are recorded as such.
 
-## A release transaction: what it needs, exactly
+## The transaction in a release carrier (Lr)
 
-Evaluated in the final round, after the cleanup mechanism was in place
-(`README.md`, "Final bounded round"). Not run: no real client was started
-for it.
+One run in the final round, 2026-10-11 20:54–21:00, after the cleanup
+mechanism was in place (`README.md`, "Final bounded round"). Every check of
+the runner's judgement held.
 
-It cannot be run from a build session alone. A release build has no smoke
+It could not be run from a build session alone. A release build has no smoke
 driver, so its switches and its dialog need clicks, and nothing available
 there can make them: asked without prompting, `AXIsProcessTrusted`,
 `CGPreflightPostEventAccess`, `CGPreflightListenEventAccess` and
 `CGPreflightScreenCaptureAccess` all answered false, on the build machine
-and over SSH on the test machine. It needs a person twice: to authorize a
-sign-in, and at the window.
+and over SSH on the test machine. The owner operated the window and asked
+for that part to be as small as it could be. Who did what:
 
-The carrier. Everything here except the registry was built and opened once
-in the follow-up, then removed unused:
+**The carrier (built, signed and placed from the build machine).**
 
-1. The release profile of the commit: `cargo build --release --locked`, then
-   `tauri build --bundles app` with updater artifacts off, then
+1. The release profile of commit `18e38bb`: `cargo build --release --locked`,
+   then `tauri build --bundles app` with updater artifacts off, then
    `scripts/sidecar_provenance.py check --profile release --bundle`.
 2. A private bundle identifier, and an `LSEnvironment` of three values in
    its `Info.plist`: `HOME=<root>/home`, `TMUX_TMPDIR=<root>/t`, and
    `DISABLE_AUTOUPDATER=1` for the clients its panes start. Signed inside-out
    with a Developer ID identity (LaunchServices refuses `LSEnvironment` in an
-   unsigned bundle) and verified piece by piece. The executables are the
-   release build's, unchanged; this is not the published bundle and not a
-   switch in the product.
+   unsigned bundle) and verified piece by piece there and on the test
+   machine. The executables are the release build's, unchanged; this is not
+   the published bundle and not a switch in the product.
 3. Placed at `<root>/home/Applications/deck.app` on the test machine, where
    `<root>` is a short directory under `/private/tmp` with a registry
-   (`scripts/edr_runtime.py experiment init`). Opened once and registered:
-   the application by its pid, its server by `<root>/t/tmux-<uid>/deck`.
+   (`scripts/edr_runtime.py experiment init`). One background trial launch:
+   the environment read from the kernel was those three values, the data and
+   socket were inside the root, and it was stopped through the registry.
 
-The client:
+**The client.**
 
-4. A keychain of its own for that home (not named `login.keychain-db`),
-   unlocked in the GUI session; `claude auth login` in a shell that has
-   `USER` and `LOGNAME`. **The owner authorizes it in a browser.**
+4. A keychain of its own for that home (not named `login.keychain-db`; the
+   home needs a `Library/Preferences` directory for the search list to be
+   saved), unlocked in the GUI session; the client's sign-in in a shell that
+   has `USER` and `LOGNAME`. **The owner authorized it in a browser.**
 5. Trust for the two working directories and the bypass warning, accepted
-   once in a client outside the carrier.
+   once in a client outside the carrier, which was then closed.
 
-The window. **A person, about a dozen actions**; labels as the English UI
-shows them:
+**Observation.**
 
-6. Settings → Agents → "Claude session re-entry observation": on, confirm.
-7. Two ordinary cards. In the first, `cd ~/work/a && claude`; in the second,
-   `cd ~/work/b && claude --dangerously-skip-permissions`. One one-word
-   prompt in each; in the first then `/clear` and a second prompt.
-8. In the first card's Lists panel: "not before" set to the next day, one
-   prompt, ⌘↵.
-9. Settings → Terminal → "Shell service" → "Restart service". In the review:
-   "Select all candidates", "Reapply bypass to 1 session(s) launched with
-   bypass", then "Restart and reopen 2 session(s)".
-10. Quit the application and open it again. The same restart, this time
-    with "Reopen all without reapplying bypass".
+6. The hook file was given the two lifecycle entries as an installation at
+   `/Applications/deck.app` would have left them. The carrier's next launch
+   logged `lifecycle entries rewritten to the current spec` and the file then
+   named this carrier's helper; the client's own two keys were unchanged. No
+   client ran between the two. The Settings switch was not used.
 
-What is read from outside after steps 7, 9 and 10, typing into nothing: the
-process table (each pane's client and its arguments), the names of the
-session files per directory, the carrier's own `app.log` lines
-`[agent-reentry] frozen`, `sealed`, `entry`, `complete` and
-`[tmux-restart] queue-paused`, and `queue.json`.
+**The window: the owner, four steps.**
 
-What that run would show: items 5–10 in a release build under a relocated
-home — the session after `/clear`, the flag only under Policy B and only on
-the client launched with it, one request per entry, the queued prompt paused
-and unsent, no policy kept. What it would not: `/Applications/deck.app`,
-notarization, Gatekeeper, macOS 26. What the window says would be the
-operator's reading, not a machine check.
+7. Two new cards.
+8. One prompt queued in a card's Lists panel, "not before" the next day.
+9. Settings → Terminal & sessions → "Shell service" → "Restart service"; in
+   the review "Select all candidates", "Reapply bypass to 1 session(s)
+   launched with bypass", then "Restart and reopen 2 session(s)".
+10. After the application had been started again: the same restart with the
+    policy left as the review showed it.
 
-The end: `experiment cleanup`, the client signed out, the keychain deleted,
-the root removed (not moved to the Trash: it held a credential store).
+**From outside, between those steps.** A runner typed into the two cards
+through the carrier's own tmux server, by its full socket path, what a
+person would type there: `cd ~/work/a && claude` and, in the other,
+`cd ~/work/b && claude --dangerously-skip-permissions`; one one-word prompt
+in each; in the first then `/clear` and a second prompt. It looked at the
+pane before every keystroke, typed only at a shell prompt or at the client's
+ready screen, and answered no dialog. After restart 1 it ended the
+application through the registry and opened the carrier again, once. It kept
+the registry current: each application process and each of the three server
+generations was registered when first seen.
+
+| Step | Who | What the process table, the session files and the carrier's own log said |
+| --- | --- | --- |
+| Observation on | the carrier's launch | the hook file had been given the two lifecycle entries as an installation at `/Applications/deck.app` would have left them; the launch logged `lifecycle entries rewritten to the current spec` and the file then named this carrier's helper. The client's own two keys were unchanged. No client ran in between |
+| Two cards | the owner, in the window | two sessions on the carrier's server |
+| Clients and prompts | the driver, through the carrier's tmux server | card a: `claude`, one prompt, `/clear`, one prompt: two sessions of its own. Card b: `claude --dangerously-skip-permissions`, one prompt: one session |
+| A queued prompt, "not before" the next day | the owner, in the window | `queue.json`: one item, pending |
+| Review and restart 1, **Policy B** | the owner, in the window | log: `preview sessions=2 candidates=2`, `frozen entries=2 eligible=2 bypass=1`, `sealed final=2 of=2`, `queue-paused count=1`, two `outcome=confirmed`, `complete replaced=true entries=2 confirmed=2`, `finish result=ok` after 4.0 s. After: a `<absolute program> --resume <id>`; b `<absolute program> --dangerously-skip-permissions --resume <id>`. Each id is the newest session of that card's directory, and a's is the second of its two (the one after `/clear`) |
+| The application ended and started again | the driver: stopped through the registry, one LaunchServices open | another process; the same server and the same two clients |
+| Review and restart 2, **the ordinary policy**, left as the review showed it | the owner, in the window | log: `preview sessions=2 candidates=2`, `frozen entries=2 eligible=2 bypass=0`, `queue-paused count=0`, two `outcome=confirmed`, `complete replaced=true entries=2 confirmed=2`. After: a and b each one new client, `--resume <id>`, and neither carries the bypass flag |
+| The queued prompt | — | still one item: `paused: true`, `attempts: 0`, no delivery record; no send in the log |
+| The policy | — | no document of the data directory holds it; the log holds the two counts |
+
+Read from outside, typing into nothing after the prompts: the process table
+(each pane's client and its arguments), the names of the session files per
+directory, the carrier's own `app.log`, and its documents. Card a's
+directory also held the sessions of the two clients that had run there
+before the cards existed (the acceptance of the trust question, and the
+GUI-session check); card a's own two are the ones made after the runner
+began, and it was resumed in the later of them.
+
+What this run is and is not:
+
+- A RELEASE build, Developer ID signed, at a stable location under a
+  relocated home, with that home's hook file and a real, signed-in client.
+  Not `/Applications/deck.app`, not a person's home, not notarized; no
+  Gatekeeper decision was involved.
+- The typing came from outside, not through the window. The clients are
+  direct children of the cards' shells either way.
+- The Settings switch was not used; observation came from the migration.
+- What the review and the result rows said was the owner's reading and was
+  not recorded. Nothing was typed into a re-entered client, and nothing here
+  says its work continued.
+- The review directly after Policy B was not opened before the application
+  was started again.
+- The clients ran on the owner's account: four one-word prompts in all.
+
+The end: everything registered was stopped through the registry (exit 0),
+the client signed out, the keychain deleted, the root removed (not moved to
+the Trash: it held a credential store). The test machine's installed Deck,
+its files, the hook file digest and the keychain list were the same before
+and after.
 
 ## Accepted residual risks
 

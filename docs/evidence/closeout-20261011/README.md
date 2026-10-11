@@ -12,9 +12,10 @@ BLOCKED or UNRUN, so nothing here says that the three are finished.
   Slack app, its real Socket Mode connection and real messages, through the
   registered integration, in a real WKWebView of a debug carrier.
 - **C. Claude session re-entry** — the hook families, their migration and
-  the transaction itself, in carriers under a relocated home. Nothing ran at
-  `/Applications/deck.app`, and no transaction ran in a release build. Its
-  acceptance summary is [reentry-acceptance.md](reentry-acceptance.md).
+  the transaction itself, in carriers under a relocated home: in debug
+  carriers, and once, at the end, in a release carrier with the owner at the
+  window. Nothing ran at `/Applications/deck.app`. Its acceptance summary is
+  [reentry-acceptance.md](reentry-acceptance.md).
 
 Three rounds are recorded, each marked where it matters:
 
@@ -27,7 +28,8 @@ Three rounds are recorded, each marked where it matters:
 - **the final bounded round** (from 19:26): the verification rules of A, a
   check of the package that actually runs, the incident's guard as a tracked
   mechanism, and the scope of this document, which had claimed more than ran
-  in several places ("What this document claimed too widely").
+  in several places ("What this document claimed too widely"); then the
+  transaction in a release carrier, with the owner operating its window.
 
 This is a summary a clean checkout can read. Raw logs, fetched documents and
 run scripts are in `reports/closeout-20261011/`, a git-ignored working
@@ -101,6 +103,7 @@ named):
 | Follow-up: C's live transaction | the code of commit `c9d78f5` (then `5274067`): its tracked changes (diff `56c261b7…`) and the scenario file (`17e5336b…`) are byte for byte what the run used; `app/SMOKE.md` was written after it. Carrier executable `efbcdeaa…`, debug, ad-hoc signed |
 | Follow-up: gate with the new scenario | the working tree that became `c9d78f5` |
 | Final round: tests, negative controls, the launch through `app/run.sh`, the translation carrier's assembly, the gate | commit `39537a2` (which contains `8dc8778`); only documents differed from it while the gate ran |
+| Final round: the release transaction | the release profile of commit `18e38bb`, working tree clean; carrier executable `9fb51c7c…`, Developer ID signed, not notarized. The registry tool as of `39537a2`, and with `f70e8c5` from the keep-awake's registration on |
 
 ## Verdict
 
@@ -117,8 +120,8 @@ a row never speaks for a place or a build it does not name.
 | C1. The two Settings switches for Claude's hooks, in the real window | **PASS** | DEBUG carrier, relocated home. A release window: UNRUN. `/Applications/deck.app`: BLOCKED |
 | C2. Launch-time migration of existing hooks | **PASS** | RELEASE carrier (Developer ID signed, not notarized), relocated home, no click. `/Applications/deck.app`: BLOCKED |
 | C3. The transaction in a real window with real clients (follow-up) | **PASS** | DEBUG carrier (ad-hoc signed), relocated home, that home's hook file, macOS 27.0.1, Claude Code 2.1.296 signed in there by the owner: both policies, `/clear`, a queued prompt, a second review and a relaunch |
-| C4. The transaction in a RELEASE build, relocated home | **UNRUN** | a release build has no smoke driver, and this environment has no way to operate a window; it needs a person at the window and a sign-in. The exact steps are in [reentry-acceptance.md](reentry-acceptance.md) |
-| C5. The transaction in a RELEASE build at `/Applications/deck.app` | **BLOCKED** | the owner's installed Deck is in use on both machines; replacing it is the owner's decision. Also needs everything C4 needs |
+| C4. The transaction in a RELEASE build, relocated home (final round) | **PASS** | RELEASE carrier (Developer ID signed, not notarized), relocated home, that home's hook file, macOS 27.0.1, Claude Code 2.1.296 signed in there by the owner. The owner made the two cards, queued the prompt and operated both restart reviews in the real window: Policy B, then the ordinary policy after the application had been started again. Typed into the cards from outside, not through the window; observation was on through the launch-time migration, not through the Settings switch; what the window said is the owner's reading and was not recorded |
+| C5. The transaction in a RELEASE build at `/Applications/deck.app` | **BLOCKED** | the owner's installed Deck is in use on both machines; replacing it is the owner's decision. It would also need a person at the window, as C4 did |
 | C6. An unknown or unconfirmed outcome, or an agent that does not exit in time, in a real application | **UNRUN** | tests only; no real run produced one |
 | macOS 26: the automated gate | **UNRUN** | nothing after `origin/main` (`dcc3c06`) was pushed, so the `macos-26` runners never built this code |
 | macOS 26: native identity of a real client | **BLOCKED** | no macOS 26 machine; the gate runs no real client, so a green gate would not close this |
@@ -127,7 +130,7 @@ a row never speaks for a place or a build it does not name.
 | Release carrier: Developer ID signature | **PASS** | each executable verifies by itself, the bundle verifies deep and strict, hardened runtime; signed on the build machine, no secure timestamp |
 | Release carrier: notarization | **UNRUN** | nothing was sent to Apple; not authorized |
 | Release carrier: Gatekeeper | **assessed, rejected** | `spctl` says "Unnotarized Developer ID". The carriers ran only because a file copied over SSH carries no quarantine attribute, so no launch here was a Gatekeeper decision. Acceptance: UNRUN |
-| Experiment cleanup: only what a run registered and can prove is its own is stopped (final round) | **PASS** for what ran | tests with real tmux servers and a sentinel, negative controls, a harmless fixture on the test machine, one live cleanup on the build machine. The two runners moved onto it were not run again |
+| Experiment cleanup: only what a run registered and can prove is its own is stopped (final round) | **PASS** for what ran | tests with real tmux servers and a sentinel, negative controls, a harmless fixture on the test machine, one live cleanup on the build machine, and the release run itself: a real release carrier whose socket is named `deck`, three server generations registered, everything stopped through the registry. The two older runners moved onto it were not run again |
 | Architecture and regression checks | **PASS** | the gates below, on macOS 27.0.1 |
 
 One incident happened on the test machine during C. It is recorded in
@@ -334,8 +337,10 @@ transaction with real clients in a real window is its section "The
 transaction in the real window with real clients (L)".
 
 Everything of C that ran, ran under a relocated home or in a private
-directory. The release carrier ran the migration and nothing else; the
-transaction ran in debug carriers only.
+directory. In the round and the follow-up the release carrier ran the
+migration and nothing else, and the transaction ran in debug carriers only;
+the final round added one transaction in a release carrier, with the owner
+at its window.
 
 ## Architecture and regression checks
 
@@ -535,35 +540,80 @@ changed:
 - "Incident" said the runners now stop only their own server. That guard was
   in files no checkout has; item 3 replaces it.
 
-### 5. The release transaction: evaluated, not run
+### 5. The release transaction
 
 Asked for last: a minimal Policy A / Policy B transaction in a RELEASE build
 at an isolated stable location, with global hooks, real Claude and the real
-UI. Evaluated after items 1–4:
+UI. It ran once, 20:54–21:00, and every check of the judgement held.
 
-- It can be placed safely. A release carrier at
-  `<home>/Applications/deck.app` under a relocated home relocates itself
-  through its own `LSEnvironment` (it must be Developer ID signed for that;
-  the follow-up opened such a carrier once with a plain `open` and found its
-  data, socket and hook file inside its directory), with its tmux socket
-  directory inside the experiment
-  root and every process in the root's registry. That is packaging around an
-  unchanged release executable, not a switch in the product, and it replaces
-  nothing the owner uses.
-- It cannot be operated from here. A release build ignores every smoke
-  argument, so its switches and its dialog need clicks. Asked without
+What decided how it ran:
+
+- A release build ignores every smoke argument, so its switches and its
+  dialog need clicks, and nothing here can make them. Asked without
   prompting, `AXIsProcessTrusted`, `CGPreflightPostEventAccess`,
   `CGPreflightListenEventAccess` and `CGPreflightScreenCaptureAccess` all
-  answer false for a process started from the build session, on the build
-  machine and over SSH on the test machine, and the session has no
-  desktop-control tool.
-- It needs the owner twice: to authorize the Claude sign-in for the relocated
-  home in a browser, and to operate the window for about a dozen actions.
+  answered false for a process started from the build session, on the build
+  machine and over SSH on the test machine, and the session had no
+  desktop-control tool. The owner agreed to operate the window and asked for
+  that part to be as small as possible.
+- So the owner did what only the window can do: two new cards, one queued
+  prompt, and the restart review twice. Everything else was done from
+  outside, and is named as such below.
+- The carrier: the release profile of `18e38bb`, the bundler's bundle with a
+  private bundle identifier and an `LSEnvironment` of three values (`HOME`,
+  `TMUX_TMPDIR` inside the root, `DISABLE_AUTOUPDATER` for the clients),
+  Developer ID signed on the build machine, not notarized, at
+  `<home>/Applications/deck.app` under a relocated home on the test machine.
+  The executables are the release build's, unchanged: this is packaging
+  around them, not a switch in the product, and not the published bundle.
+  One background trial launch first: the process's environment, read from
+  the kernel, was those three values; its data, socket and log were inside
+  the root; it was stopped through the registry.
+- The client: a keychain of its own for that home, the owner's authorization
+  in a browser on the build machine, then trust for the two directories and
+  the bypass warning accepted once in a client outside the carrier.
 
-So C4 is UNRUN, with a person as its missing input. No real client was
-started for it in this round. The exact steps are in
-[reentry-acceptance.md](reentry-acceptance.md), "A release transaction: what
-it needs, exactly".
+| Step | Who | What the process table, the session files and the carrier's own log said |
+| --- | --- | --- |
+| Observation on | the carrier's launch | the hook file had been given the two lifecycle entries as an installation at `/Applications/deck.app` would have left them; the launch logged `lifecycle entries rewritten to the current spec` and the file then named this carrier's helper. The client's own two keys were unchanged. No client ran in between |
+| Two cards | the owner, in the window | two sessions on the carrier's server |
+| Clients and prompts | the driver, through the carrier's tmux server | card a: `claude`, one prompt, `/clear`, one prompt: two sessions of its own. Card b: `claude --dangerously-skip-permissions`, one prompt: one session |
+| A queued prompt, "not before" the next day | the owner, in the window | `queue.json`: one item, pending |
+| Review and restart 1, **Policy B** | the owner, in the window | log: `preview sessions=2 candidates=2`, `frozen entries=2 eligible=2 bypass=1`, `sealed final=2 of=2`, `queue-paused count=1`, two `outcome=confirmed`, `complete replaced=true entries=2 confirmed=2`, `finish result=ok` after 4.0 s. After: a `<absolute program> --resume <id>`; b `<absolute program> --dangerously-skip-permissions --resume <id>`. Each id is the newest session of that card's directory, and a's is the second of its two (the one after `/clear`) |
+| The application ended and started again | the driver: stopped through the registry, one LaunchServices open | another process; the same server and the same two clients |
+| Review and restart 2, **the ordinary policy**, left as the review showed it | the owner, in the window | log: `preview sessions=2 candidates=2`, `frozen entries=2 eligible=2 bypass=0`, `queue-paused count=0`, two `outcome=confirmed`, `complete replaced=true entries=2 confirmed=2`. After: a and b each one new client, `--resume <id>`, and neither carries the bypass flag |
+| The queued prompt | — | still one item: `paused: true`, `attempts: 0`, no delivery record; no send in the log |
+| The policy | — | no document of the data directory holds it; the log holds the two counts |
+
+What this run is and is not:
+
+- It is a RELEASE build with a Developer ID signature at a stable location
+  under a relocated home, with that home's hook file and a real, signed-in
+  client. It is not `/Applications/deck.app`, not a person's home, not a
+  notarized bundle, and no Gatekeeper decision was involved.
+- The typing into the two cards came from outside, through the carrier's own
+  tmux server by its full socket path, each keystroke after a look at the
+  pane. The clients are direct children of the cards' shells either way; it
+  is still not typing through the window.
+- The Settings switch was not used. Observation was on because the launch
+  migrated entries that were put there by hand in the form of an earlier
+  installation. That is the migration path (M1) once more, now followed by
+  real clients using the migrated entries; the switch in a release window
+  stays UNRUN.
+- What the review and the result rows SAID was read by the owner and not
+  recorded. The machine evidence is what was sent and what ran.
+- The review directly after Policy B was not opened before the application
+  was started again, so "the next review inherits nothing" is shown here
+  only across that restart of the application.
+- No unknown outcome, timeout or unconfirmed entry occurred.
+- The clients ran on the owner's account: four one-word prompts in all, the
+  one from the GUI-session check included. Nothing was typed into a
+  re-entered client.
+
+Found on the way and fixed (`f70e8c5`): the registry refused to register the
+keep-awake process, because a program started by its bare name shows no
+path and the tool resolved the name against the directory it ran from, a
+person's home over SSH.
 
 ### Gates of the final round
 
@@ -579,7 +629,7 @@ On commit `39537a2`, macOS 27.0.1, with the same isolation as before
 | then `cargo build`, `sidecar_provenance.py check --profile debug --binaries`, `sidecar_provenance.py staged --profile debug` | 0 | the ordinary build put its own sidecars and frontend back: 5 files, 171 staged files |
 | `scripts/ui-tests` | 0 | 743 passed, 0 failed |
 | `node --check` on every frontend and test module; `node app/ui/js/check.mjs` | 0 | 153 files; 60 modules, identifiers resolve |
-| `python3 -m unittest` (the gate's list) | 0 | 169 passed (134 before this round: 13 more in `test_sidecar_provenance.py`, 22 more in `test_edr_runtime.py`) |
+| `python3 -m unittest` (the gate's list) | 0 | 169 passed (134 before this round: 13 more in `test_sidecar_provenance.py`, 22 more in `test_edr_runtime.py`); 170 after `f70e8c5`, which changed only the registry tool and its test |
 | `scripts/check-workflows`, `scripts/test-smoke-guard` | 0 | |
 
 No assertion, threshold or exclusion was relaxed. The documents of this
@@ -649,13 +699,15 @@ Created this round and removed or left as stated:
 | Final round, test machine: the fixture for the registry tool (a copy of the pinned tmux, a fixture server, a sentinel server, two registry files, in two directories under `/private/tmp`) | both servers stopped through the tool; both directories removed by exact path; no process of the round left |
 | Final round, build machine: one isolated smoke launch through `app/run.sh` | application and server stopped with the reviewed cleanup and verified by pid; its data directory and its stale socket file removed by exact path |
 | Final round, build machine: test fixtures and tree copies of the negative controls under `/private/tmp`, the isolated cargo home and temporary directory | removed by their makers or by exact path |
+| Final round, test machine: the root of the release run (relocated home with the signed carrier and the client's sign-in in a keychain of its own, the carrier's socket directory, a sign-in session, the registry) | everything registered was stopped through the registry (exit 0; three generations of the carrier's server, two application processes, the sign-in session, the keep-awake); client signed out, keychain deleted, root removed (not moved to the Trash: it held a credential store). The installed Deck's shell service, its `~/.deck` files, the hook file digest and the keychain list were the same before and after this run |
+| Final round, build machine: a separate browser profile holding the owner's Claude authorization; the signed carrier's staging directory | that browser instance quit by its own pid and start time; profile, the two private files (address, code) and the staging directory removed by exact path |
 | Seen on the build machine and left alone | stale `deck-smoke-*` socket files of earlier rounds in the default tmux directory. None is this round's, and nothing answers on this round's names |
 
 ## Open items
 
 | Item | Why it is open | Smallest thing that closes it |
 | --- | --- | --- |
-| C4. The transaction in a RELEASE build under a relocated home | a release build has no smoke driver and this environment cannot operate a window; a real client there needs the owner's sign-in | the steps of [reentry-acceptance.md](reentry-acceptance.md), once, with a person at the window |
+| The Settings switches in a RELEASE window; typing through the window; a record of what the review said | the release run used the migration instead of the switch, typed from outside, and has only the owner's reading of the dialog | a person at a release window once more, or a way to operate one |
 | C5. The transaction in a RELEASE build at `/Applications/deck.app` | the owner's Deck is installed and in use on both machines | the owner's decision to park their installation, or a machine without one; then the same steps |
 | C6. An unknown or unconfirmed outcome, or an agent that does not exit in time, in a real application | no real run produced one; tests only | a fault staged on purpose in a later run |
 | macOS 26: the automated gate | none of this history is pushed | a push, when authorized. It closes what the gate's jobs run, and nothing below |
