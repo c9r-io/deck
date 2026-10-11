@@ -9,7 +9,8 @@
 //! - `binaries/<sidecar>-<triple>` (`externalBin`): the context's own build
 //!   of each sidecar — debug, release, or coverage-instrumented;
 //! - `ui-dist/` (`frontendDist`): the frontend, with `ui/test` in debug
-//!   profiles and without it in release profiles.
+//!   profiles and without it in release profiles, and in neither any entry
+//!   whose name starts with a dot.
 //!
 //! So each path holds what the last build script wrote, and everything that
 //! packages reads it afterwards (`app/run.sh`,
@@ -126,23 +127,33 @@ pub fn place_file(
 }
 
 /// Every file below `root` by its path relative to `root`, without the
-/// top-level entry named `skip`.
-fn files(root: &Path, skip: Option<&str>) -> std::io::Result<BTreeMap<PathBuf, PathBuf>> {
+/// top-level entry named `skip`. `dot_entries` says whether an entry whose
+/// name starts with a dot counts, at any depth: it never does for a SOURCE
+/// tree (see `stage_tree`) and always does for the tree in place, so one
+/// that was staged there earlier makes the two differ.
+fn files(
+    root: &Path,
+    skip: Option<&str>,
+    dot_entries: bool,
+) -> std::io::Result<BTreeMap<PathBuf, PathBuf>> {
     fn walk(
         dir: &Path,
         relative: &Path,
         skip: Option<&str>,
+        dot_entries: bool,
         found: &mut BTreeMap<PathBuf, PathBuf>,
     ) -> std::io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let name = entry.file_name();
-            if skip.is_some_and(|skipped| name == skipped) {
+            if skip.is_some_and(|skipped| name == skipped)
+                || (!dot_entries && name.as_encoded_bytes().first() == Some(&b'.'))
+            {
                 continue;
             }
             let path = entry.path();
             if path.is_dir() {
-                walk(&path, &relative.join(&name), None, found)?;
+                walk(&path, &relative.join(&name), None, dot_entries, found)?;
             } else {
                 found.insert(relative.join(&name), path);
             }
@@ -150,7 +161,7 @@ fn files(root: &Path, skip: Option<&str>) -> std::io::Result<BTreeMap<PathBuf, P
         Ok(())
     }
     let mut found = BTreeMap::new();
-    walk(root, Path::new(""), skip, &mut found)?;
+    walk(root, Path::new(""), skip, dot_entries, &mut found)?;
     Ok(found)
 }
 
@@ -174,14 +185,18 @@ fn newest(root: &Path) -> Option<SystemTime> {
 }
 
 /// Make `dest` the tree `source` without its top-level entry `skip`: the
-/// same files with the same bytes, and nothing else.
+/// same files with the same bytes, and nothing else. An entry of `source`
+/// whose name starts with a dot is not part of it at any depth: what a tool,
+/// an editor or Finder leaves in the source directory (`.playwright-cli/`,
+/// `.DS_Store`) is local state, usually ignored by git, and staging it would
+/// compile it into the executable of every build made on that machine.
 pub fn stage_tree(
     source: &Path,
     dest: &Path,
     skip: Option<&str>,
     started: Option<SystemTime>,
 ) -> std::io::Result<Placed> {
-    let wanted = files(source, skip)?;
+    let wanted = files(source, skip, false)?;
     let same = |staged: &BTreeMap<PathBuf, PathBuf>| {
         staged.len() == wanted.len()
             && wanted.iter().all(|(relative, from)| {
@@ -190,7 +205,7 @@ pub fn stage_tree(
                 })
             })
     };
-    if files(dest, None).is_ok_and(|staged| same(&staged)) {
+    if files(dest, None, true).is_ok_and(|staged| same(&staged)) {
         return Ok(Placed::Unchanged);
     }
     let stamp = stamp(started, newest(dest));

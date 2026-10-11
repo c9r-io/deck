@@ -132,7 +132,10 @@ fn build_sidecars(started: Option<std::time::SystemTime>) {
 /// — the node:test carriers and the WKWebView smoke are development assets
 /// and must not ship inside the signed bundle. Debug profiles keep it because
 /// `main.rs` imports `./test/wk-smoke.mjs` from the served bundle for the
-/// isolated smoke run. A tree that differs is staged again from scratch,
+/// isolated smoke run. No profile stages an entry whose name starts with a
+/// dot: such entries are a tool's or Finder's droppings, not frontend source
+/// (an ignored `ui/.playwright-cli/` used to be compiled into every local
+/// executable). A tree that differs is staged again from scratch,
 /// which also drops files deleted from `ui/`; an in-place copy would leave
 /// them in the bundle.
 /// `ui-dist/` is ONE directory for every cargo context while debug and

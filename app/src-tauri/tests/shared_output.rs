@@ -379,6 +379,56 @@ fn an_edited_removed_or_stray_file_is_staged_again_from_scratch() {
 }
 
 #[test]
+fn dot_entries_of_the_source_tree_are_never_staged() {
+    let scratch = Scratch::new("dot-entries");
+    let source = frontend(&scratch);
+    let old = ago(30 * 86_400);
+    // what a browser-automation tool, Finder and an editor leave behind;
+    // git ignores them, the build must too
+    scratch.file(
+        "ui/.playwright-cli/page.yml",
+        b"a tool's record",
+        0o644,
+        old,
+    );
+    scratch.file("ui/.DS_Store", b"finder", 0o644, old);
+    scratch.file("ui/js/.app.js.swp", b"editor", 0o644, old);
+    let dist = scratch.0.join("ui-dist");
+    let staged = [
+        "index.html",
+        "js/app.js",
+        "js/test/kept.js",
+        "test/fixtures/board.json",
+        "test/wk-smoke.mjs",
+    ];
+
+    assert_eq!(
+        stage_tree(&source, &dist, None, Some(ago(3_600))).unwrap(),
+        Placed::Replaced
+    );
+    assert_eq!(listing(&dist), staged);
+    assert_eq!(
+        stage_tree(&source, &dist, None, Some(ago(60))).unwrap(),
+        Placed::Unchanged,
+        "the droppings in the source do not make a staged tree look stale"
+    );
+
+    // a tree an older build staged WITH them is not this context's tree
+    scratch.file(
+        "ui-dist/.playwright-cli/page.yml",
+        b"a tool's record",
+        0o644,
+        old,
+    );
+    assert_eq!(
+        stage_tree(&source, &dist, None, Some(ago(5))).unwrap(),
+        Placed::Replaced
+    );
+    assert_eq!(listing(&dist), staged);
+    assert!(!dist.join(".playwright-cli").exists());
+}
+
+#[test]
 fn a_staging_made_while_this_script_ran_is_never_hidden() {
     let scratch = Scratch::new("concurrent-staging");
     let source = frontend(&scratch);
