@@ -295,6 +295,33 @@
         "hooks-signal-off": {}
       }
     },
+    "reentry-live": {
+      "terminal": "done",
+      "checks": {
+        "relive-clean": {"a": 15},
+        "relive-hint": {"a": 15, "b": 1},
+        "relive-observe": {"a": 15},
+        "relive-cards": {"a": 4, "b": 15},
+        "relive-queue": {"a": 15, "b": 0},
+        "relive-hold": {},
+        "relive-preview": {"a": 127, "b": 2},
+        "relive-other": {"metric": true},
+        "relive-request": {"a": 4, "b": 2},
+        "relive-b-result": {},
+        "relive-early": {"metric": true},
+        "relive-b-queue": {"a": 7, "b": 0},
+        "relive-next-preview": {"a": 15}
+      }
+    },
+    "reentry-live-relaunch": {
+      "terminal": "done",
+      "checks": {
+        "relive-relaunch-preview": {"a": 63},
+        "relive-a-result": {"b": 0},
+        "relive-a-queue": {"a": 7, "b": 0},
+        "relive-hold": {}
+      }
+    },
     "channel-first-send": {
       "terminal": "done",
       "checks": {

@@ -160,6 +160,8 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("channel-live", "m.verifyChannelLive()"),
     ("channel-live-replay", "m.verifyChannelLiveReplay()"),
     ("hooks-live", "m.verifyHooksLive()"),
+    ("reentry-live", "m.verifyReentryLive()"),
+    ("reentry-live-relaunch", "m.verifyReentryLiveRelaunch()"),
     ("connector", "m.verifyConnector()"),
     ("connector-transport", "m.verifyConnectorTransport()"),
     ("selection-events", "m.verifySelectionEvents()"),

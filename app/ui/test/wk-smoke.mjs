@@ -3197,6 +3197,21 @@ export async function verifyHooksLive() {
   await runHooksLiveSmoke();
 }
 
+// The shell service restart with "Reopen Agent sessions" through the real
+// dialog, with real Claude Code clients in the cards, under a home the
+// operator gave this carrier: observation off and on, bypass reapplied, a
+// queued prompt kept paused (reentry-live-smoke.mjs). The relaunch mode is
+// the same root and tmux server started again, with the policy left alone.
+export async function verifyReentryLive() {
+  const { runReentryLiveSmoke } = await import('./reentry-live-smoke.mjs');
+  await runReentryLiveSmoke();
+}
+
+export async function verifyReentryLiveRelaunch() {
+  const { runReentryLiveRelaunchSmoke } = await import('./reentry-live-smoke.mjs');
+  await runReentryLiveRelaunchSmoke();
+}
+
 // The lost Board's way out, on a root the operator seeded with nothing
 // loadable (board-lost-smoke.mjs).
 export async function verifyBoardLost() {

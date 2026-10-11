@@ -98,7 +98,9 @@ default; `DECK_SMOKE_WKWEBVIEW=1`), `settings`, `attention`, `resume`,
 `channel-live-replay` (a real Slack sandbox app and someone posting
 messages; see "Slack channel monitor against the real service"),
 `hooks-live` (a home of its own; see "Claude hook switches on the global
-settings file"),
+settings file"), `reentry-live` → `reentry-live-relaunch` (real Claude
+clients under a home of their own; see "Claude session re-entry with real
+clients"),
 `connector-transport` (stays
 open for the Swift transport test; see `connector/ios/README.md`), and two
 that relaunch a finished `run` root: `ambiguous` (relaunch with
@@ -744,6 +746,93 @@ window. Hooks are installed only from `/Applications/deck.app` or
       step.
 - [ ] `scripts/smoke-verdict <data dir> hooks-live` judges the switches and
       the derived state; the file comparison is the operator's.
+
+### Claude session re-entry with real clients
+
+`reentry-live` is the restart with "Reopen Agent sessions" in the real window
+with real Claude Code clients: a client started before observation is on, the
+two hook switches, a client that left its first session with `/clear`, two
+bypass launches (one lowered to plan mode while it runs), two foreground
+programs that are no Agent (one of them unreadable to Deck), a queued prompt,
+one restart that reapplies bypass (Policy B) and the review after it. `reentry-live-relaunch` is the same data root and
+tmux server after the app was quit and started again: one restart with the
+policy left alone (Policy A). Neither is part of an unattended run: both start
+real clients on a signed-in account and write the GLOBAL
+`~/.claude/settings.json` of the home they run under, so they are never run
+under a person's home.
+
+- [ ] Prepare `/private/tmp/deck-relive-<12 hex>/` (mode 700) with `home/` as
+      the carrier's home: the debug carrier at `home/Applications/deck.app`,
+      Claude signed in under that home and found by a login shell there, no
+      hook of Deck's in `home/.claude/settings.json`, and
+      `home/work/{e,a,b,c}` already trusted by Claude with the bypass-mode
+      warning accepted (`home/work/{d,t}` only have to exist). Under a
+      relocated home the client finds no keychain and cannot save a sign-in:
+      give that home a keychain of its own first (`security create-keychain`,
+      `list-keychains -d user -s`, `default-keychain -d user -s`, all with
+      `HOME` set to it; any file name but `login.keychain-db`, which cannot
+      be unlocked with its own password), unlock it in the GUI session, and
+      sign in from a shell that has `USER` set, or the item is saved under
+      the account `unknown` and a card's client does not find it. Write
+      `relive-<12 hex>` to
+      `<data dir>/translation-fixture/scenario` and launch as for `hooks-live`
+      (`env -i /usr/bin/open -n --env HOME=<that home> …`) with
+      `--smoke-wkwebview reentry-live`. Keep the window visible.
+- [ ] The page starts six cards (`claude` in `e` and `a`, `claude
+      --dangerously-skip-permissions` in `b` and `c`, `cat` in `d`, `top` in
+      `t`), asks each client for one word, sends `/clear` and a second turn to A, lowers C to
+      plan mode with Shift+Tab, and queues one prompt on A whose "not before"
+      is a day away. What it believes about Claude's screen is one block of
+      constants at the top of `ui/test/reentry-live-smoke.mjs`, which says
+      what they were read from; calibrate them again for another release of
+      the client. A screen that asks something (trust, login, a warning to
+      accept) is never typed into; it ends the run with `relive-hint` or
+      `relive-cards` at `a=-99`.
+- [ ] Read the process table at each `smoke-check relive-hold` line: `a=1`
+      (ten seconds; every client as it was started), `a=2` (twelve seconds;
+      after the Policy B restart) and, in the relaunch, `a=3` (twelve seconds;
+      after the Policy A restart). By the product's contract A's new client
+      carries `--resume` and no bypass flag both times, and B's and C's carry
+      the bypass flag at 2 and none at 3, each started once. The page sees no
+      process and no session id: that reading, and whether A's session is the
+      one after `/clear`, is the operator's.
+- [ ] Expected in the window: with observation off the review says the
+      session cannot be reopened yet, offers Settings and has nothing to tick
+      (`relive-hint`); with both switches on (`relive-observe`), E, A, B and C
+      can be ticked, D is told to be reopened manually, T offers nothing,
+      nothing is ticked and the policy is the ordinary one
+      (`relive-preview`). T runs the system `top`, a program of another user
+      that Deck cannot read: `relive-other` records which sentence its row
+      carries and is not judged (`a=2`, "context could not be verified", on
+      macOS 27). After "Select all
+      candidates" and the bypass policy the button names 4 sessions and the
+      policy 2 bypass launches (`relive-request`); the result says the
+      service restarted, A re-entered with no flag, B and C with the flag
+      sent as authorized and the line that Deck did not verify the permission
+      in effect, and that queues remain paused (`relive-b-result`); the
+      queued prompt is still the one row, paused and undelivered
+      (`relive-b-queue`); the next review starts from the ordinary policy
+      with nothing ticked (`relive-next-preview`). E's client started before
+      the hooks existed: `relive-early` records what its row said (`a=1` not
+      attempted, `a=2` confirmed, `a=3` anything else) and is not judged
+      (Claude Code 2.1.296 runs hooks added after it started: `a=2`).
+- [ ] Judge with `scripts/smoke-verdict <data dir> reentry-live`. A
+      checkpoint with several terms logs them as `a`, one bit per term in
+      the order the carrier lists them, so a failed line says which did not
+      hold.
+- [ ] Quit the app, leave the tmux server and its clients running, and launch
+      the same data root, socket and home with `--smoke-wkwebview
+      reentry-live-relaunch`: the review again starts from nothing
+      (`relive-relaunch-preview`), "Select all candidates" with the policy
+      left alone re-enters A, B and C and no row speaks of a flag
+      (`relive-a-result`, `b=0`), and the queued prompt is still paused and
+      undelivered (`relive-a-queue`). Judge with `scripts/smoke-verdict <data
+      dir> reentry-live-relaunch`.
+- [ ] A pass is a debug carrier under a relocated home: it is not the release
+      build in `/Applications`, and "confirmed" means that the client entered
+      that session — not that work continues, and not that Deck verified the
+      permission in effect. Stop the isolated tmux server after the run (that
+      ends the clients) and remove the home.
 
 ### Connector post-accept recovery
 
