@@ -43,11 +43,16 @@ A list's **📋** menu can save it as a template or insert one. Insertion makes 
 | Waiting for time, quiet or the minimum gap | Read the remaining conditions in the execution plan and keep deck running |
 | Waiting for inspection | Read the result and explicitly confirm the checkpoint; opening the terminal is not enough |
 | Waiting for a program or context | Inspect the card's terminal and return the expected program to the foreground; avoid blind input into a shell or permission menu |
+| Waiting for first agent interaction | Check startup dialogs and the matching status integration; interact with the Agent or choose Send now after checking the target |
+| Agent requests input or permission | Answer in the terminal; automatic delivery will not answer for you |
+| External follow-up needs approval | Review the content and choose Send now, or review the applicable rule or preset approval |
+| Codex status cannot be attributed | Inspect the terminal; check hooks and the optional `--no-daemon` path for a new session. Missing evidence is not permission to auto-send |
+| Approval cannot be verified, or channel first-step permission withdrawn | Check the saved rule or preset and the reason shown. Restore a valid intended permission, or explicitly send the reviewed row; elapsed time does not grant permission |
 | Delivery failed | Resolve the cause and retry, or explicitly skip; later rows do not pass the failed row |
 | Delivery uncertain | Check the terminal, then acknowledge as sent or explicitly retry accepting a possible duplicate. deck does not auto-resend |
 | Sending; changes temporarily refused | Wait for the delivery to finish before editing, pausing or removing it |
 
-Immediately before delivery, deck rechecks the card's terminal and any identifiable foreground program. When a launch command identifies the expected program, deck waits for it to return to the foreground. Otherwise it uses compatibility mode in the same terminal, where a shell may interpret the input; inspect the target before scheduling. A target change blocks that mismatched delivery; a later attempt can recheck a replacement session generation.
+Immediately before delivery, deck rechecks the card's terminal and any identifiable foreground program. When a launch command identifies the expected program, deck waits for it to return to the foreground. Otherwise it uses compatibility mode in the same terminal, where a shell may interpret the input; inspect the target before scheduling. A target change blocks that mismatched delivery; a later attempt can recheck a replacement session generation. Agent-only external rows also require the expected Agent in the foreground and its bracketed-paste mode. Send now is your action for one row, not blanket approval for future rows; it cannot bypass the target and paste checks.
 
 ## Before you leave
 

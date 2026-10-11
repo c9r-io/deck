@@ -186,7 +186,7 @@ test('both languages publish all guide topics, overview, metadata and version-sc
       assert.ok(html.includes(`<html lang="${locale ? 'zh-Hans' : 'en'}">`));
       assert.equal([...html.matchAll(/<h1\b/g)].length, 1);
       assert.match(html, /aria-current="page"/);
-      assert.match(html, /deck 0\.7\.8/);
+      assert.match(html, /deck 0\.7\.26/);
       assert.ok(html.includes(`<summary>${locale ? '集成' : 'Integrations'}</summary>`));
       assert.ok(html.includes(`/blob/${config.guideRef}/README.md`));
       assert.ok(html.includes(`rel="canonical" href="${config.siteUrl}/${route}"`));
@@ -206,7 +206,7 @@ test('both languages describe current voice and integration behavior', async () 
   const chinese = await readFile(path.join(dist, 'zh/guide/input-and-settings/index.html'), 'utf8');
   for (const html of [english, chinese]) {
     assert.doesNotMatch(html, /An empty draft starts recording|仅插入把文字放进终端/);
-    assert.match(html, /0\.7\.8/);
+    assert.match(html, /0\.7\.26/);
   }
   assert.match(english, /never sends Enter for voice input/);
   assert.match(chinese, /语音输入不会替你按回车/);
@@ -214,6 +214,65 @@ test('both languages describe current voice and integration behavior', async () 
     const html = await readFile(path.join(dist, route), 'utf8');
     assert.match(html, /Phone Connector|手机 Connector/);
     assert.match(html, /Secure Tunnel/);
+  }
+});
+
+test('public guide facts and release references match the audited Stable', async () => {
+  assert.equal(config.guideVersion, '0.7.26');
+  assert.equal(config.guideRef, 'dcc3c064404e9eb4d392cb6228ae0b9f2cf14054');
+  assert.equal(config.releaseLabel, 'Stable 0.7.26');
+  assert.equal(config.releaseLabelZh, '稳定版 0.7.26');
+  for (const route of routes) {
+    const html = await readFile(path.join(dist, route), 'utf8');
+    // The shared Secure Tunnel source states its historical minimum of 0.7.8;
+    // it is not a claim that this guide still targets that release.
+    if (!route.includes('docs/integrations/')) {
+      assert.doesNotMatch(html, /0\.7\.8|692438f9310f079743700a10bda7cf80f77b06c6/, route);
+    }
+    if (route.startsWith('guide/') || route.startsWith('zh/guide/')) {
+      assert.doesNotMatch(html, /Integrations &amp; automation|集成与自动化|Data &amp; logs|数据与日志/, route);
+    }
+  }
+  for (const locale of ['', 'zh/']) {
+    const html = await readFile(path.join(dist, `${locale}guide/integrations/index.html`), 'utf8');
+    assert.doesNotMatch(html, /\/blob\/main\/docs\//);
+    for (const doc of ['channel-monitor.md', 'connector.md', 'mcp.md']) {
+      assert.ok(html.includes(`/blob/${config.guideRef}/docs/${doc}`));
+    }
+  }
+});
+
+test('automation closure requires process evidence, never a reported turn ending', async () => {
+  const en = await readFile(path.join(dist, 'guide/automations/index.html'), 'utf8');
+  const zh = await readFile(path.join(dist, 'zh/guide/automations/index.html'), 'utf8');
+  assert.match(en, /empty queue and three consecutive polls/);
+  assert.match(en, /no agent state and a shell in the foreground of the single-pane session/);
+  assert.match(en, /A reported turn ending never closes the run/);
+  assert.match(en, /retained scratchpad or an active reminder/);
+  assert.match(zh, /队列已清空，并连续三次检查到/);
+  assert.match(zh, /没有 agent 状态，且单窗格 session 的前台已经回到 shell/);
+  assert.match(zh, /本轮结束报告不会关闭运行卡片/);
+  assert.match(zh, /有需要保留的备忘录或有效提醒事项/);
+});
+
+test('both languages distinguish first-send risk, follow-up authority and attention', async () => {
+  for (const locale of ['', 'zh/']) {
+    const attention = await readFile(path.join(dist, `${locale}guide/attention/index.html`), 'utf8');
+    const automation = await readFile(path.join(dist, `${locale}guide/automations/index.html`), 'utf8');
+    const integrations = await readFile(path.join(dist, `${locale}guide/integrations/index.html`), 'utf8');
+    const settings = await readFile(path.join(dist, `${locale}guide/input-and-settings/index.html`), 'utf8');
+    for (const html of [attention, automation, integrations]) assert.match(html, /--no-daemon/);
+    assert.match(attention, /\/hooks/);
+    assert.match(attention, locale ? /有投递待处理/ : /Delivery waiting/);
+    assert.match(attention, locale ? /终端铃/ : /Bell/);
+    assert.match(attention, locale ? /仅在 Deck 内提醒/ : /Remind only inside Deck/);
+    assert.match(attention, locale ? /取消提醒并关闭/ : /Cancel reminder and close/);
+    assert.match(automation, locale ? /自动继续已批准的后续步骤/ : /Automatically continue approved follow-up steps/);
+    assert.match(automation, locale ? /短暂兼容等待不代表 agent 已就绪/ : /short compatibility wait is not evidence/);
+    assert.match(integrations, locale ? /每条后续步骤仍需/ : /Every follow-up still waits/);
+    assert.match(settings, locale ? /八类/ : /eight searchable categories/);
+    assert.match(settings, locale ? /数据与隐私/ : /Data &amp; privacy/);
+    assert.match(settings, locale ? /本地翻译/ : /Local Translation/);
   }
 });
 
@@ -225,7 +284,7 @@ test('Markdown supports stable Unicode anchors, duplicate headings and rejects m
   assert.throws(() => renderMarkdown('# Only a title'), /introductory paragraph/);
 });
 
-test('parallel-session scenario is paired, discoverable and indexed without changing the guide version', async () => {
+test('parallel-session scenario is paired, discoverable and indexed alongside the versioned guide', async () => {
   const sitemap = await readFile(path.join(dist, 'sitemap.xml'), 'utf8');
   const redirects = await readFile(path.join(dist, '_redirects'), 'utf8');
   for (const locale of ['', 'zh/']) {

@@ -27,7 +27,7 @@ If the directory no longer exists, deck offers cancel, edit defaults or a shell 
 
 ## Know when to return
 
-Work on something else, then check **Needs attention** in the sidebar for input requests and unread turn endings across projects. Explicit agent states require the matching integration; without it, deck can only observe output activity. [Set up and understand signals →](/guide/attention/)
+Work on something else, then check **Needs attention** in the sidebar for input requests and unread turn endings across projects. Explicit agent states require the matching integration. Manual follow-up, due reminders and waiting deliveries can still bring a card to your attention without Agent hooks; output activity alone is not a request for help. [Set up and understand signals →](/guide/attention/)
 
 > An empty Needs attention view does not mean all work is complete. Sessions without a valid status report may still need a look.
 

@@ -16,11 +16,13 @@ Leaving a terminal view, quitting the app and ending a session are different act
 
 ## End a session deliberately
 
-Closing a card affects its running shell, agent and processes. The card corner × and right-click close act immediately; the in-session close action asks for confirmation. Check unsaved work and pending lists first.
+Closing a card affects its running shell, agent and processes. Without an active reminder, the card corner × and right-click close act immediately; the in-session close action asks for confirmation. An active reminder requires explicit **Cancel reminder and close**; a remote or automatic close cannot silently cancel it. Check unsaved work and pending lists first.
 
 Ctrl+D in a terminal is interpreted by the foreground program. It exits the shell only in applicable contexts, such as at a shell prompt. It is not a universal shortcut for closing deck.
 
 An agent exiting usually returns to the shell. It does not necessarily end the card's entire session.
+
+When Deck verifies a normal exit of an ordinary card's owning shell, it can retire that card and cancel its scheduled prompts. A missing session, service loss or signal termination is not that proof: the card stays stopped. MCP-origin cards, retained scratchpads and reminders have additional retention protection. A reminder protects the card, not a process; ending it does not release an automatic retirement it previously blocked.
 
 ## When the app is upgraded
 

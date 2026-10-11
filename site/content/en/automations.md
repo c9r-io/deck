@@ -36,7 +36,7 @@ A clock rule has one run at a time. If its previous card remains on the Board, t
 
 ## Start from a Slack reaction
 
-Open the Slack connection under **Settings → Integrations & automation**:
+Open the Slack connection under **Settings → Integrations → Slack**:
 
 1. Click **Create the Slack app…**, then choose a workspace and create the app on Slack's page.
 2. Install it into the workspace and copy the User OAuth Token into deck as instructed. Some workspaces require administrator approval.
@@ -51,10 +51,20 @@ Only your own reactions trigger work. Reactions already present when the rule is
 
 For messages posted in a selected channel by allowed users or bots, enable **channel monitoring in the same Deck Slack app**. Update and reinstall an existing app, paste its new bot token, then add the bot to each monitored public or private channel. Its first match can create a card and queue a saved template; later matches add scratchpad notes without sending them to the agent. Channel text remains untrusted even when its sender is allowed. [Compare optional integrations →](/guide/integrations/#slack-reactions-and-channel-monitoring)
 
+## First input and follow-up permission
+
+For a newly started Claude Code or Codex, the first template row normally waits for **one real agent interaction**, observed through the matching Agent status integration, or your **Send now** after checking the terminal. A startup trust, update, sign-in or hook-review dialog may still own Enter. A saved rule, quiet output or a turn-ending report does not prove readiness.
+
+Clock and Slack badge rules offer a separate, off-by-default **Send the first step to a newly started agent without waiting for readiness** choice. Its confirmation accepts that startup-input risk for the first step of future runs. It supports Claude and Codex with literal `--no-daemon`; a short compatibility wait is not evidence that the agent is ready. Input or permission requests, inspection and target checks still apply. Turning it off withdraws the exception from waiting first steps; it does not stop work that can proceed with real interaction evidence.
+
+A Slack reaction expresses the run and first-step intent; it does not approve every later message. Follow-up steps normally wait for **Send now**. **Automatically continue approved follow-up steps** approves a specific version of the rule and template; rows containing `{{msg.*}}` also need the separate external-content acknowledgment. Changes to covered content or targets, or withdrawing approval, stop unsent steps relying on that approval. Frozen queued text is not rewritten. Approval never answers an Agent's permission prompt or completes inspection. Clock follow-ups contain your own text and do not need a Slack content grant.
+
+Slack badge commands must start with `claude` or `codex` and may include simple unquoted arguments; shell syntax, executable paths and environment prefixes are refused. Every template row must begin with your own words, not a message placeholder. Channel monitoring has its own first-step choice and always keeps later steps manual. [Compare the integration boundaries →](/guide/integrations/)
+
 ## Finishing and inspection
 
-**Keep it** leaves the card for you to read. **Close the card** requires an empty queue and three consecutive observations of a reported turn ending (or a foreground shell without hook state), with no pane showing the card. These conditions **cannot prove business success or establish that the report belongs to the last prompt**.
+**Keep it** leaves the card for you to review. **Close the card** requires an empty queue and three consecutive polls with **no agent state and a shell in the foreground of the single-pane session**. The session must still be alive, and no open Deck pane may show the card. **A reported turn ending never closes the run**: an interactive agent can still own background work. These observations do not prove business success.
 
-If every-row inspection is enabled, the last row must also be inspected before automatic closing is possible. Changing the rule's inspection setting affects new runs only; existing runs keep their settings. Inspection does not replace timing and target checks.
+A retained scratchpad or an active reminder also prevents automatic closure. Ending a reminder does not release a retirement it previously blocked. With per-row human inspection enabled, the last row must be inspected too. Changing a rule's inspection setting affects new runs only; existing runs keep their setting. Inspection does not bypass scheduling or target checks.
 
-Deleting a rule leaves its existing cards. Ending one run's card does not delete the rule that will trigger future runs.
+Deleting a rule does not delete cards it already created. Closing a run card does not delete a rule that may trigger again.
