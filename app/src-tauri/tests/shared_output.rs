@@ -446,6 +446,38 @@ fn a_staging_made_while_this_script_ran_is_never_hidden() {
     assert!(changed_for(other_started, &dist));
 }
 
+/// The verifier of a staged tree (`scripts/sidecar_provenance.py staged`) reads
+/// the same fixture: what this module stages is what that script accepts.
+#[test]
+fn the_staging_contract_fixture_is_what_this_module_stages() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/staging-contract.json")).expect("fixture");
+    let names = |key: &str| -> Vec<String> {
+        fixture[key]
+            .as_array()
+            .expect("a list of paths")
+            .iter()
+            .map(|name| name.as_str().expect("a path").to_string())
+            .collect()
+    };
+    let scratch = Scratch::new("contract");
+    for name in names("source") {
+        scratch.file(&format!("ui/{name}"), name.as_bytes(), 0o644, ago(86_400));
+    }
+    let source = scratch.0.join("ui");
+    for (profile, skip) in [("debug", None), ("release", Some("test"))] {
+        let dist = scratch.0.join(format!("ui-dist-{profile}"));
+        assert_eq!(
+            stage_tree(&source, &dist, skip, Some(ago(60))).unwrap(),
+            Placed::Replaced
+        );
+        assert_eq!(listing(&dist), names(profile), "{profile}");
+        for name in names(profile) {
+            assert_eq!(std::fs::read(dist.join(&name)).unwrap(), name.as_bytes());
+        }
+    }
+}
+
 /// The module only helps if `build.rs` writes both shared outputs through it
 /// and names each as an input of its own; a plain copy would bring the
 /// defect back without failing any test above.

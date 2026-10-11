@@ -45,6 +45,8 @@ MANIFEST = json.loads((ROOT / "scripts/translation-lens-verify.manifest.json").r
 SMOKE_MANIFEST = json.loads((ROOT / "app/ui/test/fixtures/smoke-manifest.json").read_text())
 RUNS = int(os.environ.get("DECK_TL_RUNS", "3"))
 MODES = ("translation-guard", "translation", "translation-native")
+# The built sidecars this carrier needs beside tmux (it runs no MCP session).
+BUNDLE_SIDECARS = ("deck-status-helper", "deck-lifecycle-helper")
 # Iteration aid only: a subset of modes can never satisfy the manifest, so
 # such a run is reported FAIL (missing evidence), never PASS.
 RUN_MODES = tuple(m for m in os.environ.get("DECK_TL_MODES", ",".join(MODES)).split(",") if m in MODES)
@@ -218,18 +220,15 @@ def build_bundle():
     log = EVIDENCE / "build.log"
     if run_logged(["cargo", "build", "--manifest-path", str(TAURI / "Cargo.toml")], log, 3600) != 0:
         raise RuntimeError("cargo build failed (evidence/build.log)")
-    dist = TAURI / "ui-dist"
-    mismatched = []
-    for path in (ROOT / "app/ui").rglob("*"):
-        if path.is_file():
-            staged = dist / path.relative_to(ROOT / "app/ui")
-            if not staged.is_file() or sha256_file(staged) != sha256_file(path):
-                mismatched.append(str(path.relative_to(ROOT)))
-    if mismatched:
-        raise RuntimeError("embedded frontend does not match app/ui")
-    # binaries/ is shared with the release and coverage build contexts
-    provenance = [sys.executable, str(ROOT / "scripts/sidecar_provenance.py"), "check", "--profile", "debug", "--binaries",
-                  "--main-product", str(TAURI / "target/debug/deck-app")]
+    # ui-dist/ and binaries/ are shared with the release and coverage build
+    # contexts. The staged frontend is judged by the staging contract itself
+    # (build/shared_output.rs: no dot entries of app/ui, at any depth): a file
+    # missing, changed, or staged without belonging there fails.
+    tool = [sys.executable, str(ROOT / "scripts/sidecar_provenance.py")]
+    if run_logged(tool + ["staged", "--profile", "debug"], EVIDENCE / "staged-frontend.log", 120) != 0:
+        raise RuntimeError("embedded frontend does not match app/ui (evidence/staged-frontend.log)")
+    provenance = tool + ["check", "--profile", "debug", "--binaries",
+                         "--main-product", str(TAURI / "target/debug/deck-app")]
     if run_logged(provenance, EVIDENCE / "sidecar-provenance.log", 120) != 0:
         raise RuntimeError("sidecars or executable are not this debug build (evidence/sidecar-provenance.log)")
     bundle = RUN / "deck-smoke-tl.app"
@@ -237,7 +236,7 @@ def build_bundle():
     macos.mkdir(parents=True)
     resources.mkdir()
     shutil.copy2(TAURI / "target/debug/deck-app", macos / "deck")
-    for name in ("tmux", "deck-status-helper", "deck-lifecycle-helper"):
+    for name in ("tmux", *BUNDLE_SIDECARS):
         shutil.copy2(TAURI / f"binaries/{name}-aarch64-apple-darwin", macos / name)
     shutil.copy2(TAURI / "icons/icon.icns", resources / "deck.icns")
     version = json.loads((TAURI / "tauri.conf.json").read_text())["version"]
@@ -250,6 +249,14 @@ def build_bundle():
     if run_logged(["codesign", "--force", "--sign", "-", "--entitlements", str(TAURI / "Entitlements.plist"),
                    str(bundle)], EVIDENCE / "codesign.log", 120) != 0:
         raise RuntimeError("codesign failed")
+    # What was copied is what the runs below execute: another build context
+    # may have written binaries/ after the check above. This carrier holds two
+    # of the four built sidecars; both, tmux and the executable are checked,
+    # and a third sidecar that got in would be checked too.
+    packaged = tool + ["check", "--profile", "debug", "--bundle", str(bundle), "--sidecars", ",".join(BUNDLE_SIDECARS),
+                       "--main-product", str(TAURI / "target/debug/deck-app")]
+    if run_logged(packaged, EVIDENCE / "bundle-provenance.log", 120) != 0:
+        raise RuntimeError("the assembled bundle does not hold this debug build (evidence/bundle-provenance.log)")
     report["bundlePath"] = str(bundle)
     report["bundleIdentifier"] = f"io.c9r.deck.smoke.tl{RUN_ID}"
     report["binaryHash"] = sha256_file(macos / "deck")

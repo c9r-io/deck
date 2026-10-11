@@ -1,0 +1,31 @@
+{
+  "about": "One staging contract, two readers. build/shared_output.rs (stage_tree) STAGES the frontend; scripts/sidecar_provenance.py (staged) JUDGES a staged tree. Each builds `source` in a scratch directory (a file's bytes are its own path) and must stage, or accept, exactly the files listed for the profile. A dot entry of the source is never staged, at any depth; a release profile also leaves out the top-level test tree, and only that one.",
+  "source": [
+    ".DS_Store",
+    ".playwright-cli/page.yml",
+    "index.html",
+    "js/.app.js.swp",
+    "js/.hidden/inner.js",
+    "js/app.js",
+    "js/test/kept.js",
+    "test/.DS_Store",
+    "test/fixtures/board.json",
+    "test/wk-smoke.mjs",
+    "vendor/.cache/deep/blob.bin",
+    "vendor/xterm.js"
+  ],
+  "debug": [
+    "index.html",
+    "js/app.js",
+    "js/test/kept.js",
+    "test/fixtures/board.json",
+    "test/wk-smoke.mjs",
+    "vendor/xterm.js"
+  ],
+  "release": [
+    "index.html",
+    "js/app.js",
+    "js/test/kept.js",
+    "vendor/xterm.js"
+  ]
+}

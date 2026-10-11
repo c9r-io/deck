@@ -8,6 +8,7 @@ set -e
 APP_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 REPO_ROOT=$(dirname "$APP_DIR")
 cd "$APP_DIR/src-tauri"
+. "$APP_DIR/bundle.sh"
 
 # A smoke launch must never fall into the default development path below,
 # whose pkill pattern also matches an installed deck.app. Refuse partial
@@ -55,9 +56,8 @@ cargo build
 # checkout (debug, release, cargo llvm-cov); build.rs has just made them this
 # debug build's (app/src-tauri/build/shared_output.rs). Never assemble a
 # bundle from another context's sidecars or frontend, which is what a build
-# running beside this one would leave here.
-python3 "$REPO_ROOT/scripts/sidecar_provenance.py" check --profile debug --binaries \
-  --main-product target/debug/deck-app
+# running beside this one would leave here (bundle.sh).
+deck_bundle_precheck "$REPO_ROOT" "$PWD"
 
 APP=target/debug/deck-dev.app
 BUNDLE_NAME="deck dev"
@@ -87,29 +87,13 @@ else
 fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/debug/deck-app "$APP/Contents/MacOS/deck"
+# The executable, the static tmux and the sidecars build.rs built into
+# binaries/ (dmg parity): the agent-hook status and lifecycle helpers, the MCP
+# adapter and the managed terminal runner. They remain ordinary signed bundle
+# sidecars and are never installed globally.
+deck_bundle_copy "$PWD" "$APP"
 cp icons/icon.png "$APP/Contents/Resources/icon.png"
 cp icons/icon.icns "$APP/Contents/Resources/deck.icns"
-# bundle the static tmux sidecar into the dev bundle too (dmg parity)
-if [ -f binaries/tmux-aarch64-apple-darwin ]; then
-  cp binaries/tmux-aarch64-apple-darwin "$APP/Contents/MacOS/tmux"
-fi
-# agent-hook status helper, built by build.rs into binaries/ (dmg parity)
-if [ -f binaries/deck-status-helper-aarch64-apple-darwin ]; then
-  cp binaries/deck-status-helper-aarch64-apple-darwin "$APP/Contents/MacOS/deck-status-helper"
-fi
-# agent-hook session lifecycle helper, built by build.rs into binaries/ (dmg parity)
-if [ -f binaries/deck-lifecycle-helper-aarch64-apple-darwin ]; then
-  cp binaries/deck-lifecycle-helper-aarch64-apple-darwin "$APP/Contents/MacOS/deck-lifecycle-helper"
-fi
-# MCP adapter and managed terminal runner, built by build.rs into binaries/.
-# They remain ordinary signed bundle sidecars and are never installed globally.
-if [ -f binaries/deck-mcp-aarch64-apple-darwin ]; then
-  cp binaries/deck-mcp-aarch64-apple-darwin "$APP/Contents/MacOS/deck-mcp"
-fi
-if [ -f binaries/deck-mcp-runner-aarch64-apple-darwin ]; then
-  cp binaries/deck-mcp-runner-aarch64-apple-darwin "$APP/Contents/MacOS/deck-mcp-runner"
-fi
 if [ "${DECK_SMOKE_WKWEBVIEW:-}" = channel-first-send ]; then
   mkdir -p "$APP/Contents/MacOS/channel-fixture-bin"
   cp target/debug/examples/channel_fixture "$APP/Contents/MacOS/channel-fixture-bin/claude"
@@ -143,6 +127,14 @@ EOF
 # Stable ad-hoc bundle identity for local TCC permission checks; release uses
 # Developer ID signing and the same microphone entitlement via Tauri.
 codesign --force --sign - --entitlements Entitlements.plist "$APP"
+
+# What was copied is what will run. Another build context may have written
+# binaries/ between the check above and the copy; a bundle that does not hold
+# this debug build is never opened.
+if ! deck_bundle_postcheck "$REPO_ROOT" "$PWD" "$APP"; then
+  echo "refusing to launch $APP: it does not hold this debug build (see above). Run again." >&2
+  exit 1
+fi
 
 if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
   DECK_SMOKE_TMUX_SOCKET=${DECK_SMOKE_TMUX_SOCKET:-deck-smoke-$$}

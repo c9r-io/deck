@@ -6,6 +6,7 @@ import pathlib
 import plistlib
 import re
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -316,6 +317,212 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(self.check("--profile", "debug", "--bundle", str(app))[0], 2)
 
 
+class StagedTests(unittest.TestCase):
+    """`staged` judges a staged frontend by the contract build.rs stages by."""
+
+    CONTRACT = json.loads((ROOT / "app/src-tauri/tests/fixtures/staging-contract.json").read_text())
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="deck-staged-")
+        self.addCleanup(directory.cleanup)
+        self.root = pathlib.Path(directory.name)
+        self.source = self.root / "ui"
+        for name in self.CONTRACT["source"]:
+            self.write(self.source / name, name)
+
+    @staticmethod
+    def write(path, text):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def staging(self, profile):
+        dist = self.root / f"ui-dist-{profile}"
+        for name in self.CONTRACT[profile]:
+            self.write(dist / name, name)
+        return dist
+
+    def test_the_contract_fixture_is_accepted_for_each_profile(self):
+        # the Rust test of the same fixture stages exactly these lists
+        for profile in ("debug", "release"):
+            self.assertEqual(sorted(MODULE.staged_files(self.source, profile)), self.CONTRACT[profile])
+            self.assertEqual(MODULE.staging_problems(self.source, self.staging(profile), profile), [])
+            status, out, _ = run("staged", "--profile", profile, "--source", str(self.source),
+                                 "--dist", str(self.root / f"ui-dist-{profile}"))
+            self.assertEqual(status, 0)
+            self.assertIn(f"{len(self.CONTRACT[profile])} files", out)
+
+    def test_dot_entries_of_the_source_are_never_asked_for(self):
+        # .DS_Store, a tool directory, an editor swap file and a nested hidden
+        # directory are in the source; none is staged and none is missed
+        dist = self.staging("debug")
+        self.write(self.source / "js/.hidden/deeper/.more/x.js", "more")
+        self.write(self.source / ".DS_Store", "changed by Finder")
+        self.assertEqual(MODULE.staging_problems(self.source, dist, "debug"), [])
+
+    def test_a_missing_or_changed_ordinary_file_is_reported(self):
+        dist = self.staging("debug")
+        (dist / "index.html").unlink()
+        (dist / "js/app.js").write_text("older bytes")
+        self.write(self.source / "js/new.js", "added to the source after the staging")
+        self.assertEqual(sorted(MODULE.staging_problems(self.source, dist, "debug")), [
+            "missing from the staged frontend: index.html",
+            "missing from the staged frontend: js/new.js",
+            "staged with other bytes than the source: js/app.js",
+        ])
+        status, _, err = run("staged", "--profile", "debug", "--source", str(self.source), "--dist", str(dist))
+        self.assertEqual(status, 1)
+        self.assertIn("3 difference(s)", err)
+
+    def test_what_does_not_belong_in_the_staging_is_reported(self):
+        dist = self.staging("debug")
+        self.write(dist / ".DS_Store", "finder")
+        self.write(dist / "js/.hidden/inner.js", "a hidden directory an older build staged")
+        self.write(dist / "vendor/.cache/deep/blob.bin", "nested")
+        self.write(dist / "js/removed.js", "deleted from the source since")
+        self.assertEqual(sorted(MODULE.staging_problems(self.source, dist, "debug")), [
+            "staged but not part of the frontend (a dot entry): .DS_Store",
+            "staged but not part of the frontend (a dot entry): js/.hidden/inner.js",
+            "staged but not part of the frontend (a dot entry): vendor/.cache/deep/blob.bin",
+            "staged but not part of the frontend (not in the source tree): js/removed.js",
+        ])
+
+    def test_a_release_staging_holds_no_test_tree_and_a_debug_one_must(self):
+        debug = self.staging("debug")
+        problems = MODULE.staging_problems(self.source, debug, "release")
+        self.assertEqual(sorted(problems), [
+            "staged but not part of the frontend (ui/test in a release staging): test/fixtures/board.json",
+            "staged but not part of the frontend (ui/test in a release staging): test/wk-smoke.mjs",
+        ])
+        release = self.staging("release")
+        self.assertEqual(sorted(MODULE.staging_problems(self.source, release, "debug")), [
+            "missing from the staged frontend: test/fixtures/board.json",
+            "missing from the staged frontend: test/wk-smoke.mjs",
+        ])
+        # a nested directory that happens to be called test is ordinary frontend
+        self.assertIn("js/test/kept.js", MODULE.staged_files(self.source, "release"))
+
+    def test_a_tree_that_is_not_there_asks_nothing(self):
+        status, _, _ = run("staged", "--profile", "debug", "--source", str(self.source), "--dist", str(self.root / "absent"))
+        self.assertEqual(status, 2)
+
+
+class PackagedTests(unittest.TestCase):
+    """What a package RUNS is what was copied, which a check of binaries/ made
+    earlier cannot know. The negative controls replace a shared sidecar after
+    that check passed and the finished package must still be refused."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="deck-packaged-")
+        self.addCleanup(directory.cleanup)
+        self.tree = Tree(directory.name)
+        self.tauri = self.tree.tauri
+        self.tree.place("debug")
+        # the staged frontend bundle.sh also checks: one file, staged
+        for directory in (self.tauri.parent / "ui", self.tauri / "ui-dist"):
+            directory.mkdir()
+            (directory / "index.html").write_text("frontend")
+
+    def step(self, function, *arguments):
+        """One function of app/bundle.sh, as app/run.sh calls it."""
+        script = f'. "$0/app/bundle.sh" && {function} "$@"'
+        return subprocess.run(["sh", "-c", script, str(ROOT), *map(str, arguments)], capture_output=True, text=True)
+
+    def finish(self, app):
+        """What app/run.sh does between the copy and the last check, as far as the check reads it."""
+        with open(app / "Contents" / "Info.plist", "wb") as handle:
+            plistlib.dump({"CFBundleExecutable": "deck"}, handle)
+
+    def foreign(self, binary, context):
+        (self.tauri / "binaries" / f"{binary}-{TRIPLE}").write_bytes(self.tree.product(binary, context).read_bytes())
+
+    def test_the_dev_bundle_passes_when_nothing_changes_in_between(self):
+        app = self.tauri / "target/debug/deck-dev.app"
+        self.assertEqual(self.step("deck_bundle_precheck", ROOT, self.tauri).returncode, 0)
+        self.assertEqual(self.step("deck_bundle_copy", self.tauri, app).returncode, 0)
+        self.finish(app)
+        done = self.step("deck_bundle_postcheck", ROOT, self.tauri, app)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("6 files", done.stdout)
+        self.assertEqual(sorted(path.name for path in (app / "Contents/MacOS").iterdir()),
+                         ["deck", "deck-lifecycle-helper", "deck-mcp", "deck-mcp-runner", "deck-status-helper", "tmux"])
+
+    def test_a_sidecar_replaced_after_the_first_check_is_refused_in_the_dev_bundle(self):
+        for binary, context, said in (("deck-mcp", "coverage", "is instrumented, expected plain"),
+                                      ("deck-lifecycle-helper", "release", "is not this checkout's build product")):
+            with self.subTest(binary=binary, context=context):
+                self.tree.place("debug")
+                app = self.tauri / f"target/debug/deck-dev-{context}.app"
+                first = self.step("deck_bundle_precheck", ROOT, self.tauri)
+                self.assertEqual(first.returncode, 0, first.stderr)
+                # another build context writes the shared directory now
+                self.foreign(binary, context)
+                self.assertEqual(self.step("deck_bundle_copy", self.tauri, app).returncode, 0)
+                self.finish(app)
+                last = self.step("deck_bundle_postcheck", ROOT, self.tauri, app)
+                self.assertEqual(last.returncode, 1)
+                self.assertIn(f"{binary}: ", last.stderr)
+                self.assertIn(said, last.stderr)
+                self.assertIn("sidecar provenance FAILED", last.stderr)
+
+    def test_a_frontend_staged_by_another_profile_stops_the_dev_bundle_before_the_copy(self):
+        (self.tauri / "ui-dist/.DS_Store").write_text("finder")
+        first = self.step("deck_bundle_precheck", ROOT, self.tauri)
+        self.assertEqual(first.returncode, 1)
+        self.assertIn("a dot entry", first.stderr)
+
+    def carrier(self, names):
+        """A test carrier holding tmux, the executable and only `names` of the four sidecars, copied from binaries/."""
+        app = self.tauri.parent / "carrier.app"
+        macos = app / "Contents" / "MacOS"
+        macos.mkdir(parents=True, exist_ok=True)
+        for name in ("tmux", *names):
+            (macos / name).write_bytes((self.tauri / "binaries" / f"{name}-{TRIPLE}").read_bytes())
+        (macos / "deck").write_bytes((self.tauri / "target/debug/deck-app").read_bytes())
+        self.finish(app)
+        return app
+
+    def check(self, app, sidecars):
+        return run("check", "--tauri", str(self.tauri), "--profile", "debug", "--bundle", str(app),
+                   "--sidecars", sidecars, "--main-product", str(self.tauri / "target/debug/deck-app"))
+
+    def test_a_carrier_with_two_sidecars_is_checked_for_exactly_what_it_carries(self):
+        two = ("deck-status-helper", "deck-lifecycle-helper")
+        app = self.carrier(two)
+        status, out, err = self.check(app, ",".join(two))
+        self.assertEqual(status, 0, err)
+        self.assertIn("4 files", out)  # two sidecars, tmux, the executable
+        # without the option the same carrier is incomplete: nothing is skipped by default
+        self.assertEqual(run("check", "--tauri", str(self.tauri), "--profile", "debug", "--bundle", str(app),
+                             "--main-product", str(self.tauri / "target/debug/deck-app"))[0], 1)
+        # a sidecar it was asked to carry is missing
+        (app / "Contents/MacOS/deck-lifecycle-helper").unlink()
+        self.assertEqual(self.check(app, ",".join(two))[0], 1)
+
+    def test_a_sidecar_nobody_named_is_still_checked_when_it_is_in_the_carrier(self):
+        two = ("deck-status-helper", "deck-lifecycle-helper")
+        app = self.carrier(two)
+        (app / "Contents/MacOS/deck-mcp").write_bytes(self.tree.product("deck-mcp", "coverage").read_bytes())
+        status, _, err = self.check(app, ",".join(two))
+        self.assertEqual(status, 1)
+        self.assertIn("deck-mcp: ", err)
+
+    def test_a_sidecar_replaced_after_the_first_check_is_refused_in_the_carrier(self):
+        two = ("deck-status-helper", "deck-lifecycle-helper")
+        self.assertEqual(run("check", "--tauri", str(self.tauri), "--profile", "debug", "--binaries",
+                             "--main-product", str(self.tauri / "target/debug/deck-app"))[0], 0)
+        self.foreign("deck-status-helper", "coverage")
+        status, _, err = self.check(self.carrier(two), ",".join(two))
+        self.assertEqual(status, 1)
+        self.assertIn("deck-status-helper: ", err)
+        self.assertIn("is instrumented, expected plain", err)
+
+    def test_the_component_option_is_for_packages_and_known_names(self):
+        app = self.carrier(("deck-status-helper",))
+        self.assertEqual(self.check(app, "deck-status-helper,deck-unknown")[0], 2)
+        self.assertEqual(run("check", "--tauri", str(self.tauri), "--profile", "debug", "--binaries",
+                             "--sidecars", "deck-status-helper")[0], 2)
+
+
 class RepositoryTests(unittest.TestCase):
     def test_the_table_is_build_rs_and_the_tauri_configuration(self):
         build = (ROOT / "app/src-tauri/build.rs").read_text()
@@ -339,19 +546,41 @@ class RepositoryTests(unittest.TestCase):
         for name in MODULE.TEST_ASSETS:
             self.assertTrue((ROOT / "app/ui" / name.decode().lstrip("/")).is_file(), name)
 
-    def test_every_packaging_path_checks_before_it_copies(self):
-        """A package is only as right as the last placement in binaries/."""
+    def test_every_packaging_path_checks_before_it_copies_and_again_before_it_runs(self):
+        """A package is only as right as the last placement in binaries/, and what
+        runs is what was copied: every path checks the shared outputs first and the
+        finished package again before anything opens or ships it."""
         tool = "scripts/sidecar_provenance.py"
+        steps = (ROOT / "app/bundle.sh").read_text()
+        self.assertIn(f'"$1/{tool}" check --profile debug --binaries --tauri "$2"', steps)
+        self.assertIn(f'"$1/{tool}" staged --profile debug --tauri "$2"', steps)
+        self.assertIn(f'"$1/{tool}" check --profile debug --bundle "$3" --tauri "$2"', steps)
         run_sh = (ROOT / "app/run.sh").read_text()
-        check = run_sh.index(f'"$REPO_ROOT/{tool}" check --profile debug --binaries')
-        self.assertLess(run_sh.index("\ncargo build\n"), check)
-        self.assertLess(check, run_sh.index("cp binaries/"))
+        self.assertNotIn("cp binaries/", run_sh, "sidecars are copied by bundle.sh only")
+        self.assertNotIn("cp target/debug/deck-app", run_sh)
+        order = [run_sh.index(mark) for mark in (
+            '. "$APP_DIR/bundle.sh"', "\ncargo build\n", 'deck_bundle_precheck "$REPO_ROOT" "$PWD"',
+            'deck_bundle_copy "$PWD" "$APP"', "codesign --force --sign - --entitlements",
+            'if ! deck_bundle_postcheck "$REPO_ROOT" "$PWD" "$APP"; then', "  exit 1\nfi\n")]
+        self.assertEqual(order, sorted(order))
+        opens = [match.start() for match in re.finditer(r"(?m)^\s*open ", run_sh)]
+        self.assertTrue(opens and min(opens) > order[-1], "nothing opens the bundle before the last check")
         compat = (ROOT / "scripts/package-compat-candidate").read_text()
         check = compat.index(f'"$ROOT/{tool}" check --profile release --binaries')
         self.assertLess(check, compat.index('cp "$source"'))
         self.assertLess(compat.index("codesign --force"), compat.index(f'"$ROOT/{tool}" check --profile release --bundle "$APP"'))
         lens = (ROOT / "scripts/translation-lens-verify.py").read_text()
-        self.assertLess(lens.index('"check", "--profile", "debug", "--binaries"'), lens.index('TAURI / f"binaries/{name}-aarch64-apple-darwin"'))
+        order = [lens.index(mark) for mark in (
+            '"staged", "--profile", "debug"', '"check", "--profile", "debug", "--binaries"',
+            'TAURI / f"binaries/{name}-aarch64-apple-darwin"', '"codesign", "--force"',
+            '"check", "--profile", "debug", "--bundle", str(bundle), "--sidecars", ",".join(BUNDLE_SIDECARS)',
+            'report["bundlePath"] = str(bundle)')]
+        self.assertEqual(order, sorted(order))
+        self.assertIn('BUNDLE_SIDECARS = ("deck-status-helper", "deck-lifecycle-helper")', lens)
+        self.assertNotIn("rglob", lens[lens.index("def build_bundle"):lens.index("def processes")])
+        setup = (ROOT / "scripts/translation-setup-verify.py").read_text()
+        self.assertIn("'staged', '--profile', 'debug'", setup)
+        self.assertNotIn("rglob('*')", setup)
         # each workflow names the product of the cargo target it builds for
         for name, product in (
             ("nightly.yml", "app/src-tauri/target/aarch64-apple-darwin/release/deck-app"),
@@ -367,7 +596,6 @@ class RepositoryTests(unittest.TestCase):
         gate = (ROOT / ".github/workflows/gate.yml").read_text()
         coverage = gate.index("run: cargo llvm-cov --workspace")
         self.assertLess(coverage, gate.index(f"python3 {tool} check --profile debug --coverage --binaries"))
-
 
 if __name__ == "__main__":
     unittest.main()

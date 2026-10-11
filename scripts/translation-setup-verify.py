@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -67,12 +68,12 @@ def run(scenario, data, socket, build=False):
         code = command(['app/run.sh'], 'build.log', env=env, timeout=3600)
         if code:
             raise RuntimeError(f'build/launch failed: {code}')
-        mismatch = [str(p) for p in (ROOT / 'app/ui').rglob('*') if p.is_file()
-                    and (not (ROOT / 'app/src-tauri/ui-dist' / p.relative_to(ROOT / 'app/ui')).exists()
-                         or p.read_bytes() != (ROOT / 'app/src-tauri/ui-dist' / p.relative_to(ROOT / 'app/ui')).read_bytes())]
-        REPORT['embeddedFrontendMatches'] = not mismatch
-        if mismatch:
-            raise RuntimeError('embedded frontend mismatch')
+        # judged by the staging contract (build/shared_output.rs), as app/run.sh did before it launched
+        staged = subprocess.run([sys.executable, str(ROOT / 'scripts/sidecar_provenance.py'), 'staged', '--profile', 'debug'],
+                                capture_output=True, text=True)
+        REPORT['embeddedFrontendMatches'] = staged.returncode == 0
+        if staged.returncode:
+            raise RuntimeError('embedded frontend mismatch: ' + staged.stderr.strip().splitlines()[-1])
         REPORT['binarySha256'] = hashlib.sha256((BUNDLE / 'Contents/MacOS/deck').read_bytes()).hexdigest()
         REPORT['sourceDiffSha256'] = hashlib.sha256(subprocess.check_output(['git', 'diff', 'HEAD'], cwd=ROOT)).hexdigest()
     else:

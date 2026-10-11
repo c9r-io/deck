@@ -30,11 +30,28 @@ Usage:
   sidecar_provenance.py inspect FILE...
   sidecar_provenance.py check --profile debug|release [--coverage]
         (--binaries | --bundle APP | --dir DIR) [--tauri DIR] [--triple T]
-        [--main-product FILE] [--no-main]
+        [--main-product FILE] [--no-main] [--sidecars NAME,NAME]
+  sidecar_provenance.py staged --profile debug|release [--tauri DIR]
+        [--source DIR] [--dist DIR]
 
 `--bundle` also checks the packaged tmux and the bundle's executable against
 the profile's `deck-app` product. `--main-product` names that product; with
 `--binaries` or `--dir` it adds the product's own state to the check.
+
+`--binaries` answers for the shared directory at one instant. A package is
+what was COPIED out of it, possibly after another build context wrote there:
+a packaging path checks the finished package (`--bundle`) again before it
+launches or ships it. `--sidecars` names the built sidecars a package must
+carry when it carries fewer than all four (a test carrier); a sidecar that
+is in the package without being named is still checked, never skipped.
+
+`staged` compares `ui-dist/` with what build.rs stages from `app/ui` under
+the contract of `build/shared_output.rs`: every file of the source tree,
+except entries whose name starts with a dot at any depth (a tool's, an
+editor's or Finder's droppings) and, for a release profile, the top-level
+`test` tree. It reports a file that is missing, one whose bytes differ, and
+anything staged that the contract does not put there (a dot entry, a file
+deleted from the source, `test/` in a release staging).
 
 Exit status: 0 every checked file is the expected build; 1 at least one is
 not; 2 the question could not be asked (usage, unreadable tree).
@@ -211,11 +228,94 @@ def frontend(label, executable, profile, problems):
         )
 
 
+def staged_files(source, profile):
+    """Relative path -> file of everything build.rs stages from `source`.
+
+    The same rule as `stage_tree` in build/shared_output.rs, and the two are
+    held to one fixture (app/src-tauri/tests/fixtures/staging-contract.json).
+    """
+    found = {}
+
+    def walk(directory, relative, top):
+        for entry in sorted(directory.iterdir()):
+            if entry.name.startswith(".") or (top and profile == "release" and entry.name == "test"):
+                continue
+            if entry.is_dir():
+                walk(entry, relative / entry.name, False)
+            else:
+                found[(relative / entry.name).as_posix()] = entry
+
+    walk(Path(source), Path(""), True)
+    return found
+
+
+def staging_problems(source, dist, profile):
+    """What `dist` holds that differs from the staging of `source`: a list of sentences."""
+    wanted = staged_files(source, profile)
+    present = {}
+
+    def walk(directory, relative):
+        for entry in sorted(directory.iterdir()):
+            if entry.is_dir():
+                walk(entry, relative / entry.name)
+            else:
+                present[(relative / entry.name).as_posix()] = entry
+
+    walk(Path(dist), Path(""))
+    problems = []
+    for name, file in wanted.items():
+        if name not in present:
+            problems.append(f"missing from the staged frontend: {name}")
+        elif present[name].read_bytes() != file.read_bytes():
+            problems.append(f"staged with other bytes than the source: {name}")
+    for name in present:
+        if name not in wanted:
+            why = "a dot entry" if any(part.startswith(".") for part in name.split("/")) else (
+                "ui/test in a release staging" if profile == "release" and name.split("/")[0] == "test"
+                else "not in the source tree")
+            problems.append(f"staged but not part of the frontend ({why}): {name}")
+    return problems
+
+
+def staged(args):
+    tauri = Path(args.tauri)
+    source = Path(args.source) if args.source else tauri.parent / "ui"
+    dist = Path(args.dist) if args.dist else tauri / "ui-dist"
+    if not source.is_dir() or not dist.is_dir():
+        print(f"{source} and {dist} must both be directories", file=sys.stderr)
+        return 2
+    try:
+        problems = staging_problems(source, dist, args.profile)
+    except OSError as error:
+        print(f"the trees could not be read ({error})", file=sys.stderr)
+        return 2
+    if problems:
+        for problem in problems[:40]:
+            print(problem, file=sys.stderr)
+        print(
+            f"staged frontend FAILED for {dist}: {len(problems)} difference(s) from the {args.profile} "
+            f"staging of {source}. Build this profile again, then package.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"staged frontend ok: {dist} is the {args.profile} staging of {source} "
+          f"({len(staged_files(source, args.profile))} files)")
+    return 0
+
+
 def check(args):
     tauri = Path(args.tauri)
     if not (tauri / "tauri.conf.json").is_file():
         print(f"{tauri} is not the app/src-tauri directory", file=sys.stderr)
         return 2
+    known = [binary for binary, _ in SIDECARS]
+    required = set(known)
+    if args.sidecars is not None:
+        required = {name for name in args.sidecars.split(",") if name}
+        if args.binaries or not required <= set(known):
+            print("--sidecars names built sidecars of a package (--bundle or --dir): "
+                  + ", ".join(known), file=sys.stderr)
+            return 2
     problems = []
     main = None
     if args.binaries:
@@ -234,10 +334,15 @@ def check(args):
             except (OSError, KeyError, plistlib.InvalidFileException) as error:
                 print(f"{args.bundle}: Info.plist cannot name the executable ({error})", file=sys.stderr)
                 return 2
+    carried = 0
     for binary, crate in SIDECARS:
+        candidate = locate(binary)
+        if binary not in required and not candidate.exists() and not candidate.is_symlink():
+            continue  # a sidecar this package does not carry and was not asked to
+        carried += 1
         compare(
             binary,
-            locate(binary),
+            candidate,
             product_path(tauri, crate, binary, args.triple, args.profile, args.coverage),
             args.coverage,
             problems,
@@ -281,7 +386,7 @@ def check(args):
             file=sys.stderr,
         )
         return 1
-    checked = len(SIDECARS) + (0 if args.binaries else len(PREBUILT)) + len(products)
+    checked = carried + (0 if args.binaries else len(PREBUILT)) + len(products)
     print(f"sidecar provenance ok: {checked} files in {where} are the {context} build of this checkout")
     return 0
 
@@ -302,9 +407,17 @@ def main(argv=None):
     two.add_argument("--triple", default=DEFAULT_TRIPLE)
     two.add_argument("--main-product", help="the build product the bundle executable must be")
     two.add_argument("--no-main", action="store_true", help="do not check the bundle executable")
+    two.add_argument("--sidecars", help="the built sidecars a package must carry (default: all four)")
+    three = commands.add_parser("staged", help="compare ui-dist/ with what build.rs stages from app/ui")
+    three.add_argument("--profile", required=True, choices=("debug", "release"))
+    three.add_argument("--tauri", default=str(Path(__file__).resolve().parent.parent / "app" / "src-tauri"))
+    three.add_argument("--source", help="the frontend source tree (default: <tauri>/../ui)")
+    three.add_argument("--dist", help="the staged tree (default: <tauri>/ui-dist)")
     args = parser.parse_args(argv)
     if args.command == "check":
         return check(args)
+    if args.command == "staged":
+        return staged(args)
     status = 0
     for name in args.files:
         try:
