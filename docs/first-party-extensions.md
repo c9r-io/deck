@@ -120,7 +120,8 @@ exercised natively are evidence, not a runtime condition. The header of
 `agent_reentry/claude.rs` records the historical campaigns; the current
 [acceptance summary](evidence/closeout-20261011/reentry-acceptance.md)
 records the new identity mechanism's completed representative P3 on Claude
-2.1.295: A/B through both the controller and the isolated real application.
+2.1.295: A/B through both the controller and the isolated real application,
+and a later run on 2.1.296 in a real window at a stable location.
 That result does not certify untested platforms or a published carrier.
 
 ## Compatibility and withdrawal
