@@ -427,8 +427,9 @@ ordinary policy after the application had been started again. Still open,
 each on its own: anything at `/Applications/deck.app`, where nothing ran at
 all; the Settings switches in a release window; an unknown or unconfirmed
 outcome in a real application; notarization and Gatekeeper acceptance; and
-on macOS 26 the automated gate, native identity of a real client, and a
-transaction in a real window. See the
+on macOS 26, native identity of a real client and a transaction in a real
+window (the automated gate ran there in CI, and closes only what its jobs
+executed). See the
 [acceptance summary](evidence/closeout-20261011/reentry-acceptance.md)
 for the matrix, source provenance and the limits of this validation.
 This is representative validation, not a version allowlist or release approval.

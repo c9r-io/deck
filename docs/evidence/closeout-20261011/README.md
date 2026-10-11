@@ -75,7 +75,7 @@ evidence from an earlier round that was not executed again.
 | | |
 | --- | --- |
 | Base commit | `f1cad6466da8b56035a97f0a7d138ad0cd0a746b` (`main`, clean at the start) |
-| Commits | the round: `d54d7ce`, `06fb0b5`, `02fa839`, `b7518af`, `e25774d`. The follow-up: `9e0bad3`, `c9d78f5`, `0aeee77`. The final round: `8dc8778`, `39537a2` and the commit that last changed this file. `b664fc6` holds the id table. None is pushed, tagged or released: `origin/main` is `dcc3c06`, and every commit after it exists in this clone only |
+| Commits | the round: `d54d7ce`, `06fb0b5`, `02fa839`, `b7518af`, `e25774d`. The follow-up: `9e0bad3`, `c9d78f5`, `0aeee77`. The final round: `8dc8778`, `39537a2`, `18e38bb`, `f70e8c5`, `60e9e35`, then `2c2a455` (the gate's workflow) and the commit that last changed this file. `b664fc6` holds the id table. Pushed to `origin/main` on 2026-10-11, when the owner authorized it: `60e9e35` at 21:12 and `2c2a455` at 21:30. This document tags and releases nothing; a Nightly candidate built from a later commit is recorded in `CHANGELOG.md` and on its own Release |
 | Machines | build and Slack driver: macOS 27.0.1 (26A434), arm64. Real windows: the Mac mini test machine, macOS 27.0.1 (26A434), arm64 |
 | Toolchain | cargo 1.97.1, cargo-llvm-cov 0.8.5, tauri-cli 2.11.4 |
 | Debug carriers | `target/debug/deck-app` of the working tree in an ad-hoc signed bundle, identifier `io.c9r.deck.smoke`; plain sidecars (checked before every assembly) |
@@ -115,7 +115,7 @@ a row never speaks for a place or a build it does not name.
 | A1. Shared build outputs: the pollution reproduced and fixed | **PASS** | this checkout, macOS 27.0.1: sequence 68 of 68 checks |
 | A2. The staged frontend takes no dot entry of the source tree (follow-up) | **PASS** | test and its negative control; a debug build after the fix |
 | A3. Verification follows the same staging contract (final round) | **PASS** | tests on one fixture read by both sides; the real `ui-dist/` of this checkout judged by it |
-| A4. A package is checked again after it is copied, before it runs (final round) | **PASS** | `app/run.sh`: a real isolated launch; the translation carrier: its real assembly, and refused twice with a foreign sidecar; negative controls in the tests. The release workflows' own bundle checks run in CI and did not run here |
+| A4. A package is checked again after it is copied, before it runs (final round) | **PASS** | `app/run.sh`: a real isolated launch; the translation carrier: its real assembly, and refused twice with a foreign sidecar; negative controls in the tests. In CI the gate's `release` job packaged and checked its candidate on `macos-26`; `nightly.yml` and `release.yml` check their own bundle only when a candidate is built |
 | B. Slack in the real window, six items | **PASS** | DEBUG carrier (ad-hoc signed) in a private directory, macOS 27.0.1, one sandbox workspace. A release build: UNRUN |
 | C1. The two Settings switches for Claude's hooks, in the real window | **PASS** | DEBUG carrier, relocated home. A release window: UNRUN. `/Applications/deck.app`: BLOCKED |
 | C2. Launch-time migration of existing hooks | **PASS** | RELEASE carrier (Developer ID signed, not notarized), relocated home, no click. `/Applications/deck.app`: BLOCKED |
@@ -123,8 +123,8 @@ a row never speaks for a place or a build it does not name.
 | C4. The transaction in a RELEASE build, relocated home (final round) | **PASS** | RELEASE carrier (Developer ID signed, not notarized), relocated home, that home's hook file, macOS 27.0.1, Claude Code 2.1.296 signed in there by the owner. The owner made the two cards, queued the prompt and operated both restart reviews in the real window: Policy B, then the ordinary policy after the application had been started again. Typed into the cards from outside, not through the window; observation was on through the launch-time migration, not through the Settings switch; what the window said is the owner's reading and was not recorded |
 | C5. The transaction in a RELEASE build at `/Applications/deck.app` | **BLOCKED** | the owner's installed Deck is in use on both machines; replacing it is the owner's decision. It would also need a person at the window, as C4 did |
 | C6. An unknown or unconfirmed outcome, or an agent that does not exit in time, in a real application | **UNRUN** | tests only; no real run produced one |
-| macOS 26: the automated gate | **UNRUN** | nothing after `origin/main` (`dcc3c06`) was pushed, so the `macos-26` runners never built this code |
-| macOS 26: native identity of a real client | **BLOCKED** | no macOS 26 machine; the gate runs no real client, so a green gate would not close this |
+| macOS 26: the automated gate | **PASS** | CI run 38139504866 on `2c2a455`: `checks`, `rust` and `release` on hosted `macos-26` runners, `macos14-launch` on `macos-14`. It closes what those jobs executed ("CI on the pushed commits") and nothing below. The first run, on `60e9e35`, failed |
+| macOS 26: native identity of a real client | **BLOCKED** | no macOS 26 machine; the gate runs no real client, so the green gate does not close this |
 | macOS 26: the transaction in a real window | **BLOCKED** | no macOS 26 machine |
 | Release carrier: release profile | **PASS** | every executable of the carrier is this checkout's release build (provenance check); no `ui/test` inside |
 | Release carrier: Developer ID signature | **PASS** | each executable verifies by itself, the bundle verifies deep and strict, hardened runtime; signed on the build machine, no secure timestamp |
@@ -615,6 +615,54 @@ keep-awake process, because a program started by its bare name shows no
 path and the tool resolved the name against the directory it ran from, a
 person's home over SSH.
 
+### CI on the pushed commits
+
+The owner then authorized a push and a run of the gate, to close what CI
+actually covers and no more. `main` was pushed as a fast-forward
+(`dcc3c06..60e9e35`, 26 commits; every identity and every added line was
+scanned again first).
+
+| Run | Commit | Result |
+| --- | --- | --- |
+| 38138366227 | `60e9e35` | **FAIL** in `rust`. `checks`, `release` and `macos14-launch` passed |
+| 38139504866 | `2c2a455` | **PASS**: `checks`, `rust`, `release` (hosted `macos-26` arm64 runners), `macos14-launch` (`macos-14`), and the summary job |
+
+Why the first run failed: 69 tests of `agent_reentry::tests` stopped at the
+first line of their fixture, which requires the account's login shell to be
+`/bin/zsh`. Those tests run the production assembly; it reads the login
+shell from the account database, and re-entry supports zsh, the macOS
+default. The hosted runner's account is created with bash. This code had
+never been built in CI, so the gate had never met it. It is a precondition
+of the test environment, not a failure of the feature: on a machine whose
+account uses another login shell the product shows such sessions as not
+reopenable, and that case has its own test. `2c2a455` gives the runner's
+account the macOS default before anything is built and fails at once if the
+account database does not then say so. No test was changed and none is
+skipped.
+
+What the green run executed, and so what it closes:
+
+| Job | Runner | What it ran |
+| --- | --- | --- |
+| `checks` | `macos-26` | the bundled tmux's digest, `cargo fmt`, the frontend suite and syntax checks, the identifier scan, the script tests (170, among them the registry's 30 with real tmux servers), the workflow check, the Swift bridge guards, the audits and the Tunnel Helper suite |
+| `rust` | `macos-26` | CI-form clippy; the coverage step: 1418 passed, 0 failed, 12 ignored, lines 85.05 %, functions 82.86 % (81 `agent_reentry` tests, and the identity mechanism's own tests with fixtures signed at test time); the coverage-context provenance check; the Full Local parity lanes and their verdict gate |
+| `release` | `macos-26` | the release build, the translation-binary and EDR scans, and `scripts/package-compat-candidate` with its provenance checks |
+| `macos14-launch` | `macos-14` | `scripts/test-compat-candidate`: the packaged candidate reached UI readiness on macOS 14 |
+
+What it does not close:
+
+- **Native identity of a real client on macOS 26, and a transaction in a
+  real window there.** The gate starts no Claude Code client; its identity
+  tests validate programs the test signs itself.
+- **What the new cleanup of `scripts/test-compat-candidate` did on the
+  runner.** The script ran green in both runs with the new function in
+  place and printed no "left running" line, which means the function met no
+  server that was not the candidate's. The job asserts nothing about it;
+  the function's own behaviour is shown by its fixture tests, which ran in
+  `checks`.
+- Notarization, Gatekeeper and a published candidate: the gate builds no
+  signed bundle.
+
 ### Gates of the final round
 
 On commit `39537a2`, macOS 27.0.1, with the same isolation as before
@@ -710,12 +758,11 @@ Created this round and removed or left as stated:
 | The Settings switches in a RELEASE window; typing through the window; a record of what the review said | the release run used the migration instead of the switch, typed from outside, and has only the owner's reading of the dialog | a person at a release window once more, or a way to operate one |
 | C5. The transaction in a RELEASE build at `/Applications/deck.app` | the owner's Deck is installed and in use on both machines | the owner's decision to park their installation, or a machine without one; then the same steps |
 | C6. An unknown or unconfirmed outcome, or an agent that does not exit in time, in a real application | no real run produced one; tests only | a fault staged on purpose in a later run |
-| macOS 26: the automated gate | none of this history is pushed | a push, when authorized. It closes what the gate's jobs run, and nothing below |
 | macOS 26: native identity of a real client | no machine; CI runs no real client | a macOS 26 machine with Claude Code on it |
 | macOS 26: the transaction in a real window | no machine | the same machine and the follow-up's debug-carrier run |
 | Notarization of a carrier | not authorized; needs Apple credentials | an authorization to submit a private carrier |
 | Gatekeeper acceptance | follows notarization; no launch here was a Gatekeeper decision | a notarized, stapled carrier assessed with `spctl` and opened once with a quarantine attribute |
-| The new cleanup of `scripts/test-compat-candidate` on macOS 14 | that script runs only in the gate's macOS 14 job; here its function ran against fixtures | the same push |
+| The smoke's own clipboard reader takes the launching shell's locale | found before the Nightly: a smoke application opened with an empty environment fails its clipboard checkpoints on non-ASCII text, although the product wrote the right bytes (`smoke_clipboard_metrics` runs `pbpaste` unpinned) | pin the locale for that reader, as the product's own writer does |
 | The two runners moved onto the registry | not run since they were changed | the next run of either |
 | The translation verification's window runs | only its bundle assembly was exercised in the final round | one run of `scripts/translation-lens-verify.py` |
 | Slack in a release build; the `channel-scope` fault and a pending event across a quit in the window | no smoke driver in release; not part of this run | an operator pasting tokens into a release window; a later run |

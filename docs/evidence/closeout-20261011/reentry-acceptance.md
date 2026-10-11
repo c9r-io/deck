@@ -21,8 +21,10 @@ window (kind **Lr**): Policy B, then the ordinary policy after the
 application had been started again.
 
 What did not run, each a separate item below: **anything at
-`/Applications/deck.app`**; the Settings switches in a release window; the
-three macOS 26 items; notarization and Gatekeeper acceptance.
+`/Applications/deck.app`**; the Settings switches in a release window; on
+macOS 26, native identity of a real client and a transaction in a real
+window (the automated gate did run there, in CI); notarization and
+Gatekeeper acceptance.
 
 Three places are kept apart throughout (`README.md`, "Scope words"): a
 **private directory**; a **relocated home**, `<home>/Applications/deck.app`
@@ -188,12 +190,12 @@ The identity mechanism has no version conditional (`procinfo/code_identity.rs`
 has only `cfg(target_os = "macos")`). On macOS 27.0.1 its tests ran in the
 gate (C fixtures signed at test time, `/bin/ls` as an Apple-signed negative
 and the test binary itself), and it admitted real Claude Code 2.1.295 and
-2.1.296 clients in the runs above. Both machines available are 27.0.1. On
-macOS 26 nothing ran, and that is three items, not one:
+2.1.296 clients in the runs above. Both machines available are 27.0.1.
+macOS 26 is three items, not one, and only the first has run:
 
 | Item on macOS 26 | Status | What would close it, and what would not |
 | --- | --- | --- |
-| The automated gate | **UNRUN** | `gate.yml` runs its `checks`, `rust` and `release` jobs on `macos-26` runners, but none of this history is pushed, and a push was not authorized. A green run closes what those jobs execute: the test suites (the identity mechanism's own tests with their test-time fixtures among them), clippy, the release build and its checks. It closes nothing below |
+| The automated gate | **PASS** | CI run 38139504866 on `2c2a455`, after the owner authorized the push: `checks`, `rust` and `release` on hosted `macos-26` runners. It closes what those jobs executed: the test suites (81 `agent_reentry` tests and the identity mechanism's own tests with their test-time fixtures among them), clippy, the release build and its checks. The first run failed because the hosted runner's account has bash as its login shell and the re-entry tests run the production assembly, which supports zsh; the gate now gives the account the macOS default first (`README.md`, "CI on the pushed commits"). It closes nothing below |
 | Native identity of a real client | **BLOCKED** | the production check, Security.framework validating a running Claude Code image and its file against the product's requirement, on macOS 26. The gate runs no real client. It needs a macOS 26 machine with Claude Code on it |
 | The transaction in a real window with a real client | **BLOCKED** | no macOS 26 machine. The debug-carrier run of kind L, on such a machine |
 
