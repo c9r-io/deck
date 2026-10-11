@@ -54,6 +54,12 @@ evidence from an earlier round that was not executed again.
 | Debug carriers | `target/debug/deck-app` of the working tree in an ad-hoc signed bundle, identifier `io.c9r.deck.smoke`; plain sidecars (checked before every assembly) |
 | Release carrier | the tauri bundler's release bundle, identifier changed to `io.c9r.deck.smoke`, Developer ID signed, not notarized; plain release sidecars, no `ui/test` inside |
 
+The commit ids in this file and in the older evidence documents are the ids
+the commits had when the text was written. Nineteen commits were recreated
+afterwards with identical content to correct one commit's author identity;
+[commit-ids.md](commit-ids.md) maps every cited id to the id in this
+history.
+
 Which source each piece of evidence ran on (a diff digest is the SHA-256 of
 `git diff HEAD` at that moment; the untracked files it does not cover are
 named):
