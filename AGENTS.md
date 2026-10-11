@@ -61,3 +61,48 @@ Before finishing, stop only processes created by the experiment, restore the
 pre-test installation/data state, and inventory again. Prefer moving exact test
 artifacts to a uniquely named Trash directory over irreversible deletion. Never
 interrupt unrelated sessions or services.
+
+## Experiment resources: registered when started, stopped only through the registry
+
+An experiment outside this checkout's debug bundles (a release carrier, a
+relocated home, anything on the Mac mini) keeps everything it starts under ONE
+root directory of its own under a temporary directory, its tmux socket
+directory included: the carrier is launched with `TMUX_TMPDIR` inside the root,
+so its server listens on `<root>/…/tmux-<uid>/<name>`. Keep the root short: a
+socket path has about 100 bytes. A release carrier that would use the default
+tmux directory is not launched on a machine that has an installed Deck.
+
+Each server and process is registered when it is started, and the registry is
+the only way the experiment stops one:
+
+```sh
+python3 scripts/edr_runtime.py experiment init --root <root>
+python3 scripts/edr_runtime.py experiment add-server --root <root> --socket <full socket path> --tmux <tmux program>
+python3 scripts/edr_runtime.py experiment add-process --root <root> --pid <pid>
+python3 scripts/edr_runtime.py experiment show --root <root>
+python3 scripts/edr_runtime.py experiment stop --root <root> --pid <pid>
+python3 scripts/edr_runtime.py experiment cleanup --root <root>
+```
+
+On the Mac mini the same file is read from standard input:
+`ssh macmini "python3 - experiment cleanup --root <root>" < scripts/edr_runtime.py`.
+
+`stop` ends one registered resource and leaves the rest running. `cleanup`
+verifies every entry again before it stops anything: the socket path
+is inside the root, the server that answers on it reports the registered pid,
+and that pid still has the registered start time and executable. One entry that
+does not hold refuses the whole cleanup. Exit 3 means nothing was stopped; exit
+1 means something that was never registered still runs from the root. A refusal
+is looked into. It is never worked around with a broader command, a `pkill`
+pattern, or a kill by a pid read from a listing.
+
+A tmux server is never addressed by its socket name in a cleanup. A release
+build names its socket `deck` wherever it runs, and `tmux -L deck` is resolved
+in the calling shell's `TMUX_TMPDIR`. On 2026-10-11 a cleanup that ran
+`tmux -L deck kill-server` without the experiment's socket directory stopped
+the Mac mini's installed Deck shell service; its sessions could not be brought
+back (`docs/evidence/closeout-20261011/README.md`, "Incident"). A pid alone, a
+path prefix alone, a socket name, or a server missing from a listing is not
+proof that a target is the experiment's. The regressions, and the register of
+every tracked script that stops a tmux server, are in
+`scripts/test_edr_runtime.py`.

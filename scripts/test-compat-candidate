@@ -7,11 +7,31 @@ test "$os_major" = 14 || { echo "expected macOS 14, got $os_major" >&2; exit 1; 
 test "$(uname -m)" = arm64
 test ! -e "$HOME/.deck" || { echo "runner already has Deck data" >&2; exit 1; }
 work=$(mktemp -d "${RUNNER_TEMP:-/tmp}/deck-compat.XXXXXX")
+work=$(cd "$work" && pwd -P)
+# The candidate is a release build: its shell service is the socket `deck` in
+# the default tmux directory, the name and the place an installed Deck uses.
+# A cleanup that names the socket stops whichever server that name reaches
+# from the calling shell; on 2026-10-11 such a cleanup stopped an installed
+# Deck's (docs/evidence/closeout-20261011). So the server on the FULL socket
+# path is asked which process it is, and it is stopped only when that process
+# is this candidate's own tmux. Any other server there is left running.
+stop_candidate_server() {
+  candidate_tmux=$1
+  [ -x "$candidate_tmux" ] || return 0
+  socket_directory=$(cd "${TMUX_TMPDIR:-/tmp}" 2>/dev/null && pwd -P) || return 0
+  socket="$socket_directory/tmux-$(id -u)/deck"
+  server=$("$candidate_tmux" -S "$socket" display-message -p '#{pid}' 2>/dev/null) || return 0
+  case "$server" in '' | *[!0-9]*) return 0 ;; esac
+  program=$(ps -o comm= -p "$server" 2>/dev/null) || return 0
+  if [ "$program" = "$candidate_tmux" ]; then
+    "$candidate_tmux" -S "$socket" kill-server 2>/dev/null || true
+  else
+    echo "the tmux server on $socket is not this candidate's; left running" >&2
+  fi
+}
 cleanup() {
   if [ -n "${pid:-}" ]; then kill "$pid" 2>/dev/null || true; fi
-  if [ -x "$work/deck-compat.app/Contents/MacOS/tmux" ]; then
-    "$work/deck-compat.app/Contents/MacOS/tmux" -L deck kill-server 2>/dev/null || true
-  fi
+  stop_candidate_server "$work/deck-compat.app/Contents/MacOS/tmux"
   rm -rf "$work" "$HOME/.deck"
 }
 trap cleanup EXIT HUP INT TERM

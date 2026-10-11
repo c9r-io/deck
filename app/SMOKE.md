@@ -994,6 +994,10 @@ under a person's home.
       shell never retires anything. Explicit Close with queue-cancel or
       Board-save failure keeps the card and pane; retry after restoring writes
       closes them only after durable success.
+      These commands name the socket: from an ordinary shell `-L deck` is the
+      installed Deck's own shell service. They belong to this check on the
+      instance under test and are never an experiment's cleanup (`AGENTS.md`,
+      "Experiment resources").
 
 ## Completion & separators
 - [ ] Second command typed shows gray ghost; Tab applies remainder only
