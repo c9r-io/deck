@@ -126,12 +126,13 @@ a row never speaks for a place or a build it does not name.
 | macOS 26: the automated gate | **PASS** | CI run 38139504866 on `2c2a455`: `checks`, `rust` and `release` on hosted `macos-26` runners, `macos14-launch` on `macos-14`. It closes what those jobs executed ("CI on the pushed commits") and nothing below. The first run, on `60e9e35`, failed |
 | macOS 26: native identity of a real client | **BLOCKED** | no macOS 26 machine; the gate runs no real client, so the green gate does not close this |
 | macOS 26: the transaction in a real window | **BLOCKED** | no macOS 26 machine |
-| Release carrier: release profile | **PASS** | every executable of the carrier is this checkout's release build (provenance check); no `ui/test` inside |
-| Release carrier: Developer ID signature | **PASS** | each executable verifies by itself, the bundle verifies deep and strict, hardened runtime; signed on the build machine, no secure timestamp |
-| Release carrier: notarization | **UNRUN** | nothing was sent to Apple; not authorized |
-| Release carrier: Gatekeeper | **assessed, rejected** | `spctl` says "Unnotarized Developer ID". The carriers ran only because a file copied over SSH carries no quarantine attribute, so no launch here was a Gatekeeper decision. Acceptance: UNRUN |
+| Private release carrier: release profile | **PASS** | every executable of the carrier is this checkout's release build (provenance check); no `ui/test` inside |
+| Private release carrier: Developer ID signature | **PASS** | each executable verifies by itself, the bundle verifies deep and strict, hardened runtime; signed on the build machine, no secure timestamp |
+| Private release carrier: notarization | **UNRUN** | nothing of this round's own carriers was sent to Apple |
+| Private release carrier: Gatekeeper | **assessed, rejected** | `spctl` says "Unnotarized Developer ID". The carriers ran only because a file copied over SSH carries no quarantine attribute, so no launch here was a Gatekeeper decision. Acceptance: UNRUN |
 | Experiment cleanup: only what a run registered and can prove is its own is stopped (final round) | **PASS** for what ran | tests with real tmux servers and a sentinel, negative controls, a harmless fixture on the test machine, one live cleanup on the build machine, and the release run itself: a real release carrier whose socket is named `deck`, three server generations registered, everything stopped through the registry. The two older runners moved onto it were not run again |
-| Architecture and regression checks | **PASS** | the gates below, on macOS 27.0.1 |
+| The published Nightly candidate 0.8.0: signature, notarization, stapling, Gatekeeper | **PASS**, by its own workflow | built by CI from `a6e1df3`, not by this round: "The Nightly candidate". Not installed or updated to on a machine in this round |
+| Architecture and regression checks | **PASS** | the gates below, on macOS 27.0.1, and the gate in CI on `macos-26` |
 
 One incident happened on the test machine during C. It is recorded in
 "Incident"; what it destroyed stays destroyed and no row above softens it.
@@ -626,6 +627,8 @@ scanned again first).
 | --- | --- | --- |
 | 38138366227 | `60e9e35` | **FAIL** in `rust`. `checks`, `release` and `macos14-launch` passed |
 | 38139504866 | `2c2a455` | **PASS**: `checks`, `rust`, `release` (hosted `macos-26` arm64 runners), `macos14-launch` (`macos-14`), and the summary job |
+| 38141233582, and the gate inside the Nightly run 38141251083 | `d2b0ecb` | **FAIL** in `rust`, both: one test. Nothing was built or published |
+| 38143516667, and the gate inside the Nightly run 38143517011 | `a6e1df3` | **PASS**, both |
 
 Why the first run failed: 69 tests of `agent_reentry::tests` stopped at the
 first line of their fixture, which requires the account's login shell to be
@@ -640,7 +643,18 @@ account the macOS default before anything is built and fails at once if the
 account database does not then say so. No test was changed and none is
 skipped.
 
-What the green run executed, and so what it closes:
+Why the two runs on `d2b0ecb` failed: `unknown_outcomes_are_never_retried`
+starts four entries one after another, and an entry is attempted only while
+the post share still has 1.5 s left. The test gave that share 4 s, so all
+four had to be started within 2.5 s. The hosted runner managed it in the
+run before and not in these two; the product then refuses the last entry
+before its launch, as it should, and the test, which is about entries that
+were started, failed on it. It did not fail on the build machine, with or
+without load. `a6e1df3` gives the test's share 8 s and moves its late
+receipt and its wait with it; every assertion is as it was. This is the one
+change to a test in this round, and it changes times only.
+
+What a green run executed, and so what it closes:
 
 | Job | Runner | What it ran |
 | --- | --- | --- |
@@ -661,7 +675,41 @@ What it does not close:
   the function's own behaviour is shown by its fixture tests, which ran in
   `checks`.
 - Notarization, Gatekeeper and a published candidate: the gate builds no
-  signed bundle.
+  signed bundle. That is the Nightly workflow's part, below.
+
+### The Nightly candidate
+
+The owner authorized a Nightly in the 0.8 series after the gate. The
+candidate is not evidence gathered by this round's own runs; its workflow
+is, and it is recorded here for what that workflow ran.
+
+| | |
+| --- | --- |
+| Version and commit | 0.8.0, `a6e1df3` (the release commit `d2b0ecb` plus the test's times) |
+| Run | Nightly 38143517011; its gate passed, the `nightly` environment was approved under that authorization, then `build-sign` and `publish` |
+| Candidate | prerelease `nightly-v0.8.0-20261011-a6e1df3`: the disk image, the updater archive and its signature, the Tunnel Helper archive, `candidate.json`, `provenance.json`, `SHA256SUMS` |
+| What the workflow verified on its own bundle (`provenance.json`) | the gate passed; `codesign`, notarization, stapling and Gatekeeper passed, for the application and for the Helper; updater key epoch `nightly-v1` |
+| Feed | the Nightly feed's `latest.json` names 0.8.0 and that archive. Stable is untouched: `v0.7.26` |
+| Before the first dispatch, on the 0.8.0 tree (`d2b0ecb`) | `cargo fmt`, CI-form clippy, the coverage step (1418 passed, lines 85.06 %, functions 82.91 %), the frontend suite (743), the script tests (170), the workflow check; and the unattended smoke matrix on the test machine, 22 modes. After the test's times were changed (`a6e1df3`): clippy, that test three times on the build machine, and the two gates in CI |
+
+About that smoke matrix. It ran through the registry of item 3: one root, a
+relocated home, the carrier's socket directory inside the root, everything
+stopped through `experiment stop` and `cleanup`. 21 modes passed at once.
+`run` failed 9 of its 94 checkpoints, all of them where the smoke reads the
+clipboard: the application had been opened with an empty environment, and
+the smoke's own reader runs `pbpaste` under the process locale, so
+non-ASCII text read back shorter than the product had written it (the
+product's writer pins its locale). With the locale a launching shell hands
+over, and nothing else changed, `run`, `ambiguous` and `restart` passed. Not
+run: the translation modes, `channel-fault`, `channel-first-send`,
+`authority-live`, `clock-live`, `selection-events`, `reminder` and
+`reminder-native`; `channel-live`, `hooks-live` and `reentry-live` ran
+earlier the same day on the same product source.
+
+What the candidate does not show: the private carriers of this round were
+never notarized, and their rows above stay as they are. Nobody has yet
+installed the candidate from its disk image or updated to it from an
+installed Deck in this round.
 
 ### Gates of the final round
 
@@ -760,8 +808,8 @@ Created this round and removed or left as stated:
 | C6. An unknown or unconfirmed outcome, or an agent that does not exit in time, in a real application | no real run produced one; tests only | a fault staged on purpose in a later run |
 | macOS 26: native identity of a real client | no machine; CI runs no real client | a macOS 26 machine with Claude Code on it |
 | macOS 26: the transaction in a real window | no machine | the same machine and the follow-up's debug-carrier run |
-| Notarization of a carrier | not authorized; needs Apple credentials | an authorization to submit a private carrier |
-| Gatekeeper acceptance | follows notarization; no launch here was a Gatekeeper decision | a notarized, stapled carrier assessed with `spctl` and opened once with a quarantine attribute |
+| Notarization and Gatekeeper for this round's private carriers | they were never submitted; the published candidate's own workflow notarized and assessed ITS bundle | nothing, unless a private carrier must be handed to someone |
+| The candidate installed, or updated to, on a machine | the workflow verifies the bundle on its runner; no installation was made in this round | installing Nightly 0.8.0 from its disk image, and one update from an installed Deck |
 | The smoke's own clipboard reader takes the launching shell's locale | found before the Nightly: a smoke application opened with an empty environment fails its clipboard checkpoints on non-ASCII text, although the product wrote the right bytes (`smoke_clipboard_metrics` runs `pbpaste` unpinned) | pin the locale for that reader, as the product's own writer does |
 | The two runners moved onto the registry | not run since they were changed | the next run of either |
 | The translation verification's window runs | only its bundle assembly was exercised in the final round | one run of `scripts/translation-lens-verify.py` |
