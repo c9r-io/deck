@@ -205,6 +205,18 @@ export async function runPiLiveSmoke() {
     // (the session's own name, its directory, the two process names and the pane's opaque identity are Deck's, not Pi's)
     const strings = Object.entries(seen).filter(([key, value]) => typeof value === 'string' && !['name', 'cwd', 'fg', 'finish_fg', 'lifecycle'].includes(key));
     const closed = strings.every(([, value]) => ['observed', 'connected', 'working', 'turn-done'].includes(value));
+    // 11. the restart review, asked of the real backend while this Pi is connected and its
+    //     session observed: the card is named as Pi, told Pi's own reason, and cannot be chosen
+    const { reentryPlan, planView, reentryRequest, withAllSelected } = await import('../js/reentry-model.js');
+    const preview = await inv('agent_reentry_preview');
+    const listed = (preview.entries || []).find(entry => entry.cardId === card.id);
+    const all = withAllSelected(reentryPlan(preview), true);
+    const reviewRow = planView(all).rows.find(each => each.cardId === card.id);
+    await report('pi-review', !!listed && listed.kind === 'unsupported' && listed.reason === 'client-identity-unverifiable'
+      && listed.source === 'pi' && listed.launchProfile == null && !!reviewRow && reviewRow.selectable === false
+      && reviewRow.checked === false && reentryRequest(all) === null
+      && t(reviewRow.note.key) === t('reentry.reason.client-identity-unverifiable')
+      && (await info(card.session)).pi_signal === 'connected');
     await openAgents();
     const quiet2 = await setSwitch(false, 'set-pi-lifecycle');
     const after = await status();

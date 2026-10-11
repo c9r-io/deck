@@ -823,7 +823,7 @@ python3 scripts/pi-live-verify.py --runtime npm            # the npm install of 
 python3 scripts/pi-live-verify.py --runtime standalone --standalone <unpacked official build>
 ```
 
-- [ ] Exit 0 for both runtimes. The page reports twelve checkpoints: the
+- [ ] Exit 0 for both runtimes. The page reports thirteen checkpoints: the
       switch off and clean; on through its confirmation; a clock automation's
       run that starts Pi; Pi connected with limited coverage and no attention
       of its own; the run's first step HELD at `pi-input-unverified` through
@@ -833,7 +833,9 @@ python3 scripts/pi-live-verify.py --runtime standalone --standalone <unpacked of
       (the card's word gone at once, a further Pi run adding none); on again,
       connected only after Pi's own `/reload`; session observation turned on
       (a connected Pi keeps its earlier setting until its reload, then the
-      card's payload says `observed` and nothing of the session), and off.
+      card's payload says `observed` and nothing of the session), the
+      restart review asked of the real backend meanwhile (this card named
+      as Pi, with Pi's own reason, not selectable, in no request), and off.
 - [ ] The operator's own checks, which the page cannot make: Pi's settings
       byte for byte at each step (the user's bytes, plus Deck's one entry,
       minus exactly that entry, the same bytes again), the held row's text

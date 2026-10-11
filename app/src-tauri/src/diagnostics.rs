@@ -545,6 +545,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "pi-send-now",
     "pi-disabled",
     "pi-reload",
+    "pi-review",
     "pi-session",
     "relive-clean",
     "relive-hint",

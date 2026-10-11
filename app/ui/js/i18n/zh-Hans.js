@@ -1248,6 +1248,7 @@ const dictionary = {
   'reentry.result.queuesPaused': '队列保持暂停。',
   'reentry.result.open': '打开卡片',
   'reentry.reason.unsupported-agent': '此 Agent 需手动重新进入。',
+  'reentry.reason.client-identity-unverifiable': 'Pi · Deck 无法验证这个 Pi 运行的是谁的代码，因此不会自动重新进入。请手动重新进入。',
   'reentry.reason.multiple-panes': '多窗口或多窗格的 session 需手动重新进入。',
   'reentry.reason.identity-unavailable': '无法确认此 session 的重入条件。',
   'reentry.reason.executable-unavailable': '原 Claude 程序已改变或不可用，未自动重新进入。',

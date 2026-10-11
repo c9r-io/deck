@@ -86,6 +86,9 @@ export const POLICY_ORDINARY = 'ordinary';
 export const POLICY_BYPASS = 'reapply-bypass';
 
 const KINDS = ['candidate', 'shell', 'unsupported'];
+// which agent a row is, when the backend knows (its adapter's source word):
+// a label, never a permission
+const SOURCES = ['claude-code', 'pi'];
 const PROFILES = ['bypass', 'ordinary', 'unknown'];
 const OUTCOMES = ['not-attempted', 'refused-before-launch', 'confirmed', 'unconfirmed', 'known-no-launch-failure'];
 
@@ -96,6 +99,7 @@ const PROFILE_KEYS = {
 };
 const REASON_KEYS = {
   'unsupported-agent': 'reentry.reason.unsupported-agent',
+  'client-identity-unverifiable': 'reentry.reason.client-identity-unverifiable',
   'multiple-panes': 'reentry.reason.multiple-panes',
   'identity-unavailable': 'reentry.reason.identity-unavailable',
   'executable-unavailable': 'reentry.reason.executable-unavailable',
@@ -161,6 +165,7 @@ function previewEntry(raw, repeated) {
   return {
     cardId, session, kind,
     reason: kind === 'candidate' ? null : (own(REASON_KEYS, raw.reason) ? raw.reason : null),
+    source: SOURCES.includes(raw.source) ? raw.source : null,
     profile: kind !== 'candidate' ? null : PROFILES.includes(raw.launchProfile) ? raw.launchProfile : 'unknown',
   };
 }
@@ -256,6 +261,7 @@ export function planView(plan, { managed = false } = {}) {
   const rows = plan.entries.map(entry => ({
     cardId: entry.cardId,
     session: entry.session,
+    source: entry.source ?? null,
     selectable: selectable(plan, entry),
     checked: plan.selected.includes(entry.cardId),
     note: entry.kind === 'candidate' ? text(PROFILE_KEYS[entry.profile])

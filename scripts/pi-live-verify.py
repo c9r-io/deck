@@ -54,7 +54,7 @@ TAURI = REPO / "app/src-tauri"
 FIXTURES = REPO / "scripts/pi"
 ENTRY = "Contents/Resources/pi/signal.ts"
 CHECKS = ("pi-clean", "pi-enable", "pi-run-created", "pi-connected", "pi-hold", "pi-turn-done", "pi-attention",
-          "pi-send-now", "pi-disabled", "pi-reload", "pi-session", "done")
+          "pi-send-now", "pi-disabled", "pi-reload", "pi-review", "pi-session", "done")
 # The user's own Pi settings: other keys, their own entries (one of them the
 # fixture provider, an extension of "theirs"), Pi's two-space layout. Deck's
 # entry is added by the real switch and by nothing in this file.

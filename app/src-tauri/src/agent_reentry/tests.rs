@@ -7072,3 +7072,140 @@ fn the_wait_for_the_turn_ends_at_the_callers_own_limit_whoever_takes_the_turn_ne
     assert!(PREVIEW_TURN.lock_or_recover().is_none());
     reset_for_tests();
 }
+
+/// Pi is never re-entered. Its adapter has no re-entry capability, so a card
+/// whose foreground is a Pi that Deck verified is shown with its own reason
+/// and label and is no candidate — whatever is observed of its session, and
+/// even when the process would otherwise pass for a candidate. An approval
+/// that names it (a forged request: the dialog offers no such box) is refused
+/// whole: no client is asked to exit, no shell is replaced, nothing is typed.
+/// The Claude card beside it is a candidate as before and is reopened by an
+/// approval that names it alone.
+#[test]
+fn a_verified_pi_is_named_refused_and_never_started_whatever_is_approved() {
+    use crate::agent_pi::{SessionEvent, StartReason};
+    use crate::agent_status::{PaneKey, PiCoverage};
+    assert!(
+        crate::agent_pi::PI.reentry.is_none(),
+        "Pi has no re-entry capability"
+    );
+    let world = World::new();
+    let _store = crate::agent_status::STORE_TEST_LOCK.lock_or_recover();
+    crate::agent_status::reset_for_tests();
+    lifecycle::reset_pi_for_tests();
+    world.card("a", &format!("session={ID_A}"), Some("{agent}"));
+    // the "Pi": a second client of the very product a candidate must be
+    world.card("p", &format!("session={ID_B}"), Some("{agent}"));
+    let rows = crate::tmux::list_panes_with(&|args| world.raw(args)).unwrap();
+    let row = rows.iter().find(|row| row.session_name == "p").unwrap();
+    let generation = crate::agent_status::live_generation(row.pane_pid).unwrap();
+    // without a verified observer both are what they were before: candidates
+    let (_, plain) = world.preview();
+    assert_eq!(plain["entries"][1]["kind"], "candidate");
+    // a Pi observer verified for exactly that foreground generation
+    crate::agent_status::pi_observed(row, generation, PiCoverage::Connected);
+    let pi = world.foreground_pid("p");
+    let shown = |view: &serde_json::Value| {
+        let entry = |name: &str| {
+            view["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["session"] == name)
+                .unwrap()
+                .clone()
+        };
+        (entry("a"), entry("p"))
+    };
+    let (token, view) = world.preview();
+    let (a, p) = shown(&view);
+    assert_eq!(
+        (&a["kind"], &a["source"]),
+        (&"candidate".into(), &"claude-code".into())
+    );
+    assert_eq!(
+        (&p["kind"], &p["reason"], &p["source"], &p["launchProfile"]),
+        (
+            &"unsupported".into(),
+            &"client-identity-unverifiable".into(),
+            &"pi".into(),
+            &serde_json::Value::Null
+        ),
+        "named as Pi, with the reason that is Pi's own"
+    );
+    // a session observed for that Pi changes nothing about it
+    let id = match crate::agent_pi::parse_frame(
+        r#"{"protocol":"pi-observer","v":1,"source":"pi","seq":1,"event":"snapshot","nativeSessionId":"session-one"}"#,
+    ) {
+        Ok(crate::agent_pi::Frame::Lifecycle {
+            native: crate::agent_pi::NativeId::Kept(id),
+            ..
+        }) => id,
+        other => panic!("{other:?}"),
+    };
+    lifecycle::observe_pi(
+        77,
+        &PaneKey::of(row),
+        generation,
+        SessionEvent::Start(StartReason::Resume),
+        &id,
+    )
+    .unwrap();
+    let (token_again, observed) = world.preview();
+    assert_eq!(
+        shown(&observed).1,
+        p,
+        "an observed session makes Pi no candidate"
+    );
+    // a forged approval — Pi alone, Pi beside the Claude card, under either
+    // policy — is refused before anything is touched
+    let (server, launches) = (world.server_pid(), world.launches().len());
+    for (request, cards, policy) in [
+        ("req-pi", &["p"][..], PolicyB),
+        ("req-pi-a", &["a", "p"][..], PolicyB),
+        ("req-pi-ordinary", &["p", "a"][..], PolicyA),
+    ] {
+        let error = world
+            .restart(request, &world.approval(&token_again, cards, policy))
+            .unwrap_err();
+        assert_eq!(error.message(), "reentry-preview-expired", "{request}");
+        assert_eq!(
+            world.server_pid(),
+            server,
+            "{request}: nothing was replaced"
+        );
+        assert_eq!(
+            world.launches().len(),
+            launches,
+            "{request}: nothing was started"
+        );
+        assert!(world.pasted().is_empty(), "{request}: nothing was typed");
+        assert_eq!(
+            world.foreground_pid("p"),
+            pi,
+            "{request}: the Pi was not asked to exit"
+        );
+    }
+    let _ = token;
+    // the Claude card alone is reopened as before; the Pi is left as it is
+    let (token, _) = world.preview();
+    let (old, new, result) = world
+        .restart("req-claude", &world.approval(&token, &["a"], PolicyA))
+        .expect("restart");
+    assert_ne!(old, new);
+    let result = result.unwrap();
+    assert_eq!(
+        result.entries.len(),
+        1,
+        "the operation holds the approved card only"
+    );
+    assert_eq!(entry(&result, "a").outcome, Outcome::Confirmed);
+    assert_eq!(
+        world.pasted(),
+        [line(&world, "", ID_A)],
+        "one request, for the Claude card"
+    );
+    assert_eq!(world.launches().len(), launches + 1);
+    crate::agent_status::reset_for_tests();
+    lifecycle::reset_pi_for_tests();
+}

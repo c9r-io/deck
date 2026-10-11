@@ -274,6 +274,12 @@ pub(crate) enum Outcome {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Reason {
     UnsupportedAgent,
+    /// The foreground is a Pi whose observer Deck verified, and Deck has no
+    /// way to prove whose code a Pi client runs (an npm install is Node's
+    /// image, the standalone build is ad-hoc signed): Pi has no re-entry
+    /// capability. Said of that card whatever is observed of its session
+    /// and whatever any Claude setting is.
+    ClientIdentityUnverifiable,
     MultiplePanes,
     IdentityUnavailable,
     ExecutableUnavailable,
@@ -296,6 +302,7 @@ impl Reason {
     fn code(self) -> &'static str {
         match self {
             Reason::UnsupportedAgent => "unsupported-agent",
+            Reason::ClientIdentityUnverifiable => "client-identity-unverifiable",
             Reason::MultiplePanes => "multiple-panes",
             Reason::IdentityUnavailable => "identity-unavailable",
             Reason::ExecutableUnavailable => "executable-unavailable",
@@ -419,6 +426,11 @@ pub(crate) struct PreviewEntryView {
     session: String,
     kind: Kind,
     reason: Option<Reason>,
+    /// Which agent the card's foreground is, when Deck knows: the source
+    /// word of a verified candidate's adapter, or `pi` for a Pi whose
+    /// observer was verified. A label for the row; it admits nothing. (Not
+    /// named `agent`: that is the Signal word's field in the poll payload.)
+    source: Option<&'static str>,
     launch_profile: Option<&'static str>,
 }
 
@@ -593,6 +605,13 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
             shell_birth: Some(shell_birth),
             client: None,
         };
+    }
+    // A Pi whose observer Deck verified for this very foreground generation.
+    // Pi has no re-entry capability (`agent_pi::PI.reentry` is `None`), so
+    // nothing of the candidate path is asked of it: no code identity is read,
+    // no launch profile, no session. The card is told why, and stays out.
+    if crate::agent_status::pi_proven(row, foreground) {
+        return Inspected::refused(Kind::Unsupported, Reason::ClientIdentityUnverifiable);
     }
     let capability = env.capability;
     let read = crate::procinfo::qualify_client(
@@ -933,6 +952,13 @@ pub(crate) fn read_preview(env: &Env) -> Result<Previewed, DeckError> {
                     session: entry.row.session_name.clone(),
                     kind,
                     reason,
+                    source: match (kind, reason) {
+                        (Kind::Candidate, _) => Some(crate::agent_status::CLAUDE_CODE.source),
+                        (_, Some(Reason::ClientIdentityUnverifiable)) => {
+                            Some(crate::agent_pi::SOURCE)
+                        }
+                        _ => None,
+                    },
                     launch_profile: entry
                         .inspected
                         .client

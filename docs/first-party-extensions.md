@@ -104,7 +104,10 @@ capability (`receipts`, a `lifecycle::ReceiptContract`): a source without
 one can send no receipt. Pi's optional session observation
 (`agent_pi_lifecycle_set`, `lifecycle::observe_pi`) is not a receipt and
 gives Pi no contract: it says which native session a running Pi is in, in
-memory only, and makes Pi no candidate for re-entry. It holds the product's code requirement — whose code a client
+memory only, and makes Pi no candidate for re-entry. In the restart review a
+card whose foreground is a verified Pi is named as Pi and told its own
+reason (`client-identity-unverifiable`); it is never a candidate, and an
+approval that names it is refused whole. It holds the product's code requirement — whose code a client
 must be, with no release, version or digest in it — the supported launch
 grammar, the login shell the launch sink is written against and a pure
 constructor of the exact-id request. Like

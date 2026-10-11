@@ -1246,6 +1246,21 @@ pub(crate) fn pi_observed(row: &PaneRow, generation: ForegroundGeneration, cover
     with_generation(row, generation, |record| record.pi = Some(coverage));
 }
 
+/// Whether a Pi observer was verified for exactly this pane and foreground
+/// generation (the restart review's label for a card it will not reopen).
+/// A name is not asked: this is what was proven, not what something is
+/// called.
+pub(crate) fn pi_proven(row: &PaneRow, generation: ForegroundGeneration) -> bool {
+    with_evidence(|records| {
+        records.get(&PaneKey::of(row)).is_some_and(|r| {
+            r.session_id == row.session_id
+                && r.pane_pid == row.pane_pid
+                && r.generation == generation
+                && r.pi.is_some()
+        })
+    })
+}
+
 /// Whether a pane's CURRENT foreground is a recognized Pi, for a reader
 /// that holds the pane's identity and no listing (the scheduler's pre-fire
 /// check): a proven observer of the live generation, or Pi's own name on
@@ -7224,6 +7239,143 @@ mod tests {
             table: table.clone(),
         };
         ingest(line, &origin, || Some(rows.to_vec()))
+    }
+
+    /// The two long-lived workers beside the accept loop do not wait for each
+    /// other. While the receipt worker is inside a Claude code validation
+    /// that does not return, a Pi stream is taken and answered by the Pi
+    /// transport; while the Pi admission is stuck in a pane listing, a
+    /// lifecycle receipt is still handed over and settled. Neither holds the
+    /// accept loop.
+    #[test]
+    fn a_held_receipt_validation_and_a_stuck_pi_admission_do_not_wait_for_each_other() {
+        use crate::agent_pi::transport::{Bounds, Service, World};
+        use crate::agent_reentry::lifecycle;
+        use std::io::{BufRead, Write};
+        use std::time::Instant;
+        let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        crate::agent_reentry::reset_for_tests();
+        reset_for_tests();
+        let executable = crate::procinfo::ExecutableRef::of_this_test();
+        lifecycle::begin("deck", Path::new("/nonexistent/deck-lifecycle-helper"));
+        lifecycle::arm(
+            0,
+            lifecycle::Lease::launch(
+                4242,
+                "%7",
+                LEASED_SHELL,
+                executable,
+                Instant::now() + Duration::from_secs(60),
+            ),
+        );
+        const ID: &str = "aaaaaaaa-0000-4000-8000-000000000001";
+        let resume = lifecycle_line(r#""event":"session-start","startSource":"resume""#, ID);
+        let hello = serde_json::json!({
+            "protocol": "pi-observer", "v": 1, "source": "pi", "socket": "deck",
+            "server_pid": 42, "pane": "%3", "observerVersion": 1, "piVersion": "1.1.0",
+            "mode": "tui", "capabilities": { "signal": true, "lifecycle": false }
+        })
+        .to_string();
+        let drops = Mutex::new(Drops::new(Instant::now()));
+        let answered = |service: &Service, receipts: &Receipts| -> (serde_json::Value, Duration) {
+            let (mut ours, theirs) = UnixStream::pair().expect("a socket pair");
+            ours.write_all(format!("{hello}\n").as_bytes()).unwrap();
+            let from = Instant::now();
+            handle_stream(theirs, &drops, receipts, service);
+            let handed = from.elapsed();
+            ours.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reply = String::new();
+            std::io::BufReader::new(&ours)
+                .read_line(&mut reply)
+                .unwrap();
+            (serde_json::from_str(&reply).expect("a reply line"), handed)
+        };
+        let quick = || Bounds {
+            answer: Duration::from_secs(2),
+            stale: Duration::from_secs(15),
+        };
+
+        // 1. the receipt worker is held inside a validation that does not return
+        let mut worker = HeldWorker::start();
+        worker.hand(&resume);
+        worker.validation_began();
+        let pi = Service::start_in(
+            Arc::new(|_| {}),
+            World {
+                process: Box::new(|_| None),
+                listing: Box::new(|| None),
+                enabled: Box::new(|| crate::agent_pi::Capabilities::NONE),
+                socket: "deck".into(),
+            },
+            quick(),
+        );
+        let (reply, handed) = answered(&pi, &worker.receipts);
+        assert_eq!(reply["protocol"], "pi-observer");
+        assert!(reply["refused"].is_string(), "answered by the Pi transport");
+        assert!(
+            handed < Duration::from_millis(500),
+            "the accept loop did not wait"
+        );
+        // the validation is still held: nothing of it was needed for that answer
+        worker.let_answer();
+        assert_eq!(worker.next_settled(), Ok(()));
+
+        // 2. the Pi admission is stuck in a listing that does not return
+        let (entered, inside) = std::sync::mpsc::channel::<()>();
+        let (free, wait) = std::sync::mpsc::channel::<()>();
+        let wait = Mutex::new(wait);
+        let table = {
+            // a peer that leads its terminal's foreground, so the admission reaches the listing
+            let me = std::process::id();
+            move |pid: u32| {
+                (pid == me).then_some(crate::procinfo::ProcessInfo {
+                    pid: me,
+                    ppid: 1,
+                    pgid: me,
+                    tty: 7,
+                    tty_pgid: me,
+                    start_seconds: 1000,
+                    start_micros: 0,
+                })
+            }
+        };
+        let held = Service::start_in(
+            Arc::new(|_| {}),
+            World {
+                process: Box::new(table),
+                listing: Box::new(move || {
+                    let _ = entered.send(());
+                    let _ = wait.lock_or_recover().recv();
+                    None
+                }),
+                enabled: Box::new(|| crate::agent_pi::Capabilities::NONE),
+                socket: "deck".into(),
+            },
+            quick(),
+        );
+        let (mut ours, theirs) = UnixStream::pair().expect("a socket pair");
+        ours.write_all(format!("{hello}\n").as_bytes()).unwrap();
+        held.hand_as(theirs, hello.clone(), Some(std::process::id()));
+        inside
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the Pi admission is inside its listing");
+        // a receipt meanwhile: handed over at once and settled by its own worker
+        let from = Instant::now();
+        worker.hand(&resume);
+        assert!(from.elapsed() < Duration::from_millis(500));
+        worker.validation_began();
+        worker.let_answer();
+        let _ = worker.next_settled();
+        assert!(
+            from.elapsed() < Duration::from_secs(2),
+            "the receipt did not wait for the Pi admission"
+        );
+        let _ = free.send(());
+        drop(ours);
+        worker.stop();
+        lifecycle::end();
+        crate::agent_reentry::reset_for_tests();
     }
 
     /// The listener's dispatch: a `pi-observer` line goes to the Pi

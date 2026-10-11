@@ -1249,6 +1249,7 @@ const dictionary = {
   'reentry.result.queuesPaused': 'Queues remain paused.',
   'reentry.result.open': 'Open card',
   'reentry.reason.unsupported-agent': 'Reopen this Agent manually.',
+  'reentry.reason.client-identity-unverifiable': 'Pi · Deck cannot verify whose code this Pi runs, so it is not reopened automatically. Reopen it manually.',
   'reentry.reason.multiple-panes': 'Sessions with multiple windows or panes need manual re-entry.',
   'reentry.reason.identity-unavailable': 'The session’s re-entry context could not be verified.',
   'reentry.reason.executable-unavailable': 'The original Claude program changed or is unavailable. The session was not reopened automatically.',

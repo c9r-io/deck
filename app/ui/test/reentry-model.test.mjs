@@ -92,7 +92,7 @@ test('the profile comes from the preview alone: nothing saved on a card can enab
   const plan = selectAll(reentryPlan(preview));
   assert.equal(planCounts(plan).bypass, 0);
   assert.equal(withPolicy(plan, POLICY_BYPASS).policy, POLICY_ORDINARY);
-  assert.deepEqual(Object.keys(plan.entries[0]).sort(), ['cardId', 'kind', 'profile', 'reason', 'session']);
+  assert.deepEqual(Object.keys(plan.entries[0]).sort(), ['cardId', 'kind', 'profile', 'reason', 'session', 'source']);
 });
 
 test('the request holds the selected candidate ids only', () => {
@@ -286,7 +286,7 @@ test('"Claude started" is said only for an unconfirmed entry whose client was ob
 });
 
 test('every closed reason and warning has its sentence in both languages; an unknown code shows no raw text', () => {
-  const reasons = ['unsupported-agent', 'multiple-panes', 'identity-unavailable', 'executable-unavailable', 'check-incomplete',
+  const reasons = ['unsupported-agent', 'client-identity-unverifiable', 'multiple-panes', 'identity-unavailable', 'executable-unavailable', 'check-incomplete',
     'final-session-unconfirmed', 'exit-timeout', 'impact-changed', 'launch-refused', 'launch-unconfirmed', 'context-changed', 'context-unverified',
     'native-session-not-found', 'user-action-required', 'bypass-not-reapplied'];
   for (const reason of reasons) {
@@ -675,4 +675,45 @@ test('the display guard refuses native-looking strings', () => {
     assert.equal(displayable(bad), null, String(bad));
   }
   assert.equal(displayable('deck-Cmf1x2a-0001'), 'deck-Cmf1x2a-0001');
+});
+
+/* A Pi card in the review: named, told its own reason, never selectable. It
+   takes no part in what is chosen for the Claude cards beside it, under
+   either policy, and it is never part of the request. */
+test('a Pi card is named with its own reason, can never be chosen, and is never requested', () => {
+  const preview = {
+    token: 'tok', lifecycleObservation: true,
+    entries: [
+      { cardId: 'A', session: 'deck-a', kind: 'candidate', launchProfile: 'bypass', source: 'claude-code' },
+      { cardId: 'P', session: 'deck-p', kind: 'unsupported', reason: 'client-identity-unverifiable', source: 'pi' },
+      { cardId: 'Q', session: 'deck-q', kind: 'unsupported', reason: 'unsupported-agent' },
+    ],
+  };
+  const plan = reentryPlan(preview);
+  const rows = which => planView(which).rows;
+  const pi = rows(plan).find(row => row.cardId === 'P');
+  assert.equal(pi.source, 'pi');
+  assert.equal(pi.selectable, false);
+  assert.deepEqual(pi.note, { key: 'reentry.reason.client-identity-unverifiable' });
+  assert.equal(rows(plan).find(row => row.cardId === 'A').source, 'claude-code');
+  assert.equal(rows(plan).find(row => row.cardId === 'Q').source, null);
+  // choosing everything, and reapplying bypass, choose the Claude card and nothing of Pi
+  for (const chosen of [selectAll(plan), withPolicy(selectAll(plan), POLICY_BYPASS)]) {
+    assert.deepEqual(reentryRequest(chosen).cards, ['A']);
+    const row = rows(chosen).find(each => each.cardId === 'P');
+    assert.deepEqual([row.selectable, row.checked], [false, false]);
+  }
+  // only Pi and an unknown program: nothing can be chosen at all
+  const none = reentryPlan({ ...preview, entries: preview.entries.slice(1) });
+  assert.equal(planView(none).canSelect, false);
+  assert.equal(reentryRequest(selectAll(none)), null);
+  // the reason is Pi's own in both languages, and the label is a closed word
+  for (const dictionary of Object.values(dictionaries)) {
+    assert.match(dictionary['reentry.reason.client-identity-unverifiable'], /^Pi · /);
+  }
+  assert.match(dictionaries.en['reentry.reason.client-identity-unverifiable'], /cannot verify whose code this Pi runs.*not reopened automatically/);
+  assert.equal(rows(reentryPlan({ ...preview, entries: [{ ...preview.entries[1], source: 'node' }] }))[0].source, null);
+  // a session Deck observes for that Pi is no part of this payload and changes nothing here
+  const observed = reentryPlan({ ...preview, entries: [{ ...preview.entries[1], piSession: 'observed', nativeSessionId: 'x' }] });
+  assert.deepEqual(rows(observed)[0], { ...pi });
 });
