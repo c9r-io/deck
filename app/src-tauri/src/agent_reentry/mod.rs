@@ -899,7 +899,8 @@ pub(crate) struct Previewed {
 pub(crate) fn read_preview(env: &Env) -> Result<Previewed, DeckError> {
     let entries = previewed(env)?;
     let token = opaque_token()?;
-    let launchable = env.observation && launch::supported_before_restart(env);
+    let baseline = launch::supported_before_restart(env);
+    let launchable = env.observation && baseline;
     let view = PreviewView {
         token: token.clone(),
         lifecycle_observation: env.observation,
@@ -907,12 +908,17 @@ pub(crate) fn read_preview(env: &Env) -> Result<Previewed, DeckError> {
             .iter()
             .map(|entry| {
                 // Conditions known before the restart are shown now, not
-                // discovered after the client was exited: without the
-                // observation no final session can be confirmed, and without
-                // a supported baseline and the supported login shell nothing
-                // would be typed.
+                // discovered after the client was exited, and each as what
+                // it is. Without a supported baseline and the supported
+                // login shell nothing would be typed: the entry is not a
+                // candidate. Observation that is merely off is the user's
+                // own setting, not something wrong with the session: the
+                // entry stays a candidate and `lifecycle_observation: false`
+                // says why none of them can be chosen, so the dialog can
+                // name the setting instead of an unverifiable session.
+                // Either way nothing is kept below: no token, no approval.
                 let (kind, reason) = match entry.inspected.kind {
-                    Kind::Candidate if !launchable => {
+                    Kind::Candidate if !baseline => {
                         (Kind::Unsupported, Some(Reason::IdentityUnavailable))
                     }
                     kind => (kind, entry.inspected.reason),

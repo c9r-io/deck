@@ -1697,15 +1697,33 @@ fn only_a_direct_client_of_the_product_in_a_supported_launch_shape_is_a_candidat
         );
     }
     assert_eq!(read("shell"), cell("unsupported", "multiple-panes", "-"));
-    // without the observation opt-in there is no candidate and no token to confirm
+    // Without the observation opt-in the same sessions are still read as
+    // what they are — the dialog names the setting that is off, not a session
+    // it could not verify — and nothing can be confirmed: the view says the
+    // observation is off and no token was kept for it.
     world.observation.set(false);
     let (token, view) = world.preview();
     assert_eq!(view["lifecycleObservation"], false);
-    assert!(view["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|entry| entry["kind"] != "candidate"));
+    let kinds = |view: &serde_json::Value, card: &str| -> (String, String) {
+        let entry = view["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["cardId"] == format!("card-{card}"))
+            .unwrap_or_else(|| panic!("no entry for {card}"));
+        (
+            entry["kind"].as_str().unwrap_or_default().to_owned(),
+            entry["reason"].as_str().unwrap_or("-").to_owned(),
+        )
+    };
+    assert_eq!(kinds(&view, "ok"), ("candidate".to_owned(), "-".to_owned()));
+    for card in ["foreign", "appended"] {
+        assert_eq!(
+            kinds(&view, card),
+            ("unsupported".to_owned(), "identity-unavailable".to_owned()),
+            "{card}: turning observation off makes nothing a candidate"
+        );
+    }
     let error = world
         .restart("r-off", &world.approval(&token, &["ok"], Policy::Ordinary))
         .unwrap_err();
