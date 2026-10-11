@@ -6,6 +6,12 @@ TAURI="$ROOT/app/src-tauri"
 APP="$TAURI/target/deck-compat.app"
 ARCHIVE="$TAURI/target/deck-compat-candidate.tar.gz"
 test -f "$TAURI/target/release/deck-app"
+# binaries/ is shared with the debug and coverage build contexts
+# (app/src-tauri/build/shared_output.rs): package this checkout's release
+# sidecars and a release executable without the development frontend, or
+# nothing.
+python3 "$ROOT/scripts/sidecar_provenance.py" check --profile release --binaries \
+  --main-product "$TAURI/target/release/deck-app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$TAURI/target/release/deck-app" "$APP/Contents/MacOS/deck"
@@ -35,6 +41,8 @@ cat > "$APP/Contents/Info.plist" <<EOF
 EOF
 codesign --force --sign - --entitlements "$TAURI/Entitlements.plist" "$APP"
 codesign --verify --deep --strict "$APP"
+python3 "$ROOT/scripts/sidecar_provenance.py" check --profile release --bundle "$APP" \
+  --main-product "$TAURI/target/release/deck-app"
 python3 "$ROOT/scripts/check_local_translation_binary.py" "$APP"
 "$ROOT/scripts/check-edr-binary" "$APP"
 tar -czf "$ARCHIVE" -C "$TAURI/target" deck-compat.app

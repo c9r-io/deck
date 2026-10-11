@@ -356,6 +356,14 @@ Chromium testing of the mock catches none of these; verify in the real app.
   silently ship the previous UI. `build.rs` stages `ui/` into the gitignored
   `src-tauri/ui-dist/`; never edit it. `beforeBuildCommand` must `mkdir -p` it
   or the tauri CLI fails on a clean runner.
+- `src-tauri/binaries/` and `src-tauri/ui-dist/` are ONE location each for
+  every build context of a checkout (debug, release, `cargo llvm-cov`), and
+  each context produces its own sidecars and frontend. `build.rs` writes both
+  only through `build/shared_output.rs` (contract in its header: a plain copy
+  keeps the source's modification time and cargo then never sees the change,
+  which packaged coverage-instrumented helpers and debug frontends). Every
+  path that packages checks what it packages with
+  `scripts/sidecar_provenance.py`; a new packaging path must too.
 - `src-tauri/capabilities/default.json` must grant `core:default`, or
   `event.listen` is silently refused: invoke works, events never arrive, the
   terminal gets no output. Keep the boot-time deck-ping self-test; always

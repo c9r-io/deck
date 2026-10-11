@@ -105,7 +105,7 @@ jobs:
         run: node app/ui/js/check.mjs
 
       - name: Release tooling fixtures
-        run: python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py scripts/test_signal_candidate.py scripts/test_codex_title_probe.py scripts/test_ce_verdict.py scripts/test_reminder_verify.py
+        run: python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py scripts/test_signal_candidate.py scripts/test_codex_title_probe.py scripts/test_ce_verdict.py scripts/test_reminder_verify.py scripts/test_sidecar_provenance.py
 
       - name: Workflow syntax and expression validation
         run: scripts/check-workflows
@@ -213,6 +213,14 @@ jobs:
           DECK_CE_PLAN_ID: ${{ steps.ce-probe.outputs.DECK_CE_PLAN_ID }}
           DECK_CE_CASE: ${{ steps.ce-probe.outputs.DECK_CE_CASE }}
         run: cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
+
+      # binaries/ is ONE directory for every build context
+      # (app/src-tauri/build/shared_output.rs). The tests above ran the
+      # sidecars placed there: they must be the coverage run's own
+      # instrumented builds, or the helpers', adapter's and runner's process
+      # coverage silently reads 0%.
+      - name: Coverage ran against its own instrumented sidecars
+        run: python3 scripts/sidecar_provenance.py check --profile debug --coverage --binaries
 
       # Full Local parity (Controlled Execution, docs/ce-calibration.md): the
       # REAL workload on the frozen plan v2, not only the aggregator's unit

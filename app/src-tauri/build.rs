@@ -1,10 +1,24 @@
+// `binaries/` and `ui-dist/` are written by every cargo context of this
+// checkout (debug, release, `cargo llvm-cov`) and read by everything that
+// packages. The module header holds the whole rule; both writers below go
+// through it and name their output with `rerun-if-changed`.
+#[path = "build/shared_output.rs"]
+mod shared_output;
+
+use shared_output::Placed;
+
 /// Build signed bundle sidecars before tauri validates `externalBin`.
 /// A separate target directory avoids the cargo-in-cargo workspace lock.
 /// None is installed under the user's home directory: status-helper and
 /// lifecycle-helper are used by explicit agent hooks (two separate closed
 /// protocol families), deck-mcp is a user-launched STDIO adapter, and
 /// deck-mcp-runner exists only as an MCP-managed tmux pane process.
-fn build_sidecars() {
+///
+/// Each context builds its own sidecars in its own target directory and
+/// places them in the ONE `binaries/` directory (`build/shared_output.rs`):
+/// after this function `binaries/` holds this context's sidecars, and any
+/// other context sees that as a change and places its own when it builds.
+fn build_sidecars(started: Option<std::time::SystemTime>) {
     let triple = std::env::var("TARGET").expect("cargo sets TARGET");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     // Sidecars follow the outer profile. tauri-build copies each sidecar
@@ -54,7 +68,7 @@ fn build_sidecars() {
         } else {
             target_dir.to_string()
         };
-        let started = std::time::Instant::now();
+        let begun = std::time::Instant::now();
         let mut command = std::process::Command::new(&cargo);
         command.arg("build");
         if release {
@@ -88,57 +102,69 @@ fn build_sidecars() {
             .lines()
             .filter(|line| line.contains("Compiling"))
             .count();
-        timing(
-            &format!("sidecar {package}"),
-            started,
-            &format!("cargo build ran, {compiled} crates compiled ({target_dir})"),
-        );
         let built = format!("{target_dir}/{triple}/{profile}/{binary}");
         let dest = format!("binaries/{binary}-{triple}");
-        std::fs::copy(&built, &dest).unwrap_or_else(|_| panic!("failed to place {binary} sidecar"));
+        // an input as well as an output: another context may have placed its
+        // own build of this sidecar since this script last ran
+        println!("cargo:rerun-if-changed={dest}");
+        let placed = shared_output::place_file(
+            std::path::Path::new(&built),
+            std::path::Path::new(&dest),
+            started,
+        )
+        .unwrap_or_else(|error| panic!("failed to place {binary} sidecar: {error}"));
+        timing(
+            &format!("sidecar {package}"),
+            begun,
+            &format!(
+                "cargo build ran, {compiled} crates compiled ({target_dir}); {dest} {}",
+                match placed {
+                    Placed::Unchanged => "already this build",
+                    Placed::Replaced => "replaced",
+                }
+            ),
+        );
     }
 }
 
-/// Stage the no-build frontend for `tauri::generate_context!`: a fresh copy
+/// Stage the no-build frontend for `tauri::generate_context!`: an exact copy
 /// of `../ui` under `ui-dist/` (gitignored). Release profiles drop `ui/test`
 /// — the node:test carriers and the WKWebView smoke are development assets
 /// and must not ship inside the signed bundle. Debug profiles keep it because
 /// `main.rs` imports `./test/wk-smoke.mjs` from the served bundle for the
-/// isolated smoke run. Staging from scratch also drops files deleted from
-/// `ui/`, which an in-place copy would leave in the bundle.
+/// isolated smoke run. A tree that differs is staged again from scratch,
+/// which also drops files deleted from `ui/`; an in-place copy would leave
+/// them in the bundle.
+/// `ui-dist/` is ONE directory for every cargo context while debug and
+/// release stage different trees (`build/shared_output.rs`): a debug build
+/// after a release build puts `test` back, a release build after a debug
+/// build removes it again, and a tree that is already right is not touched.
 /// The tauri CLI checks that `frontendDist` EXISTS before it runs cargo, so
 /// `tauri build` on a clean checkout dies before this script can stage
 /// anything (the 0.5.15 nightly build did). `beforeBuildCommand` in
 /// tauri.conf.json therefore only `mkdir -p`s the directory; the content
 /// is owned here, and only here.
-fn stage_frontend() {
-    fn copy_tree(src: &std::path::Path, dst: &std::path::Path, skip: Option<&str>) {
-        std::fs::create_dir_all(dst).expect("create ui-dist directory");
-        for entry in std::fs::read_dir(src).expect("read ui directory") {
-            let entry = entry.expect("ui entry");
-            let name = entry.file_name();
-            if skip.is_some_and(|s| name == s) {
-                continue;
-            }
-            let from = entry.path();
-            let to = dst.join(&name);
-            if from.is_dir() {
-                copy_tree(&from, &to, None);
-            } else {
-                std::fs::copy(&from, &to).expect("copy frontend file");
-            }
-        }
-    }
-    let started = std::time::Instant::now();
+fn stage_frontend(started: Option<std::time::SystemTime>) {
+    let begun = std::time::Instant::now();
     let release = std::env::var("PROFILE").as_deref() == Ok("release");
-    let dist = std::path::Path::new("ui-dist");
-    let _ = std::fs::remove_dir_all(dist);
-    copy_tree(
+    // an input as well as an output: another context may have staged its own
+    // tree since this script last ran
+    println!("cargo:rerun-if-changed=ui-dist");
+    let placed = shared_output::stage_tree(
         std::path::Path::new("../ui"),
-        dist,
+        std::path::Path::new("ui-dist"),
         if release { Some("test") } else { None },
+        started,
+    )
+    .unwrap_or_else(|error| panic!("failed to stage the frontend: {error}"));
+    timing(
+        "frontend staging",
+        begun,
+        match placed {
+            Placed::Unchanged => "ui-dist already this profile's tree",
+            Placed::Replaced => "ui-dist staged from scratch",
+        },
     );
-    timing("frontend staging", started, "ui-dist staged from scratch");
 }
 
 // Swift is compiled and statically linked at build time, never spawned by Deck.
@@ -455,10 +481,21 @@ fn timing(stage: &str, started: std::time::Instant, detail: &str) {
 }
 
 fn main() {
+    // The reference instant for everything written to a shared output. When
+    // cargo's record of it is missing the outputs are still right; the next
+    // build of this context only runs this script one more time.
+    let started = std::env::var_os("OUT_DIR")
+        .and_then(|out| shared_output::started(std::path::Path::new(&out)));
+    if started.is_none() {
+        println!(
+            "cargo:warning=cargo's invoked.timestamp was not found beside OUT_DIR; \
+             shared build outputs are stamped with the current time instead"
+        );
+    }
     build_native_bridges();
     build_bergamot();
-    build_sidecars();
-    stage_frontend();
+    build_sidecars(started);
+    stage_frontend(started);
     println!("cargo:rerun-if-env-changed=DECK_BUILD_COMMIT");
     let supplied = std::env::var("DECK_BUILD_COMMIT").ok();
     let discovered = std::process::Command::new("git")

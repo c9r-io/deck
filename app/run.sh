@@ -51,6 +51,14 @@ fi
 
 cargo build
 
+# binaries/ and ui-dist/ are ONE location each for every build context of this
+# checkout (debug, release, cargo llvm-cov); build.rs has just made them this
+# debug build's (app/src-tauri/build/shared_output.rs). Never assemble a
+# bundle from another context's sidecars or frontend, which is what a build
+# running beside this one would leave here.
+python3 "$REPO_ROOT/scripts/sidecar_provenance.py" check --profile debug --binaries \
+  --main-product target/debug/deck-app
+
 APP=target/debug/deck-dev.app
 BUNDLE_NAME="deck dev"
 BUNDLE_ID=io.c9r.deck.dev

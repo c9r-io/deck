@@ -190,6 +190,9 @@ jobs:
           test -f "$app_path/Contents/MacOS/$executable"
           test -f "$app_path/Contents/MacOS/tmux"
           scripts/check-edr-binary "$app_path"
+          # every sidecar and the executable are this checkout's release build:
+          # none instrumented, none from another build context, no ui/test inside
+          python3 scripts/sidecar_provenance.py check --profile release --bundle "$app_path" --main-product app/src-tauri/target/release/deck-app
           codesign --verify --deep --strict --verbose=2 "$app_path"
           codesign --verify --strict --verbose=2 "$app_path/Contents/MacOS/tmux"
           test "$(dwarfdump --uuid "$app_path/Contents/MacOS/$executable" | wc -l | tr -d ' ')" = 1

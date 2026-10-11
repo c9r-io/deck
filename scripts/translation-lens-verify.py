@@ -227,6 +227,11 @@ def build_bundle():
                 mismatched.append(str(path.relative_to(ROOT)))
     if mismatched:
         raise RuntimeError("embedded frontend does not match app/ui")
+    # binaries/ is shared with the release and coverage build contexts
+    provenance = [sys.executable, str(ROOT / "scripts/sidecar_provenance.py"), "check", "--profile", "debug", "--binaries",
+                  "--main-product", str(TAURI / "target/debug/deck-app")]
+    if run_logged(provenance, EVIDENCE / "sidecar-provenance.log", 120) != 0:
+        raise RuntimeError("sidecars or executable are not this debug build (evidence/sidecar-provenance.log)")
     bundle = RUN / "deck-smoke-tl.app"
     macos, resources = bundle / "Contents/MacOS", bundle / "Contents/Resources"
     macos.mkdir(parents=True)
