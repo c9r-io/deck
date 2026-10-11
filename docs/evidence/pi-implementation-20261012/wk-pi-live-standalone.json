@@ -1,0 +1,114 @@
+{
+ "root": "<experiment root under /private/tmp>",
+ "checks": [
+  {
+   "check": "every checkpoint was reached",
+   "ok": true,
+   "detail": {
+    "reached": [
+     "done",
+     "pi-attention",
+     "pi-clean",
+     "pi-connected",
+     "pi-disabled",
+     "pi-enable",
+     "pi-hold",
+     "pi-reload",
+     "pi-review",
+     "pi-run-created",
+     "pi-send-now",
+     "pi-session",
+     "pi-turn-done"
+    ]
+   }
+  },
+  {
+   "check": "before the switch: Pi's settings are the user's, byte for byte",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "after the switch: the user's bytes plus Deck's one entry",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "after the switch was turned off: Deck's entry is gone and every other byte stayed",
+   "ok": true,
+   "detail": {
+    "pi_rewrote_the_file": true
+   }
+  },
+  {
+   "check": "turned on again: the same bytes as before it was turned off",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "held: Deck's automatic row never reached Pi (no text in the pane, no provider request, no run)",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "still not after two typed turns",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "Send now delivered the row's text once",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "session observation on and off again: the same bytes as before it was turned on",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "app.log holds the production's closed lines for each step",
+   "ok": true,
+   "detail": {
+    "missing": []
+   }
+  },
+  {
+   "check": "and nothing of the prompt, the paths, Pi's answer or a native session id",
+   "ok": true,
+   "detail": {
+    "leaked": 0,
+    "sessions_seen": 1
+   }
+  },
+  {
+   "check": "no native session id is in Deck's data directory",
+   "ok": true,
+   "detail": {
+    "files": 10
+   }
+  },
+  {
+   "check": "this machine's own Deck is as it was: the same processes, the same file names in its data directory",
+   "ok": true,
+   "detail": {
+    "processes": 1
+   }
+  },
+  {
+   "check": "scripts/smoke-verdict pi-live is green",
+   "ok": true,
+   "detail": {
+    "exit": 0
+   }
+  }
+ ],
+ "stopped": null,
+ "cleanup": {
+  "exit": 0,
+  "processes_from_root": 0,
+  "socket_left": false
+ },
+ "moved_to_trash_there": true,
+ "runtime": "standalone",
+ "where": "another machine",
+ "failed": []
+}

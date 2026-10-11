@@ -1,0 +1,2228 @@
+{
+ "root": "<experiment root under /private/tmp>",
+ "facts": {
+  "artifacts": {
+   "npm": {
+    "package_version": "1.1.0",
+    "cli_sha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "node_version": "v24.19.0",
+    "node_sha256": "27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1"
+   },
+   "standalone": {
+    "version": "1.1.0",
+    "pi_sha256": "daea10db90f7806cd0ae5be89fcf819d47b5ed3df99b7c79c31186a1cd6a6501"
+   },
+   "observer_sha256": {
+    "observer.ts": "14ee240091ef22cb7249281da4a1cb21429da2144dcf383b49d7ef68518cee3e",
+    "signal.ts": "8f86651da085a019e48173fb226b4e35743676bfb692c9e98843e3eb44b597f1",
+    "lifecycle.ts": "13e6940dfc940a361221c21c5b9a738dad2a97b22ece322c37325012fe03c45a",
+    "both.ts": "906761d9c5b69b25db8052bc4c963e6f9e683ec5bf910eae5614de0642255a61"
+   },
+   "tmux_sha256": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0",
+   "deck_head": "812b786ceb7807fc8085f45135d44bf8f034bc4a"
+  },
+  "settings_before_sha256": "161a1a7e7e6372ab8f161f9c8d5a1c929fd9d3d8951cf4eefaf473b25672f3da",
+  "process": {
+   "npm": {
+    "tmux_command": "node",
+    "ps_comm": "pi",
+    "parent_is_pane_shell": true,
+    "leads_its_group": true,
+    "is_terminal_foreground": true,
+    "same_terminal_as_shell": true
+   },
+   "standalone": {
+    "tmux_command": "pi",
+    "ps_comm": "pi",
+    "parent_is_pane_shell": true,
+    "leads_its_group": true,
+    "is_terminal_foreground": true,
+    "same_terminal_as_shell": true
+   }
+  },
+  "dialogs_unrun": {
+   "npm": [],
+   "standalone": []
+  },
+  "two_dialogs_at_once": {
+   "npm": {
+    "starts_announced": 1,
+    "ends_announced": 0,
+    "command_returned": false
+   },
+   "standalone": {
+    "starts_announced": 1,
+    "ends_announced": 0,
+    "command_returned": false
+   }
+  },
+  "pi_rewrote_its_settings_meanwhile": true,
+  "teardown_seen_before_the_reset": {
+   "npm:new": true,
+   "npm:fork": true,
+   "npm:resume": true,
+   "npm:reload": true
+  }
+ },
+ "checks": [
+  {
+   "ac": "A08",
+   "check": "this backend is a stable install only under the relocated home",
+   "ok": true,
+   "detail": {
+    "settings": {
+     "pi": false,
+     "pi_installation": "absent",
+     "pi_lifecycle": false
+    }
+   }
+  },
+  {
+   "ac": "A08",
+   "check": "the Settings command wrote Deck's one entry into Pi's own settings",
+   "ok": true,
+   "detail": {
+    "reply": {
+     "ok": true,
+     "error": null,
+     "status": {
+      "pi": true,
+      "pi_installation": "current",
+      "pi_lifecycle": false
+     }
+    }
+   }
+  },
+  {
+   "ac": "A05",
+   "check": "every byte the user wrote is where it was; only the entry was added",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A04",
+   "check": "asking again writes nothing",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A08",
+   "check": "configured is not connected: no observer exists before a Pi loads the entry",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A14",
+   "check": "a shell is no Pi: nothing is said about it",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "zsh",
+     "finish_fg": "zsh",
+     "name": "deck-a",
+     "scheduler": {
+      "pi": false,
+      "pi_signal": null,
+      "pre_fire_pi": false
+     }
+    }
+   }
+  },
+  {
+   "ac": "A09",
+   "check": "npm: the observer's process is the pane's foreground leader, a child of the pane's shell, on its terminal",
+   "ok": true,
+   "detail": {
+    "tmux_command": "node",
+    "ps_comm": "pi",
+    "parent_is_pane_shell": true,
+    "leads_its_group": true,
+    "is_terminal_foreground": true,
+    "same_terminal_as_shell": true
+   }
+  },
+  {
+   "ac": "A08",
+   "check": "npm: Pi loaded the entry and its hello was accepted by the production listener",
+   "ok": true,
+   "detail": {
+    "lease_run": 0
+   }
+  },
+  {
+   "ac": "A14",
+   "check": "npm: a loaded, idle Pi is not a turn that ended",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "node",
+     "finish_fg": "node",
+     "name": "deck-a",
+     "pi_signal": "connected",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "connected",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "Q01",
+   "check": "npm: the scheduler recognizes the target as Pi, by the tick's evidence and before firing",
+   "ok": true,
+   "detail": {
+    "scheduler": {
+     "pi": true,
+     "pi_signal": "connected",
+     "pre_fire_pi": true
+    }
+   }
+  },
+  {
+   "ac": "A09",
+   "check": "standalone: the observer's process is the pane's foreground leader, a child of the pane's shell, on its terminal",
+   "ok": true,
+   "detail": {
+    "tmux_command": "pi",
+    "ps_comm": "pi",
+    "parent_is_pane_shell": true,
+    "leads_its_group": true,
+    "is_terminal_foreground": true,
+    "same_terminal_as_shell": true
+   }
+  },
+  {
+   "ac": "A08",
+   "check": "standalone: Pi loaded the entry and its hello was accepted by the production listener",
+   "ok": true,
+   "detail": {
+    "lease_run": 0
+   }
+  },
+  {
+   "ac": "A14",
+   "check": "standalone: a loaded, idle Pi is not a turn that ended",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "pi",
+     "finish_fg": "pi",
+     "name": "deck-b",
+     "pi_signal": "connected",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "connected",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "Q01",
+   "check": "standalone: the scheduler recognizes the target as Pi, by the tick's evidence and before firing",
+   "ok": true,
+   "detail": {
+    "scheduler": {
+     "pi": true,
+     "pi_signal": "connected",
+     "pre_fire_pi": true
+    }
+   }
+  },
+  {
+   "ac": "A10",
+   "check": "two Pis in two panes of one working directory hold two leases",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A14",
+   "check": "npm: an ordinary run: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A14",
+   "check": "npm: an ordinary run is one start, one end, one settlement in Pi",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A15",
+   "check": "npm: a retry after a provider error: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A15",
+   "check": "npm: a retry after a provider error: Pi asked the provider more than once and settled once; Deck reported one ending",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "provider_requests": 2
+   }
+  },
+  {
+   "ac": "A15",
+   "check": "npm: a queued follow-up: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A15",
+   "check": "npm: a queued follow-up: Pi asked the provider more than once and settled once; Deck reported one ending",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "provider_requests": 2
+   }
+  },
+  {
+   "ac": "A15",
+   "check": "npm: a continuation before the settlement: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A15",
+   "check": "npm: a continuation before the settlement: Pi asked the provider more than once and settled once; Deck reported one ending",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "provider_requests": 2
+   }
+  },
+  {
+   "ac": "A16",
+   "check": "npm: a run started by the settlement handler is a second run: done(A), working(B), done(B)",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done",
+     "working",
+     "turn-done"
+    ],
+    "announced": 2,
+    "runs": 2
+   }
+  },
+  {
+   "ac": "A17",
+   "check": "npm: an aborted run ends as an interaction boundary, nothing more",
+   "ok": true,
+   "detail": {
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "aborted": true
+   }
+  },
+  {
+   "ac": "A17",
+   "check": "npm: a run that ends in a provider error is the same boundary",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ]
+   }
+  },
+  {
+   "ac": "A14",
+   "check": "standalone: an ordinary run: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A14",
+   "check": "standalone: an ordinary run is one start, one end, one settlement in Pi",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A15",
+   "check": "standalone: a retry after a provider error: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A15",
+   "check": "standalone: a retry after a provider error: Pi asked the provider more than once and settled once; Deck reported one ending",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "provider_requests": 2
+   }
+  },
+  {
+   "ac": "A15",
+   "check": "standalone: a queued follow-up: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A15",
+   "check": "standalone: a queued follow-up: Pi asked the provider more than once and settled once; Deck reported one ending",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "provider_requests": 2
+   }
+  },
+  {
+   "ac": "A15",
+   "check": "standalone: a continuation before the settlement: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A15",
+   "check": "standalone: a continuation before the settlement: Pi asked the provider more than once and settled once; Deck reported one ending",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "provider_requests": 2
+   }
+  },
+  {
+   "ac": "A16",
+   "check": "standalone: a run started by the settlement handler is a second run: done(A), working(B), done(B)",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done",
+     "working",
+     "turn-done"
+    ],
+    "announced": 2,
+    "runs": 2
+   }
+  },
+  {
+   "ac": "A17",
+   "check": "standalone: an aborted run ends as an interaction boundary, nothing more",
+   "ok": true,
+   "detail": {
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "aborted": true
+   }
+  },
+  {
+   "ac": "A17",
+   "check": "standalone: a run that ends in a provider error is the same boundary",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ]
+   }
+  },
+  {
+   "ac": "A26",
+   "check": "a Pi ending is viewed by its own episode, through the shared dismiss command",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A26",
+   "check": "npm: the next run after a viewed ending: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A26",
+   "check": "the next ending is a new, unviewed episode",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A18",
+   "check": "npm: Pi raised a confirm dialog; Deck's card did not change and never asked for input",
+   "ok": true,
+   "detail": {
+    "prompts": [
+     "ui_prompt_start",
+     "ui_prompt_end"
+    ],
+    "changes": 0
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "npm: Pi raised a input dialog; Deck's card did not change and never asked for input",
+   "ok": true,
+   "detail": {
+    "prompts": [
+     "ui_prompt_start",
+     "ui_prompt_end"
+    ],
+    "changes": 0
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "npm: Pi raised a select dialog; Deck's card did not change and never asked for input",
+   "ok": true,
+   "detail": {
+    "prompts": [
+     "ui_prompt_start",
+     "ui_prompt_end"
+    ],
+    "changes": 0
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "npm: Pi raised a editor dialog; Deck's card did not change and never asked for input",
+   "ok": true,
+   "detail": {
+    "prompts": [
+     "ui_prompt_start",
+     "ui_prompt_end"
+    ],
+    "changes": 0
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "npm: Pi raised a custom dialog; Deck's card did not change and never asked for input",
+   "ok": true,
+   "detail": {
+    "prompts": [
+     "ui_prompt_start",
+     "ui_prompt_end"
+    ],
+    "changes": 0
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "npm: Pi raised a timed dialog; Deck's card did not change and never asked for input",
+   "ok": true,
+   "detail": {
+    "prompts": [
+     "ui_prompt_start",
+     "ui_prompt_end"
+    ],
+    "changes": 0
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "npm: every dialog kind was raised",
+   "ok": true,
+   "detail": {
+    "unrun": []
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "npm: after the dialogs the card says what it said, with the limited-coverage word",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": "turn-done",
+     "alive": true,
+     "codex_signal": null,
+     "episode": 34,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "node",
+     "finish_fg": "node",
+     "name": "deck-a",
+     "pi_signal": "connected",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "connected",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "npm: two dialogs at once: Pi announces one start for both; Deck's card did not change",
+   "ok": true,
+   "detail": {
+    "starts_announced": 1,
+    "ends_announced": 0,
+    "command_returned": false
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "npm: a fresh Pi after the dialogs: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A20",
+   "check": "npm: Pi's built-in /model dialog emits no prompt event; the card does not change",
+   "ok": true,
+   "detail": {
+    "events": []
+   }
+  },
+  {
+   "ac": "A20",
+   "check": "npm: Pi's built-in /resume dialog emits no prompt event; the card does not change",
+   "ok": true,
+   "detail": {
+    "events": []
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "standalone: Pi raised a confirm dialog; Deck's card did not change and never asked for input",
+   "ok": true,
+   "detail": {
+    "prompts": [
+     "ui_prompt_start",
+     "ui_prompt_end"
+    ],
+    "changes": 0
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "standalone: Pi raised a input dialog; Deck's card did not change and never asked for input",
+   "ok": true,
+   "detail": {
+    "prompts": [
+     "ui_prompt_start",
+     "ui_prompt_end"
+    ],
+    "changes": 0
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "standalone: Pi raised a select dialog; Deck's card did not change and never asked for input",
+   "ok": true,
+   "detail": {
+    "prompts": [
+     "ui_prompt_start",
+     "ui_prompt_end"
+    ],
+    "changes": 0
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "standalone: Pi raised a editor dialog; Deck's card did not change and never asked for input",
+   "ok": true,
+   "detail": {
+    "prompts": [
+     "ui_prompt_start",
+     "ui_prompt_end"
+    ],
+    "changes": 0
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "standalone: Pi raised a custom dialog; Deck's card did not change and never asked for input",
+   "ok": true,
+   "detail": {
+    "prompts": [
+     "ui_prompt_start",
+     "ui_prompt_end"
+    ],
+    "changes": 0
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "standalone: Pi raised a timed dialog; Deck's card did not change and never asked for input",
+   "ok": true,
+   "detail": {
+    "prompts": [
+     "ui_prompt_start",
+     "ui_prompt_end"
+    ],
+    "changes": 0
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "standalone: every dialog kind was raised",
+   "ok": true,
+   "detail": {
+    "unrun": []
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "standalone: after the dialogs the card says what it said, with the limited-coverage word",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": "turn-done",
+     "alive": true,
+     "codex_signal": null,
+     "episode": 32,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "pi",
+     "finish_fg": "pi",
+     "name": "deck-b",
+     "pi_signal": "connected",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "connected",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "standalone: two dialogs at once: Pi announces one start for both; Deck's card did not change",
+   "ok": true,
+   "detail": {
+    "starts_announced": 1,
+    "ends_announced": 0,
+    "command_returned": false
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "standalone: a fresh Pi after the dialogs: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A20",
+   "check": "standalone: Pi's built-in /model dialog emits no prompt event; the card does not change",
+   "ok": true,
+   "detail": {
+    "events": []
+   }
+  },
+  {
+   "ac": "A20",
+   "check": "standalone: Pi's built-in /resume dialog emits no prompt event; the card does not change",
+   "ok": true,
+   "detail": {
+    "events": []
+   }
+  },
+  {
+   "ac": "A10",
+   "check": "two Pis at once: each card follows its own Pi, and one's ending does not end the other's run",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A10",
+   "check": "npm: before the split: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A10",
+   "check": "another pane in front: the card says nothing of the Pi behind it",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "node",
+     "finish_fg": null,
+     "name": "deck-a",
+     "scheduler": {
+      "pi": false,
+      "pi_signal": null,
+      "pre_fire_pi": false
+     }
+    }
+   }
+  },
+  {
+   "ac": "A10",
+   "check": "a run in the pane that is not in front reaches no card surface",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "node",
+     "finish_fg": null,
+     "name": "deck-a",
+     "scheduler": {
+      "pi": false,
+      "pi_signal": null,
+      "pre_fire_pi": false
+     }
+    }
+   }
+  },
+  {
+   "ac": "A10",
+   "check": "back in front, the card shows what that pane's Pi last reported",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": "turn-done",
+     "alive": true,
+     "codex_signal": null,
+     "episode": 46,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "node",
+     "finish_fg": null,
+     "name": "deck-a",
+     "pi_signal": "connected",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "connected",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "A22",
+   "check": "npm: before the reload: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A22",
+   "check": "npm: a reload withdraws what the old runtime reported; the new one starts with nothing and replays nothing",
+   "ok": true,
+   "detail": {
+    "reasons": [
+     [
+      "session_shutdown",
+      "reload"
+     ],
+     [
+      "session_start",
+      "reload"
+     ]
+    ],
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "node",
+     "finish_fg": "node",
+     "name": "deck-a",
+     "pi_signal": "connected",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "connected",
+      "pre_fire_pi": true
+     }
+    },
+    "ended": [
+     "reset-reload"
+    ]
+   }
+  },
+  {
+   "ac": "A22",
+   "check": "standalone: before the reload: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A22",
+   "check": "standalone: a reload withdraws what the old runtime reported; the new one starts with nothing and replays nothing",
+   "ok": true,
+   "detail": {
+    "reasons": [
+     [
+      "session_shutdown",
+      "reload"
+     ],
+     [
+      "session_start",
+      "reload"
+     ]
+    ],
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "pi",
+     "finish_fg": "pi",
+     "name": "deck-b",
+     "pi_signal": "connected",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "connected",
+      "pre_fire_pi": true
+     }
+    },
+    "ended": [
+     "reset-reload"
+    ]
+   }
+  },
+  {
+   "ac": "A22",
+   "check": "npm: before the silence: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A22",
+   "check": "standalone: before the silence: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A22",
+   "check": "a Pi that says nothing for fifteen seconds loses its observation: no ending is made up, the card says unavailable",
+   "ok": true,
+   "detail": {
+    "seconds": 14.6,
+    "stale": 2,
+    "cards": {
+     "deck-a": {
+      "agent": null,
+      "alive": true,
+      "codex_signal": null,
+      "episode": null,
+      "episode_viewed": false,
+      "exited_normally": false,
+      "fg": "node",
+      "finish_fg": "node",
+      "name": "deck-a",
+      "pi_signal": "unavailable",
+      "scheduler": {
+       "pi": true,
+       "pi_signal": "unavailable",
+       "pre_fire_pi": true
+      }
+     },
+     "deck-b": {
+      "agent": null,
+      "alive": true,
+      "codex_signal": null,
+      "episode": null,
+      "episode_viewed": false,
+      "exited_normally": false,
+      "fg": "pi",
+      "finish_fg": "pi",
+      "name": "deck-b",
+      "pi_signal": "unavailable",
+      "scheduler": {
+       "pi": true,
+       "pi_signal": "unavailable",
+       "pre_fire_pi": true
+      }
+     }
+    }
+   }
+  },
+  {
+   "ac": "Q02",
+   "check": "an unavailable Pi is still a Pi to the scheduler",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A22",
+   "check": "when Pi answers again its observer reconnects by itself and reports nothing of the past",
+   "ok": true,
+   "detail": {
+    "cards": {
+     "deck-a": {
+      "agent": null,
+      "alive": true,
+      "codex_signal": null,
+      "episode": null,
+      "episode_viewed": false,
+      "exited_normally": false,
+      "fg": "node",
+      "finish_fg": "node",
+      "name": "deck-a",
+      "pi_signal": "connected",
+      "scheduler": {
+       "pi": true,
+       "pi_signal": "connected",
+       "pre_fire_pi": true
+      }
+     },
+     "deck-b": {
+      "agent": null,
+      "alive": true,
+      "codex_signal": null,
+      "episode": null,
+      "episode_viewed": false,
+      "exited_normally": false,
+      "fg": "pi",
+      "finish_fg": "pi",
+      "name": "deck-b",
+      "pi_signal": "connected",
+      "scheduler": {
+       "pi": true,
+       "pi_signal": "connected",
+       "pre_fire_pi": true
+      }
+     }
+    }
+   }
+  },
+  {
+   "ac": "A23",
+   "check": "npm: before Deck stops: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A23",
+   "check": "Deck restarted while Pi ran: an idle Pi's old ending is not replayed",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "node",
+     "finish_fg": "node",
+     "name": "deck-a",
+     "pi_signal": "connected",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "connected",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "A23",
+   "check": "Deck restarted while Pi ran: an active run is reported again as working, on a new lease",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A23",
+   "check": "and that run's ending is reported once",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A25",
+   "check": "npm: before the switch is turned off: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A25",
+   "check": "turning the switch off withdraws every Pi observation at once",
+   "ok": true,
+   "detail": {
+    "milliseconds": 13
+   }
+  },
+  {
+   "ac": "A05",
+   "check": "turning it off takes Deck's entry out and leaves every other byte, Pi's own later changes included",
+   "ok": true,
+   "detail": {
+    "pi_rewrote_the_file": true
+   }
+  },
+  {
+   "ac": "A25",
+   "check": "a Pi that has not reloaded keeps running and writes nothing: no word, no stream, no new refusal",
+   "ok": true,
+   "detail": {
+    "cards": {
+     "deck-a": {
+      "agent": null,
+      "alive": true,
+      "codex_signal": null,
+      "episode": null,
+      "episode_viewed": false,
+      "exited_normally": false,
+      "fg": "node",
+      "finish_fg": "node",
+      "name": "deck-a",
+      "pi_signal": "unavailable",
+      "scheduler": {
+       "pi": true,
+       "pi_signal": "unavailable",
+       "pre_fire_pi": true
+      }
+     },
+     "deck-b": {
+      "agent": null,
+      "alive": true,
+      "codex_signal": null,
+      "episode": null,
+      "episode_viewed": false,
+      "exited_normally": false,
+      "fg": "pi",
+      "finish_fg": "pi",
+      "name": "deck-b",
+      "pi_signal": "unavailable",
+      "scheduler": {
+       "pi": true,
+       "pi_signal": "unavailable",
+       "pre_fire_pi": true
+      }
+     }
+    }
+   }
+  },
+  {
+   "ac": "Q02",
+   "check": "turned off, both are still Pi to the scheduler",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A08",
+   "check": "turned on again: the file names the entry, and the Pis that loaded before it are still not connected",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A08",
+   "check": "a reload, or a new Pi, loads the entry and connects",
+   "ok": true,
+   "detail": {
+    "cards": {
+     "deck-a": {
+      "agent": null,
+      "alive": true,
+      "codex_signal": null,
+      "episode": null,
+      "episode_viewed": false,
+      "exited_normally": false,
+      "fg": "node",
+      "finish_fg": "node",
+      "name": "deck-a",
+      "pi_signal": "connected",
+      "scheduler": {
+       "pi": true,
+       "pi_signal": "connected",
+       "pre_fire_pi": true
+      }
+     },
+     "deck-b": {
+      "agent": null,
+      "alive": true,
+      "codex_signal": null,
+      "episode": null,
+      "episode_viewed": false,
+      "exited_normally": false,
+      "fg": "pi",
+      "finish_fg": "pi",
+      "name": "deck-b",
+      "pi_signal": "connected",
+      "scheduler": {
+       "pi": true,
+       "pi_signal": "connected",
+       "pre_fire_pi": true
+      }
+     }
+    }
+   }
+  },
+  {
+   "ac": "A21",
+   "check": "npm: started with --no-extensions: no hello, nothing reported, and the card never says connected",
+   "ok": true,
+   "detail": {
+    "running": true,
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "node",
+     "finish_fg": "node",
+     "name": "deck-a",
+     "pi_signal": "unavailable",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "unavailable",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "A21",
+   "check": "standalone: started with --no-extensions: no hello, nothing reported, and the card never says connected",
+   "ok": true,
+   "detail": {
+    "running": true,
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "pi",
+     "finish_fg": "pi",
+     "name": "deck-b",
+     "pi_signal": "unavailable",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "unavailable",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "A06",
+   "check": "the user's own disabling entry wins: conflict, and the switch is refused without a write",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A21",
+   "check": "npm: the user's negative entry: no hello, nothing reported, and the card never says connected",
+   "ok": true,
+   "detail": {
+    "running": true,
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "node",
+     "finish_fg": "node",
+     "name": "deck-a",
+     "pi_signal": "unavailable",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "unavailable",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "A21",
+   "check": "standalone: the user's negative entry: no hello, nothing reported, and the card never says connected",
+   "ok": true,
+   "detail": {
+    "running": true,
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "pi",
+     "finish_fg": "pi",
+     "name": "deck-b",
+     "pi_signal": "unavailable",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "unavailable",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "A21",
+   "check": "npm: the entry's file is missing: no hello, nothing reported, and the card never says connected",
+   "ok": true,
+   "detail": {
+    "running": true,
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "node",
+     "finish_fg": "node",
+     "name": "deck-a",
+     "pi_signal": "unavailable",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "unavailable",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "A21",
+   "check": "standalone: the entry's file is missing: no hello, nothing reported, and the card never says connected",
+   "ok": true,
+   "detail": {
+    "running": true,
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "pi",
+     "finish_fg": "pi",
+     "name": "deck-b",
+     "pi_signal": "unavailable",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "unavailable",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "A21",
+   "check": "npm: the entry throws while Pi loads it: no hello, nothing reported, and the card never says connected",
+   "ok": true,
+   "detail": {
+    "running": false,
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "zsh",
+     "finish_fg": "zsh",
+     "name": "deck-a",
+     "scheduler": {
+      "pi": false,
+      "pi_signal": null,
+      "pre_fire_pi": false
+     }
+    }
+   }
+  },
+  {
+   "ac": "A21",
+   "check": "standalone: the entry throws while Pi loads it: no hello, nothing reported, and the card never says connected",
+   "ok": true,
+   "detail": {
+    "running": false,
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "zsh",
+     "finish_fg": "zsh",
+     "name": "deck-b",
+     "scheduler": {
+      "pi": false,
+      "pi_signal": null,
+      "pre_fire_pi": false
+     }
+    }
+   }
+  },
+  {
+   "ac": "A21",
+   "check": "the bundle's files are again what this build ships",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A06",
+   "check": "the boot migration rewrites an entry of the other stable location to this bundle, and nothing else",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A06",
+   "check": "without an entry the boot migration enrolls nobody",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A19",
+   "check": "npm: a later extension hears the dialog's end BEFORE its start (the upstream reorder)",
+   "ok": true,
+   "detail": {
+    "heard": [
+     "ui_prompt_end",
+     "ui_prompt_start"
+    ]
+   }
+  },
+  {
+   "ac": "A19",
+   "check": "npm: the start of a dialog that closed before a run arrives after that run settled",
+   "ok": true,
+   "detail": {
+    "heard": [
+     "ui_prompt_end",
+     "agent_start",
+     "agent_settled",
+     "ui_prompt_start"
+    ]
+   }
+  },
+  {
+   "ac": "A19",
+   "check": "npm: Deck's card shows that run and nothing else: no input request exists to be wrong",
+   "ok": true,
+   "detail": {
+    "states": [
+     [
+      "working",
+      6
+     ],
+     [
+      "turn-done",
+      7
+     ]
+    ]
+   }
+  },
+  {
+   "ac": "A19",
+   "check": "standalone: a later extension hears the dialog's end BEFORE its start (the upstream reorder)",
+   "ok": true,
+   "detail": {
+    "heard": [
+     "ui_prompt_end",
+     "ui_prompt_start"
+    ]
+   }
+  },
+  {
+   "ac": "A19",
+   "check": "standalone: the start of a dialog that closed before a run arrives after that run settled",
+   "ok": true,
+   "detail": {
+    "heard": [
+     "ui_prompt_end",
+     "agent_start",
+     "agent_settled",
+     "ui_prompt_start"
+    ]
+   }
+  },
+  {
+   "ac": "A19",
+   "check": "standalone: Deck's card shows that run and nothing else: no input request exists to be wrong",
+   "ok": true,
+   "detail": {
+    "states": [
+     [
+      "working",
+      8
+     ],
+     [
+      "turn-done",
+      9
+     ]
+    ]
+   }
+  },
+  {
+   "ac": "A22",
+   "check": "npm: before the quit: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A22",
+   "check": "a quit withdraws the card's word; a shell in front is no Pi and nothing is made up",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "zsh",
+     "finish_fg": "zsh",
+     "name": "deck-a",
+     "scheduler": {
+      "pi": false,
+      "pi_signal": null,
+      "pre_fire_pi": false
+     }
+    },
+    "ended": [
+     "reset-quit"
+    ]
+   }
+  },
+  {
+   "ac": "A22",
+   "check": "standalone: before the kill: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "A22",
+   "check": "a Pi killed without a shutdown: its observation is withdrawn, no ending and no quit are invented",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "zsh",
+     "finish_fg": "zsh",
+     "name": "deck-b",
+     "scheduler": {
+      "pi": false,
+      "pi_signal": null,
+      "pre_fire_pi": false
+     }
+    },
+    "ended": [
+     "eof"
+    ]
+   }
+  },
+  {
+   "ac": "Q05",
+   "check": "a plain node process is not recognized as Pi by its name",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "node",
+     "finish_fg": "node",
+     "name": "deck-a",
+     "scheduler": {
+      "pi": false,
+      "pi_signal": null,
+      "pre_fire_pi": false
+     }
+    }
+   }
+  },
+  {
+   "ac": "B01",
+   "check": "with work status alone no session was ever named: no id reached Deck",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "B01",
+   "check": "session observation is a second switch on the same entry: one entry, now the one that carries both",
+   "ok": true,
+   "detail": {
+    "status": {
+     "pi": true,
+     "pi_installation": "current",
+     "pi_lifecycle": true
+    }
+   }
+  },
+  {
+   "ac": "B03",
+   "check": "npm: the session Pi started in is observed, with Pi's own reason, and the card says only that one is observed",
+   "ok": true,
+   "detail": {
+    "last": "start-startup"
+   }
+  },
+  {
+   "ac": "B03",
+   "check": "npm: a run in the first session: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "B02",
+   "check": "a run changes nothing about the observed session",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "B03",
+   "check": "npm: a new session: Pi's own reasons, the id Pi names, a new lease, the old one ended by its reset",
+   "ok": true,
+   "detail": {
+    "said": [
+     [
+      "session_shutdown",
+      "new"
+     ],
+     [
+      "session_start",
+      "new"
+     ]
+    ],
+    "last": "start-new",
+    "same_id_as_before": false,
+    "ended": [
+     "reset-new"
+    ]
+   }
+  },
+  {
+   "ac": "B03",
+   "check": "npm: a run in the second session: one run, working then turn-done, announced once",
+   "ok": true,
+   "detail": {
+    "source": [
+     "agent_start",
+     "agent_end",
+     "agent_settled"
+    ],
+    "states": [
+     "working",
+     "turn-done"
+    ],
+    "announced": 1,
+    "runs": 1,
+    "new_episodes": 2
+   }
+  },
+  {
+   "ac": "B03",
+   "check": "npm: a fork: Pi's own reasons, the id Pi names, a new lease, the old one ended by its reset",
+   "ok": true,
+   "detail": {
+    "said": [
+     [
+      "session_shutdown",
+      "fork"
+     ],
+     [
+      "session_start",
+      "fork"
+     ]
+    ],
+    "last": "start-fork",
+    "same_id_as_before": false,
+    "ended": [
+     "reset-fork"
+    ]
+   }
+  },
+  {
+   "ac": "B03",
+   "check": "new and fork each named a session of its own",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "B03",
+   "check": "npm: a resume while Pi runs: Pi's own reasons, the id Pi names, a new lease, the old one ended by its reset",
+   "ok": true,
+   "detail": {
+    "said": [
+     [
+      "session_shutdown",
+      "resume"
+     ],
+     [
+      "session_start",
+      "resume"
+     ]
+    ],
+    "last": "start-resume",
+    "same_id_as_before": false,
+    "ended": [
+     "reset-resume"
+    ]
+   }
+  },
+  {
+   "ac": "B03",
+   "check": "the resumed session is the first one, by the id Pi names",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "B05",
+   "check": "npm: a reload: another runtime in the same session: Pi's own reasons, the id Pi names, a new lease, the old one ended by its reset",
+   "ok": true,
+   "detail": {
+    "said": [
+     [
+      "session_shutdown",
+      "reload"
+     ],
+     [
+      "session_start",
+      "reload"
+     ]
+    ],
+    "last": "start-reload",
+    "same_id_as_before": true,
+    "ended": [
+     "reset-reload"
+    ]
+   }
+  },
+  {
+   "ac": "B07",
+   "check": "npm: a quit is the runtime's teardown, said by Pi and ended by its reset; nothing of it is kept",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "B04",
+   "check": "npm: a session named on the command line starts as a startup: Deck does not call it a resume",
+   "ok": true,
+   "detail": {
+    "reason": "startup",
+    "last": "start-startup"
+   }
+  },
+  {
+   "ac": "B06",
+   "check": "one session in two panes is two observations, each of its own process and lease",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "B07",
+   "check": "standalone: a Pi killed without a shutdown: the stream's end is all there is, no teardown and no quit",
+   "ok": true,
+   "detail": {
+    "ended": [
+     "eof"
+    ]
+   }
+  },
+  {
+   "ac": "B04",
+   "check": "standalone: a session path that does not exist creates a session",
+   "ok": true,
+   "detail": {
+    "reason": "startup"
+   }
+  },
+  {
+   "ac": "B02",
+   "check": "standalone: a session id of the user's own, not a UUID, is kept as it is",
+   "ok": true,
+   "detail": {
+    "reason": "startup"
+   }
+  },
+  {
+   "ac": "B04",
+   "check": "standalone: a session id that does not exist starts no Pi: no hello, no observation",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "B01",
+   "check": "work status off, session observation on: the one entry is the one that observes sessions only",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "B01",
+   "check": "standalone: session observation alone reports a session and no run: the card has no word",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "pi",
+     "finish_fg": "pi",
+     "name": "deck-b",
+     "pi_session": "observed",
+     "pi_signal": "unavailable",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "unavailable",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "B08",
+   "check": "a restarted Deck knows no session: nothing is read back from disk",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "B08",
+   "check": "the running Pi's observer reports the session it is in NOW, as a snapshot and never as a start",
+   "ok": true,
+   "detail": {
+    "last": "snapshot"
+   }
+  },
+  {
+   "ac": "B08",
+   "check": "session observation turned off: every record is gone at once and Deck's entry with it",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "B08",
+   "check": "no native session id is in Deck's data directory, Pi's settings or this run's summary",
+   "ok": true,
+   "detail": {
+    "sessions_seen": 5,
+    "leaked": 0
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "backend 1: in its whole life no card ever showed a word but working and turn-done",
+   "ok": true,
+   "detail": {
+    "words": [
+     "turn-done",
+     "working"
+    ]
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "backend 2: in its whole life no card ever showed a word but working and turn-done",
+   "ok": true,
+   "detail": {
+    "words": [
+     "turn-done",
+     "working"
+    ]
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "backend 3: in its whole life no card ever showed a word but working and turn-done",
+   "ok": true,
+   "detail": {
+    "words": []
+   }
+  }
+ ],
+ "passed": 140,
+ "failed": [],
+ "stopped": null,
+ "cleanup": {
+  "exit": 0,
+  "processes_from_root": 0,
+  "socket_left": false
+ }
+}

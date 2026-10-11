@@ -1,0 +1,101 @@
+{
+ "tree": "the commit that adds this file; base 1bdcf57",
+ "where": "development machine, macOS 27.0 arm64; cargo with an isolated HOME, the account's own toolchain read only",
+ "rust": [
+  {
+   "command": "cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml",
+   "exit": 0
+  },
+  {
+   "command": "cargo clippy --workspace --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings",
+   "exit": 0
+  },
+  {
+   "command": "cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1",
+   "exit": 0,
+   "test_binaries_ok": 23,
+   "deck_app_unit_tests": {
+    "passed": 1209,
+    "ignored": 13
+   },
+   "coverage": {
+    "functions": "83.33%",
+    "lines": "85.45%"
+   },
+   "note": "the gate's own form (gate.yml), run without the Controlled Execution probe environment of CI; the first run of this form failed in tests/signal_census.rs (a payload field named agent), fixed and rerun in full"
+  },
+  {
+   "command": "python3 scripts/sidecar_provenance.py check --profile debug --coverage --binaries",
+   "exit": 0
+  },
+  {
+   "command": "cargo build --release --locked --manifest-path app/src-tauri/Cargo.toml",
+   "exit": 0
+  },
+  {
+   "command": "python3 scripts/check_local_translation_binary.py app/src-tauri/target/release/deck-app",
+   "exit": 0
+  },
+  {
+   "command": "scripts/check-edr-binary app/src-tauri/target/release/deck-app",
+   "exit": 0
+  }
+ ],
+ "frontend": [
+  {
+   "command": "node --check on every app/ui/js module and app/ui/test carrier",
+   "failures": 0
+  },
+  {
+   "command": "scripts/ui-tests",
+   "exit": 0,
+   "tests": 771,
+   "fail": 0
+  },
+  {
+   "command": "node app/ui/js/check.mjs (from app/)",
+   "exit": 0
+  }
+ ],
+ "scripts": [
+  {
+   "command": "python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py scripts/test_signal_candidate.py scripts/test_codex_title_probe.py scripts/test_ce_verdict.py scripts/test_reminder_verify.py scripts/test_sidecar_provenance.py",
+   "exit": 0,
+   "tests": 174
+  },
+  {
+   "command": "scripts/check-workflows",
+   "exit": 0
+  }
+ ],
+ "native": {
+  "command": "python3 scripts/pi_native.py --test-binary <deck-app unit-test executable> --standalone <official Pi 1.1.0 build>",
+  "exit": 0,
+  "checks_passed": 140,
+  "failed": [],
+  "cleanup": {
+   "exit": 0,
+   "processes_from_root": 0,
+   "socket_left": false
+  }
+ },
+ "wkwebview": [
+  {
+   "command": "python3 scripts/pi-live-verify.py --runtime npm --host <test machine>",
+   "exit": 0,
+   "verdict": "PASS 13/13"
+  },
+  {
+   "command": "python3 scripts/pi-live-verify.py --runtime standalone --standalone <official build> --host <test machine>",
+   "exit": 0,
+   "verdict": "PASS 13/13"
+  }
+ ],
+ "not_run": [
+  "Controlled Execution parity steps of gate.yml (ce_parity.py, ce_verdict.py): unrelated to this change",
+  "cargo audit",
+  "the tunnel-helper crate's own gate",
+  "the older-runtime launch check of the release carrier",
+  "a signed, notarized bundle"
+ ]
+}

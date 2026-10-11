@@ -1,0 +1,23 @@
+{
+  "cleanup_exit_code": 0,
+  "inventory_exit_code": 0,
+  "registered_resources": 21,
+  "all_registered_resources_gone": true,
+  "tmux_socket_absent": true,
+  "collector_socket_absent": true,
+  "final_campaign_exit_codes": {
+    "base": 0,
+    "session_cli": 0,
+    "ui_ordering": 0,
+    "builtin_and_runtime_resume": 0
+  },
+  "final_event_count": 75,
+  "base_source_event_count": 51,
+  "final_peer_samples": 49,
+  "all_six_peer_assertions_passed": true,
+  "production_code_modified": false,
+  "user_configuration_writes": false,
+  "model_credentials_used": false,
+  "published": false,
+  "temporary_artifacts_retained_for_review": true
+}

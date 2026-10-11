@@ -1,0 +1,31 @@
+{
+ "what": "Why Deck cannot prove whose code a Pi client runs (C01). Read with codesign on the two runtime images of the acceptance runs; public signing identities only.",
+ "npm_install": {
+  "running_image": "node (Node.js v24.19.0); Pi is JavaScript that image loads",
+  "codesign": {
+   "Identifier": "node",
+   "Authority": [
+    "Developer ID Application: Node.js Foundation (HX7739G8FX)",
+    "Developer ID Certification Authority",
+    "Apple Root CA"
+   ],
+   "TeamIdentifier": "HX7739G8FX",
+   "flags": "runtime",
+   "verify_strict_exit": 0
+  },
+  "conclusion": "The signature identifies Node.js. Nothing in it names or covers Pi's JavaScript: any script that Node runs has this identity."
+ },
+ "official_standalone": {
+  "artifact": "pi-darwin-arm64.tar.gz of release v1.1.0, sha256 3455b13de35c15a5893cdebc922678199e90a7ce99b06cbc23f37860e90d63c7 (matches the release's SHA256SUMS)",
+  "pi_sha256": "daea10db90f7806cd0ae5be89fcf819d47b5ed3df99b7c79c31186a1cd6a6501",
+  "codesign": {
+   "Identifier": "a.out",
+   "Signature": "adhoc",
+   "flags": "adhoc,linker-signed",
+   "TeamIdentifier": "not set",
+   "verify_strict": "invalid signature (code or signature have been modified)"
+  },
+  "conclusion": "Ad-hoc, no team, and the strict verification fails: no code requirement can name a supplier for it."
+ },
+ "what_deck_does": "agent_pi::PI.reentry is None. No digest, path, version or name table stands in for a supplier identity. A verified Pi card is shown as client-identity-unverifiable in the restart review and is never a candidate (agent_reentry tests: a_verified_pi_is_named_refused_and_never_started_whatever_is_approved; WKWebView checkpoint pi-review)."
+}

@@ -1,0 +1,37 @@
+{
+  "deck_commit": "1bdcf57d7a9f7aebe989319af6d4dba0c7b57c4b",
+  "pi_release": "v1.1.0",
+  "pi_commit": "abe508e1b89912adde45528136c3221eb69acdd7",
+  "pi_release_published": "2026-10-07T22:26:31Z",
+  "macos": "27.0.1 (26A434)",
+  "arch": "arm64",
+  "node": "24.19.0",
+  "archive_sha256": "3455b13de35c15a5893cdebc922678199e90a7ce99b06cbc23f37860e90d63c7",
+  "archive_matches_official_SHA256SUMS": true,
+  "standalone_signature": {
+    "identifier": "a.out",
+    "signature": "adhoc",
+    "team": null,
+    "sealed_resources": false
+  },
+  "npm_runtime_signature": {
+    "identifier": "node",
+    "team": "HX7739G8FX",
+    "product": "Node.js Foundation",
+    "does_not_attest_pi_javascript": true
+  },
+  "production_code_modified": false,
+  "provider": "local deterministic Extension fixture; no remote model or credentials",
+  "transport": "one-shot direct node:net Unix sockets; NOT candidate persistent production protocol",
+  "source_files": {
+    "packages/coding-agent/src/core/extensions/types.ts": "d9a24065cc9830dc8bdc8d2e41299ad6ce125b3d156a0de1674faeabcb439122",
+    "packages/coding-agent/src/core/extensions/runner.ts": "2a3bd7f81623928070eb956cdac37b861a787297046f9ce7af0522ff6d41a98a",
+    "packages/coding-agent/src/core/agent-session.ts": "19186bf8a79876131a296fe17333c6276a671f8f48401df238c9814eeba0f5df",
+    "packages/coding-agent/src/core/session-manager.ts": "450d82c529933214e088b8422f00061815e617f352f6c834689787a314064bff",
+    "packages/coding-agent/src/main.ts": "e99bd9d46949afd12daa91306b926c1ec9b4992ec386c674cbd928e6f06a4e08",
+    "scripts/build-binaries.sh": "a828fcda33c9691b2098caed7de88205d4cfebb385bb6cb4429561fbd9c1a88a"
+  },
+  "npm_cli_sha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+  "standalone_executable_sha256": "daea10db90f7806cd0ae5be89fcf819d47b5ed3df99b7c79c31186a1cd6a6501",
+  "node_executable_sha256": "27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1"
+}
