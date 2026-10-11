@@ -77,12 +77,13 @@
 //!   word authorizes a side effect: not closing a card, not releasing
 //!   external text into the pane.
 //!
-//! Adding an agent module = one `AgentAdapter` declaration here + its entry
-//! in the static extension tables (`extensions.rs`): the adapter names the
-//! source word, the hook spec table and style, the hooks file and a closed
-//! proof class. The socket protocol and store are shared. A registered
-//! adapter is only a recognized source word: it earns no Signal, trust,
-//! readiness or remote admission by being listed.
+//! Adding an agent module = one `AgentAdapter` declaration + its entry in
+//! the static extension tables (`extensions.rs`): the adapter names the
+//! source word, how it is installed (`Install`: a hooks document with its
+//! spec table, style and file, or Pi's one extension entry) and a closed
+//! proof class. The socket and the store are shared. A registered adapter
+//! is only a recognized source word: it earns no Signal, trust, readiness
+//! or remote admission by being listed.
 //!
 //! # Contract
 //! Agent status hooks (`agent_status.rs`, opt-in): agent CLIs report a CLOSED
@@ -240,6 +241,38 @@
 //! release-location rule, byte-preserving text edit, mode and symlink
 //! handling apply to both. An adapter's optional `reentry` capability is
 //! static data: registered is not enabled, approved or trusted.
+//!
+//! # A third family: a Pi observer's stream
+//! Pi runs no helper per event. Its observer is an extension inside the Pi
+//! process that holds ONE stream on this socket for as long as that Pi runs
+//! (`agent_pi`: the wire, the settings entry, the transport). `handle_stream`
+//! asks for that family FIRST — the lifecycle family would take any line
+//! with a `protocol` key — and hands the connection to the bounded Pi
+//! transport without waiting; nothing of a Pi stream is read, verified or
+//! answered on the accept loop, and its lines reach neither the hook parser
+//! nor the lifecycle mailbox. The reverse door is closed too: a hook line
+//! (wire v1 or v2) that names source `pi` is refused, `pi-observer-required`
+//! — Pi has no interaction id of its own, and a number an observer counts
+//! must never look like one.
+//! What a Pi stream proved is written here by three functions and nothing
+//! else. `pi_observed` records, for a pane's foreground generation, that a
+//! Pi observer was proven there and what may be said about its Signal
+//! (`PiCoverage`: `connected` is LIMITED coverage — work started, an
+//! interaction ended, never an input request; `unavailable` claims no
+//! cause; `incompatible` is a release this build does not know).
+//! `pi_signal` writes one run boundary — `working` or `turn-done`, the only
+//! two words the closed `agent_pi::RunState` has — into the SAME store,
+//! under `InteractionKey::PiRun { lease, run }`, with the same episode,
+//! viewed and projection rules as a hook word. `pi_lost` withdraws exactly
+//! the observation one lease wrote, with its episode (`notify::
+//! withdraw_episode`), and turns `connected` into `unavailable`; a lost
+//! observer is never a turn that ended. Coverage is explanatory: it
+//! creates no episode, joins no badge and lifts no hold. Recognition —
+//! a proven observer of the generation, or Pi's own name on the foreground
+//! (`pi_named`: tmux's name, or the name the leader gives itself, since an
+//! npm install is `node` to tmux) — only ever ADDS the scheduler's Pi hold
+//! (`Evidence::pi`, `pi_foreground`); a name proves nothing and admits
+//! nothing.
 
 use std::collections::HashMap;
 
@@ -292,11 +325,16 @@ pub(crate) struct PaneKey {
 }
 
 impl PaneKey {
-    fn of(row: &PaneRow) -> Self {
+    pub(crate) fn of(row: &PaneRow) -> Self {
         Self {
             server_pid: row.server_pid,
             pane_id: row.pane_id.clone(),
         }
+    }
+
+    /// Whether `row` is this pane of this server generation.
+    pub(crate) fn names(&self, row: &PaneRow) -> bool {
+        self.server_pid == row.server_pid && self.pane_id == row.pane_id
     }
 }
 
@@ -313,6 +351,17 @@ pub(crate) struct ForegroundGeneration {
 }
 
 impl ForegroundGeneration {
+    /// The generation a process is, by its pid and birth instant as
+    /// `procinfo` read them. Nothing is proven by building one: a caller
+    /// compares it with what the kernel says about a pane's foreground.
+    pub(crate) fn of(pid: u32, birth: (u64, u32)) -> Self {
+        Self {
+            pid,
+            start_seconds: birth.0,
+            start_micros: birth.1,
+        }
+    }
+
     pub(crate) fn pid(&self) -> u32 {
         self.pid
     }
@@ -337,11 +386,29 @@ struct Entry {
     /// The attention episode of the current observation (FR-SI-05), its
     /// private sameness key, and whether the user has viewed it.
     episode: EpisodeId,
-    last: Option<(Option<String>, &'static str)>,
+    last: Option<(InteractionKey, &'static str)>,
     viewed: bool,
     /// The last accepted word came from Codex (the only source whose
     /// observation an `Unavailable` trust proof clears).
     codex: bool,
+    /// The last accepted word came through this Pi observer lease
+    /// (`agent_pi::transport`): the one observation that lease's loss
+    /// withdraws. `None` for a word a hook reported.
+    pi: Option<u64>,
+}
+
+/// What makes two accepted words the same observation (FR-SI-05). A closed
+/// set, one variant per way an interaction is identified, so one kind can
+/// never be read as another: a hook word without an id, a source's own
+/// interaction id (wire v2), and a Pi observer's run. The last is NOT a
+/// native id: Pi has none that spans a run, so the observer counts its runs
+/// inside one connection and the backend names that connection (`lease`).
+/// Only `pi_signal` builds it, from a lease the Pi transport verified.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum InteractionKey {
+    Word,
+    NativeUuid(String),
+    PiRun { lease: u64, run: u64 },
 }
 
 impl Entry {
@@ -579,6 +646,28 @@ struct GenerationEvidence {
     generation: ForegroundGeneration,
     codex: Option<CodexSignalTrust>,
     claude_interaction: bool,
+    /// A Pi observer of this generation said hello and the kernel proved it
+    /// to be the pane's foreground program (`agent_pi::transport`). `Some`
+    /// is what recognizes the generation as Pi; the value is what Deck may
+    /// say about its Signal coverage. Never interaction evidence.
+    pi: Option<PiCoverage>,
+}
+
+/// What Deck may say about a recognized Pi's Signal coverage. Presentation
+/// only: not an agent state, not an attention episode, and no hold depends
+/// on which of the three it is. `Connected` is LIMITED coverage — the start
+/// of work and the end of an interaction; Pi gives Deck no reliable way to
+/// observe that it waits for input, so that is never reported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PiCoverage {
+    /// An observer with the signal capability is bound to this generation.
+    Connected,
+    /// No such observer is bound now. Why is not known and not guessed:
+    /// never loaded, turned off, disconnected, or reloading.
+    Unavailable,
+    /// The observer's Pi release is outside the range this build supports.
+    Incompatible,
 }
 
 static EVIDENCE: Mutex<Option<HashMap<PaneKey, GenerationEvidence>>> = Mutex::new(None);
@@ -604,6 +693,7 @@ fn with_generation(
                 generation,
                 codex: None,
                 claude_interaction: false,
+                pi: None,
             });
         if record.session_id != row.session_id
             || record.pane_pid != row.pane_pid
@@ -615,6 +705,7 @@ fn with_generation(
                 generation,
                 codex: None,
                 claude_interaction: false,
+                pi: None,
             };
         }
         update(record);
@@ -660,37 +751,77 @@ pub(crate) struct Evidence {
     pub(crate) codex: Option<CodexSignalTrust>,
     /// An accepted Claude interaction came from this generation.
     pub(crate) claude_interaction: bool,
+    /// The target is a recognized Pi: an observer of this generation was
+    /// proven (whatever the foreground's name — `node` for an npm install),
+    /// or the foreground is literally `pi`. Recognition only ever ADDS the
+    /// scheduler's Pi hold; a name proves nothing and admits nothing.
+    pub(crate) pi: bool,
+    /// What may be said about that Pi's Signal coverage (`None`: not a
+    /// recognized Pi). A name alone reads `Unavailable`.
+    pub(crate) pi_signal: Option<PiCoverage>,
 }
 
 /// Evidence per session's Signal target, bound to its CURRENT foreground
 /// generation via `generation_now` (point reads in production,
 /// `live_generation`), so evidence never outlives the process that earned
 /// it, even between Board polls. The executable name only decides that a
-/// hold applies — it never proves anything.
+/// hold applies — it never proves anything. `name_now` is the name a
+/// process gives itself (`foreground_name`): an npm-installed Pi is `node`
+/// to tmux and `pi` by its own argv, and either name recognizes it.
 pub(crate) fn generation_evidence(
     rows: &[PaneRow],
     generation_now: impl Fn(u32) -> Option<ForegroundGeneration>,
+    name_now: impl Fn(u32) -> Option<String>,
 ) -> HashMap<String, Evidence> {
     let targets = signal_targets(rows);
     with_evidence(|records| {
         targets
             .into_iter()
             .map(|(session, row)| {
+                let now = generation_now(row.pane_pid);
                 let proven = records.get(&PaneKey::of(row)).filter(|r| {
                     r.session_id == row.session_id
                         && r.pane_pid == row.pane_pid
-                        && generation_now(row.pane_pid) == Some(r.generation)
+                        && now == Some(r.generation)
                 });
+                let observed = proven.and_then(|r| r.pi);
+                let pi = observed.is_some() || pi_named(&row.command, now, &name_now);
                 let evidence = Evidence {
                     codex: proven
                         .and_then(|r| r.codex)
                         .or((row.command == "codex").then_some(CodexSignalTrust::Unknown)),
                     claude_interaction: proven.is_some_and(|r| r.claude_interaction),
+                    pi,
+                    pi_signal: pi.then_some(observed.unwrap_or(PiCoverage::Unavailable)),
                 };
                 (session, evidence)
             })
             .collect()
     })
+}
+
+/// Whether a pane's foreground carries Pi's name: tmux's name for it, or
+/// the name the foreground leader gives itself. A shell in front is never
+/// asked. A name recognizes — it adds the scheduler's Pi hold and the card's
+/// coverage note — and proves nothing: no Signal, target or admission
+/// follows from it.
+fn pi_named(
+    command: &str,
+    generation: Option<ForegroundGeneration>,
+    name_now: &impl Fn(u32) -> Option<String>,
+) -> bool {
+    command == crate::agent_pi::PROCESS
+        || (!crate::context::shell_process(Some(command))
+            && generation
+                .and_then(|generation| name_now(generation.pid))
+                .as_deref()
+                == Some(crate::agent_pi::PROCESS))
+}
+
+/// The name a process gives itself: the sanitized basename of its argv[0],
+/// one kernel read (`procinfo::argv0`). Production's `name_now`.
+pub(crate) fn foreground_name(pid: u32) -> Option<String> {
+    crate::procinfo::argv0(pid).and_then(|name| crate::context::sanitize_process(&name))
 }
 
 /// The foreground generation of `pane_pid`'s terminal from two point reads
@@ -742,6 +873,12 @@ pub(crate) fn parse_event(line: &str) -> Result<Event, &'static str> {
         .and_then(|v| v.as_str())
         .filter(|s| crate::extensions::agent(s).is_some())
         .ok_or("unknown-source")?;
+    // Pi has no hook helper and no native interaction id: its words exist
+    // only inside an observer stream the Pi transport verified. A v1 or v2
+    // line that names it is refused whatever else it says.
+    if crate::extensions::agent(source).is_some_and(|adapter| adapter.class == SignalClass::Pi) {
+        return Err("pi-observer-required");
+    }
     let state = STATES
         .iter()
         .find(|s| Some(**s) == obj.get("state").and_then(|v| v.as_str()))
@@ -1024,6 +1161,7 @@ pub(crate) fn ingest(
                     last: None,
                     viewed: false,
                     codex,
+                    pi: None,
                 },
             );
         }
@@ -1033,8 +1171,15 @@ pub(crate) fn ingest(
             .admit(event.state, event.interaction.as_deref())?;
         entry.state = event.state;
         entry.codex = codex;
+        entry.pi = None;
         // only an accepted observation allocates or changes an episode
-        let sameness = (event.interaction.clone(), event.state);
+        let sameness = (
+            event
+                .interaction
+                .clone()
+                .map_or(InteractionKey::Word, InteractionKey::NativeUuid),
+            event.state,
+        );
         if entry.last.as_ref() != Some(&sameness) {
             entry.last = Some(sameness);
             entry.episode = NEXT_EPISODE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1071,6 +1216,152 @@ pub(crate) fn ingest(
     Ok(())
 }
 
+// ---------- Pi observer ingress ------------------------------------------------
+//
+// Pi's words do not arrive as hook lines: an observer inside the Pi process
+// holds one stream on the status socket, and `agent_pi::transport` verifies
+// every frame of it (kernel peer, pane, foreground generation, lease, order)
+// before anything below is called. These functions are the ONLY writers of a
+// Pi observation into the shared store, and they take what the transport
+// proved — never a wire line. The store, the projection, episodes and every
+// consumer are the same as for a hook word.
+
+/// A proven Pi observer said hello for this pane generation: the generation
+/// is recognized as Pi from here on, and `coverage` is what may be said
+/// about its Signal. Recognition is not interaction evidence.
+pub(crate) fn pi_observed(row: &PaneRow, generation: ForegroundGeneration, coverage: PiCoverage) {
+    with_generation(row, generation, |record| record.pi = Some(coverage));
+}
+
+/// Whether a pane's CURRENT foreground is a recognized Pi, for a reader
+/// that holds the pane's identity and no listing (the scheduler's pre-fire
+/// check): a proven observer of the live generation, or Pi's own name on
+/// that generation's leader. Everything is asked now, through
+/// `generation_now` and `name_now`; a foreground that cannot be read is not
+/// recognized by this — recognition needs a fact.
+pub(crate) fn pi_foreground(
+    server_pid: u32,
+    pane_id: &str,
+    pane_pid: u32,
+    generation_now: impl Fn(u32) -> Option<ForegroundGeneration>,
+    name_now: impl Fn(u32) -> Option<String>,
+) -> bool {
+    let Some(generation) = generation_now(pane_pid) else {
+        return false;
+    };
+    let key = PaneKey {
+        server_pid,
+        pane_id: pane_id.to_string(),
+    };
+    name_now(generation.pid).as_deref() == Some(crate::agent_pi::PROCESS)
+        || with_evidence(|records| {
+            records.get(&key).is_some_and(|r| {
+                r.pane_pid == pane_pid && r.generation == generation && r.pi.is_some()
+            })
+        })
+}
+
+/// One run boundary of a proven Pi observer. `lease` and `run` name the
+/// observer's connection and its run inside it (`InteractionKey::PiRun`);
+/// the word is one of the two the closed `RunState` has, so a Pi input
+/// request cannot be written here at all. Stored under its pane like any
+/// word; only the session's Signal target reaches the attention layer.
+pub(crate) fn pi_signal(
+    rows: &[PaneRow],
+    row: &PaneRow,
+    generation: ForegroundGeneration,
+    lease: u64,
+    run: u64,
+    state: crate::agent_pi::RunState,
+) {
+    let state = match state {
+        crate::agent_pi::RunState::Working => WORKING,
+        crate::agent_pi::RunState::TurnDone => TURN_DONE,
+    };
+    let key = PaneKey::of(row);
+    let observation = with_agents(|agents| {
+        // the same pane generation keeps its entry; anything else (a new
+        // foreground generation, a replaced session or pane process) starts
+        // fresh, exactly as a hook word does
+        let fresh = || Entry {
+            state,
+            session: row.session_name.clone(),
+            session_id: row.session_id.clone(),
+            pane_pid: row.pane_pid,
+            generation,
+            interactions: Interactions::default(),
+            episode: 0,
+            last: None,
+            viewed: false,
+            codex: false,
+            pi: Some(lease),
+        };
+        let entry = agents.entry(key.clone()).or_insert_with(&fresh);
+        if entry.session_id != row.session_id
+            || entry.pane_pid != row.pane_pid
+            || entry.generation != generation
+        {
+            *entry = fresh();
+        }
+        entry.state = state;
+        entry.codex = false;
+        entry.pi = Some(lease);
+        let sameness = (InteractionKey::PiRun { lease, run }, state);
+        if entry.last.as_ref() != Some(&sameness) {
+            entry.last = Some(sameness);
+            entry.episode = NEXT_EPISODE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            entry.viewed = false;
+        }
+        Observation {
+            state: entry.state,
+            episode: entry.episode,
+            viewed: entry.viewed,
+        }
+    });
+    let targeted = signal_targets(rows)
+        .get(&row.session_name)
+        .is_some_and(|target| target.pane_id == row.pane_id);
+    applog(&format!(
+        "[agent-status] pi {} s={} target={} v=pi e={}",
+        state,
+        crate::applog::session_tag(&row.session_name),
+        u8::from(targeted),
+        observation.episode
+    ));
+    if targeted {
+        crate::notify::observe(&row.session_name, observation);
+    }
+}
+
+/// A Pi observer lease is over (a reset, the end of its stream, a timeout,
+/// an overflow, a turned-off capability, another foreground): the
+/// observation that lease wrote is withdrawn at once, with its episode, and
+/// the generation's coverage no longer reads `Connected`. Nothing else is
+/// touched: an observation a hook wrote for the same pane stays, another
+/// pane's stays, and nothing is reported in its place — a lost observer is
+/// not a turn that ended.
+pub(crate) fn pi_lost(key: &PaneKey, generation: ForegroundGeneration, lease: u64) {
+    let withdrawn = with_agents(|agents| {
+        let owned = agents
+            .get(key)
+            .is_some_and(|entry| entry.pi == Some(lease) && entry.generation == generation);
+        owned
+            .then(|| agents.remove(key))
+            .flatten()
+            .map(|entry| (entry.session, entry.episode))
+    });
+    with_evidence(|records| {
+        if let Some(record) = records.get_mut(key).filter(|r| r.generation == generation) {
+            if record.pi == Some(PiCoverage::Connected) {
+                record.pi = Some(PiCoverage::Unavailable);
+            }
+        }
+    });
+    if let Some((session, episode)) = withdrawn {
+        crate::notify::withdraw_episode(&session, episode);
+    }
+}
+
 // ---------- poll integration ------------------------------------------------
 
 /// Called from every `poll_sessions` with the whole pane listing and the
@@ -1083,6 +1374,9 @@ pub(crate) fn ingest(
 /// a session whose target changed hears its new target's word, a session
 /// without one is forgotten.
 pub(crate) fn reconcile(rows: &[PaneRow], table: &ProcessTable) {
+    // a Pi observer lease whose pane or foreground generation is no longer
+    // the one it was bound to ends here, before its observation is judged
+    crate::agent_pi::transport::reconcile(rows);
     with_agents(|agents| {
         agents.retain(|key, entry| {
             rows.iter()
@@ -1191,6 +1485,28 @@ const DROP_REASONS: &[&str] = &[
     "lifecycle-late",
     "lifecycle-busy",
     "lifecycle-overflow",
+    // a hook line that names Pi, and the Pi observer family (`agent_pi`)
+    "pi-observer-required",
+    "pi-bad-frame",
+    "pi-bad-version",
+    "pi-bad-mode",
+    "pi-unsupported-pi-version",
+    "pi-other-server",
+    "pi-no-peer",
+    "pi-not-foreground",
+    "pi-no-such-pane",
+    "pi-foreign-pane",
+    "pi-terminal-discontinuity",
+    "pi-no-generation",
+    "pi-generation-mismatch",
+    "pi-pane-changed",
+    "pi-duplicate-observer",
+    "pi-capability-disabled",
+    "pi-busy",
+    "pi-bad-seq",
+    "pi-bad-run",
+    "pi-late",
+    "pi-stale",
 ];
 
 /// How often the drop summary may be written.
@@ -1348,11 +1664,25 @@ impl Receipts {
     }
 }
 
-fn handle_stream(mut stream: UnixStream, drops: &Mutex<Drops>, receipts: &Receipts) {
+fn handle_stream(
+    mut stream: UnixStream,
+    drops: &Mutex<Drops>,
+    receipts: &Receipts,
+    pi: &crate::agent_pi::transport::Service,
+) {
     let Some(line) = read_first_line(&mut stream) else {
         return;
     };
     if line.is_empty() {
+        return;
+    }
+    // A third closed family on the same socket: a Pi observer's stream. It
+    // stays open for as long as that Pi runs, so nothing of it is done on
+    // this thread: the connection goes to the bounded Pi transport, which
+    // never blocks here, and this loop is back to accepting at once. The
+    // line reaches neither the hook parser nor the lifecycle mailbox.
+    if crate::agent_pi::is_family(&line) {
+        pi.hand(stream, line);
         return;
     }
     // A separate closed protocol family on the same socket: a lifecycle
@@ -1416,6 +1746,13 @@ fn lifecycle_receipt(
     })
 }
 
+/// The Pi transport's way into the bounded drop diagnostics: it names a
+/// closed reason, and this module counts and logs it like every other.
+fn pi_reporter(drops: &Arc<Mutex<Drops>>) -> crate::agent_pi::transport::Reporter {
+    let drops = drops.clone();
+    Arc::new(move |reason| note(&drops, Some(reason)))
+}
+
 pub(crate) fn listen_at(path: &Path) -> Result<UnixListener, DeckError> {
     let _ = std::fs::remove_file(path); // stale socket from a previous run
     let listener =
@@ -1426,6 +1763,23 @@ pub(crate) fn listen_at(path: &Path) -> Result<UnixListener, DeckError> {
     Ok(listener)
 }
 
+/// What the bounded drop diagnostics counted so far, by closed reason: a
+/// test's view of what production writes to app.log.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct DropCounts(Arc<Mutex<Drops>>);
+
+#[cfg(test)]
+impl DropCounts {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(Mutex::new(Drops::new(std::time::Instant::now()))))
+    }
+
+    pub(crate) fn counts(&self) -> std::collections::BTreeMap<&'static str, u32> {
+        self.0.lock_or_recover().counts.clone()
+    }
+}
+
 /// The production accept-and-handle step on a test socket: the re-entry
 /// integration tests feed real helper connections through `handle_stream`.
 #[cfg(test)]
@@ -1433,16 +1787,28 @@ pub(crate) fn serve_for_tests(
     listener: UnixListener,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
+    serve_counting_for_tests(listener, stop, &DropCounts::new());
+}
+
+/// `serve_for_tests`, with the drop diagnostics where the caller can read
+/// them (the native Pi run, `agent_pi::tests::native`).
+#[cfg(test)]
+pub(crate) fn serve_counting_for_tests(
+    listener: UnixListener,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    counted: &DropCounts,
+) {
     listener
         .set_nonblocking(true)
         .expect("nonblocking listener");
-    let drops = Arc::new(Mutex::new(Drops::new(std::time::Instant::now())));
+    let drops = counted.0.clone();
     let (receipts, worker) = Receipts::start(drops.clone());
+    let pi = crate::agent_pi::transport::Service::start(pi_reporter(&drops));
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
         match listener.accept() {
             Ok((stream, _)) => {
                 stream.set_nonblocking(false).expect("blocking stream");
-                handle_stream(stream, &drops, &receipts);
+                handle_stream(stream, &drops, &receipts, &pi);
             }
             Err(_) => std::thread::sleep(Duration::from_millis(5)),
         }
@@ -1469,9 +1835,11 @@ pub(crate) fn spawn_listener() {
         let drops = Arc::new(Mutex::new(Drops::new(std::time::Instant::now())));
         // one receipt worker beside this thread, for as long as it accepts
         let (receipts, _) = Receipts::start(drops.clone());
+        // and the one bounded service that owns every Pi observer stream
+        let pi = crate::agent_pi::transport::Service::start(pi_reporter(&drops));
         for stream in listener.incoming() {
             match stream {
-                Ok(stream) => handle_stream(stream, &drops, &receipts),
+                Ok(stream) => handle_stream(stream, &drops, &receipts, &pi),
                 Err(_) => std::thread::sleep(Duration::from_secs(1)),
             }
         }
@@ -1870,18 +2238,18 @@ enum HookEdit<'a> {
 }
 
 /// The half-open byte range of a JSON value in the document text.
-type Span = std::ops::Range<usize>;
+pub(crate) type Span = std::ops::Range<usize>;
 
 /// One element of an array or one member of an object: `whole` runs from the
 /// member's key (or the element's start) to the end of the value, `value` is
 /// the value alone.
-struct Item {
-    key: Option<String>,
-    whole: Span,
-    value: Span,
+pub(crate) struct Item {
+    pub(crate) key: Option<String>,
+    pub(crate) whole: Span,
+    pub(crate) value: Span,
 }
 
-fn skip_space(text: &[u8], mut at: usize) -> usize {
+pub(crate) fn skip_space(text: &[u8], mut at: usize) -> usize {
     while matches!(text.get(at), Some(b' ' | b'\t' | b'\n' | b'\r')) {
         at += 1;
     }
@@ -1891,7 +2259,7 @@ fn skip_space(text: &[u8], mut at: usize) -> usize {
 /// Where the JSON value that starts at `at` ends. serde_json has accepted
 /// the text already, so this only finds boundaries; whatever it does not
 /// expect is `None`, and the caller leaves the file alone.
-fn value_end(text: &[u8], at: usize) -> Option<usize> {
+pub(crate) fn value_end(text: &[u8], at: usize) -> Option<usize> {
     match *text.get(at)? {
         b'"' => {
             let mut at = at + 1;
@@ -1934,7 +2302,7 @@ fn value_end(text: &[u8], at: usize) -> Option<usize> {
 }
 
 /// The items of the object or array at `span`.
-fn items(text: &str, span: &Span) -> Option<Vec<Item>> {
+pub(crate) fn items(text: &str, span: &Span) -> Option<Vec<Item>> {
     let bytes = text.as_bytes();
     let (object, close) = match *bytes.get(span.start)? {
         b'{' => (true, b'}'),
@@ -1989,15 +2357,15 @@ fn indent_unit(text: &str) -> String {
 
 /// What stands around the items of one container: after the opening bracket,
 /// between two items (the comma included), before the closing bracket.
-struct Layout {
-    lead: String,
+pub(crate) struct Layout {
+    pub(crate) lead: String,
     between: String,
     tail: String,
 }
 
 /// The container's own layout when it has items; the document's, one step
 /// deeper than the line the container opens on, when it has none.
-fn layout(text: &str, span: &Span, old: &[Item]) -> Layout {
+pub(crate) fn layout(text: &str, span: &Span, old: &[Item]) -> Layout {
     let Some(first) = old.first() else {
         let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
         let line = text[..span.start].rfind('\n').map_or(0, |at| at + 1);
@@ -2030,7 +2398,7 @@ fn layout(text: &str, span: &Span, old: &[Item]) -> Layout {
 /// between the items is the container's own: an item that stays keeps the
 /// separator that stood before it, so the text changes only where an item
 /// did.
-fn rebuilt(
+pub(crate) fn rebuilt(
     text: &str,
     span: &Span,
     old: &[Item],
@@ -2069,7 +2437,7 @@ fn rebuilt(
 /// A value deck writes, as text for a container whose items follow `lead`:
 /// serde's pretty form re-indented in the document's own unit, or its
 /// compact form when the container is written on one line.
-fn written(value: &serde_json::Value, text: &str, lead: &str) -> Option<String> {
+pub(crate) fn written(value: &serde_json::Value, text: &str, lead: &str) -> Option<String> {
     let Some(at) = lead.rfind('\n') else {
         return serde_json::to_string(value).ok();
     };
@@ -2368,7 +2736,7 @@ fn not_json() -> DeckError {
 }
 
 /// The settings file as its owner wrote it; `None` when there is none.
-fn read_settings_text(path: &Path) -> Result<Option<String>, DeckError> {
+pub(crate) fn read_settings_text(path: &Path) -> Result<Option<String>, DeckError> {
     match std::fs::read(path) {
         Ok(bytes) => String::from_utf8(bytes).map(Some).map_err(|_| not_json()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -2398,7 +2766,11 @@ fn read_settings_value(path: &Path) -> Result<serde_json::Value, DeckError> {
 /// a file deck may not write are refused, and a failure leaves the file as
 /// it was with nothing beside it. Refuses to create the agent's config
 /// DIRECTORY: a missing one means the agent never ran on this Mac.
-fn write_agent_config(path: &Path, bytes: &[u8], never_ran: &str) -> Result<(), DeckError> {
+pub(crate) fn write_agent_config(
+    path: &Path,
+    bytes: &[u8],
+    never_ran: &str,
+) -> Result<(), DeckError> {
     if let Some(dir) = path.parent() {
         if !dir.exists() {
             return Err(DeckError::new(ErrorKind::Missing, never_ran));
@@ -2500,14 +2872,16 @@ pub(crate) fn lifecycle_observation_installed() -> bool {
         Err(_) => return false,
         Ok(None) => {}
     }
-    crate::extensions::agent(CLAUDE_CODE.source).is_some_and(|adapter| {
-        !adapter.lifecycle_hooks.is_empty()
-            && (adapter.config_path)()
-                .and_then(|path| read_settings_value(&path).ok())
-                .is_some_and(|value| {
-                    hooks_installed_of(Family::Lifecycle, &value, adapter.lifecycle_hooks)
-                })
-    })
+    crate::extensions::agent(CLAUDE_CODE.source)
+        .and_then(AgentAdapter::hook_install)
+        .is_some_and(|install| {
+            !install.lifecycle_hooks.is_empty()
+                && (install.config_path)()
+                    .and_then(|path| read_settings_value(&path).ok())
+                    .is_some_and(|value| {
+                        hooks_installed_of(Family::Lifecycle, &value, install.lifecycle_hooks)
+                    })
+        })
 }
 
 /// Which core-owned generation proof an ACCEPTED event of a source feeds.
@@ -2521,16 +2895,15 @@ pub(crate) enum SignalClass {
     Claude,
     /// Terminal continuity decides `CodexSignalTrust` for the generation.
     Codex,
+    /// Pi: its words arrive only through the `pi-observer` family
+    /// (`agent_pi`), never through the hook parser, and prove no interaction
+    /// evidence for the scheduler. A recognized Pi only ever adds a hold.
+    Pi,
 }
 
-/// One supported agent: its wire source word (also the Settings toggle's
-/// id), its hook spec table and style, where its hooks file lives, and its
-/// proof class. The static extension tables (`extensions.rs`) list these;
-/// event parsing, the installer, the boot migration and the status view all
-/// select through `extensions::agent` / `extensions::agents`.
-pub(crate) struct AgentAdapter {
-    pub(crate) source: &'static str,
-    class: SignalClass,
+/// The hook-based installation of one agent: its Signal hook spec table and
+/// style, where its hooks document lives, and the Lifecycle family's hooks.
+pub(crate) struct HookInstall {
     hooks: &'static [HookSpec],
     style: HookStyle,
     config_path: fn() -> Option<PathBuf>,
@@ -2538,30 +2911,64 @@ pub(crate) struct AgentAdapter {
     /// The Lifecycle family's hooks (empty: none). Installed only by the
     /// separate re-entry observation opt-in, never with the Signal hooks.
     lifecycle_hooks: &'static [HookSpec],
+}
+
+/// How one agent's integration is installed. A closed pair, not an
+/// interface: the hook merge engine below serves `Hooks`, and Pi's one
+/// bundled extension entry is written by `agent_pi::config`. Neither can
+/// stand in for the other.
+pub(crate) enum Install {
+    Hooks(HookInstall),
+    PiExtension,
+}
+
+/// One supported agent: its wire source word (also the Settings toggle's
+/// id), how its integration is installed, and its proof class. The static
+/// extension tables (`extensions.rs`) list these; event parsing, the
+/// installer, the boot migration and the status view all select through
+/// `extensions::agent` / `extensions::agents`.
+pub(crate) struct AgentAdapter {
+    pub(crate) source: &'static str,
+    pub(crate) class: SignalClass,
+    pub(crate) install: Install,
     /// Optional static re-entry capability. `None`: this agent is never
     /// re-entered automatically. `Some` is not enabled, approved or trusted.
     pub(crate) reentry: Option<&'static crate::agent_reentry::ReentryCapability>,
 }
 
+impl AgentAdapter {
+    /// The hook-based installation, when this agent has one.
+    fn hook_install(&self) -> Option<&HookInstall> {
+        match &self.install {
+            Install::Hooks(install) => Some(install),
+            Install::PiExtension => None,
+        }
+    }
+}
+
 pub(crate) const CLAUDE_CODE: AgentAdapter = AgentAdapter {
     source: "claude-code",
     class: SignalClass::Claude,
-    hooks: CLAUDE_HOOKS,
-    style: HookStyle::Exec,
-    config_path: claude_settings_path,
-    never_ran: "Claude Code has never run on this Mac — nothing to configure",
-    lifecycle_hooks: CLAUDE_LIFECYCLE_HOOKS,
+    install: Install::Hooks(HookInstall {
+        hooks: CLAUDE_HOOKS,
+        style: HookStyle::Exec,
+        config_path: claude_settings_path,
+        never_ran: "Claude Code has never run on this Mac — nothing to configure",
+        lifecycle_hooks: CLAUDE_LIFECYCLE_HOOKS,
+    }),
     reentry: Some(&crate::agent_reentry::claude::CAPABILITY),
 };
 
 pub(crate) const CODEX: AgentAdapter = AgentAdapter {
     source: "codex",
     class: SignalClass::Codex,
-    hooks: CODEX_HOOKS,
-    style: HookStyle::ShellAsync,
-    config_path: codex_hooks_path,
-    never_ran: "Codex has never run on this Mac — nothing to configure",
-    lifecycle_hooks: &[],
+    install: Install::Hooks(HookInstall {
+        hooks: CODEX_HOOKS,
+        style: HookStyle::ShellAsync,
+        config_path: codex_hooks_path,
+        never_ran: "Codex has never run on this Mac — nothing to configure",
+        lifecycle_hooks: &[],
+    }),
     reentry: None,
 };
 
@@ -2581,13 +2988,16 @@ pub(crate) fn migrate_hooks_on_boot() {
     };
     let mut legacy_referenced = false;
     for adapter in crate::extensions::unambiguous_agents() {
+        let Some(install) = adapter.hook_install() else {
+            continue;
+        };
         let (specs, source, style, never_ran) = (
-            adapter.hooks,
+            install.hooks,
             adapter.source,
-            adapter.style,
-            adapter.never_ran,
+            install.style,
+            install.never_ran,
         );
-        let Some(path) = (adapter.config_path)() else {
+        let Some(path) = (install.config_path)() else {
             continue;
         };
         let Ok(value) = read_settings_value(&path) else {
@@ -2596,12 +3006,12 @@ pub(crate) fn migrate_hooks_on_boot() {
         // The Lifecycle family is migrated only where the user already
         // enabled it: a user with the status hooks alone is never enrolled.
         // A missing lifecycle helper leaves those entries exactly as they are.
-        if !adapter.lifecycle_hooks.is_empty()
-            && hooks_installed_of(Family::Lifecycle, &value, adapter.lifecycle_hooks)
+        if !install.lifecycle_hooks.is_empty()
+            && hooks_installed_of(Family::Lifecycle, &value, install.lifecycle_hooks)
         {
             let migrated = installed_family_helper_path(Family::Lifecycle).and_then(|helper| {
                 let edit = HookEdit::Install {
-                    specs: adapter.lifecycle_hooks,
+                    specs: install.lifecycle_hooks,
                     source,
                     style: HookStyle::ExecBrief,
                     helper: &helper,
@@ -2697,23 +3107,37 @@ pub(crate) struct AgentHooksStatus {
     codex: bool,
     /// The separate re-entry observation opt-in (Lifecycle family).
     claude_reentry: bool,
+    /// Pi's switch and the state of its one extension entry, both derived
+    /// from Pi's own settings file (`agent_pi::config`).
+    pi: bool,
+    pi_installation: crate::agent_pi::config::Installation,
 }
 
 #[tauri::command]
 pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
-    // The reply keeps its two fixed keys (the Settings toggles); each is
+    // The reply keeps its fixed keys (the Settings toggles); each is
     // answered from the registered adapter of that source word.
     let installed = |source: &str| {
-        crate::extensions::agent(source).is_some_and(|adapter| {
-            (adapter.config_path)()
-                .and_then(|path| read_settings_value(&path).ok())
-                .is_some_and(|value| hooks_installed(&value, adapter.hooks))
-        })
+        crate::extensions::agent(source)
+            .and_then(AgentAdapter::hook_install)
+            .is_some_and(|install| {
+                (install.config_path)()
+                    .and_then(|path| read_settings_value(&path).ok())
+                    .is_some_and(|value| hooks_installed(&value, install.hooks))
+            })
     };
+    // Unregistered, Pi answers as absent: a registered adapter is what makes
+    // the file worth reading at all.
+    let pi = crate::extensions::agent(crate::agent_pi::SOURCE)
+        .filter(|adapter| matches!(adapter.install, Install::PiExtension))
+        .map(|_| crate::agent_pi::config::status())
+        .unwrap_or_default();
     AgentHooksStatus {
         claude: installed(CLAUDE_CODE.source),
         codex: installed(CODEX.source),
         claude_reentry: lifecycle_observation_installed(),
+        pi: pi.signal,
+        pi_installation: pi.installation,
     }
 }
 
@@ -2730,14 +3154,22 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
     }
     let adapter = crate::extensions::agent(&agent)
         .ok_or(DeckError::new(ErrorKind::Other, "unknown agent"))?;
+    let install = match &adapter.install {
+        Install::Hooks(install) => install,
+        // Pi has no hooks document: its one extension entry carries the
+        // capability, and its own module writes it and says what happened.
+        Install::PiExtension => {
+            return crate::agent_pi::config::set(crate::agent_pi::Capability::Signal, enable)
+        }
+    };
     let (specs, source, style, never_ran) = (
-        adapter.hooks,
+        install.hooks,
         adapter.source,
-        adapter.style,
-        adapter.never_ran,
+        install.style,
+        install.never_ran,
     );
     let path =
-        (adapter.config_path)().ok_or(DeckError::new(ErrorKind::Other, "no home directory"))?;
+        (install.config_path)().ok_or(DeckError::new(ErrorKind::Other, "no home directory"))?;
     let result = if enable {
         installed_helper_path().and_then(|helper| {
             let edit = HookEdit::Install {
@@ -2774,32 +3206,36 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
 #[tauri::command]
 pub(crate) fn agent_lifecycle_hooks_set(enable: bool) -> Result<(), DeckError> {
     let adapter = crate::extensions::agent(CLAUDE_CODE.source)
-        .filter(|adapter| adapter.reentry.is_some() && !adapter.lifecycle_hooks.is_empty())
+        .filter(|adapter| adapter.reentry.is_some())
+        .ok_or(DeckError::new(ErrorKind::Other, "unknown agent"))?;
+    let install = adapter
+        .hook_install()
+        .filter(|install| !install.lifecycle_hooks.is_empty())
         .ok_or(DeckError::new(ErrorKind::Other, "unknown agent"))?;
     let path = match crate::launch_args::reentry_project_config()
         .map_err(|reason| DeckError::new(ErrorKind::Other, reason))?
     {
         Some(path) => path,
         None => {
-            (adapter.config_path)().ok_or(DeckError::new(ErrorKind::Other, "no home directory"))?
+            (install.config_path)().ok_or(DeckError::new(ErrorKind::Other, "no home directory"))?
         }
     };
     let result = if enable {
         installed_family_helper_path(Family::Lifecycle).and_then(|helper| {
             let edit = HookEdit::Install {
-                specs: adapter.lifecycle_hooks,
+                specs: install.lifecycle_hooks,
                 source: adapter.source,
                 style: HookStyle::ExecBrief,
                 helper: &helper,
             };
-            hooks_set_of(Family::Lifecycle, &path, edit, adapter.never_ran)
+            hooks_set_of(Family::Lifecycle, &path, edit, install.never_ran)
         })
     } else {
         hooks_set_of(
             Family::Lifecycle,
             &path,
             HookEdit::Uninstall,
-            adapter.never_ran,
+            install.never_ran,
         )
     }
     .map(|_written| ());
@@ -3434,7 +3870,7 @@ mod tests {
 
     /// Every session's Codex trust against the snapshot `table`.
     fn trust(rows: &[PaneRow], table: &ProcessTable) -> HashMap<String, CodexSignalTrust> {
-        generation_evidence(rows, |pane| foreground_generation(table, pane))
+        generation_evidence(rows, |pane| foreground_generation(table, pane), |_| None)
             .into_iter()
             .filter_map(|(session, evidence)| evidence.codex.map(|trust| (session, trust)))
             .collect()
@@ -3456,6 +3892,7 @@ mod tests {
             agent: projections(rows).get(session).map(|o| o.state),
             codex: trust(rows, table).get(session).copied(),
             claude_interaction: false,
+            pi: false,
         };
         crate::scheduler::agent_holds(&owner, Some(&seen))
     }
@@ -3621,6 +4058,7 @@ mod tests {
             agent: Some("turn-done"),
             codex,
             claude_interaction: false,
+            pi: false,
         };
         assert!(!crate::scheduler::agent_holds(
             &owner,
@@ -3730,9 +4168,13 @@ mod tests {
         table: &ProcessTable,
         session: &str,
     ) -> crate::scheduler::Observed {
-        crate::scheduler::observe_with(rows.to_vec(), |pane| foreground_generation(table, pane))
-            .remove(session)
-            .expect("listed session")
+        crate::scheduler::observe_with(
+            rows.to_vec(),
+            |pane| foreground_generation(table, pane),
+            |_| None,
+        )
+        .remove(session)
+        .expect("listed session")
     }
 
     fn claude_row_held(rows: &[PaneRow], table: &ProcessTable, session: &str) -> bool {
@@ -4434,9 +4876,41 @@ mod tests {
     fn hook_status_command_returns_both_closed_agent_fields() {
         let status = serde_json::to_value(agent_hooks_status()).unwrap();
         let object = status.as_object().unwrap();
-        // the two Signal toggles, plus the separate re-entry observation
-        // opt-in (the Lifecycle family): three closed booleans, nothing else
-        assert_eq!(object.len(), 3);
+        // the two Signal toggles, the separate re-entry observation opt-in
+        // (the Lifecycle family), and Pi's switch with the closed state of
+        // its one settings entry: four booleans and one word, nothing else
+        assert_eq!(object.len(), 5);
+        assert!(object.get("pi").is_some_and(serde_json::Value::is_boolean));
+        let installation = object
+            .get("pi_installation")
+            .and_then(serde_json::Value::as_str)
+            .expect("a closed word");
+        assert!(
+            [
+                "absent",
+                "current",
+                "needs-reload",
+                "conflict",
+                "unreadable",
+                "unsupported-location"
+            ]
+            .contains(&installation),
+            "{installation}"
+        );
+        // a test binary is no stable install: it may read, never write
+        assert_eq!(installation, "unsupported-location");
+        assert_eq!(
+            agent_hooks_set(crate::agent_pi::SOURCE.into(), true)
+                .unwrap_err()
+                .message(),
+            "pi-config-unsupported-location"
+        );
+        assert_eq!(
+            agent_hooks_set(crate::agent_pi::SOURCE.into(), false)
+                .unwrap_err()
+                .message(),
+            "pi-config-unsupported-location"
+        );
         assert!(object
             .get("claude_reentry")
             .is_some_and(serde_json::Value::is_boolean));
@@ -6365,10 +6839,22 @@ mod tests {
     fn only_claude_declares_a_reentry_capability_and_lifecycle_hooks() {
         let claude = crate::extensions::agent("claude-code").expect("registered");
         assert!(claude.reentry.is_some());
-        assert_eq!(claude.lifecycle_hooks.len(), 2);
+        assert_eq!(
+            claude.hook_install().expect("hooks").lifecycle_hooks.len(),
+            2
+        );
         let codex = crate::extensions::agent("codex").expect("registered");
         assert!(codex.reentry.is_none(), "Codex is never re-entered");
-        assert!(codex.lifecycle_hooks.is_empty());
+        assert!(codex
+            .hook_install()
+            .expect("hooks")
+            .lifecycle_hooks
+            .is_empty());
+        // Pi: registered, no hook family at all and no re-entry capability
+        let pi = crate::extensions::agent("pi").expect("registered");
+        assert!(pi.reentry.is_none(), "Pi is never re-entered");
+        assert!(pi.hook_install().is_none());
+        assert!(matches!(pi.install, Install::PiExtension));
         assert!(crate::extensions::agent("fake-agent").is_none());
         // the two helpers are two markers: neither family owns the other's
         for (family, command, owns) in [
@@ -6598,8 +7084,9 @@ mod tests {
             return;
         };
         let adapter = crate::extensions::agent(CLAUDE_CODE.source).expect("the Claude adapter");
+        let hooks = adapter.hook_install().expect("the Claude hooks");
         let install = HookEdit::Install {
-            specs: adapter.lifecycle_hooks,
+            specs: hooks.lifecycle_hooks,
             source: adapter.source,
             style: HookStyle::ExecBrief,
             helper: &helper,
@@ -6613,7 +7100,7 @@ mod tests {
         for case in cases {
             let path = case.join("settings.json");
             let step = |edit: HookEdit, keep: &str| {
-                let wrote = hooks_set_of(Family::Lifecycle, &path, edit, adapter.never_ran);
+                let wrote = hooks_set_of(Family::Lifecycle, &path, edit, hooks.never_ran);
                 if path.exists() {
                     std::fs::copy(&path, case.join(keep)).expect("keep a copy");
                 }
@@ -6627,5 +7114,167 @@ mod tests {
                 case.file_name().unwrap_or_default().to_string_lossy()
             );
         }
+    }
+
+    /// Pi has no hook helper and no interaction id of its own: a status
+    /// line that names it is refused by the parser, whatever its version,
+    /// word or id, and whoever sent it. Nothing an observer counts can be
+    /// dressed up as a native v2 id.
+    #[test]
+    fn a_hook_line_that_names_pi_is_refused_whatever_else_it_says() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let line = |version: u32, state: &str, interaction: Option<&str>| {
+            let mut line = serde_json::json!({
+                "v": version, "source": "pi", "state": state,
+                "socket": crate::tmux::socket(), "server_pid": 42, "pane": "%3"
+            });
+            if let Some(id) = interaction {
+                line["interaction"] = id.into();
+            }
+            line.to_string()
+        };
+        let id = "731c5908-251a-4388-b3a3-4719ad442bce";
+        for state in STATES {
+            assert_eq!(
+                parse_event(&line(1, state, None)),
+                Err("pi-observer-required")
+            );
+            assert_eq!(
+                parse_event(&line(2, state, Some(id))),
+                Err("pi-observer-required")
+            );
+        }
+        // the same line from the pane's own foreground program, with every
+        // admission fact in order: still refused, and nothing is stored
+        let rows = [row("deck-card-ab12", "$1", "%3", 300, true, "pi")];
+        let table = with_helper(world(&[pane(300, 7, 310, 2000)]), 320, 310);
+        for text in [line(1, "working", None), line(2, "turn-done", Some(id))] {
+            assert_eq!(
+                report_line(&text, Some(320), &table, &rows),
+                Err("pi-observer-required")
+            );
+        }
+        assert!(projections(&rows).is_empty());
+        assert!(
+            !generation_evidence(&rows, |pane| foreground_generation(&table, pane), |_| None)
+                ["deck-card-ab12"]
+                .claude_interaction
+        );
+        // counted in the bounded drop diagnostics under its own reason
+        assert!(DROP_REASONS.contains(&"pi-observer-required"));
+        // the other two sources are parsed as they were
+        assert!(
+            parse_event(&line(1, "working", None).replace("\"pi\"", "\"claude-code\"")).is_ok()
+        );
+        assert!(parse_event(&line(2, "working", Some(id)).replace("\"pi\"", "\"codex\"")).is_ok());
+        // every refusal the Pi family can send has its drop reason here
+        for code in crate::agent_pi::REFUSALS {
+            let reason = crate::agent_pi::drop_reason(code);
+            assert!(DROP_REASONS.contains(&reason), "{reason}");
+        }
+    }
+
+    fn report_line(
+        line: &str,
+        peer: Option<u32>,
+        table: &ProcessTable,
+        rows: &[PaneRow],
+    ) -> Result<(), &'static str> {
+        let origin = Origin {
+            peer,
+            table: table.clone(),
+        };
+        ingest(line, &origin, || Some(rows.to_vec()))
+    }
+
+    /// The listener's dispatch: a `pi-observer` line goes to the Pi
+    /// transport and to nothing else — not the lifecycle mailbox, which
+    /// would take any line with a `protocol` key, and not the hook parser.
+    #[test]
+    fn the_listener_hands_a_pi_stream_to_the_pi_transport_and_to_nothing_else() {
+        use crate::agent_pi::transport::{Bounds, Service, World};
+        use std::io::{BufRead, Write};
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let hello = serde_json::json!({
+            "protocol": "pi-observer", "v": 1, "source": "pi", "socket": "deck",
+            "server_pid": 42, "pane": "%3", "observerVersion": 1, "piVersion": "1.1.0",
+            "mode": "tui", "capabilities": { "signal": true, "lifecycle": false }
+        })
+        .to_string();
+        // both family tests take the line: the order of the dispatch decides
+        assert!(crate::agent_pi::is_family(&hello));
+        assert!(crate::agent_reentry::lifecycle::is_family(&hello));
+        assert!(!crate::agent_pi::is_family(
+            "{\"protocol\":\"agent-lifecycle\",\"v\":1}"
+        ));
+        assert!(!crate::agent_pi::is_family(
+            "{\"v\":1,\"source\":\"pi\",\"state\":\"working\"}"
+        ));
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let drops = Mutex::new(Drops::new(std::time::Instant::now()));
+        let settled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (receipts, worker) = Receipts::start_with({
+            let settled = settled.clone();
+            move |_receipt: Receipt| {
+                settled.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        // an operation is in flight, so a lifecycle line WOULD be claimed
+        crate::agent_reentry::lifecycle::begin("deck", Path::new("/nonexistent/helper"));
+        let pi = Service::start_in(
+            {
+                let reasons = reasons.clone();
+                Arc::new(move |reason| reasons.lock_or_recover().push(reason))
+            },
+            World {
+                process: Box::new(|_| None),
+                listing: Box::new(|| None),
+                enabled: Box::new(|| crate::agent_pi::Capabilities::NONE),
+                socket: "deck".into(),
+            },
+            Bounds {
+                answer: Duration::from_secs(2),
+                stale: Duration::from_secs(15),
+            },
+        );
+        let (mut ours, theirs) = UnixStream::pair().expect("a socket pair");
+        ours.write_all(format!("{hello}\n").as_bytes()).unwrap();
+        let started = std::time::Instant::now();
+        handle_stream(theirs, &drops, &receipts, &pi);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the listener does not wait for the stream"
+        );
+        // the Pi transport answered in its own protocol: this process is no
+        // pane's foreground program, so the stream is refused there
+        ours.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reply = String::new();
+        std::io::BufReader::new(&ours)
+            .read_line(&mut reply)
+            .unwrap();
+        let reply: serde_json::Value = serde_json::from_str(&reply).expect("a reply line");
+        assert_eq!(reply["protocol"], "pi-observer");
+        assert_eq!(reply["refused"], "no-peer");
+        assert_eq!(*reasons.lock_or_recover(), ["pi-no-peer"]);
+        // nothing of it reached the lifecycle mailbox or the hook parser
+        drop(receipts);
+        worker.expect("the receipt worker").join().unwrap();
+        assert_eq!(settled.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(
+            drops.lock_or_recover().counts.is_empty(),
+            "no hook or lifecycle drop"
+        );
+        crate::agent_reentry::lifecycle::end();
+        // and the order is what the source says: Pi before the lifecycle family
+        let source = include_str!("agent_status.rs");
+        let at = source.find("fn handle_stream(").unwrap();
+        let body = &source[at..at + source[at..].find("\n}\n").unwrap()];
+        let pi_at = body.find("crate::agent_pi::is_family(&line)").unwrap();
+        let lifecycle_at = body
+            .find("crate::agent_reentry::lifecycle::is_family(&line)")
+            .unwrap();
+        assert!(pi_at < lifecycle_at);
     }
 }

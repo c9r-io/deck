@@ -29,7 +29,7 @@
 mod source_scan;
 use source_scan::{
     body_span, code_only, enclosing_function, is_declared_test_file, is_ident, js_declaration,
-    js_ident, js_sources, production_sources,
+    js_ident, js_sources, manifest, production_sources,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,6 +141,21 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     (
         "agent_status.rs",
         "renotify",
+        "notify::observe(",
+        1,
+        Producer,
+    ),
+    // Pi's two words: the `pi-observer` wire parses exactly those two (a
+    // Pi run has no `needs-input`), and the ONE store writer for a verified
+    // observer frame maps the closed `RunState` to them and forwards the
+    // session's Signal target to the attention loop, as `ingest` does
+    ("agent_pi.rs", "parse_frame", "\"working\"", 1, Producer),
+    ("agent_pi.rs", "parse_frame", "\"turn-done\"", 1, Producer),
+    ("agent_status.rs", "pi_signal", "WORKING", 1, Producer),
+    ("agent_status.rs", "pi_signal", "TURN_DONE", 1, Producer),
+    (
+        "agent_status.rs",
+        "pi_signal",
         "notify::observe(",
         1,
         Producer,
@@ -554,6 +569,56 @@ const JS_SINKS: &[&str] = &[
     "'kill_session'",
 ];
 
+// ------------------------------------------------- the Pi observer (in Pi)
+
+/// The agent words in every quoting a JavaScript file can spell them in.
+/// The observer's files run inside the Pi process (`resources/pi/`), outside
+/// both scans above; they are the FIRST producer of a Pi word.
+const PI_OBSERVER_TOKENS: &[&str] = &[
+    "\"working\"",
+    "\"turn-done\"",
+    "\"needs-input\"",
+    "'working'",
+    "'turn-done'",
+    "'needs-input'",
+    "`working`",
+    "`turn-done`",
+    "`needs-input`",
+];
+
+/// Every word site of the Pi observer's files, at file scope, comment lines
+/// left out as for the frontend.
+fn pi_observer_census() -> Census {
+    let mut out = Census::new();
+    let mut files: Vec<_> = std::fs::read_dir(manifest("resources/pi"))
+        .expect("resources/pi")
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "the Pi observer's files are found");
+    for path in files {
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        let source = std::fs::read_to_string(&path).unwrap();
+        let comments = js_comment_lines(&source);
+        for token in PI_OBSERVER_TOKENS {
+            for (at, _) in source.match_indices(token) {
+                if !comments[source[..at].matches('\n').count()] {
+                    bump(&mut out, &file, String::new(), token);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The observer reports that a run started (when it starts, and for a run
+/// already open when a connection is accepted) and that it settled. It has
+/// no site for an input request: Pi gives it no reliable way to know one.
+const PI_OBSERVER: &[(&str, &str, &str, usize, Class)] = &[
+    ("observer.ts", "", "\"working\"", 2, Producer),
+    ("observer.ts", "", "\"turn-done\"", 1, Producer),
+];
+
 // ----------------------------------------------------------------- checks
 
 const TURN_DONE_TOKENS: &[&str] = &["TURN_DONE", "\"turn-done\"", "'turn-done'"];
@@ -597,6 +662,64 @@ fn every_rust_signal_site_is_classified() {
 #[test]
 fn every_frontend_signal_site_is_classified() {
     assert_pinned("js", &js_census(), JS);
+}
+
+#[test]
+fn every_pi_observer_signal_site_is_classified() {
+    assert_pinned("pi observer", &pi_observer_census(), PI_OBSERVER);
+    // no input request in any spelling, comments included: the observer
+    // cannot report one, and the wire has no word for it
+    for entry in std::fs::read_dir(manifest("resources/pi")).unwrap() {
+        let path = entry.unwrap().path();
+        let source = std::fs::read_to_string(&path).unwrap();
+        for word in ["needs-input", "needs_input", "needsInput", "NEEDS_INPUT"] {
+            assert!(!source.contains(word), "{}: {word}", path.display());
+        }
+    }
+    // and on the backend: the closed run state has two words, the one
+    // writer of a Pi observation maps exactly those, and Pi's wire parser
+    // names no other
+    let sources = production_sources();
+    let text = |file: &str| {
+        sources
+            .iter()
+            .find(|(name, _)| name == file)
+            .unwrap_or_else(|| panic!("{file}"))
+            .1
+            .clone()
+    };
+    let wire = text("agent_pi.rs");
+    assert!(wire.contains("pub(crate) enum RunState {\n    Working,\n    TurnDone,\n}"));
+    let parse = {
+        let at = wire
+            .find("pub(crate) fn parse_frame(")
+            .expect("parse_frame");
+        let (open, close) = body_span(&wire, at).unwrap();
+        wire[open..=close].to_string()
+    };
+    assert!(!parse.contains("needs-input") && !parse.contains("NEEDS_INPUT"));
+    let status = text("agent_status.rs");
+    let writer = {
+        let at = status.find("pub(crate) fn pi_signal(").expect("pi_signal");
+        let (open, close) = body_span(&status, at).unwrap();
+        status[open..=close].to_string()
+    };
+    assert!(!writer.contains("NEEDS_INPUT") && !writer.contains("needs-input"));
+    assert!(
+        writer.contains("RunState::Working => WORKING")
+            && writer.contains("RunState::TurnDone => TURN_DONE")
+    );
+    // nothing but the transport calls the writer, and the hook parser
+    // refuses the source outright
+    for (file, source) in &sources {
+        let calls = source.matches("pi_signal(").count();
+        match file.as_str() {
+            "agent_status.rs" => assert_eq!(calls, 1, "the definition"),
+            "agent_pi/transport.rs" => assert_eq!(calls, 1, "the one caller"),
+            _ => assert_eq!(calls, 0, "{file} writes a Pi observation"),
+        }
+    }
+    assert!(status.contains("return Err(\"pi-observer-required\");"));
 }
 
 /// The P0 invariant: `turn-done` never enters a side-effect path.

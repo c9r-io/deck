@@ -748,6 +748,75 @@ class EdrBinaryBundleTests(unittest.TestCase):
             self.assertEqual(dirty.returncode, 1)
             self.assertIn(f"{self.HELPER} contains forbidden EDR token: {self.FORBIDDEN}", dirty.stderr)
 
+    # ---- the Pi observer's files (Contents/Resources/pi) ----
+
+    PI_MARKER = "Contents/Resources/pi"
+    PI_FILES = ROOT / "app" / "src-tauri" / "resources" / "pi"
+
+    def pi_bundle(self, root: Path, name: str, *, named: bool, files: dict[str, str] | None) -> Path:
+        """A complete bundle whose application names the Pi directory or not,
+        and that holds `files` there (None: no such directory)."""
+        app = self.bundle(root, name, app_names_helper=True, helper=self.CLEAN_HELPER,
+                          deck=f"{self.PI_MARKER}\n" if named else "")
+        if files is not None:
+            directory = app / "Contents" / "Resources" / "pi"
+            directory.mkdir(parents=True)
+            for file, text in files.items():
+                (directory / file).write_text(text)
+        return app
+
+    def test_a_bundle_that_names_the_pi_observer_must_carry_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            real = {path.name: path.read_text() for path in sorted(self.PI_FILES.glob("*.ts"))}
+            self.assertIn("observer.ts", real)
+            # the checkout's own files pass the packaged vocabulary
+            complete = self.check(self.pi_bundle(root, "complete", named=True, files=real))
+            self.assertEqual((complete.returncode, complete.stderr), (0, ""))
+            missing = self.check(self.pi_bundle(root, "missing", named=True, files=None))
+            self.assertEqual(missing.returncode, 1)
+            self.assertIn("references Contents/Resources/pi, but the bundle does not contain it", missing.stderr)
+            # a bundle from before Pi names nothing and lacks nothing
+            old = self.check(self.pi_bundle(root, "old", named=False, files=None))
+            self.assertEqual((old.returncode, old.stderr), (0, ""))
+            # a directory that is there is checked whatever the application says
+            for named in (True, False):
+                without = self.check(self.pi_bundle(root, f"no-observer-{named}", named=named,
+                                                    files={"signal.ts": real["signal.ts"]}))
+                self.assertEqual(without.returncode, 1, named)
+                self.assertIn("does not contain observer.ts", without.stderr)
+
+    def test_a_packaged_pi_observer_file_is_held_to_the_closed_vocabulary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            clean = (self.PI_FILES / "observer.ts").read_text()
+            # spelled in parts so that this file never holds a scanned token whole
+            for index, token in enumerate(("child" + "_process", "sp" + "awn(", "send" + "UserMessage(",
+                                           "switch" + "Session(", "execute" + "Tool(", "fe" + "tch(",
+                                           "node:" + "http", "needs" + "-input", "write" + "FileSync(",
+                                           "get" + "Entries(", "re" + "quire(")):
+                dirty = self.check(self.pi_bundle(root, f"dirty-{index}", named=True,
+                                                  files={"observer.ts": clean + f"\n{token}\n"}))
+                self.assertEqual(dirty.returncode, 1, token)
+                self.assertIn("contains forbidden Pi observer token", dirty.stderr, token)
+            # nothing but regular .ts files lives there
+            stray = self.check(self.pi_bundle(root, "stray", named=True,
+                                              files={"observer.ts": clean, "helper.sh": "true\n"}))
+            self.assertEqual(stray.returncode, 1)
+            self.assertIn("is not a Pi observer file", stray.stderr)
+            linked = self.pi_bundle(root, "linked", named=True, files={"observer.ts": clean})
+            (linked / "Contents" / "Resources" / "pi" / "extra.ts").symlink_to("/etc/hosts")
+            result = self.check(linked)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("is not a regular file", result.stderr)
+            # the test-only fixtures use exactly what the observer may not: they
+            # would be refused if anything ever packaged them
+            fixture = (ROOT / "scripts" / "pi" / "fixture.ts").read_text()
+            packaged = self.check(self.pi_bundle(root, "fixture", named=True,
+                                                 files={"observer.ts": clean, "fixture.ts": fixture}))
+            self.assertEqual(packaged.returncode, 1)
+            self.assertIn("contains forbidden Pi observer token", packaged.stderr)
+
     def test_a_bundle_from_before_the_helper_is_never_rejected_for_lacking_it(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

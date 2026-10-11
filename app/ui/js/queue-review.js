@@ -44,6 +44,7 @@ const stageKeys = {
   previous: 'queue.stage.previous', iteration: 'queue.stage.iteration', gap: 'queue.stage.gap', time: 'queue.stage.time',
   quiet: 'queue.stage.quiet', unknown: 'queue.stage.unknown', context: 'queue.stage.context', agent: 'queue.stage.agent',
   'first-send': 'queue.stage.firstSend', external: 'queue.stage.external', 'codex-signal': 'queue.stage.codexSignal',
+  'pi-input-unverified': 'queue.stage.piInputUnverified',
   'authority-unverified': 'queue.stage.authorityUnverified',
   'channel-stopped': 'queue.stage.channelStopped',
   'channel-unverified': 'queue.stage.channelUnverified',

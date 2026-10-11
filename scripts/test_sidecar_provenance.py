@@ -21,6 +21,8 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 TRIPLE = "aarch64-apple-darwin"
+# the Pi observer's files (app/bundle.sh DECK_BUNDLE_PI_RESOURCES)
+PI_RESOURCES = ("observer.ts", "signal.ts")
 # Literals, not the tool's own table: a wrong table must fail these tests.
 BUILT = {
     "deck-status-helper": "status-helper",
@@ -421,6 +423,11 @@ class PackagedTests(unittest.TestCase):
         for directory in (self.tauri.parent / "ui", self.tauri / "ui-dist"):
             directory.mkdir()
             (directory / "index.html").write_text("frontend")
+        # the Pi observer's files, which bundle.sh copies beside the sidecars
+        self.pi = self.tauri / "resources/pi"
+        self.pi.mkdir(parents=True)
+        for name in PI_RESOURCES:
+            (self.pi / name).write_text(f"// {name}\n")
 
     def step(self, function, *arguments):
         """One function of app/bundle.sh, as app/run.sh calls it."""
@@ -445,6 +452,40 @@ class PackagedTests(unittest.TestCase):
         self.assertIn("6 files", done.stdout)
         self.assertEqual(sorted(path.name for path in (app / "Contents/MacOS").iterdir()),
                          ["deck", "deck-lifecycle-helper", "deck-mcp", "deck-mcp-runner", "deck-status-helper", "tmux"])
+
+    def test_the_dev_bundle_carries_the_pi_observers_files_and_nothing_else_there(self):
+        app = self.tauri / "target/debug/deck-dev.app"
+        self.assertEqual(self.step("deck_bundle_copy", self.tauri, app).returncode, 0)
+        self.finish(app)
+        carried = app / "Contents/Resources/pi"
+        self.assertEqual(sorted(path.name for path in carried.iterdir()), sorted(PI_RESOURCES))
+        for name in PI_RESOURCES:
+            self.assertEqual((carried / name).read_bytes(), (self.pi / name).read_bytes())
+        self.assertEqual(self.step("deck_bundle_postcheck", ROOT, self.tauri, app).returncode, 0)
+        # the checkout's file changed after the copy: the bundle is not this checkout's
+        (self.pi / PI_RESOURCES[0]).write_text("// edited\n")
+        stale = self.step("deck_bundle_postcheck", ROOT, self.tauri, app)
+        self.assertEqual(stale.returncode, 1)
+        self.assertIn(f"does not hold this checkout's resources/pi/{PI_RESOURCES[0]}", stale.stderr)
+        # copied again it passes; anything else in that directory is refused
+        self.assertEqual(self.step("deck_bundle_copy", self.tauri, app).returncode, 0)
+        self.finish(app)
+        self.assertEqual(self.step("deck_bundle_postcheck", ROOT, self.tauri, app).returncode, 0)
+        (carried / "fixture.ts").write_text("// a test fixture has no place in a bundle\n")
+        extra = self.step("deck_bundle_postcheck", ROOT, self.tauri, app)
+        self.assertEqual(extra.returncode, 1)
+        self.assertIn("holds something other than the Pi observer's files", extra.stderr)
+        # a copy removes what does not belong there
+        self.assertEqual(self.step("deck_bundle_copy", self.tauri, app).returncode, 0)
+        self.assertEqual(sorted(path.name for path in carried.iterdir()), sorted(PI_RESOURCES))
+        # a checkout without one of the files builds no bundle
+        (self.pi / PI_RESOURCES[1]).unlink()
+        self.assertEqual(self.step("deck_bundle_copy", self.tauri, app).returncode, 1)
+
+    def test_the_bundle_script_names_the_files_the_checkout_ships(self):
+        text = (ROOT / "app/bundle.sh").read_text()
+        self.assertIn(f'DECK_BUNDLE_PI_RESOURCES="{" ".join(PI_RESOURCES)}"', text)
+        self.assertEqual(sorted(path.name for path in (ROOT / "app/src-tauri/resources/pi").iterdir()), sorted(PI_RESOURCES))
 
     def test_a_sidecar_replaced_after_the_first_check_is_refused_in_the_dev_bundle(self):
         for binary, context, said in (("deck-mcp", "coverage", "is instrumented, expected plain"),

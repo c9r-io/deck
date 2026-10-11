@@ -234,12 +234,14 @@ pub(crate) fn prepare_context_with(
     if ready.status != ContextStatus::Ready {
         return Prepared::Probe(ready);
     }
-    if row_agent(item).is_some() {
+    if row_agent(item).is_some() || row_pi(item) {
         // process identity is not input readiness, and time is not input
         // authority: the agent's first prompt waits for its first real
         // interaction (select.rs, first-interaction gate) — or, for a row
         // carrying a first-send readiness override (`first_send.rs`), for a
-        // LATER tick that finds the session existing; starting never types
+        // LATER tick that finds the session existing; starting never types.
+        // A row configured for Pi is started the same way and then held for
+        // good (select.rs, Pi hold): no later pass sends it automatically.
         return Prepared::StartedAwaitingInteraction(ready);
     }
     // The process is in the foreground the instant it execs, while its TUI
@@ -799,6 +801,13 @@ fn send_one_guarded(
         // automatic only: send-now is the user acting, not the approval
         // and not the first-send override
         let automatic = request.requested.is_none();
+        // The Pi hold again, from facts read at this instant and not from
+        // the tick's observation: a recognized Pi in the target's
+        // foreground is never sent to automatically, whatever was approved
+        // or overridden. The row and everything it carries stay as they are.
+        if automatic && pi_target_now(&sel) {
+            return Ok(None);
+        }
         let overridden =
             automatic && relies_on_readiness_override(&sel, request.activity.get(&sel.session));
         // each decision reads the one source that backs it, once
@@ -1279,7 +1288,7 @@ fn send_one_safe_requested_with_stabilization(
                     };
                     if matches!(
                         hold_reason(&bound, current.get(&bound.session)),
-                        Some(Hold::NeedsInput | Hold::CodexUnavailable)
+                        Some(Hold::NeedsInput | Hold::CodexUnavailable | Hold::PiInputUnverified)
                     ) {
                         return SendResult::Nothing;
                     }

@@ -2949,6 +2949,7 @@ fn seen_codex(
             agent,
             codex: Some(trust),
             claude_interaction: false,
+            pi: false,
             authority_unverified: false,
             board_unverified: false,
             channel_unverified: false,
@@ -6846,6 +6847,400 @@ fn the_post_start_wake_is_at_most_once_per_session_per_tick() {
     );
     assert!(start_wake_due(&mut last, "c", t0 + tick * 3));
     assert_eq!(last.len(), 1, "expired entries are pruned");
+}
+
+// ---------- Pi: a recognized Pi is never sent to automatically --------------
+
+/// Session "s" exists and its Signal target is a recognized Pi (a proven
+/// observer of its foreground generation, or Pi's name on it).
+fn seen_pi(activity: u64) -> Observations {
+    HashMap::from([(
+        "s".to_string(),
+        Observed {
+            activity,
+            pi: true,
+            ..Observed::default()
+        },
+    )])
+}
+
+/// A row configured for Pi (a card whose command is `pi`).
+fn pi_row(id: &str, mode: &str) -> QueueItem {
+    let mut row = qi(id, mode);
+    row.cmd = "pi".into();
+    row.expected_process = Some("pi".into());
+    if mode == "at" {
+        row.at = Some(NOW - 1);
+    }
+    row
+}
+
+/// Q01/Q02: each of the three ways a target is recognized holds every
+/// automatic row, and nothing an observer reports lifts the hold.
+#[test]
+fn no_automatic_row_is_selected_into_a_recognized_pi() {
+    let quiet = NOW - 400;
+    // configured for Pi, in an existing session — whatever that session's
+    // observation says about interactions
+    for mode in ["at", "chain"] {
+        let q = qs(vec![pi_row("p", mode)]);
+        for observed in [seen(quiet), unestablished(quiet), seen_pi(quiet)] {
+            assert_eq!(
+                hold_reason(&q.items[0], observed.get("s")),
+                Some(Hold::PiInputUnverified),
+                "{mode}"
+            );
+            assert!(select_due(&q, NOW, 720, &observed).is_empty(), "{mode}");
+            assert!(tick_selection(&q, NOW, 720, Some(&observed)).is_empty());
+        }
+    }
+    // not configured for Pi, yet the session's foreground is a recognized Pi
+    // (an owner row queued for a shell card in which the user started Pi)
+    for row in [
+        qi("o", "chain"),
+        bootstrap_row("claude"),
+        bootstrap_row("pyapp"),
+    ] {
+        let q = qs(vec![row]);
+        assert_eq!(
+            hold_reason(&q.items[0], seen_pi(quiet).get("s")),
+            Some(Hold::PiInputUnverified)
+        );
+        assert!(select_due(&q, NOW, 720, &seen_pi(quiet)).is_empty());
+    }
+    // neither: nothing of this applies (an owner row keeps the quiet rule)
+    let owner = qs(vec![qi("o", "chain")]);
+    assert_eq!(hold_reason(&owner.items[0], seen(quiet).get("s")), None);
+    assert_eq!(ids(&select_due(&owner, NOW, 720, &seen(quiet))), ["o"]);
+
+    // what a Pi observer reports is not readiness: working, turn-done, a
+    // bound stream, an established interaction of anything else
+    let q = qs(vec![pi_row("p", "at")]);
+    for agent in [None, Some("working"), Some("turn-done")] {
+        let mut observed = seen_pi(quiet);
+        let entry = observed.get_mut("s").unwrap();
+        entry.agent = agent;
+        entry.claude_interaction = true;
+        entry.codex = Some(crate::agent_status::CodexSignalTrust::Trusted);
+        assert_eq!(
+            hold_reason(&q.items[0], observed.get("s")),
+            Some(Hold::PiInputUnverified),
+            "{agent:?}"
+        );
+        assert!(select_due(&q, NOW, 720, &observed).is_empty(), "{agent:?}");
+    }
+    // the plan names the hold, and it is a delivery that waits for a person
+    let stage = |q: &QueueState, observed: &Observations| {
+        serde_json::to_value(plan_item(q, &q.items[0], NOW, 720, Some(observed))).unwrap()["stage"]
+            .clone()
+    };
+    assert_eq!(stage(&q, &seen_pi(quiet)), "pi-input-unverified");
+    assert_eq!(stage(&q, &seen(quiet)), "pi-input-unverified");
+    assert!(DELIVERY_WAIT_STAGES.contains(&"pi-input-unverified"));
+    let waits = delivery_waits(
+        &q,
+        NOW,
+        720,
+        Some(&seen_pi(quiet)),
+        &HashMap::new(),
+        &HashSet::new(),
+    );
+    assert_eq!(
+        waits.get("s").map(|wait| (wait.item.as_str(), wait.stage)),
+        Some(("p", "pi-input-unverified"))
+    );
+    // Send now is the user's own act: the row is still selectable by request
+    assert_eq!(
+        select_requested(&q, "s", "p", NOW).map(|row| row.id),
+        Some("p".to_string())
+    );
+}
+
+/// Q03: no approval, permission or readiness override exempts a Pi target.
+#[test]
+fn no_approval_or_override_exempts_a_pi_target() {
+    let quiet = NOW - 400;
+    // the first-send readiness override of a Slack badge or clock head
+    let mut head = overridden_head("h");
+    head.cmd = "pi".into();
+    head.expected_process = Some("pi".into());
+    for observed in [unestablished(quiet), seen(quiet), seen_pi(quiet)] {
+        assert_eq!(
+            hold_reason(&head, observed.get("s")),
+            Some(Hold::PiInputUnverified)
+        );
+        assert!(
+            !relies_on_readiness_override(&head, observed.get("s")),
+            "an override that sends nothing is not relied on"
+        );
+        assert!(select_due(&qs(vec![head.clone()]), NOW, 720, &observed).is_empty());
+    }
+    // the same override on a Claude head whose session turns out to be a Pi
+    let claude_head = overridden_head("c");
+    assert_eq!(
+        hold_reason(&claude_head, seen_pi(quiet).get("s")),
+        Some(Hold::PiInputUnverified)
+    );
+    assert!(!relies_on_readiness_override(
+        &claude_head,
+        seen_pi(quiet).get("s")
+    ));
+    // negative control: without a Pi the override does what it did
+    assert_eq!(
+        hold_reason(&claude_head, unestablished(quiet).get("s")),
+        None
+    );
+
+    // an approved external follow-up step
+    let mut step = external_step("e", Some(step_authority(1)));
+    assert_eq!(
+        hold_reason(&step, seen(quiet).get("s")),
+        None,
+        "approved, for Claude"
+    );
+    assert_eq!(
+        hold_reason(&step, seen_pi(quiet).get("s")),
+        Some(Hold::PiInputUnverified)
+    );
+    step.cmd = "pi".into();
+    step.expected_process = Some("pi".into());
+    assert_eq!(
+        hold_reason(&step, seen(quiet).get("s")),
+        Some(Hold::PiInputUnverified)
+    );
+    assert!(
+        step.authority.is_some(),
+        "the hold takes nothing from the row"
+    );
+    // an unapproved one names the missing approval first; either way it waits
+    step.authority = None;
+    assert_eq!(
+        hold_reason(&step, seen_pi(quiet).get("s")),
+        Some(Hold::External)
+    );
+
+    // an approval that could not be re-read changes nothing about it
+    let mut unverified = seen_pi(quiet);
+    mark_authority_unverified(&mut unverified);
+    mark_board_unverified(&mut unverified);
+    assert_eq!(
+        hold_reason(&head, unverified.get("s")),
+        Some(Hold::PiInputUnverified)
+    );
+    // a repeating rule for a Pi card never starts an iteration into it
+    let mut every = rule(300);
+    every.cmd = "pi".into();
+    every.expected_process = Some("pi".into());
+    assert!(select_due(&qs(vec![every]), NOW + 400, 720, &seen(quiet)).is_empty());
+}
+
+/// Q04: an absent session of a Pi row is started and bound, and nothing is
+/// typed — on that pass and on the pass after it.
+#[test]
+fn a_fresh_pi_is_started_and_never_sent_to() {
+    // an absent session is no hold: the row may be selected to START it
+    let q = qs(vec![pi_row("p", "at")]);
+    assert_eq!(hold_reason(&q.items[0], None), None);
+    assert_eq!(
+        ids(&tick_selection(&q, NOW, 720, Some(&Observations::new()))),
+        ["p"]
+    );
+    // the real path: a real pane, a program that carries Pi's name and
+    // records every byte it is sent
+    let (result, bytes) = send_into_fake_modal("pi");
+    assert!(
+        matches!(result, SendResult::StartedAwaitingInteraction { .. }),
+        "{result:?}"
+    );
+    assert_eq!(bytes, "", "no prompt byte and no Enter reached Pi");
+    // from an empty server, with an approved run and with the first-send
+    // override: started once, zero bytes, and the follow-up pass has no
+    // candidate — where the same override sends to Claude
+    for first_send in [None, Some("pi")] {
+        let (candidates, result, bytes, started, second) =
+            automation_run(EmptyState::ZeroSessions, "pi", first_send, true);
+        assert_eq!(candidates, 1, "{first_send:?}");
+        assert!(
+            matches!(result, Some(SendResult::StartedAwaitingInteraction { .. })),
+            "{first_send:?}: {result:?}"
+        );
+        assert!(started && bytes.is_empty(), "{first_send:?}");
+        let (candidates, result, bytes) = second.expect("the follow-up pass ran");
+        assert_eq!(candidates, 0, "{first_send:?}: held, no worker");
+        assert!(result.is_none(), "{first_send:?}");
+        assert_eq!(bytes, "", "{first_send:?}: still zero bytes");
+    }
+}
+
+/// The pre-fire transaction asks again from facts read at that instant: a
+/// Pi the tick's observation did not have is held all the same, and the row
+/// keeps everything it carried.
+#[test]
+fn the_pre_fire_transaction_holds_a_pi_the_tick_did_not_observe() {
+    let fire_count = std::sync::atomic::AtomicUsize::new(0);
+    let fire = |_: &QueueItem| -> Result<(), DeckError> {
+        fire_count.fetch_add(1, AtomicOrdering::SeqCst);
+        Ok(())
+    };
+    let hooks = SendHooks {
+        fire: &fire,
+        persist: &ok_persist,
+        kill: &|_: &str| {},
+        board: &test_board,
+        authority: &test_authority,
+    };
+    let context = ContextHooks {
+        prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| Prepared::Probe(ready()),
+        final_probe: &|_: &QueueItem| ready(),
+    };
+    // The tick's snapshot has no such session (it was absent), so selection
+    // holds nothing; by the time the worker runs, the session exists.
+    let stale = Observations::new();
+    for row in [
+        pi_row("p", "at"),
+        {
+            let mut head = overridden_head("p");
+            head.cmd = "pi".into();
+            head.expected_process = Some("pi".into());
+            head
+        },
+        {
+            let mut step = external_step("p", Some(step_authority(0)));
+            step.mode = "at".into();
+            step.at = Some(NOW - 1);
+            step.cmd = "pi".into();
+            step.expected_process = Some("pi".into());
+            step
+        },
+    ] {
+        let qm = Mutex::new(qs(vec![row]));
+        // the row as the queue holds it, before anything is attempted
+        let before = serde_json::to_value(&qm.lock_or_recover().items[0]).unwrap();
+        assert_eq!(
+            ids(&tick_selection(
+                &qm.lock_or_recover(),
+                NOW,
+                720,
+                Some(&stale)
+            )),
+            ["p"],
+            "selected on the stale observation"
+        );
+        let result = send_one_safe(
+            &qm,
+            &AtomicBool::new(false),
+            "s",
+            720,
+            &stale,
+            &hooks,
+            &context,
+        );
+        assert_eq!(result, SendResult::Nothing);
+        assert_eq!(
+            fire_count.load(AtomicOrdering::SeqCst),
+            0,
+            "nothing was typed"
+        );
+        let q = qm.lock_or_recover();
+        assert_eq!(q.items[0].state, ItemState::Pending);
+        assert_eq!(q.items[0].attempts, 0);
+        assert!(
+            q.pending.is_empty() && q.deliveries.is_empty(),
+            "no firing intent"
+        );
+        // approval and override are still the row's: the hold revokes nothing
+        let mut after = serde_json::to_value(&q.items[0]).unwrap();
+        for key in ["binding", "last_context"] {
+            after.as_object_mut().unwrap().remove(key);
+        }
+        let mut expected = before.clone();
+        for key in ["binding", "last_context"] {
+            expected.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(after, expected);
+    }
+    // Send now for the same row is the user's act and goes through
+    let qm = Mutex::new(qs(vec![pi_row("p", "at")]));
+    let result = send_one_safe_requested(
+        &qm,
+        &AtomicBool::new(false),
+        SendRequest {
+            session: "s",
+            now_min: 720,
+            activity: &stale,
+            requested: Some("p"),
+        },
+        &hooks,
+        &context,
+    );
+    assert!(matches!(result, SendResult::Sent { .. }), "{result:?}");
+    assert_eq!(fire_count.load(AtomicOrdering::SeqCst), 1);
+}
+
+/// The pre-fire question itself, over injected kernel readers: the row's
+/// configuration, a proven observer of the bound pane's live foreground
+/// generation, or Pi's name on that foreground — and nothing else.
+#[test]
+fn a_pi_target_is_recognized_from_facts_read_now() {
+    use crate::agent_status::{ForegroundGeneration, PiCoverage, STORE_TEST_LOCK};
+    let _guard = STORE_TEST_LOCK.lock_or_recover();
+    crate::agent_status::reset_for_tests();
+    let pi = ForegroundGeneration::of(310, (2000, 7));
+    let other = ForegroundGeneration::of(350, (4000, 7));
+    let now = |generation: Option<ForegroundGeneration>| move |_: u32| generation;
+    let named = |name: &'static str| move |_: u32| Some(name.to_string());
+    // configured for Pi: recognized whatever the kernel says
+    assert!(pi_target_with(&pi_row("p", "at"), now(None), |_| None));
+    // not configured and bound to no pane: nothing to ask
+    let mut row = qi("o", "chain");
+    assert!(!pi_target_with(&row, now(Some(pi)), named("pi")));
+    // bound: the foreground's own name
+    row.binding = Some(PaneIdentity {
+        server_pid: 42,
+        session_id: "$1".into(),
+        window_id: "@1".into(),
+        pane_id: "%1".into(),
+        pane_pid: 300,
+    });
+    assert!(pi_target_with(&row, now(Some(pi)), named("pi")));
+    for name in ["node", "bun", "claude", "zsh", "pi-agent", "Pi"] {
+        assert!(!pi_target_with(&row, now(Some(pi)), named(name)), "{name}");
+    }
+    assert!(!pi_target_with(&row, now(Some(pi)), |_| None));
+    // a foreground that cannot be read is not recognized by a name either
+    assert!(!pi_target_with(&row, now(None), named("pi")));
+    // bound: a proven observer of exactly this live generation
+    let pane = crate::tmux::PaneRow {
+        server_pid: 42,
+        session_id: "$1".into(),
+        session_name: "s".into(),
+        pane_id: "%1".into(),
+        pane_pid: 300,
+        ..crate::tmux::PaneRow::default()
+    };
+    for coverage in [
+        PiCoverage::Connected,
+        PiCoverage::Unavailable,
+        PiCoverage::Incompatible,
+    ] {
+        crate::agent_status::pi_observed(&pane, pi, coverage);
+        assert!(
+            pi_target_with(&row, now(Some(pi)), named("node")),
+            "{coverage:?}"
+        );
+    }
+    assert!(
+        !pi_target_with(&row, now(Some(other)), named("node")),
+        "another program now"
+    );
+    assert!(!pi_target_with(&row, now(None), named("node")));
+    let mut elsewhere = row.clone();
+    elsewhere.binding.as_mut().unwrap().pane_id = "%2".into();
+    assert!(
+        !pi_target_with(&elsewhere, now(Some(pi)), named("node")),
+        "another pane"
+    );
+    crate::agent_status::reset_for_tests();
 }
 
 mod real_claude {

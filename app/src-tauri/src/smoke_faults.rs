@@ -195,6 +195,56 @@ pub(crate) fn smoke_signal_fixture() -> Result<SmokeSignalFixture, DeckError> {
     })
 }
 
+/// What the `pi-live` smoke's page needs from its operator
+/// (`scripts/pi-live-verify.py`): the command the operator wrote for the
+/// run — it names the operator's own Pi and fixture provider inside the
+/// experiment root — its working directory and the step text, and how often
+/// the fixture provider was asked and Pi settled, counted from the fixture's
+/// own event log. Nothing else of that log is read back, and this command
+/// starts nothing.
+#[derive(Debug, Serialize)]
+pub(crate) struct SmokePiFixture {
+    command: String,
+    dir: String,
+    marker: String,
+    requests: u32,
+    settled: u32,
+}
+
+#[tauri::command]
+pub(crate) fn smoke_pi_fixture() -> Result<SmokePiFixture, DeckError> {
+    let unavailable = || DeckError::new(ErrorKind::Other, "pi fixture is unavailable");
+    if !enabled() {
+        return Err(unavailable());
+    }
+    pi_fixture_in(&crate::datadir::deck_dir().join("pi-fixture")).ok_or_else(unavailable)
+}
+
+/// `smoke_pi_fixture` over the operator's directory.
+fn pi_fixture_in(dir: &std::path::Path) -> Option<SmokePiFixture> {
+    // one line the operator wrote: bounded, and nothing a terminal could misread
+    let line = |name: &str| {
+        std::fs::read_to_string(dir.join(name))
+            .ok()
+            .map(|text| text.trim().to_string())
+            .filter(|text| {
+                !text.is_empty() && text.len() <= 2048 && !text.chars().any(char::is_control)
+            })
+    };
+    let log = std::fs::read_to_string(dir.join("source.jsonl")).unwrap_or_default();
+    let count = |event: &str| {
+        let wanted = format!("\"event\":\"{event}\"");
+        log.lines().filter(|line| line.contains(&wanted)).count() as u32
+    };
+    Some(SmokePiFixture {
+        command: line("command")?,
+        dir: line("dir")?,
+        marker: line("marker")?,
+        requests: count("fixture_provider_request"),
+        settled: count("agent_settled"),
+    })
+}
+
 /// Closed, content-free state from the `channel-first-send` smoke's fake
 /// `claude`. `app/run.sh` places the example in the signed carrier's closed
 /// PATH, outside the hardened data tree; this command only reads its private
@@ -415,5 +465,44 @@ mod tests {
             smoke_signal_fixture().unwrap_err(),
             "signal fixture is unavailable"
         );
+        assert_eq!(smoke_pi_fixture().unwrap_err(), "pi fixture is unavailable");
+    }
+
+    #[test]
+    fn the_pi_fixture_is_three_operator_lines_and_two_counts() {
+        let dir = std::env::temp_dir().join(format!("deck-pi-fixture-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(pi_fixture_in(&dir).is_none(), "nothing the operator wrote");
+        std::fs::write(dir.join("command"), "pi --no-tools -e /tmp/x/fixture.ts\n").unwrap();
+        std::fs::write(dir.join("dir"), "/tmp/x/work\n").unwrap();
+        std::fs::write(dir.join("marker"), "deck-pi-live-step-1\n").unwrap();
+        let fixture = pi_fixture_in(&dir).expect("the operator's three lines");
+        assert_eq!(fixture.command, "pi --no-tools -e /tmp/x/fixture.ts");
+        assert_eq!(
+            (fixture.dir.as_str(), fixture.marker.as_str()),
+            ("/tmp/x/work", "deck-pi-live-step-1")
+        );
+        assert_eq!((fixture.requests, fixture.settled), (0, 0), "no log yet");
+        std::fs::write(
+            dir.join("source.jsonl"),
+            "{\"event\":\"session_start\",\"pid\":7,\"id\":\"private\"}\n\
+             {\"event\":\"fixture_provider_request\",\"pid\":7}\n\
+             {\"event\":\"agent_settled\",\"pid\":7,\"aborted\":false}\n\
+             {\"event\":\"fixture_provider_request\",\"pid\":7}\n",
+        )
+        .unwrap();
+        let fixture = pi_fixture_in(&dir).unwrap();
+        assert_eq!((fixture.requests, fixture.settled), (2, 1));
+        // only the five fields leave: nothing of the log's content
+        let sent = serde_json::to_value(&fixture).unwrap();
+        assert_eq!(sent.as_object().unwrap().len(), 5);
+        assert!(!sent.to_string().contains("private"));
+        // a line a terminal could misread, or an oversized one, is no fixture
+        for bad in ["pi\u{1b}[2J", &"p".repeat(2049), "  \n"] {
+            std::fs::write(dir.join("command"), bad).unwrap();
+            assert!(pi_fixture_in(&dir).is_none());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

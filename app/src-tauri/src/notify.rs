@@ -92,7 +92,12 @@
 //!   (FR-SI-05). `notify_dismiss(session, episode)` marks exactly that
 //!   episode; a stale episode is a no-op. A session that left the hook store
 //!   is forgotten. The system's own identifier is the tmux session name, so
-//!   one card has at most one notification.
+//!   one card has at most one notification. A source may also WITHDRAW the
+//!   episode it reported, between polls (`withdraw_episode`: a Pi observer
+//!   that is gone took its word with it, `agent_status::pi_lost`): only
+//!   when that is the episode the session projects, its notification goes
+//!   and the badge drops at once, as `retain` would do at the next poll.
+//!   Nothing is announced for a withdrawal, and nothing is put in its place.
 //! - **Native surface.** `native/NotificationBridge.swift` is compiled into
 //!   the same static library as the speech bridge and is a no-op outside a
 //!   real .app bundle (`status()` reports `unsupported`). Authorization is
@@ -436,6 +441,29 @@ pub(crate) fn retain_with(n: &mut Notify, native: &dyn Native, alive: &HashSet<S
     push_badge(n, native);
 }
 
+/// The source withdrew `episode` of `session` (a Pi observer that is gone,
+/// `agent_status::pi_lost`): if that is the episode the session projects
+/// here, the session is forgotten at once — its notification goes and the
+/// badge drops — as `retain_with` does at the next poll. Any other episode
+/// changes nothing: another pane's word may be what the session shows.
+pub(crate) fn withdraw_episode_with(
+    n: &mut Notify,
+    native: &dyn Native,
+    session: &str,
+    episode: crate::agent_status::EpisodeId,
+) {
+    if !n
+        .states
+        .get(session)
+        .is_some_and(|seen| seen.episode == episode)
+    {
+        return;
+    }
+    n.states.remove(session);
+    withdraw(n, native, session);
+    push_badge(n, native);
+}
+
 /// `episode` of `session` was viewed (agent_status already recorded it):
 /// if it is the session's projected episode its notification goes and the
 /// badge drops. Any other episode changes nothing here.
@@ -716,6 +744,15 @@ pub(crate) fn retain(alive: &HashSet<String>) {
     retain_with(&mut NOTIFY.lock_or_recover(), &SystemNative, alive);
 }
 
+pub(crate) fn withdraw_episode(session: &str, episode: crate::agent_status::EpisodeId) {
+    withdraw_episode_with(
+        &mut NOTIFY.lock_or_recover(),
+        &SystemNative,
+        session,
+        episode,
+    );
+}
+
 /// The global notification state as tests see it: session → last word,
 /// the unread sessions and the Dock count the badge would show. Tests that
 /// read it hold `agent_status::STORE_TEST_LOCK` (the only writer in tests).
@@ -952,6 +989,60 @@ mod tests {
         observe_word(&mut n, &fake, "deck-card-ab12", "working", true, "en");
         assert_eq!(fake.calls(), ["remove deck-card-ab12"]);
         assert_eq!(*fake.badge.borrow(), Some(0));
+    }
+
+    /// A source that takes its own word back (a Pi observer that is gone):
+    /// the unread ending and its notification go at once, nothing is
+    /// announced for it, and only the episode that source reported is
+    /// touched.
+    #[test]
+    fn a_withdrawn_episode_takes_its_notification_and_its_count_with_it() {
+        let (mut n, fake) = ready();
+        let ended = Observation {
+            state: TURN_DONE,
+            episode: 7,
+            viewed: false,
+        };
+        observe_with(&mut n, &fake, "deck-card-ab12", ended, true, "en");
+        observe_word(&mut n, &fake, "deck-card-cd34", NEEDS_INPUT, true, "en");
+        assert_eq!(*fake.badge.borrow(), Some(2));
+        assert_eq!(n.announced.get("deck-card-ab12"), Some(&1));
+        fake.clear();
+        // another episode than the one the session projects: nothing
+        withdraw_episode_with(&mut n, &fake, "deck-card-ab12", 6);
+        withdraw_episode_with(&mut n, &fake, "deck-card-zz99", 7);
+        assert!(fake.calls().is_empty());
+        assert_eq!(n.states.get("deck-card-ab12"), Some(&ended));
+        // the projected one: its notification is removed, the count drops,
+        // the other card keeps what it had, and nothing new is announced
+        withdraw_episode_with(&mut n, &fake, "deck-card-ab12", 7);
+        assert_eq!(fake.calls(), ["remove deck-card-ab12"]);
+        assert_eq!(*fake.badge.borrow(), Some(1));
+        assert!(!n.states.contains_key("deck-card-ab12"));
+        assert!(n.states.contains_key("deck-card-cd34"));
+        assert_eq!(n.announced.get("deck-card-ab12"), Some(&1));
+        // twice is once
+        fake.clear();
+        withdraw_episode_with(&mut n, &fake, "deck-card-ab12", 7);
+        assert!(fake.calls().is_empty());
+        // a held delivery's notification of the same card is another source's
+        let (mut n, fake) = ready();
+        observe_with(&mut n, &fake, "deck-card-ab12", ended, false, "en");
+        waits_with(
+            &mut n,
+            &fake,
+            HashMap::from([("deck-card-ab12".to_string(), "k1".to_string())]),
+            true,
+            "en",
+        );
+        assert!(n.wait_posted.contains("deck-card-ab12"));
+        fake.clear();
+        withdraw_episode_with(&mut n, &fake, "deck-card-ab12", 7);
+        assert!(
+            n.wait_posted.contains("deck-card-ab12") && n.waits.contains_key("deck-card-ab12"),
+            "the held delivery's notice stays"
+        );
+        assert_eq!(*fake.badge.borrow(), Some(1), "the wait still counts");
     }
 
     #[test]

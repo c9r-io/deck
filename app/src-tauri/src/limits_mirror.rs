@@ -178,6 +178,45 @@ fn closed_status_vocabularies_match_the_fixture() {
         serde_json::to_value([Unknown, Trusted, Unavailable]).unwrap(),
         l["codex_signal_trust"]
     );
+    // Pi: the card's coverage words and the Settings row's entry states
+    {
+        use crate::agent_pi::config::Installation;
+        use crate::agent_status::PiCoverage;
+        assert_eq!(
+            serde_json::to_value([
+                PiCoverage::Connected,
+                PiCoverage::Unavailable,
+                PiCoverage::Incompatible
+            ])
+            .unwrap(),
+            l["pi_coverage"]
+        );
+        // every variant, spelled as it goes on the wire: adding one breaks
+        // this match until it is listed here and in the fixture
+        let spelled = |installation: Installation| match installation {
+            Installation::Absent
+            | Installation::Current
+            | Installation::NeedsReload
+            | Installation::Conflict
+            | Installation::Unreadable
+            | Installation::UnsupportedLocation => serde_json::to_value(installation).unwrap(),
+        };
+        assert_eq!(
+            serde_json::Value::Array(
+                [
+                    Installation::Absent,
+                    Installation::Current,
+                    Installation::NeedsReload,
+                    Installation::Conflict,
+                    Installation::Unreadable,
+                    Installation::UnsupportedLocation
+                ]
+                .map(spelled)
+                .to_vec()
+            ),
+            l["pi_installations"]
+        );
+    }
     let notices: Vec<&str> = crate::storage::StorageNotice::ALL
         .iter()
         .map(|notice| notice.code())

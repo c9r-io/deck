@@ -74,6 +74,23 @@
 //!   ledger; the row stays pending and the next tick holds it at stage
 //!   `first-send`.
 //!
+//! - Pi hold: no automatic row of any mode is selected into an EXISTING
+//!   session that is a recognized Pi (`Hold::PiInputUnverified`): the row is
+//!   configured for Pi (`expected_process`), the session's Signal target
+//!   carries Pi's name, or a proven Pi observer belongs to its current
+//!   foreground generation. Pi gives Deck no reliable way to observe that it
+//!   waits for input (`agent_pi.rs`), so nothing an observer reports —
+//!   `working`, `turn-done`, a bound stream — ever lifts this hold, and
+//!   neither does a first-send readiness override, an approval or a channel
+//!   permission: it is asked before all of them. It is not interaction
+//!   evidence and creates none. Recognition only ever ADDS the hold; a name
+//!   is no delivery target and no remote admission (`admission.rs` does not
+//!   know Pi). An absent session is started and never sent to (below), and
+//!   the pre-fire transaction asks again from facts read at that instant
+//!   (`pi_target_now`), so a Pi that appeared after the tick's observation
+//!   is held too. Send-now stays the user's own act, under every existing
+//!   target, foreground and paste guard.
+//!
 //! Owner rows keep the quiet-only rule (plus the holds above). Manual
 //! send-now (`select_for_request`) is the user acting while looking at the
 //! pane and is not held. A stale `needs-input` (a question dismissed with
@@ -106,6 +123,10 @@ pub(crate) struct Observed {
     /// An accepted Claude interaction word came from the Signal target's
     /// current foreground generation (`agent_status::Evidence`).
     pub(crate) claude_interaction: bool,
+    /// The Signal target is a recognized Pi (`agent_status::Evidence::pi`):
+    /// a proven observer of its current foreground generation, or Pi's name
+    /// on that foreground. Recognition only: it holds, and proves nothing.
+    pub(crate) pi: bool,
     /// Not Signal: a tick-wide fact copied to every session so selection
     /// stays pure — this tick could not read the automation-authority source
     /// (settings), so no row may be sent automatically on its approval
@@ -154,17 +175,22 @@ pub(crate) fn mark_channel_unverified(seen: &mut Observations) {
 pub(crate) type Observations = HashMap<String, Observed>;
 
 pub(crate) fn observe(rows: Vec<PaneRow>) -> Observations {
-    observe_with(rows, crate::agent_status::live_generation)
+    observe_with(
+        rows,
+        crate::agent_status::live_generation,
+        crate::agent_status::foreground_name,
+    )
 }
 
-/// `observe` with the foreground-generation reader injected (the Signal
-/// Trace harness passes its synthetic world's).
+/// `observe` with the foreground-generation and foreground-name readers
+/// injected (the Signal Trace harness passes its synthetic world's).
 pub(crate) fn observe_with(
     rows: Vec<PaneRow>,
     generation_now: impl Fn(u32) -> Option<agent_status::ForegroundGeneration>,
+    name_now: impl Fn(u32) -> Option<String>,
 ) -> Observations {
     let agents = crate::agent_status::projections(&rows);
-    let evidence = crate::agent_status::generation_evidence(&rows, generation_now);
+    let evidence = crate::agent_status::generation_evidence(&rows, generation_now, name_now);
     let mut seen = Observations::new();
     for row in rows {
         let activity = row.window_activity;
@@ -174,6 +200,7 @@ pub(crate) fn observe_with(
                 agent: agents.get(session).map(|o| o.state),
                 codex: evidence.get(session).and_then(|e| e.codex),
                 claude_interaction: evidence.get(session).is_some_and(|e| e.claude_interaction),
+                pi: evidence.get(session).is_some_and(|e| e.pi),
                 authority_unverified: false,
                 board_unverified: false,
                 channel_unverified: false,
@@ -202,6 +229,9 @@ pub(crate) enum Hold {
     AuthorityUnverified,
     ChannelPermission,
     ChannelUnverified,
+    /// the target is a recognized Pi, whose input requests Deck cannot
+    /// observe: send-now only (plan stage `pi-input-unverified`)
+    PiInputUnverified,
 }
 
 /// The recognized interactive agent a row is configured for, if any.
@@ -209,6 +239,45 @@ pub(crate) fn row_agent(i: &QueueItem) -> Option<&'static str> {
     i.expected_process
         .as_deref()
         .and_then(crate::admission::interactive_agent)
+}
+
+/// Whether a row is configured for Pi. Not `row_agent`: that closed list is
+/// remote admission's too, and Pi is no remote agent. This only ever holds
+/// the row and makes starting its session start-only.
+pub(crate) fn row_pi(i: &QueueItem) -> bool {
+    i.expected_process.as_deref() == Some(crate::agent_pi::PROCESS)
+}
+
+/// Whether an automatic send of `i` would go to a recognized Pi, asked of
+/// facts read NOW and of no listing: the row's own configuration, or the
+/// pane it is bound to having a recognized Pi in its foreground at this
+/// instant (`agent_status::pi_foreground`). The pre-fire transaction asks
+/// this whatever the tick observed, so a Pi that came to the foreground
+/// after that observation is held as well.
+pub(crate) fn pi_target_now(i: &QueueItem) -> bool {
+    pi_target_with(
+        i,
+        crate::agent_status::live_generation,
+        crate::agent_status::foreground_name,
+    )
+}
+
+/// `pi_target_now` with the two kernel readers injected.
+pub(crate) fn pi_target_with(
+    i: &QueueItem,
+    generation_now: impl Fn(u32) -> Option<agent_status::ForegroundGeneration>,
+    name_now: impl Fn(u32) -> Option<String>,
+) -> bool {
+    row_pi(i)
+        || i.binding.as_ref().is_some_and(|pane| {
+            agent_status::pi_foreground(
+                pane.server_pid,
+                &pane.pane_id,
+                pane.pane_pid,
+                generation_now,
+                name_now,
+            )
+        })
 }
 
 /// The agent hold (module header): why the hook state and interaction
@@ -253,6 +322,12 @@ fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool
         return Some(Hold::ChannelUnverified);
     }
     let o = seen?;
+    // A recognized Pi: asked before every approval and readiness override,
+    // and lifted by none of them, nor by anything its observer reports. Pi
+    // gives Deck no way to observe that it waits for input.
+    if row_pi(i) || o.pi {
+        return Some(Hold::PiInputUnverified);
+    }
     // a failed read of the authority source is no proof the approval
     // still stands (and no proof it was revoked): hold, keep everything
     // (settings for a rule's approval, the Board side for a phone task's)

@@ -69,6 +69,65 @@ else
     exit 1
   fi
   targets+=("$macos/deck-mcp" "$macos/deck-mcp-runner")
+  # The Pi observer: text the Pi process loads from the bundle
+  # (Contents/Resources/pi, agent_pi/config.rs). The same rule as for the
+  # lifecycle helper decides whether THIS bundle must carry it: the
+  # application names the directory in string data live code reads
+  # (RESOURCE_DIR, 21 bytes), so
+  #   - directory present          -> every file in it is checked below,
+  #                                   whatever the application says;
+  #   - absent, named by the app   -> the bundle is incomplete: rejected;
+  #   - absent, not named          -> a bundle from before Pi: accepted.
+  # What is checked is that the directory holds regular `.ts` files only,
+  # that `observer.ts` is among them, and that none carries a word of the
+  # closed list below: a process spawn, a network client, or one of Pi's
+  # execution and session APIs. tests/edr_quiet.rs is authoritative for the
+  # source; this is the same vocabulary on what was actually packaged.
+  pi_dir="$target_path/Contents/Resources/pi"
+  set +e
+  strings -a "$macos/$executable" | LC_ALL=C grep -F -c -- Contents/Resources/pi >/dev/null
+  evidence=("${PIPESTATUS[@]}")
+  set -e
+  if [ "${evidence[0]}" -ne 0 ] || [ "${evidence[1]}" -gt 1 ]; then
+    echo "$macos/$executable could not be read to decide whether the Pi observer is required" >&2
+    exit 1
+  fi
+  if [ -e "$pi_dir" ] || [ -L "$pi_dir" ]; then
+    if [ -L "$pi_dir" ] || [ ! -d "$pi_dir" ]; then
+      echo "$pi_dir is not a directory of the bundle" >&2
+      exit 1
+    fi
+    if [ ! -f "$pi_dir/observer.ts" ] || [ -L "$pi_dir/observer.ts" ]; then
+      echo "$pi_dir does not contain observer.ts" >&2
+      exit 1
+    fi
+    while IFS= read -r -d '' entry; do
+      case "$entry" in
+        *.ts) ;;
+        *) echo "$entry is not a Pi observer file" >&2; exit 1 ;;
+      esac
+      if [ -L "$entry" ] || [ ! -f "$entry" ]; then
+        echo "$entry is not a regular file" >&2
+        exit 1
+      fi
+      for forbidden in \
+        child_process spawn execFile 'exec(' 'eval(' 'require(' 'import(' \
+        node:http node:https node:dgram node:tls node:dns 'fetch(' WebSocket \
+        sendUserMessage sendMessage newSession switchSession executeTool \
+        registerTool registerCommand registerProvider appendEntry setActiveTools \
+        getEntries getBranch getSessionFile getSystemPrompt needs-input \
+        writeFile appendFile readFile createWriteStream createServer
+      do
+        if LC_ALL=C grep -F -- "$forbidden" "$entry" >/dev/null; then
+          echo "$entry contains forbidden Pi observer token: $forbidden" >&2
+          exit 1
+        fi
+      done
+    done < <(find "$pi_dir" -mindepth 1 -print0)
+  elif [ "${evidence[1]}" -eq 0 ]; then
+    echo "$macos/$executable references Contents/Resources/pi, but the bundle does not contain it" >&2
+    exit 1
+  fi
 fi
 for target in "${targets[@]}"; do
   test -f "$target"

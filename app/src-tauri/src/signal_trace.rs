@@ -376,9 +376,11 @@ fn check(at: &str, expect: &Value, world: &World, last: &HashMap<String, Value>)
     let (states, unread, dock) = crate::notify::snapshot_for_tests();
     let announced = crate::notify::announced_for_tests();
     let table = world.table();
-    let observed = crate::scheduler::observe_with(world.rows(), |pane| {
-        crate::agent_status::foreground_generation(&table, pane)
-    });
+    let observed = crate::scheduler::observe_with(
+        world.rows(),
+        |pane| crate::agent_status::foreground_generation(&table, pane),
+        |_| None,
+    );
     for (session, want) in expect["sessions"].as_object().into_iter().flatten() {
         let name = World::name(session);
         let polled = last.get(session).cloned().unwrap_or(Value::Null);

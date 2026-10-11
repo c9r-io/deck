@@ -5,7 +5,7 @@
 //! # Contract
 //! - Three typed tables, no common interface: `SERVICES` (service
 //!   integrations; today `slack::INTEGRATION`), `AGENT_ADAPTERS` (the
-//!   declarations in `agent_status.rs`) and `TRANSLATION_PROVIDERS` (the
+//!   declarations in `agent_status.rs` and `agent_pi.rs`) and `TRANSLATION_PROVIDERS` (the
 //!   engines behind `intelligence::provider::TranslationProvider`), plus the
 //!   one engine this build selects, `TRANSLATION_ENGINE`.
 //! - Entries are source code compiled into the app. No setting, environment
@@ -19,8 +19,9 @@
 //!   a provider is built on the first translation and loads its model only
 //!   then (`intelligence/translation.rs`), and an agent adapter's source
 //!   word earns Signal only through the pane, generation and interaction
-//!   checks of `agent_status::ingest`. Remote admission
-//!   (`admission.rs`) does not read these tables.
+//!   checks of `agent_status::ingest` — for Pi, the peer, lease and order
+//!   checks of `agent_pi::transport`. Remote admission (`admission.rs`)
+//!   does not read these tables.
 //! - No silent fallback, and no winner in a clash: an identity is used only
 //!   when EXACTLY one entry carries it, never the first or the last of
 //!   several. That holds for every consumer, not only the lookups: an
@@ -84,8 +85,11 @@ pub(crate) struct ServiceIntegration {
 pub(crate) const TRANSLATION_ENGINE: &str = "bergamot";
 
 const SERVICES: &[ServiceIntegration] = &[crate::slack::INTEGRATION];
-const AGENT_ADAPTERS: &[AgentAdapter] =
-    &[crate::agent_status::CLAUDE_CODE, crate::agent_status::CODEX];
+const AGENT_ADAPTERS: &[AgentAdapter] = &[
+    crate::agent_status::CLAUDE_CODE,
+    crate::agent_status::CODEX,
+    crate::agent_pi::PI,
+];
 const TRANSLATION_PROVIDERS: &[TranslationProviderEntry] =
     &[crate::intelligence::provider::BERGAMOT];
 
@@ -391,7 +395,16 @@ mod tests {
         assert_eq!(SERVICES.iter().map(|s| s.id).collect::<Vec<_>>(), ["slack"]);
         assert_eq!(
             AGENT_ADAPTERS.iter().map(|a| a.source).collect::<Vec<_>>(),
-            ["claude-code", "codex"]
+            ["claude-code", "codex", "pi"]
+        );
+        // registered is not re-entered: only Claude declares that capability
+        assert_eq!(
+            AGENT_ADAPTERS
+                .iter()
+                .filter(|a| a.reentry.is_some())
+                .map(|a| a.source)
+                .collect::<Vec<_>>(),
+            ["claude-code"]
         );
         assert_eq!(
             TRANSLATION_PROVIDERS

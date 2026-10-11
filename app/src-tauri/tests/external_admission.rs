@@ -1238,6 +1238,108 @@ fn frontend_queue_and_terminal_calls_are_pinned() {
 
 // ----------------------------------------------------- scanner self-tests
 
+/// Pi is recognized only to be HELD (`scheduler/select.rs`): it is no remote
+/// agent, its name is no delivery target, and nothing of its adapter can
+/// queue text, type into a pane or start anything.
+#[test]
+fn pi_is_no_remote_agent_and_its_adapter_reaches_no_terminal_or_queue() {
+    let sources = production_sources();
+    let text = |file: &str| {
+        &sources
+            .iter()
+            .find(|(name, _)| name == file)
+            .unwrap_or_else(|| panic!("{file}"))
+            .1
+    };
+    // the ONE closed list of remote agents is the two it was
+    let admission = text("admission.rs");
+    let at = admission
+        .find("pub(crate) fn interactive_agent(")
+        .expect("interactive_agent");
+    let (open, close) = body_span(admission, at).expect("its body");
+    let agents: String = admission[open..=close].split_whitespace().collect();
+    assert_eq!(
+        agents, "{matchprocess{\"claude\"=>Some(\"claude\"),\"codex\"=>Some(\"codex\"),_=>None,}}",
+        "no third agent, and never a runtime name such as node or bun"
+    );
+    // the scheduler asks for Pi through its own predicate, which holds only
+    let select = text("scheduler/select.rs");
+    assert!(select.contains(
+        "pub(crate) fn row_pi(i: &QueueItem) -> bool {\n    i.expected_process.as_deref() == Some(crate::agent_pi::PROCESS)\n}"
+    ));
+    let at = select
+        .find("fn hold_reason_with(")
+        .expect("hold_reason_with");
+    let (open, close) = body_span(select, at).expect("its body");
+    let decision = &select[open..=close];
+    let hold = decision
+        .find("return Some(Hold::PiInputUnverified);")
+        .expect("the Pi hold");
+    for later in [
+        "let overridden =",
+        "o.claude_interaction",
+        "Hold::AuthorityUnverified",
+        "Hold::FirstInteraction",
+    ] {
+        assert!(
+            decision.find(later).is_some_and(|at| at > hold),
+            "the Pi hold is asked before `{later}`"
+        );
+    }
+    assert!(
+        !decision[hold..].contains("PiInputUnverified =>")
+            && decision.matches("PiInputUnverified").count() == 1,
+        "nothing after it lifts it"
+    );
+    // the pre-fire transaction asks again, for automatic sends only
+    let delivery = text("scheduler/delivery.rs");
+    assert!(delivery.contains(
+        "if automatic && pi_target_now(&sel) {\n            return Ok(None);\n        }"
+    ));
+    assert!(delivery.contains("if row_agent(item).is_some() || row_pi(item) {"));
+    // the adapter: no queue item, no terminal input, no spawn, no session start
+    for file in ["agent_pi.rs", "agent_pi/config.rs", "agent_pi/transport.rs"] {
+        let code = text(file);
+        for token in [
+            "QueueItem",
+            "queue_add",
+            "admit_external",
+            "fire_item",
+            "prompt_delivery",
+            "send-keys",
+            "paste-buffer",
+            "load-buffer",
+            "send_keys",
+            "start_session",
+            "new-session",
+            "Command::new",
+            "pty::",
+            "authority",
+            "readiness_override",
+        ] {
+            assert!(
+                token_sites(code, token).is_empty(),
+                "{file} names `{token}`"
+            );
+        }
+    }
+    // of tmux the transport names one read, and nothing that writes
+    let transport = text("agent_pi/transport.rs");
+    let named: Vec<&str> = transport
+        .match_indices("crate::tmux::")
+        .map(|(at, _)| {
+            let rest = &transport[at + "crate::tmux::".len()..];
+            &rest[..rest.find(|c: char| !is_ident(c)).unwrap_or(rest.len())]
+        })
+        .collect();
+    assert!(
+        named.iter().all(
+            |name| ["list_panes", "socket", "validate_session_name", "PaneRow"].contains(name)
+        ),
+        "{named:?}"
+    );
+}
+
 #[test]
 fn scanner_binds_sites_and_bodies() {
     let source = "fn a() { let s = \"}\"; let c = '{'; x.items.push(1); }\nfn b<'t>() { y }\n";

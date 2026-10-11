@@ -338,7 +338,7 @@ test('a row the backend holds for a first interaction or for Codex Signal is a h
   });
   assert.deepEqual(Object.fromEntries(deliveryWaits(items)), { both: 'review' }, 'without a plan nothing live is claimed');
   assert.deepEqual(Object.fromEntries(deliveryWaits(items, undefined)), { both: 'review' });
-  assert.deepEqual([...DELIVERY_WAITS], ['ambiguous', 'failed', 'review', 'channel-stopped', 'channel-unverified', 'external', 'first-send', 'codex-signal', 'authority-unverified']);
+  assert.deepEqual([...DELIVERY_WAITS], ['ambiguous', 'failed', 'review', 'channel-stopped', 'channel-unverified', 'external', 'first-send', 'codex-signal', 'pi-input-unverified', 'authority-unverified']);
   const tracker = trackerOf();
   const card = cards.find(c => c.id === '03');
   tracker.deliveries([row('a', card.session)], [{ item: 'a', stage: 'first-send' }]);

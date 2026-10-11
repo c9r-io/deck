@@ -12,7 +12,7 @@ Three typed tables, compiled into the app, with no shared interface:
 | Kind | Table | Entry | Today |
 |---|---|---|---|
 | Service integration | `SERVICES` | `extensions::ServiceIntegration` | `slack::INTEGRATION` |
-| Agent adapter | `AGENT_ADAPTERS` | `agent_status::AgentAdapter` | `CLAUDE_CODE`, `CODEX` |
+| Agent adapter | `AGENT_ADAPTERS` | `agent_status::AgentAdapter` | `CLAUDE_CODE`, `CODEX`, `agent_pi::PI` |
 | Local capability provider | `TRANSLATION_PROVIDERS` + `TRANSLATION_ENGINE` | `intelligence::provider::TranslationProviderEntry` | `BERGAMOT` |
 
 Rules the module header states and its tests pin:
@@ -42,6 +42,7 @@ Rules the module header states and its tests pin:
 |---|---|---|---|
 | Service | `slack::INTEGRATION` (`slack.rs`) | `main.rs` setup → `extensions::start_services` (the only start of `slack_transport::spawn`, which refuses a second owner); `inbound::spawn_inbound` → `extensions::service_sources` (+ the built-in clock); `inbound_status` (credential presence rows, live connection); `inbound::set_secret` → `extensions::secret_owner` → `store_secret`; `inbound_setup` → `setup_url`; `inbound_check_now` → `wake_services`; the poll loop → `reannounce_services` | Board creation and persistence; dedupe ledger, pending and ACK-to-webview order; provenance, content authority, first-send permission and readiness (`scheduler/authority.rs`, `first_send.rs`, `channel_first_send.rs`, `documents.rs`); settings shape (`inbound::validate_settings`, including the channel rules); final input delivery and attention routing |
 | Agent | `agent_status::CLAUDE_CODE`, `CODEX` | `parse_event` (accepted source words), `ingest` (proof class), `agent_hooks_set`, `agent_hooks_status`, `migrate_hooks_on_boot` — all through `extensions::agent` / `agents` | Pane, ancestry, foreground-generation and interaction admission; `CodexSignalTrust`; every Signal consumer (`tests/signal_census.rs`); remote admission (`admission.rs`, which does not read the tables) |
+| Agent | `agent_pi::PI` (`Install::PiExtension`, no `reentry`) | `agent_hooks_set` / `agent_hooks_status` (Pi's one extension entry, `agent_pi::config`); `parse_event` REFUSES its source word on the hook path; its words arrive only on a `pi-observer` stream (`agent_pi::transport`) | Kernel peer, foreground-leader, pane, lease and order admission; what a card may say (`PiCoverage`); the scheduler's Pi hold: no automatic prompt is sent to a recognized Pi (`scheduler/select.rs`); remote admission, which Pi is not part of |
 | Provider | `provider::BERGAMOT` | `translation::Coordinator::from_registry` → `extensions::translation_provider`, held as `Box<dyn TranslationProvider>` | Enablement, pack download/verification/deletion, limits per mode, language gating, cancellation (a request that left `active` publishes nothing), unload; the Lens, pasteboard gate, selection ownership and where a result is shown |
 
 ## What moved, what was reused, what stays coupled
@@ -67,14 +68,16 @@ Kept coupled on purpose:
   persisted schema that the core validates on load and save.
 - `inbound::SOURCES` (`slack`, `clock`) stays the closed, persisted source
   vocabulary; the clock stays the dispatcher's built-in source.
-- `agent_hooks_status` keeps its two fixed reply keys (`claude`, `codex`),
-  and the frontend Settings sections, Slack connection panel and Lens are
-  unchanged. No frontend registry exists: the backend IPC contract did not
+- `agent_hooks_status` keeps fixed reply keys (`claude`, `codex`,
+  `claude_reentry`, and Pi's `pi` with `pi_installation`), and the
+  frontend Settings sections, Slack connection panel and Lens are
+  unchanged apart from Pi's own row. No frontend registry exists: the backend IPC contract did not
   change, so a frontend table would only be a second description.
 - `admission::interactive_agent` (executable names) is a separate closed
   list from the adapters' source words.
 - `scheduler` and `commands.rs` still read `agent_status` directly, and
-  `generation_evidence` still names the `codex` executable for the hold.
+  `generation_evidence` still names the `codex` executable, and Pi's own
+  name, for their holds.
 
 ## Adding a future extension of an existing kind (not done here)
 
@@ -84,8 +87,10 @@ Kept coupled on purpose:
   slot in `keychain.rs`, its rule shape in settings validation, and its
   Settings/drawer UI. Authority for its events is a core decision.
 - An agent: one `AgentAdapter` constant and its entry in `AGENT_ADAPTERS`,
-  a Settings toggle and a reply key in `AgentHooksStatus`. Signal trust and
-  remote admission need their own, separate decisions.
+  a Settings toggle and a reply key in `AgentHooksStatus`. Its `install`
+  says how it is installed: a hooks document (`Install::Hooks`) or one
+  extension entry in the agent's own settings (`Install::PiExtension`).
+  Signal trust and remote admission need their own, separate decisions.
 - A translation engine: a `TranslationProvider` implementation, its entry,
   and changing `TRANSLATION_ENGINE` (one engine per build).
 
@@ -93,7 +98,8 @@ Kept coupled on purpose:
 
 `AgentAdapter` has one more narrow, optional, static field: `reentry`
 (`agent_reentry::ReentryCapability`), `Some` for `CLAUDE_CODE` and `None`
-for `CODEX`. It holds the product's code requirement — whose code a client
+for `CODEX` and `PI` (neither way Pi is installed lets Deck prove whose
+code a client is). It holds the product's code requirement — whose code a client
 must be, with no release, version or digest in it — the supported launch
 grammar, the login shell the launch sink is written against and a pure
 constructor of the exact-id request. Like

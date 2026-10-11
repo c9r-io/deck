@@ -1,4 +1,5 @@
 import { reminderDue } from './reminder-model.js';
+import { PI_COVERAGE } from './pi-model.js';
 // attention-model.js — runtime-only observations and derived attention.
 // No Board writes, hook installation, inferred readiness, or durable ordering.
 // Three layers, kept apart:
@@ -9,6 +10,10 @@ import { reminderDue } from './reminder-model.js';
 // - Codex coverage: `codexSignal` is the backend's generation-bound diagnostic
 //   evidence, independent of observation/attention. A gap never creates a
 //   pending episode, readiness or permission; an unknown cause stays unknown.
+// - Pi coverage: `piSignal` is the backend's word about a recognized Pi
+//   (pi-model.js): `connected` is limited coverage, never an input request.
+//   Like the Codex word it is kept beside the observation and feeds no
+//   category, count or badge.
 // - Attention: `seen` (read/unread) and the derived categories. Read means
 //   successfully displayed, never handled. With a backend episode (FR-SI-05:
 //   `episode` is Deck's opaque token for one accepted observation) the
@@ -45,7 +50,8 @@ import { reminderDue } from './reminder-model.js';
 //   review.rs `plan_item`) names a row held for a first agent interaction
 //   (`first-send`) or because Codex Signal cannot be attributed
 //   (`codex-signal`), or withdrawn channel permission (`channel-stopped`),
-//   and the model accepts these stage words
+//   or because the target is a recognized Pi, which nothing but Send now
+//   sends to (`pi-input-unverified`), and the model accepts these stage words
 //   for a row still in the queue. An approval Deck could not re-read
 //   (`authority-unverified` or `channel-unverified`) usually passes by itself and stays in the panel;
 //   it is a held delivery only when the backend's plan marks it `lasting`
@@ -64,9 +70,9 @@ import { CARD_QUIET_SECS, effectiveCardStatus, itemDead } from './pure.js';
 
 export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'waiting', 'done', 'followed', 'unavailable', 'stopped', 'reminder', 'reminders']);
 /* most pressing first: one reason per session */
-export const DELIVERY_WAITS = Object.freeze(['ambiguous', 'failed', 'review', 'channel-stopped', 'channel-unverified', 'external', 'first-send', 'codex-signal', 'authority-unverified']);
-/* the two the backend's plan decides; never read from hook state here */
-const LIVE_DELIVERY_WAITS = Object.freeze(['first-send', 'codex-signal', 'channel-stopped']);
+export const DELIVERY_WAITS = Object.freeze(['ambiguous', 'failed', 'review', 'channel-stopped', 'channel-unverified', 'external', 'first-send', 'codex-signal', 'pi-input-unverified', 'authority-unverified']);
+/* the ones the backend's plan decides; never read from hook state here */
+const LIVE_DELIVERY_WAITS = Object.freeze(['first-send', 'codex-signal', 'pi-input-unverified', 'channel-stopped']);
 /* the third, only once the backend says the hold has lasted */
 const liveWait = plan => LIVE_DELIVERY_WAITS.includes(plan.stage)
   || (['authority-unverified', 'channel-unverified'].includes(plan.stage) && plan.lasting === true);
@@ -149,6 +155,7 @@ export function createAttentionTracker() {
         snapshots.set(card.id, {
           session: card.session, alive: info.alive, agent, status,
           codexSignal: info.alive && CODEX_SIGNAL_TRUST.includes(info.codex_signal) ? info.codex_signal : null,
+          piSignal: info.alive && PI_COVERAGE.includes(info.pi_signal) ? info.pi_signal : null,
           idle: info.idle_secs ?? null, observedAt: now, stale: false, episode, episodeViewed,
           bell: info.alive && !agent && info.bell === true,
           seen: episode != null

@@ -7,6 +7,7 @@
 
 mod admission;
 mod agent_origin;
+mod agent_pi;
 mod agent_reentry;
 mod agent_status;
 mod applog;
@@ -160,6 +161,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("channel-live", "m.verifyChannelLive()"),
     ("channel-live-replay", "m.verifyChannelLiveReplay()"),
     ("hooks-live", "m.verifyHooksLive()"),
+    ("pi-live", "m.verifyPiLive()"),
     ("reentry-live", "m.verifyReentryLive()"),
     ("reentry-live-relaunch", "m.verifyReentryLiveRelaunch()"),
     ("connector", "m.verifyConnector()"),
@@ -261,6 +263,9 @@ fn main() {
             // entries at this install's bundled helper and retires the
             // legacy ~/.deck/bin copy; never installs hooks by itself.
             agent_status::migrate_hooks_on_boot();
+            // Pi's one settings entry, under the same rule: an entry that is
+            // there is moved to this install's bundle, none is ever added.
+            agent_pi::config::migrate_on_boot();
             // Away notifications + Dock badge (notify.rs): the click
             // delegate and the saved switch, before the first hook event.
             {
@@ -575,6 +580,7 @@ fn main() {
             smoke_faults::smoke_clipboard_metrics,
             smoke_faults::smoke_query_channel,
             smoke_faults::smoke_signal_fixture,
+            smoke_faults::smoke_pi_fixture,
             smoke_faults::smoke_channel_fixture,
             smoke_native::smoke_native_input,
             smoke_native::smoke_reminder_inventory,

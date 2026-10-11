@@ -552,6 +552,13 @@ pub(crate) struct SessInfo {
     /// Diagnostic coverage of the SAME Signal target's foreground generation.
     /// None for other programs; unknown never claims a particular cause.
     codex_signal: Option<crate::agent_status::CodexSignalTrust>,
+    /// Diagnostic coverage of the SAME Signal target when it is a
+    /// recognized Pi (`agent_status::PiCoverage`): `connected` is limited
+    /// coverage (work started, interaction ended — never an input request),
+    /// `unavailable` claims no cause. None for other programs. Explanatory
+    /// only: no attention episode, no hold depends on its value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pi_signal: Option<crate::agent_status::PiCoverage>,
     /// the Deck-local attention episode of that same observation
     /// (`agent_status::Observation`): opaque, never a source id, never
     /// authority. None without an observation.
@@ -948,9 +955,11 @@ pub(crate) fn poll_observing_bells(
     // foreground process generation that reported it
     crate::agent_status::reconcile(&rows, &table);
     let agents = crate::agent_status::projections(&rows);
-    let evidence = crate::agent_status::generation_evidence(&rows, |pane| {
-        crate::agent_status::foreground_generation(&table, pane)
-    });
+    let evidence = crate::agent_status::generation_evidence(
+        &rows,
+        |pane| crate::agent_status::foreground_generation(&table, pane),
+        crate::agent_status::foreground_name,
+    );
     let mut finish = crate::agent_status::finish_foregrounds(&rows);
     // Bells of the requested sessions, from the same snapshot. Without a
     // server line nothing is observed: what the last poll found stands.
@@ -1024,6 +1033,7 @@ pub(crate) fn poll_observing_bells(
                 scrolled: pane.map(|pane| pane.in_mode),
                 agent: pane.and(agents.get(&name)).map(|o| o.state),
                 codex_signal: pane.and(evidence.get(&name)).and_then(|e| e.codex),
+                pi_signal: pane.and(evidence.get(&name)).and_then(|e| e.pi_signal),
                 episode: pane.and(agents.get(&name)).map(|o| o.episode),
                 episode_viewed: pane.and(agents.get(&name)).is_some_and(|o| o.viewed),
                 finish_fg: pane.and_then(|_| finish.remove(&name)),
@@ -2053,6 +2063,158 @@ mod tests {
             "no unique target"
         );
         assert_eq!(poll(vec![], table).codex_signal, None, "stopped session");
+        crate::agent_status::reset_for_tests();
+    }
+
+    /// Pi's coverage word reaches the Board for the session's Signal target
+    /// and its CURRENT foreground generation, like Codex's: a proven
+    /// observer reads `connected`, a lost one or a name alone
+    /// `unavailable`, a release this build does not know `incompatible`;
+    /// another program, a shell in front, no unique target and a stopped
+    /// session read nothing, and the key is then absent from the payload.
+    /// The word explains: it brings no agent word and no episode.
+    #[test]
+    fn pi_coverage_uses_the_signal_target_and_current_generation() {
+        use crate::agent_pi::RunState;
+        use crate::agent_status::PiCoverage::{Connected, Incompatible, Unavailable};
+        use crate::agent_status::{ForegroundGeneration, PaneKey};
+        use crate::procinfo::ProcessInfo;
+        let _store = crate::agent_status::STORE_TEST_LOCK.lock_or_recover();
+        let _tracker = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        crate::agent_status::reset_for_tests();
+        // pids no process can have: the poll asks the kernel for the name a
+        // foreground leader gives itself, and here it must find none
+        const SHELL_A: u32 = 3_000_300;
+        const SHELL_B: u32 = 3_000_400;
+        const PI: u32 = 3_000_410;
+        let process = |pid, ppid, tty, fg, start| ProcessInfo {
+            pid,
+            ppid,
+            pgid: pid,
+            tty,
+            tty_pgid: fg,
+            start_seconds: start,
+            start_micros: 0,
+        };
+        let table: crate::agent_status::ProcessTable = [
+            process(SHELL_A, 42, 7, SHELL_A, 1000),
+            process(SHELL_B, 42, 8, PI, 1000),
+            process(PI, SHELL_B, 8, PI, 2000),
+        ]
+        .into_iter()
+        .map(|info| (info.pid, info))
+        .collect();
+        let row = |pane: &str, pid, active, command: &str| PaneRow {
+            server_pid: 42,
+            session_id: "$1".into(),
+            session_name: "deck-card-pi".into(),
+            window_id: "@1".into(),
+            pane_id: pane.into(),
+            pane_pid: pid,
+            window_active: true,
+            pane_active: active,
+            command: command.into(),
+            ..PaneRow::default()
+        };
+        let rows = vec![
+            row("%3", SHELL_A, false, "zsh"),
+            row("%4", SHELL_B, true, "pi"),
+        ];
+        let poll = |rows: Vec<PaneRow>, table: crate::agent_status::ProcessTable| {
+            poll_from_listing(
+                vec!["deck-card-pi".into()],
+                vec![],
+                false,
+                listed(rows),
+                || table,
+                &mut crate::shell_exit::ExitEvidence::new(),
+                &|_| false,
+            )
+            .unwrap()
+            .remove(0)
+        };
+        // a name alone: recognized, and nothing is known about its Signal
+        let info = poll(rows.clone(), table.clone());
+        assert_eq!(info.fg.as_deref(), Some("zsh"), "the representative pane");
+        assert_eq!(
+            info.pi_signal,
+            Some(Unavailable),
+            "selected pane, never representative pane"
+        );
+        assert_eq!(
+            serde_json::to_value(&info).unwrap()["pi_signal"],
+            "unavailable"
+        );
+        assert_eq!((info.agent, info.episode), (None, None));
+        // a proven observer of that generation: connected, and still no word
+        let generation = ForegroundGeneration::of(PI, (2000, 0));
+        crate::agent_status::pi_observed(&rows[1], generation, Connected);
+        let info = poll(rows.clone(), table.clone());
+        assert_eq!(info.pi_signal, Some(Connected));
+        assert_eq!(
+            serde_json::to_value(&info).unwrap()["pi_signal"],
+            "connected"
+        );
+        assert_eq!(
+            (info.agent, info.episode),
+            (None, None),
+            "a loaded Pi reported nothing"
+        );
+        // its run: the shared word and an episode, beside the coverage
+        crate::agent_status::pi_signal(&rows, &rows[1], generation, 7, 1, RunState::Working);
+        let info = poll(rows.clone(), table.clone());
+        assert_eq!(
+            (info.agent, info.pi_signal),
+            (Some("working"), Some(Connected))
+        );
+        assert!(info.episode.is_some());
+        // an npm install is `node` to tmux: the proof stands whatever the name
+        let mut npm = rows.clone();
+        npm[1].command = "node".into();
+        let info = poll(npm.clone(), table.clone());
+        assert_eq!(
+            (info.agent, info.pi_signal),
+            (Some("working"), Some(Connected))
+        );
+        // the observer is lost: its word goes, the coverage says so
+        crate::agent_status::pi_lost(&PaneKey::of(&rows[1]), generation, 7);
+        let info = poll(npm.clone(), table.clone());
+        assert_eq!(
+            (info.agent, info.episode, info.pi_signal),
+            (None, None, Some(Unavailable))
+        );
+        // a release this build does not know
+        crate::agent_status::pi_observed(&rows[1], generation, Incompatible);
+        assert_eq!(
+            serde_json::to_value(poll(npm.clone(), table.clone())).unwrap()["pi_signal"],
+            "incompatible"
+        );
+        // another process under the same pid: the proof is gone; `pi` is
+        // still a name, `node` is not
+        let mut replaced = table.clone();
+        replaced.get_mut(&PI).unwrap().start_seconds += 1;
+        assert_eq!(
+            poll(rows.clone(), replaced.clone()).pi_signal,
+            Some(Unavailable)
+        );
+        let info = poll(npm.clone(), replaced);
+        assert_eq!(info.pi_signal, None, "node alone is no Pi");
+        assert!(
+            serde_json::to_value(&info)
+                .unwrap()
+                .get("pi_signal")
+                .is_none(),
+            "no key for another program"
+        );
+        // a shell in front, no unique target, a stopped session
+        let mut switched = rows.clone();
+        switched[0].pane_active = true;
+        switched[1].pane_active = false;
+        assert_eq!(poll(switched, table.clone()).pi_signal, None);
+        let mut ambiguous = rows;
+        ambiguous[0].pane_active = true;
+        assert_eq!(poll(ambiguous, table.clone()).pi_signal, None);
+        assert_eq!(poll(vec![], table).pi_signal, None);
         crate::agent_status::reset_for_tests();
     }
 

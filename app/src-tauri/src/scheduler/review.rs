@@ -31,7 +31,7 @@
 //!   the backend's own selection stage per item (review, review-approved,
 //!   ambiguous, firing, failed, paused, retry, previous, iteration, gap,
 //!   time, agent, external, codex-signal, first-send, authority-unverified,
-//!   quiet, context, channel-stopped, channel-unverified,
+//!   quiet, context, channel-stopped, channel-unverified, pi-input-unverified,
 //!   unknown) with its observation time and whether the row carries content
 //!   authority, so the webview never derives readiness from hook state.
 //! - `delivery_waits` is the same projection read for attention: per session,
@@ -496,6 +496,7 @@ pub(crate) fn plan_item(
             Hold::AuthorityUnverified => "authority-unverified",
             Hold::ChannelPermission => "channel-stopped",
             Hold::ChannelUnverified => "channel-unverified",
+            Hold::PiInputUnverified => "pi-input-unverified",
         }
     } else if i.mode == "chain" && quiet_remaining.is_some_and(|s| s > 0) {
         "quiet"
@@ -527,17 +528,20 @@ pub(crate) struct DeliveryWait {
 /// on by itself, most pressing first: an uncertain delivery, a row that
 /// stopped retrying, a human checkpoint, external content whose turn has
 /// come without an approval, a first prompt held until the agent proves an
-/// interaction, and a row held because Codex Signal cannot be attributed.
-/// The last two rest on an observation, and each is one-way within a pane
-/// generation (interaction evidence only appears; Codex trust is monotone),
-/// so neither flickers; a row whose rule accepted the first-send risk is
+/// interaction, a row held because Codex Signal cannot be attributed, and a
+/// row held because its target is a recognized Pi (which nothing but
+/// send-now ever sends to).
+/// Those three rest on an observation, and each is one-way within a pane
+/// generation (interaction evidence only appears; Codex trust is monotone;
+/// a recognized Pi stays one), so none flickers; a row whose rule accepted
+/// the first-send risk is
 /// never at `first-send`. Time, gap, quiet and "previous row" waits are the
 /// machine's; an agent's own input request is the agent's to announce; an
 /// approval that could not be re-read (`authority-unverified`) usually
 /// returns by the next tick, and is a wait only once it has lasted
 /// (`track_unverified`). Mirrored by the webview (`limits.json`
 /// `delivery_waits`).
-pub(crate) const DELIVERY_WAIT_STAGES: [&str; 9] = [
+pub(crate) const DELIVERY_WAIT_STAGES: [&str; 10] = [
     "ambiguous",
     "failed",
     "review",
@@ -546,6 +550,7 @@ pub(crate) const DELIVERY_WAIT_STAGES: [&str; 9] = [
     "external",
     "first-send",
     "codex-signal",
+    "pi-input-unverified",
     UNVERIFIED_STAGE,
 ];
 

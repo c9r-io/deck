@@ -148,7 +148,7 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   server) is not a failure but an empty listing
   (`tmux_lifecycle::scheduler_pane_listing`): there is no agent to protect,
   so a due automation row is selected and its session started — which for
-  Claude or Codex is `StartedAwaitingInteraction`, never a paste. Every
+  Claude, Codex or Pi is `StartedAwaitingInteraction`, never a paste. Every
   other failure (timeout, malformed output, an unreachable or inconsistent
   probe, a server with sessions) still selects nothing.
 - **Agent Bootstrap Input Safety.** Unattended prompt delivery to Claude or
@@ -168,8 +168,25 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   an intentional degradation. Interacting with the agent once (so its hook
   is accepted) releases it; send now does not by itself, since only an
   accepted hook is evidence. The evidence is only this prerequisite: every
-  other hold still applies after it. Programs other than Claude and Codex
-  are unaffected.
+  other hold still applies after it. Programs other than Claude, Codex and
+  Pi are unaffected.
+- **No automatic prompt is sent to Pi.** Pi gives an extension no reliable
+  way to observe that it waits for input: its dialog notifications carry
+  no identity and can overtake one another, and its own dialogs emit none
+  (`agent_pi.rs`). So Deck reports for Pi only that a run started and that
+  it settled, says so on the card, and never types into a recognized Pi by
+  itself. Every automatic row of any mode whose target is one — the row is
+  configured for `pi`, the session's Signal target carries Pi's name (for
+  an npm install the name the process gives itself), or a proven Pi
+  observer belongs to the pane's current foreground generation — is held
+  at stage `pi-input-unverified`. Nothing lifts it: not `working`, not
+  `turn-done`, not a connected observer, not a first-send readiness
+  override, an approval or a channel permission (it is asked before all of
+  them), and it is asked again from facts read at the instant of the
+  pre-fire transaction. A fresh Pi may be started by the scheduler and is
+  never sent to. **Send now** stays the user's own act under every
+  existing target, foreground and paste guard. Pi is no remote agent:
+  `admission.rs` does not know it.
 - **The pass that starts a new agent never sends its first prompt.**
   When a successful pane listing shows the session absent, the scheduler
   may start it (a clock automation's card starts this way), bind its pane
@@ -186,7 +203,8 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
 - The hold never moves a card and consumes no attempt. The panel plan
   names each hold as its own closed stage — `agent` (an input or permission
   request), `external` (external content no approval covers), `codex-signal`
-  (Codex Signal cannot be attributed to this process), `first-send` — and
+  (Codex Signal cannot be attributed to this process), `pi-input-unverified`
+  (the target is a Pi), `first-send` — and
   says whether the row carries an approval ("Approved step · …"); the hook
   observation is shown beside it.
 
@@ -253,9 +271,10 @@ expected process and the bracketed-paste check all still apply.
   durable (queue.json); interaction evidence is in memory only, so after a
   Deck restart or a new agent generation the first-interaction gate holds
   the approved row again until the agent proves an interaction.
-- **Fresh agents.** An approved first step for a fresh Claude or Codex is
-  started and never typed into (`StartedAwaitingInteraction`), exactly as
-  without an approval. The one real interaction (or send-now) there is a
+- **Fresh agents.** An approved first step for a fresh Claude, Codex or Pi
+  is started and never typed into (`StartedAwaitingInteraction`), exactly as
+  without an approval. For Pi that stays so on every later pass
+  (`pi-input-unverified`); what follows is about Claude and Codex. The one real interaction (or send-now) there is a
   readiness confirmation, not an approval: the reaction already approved
   the run. By default it is a safety boundary; the only way past it is the
   explicit per-rule first-send readiness override below.

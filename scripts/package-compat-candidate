@@ -21,6 +21,12 @@ for pair in tmux deck-status-helper deck-lifecycle-helper deck-mcp deck-mcp-runn
   test -f "$source"
   cp "$source" "$APP/Contents/MacOS/$pair"
 done
+# The Pi observer's files (the list tauri.conf.json `bundle.resources` names).
+mkdir -p "$APP/Contents/Resources/pi"
+for name in observer.ts signal.ts; do
+  test -f "$TAURI/resources/pi/$name"
+  cp "$TAURI/resources/pi/$name" "$APP/Contents/Resources/pi/$name"
+done
 version=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$TAURI/tauri.conf.json")
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

@@ -295,6 +295,21 @@
         "hooks-signal-off": {}
       }
     },
+    "pi-live": {
+      "terminal": "done",
+      "checks": {
+        "pi-clean": {},
+        "pi-enable": {},
+        "pi-run-created": {},
+        "pi-connected": {},
+        "pi-hold": {},
+        "pi-turn-done": {},
+        "pi-attention": {},
+        "pi-send-now": {},
+        "pi-disabled": {},
+        "pi-reload": {}
+      }
+    },
     "reentry-live": {
       "terminal": "done",
       "checks": {

@@ -84,6 +84,7 @@ const DEBUG_ONLY: &[&str] = &[
     "smoke_flush_queue",
     "smoke_query_channel",
     "smoke_signal_fixture",
+    "smoke_pi_fixture",
     "smoke_native_input",
     "smoke_native_snapshot",
     "smoke_native_fixture",

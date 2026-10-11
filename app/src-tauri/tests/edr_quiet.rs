@@ -19,6 +19,17 @@
 //!   an alias or a variable-level allowlist entry;
 //! - write an executable under `~`: agent hook commands name the helper
 //!   INSIDE the signed bundle;
+//! - hand another program code of deck's from anywhere but the signed
+//!   bundle, or code that does more than observe. The Pi observer
+//!   (`resources/pi/`, loaded by the Pi process itself from
+//!   `Contents/Resources/pi`) is a closed list of text files; Pi's settings
+//!   get a path into the bundle, never a copy (`agent_pi/config.rs`). Inside
+//!   Pi it imports `node:fs` and `node:net` only, stats the status socket and
+//!   holds ONE stream to it, and of Pi's own API uses `pi.on` for four
+//!   notification events and nothing else: no process, no network client, no
+//!   file read or write, and none of Pi's tool, message, session, UI or
+//!   model entry points. The test-only Pi fixtures (`scripts/pi/`) use
+//!   exactly those entry points and are packaged by nothing;
 //! - run any tmux but the signed sidecar next to its own executable
 //!   (`tmux::tmux_program()`), never Homebrew/MacPorts or a PATH lookup
 //!   (`/usr/local/bin` is user-writable on many Macs, and every deck session
@@ -102,7 +113,11 @@
 //!    socket or calls the `libc` socket functions directly;
 //! 7. updates are installed by deck, never by the plugin (no
 //!    `download_and_install` / `install(`), behind the writability guard,
-//!    and the reviewed plugin version is pinned in `Cargo.lock`.
+//!    and the reviewed plugin version is pinned in `Cargo.lock`;
+//! 8. the Pi observer's files are ONE closed list in every place that
+//!    packages or verifies them, and every byte of each — comments included
+//!    — holds to a closed vocabulary of imports, Pi API members, events and
+//!    context reads (`pi_observer_violations`).
 //!
 //! The scanner is a pure function over `(relative path, source)`, so the
 //! negative tests below feed it in-memory samples. It is a review tripwire,
@@ -1098,4 +1113,451 @@ fn bergamot_bridge_is_an_in_process_data_only_boundary() {
     let build = std::fs::read_to_string("build.rs").unwrap();
     assert!(build.contains("cargo:rustc-link-lib=static=deck_bergamot"));
     assert!(!build.contains("cargo:rustc-link-lib=framework=Translation"));
+}
+
+// ---------------------------------------------------------------- Pi observer
+
+/// The Pi observer's files, as every packaging path must name them.
+const PI_OBSERVER_FILES: &[&str] = &["observer.ts", "signal.ts"];
+
+/// The only import lines a Pi observer file may hold.
+const PI_IMPORTS: &[&str] = &[
+    "import fs from \"node:fs\";",
+    "import net from \"node:net\";",
+    "import { VERSION } from \"@earendil-works/pi-coding-agent\";",
+    "import { deckPiObserver } from \"./observer.ts\";",
+];
+
+/// The members that may be read of each named object, wherever the name
+/// stands — in code, a string or a comment.
+const PI_MEMBERS: &[(&str, &[&str])] = &[
+    // Pi's extension API: subscribing, and nothing else
+    ("pi", &["on"]),
+    // the event context: the run mode word
+    ("ctx", &["mode"]),
+    // an event: Pi's own closed reason word
+    ("event", &["reason"]),
+    ("fs", &["lstatSync", "statSync"]),
+    ("net", &["createConnection"]),
+    ("process", &["env", "getuid"]),
+    ("env", &["DECK_STATUS_SOCK", "TMUX", "TMUX_PANE"]),
+    ("JSON", &["parse", "stringify"]),
+];
+
+/// The events the observer subscribes to: notifications that carry no
+/// prompt, message, title, tool call or result.
+const PI_EVENTS: &[&str] = &[
+    "session_start",
+    "agent_start",
+    "agent_settled",
+    "session_shutdown",
+];
+
+/// Text that may not appear anywhere in a Pi observer file.
+const PI_FORBIDDEN: &[&str] = &[
+    // a process, a shell, code from text
+    "child_process",
+    "spawn",
+    "execFile",
+    "execSync",
+    "exec(",
+    ".fork(",
+    "eval(",
+    "Function(",
+    "Worker",
+    "import(",
+    "import.meta",
+    "require(",
+    "globalThis",
+    // a network client or a server of any kind
+    "http",
+    "fetch(",
+    "WebSocket",
+    "dgram",
+    "node:tls",
+    "node:dns",
+    "createServer",
+    ".listen(",
+    "host:",
+    "port:",
+    // reading or writing a file's content, or changing the file system
+    "readFile",
+    "writeFile",
+    "appendFile",
+    "createReadStream",
+    "createWriteStream",
+    "readdir",
+    "mkdir",
+    "unlink",
+    "rename",
+    "chmod",
+    // Pi's execution, message, session, model and UI entry points
+    "sendUserMessage",
+    "sendMessage",
+    "newSession",
+    "switchSession",
+    "executeTool",
+    "registerTool",
+    "registerCommand",
+    "registerProvider",
+    "registerShortcut",
+    "registerFlag",
+    "registerMcpServer",
+    "appendEntry",
+    "setActiveTools",
+    "setModel",
+    "modelRegistry",
+    "sessionManager",
+    "getSessionId",
+    "getSessionFile",
+    "getEntries",
+    "getBranch",
+    "getSystemPrompt",
+    "getContextUsage",
+    "hasPendingMessages",
+    ".abort(",
+    ".shutdown(",
+    ".compact(",
+    ".ui.",
+    "hasUI",
+    "isIdle",
+    // content: a prompt, messages, a title, a tool call, a path
+    ".prompt",
+    ".messages",
+    ".title",
+    ".cwd",
+    ".model",
+    ".toolName",
+    ".input",
+    ".content",
+    // events that carry content, or that Pi cannot order reliably
+    "ui_prompt",
+    "agent_end",
+    "before_agent_start",
+    "agent_before_settle",
+    "tool_call",
+    "tool_result",
+    "message_end",
+    "turn_end",
+    "provider_stream",
+    "session_before",
+    "session_info",
+    // the word Pi can never report
+    "needs-input",
+    "needs_input",
+];
+
+/// The lines of an entry file that are not comments or blank: exactly
+/// these, for exactly this pair of capabilities.
+fn pi_entry_lines(signal: bool, lifecycle: bool) -> Vec<String> {
+    vec![
+        PI_IMPORTS[2].to_string(),
+        PI_IMPORTS[3].to_string(),
+        format!("export default deckPiObserver({{ signal: {signal}, lifecycle: {lifecycle} }}, VERSION);"),
+    ]
+}
+
+/// Every identifier that follows `<object>.` where `object` is not the
+/// tail of a longer name.
+fn members_of<'a>(source: &'a str, object: &str) -> Vec<&'a str> {
+    let pattern = format!("{object}.");
+    source
+        .match_indices(&pattern)
+        .filter(|(at, _)| {
+            !source[..*at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$')
+        })
+        .map(|(at, _)| {
+            let rest = &source[at + pattern.len()..];
+            let end = rest
+                .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+                .unwrap_or(rest.len());
+            &rest[..end]
+        })
+        // a sentence that ends in the word is not a member access
+        .filter(|member| !member.is_empty())
+        .collect()
+}
+
+/// What is wrong with one Pi observer file. A pure function of its name and
+/// text; nothing is skipped — a comment may not name what code may not use.
+fn pi_observer_violations(name: &str, source: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for forbidden in PI_FORBIDDEN {
+        if source.contains(forbidden) {
+            violations.push(format!("{name}: `{forbidden}`"));
+        }
+    }
+    for line in source.lines().map(str::trim) {
+        if (line.starts_with("import ") || line.starts_with("import{") || line.contains(" from \""))
+            && !PI_IMPORTS.contains(&line)
+        {
+            violations.push(format!("{name}: import `{line}`"));
+        }
+    }
+    for (object, allowed) in PI_MEMBERS {
+        for member in members_of(source, object) {
+            if !allowed.contains(&member) {
+                violations.push(format!("{name}: `{object}.{member}`"));
+            }
+        }
+    }
+    // every subscription names its event as a literal, and a known one
+    let subscribed: Vec<&str> = source
+        .match_indices("pi.on(")
+        .map(|(at, _)| {
+            let rest = &source[at + "pi.on(".len()..];
+            rest.strip_prefix('"')
+                .and_then(|rest| rest.split_once('"'))
+                .map_or("", |(event, _)| event)
+        })
+        .collect();
+    for event in &subscribed {
+        if !PI_EVENTS.contains(event) {
+            violations.push(format!("{name}: subscribes to `{event}`"));
+        }
+    }
+    if name == "observer.ts" {
+        // the one connection: a Unix path, in the object form that cannot
+        // be read as a port or a host
+        if source.matches("createConnection(").count() != 1
+            || !source.contains("net.createConnection({ path: target.path })")
+        {
+            violations.push(format!("{name}: the one connection is not a Unix path"));
+        }
+        // the factory starts nothing: every timer and the socket are made
+        // inside a callback, and the four events are all it subscribes to
+        let mut events = subscribed.clone();
+        events.sort_unstable();
+        let mut wanted = PI_EVENTS.to_vec();
+        wanted.sort_unstable();
+        if events != wanted {
+            violations.push(format!("{name}: subscribes to {events:?}"));
+        }
+        if !source.contains("if (target || ctx.mode !== \"tui\") return;") {
+            violations.push(format!(
+                "{name}: connects outside an interactive terminal session"
+            ));
+        }
+        for imported in [PI_IMPORTS[0], PI_IMPORTS[1]] {
+            if !source.contains(imported) {
+                violations.push(format!("{name}: lacks `{imported}`"));
+            }
+        }
+    } else {
+        // an entry is its two imports and one call, and nothing else
+        let code: Vec<String> = source
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("//"))
+            .map(str::to_string)
+            .collect();
+        let expected = match name {
+            "signal.ts" => pi_entry_lines(true, false),
+            _ => Vec::new(),
+        };
+        if code != expected {
+            violations.push(format!("{name}: is not the entry of its capabilities"));
+        }
+        if !subscribed.is_empty() {
+            violations.push(format!("{name}: an entry subscribes to nothing itself"));
+        }
+    }
+    violations
+}
+
+fn pi_observer_file(name: &str) -> String {
+    std::fs::read_to_string(manifest("resources/pi").join(name))
+        .unwrap_or_else(|_| panic!("{name}"))
+}
+
+#[test]
+fn the_pi_observer_holds_to_its_closed_vocabulary() {
+    for name in PI_OBSERVER_FILES {
+        assert_eq!(
+            pi_observer_violations(name, &pi_observer_file(name)),
+            Vec::<String>::new(),
+            "{name}"
+        );
+    }
+    // the scanner sees what it is for: each of these, added anywhere to a
+    // file that passes, is found — in code, in a string and in a comment
+    let observer = pi_observer_file("observer.ts");
+    for added in [
+        "import cp from \"node:child_process\";",
+        "import os from \"node:os\";",
+        "import { VERSION, SessionManager } from \"@earendil-works/pi-coding-agent\";",
+        "import x from \"./other.ts\";",
+        "const cp = await import(\"node:child_process\");",
+        "const cp = require(\"child_process\");",
+        "pi.sendUserMessage(\"continue\");",
+        "pi.sendMessage({});",
+        "pi.registerTool({});",
+        "pi.registerCommand(\"x\", {});",
+        "pi.events.emit(\"x\");",
+        "pi.on(\"ui_prompt_start\", () => {});",
+        "pi.on(\"agent_end\", (e) => e);",
+        "pi.on(\"tool_call\", () => {});",
+        "pi.on(\"before_agent_start\", () => {});",
+        "pi.on(\"turn_start\", () => {});",
+        "pi.on(name, () => {});",
+        "const id = ctx.sessionManager.getSessionId();",
+        "const file = ctx.sessionManager.getSessionFile();",
+        "ctx.ui.notify(\"x\");",
+        "const dir = ctx.cwd;",
+        "ctx.abort();",
+        "ctx.shutdown();",
+        "await ctx.newSession();",
+        "await ctx.switchSession(path);",
+        "await ctx.fork(id);",
+        "ctx.executeTool(\"bash\", {});",
+        "const text = event.prompt;",
+        "const all = event.messages;",
+        "const title = event.title;",
+        "const done = event.aborted;",
+        "fs.writeFileSync(path, \"x\");",
+        "fs.readFileSync(path);",
+        "fs.appendFileSync(path, \"x\");",
+        "net.createServer();",
+        "net.connect(8188, \"127.0.0.1\");",
+        "net.createConnection({ port: 8188 });",
+        "net.createConnection(target.path);",
+        "await fetch(\"http://127.0.0.1\");",
+        "new WebSocket(url);",
+        "process.exit(0);",
+        "process.kill(pid);",
+        "const home = process.env.HOME;",
+        "const key = env.ANTHROPIC_API_KEY;",
+        "push({ run, state: \"needs-input\" });",
+        "// a comment that names pi.sendUserMessage is refused too",
+        "eval(text);",
+        "new Function(text)();",
+        "globalThis.fetch;",
+    ] {
+        let changed = format!("{observer}\n{added}\n");
+        assert!(
+            !pi_observer_violations("observer.ts", &changed).is_empty(),
+            "not found: {added}"
+        );
+    }
+    // removing what it must do is found as well
+    for (from, to) in [
+        (
+            "net.createConnection({ path: target.path })",
+            "net.createConnection(target)",
+        ),
+        (
+            "if (target || ctx.mode !== \"tui\") return;",
+            "if (target) return;",
+        ),
+        ("pi.on(\"agent_settled\"", "pi.on(\"agent_end\""),
+    ] {
+        assert!(observer.contains(from), "{from}");
+        assert!(
+            !pi_observer_violations("observer.ts", &observer.replace(from, to)).is_empty(),
+            "{from}"
+        );
+    }
+    // an entry is exactly its imports and its one call
+    let entry = pi_observer_file("signal.ts");
+    for changed in [
+        entry.replace(
+            "signal: true, lifecycle: false",
+            "signal: true, lifecycle: true",
+        ),
+        format!("{entry}\nexport const extra = 1;\n"),
+        entry.replace(
+            "export default",
+            "pi.on(\"agent_start\", () => {});\nexport default",
+        ),
+        entry.replace("./observer.ts", "./observer.js"),
+    ] {
+        assert!(!pi_observer_violations("signal.ts", &changed).is_empty());
+    }
+}
+
+#[test]
+fn the_pi_observer_s_files_are_one_closed_list_everywhere() {
+    // the directory itself
+    let mut listed: Vec<String> = std::fs::read_dir(manifest("resources/pi"))
+        .expect("resources/pi")
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    listed.sort();
+    assert_eq!(
+        listed, PI_OBSERVER_FILES,
+        "resources/pi holds exactly these"
+    );
+    // what the build compiles in and verifies before it writes a path
+    let config = production_sources()
+        .into_iter()
+        .find(|(name, _)| name == "agent_pi/config.rs")
+        .expect("agent_pi/config.rs")
+        .1;
+    let mut compiled: Vec<&str> = config
+        .match_indices("include_str!(\"../../resources/pi/")
+        .map(|(at, _)| {
+            let rest = &config[at + "include_str!(\"../../resources/pi/".len()..];
+            &rest[..rest.find('"').unwrap()]
+        })
+        .collect();
+    compiled.sort_unstable();
+    assert_eq!(compiled, PI_OBSERVER_FILES);
+    assert!(config.contains("const RESOURCE_DIR: &str = \"Contents/Resources/pi\";"));
+    // the release bundle (tauri), the debug carriers and the compatibility
+    // candidate: the same names, into the same directory
+    let tauri: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest("tauri.conf.json")).unwrap())
+            .unwrap();
+    let resources = tauri["bundle"]["resources"]
+        .as_object()
+        .expect("a resource map");
+    let mut mapped: Vec<(String, String)> = resources
+        .iter()
+        .map(|(from, to)| (from.clone(), to.as_str().unwrap().to_string()))
+        .collect();
+    mapped.sort();
+    let wanted: Vec<(String, String)> = PI_OBSERVER_FILES
+        .iter()
+        .map(|name| (format!("resources/pi/{name}"), format!("pi/{name}")))
+        .collect();
+    assert_eq!(
+        mapped, wanted,
+        "tauri.conf.json bundles the list and nothing else"
+    );
+    let names = PI_OBSERVER_FILES.join(" ");
+    let bundle = std::fs::read_to_string(manifest("../bundle.sh")).unwrap();
+    assert!(bundle.contains(&format!("DECK_BUNDLE_PI_RESOURCES=\"{names}\"")));
+    assert!(bundle.contains("&& deck_bundle_pi_check \"$2\" \"$3\""));
+    let candidate =
+        std::fs::read_to_string(manifest("../../scripts/package-compat-candidate")).unwrap();
+    assert!(candidate.contains(&format!("for name in {names}; do")));
+    // the test-only fixtures are packaged by nothing and say what they are
+    let fixtures = manifest("../../scripts/pi");
+    for entry in std::fs::read_dir(&fixtures).expect("scripts/pi") {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.lines()
+                .next()
+                .is_some_and(|line| line.contains("TEST ONLY")),
+            "{name} says it is test only"
+        );
+        assert!(
+            !pi_observer_violations("observer.ts", &text).is_empty(),
+            "{name} would never pass as an observer file"
+        );
+        assert!(!PI_OBSERVER_FILES.contains(&name.as_str()));
+        for (what, packaging) in [
+            ("tauri.conf.json", tauri.to_string()),
+            ("bundle.sh", bundle.clone()),
+            ("package-compat-candidate", candidate.clone()),
+        ] {
+            assert!(!packaging.contains(&name), "{what} names {name}");
+            assert!(!packaging.contains("scripts/pi"), "{what} names scripts/pi");
+        }
+    }
 }

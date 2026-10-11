@@ -44,6 +44,13 @@
 // background `detect_editors` answers, keeping the saved choice selected.
 // Away notifications name their dependency on agent-status hooks inline
 // when both are known to be off; nothing is switched on for the user.
+// Pi work status is one more switch of the agent-status group. It shows
+// `pi` of `agent_hooks_status`, which the backend derives from Deck's one
+// entry in Pi's own settings file, and is written by `agent_hooks_set` like
+// the other two. What differs is said by pi-model.js: the note under the
+// switch names the entry's state (configured is never shown as connected),
+// a build that may not write Pi's settings cannot use the switch, and a
+// refusal has its own sentence for each closed code.
 // Claude session re-entry observation is its own explicit opt-in: the box
 // shows `claude_reentry` of `agent_hooks_status` (the backend derives it from
 // the installed lifecycle hooks; there is no settings key), is written only
@@ -71,6 +78,7 @@ import { newlyPairedDevice } from './connector-model.js';
 import { slackConnectionView } from './slack-connection-model.js';
 import { removeLegacySlackCredentials } from './slack-legacy-cleanup.js';
 import { NOTIFY_STATUS_WORDS, agentHooksToastKey, notifyNeedsAgentStatus, notifyStatusKey } from './notify-model.js';
+import { piErrorKey, piSettingsView } from './pi-model.js';
 import { SETTINGS_SECTIONS, isSettingsSection, searchSettings, sectionItems, settingItem } from './settings-search-model.js';
 import {
   formatShortcut, isSafeShortcut, registerShortcutAction, shortcutConflict, shortcutFromEvent,
@@ -539,6 +547,7 @@ export async function openSettings(target) {
   $('set-agent-hooks').checked = false;
   $('set-codex-hooks').checked = false;
   $('set-claude-reentry').checked = false;
+  renderPiSettings(null);
   agentHooksKnown = null;
   renderNotifyDependency();
   const hooksGeneration = ++agentHooksGeneration;
@@ -548,6 +557,7 @@ export async function openSettings(target) {
       $('set-agent-hooks').checked = !!(status && status.claude);
       $('set-codex-hooks').checked = !!(status && status.codex);
       $('set-claude-reentry').checked = !!status && status.claude_reentry === true;
+      renderPiSettings(status);
       agentHooksKnown = { claude: status.claude === true, codex: status.codex === true };
       renderNotifyDependency();
     })
@@ -711,6 +721,43 @@ export async function persistAgentHooksChoice(agent, boxId, confirmKey) {
   } finally {
     agentHooksPending = false;
     box.disabled = false;
+  }
+}
+
+/* Pi work status: the switch and the note under it, both from what the
+   backend read in Pi's own settings file. `null` (not read yet, or a failed
+   read) shows the switch off and unusable, with no note. */
+let piPending = false;
+function renderPiSettings(status) {
+  const view = status ? piSettingsView(status) : { signal: false, usable: false, note: null };
+  const box = $('set-pi-hooks');
+  box.checked = view.signal;
+  box.disabled = piPending || !view.usable;
+  const note = $('set-pi-note');
+  note.hidden = !view.note;
+  note.textContent = view.note ? t(view.note) : '';
+}
+export async function persistPiChoice() {
+  if (piPending) return;
+  const box = $('set-pi-hooks');
+  const desired = box.checked;
+  if (desired && !(await confirmDialog(t('settings.piSignalEnableConfirm')))) {
+    box.checked = false;
+    return;
+  }
+  piPending = true;
+  box.disabled = true;
+  try {
+    await inv('agent_hooks_set', { agent: 'pi', enable: desired });
+    toast(t(desired ? 'settings.piSignalEnabled' : 'settings.piSignalDisabled'));
+  } catch (error) {
+    box.checked = !desired;
+    toast(t(piErrorKey(typeof error === 'string' ? error : error?.message)));
+    uev('settings-save-fail');
+  } finally {
+    piPending = false;
+    // the file is the truth: the switch and its note are read again
+    await inv('agent_hooks_status').then(renderPiSettings).catch(() => renderPiSettings(null));
   }
 }
 
@@ -1417,6 +1464,8 @@ export function initSettings() {
     persistAgentHooksChoice('codex', 'set-codex-hooks', 'settings.codexHooksEnableConfirm');
 
   $('set-claude-reentry').onchange = persistClaudeReentryChoice;
+
+  $('set-pi-hooks').onchange = persistPiChoice;
 
   $('set-notify-away').onchange = persistNotifyChoice;
   $('set-notify-sound').onchange = persistNotifyChoice;

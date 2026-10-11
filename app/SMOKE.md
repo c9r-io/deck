@@ -47,6 +47,50 @@ test-owned resources; it never reads `~/.deck` or the normal tmux server.
    Stop only the test-owned tmux server and Agent, then move the disposable
    root to a uniquely named Trash location after retaining bounded evidence.
 
+## Pi work status with real Pi (native run)
+
+Deck's Pi observer is checked against two real interactive Pi processes, an
+npm install on Node and the official standalone build, in panes of an
+isolated tmux server. Deck's side is production code, not a model of it:
+the status listener, the Pi transport, the store, the Board poll body and
+the Settings commands, started as the `agent_pi::tests::native::tap` harness
+from a stand-in bundle under a relocated home (so the stable-install rule
+holds there and only there). A deterministic local provider
+(`scripts/pi/fixture.ts`, TEST ONLY, never packaged) answers in place of a
+model; Pi itself retries, queues, continues, settles, raises its dialogs,
+reloads and quits. No account, credential or setting of the person running
+it is read: home, Pi's agent directory, sessions, working directory, tmux
+socket directory and Deck's data directory live in one experiment root
+under `/private/tmp`.
+
+```sh
+cargo test --locked --offline --manifest-path app/src-tauri/Cargo.toml \
+  --bin deck-app --no-run            # prints the test executable's path
+python3 scripts/pi_native.py --test-binary <that executable> \
+  --standalone <unpacked, checksum-verified official build: the directory with pi>
+```
+
+- [ ] Exit 0: every check passed and `edr_runtime.py experiment cleanup`
+      found nothing left. `<root>/result.json` is the summary (closed words,
+      counts, relations); `<root>/logs/` is the private trace and holds
+      native session ids: it is never committed.
+- [ ] The run covers both runtimes for: the Settings command writing Deck's
+      one entry and taking it out again byte for byte; hello and lease per
+      pane; ordinary, retried, queued, continued and settlement-started
+      runs; an abort and a provider error; every dialog kind and two at
+      once; Pi's own dialogs; two Pis at once; a pane that is not in front;
+      reload; fifteen seconds of silence; a Deck restart; the switch turned
+      off while Pi runs; Pi started without the entry, with the user's
+      disabling entry, with a missing or broken entry; the dialog
+      notifications arriving out of order; quit, a killed Pi, and a plain
+      `node` that is not Pi.
+- [ ] It does NOT cover: a model account, the real window (that is the
+      `pi-live` WKWebView mode), a signed release bundle, or Pi releases
+      other than the two artifacts its summary names.
+- [ ] Never point `--root` at anything but a new, empty directory under
+      `/private/tmp`, and stop nothing by hand: the driver registers every
+      server and process when it starts and stops them through the registry.
+
 ## Manual physical selection evidence
 
 The `selection-events` mode keeps an isolated terminal open for actual mouse
@@ -746,6 +790,52 @@ window. Hooks are installed only from `/Applications/deck.app` or
       step.
 - [ ] `scripts/smoke-verdict <data dir> hooks-live` judges the switches and
       the derived state; the file comparison is the operator's.
+
+### Pi work status in the real window (WKWebView mode `pi-live`)
+
+`pi-live` is the Pi switch of Settings → Agents & notifications, a real
+interactive Pi and the card it runs in, in the real window. The switch writes
+Pi's own settings file and only a stable install may do that, so, like
+`hooks-live`, the carrier runs from `<home>/Applications/deck.app` under a
+home of its own and never under a person's. `scripts/pi-live-verify.py` is
+the operator: it builds one experiment root under `/private/tmp` (home, Pi's
+agent directory with settings "of the user's", sessions, working directory,
+tmux socket directory, Deck's data directory), assembles this checkout's
+debug carrier there with the functions `app/run.sh` uses, launches it through
+LaunchServices, copies Pi's settings file and the Pi pane after every
+checkpoint, judges those copies, runs `scripts/smoke-verdict`, and stops what
+it started through the experiment registry. The model is the local fixture
+provider; no account is used.
+
+```sh
+cargo build --manifest-path app/src-tauri/Cargo.toml
+python3 scripts/pi-live-verify.py --runtime npm            # the npm install of Pi on this machine, copied
+python3 scripts/pi-live-verify.py --runtime standalone --standalone <unpacked official build>
+```
+
+- [ ] Exit 0 for both runtimes. The page reports eleven checkpoints: the
+      switch off and clean; on through its confirmation; a clock automation's
+      run that starts Pi; Pi connected with limited coverage and no attention
+      of its own; the run's first step HELD at `pi-input-unverified` through
+      several scheduler passes; a typed turn ending as `turn-done`; a turn
+      that ends while the Board is in front counted once as unread; the held
+      row delivered once by Send now; the switch turned off while Pi runs
+      (the card's word gone at once, a further Pi run adding none); on again,
+      connected only after Pi's own `/reload`.
+- [ ] The operator's own checks, which the page cannot make: Pi's settings
+      byte for byte at each step (the user's bytes, plus Deck's one entry,
+      minus exactly that entry, the same bytes again), the held row's text
+      absent from the pane and Pi's provider never asked until a person
+      typed, that text present exactly once after Send now, the production's
+      closed app.log lines for each step and nothing of a prompt, a path or
+      an answer in that log, and the machine's own Deck unchanged.
+- [ ] The window takes the foreground and keyboard focus for about two
+      minutes. A locked screen stops the page's timers and the run with
+      them; with `--host <ssh alias>` the same root is moved to the same path
+      on another Mac that has a console login (AGENTS.md, "Mac mini test
+      resource"), run there by the same file and trashed there afterwards.
+- [ ] Not covered: a signed release bundle (`/Applications`), a model
+      account, notification posting (the carrier is ad-hoc signed).
 
 ### Claude session re-entry with real clients
 

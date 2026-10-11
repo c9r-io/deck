@@ -44,6 +44,7 @@
 //   board.js and layout.js may import this module without a cycle.
 import { $, ctx, QUIET_SECS, state, store } from './state.js';
 import { ATTENTION_BADGE_LABELS, ATTENTION_FILTERS, attentionBadge, attentionRows, codexCoverageGap } from './attention-model.js';
+import { piCoverage, piDetailKeys, piStatusKey } from './pi-model.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
 import { choiceDialog } from './dialogs.js';
 
@@ -69,6 +70,7 @@ export function attentionStatusText(card) {
   else if (snapshot.agent === 'needs-input') text = t('attention.input');
   else if (snapshot.agent === 'turn-done') text = t(snapshot.seen ? 'attention.doneRead' : 'attention.doneUnread');
   else if (snapshot.agent === 'working') text = t('attention.working');
+  else if (piStatusKey(snapshot)) text = t(piStatusKey(snapshot));
   else if (gap) text = t(gap === 'unknown' ? 'signal.codex.unknown' : 'signal.codex.unavailable');
   else text = t(snapshot.idle == null ? 'attention.noSignal'
     : snapshot.idle >= QUIET_SECS ? 'attention.quiet' : 'attention.recent');
@@ -78,9 +80,12 @@ export function attentionStatusText(card) {
 export async function showSignalDiagnostics(card, opener = null) {
   const snapshot = ctx.attention.get(card);
   const gap = codexCoverageGap(snapshot);
-  if (!gap) return;
-  const message = [snapshot.stale ? t('signal.stale') : '', t(gap === 'unknown' ? 'signal.codex.unknownHint' : 'signal.codex.unavailableHint'),
-    t('signal.codex.checks'), t('signal.codex.compatibility')].filter(Boolean).join('\n\n');
+  /* a recognized Pi explains its limited coverage under every state */
+  const pi = piDetailKeys(snapshot);
+  if (!gap && !pi) return;
+  const lines = pi ? pi.map(key => t(key))
+    : [t(gap === 'unknown' ? 'signal.codex.unknownHint' : 'signal.codex.unavailableHint'), t('signal.codex.checks'), t('signal.codex.compatibility')];
+  const message = [snapshot.stale ? t('signal.stale') : '', ...lines].filter(Boolean).join('\n\n');
   const selected = await choiceDialog(message, [{ id: 'settings', label: t('signal.settings'), primary: true }]);
   if (selected === 'settings') await openSettings({ setting: 'agent-status' });
   else if (opener?.isConnected && !opener.hidden) opener.focus();
@@ -93,7 +98,7 @@ export function paintCardSignalStatus(el, card) {
   el.querySelector('.card-status-text').textContent = attentionStatusText(card);
   el.title = sourceText(card);
   const help = el.querySelector('.card-signal-help');
-  help.hidden = !codexCoverageGap(ctx.attention.get(card));
+  help.hidden = !codexCoverageGap(ctx.attention.get(card)) && !piCoverage(ctx.attention.get(card));
   help.textContent = t('signal.details');
   help.setAttribute('aria-label', t('signal.detailsNamed', { name: card.title }));
   help.onclick = event => { event.stopPropagation(); void showSignalDiagnostics(card, help); };

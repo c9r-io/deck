@@ -87,10 +87,12 @@
   },
   "agent_states": ["working", "needs-input", "turn-done"],
   "codex_signal_trust": ["unknown", "trusted", "unavailable"],
+  "pi_coverage": ["connected", "unavailable", "incompatible"],
+  "pi_installations": ["absent", "current", "needs-reload", "conflict", "unreadable", "unsupported-location"],
   "notify_status_words": ["unsupported", "not-determined", "denied", "authorized", "provisional"],
   "context_statuses": ["ready", "foreground-different", "session-replaced", "unavailable", "starting", "unknown"],
   "storage_notices": ["storage.privacy", "queue.persist", "queue.load", "history.load", "queue.interrupted", "storage.recovered", "storage.choices-withdrawn"],
   "mcp_local_errors": ["mcp-session-busy", "mcp-runner-stale", "mcp-client-revoked", "mcp-feature-disabled", "mcp-runner-unconfirmed", "mcp-fence-unpersisted"],
   "link_failures": ["link-no-editor", "link-path-missing", "link-not-allowed", "link-open-failed"],
-  "delivery_waits": ["ambiguous", "failed", "review", "channel-stopped", "channel-unverified", "external", "first-send", "codex-signal", "authority-unverified"]
+  "delivery_waits": ["ambiguous", "failed", "review", "channel-stopped", "channel-unverified", "external", "first-send", "codex-signal", "pi-input-unverified", "authority-unverified"]
 }

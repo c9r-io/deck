@@ -15,7 +15,7 @@ const { formatDateTime } = await import('../js/i18n.js');
 const {
   connectorPairingChanged, initSettings, renderConnectorSettings, mcpAuthorizationDialog, persistSessionRestoreChoice, persistUpdateChannelChoice,
   persistThemeChoice, filterSettings, renderMcpSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
-  locateSetting, openSettings, refreshEditors, persistAgentHooksChoice, persistClaudeReentryChoice,
+  locateSetting, openSettings, refreshEditors, persistAgentHooksChoice, persistClaudeReentryChoice, persistPiChoice,
 } = await import('../js/settings.js');
 const { normalizeSettings: normalizeSettingsDoc } = await import('../js/settings-model.js');
 const { ctx, store } = await import('../js/state.js');
@@ -975,6 +975,120 @@ test('Claude session re-entry observation follows only claude_reentry and its ow
   assert.equal(reentry.disabled, false);
   assert.equal(claude.checked, false);
   assert.deepEqual(Object.keys(ctx.settings).filter(key => /reentry/i.test(key)), [], 'no settings key holds the choice');
+  box.fire('keydown', { key: 'Escape' });
+});
+
+test('the Pi work-status switch shows what Pi\'s settings say and writes through its own command', async () => {
+  ctx.settings = normalizeSettingsDoc({});
+  const box = fakeDocument.getElementById('settings-box');
+  const pi = fakeDocument.getElementById('set-pi-hooks');
+  const note = fakeDocument.getElementById('set-pi-note');
+  const others = ['set-agent-hooks', 'set-codex-hooks', 'set-claude-reentry'].map(id => fakeDocument.getElementById(id));
+  const toasts = fakeDocument.getElementById('toasts');
+  const open = async status => {
+    settingsBackend({ agent_hooks_status: () => status });
+    await openSettings();
+    await tick(); await tick();
+  };
+  // derived from the backend's two fields; an unread or unknown state is off and unusable
+  for (const [status, checked, disabled, said] of [
+    [{ pi: false, pi_installation: 'absent' }, false, false, null],
+    [{ pi: true, pi_installation: 'current' }, true, false, /already running follows when it next starts or reloads/],
+    [{ pi: true, pi_installation: 'needs-reload' }, true, false, /still runs with the earlier setting/],
+    [{ pi: true, pi_installation: 'conflict' }, true, false, /do not agree/],
+    [{ pi: false, pi_installation: 'unreadable' }, false, false, /cannot be read/],
+    [{ pi: true, pi_installation: 'unsupported-location' }, true, true, /does not run from the Applications folder/],
+    [{ pi: true, pi_installation: 'installed' }, false, true, /Pi status is unavailable/],
+    [{ claude: true, codex: true, claude_reentry: true }, false, true, /Pi status is unavailable/],
+    [null, false, true, null],
+  ]) {
+    await open(status);
+    assert.equal(pi.checked, checked, JSON.stringify(status));
+    assert.equal(pi.disabled, disabled, JSON.stringify(status));
+    assert.equal(note.hidden, said == null, JSON.stringify(status));
+    if (said) assert.match(note.textContent, said);
+    // "configured" is never shown as a connection
+    assert.doesNotMatch(note.textContent, /connected to Deck|is connected|loaded/i);
+    box.fire('keydown', { key: 'Escape' });
+  }
+
+  // the other three switches neither move it nor follow it
+  await open({ claude: true, codex: true, claude_reentry: true, pi: false, pi_installation: 'absent' });
+  assert.deepEqual(others.map(node => node.checked), [true, true, true]);
+  assert.equal(pi.checked, false);
+
+  // enabling asks first; a declined confirmation writes nothing
+  let sent = [];
+  let state = { pi: false, pi_installation: 'absent' };
+  const backend = overrides => {
+    settingsBackend({ agent_hooks_status: () => state, ...overrides });
+    window.__TAURI__.core.invoke = (invoke => async (cmd, args) => { sent.push([cmd, args]); return invoke(cmd, args); })(window.__TAURI__.core.invoke);
+  };
+  backend({});
+  pi.checked = true;
+  const declined = persistPiChoice();
+  cfmDone(false);
+  await declined;
+  assert.equal(pi.checked, false);
+  assert.deepEqual(sent, []);
+  // confirmed: its own agent word, then the file is read again and shown
+  backend({ agent_hooks_set: () => { state = { pi: true, pi_installation: 'current' }; return null; } });
+  pi.checked = true;
+  const enabling = persistPiChoice();
+  cfmDone(true);
+  await enabling;
+  assert.deepEqual(sent, [['agent_hooks_set', { agent: 'pi', enable: true }], ['agent_hooks_status', undefined]]);
+  assert.equal(pi.checked, true);
+  assert.equal(pi.disabled, false);
+  assert.match(note.textContent, /next starts or reloads/);
+  assert.match(toasts.children.at(-1).textContent, /Pi work status configured/);
+  assert.deepEqual(others.map(node => node.checked), [true, true, true], 'no other switch moved');
+  assert.deepEqual(Object.keys(ctx.settings).filter(key => /^pi(?=[A-Z_]|$)|agentPi/.test(key)), [], 'no settings key holds the choice');
+
+  // turning it off asks nothing
+  sent = [];
+  backend({ agent_hooks_set: () => { state = { pi: false, pi_installation: 'absent' }; return null; } });
+  pi.checked = false;
+  await persistPiChoice();
+  assert.deepEqual(sent[0], ['agent_hooks_set', { agent: 'pi', enable: false }]);
+  assert.equal(pi.checked, false);
+  assert.equal(note.hidden, true);
+  assert.match(toasts.children.at(-1).textContent, /Pi work status removed/);
+
+  // a refusal says its own sentence for a closed code, the generic one for
+  // anything else, and the switch shows what the file still says
+  for (const [message, said] of [
+    ['pi-never-ran', /Pi has not been run on this Mac yet/],
+    ['pi-config-conflict', /Pi’s settings disable Deck’s extension/],
+    ['pi-config-unreadable', /cannot be edited safely/],
+    ['pi-config-busy', /kept changing/],
+    ['/Users/u/.pi/agent/settings.json: Permission denied (os error 13)', /could not update the agent’s config file/],
+  ]) {
+    backend({ agent_hooks_set: () => { throw message; } });
+    pi.checked = true;
+    const refused = persistPiChoice();
+    cfmDone(true);
+    await refused;
+    assert.equal(pi.checked, false, message);
+    assert.equal(pi.disabled, false, message);
+    assert.match(toasts.children.at(-1).textContent, said, message);
+    assert.doesNotMatch(toasts.children.at(-1).textContent, /Users|os error|settings\.json:/, 'the backend text is never shown');
+  }
+  // an Error object is read the same way
+  backend({ agent_hooks_set: () => { throw new Error('pi-resource-missing'); } });
+  pi.checked = true;
+  const missing = persistPiChoice();
+  cfmDone(true);
+  await missing;
+  assert.match(toasts.children.at(-1).textContent, /missing its Pi extension/);
+  // a status read that fails afterwards shows nothing as on
+  backend({ agent_hooks_set: () => null, agent_hooks_status: () => { throw new Error('gone'); } });
+  pi.checked = true;
+  const unread = persistPiChoice();
+  cfmDone(true);
+  await unread;
+  assert.equal(pi.checked, false);
+  assert.equal(pi.disabled, true);
   box.fire('keydown', { key: 'Escape' });
 });
 

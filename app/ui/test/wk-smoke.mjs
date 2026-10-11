@@ -3197,6 +3197,15 @@ export async function verifyHooksLive() {
   await runHooksLiveSmoke();
 }
 
+// Pi work status in the real window with a real interactive Pi, under a home
+// the operator gave this carrier: the Settings switch, Pi loading Deck's
+// observer, the card and the attention list, the scheduler's Pi hold, Send
+// now, and the switch turned off while Pi runs (pi-live-smoke.mjs).
+export async function verifyPiLive() {
+  const { runPiLiveSmoke } = await import('./pi-live-smoke.mjs');
+  await runPiLiveSmoke();
+}
+
 // The shell service restart with "Reopen Agent sessions" through the real
 // dialog, with real Claude Code clients in the cards, under a home the
 // operator gave this carrier: observation off and on, bypass reapplied, a

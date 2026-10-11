@@ -39,6 +39,15 @@ never notify: the 15 s output heuristic is activity, not readiness, and
 quiet never means ready. Nothing is posted for *working*, for a manual
 follow-up star, or for a session that stopped.
 
+**Pi is covered in part.** With Pi's work status turned on in the same
+Settings section, deck knows when a Pi run started and when it settled, so
+a Pi's **turn ended** is announced like any other. An **input request**
+from Pi is never announced: Pi gives deck no reliable way to observe that
+it waits for input, and deck does not guess. The card says so ("Pi
+connected · limited status"), and that note is information only: it is not
+a notification, it is not counted on the Dock, and a Pi whose status deck
+cannot observe at all ("Pi status unavailable") is not an alert either.
+
 ### A delivery that waits for you
 
 A list (the ⏱ panel) sends its rows by itself until one of them needs a
@@ -57,6 +66,8 @@ such a row while you are away:
   sending without one;
 - a row is held because **Codex Signal cannot be attributed** to that Codex
   process, and waits for *Send now*;
+- the row's target is **Pi**: deck cannot observe that Pi waits for input,
+  so nothing is sent to it automatically, and the row waits for *Send now*;
 - a step you approved for automatic sending has been held for about a
   minute because deck **cannot verify the approval** (the settings or the
   Board could not be read as your current version — for instance after a
