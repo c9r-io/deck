@@ -1012,3 +1012,175 @@ class PiBuildIdentityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PiNativeTapTests(unittest.TestCase):
+    """`scripts/pi_native.py`: how the driver reads the backend half's output (follow-up 02, R03)."""
+
+    BEFORE = "test agent_pi::tests::native::tap ... "
+    # Writes what the test put beside it, as it is; a line `--- later ---` is not written: what follows it is
+    # written once the test has sent a line. It ends with its standard input, and after twenty seconds anyway.
+    BACKEND = """#!/usr/bin/env python3
+import signal, sys
+signal.alarm(20)
+for line in open(__file__ + ".out").read().splitlines(keepends=True):
+    if line == "--- later ---\\n":
+        sys.stdin.readline()
+        continue
+    sys.stdout.write(line)
+    sys.stdout.flush()
+sys.stdin.read()
+"""
+
+    def setUp(self) -> None:
+        self.native = runpy.run_path(str(ROOT / "scripts" / "pi_native.py"))
+        self.dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.dir.name).resolve()
+        (self.root / "logs").mkdir()
+        self.taps: list = []
+
+    def tearDown(self) -> None:
+        for tap in self.taps:
+            try:
+                tap.process.stdin.close()
+            except OSError:
+                pass
+            tap.process.wait(timeout=10)
+            tap.process.stdout.close()
+            tap.log.close()
+            tap.raw.close()
+            tap.err.close()
+        self.dir.cleanup()
+
+    def run_with(self, output: str):
+        """A stand-in for the driver's run whose backend half writes exactly `output` and then waits."""
+        app = self.root / "backend"
+        app.write_text(self.BACKEND)
+        app.chmod(0o700)
+        (self.root / "backend.out").write_text(output)
+        failed = self.native["Failed"]
+
+        class Run:
+            taps = 0
+            logs = self.root / "logs"
+            work = self.root
+            env = {"PATH": "/usr/bin:/bin"}
+
+            def registry(self, *args, **kwargs):
+                return None
+
+            def note(self, *args, **kwargs):
+                return None
+
+            def until(self, label, predicate, timeout=20):
+                end = __import__("time").monotonic() + timeout
+                while __import__("time").monotonic() < end:
+                    value = predicate()
+                    if value:
+                        return value
+                    __import__("time").sleep(0.01)
+                raise failed(f"timed out waiting for {label}")
+
+        run = Run()
+        run.app = app
+        return run
+
+    def tap(self, run):
+        tap = self.native["Tap"](run)
+        self.taps.append(tap)
+        return tap
+
+    @staticmethod
+    def line(**event) -> str:
+        return "@tap " + json.dumps(event) + "\n"
+
+    def test_an_event_begins_its_line_or_follows_libtest_s_own_words_and_nothing_else(self) -> None:
+        event = self.native["tap_event"]
+        framing = self.native["Framing"]
+        self.assertEqual(self.native["LIBTEST_BEFORE"], self.BEFORE)
+        ready, now = {"ready": {"socket": "deck-dev"}, "t": 3}, {"now": {"store": {}}, "t": 1}
+        # an ordinary line
+        self.assertEqual(event(self.line(**ready)), ready)
+        self.assertEqual(event(self.line(**ready).rstrip("\n")), ready)
+        # the first line a test writes stands behind libtest's words: `ready` or a sample, whichever came first
+        self.assertEqual(event(self.BEFORE + self.line(**ready)), ready)
+        self.assertEqual(event(self.BEFORE + self.line(**now)), now)
+        # what libtest and the harness write that is no event
+        for other in ["", "\n", "running 1 test\n", self.BEFORE + "\n", self.BEFORE + "ok\n", "ok\n",
+                      "test result: ok. 1 passed; 0 failed\n", "agent_pi::tests::native::tap: no DECK_PI_NATIVE_ROOT\n",
+                      "@tapped\n", "@tap\n"]:
+            self.assertIsNone(event(other), other)
+        # an event anywhere else in a line, behind other words or another test's, is not looked for: it is an error
+        for bad in ["log: " + self.line(**ready), " " + self.line(**ready), "test other::tap ... " + self.line(**ready),
+                    self.BEFORE + self.BEFORE + self.line(**ready), self.BEFORE + "x" + self.line(**ready),
+                    self.line(**ready).rstrip("\n") + self.line(**now)]:
+            if bad.count("@tap ") == 2 and bad.startswith("@tap "):
+                # two events on one line: the line is no JSON object
+                with self.assertRaises(framing):
+                    event(bad)
+                continue
+            with self.assertRaises(framing, msg=bad):
+                event(bad)
+        # an event that is no JSON object is an error too, whatever stands in front of it
+        for bad in ["@tap {\"ready\": \n", "@tap [1]\n", "@tap 7\n", "@tap \n", "@tap {'a': 1}\n",
+                    self.BEFORE + "@tap {\"now\": \n"]:
+            with self.assertRaises(framing, msg=bad):
+                event(bad)
+
+    def test_the_first_event_is_read_whichever_it_is(self) -> None:
+        ready = self.line(ready={"socket": "deck-dev", "status_sock": "/x"}, t=5)
+        sample = self.line(now={"store": {"deck-a": {"state": "working", "episode": 4}}, "leases": []}, t=1)
+        # `ready` first, on libtest's line
+        first = self.tap(self.run_with("\nrunning 1 test\n" + self.BEFORE + ready + sample))
+        self.assertEqual(first.ready, {"socket": "deck-dev", "status_sock": "/x"})
+        first.run.until("the sample", lambda: len(first.since()) == 2, 5)
+        self.assertEqual(first.state("deck-a"), "working")
+        # a sample first, on libtest's line: it is not lost, and `ready` behind it is found
+        second = self.tap(self.run_with("\nrunning 1 test\n" + self.BEFORE + sample + ready))
+        self.assertEqual(second.ready["socket"], "deck-dev")
+        self.assertEqual([sorted(event)[0] for event in second.since()], ["now", "ready"])
+        self.assertEqual(second.state("deck-a"), "working")
+        # every line is kept as it was written, beside the events
+        raw = (self.root / "logs" / f"tap-{second.number}.stdout").read_text()
+        self.assertEqual(raw, "\nrunning 1 test\n" + self.BEFORE + sample + ready)
+        events = (self.root / "logs" / f"tap-{second.number}.jsonl").read_text().splitlines()
+        self.assertEqual(len(events), 2)
+
+    def test_a_second_life_of_the_backend_half_is_read_the_same_way(self) -> None:
+        ready = self.line(ready={"socket": "deck-dev"}, t=5)
+        run = self.run_with("\nrunning 1 test\n" + self.BEFORE + ready)
+        first = self.tap(run)
+        # Deck "restarts": another process, whose first line stands behind libtest's words again
+        (self.root / "backend.out").write_text("\nrunning 1 test\n" + self.BEFORE + self.line(now={"store": {}}, t=0) + ready)
+        second = self.tap(run)
+        self.assertEqual((first.number, second.number), (1, 2))
+        self.assertEqual(len(first.since()), 1)
+        self.assertEqual([sorted(event)[0] for event in second.since()], ["now", "ready"])
+        for number in (1, 2):
+            self.assertTrue((self.root / "logs" / f"tap-{number}.stdout").read_text().count(self.BEFORE) == 1)
+
+    def test_a_line_that_breaks_the_framing_fails_the_run_at_once_and_is_kept(self) -> None:
+        failed = self.native["Failed"]
+        ready = self.line(ready={"socket": "deck-dev"}, t=5)
+        for bad in ["@tap {\"ready\": \n", "panicked at src/x.rs: " + self.line(now={"store": {}}), "@tap [\"ready\"]\n"]:
+            run = self.run_with("\nrunning 1 test\n" + bad + ready)
+            started = __import__("time").monotonic()
+            with self.assertRaises(failed) as refused:
+                self.native["Tap"](run)
+            self.assertLess(__import__("time").monotonic() - started, 5, "not after the thirty seconds a silent backend gets")
+            self.assertIn("not what it must be", str(refused.exception))
+            raw = (self.root / "logs" / f"tap-{run.taps}.stdout").read_text()
+            self.assertIn(bad, raw, "the line that broke it is kept")
+            # nothing behind the broken line was taken for an event
+            self.assertEqual((self.root / "logs" / f"tap-{run.taps}.jsonl").read_text(), "")
+        # a framing that breaks later fails whoever asks next, and what was read before it is not served either
+        run = self.run_with(self.BEFORE + ready + "--- later ---\n@tap not json\n" + self.line(now={"store": {}}))
+        tap = self.tap(run)
+        self.assertEqual(len(tap.since()), 1)
+        tap.process.stdin.write("\n")
+        tap.process.stdin.flush()
+        run.until("the broken line", lambda: tap.broken, 5)
+        for ask in (tap.mark, tap.since, tap.now, lambda: tap.first(lambda event: "now" in event, "a sample", 1)):
+            with self.assertRaises(failed):
+                ask()
+        self.assertIn("@tap not json\n", (self.root / "logs" / f"tap-{tap.number}.stdout").read_text())

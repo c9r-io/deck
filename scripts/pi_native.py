@@ -83,6 +83,43 @@ class Failed(Exception):
     """A step did not happen in time: the run cannot go on."""
 
 
+# What the backend half writes for every event, at the beginning of a line.
+TAP = "@tap "
+# What libtest writes before a test begins when it runs ONE test with
+# `--nocapture`, with no newline behind it: whatever the test writes first
+# stands behind it on the same line. Which of the harness's threads writes
+# first is the scheduler's choice, so that first event is `ready` in one run
+# and a sample of the store in the next.
+LIBTEST_BEFORE = "test agent_pi::tests::native::tap ... "
+
+
+class Framing(Exception):
+    """A line of the backend half's output holds an event where none may stand, or one that is no event."""
+
+
+def tap_event(line: str) -> dict | None:
+    """The event one line of the backend half's standard output carries; None for a line that carries none.
+
+    An event begins its line, or follows exactly libtest's own words for this one test. Nothing else is
+    looked for: a line that holds the marker anywhere else, and an event that is not a JSON object, is an
+    error — never skipped, and never searched for something that looks like JSON.
+    """
+    text = line.rstrip("\n")
+    if text.startswith(LIBTEST_BEFORE):
+        text = text[len(LIBTEST_BEFORE):]
+    if not text.startswith(TAP):
+        if TAP in text:
+            raise Framing(f"an event that does not begin its line: {text[:160]!r}")
+        return None
+    try:
+        event = json.loads(text[len(TAP):])
+    except ValueError as error:
+        raise Framing(f"an event that is not JSON: {text[:160]!r}") from error
+    if not isinstance(event, dict):
+        raise Framing(f"an event that is not an object: {text[:160]!r}")
+    return event
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:
@@ -116,11 +153,15 @@ class Tap:
         self.events: list[dict] = []
         self.lock = threading.Lock()
         self.asked = 0
+        # why this life's output can no longer be believed, once it cannot
+        self.broken: str | None = None
         self.log = (run.logs / f"tap-{self.number}.jsonl").open("w")
+        # every line the backend half wrote, as it wrote it
+        self.raw = (run.logs / f"tap-{self.number}.stdout").open("w")
+        self.err = (run.logs / f"tap-{self.number}.stderr").open("w")
         self.process = subprocess.Popen(
             [str(run.app), "agent_pi::tests::native::tap", "--ignored", "--exact", "--nocapture", "--test-threads=1"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=(run.logs / f"tap-{self.number}.stderr").open("w"),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err,
             env=run.env, cwd=str(run.work), text=True, bufsize=1,
         )
         threading.Thread(target=self.read, daemon=True).start()
@@ -129,21 +170,37 @@ class Tap:
 
     def read(self) -> None:
         for line in self.process.stdout:
-            if not line.startswith("@tap "):
+            self.raw.write(line)
+            self.raw.flush()
+            try:
+                event = tap_event(line)
+            except Framing as error:
+                # the raw output goes on being kept; nothing after this is taken for an event
+                with self.lock:
+                    self.broken = self.broken or str(error)
                 continue
-            event = json.loads(line[5:])
+            if event is None:
+                continue
             with self.lock:
+                if self.broken:
+                    continue
                 self.events.append(event)
                 self.log.write(json.dumps(event) + "\n")
                 self.log.flush()
 
+    def heard(self) -> list[dict]:
+        """Every event so far. A life whose output broke its framing says so instead: at once, to whoever asks."""
+        if self.broken:
+            raise Failed(f"the backend half's output is not what it must be: {self.broken} (kept in {self.raw.name})")
+        return self.events
+
     def mark(self) -> int:
         with self.lock:
-            return len(self.events)
+            return len(self.heard())
 
     def since(self, mark: int = 0) -> list[dict]:
         with self.lock:
-            return self.events[mark:]
+            return self.heard()[mark:]
 
     def first(self, wanted, label: str, timeout: float = 20, mark: int = 0) -> dict:
         return self.run.until(label, lambda: next((e for e in self.since(mark) if wanted(e)), None), timeout)
@@ -158,7 +215,7 @@ class Tap:
     def now(self) -> dict:
         """What the store, the transport and the diagnostics held at the last change."""
         with self.lock:
-            for event in reversed(self.events):
+            for event in reversed(self.heard()):
                 if "now" in event:
                     return event["now"]
         return {"store": {}, "leases": [], "ended": [], "sessions": [], "unsupported": [], "revoked": [], "drops": {},
