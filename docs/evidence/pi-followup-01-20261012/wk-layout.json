@@ -1,0 +1,179 @@
+{
+ "root": "/private/tmp/deck-pi-live-shxag3xf",
+ "mode": "pi-layout",
+ "checks": [
+  {
+   "check": "the carrier is this checkout's debug build: its executables byte for byte before the ad-hoc signing, which rewrote the main executable only, and the observer's files as the sources have them",
+   "ok": true,
+   "detail": {
+    "rewritten": [
+     "Contents/MacOS/deck"
+    ]
+   }
+  },
+  {
+   "check": "the page reached its end",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "no Pi, Claude or Codex was started for it: the layout is painted from scripted answers",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "nothing wrote Pi's settings: the file was never created",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "the window snapshots were written: PNG files, each of the whole window",
+   "ok": true,
+   "detail": {
+    "written": 64,
+    "sizes": [
+     "2560x1600"
+    ]
+   }
+  },
+  {
+   "check": "this machine's own Deck is as it was: the same processes, the same file names in its data directory",
+   "ok": true,
+   "detail": {
+    "processes": 1
+   }
+  },
+  {
+   "check": "scripts/smoke-verdict pi-layout is green",
+   "ok": true,
+   "detail": {
+    "exit": 0
+   }
+  }
+ ],
+ "stopped": null,
+ "facts": {
+  "build": {
+   "head": "eb16c7123f001149ec3d3aa6c4e8f5b78bc45d1a",
+   "dirty": false,
+   "dirty_paths": [],
+   "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "source_sha256": "6388ddd457ae330231a6506df19119a0e30b98ad2026393f9b73091402511549",
+   "source_files": 324,
+   "built_after_every_source": true,
+   "command": [
+    "pi-live-verify.py",
+    "--mode",
+    "pi-layout",
+    "--host",
+    "macmini"
+   ]
+  },
+  "carrier": {
+   "files": {
+    "Contents/MacOS/deck": "7162c6a3f4f6cb2af45a934cf45569c0b4942a20ad1929cd762ec04109e55826",
+    "Contents/MacOS/deck-lifecycle-helper": "58ca0671e7152995a496ce067a18da7b026ef1d1abd895ca91e8d0c3f8faa32f",
+    "Contents/MacOS/deck-mcp": "81c2bad7fd7f6bb0bb8dbe212372606e7c603976001ed60bcd790eb615b35b98",
+    "Contents/MacOS/deck-mcp-runner": "6fe2bfaf46f98f088700e20a1e29783765508a18be6296301cc9c10cf44ec918",
+    "Contents/MacOS/deck-status-helper": "1facfbb230f083be9e5bf60843b4c9f7a91182736f702600cdf811097541d44b",
+    "Contents/MacOS/tmux": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0",
+    "Contents/Resources/pi/both.ts": "906761d9c5b69b25db8052bc4c963e6f9e683ec5bf910eae5614de0642255a61",
+    "Contents/Resources/pi/lifecycle.ts": "13e6940dfc940a361221c21c5b9a738dad2a97b22ece322c37325012fe03c45a",
+    "Contents/Resources/pi/observer.ts": "31a96a37de7f0e31dd3c5c5064ce26c9f6b76d95fed15a920de31be509abbd22",
+    "Contents/Resources/pi/signal.ts": "8f86651da085a019e48173fb226b4e35743676bfb692c9e98843e3eb44b597f1"
+   },
+   "as_built_sha256": {
+    "Contents/MacOS/deck": "0a0f9b75865a2f15509f97b4f0d5464a5ef6630912f79f6d78950737ec701f87",
+    "Contents/MacOS/deck-lifecycle-helper": "58ca0671e7152995a496ce067a18da7b026ef1d1abd895ca91e8d0c3f8faa32f",
+    "Contents/MacOS/deck-mcp": "81c2bad7fd7f6bb0bb8dbe212372606e7c603976001ed60bcd790eb615b35b98",
+    "Contents/MacOS/deck-mcp-runner": "6fe2bfaf46f98f088700e20a1e29783765508a18be6296301cc9c10cf44ec918",
+    "Contents/MacOS/deck-status-helper": "1facfbb230f083be9e5bf60843b4c9f7a91182736f702600cdf811097541d44b",
+    "Contents/MacOS/tmux": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0"
+   },
+   "executables_copied_byte_for_byte_before_signing": true,
+   "rewritten_by_the_signing": [
+    "Contents/MacOS/deck"
+   ],
+   "observer_files_are_the_sources": true,
+   "version": "0.8.0"
+  },
+  "snapshots": {
+   "pilay-attention-en-100.png": "627c21c8abe608a7a33071b5d17d090ac6205dff6096f142417fd6d9c8e87846",
+   "pilay-attention-en-160.png": "fcfed968c4dd920a67e0f18ca87e2851bdab11c689a1e64c1750f55ba5c2bc37",
+   "pilay-attention-quiet-en-160.png": "8af98f7ca21e31481fc9fc26ee1e98097ccbc1e32ee0de652a09a6a541240ac4",
+   "pilay-attention-quiet-zh-160.png": "d36b11e0964bea302ad652cd3d7f6ada1a42d726be6395d149a93df507749696",
+   "pilay-attention-zh-100.png": "b3a0c5cf992d9944f4eaf31ff40b4dc8ed08d7c2b2a35c3c649d6c8188195509",
+   "pilay-attention-zh-160.png": "8752661136a144822fcb210e0f6fce406ab81c6f28562a0fe1938365245464ad",
+   "pilay-board-en-100.png": "c560cca81fac3290bcb0127289ac17718c964bcdc6dea60d73ce69685001c3c1",
+   "pilay-board-en-160.png": "85b4cb0a338d79e89ea380407ab065bca411f8e2400348c906caac28a27dd39b",
+   "pilay-board-en-50.png": "fe7b2676afa2c49a02e9e68f05c1b35f1a78d9e8404347cac6c49e77b29730fd",
+   "pilay-board-zh-100.png": "f84cc5f82a787e250f9b490e9050508e6aa4fd2a02759828cb6c7883c2e1c156",
+   "pilay-board-zh-160.png": "f9bf28db2daed2e3a8cfbe579154f04cd5fa2a94671ff1fad8fb2f8200790e77",
+   "pilay-review-mixed-en-100.png": "1ff2855b0bb3b728c5f027d4f3845016b7f2bb0926e997121557c975c946d2ad",
+   "pilay-review-mixed-en-160.png": "6b4148083a284b35f8268ed6c384a5d19900ce4a3adb0bf2ed27653a3b6b5df8",
+   "pilay-review-mixed-en-50.png": "74810f7220aeeb2d0ba202f255d87f260ab8299c8a809ef8719c63f7675ccb91",
+   "pilay-review-mixed-zh-100.png": "a71ccfd8133ccd94ccafe8221fbc0f85a08f46d7384737f88365d5feebff586c",
+   "pilay-review-mixed-zh-160.png": "400fa7b05c35f26ec78939f39c206845dec178dedab443fedde36188055338af",
+   "pilay-review-none-en-100.png": "b96ecf570d3c649eeb896730eddde65b61d5fac2a1e1e77ebb78ddbde63b7111",
+   "pilay-review-none-en-160.png": "826b0e155f8dfed9da9e366df99252ba36bd1857683d47917c0a9f5a3aabe517",
+   "pilay-review-none-zh-100.png": "414f9ace8b3de46ee88b6772d9ed32e990b2a731f8374baa100533d92f9ddd5f",
+   "pilay-review-none-zh-160.png": "759f3e43e205ef2af40741854e80bf6aad31d420f0a05bcdf06141f5e7bd3dbd",
+   "pilay-review-policy-en-160.png": "feed6de4c1d2324a57cd910a58465ca678b28fa5a8b6339dd2619961d038da08",
+   "pilay-review-policy-zh-160.png": "6564b48bb9dc6f1cfdc88d673a59e8d254369c691f926c033f4115a1b21fca1c",
+   "pilay-review-result-en-100.png": "d0b783b74b9939fe5f0ef03bb0d05f2b50f4f9e40a0df764ecb84c2256f8aa72",
+   "pilay-review-result-en-160.png": "4fe030d4e82e425fe4c278877e963b1a71900055221248e2ad842ad97ed4bdfc",
+   "pilay-review-result-zh-100.png": "2ea089b2e6be4f9685ec0fba7366e61f7194f58f2c30769cc0a5dd23d98cef29",
+   "pilay-review-result-zh-160.png": "1b3eb9bc652817511b8c0acc48dcbe9267210655d090d8cb3a3964987d10c4f4",
+   "pilay-review-setup-en-100.png": "fc5ce437f7a106b1beafb136c6343686f98e2d1a457547c0cf935211bafa689b",
+   "pilay-review-setup-en-160.png": "04feb0ea6b719d8c2d4d1b4cee6a951bf77a1b6603a152cfbbb140075d14392a",
+   "pilay-review-setup-zh-100.png": "90637dd04c4f20d4a720f96aeda58f963fc3d1a1e80a7cbc7f1e7194932ddcf0",
+   "pilay-review-setup-zh-160.png": "7390e96f3da7ea1f9c695b0fbef5a6ad58095393e8d7b672dcc66d5d7f2a435c",
+   "pilay-review-unreadable-en-160.png": "a547931e27066930fd6931a3f7517d04fcbc6c643d1b9e15503b2a17786b5dec",
+   "pilay-review-unreadable-zh-160.png": "f2689a48223ddc081465bd7dde963d3b4dfea98dbe852770ffbf7fc9ba27eb36",
+   "pilay-settings-both-en-100.png": "b89c32706d762defdc13c6a35b3775b553f361da20e9500977d5c6eb4439687d",
+   "pilay-settings-both-en-160.png": "4b3a33b2e62c8c816f091e914e6e8540883bd5788b67f0d4fcacda20596c9ec2",
+   "pilay-settings-both-zh-100.png": "38ab1b9ea30dfbd440f60986e3ced0a6e73ad3b61aaf398838eb83d9745a3b06",
+   "pilay-settings-both-zh-160.png": "de09cf70027a374bff4aa7a1316a024c0f8b8e7f5984f75401488f4b359784df",
+   "pilay-settings-conflict-en-100.png": "a5363d0123153170572cad4a95d6d772beac3584297f26aee6e0031e6787067f",
+   "pilay-settings-conflict-en-160.png": "358097f4355d5fcfe1e85aaebd31e543bceb66eabc3d7760844c199b2749f679",
+   "pilay-settings-conflict-zh-100.png": "17864ffcfa19bd9c482afeeddfaf75a22e5483f4da9b331ca456eb69e0d25928",
+   "pilay-settings-conflict-zh-160.png": "97cb903efc00283d4c1d638b649c7bc682e8919ef862b8236316ea791ae4bcc0",
+   "pilay-settings-details-en-100.png": "d2d17a03072a7e00972bdac0d4b50b91300898a1aed2a99124e1479a31a6d98c",
+   "pilay-settings-details-en-160.png": "39825bfb1e2d1b4a90dab981cbfdbf2ba82f802792d4496b286a28ce588c50ef",
+   "pilay-settings-details-zh-100.png": "b1d69adeb555e3c04ef721bd838180cb86e1cd71d74171792b291a4e95fcde5f",
+   "pilay-settings-details-zh-160.png": "aca630def28ce41fb8f671dd309b913dce2c896197df823b53cef4642e669ba7",
+   "pilay-settings-location-en-100.png": "29b75e3fce4b42d49788504f01f782372b9b01866ca50c7f53564d38cfdd19ef",
+   "pilay-settings-location-en-160.png": "293d23373dd058e2ec20ad89b34d2764a5d8a62cc59a165fe34fbe462512c70f",
+   "pilay-settings-location-zh-100.png": "7d9298349dd581c6004bb4a6737273ddbbd1e3f94c487b0200e5264a989ff8dd",
+   "pilay-settings-location-zh-160.png": "65663928067a14000b2f95b010a18a580accf9f0cbc693e12b8edaa3216f061c",
+   "pilay-settings-refused-en-160.png": "94aa3adb0279d1e8e2e585b8d863a31f9557be4c681c97529c7090571b7da74a",
+   "pilay-settings-refused-zh-160.png": "00004fc8caa850664b8662cd816e7a324138ab5d89483aa32aadc9f9d97e2448",
+   "pilay-settings-reload-en-100.png": "8c6e52f8eac59ac94ece616395dd0ff8bbde1fa9cca830350b54e822fbac896d",
+   "pilay-settings-reload-en-160.png": "58abf771201f233ced8824386252edfe4235fac043dfc2dd6d29591de8b5b227",
+   "pilay-settings-reload-zh-100.png": "6ef5c5f6e6b3cc79e7495088cbd48fd39c279f3a6835f0a8aa5946e5b86396b1",
+   "pilay-settings-reload-zh-160.png": "641e47f4e19ddb7e4e8e2c211b54a757378453e3e4190a58332e1edae9b82d41",
+   "pilay-why-incompatible-en-100.png": "8f98faee5531d44af884624948ae5dba5a764b84c7ea6bd1418c79518b283087",
+   "pilay-why-incompatible-zh-100.png": "1f7a3be71cbf69d0ba695c67328dac978e4eed7204db757a781a0353f90570b7",
+   "pilay-why-unavailable-en-100.png": "8336bc3ec3c56855bf3a8ab1dc5eadda736c429eab26ed54a3cd41abce84339c",
+   "pilay-why-unavailable-en-160.png": "51c247f2bfbbb5d3ca72838fe18473a3e7b8e97325dce9a00978fe56cd0cb097",
+   "pilay-why-unavailable-zh-100.png": "c8183461fb6ee70b703187e6243596fbb59bebb8aa94a075159303d0047c2400",
+   "pilay-why-unavailable-zh-160.png": "7814bbc4882e7e3c21ed6302bcabbc14a59663633e135e4b07ec9f4db1ae0653",
+   "pilay-why-unsupported-en-100.png": "f3448c727bb3012559fbe132b0cb3a746afa9ad2e9a4833560b8d97e454498e7",
+   "pilay-why-unsupported-en-160.png": "ae3e60c13d778d3594b6c32c371d9a28884547a9d771d1c7ad342fbacc206898",
+   "pilay-why-unsupported-zh-100.png": "2820a01c0e3446dbbde51fcd690e4842b72de7acdfb13f27c657f0b79758e236",
+   "pilay-why-unsupported-zh-160.png": "57d0604d279782bf01d25fb7397b3be3187cdf3311c67d58038d37b73416f0cb"
+  },
+  "snapshot_pixel_sizes": [
+   "2560x1600"
+  ]
+ },
+ "cleanup": {
+  "exit": 0,
+  "processes_from_root": 0,
+  "socket_left": false
+ },
+ "moved_to_trash_there": true,
+ "runtime": null,
+ "where": "another machine",
+ "failed": []
+}

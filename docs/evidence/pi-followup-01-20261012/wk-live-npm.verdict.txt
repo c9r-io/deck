@@ -1,0 +1,1 @@
+smoke-verdict pi-live: PASS (16/16 expected checkpoints, 16 lines)

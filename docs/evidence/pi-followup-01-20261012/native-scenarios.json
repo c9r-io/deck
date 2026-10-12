@@ -1,0 +1,174 @@
+{
+ "what": "the native run by scenario: checks, duration, and the closed words the production listener counted meanwhile; no ids",
+ "checks_in_the_scenarios": 269,
+ "scenarios": [
+  {
+   "scenario": "settings_loop",
+   "passed": 6,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [],
+   "seconds": 0.2
+  },
+  {
+   "scenario": "start_both",
+   "passed": 9,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [],
+   "seconds": 0.8
+  },
+  {
+   "scenario": "boundaries",
+   "passed": 22,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [],
+   "seconds": 11.0
+  },
+  {
+   "scenario": "viewed",
+   "passed": 3,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [],
+   "seconds": 1.3
+  },
+  {
+   "scenario": "dialogs",
+   "passed": 24,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [],
+   "seconds": 29.2
+  },
+  {
+   "scenario": "together",
+   "passed": 1,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [],
+   "seconds": 5.5
+  },
+  {
+   "scenario": "inactive_pane",
+   "passed": 4,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [],
+   "seconds": 2.0
+  },
+  {
+   "scenario": "reload",
+   "passed": 4,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [],
+   "seconds": 2.5
+  },
+  {
+   "scenario": "frozen",
+   "passed": 5,
+   "failed": 0,
+   "counted": {
+    "pi-stale": 2
+   },
+   "answered_revoked": [],
+   "seconds": 22.0
+  },
+  {
+   "scenario": "restart",
+   "passed": 4,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [],
+   "seconds": 25.7
+  },
+  {
+   "scenario": "disable",
+   "passed": 8,
+   "failed": 0,
+   "counted": {
+    "pi-capability-disabled": 2
+   },
+   "answered_revoked": [],
+   "seconds": 13.4
+  },
+  {
+   "scenario": "not_loaded",
+   "passed": 12,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [],
+   "seconds": 42.1
+  },
+  {
+   "scenario": "out_of_order",
+   "passed": 6,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [],
+   "seconds": 14.4
+  },
+  {
+   "scenario": "endings",
+   "passed": 5,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [],
+   "seconds": 2.1
+  },
+  {
+   "scenario": "native_sessions",
+   "passed": 33,
+   "failed": 0,
+   "counted": {
+    "pi-capability-disabled": 1
+   },
+   "answered_revoked": [],
+   "seconds": 29.2
+  },
+  {
+   "scenario": "capabilities",
+   "passed": 58,
+   "failed": 0,
+   "counted": {
+    "pi-capability-disabled": 8
+   },
+   "answered_revoked": [],
+   "seconds": 58.6
+  },
+  {
+   "scenario": "on_the_way",
+   "passed": 25,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [
+    "signal",
+    "signal",
+    "lifecycle",
+    "lifecycle"
+   ],
+   "seconds": 47.5
+  },
+  {
+   "scenario": "unsupported_ids",
+   "passed": 29,
+   "failed": 0,
+   "counted": {},
+   "answered_revoked": [],
+   "seconds": 9.8
+  },
+  {
+   "scenario": "exec_peer",
+   "passed": 11,
+   "failed": 0,
+   "counted": {
+    "pi-peer-executed": 2
+   },
+   "answered_revoked": [],
+   "seconds": 3.3
+  }
+ ],
+ "counted_outside_any_scenario": {}
+}

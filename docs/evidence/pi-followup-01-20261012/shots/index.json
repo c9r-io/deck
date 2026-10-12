@@ -1,0 +1,130 @@
+{
+ "pilay-board-en-100.jpg": {
+  "of": "pilay-board-en-100.png",
+  "original_sha256": "c560cca81fac3290bcb0127289ac17718c964bcdc6dea60d73ce69685001c3c1"
+ },
+ "pilay-board-zh-160.jpg": {
+  "of": "pilay-board-zh-160.png",
+  "original_sha256": "f9bf28db2daed2e3a8cfbe579154f04cd5fa2a94671ff1fad8fb2f8200790e77"
+ },
+ "pilay-attention-en-100.jpg": {
+  "of": "pilay-attention-en-100.png",
+  "original_sha256": "627c21c8abe608a7a33071b5d17d090ac6205dff6096f142417fd6d9c8e87846"
+ },
+ "pilay-attention-zh-160.jpg": {
+  "of": "pilay-attention-zh-160.png",
+  "original_sha256": "8752661136a144822fcb210e0f6fce406ab81c6f28562a0fe1938365245464ad"
+ },
+ "pilay-attention-quiet-zh-160.jpg": {
+  "of": "pilay-attention-quiet-zh-160.png",
+  "original_sha256": "d36b11e0964bea302ad652cd3d7f6ada1a42d726be6395d149a93df507749696"
+ },
+ "pilay-why-unsupported-zh-160.jpg": {
+  "of": "pilay-why-unsupported-zh-160.png",
+  "original_sha256": "57d0604d279782bf01d25fb7397b3be3187cdf3311c67d58038d37b73416f0cb"
+ },
+ "pilay-why-unavailable-en-100.jpg": {
+  "of": "pilay-why-unavailable-en-100.png",
+  "original_sha256": "8336bc3ec3c56855bf3a8ab1dc5eadda736c429eab26ed54a3cd41abce84339c"
+ },
+ "pilay-settings-reload-en-100.jpg": {
+  "of": "pilay-settings-reload-en-100.png",
+  "original_sha256": "8c6e52f8eac59ac94ece616395dd0ff8bbde1fa9cca830350b54e822fbac896d"
+ },
+ "pilay-settings-reload-zh-160.jpg": {
+  "of": "pilay-settings-reload-zh-160.png",
+  "original_sha256": "641e47f4e19ddb7e4e8e2c211b54a757378453e3e4190a58332e1edae9b82d41"
+ },
+ "pilay-settings-conflict-zh-100.jpg": {
+  "of": "pilay-settings-conflict-zh-100.png",
+  "original_sha256": "17864ffcfa19bd9c482afeeddfaf75a22e5483f4da9b331ca456eb69e0d25928"
+ },
+ "pilay-settings-details-zh-160.jpg": {
+  "of": "pilay-settings-details-zh-160.png",
+  "original_sha256": "aca630def28ce41fb8f671dd309b913dce2c896197df823b53cef4642e669ba7"
+ },
+ "pilay-settings-refused-en-160.jpg": {
+  "of": "pilay-settings-refused-en-160.png",
+  "original_sha256": "94aa3adb0279d1e8e2e585b8d863a31f9557be4c681c97529c7090571b7da74a"
+ },
+ "pilay-review-mixed-en-100.jpg": {
+  "of": "pilay-review-mixed-en-100.png",
+  "original_sha256": "1ff2855b0bb3b728c5f027d4f3845016b7f2bb0926e997121557c975c946d2ad"
+ },
+ "pilay-review-mixed-zh-160.jpg": {
+  "of": "pilay-review-mixed-zh-160.png",
+  "original_sha256": "400fa7b05c35f26ec78939f39c206845dec178dedab443fedde36188055338af"
+ },
+ "pilay-review-policy-zh-160.jpg": {
+  "of": "pilay-review-policy-zh-160.png",
+  "original_sha256": "6564b48bb9dc6f1cfdc88d673a59e8d254369c691f926c033f4115a1b21fca1c"
+ },
+ "pilay-review-none-zh-100.jpg": {
+  "of": "pilay-review-none-zh-100.png",
+  "original_sha256": "414f9ace8b3de46ee88b6772d9ed32e990b2a731f8374baa100533d92f9ddd5f"
+ },
+ "pilay-review-setup-en-160.jpg": {
+  "of": "pilay-review-setup-en-160.png",
+  "original_sha256": "04feb0ea6b719d8c2d4d1b4cee6a951bf77a1b6603a152cfbbb140075d14392a"
+ },
+ "pilay-review-unreadable-zh-160.jpg": {
+  "of": "pilay-review-unreadable-zh-160.png",
+  "original_sha256": "f2689a48223ddc081465bd7dde963d3b4dfea98dbe852770ffbf7fc9ba27eb36"
+ },
+ "pilay-review-result-zh-160.jpg": {
+  "of": "pilay-review-result-zh-160.png",
+  "original_sha256": "1b3eb9bc652817511b8c0acc48dcbe9267210655d090d8cb3a3964987d10c4f4"
+ },
+ "npm-pilive-settings-en.jpg": {
+  "of": "pilive-settings-en.png",
+  "original_sha256": "b538a99ad2d0229d1c48862e7440fc5e44b16e38b789af0a23b4ed5d563ab278"
+ },
+ "npm-pilive-settings-zh.jpg": {
+  "of": "pilive-settings-zh.png",
+  "original_sha256": "b2546a9e6c3f3c1c45e7a591d9b65715bbb262d12affc4e189d4ba758a9996ba"
+ },
+ "npm-pilive-board-observed-en.jpg": {
+  "of": "pilive-board-observed-en.png",
+  "original_sha256": "11d0159e12475ad3f5773e2d80d069f5e39819d99499f1485a608897c4ba8145"
+ },
+ "npm-pilive-why-observed-zh.jpg": {
+  "of": "pilive-why-observed-zh.png",
+  "original_sha256": "12703e4fb6df885241f65d447cf051dd33f5e0d34cd2e15ae6c2967a4d62cd55"
+ },
+ "npm-pilive-attention.jpg": {
+  "of": "pilive-attention.png",
+  "original_sha256": "611851a84b24e33498d8ebe16211fcbfe36ebeae8e9063fda4063e3fc166a6e4"
+ },
+ "npm-pilive-review-en.jpg": {
+  "of": "pilive-review-en.png",
+  "original_sha256": "1d704ad9bc726fecf5ccd0eb41e85e6276734d257b517999da48ed1bf52fec08"
+ },
+ "npm-pilive-review-zh.jpg": {
+  "of": "pilive-review-zh.png",
+  "original_sha256": "3a51f39498e95cf1be3d5ab96d98e97c2cb24093771942f0c4c2a9375ed292c9"
+ },
+ "npm-pilive-board-unsupported-en.jpg": {
+  "of": "pilive-board-unsupported-en.png",
+  "original_sha256": "00a62a4fe412dbbaf96217f683c35629ff3d658750a7f2eb8fa300b257b1780a"
+ },
+ "npm-pilive-why-unsupported-en.jpg": {
+  "of": "pilive-why-unsupported-en.png",
+  "original_sha256": "f63d1a639ed8748af1f30804d7e3993ab1cf781477a788f7f6b8ef62a7506277"
+ },
+ "npm-pilive-why-unsupported-zh.jpg": {
+  "of": "pilive-why-unsupported-zh.png",
+  "original_sha256": "4ffa673cedd034e9f8d78863acde1eddfb3aaef2b1479981ed6bcaa17af2f8a5"
+ },
+ "standalone-pilive-attention.jpg": {
+  "of": "pilive-attention.png",
+  "original_sha256": "611851a84b24e33498d8ebe16211fcbfe36ebeae8e9063fda4063e3fc166a6e4"
+ },
+ "standalone-pilive-review-zh.jpg": {
+  "of": "pilive-review-zh.png",
+  "original_sha256": "3a51f39498e95cf1be3d5ab96d98e97c2cb24093771942f0c4c2a9375ed292c9"
+ },
+ "standalone-pilive-why-unsupported-zh.jpg": {
+  "of": "pilive-why-unsupported-zh.png",
+  "original_sha256": "4ffa673cedd034e9f8d78863acde1eddfb3aaef2b1479981ed6bcaa17af2f8a5"
+ }
+}

@@ -1,0 +1,584 @@
+[
+ {
+  "scenario": "exec-other",
+  "rows": [
+   {
+    "step": "hello",
+    "line": "hello 97441 peer-a",
+    "is_child_of_watcher": true,
+    "ppid": "97440",
+    "peerpid": 97441,
+    "token": {
+     "pid": 97441,
+     "pidversion": 6439303
+    },
+    "birth": [
+     1791770703,
+     325809
+    ],
+    "image": "peer-a",
+    "watch_registered": "ok",
+    "watch": []
+   },
+   {
+    "step": "w",
+    "line": "again 97441 peer-a",
+    "peerpid": 97441,
+    "token": {
+     "pid": 97441,
+     "pidversion": 6439303
+    },
+    "birth": [
+     1791770703,
+     325809
+    ],
+    "image": "peer-a",
+    "watch": []
+   },
+   {
+    "step": "x",
+    "line": "resumed 97441 peer-b",
+    "peerpid": 97441,
+    "token": {
+     "pid": 97441,
+     "pidversion": 6439308
+    },
+    "birth": [
+     1791770703,
+     325809
+    ],
+    "image": "peer-b",
+    "watch": [
+     {
+      "ident": 97441,
+      "fflags": [
+       "EXEC"
+      ]
+     }
+    ]
+   },
+   {
+    "step": "w",
+    "line": "again 97441 peer-b",
+    "peerpid": 97441,
+    "token": {
+     "pid": 97441,
+     "pidversion": 6439308
+    },
+    "birth": [
+     1791770703,
+     325809
+    ],
+    "image": "peer-b",
+    "watch": []
+   },
+   {
+    "step": "quit",
+    "peerpid": {
+     "error": 57
+    },
+    "token": {
+     "error": 57
+    },
+    "birth": null,
+    "watch": [
+     {
+      "ident": 97441,
+      "fflags": [
+       "EXIT"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "scenario": "exec-self",
+  "rows": [
+   {
+    "step": "hello",
+    "line": "hello 97443 peer-a",
+    "is_child_of_watcher": true,
+    "ppid": "97440",
+    "peerpid": 97443,
+    "token": {
+     "pid": 97443,
+     "pidversion": 6439310
+    },
+    "birth": [
+     1791770704,
+     711691
+    ],
+    "image": "peer-a",
+    "watch_registered": "ok",
+    "watch": []
+   },
+   {
+    "step": "s",
+    "line": "resumed 97443 peer-a",
+    "peerpid": 97443,
+    "token": {
+     "pid": 97443,
+     "pidversion": 6439315
+    },
+    "birth": [
+     1791770704,
+     711691
+    ],
+    "image": "peer-a",
+    "watch": [
+     {
+      "ident": 97443,
+      "fflags": [
+       "EXEC"
+      ]
+     }
+    ]
+   },
+   {
+    "step": "w",
+    "line": "again 97443 peer-a",
+    "peerpid": 97443,
+    "token": {
+     "pid": 97443,
+     "pidversion": 6439315
+    },
+    "birth": [
+     1791770704,
+     711691
+    ],
+    "image": "peer-a",
+    "watch": []
+   },
+   {
+    "step": "quit",
+    "peerpid": {
+     "error": 57
+    },
+    "token": {
+     "error": 57
+    },
+    "birth": null,
+    "watch": [
+     {
+      "ident": 97443,
+      "fflags": [
+       "EXIT"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "scenario": "spawn-setexec",
+  "rows": [
+   {
+    "step": "hello",
+    "line": "hello 97445 peer-a",
+    "is_child_of_watcher": true,
+    "ppid": "97440",
+    "peerpid": 97445,
+    "token": {
+     "pid": 97445,
+     "pidversion": 6439317
+    },
+    "birth": [
+     1791770705,
+     344650
+    ],
+    "image": "peer-a",
+    "watch_registered": "ok",
+    "watch": []
+   },
+   {
+    "step": "p",
+    "line": "resumed 97445 peer-b",
+    "peerpid": 97445,
+    "token": {
+     "pid": 97445,
+     "pidversion": 6439322
+    },
+    "birth": [
+     1791770705,
+     344650
+    ],
+    "image": "peer-b",
+    "watch": [
+     {
+      "ident": 97445,
+      "fflags": [
+       "EXEC"
+      ]
+     }
+    ]
+   },
+   {
+    "step": "w",
+    "line": "again 97445 peer-b",
+    "peerpid": 97445,
+    "token": {
+     "pid": 97445,
+     "pidversion": 6439322
+    },
+    "birth": [
+     1791770705,
+     344650
+    ],
+    "image": "peer-b",
+    "watch": []
+   },
+   {
+    "step": "quit",
+    "peerpid": {
+     "error": 57
+    },
+    "token": {
+     "error": 57
+    },
+    "birth": null,
+    "watch": [
+     {
+      "ident": 97445,
+      "fflags": [
+       "EXIT"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "scenario": "fork-child-writes",
+  "rows": [
+   {
+    "step": "hello",
+    "line": "hello 97447 peer-a",
+    "is_child_of_watcher": true,
+    "ppid": "97440",
+    "peerpid": 97447,
+    "token": {
+     "pid": 97447,
+     "pidversion": 6439324
+    },
+    "birth": [
+     1791770705,
+     987659
+    ],
+    "image": "peer-a",
+    "watch_registered": "ok",
+    "watch": []
+   },
+   {
+    "step": "f",
+    "line": "child 97449 peer-a",
+    "peerpid": 97449,
+    "token": {
+     "error": 22
+    },
+    "birth": [
+     1791770705,
+     987659
+    ],
+    "image": "peer-a",
+    "watch": [
+     {
+      "ident": 97447,
+      "fflags": [
+       "FORK"
+      ]
+     }
+    ]
+   },
+   {
+    "step": "w",
+    "line": "again 97447 peer-a",
+    "peerpid": 97447,
+    "token": {
+     "pid": 97447,
+     "pidversion": 6439324
+    },
+    "birth": [
+     1791770705,
+     987659
+    ],
+    "image": "peer-a",
+    "watch": []
+   },
+   {
+    "step": "quit",
+    "peerpid": {
+     "error": 57
+    },
+    "token": {
+     "error": 57
+    },
+    "birth": null,
+    "watch": [
+     {
+      "ident": 97447,
+      "fflags": [
+       "EXIT"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "scenario": "fork-child-execs",
+  "rows": [
+   {
+    "step": "hello",
+    "line": "hello 97450 peer-a",
+    "is_child_of_watcher": true,
+    "ppid": "97440",
+    "peerpid": 97450,
+    "token": {
+     "pid": 97450,
+     "pidversion": 6439331
+    },
+    "birth": [
+     1791770706,
+     617889
+    ],
+    "image": "peer-a",
+    "watch_registered": "ok",
+    "watch": []
+   },
+   {
+    "step": "e",
+    "line": "resumed 97452 peer-b",
+    "peerpid": 97452,
+    "token": {
+     "error": 22
+    },
+    "birth": [
+     1791770706,
+     617889
+    ],
+    "image": "peer-a",
+    "watch": [
+     {
+      "ident": 97450,
+      "fflags": [
+       "FORK"
+      ]
+     }
+    ]
+   },
+   {
+    "step": "w",
+    "line": "again 97450 peer-a",
+    "peerpid": 97450,
+    "token": {
+     "pid": 97450,
+     "pidversion": 6439331
+    },
+    "birth": [
+     1791770706,
+     617889
+    ],
+    "image": "peer-a",
+    "watch": []
+   },
+   {
+    "step": "quit",
+    "peerpid": {
+     "error": 57
+    },
+    "token": {
+     "error": 57
+    },
+    "birth": null,
+    "watch": [
+     {
+      "ident": 97450,
+      "fflags": [
+       "EXIT"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "scenario": "detached-exec-other",
+  "rows": [
+   {
+    "step": "hello",
+    "line": "hello 97454 peer-a",
+    "is_child_of_watcher": false,
+    "ppid": "1",
+    "peerpid": 97454,
+    "token": {
+     "pid": 97454,
+     "pidversion": 6439340
+    },
+    "birth": [
+     1791770707,
+     262356
+    ],
+    "image": "peer-a",
+    "watch_registered": "ok",
+    "watch": []
+   },
+   {
+    "step": "w",
+    "line": "again 97454 peer-a",
+    "peerpid": 97454,
+    "token": {
+     "pid": 97454,
+     "pidversion": 6439340
+    },
+    "birth": [
+     1791770707,
+     262356
+    ],
+    "image": "peer-a",
+    "watch": []
+   },
+   {
+    "step": "x",
+    "line": "resumed 97454 peer-b",
+    "peerpid": 97454,
+    "token": {
+     "pid": 97454,
+     "pidversion": 6439345
+    },
+    "birth": [
+     1791770707,
+     262356
+    ],
+    "image": "peer-b",
+    "watch": [
+     {
+      "ident": 97454,
+      "fflags": [
+       "EXEC"
+      ]
+     }
+    ]
+   },
+   {
+    "step": "w",
+    "line": "again 97454 peer-b",
+    "peerpid": 97454,
+    "token": {
+     "pid": 97454,
+     "pidversion": 6439345
+    },
+    "birth": [
+     1791770707,
+     262356
+    ],
+    "image": "peer-b",
+    "watch": []
+   },
+   {
+    "step": "quit",
+    "peerpid": {
+     "error": 57
+    },
+    "token": {
+     "error": 57
+    },
+    "birth": null,
+    "watch": [
+     {
+      "ident": 97454,
+      "fflags": [
+       "EXIT"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "scenario": "file-replaced",
+  "rows": [
+   {
+    "step": "hello",
+    "line": "hello 97456 peer-a",
+    "is_child_of_watcher": true,
+    "ppid": "97440",
+    "peerpid": 97456,
+    "token": {
+     "pid": 97456,
+     "pidversion": 6439347
+    },
+    "birth": [
+     1791770708,
+     52326
+    ],
+    "image": "peer-a",
+    "watch_registered": "ok",
+    "watch": []
+   },
+   {
+    "step": "w",
+    "line": "again 97456 peer-a",
+    "peerpid": 97456,
+    "token": {
+     "pid": 97456,
+     "pidversion": 6439347
+    },
+    "birth": [
+     1791770708,
+     52326
+    ],
+    "image": "peer-a",
+    "watch": []
+   },
+   {
+    "step": "replace-file",
+    "line": "(file at the peer's path replaced)",
+    "peerpid": 97456,
+    "token": {
+     "pid": 97456,
+     "pidversion": 6439347
+    },
+    "birth": [
+     1791770708,
+     52326
+    ],
+    "image": "peer-a",
+    "watch": []
+   },
+   {
+    "step": "w",
+    "line": "again 97456 peer-a",
+    "peerpid": 97456,
+    "token": {
+     "pid": 97456,
+     "pidversion": 6439347
+    },
+    "birth": [
+     1791770708,
+     52326
+    ],
+    "image": "peer-a",
+    "watch": []
+   },
+   {
+    "step": "quit",
+    "peerpid": {
+     "error": 57
+    },
+    "token": {
+     "error": 57
+    },
+    "birth": null,
+    "watch": [
+     {
+      "ident": 97456,
+      "fflags": [
+       "EXIT"
+      ]
+     }
+    ]
+   }
+  ]
+ }
+]
