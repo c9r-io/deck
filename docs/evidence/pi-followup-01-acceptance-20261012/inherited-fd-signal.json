@@ -1,0 +1,62 @@
+{
+  "root": "/private/tmp/deck-pi-hmyhl4hp",
+  "before": {
+    "pid": 7303,
+    "hello": {
+      "protocol": "pi-observer",
+      "v": 1,
+      "accepted": true
+    },
+    "working": {
+      "protocol": "pi-observer",
+      "v": 1,
+      "ack": 1
+    }
+  },
+  "after": {
+    "protocol": "pi-observer",
+    "v": 1,
+    "ack": 2
+  },
+  "child": {
+    "pid": 7306,
+    "pgid": 7306,
+    "sid": 7306
+  },
+  "child_ps": "7306  7303  7306 ??       /private/tmp/deck-pi-hmyhl4hp/rt/exec-before",
+  "parent_still_same_image": true,
+  "before_image": "/private/tmp/deck-pi-hmyhl4hp/rt/exec-before",
+  "after_image": "/private/tmp/deck-pi-hmyhl4hp/rt/exec-before",
+  "card": {
+    "agent": "turn-done",
+    "alive": true,
+    "codex_signal": null,
+    "episode": 2,
+    "episode_viewed": false,
+    "exited_normally": false,
+    "fg": "exec-before",
+    "finish_fg": "exec-before",
+    "name": "deck-a",
+    "pi_signal": "connected",
+    "scheduler": {
+      "pi": true,
+      "pi_signal": "connected",
+      "pre_fire_pi": true
+    }
+  },
+  "cleanup_exit": 0,
+  "socket_left": false,
+  "build": {
+    "head": "546eb45d648589875c5bfee7d07ce10d6225aa4e",
+    "dirty": false,
+    "dirty_paths": [],
+    "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "source_sha256": "6388ddd457ae330231a6506df19119a0e30b98ad2026393f9b73091402511549",
+    "source_files": 324,
+    "test_binary": "deck_app-5342d33110f51628",
+    "test_binary_sha256": "82124a852b096a6eab633278d9bc1fe609abbc905392a22e2508597bb925f199",
+    "test_binary_run_sha256": "82124a852b096a6eab633278d9bc1fe609abbc905392a22e2508597bb925f199",
+    "probe_carrier_sha256": "82124a852b096a6eab633278d9bc1fe609abbc905392a22e2508597bb925f199"
+  },
+  "fixture_sha256": "b76507b574cd044909e077455bbeb5dec69cb71607a77b5c45b5e7ef237a4da9"
+}

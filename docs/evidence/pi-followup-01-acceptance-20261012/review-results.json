@@ -1,0 +1,116 @@
+{
+  "review_head": "546eb45d648589875c5bfee7d07ce10d6225aa4e",
+  "code_commit": "eb16c7123f001149ec3d3aa6c4e8f5b78bc45d1a",
+  "source_sha256": "6388ddd457ae330231a6506df19119a0e30b98ad2026393f9b73091402511549",
+  "independent": {
+    "rust": {
+      "command": "cargo test --offline --locked --manifest-path app/src-tauri/Cargo.toml --bin deck-app --test edr_quiet --test external_admission --test log_privacy --test signal_census -- --test-threads=1",
+      "exit": 0,
+      "unit_passed": 1228,
+      "ignored": 13,
+      "safety_passed": 44,
+      "log": "/private/tmp/deck-pi-review2-qhk10fvq/rust.log"
+    },
+    "ui": {
+      "command": "scripts/ui-tests",
+      "exit": 0,
+      "passed": 777,
+      "log": "/private/tmp/deck-pi-followup-review-ui.log"
+    },
+    "native_first": {
+      "exit": 1,
+      "passed": 44,
+      "stopped": "ready timeout; suspected stdout framing",
+      "root": "/private/tmp/deck-pi-zoxxyvfn"
+    },
+    "native_reader_adjusted": {
+      "exit": 0,
+      "passed": 170,
+      "production_changed": false,
+      "root": "/private/tmp/deck-pi-tjhiidf_"
+    },
+    "adversarial_child": {
+      "signal_accepted": true,
+      "lifecycle_accepted": true,
+      "expected": "refuse actual writer outside foreground terminal",
+      "verdict": "FAIL"
+    },
+    "hello_before_watch": {
+      "basis": "source review and implementer admission",
+      "native_exact_interleaving_run": false,
+      "verdict": "FAIL"
+    }
+  },
+  "verdicts": {
+    "F01": "FAIL",
+    "F02": "PASS",
+    "F03": "PASS",
+    "F04": "PASS within scoped UI; external publication and accounts BLOCKED",
+    "F05": "PASS",
+    "F06": "PASS",
+    "Design": "FAIL",
+    "Implementation": "FAIL",
+    "P1a": "FAIL",
+    "P1": "BLOCKED",
+    "P2": "FAIL",
+    "P3": "BLOCKED",
+    "Security": "FAIL",
+    "Regression": "PASS for tested backend/frontend/safety scope; native harness framing needs repair",
+    "Native_E2E": "FAIL when added adversarial cases included",
+    "Product_Constitution": "FAIL Signal Integrity; product ownership and execution-authority boundaries preserved"
+  },
+  "cleanup": [
+    {
+      "root": "/private/tmp/deck-pi-hmyhl4hp",
+      "cleanup_exit": 0,
+      "socket_left": false,
+      "final_show_exit": 0,
+      "final_show": "process pid 7275 started Mon Oct 12 14:20:56 2026: gone\ntmux-server pid 7285 started Mon Oct 12 14:20:57 2026 socket /private/tmp/deck-pi-hmyhl4hp/tt/tmux-501/deck-dev: gone\nprocess pid 7303 started Mon Oct 12 14:20:57 2026: gone\nprocess pid 7306 started Mon Oct 12 14:20:58 2026: gone",
+      "moved_to_own_trash_name": "deck-pi-hmyhl4hp-pi-review-20261012"
+    },
+    {
+      "root": "/private/tmp/deck-pi-h42433xd",
+      "cleanup_exit": 0,
+      "socket_left": false,
+      "final_show_exit": 0,
+      "final_show": "process pid 10563 started Mon Oct 12 14:23:25 2026: gone\ntmux-server pid 10570 started Mon Oct 12 14:23:26 2026 socket /private/tmp/deck-pi-h42433xd/tt/tmux-501/deck-dev: gone\nprocess pid 10588 started Mon Oct 12 14:23:26 2026: gone\nprocess pid 10591 started Mon Oct 12 14:23:27 2026: gone",
+      "moved_to_own_trash_name": "deck-pi-h42433xd-pi-review-20261012"
+    },
+    {
+      "root": "/private/tmp/deck-pi-7gwgjnda",
+      "cleanup_exit": 0,
+      "socket_left": false,
+      "final_show_exit": 0,
+      "final_show": "process pid 10950 started Mon Oct 12 14:24:10 2026: gone\ntmux-server pid 10957 started Mon Oct 12 14:24:11 2026 socket /private/tmp/deck-pi-7gwgjnda/tt/tmux-501/deck-dev: gone\nprocess pid 10975 started Mon Oct 12 14:24:11 2026: gone\nprocess pid 10978 started Mon Oct 12 14:24:12 2026: gone",
+      "moved_to_own_trash_name": "deck-pi-7gwgjnda-pi-review-20261012"
+    },
+    {
+      "root": "/private/tmp/deck-pi-y_hsxyfz",
+      "cleanup_exit": 0,
+      "socket_left": false,
+      "final_show_exit": 0,
+      "final_show": "process pid 11070 started Mon Oct 12 14:24:26 2026: gone\ntmux-server pid 11078 started Mon Oct 12 14:24:27 2026 socket /private/tmp/deck-pi-y_hsxyfz/tt/tmux-501/deck-dev: gone\nprocess pid 11096 started Mon Oct 12 14:24:27 2026: gone\nprocess pid 11099 started Mon Oct 12 14:24:27 2026: gone"
+    },
+    {
+      "root": "/private/tmp/deck-pi-zoxxyvfn",
+      "cleanup": {
+        "exit": 0,
+        "processes_from_root": 0,
+        "socket_left": false
+      },
+      "final_show_exit": 0,
+      "final_show": "process pid 6147 started Mon Oct 12 14:20:29 2026: gone\ntmux-server pid 6172 started Mon Oct 12 14:20:30 2026 socket /private/tmp/deck-pi-zoxxyvfn/tt/tmux-501/deck-dev: gone\nprocess pid 6199 started Mon Oct 12 14:20:30 2026: gone\nprocess pid 6229 started Mon Oct 12 14:20:30 2026: gone\nprocess pid 6255 started Mon Oct 12 14:20:31 2026: gone\nprocess pid 6328 started Mon Oct 12 14:20:35 2026: gone\nprocess pid 6542 started Mon Oct 12 14:20:39 2026: gone\nprocess pid 6567 started Mon Oct 12 14:20:39 2026: gone\nprocess pid 6600 started Mon Oct 12 14:20:39 2026: gone\nprocess pid 6661 started Mon Oct 12 14:20:40 2026: gone\nprocess pid 6848 started Mon Oct 12 14:20:44 2026: gone\nprocess pid 7142 started Mon Oct 12 14:20:53 2026: gone",
+      "moved_to_own_trash_name": "deck-pi-zoxxyvfn-pi-review-20261012"
+    },
+    {
+      "root": "/private/tmp/deck-pi-tjhiidf_",
+      "cleanup": {
+        "exit": 0,
+        "processes_from_root": 0,
+        "socket_left": false
+      },
+      "final_show_exit": 0,
+      "final_show": "process pid 10035 started Mon Oct 12 14:22:44 2026: gone\ntmux-server pid 10042 started Mon Oct 12 14:22:45 2026 socket /private/tmp/deck-pi-tjhiidf_/tt/tmux-501/deck-dev: gone\nprocess pid 10055 started Mon Oct 12 14:22:45 2026: gone\nprocess pid 10081 started Mon Oct 12 14:22:46 2026: gone\nprocess pid 10107 started Mon Oct 12 14:22:46 2026: gone\nprocess pid 10170 started Mon Oct 12 14:22:50 2026: gone\nprocess pid 10234 started Mon Oct 12 14:22:54 2026: gone\nprocess pid 10256 started Mon Oct 12 14:22:54 2026: gone\nprocess pid 10273 started Mon Oct 12 14:22:54 2026: gone\nprocess pid 10292 started Mon Oct 12 14:22:55 2026: gone\nprocess pid 10323 started Mon Oct 12 14:22:59 2026: gone\nprocess pid 10413 started Mon Oct 12 14:23:08 2026: gone\nprocess pid 10446 started Mon Oct 12 14:23:10 2026: gone\nprocess pid 10468 started Mon Oct 12 14:23:10 2026: gone\nprocess pid 10705 started Mon Oct 12 14:23:39 2026: gone\nprocess pid 10717 started Mon Oct 12 14:23:39 2026: gone\nprocess pid 10901 started Mon Oct 12 14:24:07 2026: gone\nprocess pid 10924 started Mon Oct 12 14:24:08 2026: gone\nprocess pid 11261 started Mon Oct 12 14:24:54 2026: gone\nprocess pid 11297 started Mon Oct 12 14:24:56 2026: gone\nprocess pid 11322 started Mon Oct 12 14:24:57 2026: gone\nprocess pid 11365 started Mon Oct 12 14:24:58 2026: gone\nprocess pid 11399 started Mon Oct 12 14:24:59 2026: gone\nprocess pid 11436 started Mon Oct 12 14:25:00 2026: gone\nprocess pid 11464 started Mon Oct 12 14:25:01 2026: gone\nprocess pid 11500 started Mon Oct 12 14:25:02 2026: gone\nprocess pid 11538 started Mon Oct 12 14:25:04 2026: gone\nprocess pid 11559 started Mon Oct 12 14:25:05 2026: gone\nprocess pid 11580 started Mon Oct 12 14:25:05 2026: gone"
+    }
+  ]
+}
