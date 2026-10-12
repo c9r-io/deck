@@ -116,11 +116,16 @@
 //!   descriptor of its own could have been the pane's foreground program
 //!   itself, and a lease says that this program speaks as a Pi observer,
 //!   never whose program it is ("Who may bind"). And (c) takes the making
-//!   of a connection for one step: both runtimes Pi ships on create the
-//!   socket and connect it in one call. A runtime in which another thread
-//!   forked between those two system calls, at the instant of a look,
-//!   would give that child a connection the mark counts as later; the
-//!   child would still have to come by the nonce.
+//!   of a connection for one step. It is one native call on the JavaScript
+//!   thread in both runtimes (libuv `uv_pipe_connect2`; uSockets `bsd.c`),
+//!   and an ordinary child (`POSIX_SPAWN_CLOEXEC_DEFAULT`) inherits no
+//!   descriptor. Another thread can fork inside it — a Worker, or Bun's
+//!   `Bun.openInEditor` (Pi 1.1.0 never calls it; an extension can), of whose
+//!   children 9 and then 8 in 1000 were born with the half-made connection:
+//!   close-on-exec comes after `socket()` (no `SOCK_CLOEXEC` on macOS). Such a
+//!   child is an executed image without the nonce, and a connection carries
+//!   one message: at worst its bytes get `again`, or it takes its parent's
+//!   one answer and the observer binds again; none of its lines is believed.
 //! - **A hello is not believed; an attest is.** What reached the socket
 //!   before Deck looked at a process says nothing about the program that
 //!   runs in it now: an earlier image may have written it and executed

@@ -1336,12 +1336,12 @@ pub(crate) fn ingest(
 // ---------- Pi observer ingress ------------------------------------------------
 //
 // Pi's words do not arrive as hook lines: an observer inside the Pi process
-// holds one stream on the status socket, and `agent_pi::transport` verifies
-// every frame of it (kernel peer, pane, foreground generation, lease, order)
-// before anything below is called. These functions are the ONLY writers of a
-// Pi observation into the shared store, and they take what the transport
-// proved — never a wire line. The store, the projection, episodes and every
-// consumer are the same as for a hook word.
+// makes a connection to the status socket for each message it sends, and
+// `agent_pi::transport` verifies every one (kernel peer, pane, foreground
+// generation, lease, order) before anything below is called. These functions
+// are the ONLY writers of a Pi observation into the shared store, and they
+// take what the transport proved — never a wire line. The store, the
+// projection, episodes and every consumer are the same as for a hook word.
 
 /// A proven Pi observer said hello for this pane generation: the generation
 /// is recognized as Pi from here on, and `coverage` is what may be said
