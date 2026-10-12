@@ -1,5 +1,14 @@
 # Pi v0.8.0 implementation: evidence
 
+> **更正（Follow-up 01，2026-10-12）。** 独立验收（`../pi-acceptance-20261012/`）未通过本轮实现。
+> 本文件是当时的记录，保留原样供对照，但其中有两处判定是**错误的**，已在原位改正：
+> A12（同 PID `exec` 当时只用合成的内核事实测过 PID 复用，真实 `exec` 会让旧 lease 继续可信）
+> 和 B02（257 字节的 Session ID 被 ACK 后静默丢弃，同一 lease 随后还能接受另一个 ID）。
+> 本文件所说的“final tree”也没有可复核的构建标识：`native-result.json` 记录的
+> `deck_head` 是 `812b786`，没有测试可执行文件的哈希和当时工作区的差异（F05）。
+> 六个问题的根因、修复、重新生成的证据，以及当时未运行的 G06/C03/B12/A26 布局门禁，
+> 见 [`../pi-followup-01-20261012/README.md`](../pi-followup-01-20261012/README.md)。
+
 What was implemented against `docs/design/pi-v0.8.0/`, what was run, on what,
 and what it does and does not show. One row per acceptance item, with the
 place and the build it ran on. Nothing here is a release result: every run
@@ -76,7 +85,7 @@ with native session ids) stay in the experiment roots and are not committed.
 | A09 | I/N | N `start_both`: peer is the terminal's foreground leader, a child of the pane's shell, on its terminal, for both runtimes; `transport::tests::real_processes_bind_only_as_their_own_pane_s_foreground_program` | PASS |
 | A10 | I/N | `two_panes_of_one_project_never_share_a_state`; N `together`, `inactive_pane` | PASS |
 | A11 | I/S | `only_the_pane_s_own_foreground_program_may_bind`; the real-process test (another pane's name, a background child with the inherited environment, a wrapper's child); non-TUI modes refused by the wire and never connected by the observer | PASS |
-| A12 | I/S | `every_frame_is_judged_by_what_the_kernel_says_now`, `a_foreground_that_changes_during_the_listing_writes_nothing`, `an_answer_that_outlasts_its_budget_is_late_and_commits_nothing_that_stays` | PASS (synthetic kernel facts; an exec under the same pid was not staged with a real process) |
+| A12 | I/S | `every_frame_is_judged_by_what_the_kernel_says_now`, `a_foreground_that_changes_during_the_listing_writes_nothing`, `an_answer_that_outlasts_its_budget_is_late_and_commits_nothing_that_stays` | ~~PASS~~ **FAIL（更正）**：这些测试用合成的内核事实模拟的是 PID 复用，不是同 PID 的 `exec`；独立验收用真实进程证明 `exec` 之后旧 lease 仍被 ACK、卡片仍显示 `connected`。修复与真实 `exec` 证据见 Follow-up 01 的 F01。 |
 | A13 | U/I | `frames_are_numbered_without_a_gap_and_runs_never_go_back`, `one_observer_per_foreground_generation_and_the_first_stays`, `ending_a_lease_withdraws_its_own_observation_and_nothing_else` | PASS |
 | A14 | N | `boundaries`, ordinary run, both runtimes | PASS |
 | A15 | N | retry, queued follow-up, continuation before the settlement, both runtimes (provider asked twice, settled once, one ending) | PASS |
@@ -127,7 +136,7 @@ that residual; nothing is granted by it.
 | AC | Kind | What ran | Verdict |
 |---|---|---|---|
 | B01 | U/I/N/W | scanner pin of the one guarded read; `pi-observer.test.mjs` (the session manager is never asked without the capability); `session_frames_need_their_own_capability_and_are_gone_with_the_lease`; N `native_sessions` (signal alone names no session, session alone reports no run, both on one stream); W `pi-session` | PASS |
-| B02 | U/I/N | `a_native_id_is_pi_s_own_shape_and_never_cut_short`; N: an id of the user's own (`--session-id`) kept as it is; 257 bytes acknowledged and not kept | PASS |
+| B02 | U/I/N | `a_native_id_is_pi_s_own_shape_and_never_cut_short`; N: an id of the user's own (`--session-id`) kept as it is; 257 bytes acknowledged and not kept | ~~PASS~~ **FAIL（更正）**：“ACK 后不保留”正是缺陷——超限 ID 被静默丢弃且清空了一致性记录，同一 lease 之后可以接受另一个 ID，前端也没有 unsupported 状态。修复见 Follow-up 01 的 F02。 |
 | B03 | N | startup, `/fx-new`, `/fx-fork`, in-process resume by path, with Pi's own reasons and the id Pi names | PASS on the npm runtime; the in-process changes were not repeated on the standalone build |
 | B04 | N | a session named on the command line starts as `startup`; a path that does not exist creates a session; an id that does not exist starts no Pi; `--session-id` | PASS |
 | B05 | N | `/reload`: the same id, another lease, the old one ended by its reset | PASS (npm) |
@@ -213,6 +222,8 @@ Test and harness mistakes of this work (not product defects), each fixed:
    Pi reason sentence carries the label; other rows have no visible label.
 8. An id longer than 256 bytes is acknowledged and not kept, rather than
    refusing the stream (a refusal would repeat at every reconnect).
+   **（更正：这条偏差未被接受，已撤销。Follow-up 01 的 F02 改为显式、粘性的
+   `unsupported`，见该轮证据。第 4 条“关一个能力会结束整条流”同样已由 F03 改掉。）**
 9. `CLAUDE.md`'s module index does not list `agent_pi` (the file may not be
    edited in this work).
 
