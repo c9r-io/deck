@@ -1,0 +1,117 @@
+{
+  "reviewed_commit": "7e4f8d7bf3900cc876d60a5c87e41db508400302",
+  "base": "1bdcf57",
+  "production_changes_by_reviewer": false,
+  "test_binary_sha256": "091e1c8da4bd4cc0d5bc362b31f4c59d193265e9d09658d46d7ec52c25f74de1",
+  "ui": {
+    "command": "scripts/ui-tests",
+    "exit": 0,
+    "passed": 771,
+    "failed": 0
+  },
+  "native": {
+    "command": "python3 scripts/pi_native.py --test-binary <freshly built test binary> --standalone <verified Pi 1.1.0> --only boundaries,disable,native_sessions",
+    "exit": 0,
+    "passed": 71,
+    "failed": [],
+    "cleanup": {
+      "exit": 0,
+      "processes_from_root": 0,
+      "socket_left": false
+    },
+    "artifacts": {
+      "npm": {
+        "package_version": "1.1.0",
+        "cli_sha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+        "node_version": "v24.19.0",
+        "node_sha256": "27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1"
+      },
+      "standalone": {
+        "version": "1.1.0",
+        "pi_sha256": "daea10db90f7806cd0ae5be89fcf819d47b5ed3df99b7c79c31186a1cd6a6501"
+      },
+      "observer_sha256": {
+        "observer.ts": "14ee240091ef22cb7249281da4a1cb21429da2144dcf383b49d7ef68518cee3e",
+        "signal.ts": "8f86651da085a019e48173fb226b4e35743676bfb692c9e98843e3eb44b597f1",
+        "lifecycle.ts": "13e6940dfc940a361221c21c5b9a738dad2a97b22ece322c37325012fe03c45a",
+        "both.ts": "906761d9c5b69b25db8052bc4c963e6f9e683ec5bf910eae5614de0642255a61"
+      },
+      "tmux_sha256": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0",
+      "deck_head": "7e4f8d7bf3900cc876d60a5c87e41db508400302"
+    }
+  },
+  "same_pid_exec": {
+    "before": {
+      "hello": {
+        "protocol": "pi-observer",
+        "v": 1,
+        "accepted": true
+      },
+      "working": {
+        "protocol": "pi-observer",
+        "v": 1,
+        "ack": 1
+      }
+    },
+    "after": {
+      "protocol": "pi-observer",
+      "v": 1,
+      "ack": 2
+    },
+    "same_pid": true,
+    "image_changed": true,
+    "before_image": "<root>/rt/exec-before",
+    "after_image": "<root>/rt/exec-after",
+    "card": {
+      "agent": "turn-done",
+      "alive": true,
+      "codex_signal": null,
+      "episode": 2,
+      "episode_viewed": false,
+      "exited_normally": false,
+      "fg": "exec-after",
+      "finish_fg": "exec-after",
+      "name": "deck-a",
+      "pi_signal": "connected",
+      "scheduler": {
+        "pi": true,
+        "pi_signal": "connected",
+        "pre_fire_pi": true
+      }
+    },
+    "cleanup_exit": 0,
+    "socket_left": false
+  },
+  "pre_hello_stall": {
+    "waited_seconds": 3.53,
+    "probe_answer_before_slow_closed": "",
+    "answer_after_slow_closed": "{\"protocol\":\"pi-observer\",\"v\":1,\"refused\":\"bad-frame\"}\n",
+    "cleanup_exit": 0,
+    "socket_left": false
+  },
+  "raw_evidence_root": "/private/tmp/deck-pi-accept-n_kowcmb",
+  "regression": {
+    "command": "cargo test --offline --locked --manifest-path app/src-tauri/Cargo.toml --bin deck-app --test edr_quiet --test external_admission --test log_privacy --test signal_census -- --test-threads=1",
+    "exit": 0,
+    "unit_passed": 1209,
+    "unit_ignored": 13,
+    "safety_passed": {
+      "edr_quiet": 20,
+      "external_admission": 8,
+      "log_privacy": 7,
+      "signal_census": 9
+    },
+    "scope": "Rebuilt current production source under isolated HOME; not a rerun of every workspace gate."
+  },
+  "cleanup_audit": {
+    "registry_show_exit": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "registered_running": 0,
+    "root_executables_remaining": 0
+  }
+}
