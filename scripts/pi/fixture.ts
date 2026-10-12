@@ -1,7 +1,7 @@
 // fixture.ts — TEST ONLY. Drives a real interactive Pi without a model
 // account: a deterministic local provider and a few commands that make Pi
-// itself retry, queue a follow-up, continue after a settlement, raise UI
-// prompts and replace its session. It is loaded with `-e` by
+// itself retry, queue a follow-up, continue after a settlement, run one of
+// its own tools, raise UI prompts and replace its session. It is loaded with `-e` by
 // `scripts/pi_native.py` inside an experiment root and is never packaged:
 // Deck's observer (`app/src-tauri/resources/pi/`) uses none of these APIs.
 //
@@ -17,6 +17,7 @@ export default function (pi) {
   let order = 0;
   let failNext = 0;
   let slowNext = 0;
+  let toolNext = null;
   let followUp = false;
   let afterSettle = false;
   let continueOnce = false;
@@ -46,18 +47,24 @@ export default function (pi) {
       if (failed) failNext -= 1;
       const wait = slowNext || 100;
       slowNext = 0;
+      // one call of Pi's own shell tool, when a command asked for one: Pi runs it and asks again
+      const tool = failed ? null : toolNext;
+      if (tool) toolNext = null;
       const answer = () => {
         const aborted = !!(options && options.signal && options.signal.aborted);
+        const content = tool
+          ? [{ type: "toolCall", id: `call_fixture_${order}`, name: "bash", arguments: { command: tool } }]
+          : [{ type: "text", text: "fixture response" }];
         const message = {
-          role: "assistant", content: [{ type: "text", text: "fixture response" }], api: model.api,
+          role: "assistant", content, api: model.api,
           provider: model.provider, model: model.id,
           usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-          stopReason: aborted ? "aborted" : failed ? "error" : "stop", timestamp: Date.now(),
+          stopReason: aborted ? "aborted" : failed ? "error" : tool ? "toolUse" : "stop", timestamp: Date.now(),
           ...(failed && !aborted ? { errorMessage: "overloaded_error" } : {}),
         };
         if (aborted) stream.push({ type: "error", reason: "aborted", error: message });
         else if (failed) stream.push({ type: "error", reason: "error", error: message });
-        else stream.push({ type: "done", reason: "stop", message });
+        else stream.push({ type: "done", reason: tool ? "toolUse" : "stop", message });
         stream.end();
       };
       const timer = setTimeout(answer, wait);
@@ -73,6 +80,7 @@ export default function (pi) {
   pi.registerCommand("fx-error", { handler: async () => { failNext = 99; pi.sendUserMessage("fixture error"); } });
   pi.registerCommand("fx-ok", { handler: async () => { failNext = 0; } });
   pi.registerCommand("fx-slow", { handler: async (text) => { slowNext = Number(text) || 4000; pi.sendUserMessage("fixture slow"); } });
+  pi.registerCommand("fx-tool", { handler: async (text) => { toolNext = String(text || "true"); pi.sendUserMessage("fixture tool"); } });
   pi.registerCommand("fx-follow", { handler: async () => { followUp = true; pi.sendUserMessage("fixture follow"); } });
   pi.registerCommand("fx-settled", { handler: async () => { afterSettle = true; pi.sendUserMessage("fixture settled"); } });
   pi.registerCommand("fx-continue", { handler: async () => { continueOnce = true; pi.sendUserMessage("fixture continue"); } });

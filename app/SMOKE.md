@@ -86,8 +86,8 @@ python3 scripts/pi_native.py --test-binary <that executable> \
       start); the switch off. Native ids are compared inside the private
       trace and appear nowhere else.
 - [ ] The run covers both runtimes for: the Settings command writing Deck's
-      one entry and taking it out again byte for byte; hello and lease per
-      pane; ordinary, retried, queued, continued and settlement-started
+      one entry and taking it out again byte for byte; hello, attest and
+      lease per pane; ordinary, retried, queued, continued and settlement-started
       runs; an abort and a provider error; every dialog kind and two at
       once; Pi's own dialogs; two Pis at once; a pane that is not in front;
       reload; fifteen seconds of silence; a Deck restart; the switch turned
@@ -95,33 +95,43 @@ python3 scripts/pi_native.py --test-binary <that executable> \
       disabling entry, with a missing or broken entry; the dialog
       notifications arriving out of order; quit, a killed Pi, and a plain
       `node` that is not Pi.
-- [ ] Four more scenarios run on both runtimes. `capabilities`, twice with
+- [ ] Five more scenarios run on both runtimes. `capabilities`, twice with
       the two runtimes changing places, so that each is once the idle one and
       once the one in a run for either switch: each
       switch turned off by itself while Pi is idle and while it is in a run —
-      the stream keeps its lease and the other capability, an unread ending
+      the lease stands and keeps the other capability, an unread ending
       is not removed, a run that was open ends on the same lease, nothing is
       refused for it; turned on again nothing comes back before Pi's own
       reload, and Settings says `needs-reload` for exactly as long as a
-      running Pi waits; both off ends the streams; a quick sequence of
-      switches; and with Deck's own switches no frame of a lost capability is
-      ever sent (a stream bound with less than its runtime loaded hears so
-      before its acceptance). `on_the_way`: Deck's entry is changed in Pi's
+      running Pi waits; both off ends the leases; a quick sequence of
+      switches. Deck acts on its own switch at once; an observer hears of it
+      in the answer to its next message (its acceptance, when it is bound
+      with less than its runtime loaded), so at most a frame that was on its
+      way is answered `revoked`, and none after that. `on_the_way`: Deck's
+      entry is changed in Pi's
       settings BY HAND, so Deck learns of it only when it commits the next
       frame — the ending of a run, the teardown of a session — which is then
       answered `revoked`: its number is used up, nothing is written (never a
-      `turn-done`, never a `shutdown`), the stream goes on with what it has
-      left, and the other, idle stream is told at its next heartbeat.
+      `turn-done`, never a `shutdown`), the lease goes on with what it has
+      left, and the other, idle lease is told at its next heartbeat.
       `unsupported_ids`: Pi started with a session id of 256, 257,
       512 and 513 bytes — observed whole up to 256, said to be `unsupported`
       beyond (never cut short, never passed over), runs reported throughout,
-      a new runtime in a session Deck keeps observed again. `exec_peer`: a
+      a new runtime in a session Deck keeps observed again.
+      `tool_children`: Pi started WITH its tools runs its shell tool, a real
+      child of Pi — Deck asks for the observer's next frame once more
+      (`again`) and writes it once, under the same lease; then the tool runs
+      a program that reaches the status socket with the pane's environment
+      and tries to bind and to end Pi's run: refused `not-foreground` and
+      `sender-mismatch`, and Pi's own run is what it was. `exec_peer`: a
       real program in a pane's foreground (`scripts/pi/exec-peer.c`, TEST
-      ONLY) binds, forks, then EXECUTES ANOTHER IMAGE in the same pid with
-      the connection kept — the frame the new image sends is refused
-      `peer-executed`, a silent exec is ended by the poll, and nothing of the
-      old observer is shown; a file replaced on disk under the running
-      program changes nothing.
+      ONLY) binds, forks, then EXECUTES ANOTHER IMAGE in the same pid, which
+      is told the lease and the nonce the old one held — the frame the new
+      image sends is refused `peer-executed`, a silent exec ends the lease
+      without a frame, and nothing of the old observer is shown; a file
+      replaced on disk under the running program changes nothing; children
+      of the bound program, on the connection they inherited and on one of
+      their own, write nothing for it.
 - [ ] The summary names its build: the commit, whether the working tree
       differed from it and in which files, one hash over the sources as they
       were on disk (`scripts/pi_build_identity.py` prints the same for any

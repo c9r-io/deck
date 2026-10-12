@@ -410,14 +410,14 @@ class Run:
                   "[agent-pi] session unsupported-native-id s=")
         self.check("app.log holds the production's closed lines for each step",
                    all(text in log for text in wanted), missing=[text for text in wanted if text not in log])
-        # the stream that lost session observation is the one that reported the next run: between the
-        # narrowing and that run's ending no observer was bound and no stream ended
+        # the lease that lost session observation is the one that reported the next run: between the
+        # narrowing and that run's ending no observer was bound and no lease ended
         lines = log.splitlines()
         narrowed = next((n for n, line in enumerate(lines) if "[agent-pi] observer narrowed s=" in line and "lifecycle=0" in line), None)
         ending = next((n for n, line in enumerate(lines) if narrowed is not None and n > narrowed
                        and "[agent-status] pi turn-done s=" in line), None)
         between = lines[narrowed:ending] if narrowed is not None and ending is not None else []
-        self.check("after session observation was taken from it, the SAME stream reported the next run",
+        self.check("after session observation was taken from it, the SAME lease reported the next run",
                    ending is not None and any("[agent-status] pi working s=" in line for line in between)
                    and not any("[agent-pi] observer bound" in line or "[agent-pi] observer ended" in line for line in between),
                    lines_between=len(between))
