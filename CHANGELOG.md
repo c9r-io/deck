@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.8.1 — 2026-10-13 (Nightly)
+
+- New, off by default: Deck can show when Pi (the Pi coding agent) starts
+  working in a card and when an interaction ends. Turn on "Pi work status"
+  in Settings → Agents & notifications; it adds one entry to the
+  `extensions` list in Pi's settings file (`~/.pi/agent/settings.json`)
+  that names an observer extension inside the Deck app. Your other settings
+  and extensions are kept, no program is copied into your home directory,
+  and turning both Pi settings off removes it. A Pi that is already
+  running follows when it next starts or after `/reload`; turning the
+  setting off takes effect at once.
+- What Pi status does not cover: Deck cannot reliably observe when Pi is
+  waiting for your input, so a Pi card never shows "input requested", and
+  the card says so ("Pi connected · limited status"). An ended interaction
+  does not mean the task is finished or succeeded. When Deck has no status
+  from the Pi in a terminal the card says "Pi status unavailable", and for
+  a Pi release outside the supported range, "Pi version not supported".
+- Nothing is sent to Pi automatically. Queued steps and automations that
+  would go to a terminal running Pi are held ("automatic sending to Pi is
+  paused"), whether or not Pi work status is on; use Send now after you
+  have looked at the terminal.
+- A second, separate choice, also off by default: "Pi session observation"
+  lets Deck know which native Pi session currently runs in a terminal. The
+  session's id stays in memory while that Pi runs and is never shown,
+  logged or stored. Deck does not reopen Pi sessions: when you restart the
+  background shell service, the review names a Pi it has verified and says
+  that it is not reopened automatically; reopening it is yours to do.
+- Supported: Pi 1.1.x, installed with npm or as the official standalone
+  build. The extension reports a fixed status word and the pane it runs
+  in, never prompts, output or your files. Deck changes Pi's settings only
+  when it runs from the Applications folder, leaves the file alone when it
+  cannot read it the way it expects, and does not turn its extension back
+  on if you disabled it in Pi's settings yourself. Its entry follows the
+  application: after Deck is installed to another location, the next
+  launch rewrites that one entry to the new path, and nobody who had not
+  turned a Pi setting on is enrolled.
+
 ## 0.8.0 — 2026-10-11 (Nightly)
 
 - New, off by default: when you restart the background shell service, Deck
