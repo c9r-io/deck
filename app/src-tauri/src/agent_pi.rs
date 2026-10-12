@@ -60,9 +60,11 @@
 //!   of a frame that was NOT committed because its capability was taken from
 //!   the stream in the meantime (the stream goes on); `capabilities` with
 //!   the two bits the stream may still use, sent whenever that became less
-//!   than the observer last knew; and `refused` with a closed code, which
-//!   ends the stream. The bits only ever narrow: nothing Deck sends gives a
-//!   running observer a capability back.
+//!   than the observer last knew — for a hello that claims more than the
+//!   settings enable, BEFORE its `accepted`, so that no frame of the rest is
+//!   ever sent; and `refused` with a closed code, which ends the stream.
+//!   The bits only ever narrow: nothing Deck sends gives a running observer
+//!   a capability back.
 //! - **Compatibility is not identity.** `piVersion` is Pi's own exported
 //!   version, used only to decide whether this build knows the meaning of
 //!   the events (`PiVersion::supported`: 1.1.x; 1.1.0 is what ran natively).

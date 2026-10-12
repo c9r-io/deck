@@ -36,7 +36,9 @@
 //   was queued: nothing queued is ever sent on a later connection.
 // - Deck may take a capability away while this runtime lives, and never
 //   gives one back. A `capabilities` line names what the stream may still
-//   do: from then on nothing of a lost capability is read, queued or sent —
+//   do — it may come before `accepted`, when Deck's settings enable less
+//   than this runtime loaded: nothing of the rest is then sent at all. From
+//   then on nothing of a lost capability is read, queued or sent —
 //   without the lifecycle capability the session manager is not touched
 //   again — and what is left goes on on the same connection. A frame that
 //   was on its way is answered `revoked` instead of `ack`; that is an

@@ -1257,12 +1257,13 @@ fn session_frames_need_their_own_capability_and_are_gone_with_the_lease() {
     until("its lease to end", || probe::live() == 0);
 
     // A hello that claims session observation while the settings enable
-    // Signal alone: bound for Signal, told so at once, and its session
-    // frames are not written — without ending the runs it may report.
+    // Signal alone: bound for Signal, told so before its acceptance, and a
+    // session frame it sends all the same is not written — without ending
+    // the runs it may report.
     *shared.enabled.lock_or_recover() = SIGNAL;
     let mut narrowed = Client::open(&service, &hello_with("%1", true, true), 310);
-    assert!(narrowed.accepted());
     assert_eq!(narrowed.capabilities(), Some((true, false)));
+    assert!(narrowed.accepted());
     narrowed.send(start(1, "session-one"));
     assert_eq!(narrowed.revoked(), Some(1), "not committed, and no refusal");
     assert!(sessions().is_empty());
@@ -2231,6 +2232,48 @@ fn a_stream_hears_what_it_may_still_do_and_goes_on() {
     until("the lease to end", || probe::live() == 0);
     assert_eq!(shared.state("deck-a"), None);
     assert_eq!(*reasons.lock_or_recover(), ["pi-capability-disabled"]);
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+}
+
+/// A runtime that loaded more than the settings enable now — a switch was
+/// turned off and that Pi has not reloaded — is bound for what is left, and
+/// hears so BEFORE its acceptance: an observer that reads its lines in order
+/// knows what it may do before it may send anything, so no frame of the
+/// rest, and no session id, ever crosses the socket. One that sends such a
+/// frame all the same gets `revoked`, and the stream goes on.
+#[test]
+fn a_stream_bound_with_less_than_it_claims_hears_so_before_its_acceptance() {
+    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+    let _guard = fresh();
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+    let shared = two_panes();
+    *shared.enabled.lock_or_recover() = SIGNAL;
+    let (service, reasons) = service(&shared, Bounds::LIVE);
+    let mut client = Client::open(&service, &hello_with("%1", true, true), 310);
+    assert_eq!(
+        client.capabilities(),
+        Some((true, false)),
+        "what is left, first"
+    );
+    assert!(client.accepted(), "and then the acceptance");
+    // nothing else is said unasked: the next line answers the next frame
+    client.send(serde_json::json!({"seq": 1, "run": 1, "state": "working"}));
+    assert_eq!(client.ack(), Some(1));
+    assert_eq!(shared.state("deck-a"), Some("working"));
+    // a session frame on a stream that never had the capability in use
+    client.send(serde_json::json!({"seq": 2, "event": "snapshot", "nativeSessionId": "one"}));
+    assert_eq!(client.revoked(), Some(2));
+    assert!(sessions().is_empty());
+    assert_eq!(probe::revoked(), [("deck-a".to_string(), "lifecycle")]);
+    client.send(serde_json::json!({"seq": 3, "run": 1, "state": "turn-done"}));
+    assert_eq!(client.ack(), Some(3));
+    assert_eq!(probe::live(), 1);
+    assert!(reasons.lock_or_recover().is_empty());
+    // a hello that claims exactly what is enabled hears nothing before it
+    let mut exact = Client::open(&service, &hello_with("%2", true, false), 410);
+    assert!(exact.accepted());
+    drop((client, exact));
+    until("the leases to end", || probe::live() == 0);
     crate::agent_reentry::lifecycle::reset_pi_for_tests();
 }
 

@@ -67,7 +67,9 @@
 //!   and the lease: turning Signal off withdraws that lease's word and
 //!   episode and nothing else; turning session observation off forgets that
 //!   lease's session and nothing else. The observer is told at once
-//!   (`capabilities`), stops reading and sending for what it lost, and a
+//!   (`capabilities`) — at the bind BEFORE its acceptance, so that a stream
+//!   bound with less than its runtime loaded never sends a frame of the
+//!   rest — stops reading and sending for what it lost, and a
 //!   frame of a lost capability that was already on its way is answered
 //!   `revoked`: its number is used up, nothing is written, the stream goes
 //!   on. A frame of a capability the hello never claimed is a forgery and
@@ -698,6 +700,10 @@ fn commit(
         (Ok(_), Frame::Reset { reason, .. }) => end(lease, reset_code(*reason)),
         _ => {}
     }
+    #[cfg(test)]
+    if let (Ok(Committed::Revoked(_)), Some(capability)) = (&verdict, frame.capability()) {
+        probe::revoked_frame(lease, capability);
+    }
     verdict
 }
 
@@ -1143,10 +1149,15 @@ async fn serve(
         }
     };
     let lease = Held(bound.lease);
-    if write_line(&stream, &super::accepted_line(), bounds.answer)
-        .await
-        .is_err()
-    {
+    // What the hello claimed and the settings do not enable is said BEFORE
+    // the acceptance: the observer then never sends a frame of it, and a
+    // session id that Deck may not observe never crosses the socket.
+    let mut welcome = String::new();
+    if let Some(now) = notice(lease.0) {
+        welcome.push_str(&super::capabilities_line(now));
+    }
+    welcome.push_str(&super::accepted_line());
+    if write_line(&stream, &welcome, bounds.answer).await.is_err() {
         return;
     }
     // what the client sent behind its hello are its next lines
@@ -1246,10 +1257,36 @@ pub(crate) mod probe {
     /// Why each lease ended, in order: what production writes to app.log.
     pub(super) static ENDED: Mutex<Vec<(String, &'static str)>> = Mutex::new(Vec::new());
 
+    /// (session, capability) of every frame that was answered `revoked`,
+    /// in order: a frame of a capability its stream had lost on its way.
+    static REVOKED: Mutex<Vec<(String, &'static str)>> = Mutex::new(Vec::new());
+
     /// Forget every lease (the tasks of an earlier test release nothing).
     pub(crate) fn reset() {
         with_registry(|registry| registry.leases.clear());
         ENDED.lock_or_recover().clear();
+        REVOKED.lock_or_recover().clear();
+    }
+
+    pub(super) fn revoked_frame(lease: u64, capability: crate::agent_pi::Capability) {
+        let session = with_registry(|registry| {
+            registry
+                .leases
+                .get(&lease)
+                .map(|lease| lease.session.clone())
+        });
+        let word = match capability {
+            crate::agent_pi::Capability::Signal => "signal",
+            crate::agent_pi::Capability::Lifecycle => "lifecycle",
+        };
+        if let Some(session) = session {
+            REVOKED.lock_or_recover().push((session, word));
+        }
+    }
+
+    /// (session, capability) of every frame answered `revoked` since `reset`.
+    pub(crate) fn revoked() -> Vec<(String, &'static str)> {
+        REVOKED.lock_or_recover().clone()
     }
 
     /// (session, closed word) of every lease that ended since `reset`.
@@ -1275,25 +1312,36 @@ pub(crate) mod probe {
         PENDING.load(Ordering::Acquire)
     }
 
-    /// Every live lease: its number, its session, the highest run it opened
-    /// and whether that run is open, and the sequence number it expects next.
-    pub(crate) fn leases() -> Vec<(u64, String, u64, bool, u64)> {
+    /// One live lease, as one reading of the registry.
+    pub(crate) struct LeaseSeen {
+        pub(crate) lease: u64,
+        pub(crate) session: String,
+        /// The highest run it opened, and whether that run is open.
+        pub(crate) run: u64,
+        pub(crate) open: bool,
+        /// The sequence number it expects next.
+        pub(crate) next_seq: u64,
+        /// What the stream may still do.
+        pub(crate) usable: Capabilities,
+    }
+
+    /// Every live lease, by its number.
+    pub(crate) fn leases() -> Vec<LeaseSeen> {
         with_registry(|registry| {
             let mut leases: Vec<_> = registry
                 .leases
                 .iter()
                 .filter(|(_, lease)| lease.over.is_none())
-                .map(|(id, lease)| {
-                    (
-                        *id,
-                        lease.session.clone(),
-                        lease.run,
-                        lease.run_open,
-                        lease.next_seq,
-                    )
+                .map(|(id, lease)| LeaseSeen {
+                    lease: *id,
+                    session: lease.session.clone(),
+                    run: lease.run,
+                    open: lease.run_open,
+                    next_seq: lease.next_seq,
+                    usable: lease.usable,
                 })
                 .collect();
-            leases.sort();
+            leases.sort_by_key(|seen| seen.lease);
             leases
         })
     }

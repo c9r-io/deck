@@ -763,9 +763,19 @@ mod native {
             crate::notify::announced_for_tests().into_iter().collect();
         let leases: Vec<Value> = probe::leases()
             .into_iter()
-            .map(|(lease, session, run, open, next)| {
-                json!({ "lease": lease, "session": session, "run": run, "open": open, "next_seq": next })
+            .map(|seen| {
+                json!({
+                    "lease": seen.lease, "session": seen.session, "run": seen.run, "open": seen.open,
+                    "next_seq": seen.next_seq,
+                    // what the stream may still do, as the transport holds it
+                    "signal": seen.usable.signal, "lifecycle": seen.usable.lifecycle,
+                })
             })
+            .collect();
+        // every frame that was answered `revoked`, in order
+        let revoked: Vec<Value> = probe::revoked()
+            .into_iter()
+            .map(|(session, capability)| json!({ "session": session, "capability": capability }))
             .collect();
         let ended: Vec<Value> = probe::ended()
             .into_iter()
@@ -784,6 +794,7 @@ mod native {
             "ended": ended,
             "sessions": sessions,
             "unsupported": unsupported,
+            "revoked": revoked,
             "pending": probe::pending(),
             "drops": drops.counts(),
             "announced": announced,

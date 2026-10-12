@@ -802,3 +802,35 @@ test('nothing Deck says gives a capability back, and a frame answered `revoked` 
     await other.server.close();
   }
 });
+
+test('bound with less than this runtime loaded: told before the acceptance, and nothing of the rest is sent', async () => {
+  const server = deck('narrow-first', 'manual');
+  await server.listening;
+  const host = pi();
+  entries.both.factory(host.api);
+  route(routed(server));
+  const session = sessionContext(host, 'session-one');
+  host.emit('session_start', { reason: 'startup' }, session.ctx);
+  await until('the hello', () => server.connections[0]?.lines.length === 1);
+  const connection = server.connections[0];
+  assert.deepEqual(connection.lines[0].capabilities, { signal: true, lifecycle: true }, 'what this runtime loaded');
+  // the session this runtime started in was read once, inside Pi, before any connection
+  const asked = session.state.asked;
+  // Deck's settings enable work status alone: what is left first, then the acceptance, as Deck writes them
+  const line = reply => `${JSON.stringify({ protocol: 'pi-observer', v: 1, ...reply })}\n`;
+  connection.socket.write(line({ capabilities: { signal: true, lifecycle: false } }) + line({ accepted: true }));
+  await sleep(120);
+  assert.equal(connection.lines.length, 1, 'no start frame: the session id never crosses the socket');
+  assert.equal(connection.closed, false);
+  // work status goes on, numbered from 1
+  host.emit('agent_start', undefined, session.ctx);
+  await until('the run', () => connection.lines.length === 2);
+  assert.deepEqual(connection.lines[1], { ...common, seq: 1, run: 1, state: 'working' });
+  server.say(connection, { ack: 1 });
+  await host.emit('session_shutdown', { reason: 'quit' }, session.ctx);
+  await until('the reset', () => connection.lines.length === 3);
+  assert.deepEqual(connection.lines[2], { ...common, seq: 2, reason: 'quit' });
+  assert.equal(session.state.asked, asked, 'the session manager is not asked again');
+  assert.deepEqual(host.touched, []);
+  await server.close();
+});
