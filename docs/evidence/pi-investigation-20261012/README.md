@@ -1,6 +1,6 @@
 # Pi 第一方集成调查证据（设计阶段）
 
-调查时间2026-10-12（Asia/Tokyo）；Deck与Pi精确对象、官方artifact摘要、源文件摘要见[identity.json](identity.json)。设计与实施边界见[详细设计](../../design/pi-v0.8.0/README.md)。**没有修改Deck生产代码、用户配置、真实会话；没有执行完整功能实现、提交、push或发布。**
+调查时间2026-10-12（Asia/Tokyo）；Deck与Pi精确对象、官方artifact摘要、源文件摘要见[identity.json](identity.json)。设计与实施边界见详细设计（`docs/design/pi-v0.8.0/README.md`，负责人本地文档，不在版本控制内）。**没有修改Deck生产代码、用户配置、真实会话；没有执行完整功能实现、提交、push或发布。**
 
 ## 调查方法与证据等级
 

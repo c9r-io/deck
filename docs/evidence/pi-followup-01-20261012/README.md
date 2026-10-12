@@ -1,6 +1,6 @@
 # Pi v0.8.0 Follow-up 01 实施证据（执行者提交，待独立验收）
 
-对应 [Follow-up 01](../../design/pi-v0.8.0/follow-up-01.md) 与负责人的[独立验收](../pi-acceptance-20261012/README.md)。本文件由执行 Agent 撰写，是提交给负责人复核的材料，不是验收结论：下面所有“自评”都需要独立验收确认，执行者不自签最终通过。
+对应 Follow-up 01（`docs/design/pi-v0.8.0/follow-up-01.md`）与负责人的独立验收（`docs/evidence/pi-acceptance-20261012/README.md`）；两者均为负责人本地文档，不在版本控制内。本文件由执行 Agent 撰写，是提交给负责人复核的材料，不是验收结论：下面所有“自评”都需要独立验收确认，执行者不自签最终通过。
 
 ## 1. 被测构建与证据的对应关系
 

@@ -1,6 +1,6 @@
 # Pi v0.8.0 implementation: evidence
 
-> **更正（Follow-up 01，2026-10-12）。** 独立验收（`../pi-acceptance-20261012/`）未通过本轮实现。
+> **更正（Follow-up 01，2026-10-12）。** 独立验收（`../pi-acceptance-20261012/`，负责人本地文档，不在版本控制内）未通过本轮实现。
 > 本文件是当时的记录，保留原样供对照，但其中有两处判定是**错误的**，已在原位改正：
 > A12（同 PID `exec` 当时只用合成的内核事实测过 PID 复用，真实 `exec` 会让旧 lease 继续可信）
 > 和 B02（257 字节的 Session ID 被 ACK 后静默丢弃，同一 lease 随后还能接受另一个 ID）。
@@ -9,7 +9,8 @@
 > 六个问题的根因、修复、重新生成的证据，以及当时未运行的 G06/C03/B12/A26 布局门禁，
 > 见 [`../pi-followup-01-20261012/README.md`](../pi-followup-01-20261012/README.md)。
 
-What was implemented against `docs/design/pi-v0.8.0/`, what was run, on what,
+What was implemented against `docs/design/pi-v0.8.0/` (the design lead's local
+documents, not in version control), what was run, on what,
 and what it does and does not show. One row per acceptance item, with the
 place and the build it ran on. Nothing here is a release result: every run
 used this checkout's debug build.
