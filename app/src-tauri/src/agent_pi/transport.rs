@@ -30,7 +30,17 @@
 //!   is not ready to be written `ANSWER_BUDGET` after it was handed over —
 //!   the wait for the worker and for tmux included — is `late`: the
 //!   observer has stopped waiting (its own two seconds began earlier), so
-//!   nothing is written for it and its lease is over here as well.
+//!   nothing the message asked for is written — no frame, no lease, no
+//!   capability — and its lease is over here as well. What an attest PROVED
+//!   is not the message's to lose, and is not held to that time: of the
+//!   three outcomes that record the recognition of "Who may bind", the two
+//!   refusals (a release this build does not support, nothing the settings
+//!   enable) are decided before the answer's time is looked at, and so are
+//!   recorded for an attest that came late as for one in time — the
+//!   kernel's facts about the pane's foreground program, which hold
+//!   automatic input to a recognized Pi and give the card its word, and
+//!   never a lease. The third, the bind itself, is not: an attest that
+//!   would have bound and is late is `late`, and nothing is recorded for it.
 //! - **Who may bind.** The process that attests must be the leader of the
 //!   foreground process group of the pane's terminal, a descendant of the
 //!   pane's process with every process between them on that terminal, in a
@@ -39,9 +49,11 @@
 //!   taken after the line was read; the socket name, the server pid, the
 //!   pane id, the versions and the mode in the line are claims: none of them
 //!   is used as proof. Only after that is the generation RECOGNIZED as Pi
-//!   (`agent_status::pi_observed`), whatever becomes of the attest: a release
-//!   this build does not support and an observer none of whose capabilities
-//!   the settings enable are refused after it, so the card can say which.
+//!   (`agent_status::pi_observed`): when the attest binds, and when it is
+//!   refused for one of two things — a release this build does not support,
+//!   an observer none of whose capabilities the settings enable. Those two
+//!   are refused after the recognition, so the card can say which; an
+//!   attest refused for anything else (`late`, `busy`) records none.
 //! - **Whose bytes.** That a process is the pane's foreground program does
 //!   not say that IT wrote what a connection carried: a child starts with a
 //!   copy of its parent's descriptors and of its memory, and the kernel
@@ -62,8 +74,9 @@
 //!   a look the worker makes a connection of its own to that listener and
 //!   is told its place — the look's MARK — and only a connection with a
 //!   later place counts (`mark_at`; `agent_pi`, "Deck's own line"). (d) It
-//!   carries the nonce of Deck's last answer to that process: made after
-//!   the look, given in that one answer, good for one message.
+//!   carries the nonce of Deck's last answer to that process: given out in
+//!   that one answer and nowhere else — so only after the look and its mark
+//!   — and good for one message.
 //!
 //!   Why that is enough: whoever else wrote on a connection the process
 //!   made holds it, and nobody holds it but the process and the children
@@ -78,19 +91,22 @@
 //!   go of one: a nonce that a child read on a connection its parent had
 //!   left, told to a second child that holds the parent's next one, is
 //!   worth nothing there — that connection was made before the look after
-//!   which the nonce was made. (The observer has one connection at a time
-//!   all the same, `observer.ts`: that keeps a retry the exception.)
+//!   which the nonce was given out. (The observer has one connection at a
+//!   time all the same, `observer.ts`: that keeps a retry the exception.)
 //!
-//!   The look moves when a fork was counted, and only then: the count, a
-//!   new mark and a new nonce are taken together. Without a mark there is
-//!   no look a later line could be judged against, so nothing is answered
-//!   that carries a nonce (`busy`) and nothing changes. When (b), (c) or
-//!   (d) does not hold for a peer that IS the bound process, the message is
-//!   neither believed nor blamed: `again`, with a new nonce; nothing is
-//!   written or ended, and the observer sends the same message on a new
-//!   connection — Pi makes a child for every tool it runs, and that must
-//!   cost a retry and nothing else. When (a) does not hold nothing of the
-//!   lease is touched, not even its nonce (`sender-mismatch`).
+//!   The look moves when a fork was counted, and only then, and in one
+//!   order. The count is read first and the new mark is taken after it, so
+//!   that a fork between the two is not in the count: the next look sees
+//!   it. The new nonce, whenever it was made, is given out only after
+//!   both, in the answer. Without a mark there is no look a later line
+//!   could be judged against, so nothing is answered that carries a nonce
+//!   (`busy`) and nothing changes. When (b), (c) or (d) does not hold for a
+//!   peer that IS the bound process, the message is neither believed nor
+//!   blamed: `again`, with a new nonce; nothing is written or ended, and
+//!   the observer sends the same message on a new connection — Pi makes a
+//!   child for every tool it runs, and that must cost a retry and nothing
+//!   else. When (a) does not hold nothing of the lease is touched, not even
+//!   its nonce (`sender-mismatch`).
 //!
 //!   What this does not cover is said plainly. A process that itself hands
 //!   its connection, its nonce or its bytes to another, or whose memory
@@ -373,8 +389,8 @@ struct Challenge {
     nonce: Nonce,
     /// The watch that began with the hello.
     instance: Arc<InstanceWatch>,
-    /// Its fork count at the look after which the nonce was made, and the
-    /// place of the connection the worker made right after that look.
+    /// Its fork count at the look the nonce was answered after, and the
+    /// place of the connection the worker made right after that count.
     forks: u64,
     mark: u64,
     until: Instant,
@@ -735,8 +751,9 @@ fn unproven(alone: bool, held: bool, behind: bool) -> &'static str {
 }
 
 /// Keep `nonce` as the one an attest of `peer` must carry. `forks` is the
-/// watch's count at the look after which the nonce was made, and `mark` the
-/// place of the connection the worker made right after that look.
+/// watch's count at the look this nonce is answered after, and `mark` the
+/// place of the connection the worker made after it read that count. The
+/// nonce is given out only once this has returned.
 fn challenged(
     bounds: &Bounds,
     peer: u32,
@@ -768,8 +785,9 @@ fn challenged(
 
 /// Answer a hello (module header, "A hello is not believed"): from here on
 /// the kernel reports what this process executes and whether it forks, the
-/// worker's own connection marks which connections are made from now on,
-/// and the nonce — made after all of that — is what its attest must carry.
+/// worker's own connection — made after the forks were counted — marks
+/// which connections are made from now on, and the nonce, which leaves
+/// Deck only after all of that, is what its attest must carry.
 fn challenge(world: &World, bounds: &Bounds, peer: Option<u32>) -> Result<Answer, &'static str> {
     let peer = peer.ok_or("no-peer")?;
     let instance = (world.watch)(peer).ok_or("no-instance")?;
@@ -843,7 +861,9 @@ fn bind(
     if let Some(code) = replaced(&instance) {
         return Err(code);
     }
-    // the look, and after it the nonce of whatever is answered
+    // The look: the count first. The nonce of whatever is answered is made
+    // here and leaves Deck only with that answer — after the mark, when a
+    // fork moves the look below.
     let forks = instance.forks();
     let next = (world.nonce)().ok_or("busy")?;
     // A child made since the hello was answered has a copy of that nonce
@@ -1032,12 +1052,14 @@ fn commit(
         end(lease, code);
         return Err(code);
     }
-    // The look, and after it the nonce of whatever is answered. The line is
-    // the peer's own when no fork was counted since the lease's look, its
-    // connection was made after that look, and it carries the nonce the
-    // lease had. A fork moves the look to this one: the worker's own
-    // connection, made now, marks what is made from here on — and without
-    // it nothing is answered that carries a nonce, and nothing changes.
+    // The look: the count first. The nonce of whatever is answered is made
+    // next and leaves Deck only with that answer — after the new mark, when
+    // a fork moves the look. The line is the peer's own when no fork was
+    // counted since the lease's look, its connection was made after that
+    // look, and it carries the nonce the lease had. A fork moves the look
+    // to this one: the worker's own connection, made now — after the count
+    // — marks what is made from here on, and without it nothing is answered
+    // that carries a nonce, and nothing changes.
     let forks = instance.forks();
     let next = (world.nonce)().ok_or("busy")?;
     let moved = if forks == counted {
