@@ -407,7 +407,7 @@ class Run:
                 and path.suffix != ".png"]
         self.check("no native session id is in Deck's data directory",
                    not any(native.encode() in path.read_bytes() for native in natives for path in kept), files=len(kept))
-        self.snapshots(12)
+        self.snapshots(13)
 
     def snapshots(self, least: int) -> None:
         """The window snapshots the page asked for: real PNG files of a window that is at least 1280 wide."""
@@ -431,7 +431,7 @@ class Run:
                    and not self.source_log.exists())
         self.check("nothing wrote Pi's settings: the file was never created",
                    not self.settings.exists())
-        self.snapshots(40)
+        self.snapshots(60)
 
     def carry_out(self) -> dict:
         """Launch, watch, judge and clean up, on the machine the root is on. The summary, written to the root."""

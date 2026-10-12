@@ -95,14 +95,24 @@ python3 scripts/pi_native.py --test-binary <that executable> \
       disabling entry, with a missing or broken entry; the dialog
       notifications arriving out of order; quit, a killed Pi, and a plain
       `node` that is not Pi.
-- [ ] Three more scenarios run on both runtimes. `capabilities`: each
+- [ ] Four more scenarios run on both runtimes. `capabilities`, twice with
+      the two runtimes changing places, so that each is once the idle one and
+      once the one in a run for either switch: each
       switch turned off by itself while Pi is idle and while it is in a run —
       the stream keeps its lease and the other capability, an unread ending
       is not removed, a run that was open ends on the same lease, nothing is
       refused for it; turned on again nothing comes back before Pi's own
       reload, and Settings says `needs-reload` for exactly as long as a
       running Pi waits; both off ends the streams; a quick sequence of
-      switches. `unsupported_ids`: Pi started with a session id of 256, 257,
+      switches; and with Deck's own switches no frame of a lost capability is
+      ever sent (a stream bound with less than its runtime loaded hears so
+      before its acceptance). `on_the_way`: Deck's entry is changed in Pi's
+      settings BY HAND, so Deck learns of it only when it commits the next
+      frame — the ending of a run, the teardown of a session — which is then
+      answered `revoked`: its number is used up, nothing is written (never a
+      `turn-done`, never a `shutdown`), the stream goes on with what it has
+      left, and the other, idle stream is told at its next heartbeat.
+      `unsupported_ids`: Pi started with a session id of 256, 257,
       512 and 513 bytes — observed whole up to 256, said to be `unsupported`
       beyond (never cut short, never passed over), runs reported throughout,
       a new runtime in a session Deck keeps observed again. `exec_peer`: a
@@ -850,7 +860,10 @@ python3 scripts/pi-live-verify.py --runtime standalone --standalone <unpacked of
       run that starts Pi; Pi connected with limited coverage and no attention
       of its own; the run's first step HELD at `pi-input-unverified` through
       several scheduler passes; a typed turn ending as `turn-done`; a turn
-      that ends while the Board is in front counted once as unread; the held
+      that ends while the Board is in front counted once as unread, and
+      listed in the real Needs attention view (opened by its button: the one
+      row, by the card's title, with the card's word, not yet viewed; back by
+      the view's own button, still unread); the held
       row delivered once by Send now; the switch turned off while Pi runs
       (the card's word gone at once, a further Pi run adding none); on again,
       Settings saying that a running Pi needs its reload, connected only after
@@ -864,8 +877,8 @@ python3 scripts/pi-live-verify.py --runtime standalone --standalone <unpacked of
       closed without confirming anything; session observation off again
       while Pi runs, after which the SAME Pi's next run is still reported;
       and a new Pi started with a 300-byte session id, which the card says it
-      cannot observe while its runs are reported as ever. Twelve snapshots of
-      the window land in `<data dir>/evidence/`.
+      cannot observe while its runs are reported as ever. Thirteen snapshots
+      of the window land in `<data dir>/evidence/`.
 - [ ] The operator's own checks, which the page cannot make: Pi's settings
       byte for byte at each step (the user's bytes, plus Deck's one entry,
       minus exactly that entry, the same bytes again), the held row's text
@@ -892,7 +905,8 @@ python3 scripts/pi-live-verify.py --runtime standalone --standalone <unpacked of
 ### What Pi's rows look like (WKWebView mode `pi-layout`)
 
 `pi-layout` is presentation only. The production modules paint the real
-Settings dialog, real cards, the real "Why?" dialog and the real restart
+Settings dialog, real cards, the real Needs attention view, the real "Why?"
+dialog and the real restart
 review in the real window (1280×800, the supported minimum), in English and
 Chinese, at 50 %, 100 % and 160 % text size. No Pi, Claude or Codex runs:
 the cards are real cards with real, empty shell sessions, and what the
@@ -907,6 +921,10 @@ python3 scripts/pi-live-verify.py --mode pi-layout [--host <ssh alias>]
 
 - [ ] Exit 0. Each scene reports by itself: the Board (a Pi's status and its
       "Why?" link beside Claude, Codex and a shell, with long titles); the
+      Needs attention view (a Pi's unread ending is listed between the two
+      Claude rows, by its own title and word; the Pis that have nothing but
+      coverage are in no list of what asks for the user, and are found, with
+      their own word, under the filter for what Deck cannot see into); the
       "Why?" dialog for every coverage and session word; the two Settings
       switches and their note in every state of Pi's settings entry, their
       "Learn more" texts, and a refused switch; the restart review with two
@@ -918,8 +936,9 @@ python3 scripts/pi-live-verify.py --mode pi-layout [--host <ssh alias>]
       have no box and carry Pi's own reason, the ways out are inside the
       dialog and nothing lies over them (`elementFromPoint`), and nothing
       shaped like a native id, a pid, a digest or a path is painted.
-- [ ] 58 snapshots of the window land in `<data dir>/evidence/`; the
-      operator checks that each is a PNG of the whole window.
+- [ ] The snapshots the page asked for (at least 60) land in
+      `<data dir>/evidence/`; the operator checks that each is a PNG of the
+      whole window.
 - [ ] `pilay-m-card` is a MEASUREMENT and judges nothing: how many cards'
       top rows run over the card (an attention badge beside a title, the
       card's own chrome) and how many status texts were cut short, per

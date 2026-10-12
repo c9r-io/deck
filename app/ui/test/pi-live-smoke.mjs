@@ -59,6 +59,16 @@ export async function runPiLiveSmoke() {
   };
   const status = () => inv('agent_hooks_status');
   const asked = () => $('cfm').style.display === 'flex';
+  /* what the window looks like, kept beside the trace */
+  const shots = { asked: 0, written: 0 };
+  const snapshot = async name => {
+    shots.asked += 1;
+    await pause(150);
+    if (await inv('smoke_native_snapshot', { name }).catch(() => -9) === 0) shots.written += 1;
+  };
+  const rect = node => node.getBoundingClientRect();
+  const visibleNode = node => !!node && node.getClientRects().length > 0 && rect(node).height > 0;
+  const view = () => ({ left: 0, top: 0, right: innerWidth, bottom: innerHeight });
   /* The box the way a click sets it, and the confirmation answered when one
      is asked: returns the question shown ('' when none was). */
   const setSwitch = async (on, id = 'set-pi-hooks') => {
@@ -159,7 +169,28 @@ export async function runPiLiveSmoke() {
     const again = await waitFor(async () => (await fixture()).settled >= 2, 30_000, 300);
     const shown = await waitFor(async () => { await pollNow(); return ctx.attention.get(card)?.agent === 'turn-done'; }, 10_000, 300);
     const counts = ctx.attention.counts(store.cards);
-    await report('pi-attention', working && again && shown && counts.done === 1 && counts.pending === 1);
+    //    and it is in the real Needs attention view, opened the way a person opens it: one row, by the card's
+    //    own title, with the word its card shows, not yet viewed — and the view's own way back
+    $('attention-btn').click();
+    const inList = await waitFor(() => state.view === 'attention' && !$('attention-view').hidden
+      && [...$('attention-list').children].some(el => el.dataset.sid === card.id), 5000, 100);
+    const listRow = [...$('attention-list').children].find(el => el.dataset.sid === card.id);
+    const rowsShown = [...$('attention-list').children].filter(el => el.classList.contains('attention-row')).length;
+    const open = listRow?.querySelector('.attention-open');
+    const rowOk = inList && !!listRow && rowsShown === 1
+      && listRow.querySelector('.attention-card-title').textContent === card.title
+      && listRow.querySelector('.attention-reason').textContent.startsWith(t('attention.doneUnread'))
+      && listRow.querySelector('.attention-viewed').textContent === t('attention.notViewed')
+      && visibleNode(open) && rect(listRow).right <= rect($('attention-list')).right + 1
+      && $('attention-list').scrollWidth <= $('attention-list').clientWidth + 1
+      && rect(open).left >= rect(listRow).left - 1 && rect(open).right <= rect(listRow).right + 1;
+    await snapshot('pilive-attention');
+    $('attention-back').click();
+    const onBoard = await waitFor(() => state.view === 'board', 5000, 100);
+    await pollNow();
+    const stillUnread = ctx.attention.get(card)?.agent === 'turn-done' && ctx.attention.counts(store.cards).done === 1;
+    await report('pi-attention', working && again && shown && counts.done === 1 && counts.pending === 1
+      && rowOk && onBoard && stillUnread);
 
     // 7. the held row, sent by the user's own Send now: Pi receives exactly that text once
     const before = await fixture();
@@ -230,15 +261,6 @@ export async function runPiLiveSmoke() {
 
     // 11. what the user SEES of all that, in the real window with the real backend's answers:
     //     the two switches and their note, the card's status and its explanation
-    const shots = { asked: 0, written: 0 };
-    const snapshot = async name => {
-      shots.asked += 1;
-      await pause(150);
-      if (await inv('smoke_native_snapshot', { name }).catch(() => -9) === 0) shots.written += 1;
-    };
-    const rect = node => node.getBoundingClientRect();
-    const visibleNode = node => !!node && node.getClientRects().length > 0 && rect(node).height > 0;
-    const view = () => ({ left: 0, top: 0, right: innerWidth, bottom: innerHeight });
     const inside = (inner, outer) => inner.left >= outer.left - 1 && inner.right <= outer.right + 1
       && inner.top >= outer.top - 1 && inner.bottom <= outer.bottom + 1;
     const reachable = node => {
@@ -377,7 +399,7 @@ export async function runPiLiveSmoke() {
     await report('pi-unsupported', shellBack && said && long.pi_signal === 'connected' && ranLong
       && afterLong.pi_session === 'unsupported' && afterLong.pi_signal === 'connected'
       && (await fixture()).settled === settledLong + 1 && whyUnsupported && noId
-      && shots.written === shots.asked && shots.asked >= 12, 1, shots.written);
+      && shots.written === shots.asked && shots.asked >= 13, 1, shots.written);
     await openAgents();
     await setSwitch(false, 'set-pi-lifecycle');
     $('set-close').click();

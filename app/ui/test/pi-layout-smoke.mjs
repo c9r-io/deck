@@ -2,7 +2,8 @@
 // `pi-layout` WKWebView smoke. Debug carrier only.
 //
 // The production modules run in the bundled webview and paint the real
-// Settings dialog, the real cards, the real "Why?" dialog and the real shell
+// Settings dialog, the real cards, the real Needs attention view, the real
+// "Why?" dialog and the real shell
 // service restart review, at the window's own size (1280×800, the supported
 // minimum), in both languages and at the smallest, the default and the
 // largest text size. What it proves is PRESENTATION: that the two switches
@@ -244,6 +245,75 @@ export async function runPiLayoutSmoke() {
       if (size !== 0.5 || language === 'en') await snapshot(`pilay-board-${tag(language, size)}`);
     });
     await report('pilay-board', boardOk === boardAll, boardAll, boardOk);
+
+    // ---- 1b. Needs attention: a Pi's unread ending is listed like any other; a Pi with nothing but coverage asks for nothing ----
+    stage = 12;
+    const { showAttention, attentionStatusText } = await import('../js/attention.js');
+    words(cards.piLong.session, { fg: 'node', agent: 'turn-done', episode: 4, episode_viewed: false, pi_signal: 'connected', pi_session: 'observed' });
+    await pollNow();
+    await until(() => ctx.attention.get(cards.piLong)?.agent === 'turn-done');
+    showAttention();
+    await until(() => state.view === 'attention' && !$('attention-view').hidden && !!$('attention-list').querySelector('.attention-row'));
+    const attentionRow = card => [...$('attention-list').children].find(el => el.dataset.sid === card.id);
+    const attentionRows = () => [...$('attention-list').children].filter(el => el.classList.contains('attention-row'));
+    const pickFilter = async name => {
+      [...$('attention-tools').querySelectorAll('button')].find(button => button.dataset.filter === name).click();
+      await pause(100);
+    };
+    /* a row holds its cells, its cells hold their text, and its one button can be reached */
+    const rowFits = row => {
+      row.scrollIntoView({ block: 'nearest' });
+      const open = row.querySelector('.attention-open');
+      const cells = [...row.querySelectorAll(':scope > span')];
+      return insideX(rect(row), rect($('attention-list'))) && noOverflowX(row)
+        && cells.every(cell => insideX(rect(cell), rect(row)) && noOverflowX(cell))
+        && shown(open) && insideX(rect(open), rect(row)) && reachable(open);
+    };
+    const asking = [cards.claudeTwo, cards.piLong, cards.claude];       // an input request, then the two unread endings
+    const quiet = [cards.piZh, cards.piOld, cards.codex, cards.shell];  // nothing but coverage, or nothing at all
+    let attentionOk = 0, attentionAll = 0;
+    await each(async (language, size) => {
+      await pollNow();
+      await pickFilter('pending');
+      const listed = asking.map(attentionRow);
+      const pi = listed[1];
+      const first = [
+        listed.every(Boolean) && quiet.every(card => !attentionRow(card)) && attentionRows().length === 3,
+        // the Pi's row: its own title, the word its card shows, and an ending nobody has looked at
+        !!pi && pi.querySelector('.attention-card-title').textContent === cards.piLong.title
+          && pi.querySelector('.attention-reason').textContent === attentionStatusText(cards.piLong)
+          && attentionStatusText(cards.piLong) === t('attention.doneUnread')
+          && pi.querySelector('.attention-viewed').textContent === t('attention.notViewed'),
+        noOverflowX($('attention-list')) && inside(rect($('attention-view')), view()),
+        listed.every(row => !!row && rowFits(row)),
+        // in the order the list promises: what waits for input first
+        stacked(attentionRows()) && attentionRows()[0] === listed[0],
+        // the count in the window's top bar is those three
+        ctx.attention.counts(store.cards).input === 1 && ctx.attention.counts(store.cards).done === 2
+          && $('attention-count').textContent.includes('3'),
+      ];
+      capture($('attention-list'), $('attention-tools'));
+      if (size !== 0.5) { if (pi) pi.scrollIntoView({ block: 'center' }); await snapshot(`pilay-attention-${tag(language, size)}`); }
+      // what only has coverage is found where the list keeps what it cannot see into — and nowhere else
+      await pickFilter('unavailable');
+      const reason = card => attentionRow(card)?.querySelector('.attention-reason').textContent;
+      const second = [
+        quiet.every(card => !!attentionRow(card)) && asking.every(card => !attentionRow(card)),
+        reason(cards.piZh) === t('signal.pi.unavailable') && reason(cards.piOld) === t('signal.pi.incompatible')
+          && reason(cards.codex) === t('signal.codex.unavailable'),
+        quiet.every(card => !!attentionRow(card) && rowFits(attentionRow(card))),
+        noOverflowX($('attention-list')) && stacked(attentionRows()),
+      ];
+      capture($('attention-list'));
+      if (size === 1.6) await snapshot(`pilay-attention-quiet-${tag(language, size)}`);
+      const parts = [...first, ...second];
+      attentionAll += 1;
+      if (parts.every(Boolean)) attentionOk += 1; else await tell(11, attentionAll, bits(parts));
+    });
+    await pickFilter('pending');
+    $('attention-back').click();                                        // the view's own way back to the Board
+    await until(() => state.view === 'board' && !!cardNode(cards.piLong));
+    await report('pilay-attention', attentionOk === attentionAll, attentionAll, attentionOk);
 
     // ---- 2. "Why?": what a card says about its Pi, for every coverage and session word ----
     stage = 3;
@@ -620,7 +690,7 @@ export async function runPiLayoutSmoke() {
     // the backend was never asked to restart, and nothing was typed, killed or switched
     await report('pilay-ipc', installed && scripted.restarts.length === 1 && refused === 0, 1, refused);
     // a = the snapshots that were written; every one that was asked for
-    await report('pilay-shots', shots.written === shots.asked && shots.asked >= 40, shots.written, shots.asked);
+    await report('pilay-shots', shots.written === shots.asked && shots.asked >= 60, shots.written, shots.asked);
     await report('done', !failed, 1, 0);
   } catch (_) {
     await report('pilay-exception', false, stage || 1, details);

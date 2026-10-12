@@ -553,6 +553,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "pilay-m-window",
     "pilay-m-card",
     "pilay-board",
+    "pilay-attention",
     "pilay-why",
     "pilay-settings",
     "pilay-settings-details",
