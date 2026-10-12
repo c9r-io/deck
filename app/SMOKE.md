@@ -890,8 +890,13 @@ python3 scripts/pi-live-verify.py --runtime standalone --standalone <unpacked of
       bound and no stream ended (the same stream went on), and the machine's
       own Deck unchanged. `result.json` names the build: the commit, the
       working tree's difference from it, the hash over the sources, the hash
-      of every executable and observer file of the carrier, and the runtime;
-      a debug executable older than its newest source file is refused.
+      of every executable and observer file of the carrier as it ran, the
+      hash of the build output each executable was copied from, and the
+      runtime. The carrier's executables are compared with those build
+      outputs byte for byte BEFORE the ad-hoc signing (which rewrites the
+      main executable and nothing else), and that comparison is one of the
+      run's checks; a debug executable older than its newest source file is
+      refused.
 - [ ] The window takes the foreground and keyboard focus for about four
       minutes. A locked screen stops the page's timers and the run with
       them; with `--host <ssh alias>` the same root is moved to the same path

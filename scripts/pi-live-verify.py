@@ -106,13 +106,16 @@ def file_sha256(path: Path) -> str:
 
 
 def newest_source() -> tuple[float, str]:
-    """The newest file the carrier is built from, among those git tracks or would track."""
+    """The newest file the carrier is built from, among those git tracks or would track.
+
+    A debug build embeds the whole frontend, the smoke pages under `app/ui/test` included: they are sources of the
+    carrier like any module. Only what never reaches the application is left out: Rust unit tests and node tests."""
     listed = subprocess.run(["/usr/bin/git", "-C", str(REPO), "ls-files", "-z", "--cached", "--others", "--exclude-standard",
                              "--", *BUILT_FROM], capture_output=True, check=True).stdout.decode().split("\0")
     newest = (0.0, "")
     for name in listed:
         path = REPO / name
-        if name and path.is_file() and "/test/" not in name and not name.endswith(("tests.rs", ".test.mjs")):
+        if name and path.is_file() and not name.endswith(("tests.rs", ".test.mjs")):
             newest = max(newest, (path.stat().st_mtime, name))
     return newest
 
@@ -185,6 +188,18 @@ class Run:
         # the carrier: this checkout's debug build, assembled and checked by the functions app/run.sh uses
         self.sh("deck_bundle_precheck", REPO, TAURI)
         self.sh("deck_bundle_copy", TAURI, self.app)
+        # Before anything is signed: every executable in the carrier is the build output it was copied from, byte
+        # for byte. (Signing the bundle rewrites the main executable, so its hash afterwards is not the build's.)
+        as_built = {}
+        for path in sorted((self.app / "Contents/MacOS").iterdir()):
+            # `<name>-<architecture>-apple-darwin`, and no longer name that merely begins the same
+            sources = [TAURI / "target/debug/deck-app"] if path.name == "deck" else [
+                built for built in sorted((TAURI / "binaries").glob(f"{path.name}-*-apple-darwin"))
+                if "-" not in built.name[len(path.name) + 1:-len("-apple-darwin")]]
+            if len(sources) != 1:
+                raise RuntimeError(f"no single build output for the carrier's {path.name}")
+            as_built[f"Contents/MacOS/{path.name}"] = file_sha256(sources[0])
+        copied_as_built = all(file_sha256(self.app / inside) == digest for inside, digest in as_built.items())
         shutil.copyfile(TAURI / "icons/icon.icns", self.app / "Contents/Resources/deck.icns")
         version = json.loads((TAURI / "tauri.conf.json").read_text())["version"]
         with (self.app / "Contents/Info.plist").open("wb") as out:
@@ -200,15 +215,25 @@ class Run:
         # the carrier as it was assembled: every executable and every observer file, by its hash
         carried = sorted(path for part in ("Contents/MacOS", "Contents/Resources/pi") for path in (self.app / part).iterdir()
                          if path.is_file())
+        files = {str(path.relative_to(self.app)): file_sha256(path) for path in carried}
+        observer_as_source = all(
+            file_sha256(self.app / "Contents/Resources/pi" / name) == file_sha256(TAURI / "resources/pi" / name)
+            for name in ("observer.ts", "signal.ts", "lifecycle.ts", "both.ts"))
         self.facts["carrier"] = {
-            "files": {str(path.relative_to(self.app)): file_sha256(path) for path in carried},
-            "main_executable_is_the_debug_build": file_sha256(self.app / "Contents/MacOS/deck")
-            == file_sha256(TAURI / "target/debug/deck-app"),
-            "observer_files_are_the_sources": all(
-                file_sha256(self.app / "Contents/Resources/pi" / name) == file_sha256(TAURI / "resources/pi" / name)
-                for name in ("observer.ts", "signal.ts", "lifecycle.ts", "both.ts")),
+            # what ran: the carrier's files after it was signed ad hoc
+            "files": files,
+            # the build outputs they were copied from, and whether the copies were those bytes before the signing
+            "as_built_sha256": as_built,
+            "executables_copied_byte_for_byte_before_signing": copied_as_built,
+            "rewritten_by_the_signing": sorted(name for name, digest in as_built.items() if files[name] != digest),
+            "observer_files_are_the_sources": observer_as_source,
             "version": version,
         }
+        self.check("the carrier is this checkout's debug build: its executables byte for byte before the ad-hoc signing, "
+                   "which rewrote the main executable only, and the observer's files as the sources have them",
+                   copied_as_built and observer_as_source
+                   and self.facts["carrier"]["rewritten_by_the_signing"] == ["Contents/MacOS/deck"],
+                   rewritten=self.facts["carrier"]["rewritten_by_the_signing"])
         if self.mode == "pi-layout":
             return
         # Pi: one of the two runtimes, reached as `pi` the way an install puts it on PATH
@@ -514,14 +539,17 @@ def main() -> int:
         if args.runtime == "standalone" and not (args.standalone and (Path(args.standalone) / "pi").is_file()):
             parser.error("--runtime standalone needs --standalone DIR")
     run = Run(args)
+    # what was checked here before the root left for another machine (there, the run starts its own list)
+    prepared: list[dict] = []
     try:
         run.prepare()
+        prepared = list(run.results) if args.host else []
         summary = on_host(run, args.host) if args.host else run.carry_out()
     except (RuntimeError, OSError, subprocess.CalledProcessError, KeyError, ValueError) as error:
         summary = {"root": str(run.root), "checks": [], "stopped": f"{type(error).__name__}: {error}",
                    "cleanup": {"exit": run.registry("cleanup", check=False).returncode, "processes_from_root": len(run.owned()),
                                "socket_left": run.socket.exists()}}
-    run.results = list(summary["checks"])
+    run.results = prepared + list(summary["checks"])
     run.verdict()
     # what was known here, before the root left: the build and the carrier; what the run found: the snapshots
     facts = {**run.facts, **{key: value for key, value in (summary.get("facts") or {}).items() if key.startswith("snapshot")}}
