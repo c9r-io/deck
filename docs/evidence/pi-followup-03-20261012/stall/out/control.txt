@@ -1,0 +1,571 @@
+# The witness's own control: the main thread waits, on purpose, for a held Worker.
+== wc2-bun-1.witness.jsonl rescue 1  pid 29709  the hold had lasted 1528 ms  held 6
+  HOLDER, first reading:
+    tid 15175663 port 0x103 ""  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1170493e8 220100002300 2200 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  bool WTF::Condition::waitUntilUnchecked<WTF::Lock>(WTF::Lock&, WTF::TimeWithDynamicClockType const&) + 144
+        pi-standalone  JSC::WaiterListManager::WaitSyncResult JSC::WaiterListManager::waitSyncImpl<int>(JSC::VM&, int*, int, WTF::Seconds) + 340
+        pi-standalone  JSC::JSValue JSC::atomicsWaitImpl<int, JSC::JSGenericTypedArrayView<JSC::Int32Adaptor>>(JSC::JSGlobalObject*, JSC::JSGenericTypedArrayView<JSC::Int32Adaptor>*, unsigned long long, int, JSC::JSValue, JSC::AtomicsWaitType) + 384
+        pi-standalone  JSC::atomicsFuncWait(JSC::JSGlobalObject*, JSC::CallFrame*) + 528
+        12f61403c  (no image: generated code)
+        pi-standalone  _op_call_return_location + 0
+        pi-standalone  _op_call_return_location + 0
+        pi-standalone  _op_call_return_location + 0
+        pi-standalone + 0x32642b8
+        pi-standalone  JSC::JSValue JSC::MicrotaskCall::tryCallWithArguments<JSC::JSGenerator*, JSC::JSValue, JSC::JSValue, JSC::JSValue, JSC::JSValue>(JSC::VM&, JSC::JSFunction*, JSC::JSValue, JSC::JSCell*, T...) + 116
+        pi-standalone  JSC::runInternalMicrotask(JSC::JSGlobalObject*, JSC::VM&, JSC::InternalMicrotask, unsigned char, std::__1::span<JSC::JSValue const, 4ul>, JSC::MicrotaskCall*) + 15076
+        pi-standalone  std::__1::pair<JSC::JSGlobalObject*, bool> JSC::MicrotaskQueue::drainImpl<true>(JSC::JSGlobalObject*, JSC::VM&, JSC::TopExceptionScope&) + 324
+        pi-standalone  JSC::MicrotaskQueue::drainWithUseCallOnEachMicrotask(JSC::JSGlobalObject*, JSC::VM&, JSC::TopExceptionScope&) + 12
+        pi-standalone  JSC::VM::drainMicrotasks() + 284
+        pi-standalone  Bun::jsFunctionDrainMicrotaskQueue(JSC::JSGlobalObject*, JSC::CallFrame*) + 16
+        12f61403c  (no image: generated code)
+        pi-standalone  _op_call_ignore_result_return_location + 0
+        pi-standalone + 0x32642b8
+        pi-standalone  JSC::Interpreter::executeCallImpl(JSC::VM&, JSC::JSObject*, JSC::CallData const&, JSC::JSValue, JSC::JSCell*, JSC::ArgList const&) + 544
+        pi-standalone  JSC::call(JSC::JSGlobalObject*, JSC::JSValue, JSC::JSValue, JSC::ArgList const&, WTF::ASCIILiteral) + 372
+        pi-standalone  Bun::JSNextTickQueue::drain(JSC::VM&, JSC::JSGlobalObject*) + 332
+        pi-standalone  _JSC__JSGlobalObject__drainMicrotasks + 48
+        pi-standalone  _jsc.event_loop.drainMicrotasksWithGlobal + 68
+        pi-standalone  _runtime.timer.TimerObjectInternals.fire + 1656
+        pi-standalone  _runtime.timer.Timer.All.drainTimers + 132
+        pi-standalone  _jsc.jsc.OpaqueWrap__anon_536894517__struct_537722166.callback + 4172
+        pi-standalone  _JSC__VM__holdAPILock + 44
+        pi-standalone  _bun.js.Run.boot + 2356
+        pi-standalone  _cli.run_command.RunCommand._bootAndHandleError + 372
+        pi-standalone  _cli.run_command.RunCommand.exec + 1736
+        pi-standalone  _cli.cli.Command.start + 59448
+        pi-standalone  _cli.cli.Cli.start + 184
+        pi-standalone  _main + 604
+        dyld  start + 6688
+        0  (no image: generated code)
+  HOLDER 200 ms later: at the same place; charged user 0 ns, system 0 ns; waiting
+  HELD THREADS:
+    tid 15175666 port 0xa03 "JavaScriptCore libpas scavenger"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 13c 0 0 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  _scavenger_thread_main + 712
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175668 port 0x1903 "Heap Helper Thread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1170d4128 3b0100003c00 3b00 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  WTF::Detail::CallableWrapper<WTF::AutomaticThread::start(WTF::AbstractLocker const&)::$_0, void>::call() + 332
+        pi-standalone  WTF::Thread::entryPoint(WTF::Thread::NewThreadContext*) + 192
+        pi-standalone  WTF::wtfThreadEntryPoint(void*) + 12
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175669 port 0x1103 "Heap Helper Thread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1170b0128 390100003a00 3900 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  WTF::Detail::CallableWrapper<WTF::AutomaticThread::start(WTF::AbstractLocker const&)::$_0, void>::call() + 332
+        pi-standalone  WTF::Thread::entryPoint(WTF::Thread::NewThreadContext*) + 192
+        pi-standalone  WTF::wtfThreadEntryPoint(void*) + 12
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175670 port 0x1803 "Heap Helper Thread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1170c4128 3c0100003d00 3c00 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  WTF::Detail::CallableWrapper<WTF::AutomaticThread::start(WTF::AbstractLocker const&)::$_0, void>::call() + 332
+        pi-standalone  WTF::Thread::entryPoint(WTF::Thread::NewThreadContext*) + 192
+        pi-standalone  WTF::wtfThreadEntryPoint(void*) + 12
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175671 port 0x1203 "JIT Worklist Helper Thread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1171703a8 30100000400 300 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  WTF::Detail::CallableWrapper<WTF::AutomaticThread::start(WTF::AbstractLocker const&)::$_0, void>::call() + 332
+        pi-standalone  WTF::Thread::entryPoint(WTF::Thread::NewThreadContext*) + 192
+        pi-standalone  WTF::wtfThreadEntryPoint(void*) + 12
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175678 port 0x1403 "Worker"  waiting  suspend 1  x16=kevent_qos  x0..x3 = 1 0 0 77328c00e0  word at x1 = None
+        libsystem_kernel.dylib  kevent64 + 8
+        pi-standalone  _us_loop_run_bun_tick + 292
+        pi-standalone  _jsc.jsc.OpaqueWrap__anon_538423166__struct_538562277.callback + 5320
+        pi-standalone  _JSC__VM__holdAPILock + 44
+        pi-standalone  _Thread.PosixThreadImpl.spawn__anon_538000300.Instance.entryFn + 8332
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+== wc2-bun-1.witness.jsonl rescue 2  pid 29709  the hold had lasted 1504 ms  held 6
+  HOLDER, first reading:
+    tid 15175663 port 0x103 ""  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1170493e8 250100002600 2500 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  bool WTF::Condition::waitUntilUnchecked<WTF::Lock>(WTF::Lock&, WTF::TimeWithDynamicClockType const&) + 144
+        pi-standalone  JSC::WaiterListManager::WaitSyncResult JSC::WaiterListManager::waitSyncImpl<int>(JSC::VM&, int*, int, WTF::Seconds) + 340
+        pi-standalone  JSC::JSValue JSC::atomicsWaitImpl<int, JSC::JSGenericTypedArrayView<JSC::Int32Adaptor>>(JSC::JSGlobalObject*, JSC::JSGenericTypedArrayView<JSC::Int32Adaptor>*, unsigned long long, int, JSC::JSValue, JSC::AtomicsWaitType) + 384
+        pi-standalone  JSC::atomicsFuncWait(JSC::JSGlobalObject*, JSC::CallFrame*) + 528
+        12f61403c  (no image: generated code)
+        pi-standalone  _op_call_return_location + 0
+        pi-standalone  _op_call_return_location + 0
+        pi-standalone  _op_call_return_location + 0
+        pi-standalone + 0x32642b8
+        pi-standalone  JSC::JSValue JSC::MicrotaskCall::tryCallWithArguments<JSC::JSGenerator*, JSC::JSValue, JSC::JSValue, JSC::JSValue, JSC::JSValue>(JSC::VM&, JSC::JSFunction*, JSC::JSValue, JSC::JSCell*, T...) + 116
+        pi-standalone  JSC::runInternalMicrotask(JSC::JSGlobalObject*, JSC::VM&, JSC::InternalMicrotask, unsigned char, std::__1::span<JSC::JSValue const, 4ul>, JSC::MicrotaskCall*) + 15076
+        pi-standalone  std::__1::pair<JSC::JSGlobalObject*, bool> JSC::MicrotaskQueue::drainImpl<true>(JSC::JSGlobalObject*, JSC::VM&, JSC::TopExceptionScope&) + 324
+        pi-standalone  JSC::MicrotaskQueue::drainWithUseCallOnEachMicrotask(JSC::JSGlobalObject*, JSC::VM&, JSC::TopExceptionScope&) + 12
+        pi-standalone  JSC::VM::drainMicrotasks() + 284
+        pi-standalone  Bun::jsFunctionDrainMicrotaskQueue(JSC::JSGlobalObject*, JSC::CallFrame*) + 16
+        12f61403c  (no image: generated code)
+        pi-standalone  _op_call_ignore_result_return_location + 0
+        pi-standalone + 0x32642b8
+        pi-standalone  JSC::Interpreter::executeCallImpl(JSC::VM&, JSC::JSObject*, JSC::CallData const&, JSC::JSValue, JSC::JSCell*, JSC::ArgList const&) + 544
+        pi-standalone  JSC::call(JSC::JSGlobalObject*, JSC::JSValue, JSC::JSValue, JSC::ArgList const&, WTF::ASCIILiteral) + 372
+        pi-standalone  Bun::JSNextTickQueue::drain(JSC::VM&, JSC::JSGlobalObject*) + 332
+        pi-standalone  _JSC__JSGlobalObject__drainMicrotasks + 48
+        pi-standalone  _jsc.event_loop.drainMicrotasksWithGlobal + 68
+        pi-standalone  _runtime.timer.TimerObjectInternals.fire + 1656
+        pi-standalone  _runtime.timer.Timer.All.drainTimers + 132
+        pi-standalone  _jsc.jsc.OpaqueWrap__anon_536894517__struct_537722166.callback + 4172
+        pi-standalone  _JSC__VM__holdAPILock + 44
+        pi-standalone  _bun.js.Run.boot + 2356
+        pi-standalone  _cli.run_command.RunCommand._bootAndHandleError + 372
+        pi-standalone  _cli.run_command.RunCommand.exec + 1736
+        pi-standalone  _cli.cli.Command.start + 59448
+        pi-standalone  _cli.cli.Cli.start + 184
+        pi-standalone  _main + 604
+        dyld  start + 6688
+        0  (no image: generated code)
+  HOLDER 200 ms later: at the same place; charged user 0 ns, system 0 ns; waiting
+  HELD THREADS:
+    tid 15175666 port 0xa03 "JavaScriptCore libpas scavenger"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 13c 0 0 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  _scavenger_thread_main + 712
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175668 port 0x1903 "Heap Helper Thread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1170d4128 530100005400 5300 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  WTF::Detail::CallableWrapper<WTF::AutomaticThread::start(WTF::AbstractLocker const&)::$_0, void>::call() + 332
+        pi-standalone  WTF::Thread::entryPoint(WTF::Thread::NewThreadContext*) + 192
+        pi-standalone  WTF::wtfThreadEntryPoint(void*) + 12
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175669 port 0x1103 "Heap Helper Thread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1170b0128 530100005400 5300 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  WTF::Detail::CallableWrapper<WTF::AutomaticThread::start(WTF::AbstractLocker const&)::$_0, void>::call() + 332
+        pi-standalone  WTF::Thread::entryPoint(WTF::Thread::NewThreadContext*) + 192
+        pi-standalone  WTF::wtfThreadEntryPoint(void*) + 12
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175670 port 0x1803 "Heap Helper Thread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1170c4128 540100005500 5400 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  WTF::Detail::CallableWrapper<WTF::AutomaticThread::start(WTF::AbstractLocker const&)::$_0, void>::call() + 332
+        pi-standalone  WTF::Thread::entryPoint(WTF::Thread::NewThreadContext*) + 192
+        pi-standalone  WTF::wtfThreadEntryPoint(void*) + 12
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175671 port 0x1203 "JIT Worklist Helper Thread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1171703a8 30100000400 300 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  WTF::Detail::CallableWrapper<WTF::AutomaticThread::start(WTF::AbstractLocker const&)::$_0, void>::call() + 332
+        pi-standalone  WTF::Thread::entryPoint(WTF::Thread::NewThreadContext*) + 192
+        pi-standalone  WTF::wtfThreadEntryPoint(void*) + 12
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175678 port 0x1403 "Worker"  waiting  suspend 1  x16=kevent_qos  x0..x3 = 1 0 0 77328c00e0  word at x1 = None
+        libsystem_kernel.dylib  kevent64 + 8
+        pi-standalone  _us_loop_run_bun_tick + 292
+        pi-standalone  _jsc.jsc.OpaqueWrap__anon_538423166__struct_538562277.callback + 5320
+        pi-standalone  _JSC__VM__holdAPILock + 44
+        pi-standalone  _Thread.PosixThreadImpl.spawn__anon_538000300.Instance.entryFn + 8332
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+== wc2-bun-1.witness.jsonl rescue 3  pid 29709  the hold had lasted 1520 ms  held 6
+  HOLDER, first reading:
+    tid 15175663 port 0x103 ""  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1170493e8 2d0100002e00 2d00 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  bool WTF::Condition::waitUntilUnchecked<WTF::Lock>(WTF::Lock&, WTF::TimeWithDynamicClockType const&) + 144
+        pi-standalone  JSC::WaiterListManager::WaitSyncResult JSC::WaiterListManager::waitSyncImpl<int>(JSC::VM&, int*, int, WTF::Seconds) + 340
+        pi-standalone  JSC::JSValue JSC::atomicsWaitImpl<int, JSC::JSGenericTypedArrayView<JSC::Int32Adaptor>>(JSC::JSGlobalObject*, JSC::JSGenericTypedArrayView<JSC::Int32Adaptor>*, unsigned long long, int, JSC::JSValue, JSC::AtomicsWaitType) + 384
+        pi-standalone  JSC::atomicsFuncWait(JSC::JSGlobalObject*, JSC::CallFrame*) + 528
+        12f61403c  (no image: generated code)
+        pi-standalone  _op_call_return_location + 0
+        pi-standalone  _op_call_return_location + 0
+        pi-standalone  _op_call_return_location + 0
+        pi-standalone + 0x32642b8
+        pi-standalone  JSC::JSValue JSC::MicrotaskCall::tryCallWithArguments<JSC::JSGenerator*, JSC::JSValue, JSC::JSValue, JSC::JSValue, JSC::JSValue>(JSC::VM&, JSC::JSFunction*, JSC::JSValue, JSC::JSCell*, T...) + 116
+        pi-standalone  JSC::runInternalMicrotask(JSC::JSGlobalObject*, JSC::VM&, JSC::InternalMicrotask, unsigned char, std::__1::span<JSC::JSValue const, 4ul>, JSC::MicrotaskCall*) + 15076
+        pi-standalone  std::__1::pair<JSC::JSGlobalObject*, bool> JSC::MicrotaskQueue::drainImpl<true>(JSC::JSGlobalObject*, JSC::VM&, JSC::TopExceptionScope&) + 324
+        pi-standalone  JSC::MicrotaskQueue::drainWithUseCallOnEachMicrotask(JSC::JSGlobalObject*, JSC::VM&, JSC::TopExceptionScope&) + 12
+        pi-standalone  JSC::VM::drainMicrotasks() + 284
+        pi-standalone  Bun::jsFunctionDrainMicrotaskQueue(JSC::JSGlobalObject*, JSC::CallFrame*) + 16
+        12f61403c  (no image: generated code)
+        pi-standalone  _op_call_ignore_result_return_location + 0
+        pi-standalone + 0x32642b8
+        pi-standalone  JSC::Interpreter::executeCallImpl(JSC::VM&, JSC::JSObject*, JSC::CallData const&, JSC::JSValue, JSC::JSCell*, JSC::ArgList const&) + 544
+        pi-standalone  JSC::call(JSC::JSGlobalObject*, JSC::JSValue, JSC::JSValue, JSC::ArgList const&, WTF::ASCIILiteral) + 372
+        pi-standalone  Bun::JSNextTickQueue::drain(JSC::VM&, JSC::JSGlobalObject*) + 332
+        pi-standalone  _JSC__JSGlobalObject__drainMicrotasks + 48
+        pi-standalone  _jsc.event_loop.drainMicrotasksWithGlobal + 68
+        pi-standalone  _runtime.timer.TimerObjectInternals.fire + 1656
+        pi-standalone  _runtime.timer.Timer.All.drainTimers + 132
+        pi-standalone  _jsc.jsc.OpaqueWrap__anon_536894517__struct_537722166.callback + 4172
+        pi-standalone  _JSC__VM__holdAPILock + 44
+        pi-standalone  _bun.js.Run.boot + 2356
+        pi-standalone  _cli.run_command.RunCommand._bootAndHandleError + 372
+        pi-standalone  _cli.run_command.RunCommand.exec + 1736
+        pi-standalone  _cli.cli.Command.start + 59448
+        pi-standalone  _cli.cli.Cli.start + 184
+        pi-standalone  _main + 604
+        dyld  start + 6688
+        0  (no image: generated code)
+  HOLDER 200 ms later: at the same place; charged user 0 ns, system 0 ns; waiting
+  HELD THREADS:
+    tid 15175666 port 0xa03 "JavaScriptCore libpas scavenger"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 13c 0 0 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  _scavenger_thread_main + 712
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175668 port 0x1903 "Heap Helper Thread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1170d4128 760100007700 7600 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  WTF::Detail::CallableWrapper<WTF::AutomaticThread::start(WTF::AbstractLocker const&)::$_0, void>::call() + 332
+        pi-standalone  WTF::Thread::entryPoint(WTF::Thread::NewThreadContext*) + 192
+        pi-standalone  WTF::wtfThreadEntryPoint(void*) + 12
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175669 port 0x1103 "Heap Helper Thread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1170b0128 7d0100007e00 7d00 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  WTF::Detail::CallableWrapper<WTF::AutomaticThread::start(WTF::AbstractLocker const&)::$_0, void>::call() + 332
+        pi-standalone  WTF::Thread::entryPoint(WTF::Thread::NewThreadContext*) + 192
+        pi-standalone  WTF::wtfThreadEntryPoint(void*) + 12
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175670 port 0x1803 "Heap Helper Thread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1170c4128 790100007a00 7900 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  WTF::Detail::CallableWrapper<WTF::AutomaticThread::start(WTF::AbstractLocker const&)::$_0, void>::call() + 332
+        pi-standalone  WTF::Thread::entryPoint(WTF::Thread::NewThreadContext*) + 192
+        pi-standalone  WTF::wtfThreadEntryPoint(void*) + 12
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175671 port 0x1203 "JIT Worklist Helper Thread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 1171703a8 70100000800 700 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        pi-standalone  WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime) + 184
+        pi-standalone  WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&) + 1220
+        pi-standalone  WTF::Detail::CallableWrapper<WTF::AutomaticThread::start(WTF::AbstractLocker const&)::$_0, void>::call() + 332
+        pi-standalone  WTF::Thread::entryPoint(WTF::Thread::NewThreadContext*) + 192
+        pi-standalone  WTF::wtfThreadEntryPoint(void*) + 12
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175678 port 0x1403 "Worker"  waiting  suspend 1  x16=kevent_qos  x0..x3 = 1 0 0 77328c00e0  word at x1 = None
+        libsystem_kernel.dylib  kevent64 + 8
+        pi-standalone  _us_loop_run_bun_tick + 292
+        pi-standalone  _jsc.jsc.OpaqueWrap__anon_538423166__struct_538562277.callback + 5320
+        pi-standalone  _JSC__VM__holdAPILock + 44
+        pi-standalone  _Thread.PosixThreadImpl.spawn__anon_538000300.Instance.entryFn + 8332
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+== wc2-node-1.witness.jsonl rescue 1  pid 29638  the hold had lasted 1501 ms  held 7
+  HOLDER, first reading:
+    tid 15175399 port 0x103 "MainThread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 10a15c180 100000100 0 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 1024
+        node  absl::synchronization_internal::PthreadWaiter::Wait(absl::synchronization_internal::KernelTimeout) + 276
+        node  AbslInternalPerThreadSemWait + 76
+        node  absl::CondVar::WaitCommon(absl::Mutex*, absl::synchronization_internal::KernelTimeout) + 204
+        node  v8::base::ConditionVariable::WaitFor(v8::base::Mutex*, v8::base::TimeDelta const&) + 128
+        node  v8::internal::Tagged<v8::internal::Object> v8::internal::FutexEmulation::WaitSync<int>(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::JSArrayBuffer>, unsigned long, int, bool, long long, v8::internal::FutexEmulation::CallType) + 356
+        node  v8::internal::FutexEmulation::WaitJs32(v8::internal::Isolate*, v8::internal::FutexEmulation::WaitMode, v8::internal::DirectHandle<v8::internal::JSArrayBuffer>, unsigned long, int, double) + 160
+        node  v8::internal::DoWait(v8::internal::Isolate*, v8::internal::FutexEmulation::WaitMode, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>) + 824
+        node  v8::internal::Builtin_AtomicsWait(int, unsigned long*, v8::internal::Isolate*) + 144
+        node  Builtins_CEntry_Return1_ArgvOnStack_BuiltinExit + 84
+        node  Builtins_InterpreterEntryTrampoline + 268
+        node  Builtins_InterpreterEntryTrampoline + 268
+        node  Builtins_InterpreterEntryTrampoline + 268
+        node  Builtins_AsyncFunctionAwaitResolveClosure + 72
+        node  Builtins_PromiseFulfillReactionJob + 56
+        node  Builtins_RunMicrotasks + 560
+        node  Builtins_JSRunMicrotasksEntry + 176
+        node  v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) + 1580
+        node  v8::internal::(anonymous namespace)::InvokeWithTryCatch(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) + 88
+        node  v8::internal::Execution::TryRunMicrotasks(v8::internal::Isolate*, v8::internal::MicrotaskQueue*) + 56
+        node  v8::internal::MicrotaskQueue::RunMicrotasks(v8::internal::Isolate*) + 356
+        node  v8::internal::MicrotaskQueue::PerformCheckpoint(v8::Isolate*) + 132
+        node  node::InternalCallbackScope::Close() + 324
+        node  node::InternalCallbackScope::~InternalCallbackScope() + 20
+        node  node::Environment::RunTimers(uv_timer_s*) + 740
+        node  uv__run_timers + 116
+        node  uv_run + 884
+        node  node::SpinEventLoopInternal(node::Environment*) + 248
+        node  node::NodeMainInstance::Run() + 268
+        node  node::Start(int, char**) + 604
+        dyld  start + 6688
+        0  (no image: generated code)
+  HOLDER 200 ms later: at the same place; charged user 0 ns, system 0 ns; waiting
+  HELD THREADS:
+    tid 15175403 port 0x1103 "DelayedTaskSchedulerWorker"  waiting  suspend 1  x16=kevent64  x0..x3 = 7 16dcdae70 0 16dcdae70  word at x1 = 0
+        libsystem_kernel.dylib  kevent + 8
+        node  uv__io_poll + 764
+        node  uv_run + 568
+        node  node::WorkerThreadsTaskRunner::DelayedTaskScheduler::Run() + 320
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175404 port 0x1807 "V8Worker"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 109d42908 2f0000003200 2f00 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        node  uv_cond_wait + 40
+        node  node::TaskQueue<node::TaskQueueEntry>::Locked::BlockingPop() + 64
+        node  node::(anonymous namespace)::PlatformWorkerThread(void*) + 440
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175405 port 0x1203 "V8Worker"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 109d42908 2d0000003100 2d00 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        node  uv_cond_wait + 40
+        node  node::TaskQueue<node::TaskQueueEntry>::Locked::BlockingPop() + 64
+        node  node::(anonymous namespace)::PlatformWorkerThread(void*) + 440
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175406 port 0x1303 "V8Worker"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 109d42908 2f0000003300 2f00 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        node  uv_cond_wait + 40
+        node  node::TaskQueue<node::TaskQueueEntry>::Locked::BlockingPop() + 64
+        node  node::(anonymous namespace)::PlatformWorkerThread(void*) + 440
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175407 port 0x1403 "V8Worker"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 109d42908 300000003400 3000 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        node  uv_cond_wait + 40
+        node  node::TaskQueue<node::TaskQueueEntry>::Locked::BlockingPop() + 64
+        node  node::(anonymous namespace)::PlatformWorkerThread(void*) + 440
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175408 port 0x1603 "SignalInspector"  waiting  suspend 1  x16=semaphore_wait_trap  x0..x3 = 1703 16fd16f18 40 0  word at x1 = 6e496c616e676953
+        libsystem_kernel.dylib  semaphore_wait_trap + 8
+        node  uv_sem_wait + 24
+        node  node::inspector::(anonymous namespace)::StartIoThreadMain(void*) + 56
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175424 port 0x2003 "WorkerThread"  waiting  suspend 1  x16=kevent64  x0..x3 = 1 0 0 1701a6860  word at x1 = None
+        libsystem_kernel.dylib  kevent + 8
+        node  uv__io_poll + 764
+        node  uv_run + 568
+        node  node::SpinEventLoopInternal(node::Environment*) + 248
+        node  node::worker::Worker::Run() + 2304
+        node  node::worker::Worker::StartThread(v8::FunctionCallbackInfo<v8::Value> const&)::$_0::__invoke(void*) + 80
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+== wc2-node-1.witness.jsonl rescue 2  pid 29638  the hold had lasted 1528 ms  held 7
+  HOLDER, first reading:
+    tid 15175399 port 0x103 "MainThread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 10a15c180 a0100000b00 100 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 1024
+        node  absl::synchronization_internal::PthreadWaiter::Wait(absl::synchronization_internal::KernelTimeout) + 276
+        node  AbslInternalPerThreadSemWait + 76
+        node  absl::CondVar::WaitCommon(absl::Mutex*, absl::synchronization_internal::KernelTimeout) + 204
+        node  v8::base::ConditionVariable::WaitFor(v8::base::Mutex*, v8::base::TimeDelta const&) + 128
+        node  v8::internal::Tagged<v8::internal::Object> v8::internal::FutexEmulation::WaitSync<int>(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::JSArrayBuffer>, unsigned long, int, bool, long long, v8::internal::FutexEmulation::CallType) + 356
+        node  v8::internal::FutexEmulation::WaitJs32(v8::internal::Isolate*, v8::internal::FutexEmulation::WaitMode, v8::internal::DirectHandle<v8::internal::JSArrayBuffer>, unsigned long, int, double) + 160
+        node  v8::internal::DoWait(v8::internal::Isolate*, v8::internal::FutexEmulation::WaitMode, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>) + 824
+        node  v8::internal::Builtin_AtomicsWait(int, unsigned long*, v8::internal::Isolate*) + 144
+        node  Builtins_CEntry_Return1_ArgvOnStack_BuiltinExit + 84
+        node  Builtins_InterpreterEntryTrampoline + 268
+        node  Builtins_InterpreterEntryTrampoline + 268
+        node  Builtins_InterpreterEntryTrampoline + 268
+        node  Builtins_AsyncFunctionAwaitResolveClosure + 72
+        node  Builtins_PromiseFulfillReactionJob + 56
+        node  Builtins_RunMicrotasks + 560
+        node  Builtins_JSRunMicrotasksEntry + 176
+        node  v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) + 1580
+        node  v8::internal::(anonymous namespace)::InvokeWithTryCatch(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) + 88
+        node  v8::internal::Execution::TryRunMicrotasks(v8::internal::Isolate*, v8::internal::MicrotaskQueue*) + 56
+        node  v8::internal::MicrotaskQueue::RunMicrotasks(v8::internal::Isolate*) + 356
+        node  v8::internal::MicrotaskQueue::PerformCheckpoint(v8::Isolate*) + 132
+        node  node::InternalCallbackScope::Close() + 324
+        node  node::InternalCallbackScope::~InternalCallbackScope() + 20
+        node  node::Environment::RunTimers(uv_timer_s*) + 740
+        node  uv__run_timers + 116
+        node  uv_run + 884
+        node  node::SpinEventLoopInternal(node::Environment*) + 248
+        node  node::NodeMainInstance::Run() + 268
+        node  node::Start(int, char**) + 604
+        dyld  start + 6688
+        0  (no image: generated code)
+  HOLDER 200 ms later: at the same place; charged user 0 ns, system 0 ns; waiting
+  HELD THREADS:
+    tid 15175403 port 0x1103 "DelayedTaskSchedulerWorker"  waiting  suspend 1  x16=kevent64  x0..x3 = 7 16dcdae70 0 16dcdae70  word at x1 = 0
+        libsystem_kernel.dylib  kevent + 8
+        node  uv__io_poll + 764
+        node  uv_run + 568
+        node  node::WorkerThreadsTaskRunner::DelayedTaskScheduler::Run() + 320
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175404 port 0x1807 "V8Worker"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 109d42908 2f0000003200 2f00 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        node  uv_cond_wait + 40
+        node  node::TaskQueue<node::TaskQueueEntry>::Locked::BlockingPop() + 64
+        node  node::(anonymous namespace)::PlatformWorkerThread(void*) + 440
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175405 port 0x1203 "V8Worker"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 109d42908 2d0000003100 2d00 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        node  uv_cond_wait + 40
+        node  node::TaskQueue<node::TaskQueueEntry>::Locked::BlockingPop() + 64
+        node  node::(anonymous namespace)::PlatformWorkerThread(void*) + 440
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175406 port 0x1303 "V8Worker"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 109d42908 2f0000003300 2f00 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        node  uv_cond_wait + 40
+        node  node::TaskQueue<node::TaskQueueEntry>::Locked::BlockingPop() + 64
+        node  node::(anonymous namespace)::PlatformWorkerThread(void*) + 440
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175407 port 0x1403 "V8Worker"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 109d42908 300000003400 3000 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        node  uv_cond_wait + 40
+        node  node::TaskQueue<node::TaskQueueEntry>::Locked::BlockingPop() + 64
+        node  node::(anonymous namespace)::PlatformWorkerThread(void*) + 440
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175408 port 0x1603 "SignalInspector"  waiting  suspend 1  x16=semaphore_wait_trap  x0..x3 = 1703 16fd16f18 40 0  word at x1 = 6e496c616e676953
+        libsystem_kernel.dylib  semaphore_wait_trap + 8
+        node  uv_sem_wait + 24
+        node  node::inspector::(anonymous namespace)::StartIoThreadMain(void*) + 56
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175424 port 0x2003 "WorkerThread"  waiting  suspend 1  x16=kevent64  x0..x3 = 1 0 0 1701a6860  word at x1 = None
+        libsystem_kernel.dylib  kevent + 8
+        node  uv__io_poll + 764
+        node  uv_run + 568
+        node  node::SpinEventLoopInternal(node::Environment*) + 248
+        node  node::worker::Worker::Run() + 2304
+        node  node::worker::Worker::StartThread(v8::FunctionCallbackInfo<v8::Value> const&)::$_0::__invoke(void*) + 80
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+== wc2-node-1.witness.jsonl rescue 3  pid 29638  the hold had lasted 1524 ms  held 7
+  HOLDER, first reading:
+    tid 15175399 port 0x103 "MainThread"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 10a15c180 140100001500 b00 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 1024
+        node  absl::synchronization_internal::PthreadWaiter::Wait(absl::synchronization_internal::KernelTimeout) + 276
+        node  AbslInternalPerThreadSemWait + 76
+        node  absl::CondVar::WaitCommon(absl::Mutex*, absl::synchronization_internal::KernelTimeout) + 204
+        node  v8::base::ConditionVariable::WaitFor(v8::base::Mutex*, v8::base::TimeDelta const&) + 128
+        node  v8::internal::Tagged<v8::internal::Object> v8::internal::FutexEmulation::WaitSync<int>(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::JSArrayBuffer>, unsigned long, int, bool, long long, v8::internal::FutexEmulation::CallType) + 356
+        node  v8::internal::FutexEmulation::WaitJs32(v8::internal::Isolate*, v8::internal::FutexEmulation::WaitMode, v8::internal::DirectHandle<v8::internal::JSArrayBuffer>, unsigned long, int, double) + 160
+        node  v8::internal::DoWait(v8::internal::Isolate*, v8::internal::FutexEmulation::WaitMode, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>) + 824
+        node  v8::internal::Builtin_AtomicsWait(int, unsigned long*, v8::internal::Isolate*) + 144
+        node  Builtins_CEntry_Return1_ArgvOnStack_BuiltinExit + 84
+        node  Builtins_InterpreterEntryTrampoline + 268
+        node  Builtins_InterpreterEntryTrampoline + 268
+        node  Builtins_InterpreterEntryTrampoline + 268
+        node  Builtins_AsyncFunctionAwaitResolveClosure + 72
+        node  Builtins_PromiseFulfillReactionJob + 56
+        node  Builtins_RunMicrotasks + 560
+        node  Builtins_JSRunMicrotasksEntry + 176
+        node  v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) + 1580
+        node  v8::internal::(anonymous namespace)::InvokeWithTryCatch(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) + 88
+        node  v8::internal::Execution::TryRunMicrotasks(v8::internal::Isolate*, v8::internal::MicrotaskQueue*) + 56
+        node  v8::internal::MicrotaskQueue::RunMicrotasks(v8::internal::Isolate*) + 356
+        node  v8::internal::MicrotaskQueue::PerformCheckpoint(v8::Isolate*) + 132
+        node  node::InternalCallbackScope::Close() + 324
+        node  node::InternalCallbackScope::~InternalCallbackScope() + 20
+        node  node::Environment::RunTimers(uv_timer_s*) + 740
+        node  uv__run_timers + 116
+        node  uv_run + 884
+        node  node::SpinEventLoopInternal(node::Environment*) + 248
+        node  node::NodeMainInstance::Run() + 268
+        node  node::Start(int, char**) + 604
+        dyld  start + 6688
+        0  (no image: generated code)
+  HOLDER 200 ms later: at the same place; charged user 0 ns, system 0 ns; waiting
+  HELD THREADS:
+    tid 15175403 port 0x1103 "DelayedTaskSchedulerWorker"  waiting  suspend 1  x16=kevent64  x0..x3 = 7 16dcdae70 0 16dcdae70  word at x1 = 0
+        libsystem_kernel.dylib  kevent + 8
+        node  uv__io_poll + 764
+        node  uv_run + 568
+        node  node::WorkerThreadsTaskRunner::DelayedTaskScheduler::Run() + 320
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175404 port 0x1807 "V8Worker"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 109d42908 320000003600 3200 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        node  uv_cond_wait + 40
+        node  node::TaskQueue<node::TaskQueueEntry>::Locked::BlockingPop() + 64
+        node  node::(anonymous namespace)::PlatformWorkerThread(void*) + 440
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175405 port 0x1203 "V8Worker"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 109d42908 310000003500 3100 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        node  uv_cond_wait + 40
+        node  node::TaskQueue<node::TaskQueueEntry>::Locked::BlockingPop() + 64
+        node  node::(anonymous namespace)::PlatformWorkerThread(void*) + 440
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175406 port 0x1303 "V8Worker"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 109d42908 2f0000003300 2f00 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        node  uv_cond_wait + 40
+        node  node::TaskQueue<node::TaskQueueEntry>::Locked::BlockingPop() + 64
+        node  node::(anonymous namespace)::PlatformWorkerThread(void*) + 440
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175407 port 0x1403 "V8Worker"  waiting  suspend 1  x16=psynch_cvwait  x0..x3 = 109d42908 300000003400 3000 0  word at x1 = None
+        libsystem_kernel.dylib  __psynch_cvwait + 8
+        libsystem_pthread.dylib  _pthread_cond_wait + 980
+        node  uv_cond_wait + 40
+        node  node::TaskQueue<node::TaskQueueEntry>::Locked::BlockingPop() + 64
+        node  node::(anonymous namespace)::PlatformWorkerThread(void*) + 440
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175408 port 0x1603 "SignalInspector"  waiting  suspend 1  x16=semaphore_wait_trap  x0..x3 = 1703 16fd16f18 40 0  word at x1 = 6e496c616e676953
+        libsystem_kernel.dylib  semaphore_wait_trap + 8
+        node  uv_sem_wait + 24
+        node  node::inspector::(anonymous namespace)::StartIoThreadMain(void*) + 56
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8
+    tid 15175424 port 0x2003 "WorkerThread"  waiting  suspend 1  x16=kevent64  x0..x3 = 1 0 0 1701a6860  word at x1 = None
+        libsystem_kernel.dylib  kevent + 8
+        node  uv__io_poll + 764
+        node  uv_run + 568
+        node  node::SpinEventLoopInternal(node::Environment*) + 248
+        node  node::worker::Worker::Run() + 2304
+        node  node::worker::Worker::StartThread(v8::FunctionCallbackInfo<v8::Value> const&)::$_0::__invoke(void*) + 80
+        libsystem_pthread.dylib  _pthread_start + 136
+        libsystem_pthread.dylib  thread_start + 8

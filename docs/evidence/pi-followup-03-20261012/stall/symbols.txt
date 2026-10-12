@@ -1,0 +1,20 @@
+Names for the Bun inside the standalone Pi (which carries none)
+
+source   https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-darwin-aarch64-profile.zip
+sha256   cb6b958b7220628466fcbc2e16fab4121c683b22034885ba95297c54a3f454bf   (= the release's SHASUMS256.txt)
+inside   bun-profile             sha256 70c33b5a0293614494873f3b4a4655e5bd74c66689e7943f7be37aeb0f693cf1
+         bun-profile.linker-map  sha256 d2f930fcdc519234af4e4cbf2747de3bd150a6e996a7a02ebcbe3c61e6369c49
+         (bun-profile was never run: only its headers and bytes were read)
+
+Why its names apply to the Pi binary's addresses (bin/pi-standalone, sha256 daea10db90f7806cd0ae5be89fcf819d47b5ed3df99b7c79c31186a1cd6a6501):
+both carry the same Mach-O UUID c7e7a979f99b34669ad6e56a63373a35, and every code section has the same
+address, size and bytes in both:
+
+  __TEXT,__text          addr 0x100004880 size 0x325f96c sha256 dc9d647bd62f9bd2e518ecfb…   (both)
+  __TEXT,__jsc_int       addr 0x103264200 size 0x651d0   sha256 5e22b4f89bd618b07917ac77…   (both)
+  __TEXT,__stubs         addr 0x1032c93d0 size 0x20ac    sha256 6ef29095db30fc3c959b983e…   (both)
+  __TEXT,__init_offsets  addr 0x1032cb47c size 0x4       sha256 091a92346eb5bd7bfdf3a0a3…   (both)
+  __TEXT,__cstring       addr 0x1032cb480 size 0x364ae0  sha256 7d70c980894f567c96f1546b…   (both)
+  __TEXT,__const         addr 0x103630000 size 0x43f1e4  sha256 aa668af131bedb8f8f67ef08…   (both)
+
+Node's own executable carries its names; the process reads them itself (dladdr).
