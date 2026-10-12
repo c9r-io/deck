@@ -11,7 +11,10 @@
 //!   and `open -n`s the installed bundle;
 //! - spawn `ps`, `date`, `osascript` or a shell: process facts (pid, ppid,
 //!   footprint, tty, foreground group, argv[0]) come from libproc and
-//!   `KERN_PROCARGS2` in `procinfo.rs`, local time from `localtime_r`, and a
+//!   `KERN_PROCARGS2` in `procinfo.rs`, whether a watched process executed
+//!   another image or exited from the kernel's own report for that pid
+//!   (kqueue `EVFILT_PROC`, one queue, no task port), local time from
+//!   `localtime_r`, and a
 //!   duplicate instance just logs and exits; default paths, structured
 //!   reads, metadata and readiness queries never start a shell; human
 //!   takeover of an MCP session starts no shell;
@@ -1355,11 +1358,14 @@ fn pi_observer_violations(name: &str, source: &str) -> Vec<String> {
         }
         // The native session id is the ONE value read through the session
         // manager, in one place, and the manager is reached only behind the
-        // lifecycle capability: at the session start and at the shutdown.
+        // lifecycle capability AS THE STREAM STILL HAS IT (`may.lifecycle`,
+        // which Deck only ever takes away): at the session start and at the
+        // shutdown. Losing the capability lets go of the manager at once.
         let reads = [
-            "        const id = manager.getSessionId();",
-            "      if (lifecycle) {\n        sessions = ctx.sessionManager;",
-            "      const id = lifecycle && target ? nativeId(ctx.sessionManager) : null;",
+            "        id = manager.getSessionId();",
+            "      if (may.lifecycle) {\n        sessions = ctx.sessionManager;",
+            "      const native = may.lifecycle && target && !silent ? nativeId(ctx.sessionManager) : null;",
+            "        may.lifecycle = false;\n        sessions = null;\n        first = null;",
         ];
         if source.matches("getSessionId").count() != 1
             || source.matches("sessionManager").count() != 2
@@ -1484,12 +1490,17 @@ fn the_pi_observer_holds_to_its_closed_vocabulary() {
         ("pi.on(\"agent_settled\"", "pi.on(\"agent_end\""),
         // the session manager outside the lifecycle capability
         (
-            "      if (lifecycle) {\n        sessions = ctx.sessionManager;",
+            "      if (may.lifecycle) {\n        sessions = ctx.sessionManager;",
             "      {\n        sessions = ctx.sessionManager;",
         ),
         (
-            "const id = lifecycle && target ? nativeId(ctx.sessionManager) : null;",
-            "const id = target ? nativeId(ctx.sessionManager) : null;",
+            "const native = may.lifecycle && target && !silent ? nativeId(ctx.sessionManager) : null;",
+            "const native = target && !silent ? nativeId(ctx.sessionManager) : null;",
+        ),
+        // a lost capability that kept the session manager
+        (
+            "        may.lifecycle = false;\n        sessions = null;\n        first = null;",
+            "        may.lifecycle = false;\n        first = null;",
         ),
     ] {
         assert!(observer.contains(from), "{from}");

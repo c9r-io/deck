@@ -731,7 +731,11 @@ export async function persistAgentHooksChoice(agent, boxId, confirmKey) {
    backend read in Pi's own settings file. `null` (not read yet, or a failed
    read) shows the switch off and unusable, with no note. */
 let piPending = false;
+/* what the rows were last painted from: the note is a sentence, so a change
+   of language while Settings is open paints it again */
+let piShown = null;
 function renderPiSettings(status) {
+  piShown = status || null;
   const view = status ? piSettingsView(status) : { signal: false, lifecycle: false, usable: false, note: null };
   const box = $('set-pi-hooks');
   box.checked = view.signal;
@@ -1400,6 +1404,7 @@ export function initSettings() {
     if ($('settings-modal').style.display === 'flex') {
       renderShortcutSettings();
       renderVoicePreferences();
+      renderPiSettings(piShown);
       filterSettings();
     }
   });

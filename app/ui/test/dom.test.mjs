@@ -1089,6 +1089,16 @@ test('the Pi work-status switch shows what Pi\'s settings say and writes through
     box.fire('keydown', { key: 'Escape' });
   }
 
+  // the note is a sentence: a change of language while Settings is open paints it again
+  await open({ pi: true, pi_installation: 'needs-reload' });
+  const { setLocale } = await import('../js/i18n.js');
+  setLocale('zh-Hans');
+  assert.match(note.textContent, /正在运行的 Pi 仍按之前的设置工作/);
+  setLocale('en');
+  assert.match(note.textContent, /still runs with the earlier setting/);
+  assert.equal(pi.checked, true, 'and the switch stays what the file says');
+  box.fire('keydown', { key: 'Escape' });
+
   // the other three switches neither move it nor follow it
   await open({ claude: true, codex: true, claude_reentry: true, pi: false, pi_installation: 'absent' });
   assert.deepEqual(others.map(node => node.checked), [true, true, true]);
@@ -1135,7 +1145,8 @@ test('the Pi work-status switch shows what Pi\'s settings say and writes through
   // a refusal says its own sentence for a closed code, the generic one for
   // anything else, and the switch shows what the file still says
   for (const [message, said] of [
-    ['pi-never-ran', /Pi has not been run on this Mac yet/],
+    // a missing directory is said as that: it is no fact about whether Pi ever ran here
+    ['pi-never-ran', /Pi’s settings directory does not exist/],
     ['pi-config-conflict', /Pi’s settings disable Deck’s extension/],
     ['pi-config-unreadable', /cannot be edited safely/],
     ['pi-config-busy', /kept changing/],

@@ -216,16 +216,19 @@ fn closed_status_vocabularies_match_the_fixture() {
             ),
             l["pi_installations"]
         );
-        // the one word a card may say about its Pi's native session
-        let observed = |session: crate::agent_reentry::lifecycle::PiSession| match session {
-            crate::agent_reentry::lifecycle::PiSession::Observed => {
-                serde_json::to_value(session).unwrap()
-            }
+        // the words a card may say about its Pi's native session: every
+        // variant, so that adding one breaks this match until it is listed
+        // here and in the fixture
+        use crate::agent_reentry::lifecycle::PiSession;
+        let said = |session: PiSession| match session {
+            PiSession::Observed | PiSession::Unsupported => serde_json::to_value(session).unwrap(),
         };
         assert_eq!(
-            serde_json::Value::Array(vec![observed(
-                crate::agent_reentry::lifecycle::PiSession::Observed
-            )]),
+            serde_json::Value::Array(
+                [PiSession::Observed, PiSession::Unsupported]
+                    .map(said)
+                    .to_vec()
+            ),
             l["pi_session"]
         );
     }

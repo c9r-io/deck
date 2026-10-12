@@ -7223,12 +7223,29 @@ fn a_pi_target_is_recognized_from_facts_read_now() {
         PiCoverage::Unavailable,
         PiCoverage::Incompatible,
     ] {
-        crate::agent_status::pi_observed(&pane, pi, coverage);
+        let (instance, switch) = crate::procinfo::InstanceWatch::stand_in();
+        crate::agent_status::pi_observed(&pane, pi, coverage, &instance);
         assert!(
             pi_target_with(&row, now(Some(pi)), named("node")),
             "{coverage:?}"
         );
+        // a kernel that cannot be asked leaves the hold: it only ever adds
+        switch.unreadable();
+        assert!(
+            pi_target_with(&row, now(Some(pi)), named("node")),
+            "{coverage:?}: unreadable"
+        );
+        // the same pid and birth, another program: an exec ends what was
+        // proven, and a name alone says what it says
+        switch.executed();
+        assert!(
+            !pi_target_with(&row, now(Some(pi)), named("node")),
+            "{coverage:?}: executed"
+        );
+        assert!(pi_target_with(&row, now(Some(pi)), named("pi")));
     }
+    let (instance, _still) = crate::procinfo::InstanceWatch::stand_in();
+    crate::agent_status::pi_observed(&pane, pi, PiCoverage::Connected, &instance);
     assert!(
         !pi_target_with(&row, now(Some(other)), named("node")),
         "another program now"

@@ -777,31 +777,65 @@ pub(crate) enum Receipt {
 //
 // One record per live observer lease, in memory only: the current native id
 // (Pi's own shape, `agent_pi::PiNativeId`) and the last thing the runtime
-// said of it — a start or a teardown with Pi's own reason, or a snapshot. It is gone with its lease — a reset, the end of the
-// stream, another foreground, the capability turned off, a Deck restart —
-// and is never rebuilt from disk. A runtime that contradicts itself (a
-// second start, another id, or a teardown of a session it never reported)
-// loses its record instead of having one of the two readings picked. The
-// id is compared, never logged, shown, written or sent anywhere.
+// said of it — a start or a teardown with Pi's own reason, or a snapshot. It
+// is gone with its lease — a reset, the end of the stream, another
+// foreground, the capability turned off, a Deck restart — and is never
+// rebuilt from disk. A runtime that contradicts itself (a second start,
+// another id, or a teardown of a session it never reported) loses its record
+// instead of having one of the two readings picked. The id is compared,
+// never logged, shown, written or sent anywhere.
+//
+// An id this build does not keep (longer than `agent_pi::MAX_NATIVE_ID`, or
+// too long for the observer to put on a line at all) is not cut short,
+// hashed or passed over: the lease's record becomes `Unsupported`, and it
+// STAYS that for the lease. From there on nothing can be compared, so a
+// later frame — a short id included — is not a first observation and
+// restores nothing; only another lease can observe a session again. The
+// card says so in one closed word (`PiSession::Unsupported`). Run
+// boundaries of the same stream are not this module's and are unaffected.
 
-use crate::agent_pi::{PiNativeId, SessionEvent};
+use crate::agent_pi::{NativeId, PiNativeId, SessionEvent};
 use crate::agent_status::{ForegroundGeneration, PaneKey};
+
+/// What one lease said of its runtime's native session.
+enum PiNative {
+    /// The current id, and the last thing this runtime said of it. A
+    /// snapshot is what the API said after a reconnect: neither a start nor
+    /// a resume. A teardown is the runtime's own word — `quit` is not proof
+    /// that the process is gone.
+    Known { id: PiNativeId, last: SessionEvent },
+    /// The runtime named an id this build does not keep. Nothing of this
+    /// lease's sessions can be compared any more.
+    Unsupported,
+}
 
 struct PiObserved {
     key: PaneKey,
     generation: ForegroundGeneration,
-    id: PiNativeId,
-    /// The last thing this runtime said of its session. A snapshot is what
-    /// the API said after a reconnect: neither a start nor a resume. A
-    /// teardown is the runtime's own word — `quit` is not proof that the
-    /// process is gone.
-    last: SessionEvent,
+    native: PiNative,
 }
 
 impl PiObserved {
     fn torn_down(&self) -> bool {
-        matches!(self.last, SessionEvent::Shutdown(_))
+        matches!(
+            self.native,
+            PiNative::Known {
+                last: SessionEvent::Shutdown(_),
+                ..
+            }
+        )
     }
+}
+
+/// What a verified lifecycle frame did to its lease's record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PiNoted {
+    /// The session is observed as the frame says.
+    Observed,
+    /// The lease's session observation became unavailable with this frame.
+    Unsupported,
+    /// It already was: the frame is acknowledged and changes nothing.
+    Ignored,
 }
 
 static PI_SESSIONS: Mutex<Option<HashMap<u64, PiObserved>>> = Mutex::new(None);
@@ -815,17 +849,30 @@ fn with_pi<R>(f: impl FnOnce(&mut HashMap<u64, PiObserved>) -> R) -> R {
 /// One verified lifecycle frame of the observer lease `lease`, bound to its
 /// pane and foreground generation by the transport that calls this. `Err`
 /// when the frame contradicts what that lease reported before: the record
-/// is then removed, and the transport ends the stream.
+/// is then removed, and the transport ends the stream. An id this build
+/// does not keep is no contradiction and no observation: the lease's record
+/// becomes `Unsupported` and stays so (`pi_unsupported`).
 pub(crate) fn observe_pi(
     lease: u64,
     key: &PaneKey,
     generation: ForegroundGeneration,
     event: SessionEvent,
-    id: &PiNativeId,
-) -> Result<(), &'static str> {
+    native: &NativeId,
+) -> Result<PiNoted, &'static str> {
+    let NativeId::Kept(id) = native else {
+        return Ok(pi_unsupported(lease, key, generation));
+    };
     with_pi(|sessions| {
-        let known = sessions.get_mut(&lease);
-        let consistent = match (event, known) {
+        let consistent = match (event, sessions.get_mut(&lease)) {
+            // nothing of this lease's sessions can be compared any more: a
+            // short id is not a first observation
+            (
+                _,
+                Some(PiObserved {
+                    native: PiNative::Unsupported,
+                    ..
+                }),
+            ) => return Ok(PiNoted::Ignored),
             // the first thing a runtime says of its session
             (SessionEvent::Start(_) | SessionEvent::Snapshot, None) => {
                 sessions.insert(
@@ -833,28 +880,71 @@ pub(crate) fn observe_pi(
                     PiObserved {
                         key: key.clone(),
                         generation,
-                        id: id.clone(),
-                        last: event,
+                        native: PiNative::Known {
+                            id: id.clone(),
+                            last: event,
+                        },
                     },
                 );
                 true
             }
-            // what the API says again, for the session already known
-            (SessionEvent::Snapshot, Some(known)) => known.id == *id && !known.torn_down(),
-            (SessionEvent::Shutdown(_), Some(known)) if known.id == *id && !known.torn_down() => {
-                known.last = event;
-                true
+            (
+                event,
+                Some(PiObserved {
+                    native: PiNative::Known { id: known, last },
+                    ..
+                }),
+            ) => {
+                let live = *known == *id && !matches!(last, SessionEvent::Shutdown(_));
+                match event {
+                    // what the API says again, for the session already known
+                    SessionEvent::Snapshot => live,
+                    SessionEvent::Shutdown(_) if live => {
+                        *last = event;
+                        true
+                    }
+                    // a second start in one runtime, or a teardown of
+                    // another session: neither reading is picked
+                    _ => false,
+                }
             }
-            // a second start in one runtime, a teardown of another session
-            // or of none: neither reading is picked
-            _ => false,
+            // a teardown of no session at all
+            (SessionEvent::Shutdown(_), None) => false,
         };
         if consistent {
-            Ok(())
+            Ok(PiNoted::Observed)
         } else {
             sessions.remove(&lease);
             Err("bad-lifecycle")
         }
+    })
+}
+
+/// The runtime of `lease` named a session id this build does not keep, in
+/// a lifecycle frame or — when the id did not even fit a line — in the
+/// observer's own closed word for it. Whatever the lease reported before is
+/// no longer current, and nothing it says later is a first observation.
+pub(crate) fn pi_unsupported(
+    lease: u64,
+    key: &PaneKey,
+    generation: ForegroundGeneration,
+) -> PiNoted {
+    with_pi(|sessions| {
+        let already = sessions
+            .get(&lease)
+            .is_some_and(|known| matches!(known.native, PiNative::Unsupported));
+        if already {
+            return PiNoted::Ignored;
+        }
+        sessions.insert(
+            lease,
+            PiObserved {
+                key: key.clone(),
+                generation,
+                native: PiNative::Unsupported,
+            },
+        );
+        PiNoted::Unsupported
     })
 }
 
@@ -864,32 +954,57 @@ pub(crate) fn forget_pi(lease: u64) {
 }
 
 /// What a card may say about its Pi's native session: one closed word, and
-/// only while a live observer of the pane's CURRENT foreground generation
-/// reported a session and no teardown. The id never leaves this module.
+/// only of a live observer of the pane's CURRENT foreground generation.
+/// `Observed`: it reported a session and no teardown. `Unsupported`: it
+/// named an id this build does not keep, so its session is not observed.
+/// The id never leaves this module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum PiSession {
     Observed,
+    Unsupported,
 }
 
 pub(crate) fn pi_session(key: &PaneKey, generation: ForegroundGeneration) -> Option<PiSession> {
     with_pi(|sessions| {
-        sessions
+        let known = sessions
             .values()
-            .any(|known| known.key == *key && known.generation == generation && !known.torn_down())
-            .then_some(PiSession::Observed)
+            .find(|known| known.key == *key && known.generation == generation)?;
+        match known.native {
+            PiNative::Unsupported => Some(PiSession::Unsupported),
+            PiNative::Known { .. } => (!known.torn_down()).then_some(PiSession::Observed),
+        }
     })
 }
 
-/// What a test may ask about the records: (lease, id, the last event).
+/// What a test may ask about the records of observed sessions: (lease, id,
+/// the last event).
 #[cfg(test)]
 pub(crate) fn pi_sessions_for_tests() -> Vec<(u64, String, SessionEvent)> {
     with_pi(|sessions| {
         let mut all: Vec<_> = sessions
             .iter()
-            .map(|(lease, known)| (*lease, known.id.as_str().to_owned(), known.last))
+            .filter_map(|(lease, known)| match &known.native {
+                PiNative::Known { id, last } => Some((*lease, id.as_str().to_owned(), *last)),
+                PiNative::Unsupported => None,
+            })
             .collect();
         all.sort_by_key(|record| record.0);
+        all
+    })
+}
+
+/// The leases whose session observation is unavailable for an id this
+/// build does not keep.
+#[cfg(test)]
+pub(crate) fn pi_unsupported_for_tests() -> Vec<u64> {
+    with_pi(|sessions| {
+        let mut all: Vec<u64> = sessions
+            .iter()
+            .filter(|(_, known)| matches!(known.native, PiNative::Unsupported))
+            .map(|(lease, _)| *lease)
+            .collect();
+        all.sort_unstable();
         all
     })
 }
@@ -2176,14 +2291,13 @@ mod tests {
             ForegroundGeneration::of(pid, (2000, 0))
         }
 
-        fn id(text: &str) -> PiNativeId {
+        /// The id a lifecycle frame names, as the wire parser reads it: kept,
+        /// or well formed and longer than this build keeps.
+        fn id(text: &str) -> NativeId {
             match crate::agent_pi::parse_frame(&format!(
                 r#"{{"protocol":"pi-observer","v":1,"source":"pi","seq":1,"event":"snapshot","nativeSessionId":"{text}"}}"#
             )) {
-                Ok(crate::agent_pi::Frame::Lifecycle {
-                    native: crate::agent_pi::NativeId::Kept(id),
-                    ..
-                }) => id,
+                Ok(crate::agent_pi::Frame::Lifecycle { native, .. }) => native,
                 other => panic!("{other:?}"),
             }
         }
@@ -2198,7 +2312,10 @@ mod tests {
             reset_pi_for_tests();
             let (a, b) = (pane("%1"), pane("%2"));
             let native = id("fixture.custom-ID_123");
-            assert!(!crate::agent_reentry::claude::native_id_ok(native.as_str()));
+            assert!(matches!(native, NativeId::Kept(_)));
+            assert!(!crate::agent_reentry::claude::native_id_ok(
+                "fixture.custom-ID_123"
+            ));
             assert_eq!(pi_session(&a, generation(310)), None);
             assert_eq!(
                 observe_pi(
@@ -2208,7 +2325,7 @@ mod tests {
                     SessionEvent::Start(StartReason::Startup),
                     &native
                 ),
-                Ok(())
+                Ok(PiNoted::Observed)
             );
             assert_eq!(pi_session(&a, generation(310)), Some(PiSession::Observed));
             // another generation of that pane, and another pane, read nothing
@@ -2217,7 +2334,7 @@ mod tests {
             // the same session in a second pane is a second, independent record
             assert_eq!(
                 observe_pi(8, &b, generation(410), SessionEvent::Snapshot, &native),
-                Ok(())
+                Ok(PiNoted::Observed)
             );
             assert_eq!(
                 pi_sessions_for_tests(),
@@ -2237,7 +2354,7 @@ mod tests {
             // a snapshot of the session already known changes nothing
             assert_eq!(
                 observe_pi(7, &a, generation(310), SessionEvent::Snapshot, &native),
-                Ok(())
+                Ok(PiNoted::Observed)
             );
             // the teardown is the runtime's word: no session is observed after it
             assert_eq!(
@@ -2248,7 +2365,7 @@ mod tests {
                     SessionEvent::Shutdown(ShutdownReason::Quit),
                     &native
                 ),
-                Ok(())
+                Ok(PiNoted::Observed)
             );
             assert_eq!(pi_session(&a, generation(310)), None);
             assert_eq!(
@@ -2280,7 +2397,7 @@ mod tests {
             let (first, other) = (id("session-one"), id("session-two"));
             let start = SessionEvent::Start(StartReason::Startup);
             let quit = SessionEvent::Shutdown(ShutdownReason::Quit);
-            let cases: [(&str, Vec<(SessionEvent, &PiNativeId)>); 6] = [
+            let cases: [(&str, Vec<(SessionEvent, &NativeId)>); 6] = [
                 (
                     "a second start without a teardown",
                     vec![
@@ -2312,7 +2429,7 @@ mod tests {
                 for (event, native) in before {
                     assert_eq!(
                         observe_pi(7, &a, generation(310), *event, native),
-                        Ok(()),
+                        Ok(PiNoted::Observed),
                         "{what}"
                     );
                 }
@@ -2328,7 +2445,134 @@ mod tests {
                 assert_eq!(pi_session(&a, generation(310)), None, "{what}");
             }
             // a start after a contradiction is a first start again
-            assert_eq!(observe_pi(7, &a, generation(310), start, &other), Ok(()));
+            assert_eq!(
+                observe_pi(7, &a, generation(310), start, &other),
+                Ok(PiNoted::Observed)
+            );
+            reset_pi_for_tests();
+        }
+
+        /// An id this build does not keep is neither kept nor passed over. The
+        /// lease's record becomes `unsupported` — one closed word a card can
+        /// show — and STAYS so: whatever the lease said before is no longer
+        /// current, and nothing it says later is a first observation. Only
+        /// another lease observes a session again.
+        #[test]
+        fn an_id_this_build_does_not_keep_makes_the_lease_unsupported_for_good() {
+            let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+            reset_pi_for_tests();
+            let a = pane("%1");
+            let start = SessionEvent::Start(StartReason::Startup);
+            let quit = SessionEvent::Shutdown(ShutdownReason::Quit);
+            let (longest, too_long) = ("k".repeat(256), "k".repeat(257));
+            // the boundary: 256 bytes are kept, 257 are not
+            assert!(matches!(id(&longest), NativeId::Kept(_)));
+            assert_eq!(id(&too_long), NativeId::Unsupported);
+            assert_eq!(id(&"k".repeat(512)), NativeId::Unsupported);
+            assert_eq!(
+                observe_pi(7, &a, generation(310), start, &id(&longest)),
+                Ok(PiNoted::Observed)
+            );
+            assert_eq!(pi_session(&a, generation(310)), Some(PiSession::Observed));
+
+            // A, then an id that is not kept, then B: A is gone, B is not a
+            // first observation, and the lease is not "nothing seen yet"
+            reset_pi_for_tests();
+            let (first, other) = (id("session-one"), id("session-two"));
+            assert_eq!(
+                observe_pi(7, &a, generation(310), start, &first),
+                Ok(PiNoted::Observed)
+            );
+            assert_eq!(
+                observe_pi(
+                    7,
+                    &a,
+                    generation(310),
+                    SessionEvent::Snapshot,
+                    &id(&too_long)
+                ),
+                Ok(PiNoted::Unsupported),
+                "no contradiction, no observation: the lease's sessions are unavailable"
+            );
+            assert_eq!(
+                pi_session(&a, generation(310)),
+                Some(PiSession::Unsupported)
+            );
+            assert!(pi_sessions_for_tests().is_empty(), "A is no longer current");
+            assert_eq!(pi_unsupported_for_tests(), [7]);
+            for (event, native) in [
+                (SessionEvent::Snapshot, &other),
+                (SessionEvent::Start(StartReason::New), &other),
+                (SessionEvent::Snapshot, &first),
+                (SessionEvent::Snapshot, &id(&too_long)),
+                (quit, &other),
+            ] {
+                assert_eq!(
+                    observe_pi(7, &a, generation(310), event, native),
+                    Ok(PiNoted::Ignored),
+                    "{event:?}: acknowledged, and nothing is observed again"
+                );
+                assert_eq!(
+                    pi_session(&a, generation(310)),
+                    Some(PiSession::Unsupported)
+                );
+                assert!(pi_sessions_for_tests().is_empty());
+            }
+
+            // an unsupported start, then a short snapshot: the same
+            reset_pi_for_tests();
+            assert_eq!(
+                observe_pi(7, &a, generation(310), start, &id(&too_long)),
+                Ok(PiNoted::Unsupported)
+            );
+            assert_eq!(
+                observe_pi(7, &a, generation(310), SessionEvent::Snapshot, &first),
+                Ok(PiNoted::Ignored)
+            );
+            assert_eq!(
+                pi_session(&a, generation(310)),
+                Some(PiSession::Unsupported)
+            );
+            // the observer's own word for an id it could not put on a line
+            assert_eq!(pi_unsupported(7, &a, generation(310)), PiNoted::Ignored);
+            assert_eq!(
+                pi_unsupported(8, &pane("%2"), generation(410)),
+                PiNoted::Unsupported
+            );
+            assert_eq!(
+                pi_session(&pane("%2"), generation(410)),
+                Some(PiSession::Unsupported)
+            );
+
+            // a consistency failure is still a failure, and is not this state:
+            // a teardown of another session ends the record
+            reset_pi_for_tests();
+            assert_eq!(
+                observe_pi(7, &a, generation(310), start, &first),
+                Ok(PiNoted::Observed)
+            );
+            assert_eq!(
+                observe_pi(7, &a, generation(310), quit, &other),
+                Err("bad-lifecycle")
+            );
+            assert_eq!(pi_session(&a, generation(310)), None);
+            assert!(pi_unsupported_for_tests().is_empty());
+
+            // another lease of the same pane observes again; the old lease's
+            // state went with it
+            reset_pi_for_tests();
+            assert_eq!(pi_unsupported(7, &a, generation(310)), PiNoted::Unsupported);
+            forget_pi(7);
+            assert_eq!(pi_session(&a, generation(310)), None);
+            assert_eq!(
+                observe_pi(9, &a, generation(310), SessionEvent::Snapshot, &first),
+                Ok(PiNoted::Observed)
+            );
+            assert_eq!(pi_session(&a, generation(310)), Some(PiSession::Observed));
+            assert_eq!(
+                serde_json::to_value(PiSession::Unsupported).unwrap(),
+                "unsupported"
+            );
             reset_pi_for_tests();
         }
 
@@ -2355,7 +2599,7 @@ mod tests {
             ] {
                 assert_eq!(
                     observe_pi(7, &pane("%1"), generation(310), event, &native),
-                    Ok(())
+                    Ok(PiNoted::Observed)
                 );
             }
             assert!(

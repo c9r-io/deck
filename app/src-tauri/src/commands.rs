@@ -2156,7 +2156,8 @@ mod tests {
         assert_eq!((info.agent, info.episode), (None, None));
         // a proven observer of that generation: connected, and still no word
         let generation = ForegroundGeneration::of(PI, (2000, 0));
-        crate::agent_status::pi_observed(&rows[1], generation, Connected);
+        let (instance, switch) = crate::procinfo::InstanceWatch::stand_in();
+        crate::agent_status::pi_observed(&rows[1], generation, Connected, &instance);
         let info = poll(rows.clone(), table.clone());
         assert_eq!(info.pi_signal, Some(Connected));
         assert_eq!(
@@ -2169,7 +2170,15 @@ mod tests {
             "a loaded Pi reported nothing"
         );
         // its run: the shared word and an episode, beside the coverage
-        crate::agent_status::pi_signal(&rows, &rows[1], generation, 7, 1, RunState::Working);
+        crate::agent_status::pi_signal(
+            &rows,
+            &rows[1],
+            generation,
+            7,
+            &instance,
+            1,
+            RunState::Working,
+        );
         let info = poll(rows.clone(), table.clone());
         assert_eq!(
             (info.agent, info.pi_signal),
@@ -2192,10 +2201,45 @@ mod tests {
             (None, None, Some(Unavailable))
         );
         // a release this build does not know
-        crate::agent_status::pi_observed(&rows[1], generation, Incompatible);
+        crate::agent_status::pi_observed(&rows[1], generation, Incompatible, &instance);
         assert_eq!(
             serde_json::to_value(poll(npm.clone(), table.clone())).unwrap()["pi_signal"],
             "incompatible"
+        );
+        // The same pid and the same birth instant, ANOTHER PROGRAM: an exec.
+        // What was proven of the program before describes nothing that runs
+        // there now — no word, no episode, no coverage. `pi` is still a
+        // name; `node` is not.
+        crate::agent_status::pi_observed(&rows[1], generation, Connected, &instance);
+        crate::agent_status::pi_signal(
+            &rows,
+            &rows[1],
+            generation,
+            8,
+            &instance,
+            1,
+            RunState::TurnDone,
+        );
+        let info = poll(npm.clone(), table.clone());
+        assert_eq!(
+            (info.agent, info.pi_signal),
+            (Some("turn-done"), Some(Connected))
+        );
+        switch.executed();
+        let info = poll(npm.clone(), table.clone());
+        assert_eq!(
+            (info.agent, info.episode, info.pi_signal),
+            (None, None, None),
+            "after an exec inside the same pid nothing of the old observer is shown"
+        );
+        assert!(serde_json::to_value(&info)
+            .unwrap()
+            .get("pi_signal")
+            .is_none());
+        assert_eq!(
+            poll(rows.clone(), table.clone()).pi_signal,
+            Some(Unavailable),
+            "a name is still a name, and says no more than that"
         );
         // another process under the same pid: the proof is gone; `pi` is
         // still a name, `node` is not

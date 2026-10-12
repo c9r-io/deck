@@ -178,8 +178,10 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   itself. Every automatic row of any mode whose target is one — the row is
   configured for `pi`, the session's Signal target carries Pi's name (for
   an npm install the name the process gives itself), or a proven Pi
-  observer belongs to the pane's current foreground generation — is held
-  at stage `pi-input-unverified`. Nothing lifts it: not `working`, not
+  observer belongs to the pane's current foreground generation and that
+  process has not executed another image since (a pid and a birth instant
+  survive an exec; what was proven of the program before does not) — is
+  held at stage `pi-input-unverified`. Nothing lifts it: not `working`, not
   `turn-done`, not a connected observer, not a first-send readiness
   override, an approval or a channel permission (it is asked before all of
   them), and it is asked again from facts read at the instant of the

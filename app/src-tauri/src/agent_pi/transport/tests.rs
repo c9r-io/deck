@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent_status::{self, ProcessTable, STORE_TEST_LOCK};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Condvar;
@@ -8,6 +9,36 @@ const SIGNAL: Capabilities = Capabilities {
     signal: true,
     lifecycle: false,
 };
+
+type StandIns = HashMap<u32, (Arc<InstanceWatch>, crate::procinfo::InstanceStandIn)>;
+
+/// The stand-in execution instance of every peer a test names, by pid.
+static INSTANCES: Mutex<Option<StandIns>> = Mutex::new(None);
+
+/// The watch of the program `pid` runs now: what the listener takes from
+/// the kernel when a stream is handed over.
+fn instance_of(pid: u32) -> Arc<InstanceWatch> {
+    INSTANCES
+        .lock_or_recover()
+        .get_or_insert_with(HashMap::new)
+        .entry(pid)
+        .or_insert_with(InstanceWatch::stand_in)
+        .0
+        .clone()
+}
+
+/// Something happened to the process `pid`, said to the watch it has: an
+/// exec, the exit, or a kernel that cannot be asked. A later connection of
+/// that pid is watched afresh — it is the program that runs then.
+fn became(pid: u32, what: impl FnOnce(&crate::procinfo::InstanceStandIn)) {
+    let known = INSTANCES
+        .lock_or_recover()
+        .get_or_insert_with(HashMap::new)
+        .remove(&pid);
+    if let Some((_, switch)) = known {
+        what(&switch);
+    }
+}
 
 fn process(pid: u32, ppid: u32, tty: u32, tty_pgid: u32, start: u64) -> ProcessInfo {
     ProcessInfo {
@@ -194,16 +225,25 @@ fn hello(pane: &str) -> Hello {
 
 fn bound_as(world: &World, hello: &Hello, peer: Option<u32>) -> Result<u64, &'static str> {
     let mut listing = Listing { world, taken: None };
-    bind(world, hello, peer, &mut listing).map(|bound| bound.lease)
+    bind(world, hello, peer, peer.map(instance_of), &mut listing).map(|bound| bound.lease)
 }
 
 fn bound(world: &World, pane: &str, peer: u32) -> Result<u64, &'static str> {
     bound_as(world, &hello(pane), Some(peer))
 }
 
-fn sent(world: &World, lease: u64, frame: Frame) -> Result<u64, &'static str> {
+/// What became of one frame: written, or answered `revoked`.
+fn sent_as(world: &World, lease: u64, frame: Frame) -> Result<Committed, &'static str> {
     let mut listing = Listing { world, taken: None };
     commit(world, lease, &frame, &mut listing)
+}
+
+/// The sequence number of a frame that was WRITTEN.
+fn sent(world: &World, lease: u64, frame: Frame) -> Result<u64, &'static str> {
+    match sent_as(world, lease, frame)? {
+        Committed::Ack(seq) => Ok(seq),
+        Committed::Revoked(_) => Err("revoked"),
+    }
 }
 
 fn working(seq: u64, run: u64) -> Frame {
@@ -239,6 +279,7 @@ fn fresh() -> std::sync::MutexGuard<'static, ()> {
     agent_status::reset_for_tests();
     crate::notify::reset_for_tests();
     probe::reset();
+    *INSTANCES.lock_or_recover() = None;
     guard
 }
 
@@ -473,8 +514,10 @@ fn compatibility_and_the_settings_are_asked_after_identity() {
         (true, Some(PiCoverage::Incompatible))
     );
     assert_eq!(probe::live(), 0);
-    // the capability is off in Pi's settings (an observer loaded earlier)
+    // nothing is on in Pi's settings (an observer loaded earlier): refused,
+    // and that runtime does not come back before Pi reloads
     *shared.enabled.lock_or_recover() = Capabilities::NONE;
+    assert!(!mismatched(SIGNAL));
     assert_eq!(bound(&world, "%2", 410), Err("capability-disabled"));
     assert_eq!(
         (
@@ -483,14 +526,43 @@ fn compatibility_and_the_settings_are_asked_after_identity() {
         ),
         (true, Some(PiCoverage::Unavailable))
     );
-    // a capability the settings do not enable, beside one they do
+    assert!(
+        mismatched(SIGNAL),
+        "turned on again, that Pi still needs its reload"
+    );
+    // A capability the settings do not enable, beside one they do: the
+    // stream is bound for the one and may not use the other. What its
+    // runtime loaded is not what its stream may use.
     *shared.enabled.lock_or_recover() = SIGNAL;
     let mut more = hello("%2");
     more.capabilities.lifecycle = true;
+    let lease = bound_as(&world, &more, Some(410)).expect("bound for what is enabled");
     assert_eq!(
-        bound_as(&world, &more, Some(410)),
-        Err("capability-disabled")
+        notice(lease),
+        Some(SIGNAL),
+        "the observer is told what it may do"
     );
+    assert_eq!(notice(lease), None, "once");
+    assert_eq!(
+        shared.evidence("deck-b").pi_signal,
+        Some(PiCoverage::Connected)
+    );
+    assert!(!mismatched(SIGNAL), "a hello that bound ends the wait");
+    assert_eq!(
+        sent_as(
+            &world,
+            lease,
+            Frame::Lifecycle {
+                seq: 1,
+                event: crate::agent_pi::SessionEvent::Snapshot,
+                native: crate::agent_pi::NativeId::Unsupported,
+            }
+        ),
+        Ok(Committed::Revoked(1)),
+        "claimed, and not enabled: not written, and no error"
+    );
+    assert_eq!(sent(&world, lease, working(2, 1)), Ok(2));
+    release(lease);
     // an incompatible identity from ANOTHER pane's process proves nothing
     agent_status::reset_for_tests();
     assert_eq!(bound_as(&world, &old, Some(410)), Err("foreign-pane"));
@@ -789,6 +861,10 @@ fn the_poll_and_the_settings_end_leases_that_no_longer_hold() {
         shared.evidence("deck-b").pi_signal,
         Some(PiCoverage::Unavailable)
     );
+    // no stream is live, and the entry may be back: that Pi's observer is
+    // not, until Pi loads its extensions again
+    assert_eq!(probe::live(), 0);
+    assert!(mismatched(SIGNAL), "a running Pi waits for its reload");
     // and a frame of a stream that outlived an external edit of the file
     let d = bound(&world, "%2", 410).unwrap();
     *shared.enabled.lock_or_recover() = Capabilities::NONE;
@@ -834,11 +910,22 @@ struct Client {
 impl Client {
     /// One stream handed to `service` as the peer `peer`, its hello sent.
     fn open(service: &Service, hello: &str, peer: u32) -> Self {
+        Self::open_with(service, hello, b"", peer)
+    }
+
+    /// `open`, with `rest` as what the listener read behind the hello.
+    fn open_with(service: &Service, hello: &str, rest: &[u8], peer: u32) -> Self {
         let (ours, theirs) = UnixStream::pair().expect("a socket pair");
         ours.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         ours.set_write_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        service.hand_as(theirs, hello.to_string(), Some(peer));
+        service.hand_as(
+            theirs,
+            hello.to_string(),
+            rest.to_vec(),
+            Some(peer),
+            Some(instance_of(peer)),
+        );
         Self {
             reader: BufReader::new(ours.try_clone().unwrap()),
             writer: ours,
@@ -866,6 +953,20 @@ impl Client {
 
     fn ack(&mut self) -> Option<u64> {
         self.reply().and_then(|reply| reply["ack"].as_u64())
+    }
+
+    /// The number of a frame that was answered `revoked`.
+    fn revoked(&mut self) -> Option<u64> {
+        self.reply().and_then(|reply| reply["revoked"].as_u64())
+    }
+
+    /// The two bits of a `capabilities` line: (signal, lifecycle).
+    fn capabilities(&mut self) -> Option<(bool, bool)> {
+        let reply = self.reply()?;
+        let bits = reply.get("capabilities")?;
+        (reply.as_object()?.len() == 3)
+            .then(|| Some((bits["signal"].as_bool()?, bits["lifecycle"].as_bool()?)))
+            .flatten()
     }
 
     fn refused(&mut self) -> Option<String> {
@@ -1155,10 +1256,22 @@ fn session_frames_need_their_own_capability_and_are_gone_with_the_lease() {
     assert!(sessions().is_empty());
     until("its lease to end", || probe::live() == 0);
 
-    // a hello may claim session observation only while the settings enable it
+    // A hello that claims session observation while the settings enable
+    // Signal alone: bound for Signal, told so at once, and its session
+    // frames are not written — without ending the runs it may report.
     *shared.enabled.lock_or_recover() = SIGNAL;
-    let mut refused = Client::open(&service, &hello_with("%1", true, true), 310);
-    assert_eq!(refused.reply().unwrap()["refused"], "capability-disabled");
+    let mut narrowed = Client::open(&service, &hello_with("%1", true, true), 310);
+    assert!(narrowed.accepted());
+    assert_eq!(narrowed.capabilities(), Some((true, false)));
+    narrowed.send(start(1, "session-one"));
+    assert_eq!(narrowed.revoked(), Some(1), "not committed, and no refusal");
+    assert!(sessions().is_empty());
+    assert_eq!(observed("deck-a"), None);
+    narrowed.send(serde_json::json!({"seq": 2, "run": 1, "state": "working"}));
+    assert_eq!(narrowed.ack(), Some(2));
+    drop(narrowed);
+    until("its lease to end", || probe::live() == 0);
+    // a stream none of whose capabilities are enabled is refused
     let mut refused = Client::open(&service, &hello_with("%1", false, true), 310);
     assert_eq!(refused.reply().unwrap()["refused"], "capability-disabled");
     // and with it enabled alone, a lifecycle-only stream binds and Signal does not
@@ -1220,22 +1333,152 @@ fn a_session_frame_that_contradicts_its_lease_ends_the_stream() {
     );
     assert_eq!(client.reply().unwrap()["refused"], "bad-native-id");
     until("the lease to end", || probe::live() == 0);
-    // an id longer than this build keeps is acknowledged and not kept: never cut short
-    let mut client = open();
-    client.send(serde_json::json!({"seq": 1, "event": "start", "nativeSessionId": "a".repeat(257), "reason": "startup"}));
-    assert_eq!(client.ack(), Some(1));
-    assert!(sessions().is_empty());
-    client.send(
-        serde_json::json!({"seq": 2, "event": "snapshot", "nativeSessionId": "a".repeat(256)}),
-    );
-    assert_eq!(client.ack(), Some(2));
-    assert_eq!(sessions()[0].1.len(), 256);
-    drop(client);
-    until("the lease to end", || probe::live() == 0);
-    assert!(sessions().is_empty());
     assert_eq!(
         *reasons.lock_or_recover(),
         ["pi-bad-lifecycle", "pi-bad-lifecycle", "pi-bad-native-id"]
+    );
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+}
+
+/// An id this build does not keep is not cut short, not stood in for and
+/// not passed over: the stream's session observation becomes `unsupported`,
+/// which the card can say, and stays so for the lease — a short id sent
+/// afterwards is not a first observation. The runs of the same stream go
+/// on. A new lease observes again. An id that is not Pi's shape at all is
+/// a refusal, never this state.
+#[test]
+fn an_id_this_build_does_not_keep_makes_sessions_unsupported_and_leaves_the_runs() {
+    use crate::agent_reentry::lifecycle::{pi_unsupported_for_tests, PiSession};
+    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+    let _guard = fresh();
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+    let shared = two_panes();
+    *shared.enabled.lock_or_recover() = BOTH;
+    let (service, reasons) = service(&shared, Bounds::LIVE);
+    let open = || {
+        let mut client = Client::open(&service, &hello_with("%1", true, true), 310);
+        assert!(client.accepted());
+        client
+    };
+    let session = || shared.evidence("deck-a").pi_session;
+    let start = |seq: u64, id: &str| serde_json::json!({"seq": seq, "event": "start", "nativeSessionId": id, "reason": "startup"});
+    let snapshot = |seq: u64, id: &str| serde_json::json!({"seq": seq, "event": "snapshot", "nativeSessionId": id});
+
+    // the boundary: 256 bytes are a session, 257 are not
+    let mut client = open();
+    client.send(start(1, &"a".repeat(256)));
+    assert_eq!(client.ack(), Some(1));
+    assert_eq!(
+        (sessions()[0].1.len(), session()),
+        (256, Some(PiSession::Observed))
+    );
+    drop(client);
+    until("the lease to end", || probe::live() == 0);
+
+    // an unsupported start, then a short snapshot, on ONE lease
+    let mut client = open();
+    client.send(start(1, &"a".repeat(257)));
+    assert_eq!(client.ack(), Some(1), "acknowledged: the stream goes on");
+    assert!(sessions().is_empty(), "nothing is kept, cut short or not");
+    assert_eq!(pi_unsupported_for_tests().len(), 1);
+    assert_eq!(session(), Some(PiSession::Unsupported));
+    client.send(snapshot(2, &"a".repeat(256)));
+    assert_eq!(client.ack(), Some(2));
+    assert!(
+        sessions().is_empty(),
+        "a short id afterwards is not a first observation"
+    );
+    assert_eq!(session(), Some(PiSession::Unsupported));
+    // the runs of the same stream are untouched
+    client.send(serde_json::json!({"seq": 3, "run": 1, "state": "working"}));
+    assert_eq!(client.ack(), Some(3));
+    assert_eq!(shared.state("deck-a"), Some("working"));
+    assert_eq!(
+        shared.evidence("deck-a").pi_signal,
+        Some(PiCoverage::Connected)
+    );
+    client.send(serde_json::json!({"seq": 4, "run": 1, "state": "turn-done"}));
+    assert_eq!(client.ack(), Some(4));
+    assert_eq!(shared.state("deck-a"), Some("turn-done"));
+    drop(client);
+    until("the lease to end", || probe::live() == 0);
+    assert!(pi_unsupported_for_tests().is_empty(), "gone with its lease");
+    assert_eq!(session(), None);
+
+    // A, then an id that is not kept, then B: A is no longer current and B
+    // is not taken up; a teardown that names B is acknowledged and is nothing
+    let mut client = open();
+    client.send(start(1, "session-a"));
+    assert_eq!(client.ack(), Some(1));
+    assert_eq!(session(), Some(PiSession::Observed));
+    client.send(snapshot(2, &"b".repeat(512)));
+    assert_eq!(client.ack(), Some(2));
+    assert!(sessions().is_empty());
+    assert_eq!(session(), Some(PiSession::Unsupported));
+    client.send(snapshot(3, "session-b"));
+    assert_eq!(client.ack(), Some(3));
+    client.send(serde_json::json!({"seq": 4, "event": "shutdown", "nativeSessionId": "session-b", "reason": "quit"}));
+    assert_eq!(client.ack(), Some(4));
+    assert!(sessions().is_empty());
+    assert_eq!(session(), Some(PiSession::Unsupported));
+    drop(client);
+    until("the lease to end", || probe::live() == 0);
+
+    // the observer's own word for an id that does not fit a line (513 bytes
+    // and more are never sent): the same state, and nothing else in the frame
+    let mut client = open();
+    client.send(serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id"}));
+    assert_eq!(client.ack(), Some(1));
+    assert_eq!(session(), Some(PiSession::Unsupported));
+    client.send(snapshot(2, "session-a"));
+    assert_eq!(client.ack(), Some(2));
+    assert_eq!(session(), Some(PiSession::Unsupported));
+    drop(client);
+    until("the lease to end", || probe::live() == 0);
+    // ... which a stream without the capability may not say,
+    let mut signal_only = Client::open(&service, &hello_with("%1", true, false), 310);
+    assert!(signal_only.accepted());
+    signal_only.send(serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id"}));
+    assert_eq!(
+        signal_only.reply().unwrap()["refused"],
+        "capability-disabled"
+    );
+    until("the lease to end", || probe::live() == 0);
+    // ... and which is one closed word
+    let mut client = open();
+    client.send(serde_json::json!({"seq": 1, "unavailable": "anything-else"}));
+    assert_eq!(client.reply().unwrap()["refused"], "bad-frame");
+    until("the lease to end", || probe::live() == 0);
+
+    // a consistency failure is still a failure: a teardown of ANOTHER session
+    let mut client = open();
+    client.send(start(1, "session-a"));
+    assert_eq!(client.ack(), Some(1));
+    client.send(serde_json::json!({"seq": 2, "event": "shutdown", "nativeSessionId": "session-b", "reason": "quit"}));
+    assert_eq!(client.reply().unwrap()["refused"], "bad-lifecycle");
+    until("the lease to end", || probe::live() == 0);
+    // and an id that is not Pi's shape is refused whatever its length
+    let mut client = open();
+    client.send(snapshot(1, &format!("{}/x", "c".repeat(300))));
+    assert_eq!(client.reply().unwrap()["refused"], "bad-native-id");
+    until("the lease to end", || probe::live() == 0);
+    assert!(pi_unsupported_for_tests().is_empty());
+
+    // a new lease observes again
+    let mut client = open();
+    client.send(snapshot(1, "session-a"));
+    assert_eq!(client.ack(), Some(1));
+    assert_eq!(session(), Some(PiSession::Observed));
+    drop(client);
+    until("the lease to end", || probe::live() == 0);
+    assert_eq!(
+        *reasons.lock_or_recover(),
+        [
+            "pi-capability-disabled",
+            "pi-bad-frame",
+            "pi-bad-lifecycle",
+            "pi-bad-native-id"
+        ]
     );
     crate::agent_reentry::lifecycle::reset_pi_for_tests();
 }
@@ -1613,6 +1856,424 @@ fn an_answer_that_outlasts_its_budget_is_late_and_commits_nothing_that_stays() {
     });
 }
 
+// ---------- one execution instance ------------------------------------------------------
+
+/// A lease is of ONE execution instance. A program that executes another
+/// image keeps its pid, its birth instant, its terminal and — when it keeps
+/// the descriptor — the connection; none of that makes the new program the
+/// observer. Asked for every frame, at the bind and by the poll.
+#[test]
+fn a_peer_that_executed_another_image_is_not_the_observer_any_more() {
+    let _guard = fresh();
+    let shared = two_panes();
+    let world = shared.world();
+    let now = |shared: &Shared| {
+        let table = shared.table();
+        move |pane: u32| agent_status::foreground_generation(&table, pane)
+    };
+    let a = bound(&world, "%1", 310).unwrap();
+    assert_eq!(sent(&world, a, working(1, 1)), Ok(1));
+    assert_eq!(shared.state("deck-a"), Some("working"));
+
+    // the same pid, the same birth instant, another program: an exec
+    became(310, |process| process.executed());
+    // what is READ is withdrawn before any frame or poll notices
+    assert_eq!(shared.state("deck-a"), None, "its word is not spoken");
+    assert_eq!(
+        (
+            shared.evidence("deck-a").pi,
+            shared.evidence("deck-a").pi_signal
+        ),
+        (false, None),
+        "what the hello proved is proven of no program that runs there"
+    );
+    // a frame the new program sends on the connection it inherited
+    assert_eq!(sent(&world, a, done(2, 1)), Err("peer-executed"));
+    assert_eq!(over(a), Some("peer-executed"));
+    assert_eq!(shared.state("deck-a"), None);
+    // an old callback of that lease, however late
+    assert_eq!(sent(&world, a, done(2, 1)), Err("late"));
+    assert_eq!(sent(&world, a, Frame::Ping { seq: 2 }), Err("late"));
+    // the new program is nothing until it says hello itself; then it has a
+    // lease of its own, and nothing of the old one
+    let again = bound(&world, "%1", 310).expect("the program that runs now may bind");
+    assert_ne!(again, a);
+    assert_eq!(shared.state("deck-a"), None, "no word is inherited");
+    assert_eq!(sent(&world, again, working(1, 1)), Ok(1));
+    assert_eq!(shared.state("deck-a"), Some("working"));
+
+    // the poll notices by itself: no frame is needed
+    let b = bound(&world, "%2", 410).unwrap();
+    assert_eq!(sent(&world, b, working(1, 1)), Ok(1));
+    became(410, |process| process.executed());
+    reconcile_with(&shared.rows(), now(&shared));
+    assert_eq!(over(b), Some("peer-executed"));
+    assert_eq!(shared.state("deck-b"), None);
+    assert_eq!(
+        shared.evidence("deck-b").pi_signal,
+        Some(PiCoverage::Unavailable),
+        "B is `pi` by name: a name says no more than that"
+    );
+    assert_eq!(over(again), None, "A's new lease is not B's");
+    assert_eq!(shared.state("deck-a"), Some("working"));
+
+    // an old stream that was not noticed yet does not stand in the way of
+    // the program that runs now: it ends first, for its own reason
+    became(310, |process| process.executed());
+    let third = bound(&world, "%1", 310).expect("not a duplicate of a program that is gone");
+    assert_eq!(over(again), Some("peer-executed"));
+    assert_eq!(shared.state("deck-a"), None);
+    release(third);
+
+    // an exec between the hand-over and the bind: nothing is bound, and
+    // nothing is recognized
+    agent_status::reset_for_tests();
+    let (watch, process) = InstanceWatch::stand_in();
+    process.executed();
+    let mut listing = Listing {
+        world: &world,
+        taken: None,
+    };
+    assert_eq!(
+        bind(&world, &hello("%1"), Some(310), Some(watch), &mut listing).map(|bound| bound.lease),
+        Err("peer-executed")
+    );
+    assert!(!shared.evidence("deck-a").pi);
+    // no watch at all: nothing could notice a later exec, so nothing is bound
+    let mut listing = Listing {
+        world: &world,
+        taken: None,
+    };
+    assert_eq!(
+        bind(&world, &hello("%1"), Some(310), None, &mut listing).map(|bound| bound.lease),
+        Err("no-instance")
+    );
+    assert!(!shared.evidence("deck-a").pi);
+    assert_eq!(probe::live(), 0);
+}
+
+/// The two other things a watch can say. A process that is gone names
+/// nothing (`generation-mismatch`). A kernel that cannot be asked proves
+/// nothing: the observation is withdrawn for a closed reason, and only the
+/// recognition stays, which never does more than add a hold.
+#[test]
+fn a_peer_that_is_gone_or_cannot_be_asked_about_is_not_trusted() {
+    let _guard = fresh();
+    let shared = two_panes();
+    let world = shared.world();
+    let a = bound(&world, "%1", 310).unwrap();
+    let b = bound(&world, "%2", 410).unwrap();
+    assert_eq!(sent(&world, a, working(1, 1)), Ok(1));
+    assert_eq!(sent(&world, b, working(1, 1)), Ok(1));
+
+    became(310, |process| process.unreadable());
+    assert_eq!(shared.state("deck-a"), None, "no word without continuity");
+    assert_eq!(
+        (
+            shared.evidence("deck-a").pi,
+            shared.evidence("deck-a").pi_signal
+        ),
+        (true, Some(PiCoverage::Unavailable)),
+        "recognized still, and never `connected`"
+    );
+    assert_eq!(sent(&world, a, done(2, 1)), Err("no-instance"));
+    assert_eq!(over(a), Some("no-instance"));
+    assert_eq!(shared.state("deck-b"), Some("working"), "B is not touched");
+
+    became(410, |process| process.exited());
+    assert_eq!(sent(&world, b, done(2, 1)), Err("generation-mismatch"));
+    assert_eq!(shared.state("deck-b"), None);
+    assert_eq!(probe::live(), 0);
+}
+
+/// The same through a stream: the refusal the new program reads on the
+/// connection it kept, and the drop reason production counts.
+#[test]
+fn a_frame_on_a_connection_kept_across_an_exec_is_refused() {
+    let _guard = fresh();
+    let shared = two_panes();
+    let (service, reasons) = service(&shared, Bounds::LIVE);
+    let mut client = Client::open(&service, &hello_line("%1"), 310);
+    assert!(client.accepted());
+    client.send(serde_json::json!({"seq": 1, "run": 1, "state": "working"}));
+    assert_eq!(client.ack(), Some(1));
+    assert_eq!(shared.state("deck-a"), Some("working"));
+    became(310, |process| process.executed());
+    client.send(serde_json::json!({"seq": 2, "run": 1, "state": "turn-done"}));
+    assert_eq!(client.refused().as_deref(), Some("peer-executed"));
+    assert!(client.ended());
+    until("the lease to end", || probe::live() == 0);
+    assert_eq!(shared.state("deck-a"), None, "no ending was written");
+    assert_eq!(*reasons.lock_or_recover(), ["pi-peer-executed"]);
+    assert_eq!(
+        probe::ended(),
+        [("deck-a".to_string(), "peer-executed")],
+        "what app.log says"
+    );
+}
+
+// ---------- capabilities narrow, one by one ---------------------------------------------
+
+fn lifecycle_frame(seq: u64, event: crate::agent_pi::SessionEvent, id: &str) -> Frame {
+    let line = frame_line(match event {
+        crate::agent_pi::SessionEvent::Start(_) => serde_json::json!({
+            "seq": seq, "event": "start", "nativeSessionId": id, "reason": "startup"
+        }),
+        crate::agent_pi::SessionEvent::Shutdown(_) => serde_json::json!({
+            "seq": seq, "event": "shutdown", "nativeSessionId": id, "reason": "quit"
+        }),
+        crate::agent_pi::SessionEvent::Snapshot => serde_json::json!({
+            "seq": seq, "event": "snapshot", "nativeSessionId": id
+        }),
+    });
+    crate::agent_pi::parse_frame(&line).expect("a lifecycle frame")
+}
+
+fn both(pane: &str) -> Hello {
+    let mut hello = hello(pane);
+    hello.capabilities = BOTH;
+    hello
+}
+
+/// Turning one capability off takes exactly that one from a stream that has
+/// both: the other goes on, on the same lease, with the same run and the
+/// same unread episode. A frame of the lost capability that was on its way
+/// uses up its number and writes nothing. Nothing gives it back.
+#[test]
+fn turning_one_capability_off_leaves_the_other_and_the_lease() {
+    use crate::agent_pi::{SessionEvent, ShutdownReason, StartReason};
+    use crate::agent_reentry::lifecycle::PiSession;
+    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+    let _guard = fresh();
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+    let shared = two_panes();
+    *shared.enabled.lock_or_recover() = BOTH;
+    let world = shared.world();
+    let start = SessionEvent::Start(StartReason::Startup);
+    let quit = SessionEvent::Shutdown(ShutdownReason::Quit);
+
+    // ---- session observation off, in the middle of a run ----
+    let a = bound_as(&world, &both("%1"), Some(310)).unwrap();
+    assert_eq!(notice(a), None, "nothing less than it claimed");
+    assert_eq!(
+        sent(&world, a, lifecycle_frame(1, start, "session-a")),
+        Ok(1)
+    );
+    assert_eq!(sent(&world, a, working(2, 1)), Ok(2));
+    let episode = shared.episode("deck-a");
+    assert_eq!(
+        shared.evidence("deck-a").pi_session,
+        Some(PiSession::Observed)
+    );
+    enabled_changed(SIGNAL);
+    assert_eq!(over(a), None, "the lease stands");
+    assert!(sessions().is_empty(), "its session is forgotten at once");
+    assert_eq!(shared.evidence("deck-a").pi_session, None);
+    assert_eq!(
+        (shared.state("deck-a"), shared.episode("deck-a")),
+        (Some("working"), episode),
+        "the run, and its episode, are not touched"
+    );
+    assert_eq!(
+        shared.evidence("deck-a").pi_signal,
+        Some(PiCoverage::Connected)
+    );
+    assert_eq!(notice(a), Some(SIGNAL), "the observer is told, once");
+    assert_eq!(notice(a), None);
+    // a session frame that was on its way: its number is used, nothing is written
+    assert_eq!(
+        sent_as(
+            &world,
+            a,
+            lifecycle_frame(3, SessionEvent::Snapshot, "session-a")
+        ),
+        Ok(Committed::Revoked(3))
+    );
+    assert!(sessions().is_empty());
+    assert_eq!(over(a), None, "and that is no reason to end what is left");
+    // the run goes on to its end, numbered without a gap
+    assert_eq!(sent(&world, a, done(4, 1)), Ok(4));
+    assert_eq!(shared.state("deck-a"), Some("turn-done"));
+    let ending = shared.episode("deck-a");
+    assert!(!mismatched(SIGNAL), "what runs is what is configured");
+    // turned on again: not given back to a running observer
+    assert!(mismatched(BOTH), "a reload is what gives it back");
+    enabled_changed(BOTH);
+    assert_eq!(notice(a), None);
+    assert_eq!(
+        sent_as(
+            &world,
+            a,
+            lifecycle_frame(5, SessionEvent::Snapshot, "session-a")
+        ),
+        Ok(Committed::Revoked(5)),
+        "a capability is never widened on a live stream"
+    );
+    assert!(sessions().is_empty());
+    assert_eq!(
+        (shared.state("deck-a"), shared.episode("deck-a")),
+        (Some("turn-done"), ending),
+        "the unread ending is still there"
+    );
+    release(a);
+
+    // ---- Signal off, in the middle of a run ----
+    let b = bound_as(&world, &both("%2"), Some(410)).unwrap();
+    assert_eq!(
+        sent(&world, b, lifecycle_frame(1, start, "session-b")),
+        Ok(1)
+    );
+    assert_eq!(sent(&world, b, working(2, 1)), Ok(2));
+    assert!(shared.episode("deck-b").is_some());
+    enabled_changed(LIFECYCLE);
+    assert_eq!(over(b), None, "the lease stands");
+    assert_eq!(
+        (shared.state("deck-b"), shared.episode("deck-b")),
+        (None, None),
+        "that lease's word and episode are withdrawn"
+    );
+    assert_eq!(
+        shared.evidence("deck-b").pi_signal,
+        Some(PiCoverage::Unavailable)
+    );
+    assert_eq!(
+        shared.evidence("deck-b").pi_session,
+        Some(PiSession::Observed),
+        "and its session is not"
+    );
+    assert_eq!(notice(b), Some(LIFECYCLE));
+    // the run's ending was on its way: not written, now or later
+    assert_eq!(sent_as(&world, b, done(3, 1)), Ok(Committed::Revoked(3)));
+    assert_eq!(sent_as(&world, b, working(4, 2)), Ok(Committed::Revoked(4)));
+    assert_eq!(shared.state("deck-b"), None);
+    // what is left goes on
+    assert_eq!(
+        sent(&world, b, lifecycle_frame(5, quit, "session-b")),
+        Ok(5)
+    );
+    assert_eq!(shared.evidence("deck-b").pi_session, None);
+    assert!(mismatched(BOTH) && !mismatched(LIFECYCLE));
+    // the other one off as well: nothing is left, and the stream is over
+    enabled_changed(Capabilities::NONE);
+    assert_eq!(over(b), Some("capability-disabled"));
+    assert!(sessions().is_empty());
+    release(b);
+
+    // ---- an edit of the file nobody announced: noticed by the next frame ----
+    *shared.enabled.lock_or_recover() = BOTH;
+    let c = bound_as(&world, &both("%1"), Some(310)).unwrap();
+    assert_eq!(
+        sent(&world, c, lifecycle_frame(1, start, "session-c")),
+        Ok(1)
+    );
+    *shared.enabled.lock_or_recover() = SIGNAL;
+    assert_eq!(sent(&world, c, working(2, 1)), Ok(2), "Signal is still on");
+    assert!(sessions().is_empty(), "narrowed by that very commit");
+    assert_eq!(notice(c), Some(SIGNAL));
+    assert_eq!(
+        sent_as(&world, c, lifecycle_frame(3, quit, "session-c")),
+        Ok(Committed::Revoked(3))
+    );
+    // a capability the hello never claimed is a forgery, as before
+    release(c);
+    let d = bound(&world, "%1", 310).unwrap();
+    assert_eq!(
+        sent(&world, d, lifecycle_frame(1, start, "session-d")),
+        Err("capability-disabled")
+    );
+    assert_eq!(over(d), Some("capability-disabled"));
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+}
+
+/// The same through a stream: the observer hears of the change at once and
+/// unasked, a frame that crossed it is answered `revoked`, what is left is
+/// acknowledged as before, and losing the last capability is a refusal.
+#[test]
+fn a_stream_hears_what_it_may_still_do_and_goes_on() {
+    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+    let _guard = fresh();
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+    let shared = two_panes();
+    *shared.enabled.lock_or_recover() = BOTH;
+    let (service, reasons) = service(&shared, Bounds::LIVE);
+    let mut client = Client::open(&service, &hello_with("%1", true, true), 310);
+    assert!(client.accepted());
+    client.send(serde_json::json!({"seq": 1, "event": "start", "nativeSessionId": "one", "reason": "startup"}));
+    assert_eq!(client.ack(), Some(1));
+    client.send(serde_json::json!({"seq": 2, "run": 1, "state": "working"}));
+    assert_eq!(client.ack(), Some(2));
+
+    // the session switch is turned off in Settings while the Pi is working
+    *shared.enabled.lock_or_recover() = SIGNAL;
+    enabled_changed(SIGNAL);
+    assert_eq!(
+        client.capabilities(),
+        Some((true, false)),
+        "said unasked, at once"
+    );
+    assert!(sessions().is_empty());
+    // a session frame that crossed the change, then the run's ending
+    client.send(serde_json::json!({"seq": 3, "event": "snapshot", "nativeSessionId": "one"}));
+    assert_eq!(client.revoked(), Some(3));
+    client.send(serde_json::json!({"seq": 4, "run": 1, "state": "turn-done"}));
+    assert_eq!(client.ack(), Some(4));
+    assert_eq!(shared.state("deck-a"), Some("turn-done"));
+    // one more whole run on the same stream
+    client.send(serde_json::json!({"seq": 5, "run": 2, "state": "working"}));
+    assert_eq!(client.ack(), Some(5));
+    client.send(serde_json::json!({"seq": 6}));
+    assert_eq!(client.ack(), Some(6), "the heartbeat goes on");
+    assert_eq!(probe::live(), 1);
+    // the last capability goes: that is the end of the stream
+    *shared.enabled.lock_or_recover() = Capabilities::NONE;
+    enabled_changed(Capabilities::NONE);
+    assert_eq!(client.refused().as_deref(), Some("capability-disabled"));
+    until("the lease to end", || probe::live() == 0);
+    assert_eq!(shared.state("deck-a"), None);
+    assert_eq!(*reasons.lock_or_recover(), ["pi-capability-disabled"]);
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+}
+
+/// What the listener read behind the hello are the stream's next bytes:
+/// whole lines are its frames, in order, and a part of a line waits for its
+/// end. Nothing a client sent is read and thrown away.
+#[test]
+fn what_was_read_behind_the_hello_are_the_stream_s_next_lines() {
+    let _guard = fresh();
+    let shared = two_panes();
+    let (service, _reasons) = service(&shared, Bounds::LIVE);
+    let first = frame_line(serde_json::json!({"seq": 1, "run": 1, "state": "working"}));
+    let second = frame_line(serde_json::json!({"seq": 2, "run": 1, "state": "turn-done"}));
+    let (head, tail) = second.split_at(20);
+    let mut client = Client::open_with(
+        &service,
+        &hello_line("%1"),
+        format!("{first}\n{head}").as_bytes(),
+        310,
+    );
+    assert!(client.accepted());
+    assert_eq!(client.ack(), Some(1), "the frame that came with the hello");
+    assert_eq!(shared.state("deck-a"), Some("working"));
+    client
+        .writer
+        .write_all(format!("{tail}\n").as_bytes())
+        .unwrap();
+    assert_eq!(client.ack(), Some(2), "the line that was cut in two");
+    assert_eq!(shared.state("deck-a"), Some("turn-done"));
+    drop(client);
+    until("the lease to end", || probe::live() == 0);
+    // the bounds of a line and of the queue hold for those bytes too
+    let mut client = Client::open_with(
+        &service,
+        &hello_line("%1"),
+        "x".repeat(crate::agent_pi::MAX_LINE + 1).as_bytes(),
+        310,
+    );
+    assert!(client.accepted());
+    assert_eq!(client.refused().as_deref(), Some("bad-frame"));
+    until("the lease to end", || probe::live() == 0);
+}
+
 // ---------- real processes: the kernel's own answers --------------------------------
 
 /// A throwaway tmux server of the bundled tmux on a socket inside its own
@@ -1775,7 +2436,7 @@ fn real_processes_bind_only_as_their_own_pane_s_foreground_program() {
                     .read_line(&mut line)
                     .is_ok_and(|read| read > 0)
                 {
-                    service.hand(stream, line.trim_end().to_string());
+                    service.hand(stream, line.trim_end().to_string(), Vec::new());
                 }
             }
         }
@@ -1913,6 +2574,263 @@ fn real_processes_bind_only_as_their_own_pane_s_foreground_program() {
 
     stop.store(true, Ordering::Release);
     accepting.join().unwrap();
+    drop(server);
+    until("the last stream's end", || {
+        probe::live() == 0 && probe::streams() == 0
+    });
+}
+
+/// The production listener step for a real server: the first line of every
+/// connection, then the hand-over — which is where the kernel's watch of
+/// the peer's execution instance is taken.
+struct Accepting {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    reasons: Reasons,
+}
+
+impl Accepting {
+    fn start(server: &Server, enabled: Capabilities) -> Self {
+        let listener =
+            agent_status::listen_at(&server.base.join("status.sock")).expect("a status socket");
+        let reasons: Reasons = Arc::new(Mutex::new(Vec::new()));
+        let runner = server.runner();
+        let service = {
+            let report = reasons.clone();
+            Service::start_in(
+                Arc::new(move |reason| report.lock_or_recover().push(reason)),
+                World {
+                    process: Box::new(crate::procinfo::process),
+                    listing: Box::new(move || crate::tmux::list_panes_with(&runner).ok()),
+                    enabled: Box::new(move || enabled),
+                    socket: "t".into(),
+                },
+                Bounds::LIVE,
+            )
+        };
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread = std::thread::spawn({
+            let stop = stop.clone();
+            move || {
+                listener.set_nonblocking(true).unwrap();
+                while !stop.load(Ordering::Acquire) {
+                    let Ok((stream, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut line = String::new();
+                    if BufReader::new(stream.try_clone().unwrap())
+                        .read_line(&mut line)
+                        .is_ok_and(|read| read > 0)
+                    {
+                        service.hand(stream, line.trim_end().to_string(), Vec::new());
+                    }
+                }
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+            reasons,
+        }
+    }
+
+    fn refused(&self, reason: &str) -> bool {
+        self.reasons.lock_or_recover().contains(&reason)
+    }
+}
+
+impl Drop for Accepting {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// A program for a real pane's foreground that speaks to the status socket
+/// and can replace its own image: the test-only fixture the native run uses
+/// too (its header says what its steps are).
+const PEER_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../scripts/pi/exec-peer.c"
+));
+
+/// Build the peer at `path`; `tag` makes two builds two different images.
+fn build_peer(path: &std::path::Path, tag: &str) {
+    let source = path.with_extension("c");
+    std::fs::write(&source, PEER_SOURCE).unwrap();
+    let built = std::process::Command::new("/usr/bin/cc")
+        .args(["-O1", &format!("-DBUILD=\"{tag}\""), "-o"])
+        .arg(path)
+        .arg(&source)
+        .output()
+        .expect("the C compiler");
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+}
+
+/// A real exec inside the observer's pid, with the real kernel's watch.
+///
+/// The peer is a program in a real pane's foreground that connects, says
+/// hello and reports a run; between two frames it starts a child (a fork,
+/// and an exec in that child); then it EXECUTES ANOTHER IMAGE in its own
+/// pid, keeping the connection. Pane A's new program sends a frame on the
+/// descriptor it inherited; pane B's says nothing. In both the pid, the
+/// birth instant, the terminal and the foreground group are what they were:
+/// only the execution instance tells the two programs apart.
+#[test]
+fn a_real_exec_inside_the_observer_s_pid_ends_its_lease() {
+    let _guard = fresh();
+    let server = Server::start("exec");
+    let accepting = Accepting::start(&server, SIGNAL);
+    let base = server.base.to_str().unwrap().to_string();
+    let (before, after) = (server.base.join("observer"), server.base.join("other"));
+    build_peer(&before, "before");
+    build_peer(&after, "after");
+    let frame = |body: serde_json::Value| format!("'{}'", frame_line(body));
+    let working = frame(serde_json::json!({"seq": 1, "run": 1, "state": "working"}));
+    let ping = frame(serde_json::json!({"seq": 2}));
+    let ending = frame(serde_json::json!({"seq": 3, "run": 1, "state": "turn-done"}));
+    let command = |session: &str, last: &str| {
+        format!(
+            "{base}/observer {base}/status.sock {base}/log-{session} '{hello}' {working} @fork \
+             {ping} @mark:{base}/before-{session} @wait:{base}/go-{session} \
+             @exec:{base}/other {last}",
+            hello = server.hello(session),
+        )
+    };
+    let log = |session: &str| {
+        std::fs::read_to_string(server.base.join(format!("log-{session}"))).unwrap_or_default()
+    };
+    let there = |name: &str| server.base.join(name).exists();
+    let generation = |session: &str| {
+        let pane = server.fact(session, "#{pane_pid}").parse::<u32>().unwrap();
+        agent_status::live_generation(pane)
+    };
+
+    // A: the new image writes a frame on the descriptor it kept, then stays
+    // B: the new image keeps the descriptor and says nothing
+    let lasts = [
+        (
+            "deck-a",
+            format!("{ending} @mark:{base}/after-deck-a @sleep"),
+        ),
+        ("deck-b", format!("@mark:{base}/after-deck-b @sleep")),
+    ];
+    for (session, last) in &lasts {
+        server.type_line(session, &command(session, last));
+        let end = Instant::now() + Duration::from_secs(10);
+        while !there(&format!("before-{session}")) {
+            assert!(
+                Instant::now() < end,
+                "{session}: no frames before the exec; refused {:?}; the pane shows:\n{}",
+                accepting.reasons.lock_or_recover(),
+                server
+                    .tmux(&["capture-pane", "-p", "-t", session])
+                    .unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let said = log(session);
+        assert!(
+            said.contains("\"accepted\":true")
+                && said.contains("\"ack\":1")
+                && said.contains("\"ack\":2"),
+            "{session}: a fork and a child's exec between two frames end nothing: {said}"
+        );
+        assert_eq!(server.state(session), Some("working"));
+        assert_eq!(
+            server.evidence(session).pi_signal,
+            Some(PiCoverage::Connected)
+        );
+        assert_eq!(server.fact(session, "#{pane_current_command}"), "observer");
+    }
+    assert_eq!(probe::live(), 2);
+    let (a_before, b_before) = (generation("deck-a"), generation("deck-b"));
+    assert!(a_before.is_some() && b_before.is_some());
+
+    // A executes another image and sends the run's ending on the old connection
+    std::fs::write(server.base.join("go-deck-a"), "").unwrap();
+    until("the answer the new image read", || there("after-deck-a"));
+    assert!(
+        log("deck-a").contains("\"refused\":\"peer-executed\""),
+        "{}",
+        log("deck-a")
+    );
+    assert!(accepting.refused("pi-peer-executed"));
+    until("A's lease to end", || probe::live() == 1);
+    assert_eq!(
+        generation("deck-a"),
+        a_before,
+        "the same pid and the same birth instant: neither tells an exec"
+    );
+    assert_eq!(server.fact("deck-a", "#{pane_current_command}"), "other");
+    assert_eq!(server.state("deck-a"), None, "no ending was written");
+    assert_eq!(
+        (
+            server.evidence("deck-a").pi,
+            server.evidence("deck-a").pi_signal
+        ),
+        (false, None),
+        "nothing of the old observer describes the program that runs now"
+    );
+    let rows = server.rows();
+    let row = rows
+        .iter()
+        .find(|row| row.session_name == "deck-a")
+        .unwrap();
+    assert!(!agent_status::pi_foreground(
+        row.server_pid,
+        &row.pane_id,
+        row.pane_pid,
+        agent_status::live_generation,
+        agent_status::foreground_name,
+    ));
+    assert_eq!(server.state("deck-b"), Some("working"), "B is not A");
+
+    // B executes another image and says nothing: every reader sees it at
+    // once, and the poll ends the lease without a frame
+    std::fs::write(server.base.join("go-deck-b"), "").unwrap();
+    until("B's new image", || there("after-deck-b"));
+    until("B's word to be withdrawn from every reader", || {
+        server.state("deck-b").is_none()
+    });
+    assert_eq!(generation("deck-b"), b_before);
+    assert_eq!(
+        (
+            server.evidence("deck-b").pi,
+            server.evidence("deck-b").pi_signal
+        ),
+        (false, None)
+    );
+    assert_eq!(
+        probe::live(),
+        1,
+        "not ended yet: nobody asked the transport"
+    );
+    reconcile(&server.rows());
+    assert_eq!(probe::live(), 0);
+    assert_eq!(
+        probe::ended()
+            .iter()
+            .map(|(_, code)| *code)
+            .collect::<Vec<_>>(),
+        ["peer-executed", "peer-executed"]
+    );
+
+    for session in ["deck-a", "deck-b"] {
+        server.tmux(&["send-keys", "-t", session, "C-c"]).unwrap();
+    }
+    drop(accepting);
     drop(server);
     until("the last stream's end", || {
         probe::live() == 0 && probe::streams() == 0

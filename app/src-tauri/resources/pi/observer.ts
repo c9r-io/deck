@@ -29,11 +29,20 @@
 //   The factory registers callbacks and starts nothing; the connection is
 //   opened by `session_start`.
 // - Protocol `pi-observer` v1, one JSON line per frame, at most 1024 bytes.
-//   `hello` first; then `signal`, `lifecycle`, `reset` and `ping`, numbered
-//   from 1 without a gap. ONE frame waits for its acknowledgement at a time.
-//   An acknowledgement that takes more than two seconds, a refusal, an
+//   `hello` first; then `signal`, `lifecycle`, `unavailable`, `reset` and
+//   `ping`, numbered from 1 without a gap. ONE frame waits for its answer at
+//   a time. An answer that takes more than two seconds, a refusal, an
 //   unexpected line or a full queue closes the connection and forgets what
 //   was queued: nothing queued is ever sent on a later connection.
+// - Deck may take a capability away while this runtime lives, and never
+//   gives one back. A `capabilities` line names what the stream may still
+//   do: from then on nothing of a lost capability is read, queued or sent —
+//   without the lifecycle capability the session manager is not touched
+//   again — and what is left goes on on the same connection. A frame that
+//   was on its way is answered `revoked` instead of `ack`; that is an
+//   answer, not an error. A later connection of this runtime claims only
+//   what is left. Getting a capability back takes Pi loading its extensions
+//   again.
 // - A run is the interval from `agent_start` to `agent_settled`. A second
 //   `agent_start` before the settlement (a retry, a queued follow-up, a
 //   continuation) is the same run. `agent_settled` without a run reports
@@ -45,7 +54,13 @@
 //   this runtime started in (`start`, with Pi's own reason); a later
 //   connection reports only what the API says now (`snapshot`), never a
 //   start again. `session_shutdown` reads the id once more, then reports
-//   `shutdown` with Pi's reason.
+//   `shutdown` with Pi's reason. An id is sent whole or not at all: one that
+//   does not fit a line is reported as the closed word
+//   `unsupported-native-id` in place of the frame that would have carried
+//   it — never cut short, never hashed, never passed over in silence — and
+//   after that word this connection says nothing more about sessions. An id
+//   that does not even have the shape of a Pi session id is this observer's
+//   error like any other: it ends the observer and reports nothing.
 // - `session_shutdown` marks this runtime disposed before anything else:
 //   timers stop, later callbacks do nothing, and nothing reconnects. The
 //   last frames (`shutdown` with the lifecycle capability, then `reset`,
@@ -79,8 +94,12 @@ const SHUTDOWN_DRAIN_MS = 100;
 const QUEUE_LIMIT = 8;
 /* a Unix socket address holds 104 bytes on macOS, the terminator included */
 const MAX_SOCKET_PATH = 103;
-/* an id longer than this is not sent at all; Deck keeps at most 256 bytes */
+/* an id longer than this does not fit a line: Deck is told so in one closed
+   word instead. Deck itself keeps at most 256 bytes and says so on the card. */
 const MAX_NATIVE_ID = 512;
+const UNSUPPORTED_NATIVE_ID = "unsupported-native-id";
+/* the shape Pi itself gives a session id */
+const NATIVE_ID_SHAPE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
 const START_REASONS = ["startup", "reload", "new", "resume", "fork"];
 const SHUTDOWN_REASONS = ["quit", "reload", "new", "resume", "fork"];
@@ -123,6 +142,16 @@ export function privateSocket(path) {
 
 const closedWord = (words, word) => (words.includes(word) ? word : null);
 
+/** What Pi gave as its session id: `{ id }`, `{ unsupported: true }` for an
+ *  id that does not fit a line, `null` for none, and a throw for one that is
+ *  no Pi session id at all. */
+function nativeIdOf(value) {
+  if (typeof value !== "string" || value.length === 0) return null;
+  if (value.length <= MAX_NATIVE_ID) return { id: value };
+  if (!NATIVE_ID_SHAPE.test(value)) throw new Error("native id");
+  return { unsupported: true };
+}
+
 /** The extension factory of one entry. `piVersion` is Pi's exported VERSION. */
 export function deckPiObserver(capabilities, piVersion) {
   const signal = capabilities.signal === true;
@@ -130,9 +159,12 @@ export function deckPiObserver(capabilities, piVersion) {
   return function deckPiObserverFactory(pi) {
     let disposed = false;
     let ended = false; // a final refusal: nothing reconnects in this runtime
+    // what this runtime may still do: Deck only ever takes away
+    const may = { signal, lifecycle };
     let target = null;
     let sessions = null; // this runtime's session manager, lifecycle only
     let first = null; // the start this runtime may report on its first connection
+    let silent = false; // this connection said that its session id cannot be sent
     let active = false; // a run started and has not settled
     let socket = null;
     let accepted = false;
@@ -147,12 +179,23 @@ export function deckPiObserver(capabilities, piVersion) {
     let drained = null;
 
     const nativeId = (manager) => {
+      let id = null;
       try {
-        const id = manager.getSessionId();
-        return typeof id === "string" && id.length > 0 && id.length <= MAX_NATIVE_ID ? id : null;
+        id = manager.getSessionId();
       } catch (_) {
         return null;
       }
+      return nativeIdOf(id);
+    };
+
+    /* one session frame, or the closed word for an id that cannot be sent */
+    const session = (native, frame) => {
+      if (!native || silent) return null;
+      if (native.unsupported) {
+        silent = true;
+        return { unavailable: UNSUPPORTED_NATIVE_ID };
+      }
+      return { ...frame, nativeSessionId: native.id };
     };
 
     const stopTimers = () => {
@@ -168,6 +211,23 @@ export function deckPiObserver(capabilities, piVersion) {
       queue = [];
       buffer = "";
       accepted = false;
+      silent = false;
+    };
+
+    /* Deck took a capability away: nothing of it is read, queued or sent again */
+    const narrow = (now) => {
+      const lost = { signal: may.signal && !now.signal, lifecycle: may.lifecycle && !now.lifecycle };
+      if (lost.signal) {
+        may.signal = false;
+        active = false;
+      }
+      if (lost.lifecycle) {
+        may.lifecycle = false;
+        sessions = null;
+        first = null;
+      }
+      queue = queue.filter((frame) => !(lost.signal && "state" in frame)
+        && !(lost.lifecycle && ("event" in frame || "unavailable" in frame)));
     };
 
     /* this connection is over: nothing of it is kept or sent again */
@@ -225,14 +285,15 @@ export function deckPiObserver(capabilities, piVersion) {
     const onAccepted = () => {
       accepted = true;
       attempt = 0;
-      if (lifecycle) {
+      if (may.lifecycle) {
         const start = first;
         first = null;
-        const id = start ? start.id : nativeId(sessions);
-        if (id && start) push({ event: "start", nativeSessionId: id, reason: start.reason });
-        else if (id) push({ event: "snapshot", nativeSessionId: id });
+        const frame = start
+          ? session(start.native, { event: "start", reason: start.reason })
+          : session(nativeId(sessions), { event: "snapshot" });
+        if (frame) push(frame);
       }
-      if (signal && active) {
+      if (may.signal && active) {
         run = 1;
         push({ run, state: "working" });
       }
@@ -250,14 +311,30 @@ export function deckPiObserver(capabilities, piVersion) {
         drop(which);
         return;
       }
-      // a refusal may arrive at any time: Deck revokes a stream that way too
+      // a refusal may arrive at any time: Deck ends a stream that way too
       if (typeof reply.refused === "string") {
         if (FINAL_REFUSALS.includes(reply.refused)) ended = true;
         drop(which);
         return;
       }
+      // what this stream may still do, at any time and in answer to nothing
+      if (reply.capabilities !== undefined) {
+        const now = reply.capabilities;
+        const bits = !!now && typeof now === "object"
+          && typeof now.signal === "boolean" && typeof now.lifecycle === "boolean";
+        if (!bits || Object.keys(reply).length !== 3) {
+          drop(which);
+          return;
+        }
+        narrow(now);
+        pump();
+        return;
+      }
       const waited = awaiting;
-      const answered = !!waited && (waited.seq === 0 ? reply.accepted === true : reply.ack === waited.seq);
+      // `revoked` answers a frame whose capability was taken while it was on its way
+      const answered = !!waited && (waited.seq === 0
+        ? reply.accepted === true
+        : reply.ack === waited.seq || reply.revoked === waited.seq);
       if (!answered) {
         drop(which);
         return;
@@ -268,8 +345,23 @@ export function deckPiObserver(capabilities, piVersion) {
       pump();
     };
 
+    /* what `onLine` does must never reach Pi as an exception of its socket */
+    const received = (which, line) => {
+      try {
+        onLine(which, line);
+      } catch (_) {
+        dispose();
+        drop(which);
+      }
+    };
+
     const connect = () => {
       if (disposed || ended || socket || !target) return;
+      // a runtime that lost both capabilities has nothing to connect for
+      if (!may.signal && !may.lifecycle) {
+        ended = true;
+        return;
+      }
       // a connection that did not carry the start never reports it later
       if (!privateSocket(target.path)) {
         first = null;
@@ -300,7 +392,7 @@ export function deckPiObserver(capabilities, piVersion) {
           observerVersion: OBSERVER_VERSION,
           piVersion,
           mode: "tui",
-          capabilities: { signal, lifecycle },
+          capabilities: { signal: may.signal, lifecycle: may.lifecycle },
         };
         if (!write(which, hello, 0)) drop(which);
       });
@@ -314,7 +406,7 @@ export function deckPiObserver(capabilities, piVersion) {
         for (let at = buffer.indexOf("\n"); at >= 0 && socket === which; at = buffer.indexOf("\n")) {
           const line = buffer.slice(0, at);
           buffer = buffer.slice(at + 1);
-          onLine(which, line);
+          received(which, line);
         }
       });
       const lost = () => {
@@ -350,17 +442,17 @@ export function deckPiObserver(capabilities, piVersion) {
       if (typeof piVersion !== "string" || !/^[0-9A-Za-z.+-]{1,32}$/.test(piVersion)) return;
       target = route(process.env);
       if (!target) return;
-      if (lifecycle) {
+      if (may.lifecycle) {
         sessions = ctx.sessionManager;
-        const id = nativeId(sessions);
+        const native = nativeId(sessions);
         const reason = closedWord(START_REASONS, event.reason);
-        first = id && reason ? { id, reason } : null;
+        first = native && reason ? { native, reason } : null;
       }
       connect();
     });
 
     const onAgentStart = guarded(() => {
-      if (!target || active) return;
+      if (!target || active || !may.signal) return;
       active = true;
       if (!accepted) return;
       run += 1;
@@ -368,14 +460,15 @@ export function deckPiObserver(capabilities, piVersion) {
     });
 
     const onAgentSettled = guarded(() => {
-      if (!target || !active) return;
+      if (!target || !active || !may.signal) return;
       active = false;
       if (accepted && run > 0) push({ run, state: "turn-done" });
     });
 
     const onShutdown = guarded((event, ctx) => {
-      // the last id, read before this runtime is disposed
-      const id = lifecycle && target ? nativeId(ctx.sessionManager) : null;
+      // the last id, read before this runtime is disposed — and only by a
+      // stream that may still observe sessions and has not said it cannot
+      const native = may.lifecycle && target && !silent ? nativeId(ctx.sessionManager) : null;
       const which = socket;
       const connected = accepted;
       dispose();
@@ -387,7 +480,8 @@ export function deckPiObserver(capabilities, piVersion) {
       const reason = closedWord(SHUTDOWN_REASONS, event.reason);
       // what was queued and not sent belongs to a runtime that is over
       queue = [];
-      if (lifecycle && id && reason) queue.push({ event: "shutdown", nativeSessionId: id, reason });
+      const last = reason ? session(native, { event: "shutdown", reason }) : null;
+      if (last) queue.push(last);
       queue.push({ reason: reason || "fault" });
       return new Promise((resolve) => {
         let finished = false;

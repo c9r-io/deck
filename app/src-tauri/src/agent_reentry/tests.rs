@@ -7103,7 +7103,8 @@ fn a_verified_pi_is_named_refused_and_never_started_whatever_is_approved() {
     let (_, plain) = world.preview();
     assert_eq!(plain["entries"][1]["kind"], "candidate");
     // a Pi observer verified for exactly that foreground generation
-    crate::agent_status::pi_observed(row, generation, PiCoverage::Connected);
+    let (instance, became) = crate::procinfo::InstanceWatch::stand_in();
+    crate::agent_status::pi_observed(row, generation, PiCoverage::Connected, &instance);
     let pi = world.foreground_pid("p");
     let shown = |view: &serde_json::Value| {
         let entry = |name: &str| {
@@ -7137,10 +7138,7 @@ fn a_verified_pi_is_named_refused_and_never_started_whatever_is_approved() {
     let id = match crate::agent_pi::parse_frame(
         r#"{"protocol":"pi-observer","v":1,"source":"pi","seq":1,"event":"snapshot","nativeSessionId":"session-one"}"#,
     ) {
-        Ok(crate::agent_pi::Frame::Lifecycle {
-            native: crate::agent_pi::NativeId::Kept(id),
-            ..
-        }) => id,
+        Ok(crate::agent_pi::Frame::Lifecycle { native, .. }) => native,
         other => panic!("{other:?}"),
     };
     lifecycle::observe_pi(
@@ -7187,6 +7185,19 @@ fn a_verified_pi_is_named_refused_and_never_started_whatever_is_approved() {
         );
     }
     let _ = token;
+    // The same pid and birth instant, ANOTHER PROGRAM (an exec): what the
+    // observer proved names nothing that runs there now. The card is judged
+    // as what it is — here, the product a candidate must be — and is not
+    // called Pi on the word of a program that is gone.
+    became.executed();
+    let (_, after) = world.preview();
+    assert_eq!(
+        (&shown(&after).1["kind"], &shown(&after).1["source"]),
+        (&"candidate".into(), &"claude-code".into()),
+        "nothing of the old observer names this client"
+    );
+    let (instance, _same) = crate::procinfo::InstanceWatch::stand_in();
+    crate::agent_status::pi_observed(row, generation, PiCoverage::Connected, &instance);
     // the Claude card alone is reopened as before; the Pi is left as it is
     let (token, _) = world.preview();
     let (old, new, result) = world

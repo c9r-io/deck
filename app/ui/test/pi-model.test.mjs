@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  PI_COVERAGE, PI_INSTALLATIONS, PI_SESSION, piCoverage, piDetailKeys, piErrorKey, piSessionObserved, piSettingsView,
+  PI_COVERAGE, PI_INSTALLATIONS, PI_SESSION, piCoverage, piDetailKeys, piErrorKey, piSessionKey, piSessionObserved, piSettingsView,
   piStatus, piStatusKey,
 } from '../js/pi-model.js';
 import { createAttentionTracker, attentionBadge, DELIVERY_WAITS, deliveryWaits } from '../js/attention-model.js';
@@ -177,6 +177,23 @@ test('an observed session is one more line of explanation and nothing else', () 
   assert.deepEqual(piDetailKeys({ alive: true, piSignal: 'unavailable' }), ['signal.pi.unavailableHint', 'signal.pi.hold']);
   // observation alone, without any coverage word, explains nothing on a card that is no recognized Pi
   assert.equal(piDetailKeys({ alive: true, piSession: 'observed' }), null);
+  // A session id Deck does not support is SAID: neither an observed session nor nothing. One line, no state.
+  const unsupported = { alive: true, piSignal: 'connected', piSession: 'unsupported' };
+  assert.equal(piSessionObserved(unsupported), false);
+  assert.equal(piSessionKey(unsupported), 'signal.pi.sessionUnsupported');
+  assert.deepEqual(piDetailKeys(unsupported), ['signal.pi.connectedHint', 'signal.pi.hold', 'signal.pi.sessionUnsupported']);
+  assert.equal(piStatusKey(unsupported), piStatusKey({ alive: true, piSignal: 'connected' }));
+  assert.equal(piSessionKey({ alive: false, piSession: 'unsupported' }), null);
+  assert.equal(piSessionKey({ alive: true, piSession: 'truncated' }), null);
+  for (const dictionary of [dictionaries.en, dictionaries['zh-Hans']]) {
+    const text = dictionary['signal.pi.sessionUnsupported'];
+    assert.ok(text && text !== dictionary['signal.pi.session']);
+    // no id, length or number is ever part of the sentence
+    assert.doesNotMatch(text, /\d/);
+  }
+  // a missing settings directory is said as that, and not as "Pi never ran on this Mac"
+  assert.doesNotMatch(dictionaries.en['error.pi.neverRan'], /this Mac|never|not been run/i);
+  assert.doesNotMatch(dictionaries['zh-Hans']['error.pi.neverRan'], /这台 Mac|没有运行过/);
   // it is no state: the status text of the card does not change with it
   assert.equal(piStatusKey(live), piStatusKey({ alive: true, piSignal: 'connected' }));
   // the snapshot the Board keeps takes the closed word from the poll, or nothing
@@ -184,6 +201,8 @@ test('an observed session is one more line of explanation and nothing else', () 
   const card = { id: 'c', session: 's' };
   tracker.record([card], [{ name: 's', alive: true, pi_signal: 'connected', pi_session: 'observed' }]);
   assert.equal(tracker.get(card).piSession, 'observed');
+  tracker.record([card], [{ name: 's', alive: true, pi_signal: 'connected', pi_session: 'unsupported' }]);
+  assert.equal(tracker.get(card).piSession, 'unsupported');
   tracker.record([card], [{ name: 's', alive: true, pi_signal: 'connected', pi_session: 'abc-123' }]);
   assert.equal(tracker.get(card).piSession, null, 'anything but the closed word is nothing');
 });

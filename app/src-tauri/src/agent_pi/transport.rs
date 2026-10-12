@@ -3,12 +3,15 @@
 //! # Contract
 //! - **Off the accept loop.** The status listener is every agent's Signal
 //!   path. Of a Pi stream it reads the first line, takes the kernel's peer
-//!   pid and hands the connection over without waiting (`Service::hand`);
-//!   nothing below runs on that thread, and a full service refuses the
-//!   stream at once. No listener, thread per connection or thread per frame
-//!   is added: connections are tasks of the application's existing async
-//!   runtime, and ONE admission worker verifies and commits their frames,
-//!   one after the other.
+//!   pid, starts watching that process's execution instance and hands the
+//!   connection over without waiting (`Service::hand`); nothing below runs
+//!   on that thread, and a full service refuses the stream at once. No
+//!   listener, thread per connection or thread per frame is added:
+//!   connections are tasks of the application's existing async runtime, and
+//!   ONE admission worker verifies and commits their frames, one after the
+//!   other. Bytes that arrived behind the first line are this stream's and
+//!   are parsed as its next lines, under the same bounds: nothing a client
+//!   sent is read and thrown away.
 //! - **Bounded.** At most `MAX_STREAMS` streams; at most `MAX_PENDING` lines
 //!   read and not yet answered across all of them and `MAX_PENDING_PER_STREAM`
 //!   of one; a line is at most `agent_pi::MAX_LINE` bytes, whole or partial.
@@ -34,20 +37,51 @@
 //!   every id in the line are claims: none of them is used as proof. Only
 //!   after that is the generation RECOGNIZED as Pi (`agent_status::
 //!   pi_observed`), whatever happens to the stream next: a release this
-//!   build does not support and a capability the settings do not enable are
-//!   refused after it, so the card can say which.
+//!   build does not support and a stream none of whose capabilities the
+//!   settings enable are refused after it, so the card can say which.
+//! - **One execution instance.** A pid and a birth instant survive an
+//!   `exec`, so they do not say that the program which connected is the one
+//!   that runs now. The peer is therefore watched from the hand-over
+//!   (`procinfo::InstanceWatch`: the kernel's own exec and exit reports),
+//!   and that watch is asked at the bind, for every frame after the other
+//!   kernel reads, by the poll's `reconcile`, and by every reader of what
+//!   the stream proved (`agent_status`). A peer that executed another image
+//!   is `peer-executed`: its lease ends, what it reported is withdrawn, and
+//!   what the hello proved is forgotten — the new program inherits the
+//!   connection, not the lease, and is nothing until it says hello itself.
+//!   A watch the kernel refused or cannot answer is `no-instance`: nothing
+//!   is bound, or the lease ends; it is never read as "unchanged". A fork
+//!   is not an exec (the parent's lease stands; the child is another
+//!   process), and a file replaced on disk changes nothing that runs.
 //! - **A lease.** An accepted stream gets a number this process never uses
 //!   again. It is bound to the pane (server pid, pane id, session id, pane
-//!   process and its birth) and to the peer's generation. Every commit names
-//!   its lease and is made under the registry lock that ends leases: a frame
-//!   of an ended lease writes nothing, however long it waited.
+//!   process and its birth), to the peer's generation and to its execution
+//!   instance. Every commit names its lease and is made under the registry
+//!   lock that ends leases: a frame of an ended lease writes nothing,
+//!   however long it waited.
+//! - **Capabilities narrow, one by one, and never widen.** A lease keeps
+//!   what its runtime loaded (the hello's claim) apart from what the stream
+//!   may still do (`usable`): the claim as far as the settings enable it,
+//!   at the bind and whenever they enable less (`settings_changed`, and
+//!   again at every commit). Taking one capability away leaves the other
+//!   and the lease: turning Signal off withdraws that lease's word and
+//!   episode and nothing else; turning session observation off forgets that
+//!   lease's session and nothing else. The observer is told at once
+//!   (`capabilities`), stops reading and sending for what it lost, and a
+//!   frame of a lost capability that was already on its way is answered
+//!   `revoked`: its number is used up, nothing is written, the stream goes
+//!   on. A frame of a capability the hello never claimed is a forgery and
+//!   ends the stream (`capability-disabled`), as does a stream left with no
+//!   capability at all. Nothing gives a running observer a capability back:
+//!   that takes Pi loading its extensions again (`config`, `needs-reload`).
 //! - **What is checked for every frame** (`commit`), in this order: the
 //!   lease is live; for a frame that writes pane-bound state, the pane is
 //!   read from a listing taken AFTER the frame was read; then the kernel is
 //!   asked NOW — after that listing — for the peer's generation, the pane
 //!   process, the terminal's foreground and the ancestry; then, under the
-//!   lock, the lease again, what the settings enable, the sequence number
-//!   (the next one, no gap, no repeat) and the run rules. A `ping` commits
+//!   lock, the lease again, what the settings enable (narrowing the stream
+//!   when that is less), the sequence number (the next one, no gap, no
+//!   repeat), the frame's capability and the run rules. A `ping` commits
 //!   nothing pane-bound and needs no listing: an idle Pi causes no tmux
 //!   call. Frames that were already waiting when a listing is taken share
 //!   it; each still gets its own kernel reads.
@@ -55,20 +89,24 @@
 //!   stream and of the settings, and is handed to `agent_reentry::lifecycle::
 //!   observe_pi` with the lease it came on: an observation, kept apart from
 //!   every re-entry receipt. A frame that contradicts what the lease already
-//!   reported is refused (`bad-lifecycle`) and its record is gone; an id
-//!   longer than this build keeps is acknowledged and not kept. A signal
-//!   frame on a stream without the signal capability, and a lifecycle frame
-//!   on one without the lifecycle capability, are refused.
+//!   reported is refused (`bad-lifecycle`) and its record is gone. An id
+//!   this build does not keep — longer than `MAX_NATIVE_ID`, or one the
+//!   observer could not put on a line and reports with `unavailable` — is
+//!   neither kept nor passed over: that lease's session observation becomes
+//!   `unsupported`, visibly, and stays so whatever the stream says next
+//!   (`lifecycle::pi_unsupported`); the frame is acknowledged and the
+//!   stream's run boundaries go on.
 //! - **Runs.** `working` opens run `n + 1` and only while no run is open;
 //!   `turn-done` closes the open run and names it. Anything else — a run
 //!   that goes back, a second start, an ending of another run — is refused:
 //!   a late ending of one run can never close another.
 //! - **Ending a lease withdraws its observation at once** (`end`): a reset,
-//!   the end of the stream, a refusal, staleness, an overflow, a capability
-//!   turned off (`settings_changed`), another foreground or pane
-//!   (`reconcile`). Nothing is reported in its place, nothing is replayed on
-//!   a later stream, and a lost observer is never a turn that ended. A
-//!   sender that never bound a lease changes nothing for any pane.
+//!   the end of the stream, a refusal, staleness, an overflow, the last
+//!   capability turned off (`settings_changed`), another foreground, pane or
+//!   execution instance (`reconcile`). Nothing is reported in its place,
+//!   nothing is replayed on a later stream, and a lost observer is never a
+//!   turn that ended. A sender that never bound a lease changes nothing for
+//!   any pane.
 //! - **No authority.** Nothing here types, starts, resumes, moves or closes
 //!   anything, and nothing a Pi stream says lifts a scheduler hold.
 
@@ -85,9 +123,10 @@ use tokio::sync::{oneshot, Notify};
 
 use super::{Capabilities, Frame, Hello, PiVersion, ResetReason, RunState};
 use crate::agent_origin::ORIGIN_HOPS;
+use crate::agent_reentry::lifecycle::PiNoted;
 use crate::agent_status::{ForegroundGeneration, PaneKey, PiCoverage};
 use crate::applog::{applog, session_tag};
-use crate::procinfo::ProcessInfo;
+use crate::procinfo::{Continuity, InstanceWatch, ProcessInfo};
 use crate::sync::LockRecover;
 use crate::tmux::PaneRow;
 
@@ -148,8 +187,16 @@ struct Lease {
     pane_birth: (u64, u32),
     /// The peer: the pane's foreground leader when the stream was bound.
     generation: ForegroundGeneration,
-    /// What the hello claimed, all of it enabled when it was accepted.
-    capabilities: Capabilities,
+    /// The execution instance the peer was when the stream was handed over.
+    instance: Arc<InstanceWatch>,
+    /// What the hello claimed: what this runtime loaded.
+    loaded: Capabilities,
+    /// What the stream may still do: `loaded` as far as the settings
+    /// enabled it at the bind, less whenever they enable less. Never more.
+    usable: Capabilities,
+    /// What the observer was last told it may do. Its stream's task writes
+    /// a `capabilities` line whenever `usable` is less than this.
+    told: Capabilities,
     /// The sequence number the next frame must carry.
     next_seq: u64,
     /// The highest run this stream opened, and whether it is still open.
@@ -256,6 +303,10 @@ fn end(lease: u64, code: &'static str) {
         entry.over = Some(code);
         crate::agent_status::pi_lost(&entry.key, entry.generation, lease);
         crate::agent_reentry::lifecycle::forget_pi(lease);
+        // that observer does not connect again before Pi reloads
+        if code == "capability-disabled" {
+            crate::agent_status::pi_waits_for_reload(&entry.key, entry.generation);
+        }
         entry.wake.notify_one();
         Some(entry.session.clone())
     });
@@ -281,22 +332,57 @@ fn over(lease: u64) -> Option<&'static str> {
     with_registry(|registry| registry.leases.get(&lease).and_then(|lease| lease.over))
 }
 
-/// Whether a live stream has other capabilities than `configured`: that Pi
-/// loaded its extensions before the settings entry changed (`config::
-/// status`, `needs-reload`).
+/// Whether a running Pi does something else than `configured` says and
+/// will go on doing so until it loads its extensions again (`config::
+/// status`, `needs-reload`): a live stream that may do other things than
+/// the entry names — it loaded less, or lost a capability that has been
+/// turned on again since — or a recognized Pi whose observer was ended for
+/// its capabilities and does not come back by itself.
 pub(crate) fn mismatched(configured: Capabilities) -> bool {
     with_registry(|registry| {
         registry
             .leases
             .values()
-            .any(|lease| lease.over.is_none() && lease.capabilities != configured)
-    })
+            .any(|lease| lease.over.is_none() && lease.usable != configured)
+    }) || crate::agent_status::pi_reload_pending()
 }
 
-/// The settings entry changed in Deck: a stream that has a capability the
-/// settings no longer enable ends now, not at its next frame.
+/// The settings entry changed in Deck: a stream loses what the settings no
+/// longer enable now, not at its next frame, and keeps the rest.
 pub(crate) fn settings_changed() {
     enabled_changed(super::config::enabled());
+}
+
+/// Take from one live lease what `enabled` no longer allows (module header,
+/// "Capabilities narrow"). Called under the registry lock. `false` when
+/// nothing would be left: the caller ends the lease.
+fn narrowed(entry: &mut Lease, lease: u64, enabled: Capabilities) -> bool {
+    let next = entry.usable.and(enabled);
+    if next == entry.usable {
+        return true;
+    }
+    if !next.any() {
+        return false;
+    }
+    if entry.usable.signal && !next.signal {
+        // that lease's word and episode, and nothing else; a run that was
+        // open is not closed by anything this stream sends later
+        entry.run_open = false;
+        crate::agent_status::pi_lost(&entry.key, entry.generation, lease);
+    }
+    if entry.usable.lifecycle && !next.lifecycle {
+        crate::agent_reentry::lifecycle::forget_pi(lease);
+    }
+    entry.usable = next;
+    // the stream's task tells the observer
+    entry.wake.notify_one();
+    applog(&format!(
+        "[agent-pi] observer narrowed s={} signal={} lifecycle={}",
+        session_tag(&entry.session),
+        u8::from(next.signal),
+        u8::from(next.lifecycle)
+    ));
+    true
 }
 
 /// `settings_changed` for a given enabled set.
@@ -304,9 +390,9 @@ fn enabled_changed(enabled: Capabilities) {
     let ended: Vec<u64> = with_registry(|registry| {
         registry
             .leases
-            .iter()
-            .filter(|(_, lease)| lease.over.is_none() && !lease.capabilities.within(enabled))
-            .map(|(id, _)| *id)
+            .iter_mut()
+            .filter(|(_, lease)| lease.over.is_none())
+            .filter_map(|(id, lease)| (!narrowed(lease, *id, enabled)).then_some(*id))
             .collect()
     });
     for lease in ended {
@@ -314,11 +400,36 @@ fn enabled_changed(enabled: Capabilities) {
     }
 }
 
+/// What the observer of `lease` must be told now: the capabilities its
+/// stream may still use, when that is less than it last heard.
+fn notice(lease: u64) -> Option<Capabilities> {
+    with_registry(|registry| {
+        let entry = registry.live_mut(lease)?;
+        (entry.told != entry.usable).then(|| {
+            entry.told = entry.usable;
+            entry.usable
+        })
+    })
+}
+
+/// Why a lease whose peer is no longer the execution instance it was bound
+/// as is over; `None` while it is that instance.
+fn replaced(instance: &InstanceWatch) -> Option<&'static str> {
+    match instance.continuity() {
+        Continuity::Same => None,
+        Continuity::Executed => Some("peer-executed"),
+        // the process is gone: its pid and birth name nothing that runs
+        Continuity::Exited => Some("generation-mismatch"),
+        Continuity::Unreadable => Some("no-instance"),
+    }
+}
+
 /// The poll's pane listing against the leases: a lease whose pane now has
-/// another process or session, or whose pane's foreground is no longer the
-/// peer, is over. The foreground is asked NOW (`generation_now`), not taken
-/// from the poll's snapshot, so a stream bound after that snapshot was made
-/// is judged by what is true and not by what the snapshot missed.
+/// another process or session, whose peer executed another image, or whose
+/// pane's foreground is no longer the peer, is over. The foreground is asked
+/// NOW (`generation_now`), not taken from the poll's snapshot, so a stream
+/// bound after that snapshot was made is judged by what is true and not by
+/// what the snapshot missed.
 pub(crate) fn reconcile_with(
     rows: &[PaneRow],
     generation_now: impl Fn(u32) -> Option<ForegroundGeneration>,
@@ -335,6 +446,8 @@ pub(crate) fn reconcile_with(
                 });
                 if moved {
                     Some((*id, "pane-changed"))
+                } else if let Some(code) = replaced(&lease.instance) {
+                    Some((*id, code))
                 } else {
                     (generation_now(lease.pane_pid) != Some(lease.generation))
                         .then_some((*id, "generation-mismatch"))
@@ -364,13 +477,24 @@ enum Job {
     Hello {
         hello: Hello,
         peer: Option<u32>,
+        instance: Option<Arc<InstanceWatch>>,
         reply: oneshot::Sender<Result<Bound, &'static str>>,
     },
     Frame {
         lease: u64,
         frame: Frame,
-        reply: oneshot::Sender<Result<u64, &'static str>>,
+        reply: oneshot::Sender<Result<Committed, &'static str>>,
     },
+}
+
+/// What became of one verified frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Committed {
+    /// It was written: `ack`.
+    Ack(u64),
+    /// Its capability was taken from the stream before it arrived: its
+    /// number is used up and nothing was written (`revoked`).
+    Revoked(u64),
 }
 
 /// The pane listing of one batch: taken at most once, when a job first
@@ -395,13 +519,16 @@ impl Listing<'_> {
 
 /// The kernel facts every commit needs, read now: the peer is still that
 /// generation, the pane's process is alive, the pane terminal's foreground
-/// group is led by the peer, and the pane's process is the peer's ancestor
-/// with every process between them on the pane's terminal. Returns the pane
-/// process's birth instant.
+/// group is led by the peer, the pane's process is the peer's ancestor with
+/// every process between them on the pane's terminal, and — asked last, so
+/// that it covers the reads before it — the peer has not executed another
+/// image since its stream was handed over. Returns the pane process's birth
+/// instant.
 fn verified(
     world: &World,
     pane_pid: u32,
     generation: ForegroundGeneration,
+    instance: &InstanceWatch,
 ) -> Result<(u64, u32), &'static str> {
     let client = (world.process)(generation.pid())
         .filter(|client| (client.start_seconds, client.start_micros) == generation.birth())
@@ -427,7 +554,10 @@ fn verified(
         }
         at = (world.process)(at.ppid).ok_or("foreign-pane")?;
     }
-    Ok((pane.start_seconds, pane.start_micros))
+    match replaced(instance) {
+        Some(code) => Err(code),
+        None => Ok((pane.start_seconds, pane.start_micros)),
+    }
 }
 
 /// Admit one hello (module header, "Who may bind").
@@ -435,16 +565,32 @@ fn bind(
     world: &World,
     hello: &Hello,
     peer: Option<u32>,
+    instance: Option<Arc<InstanceWatch>>,
     listing: &mut Listing,
 ) -> Result<Bound, &'static str> {
     let peer = peer.ok_or("no-peer")?;
     let client = (world.process)(peer)
         .filter(|client| client.start_seconds != 0)
         .ok_or("no-peer")?;
+    // without a watch nothing could notice the peer becoming another program
+    let instance = instance.ok_or("no-instance")?;
     let generation = ForegroundGeneration::of(peer, (client.start_seconds, client.start_micros));
     // the observer runs inside the terminal's foreground program itself
     if client.tty == 0 || client.pgid != client.pid || client.tty_pgid != client.pid {
         return Err("not-foreground");
+    }
+    // An earlier stream of this pid whose program has since executed another
+    // image, or is gone, is over before it can stand in this one's way.
+    let stale: Vec<(u64, &'static str)> = with_registry(|registry| {
+        registry
+            .leases
+            .iter()
+            .filter(|(_, lease)| lease.over.is_none() && lease.generation == generation)
+            .filter_map(|(id, lease)| replaced(&lease.instance).map(|code| (*id, code)))
+            .collect()
+    });
+    for (lease, code) in stale {
+        end(lease, code);
     }
     let bound = |registry: &Registry| {
         registry
@@ -472,20 +618,24 @@ fn bind(
         return Err("not-foreground");
     }
     // the kernel, asked after the listing: what it says now is what counts
-    let pane_birth = verified(world, row.pane_pid, generation)?;
+    let pane_birth = verified(world, row.pane_pid, generation, &instance)?;
     // Proven: this pane's foreground program is a Pi observer. That holds
-    // for the generation whatever is decided about the stream below.
+    // for this execution instance whatever is decided about the stream below.
     if hello.version == PiVersion::Unsupported {
         let coverage = if hello.capabilities.signal {
             PiCoverage::Incompatible
         } else {
             PiCoverage::Unavailable
         };
-        crate::agent_status::pi_observed(&row, generation, coverage);
+        crate::agent_status::pi_observed(&row, generation, coverage, &instance);
         return Err("unsupported-pi-version");
     }
-    if !hello.capabilities.within((world.enabled)()) {
-        crate::agent_status::pi_observed(&row, generation, PiCoverage::Unavailable);
+    // what this runtime loaded, as far as the settings enable it now: the
+    // rest is not usable, and a stream with nothing left is refused
+    let usable = hello.capabilities.and((world.enabled)());
+    if !usable.any() {
+        crate::agent_status::pi_observed(&row, generation, PiCoverage::Unavailable, &instance);
+        crate::agent_status::pi_waits_for_reload(&PaneKey::of(&row), generation);
         return Err("capability-disabled");
     }
     let wake = Arc::new(Notify::new());
@@ -504,7 +654,11 @@ fn bind(
                 pane_pid: row.pane_pid,
                 pane_birth,
                 generation,
-                capabilities: hello.capabilities,
+                instance: instance.clone(),
+                loaded: hello.capabilities,
+                usable,
+                // the observer assumes what it claimed until it hears less
+                told: hello.capabilities,
                 next_seq: 1,
                 run: 0,
                 run_open: false,
@@ -512,19 +666,19 @@ fn bind(
                 wake: wake.clone(),
             },
         );
-        let coverage = if hello.capabilities.signal {
+        let coverage = if usable.signal {
             PiCoverage::Connected
         } else {
             PiCoverage::Unavailable
         };
-        crate::agent_status::pi_observed(&row, generation, coverage);
+        crate::agent_status::pi_observed(&row, generation, coverage, &instance);
         Ok(lease)
     })?;
     applog(&format!(
         "[agent-pi] observer bound s={} signal={} lifecycle={}",
         session_tag(&row.session_name),
-        u8::from(hello.capabilities.signal),
-        u8::from(hello.capabilities.lifecycle)
+        u8::from(usable.signal),
+        u8::from(usable.lifecycle)
     ));
     Ok(Bound { lease, wake })
 }
@@ -536,7 +690,7 @@ fn commit(
     lease: u64,
     frame: &Frame,
     listing: &mut Listing,
-) -> Result<u64, &'static str> {
+) -> Result<Committed, &'static str> {
     let verdict = committed(world, lease, frame, listing);
     match (&verdict, frame) {
         (Err(code), _) => end(lease, code),
@@ -583,9 +737,9 @@ fn committed(
     lease: u64,
     frame: &Frame,
     listing: &mut Listing,
-) -> Result<u64, &'static str> {
+) -> Result<Committed, &'static str> {
     // what the lease is bound to: nothing is decided on this reading
-    let (key, session_id, pane_pid, pane_birth, generation) = with_registry(|registry| {
+    let (key, session_id, pane_pid, pane_birth, generation, instance) = with_registry(|registry| {
         registry.live(lease).map(|lease| {
             (
                 lease.key.clone(),
@@ -593,6 +747,7 @@ fn committed(
                 lease.pane_pid,
                 lease.pane_birth,
                 lease.generation,
+                lease.instance.clone(),
             )
         })
     })
@@ -612,23 +767,34 @@ fn committed(
         }
     };
     // the kernel, now: after the listing, immediately before the write
-    if verified(world, pane_pid, generation)? != pane_birth {
+    if verified(world, pane_pid, generation, &instance)? != pane_birth {
         return Err("pane-changed");
     }
     let enabled = (world.enabled)();
     with_registry(|registry| {
         let entry = registry.live_mut(lease).ok_or("late")?;
-        if !entry.capabilities.within(enabled) {
+        // what the settings enable now: less is taken from the stream here,
+        // and a stream left with nothing is over
+        if !narrowed(entry, lease, enabled) {
             return Err("capability-disabled");
         }
         let seq = frame.seq();
         if seq != entry.next_seq {
             return Err("bad-seq");
         }
-        if let Frame::Signal { run, state, .. } = frame {
-            if !entry.capabilities.signal {
+        if let Some(capability) = frame.capability() {
+            // never claimed by the hello: no late frame, a forgery
+            if !entry.loaded.has(capability) {
                 return Err("capability-disabled");
             }
+            // claimed, and taken from the stream since: the frame was on
+            // its way; its number is used up and nothing is written
+            if !entry.usable.has(capability) {
+                entry.next_seq += 1;
+                return Ok(Committed::Revoked(seq));
+            }
+        }
+        if let Frame::Signal { run, state, .. } = frame {
             match state {
                 RunState::Working if !entry.run_open && *run == entry.run + 1 => {
                     entry.run = *run;
@@ -640,31 +806,36 @@ fn committed(
                 _ => return Err("bad-run"),
             }
             let (rows, row) = pane.ok_or("pane-changed")?;
-            crate::agent_status::pi_signal(rows, row, generation, lease, *run, *state);
+            crate::agent_status::pi_signal(rows, row, generation, lease, &instance, *run, *state);
         }
-        if let Frame::Lifecycle { event, native, .. } = frame {
-            if !entry.capabilities.lifecycle {
-                return Err("capability-disabled");
-            }
-            match native {
-                super::NativeId::Kept(id) => {
-                    crate::agent_reentry::lifecycle::observe_pi(
-                        lease, &entry.key, generation, *event, id,
-                    )?;
-                    // Pi's own closed word and a session tag: never the id
-                    applog(&format!(
-                        "[agent-pi] session {} s={}",
-                        session_word(*event),
-                        session_tag(&entry.session)
-                    ));
-                }
-                // well formed and longer than this build keeps: nothing is
-                // cut short or stood in for it, and nothing is observed
-                super::NativeId::Unsupported => crate::agent_reentry::lifecycle::forget_pi(lease),
-            }
+        // a session, or the observer's word that it has an id it cannot send
+        let noted = match frame {
+            Frame::Lifecycle { event, native, .. } => Some((
+                crate::agent_reentry::lifecycle::observe_pi(
+                    lease, &entry.key, generation, *event, native,
+                )?,
+                session_word(*event),
+            )),
+            Frame::Unavailable { .. } => Some((
+                crate::agent_reentry::lifecycle::pi_unsupported(lease, &entry.key, generation),
+                "unsupported-native-id",
+            )),
+            _ => None,
+        };
+        // closed words and a session tag: never the id, its length or a path
+        match noted {
+            Some((PiNoted::Observed, word)) => applog(&format!(
+                "[agent-pi] session {word} s={}",
+                session_tag(&entry.session)
+            )),
+            Some((PiNoted::Unsupported, _)) => applog(&format!(
+                "[agent-pi] session unsupported-native-id s={}",
+                session_tag(&entry.session)
+            )),
+            Some((PiNoted::Ignored, _)) | None => {}
         }
         entry.next_seq += 1;
-        Ok(seq)
+        Ok(Committed::Ack(seq))
     })
 }
 
@@ -685,8 +856,13 @@ fn worker(waiting: Receiver<Job>, world: World) {
         };
         for job in batch {
             match job {
-                Job::Hello { hello, peer, reply } => {
-                    let verdict = bind(&world, &hello, peer, &mut listing);
+                Job::Hello {
+                    hello,
+                    peer,
+                    instance,
+                    reply,
+                } => {
+                    let verdict = bind(&world, &hello, peer, instance, &mut listing);
                     let lease = verdict.as_ref().ok().map(|bound| bound.lease);
                     // nobody waits for this stream any more: its lease is not kept
                     if let (Err(_), Some(lease)) = (reply.send(verdict), lease) {
@@ -750,15 +926,25 @@ impl Service {
 
     /// Take one Pi stream from the status listener. Never waits: a slot is
     /// taken or the stream is refused, the peer is read from the kernel
-    /// while the client is certainly connected, and the rest happens in the
-    /// stream's own task.
-    pub(crate) fn hand(&self, stream: UnixStream, line: String) {
+    /// while the client is certainly connected and watched from that moment
+    /// on, and the rest happens in the stream's own task. `rest` is what
+    /// the listener read behind the first line: this stream's next bytes.
+    pub(crate) fn hand(&self, stream: UnixStream, line: String, rest: Vec<u8>) {
         let peer = crate::procinfo::peer_pid(&stream);
-        self.hand_as(stream, line, peer);
+        let instance = peer.and_then(InstanceWatch::of);
+        self.hand_as(stream, line, rest, peer, instance);
     }
 
-    /// `hand` for a peer the caller read from the kernel already.
-    pub(crate) fn hand_as(&self, stream: UnixStream, line: String, peer: Option<u32>) {
+    /// `hand` for a peer the caller read from the kernel already, and for
+    /// the watch of its execution instance.
+    pub(crate) fn hand_as(
+        &self,
+        stream: UnixStream,
+        line: String,
+        rest: Vec<u8>,
+        peer: Option<u32>,
+        instance: Option<Arc<InstanceWatch>>,
+    ) {
         let Some(slot) = Slot::take() else {
             (self.report)(super::drop_reason("busy"));
             refuse_now(stream, "busy");
@@ -769,7 +955,13 @@ impl Service {
         }
         let (jobs, report, bounds) = (self.jobs.clone(), self.report.clone(), self.bounds);
         tauri::async_runtime::spawn(async move {
-            serve(stream, line, peer, slot, jobs, report, bounds).await;
+            let client = Client {
+                hello: line,
+                rest,
+                peer,
+                instance,
+            };
+            serve(stream, client, slot, jobs, report, bounds).await;
         });
     }
 }
@@ -851,6 +1043,24 @@ enum Closed {
     Refused(&'static str),
 }
 
+/// Move the whole lines `buffer` holds into `pending`, under the bounds of
+/// a line and of the queue; a line that does not end yet stays.
+fn take_lines(buffer: &mut Vec<u8>, pending: &mut Pending) -> Result<(), Closed> {
+    while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
+        let line: Vec<u8> = buffer.drain(..=end).take(end).collect();
+        if line.len() > super::MAX_LINE {
+            return Err(Closed::Refused("bad-frame"));
+        }
+        let line = String::from_utf8(line).map_err(|_| Closed::Refused("bad-frame"))?;
+        pending.push(line).map_err(Closed::Refused)?;
+    }
+    // a line that does not end is bounded like one that does
+    if buffer.len() > super::MAX_LINE {
+        return Err(Closed::Refused("bad-frame"));
+    }
+    Ok(())
+}
+
 /// Take what the socket holds right now into `pending`, whole lines only.
 fn read_lines(
     stream: &tokio::net::UnixStream,
@@ -869,18 +1079,7 @@ fn read_lines(
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
             Err(_) => return Err(Closed::Eof),
         }
-        while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
-            let line: Vec<u8> = buffer.drain(..=end).take(end).collect();
-            if line.len() > super::MAX_LINE {
-                return Err(Closed::Refused("bad-frame"));
-            }
-            let line = String::from_utf8(line).map_err(|_| Closed::Refused("bad-frame"))?;
-            pending.push(line).map_err(Closed::Refused)?;
-        }
-        // a line that does not end is bounded like one that does
-        if buffer.len() > super::MAX_LINE {
-            return Err(Closed::Refused("bad-frame"));
-        }
+        take_lines(buffer, pending)?;
     }
 }
 
@@ -893,11 +1092,19 @@ impl Drop for Held {
     }
 }
 
+/// What the listener handed over of one client: its first line, the bytes
+/// it read behind that line, and what the kernel said of the peer.
+struct Client {
+    hello: String,
+    rest: Vec<u8>,
+    peer: Option<u32>,
+    instance: Option<Arc<InstanceWatch>>,
+}
+
 /// One stream, from its hello to its end.
 async fn serve(
     stream: UnixStream,
-    hello: String,
-    peer: Option<u32>,
+    client: Client,
     _slot: Slot,
     jobs: SyncSender<Job>,
     report: Reporter,
@@ -910,11 +1117,18 @@ async fn serve(
         report(super::drop_reason(code));
         super::refused_line(code)
     };
+    let Client {
+        hello,
+        rest,
+        peer,
+        instance,
+    } = client;
     let bound = match super::parse_hello(&hello) {
         Ok(hello) => {
             admit(&jobs, bounds.answer, |reply| Job::Hello {
                 hello,
                 peer,
+                instance,
                 reply,
             })
             .await
@@ -935,16 +1149,33 @@ async fn serve(
     {
         return;
     }
-    let mut buffer = Vec::new();
+    // what the client sent behind its hello are its next lines
+    let mut buffer = rest;
     let mut pending = Pending::default();
     let mut valid = Instant::now();
     // the client no longer takes answers: what it sent before it left is
     // still committed in order, and then the stream is over
     let mut gone = false;
+    let mut early = take_lines(&mut buffer, &mut pending).err();
     let refusal = loop {
         // a lease that ended elsewhere is told why before anything else
         if let Some(code) = over(lease.0) {
             break Some(code);
+        }
+        match early.take() {
+            Some(Closed::Refused(code)) => break Some(code),
+            Some(Closed::Eof) => break None,
+            None => {}
+        }
+        // less than the observer last heard: it is told before any answer
+        if let Some(now) = notice(lease.0) {
+            if !gone
+                && write_line(&stream, &super::capabilities_line(now), bounds.answer)
+                    .await
+                    .is_err()
+            {
+                gone = true;
+            }
         }
         if let Some(line) = pending.pop() {
             let frame = match super::parse_frame(&line) {
@@ -952,22 +1183,27 @@ async fn serve(
                 Err(code) => break Some(code),
             };
             let last = matches!(frame, Frame::Reset { .. });
-            let seq = match admit(&jobs, bounds.answer, |reply| Job::Frame {
+            let verdict = match admit(&jobs, bounds.answer, |reply| Job::Frame {
                 lease: lease.0,
                 frame,
                 reply,
             })
             .await
             {
-                Ok(seq) => seq,
+                Ok(verdict) => verdict,
                 Err(code) => break Some(code),
             };
             valid = Instant::now();
-            if !gone
-                && write_line(&stream, &super::ack_line(seq), bounds.answer)
-                    .await
-                    .is_err()
-            {
+            // a capability taken by this very commit is said first
+            let mut lines = String::new();
+            if let Some(now) = notice(lease.0) {
+                lines.push_str(&super::capabilities_line(now));
+            }
+            lines.push_str(&match verdict {
+                Committed::Ack(seq) => super::ack_line(seq),
+                Committed::Revoked(seq) => super::revoked_line(seq),
+            });
+            if !gone && write_line(&stream, &lines, bounds.answer).await.is_err() {
                 gone = true;
             }
             if last {

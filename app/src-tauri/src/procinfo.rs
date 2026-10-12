@@ -39,6 +39,17 @@
 //! binding and no product, and it is not "another program" either. The
 //! deadline bounds the answer, never the call — a caller that must stay
 //! responsive asks from a worker it can stop waiting for.
+//!
+//! A fourth fact stands beside those three and is none of them: whether a
+//! process is still the EXECUTION INSTANCE it was (`InstanceWatch`). A pid and
+//! a birth instant survive an exec, so a caller that bound something to "the
+//! program that runs in this process now" — a Pi observer's stream
+//! (`agent_pi::transport`), what was proven of that observer
+//! (`agent_status`) — also holds a watch of the process and asks it whenever
+//! it reads or writes: the kernel's own exec and exit reports for that pid
+//! (kqueue `EVFILT_PROC`), taken without a task port and without starting
+//! anything. It says "the same instance" or "not", and nothing about which
+//! program or whose: it is no code identity and never stands in for one.
 
 mod code_identity;
 
@@ -231,6 +242,300 @@ pub(crate) fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn peer_pid(_stream: &std::os::unix::net::UnixStream) -> Option<u32> {
     None
+}
+
+// ---------- execution instances -----------------------------------------------------
+//
+// A pid and a birth instant name a PROCESS, not what it executes: `execve`
+// and the spawn call's exec-in-place form replace the image and keep both
+// (measured on macOS 27.0.1; the kernel's own instance counter, the
+// `pidversion` of the process's audit token, changes at that moment). So a
+// caller that bound something to "this program, as it runs now" needs a
+// third fact: that the process has not executed another image since.
+//
+// The kernel reports that through kqueue(2): `EVFILT_PROC` with `NOTE_EXEC`
+// and `NOTE_EXIT`, registered for a pid. Any process may ask this of any
+// other without a task port, a privilege or an entitlement, and it starts
+// nothing. It is asked HERE, of ONE queue for the whole application (one
+// descriptor, however many processes are watched). What it says is exactly
+// "an exec or the exit happened after the watch was taken": a `fork` is not
+// an exec (the child is another process, with its own pid and birth), an
+// exec in a child is the child's, and a file replaced on disk under a
+// running program changes nothing about the image in memory, so none of the
+// three is reported. Which program a process is, or whose, is NOT answered
+// by this and is never inferred from it (`code_identity`).
+
+/// What the kernel reported of a watched process since its watch was taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Continuity {
+    /// Neither: it is still the execution instance that was watched.
+    Same,
+    /// It executed another image: the same pid and birth instant, and
+    /// nothing that was true of the program before is known of this one.
+    Executed,
+    /// It is gone.
+    Exited,
+    /// The kernel could not be asked. Nothing is known; a caller fails
+    /// closed and never treats this as `Same`.
+    Unreadable,
+}
+
+const INSTANCE_SAME: u8 = 0;
+const INSTANCE_EXECUTED: u8 = 1;
+const INSTANCE_EXITED: u8 = 2;
+const INSTANCE_UNREADABLE: u8 = 3;
+
+/// One process as the execution instance it was when `of` was called. The
+/// first thing reported of it stands for as long as the watch lives; a
+/// process is never watched again under the same watch.
+pub(crate) struct InstanceWatch {
+    pid: u32,
+    state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// Whether the kernel's queue holds a registration this watch shares
+    /// (a test's stand-in has none).
+    registered: bool,
+}
+
+/// The one queue, and every watch that is alive, by pid. A leaf lock:
+/// nothing else is taken while it is held.
+#[cfg(target_os = "macos")]
+struct InstanceQueue {
+    queue: std::os::fd::OwnedFd,
+    watched: HashMap<u32, Vec<std::sync::Arc<std::sync::atomic::AtomicU8>>>,
+}
+
+#[cfg(target_os = "macos")]
+static INSTANCES: std::sync::Mutex<Option<InstanceQueue>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "macos")]
+impl InstanceQueue {
+    fn open() -> Option<Self> {
+        use std::os::fd::FromRawFd;
+        // SAFETY: `kqueue` takes no argument and returns a new descriptor or -1.
+        let fd = unsafe { libc::kqueue() };
+        if fd < 0 {
+            return None;
+        }
+        // SAFETY: `fd` is a descriptor this call just created and owns.
+        let queue = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+        // SAFETY: a flag set on a descriptor this function owns.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        Some(Self {
+            queue,
+            watched: HashMap::new(),
+        })
+    }
+
+    fn change(&self, pid: u32, flags: u16) -> bool {
+        use std::os::fd::AsRawFd;
+        let change = libc::kevent {
+            ident: pid as libc::uintptr_t,
+            filter: libc::EVFILT_PROC,
+            flags,
+            fflags: libc::NOTE_EXEC | libc::NOTE_EXIT,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        // SAFETY: one change is read from valid storage, and no event is
+        // asked for, so nothing is written.
+        let done = unsafe {
+            libc::kevent(
+                self.queue.as_raw_fd(),
+                &change,
+                1,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            )
+        };
+        done == 0
+    }
+
+    fn mark(&self, pid: Option<u32>, word: u8) {
+        use std::sync::atomic::Ordering;
+        let lists = self
+            .watched
+            .iter()
+            .filter(|(watched, _)| pid.is_none_or(|pid| pid == **watched));
+        for (_, states) in lists {
+            for state in states {
+                // the first report stands
+                let _ = state.compare_exchange(
+                    INSTANCE_SAME,
+                    word,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+            }
+        }
+    }
+
+    /// Take what the kernel has reported so far, without waiting, and mark
+    /// the watches it concerns.
+    fn drain(&mut self) {
+        use std::os::fd::AsRawFd;
+        let none = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        loop {
+            // SAFETY: zeroed storage for the events the kernel may write.
+            let mut events: [libc::kevent; 16] = unsafe { std::mem::zeroed() };
+            // SAFETY: no change is read; at most 16 events are written into
+            // storage of exactly that size; the zero timeout never waits.
+            let got = unsafe {
+                libc::kevent(
+                    self.queue.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    events.as_mut_ptr(),
+                    events.len() as libc::c_int,
+                    &none,
+                )
+            };
+            if got < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                // the queue cannot be asked: no watch is known to hold
+                self.mark(None, INSTANCE_UNREADABLE);
+                return;
+            }
+            for event in &events[..got as usize] {
+                let pid = event.ident as u32;
+                // an exec that was followed by the exit is still an exec first
+                if event.fflags & libc::NOTE_EXEC != 0 {
+                    self.mark(Some(pid), INSTANCE_EXECUTED);
+                }
+                if event.fflags & libc::NOTE_EXIT != 0 {
+                    self.mark(Some(pid), INSTANCE_EXITED);
+                    // the kernel dropped that registration with the process:
+                    // a later process of this pid is watched afresh
+                    self.watched.remove(&pid);
+                }
+            }
+            if (got as usize) < events.len() {
+                return;
+            }
+        }
+    }
+}
+
+impl InstanceWatch {
+    /// Watch `pid` from now on. `None` when the kernel refused — no such
+    /// process, or no queue: a caller then has no continuity to rely on.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn of(pid: u32) -> Option<std::sync::Arc<Self>> {
+        use crate::sync::LockRecover;
+        let mut instances = INSTANCES.lock_or_recover();
+        if instances.is_none() {
+            *instances = InstanceQueue::open();
+        }
+        let queue = instances.as_mut()?;
+        // what was reported before this moment belongs to earlier watches
+        queue.drain();
+        if !queue.change(pid, libc::EV_ADD | libc::EV_CLEAR) {
+            return None;
+        }
+        let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(INSTANCE_SAME));
+        queue.watched.entry(pid).or_default().push(state.clone());
+        Some(std::sync::Arc::new(Self {
+            pid,
+            state,
+            registered: true,
+        }))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) fn of(_pid: u32) -> Option<std::sync::Arc<Self>> {
+        None
+    }
+
+    /// Whether the watched process is still the instance it was, asked of
+    /// the kernel now. Once it is not, the answer never changes back.
+    pub(crate) fn continuity(&self) -> Continuity {
+        let word = |state: u8| match state {
+            INSTANCE_SAME => Continuity::Same,
+            INSTANCE_EXECUTED => Continuity::Executed,
+            INSTANCE_EXITED => Continuity::Exited,
+            _ => Continuity::Unreadable,
+        };
+        let known = self.state.load(std::sync::atomic::Ordering::Acquire);
+        if known != INSTANCE_SAME || !self.registered {
+            return word(known);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use crate::sync::LockRecover;
+            match INSTANCES.lock_or_recover().as_mut() {
+                Some(queue) => queue.drain(),
+                None => return Continuity::Unreadable,
+            }
+        }
+        word(self.state.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    /// A watch no kernel answers, and the switch that says what happened to
+    /// its process: a test describes an exec, an exit or a failed read
+    /// exactly, without starting a program.
+    #[cfg(test)]
+    pub(crate) fn stand_in() -> (std::sync::Arc<Self>, InstanceStandIn) {
+        let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(INSTANCE_SAME));
+        (
+            std::sync::Arc::new(Self {
+                pid: 0,
+                state: state.clone(),
+                registered: false,
+            }),
+            InstanceStandIn(state),
+        )
+    }
+}
+
+impl Drop for InstanceWatch {
+    fn drop(&mut self) {
+        if !self.registered {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use crate::sync::LockRecover;
+            let mut instances = INSTANCES.lock_or_recover();
+            let Some(queue) = instances.as_mut() else {
+                return;
+            };
+            let Some(states) = queue.watched.get_mut(&self.pid) else {
+                return;
+            };
+            states.retain(|state| !std::sync::Arc::ptr_eq(state, &self.state));
+            if states.is_empty() {
+                queue.watched.remove(&self.pid);
+                // nobody watches this process any more; a registration the
+                // kernel already dropped is simply not there
+                let _ = queue.change(self.pid, libc::EV_DELETE);
+            }
+        }
+    }
+}
+
+/// What a test says happened to the process of a stand-in watch.
+#[cfg(test)]
+pub(crate) struct InstanceStandIn(std::sync::Arc<std::sync::atomic::AtomicU8>);
+
+#[cfg(test)]
+impl InstanceStandIn {
+    fn put(&self, word: u8) {
+        self.0.store(word, std::sync::atomic::Ordering::Release);
+    }
+    pub(crate) fn executed(&self) {
+        self.put(INSTANCE_EXECUTED);
+    }
+    pub(crate) fn exited(&self) {
+        self.put(INSTANCE_EXITED);
+    }
+    pub(crate) fn unreadable(&self) {
+        self.put(INSTANCE_UNREADABLE);
+    }
 }
 
 /// `pid` and its ancestors, nearest first, from one process-table snapshot
@@ -2712,5 +3017,174 @@ mod tests {
                 assert_eq!(c.wday, 7, "both switch days are Sundays");
             }
         }
+    }
+
+    // ---------- execution instances: the kernel's own reports ---------------------
+
+    /// A real child that does one step each time it is sent a line and says
+    /// one word when the step is done.
+    struct Stepper {
+        child: std::process::Child,
+        steps: std::process::ChildStdin,
+        said: std::io::BufReader<std::process::ChildStdout>,
+    }
+
+    impl Stepper {
+        fn start(program: &std::path::Path, script: &str) -> Self {
+            let mut child = std::process::Command::new(program)
+                .args(["-c", script])
+                .env_clear()
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("a child");
+            let steps = child.stdin.take().unwrap();
+            let said = std::io::BufReader::new(child.stdout.take().unwrap());
+            Self { child, steps, said }
+        }
+
+        fn step(&mut self) {
+            use std::io::Write;
+            self.steps.write_all(b"\n").expect("the step is asked for");
+        }
+
+        fn word(&mut self) -> String {
+            use std::io::BufRead;
+            let mut line = String::new();
+            self.said.read_line(&mut line).expect("the child's word");
+            line.trim().to_string()
+        }
+
+        fn end(mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    fn until_instance(what: &str, done: impl Fn() -> bool) {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !done() {
+            assert!(
+                std::time::Instant::now() < end,
+                "timed out waiting for {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// The fact everything bound to "this program, as it runs now" rests on,
+    /// asked of the real kernel with real processes. An exec inside one pid
+    /// keeps the pid AND the birth instant and is reported; the program's
+    /// file being replaced on disk is not an exec and is not reported; the
+    /// exit is its own word.
+    #[test]
+    fn an_exec_inside_one_pid_ends_the_instance_and_a_replaced_file_does_not() {
+        let dir = fixture::directory("instance");
+        let (program, next) = (dir.join("peer"), dir.join("next"));
+        fixture::build(&program, "build-A", &[], fixture::IDENTIFIER);
+        fixture::build(&next, "build-B", &[], fixture::IDENTIFIER);
+        let (mut process, tag) = Process::start(&program, None).expect("the fixture runs");
+        assert_eq!(tag, "build-A");
+        let pid = process.pid();
+        let birth = process_start(pid).expect("a birth instant");
+        let watch = InstanceWatch::of(pid).expect("a watch of a live process");
+        assert_eq!(watch.continuity(), Continuity::Same);
+
+        // the file at the program's path is another file now
+        let staged = dir.join("staged");
+        fixture::build(&staged, "build-C", &[], fixture::IDENTIFIER);
+        std::fs::rename(&staged, &program).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            watch.continuity(),
+            Continuity::Same,
+            "a file replaced on disk changes nothing that runs"
+        );
+
+        // a second watch of the same process, taken before its exec
+        let second = InstanceWatch::of(pid).expect("a second watch");
+        // the exec: the same pid, the same birth instant, another image
+        assert_eq!(process.exec(&next).as_deref(), Some("build-B"));
+        assert_eq!(watch.continuity(), Continuity::Executed);
+        assert_eq!(second.continuity(), Continuity::Executed);
+        assert_eq!(
+            process_start(pid),
+            Some(birth),
+            "pid and birth instant survive an exec: they do not tell it"
+        );
+        // a watch taken now watches the program that runs now ...
+        let after = InstanceWatch::of(pid).expect("a watch of the new image");
+        assert_eq!(after.continuity(), Continuity::Same);
+        assert_eq!(watch.continuity(), Continuity::Executed, "and stays said");
+        // ... and a second exec, of the SAME file, is an exec again
+        assert_eq!(process.exec(&next).as_deref(), Some("build-B"));
+        assert_eq!(after.continuity(), Continuity::Executed);
+
+        // the exit is another word, and never replaces the first report
+        let last = InstanceWatch::of(pid).expect("a watch before the exit");
+        drop(process);
+        until_instance("the exit", || last.continuity() == Continuity::Exited);
+        assert_eq!(watch.continuity(), Continuity::Executed);
+        assert_eq!(after.continuity(), Continuity::Executed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fork is not an exec, and neither is an exec in a child: the
+    /// process that was watched is still the program it was.
+    #[test]
+    fn a_fork_and_a_child_s_exec_are_not_this_process_s_exec() {
+        let mut peer = Stepper::start(
+            std::path::Path::new("/bin/bash"),
+            "echo ready; read a; /usr/bin/true; (exec /usr/bin/true); echo forked; read b",
+        );
+        assert_eq!(peer.word(), "ready");
+        let watch = InstanceWatch::of(peer.child.id()).expect("a watch");
+        peer.step();
+        assert_eq!(peer.word(), "forked");
+        assert_eq!(watch.continuity(), Continuity::Same);
+        peer.step();
+        until_instance("the exit", || watch.continuity() == Continuity::Exited);
+        peer.end();
+    }
+
+    /// A watch is of ONE process: what happens to another is not its
+    /// report. No process, no watch — and no watch is never "unchanged".
+    #[test]
+    fn a_watch_is_of_one_process_and_none_without_one() {
+        let script = "echo ready; read a";
+        let mut one = Stepper::start(std::path::Path::new("/bin/bash"), script);
+        let mut two = Stepper::start(std::path::Path::new("/bin/bash"), script);
+        assert_eq!(
+            (one.word().as_str(), two.word().as_str()),
+            ("ready", "ready")
+        );
+        let first = InstanceWatch::of(one.child.id()).expect("a watch");
+        let second = InstanceWatch::of(two.child.id()).expect("a watch");
+        // the first ends by itself
+        one.step();
+        until_instance("the exit", || first.continuity() == Continuity::Exited);
+        assert_eq!(second.continuity(), Continuity::Same);
+        one.end();
+        // dropping every watch of a process and watching it again works
+        drop(second);
+        let again = InstanceWatch::of(two.child.id()).expect("watched again");
+        assert_eq!(again.continuity(), Continuity::Same);
+        two.end();
+        until_instance("the second exit", || {
+            again.continuity() == Continuity::Exited
+        });
+        // a pid no process can have
+        assert!(InstanceWatch::of(4_000_000).is_none());
+        // a test's stand-in says exactly what the test says
+        let (watch, switch) = InstanceWatch::stand_in();
+        assert_eq!(watch.continuity(), Continuity::Same);
+        switch.unreadable();
+        assert_eq!(watch.continuity(), Continuity::Unreadable);
+        let (watch, switch) = InstanceWatch::stand_in();
+        switch.exited();
+        assert_eq!(watch.continuity(), Continuity::Exited);
+        let (watch, switch) = InstanceWatch::stand_in();
+        switch.executed();
+        assert_eq!(watch.continuity(), Continuity::Executed);
     }
 }

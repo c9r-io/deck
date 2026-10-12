@@ -32,8 +32,10 @@
 //! - **What is not Deck's to repair is refused.** A file that is not JSON,
 //!   holds a repeated key anywhere, whose `extensions` is not an array of
 //!   strings, or whose layout the span tools cannot follow is left alone and
-//!   reported (`unreadable`). A missing agent directory means Pi never ran
-//!   here: nothing is created.
+//!   reported (`unreadable`). A missing agent directory is not created: a
+//!   switch is refused. That the directory is absent is all Deck knows — it
+//!   is no fact about whether Pi ever ran on this Mac, and is not worded as
+//!   one.
 //! - **The user's own disabling wins.** Pi reads `-<path>` as "never load
 //!   this". While the array holds such an entry for one of Deck's paths,
 //!   nothing Deck does enables an observer: a switch is refused, the boot
@@ -53,8 +55,13 @@
 //!   lost. That window is short and is not closed.
 //! - **Configured is not loaded.** A switch says what Pi will load when it
 //!   next starts or reloads. Whether a running Pi has an observer is known
-//!   only from a stream the transport verified; `needs-reload` says that one
-//!   is connected with other capabilities than the file names now.
+//!   only from a stream the transport verified. Turning a switch OFF acts on
+//!   a running Pi at once (its stream loses that capability and keeps the
+//!   other, `transport`); turning one ON does not: `needs-reload` says that
+//!   a running Pi does something else than the file names now and will go
+//!   on doing so until it loads its extensions again — its stream may do
+//!   other things than the entry says, or its observer was ended for its
+//!   capabilities and does not come back by itself.
 
 use std::path::{Path, PathBuf};
 

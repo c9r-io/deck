@@ -31,24 +31,38 @@
 //!   wrapper.
 //! - **Three identities that never stand in for one another.** The kernel
 //!   says which process connected (pid and birth instant, the pane's
-//!   foreground leader, its terminal). The backend names one accepted
-//!   connection (a lease, never reused). The observer counts its runs inside
-//!   that connection. Pi's native session id is a fourth thing, used only by
-//!   the lifecycle capability and never as an interaction id. What a line
-//!   SAYS about its pane, server, version or mode is a claim.
+//!   foreground leader, its terminal) and that this process has not
+//!   executed another image since (`procinfo::InstanceWatch`: an exec keeps
+//!   the pid and the birth instant, so those two alone would let another
+//!   program speak through an inherited connection). The backend names one
+//!   accepted connection (a lease, never reused). The observer counts its
+//!   runs inside that connection. Pi's native session id is a fourth thing,
+//!   used only by the lifecycle capability and never as an interaction id.
+//!   What a line SAYS about its pane, server, version or mode is a claim.
+//!   That a process is still the instance that connected says nothing about
+//!   WHOSE program it is: it is no product identity and admits no re-entry.
 //! - **The wire** (`parse_hello`, `parse_frame`): one JSON object per line,
 //!   at most `MAX_LINE` bytes, protocol `pi-observer`, version 1, source
-//!   `pi`. Exactly five shapes, told apart by their exact key sets:
+//!   `pi`. Exactly six shapes, told apart by their exact key sets:
 //!   `hello` (`socket`, `server_pid`, `pane`, `observerVersion`, `piVersion`,
 //!   `mode`, `capabilities{signal,lifecycle}`), `signal` (`seq`, `run`,
 //!   `state`), `reset` (`seq`, `reason`), `lifecycle` (`seq`, `event`,
-//!   `nativeSessionId`, and `reason` for `start` and `shutdown` only) and
-//!   `ping` (`seq`). An unknown or repeated key, a missing one, a number that
-//!   is negative, fractional or beyond 2^53-1, an unknown word, another
-//!   protocol version or mode is refused; nothing is repaired. There is no
-//!   field for a prompt, a title, a path, a model or free text. The replies
-//!   are `accepted`, `ack` with the sequence number that was committed, and
-//!   `refused` with a closed code: Deck has nothing else to say to Pi.
+//!   `nativeSessionId`, and `reason` for `start` and `shutdown` only),
+//!   `unavailable` (`seq`, `unavailable`: the one closed word
+//!   `unsupported-native-id`, sent INSTEAD of a lifecycle frame whose id
+//!   does not fit a line — the id itself is never cut short, hashed or left
+//!   out silently) and `ping` (`seq`). An unknown or repeated key, a missing
+//!   one, a number that is negative, fractional or beyond 2^53-1, an unknown
+//!   word, another protocol version or mode is refused; nothing is repaired.
+//!   There is no field for a prompt, a title, a path, a model or free text.
+//! - **What Deck says to Pi**, and nothing else: `accepted`; `ack` with the
+//!   sequence number that was committed; `revoked` with the sequence number
+//!   of a frame that was NOT committed because its capability was taken from
+//!   the stream in the meantime (the stream goes on); `capabilities` with
+//!   the two bits the stream may still use, sent whenever that became less
+//!   than the observer last knew; and `refused` with a closed code, which
+//!   ends the stream. The bits only ever narrow: nothing Deck sends gives a
+//!   running observer a capability back.
 //! - **Compatibility is not identity.** `piVersion` is Pi's own exported
 //!   version, used only to decide whether this build knows the meaning of
 //!   the events (`PiVersion::supported`: 1.1.x; 1.1.0 is what ran natively).
@@ -122,9 +136,19 @@ impl Capabilities {
         self.signal || self.lifecycle
     }
 
-    /// Every capability of `self` is one of `other`.
-    pub(crate) fn within(self, other: Self) -> bool {
-        (!self.signal || other.signal) && (!self.lifecycle || other.lifecycle)
+    pub(crate) fn has(self, capability: Capability) -> bool {
+        match capability {
+            Capability::Signal => self.signal,
+            Capability::Lifecycle => self.lifecycle,
+        }
+    }
+
+    /// What both sets hold.
+    pub(crate) fn and(self, other: Self) -> Self {
+        Self {
+            signal: self.signal && other.signal,
+            lifecycle: self.lifecycle && other.lifecycle,
+        }
     }
 
     pub(crate) fn with(mut self, capability: Capability, on: bool) -> Self {
@@ -291,6 +315,11 @@ pub(crate) enum Frame {
         event: SessionEvent,
         native: NativeId,
     },
+    /// The observer has a session id it cannot put on a line: it says so,
+    /// in one closed word, instead of sending a lifecycle frame.
+    Unavailable {
+        seq: u64,
+    },
     Ping {
         seq: u64,
     },
@@ -302,7 +331,17 @@ impl Frame {
             Frame::Signal { seq, .. }
             | Frame::Reset { seq, .. }
             | Frame::Lifecycle { seq, .. }
+            | Frame::Unavailable { seq }
             | Frame::Ping { seq } => *seq,
+        }
+    }
+
+    /// The capability a frame belongs to; a reset and a ping to none.
+    pub(crate) fn capability(&self) -> Option<Capability> {
+        match self {
+            Frame::Signal { .. } => Some(Capability::Signal),
+            Frame::Lifecycle { .. } | Frame::Unavailable { .. } => Some(Capability::Lifecycle),
+            Frame::Reset { .. } | Frame::Ping { .. } => None,
         }
     }
 }
@@ -325,6 +364,7 @@ struct Fields {
     reason: Option<String>,
     event: Option<String>,
     native_id: Option<String>,
+    unavailable: Option<String>,
 }
 
 fn put<T, E: serde::de::Error>(slot: &mut Option<T>, value: T) -> Result<(), E> {
@@ -403,6 +443,7 @@ impl<'de> Visitor<'de> for FieldsVisitor {
                 "reason" => put(&mut fields.reason, map.next_value()?)?,
                 "event" => put(&mut fields.event, map.next_value()?)?,
                 "nativeSessionId" => put(&mut fields.native_id, map.next_value()?)?,
+                "unavailable" => put(&mut fields.unavailable, map.next_value()?)?,
                 _ => return Err(A::Error::custom("unknown key")),
             }
         }
@@ -461,6 +502,7 @@ pub(crate) fn parse_hello(line: &str) -> Result<Hello, &'static str> {
         reason: None,
         event: None,
         native_id: None,
+        unavailable: None,
         ..
     } = fields(line)?
     else {
@@ -516,6 +558,7 @@ pub(crate) fn parse_frame(line: &str) -> Result<Frame, &'static str> {
         reason,
         event,
         native_id: id,
+        unavailable,
         socket: None,
         server_pid: None,
         pane: None,
@@ -529,6 +572,14 @@ pub(crate) fn parse_frame(line: &str) -> Result<Frame, &'static str> {
         return Err("bad-frame");
     };
     let seq = count(seq)?;
+    if let Some(word) = unavailable {
+        return match (word.as_str(), run, state, reason, event, id) {
+            ("unsupported-native-id", None, None, None, None, None) => {
+                Ok(Frame::Unavailable { seq })
+            }
+            _ => Err("bad-frame"),
+        };
+    }
     match (run, state, reason, event, id) {
         (None, None, None, None, None) => Ok(Frame::Ping { seq }),
         (Some(run), Some(state), None, None, None) => Ok(Frame::Signal {
@@ -593,6 +644,20 @@ pub(crate) fn ack_line(seq: u64) -> String {
     format!("{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"ack\":{seq}}}\n")
 }
 
+/// Frame `seq` belongs to a capability this stream no longer has: it was
+/// not committed, and the stream goes on.
+pub(crate) fn revoked_line(seq: u64) -> String {
+    format!("{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"revoked\":{seq}}}\n")
+}
+
+/// What the stream may still do. Only ever less than the observer knew.
+pub(crate) fn capabilities_line(now: Capabilities) -> String {
+    format!(
+        "{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"capabilities\":{{\"signal\":{},\"lifecycle\":{}}}}}\n",
+        now.signal, now.lifecycle
+    )
+}
+
 /// The stream is over, for a closed reason: one of `REFUSALS`, a plain word
 /// that needs no escaping.
 pub(crate) fn refused_line(code: &'static str) -> String {
@@ -615,6 +680,8 @@ pub(crate) const REFUSALS: &[&str] = &[
     "terminal-discontinuity",
     "no-generation",
     "generation-mismatch",
+    "no-instance",
+    "peer-executed",
     "pane-changed",
     "duplicate-observer",
     "capability-disabled",
@@ -642,6 +709,8 @@ pub(crate) fn drop_reason(code: &'static str) -> &'static str {
         "terminal-discontinuity" => "pi-terminal-discontinuity",
         "no-generation" => "pi-no-generation",
         "generation-mismatch" => "pi-generation-mismatch",
+        "no-instance" => "pi-no-instance",
+        "peer-executed" => "pi-peer-executed",
         "pane-changed" => "pi-pane-changed",
         "duplicate-observer" => "pi-duplicate-observer",
         "capability-disabled" => "pi-capability-disabled",

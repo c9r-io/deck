@@ -26,14 +26,17 @@
 // is never sent to automatically, whatever its coverage (the backend's plan
 // names that hold, `pi-input-unverified`).
 // `pi_session` is `observed` while a live observer reports which native
-// session its Pi is in. The id never reaches the webview. It adds one line
-// to the card's explanation and nothing else: it is no state, and it never
-// means that Deck can reopen that session.
+// session its Pi is in, and `unsupported` while that observer named a
+// session id this build does not keep — said, because a session that is not
+// observed must not look like one that is, or like none. The id never
+// reaches the webview. Either word adds one line to the card's explanation
+// and nothing else: it is no state, and it never means that Deck can reopen
+// that session.
 // Part of deck's no-build frontend: native ES modules, no bundler.
 
 export const PI_INSTALLATIONS = Object.freeze(['absent', 'current', 'needs-reload', 'conflict', 'unreadable', 'unsupported-location']);
 export const PI_COVERAGE = Object.freeze(['connected', 'unavailable', 'incompatible']);
-export const PI_SESSION = Object.freeze(['observed']);
+export const PI_SESSION = Object.freeze(['observed', 'unsupported']);
 
 const NOTE_KEYS = Object.freeze({
   current: 'settings.pi.note.current',
@@ -108,9 +111,19 @@ export function piStatusKey(snapshot) {
   return own(STATUS_KEYS, piCoverage(snapshot));
 }
 
+const SESSION_KEYS = Object.freeze({
+  observed: 'signal.pi.session',
+  unsupported: 'signal.pi.sessionUnsupported',
+});
+
 /** Whether a live observer reports this card's native Pi session. */
 export function piSessionObserved(snapshot) {
-  return !!snapshot?.alive && PI_SESSION.includes(snapshot.piSession);
+  return !!snapshot?.alive && snapshot.piSession === 'observed';
+}
+
+/** The line a live card says about its Pi's native session, or null. */
+export function piSessionKey(snapshot) {
+  return snapshot?.alive ? own(SESSION_KEYS, snapshot.piSession) : null;
 }
 
 /** The lines of the card's "Why?" dialog for a Pi, or null when the card has
@@ -120,6 +133,7 @@ export function piDetailKeys(snapshot) {
   const coverage = piCoverage(snapshot);
   if (!coverage) return null;
   const lines = [HINT_KEYS[coverage], 'signal.pi.hold'];
-  if (piSessionObserved(snapshot)) lines.push('signal.pi.session');
+  const session = piSessionKey(snapshot);
+  if (session) lines.push(session);
   return lines;
 }

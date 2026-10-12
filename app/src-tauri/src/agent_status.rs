@@ -214,15 +214,17 @@
 //! Re-entry (`agent_reentry`) needs a native session id, which the status
 //! helper's payload contract must never carry. So it does not extend that
 //! helper: a second bundled helper, `deck-lifecycle-helper`, speaks its own
-//! closed protocol family (`agent_reentry::lifecycle`), and `handle_stream`
-//! dispatches by family before the Signal parser sees a byte — a lifecycle
+//! closed protocol family (`agent_reentry::lifecycle`), and `dispatch`
+//! tells the families apart before the Signal parser sees a byte — a lifecycle
 //! line never reaches `parse_event`, `ingest`, the store, interactions,
 //! episodes, notifications or any Signal consumer, and a Signal line never
 //! reaches the lifecycle mailbox. An older app that does not know the
 //! family refuses the line as an unknown Signal state.
-//! The two families share the accept loop and nothing after it. A lifecycle
+//! The two families share the accept loop, the bounded read of a
+//! connection's first line and the dispatcher (the listener section below),
+//! and nothing after it. A lifecycle
 //! receipt is verified by the kernel's view of the client's running code,
-//! a call that cannot be interrupted; the accept loop is every agent's
+//! a call that cannot be interrupted; the dispatcher is every agent's
 //! Signal path, so it never makes that call: it names the lease (one short
 //! lock) and hands the connection to ONE receipt worker over a bounded
 //! queue without waiting (`Receipts`). A receipt that takes long, or never
@@ -245,21 +247,30 @@
 //! # A third family: a Pi observer's stream
 //! Pi runs no helper per event. Its observer is an extension inside the Pi
 //! process that holds ONE stream on this socket for as long as that Pi runs
-//! (`agent_pi`: the wire, the settings entry, the transport). `handle_stream`
+//! (`agent_pi`: the wire, the settings entry, the transport). `dispatch`
 //! asks for that family FIRST — the lifecycle family would take any line
 //! with a `protocol` key — and hands the connection to the bounded Pi
-//! transport without waiting; nothing of a Pi stream is read, verified or
-//! answered on the accept loop, and its lines reach neither the hook parser
-//! nor the lifecycle mailbox. The reverse door is closed too: a hook line
+//! transport without waiting; nothing of a Pi stream is verified or
+//! answered on the accept loop or the dispatcher, and its lines reach
+//! neither the hook parser nor the lifecycle mailbox. The reverse door is closed too: a hook line
 //! (wire v1 or v2) that names source `pi` is refused, `pi-observer-required`
 //! — Pi has no interaction id of its own, and a number an observer counts
 //! must never look like one.
-//! What a Pi stream proved is written here by three functions and nothing
+//! What a Pi stream proved is written here by four functions and nothing
 //! else. `pi_observed` records, for a pane's foreground generation, that a
 //! Pi observer was proven there and what may be said about its Signal
 //! (`PiCoverage`: `connected` is LIMITED coverage — work started, an
 //! interaction ended, never an input request; `unavailable` claims no
 //! cause; `incompatible` is a release this build does not know).
+//! A generation is a pid and a birth instant, and an exec inside that pid
+//! keeps both: what a hello proved is therefore kept with a watch of the
+//! process's EXECUTION INSTANCE (`procinfo::InstanceWatch`), and every
+//! reader — the poll's evidence, the scheduler's two questions, the restart
+//! review, the projection of a word a Pi stream wrote — asks that watch
+//! before it says anything. A process that executed another image is no
+//! recognized Pi and has no word, coverage or session, whatever the
+//! program before it proved; a kernel that cannot be asked leaves the
+//! recognition (it only ever adds a hold) and no word.
 //! With the separate lifecycle capability the same stream may also say
 //! which native session its runtime is in; that goes to `agent_reentry::
 //! lifecycle::observe_pi` and never into this store. All a card learns of
@@ -271,18 +282,23 @@
 //! viewed and projection rules as a hook word. `pi_lost` withdraws exactly
 //! the observation one lease wrote, with its episode (`notify::
 //! withdraw_episode`), and turns `connected` into `unavailable`; a lost
-//! observer is never a turn that ended. Coverage is explanatory: it
-//! creates no episode, joins no badge and lifts no hold. Recognition —
-//! a proven observer of the generation, or Pi's own name on the foreground
-//! (`pi_named`: tmux's name, or the name the leader gives itself, since an
-//! npm install is `node` to tmux) — only ever ADDS the scheduler's Pi hold
-//! (`Evidence::pi`, `pi_foreground`); a name proves nothing and admits
-//! nothing.
+//! observer is never a turn that ended. The same call serves a stream that
+//! only lost its Signal capability and goes on observing sessions
+//! (`agent_pi::transport`, "Capabilities narrow"). `pi_waits_for_reload`
+//! remembers, for a recognized Pi whose observer was ended for its
+//! capabilities, that this runtime does not connect again by itself: the
+//! Settings row then says `needs-reload` for as long as that Pi runs
+//! (`pi_reload_pending`), instead of calling the entry current. Coverage
+//! is explanatory: it creates no episode, joins no badge and lifts no
+//! hold. Recognition — a proven observer of the generation, or Pi's own
+//! name on the foreground (`pi_named`: tmux's name, or the name the leader
+//! gives itself, since an npm install is `node` to tmux) — only ever ADDS
+//! the scheduler's Pi hold (`Evidence::pi`, `pi_foreground`); a name proves
+//! nothing and admits nothing.
 
 use std::collections::HashMap;
 
 use crate::tmux::PaneRow;
-use std::io::Read;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -290,6 +306,7 @@ use std::time::Duration;
 
 use crate::applog;
 use crate::error::{DeckError, ErrorKind};
+use crate::procinfo::{Continuity, InstanceWatch};
 use crate::sync::LockRecover;
 
 /// Closed state vocabulary — the only words that ever reach the frontend.
@@ -399,7 +416,14 @@ struct Entry {
     /// The last accepted word came through this Pi observer lease
     /// (`agent_pi::transport`): the one observation that lease's loss
     /// withdraws. `None` for a word a hook reported.
-    pi: Option<u64>,
+    pi: Option<PiWriter>,
+}
+
+/// The Pi observer lease that wrote an observation, and the execution
+/// instance its process was when the lease was bound.
+struct PiWriter {
+    lease: u64,
+    instance: Arc<InstanceWatch>,
 }
 
 /// What makes two accepted words the same observation (FR-SI-05). A closed
@@ -427,7 +451,22 @@ impl Entry {
     /// is the one that reported this observation; `None` when it could not
     /// be read (no proof either way — each caller says what that means).
     fn reported_by(&self, generation: Option<ForegroundGeneration>) -> Option<bool> {
+        if !self.speaks() {
+            return Some(false);
+        }
         generation.map(|now| now == self.generation)
+    }
+
+    /// Whether the program that reported this still runs as it did. A hook
+    /// word is bound by its generation alone; a Pi observer's word also by
+    /// its process's execution instance, which an exec inside the same pid
+    /// ends while pid and birth instant stay (`procinfo::InstanceWatch`). A
+    /// kernel that cannot be asked proves nothing, so that word is not
+    /// spoken either.
+    fn speaks(&self) -> bool {
+        self.pi
+            .as_ref()
+            .is_none_or(|writer| writer.instance.continuity() == Continuity::Same)
     }
 }
 
@@ -653,9 +692,47 @@ struct GenerationEvidence {
     claude_interaction: bool,
     /// A Pi observer of this generation said hello and the kernel proved it
     /// to be the pane's foreground program (`agent_pi::transport`). `Some`
-    /// is what recognizes the generation as Pi; the value is what Deck may
-    /// say about its Signal coverage. Never interaction evidence.
-    pi: Option<PiCoverage>,
+    /// is what recognizes the generation as Pi; `PiSeen::now` is what Deck
+    /// may say about its Signal coverage. Never interaction evidence.
+    pi: Option<PiSeen>,
+}
+
+/// What was proven of one Pi observer, and of which execution instance.
+///
+/// A generation is a pid and a birth instant, and an exec keeps both. What
+/// a hello proved was proven of the PROGRAM that ran then, so it is kept
+/// with a watch of that process (`procinfo::InstanceWatch`) and read only
+/// through `now`: once the process executed another image or is gone,
+/// nothing here describes what runs in that pid.
+struct PiSeen {
+    coverage: PiCoverage,
+    instance: Arc<InstanceWatch>,
+    /// This runtime's observer was ended for a capability, and its code
+    /// does not connect again before Pi loads its extensions anew
+    /// (`agent_pi::config`, `needs-reload`).
+    reload: bool,
+}
+
+impl PiSeen {
+    /// The coverage that may be reported NOW; `None` when the process is no
+    /// longer the instance that was proven. A kernel that cannot be asked
+    /// leaves the recognition — it only ever adds a hold — and never a
+    /// `Connected`.
+    fn now(&self) -> Option<PiCoverage> {
+        match self.instance.continuity() {
+            Continuity::Same => Some(self.coverage),
+            Continuity::Unreadable => Some(match self.coverage {
+                PiCoverage::Connected => PiCoverage::Unavailable,
+                other => other,
+            }),
+            Continuity::Executed | Continuity::Exited => None,
+        }
+    }
+
+    /// Still the instance that was proven, by a kernel that answered.
+    fn continuous(&self) -> bool {
+        self.instance.continuity() == Continuity::Same
+    }
 }
 
 /// What Deck may say about a recognized Pi's Signal coverage. Presentation
@@ -794,7 +871,8 @@ pub(crate) fn generation_evidence(
                         && r.pane_pid == row.pane_pid
                         && now == Some(r.generation)
                 });
-                let observed = proven.and_then(|r| r.pi);
+                let seen = proven.and_then(|r| r.pi.as_ref());
+                let observed = seen.and_then(PiSeen::now);
                 let pi = observed.is_some() || pi_named(&row.command, now, &name_now);
                 let evidence = Evidence {
                     codex: proven
@@ -803,9 +881,16 @@ pub(crate) fn generation_evidence(
                     claude_interaction: proven.is_some_and(|r| r.claude_interaction),
                     pi,
                     pi_signal: pi.then_some(observed.unwrap_or(PiCoverage::Unavailable)),
-                    pi_session: now.and_then(|generation| {
-                        crate::agent_reentry::lifecycle::pi_session(&PaneKey::of(row), generation)
-                    }),
+                    // a session is said only by a stream whose process is
+                    // still the instance it was bound as
+                    pi_session: now
+                        .filter(|_| seen.is_some_and(PiSeen::continuous))
+                        .and_then(|generation| {
+                            crate::agent_reentry::lifecycle::pi_session(
+                                &PaneKey::of(row),
+                                generation,
+                            )
+                        }),
                 };
                 (session, evidence)
             })
@@ -1001,7 +1086,7 @@ pub(crate) fn projected(target: &PaneRow) -> Option<Observation> {
     with_agents(|agents| {
         agents
             .get(&PaneKey::of(target))
-            .filter(|entry| entry.of_pane(target))
+            .filter(|entry| entry.of_pane(target) && entry.speaks())
             .map(|entry| Observation {
                 state: entry.state,
                 episode: entry.episode,
@@ -1241,9 +1326,48 @@ pub(crate) fn ingest(
 
 /// A proven Pi observer said hello for this pane generation: the generation
 /// is recognized as Pi from here on, and `coverage` is what may be said
-/// about its Signal. Recognition is not interaction evidence.
-pub(crate) fn pi_observed(row: &PaneRow, generation: ForegroundGeneration, coverage: PiCoverage) {
-    with_generation(row, generation, |record| record.pi = Some(coverage));
+/// about its Signal — for as long as its process stays the execution
+/// instance `instance` watches. Recognition is not interaction evidence.
+pub(crate) fn pi_observed(
+    row: &PaneRow,
+    generation: ForegroundGeneration,
+    coverage: PiCoverage,
+    instance: &Arc<InstanceWatch>,
+) {
+    with_generation(row, generation, |record| {
+        record.pi = Some(PiSeen {
+            coverage,
+            instance: instance.clone(),
+            reload: false,
+        });
+    });
+}
+
+/// The observer of this pane generation was ended for a capability the
+/// settings do not enable, and its code does not connect again by itself:
+/// the settings entry may say what it likes, this Pi follows only when it
+/// loads its extensions again. Forgotten with the generation, the instance
+/// or the next proven hello.
+pub(crate) fn pi_waits_for_reload(key: &PaneKey, generation: ForegroundGeneration) {
+    with_evidence(|records| {
+        if let Some(seen) = records
+            .get_mut(key)
+            .filter(|record| record.generation == generation)
+            .and_then(|record| record.pi.as_mut())
+        {
+            seen.reload = true;
+        }
+    });
+}
+
+/// Whether a recognized Pi that still runs waits for such a reload.
+pub(crate) fn pi_reload_pending() -> bool {
+    with_evidence(|records| {
+        records
+            .values()
+            .filter_map(|record| record.pi.as_ref())
+            .any(|seen| seen.reload && seen.continuous())
+    })
 }
 
 /// Whether a Pi observer was verified for exactly this pane and foreground
@@ -1256,7 +1380,7 @@ pub(crate) fn pi_proven(row: &PaneRow, generation: ForegroundGeneration) -> bool
             r.session_id == row.session_id
                 && r.pane_pid == row.pane_pid
                 && r.generation == generation
-                && r.pi.is_some()
+                && r.pi.as_ref().and_then(PiSeen::now).is_some()
         })
     })
 }
@@ -1284,7 +1408,9 @@ pub(crate) fn pi_foreground(
     name_now(generation.pid).as_deref() == Some(crate::agent_pi::PROCESS)
         || with_evidence(|records| {
             records.get(&key).is_some_and(|r| {
-                r.pane_pid == pane_pid && r.generation == generation && r.pi.is_some()
+                r.pane_pid == pane_pid
+                    && r.generation == generation
+                    && r.pi.as_ref().and_then(PiSeen::now).is_some()
             })
         })
 }
@@ -1299,6 +1425,7 @@ pub(crate) fn pi_signal(
     row: &PaneRow,
     generation: ForegroundGeneration,
     lease: u64,
+    instance: &Arc<InstanceWatch>,
     run: u64,
     state: crate::agent_pi::RunState,
 ) {
@@ -1322,7 +1449,7 @@ pub(crate) fn pi_signal(
             last: None,
             viewed: false,
             codex: false,
-            pi: Some(lease),
+            pi: None,
         };
         let entry = agents.entry(key.clone()).or_insert_with(&fresh);
         if entry.session_id != row.session_id
@@ -1333,7 +1460,10 @@ pub(crate) fn pi_signal(
         }
         entry.state = state;
         entry.codex = false;
-        entry.pi = Some(lease);
+        entry.pi = Some(PiWriter {
+            lease,
+            instance: instance.clone(),
+        });
         let sameness = (InteractionKey::PiRun { lease, run }, state);
         if entry.last.as_ref() != Some(&sameness) {
             entry.last = Some(sameness);
@@ -1370,9 +1500,13 @@ pub(crate) fn pi_signal(
 /// not a turn that ended.
 pub(crate) fn pi_lost(key: &PaneKey, generation: ForegroundGeneration, lease: u64) {
     let withdrawn = with_agents(|agents| {
-        let owned = agents
-            .get(key)
-            .is_some_and(|entry| entry.pi == Some(lease) && entry.generation == generation);
+        let owned = agents.get(key).is_some_and(|entry| {
+            entry.generation == generation
+                && entry
+                    .pi
+                    .as_ref()
+                    .is_some_and(|writer| writer.lease == lease)
+        });
         owned
             .then(|| agents.remove(key))
             .flatten()
@@ -1380,8 +1514,10 @@ pub(crate) fn pi_lost(key: &PaneKey, generation: ForegroundGeneration, lease: u6
     });
     with_evidence(|records| {
         if let Some(record) = records.get_mut(key).filter(|r| r.generation == generation) {
-            if record.pi == Some(PiCoverage::Connected) {
-                record.pi = Some(PiCoverage::Unavailable);
+            if let Some(seen) = record.pi.as_mut() {
+                if seen.coverage == PiCoverage::Connected {
+                    seen.coverage = PiCoverage::Unavailable;
+                }
             }
         }
     });
@@ -1426,6 +1562,13 @@ pub(crate) fn reconcile(rows: &[PaneRow], table: &ProcessTable) {
                         && foreground_generation(table, row.pane_pid) == Some(record.generation)
                 })
         });
+        // what a hello proved of a program that has since executed another
+        // image, in the same pid, is proven of nothing that runs there
+        for record in records.values_mut() {
+            if record.pi.as_ref().is_some_and(|seen| seen.now().is_none()) {
+                record.pi = None;
+            }
+        }
     });
     renotify(rows);
 }
@@ -1449,29 +1592,210 @@ pub(crate) fn reset_for_tests() {
 
 // ---------- socket listener --------------------------------------------------
 
-const MAX_LINE: usize = 8 * 1024;
+// The accept loop never reads a byte. Every agent's Signal, every re-entry
+// receipt and every Pi stream arrives on this one socket, and a client that
+// connects and then says nothing, or a byte now and then, must not hold any
+// of them up. So a connection's FIRST LINE is read by a task of the
+// application's async runtime, under an absolute deadline counted from the
+// accept (`FIRST_LINE_BUDGET`: a byte that arrives resets nothing), by at
+// most `MAX_FIRST_LINES` connections at a time; one more is closed at once,
+// unread. A whole first line goes to ONE dispatcher thread over a queue of
+// `MAX_DISPATCH`; a full queue closes the connection too. No listener, no
+// thread per connection and no unbounded task or buffer is added, and a
+// refusal is never a promise that everything is accepted under any load.
+//
+// The dispatcher is what the accept loop used to be after its read, and
+// keeps its order for every family: it asks for the Pi family first, then
+// for the lifecycle family, then takes the line as a hook word; a hook
+// helper is read from the kernel while it is still connected and released
+// only then, before the pane listing; a lifecycle receipt keeps its
+// connection until the receipt worker settled it, with a deadline counted
+// from the instant its line was read. One arrival is handled after the
+// other, so an agent's words are committed in the order their lines
+// completed — the helper of one word is released before that agent can
+// start the next.
+//
+// What a client sent behind its first line is never read and thrown away:
+// it is the next bytes of a Pi stream (`agent_pi::transport`), and for the
+// two one-message families — a hook word, a lifecycle receipt — it means the
+// client did not speak that family, so the message is refused
+// (`trailing-bytes`).
 
-fn read_first_line(stream: &mut UnixStream) -> Option<String> {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 1024];
-    loop {
-        match stream.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => {
-                buf.extend_from_slice(&chunk[..n]);
-                if buf.len() > MAX_LINE {
-                    return None;
-                }
-                if buf.contains(&b'\n') {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
+/// The longest first line of a connection, in bytes.
+const MAX_LINE: usize = 8 * 1024;
+/// How long a connection has, from its accept, for its whole first line.
+const FIRST_LINE_BUDGET: Duration = Duration::from_secs(2);
+/// The most connections whose first line is being read at one time.
+pub(crate) const MAX_FIRST_LINES: usize = 32;
+/// The most connections that were read and wait for the dispatcher.
+const MAX_DISPATCH: usize = 32;
+
+/// A connection whose first line was read.
+struct Arrival {
+    stream: UnixStream,
+    line: String,
+    /// What was read behind the first line.
+    rest: Vec<u8>,
+    /// When the line was complete: a lifecycle receipt's budget starts here.
+    read_at: std::time::Instant,
+}
+
+/// One of the `MAX_FIRST_LINES` places for a connection that has not
+/// delivered its first line yet.
+struct FirstLine(Arc<std::sync::atomic::AtomicUsize>);
+
+impl FirstLine {
+    fn take(reading: &Arc<std::sync::atomic::AtomicUsize>) -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        reading
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |held| {
+                (held < MAX_FIRST_LINES).then_some(held + 1)
+            })
+            .ok()
+            .map(|_| Self(reading.clone()))
     }
-    let line = buf.split(|b| *b == b'\n').next().unwrap_or(&[]);
-    String::from_utf8(line.to_vec()).ok()
+}
+
+impl Drop for FirstLine {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Read one connection's first line, no later than `deadline`. `Err` is the
+/// closed reason it is dropped for, or `None` for a client that connected
+/// and left without a byte (ordinary, and not worth a line).
+async fn first_line(
+    stream: UnixStream,
+    deadline: std::time::Instant,
+) -> Result<Arrival, Option<&'static str>> {
+    let stream = tokio::net::UnixStream::from_std(stream).map_err(|_| None)?;
+    let mut buffer = Vec::new();
+    let read = async {
+        let mut chunk = [0u8; 1024];
+        loop {
+            if stream.readable().await.is_err() {
+                return Ok(false);
+            }
+            match stream.try_read(&mut chunk) {
+                // the client closed its side: what it sent is its line
+                Ok(0) => return Ok(false),
+                Ok(count) => {
+                    buffer.extend_from_slice(&chunk[..count]);
+                    if buffer.contains(&b'\n') {
+                        return Ok(true);
+                    }
+                    if buffer.len() > MAX_LINE {
+                        return Err(Some("first-line-oversize"));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => return Ok(false),
+            }
+        }
+    };
+    let ended = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), read)
+        .await
+        .map_err(|_| Some("first-line-late"))??;
+    let read_at = std::time::Instant::now();
+    let (line, rest) = match buffer.iter().position(|byte| *byte == b'\n') {
+        Some(end) if ended => (buffer[..end].to_vec(), buffer[end + 1..].to_vec()),
+        _ => (buffer, Vec::new()),
+    };
+    if line.is_empty() && rest.is_empty() {
+        return Err(None);
+    }
+    if line.len() > MAX_LINE {
+        return Err(Some("first-line-oversize"));
+    }
+    let line = String::from_utf8(line).map_err(|_| Some("bad-json"))?;
+    let stream = stream.into_std().map_err(|_| None)?;
+    Ok(Arrival {
+        stream,
+        line,
+        rest,
+        read_at,
+    })
+}
+
+/// The bounded way from the accept loop to the dispatcher.
+struct Intake {
+    arrivals: std::sync::mpsc::SyncSender<Arrival>,
+    reading: Arc<std::sync::atomic::AtomicUsize>,
+    drops: Arc<Mutex<Drops>>,
+}
+
+impl Intake {
+    /// Start the ONE dispatcher thread, which owns the receipt queue and the
+    /// Pi service for as long as arrivals can come. A thread that cannot be
+    /// started takes the queue's other end with it: every connection is
+    /// then refused at `take`.
+    fn start(
+        drops: Arc<Mutex<Drops>>,
+        receipts: Receipts,
+        pi: crate::agent_pi::transport::Service,
+    ) -> (Self, Option<std::thread::JoinHandle<()>>) {
+        let (arrivals, waiting) = std::sync::mpsc::sync_channel::<Arrival>(MAX_DISPATCH);
+        let dispatcher = std::thread::Builder::new()
+            .name("deck-status-dispatch".into())
+            .spawn({
+                let drops = drops.clone();
+                move || {
+                    for arrival in waiting {
+                        dispatch(arrival, &drops, &receipts, &pi);
+                    }
+                }
+            })
+            .ok();
+        let intake = Self {
+            arrivals,
+            reading: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            drops,
+        };
+        (intake, dispatcher)
+    }
+
+    /// An intake whose queue nobody empties: what a dispatcher that is busy
+    /// for long looks like to the accept loop.
+    #[cfg(test)]
+    fn undrained(drops: Arc<Mutex<Drops>>) -> (Self, std::sync::mpsc::Receiver<Arrival>) {
+        let (arrivals, waiting) = std::sync::mpsc::sync_channel::<Arrival>(MAX_DISPATCH);
+        let intake = Self {
+            arrivals,
+            reading: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            drops,
+        };
+        (intake, waiting)
+    }
+
+    /// Take one accepted connection. Never reads and never waits: a place
+    /// among the first lines is taken or the connection is closed, and the
+    /// rest happens in the connection's own task.
+    fn take(&self, stream: UnixStream) {
+        let deadline = std::time::Instant::now() + FIRST_LINE_BUDGET;
+        let Some(place) = FirstLine::take(&self.reading) else {
+            note(&self.drops, Some("listener-busy"));
+            return;
+        };
+        if stream.set_nonblocking(true).is_err() {
+            return;
+        }
+        let (arrivals, drops) = (self.arrivals.clone(), self.drops.clone());
+        tauri::async_runtime::spawn(async move {
+            let arrival = first_line(stream, deadline).await;
+            // the place is free before the dispatcher is asked
+            drop(place);
+            match arrival {
+                Ok(arrival) => {
+                    if arrivals.try_send(arrival).is_err() {
+                        note(&drops, Some("listener-busy"));
+                    }
+                }
+                Err(Some(reason)) => note(&drops, Some(reason)),
+                Err(None) => {}
+            }
+        });
+    }
 }
 
 /// Every reason `ingest` can refuse an event with — the closed vocabulary
@@ -1497,6 +1821,11 @@ const DROP_REASONS: &[&str] = &[
     "interaction-mismatch",
     "duplicate-interaction",
     "identity-downgrade",
+    // the listener's own bounds, before any family is known
+    "listener-busy",
+    "first-line-late",
+    "first-line-oversize",
+    "trailing-bytes",
     // the lifecycle family (`agent_reentry::lifecycle`), same closed log
     "lifecycle-oversize",
     "lifecycle-bad-json",
@@ -1527,6 +1856,8 @@ const DROP_REASONS: &[&str] = &[
     "pi-terminal-discontinuity",
     "pi-no-generation",
     "pi-generation-mismatch",
+    "pi-no-instance",
+    "pi-peer-executed",
     "pi-pane-changed",
     "pi-duplicate-observer",
     "pi-capability-disabled",
@@ -1694,25 +2025,39 @@ impl Receipts {
     }
 }
 
-fn handle_stream(
-    mut stream: UnixStream,
+/// One connection whose first line was read, on the dispatcher thread.
+fn dispatch(
+    arrival: Arrival,
     drops: &Mutex<Drops>,
     receipts: &Receipts,
     pi: &crate::agent_pi::transport::Service,
 ) {
-    let Some(line) = read_first_line(&mut stream) else {
-        return;
-    };
+    let Arrival {
+        stream,
+        line,
+        rest,
+        read_at,
+    } = arrival;
     if line.is_empty() {
+        // an empty first line is no message; bytes behind it are not a later one
+        if !rest.is_empty() {
+            note(drops, Some("trailing-bytes"));
+        }
         return;
     }
     // A third closed family on the same socket: a Pi observer's stream. It
     // stays open for as long as that Pi runs, so nothing of it is done on
     // this thread: the connection goes to the bounded Pi transport, which
-    // never blocks here, and this loop is back to accepting at once. The
+    // never blocks here, with the bytes that came behind its hello. The
     // line reaches neither the hook parser nor the lifecycle mailbox.
     if crate::agent_pi::is_family(&line) {
-        pi.hand(stream, line);
+        pi.hand(stream, line, rest);
+        return;
+    }
+    // The two other families are one message per connection: a client that
+    // sent more did not speak either of them.
+    if !rest.is_empty() {
+        note(drops, Some("trailing-bytes"));
         return;
     }
     // A separate closed protocol family on the same socket: a lifecycle
@@ -1724,7 +2069,7 @@ fn handle_stream(
     if crate::agent_reentry::lifecycle::is_family(&line) {
         // Without an operation every client's start and end lands here all
         // day long: that ordinary case is dropped without a line.
-        if let Some(reason) = lifecycle_receipt(&line, stream, receipts)
+        if let Some(reason) = lifecycle_receipt(&line, stream, receipts, read_at)
             .err()
             .filter(|reason| *reason != "lifecycle-no-lease")
         {
@@ -1747,6 +2092,25 @@ fn handle_stream(
     note(drops, result.err());
 }
 
+/// The production first-line read and the dispatcher's step, one after the
+/// other on the calling thread: a test hands ONE connection through both
+/// and keeps its own receipt queue and Pi service.
+#[cfg(test)]
+fn handle_stream(
+    stream: UnixStream,
+    drops: &Mutex<Drops>,
+    receipts: &Receipts,
+    pi: &crate::agent_pi::transport::Service,
+) {
+    stream.set_nonblocking(true).expect("a nonblocking stream");
+    let deadline = std::time::Instant::now() + FIRST_LINE_BUDGET;
+    match tauri::async_runtime::block_on(first_line(stream, deadline)) {
+        Ok(arrival) => dispatch(arrival, drops, receipts, pi),
+        Err(Some(reason)) => note(drops, Some(reason)),
+        Err(None) => {}
+    }
+}
+
 /// One lifecycle line, as far as the listener itself goes: nothing unless a
 /// lease is armed; with one, the closed parse, the lease the line names (one
 /// short mailbox lock) and the hand-over. No kernel read and no validation
@@ -1756,10 +2120,11 @@ fn lifecycle_receipt(
     line: &str,
     stream: UnixStream,
     receipts: &Receipts,
+    read_at: std::time::Instant,
 ) -> Result<(), &'static str> {
     use crate::agent_reentry::lifecycle;
     // the receipt's whole budget starts where its line was read
-    let deadline = std::time::Instant::now() + lifecycle::RECEIPT_BUDGET;
+    let deadline = read_at + lifecycle::RECEIPT_BUDGET;
     if !lifecycle::armed() {
         return Err("lifecycle-no-lease");
     }
@@ -1814,8 +2179,8 @@ impl DropCounts {
     }
 }
 
-/// The production accept-and-handle step on a test socket: the re-entry
-/// integration tests feed real helper connections through `handle_stream`.
+/// The production accept, first-line read and dispatch on a test socket:
+/// the re-entry integration tests feed real helper connections through it.
 #[cfg(test)]
 pub(crate) fn serve_for_tests(
     listener: UnixListener,
@@ -1838,17 +2203,20 @@ pub(crate) fn serve_counting_for_tests(
     let drops = counted.0.clone();
     let (receipts, worker) = Receipts::start(drops.clone());
     let pi = crate::agent_pi::transport::Service::start(pi_reporter(&drops));
+    let (intake, dispatcher) = Intake::start(drops, receipts, pi);
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
         match listener.accept() {
-            Ok((stream, _)) => {
-                stream.set_nonblocking(false).expect("blocking stream");
-                handle_stream(stream, &drops, &receipts, &pi);
-            }
+            Ok((stream, _)) => intake.take(stream),
             Err(_) => std::thread::sleep(Duration::from_millis(5)),
         }
     }
-    // an orderly end: the worker settles what it was handed, then stops
-    drop(receipts);
+    // An orderly end: a first line still being read arrives or runs out of
+    // its budget, the dispatcher handles what it was handed and lets go of
+    // the receipt queue, and the worker settles what waits there.
+    drop(intake);
+    if let Some(dispatcher) = dispatcher {
+        let _ = dispatcher.join();
+    }
     if let Some(worker) = worker {
         let _ = worker.join();
     }
@@ -1867,13 +2235,15 @@ pub(crate) fn spawn_listener() {
             }
         };
         let drops = Arc::new(Mutex::new(Drops::new(std::time::Instant::now())));
-        // one receipt worker beside this thread, for as long as it accepts
+        // one receipt worker, for as long as connections are accepted
         let (receipts, _) = Receipts::start(drops.clone());
-        // and the one bounded service that owns every Pi observer stream
+        // the one bounded service that owns every Pi observer stream
         let pi = crate::agent_pi::transport::Service::start(pi_reporter(&drops));
+        // and the one dispatcher both are asked from; this loop only accepts
+        let (intake, _) = Intake::start(drops, receipts, pi);
         for stream in listener.incoming() {
             match stream {
-                Ok(stream) => handle_stream(stream, &drops, &receipts, &pi),
+                Ok(stream) => intake.take(stream),
                 Err(_) => std::thread::sleep(Duration::from_secs(1)),
             }
         }
@@ -3383,6 +3753,16 @@ mod tests {
     }
 
     const HELPER: &str = "/Applications/deck.app/Contents/MacOS/deck-status-helper";
+
+    /// What a client wrote as its first line, read on the test's own thread
+    /// (the production read is `first_line`, on the runtime).
+    fn read_first_line(stream: &mut UnixStream) -> Option<String> {
+        use std::io::BufRead;
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut line = String::new();
+        std::io::BufReader::new(stream).read_line(&mut line).ok()?;
+        Some(line.trim_end_matches('\n').to_string())
+    }
 
     fn event_line(state: &str, pane: &str) -> String {
         format!(
@@ -5464,7 +5844,7 @@ mod tests {
             "a full queue refuses at once; the hand-over never waits"
         );
         assert_eq!(
-            refused.read(&mut [0u8; 1]).expect("the refused connection"),
+            std::io::Read::read(&mut refused, &mut [0u8; 1]).expect("the refused connection"),
             0,
             "a refused receipt's connection is closed"
         );
@@ -7356,7 +7736,13 @@ mod tests {
         );
         let (mut ours, theirs) = UnixStream::pair().expect("a socket pair");
         ours.write_all(format!("{hello}\n").as_bytes()).unwrap();
-        held.hand_as(theirs, hello.clone(), Some(std::process::id()));
+        held.hand_as(
+            theirs,
+            hello.clone(),
+            Vec::new(),
+            Some(std::process::id()),
+            Some(crate::procinfo::InstanceWatch::stand_in().0),
+        );
         inside
             .recv_timeout(Duration::from_secs(5))
             .expect("the Pi admission is inside its listing");
@@ -7462,12 +7848,349 @@ mod tests {
         crate::agent_reentry::lifecycle::end();
         // and the order is what the source says: Pi before the lifecycle family
         let source = include_str!("agent_status.rs");
-        let at = source.find("fn handle_stream(").unwrap();
+        let at = source.find("fn dispatch(").unwrap();
         let body = &source[at..at + source[at..].find("\n}\n").unwrap()];
         let pi_at = body.find("crate::agent_pi::is_family(&line)").unwrap();
         let lifecycle_at = body
             .find("crate::agent_reentry::lifecycle::is_family(&line)")
             .unwrap();
         assert!(pi_at < lifecycle_at);
+    }
+
+    // ---------- the listener's own bounds ----------------------------------------
+
+    /// A status socket of this test's own, served by the production accept
+    /// step, first-line read, dispatcher, receipt worker and Pi service.
+    struct Listening {
+        dir: PathBuf,
+        path: PathBuf,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+        counts: DropCounts,
+    }
+
+    impl Listening {
+        fn start(label: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("deck-l-{label}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("status.sock");
+            let listener = listen_at(&path).unwrap();
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let counts = DropCounts::new();
+            let thread = std::thread::spawn({
+                let (stop, counts) = (stop.clone(), counts.clone());
+                move || serve_counting_for_tests(listener, stop, &counts)
+            });
+            Self {
+                dir,
+                path,
+                stop,
+                thread: Some(thread),
+                counts,
+            }
+        }
+
+        fn connect(&self) -> UnixStream {
+            let stream = UnixStream::connect(&self.path).expect("a connection");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+        }
+
+        fn counted(&self, reason: &str) -> u32 {
+            self.counts.counts().get(reason).copied().unwrap_or(0)
+        }
+
+        fn until_counted(&self, reason: &str, count: u32) {
+            let end = std::time::Instant::now() + Duration::from_secs(10);
+            while self.counted(reason) < count {
+                assert!(
+                    std::time::Instant::now() < end,
+                    "timed out waiting for {count} x {reason}: {:?}",
+                    self.counts.counts()
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    impl Drop for Listening {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn pi_hello() -> String {
+        serde_json::json!({
+            "protocol": "pi-observer", "v": 1, "source": "pi", "socket": "deck",
+            "server_pid": 42, "pane": "%3", "observerVersion": 1, "piVersion": "1.1.0",
+            "mode": "tui", "capabilities": { "signal": true, "lifecycle": false }
+        })
+        .to_string()
+    }
+
+    /// The reply of the Pi transport to a hello, and how long it took.
+    fn pi_answer(listening: &Listening, behind: &str) -> (serde_json::Value, Duration) {
+        use std::io::{BufRead, Write};
+        let from = std::time::Instant::now();
+        let mut stream = listening.connect();
+        stream
+            .write_all(format!("{}\n{behind}", pi_hello()).as_bytes())
+            .unwrap();
+        let mut reply = String::new();
+        std::io::BufReader::new(&stream)
+            .read_line(&mut reply)
+            .unwrap();
+        (
+            serde_json::from_str(&reply).expect("a reply line"),
+            from.elapsed(),
+        )
+    }
+
+    /// One client that never finishes its first line — silent, half a line,
+    /// or a byte now and then — holds nobody up: while all three are
+    /// connected, a Pi stream, a hook word and a lifecycle receipt are each
+    /// dispatched at once. And each of the three runs out of ITS OWN time,
+    /// counted from its accept: a byte that arrives resets nothing, and a
+    /// line that never ended is not parsed.
+    #[test]
+    fn a_silent_or_dripping_client_holds_nobody_up_and_runs_out_of_its_own_time() {
+        use crate::agent_reentry::lifecycle;
+        use std::io::Write;
+        use std::time::Instant;
+        let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        crate::agent_reentry::reset_for_tests();
+        reset_for_tests();
+        // an operation in flight, so that a lifecycle line has a family to reach
+        lifecycle::begin("deck", Path::new("/nonexistent/deck-lifecycle-helper"));
+        lifecycle::arm(
+            0,
+            lifecycle::Lease::launch(
+                4242,
+                "%7",
+                LEASED_SHELL,
+                crate::procinfo::ExecutableRef::of_this_test(),
+                Instant::now() + Duration::from_secs(60),
+            ),
+        );
+        let listening = Listening::start("slow");
+        let opened = Instant::now();
+        let mut silent = listening.connect();
+        let mut partial = listening.connect();
+        partial
+            .write_all(br#"{"v":1,"source":"claude-code","sta"#)
+            .unwrap();
+        let drip = listening.connect();
+        let dripping = std::thread::spawn({
+            let mut drip = drip.try_clone().unwrap();
+            move || {
+                let mut sent = 0;
+                while drip.write_all(b" ").is_ok() {
+                    sent += 1;
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                sent
+            }
+        });
+        std::thread::sleep(Duration::from_millis(500));
+
+        // a Pi stream: taken and answered by the Pi transport
+        let (reply, took) = pi_answer(&listening, "");
+        assert_eq!(reply["protocol"], "pi-observer");
+        assert!(reply["refused"].is_string(), "{reply}");
+        assert!(took < Duration::from_millis(1000), "Pi waited {took:?}");
+        // a hook word, Claude's and Codex's: handled (here refused, for the
+        // server it names) while its helper is still connected
+        for source in ["claude-code", "codex"] {
+            let from = Instant::now();
+            let mut hook = listening.connect();
+            let line = event_line("working", "%3")
+                .replace("claude-code", source)
+                .replace(crate::tmux::socket(), "deck-other");
+            writeln!(hook, "{line}").unwrap();
+            hook.shutdown(std::net::Shutdown::Write).unwrap();
+            listening.until_counted("other-server", if source == "codex" { 2 } else { 1 });
+            assert!(
+                from.elapsed() < Duration::from_millis(1000),
+                "{source} waited {:?}",
+                from.elapsed()
+            );
+            // released by the dispatcher: its close is the helper's end
+            assert_eq!(std::io::Read::read(&mut hook, &mut [0u8; 1]).ok(), Some(0));
+        }
+        // a lifecycle receipt of the operation in flight: reaches its family
+        let from = Instant::now();
+        let mut receipt = listening.connect();
+        let line = lifecycle_line(
+            r#""event":"session-start","startSource":"resume""#,
+            "aaaaaaaa-0000-4000-8000-000000000001",
+        )
+        .replace("claude-code", "mystery-agent");
+        writeln!(receipt, "{line}").unwrap();
+        listening.until_counted("lifecycle-unknown-source", 1);
+        assert!(from.elapsed() < Duration::from_millis(1000));
+        lifecycle::end();
+        assert!(
+            opened.elapsed() < FIRST_LINE_BUDGET,
+            "all of that while the three were still inside their time: {:?}",
+            opened.elapsed()
+        );
+        assert_eq!(listening.counted("first-line-late"), 0);
+
+        // their own time, from their accept
+        listening.until_counted("first-line-late", 3);
+        let took = opened.elapsed();
+        assert!(
+            took >= FIRST_LINE_BUDGET - Duration::from_millis(50)
+                && took < FIRST_LINE_BUDGET + Duration::from_millis(1500),
+            "an absolute deadline: {took:?}"
+        );
+        for stream in [&mut silent, &mut partial] {
+            assert_eq!(
+                std::io::Read::read(stream, &mut [0u8; 1]).ok(),
+                Some(0),
+                "closed by the listener"
+            );
+        }
+        assert!(
+            dripping.join().unwrap() >= 5,
+            "its bytes kept arriving, and bought it no time"
+        );
+        assert_eq!(
+            listening.counted("bad-json"),
+            0,
+            "a line that never ended is not parsed"
+        );
+        crate::agent_reentry::reset_for_tests();
+    }
+
+    /// A first line is at most `MAX_LINE` bytes. What a client sent behind
+    /// its first line is never read and thrown away: for a Pi stream it is
+    /// the stream's next bytes, and for the two one-message families it
+    /// means the message is not one of theirs. A line may also end with the
+    /// client's end of its side, as before.
+    #[test]
+    fn a_first_line_is_bounded_and_what_follows_it_is_never_thrown_away() {
+        use std::io::Write;
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let listening = Listening::start("line");
+        let foreign = event_line("working", "%3").replace(crate::tmux::socket(), "deck-other");
+
+        // more than a line, without an end
+        let mut big = listening.connect();
+        let _ = big.write_all(&vec![b'x'; MAX_LINE + 2048]);
+        listening.until_counted("first-line-oversize", 1);
+        assert_eq!(std::io::Read::read(&mut big, &mut [0u8; 1]).ok(), Some(0));
+
+        // a hook word with more behind it is no hook word
+        let mut more = listening.connect();
+        more.write_all(format!("{foreign}\n{foreign}\n").as_bytes())
+            .unwrap();
+        listening.until_counted("trailing-bytes", 1);
+        assert_eq!(
+            listening.counted("other-server"),
+            0,
+            "neither line was taken"
+        );
+
+        // a line that ends with the client's end of its side
+        let mut ended = listening.connect();
+        ended.write_all(foreign.as_bytes()).unwrap();
+        ended.shutdown(std::net::Shutdown::Write).unwrap();
+        listening.until_counted("other-server", 1);
+
+        // a Pi hello with a frame behind it: the Pi transport's, with that
+        // frame — never "trailing bytes"
+        let frame = r#"{"protocol":"pi-observer","v":1,"source":"pi","seq":1}"#;
+        let (reply, _) = pi_answer(&listening, &format!("{frame}\n"));
+        assert_eq!(reply["protocol"], "pi-observer");
+        assert_eq!(listening.counted("trailing-bytes"), 1);
+
+        // an empty first line with bytes behind it: said, not swallowed
+        let mut blank = listening.connect();
+        blank
+            .write_all(format!("\n{foreign}\n").as_bytes())
+            .unwrap();
+        listening.until_counted("trailing-bytes", 2);
+        assert_eq!(
+            listening.counted("other-server"),
+            1,
+            "that line was not taken"
+        );
+
+        // a client that connects and leaves without a byte is nothing
+        drop(listening.connect());
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(listening.counted("bad-json"), 0);
+        assert_eq!(listening.counted("trailing-bytes"), 2);
+    }
+
+    /// At most `MAX_FIRST_LINES` connections are read for their first line
+    /// at one time. The next one is closed at once, unread — not queued, not
+    /// waited for — and when the time of the others is up their places are
+    /// free again.
+    #[test]
+    fn a_bounded_number_of_first_lines_is_read_and_the_next_connection_is_closed_at_once() {
+        use std::time::Instant;
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let listening = Listening::start("full");
+        let held: Vec<UnixStream> = (0..MAX_FIRST_LINES).map(|_| listening.connect()).collect();
+        let opened = Instant::now();
+        let mut extra = listening.connect();
+        let from = Instant::now();
+        assert_eq!(
+            std::io::Read::read(&mut extra, &mut [0u8; 1]).ok(),
+            Some(0),
+            "closed, unread"
+        );
+        assert!(from.elapsed() < Duration::from_millis(1000));
+        listening.until_counted("listener-busy", 1);
+        assert!(
+            opened.elapsed() < FIRST_LINE_BUDGET,
+            "inside the others' time"
+        );
+        // their time is up: every place is free again, and the next is served
+        listening.until_counted("first-line-late", MAX_FIRST_LINES as u32);
+        let (reply, took) = pi_answer(&listening, "");
+        assert_eq!(reply["protocol"], "pi-observer");
+        assert!(took < Duration::from_millis(1000));
+        drop(held);
+    }
+
+    /// The queue in front of the dispatcher holds `MAX_DISPATCH` arrivals. A
+    /// dispatcher that is busy for long makes the next connection a refusal,
+    /// never a longer queue.
+    #[test]
+    fn a_full_dispatch_queue_refuses_the_next_connection_instead_of_growing() {
+        use std::io::Write;
+        let drops = Arc::new(Mutex::new(Drops::new(std::time::Instant::now())));
+        let (intake, undrained) = Intake::undrained(drops.clone());
+        let mut clients = Vec::new();
+        for _ in 0..MAX_DISPATCH + 1 {
+            let (mut ours, theirs) = UnixStream::pair().expect("a socket pair");
+            ours.write_all(b"{}\n").unwrap();
+            intake.take(theirs);
+            clients.push(ours);
+            // one after the other, so that only the queue is ever full
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let end = std::time::Instant::now() + Duration::from_secs(10);
+        while drops.lock_or_recover().counts.get("listener-busy") != Some(&1) {
+            assert!(std::time::Instant::now() < end, "no refusal");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(undrained.try_iter().count(), MAX_DISPATCH);
     }
 }

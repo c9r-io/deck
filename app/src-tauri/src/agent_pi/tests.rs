@@ -178,6 +178,53 @@ fn the_version_is_compatibility_and_nothing_else() {
     }
 }
 
+/// The observer's closed word for a session id it cannot put on a line:
+/// its own shape, one word, nothing of the id, and never beside another
+/// shape's field.
+#[test]
+fn an_id_that_cannot_be_sent_is_one_closed_word_and_no_other_shape() {
+    assert_eq!(
+        parse_frame(&frame(
+            serde_json::json!({"seq": 4, "unavailable": "unsupported-native-id"})
+        )),
+        Ok(Frame::Unavailable { seq: 4 })
+    );
+    for body in [
+        serde_json::json!({"seq": 1, "unavailable": "too-long"}),
+        serde_json::json!({"seq": 1, "unavailable": ""}),
+        serde_json::json!({"seq": 1, "unavailable": true}),
+        serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id", "nativeSessionId": "a"}),
+        serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id", "event": "start"}),
+        serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id", "reason": "quit"}),
+        serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id", "run": 1, "state": "working"}),
+        serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id", "length": 600}),
+        serde_json::json!({"unavailable": "unsupported-native-id"}),
+    ] {
+        assert_eq!(
+            parse_frame(&frame(body.clone())),
+            Err("bad-frame"),
+            "{body}"
+        );
+    }
+    // which capability each shape belongs to: a reset and a heartbeat to none
+    use crate::agent_pi::Capability;
+    let of = |body: serde_json::Value| parse_frame(&frame(body)).unwrap().capability();
+    assert_eq!(
+        of(serde_json::json!({"seq": 1, "run": 1, "state": "working"})),
+        Some(Capability::Signal)
+    );
+    assert_eq!(
+        of(serde_json::json!({"seq": 1, "event": "snapshot", "nativeSessionId": "a"})),
+        Some(Capability::Lifecycle)
+    );
+    assert_eq!(
+        of(serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id"})),
+        Some(Capability::Lifecycle)
+    );
+    assert_eq!(of(serde_json::json!({"seq": 1, "reason": "quit"})), None);
+    assert_eq!(of(serde_json::json!({"seq": 1})), None);
+}
+
 #[test]
 fn frames_are_four_closed_shapes() {
     assert_eq!(
@@ -403,6 +450,41 @@ fn a_native_id_is_pi_s_own_shape_and_never_cut_short() {
     );
 }
 
+/// The two lines that take a capability from a running stream: what the
+/// stream may still do, and the answer to a frame that crossed the change.
+#[test]
+fn a_capability_is_taken_with_two_closed_lines() {
+    let only_signal = Capabilities {
+        signal: true,
+        lifecycle: false,
+    };
+    assert_eq!(
+        capabilities_line(only_signal),
+        "{\"protocol\":\"pi-observer\",\"v\":1,\"capabilities\":{\"signal\":true,\"lifecycle\":false}}\n"
+    );
+    assert_eq!(
+        revoked_line(9),
+        "{\"protocol\":\"pi-observer\",\"v\":1,\"revoked\":9}\n"
+    );
+    for (line, key) in [
+        (capabilities_line(Capabilities::NONE), "capabilities"),
+        (revoked_line(1), "revoked"),
+    ] {
+        let value: serde_json::Value = serde_json::from_str(&line).expect("JSON");
+        assert_eq!(value.as_object().unwrap().len(), 3, "{line}");
+        assert!(value.get(key).is_some() && line.ends_with('\n'));
+        // neither is an acknowledgement, an acceptance or a refusal
+        for other in ["ack", "accepted", "refused"] {
+            assert!(value.get(other).is_none(), "{line}");
+        }
+    }
+    // the two refusals of a peer that is not the instance that connected
+    for code in ["peer-executed", "no-instance"] {
+        assert!(REFUSALS.contains(&code));
+        assert_eq!(drop_reason(code), format!("pi-{code}"));
+    }
+}
+
 #[test]
 fn replies_are_three_closed_lines() {
     assert_eq!(
@@ -446,10 +528,17 @@ fn capability_sets_compose_without_a_third_value() {
         lifecycle: true,
     };
     let signal = Capabilities::NONE.with(Capability::Signal, true);
-    assert!(signal.within(both) && !both.within(signal));
     assert!(signal.signal && !signal.lifecycle);
-    assert!(!Capabilities::NONE.any() && Capabilities::NONE.within(signal));
+    assert!(signal.has(Capability::Signal) && !signal.has(Capability::Lifecycle));
+    assert!(!Capabilities::NONE.any());
     assert_eq!(both.with(Capability::Lifecycle, false), signal);
+    // what two sets share: never more than either
+    assert_eq!(both.and(signal), signal);
+    assert_eq!(signal.and(both), signal);
+    assert_eq!(
+        signal.and(Capabilities::NONE.with(Capability::Lifecycle, true)),
+        Capabilities::NONE
+    );
 }
 
 mod native {
@@ -458,11 +547,12 @@ mod native {
     //!
     //! # What runs here
     //! Production's own code, not a model of it:
-    //! - the status listener's accept step (`agent_status::
-    //!   serve_counting_for_tests` → `handle_stream`: the first line, the family
-    //!   dispatch, the Pi transport started the way production starts it, with
-    //!   `World::live` — the kernel, the bundled tmux beside this executable,
-    //!   Pi's settings file);
+    //! - the status listener (`agent_status::serve_counting_for_tests`: the
+    //!   accept step, the bounded read of every connection's first line, the
+    //!   one dispatcher and its family dispatch, the Pi transport started the
+    //!   way production starts it, with `World::live` — the kernel and its
+    //!   watch of every peer's execution instance, the bundled tmux beside
+    //!   this executable, Pi's settings file);
     //! - the Board poll's body (`commands::poll_from_listing`: reconcile, the
     //!   projection, the coverage word) on the one-shot form of the same
     //!   snapshot, at the webview's interval;
@@ -685,12 +775,15 @@ mod native {
             .into_iter()
             .map(|(lease, id, last)| json!({ "lease": lease, "id": id, "last": said(last) }))
             .collect();
+        // leases whose session is not observed for an id this build does not keep
+        let unsupported = crate::agent_reentry::lifecycle::pi_unsupported_for_tests();
         json!({
             "store": store,
             "streams": probe::streams(),
             "leases": leases,
             "ended": ended,
             "sessions": sessions,
+            "unsupported": unsupported,
             "pending": probe::pending(),
             "drops": drops.counts(),
             "announced": announced,

@@ -620,8 +620,8 @@ test('an id or a reason the observer cannot vouch for is not sent', async () => 
   await until('the stream to close', () => odd.server.connections[0].closed);
   assert.deepEqual(odd.server.frames().slice(1), [{ ...common, seq: 2, reason: 'fault' }]);
   await odd.server.close();
-  // no id, an id that is no string, one too long to send, a manager that throws: nothing is said of a session
-  for (const id of ['', null, 42, 'a'.repeat(513), new Error('no session')]) {
+  // no id, an id that is no string, a manager that throws: there is nothing to say of a session
+  for (const id of ['', null, 42, new Error('no session')]) {
     const { server, host, session } = await observing('lifecycle', id);
     await until('the hello', () => server.connections[0]?.lines.length === 1);
     await sleep(150);
@@ -638,4 +638,167 @@ test('an id or a reason the observer cannot vouch for is not sent', async () => 
   assert.ok(JSON.stringify(long.server.frames()[0]).length <= 1024);
   await long.host.emit('session_shutdown', { reason: 'quit' }, long.session.ctx);
   await long.server.close();
+});
+
+test('an id that does not fit a line is said in one closed word, once, and never passed over', async () => {
+  const { server, host, session } = await observing('both', 'a'.repeat(513));
+  await until('the word', () => server.frames().length === 1);
+  // in place of the start: no id, no part of it, no length, no reason
+  assert.deepEqual(server.frames()[0], { ...common, seq: 1, unavailable: 'unsupported-native-id' });
+  // run boundaries of the same stream are not affected
+  host.emit('agent_start', undefined, session.ctx);
+  await until('the run', () => server.frames().length === 2);
+  assert.deepEqual(server.frames()[1], { ...common, seq: 2, run: 1, state: 'working' });
+  // a later connection says it again: it is what the API says now
+  server.connections[0].socket.destroy();
+  await until('the second connection', () => server.connections.length === 2, 3000);
+  await until('its frames', () => server.frames(1).length === 2);
+  assert.deepEqual(server.frames(1), [
+    { ...common, seq: 1, unavailable: 'unsupported-native-id' },
+    { ...common, seq: 2, run: 1, state: 'working' },
+  ]);
+  // after that word this connection says nothing more of sessions: the id is not even read at the teardown
+  const asked = session.state.asked;
+  session.state.id = 'session-short';
+  await host.emit('session_shutdown', { reason: 'quit' }, session.ctx);
+  await until('the stream to close', () => server.connections[1].closed);
+  assert.equal(session.state.asked, asked, 'not asked again');
+  assert.deepEqual(server.frames(1).slice(2), [{ ...common, seq: 3, reason: 'quit' }]);
+  for (const connection of server.connections) {
+    assert.ok(connection.lines.every(line => !('nativeSessionId' in line) && !JSON.stringify(line).includes('aaaa')));
+  }
+  assert.deepEqual(host.touched, []);
+  await server.close();
+
+  // an id that turns too long only at the teardown: the word instead of the shutdown, then the reset
+  const late = await observing('lifecycle', 'session-one');
+  await until('the start', () => late.server.frames().length === 1);
+  late.session.state.id = 'b'.repeat(2000);
+  await late.host.emit('session_shutdown', { reason: 'new' }, late.session.ctx);
+  await until('the stream to close', () => late.server.connections[0].closed);
+  assert.deepEqual(late.server.frames().slice(1), [
+    { ...common, seq: 2, unavailable: 'unsupported-native-id' },
+    { ...common, seq: 3, reason: 'new' },
+  ]);
+  await late.server.close();
+});
+
+test('an id that is too long AND not a session id at all is an error, not that word', async () => {
+  const { server, host, session } = await observing('both', `../${'a'.repeat(600)}`);
+  await sleep(300);
+  // nothing connected and nothing was said: the observer of this runtime is over
+  assert.equal(server.connections.length, 0);
+  host.emit('agent_start', undefined, session.ctx);
+  await sleep(1300);
+  assert.equal(server.connections.length, 0, 'and it does not come back');
+  assert.doesNotThrow(() => host.emit('session_shutdown', { reason: 'quit' }, session.ctx));
+  await server.close();
+});
+
+test('a capability Deck takes away is neither read nor sent again, and the other goes on', async () => {
+  const { server, host, session } = await observing('both', 'session-one');
+  await until('the start', () => server.frames().length === 1);
+  host.emit('agent_start', undefined, session.ctx);
+  await until('the run', () => server.frames().length === 2);
+  const asked = session.state.asked;
+  // Deck: session observation is turned off; unasked, and in the middle of a run
+  server.say(server.connections[0], { capabilities: { signal: true, lifecycle: false } });
+  await sleep(60);
+  assert.equal(server.connections[0].closed, false, 'the connection stays');
+  // the run goes on to its end on the same connection, numbered without a gap
+  host.emit('agent_settled', undefined, session.ctx);
+  await until('the ending', () => server.frames().length === 3);
+  assert.deepEqual(server.frames()[2], { ...common, seq: 3, run: 1, state: 'turn-done' });
+  host.emit('agent_start', undefined, session.ctx);
+  await until('the next run', () => server.frames().length === 4);
+  assert.deepEqual(server.frames()[3], { ...common, seq: 4, run: 2, state: 'working' });
+  // a later connection of this runtime claims only what is left, and says nothing of a session
+  server.connections[0].socket.destroy();
+  await until('the second connection', () => server.connections.length === 2, 3000);
+  await until('its run', () => server.frames(1).length === 1);
+  assert.deepEqual(server.connections[1].lines[0].capabilities, { signal: true, lifecycle: false });
+  assert.deepEqual(server.frames(1), [{ ...common, seq: 1, run: 1, state: 'working' }]);
+  // the teardown does not ask for the id either
+  await host.emit('session_shutdown', { reason: 'quit' }, session.ctx);
+  await until('the stream to close', () => server.connections[1].closed);
+  assert.equal(session.state.asked, asked, 'the session manager is not asked again');
+  assert.deepEqual(server.frames(1).slice(1), [{ ...common, seq: 2, reason: 'quit' }]);
+  assert.equal(server.connections.length, 2);
+  await server.close();
+});
+
+test('losing work status leaves session observation, and losing both ends the observer', async () => {
+  const { server, host, session } = await observing('both', 'session-one');
+  await until('the start', () => server.frames().length === 1);
+  host.emit('agent_start', undefined, session.ctx);
+  await until('the run', () => server.frames().length === 2);
+  server.say(server.connections[0], { capabilities: { signal: false, lifecycle: true } });
+  await sleep(60);
+  // the run's ending is not sent, and no later run is
+  host.emit('agent_settled', undefined, session.ctx);
+  host.emit('agent_start', undefined, session.ctx);
+  await sleep(150);
+  assert.equal(server.frames().length, 2, 'no run boundary after the loss');
+  assert.equal(server.connections[0].closed, false);
+  // the heartbeat and the session's teardown are what is left
+  await host.emit('session_shutdown', { reason: 'fork' }, session.ctx);
+  await until('the stream to close', () => server.connections[0].closed);
+  assert.deepEqual(server.frames().slice(2), [
+    { ...common, seq: 3, event: 'shutdown', nativeSessionId: 'session-one', reason: 'fork' },
+    { ...common, seq: 4, reason: 'fork' },
+  ]);
+  await server.close();
+
+  // both are taken, one after the other: Deck ends the stream, and this runtime does not connect again
+  const last = await observing('both', 'session-one');
+  await until('the start', () => last.server.frames().length === 1);
+  last.server.say(last.server.connections[0], { capabilities: { signal: true, lifecycle: false } });
+  last.server.say(last.server.connections[0], { capabilities: { signal: false, lifecycle: false } });
+  last.server.say(last.server.connections[0], { refused: 'capability-disabled' });
+  await until('the stream to close', () => last.server.connections[0].closed);
+  last.host.emit('agent_start', undefined, last.session.ctx);
+  await sleep(1300);
+  assert.equal(last.server.connections.length, 1, 'no reconnect in this runtime');
+  await last.server.close();
+});
+
+test('nothing Deck says gives a capability back, and a frame answered `revoked` is answered', async () => {
+  const server = deck('revoked', 'manual');
+  await server.listening;
+  const host = pi();
+  entries.both.factory(host.api);
+  route(routed(server));
+  const session = sessionContext(host, 'session-one');
+  host.emit('session_start', { reason: 'startup' }, session.ctx);
+  await until('the hello', () => server.connections[0]?.lines.length === 1);
+  const connection = server.connections[0];
+  server.say(connection, { accepted: true });
+  await until('the start', () => connection.lines.length === 2);
+  // the start crossed a change of the settings: told first, then answered as not committed
+  server.say(connection, { capabilities: { signal: true, lifecycle: false } });
+  server.say(connection, { revoked: 1 });
+  host.emit('agent_start', undefined, session.ctx);
+  await until('the run, sent after the answer', () => connection.lines.length === 3);
+  assert.deepEqual(connection.lines[2], { ...common, seq: 2, run: 1, state: 'working' });
+  assert.equal(connection.closed, false, '`revoked` is an answer, not an error');
+  server.say(connection, { ack: 2 });
+  // a line that names MORE than the observer has changes nothing: only ever less
+  server.say(connection, { capabilities: { signal: true, lifecycle: true } });
+  await sleep(60);
+  const asked = session.state.asked;
+  await host.emit('session_shutdown', { reason: 'quit' }, session.ctx);
+  await until('the reset', () => connection.lines.length === 4);
+  assert.deepEqual(connection.lines[3], { ...common, seq: 3, reason: 'quit' });
+  assert.equal(session.state.asked, asked, 'session observation did not come back');
+  await server.close();
+
+  // a capabilities line that is not exactly two bits closes the connection like any unexpected line
+  for (const odd of [{ capabilities: { signal: true } }, { capabilities: 'all' }, { capabilities: { signal: true, lifecycle: false }, ack: 1 }]) {
+    const other = await started('odd-capabilities');
+    await until('the hello', () => other.server.connections[0]?.lines.length === 1);
+    other.server.say(other.server.connections[0], odd);
+    await until('the connection to close', () => other.server.connections[0].closed);
+    await other.host.emit('session_shutdown', { reason: 'quit' });
+    await other.server.close();
+  }
 });
