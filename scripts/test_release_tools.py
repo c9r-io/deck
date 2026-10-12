@@ -946,5 +946,69 @@ class EdrBinaryBundleTests(unittest.TestCase):
             self.assertIn(self.HELPER, spelling)
 
 
+class PiBuildIdentityTests(unittest.TestCase):
+    """`scripts/pi_build_identity.py`: what ties a piece of Pi evidence to the sources it ran from."""
+
+    def setUp(self) -> None:
+        self.identity = runpy.run_path(str(ROOT / "scripts" / "pi_build_identity.py"))
+        self.dir = tempfile.TemporaryDirectory()
+        self.repo = Path(self.dir.name).resolve()
+        self.git("init", "-q")
+        (self.repo / "app/src-tauri/src").mkdir(parents=True)
+        (self.repo / "app/src-tauri/src/main.rs").write_text("fn main() {}\n")
+        (self.repo / "notes.md").write_text("not a source\n")
+        self.git("add", "-A")
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "one")
+
+    def tearDown(self) -> None:
+        self.dir.cleanup()
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(["/usr/bin/git", "-C", str(self.repo), *args], capture_output=True, text=True, check=True).stdout
+
+    def read(self) -> dict:
+        return self.identity["identity"](self.repo)
+
+    def test_a_clean_checkout_names_its_commit_and_is_not_dirty(self) -> None:
+        clean = self.read()
+        self.assertEqual(clean["head"], self.git("rev-parse", "HEAD").strip())
+        self.assertEqual((clean["dirty"], clean["dirty_paths"], clean["source_files"]), (False, [], 1))
+        self.assertEqual(clean["diff_sha256"], "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+
+    def test_the_source_hash_follows_the_bytes_on_disk_and_only_the_sources(self) -> None:
+        clean = self.read()
+        # a file outside the source roots changes the dirt, not the source hash
+        (self.repo / "notes.md").write_text("changed\n")
+        other = self.read()
+        self.assertEqual(other["source_sha256"], clean["source_sha256"])
+        self.assertEqual((other["dirty"], other["dirty_paths"]), (True, ["notes.md"]))
+        self.assertNotEqual(other["diff_sha256"], clean["diff_sha256"])
+        # a changed source, and a new one git would track, change it
+        (self.repo / "app/src-tauri/src/main.rs").write_text("fn main() { }\n")
+        changed = self.read()
+        self.assertNotEqual(changed["source_sha256"], clean["source_sha256"])
+        (self.repo / "app/src-tauri/src/new.rs").write_text("// new\n")
+        added = self.read()
+        self.assertNotEqual(added["source_sha256"], changed["source_sha256"])
+        self.assertEqual(added["source_files"], 2)
+        self.assertIn("app/src-tauri/src/new.rs", added["dirty_paths"])
+        # committed, the same bytes are the same hash: a run before the commit and the commit agree
+        self.git("add", "-A")
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "two")
+        committed = self.read()
+        self.assertEqual(committed["source_sha256"], added["source_sha256"])
+        self.assertEqual((committed["dirty"], committed["dirty_paths"]), (False, []))
+        # an ignored file is nobody's source
+        (self.repo / ".gitignore").write_text("app/src-tauri/src/generated.rs\n")
+        (self.repo / "app/src-tauri/src/generated.rs").write_text("// built\n")
+        self.assertEqual(self.read()["source_sha256"], committed["source_sha256"])
+
+    def test_no_file_content_or_path_outside_the_repository_is_in_what_it_says(self) -> None:
+        (self.repo / "app/src-tauri/src/secret.rs").write_text("// TOP-SECRET-CONTENT\n")
+        said = json.dumps(self.read())
+        self.assertNotIn("TOP-SECRET-CONTENT", said)
+        self.assertNotIn(str(self.repo), said)
+
+
 if __name__ == "__main__":
     unittest.main()
