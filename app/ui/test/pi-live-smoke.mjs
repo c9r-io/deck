@@ -355,7 +355,7 @@ export async function runPiLiveSmoke() {
     await report('pi-review', modelSays && reviewShown && restartsAsked === 0
       && (await info(card.session)).pi_signal === 'connected', 1, restartsAsked);
 
-    // 13. session observation off again while this Pi runs: its stream loses that and nothing
+    // 13. session observation off again while this Pi runs: its lease loses that and nothing
     //     else. Without any reload, the next run is reported like the ones before it.
     await openAgents();
     const quiet2 = await setSwitch(false, 'set-pi-lifecycle');

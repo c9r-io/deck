@@ -2219,7 +2219,8 @@ fn a_message_is_answered_on_its_own_connection_after_the_commit() {
 fn deck_s_own_line_is_answered_with_its_place_and_reaches_no_worker() {
     let _guard = fresh();
     let shared = two_panes();
-    let (service, reasons) = service(&shared, QUICK);
+    // the attest that keeps the worker busy below is never late
+    let (service, reasons) = service(&shared, Bounds::LIVE);
     // the worker is inside a listing that does not return
     shared.gate.set(false);
     let nonce = hello_through(&service, 310);

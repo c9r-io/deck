@@ -1439,7 +1439,7 @@ pub(crate) fn pi_foreground(
 }
 
 /// One run boundary of a proven Pi observer. `lease` and `run` name the
-/// observer's connection and its run inside it (`InteractionKey::PiRun`);
+/// observer's lease and its run inside it (`InteractionKey::PiRun`);
 /// the word is one of the two the closed `RunState` has, so a Pi input
 /// request cannot be written here at all. Stored under its pane like any
 /// word; only the session's Signal target reaches the attention layer.

@@ -766,7 +766,7 @@ pub(crate) enum Receipt {
 // ---------- Pi: an observed native session, never a receipt ------------------------
 //
 // Pi has no receipt contract and takes no part in anything above. A verified
-// Pi observer stream that carries the lifecycle capability (`agent_pi`)
+// Pi observer whose lease has the lifecycle capability (`agent_pi`)
 // says which native session its runtime is in. That is an OBSERVATION with
 // the trust ceiling of Signal: the kernel proved which process said it, and
 // nothing proves whose code that process runs. So it is kept apart by

@@ -28,11 +28,12 @@
 //!   `Contents/Resources/pi`) is a closed list of text files; Pi's settings
 //!   get a path into the bundle, never a copy (`agent_pi/config.rs`). Inside
 //!   Pi it imports `node:fs` and `node:net` only, stats the status socket and
-//!   holds ONE stream to it, and of Pi's own API uses `pi.on` for four
-//!   notification events and nothing else: no process, no network client, no
-//!   file read or write, and none of Pi's tool, message, session, UI or
-//!   model entry points. The test-only Pi fixtures (`scripts/pi/`) use
-//!   exactly those entry points and are packaged by nothing;
+//!   makes short connections to it — one message each, one at a time — and
+//!   of Pi's own API uses `pi.on` for four notification events and nothing
+//!   else: no process, no network client, no file read or write, and none of
+//!   Pi's tool, message, session, UI or model entry points. The test-only Pi
+//!   fixtures (`scripts/pi/`) use exactly those entry points and are packaged
+//!   by nothing;
 //! - run any tmux but the signed sidecar next to its own executable
 //!   (`tmux::tmux_program()`), never Homebrew/MacPorts or a PATH lookup
 //!   (`/usr/local/bin` is user-writable on many Macs, and every deck session
@@ -46,7 +47,11 @@
 //!   bundled helper reports to (`agent_status.rs`), the control socket of
 //!   the opt-in MCP feature, bound only while it is enabled
 //!   (`mcp/control.rs`), and the control socket of each MCP pane runner
-//!   (`mcp-runner`).
+//!   (`mcp-runner`). Of one of them deck is also a client itself: the Pi
+//!   admission worker makes a short connection to the agent-status socket
+//!   it answers for, to learn that connection's place among the accepted
+//!   ones (`agent_pi::transport::mark_at`) — no process, file or listener
+//!   comes of it.
 //!
 //! - let a dependency spawn on its behalf: the updater plugin's macOS
 //!   installer runs an admin AppleScript (OSAKit) when the bundle is not
@@ -1358,7 +1363,7 @@ fn pi_observer_violations(name: &str, source: &str) -> Vec<String> {
         }
         // The native session id is the ONE value read through the session
         // manager, in one place, and the manager is reached only behind the
-        // lifecycle capability AS THE STREAM STILL HAS IT (`may.lifecycle`,
+        // lifecycle capability AS THE RUNTIME STILL HAS IT (`may.lifecycle`,
         // which Deck only ever takes away): at the session start and at the
         // shutdown. Losing the capability lets go of the manager at once.
         let reads = [
