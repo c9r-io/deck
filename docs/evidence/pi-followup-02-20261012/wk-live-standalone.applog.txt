@@ -1,0 +1,52 @@
+[notify] boot not-determined
+[notify] configured not-determined
+[ui] smoke-check pi-clean a=1 b=0
+[agent-pi] signal install ok
+[ui] smoke-check pi-enable a=1 b=0
+[ui] smoke-check pi-run-created a=1 b=0
+[notify] noticed delivery-wait s=sess-5e92b away=0
+[agent-pi] observer bound s=sess-5e92b signal=1 lifecycle=0
+[ui] smoke-check pi-connected a=1 b=0
+[ui] smoke-check pi-hold a=1 b=0
+[agent-status] pi working s=sess-5e92b target=1 v=pi e=1
+[agent-status] pi turn-done s=sess-5e92b target=1 v=pi e=2
+[notify] viewed s=sess-5e92b e=2
+[ui] smoke-check pi-turn-done a=1 b=0
+[agent-status] pi working s=sess-5e92b target=1 v=pi e=3
+[agent-status] pi turn-done s=sess-5e92b target=1 v=pi e=4
+[ui] smoke-check pi-attention a=1 b=0
+[agent-status] pi working s=sess-5e92b target=1 v=pi e=5
+[agent-status] pi turn-done s=sess-5e92b target=1 v=pi e=6
+[ui] smoke-check pi-send-now a=1 b=0
+[agent-pi] signal remove ok
+[agent-pi] observer ended s=sess-5e92b (capability-disabled)
+[agent-status] dropped (pi-capability-disabled)
+[ui] smoke-check pi-disabled a=1 b=0
+[agent-pi] signal install ok
+[agent-pi] observer bound s=sess-5e92b signal=1 lifecycle=0
+[ui] smoke-check pi-reload a=1 b=0
+[agent-pi] lifecycle install ok
+[agent-pi] observer ended s=sess-5e92b (reset-reload)
+[agent-pi] observer bound s=sess-5e92b signal=1 lifecycle=1
+[agent-pi] session start-reload s=sess-5e92b
+[ui] smoke-check pi-session a=1 b=0
+[ui] smoke-check pi-shown a=1 b=7
+[ui] smoke-check pi-review a=1 b=0
+[agent-pi] lifecycle remove ok
+[agent-pi] observer narrowed s=sess-5e92b signal=1 lifecycle=0
+[agent-status] pi working s=sess-5e92b target=1 v=pi e=7
+[agent-status] pi turn-done s=sess-5e92b target=1 v=pi e=8
+[notify] viewed s=sess-5e92b e=8
+[ui] smoke-check pi-narrowed a=1 b=0
+[agent-pi] lifecycle install ok
+[agent-pi] observer ended s=sess-5e92b (reset-quit)
+[agent-pi] observer bound s=sess-5e92b signal=1 lifecycle=1
+[agent-pi] session unsupported-native-id s=sess-5e92b
+[agent-status] pi working s=sess-5e92b target=1 v=pi e=9
+[agent-status] pi turn-done s=sess-5e92b target=1 v=pi e=10
+[notify] viewed s=sess-5e92b e=10
+[ui] smoke-check pi-unsupported a=1 b=13
+[agent-pi] lifecycle remove ok
+[agent-pi] observer narrowed s=sess-5e92b signal=1 lifecycle=0
+[ui] smoke-check done a=1 b=0
+[agent-pi] observer ended s=sess-5e92b (generation-mismatch)

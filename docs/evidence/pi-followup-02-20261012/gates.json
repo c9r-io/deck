@@ -1,0 +1,407 @@
+{
+ "what": "Every step of .github/workflows/gate.yml that this machine can run, in the workflow's order, on one commit.",
+ "commit": "8bb2b7f2f4057ea2137aec0414fbf6898be622b9",
+ "working_tree_entries_before": 0,
+ "working_tree_entries_after": 0,
+ "commit_after": "8bb2b7f2f4057ea2137aec0414fbf6898be622b9",
+ "started": "2026-10-12T10:02:35Z",
+ "finished": "2026-10-12T10:16:40Z",
+ "steps": [
+  {
+   "job": "static",
+   "step": "tmux-sha",
+   "command": "shasum -a 256 -c app/src-tauri/binaries/tmux-aarch64-apple-darwin.sha256",
+   "exit": 0
+  },
+  {
+   "job": "static",
+   "step": "bergamot-patches",
+   "command": "scripts/check-bergamot-patches",
+   "exit": 0
+  },
+  {
+   "job": "static",
+   "step": "fmt",
+   "command": "cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml",
+   "exit": 0
+  },
+  {
+   "job": "static",
+   "step": "js-syntax",
+   "command": "/bin/bash -c set -e; for f in app/ui/js/*.js app/ui/js/i18n/*.js app/ui/js/*.mjs app/ui/test/*.mjs; do node --check \"$f\"; done",
+   "exit": 0
+  },
+  {
+   "job": "static",
+   "step": "ui-tests",
+   "command": "scripts/ui-tests",
+   "exit": 0,
+   "tests": {
+    "tests": 781,
+    "pass": 781,
+    "fail": 0,
+    "skipped": 0
+   }
+  },
+  {
+   "job": "static",
+   "step": "speech-bridge",
+   "command": "scripts/test-speech-bridge",
+   "exit": 0
+  },
+  {
+   "job": "static",
+   "step": "notification-bridge",
+   "command": "scripts/test-notification-bridge",
+   "exit": 0,
+   "said": "notification bridge: helpers and no-bundle guard ok"
+  },
+  {
+   "job": "static",
+   "step": "smoke-guard",
+   "command": "scripts/test-smoke-guard",
+   "exit": 0,
+   "mutants_caught": 5
+  },
+  {
+   "job": "static",
+   "step": "check-mjs",
+   "command": "node app/ui/js/check.mjs",
+   "exit": 0
+  },
+  {
+   "job": "static",
+   "step": "python-unittest",
+   "command": "python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py scripts/test_signal_candidate.py scripts/test_codex_title_probe.py scripts/test_ce_verdict.py scripts/test_reminder_verify.py scripts/test_sidecar_provenance.py",
+   "exit": 0,
+   "tests": {
+    "ran": 181,
+    "ok": true
+   }
+  },
+  {
+   "job": "static",
+   "step": "check-workflows",
+   "command": "scripts/check-workflows",
+   "exit": 0
+  },
+  {
+   "job": "static",
+   "step": "audit-app",
+   "command": "cargo audit --file app/src-tauri/Cargo.lock",
+   "exit": 0,
+   "vulnerabilities_found": false,
+   "allowed_warnings": 8
+  },
+  {
+   "job": "static",
+   "step": "tunnel-fmt",
+   "command": "cargo fmt --check --manifest-path tools/deck-tunnelctl/Cargo.toml",
+   "exit": 0
+  },
+  {
+   "job": "static",
+   "step": "tunnel-clippy",
+   "command": "cargo clippy --all-targets --locked --manifest-path tools/deck-tunnelctl/Cargo.toml -- -D warnings",
+   "exit": 0
+  },
+  {
+   "job": "static",
+   "step": "tunnel-test",
+   "command": "cargo test --all-targets --locked --manifest-path tools/deck-tunnelctl/Cargo.toml",
+   "exit": 0,
+   "test_binaries": [
+    {
+     "binary": "deck_tunnelctl (src/lib.rs)",
+     "result": "ok",
+     "passed": 28,
+     "failed": 0,
+     "ignored": 3
+    },
+    {
+     "binary": "deck_tunnelctl (src/main.rs)",
+     "result": "ok",
+     "passed": 0,
+     "failed": 0,
+     "ignored": 0
+    }
+   ],
+   "tests": {
+    "passed": 28,
+    "failed": 0,
+    "ignored": 3
+   }
+  },
+  {
+   "job": "static",
+   "step": "audit-tunnel",
+   "command": "cargo audit --file tools/deck-tunnelctl/Cargo.lock",
+   "exit": 0,
+   "vulnerabilities_found": false,
+   "allowed_warnings": 0
+  },
+  {
+   "job": "rust",
+   "step": "clippy",
+   "command": "cargo clippy --workspace --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings",
+   "exit": 0
+  },
+  {
+   "job": "rust",
+   "step": "ce-probe-env",
+   "command": "python3 scripts/ce_parity.py --plan scripts/ce/plan-full-local-2.json --app-evidence <gate>/ce-app-probe.jsonl --deck-build 8bb2b7f2f4057ea2137aec0414fbf6898be622b9 --print-app-probe-env",
+   "exit": 0
+  },
+  {
+   "job": "rust",
+   "step": "llvm-cov",
+   "command": "(the five DECK_CE_* variables of ce-probe-env) cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1",
+   "exit": 0,
+   "test_binaries": [
+    {
+     "binary": "deck_app (src/main.rs)",
+     "result": "ok",
+     "passed": 1243,
+     "failed": 0,
+     "ignored": 13
+    },
+    {
+     "binary": "edr_quiet (tests/edr_quiet.rs)",
+     "result": "ok",
+     "passed": 20,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "external_admission (tests/external_admission.rs)",
+     "result": "ok",
+     "passed": 8,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "ipc_contract (tests/ipc_contract.rs)",
+     "result": "ok",
+     "passed": 6,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "log_privacy (tests/log_privacy.rs)",
+     "result": "ok",
+     "passed": 7,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "session_architecture (tests/session_architecture.rs)",
+     "result": "ok",
+     "passed": 13,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "shared_output (tests/shared_output.rs)",
+     "result": "ok",
+     "passed": 15,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "signal_census (tests/signal_census.rs)",
+     "result": "ok",
+     "passed": 9,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "tmux_contract (tests/tmux_contract.rs)",
+     "result": "ok",
+     "passed": 111,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "channel_fixture (examples/channel_fixture.rs)",
+     "result": "ok",
+     "passed": 0,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "fake_reentry_agent (examples/fake_reentry_agent.rs)",
+     "result": "ok",
+     "passed": 0,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "local_translation_quality (examples/local_translation_quality.rs)",
+     "result": "ok",
+     "passed": 0,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "poll_bench (examples/poll_bench.rs)",
+     "result": "ok",
+     "passed": 0,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "pty_smoke (examples/pty_smoke.rs)",
+     "result": "ok",
+     "passed": 0,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "signal_fixture (examples/signal_fixture.rs)",
+     "result": "ok",
+     "passed": 0,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "deck_lifecycle_helper (src/main.rs)",
+     "result": "ok",
+     "passed": 27,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "cli (tests/cli.rs)",
+     "result": "ok",
+     "passed": 8,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "deck_mcp (src/main.rs)",
+     "result": "ok",
+     "passed": 2,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "stdio (tests/stdio.rs)",
+     "result": "ok",
+     "passed": 5,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "deck_mcp_runner (src/main.rs)",
+     "result": "ok",
+     "passed": 19,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "runner (tests/runner.rs)",
+     "result": "ok",
+     "passed": 10,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "deck_status_helper (src/main.rs)",
+     "result": "ok",
+     "passed": 8,
+     "failed": 0,
+     "ignored": 0
+    },
+    {
+     "binary": "cli (tests/cli.rs)",
+     "result": "ok",
+     "passed": 6,
+     "failed": 0,
+     "ignored": 0
+    }
+   ],
+   "tests": {
+    "passed": 1517,
+    "failed": 0,
+    "ignored": 13
+   },
+   "coverage": {
+    "regions": "86.59%",
+    "functions": "83.72%",
+    "lines": "85.77%"
+   }
+  },
+  {
+   "job": "rust",
+   "step": "provenance-coverage",
+   "command": "python3 scripts/sidecar_provenance.py check --profile debug --coverage --binaries",
+   "exit": 0,
+   "said": "sidecar provenance ok: 4 files in <repo>/app/src-tauri/binaries are the debug/coverage build of this checkout"
+  },
+  {
+   "job": "rust",
+   "step": "ce-runner-build",
+   "command": "cargo build --locked -p deck-mcp-runner --manifest-path app/src-tauri/Cargo.toml",
+   "exit": 0
+  },
+  {
+   "job": "rust",
+   "step": "ce-parity",
+   "command": "python3 scripts/ce_parity.py --plan scripts/ce/plan-full-local-2.json --mode ci --app-evidence <gate>/ce-app-probe.jsonl --deck-build 8bb2b7f2f4057ea2137aec0414fbf6898be622b9 --out <gate>/ce-full-local.jsonl",
+   "exit": 0
+  },
+  {
+   "job": "rust",
+   "step": "ce-verdict",
+   "command": "python3 scripts/ce_verdict.py --plan scripts/ce/plan-full-local-2.json --evidence <gate>/ce-full-local.jsonl --evidence <gate>/ce-full-local.jsonl.app.jsonl --out <gate>/ce-full-local-verdict.json --gate full_local_parity:ci",
+   "exit": 0,
+   "said": "ce-verdict gate full_local_parity:ci: pass"
+  },
+  {
+   "job": "release",
+   "step": "release-build",
+   "command": "cargo build --release --locked --manifest-path app/src-tauri/Cargo.toml",
+   "exit": 0
+  },
+  {
+   "job": "release",
+   "step": "release-translation",
+   "command": "python3 scripts/check_local_translation_binary.py app/src-tauri/target/release/deck-app",
+   "exit": 0,
+   "said": "static Bergamot markers present; no dynamic translation dependency in app/src-tauri/target/release/deck-app"
+  },
+  {
+   "job": "release",
+   "step": "release-edr",
+   "command": "scripts/check-edr-binary app/src-tauri/target/release/deck-app",
+   "exit": 0,
+   "said": "EDR binary vocabulary clean: app/src-tauri/target/release/deck-app"
+  },
+  {
+   "job": "release",
+   "step": "package-compat",
+   "command": "scripts/package-compat-candidate",
+   "exit": 0
+  },
+  {
+   "job": "after",
+   "step": "debug-build",
+   "command": "cargo build --locked --manifest-path app/src-tauri/Cargo.toml",
+   "exit": 0
+  },
+  {
+   "job": "after",
+   "step": "test-build",
+   "command": "cargo test --locked --manifest-path app/src-tauri/Cargo.toml --bin deck-app --no-run",
+   "exit": 0
+  },
+  {
+   "job": "after",
+   "step": "provenance-debug",
+   "command": "python3 scripts/sidecar_provenance.py check --profile debug --binaries",
+   "exit": 0,
+   "said": "sidecar provenance ok: 4 files in <repo>/app/src-tauri/binaries are the debug build of this checkout"
+  }
+ ],
+ "all_exit_zero": true
+}

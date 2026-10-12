@@ -1,0 +1,34 @@
+   Compiling deck-app v0.8.0 (<repo>/app/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.34s
+     Running unittests src/main.rs (target/debug/deps/deck_app-5342d33110f51628)
+
+running 2 tests
+test agent_pi::transport::tests::r01_a_child_with_the_inherited_connection_writes_nothing_for_its_parent ... FAILED
+test agent_pi::transport::tests::r02_what_an_earlier_image_wrote_before_the_watch_is_not_the_new_image_s ... FAILED
+
+failures:
+
+---- agent_pi::transport::tests::r01_a_child_with_the_inherited_connection_writes_nothing_for_its_parent stdout ----
+
+thread 'agent_pi::transport::tests::r01_a_child_with_the_inherited_connection_writes_nothing_for_its_parent' (14336447) panicked at src/agent_pi/transport/tests.rs:2919:5:
+the child's frame was acknowledged: {"protocol":"pi-observer","v":1,"accepted":true}
+{"protocol":"pi-observer","v":1,"ack":1}
+{"protocol":"pi-observer","v":1,"ack":2}
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- agent_pi::transport::tests::r02_what_an_earlier_image_wrote_before_the_watch_is_not_the_new_image_s stdout ----
+
+thread 'agent_pi::transport::tests::r02_what_an_earlier_image_wrote_before_the_watch_is_not_the_new_image_s' (14336497) panicked at src/agent_pi/transport/tests.rs:2987:5:
+assertion `left == right` failed: a run the new image never reported
+  left: Some("working")
+ right: None
+
+
+failures:
+    agent_pi::transport::tests::r01_a_child_with_the_inherited_connection_writes_nothing_for_its_parent
+    agent_pi::transport::tests::r02_what_an_earlier_image_wrote_before_the_watch_is_not_the_new_image_s
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 1241 filtered out; finished in 1.62s
+
+error: test failed, to rerun pass `--bin deck-app`

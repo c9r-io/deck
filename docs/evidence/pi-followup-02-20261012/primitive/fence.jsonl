@@ -1,0 +1,2 @@
+{"mode": "fork", "asked": 20000, "client_exit": 0, "children_bytes": 20000, "parent_bytes": 20000, "unreported": 0, "fork_reports": 20000, "exec_reports": 0}
+{"mode": "spawn", "asked": 20000, "client_exit": 0, "children_bytes": 20000, "parent_bytes": 20000, "unreported": 0, "fork_reports": 20000, "exec_reports": 0}

@@ -1,0 +1,10 @@
+Apple XNU, as published at https://github.com/apple-oss-distributions/xnu (tag xnu-12377.1.9; commit f6217f891ac0bb64f3d375211650a4c1ff8ca1ea).
+The files of bsd/kern that the evidence quotes line numbers from, with the SHA-256 of each as it was read:
+
+d6bd6351f97713c24d05235179d67ec6947be0114dec1298f77e4deb457b618d  kern_event.c
+89531d33618b8361064236189212c3c96be1b32e098690b17802b6b15d932d1a  kern_exec.c
+73b578159deebc71434185d3638ab1468f995a19c882e1902d001994bb0391c3  kern_fork.c
+68d5a0dfb22ad62bca963b3bc3b1c08ed28549f3c7679789a549eae428fa60bc  uipc_socket.c
+f3b0439027c33981ed7acef7399ef17f8f3888ff3848d98b1923a7b9e9220520  uipc_socket2.c
+72090fdc19c2c96481457beb70579f4d5292b5b1139b0ef735d7b01508799ac0  uipc_syscalls.c
+c34d28100931762957c2cb2f3b7a2bef5fe078e4d9c1dca1c494345cbec0e12c  uipc_usrreq.c

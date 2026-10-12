@@ -1,0 +1,226 @@
+{
+ "root": "/private/tmp/deck-pi-live-vpay6rou",
+ "mode": "pi-live",
+ "checks": [
+  {
+   "check": "the carrier is this checkout's debug build: its executables byte for byte before the ad-hoc signing, which rewrote the main executable only, and the observer's files as the sources have them",
+   "ok": true,
+   "detail": {
+    "rewritten": [
+     "Contents/MacOS/deck"
+    ]
+   }
+  },
+  {
+   "check": "every checkpoint was reached",
+   "ok": true,
+   "detail": {
+    "reached": [
+     "done",
+     "pi-attention",
+     "pi-clean",
+     "pi-connected",
+     "pi-disabled",
+     "pi-enable",
+     "pi-hold",
+     "pi-narrowed",
+     "pi-reload",
+     "pi-review",
+     "pi-run-created",
+     "pi-send-now",
+     "pi-session",
+     "pi-shown",
+     "pi-turn-done",
+     "pi-unsupported"
+    ]
+   }
+  },
+  {
+   "check": "before the switch: Pi's settings are the user's, byte for byte",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "after the switch: the user's bytes plus Deck's one entry",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "after the switch was turned off: Deck's entry is gone and every other byte stayed",
+   "ok": true,
+   "detail": {
+    "pi_rewrote_the_file": true
+   }
+  },
+  {
+   "check": "turned on again: the same bytes as before it was turned off",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "held: Deck's automatic row never reached Pi (no text in the pane, no provider request, no run)",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "still not after two typed turns",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "Send now delivered the row's text once",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "session observation on: Deck's one entry is replaced where it stood by the one that carries both",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "session observation off again: the same bytes as before it was turned on",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "app.log holds the production's closed lines for each step",
+   "ok": true,
+   "detail": {
+    "missing": []
+   }
+  },
+  {
+   "check": "after session observation was taken from it, the SAME lease reported the next run",
+   "ok": true,
+   "detail": {
+    "lines_between": 4
+   }
+  },
+  {
+   "check": "and nothing of the prompt, the paths, Pi's answer or a native session id",
+   "ok": true,
+   "detail": {
+    "leaked": 0,
+    "sessions_seen": 2
+   }
+  },
+  {
+   "check": "the Pi with the 300-byte session id really had that id, by Pi's own log",
+   "ok": true,
+   "detail": {
+    "longest": 300
+   }
+  },
+  {
+   "check": "no native session id is in Deck's data directory",
+   "ok": true,
+   "detail": {
+    "files": 10
+   }
+  },
+  {
+   "check": "the window snapshots were written: PNG files, each of the whole window",
+   "ok": true,
+   "detail": {
+    "written": 13,
+    "sizes": [
+     "2560x1600"
+    ]
+   }
+  },
+  {
+   "check": "this machine's own Deck is as it was: the same processes, the same file names in its data directory",
+   "ok": true,
+   "detail": {
+    "processes": 1
+   }
+  },
+  {
+   "check": "scripts/smoke-verdict pi-live is green",
+   "ok": true,
+   "detail": {
+    "exit": 0
+   }
+  }
+ ],
+ "stopped": null,
+ "facts": {
+  "build": {
+   "head": "8bb2b7f2f4057ea2137aec0414fbf6898be622b9",
+   "dirty": false,
+   "dirty_paths": [],
+   "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "source_sha256": "9d6bd3ae2a846a987b588b9b7fd5fcafe246a69214699ad364fe430f23f88754",
+   "source_files": 324,
+   "built_after_every_source": true,
+   "command": [
+    "pi-live-verify.py",
+    "--runtime",
+    "npm",
+    "--host",
+    "macmini"
+   ]
+  },
+  "carrier": {
+   "files": {
+    "Contents/MacOS/deck": "94ca18a958b8ff5b9e8618aea25bae0a5217f62826ab22c86031da64a1000167",
+    "Contents/MacOS/deck-lifecycle-helper": "58ca0671e7152995a496ce067a18da7b026ef1d1abd895ca91e8d0c3f8faa32f",
+    "Contents/MacOS/deck-mcp": "81c2bad7fd7f6bb0bb8dbe212372606e7c603976001ed60bcd790eb615b35b98",
+    "Contents/MacOS/deck-mcp-runner": "37480590d4bcfa4e38e8aca368cbe6c5026ad645d4fc002b6ee307f82fd5bb8f",
+    "Contents/MacOS/deck-status-helper": "1facfbb230f083be9e5bf60843b4c9f7a91182736f702600cdf811097541d44b",
+    "Contents/MacOS/tmux": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0",
+    "Contents/Resources/pi/both.ts": "906761d9c5b69b25db8052bc4c963e6f9e683ec5bf910eae5614de0642255a61",
+    "Contents/Resources/pi/lifecycle.ts": "13e6940dfc940a361221c21c5b9a738dad2a97b22ece322c37325012fe03c45a",
+    "Contents/Resources/pi/observer.ts": "cf2fb8e8b6500f9ff35887bc01680b7e21418deb60f2ce72f99e6d1ee4e3be6f",
+    "Contents/Resources/pi/signal.ts": "8f86651da085a019e48173fb226b4e35743676bfb692c9e98843e3eb44b597f1"
+   },
+   "as_built_sha256": {
+    "Contents/MacOS/deck": "037311f83399e2b9f1204daa116583f428d367fea5d4074096ed3602114cac18",
+    "Contents/MacOS/deck-lifecycle-helper": "58ca0671e7152995a496ce067a18da7b026ef1d1abd895ca91e8d0c3f8faa32f",
+    "Contents/MacOS/deck-mcp": "81c2bad7fd7f6bb0bb8dbe212372606e7c603976001ed60bcd790eb615b35b98",
+    "Contents/MacOS/deck-mcp-runner": "37480590d4bcfa4e38e8aca368cbe6c5026ad645d4fc002b6ee307f82fd5bb8f",
+    "Contents/MacOS/deck-status-helper": "1facfbb230f083be9e5bf60843b4c9f7a91182736f702600cdf811097541d44b",
+    "Contents/MacOS/tmux": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0"
+   },
+   "executables_copied_byte_for_byte_before_signing": true,
+   "rewritten_by_the_signing": [
+    "Contents/MacOS/deck"
+   ],
+   "observer_files_are_the_sources": true,
+   "version": "0.8.0"
+  },
+  "runtime": {
+   "kind": "npm",
+   "package_version": "1.1.0",
+   "cli_sha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+   "node_sha256": "27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1"
+  },
+  "snapshots": {
+   "pilive-attention.png": "611851a84b24e33498d8ebe16211fcbfe36ebeae8e9063fda4063e3fc166a6e4",
+   "pilive-board-observed-en.png": "91334163176ce26fb076de82386ef911a13785235f209244fe95ed829f7309c2",
+   "pilive-board-observed-zh.png": "892b6da0a40a564d956f88a4c082916413eb918134819008d6750cf6909785a8",
+   "pilive-board-unsupported-en.png": "ee93c225c2f96a2073e573178d2c5fb28f78762487a99479bcd0172bdf5548cd",
+   "pilive-board-unsupported-zh.png": "d76205e1fb1fd27866e07654e35619fbde9b688b74deb0678386710036a1d715",
+   "pilive-review-en.png": "dafcd29904446167c611cbb143df748988826ebc9729eab65beadf437df32c11",
+   "pilive-review-zh.png": "3a51f39498e95cf1be3d5ab96d98e97c2cb24093771942f0c4c2a9375ed292c9",
+   "pilive-settings-en.png": "ae35f16ce9f96fc88fef343cdc2414e07452f20934536abe50bf35d3b8eb0c86",
+   "pilive-settings-zh.png": "b4c903a9258511d64867f315dfec81a6ddba7364c4477e0864d38a08a88cf149",
+   "pilive-why-observed-en.png": "065d1726e0e18bb87009b64ddb3986c8cca468ecd87400e4b69b61d495c65cb3",
+   "pilive-why-observed-zh.png": "12703e4fb6df885241f65d447cf051dd33f5e0d34cd2e15ae6c2967a4d62cd55",
+   "pilive-why-unsupported-en.png": "f63d1a639ed8748af1f30804d7e3993ab1cf781477a788f7f6b8ef62a7506277",
+   "pilive-why-unsupported-zh.png": "4ffa673cedd034e9f8d78863acde1eddfb3aaef2b1479981ed6bcaa17af2f8a5"
+  },
+  "snapshot_pixel_sizes": [
+   "2560x1600"
+  ]
+ },
+ "cleanup": {
+  "exit": 0,
+  "processes_from_root": 0,
+  "socket_left": false
+ },
+ "moved_to_trash_there": true,
+ "runtime": "npm",
+ "where": "another machine",
+ "failed": []
+}

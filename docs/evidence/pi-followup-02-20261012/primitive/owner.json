@@ -1,0 +1,138 @@
+{
+ "rows": [
+  {
+   "step": "P connect shared",
+   "answer": "ok",
+   "peer_pid_is": "parent",
+   "note": "the parent connected"
+  },
+  {
+   "step": "P write shared",
+   "answer": "ok",
+   "peer_pid_is": "parent",
+   "note": "the parent wrote"
+  },
+  {
+   "step": "P socket early",
+   "answer": "ok",
+   "peer_pid_is": null,
+   "note": "the parent makes a second socket and leaves it unconnected"
+  },
+  {
+   "step": "P fork",
+   "answer": "forked 54707",
+   "peer_pid_is": null,
+   "note": ""
+  },
+  {
+   "step": "C write shared",
+   "answer": "ok",
+   "peer_pid_is": "child",
+   "note": "the child wrote on the inherited connection"
+  },
+  {
+   "step": "P getsockopt shared",
+   "answer": "ok",
+   "peer_pid_is": "child",
+   "note": "parent: getsockopt(SO_ERROR)"
+  },
+  {
+   "step": "P fstat shared",
+   "answer": "ok",
+   "peer_pid_is": "child",
+   "note": "parent: fstat"
+  },
+  {
+   "step": "P dupclose shared",
+   "answer": "ok",
+   "peer_pid_is": "child",
+   "note": "parent: dup and close of the copy"
+  },
+  {
+   "step": "P recv shared",
+   "answer": "errno 35",
+   "peer_pid_is": "parent",
+   "note": "parent: a read attempt with nothing to read"
+  },
+  {
+   "step": "C write shared",
+   "answer": "ok",
+   "peer_pid_is": "child",
+   "note": ""
+  },
+  {
+   "step": "P poll shared",
+   "answer": "ok",
+   "peer_pid_is": "parent",
+   "note": "parent: poll, no wait"
+  },
+  {
+   "step": "C write shared",
+   "answer": "ok",
+   "peer_pid_is": "child",
+   "note": ""
+  },
+  {
+   "step": "P kq shared",
+   "answer": "ok",
+   "peer_pid_is": "parent",
+   "note": "parent: registers the descriptor in a kqueue"
+  },
+  {
+   "step": "C write shared",
+   "answer": "ok",
+   "peer_pid_is": "child",
+   "note": ""
+  },
+  {
+   "step": "P write shared",
+   "answer": "ok",
+   "peer_pid_is": "parent",
+   "note": "parent: its own byte after the child's (both are in the buffer)"
+  },
+  {
+   "step": "C connect early",
+   "answer": "ok",
+   "peer_pid_is": "child",
+   "note": "the parent's unconnected socket, connected by the child"
+  },
+  {
+   "step": "C write early",
+   "answer": "ok",
+   "peer_pid_is": "child",
+   "note": ""
+  },
+  {
+   "step": "P connect early",
+   "answer": "errno 56",
+   "peer_pid_is": "parent",
+   "note": "parent: connect on the socket the child already connected"
+  },
+  {
+   "step": "C connect childs",
+   "answer": "ok",
+   "peer_pid_is": "child",
+   "note": "made by the child after the fork"
+  },
+  {
+   "step": "C write childs",
+   "answer": "ok",
+   "peer_pid_is": "child",
+   "note": ""
+  },
+  {
+   "step": "P connect parents",
+   "answer": "ok",
+   "peer_pid_is": "parent",
+   "note": "made by the parent after the fork"
+  },
+  {
+   "step": "P write parents",
+   "answer": "ok",
+   "peer_pid_is": "parent",
+   "note": ""
+  }
+ ],
+ "bytes_waiting_on_the_shared_connection": 6,
+ "client_exit": 0
+}

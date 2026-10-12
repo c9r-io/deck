@@ -1,0 +1,54 @@
+{
+ "rows": [
+  {
+   "step": "registered; nothing happened",
+   "taken": []
+  },
+  {
+   "step": "fork, then registered again, then read",
+   "taken": [
+    [
+     "FORK"
+    ]
+   ]
+  },
+  {
+   "step": "read again",
+   "taken": []
+  },
+  {
+   "step": "registered again with nothing pending, then read",
+   "taken": []
+  },
+  {
+   "step": "exec, then registered again, then read",
+   "taken": [
+    [
+     "EXEC"
+    ]
+   ]
+  },
+  {
+   "step": "fork and exec, then registered again, then read",
+   "taken": [
+    [
+     "EXEC",
+     "FORK"
+    ]
+   ]
+  },
+  {
+   "step": "the process ended",
+   "taken": [
+    [
+     "EXIT"
+    ]
+   ]
+  },
+  {
+   "step": "registering a pid that is gone",
+   "result": "errno 3"
+  }
+ ],
+ "client_exit": 0
+}

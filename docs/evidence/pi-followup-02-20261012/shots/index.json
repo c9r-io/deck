@@ -1,0 +1,46 @@
+{
+ "pilay-board-en-100.jpg": {
+  "of": "pilay-board-en-100.png",
+  "original_sha256": "2d356f58627508ddb114880de774a33e4c3dfe8d9d9cb8a4bfd9bb727246763b"
+ },
+ "pilay-attention-zh-160.jpg": {
+  "of": "pilay-attention-zh-160.png",
+  "original_sha256": "399b081746067dcb41a4a4519e2e52ab8e0a6741ab4c604219780d15a59bcf1e"
+ },
+ "pilay-settings-reload-en-100.jpg": {
+  "of": "pilay-settings-reload-en-100.png",
+  "original_sha256": "58517e8395d6c9fea159258b9cea4e39b6053f4194248fc606c517657f83f8fc"
+ },
+ "pilay-review-mixed-zh-160.jpg": {
+  "of": "pilay-review-mixed-zh-160.png",
+  "original_sha256": "78794bfdbf4adeb6c741532a706bfbfb9ad9526cc9bfc69bf8adedc490bff009"
+ },
+ "npm-pilive-settings-en.jpg": {
+  "of": "pilive-settings-en.png",
+  "original_sha256": "ae35f16ce9f96fc88fef343cdc2414e07452f20934536abe50bf35d3b8eb0c86"
+ },
+ "npm-pilive-board-observed-en.jpg": {
+  "of": "pilive-board-observed-en.png",
+  "original_sha256": "91334163176ce26fb076de82386ef911a13785235f209244fe95ed829f7309c2"
+ },
+ "npm-pilive-attention.jpg": {
+  "of": "pilive-attention.png",
+  "original_sha256": "611851a84b24e33498d8ebe16211fcbfe36ebeae8e9063fda4063e3fc166a6e4"
+ },
+ "npm-pilive-review-en.jpg": {
+  "of": "pilive-review-en.png",
+  "original_sha256": "dafcd29904446167c611cbb143df748988826ebc9729eab65beadf437df32c11"
+ },
+ "standalone-pilive-board-observed-en.jpg": {
+  "of": "pilive-board-observed-en.png",
+  "original_sha256": "9d4a093276eed750e8d6dc2678f6c87c6de96369d21b3b7f5b518224e422f644"
+ },
+ "standalone-pilive-attention.jpg": {
+  "of": "pilive-attention.png",
+  "original_sha256": "611851a84b24e33498d8ebe16211fcbfe36ebeae8e9063fda4063e3fc166a6e4"
+ },
+ "standalone-pilive-review-zh.jpg": {
+  "of": "pilive-review-zh.png",
+  "original_sha256": "3a51f39498e95cf1be3d5ab96d98e97c2cb24093771942f0c4c2a9375ed292c9"
+ }
+}

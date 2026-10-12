@@ -1,0 +1,72 @@
+{
+ "part1": {
+  "accepted": [
+   "a0",
+   "a1",
+   "a2",
+   "a3",
+   "a4",
+   "a5",
+   "a6",
+   "a7",
+   "a8",
+   "a9",
+   "a10",
+   "a11",
+   "a12",
+   "a13",
+   "a14",
+   "a15",
+   "a16",
+   "a17",
+   "a18",
+   "a19",
+   "S",
+   "b0",
+   "b1",
+   "b2",
+   "b3",
+   "b4",
+   "b5",
+   "b6",
+   "b7",
+   "b8",
+   "b9",
+   "b10",
+   "b11",
+   "b12",
+   "b13",
+   "b14",
+   "b15",
+   "b16",
+   "b17",
+   "b18",
+   "b19"
+  ],
+  "as_connected": true,
+  "client_exits": [
+   0,
+   0
+  ]
+ },
+ "part2": {
+  "clients": 8,
+  "connects_asked": 40000,
+  "connections_accepted": 40000,
+  "sentinels_accepted": 2878,
+  "refused_and_tried_again": 0,
+  "client_exits": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "overlapping": 1199,
+  "behind_but_earlier": 0,
+  "ahead_but_later": 0
+ }
+}

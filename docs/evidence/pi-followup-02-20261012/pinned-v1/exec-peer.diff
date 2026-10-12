@@ -1,0 +1,33 @@
+diff --git a/scripts/pi/exec-peer.c b/scripts/pi/exec-peer.c
+index 4658327..4bce070 100644
+--- a/scripts/pi/exec-peer.c
++++ b/scripts/pi/exec-peer.c
+@@ -10,6 +10,12 @@
+ //
+ // A step is a line to send, whose one reply line is appended to the log, or:
+ //   @fork          start a child that executes another program, and wait for it
++//   @child         go on in a CHILD of this process: the child leaves the
++//                  terminal's session (setsid) and does the steps that are
++//                  left with the connection it inherited; this process, still
++//                  the pane's foreground program and the same image, waits
++//   @kid           the same, with the child left in this process's group
++//   @send:<line>   send that line and do not wait for an answer
+ //   @mark:<file>   create that file
+ //   @wait:<file>   wait until that file exists
+ //   @exec:<file>   go on as that program in this pid, with the connection
+@@ -65,6 +71,15 @@ int main(int argc, char **argv) {
+                 _exit(1);
+             }
+             waitpid(p, 0, 0);
++        } else if (!strcmp(s, "@child") || !strcmp(s, "@kid")) {
++            pid_t p = fork();
++            if (p) {
++                waitpid(p, 0, 0);
++                return 0;
++            }
++            if (!strcmp(s, "@child")) setsid();
++        } else if (!strncmp(s, "@send:", 6)) {
++            if (write(fd, s + 6, strlen(s + 6)) < 0 || write(fd, "\n", 1) < 0) return 5;
+         } else if (!strncmp(s, "@mark:", 6)) {
+             int m = open(s + 6, O_CREAT | O_WRONLY, 0600);
+             if (m >= 0) close(m);

@@ -1,0 +1,23 @@
+     Running unittests src/main.rs (app/src-tauri/target/debug/deps/deck_app-5342d33110f51628)
+
+running 1 test
+test agent_pi::transport::tests::r01_what_one_child_read_on_a_connection_its_parent_left_writes_nothing_on_another ... FAILED
+
+failures:
+
+---- agent_pi::transport::tests::r01_what_one_child_read_on_a_connection_its_parent_left_writes_nothing_on_another stdout ----
+
+thread 'agent_pi::transport::tests::r01_what_one_child_read_on_a_connection_its_parent_left_writes_nothing_on_another' (14702717) panicked at src/agent_pi/transport/tests.rs:4225:5:
+assertion `left == right` failed: what a child wrote was taken for its parent's
+  left: Written { store: 5, sessions: 1, episode: 4, announced: [("deck-a", 1)], ended: [], leases: [(1, 1, true, 2, true, false), (2, 1, false, 4, true, true)] }
+ right: Written { store: 4, sessions: 1, episode: 3, announced: [], ended: [], leases: [(1, 1, true, 2, true, false), (2, 1, true, 3, true, true)] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    agent_pi::transport::tests::r01_what_one_child_read_on_a_connection_its_parent_left_writes_nothing_on_another
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1250 filtered out; finished in 0.56s
+
+error: test failed, to rerun pass `--bin deck-app`
+exit=101

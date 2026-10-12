@@ -1,0 +1,23 @@
+[notify] boot not-determined
+[notify] configured not-determined
+[ui] smoke-check pilay-m-window a=1280 b=768
+[ui] smoke-check pilay-m-card a=0 b=0
+[ui] smoke-check pilay-m-card a=2 b=2
+[ui] smoke-check pilay-m-card a=2 b=4
+[ui] smoke-check pilay-m-card a=0 b=0
+[ui] smoke-check pilay-m-card a=0 b=0
+[ui] smoke-check pilay-m-card a=2 b=4
+[ui] smoke-check pilay-board a=6 b=6
+[ui] smoke-check pilay-attention a=6 b=6
+[ui] smoke-check pilay-why a=36 b=36
+[ui] smoke-check pilay-settings a=48 b=48
+[ui] smoke-check pilay-settings-details a=6 b=6
+[ui] smoke-check pilay-settings-refused a=6 b=6
+[ui] smoke-check pilay-review-mixed a=6 b=6
+[ui] smoke-check pilay-review-none a=6 b=6
+[ui] smoke-check pilay-review-failure a=12 b=12
+[ui] smoke-check pilay-review-result a=6 b=6
+[ui] smoke-check pilay-no-native a=300 b=0
+[ui] smoke-check pilay-ipc a=1 b=0
+[ui] smoke-check pilay-shots a=64 b=64
+[ui] smoke-check done a=1 b=0

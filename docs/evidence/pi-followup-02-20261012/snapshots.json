@@ -1,0 +1,368 @@
+{
+ "layout": {
+  "pilay-attention-en-100.png": {
+   "sha256": "627c21c8abe608a7a33071b5d17d090ac6205dff6096f142417fd6d9c8e87846",
+   "bytes": 347341
+  },
+  "pilay-attention-en-160.png": {
+   "sha256": "fcfed968c4dd920a67e0f18ca87e2851bdab11c689a1e64c1750f55ba5c2bc37",
+   "bytes": 381114
+  },
+  "pilay-attention-quiet-en-160.png": {
+   "sha256": "8af98f7ca21e31481fc9fc26ee1e98097ccbc1e32ee0de652a09a6a541240ac4",
+   "bytes": 423818
+  },
+  "pilay-attention-quiet-zh-160.png": {
+   "sha256": "c9843e70453cf21edde364f4f24612150b6c0aff5644ae2ea41b377487e5a85e",
+   "bytes": 467856
+  },
+  "pilay-attention-zh-100.png": {
+   "sha256": "b3a0c5cf992d9944f4eaf31ff40b4dc8ed08d7c2b2a35c3c649d6c8188195509",
+   "bytes": 351277
+  },
+  "pilay-attention-zh-160.png": {
+   "sha256": "399b081746067dcb41a4a4519e2e52ab8e0a6741ab4c604219780d15a59bcf1e",
+   "bytes": 423786
+  },
+  "pilay-board-en-100.png": {
+   "sha256": "2d356f58627508ddb114880de774a33e4c3dfe8d9d9cb8a4bfd9bb727246763b",
+   "bytes": 289440
+  },
+  "pilay-board-en-160.png": {
+   "sha256": "3c5390b993b98885c165a83021686c86795189c7c898ef59ac2d8403bf498392",
+   "bytes": 299337
+  },
+  "pilay-board-en-50.png": {
+   "sha256": "73da087170c2c5864d27a7e31e539b1a47db1b7a3ab5704914da3e6aec952ba4",
+   "bytes": 232132
+  },
+  "pilay-board-zh-100.png": {
+   "sha256": "3b6d39433d8fb8ea1ab2a260bc134846da12c705d88300643cf5b671bf282fc4",
+   "bytes": 298579
+  },
+  "pilay-board-zh-160.png": {
+   "sha256": "558a1b31f0b6add220974f47e27a3ede17081f5723e32785906163622d112374",
+   "bytes": 301346
+  },
+  "pilay-review-mixed-en-100.png": {
+   "sha256": "f32d3782a2afa6bee1678a5a5a9e07b834d77e7ff62c7272c67f37cf362ad9ef",
+   "bytes": 524807
+  },
+  "pilay-review-mixed-en-160.png": {
+   "sha256": "dac7897511bd97679fe973f4f67657cc073b10da40f5ffe23293b80ca8c152ea",
+   "bytes": 457381
+  },
+  "pilay-review-mixed-en-50.png": {
+   "sha256": "49cb4d09c483dac109b4c859ac6030f89cec90d4aeac2dd4a652dcc90dbb2a1f",
+   "bytes": 396175
+  },
+  "pilay-review-mixed-zh-100.png": {
+   "sha256": "c9da30fdc0f3a77e1d5f7288d4b07b13ff245f48bdc075c471732d5b1d5f0ce4",
+   "bytes": 565048
+  },
+  "pilay-review-mixed-zh-160.png": {
+   "sha256": "78794bfdbf4adeb6c741532a706bfbfb9ad9526cc9bfc69bf8adedc490bff009",
+   "bytes": 475711
+  },
+  "pilay-review-none-en-100.png": {
+   "sha256": "b96ecf570d3c649eeb896730eddde65b61d5fac2a1e1e77ebb78ddbde63b7111",
+   "bytes": 423487
+  },
+  "pilay-review-none-en-160.png": {
+   "sha256": "aa3b6986739826139695003a4e47fb0b12561c94c54f3c405e67413bf2681713",
+   "bytes": 428126
+  },
+  "pilay-review-none-zh-100.png": {
+   "sha256": "0b1dcea0869c1186e7d11f1f5941755269c21e0b09122e023d4e7f15b9385c8f",
+   "bytes": 447879
+  },
+  "pilay-review-none-zh-160.png": {
+   "sha256": "0dd5ac1175d20ecc29511f5bf16c299d858694bc42e274933cb539ebd9866634",
+   "bytes": 465511
+  },
+  "pilay-review-policy-en-160.png": {
+   "sha256": "fa0a6123b6460771cdbcae177cd77f7d482e3566ebfbd4ddb44bc189ea17c00a",
+   "bytes": 460317
+  },
+  "pilay-review-policy-zh-160.png": {
+   "sha256": "b54cb6244ce6c567d264b1a3f1738bab8348354a078f79ec7e4259cfdba0724b",
+   "bytes": 511281
+  },
+  "pilay-review-result-en-100.png": {
+   "sha256": "0708516bdc6b4ab36e1fa750e1c8bba65b946e2c9277d564b2831f0013d30a09",
+   "bytes": 372802
+  },
+  "pilay-review-result-en-160.png": {
+   "sha256": "8dd9157e0821676db23a606f5ae4aa683eb6aedde6f8ec41f9d77ada3cd88899",
+   "bytes": 424180
+  },
+  "pilay-review-result-zh-100.png": {
+   "sha256": "d1b5554a01c2a04cfa0d316d176f4516fff91c70ab42bc1ac3dd2d1eaf101144",
+   "bytes": 388596
+  },
+  "pilay-review-result-zh-160.png": {
+   "sha256": "a0c1aab7f7fb485bb07301b77441107f3a2a82a8b374380ec37b4fb2bc8a45a9",
+   "bytes": 439580
+  },
+  "pilay-review-setup-en-100.png": {
+   "sha256": "09d598cf5032135d03deee909c2a2b589602f600a502e0c393d582ebb6b719fa",
+   "bytes": 422466
+  },
+  "pilay-review-setup-en-160.png": {
+   "sha256": "2b03bcaf95dbe3bc6c67848f1dd4b822a3a067c81b7cf4614d1c2452d6d29e15",
+   "bytes": 447151
+  },
+  "pilay-review-setup-zh-100.png": {
+   "sha256": "d8ef93b5292b008f0d401118bba06cb38e45cab4e466fbaa9be9f3990881b507",
+   "bytes": 444069
+  },
+  "pilay-review-setup-zh-160.png": {
+   "sha256": "7390e96f3da7ea1f9c695b0fbef5a6ad58095393e8d7b672dcc66d5d7f2a435c",
+   "bytes": 475332
+  },
+  "pilay-review-unreadable-en-160.png": {
+   "sha256": "6500ad0f2ab9a51d81c5eb8ff299508b6b7ef4ac375e71414abe5e0ac49120fe",
+   "bytes": 371529
+  },
+  "pilay-review-unreadable-zh-160.png": {
+   "sha256": "3db547c146fd85d4b23d358179ed0d03a69df5347c000ec3d1ee8c49bfbfe51b",
+   "bytes": 396271
+  },
+  "pilay-settings-both-en-100.png": {
+   "sha256": "0d564a90f93cf9932418ed5a24130e3baba303becebb6bafa1f56df0faef3d72",
+   "bytes": 308403
+  },
+  "pilay-settings-both-en-160.png": {
+   "sha256": "1349b9d16368087e75fe92e1cf81cce2c5424c81d42b00bdf7c9a217686934ab",
+   "bytes": 323577
+  },
+  "pilay-settings-both-zh-100.png": {
+   "sha256": "4b6ce2280f13d272eb0cd025838608a3d947bd8606880380568e0d5fe8aa928c",
+   "bytes": 297948
+  },
+  "pilay-settings-both-zh-160.png": {
+   "sha256": "2d895c90c4602128a16cb04fdd9312af82b0e027dd0d06b0744833b9760cdf8a",
+   "bytes": 325187
+  },
+  "pilay-settings-conflict-en-100.png": {
+   "sha256": "dd06e43797491e13d4a7c34a10d4b5de5b549349c612ca0999c2a0295b302a81",
+   "bytes": 321082
+  },
+  "pilay-settings-conflict-en-160.png": {
+   "sha256": "f6b822b61b0f9e5055557276c76e44f06251ea5dc95b70591989c0899fd2c09b",
+   "bytes": 333398
+  },
+  "pilay-settings-conflict-zh-100.png": {
+   "sha256": "19de6ad024e599e7e13722f5847e1f078ab0a4b717607c8a251819fc2b67d55c",
+   "bytes": 314164
+  },
+  "pilay-settings-conflict-zh-160.png": {
+   "sha256": "9da100b54f3cdfbabed97a516959d20eda05b763da72d1885d3646e1ea6d0447",
+   "bytes": 342146
+  },
+  "pilay-settings-details-en-100.png": {
+   "sha256": "8eb09d76e34b3c762c70da7b65f3150f0793dd18ca4a4b17b6fb8b14698f12f6",
+   "bytes": 409259
+  },
+  "pilay-settings-details-en-160.png": {
+   "sha256": "1069c77f353c44dce328f8b1a2742589e37ae5aa7dc362b64ffd199a9b0e8d39",
+   "bytes": 440416
+  },
+  "pilay-settings-details-zh-100.png": {
+   "sha256": "9faa7097db413722df14cea7012c04a214f8f6a219d4481efada4dc58865eccd",
+   "bytes": 467806
+  },
+  "pilay-settings-details-zh-160.png": {
+   "sha256": "c7057dadf3c7e2456e681c1acce20ee7f94a6a366d8b574a0ccc43db675b7f35",
+   "bytes": 514452
+  },
+  "pilay-settings-location-en-100.png": {
+   "sha256": "a6617c3013da6562c19c61d31ecc8b93a37d607ca5d7531df2b01f90afcd1b29",
+   "bytes": 308497
+  },
+  "pilay-settings-location-en-160.png": {
+   "sha256": "293d23373dd058e2ec20ad89b34d2764a5d8a62cc59a165fe34fbe462512c70f",
+   "bytes": 317590
+  },
+  "pilay-settings-location-zh-100.png": {
+   "sha256": "aab0924a6dadd2982a92f48ac19440e604f19ed58df9aae234f02b670892537b",
+   "bytes": 300492
+  },
+  "pilay-settings-location-zh-160.png": {
+   "sha256": "5b44753b3bf46e1cf9feff3e42c538298c6eacdaef0e8adc247ad53fa42f2acf",
+   "bytes": 330164
+  },
+  "pilay-settings-refused-en-160.png": {
+   "sha256": "8ff0505bdaa1706690fca4f3eb7fbbfda3f5d9dfe08a5df58e13369c61c4ad61",
+   "bytes": 340117
+  },
+  "pilay-settings-refused-zh-160.png": {
+   "sha256": "b96ab3a140b1b37de0bf897ba922628df99007a535a3ba1955baf2da52c425b6",
+   "bytes": 351625
+  },
+  "pilay-settings-reload-en-100.png": {
+   "sha256": "58517e8395d6c9fea159258b9cea4e39b6053f4194248fc606c517657f83f8fc",
+   "bytes": 308414
+  },
+  "pilay-settings-reload-en-160.png": {
+   "sha256": "dc202ff58730f09d6b6b67fb762e3b7a3d4a96ed70fe3ba8d830ec6b992c55bc",
+   "bytes": 323237
+  },
+  "pilay-settings-reload-zh-100.png": {
+   "sha256": "6ef5c5f6e6b3cc79e7495088cbd48fd39c279f3a6835f0a8aa5946e5b86396b1",
+   "bytes": 301860
+  },
+  "pilay-settings-reload-zh-160.png": {
+   "sha256": "185d25290132b00aaee2ce624f8d9fec8dd67fbe40884d19bdc0b16d7b8e7803",
+   "bytes": 329041
+  },
+  "pilay-why-incompatible-en-100.png": {
+   "sha256": "07355d2625433f40628eb945074134ca0480f53deb4b28273c59d52523f133b1",
+   "bytes": 334390
+  },
+  "pilay-why-incompatible-zh-100.png": {
+   "sha256": "fe559dbb02384cd64244386635c2cdedd816715b3050590bde5717ad44454c0c",
+   "bytes": 351715
+  },
+  "pilay-why-unavailable-en-100.png": {
+   "sha256": "8336bc3ec3c56855bf3a8ab1dc5eadda736c429eab26ed54a3cd41abce84339c",
+   "bytes": 367469
+  },
+  "pilay-why-unavailable-en-160.png": {
+   "sha256": "b8a871e9360c2ab1248e7669c6938a5ae08a6247f1ea1e0a96de8453570cabb0",
+   "bytes": 407619
+  },
+  "pilay-why-unavailable-zh-100.png": {
+   "sha256": "37ff09647c4bd6cb7438b52440cd23daddf064a4cbbb9341ea704af89e075f62",
+   "bytes": 393443
+  },
+  "pilay-why-unavailable-zh-160.png": {
+   "sha256": "3df40dd9b08b21ffbbf15cd48d36e1f316ea44c25a9e812b1de8844a778af55c",
+   "bytes": 455396
+  },
+  "pilay-why-unsupported-en-100.png": {
+   "sha256": "1a8ee38831c18bd1331da6c5169f194d6bb6cc9bf9e203fdf20019098f51928c",
+   "bytes": 385879
+  },
+  "pilay-why-unsupported-en-160.png": {
+   "sha256": "aed75323baaaac742f7163a6e2419edc65a5ea7d7df80fb8031c7530bcc6bcea",
+   "bytes": 436206
+  },
+  "pilay-why-unsupported-zh-100.png": {
+   "sha256": "a55697bb3e616931cbac5f6e2cfb9e91706befcdca5b0fbb025b662ea8f092d5",
+   "bytes": 406315
+  },
+  "pilay-why-unsupported-zh-160.png": {
+   "sha256": "a1dbd23c660a807d83cafe1665cf735d112e27b1f7fdb1c18005fae80898014c",
+   "bytes": 478986
+  }
+ },
+ "live-npm": {
+  "pilive-attention.png": {
+   "sha256": "611851a84b24e33498d8ebe16211fcbfe36ebeae8e9063fda4063e3fc166a6e4",
+   "bytes": 230437
+  },
+  "pilive-board-observed-en.png": {
+   "sha256": "91334163176ce26fb076de82386ef911a13785235f209244fe95ed829f7309c2",
+   "bytes": 201474
+  },
+  "pilive-board-observed-zh.png": {
+   "sha256": "892b6da0a40a564d956f88a4c082916413eb918134819008d6750cf6909785a8",
+   "bytes": 205409
+  },
+  "pilive-board-unsupported-en.png": {
+   "sha256": "ee93c225c2f96a2073e573178d2c5fb28f78762487a99479bcd0172bdf5548cd",
+   "bytes": 196445
+  },
+  "pilive-board-unsupported-zh.png": {
+   "sha256": "d76205e1fb1fd27866e07654e35619fbde9b688b74deb0678386710036a1d715",
+   "bytes": 201548
+  },
+  "pilive-review-en.png": {
+   "sha256": "dafcd29904446167c611cbb143df748988826ebc9729eab65beadf437df32c11",
+   "bytes": 291308
+  },
+  "pilive-review-zh.png": {
+   "sha256": "3a51f39498e95cf1be3d5ab96d98e97c2cb24093771942f0c4c2a9375ed292c9",
+   "bytes": 312737
+  },
+  "pilive-settings-en.png": {
+   "sha256": "ae35f16ce9f96fc88fef343cdc2414e07452f20934536abe50bf35d3b8eb0c86",
+   "bytes": 284398
+  },
+  "pilive-settings-zh.png": {
+   "sha256": "b4c903a9258511d64867f315dfec81a6ddba7364c4477e0864d38a08a88cf149",
+   "bytes": 271783
+  },
+  "pilive-why-observed-en.png": {
+   "sha256": "065d1726e0e18bb87009b64ddb3986c8cca468ecd87400e4b69b61d495c65cb3",
+   "bytes": 300188
+  },
+  "pilive-why-observed-zh.png": {
+   "sha256": "12703e4fb6df885241f65d447cf051dd33f5e0d34cd2e15ae6c2967a4d62cd55",
+   "bytes": 316836
+  },
+  "pilive-why-unsupported-en.png": {
+   "sha256": "f63d1a639ed8748af1f30804d7e3993ab1cf781477a788f7f6b8ef62a7506277",
+   "bytes": 306768
+  },
+  "pilive-why-unsupported-zh.png": {
+   "sha256": "4ffa673cedd034e9f8d78863acde1eddfb3aaef2b1479981ed6bcaa17af2f8a5",
+   "bytes": 322551
+  }
+ },
+ "live-standalone": {
+  "pilive-attention.png": {
+   "sha256": "611851a84b24e33498d8ebe16211fcbfe36ebeae8e9063fda4063e3fc166a6e4",
+   "bytes": 230437
+  },
+  "pilive-board-observed-en.png": {
+   "sha256": "9d4a093276eed750e8d6dc2678f6c87c6de96369d21b3b7f5b518224e422f644",
+   "bytes": 201470
+  },
+  "pilive-board-observed-zh.png": {
+   "sha256": "892b6da0a40a564d956f88a4c082916413eb918134819008d6750cf6909785a8",
+   "bytes": 205409
+  },
+  "pilive-board-unsupported-en.png": {
+   "sha256": "ee93c225c2f96a2073e573178d2c5fb28f78762487a99479bcd0172bdf5548cd",
+   "bytes": 196445
+  },
+  "pilive-board-unsupported-zh.png": {
+   "sha256": "d76205e1fb1fd27866e07654e35619fbde9b688b74deb0678386710036a1d715",
+   "bytes": 201548
+  },
+  "pilive-review-en.png": {
+   "sha256": "dafcd29904446167c611cbb143df748988826ebc9729eab65beadf437df32c11",
+   "bytes": 291308
+  },
+  "pilive-review-zh.png": {
+   "sha256": "3a51f39498e95cf1be3d5ab96d98e97c2cb24093771942f0c4c2a9375ed292c9",
+   "bytes": 312737
+  },
+  "pilive-settings-en.png": {
+   "sha256": "4ebe21cfa2c7c1770b7601dffcfcba9dfaaf6d6bd3c8229c3f70c8993d07f7d3",
+   "bytes": 284804
+  },
+  "pilive-settings-zh.png": {
+   "sha256": "4f7fc9edd43bbd326f0a624d77d699e1bd3448a4041d97fc69f820f7f2d29c03",
+   "bytes": 272116
+  },
+  "pilive-why-observed-en.png": {
+   "sha256": "b82bbf5889fd35142d449cebae2108736adecf249a9b8d4ea1800155bd5ce52f",
+   "bytes": 300192
+  },
+  "pilive-why-observed-zh.png": {
+   "sha256": "12703e4fb6df885241f65d447cf051dd33f5e0d34cd2e15ae6c2967a4d62cd55",
+   "bytes": 316836
+  },
+  "pilive-why-unsupported-en.png": {
+   "sha256": "f63d1a639ed8748af1f30804d7e3993ab1cf781477a788f7f6b8ef62a7506277",
+   "bytes": 306768
+  },
+  "pilive-why-unsupported-zh.png": {
+   "sha256": "4ffa673cedd034e9f8d78863acde1eddfb3aaef2b1479981ed6bcaa17af2f8a5",
+   "bytes": 322551
+  }
+ }
+}

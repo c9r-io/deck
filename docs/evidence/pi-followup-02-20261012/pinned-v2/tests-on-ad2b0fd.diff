@@ -1,0 +1,346 @@
+diff --git a/app/src-tauri/src/agent_pi/transport/tests.rs b/app/src-tauri/src/agent_pi/transport/tests.rs
+index 742a994..7894e05 100644
+--- a/app/src-tauri/src/agent_pi/transport/tests.rs
++++ b/app/src-tauri/src/agent_pi/transport/tests.rs
+@@ -3175,7 +3175,8 @@ fn step_line(body: serde_json::Value) -> String {
+ /// asks that server's tmux and the real kernel.
+ struct Accepting {
+     stop: Arc<AtomicBool>,
+-    hold: Arc<AtomicBool>,
++    /// How many connections Deck may still accept; negative is any.
++    pass: Arc<std::sync::atomic::AtomicI64>,
+     thread: Option<std::thread::JoinHandle<()>>,
+     counts: agent_status::DropCounts,
+ }
+@@ -3199,14 +3200,14 @@ impl Accepting {
+             Bounds::LIVE,
+         );
+         let stop = Arc::new(AtomicBool::new(false));
+-        let hold = Arc::new(AtomicBool::new(false));
++        let pass = Arc::new(std::sync::atomic::AtomicI64::new(-1));
+         let thread = std::thread::spawn({
+-            let (stop, hold, counts) = (stop.clone(), hold.clone(), counts.clone());
+-            move || agent_status::serve_pi_for_tests(listener, stop, &hold, &counts, service)
++            let (stop, pass, counts) = (stop.clone(), pass.clone(), counts.clone());
++            move || agent_status::serve_pi_for_tests(listener, stop, &pass, &counts, service)
+         });
+         Self {
+             stop,
+-            hold,
++            pass,
+             thread: Some(thread),
+             counts,
+         }
+@@ -3221,7 +3222,13 @@ impl Accepting {
+     /// waits in the kernel, so a test decides what has happened by the time
+     /// Deck reads its first byte.
+     fn held(&self, held: bool) {
+-        self.hold.store(held, Ordering::Release);
++        self.pass.store(if held { 0 } else { -1 }, Ordering::Release);
++    }
++
++    /// While held: Deck accepts the connection that has waited longest,
++    /// and no other.
++    fn one(&self) {
++        self.pass.store(1, Ordering::Release);
+     }
+ }
+ 
+@@ -4106,6 +4113,212 @@ fn r01_no_child_of_the_observer_writes_anything_for_it() {
+     crate::agent_reentry::lifecycle::reset_pi_for_tests();
+ }
+ 
++/// Pane B's observer, bound and working for as long as a test of pane A runs.
++fn pane_b_works(server: &Server) {
++    let base = server.base.to_str().unwrap();
++    server.run(
++        "deck-b",
++        "b",
++        &format!(
++            "{base}/observer {base}/status.sock {base}/b.log @hello {attest} {working} \
++             @mark:{base}/b-ready @wait:{base}/b-end {reset}",
++            attest = server.attest("deck-b"),
++            working = step(serde_json::json!({"seq": 1, "run": 1, "state": "working"})),
++            reset = step(serde_json::json!({"seq": 2, "reason": "quit"})),
++        ),
++    );
++    server.wait("deck-b", "b-ready");
++    assert_eq!(server.state("deck-b"), Some("working"));
++}
++
++/// B went on through all of it, under the lease it had, and says goodbye.
++fn pane_b_ends(server: &Server) {
++    server.go("b-end");
++    until("B's lease to end", || probe::live() == 0);
++    // B writes down the answer after Deck has given it
++    until("B's goodbye to be answered", || {
++        server.log("b.log").contains("\"ack\":2")
++    });
++    assert_eq!(
++        probe::ended()
++            .iter()
++            .filter(|(session, _)| session == "deck-b")
++            .collect::<Vec<_>>(),
++        [&("deck-b".to_string(), "reset-quit")]
++    );
++}
++
++/// R01, the connection an observer left behind. An observer that stops
++/// waiting for an answer lets go of that connection and makes another. A
++/// child made while the first existed still holds it and reads there what
++/// Deck answers late — a nonce that was made after that child, and every
++/// other child up to then, had been counted. A second child, made while the
++/// second connection existed, holds that one, on which nothing has been
++/// said yet, and is told by the first what it read. It writes that the
++/// parent's run ended; the parent looks at its connection, as an event loop
++/// does; Deck reads. The kernel names the parent, and the child wrote what
++/// it had been told. Nothing is written for the parent, not for a moment,
++/// and the parent's own next frame is written as if nothing had happened.
++///
++/// Deck reads the first connection alone here, and the second only after
++/// everything above has happened: the order is the test's, not the
++/// scheduler's.
++#[test]
++fn r01_what_one_child_read_on_a_connection_its_parent_left_writes_nothing_on_another() {
++    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
++    let _guard = fresh();
++    crate::agent_reentry::lifecycle::reset_pi_for_tests();
++    let server = Server::start("r01l");
++    let accepting = Accepting::start(&server, BOTH);
++    build_peer(&server.base.join("observer"), "parent");
++    pane_b_works(&server);
++    let r = Round {
++        server: &server,
++        name: "left".into(),
++    };
++    r.start(&format!(
++        "@open @child @wait:{x1} @read @save:{told} @mark:{x2} @parent '@line:{heartbeat}' @close \
++         @open @child @wait:{y1} @load:{told} '@line:{ending}' @mark:{y2} @parent @mark:{p1} \
++         @wait:{p2} @touch @mark:{p3} @wait:{p4} @close {own} @mark:{p5} @wait:{end} {bye}",
++        x1 = r.mark("x1"),
++        x2 = r.mark("x2"),
++        y1 = r.mark("y1"),
++        y2 = r.mark("y2"),
++        told = r.mark("told"),
++        p1 = r.mark("p1"),
++        p2 = r.mark("p2"),
++        p3 = r.mark("p3"),
++        p4 = r.mark("p4"),
++        p5 = r.mark("p5"),
++        end = r.mark("end"),
++        heartbeat = step_line(serde_json::json!({"seq": 3})),
++        ending = step_line(serde_json::json!({"seq": 3, "run": 1, "state": "turn-done"})),
++        own = step(serde_json::json!({"seq": 3, "run": 1, "state": "turn-done"})),
++        bye = step(serde_json::json!({"seq": 4, "reason": "quit"})),
++    ));
++    accepting.held(true);
++    r.go("go");
++    // Both connections exist and both children were made. The parent wrote
++    // its heartbeat on the first and let go of it; the second is silent.
++    r.wait("p1");
++    let (before, agains, busy) = (written(), probe::agains(), accepting.refused("pi-busy"));
++    // Deck reads the heartbeat, and nothing else yet
++    accepting.one();
++    until("the answer to the parent's heartbeat", || {
++        probe::agains() > agains || accepting.refused("pi-busy") > busy
++    });
++    // the first child reads that answer; the second writes with what it says
++    r.go("x1");
++    r.wait("x2");
++    r.go("y1");
++    r.wait("y2");
++    // the parent looks at its connection: the kernel names the parent for it
++    r.go("p2");
++    r.wait("p3");
++    let (asked, mismatched) = (probe::agains(), accepting.refused("pi-sender-mismatch"));
++    accepting.held(false);
++    until("the answer to the child's line", || {
++        probe::agains() > asked
++            || accepting.refused("pi-sender-mismatch") > mismatched
++            || written() != before
++    });
++    assert_eq!(
++        written(),
++        before,
++        "what a child wrote was taken for its parent's"
++    );
++    assert_eq!(server.state("deck-a"), Some("working"));
++    // the parent's own frame, after all that
++    r.go("p4");
++    r.wait("p5");
++    r.the_parent_s_own_ending(&before);
++    r.end();
++    pane_b_ends(&server);
++    drop(accepting);
++    drop(server);
++    crate::agent_reentry::lifecycle::reset_pi_for_tests();
++}
++
++/// R01, a connection that existed before Deck last looked. A child holds a
++/// connection its parent made, on which nothing has been said; the parent
++/// goes on with its heartbeat — which meets the fork that made the child,
++/// is asked for again and is written — and then the child is TOLD the nonce
++/// the parent holds now: more than any child can find out, since that nonce
++/// came on a connection made after the child. It writes the ending of the
++/// parent's run with it, all but the end of the line; the parent looks at
++/// the connection and ends the line itself. The kernel names the parent, the
++/// nonce is the lease's own, and no fork was counted since it was made.
++/// Nothing is written: that connection was made before the look after which
++/// the nonce was made, and a child from before that look may hold it.
++#[test]
++fn r01_a_connection_made_before_deck_last_looked_is_nobody_s_whatever_it_carries() {
++    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
++    let _guard = fresh();
++    crate::agent_reentry::lifecycle::reset_pi_for_tests();
++    let server = Server::start("r01o");
++    let accepting = Accepting::start(&server, BOTH);
++    build_peer(&server.base.join("observer"), "parent");
++    pane_b_works(&server);
++    let r = Round {
++        server: &server,
++        name: "before".into(),
++    };
++    r.start(&format!(
++        "@open @child @wait:{y1} @load:{told} '@part:{ending}' @mark:{y2} @parent {heartbeat} \
++         @save:{told} @mark:{p1} @wait:{p2} @touch '@line:' @mark:{p3} @wait:{p4} @close {own} \
++         @mark:{p5} @wait:{end} {bye}",
++        y1 = r.mark("y1"),
++        y2 = r.mark("y2"),
++        told = r.mark("told"),
++        p1 = r.mark("p1"),
++        p2 = r.mark("p2"),
++        p3 = r.mark("p3"),
++        p4 = r.mark("p4"),
++        p5 = r.mark("p5"),
++        end = r.mark("end"),
++        heartbeat = step(serde_json::json!({"seq": 3})),
++        ending = step_line(serde_json::json!({"seq": 4, "run": 1, "state": "turn-done"})),
++        own = step(serde_json::json!({"seq": 4, "run": 1, "state": "turn-done"})),
++        bye = step(serde_json::json!({"seq": 5, "reason": "quit"})),
++    ));
++    let asked = probe::agains();
++    r.go("go");
++    r.wait("p1");
++    // the heartbeat met the fork that made the child, and was then written
++    assert_eq!(probe::again_reasons()[asked..], ["fork"]);
++    assert!(r.log().contains("\"ack\":3"), "{}", r.log());
++    let (before, agains, mismatched) = (
++        written(),
++        probe::agains(),
++        accepting.refused("pi-sender-mismatch"),
++    );
++    // the child writes with the nonce it was told; the parent ends the line
++    r.go("y1");
++    r.wait("y2");
++    r.go("p2");
++    r.wait("p3");
++    until("the answer to the line the child wrote", || {
++        probe::agains() > agains
++            || accepting.refused("pi-sender-mismatch") > mismatched
++            || written() != before
++    });
++    assert_eq!(
++        written(),
++        before,
++        "what a child wrote was taken for its parent's"
++    );
++    assert_eq!(server.state("deck-a"), Some("working"));
++    // the parent's own frame, after all that
++    r.go("p4");
++    r.wait("p5");
++    r.the_parent_s_own_ending(&before);
++    r.end();
++    pane_b_ends(&server);
++    drop(accepting);
++    drop(server);
++    crate::agent_reentry::lifecycle::reset_pi_for_tests();
++}
++
+ /// R02. What an earlier image wrote before Deck looked at its process, and
+ /// what it was given, is not the new image's. The orders are decided here:
+ /// Deck reads nothing until the test lets it.
+diff --git a/app/src-tauri/src/agent_status.rs b/app/src-tauri/src/agent_status.rs
+index b29ba97..d579278 100644
+--- a/app/src-tauri/src/agent_status.rs
++++ b/app/src-tauri/src/agent_status.rs
+@@ -2231,19 +2231,21 @@ pub(crate) fn serve_counting_for_tests(
+     counted: &DropCounts,
+ ) {
+     let pi = crate::agent_pi::transport::Service::start(pi_reporter(&counted.0));
+-    let open = std::sync::atomic::AtomicBool::new(false);
++    let open = std::sync::atomic::AtomicI64::new(-1);
+     serve_pi_for_tests(listener, stop, &open, counted, pi);
+ }
+ 
+ /// The same with a Pi service the caller started (a test's own tmux server
+-/// and settings), and a switch: while `hold` is set nothing is accepted, so
+-/// what clients connect and write meanwhile waits in the kernel, unread —
+-/// a test decides what has happened by the time Deck reads a byte.
++/// and settings), and a switch. `pass` is how many connections may still be
++/// accepted: a negative number is any, and at zero nothing is accepted, so
++/// what clients connect and write meanwhile waits in the kernel, unread, in
++/// the order they connected — a test decides what has happened by the time
++/// Deck reads a byte, and which connection it reads first.
+ #[cfg(test)]
+ pub(crate) fn serve_pi_for_tests(
+     listener: UnixListener,
+     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+-    hold: &std::sync::atomic::AtomicBool,
++    pass: &std::sync::atomic::AtomicI64,
+     counted: &DropCounts,
+     pi: crate::agent_pi::transport::Service,
+ ) {
+@@ -2254,12 +2256,18 @@ pub(crate) fn serve_pi_for_tests(
+     let (receipts, worker) = Receipts::start(drops.clone());
+     let (intake, dispatcher) = Intake::start(drops, receipts, pi);
+     while !stop.load(std::sync::atomic::Ordering::Acquire) {
+-        if hold.load(std::sync::atomic::Ordering::Acquire) {
++        let left = pass.load(std::sync::atomic::Ordering::Acquire);
++        if left == 0 {
+             std::thread::sleep(Duration::from_millis(2));
+             continue;
+         }
+         match listener.accept() {
+-            Ok((stream, _)) => intake.take(stream),
++            Ok((stream, _)) => {
++                if left > 0 {
++                    pass.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
++                }
++                intake.take(stream)
++            }
+             Err(_) => std::thread::sleep(Duration::from_millis(5)),
+         }
+     }
+diff --git a/scripts/pi/exec-peer.c b/scripts/pi/exec-peer.c
+index c347fd3..3a81a54 100644
+--- a/scripts/pi/exec-peer.c
++++ b/scripts/pi/exec-peer.c
+@@ -27,6 +27,8 @@
+ //   @touch           look at it as an event loop does (poll), writing nothing
+ //   @close           close it
+ //   @forget          forget the lease and the nonce
++//   @save:<file>     write the lease and the nonce it holds into that file
++//   @load:<file>     hold the lease and the nonce that file says
+ //   @fork            start a child that executes another program; wait for it
+ //   @kid             go on in a CHILD of this process with the steps up to
+ //                    `@parent`: it has this process's memory and descriptors,
+@@ -188,6 +190,19 @@ int main(int argc, char **argv) {
+         } else if (!strcmp(s, "@forget")) {
+             strcpy(lease, "0");
+             nonce[0] = 0;
++        } else if (!strncmp(s, "@save:", 6)) {
++            FILE *out = fopen(s + 6, "w");
++            if (out) {
++                fprintf(out, "%s %s\n", lease, nonce);
++                fclose(out);
++            }
++        } else if (!strncmp(s, "@load:", 6)) {
++            FILE *in = fopen(s + 6, "r");
++            if (in) {
++                char given[40] = "";
++                if (fscanf(in, "%31s %39s", lease, given) == 2) snprintf(nonce, sizeof nonce, "%s", given);
++                fclose(in);
++            }
+         } else if (!strcmp(s, "@fork")) {
+             pid_t p = fork();
+             if (!p) {
