@@ -4090,7 +4090,10 @@ fn r01_no_child_of_the_observer_writes_anything_for_it() {
     // B went on through all of it, under the lease it had
     server.go("b-end");
     until("B's lease to end", || probe::live() == 0);
-    assert!(server.log("b.log").contains("\"ack\":2"));
+    // B writes down the answer after Deck has given it
+    until("B's goodbye to be answered", || {
+        server.log("b.log").contains("\"ack\":2")
+    });
     assert_eq!(
         probe::ended()
             .iter()
@@ -4108,16 +4111,18 @@ fn r01_no_child_of_the_observer_writes_anything_for_it() {
 /// Deck reads nothing until the test lets it.
 #[test]
 fn r02_what_an_earlier_image_wrote_or_was_given_is_not_the_new_image_s() {
+    use crate::agent_reentry::lifecycle::PiSession;
+    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
     let _guard = fresh();
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
     let server = Server::start("r02");
-    let accepting = Accepting::start(&server, SIGNAL);
+    let accepting = Accepting::start(&server, BOTH);
     let base = server.base.to_str().unwrap().to_string();
     build_peer(&server.base.join("observer"), "before");
     build_peer(&server.base.join("other"), "after");
     let hello = message(serde_json::json!({}));
     let attest = server.attest("deck-a");
     let working = step(serde_json::json!({"seq": 1, "run": 1, "state": "working"}));
-    let ending = step_line(serde_json::json!({"seq": 2, "run": 1, "state": "turn-done"}));
     let stop = |name: &str| {
         server.tmux(&["send-keys", "-t", "deck-a", "C-c"]).unwrap();
         server.idle("deck-a");
@@ -4193,33 +4198,48 @@ fn r02_what_an_earlier_image_wrote_or_was_given_is_not_the_new_image_s() {
     unrecognized("a hello with a frame behind it");
     stop("a hello with a frame behind it");
 
-    // 3. A BOUND observer reports a run; the run's ending waits unread on a
-    //    connection while its image executes another. Deck reads the frame
+    // 3. A BOUND observer reports its session and a run. The run's ending
+    //    and another session's name wait unread, each on a connection of
+    //    its own, while its image executes another. Deck reads them
     //    afterwards: the right process, the right lease, the right nonce,
     //    no fork — and not that program.
     server.run(
         "deck-a",
         "r3",
         &format!(
-            "{base}/observer {base}/status.sock {base}/r3.log @hello {attest} {working} \
-             @mark:{base}/r3-ready @wait:{base}/r3-go @open '@line:{ending}' \
-             @exec:{base}/other @mark:{base}/r3-after @sleep"
+            "{base}/observer {base}/status.sock {base}/r3.log @hello {both} {start} {working} \
+             @mark:{base}/r3-ready @wait:{base}/r3-go @open '@line:{ending}' @open \
+             '@line:{other}' @exec:{base}/other @mark:{base}/r3-after @sleep",
+            both = server.attest_with("deck-a", true, true),
+            start = step(serde_json::json!({
+                "seq": 1, "event": "start", "nativeSessionId": "session-a", "reason": "startup"
+            })),
+            working = step(serde_json::json!({"seq": 2, "run": 1, "state": "working"})),
+            ending = step_line(serde_json::json!({"seq": 3, "run": 1, "state": "turn-done"})),
+            other = step_line(
+                serde_json::json!({"seq": 3, "event": "snapshot", "nativeSessionId": "session-x"})
+            ),
         ),
     );
     server.wait("deck-a", "r3-ready");
     assert_eq!(server.state("deck-a"), Some("working"));
+    assert_eq!(
+        server.evidence("deck-a").pi_session,
+        Some(PiSession::Observed)
+    );
+    assert_eq!(sessions().len(), 1);
     accepting.held(true);
     server.go("r3-go");
     server.wait("deck-a", "r3-after");
     assert_eq!(
-        server.state("deck-a"),
-        None,
-        "withdrawn from every reader before the frame is read"
+        (server.state("deck-a"), server.evidence("deck-a").pi_session),
+        (None, None),
+        "withdrawn from every reader before a frame is read"
     );
     let (before, executed) = (written(), accepting.refused("pi-peer-executed"));
     accepting.held(false);
-    until("the frame to be refused", || {
-        accepting.refused("pi-peer-executed") == executed + 1
+    until("both frames to be refused", || {
+        accepting.refused("pi-peer-executed") == executed + 2
     });
     assert_eq!(
         probe::ended().last(),
@@ -4231,8 +4251,13 @@ fn r02_what_an_earlier_image_wrote_or_was_given_is_not_the_new_image_s() {
         "no ending was written, not for a moment"
     );
     assert_eq!(written().announced, before.announced);
-    unrecognized("a frame that waited");
-    stop("a frame that waited");
+    assert!(
+        sessions().is_empty(),
+        "neither the old session nor the one the frame named"
+    );
+    assert_eq!(server.evidence("deck-a").pi_session, None);
+    unrecognized("frames that waited");
+    stop("frames that waited");
 
     // 4. An image is given a nonce and THEN executes another, which is
     //    handed that nonce and attests with it: a nonce is not who a
@@ -4289,4 +4314,5 @@ fn r02_what_an_earlier_image_wrote_or_was_given_is_not_the_new_image_s() {
 
     drop(accepting);
     drop(server);
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
 }
