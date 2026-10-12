@@ -4811,3 +4811,41 @@ fn r02_what_an_earlier_image_wrote_or_was_given_is_not_the_new_image_s() {
     drop(server);
     crate::agent_reentry::lifecycle::reset_pi_for_tests();
 }
+
+/// The observer that ships in the bundle, as text: two of its times are
+/// written down on this side as well.
+const OBSERVER_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/resources/pi/observer.ts"
+));
+
+/// The whole number `observer.ts` gives `name`: `const <name> = <n>;`, on a
+/// line of its own and once.
+fn observer_constant(name: &str) -> u128 {
+    let declaration = format!("const {name} = ");
+    let mut found = OBSERVER_SOURCE
+        .lines()
+        .filter_map(|line| line.strip_prefix(declaration.as_str()));
+    let value = found
+        .next()
+        .unwrap_or_else(|| panic!("observer.ts declares no {name}"));
+    assert!(found.next().is_none(), "observer.ts declares {name} twice");
+    value
+        .strip_suffix(';')
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("{name} is no whole number: {value}"))
+}
+
+/// Two times are agreed between the observer and the transport and written
+/// on both sides: how long the observer waits for an answer, and how often
+/// it says that it is still there. A change on one side alone fails here.
+#[test]
+fn observer_constants_match_the_transport() {
+    let ack_timeout = observer_constant("ACK_TIMEOUT_MS");
+    let ping_every = observer_constant("PING_EVERY_MS");
+    // an answer has exactly as long as the observer waits for it
+    assert_eq!(ack_timeout, ANSWER_BUDGET.as_millis());
+    // a lease outlives one lost heartbeat, and the next one after it
+    assert!(ping_every * 2 <= STALE_AFTER.as_millis());
+    assert!(ping_every < STALE_AFTER.as_millis());
+}
