@@ -18,7 +18,10 @@
 //!   observers are bound and `MAX_CHALLENGES` nonces are open; a line is
 //!   at most `agent_pi::MAX_LINE` bytes; an answer is one short line written
 //!   within `WRITE_BUDGET`. The worker's one tmux call per batch has
-//!   `LISTING_BUDGET`. The same worker, once a second, ends what went stale
+//!   `LISTING_BUDGET`, and its one connection of its own, when a look has
+//!   to be marked ("Whose bytes"), `MARK_BUDGET`: that one is answered on
+//!   the listener's dispatcher and never waits for this worker. The same
+//!   worker, once a second, ends what went stale
 //!   — for as long as a lease or an open nonce is kept; with nothing to
 //!   look after it waits for a message and for nothing else, so a Deck no
 //!   Pi speaks to has no timer here.
@@ -48,54 +51,74 @@
 //!   connection after its child wrote on it is named, and is named before
 //!   its own bytes arrive (xnu `uipc_socket.c`; measured). So no single
 //!   fact is taken for the author. A line is the bound process's own only
-//!   when three things hold together. (a) The peer pid of its connection is
-//!   that process. (b) It carries the nonce of Deck's last answer to that
-//!   process: a nonce is made after the worker looked at the process, is
-//!   given in that one answer, and is good for one message. (c) The kernel
-//!   reported no fork of that process between that look and this one
-//!   (`procinfo::InstanceWatch::forks`: the kernel posts the report before
-//!   a child can run).
+//!   when four things hold together, each judged against one LOOK of the
+//!   worker at that process. (a) The peer pid of its connection is that
+//!   process. (b) The kernel reported no fork of that process since the
+//!   look (`procinfo::InstanceWatch::forks`: the kernel posts the report
+//!   before a child can run). (c) Its connection was made after the look.
+//!   The status listener numbers the connections it accepts (their PLACE),
+//!   and the kernel hands them to `accept` in the order in which they were
+//!   made (xnu `uipc_socket2.c`, `uipc_syscalls.c`; measured); right after
+//!   a look the worker makes a connection of its own to that listener and
+//!   is told its place — the look's MARK — and only a connection with a
+//!   later place counts (`mark_at`; `agent_pi`, "Deck's own line"). (d) It
+//!   carries the nonce of Deck's last answer to that process: made after
+//!   the look, given in that one answer, good for one message.
 //!
-//!   Why that is enough: whoever else wrote the line knew the nonce. A
-//!   child made after the nonce reached its parent's memory is a fork after
-//!   that look: (c) fails. A child made earlier can only have READ the
-//!   nonce, from the connection that carried the answer — a connection it
-//!   then held. An observer has ONE connection at a time (`observer.ts`,
-//!   `line`; closing one is immediate on both runtimes Pi ships on) and one
-//!   carries one message, so that child holds no connection of its parent's
-//!   on which a line can still arrive, and a connection of its own names
-//!   the child: (a) fails. Nothing in this depends on when a line is read,
-//!   queued or committed.
+//!   Why that is enough: whoever else wrote on a connection the process
+//!   made holds it, and nobody holds it but the process and the children
+//!   it has made since (and whoever one of those hands it on to). The
+//!   process made the connection after the look (c), so such a child was
+//!   made after the look: (b) fails. A connection the child made itself
+//!   names the child: (a) fails. The nonce (d) is asked for on top of that:
+//!   it ties a line to the one answer before it, so a line is good once,
+//!   and a second writer would have had to read that answer as well.
+//!   Nothing in this depends on when a line is read, queued or committed,
+//!   and nothing on how many connections an observer keeps or when it lets
+//!   go of one: a nonce that a child read on a connection its parent had
+//!   left, told to a second child that holds the parent's next one, is
+//!   worth nothing there — that connection was made before the look after
+//!   which the nonce was made. (The observer has one connection at a time
+//!   all the same, `observer.ts`: that keeps a retry the exception.)
 //!
-//!   When (b) or (c) does not hold for a peer that IS the bound process,
-//!   the message is neither believed nor blamed: `again`, with a new nonce;
-//!   nothing is written or ended, and the observer sends the same message
-//!   on a new connection — Pi makes a child for every tool it runs, and
-//!   that must cost a retry and nothing else. When (a) does not hold
-//!   nothing of the lease is touched, not even its nonce
-//!   (`sender-mismatch`).
+//!   The look moves when a fork was counted, and only then: the count, a
+//!   new mark and a new nonce are taken together. Without a mark there is
+//!   no look a later line could be judged against, so nothing is answered
+//!   that carries a nonce (`busy`) and nothing changes. When (b), (c) or
+//!   (d) does not hold for a peer that IS the bound process, the message is
+//!   neither believed nor blamed: `again`, with a new nonce; nothing is
+//!   written or ended, and the observer sends the same message on a new
+//!   connection — Pi makes a child for every tool it runs, and that must
+//!   cost a retry and nothing else. When (a) does not hold nothing of the
+//!   lease is touched, not even its nonce (`sender-mismatch`).
 //!
 //!   What this does not cover is said plainly. A process that itself hands
 //!   its connection, its nonce or its bytes to another, or whose memory
 //!   another can read, is the author of what follows, exactly as an
-//!   extension inside Pi that misreports is. And two observers inside ONE
-//!   process are two connections at a time: that takes two of Deck's entry
-//!   files in one Pi's settings, which Deck never writes and its Settings
-//!   call a conflict; the second is refused (`duplicate-observer`) and
-//!   stops asking by itself.
+//!   extension inside Pi that misreports is. Whatever STARTED the process
+//!   is not told from it either: a parent that leaves its child a
+//!   descriptor of its own could have been the pane's foreground program
+//!   itself, and a lease says that this program speaks as a Pi observer,
+//!   never whose program it is ("Who may bind"). And (c) takes the making
+//!   of a connection for one step: both runtimes Pi ships on create the
+//!   socket and connect it in one call. A runtime in which another thread
+//!   forked between those two system calls, at the instant of a look,
+//!   would give that child a connection the mark counts as later; the
+//!   child would still have to come by the nonce.
 //! - **A hello is not believed; an attest is.** What reached the socket
 //!   before Deck looked at a process says nothing about the program that
 //!   runs in it now: an earlier image may have written it and executed
 //!   another since. So a `hello` only asks: the worker starts watching the
-//!   peer's execution instance and its forks, and answers with a nonce. The
-//!   observer's claims come in an `attest` that carries that nonce, on a
-//!   new connection: its bytes were written after the watch began, by the
-//!   three facts above they are that process's own, and the watch says that
-//!   this process executed nothing in between. One nonce is open per pid,
-//!   good for one attest and for `CHALLENGE_BUDGET`. A nonce shows WHEN a
-//!   line was written and never, by itself, by whom: a child that read it
-//!   from the connection of the hello attests from a connection that names
-//!   the child, and is refused like any stranger (`no-challenge`).
+//!   peer's execution instance and its forks, marks that look, and answers
+//!   with a nonce. The observer's claims come in an `attest` that carries
+//!   that nonce, on a new connection: a connection that was made after the
+//!   watch began, so its bytes were written after it; by the four facts
+//!   above they are that process's own; and the watch says that this
+//!   process executed nothing in between. One nonce is open per pid, good
+//!   for one attest and for `CHALLENGE_BUDGET`. A nonce shows WHEN a line
+//!   was written and never, by itself, by whom: a child that read it from
+//!   the connection of the hello attests from a connection that names the
+//!   child, and is refused like any stranger (`no-challenge`).
 //! - **One execution instance.** A pid and a birth instant survive an
 //!   `exec`. The watch that begins with the hello (`procinfo::InstanceWatch`:
 //!   the kernel's own exec and exit reports) is asked at the bind, for every
@@ -136,10 +159,12 @@
 //!   (`config`, `needs-reload`).
 //! - **What is checked for every frame** (`commit`), in this order: the
 //!   lease exists; the connection's peer pid is the lease's; the lease is
-//!   live; the process is still the instance that attested; the frame
-//!   carries the lease's nonce and no fork was counted since that nonce was
-//!   made (`again` otherwise — and either way the lease has a new nonce
-//!   before the answer is written); the line is one of the five frames and
+//!   live; the process is still the instance that attested; no fork was
+//!   counted since the lease's look, the connection's place is behind that
+//!   look's mark and the frame carries the lease's nonce (`again` otherwise
+//!   — and either way the lease has a new nonce before the answer is
+//!   written, and after a fork a new look and mark); the line is one of the
+//!   five frames and
 //!   its answer is still due; for a frame that writes pane-bound state, the
 //!   pane is read from a listing taken AFTER the frame was read; then the
 //!   kernel is asked NOW — after that listing — for the peer's generation,
@@ -217,6 +242,8 @@ const LISTING_BUDGET: Duration = Duration::from_secs(2);
 const WRITE_BUDGET: Duration = Duration::from_millis(250);
 /// The same, for a refusal written on the listener's dispatcher.
 const BUSY_BUDGET: Duration = Duration::from_millis(50);
+/// How long the worker waits for the place of a connection of its own.
+const MARK_BUDGET: Duration = Duration::from_millis(250);
 /// How often the worker looks for leases that went stale or whose process
 /// is no longer what it was.
 const SWEEP_EVERY: Duration = Duration::from_secs(1);
@@ -243,21 +270,48 @@ pub(crate) struct World {
     pub(crate) watch: Box<dyn Fn(u32) -> Option<Arc<InstanceWatch>> + Send + Sync>,
     /// A nonce nobody has seen (`Nonce::fresh`).
     pub(crate) nonce: Box<dyn Fn() -> Option<Nonce> + Send + Sync>,
+    /// The place, among the connections the listener accepted, of one made
+    /// now (`mark_at`); `None` when none could be had in time.
+    pub(crate) mark: Box<dyn Fn() -> Option<u64> + Send + Sync>,
     /// The name of Deck's own tmux socket.
     pub(crate) socket: String,
 }
 
 impl World {
-    fn live() -> Self {
+    /// `status` is the socket the listener that hands messages to this
+    /// service accepts on.
+    fn live(status: &std::path::Path) -> Self {
+        let status = status.to_path_buf();
         Self {
             process: Box::new(crate::procinfo::process),
             listing: Box::new(|| crate::tmux::list_panes().ok()),
             enabled: Box::new(super::config::enabled),
             watch: Box::new(InstanceWatch::of),
             nonce: Box::new(Nonce::fresh),
+            mark: Box::new(move || mark_at(&status)),
             socket: crate::tmux::socket().to_string(),
         }
     }
+}
+
+/// Make a connection to the listener at `status` and ask for its place
+/// (module header, "Whose bytes"; `agent_pi`, "Deck's own line"). The kernel
+/// hands connections to `accept` in the order in which they were made, and
+/// the listener numbers them in the order in which it accepts them: a
+/// connection with a later place than this one was made after this call
+/// began. Nothing is kept: the connection is over when the answer is read,
+/// or after `MARK_BUDGET` without one.
+pub(crate) fn mark_at(status: &std::path::Path) -> Option<u64> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = UnixStream::connect(status).ok()?;
+    stream.set_read_timeout(Some(MARK_BUDGET)).ok()?;
+    stream.set_write_timeout(Some(MARK_BUDGET)).ok()?;
+    stream
+        .write_all(format!("{}\n", super::place_line()).as_bytes())
+        .ok()?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).ok()?;
+    super::placed(&line)
 }
 
 /// The time bounds of the service. Production's are the constants above; a
@@ -289,11 +343,14 @@ struct Lease {
     generation: ForegroundGeneration,
     /// The execution instance the peer has been since its hello.
     instance: Arc<InstanceWatch>,
-    /// The nonce the lease's next message must carry, and the watch's fork
-    /// count at the look after which that nonce was made (module header,
-    /// "Whose bytes").
+    /// The nonce the lease's next message must carry (module header, "Whose
+    /// bytes").
     nonce: Nonce,
+    /// The look every line of this lease is judged against: the watch's
+    /// fork count then, and the place of the connection the worker made
+    /// right after it. A fork moves both.
     forks: u64,
+    mark: u64,
     /// What the attest claimed: what this runtime loaded.
     loaded: Capabilities,
     /// What the lease may still do: `loaded` as far as the settings enabled
@@ -316,8 +373,10 @@ struct Challenge {
     nonce: Nonce,
     /// The watch that began with the hello.
     instance: Arc<InstanceWatch>,
-    /// Its fork count at the look after which the nonce was made.
+    /// Its fork count at the look after which the nonce was made, and the
+    /// place of the connection the worker made right after that look.
     forks: u64,
+    mark: u64,
     until: Instant,
 }
 
@@ -556,6 +615,8 @@ struct Job {
     line: String,
     /// The kernel's peer pid of the connection, read at the hand-over.
     peer: Option<u32>,
+    /// The connection's place among those the listener accepted.
+    place: u64,
     /// When it was handed over: its answer is due `Bounds::answer` later.
     handed: Instant,
 }
@@ -627,34 +688,61 @@ impl Listing<'_> {
     }
 }
 
-/// One message, verified and answered (module header). `due` is when its
-/// answer must be ready. `Err` is the closed code it is refused with.
+/// What is known of the connection a line came on.
+#[derive(Clone, Copy)]
+struct Via {
+    /// The kernel's peer pid of the connection when its line was handed over.
+    peer: Option<u32>,
+    /// Its place among the connections the listener accepted.
+    place: u64,
+    /// When the answer must be ready.
+    due: Instant,
+}
+
+/// One message, verified and answered (module header). `Err` is the closed
+/// code it is refused with.
 fn exchange(
     world: &World,
     bounds: &Bounds,
     line: &str,
-    peer: Option<u32>,
-    due: Instant,
+    via: Via,
     listing: &mut Listing,
 ) -> Result<Answer, &'static str> {
     match super::parse_message(line)? {
-        Message::Hello => challenge(world, bounds, peer),
-        Message::Attest { nonce, hello } => bind(world, bounds, &hello, &nonce, peer, due, listing),
+        Message::Hello => challenge(world, bounds, via.peer),
+        Message::Attest { nonce, hello } => bind(world, bounds, &hello, &nonce, via, listing),
         Message::Frame {
             lease,
             nonce,
             frame,
-        } => commit(world, lease, &nonce, &frame, peer, due, listing),
+        } => commit(world, lease, &nonce, &frame, via, listing),
+    }
+}
+
+/// Why a line of the right process was not believed: which of the three
+/// things that must hold with its peer did not.
+#[cfg(test)]
+fn unproven(alone: bool, held: bool, behind: bool) -> &'static str {
+    match (alone, held, behind) {
+        (false, true, true) => "fork",
+        (true, false, true) => "nonce",
+        (true, true, false) => "place",
+        (false, false, true) => "fork and nonce",
+        (false, true, false) => "fork and place",
+        (true, false, false) => "nonce and place",
+        _ => "fork, nonce and place",
     }
 }
 
 /// Keep `nonce` as the one an attest of `peer` must carry. `forks` is the
-/// watch's count at the look after which the nonce was made.
+/// watch's count at the look after which the nonce was made, and `mark` the
+/// place of the connection the worker made right after that look.
 fn challenged(
     bounds: &Bounds,
     peer: u32,
     instance: Arc<InstanceWatch>,
     forks: u64,
+    mark: u64,
     nonce: &Nonce,
 ) -> Result<(), &'static str> {
     let now = Instant::now();
@@ -670,6 +758,7 @@ fn challenged(
                 nonce: nonce.clone(),
                 instance,
                 forks,
+                mark,
                 until: now + bounds.challenge,
             },
         );
@@ -678,14 +767,16 @@ fn challenged(
 }
 
 /// Answer a hello (module header, "A hello is not believed"): from here on
-/// the kernel reports what this process executes and whether it forks, and
-/// the nonce — made after both — is what its attest must carry.
+/// the kernel reports what this process executes and whether it forks, the
+/// worker's own connection marks which connections are made from now on,
+/// and the nonce — made after all of that — is what its attest must carry.
 fn challenge(world: &World, bounds: &Bounds, peer: Option<u32>) -> Result<Answer, &'static str> {
     let peer = peer.ok_or("no-peer")?;
     let instance = (world.watch)(peer).ok_or("no-instance")?;
     let forks = instance.forks();
+    let mark = (world.mark)().ok_or("busy")?;
     let nonce = (world.nonce)().ok_or("busy")?;
-    challenged(bounds, peer, instance, forks, &nonce)?;
+    challenged(bounds, peer, instance, forks, mark, &nonce)?;
     Ok(Answer::Challenge(nonce))
 }
 
@@ -738,11 +829,10 @@ fn bind(
     bounds: &Bounds,
     hello: &Hello,
     nonce: &Nonce,
-    peer: Option<u32>,
-    due: Instant,
+    via: Via,
     listing: &mut Listing,
 ) -> Result<Answer, &'static str> {
-    let peer = peer.ok_or("no-peer")?;
+    let peer = via.peer.ok_or("no-peer")?;
     // The nonce this process was given: good for this one attest, whatever
     // becomes of it. A pid without one, a nonce that is not the one it was
     // given, and an attest that came too late are the same thing.
@@ -757,12 +847,21 @@ fn bind(
     let forks = instance.forks();
     let next = (world.nonce)().ok_or("busy")?;
     // A child made since the hello was answered has a copy of that nonce
-    // and may hold this connection: whose attest this is cannot be said.
-    // The observer attests again, with the new nonce.
-    if forks != challenge.forks {
-        challenged(bounds, peer, instance, forks, &next)?;
+    // and may hold this connection, and a connection that was made before
+    // the hello's look may be held by a child from before it: whose attest
+    // this is cannot be said. The observer attests again, with the new
+    // nonce, on a new connection.
+    let (alone, behind) = (forks == challenge.forks, via.place > challenge.mark);
+    if !(alone && behind) {
+        // a fork moves the look, and with it the mark
+        let mark = if alone {
+            challenge.mark
+        } else {
+            (world.mark)().ok_or("busy")?
+        };
+        challenged(bounds, peer, instance, forks, mark, &next)?;
         #[cfg(test)]
-        probe::again("fork");
+        probe::again(unproven(alone, true, behind));
         return Ok(Answer::Again(next));
     }
     let client = (world.process)(peer)
@@ -833,7 +932,7 @@ fn bind(
         return Err("capability-disabled");
     }
     // an observer that has stopped waiting for this answer holds no lease
-    if Instant::now() > due {
+    if Instant::now() > via.due {
         return Err("late");
     }
     let lease = with_registry(|registry| {
@@ -857,6 +956,7 @@ fn bind(
                 instance: instance.clone(),
                 nonce: next.clone(),
                 forks,
+                mark: challenge.mark,
                 loaded: hello.capabilities,
                 usable,
                 next_seq: 1,
@@ -897,21 +997,21 @@ fn commit(
     lease: u64,
     nonce: &Nonce,
     frame: &Result<Frame, &'static str>,
-    peer: Option<u32>,
-    due: Instant,
+    via: Via,
     listing: &mut Listing,
 ) -> Result<Answer, &'static str> {
-    let peer = peer.ok_or("no-peer")?;
+    let peer = via.peer.ok_or("no-peer")?;
     let known = with_registry(|registry| {
         registry.leases.get(&lease).map(|entry| {
             (
                 entry.over.map(|(code, _)| code),
                 entry.generation,
                 entry.instance.clone(),
+                entry.forks,
             )
         })
     });
-    let Some((over, generation, instance)) = known else {
+    let Some((over, generation, instance, counted)) = known else {
         return Err("late");
     };
     // a connection whose last user was another process is not this lease's
@@ -933,39 +1033,50 @@ fn commit(
         return Err(code);
     }
     // The look, and after it the nonce of whatever is answered. The line is
-    // the peer's own when it carries the nonce the lease had and no fork
-    // was counted since that one was made.
+    // the peer's own when no fork was counted since the lease's look, its
+    // connection was made after that look, and it carries the nonce the
+    // lease had. A fork moves the look to this one: the worker's own
+    // connection, made now, marks what is made from here on — and without
+    // it nothing is answered that carries a nonce, and nothing changes.
     let forks = instance.forks();
     let next = (world.nonce)().ok_or("busy")?;
-    let (alone, held) = with_registry(|registry| {
+    let moved = if forks == counted {
+        None
+    } else {
+        Some((world.mark)().ok_or("busy")?)
+    };
+    let (alone, held, behind) = with_registry(|registry| {
         let entry = registry.live_mut(lease)?;
-        let proof = (entry.forks == forks, entry.nonce.same(nonce));
-        entry.forks = forks;
+        let proof = (
+            entry.forks == forks,
+            entry.nonce.same(nonce),
+            via.place > entry.mark,
+        );
         entry.nonce = next.clone();
+        if let Some(mark) = moved {
+            entry.forks = forks;
+            entry.mark = mark;
+        }
         Some(proof)
     })
     .ok_or("late")?;
-    if !(alone && held) {
+    if !(alone && held && behind) {
         #[cfg(test)]
-        probe::again(match (alone, held) {
-            (false, true) => "fork",
-            (true, false) => "nonce",
-            _ => "fork and nonce",
-        });
+        probe::again(unproven(alone, held, behind));
         return Ok(Answer::Again(next));
     }
     // From here on the line is the bound observer's own, and what is wrong
     // with it ends its lease: a line that is no frame, and one whose
     // observer has stopped waiting for the answer.
     let frame = match frame {
-        Ok(frame) if Instant::now() <= due => frame,
+        Ok(frame) if Instant::now() <= via.due => frame,
         refused => {
             let code = refused.as_ref().err().copied().unwrap_or("late");
             end(lease, code);
             return Err(code);
         }
     };
-    let verdict = committed(world, lease, frame, next, due, listing);
+    let verdict = committed(world, lease, frame, next, via.due, listing);
     match (&verdict, frame) {
         (Err(code), _) => end(lease, code),
         // a reset is acknowledged and is the end of what its lease reported
@@ -1187,8 +1298,12 @@ fn worker(waiting: Receiver<Job>, world: World, report: Reporter, bounds: Bounds
                 taken: None,
             };
             for job in batch {
-                let due = job.handed + bounds.answer;
-                let said = match exchange(&world, &bounds, &job.line, job.peer, due, &mut listing) {
+                let via = Via {
+                    peer: job.peer,
+                    place: job.place,
+                    due: job.handed + bounds.answer,
+                };
+                let said = match exchange(&world, &bounds, &job.line, via, &mut listing) {
                     Ok(answer) => answer.line(),
                     Err(code) => {
                         report(super::drop_reason(code));
@@ -1215,10 +1330,11 @@ pub(crate) struct Service {
 }
 
 impl Service {
-    /// Start the admission worker. A worker that cannot be started takes
-    /// the queue's other end with it: every message is then refused `busy`.
-    pub(crate) fn start(report: Reporter) -> Self {
-        Self::start_in(report, World::live(), Bounds::LIVE)
+    /// Start the admission worker for the listener that accepts on
+    /// `status`. A worker that cannot be started takes the queue's other
+    /// end with it: every message is then refused `busy`.
+    pub(crate) fn start(report: Reporter, status: &std::path::Path) -> Self {
+        Self::start_in(report, World::live(status), Bounds::LIVE)
     }
 
     pub(crate) fn start_in(report: Reporter, world: World, bounds: Bounds) -> Self {
@@ -1232,21 +1348,34 @@ impl Service {
         Self { jobs, report }
     }
 
-    /// Take one Pi message from the status listener. Never waits: the
-    /// connection's peer is read from the kernel here, and the message is
-    /// queued for the worker or refused at once.
-    pub(crate) fn hand(&self, stream: UnixStream, line: String) {
+    /// Take one Pi message from the status listener, with the place the
+    /// listener gave its connection. Never waits: the connection's peer is
+    /// read from the kernel here, and the message is queued for the worker
+    /// or refused at once. Deck's own line (`agent_pi`, "Deck's own line")
+    /// is answered here and reaches no worker: its place, to this process
+    /// and to no other.
+    pub(crate) fn hand(&self, stream: UnixStream, line: String, place: u64) {
         let peer = crate::procinfo::peer_pid(&stream);
-        self.hand_as(stream, line, peer);
+        if super::asks_place(&line) {
+            if peer == Some(std::process::id()) {
+                answer(stream, &super::placed_line(place), BUSY_BUDGET);
+            } else {
+                (self.report)(super::drop_reason("sender-mismatch"));
+                answer(stream, &super::refused_line("sender-mismatch"), BUSY_BUDGET);
+            }
+            return;
+        }
+        self.hand_as(stream, line, peer, place);
     }
 
     /// `hand` for a peer the caller names.
-    pub(crate) fn hand_as(&self, stream: UnixStream, line: String, peer: Option<u32>) {
+    pub(crate) fn hand_as(&self, stream: UnixStream, line: String, peer: Option<u32>, place: u64) {
         PENDING.fetch_add(1, Ordering::AcqRel);
         let refused = match self.jobs.try_send(Job {
             stream,
             line,
             peer,
+            place,
             handed: Instant::now(),
         }) {
             Ok(()) => return,

@@ -35,8 +35,10 @@
 //   this module made, whichever asks (`line`). Closing is immediate on both
 //   runtimes Pi ships on (measured), so a child that Pi makes at any instant
 //   starts with at most one of these connections, and that one carries one
-//   message. Deck's proof of whose bytes a line is rests on exactly this
-//   (`agent_pi/transport.rs`, "Whose bytes").
+//   message. Deck does not take that on trust: it believes a line only on a
+//   connection that was made after it last looked at this process
+//   (`agent_pi/transport.rs`, "Whose bytes"). One connection at a time is
+//   what keeps being asked `again` the exception.
 // - Every answer of Deck's that is not a refusal carries a nonce, and the
 //   next message carries it back; it is kept in this closure and nowhere
 //   else. Binding takes two messages. `hello` carries nothing and is

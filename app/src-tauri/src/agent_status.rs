@@ -991,7 +991,7 @@ pub(crate) fn parse_event(line: &str) -> Result<Event, &'static str> {
         .filter(|s| crate::extensions::agent(s).is_some())
         .ok_or("unknown-source")?;
     // Pi has no hook helper and no native interaction id: its words exist
-    // only inside an observer stream the Pi transport verified. A v1 or v2
+    // only as messages of an observer the Pi transport verified. A v1 or v2
     // line that names it is refused whatever else it says.
     if crate::extensions::agent(source).is_some_and(|adapter| adapter.class == SignalClass::Pi) {
         return Err("pi-observer-required");
@@ -1516,8 +1516,8 @@ pub(crate) fn pi_signal(
     }
 }
 
-/// A Pi observer lease is over (a reset, the end of its stream, a timeout,
-/// an overflow, a turned-off capability, another foreground): the
+/// A Pi observer lease is over (a reset, a frame that was refused, a
+/// timeout, a turned-off capability, another foreground or image): the
 /// observation that lease wrote is withdrawn at once, with its episode, and
 /// the generation's coverage no longer reads `Connected`. Nothing else is
 /// touched: an observation a hook wrote for the same pane stays, another
@@ -1631,6 +1631,15 @@ pub(crate) fn reset_for_tests() {
 // thread per connection and no unbounded task or buffer is added, and a
 // refusal is never a promise that everything is accepted under any load.
 //
+// Every accepted connection gets its PLACE: a number, counted by the one
+// thread that accepts, in the order in which the kernel handed the
+// connections over — which is the order in which they were made (xnu puts a
+// connection at the end of the listener's queue when its `connect`
+// completes, and `accept` takes the first; measured). The place says
+// nothing about a client and decides nothing here. The Pi transport uses it
+// to tell a connection that was made after it looked at a process from one
+// that existed before (`agent_pi::transport`, "Whose bytes").
+//
 // The dispatcher is what the accept loop used to be after its read, and
 // keeps its order for every family: it asks for the Pi family first, then
 // for the lifecycle family, then takes the line as a hook word; a hook
@@ -1662,6 +1671,8 @@ const MAX_DISPATCH: usize = 32;
 /// A connection whose first line was read.
 struct Arrival {
     stream: UnixStream,
+    /// The connection's place among the accepted ones.
+    place: u64,
     line: String,
     /// What was read behind the first line.
     rest: Vec<u8>,
@@ -1669,7 +1680,7 @@ struct Arrival {
     read_at: std::time::Instant,
 }
 
-/// One of the `MAX_FIRST_LINES` places for a connection that has not
+/// One of the `MAX_FIRST_LINES` slots for a connection that has not
 /// delivered its first line yet.
 struct FirstLine(Arc<std::sync::atomic::AtomicUsize>);
 
@@ -1696,6 +1707,7 @@ impl Drop for FirstLine {
 /// and left without a byte (ordinary, and not worth a line).
 async fn first_line(
     stream: UnixStream,
+    place: u64,
     deadline: std::time::Instant,
 ) -> Result<Arrival, Option<&'static str>> {
     let stream = tokio::net::UnixStream::from_std(stream).map_err(|_| None)?;
@@ -1741,6 +1753,7 @@ async fn first_line(
     let stream = stream.into_std().map_err(|_| None)?;
     Ok(Arrival {
         stream,
+        place,
         line,
         rest,
         read_at,
@@ -1751,6 +1764,8 @@ async fn first_line(
 struct Intake {
     arrivals: std::sync::mpsc::SyncSender<Arrival>,
     reading: Arc<std::sync::atomic::AtomicUsize>,
+    /// How many connections were accepted: the last one's place.
+    accepted: std::sync::atomic::AtomicU64,
     drops: Arc<Mutex<Drops>>,
 }
 
@@ -1779,6 +1794,7 @@ impl Intake {
         let intake = Self {
             arrivals,
             reading: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            accepted: std::sync::atomic::AtomicU64::new(0),
             drops,
         };
         (intake, dispatcher)
@@ -1792,17 +1808,23 @@ impl Intake {
         let intake = Self {
             arrivals,
             reading: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            accepted: std::sync::atomic::AtomicU64::new(0),
             drops,
         };
         (intake, waiting)
     }
 
-    /// Take one accepted connection. Never reads and never waits: a place
-    /// among the first lines is taken or the connection is closed, and the
-    /// rest happens in the connection's own task.
+    /// Take one accepted connection, in the order the accept loop got them:
+    /// it is numbered here, before anything else. Never reads and never
+    /// waits: one of the first-line slots is taken or the connection is
+    /// closed, and the rest happens in the connection's own task.
     fn take(&self, stream: UnixStream) {
+        let place = self
+            .accepted
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1;
         let deadline = std::time::Instant::now() + FIRST_LINE_BUDGET;
-        let Some(place) = FirstLine::take(&self.reading) else {
+        let Some(slot) = FirstLine::take(&self.reading) else {
             note(&self.drops, Some("listener-busy"));
             return;
         };
@@ -1811,9 +1833,9 @@ impl Intake {
         }
         let (arrivals, drops) = (self.arrivals.clone(), self.drops.clone());
         tauri::async_runtime::spawn(async move {
-            let arrival = first_line(stream, deadline).await;
-            // the place is free before the dispatcher is asked
-            drop(place);
+            let arrival = first_line(stream, place, deadline).await;
+            // the slot is free before the dispatcher is asked
+            drop(slot);
             match arrival {
                 Ok(arrival) => {
                     if arrivals.try_send(arrival).is_err() {
@@ -2065,6 +2087,7 @@ fn dispatch(
 ) {
     let Arrival {
         stream,
+        place,
         line,
         rest,
         read_at,
@@ -2085,7 +2108,7 @@ fn dispatch(
     // never blocks here and answers it. The line reaches neither the hook
     // parser nor the lifecycle mailbox.
     if crate::agent_pi::is_family(&line) {
-        pi.hand(stream, line);
+        pi.hand(stream, line, place);
         return;
     }
     // A separate closed protocol family on the same socket: a lifecycle
@@ -2132,7 +2155,8 @@ fn handle_stream(
 ) {
     stream.set_nonblocking(true).expect("a nonblocking stream");
     let deadline = std::time::Instant::now() + FIRST_LINE_BUDGET;
-    match tauri::async_runtime::block_on(first_line(stream, deadline)) {
+    // one connection, handed over by itself: it has no place among others
+    match tauri::async_runtime::block_on(first_line(stream, 0, deadline)) {
         Ok(arrival) => dispatch(arrival, drops, receipts, pi),
         Err(Some(reason)) => note(drops, Some(reason)),
         Err(None) => {}
@@ -2230,20 +2254,27 @@ pub(crate) fn serve_counting_for_tests(
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     counted: &DropCounts,
 ) {
-    let pi = crate::agent_pi::transport::Service::start(pi_reporter(&counted.0));
-    let open = std::sync::atomic::AtomicBool::new(false);
+    let status = listener
+        .local_addr()
+        .ok()
+        .and_then(|address| address.as_pathname().map(Path::to_path_buf))
+        .expect("a listener on a path");
+    let pi = crate::agent_pi::transport::Service::start(pi_reporter(&counted.0), &status);
+    let open = std::sync::atomic::AtomicI64::new(-1);
     serve_pi_for_tests(listener, stop, &open, counted, pi);
 }
 
 /// The same with a Pi service the caller started (a test's own tmux server
-/// and settings), and a switch: while `hold` is set nothing is accepted, so
-/// what clients connect and write meanwhile waits in the kernel, unread —
-/// a test decides what has happened by the time Deck reads a byte.
+/// and settings), and a switch. `pass` is how many connections may still be
+/// accepted: a negative number is any, and at zero nothing is accepted, so
+/// what clients connect and write meanwhile waits in the kernel, unread, in
+/// the order they connected — a test decides what has happened by the time
+/// Deck reads a byte, and which connection it reads first.
 #[cfg(test)]
 pub(crate) fn serve_pi_for_tests(
     listener: UnixListener,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    hold: &std::sync::atomic::AtomicBool,
+    pass: &std::sync::atomic::AtomicI64,
     counted: &DropCounts,
     pi: crate::agent_pi::transport::Service,
 ) {
@@ -2254,12 +2285,18 @@ pub(crate) fn serve_pi_for_tests(
     let (receipts, worker) = Receipts::start(drops.clone());
     let (intake, dispatcher) = Intake::start(drops, receipts, pi);
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
-        if hold.load(std::sync::atomic::Ordering::Acquire) {
+        let left = pass.load(std::sync::atomic::Ordering::Acquire);
+        if left == 0 {
             std::thread::sleep(Duration::from_millis(2));
             continue;
         }
         match listener.accept() {
-            Ok((stream, _)) => intake.take(stream),
+            Ok((stream, _)) => {
+                if left > 0 {
+                    pass.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                }
+                intake.take(stream)
+            }
             Err(_) => std::thread::sleep(Duration::from_millis(5)),
         }
     }
@@ -2290,8 +2327,8 @@ pub(crate) fn spawn_listener() {
         let drops = Arc::new(Mutex::new(Drops::new(std::time::Instant::now())));
         // one receipt worker, for as long as connections are accepted
         let (receipts, _) = Receipts::start(drops.clone());
-        // the one bounded service that owns every Pi observer stream
-        let pi = crate::agent_pi::transport::Service::start(pi_reporter(&drops));
+        // the one bounded service that answers every Pi observer's message
+        let pi = crate::agent_pi::transport::Service::start(pi_reporter(&drops), &path);
         // and the one dispatcher both are asked from; this loop only accepts
         let (intake, _) = Intake::start(drops, receipts, pi);
         for stream in listener.incoming() {
@@ -7740,6 +7777,7 @@ mod tests {
                 enabled: Box::new(|| crate::agent_pi::Capabilities::NONE),
                 watch: watched(),
                 nonce: Box::new(crate::agent_pi::Nonce::fresh),
+                mark: Box::new(|| Some(1)),
                 socket: "deck".into(),
             },
             quick(),
@@ -7786,6 +7824,7 @@ mod tests {
                 enabled: Box::new(|| crate::agent_pi::Capabilities::NONE),
                 watch: watched(),
                 nonce: Box::new(crate::agent_pi::Nonce::fresh),
+                mark: Box::new(|| Some(1)),
                 socket: "deck".into(),
             },
             quick(),
@@ -7794,7 +7833,7 @@ mod tests {
         // what reaches the listing
         let (ours, theirs) = UnixStream::pair().expect("a socket pair");
         ours.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        held.hand_as(theirs, hello.clone(), Some(std::process::id()));
+        held.hand_as(theirs, hello.clone(), Some(std::process::id()), 1);
         let mut given = String::new();
         std::io::BufReader::new(&ours)
             .read_line(&mut given)
@@ -7808,7 +7847,8 @@ mod tests {
         })
         .to_string();
         let (ours, theirs) = UnixStream::pair().expect("a socket pair");
-        held.hand_as(theirs, attest, Some(std::process::id()));
+        // on a connection that was made after the hello's look
+        held.hand_as(theirs, attest, Some(std::process::id()), 2);
         inside
             .recv_timeout(Duration::from_secs(5))
             .expect("the Pi admission is inside its listing");
@@ -7875,6 +7915,7 @@ mod tests {
                 // the kernel gives no watch of this process: nothing is asked of it
                 watch: Box::new(|_| None),
                 nonce: Box::new(crate::agent_pi::Nonce::fresh),
+                mark: Box::new(|| Some(1)),
                 socket: "deck".into(),
             },
             Bounds {
@@ -8133,6 +8174,45 @@ mod tests {
             "a line that never ended is not parsed"
         );
         crate::agent_reentry::reset_for_tests();
+    }
+
+    /// Every accepted connection has its place: the order in which the
+    /// connections were MADE — whatever the order in which their lines
+    /// came, and whether or not they ever said anything. Deck's own line is
+    /// how the Pi transport asks for one (`agent_pi::transport::mark_at`).
+    #[test]
+    fn a_connection_s_place_is_the_order_in_which_it_was_made() {
+        use std::io::{BufRead, Write};
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let listening = Listening::start("place");
+        let ask = format!("{}\n", crate::agent_pi::place_line());
+        let asked = |mut stream: UnixStream| -> u64 {
+            stream.write_all(ask.as_bytes()).unwrap();
+            let mut reply = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut reply)
+                .unwrap();
+            crate::agent_pi::placed(&reply).unwrap_or_else(|| panic!("no place: {reply:?}"))
+        };
+        // four connections, one after the other; one never says a word, and
+        // the others speak in the opposite order
+        let first = listening.connect();
+        let silent = listening.connect();
+        let second = listening.connect();
+        let third = listening.connect();
+        let third = asked(third);
+        let second = asked(second);
+        let first = asked(first);
+        assert_eq!((second, third), (first + 2, first + 3));
+        drop(silent);
+        // one that is made later is behind them all, the transport's too
+        assert_eq!(asked(listening.connect()), first + 4);
+        assert_eq!(
+            crate::agent_pi::transport::mark_at(&listening.path),
+            Some(first + 5)
+        );
+        assert!(listening.counts.counts().is_empty(), "nothing was refused");
     }
 
     /// A first line is at most `MAX_LINE` bytes. What a client sent behind

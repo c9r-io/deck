@@ -2,7 +2,7 @@ use super::*;
 use crate::agent_status::{self, ProcessTable, STORE_TEST_LOCK};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Condvar;
 
 const SIGNAL: Capabilities = Capabilities {
@@ -57,6 +57,16 @@ fn forked(pid: u32) {
     {
         switch.forked();
     }
+}
+
+/// The listener's count of the connections it accepted, as these tests keep
+/// it: every message is one more connection, and so is every mark the
+/// worker takes.
+static PLACES: AtomicU64 = AtomicU64::new(0);
+
+/// A connection is made now: its place.
+fn connected() -> u64 {
+    PLACES.fetch_add(1, Ordering::SeqCst) + 1
 }
 
 /// What an observer holds between two messages, by its lease: its process
@@ -160,6 +170,8 @@ struct Shared {
     gate: Arc<Gate>,
     /// Processes the kernel gives no watch of.
     unwatched: Arc<Mutex<Vec<u32>>>,
+    /// The worker's own connection gets no answer: it has no mark.
+    unmarked: Arc<AtomicBool>,
 }
 
 impl Shared {
@@ -174,11 +186,12 @@ impl Shared {
             during: Arc::new(Mutex::new(None)),
             gate: Arc::new(gate),
             unwatched: Arc::new(Mutex::new(Vec::new())),
+            unmarked: Arc::new(AtomicBool::new(false)),
         }
     }
 
     fn world(&self) -> World {
-        let (table, rows, enabled, listings, during, gate, unwatched) = (
+        let (table, rows, enabled, listings, during, gate, unwatched, unmarked) = (
             self.table.clone(),
             self.rows.clone(),
             self.enabled.clone(),
@@ -186,6 +199,7 @@ impl Shared {
             self.during.clone(),
             self.gate.clone(),
             self.unwatched.clone(),
+            self.unmarked.clone(),
         );
         World {
             process: Box::new(move |pid| table.lock_or_recover().get(&pid).copied()),
@@ -202,6 +216,7 @@ impl Shared {
                 (!unwatched.lock_or_recover().contains(&pid)).then(|| instance_of(pid))
             }),
             nonce: Box::new(Nonce::fresh),
+            mark: Box::new(move || (!unmarked.load(Ordering::SeqCst)).then(connected)),
             socket: "deck".into(),
         }
     }
@@ -279,6 +294,15 @@ fn later() -> Instant {
     Instant::now() + Duration::from_secs(600)
 }
 
+/// A connection with `place`, whose peer the kernel names `peer`.
+fn via(peer: Option<u32>, place: u64) -> Via {
+    Via {
+        peer,
+        place,
+        due: later(),
+    }
+}
+
 /// The nonce a hello of `peer` is answered with.
 fn challenged_as(world: &World, peer: Option<u32>) -> Result<Nonce, &'static str> {
     match challenge(world, &Bounds::LIVE, peer)? {
@@ -287,12 +311,24 @@ fn challenged_as(world: &World, peer: Option<u32>) -> Result<Nonce, &'static str
     }
 }
 
-/// One attest of `peer` with `nonce`, as the worker takes it.
+/// One attest of `peer` with `nonce`, on a connection made now, as the
+/// worker takes it.
 fn attested(
     world: &World,
     hello: &Hello,
     nonce: &Nonce,
     peer: Option<u32>,
+) -> Result<Answer, &'static str> {
+    attested_on(world, hello, nonce, peer, connected())
+}
+
+/// The same on a connection that has `place`.
+fn attested_on(
+    world: &World,
+    hello: &Hello,
+    nonce: &Nonce,
+    peer: Option<u32>,
+    place: u64,
 ) -> Result<Answer, &'static str> {
     let mut listing = Listing { world, taken: None };
     let answer = bind(
@@ -300,8 +336,7 @@ fn attested(
         &Bounds::LIVE,
         hello,
         nonce,
-        peer,
-        later(),
+        via(peer, place),
         &mut listing,
     )?;
     if let (Answer::Accepted { lease, next, .. }, Some(peer)) = (&answer, peer) {
@@ -341,8 +376,8 @@ enum Committed {
     Again,
 }
 
-/// One frame of `lease` on a connection whose peer the kernel names `peer`,
-/// carrying `nonce`: exactly what the worker is handed.
+/// One frame of `lease` on a connection made now, whose peer the kernel
+/// names `peer`, carrying `nonce`: exactly what the worker is handed.
 fn sent_from(
     world: &World,
     lease: u64,
@@ -350,8 +385,19 @@ fn sent_from(
     peer: Option<u32>,
     nonce: &Nonce,
 ) -> Result<Answer, &'static str> {
+    sent_on(world, lease, frame, via(peer, connected()), nonce)
+}
+
+/// The same on a connection the test describes.
+fn sent_on(
+    world: &World,
+    lease: u64,
+    frame: Frame,
+    via: Via,
+    nonce: &Nonce,
+) -> Result<Answer, &'static str> {
     let mut listing = Listing { world, taken: None };
-    commit(world, lease, nonce, &Ok(frame), peer, later(), &mut listing)
+    commit(world, lease, nonce, &Ok(frame), via, &mut listing)
 }
 
 /// One frame of the observer that holds `lease`: its own process, the nonce
@@ -1098,14 +1144,16 @@ fn the_poll_and_the_settings_end_leases_that_no_longer_hold() {
     assert_eq!(shared.state("deck-b"), None);
 }
 
-// ---------- whose bytes: the peer, the nonce and the forks, together ---------------------
+// ---------- whose bytes: the peer, the forks, the place and the nonce, together ----------
 
 /// R01, with the kernel's answers described exactly. A line is the bound
 /// process's own only when the peer of its connection is that process, it
 /// carries the nonce of Deck's last answer to that process, and no fork of
-/// that process was counted since the nonce was made — all three. Take any
-/// one away and nothing is written: not a word, not an episode, not a
-/// session, not the end of the lease. Not even for a moment (`written`).
+/// that process was counted since the nonce was made — all three, on a
+/// connection that was made after Deck last looked (every connection here
+/// is; the test after the next takes that away). Take any one away and
+/// nothing is written: not a word, not an episode, not a session, not the
+/// end of the lease. Not even for a moment (`written`).
 #[test]
 fn a_line_is_the_observer_s_own_only_with_its_peer_its_nonce_and_no_fork_together() {
     use crate::agent_pi::{SessionEvent, StartReason};
@@ -1341,6 +1389,164 @@ fn an_attest_binds_only_with_the_nonce_its_own_process_was_given() {
     );
     // the lease's first frame carries the nonce of the acceptance
     assert_eq!(sent(&world, lease, working(1, 1)), Ok(1));
+    release(lease);
+}
+
+/// R01, the fourth thing. The peer, the nonce and the fork count together do
+/// not say that a connection is the observer's alone. One that existed when
+/// Deck last looked at the process may be held by a child from before that
+/// look, which no later count shows; and a nonce can be read by a child from
+/// a connection the observer left, and told to another. So a line counts
+/// only on a connection that was made AFTER that look: one whose place among
+/// the accepted connections is behind the worker's own, made at the look.
+/// With the kernel's answers described exactly — the right process, the
+/// lease's own nonce, no fork since — a line on a connection from before the
+/// look writes nothing: not a word, not an episode, not a session, not the
+/// end of the lease, not for a moment.
+#[test]
+fn a_line_counts_only_on_a_connection_made_after_deck_last_looked() {
+    use crate::agent_pi::{SessionEvent, StartReason};
+    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+    let _guard = fresh();
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+    let shared = two_panes();
+    *shared.enabled.lock_or_recover() = BOTH;
+    let world = shared.world();
+    let a = bound_as(&world, &both("%1"), Some(310)).unwrap();
+    let start = SessionEvent::Start(StartReason::Startup);
+    assert_eq!(
+        sent(&world, a, lifecycle_frame(1, start, "session-a")),
+        Ok(1)
+    );
+    assert_eq!(sent(&world, a, working(2, 1)), Ok(2));
+
+    // The observer has a connection on which nothing was said yet, and
+    // makes a child: the child holds that connection too.
+    let kept = connected();
+    forked(310);
+    // The observer's own next frame, on a connection of its own, meets that
+    // fork: Deck looks again, and marks the look.
+    assert_eq!(
+        sent_as(&world, a, Frame::Ping { seq: 3 }),
+        Ok(Committed::Again)
+    );
+    assert_eq!(probe::again_reasons(), ["fork"]);
+    assert_eq!(sent(&world, a, Frame::Ping { seq: 3 }), Ok(3));
+    // Now a line on the connection from before that look: the kernel names
+    // the observer (it looked at its connection), the nonce is the one the
+    // lease has NOW — however a child came by it — and no fork was counted
+    // since it was made.
+    let before = written();
+    for frame in [
+        done(4, 1),
+        lifecycle_frame(4, SessionEvent::Snapshot, "session-x"),
+        Frame::Reset {
+            seq: 4,
+            reason: ResetReason::Quit,
+        },
+        Frame::Ping { seq: 4 },
+    ] {
+        let (_, nonce) = held(a);
+        match sent_on(&world, a, frame, via(Some(310), kept), &nonce) {
+            // every answer uses a nonce up, this one as well
+            Ok(Answer::Again(next)) => hold(a, 310, next),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(written(), before);
+        assert_eq!(shared.state("deck-a"), Some("working"));
+    }
+    assert_eq!(
+        probe::again_reasons()[1..],
+        ["place"; 4],
+        "the process, the nonce and the forks were right"
+    );
+    assert_eq!(sessions().len(), 1);
+    // Everything the same on a connection that was made after the look: it
+    // is written, and it is the very next episode.
+    let episode = agent_status::next_episode_for_tests();
+    assert_eq!(sent(&world, a, done(4, 1)), Ok(4));
+    assert_eq!(shared.state("deck-a"), Some("turn-done"));
+    assert_eq!(shared.episode("deck-a"), Some(episode));
+
+    // The same before there is a lease. An attest on a connection that was
+    // made before its hello's look — the right process, the nonce of that
+    // hello's answer, no fork since — recognizes nothing; on a connection
+    // made afterwards it binds.
+    let writes = agent_status::pi_writes_for_tests();
+    let early = connected();
+    let mut given = challenged_as(&world, Some(410)).unwrap();
+    for _ in 0..2 {
+        given = match attested_on(&world, &hello("%2"), &given, Some(410), early) {
+            Ok(Answer::Again(next)) => next,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(probe::again_reasons().last(), Some(&"place"));
+        assert_eq!(probe::live(), 1, "A's lease, and no other");
+        assert_eq!(agent_status::pi_writes_for_tests(), writes);
+    }
+    assert!(matches!(
+        attested(&world, &hello("%2"), &given, Some(410)),
+        Ok(Answer::Accepted { .. })
+    ));
+    assert_eq!(
+        shared.evidence("deck-b").pi_signal,
+        Some(PiCoverage::Connected)
+    );
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+}
+
+/// A look is marked by the worker's own connection. When that connection
+/// gets no answer there is no look a later line could be judged against:
+/// no nonce is made, the message is refused `busy`, and nothing changes —
+/// not the nonce the observer holds, and not the count its next line is
+/// judged against.
+#[test]
+fn without_a_mark_no_nonce_is_made_and_nothing_changes() {
+    let _guard = fresh();
+    let shared = two_panes();
+    let world = shared.world();
+    // a hello
+    shared.unmarked.store(true, Ordering::SeqCst);
+    assert_eq!(challenged_as(&world, Some(310)), Err("busy"));
+    assert_eq!(probe::challenges(), 0);
+    shared.unmarked.store(false, Ordering::SeqCst);
+    let lease = bound(&world, "%1", 310).unwrap();
+    assert_eq!(sent(&world, lease, working(1, 1)), Ok(1));
+    // a frame of a process that made a child: the look would have to move
+    forked(310);
+    shared.unmarked.store(true, Ordering::SeqCst);
+    let before = written();
+    let (_, nonce) = held(lease);
+    assert_eq!(
+        sent_from(&world, lease, done(2, 1), Some(310), &nonce),
+        Err("busy")
+    );
+    assert_eq!(written(), before);
+    assert_eq!(over(lease), None);
+    assert_eq!(probe::agains(), 0);
+    // the fork is still counted against the same nonce ...
+    shared.unmarked.store(false, Ordering::SeqCst);
+    assert_eq!(sent_as(&world, lease, done(2, 1)), Ok(Committed::Again));
+    assert_eq!(probe::again_reasons(), ["fork"]);
+    // ... and with the next one, and no fork since, the frame is written
+    assert_eq!(sent(&world, lease, done(2, 1)), Ok(2));
+    // a frame whose process made no child needs no new mark
+    shared.unmarked.store(true, Ordering::SeqCst);
+    assert_eq!(sent(&world, lease, working(3, 2)), Ok(3));
+    // an attest whose process made a child since its hello: refused, and
+    // the nonce it carried is used up like any other
+    shared.unmarked.store(false, Ordering::SeqCst);
+    let given = challenged_as(&world, Some(410)).unwrap();
+    forked(410);
+    shared.unmarked.store(true, Ordering::SeqCst);
+    let writes = agent_status::pi_writes_for_tests();
+    assert_eq!(
+        attested(&world, &hello("%2"), &given, Some(410)),
+        Err("busy")
+    );
+    assert_eq!(probe::challenges(), 0);
+    assert_eq!(probe::live(), 1, "the first lease, and no other");
+    assert_eq!(agent_status::pi_writes_for_tests(), writes);
     release(lease);
 }
 
@@ -1813,7 +2019,7 @@ fn handed(service: &Service, line: &str, peer: Option<u32>) -> UnixStream {
     let (ours, theirs) = UnixStream::pair().expect("a socket pair");
     ours.set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
-    service.hand_as(theirs, line.to_string(), peer);
+    service.hand_as(theirs, line.to_string(), peer, connected());
     ours
 }
 
@@ -2006,6 +2212,50 @@ fn a_message_is_answered_on_its_own_connection_after_the_commit() {
 
 /// A quitting Pi sends its last frames one after the other and is gone: they
 /// are committed in order, and the lease ends for the reason its reset names.
+/// Deck's own line is answered where it is handed over, with the place of
+/// its connection: it waits for no worker — the worker is the one that
+/// asks, in the middle of a message — and reaches none.
+#[test]
+fn deck_s_own_line_is_answered_with_its_place_and_reaches_no_worker() {
+    let _guard = fresh();
+    let shared = two_panes();
+    let (service, reasons) = service(&shared, QUICK);
+    // the worker is inside a listing that does not return
+    shared.gate.set(false);
+    let nonce = hello_through(&service, 310);
+    let attest = handed(
+        &service,
+        &message({
+            let mut claims = claims("%1", true, false);
+            claims["nonce"] = nonce.into();
+            claims
+        }),
+        Some(310),
+    );
+    until("the worker to be inside the listing", || {
+        shared.gate.waiting.load(Ordering::SeqCst) == 1
+    });
+    // this process, on a connection of its own (a pair's peer is its maker)
+    let (ours, theirs) = UnixStream::pair().expect("a socket pair");
+    ours.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let asked_at = Instant::now();
+    service.hand(theirs, crate::agent_pi::place_line(), 41);
+    assert_eq!(
+        answer_of(ours),
+        Some(serde_json::json!({"protocol": "pi-observer", "v": 2, "place": 41}))
+    );
+    assert!(asked_at.elapsed() < Duration::from_secs(1));
+    assert_eq!(probe::pending(), 1, "only the attest waits for the worker");
+    assert!(reasons.lock_or_recover().is_empty());
+    shared.gate.set(true);
+    let accepted = answer_of(attest).expect("an answer to the attest");
+    release(
+        accepted["accepted"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("no lease: {accepted}")),
+    );
+}
+
 #[test]
 fn the_last_frames_of_a_quitting_pi_are_committed_in_order() {
     let _guard = fresh();
@@ -3175,7 +3425,8 @@ fn step_line(body: serde_json::Value) -> String {
 /// asks that server's tmux and the real kernel.
 struct Accepting {
     stop: Arc<AtomicBool>,
-    hold: Arc<AtomicBool>,
+    /// How many connections Deck may still accept; negative is any.
+    pass: Arc<std::sync::atomic::AtomicI64>,
     thread: Option<std::thread::JoinHandle<()>>,
     counts: agent_status::DropCounts,
 }
@@ -3194,19 +3445,23 @@ impl Accepting {
                 enabled: Box::new(move || enabled),
                 watch: Box::new(InstanceWatch::of),
                 nonce: Box::new(Nonce::fresh),
+                mark: Box::new({
+                    let status = server.base.join("status.sock");
+                    move || mark_at(&status)
+                }),
                 socket: "t".into(),
             },
             Bounds::LIVE,
         );
         let stop = Arc::new(AtomicBool::new(false));
-        let hold = Arc::new(AtomicBool::new(false));
+        let pass = Arc::new(std::sync::atomic::AtomicI64::new(-1));
         let thread = std::thread::spawn({
-            let (stop, hold, counts) = (stop.clone(), hold.clone(), counts.clone());
-            move || agent_status::serve_pi_for_tests(listener, stop, &hold, &counts, service)
+            let (stop, pass, counts) = (stop.clone(), pass.clone(), counts.clone());
+            move || agent_status::serve_pi_for_tests(listener, stop, &pass, &counts, service)
         });
         Self {
             stop,
-            hold,
+            pass,
             thread: Some(thread),
             counts,
         }
@@ -3221,7 +3476,14 @@ impl Accepting {
     /// waits in the kernel, so a test decides what has happened by the time
     /// Deck reads its first byte.
     fn held(&self, held: bool) {
-        self.hold.store(held, Ordering::Release);
+        self.pass
+            .store(if held { 0 } else { -1 }, Ordering::Release);
+    }
+
+    /// While held: Deck accepts the connection that has waited longest,
+    /// and no other.
+    fn one(&self) {
+        self.pass.store(1, Ordering::Release);
     }
 }
 
@@ -4101,6 +4363,238 @@ fn r01_no_child_of_the_observer_writes_anything_for_it() {
             .collect::<Vec<_>>(),
         [&("deck-b".to_string(), "reset-quit")]
     );
+    drop(accepting);
+    drop(server);
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+}
+
+/// Pane B's observer, bound and working for as long as a test of pane A runs.
+fn pane_b_works(server: &Server) {
+    let base = server.base.to_str().unwrap();
+    server.run(
+        "deck-b",
+        "b",
+        &format!(
+            "{base}/observer {base}/status.sock {base}/b.log @hello {attest} {working} \
+             @mark:{base}/b-ready @wait:{base}/b-end {reset}",
+            attest = server.attest("deck-b"),
+            working = step(serde_json::json!({"seq": 1, "run": 1, "state": "working"})),
+            reset = step(serde_json::json!({"seq": 2, "reason": "quit"})),
+        ),
+    );
+    server.wait("deck-b", "b-ready");
+    assert_eq!(server.state("deck-b"), Some("working"));
+}
+
+/// B went on through all of it, under the lease it had, and says goodbye.
+fn pane_b_ends(server: &Server) {
+    server.go("b-end");
+    until("B's lease to end", || probe::live() == 0);
+    // B writes down the answer after Deck has given it
+    until("B's goodbye to be answered", || {
+        server.log("b.log").contains("\"ack\":2")
+    });
+    assert_eq!(
+        probe::ended()
+            .iter()
+            .filter(|(session, _)| session == "deck-b")
+            .collect::<Vec<_>>(),
+        [&("deck-b".to_string(), "reset-quit")]
+    );
+}
+
+/// R01, the connection an observer left behind. An observer that stops
+/// waiting for an answer lets go of that connection and makes another. A
+/// child made while the first existed still holds it and reads there what
+/// Deck answers late — a nonce that was made after that child, and every
+/// other child up to then, had been counted. A second child, made while the
+/// second connection existed, holds that one, on which nothing has been
+/// said yet, and is told by the first what it read. It writes that the
+/// parent's run ended; the parent looks at its connection, as an event loop
+/// does; Deck reads. The kernel names the parent, and the child wrote what
+/// it had been told. Nothing is written for the parent, not for a moment,
+/// and the parent's own next frame is written as if nothing had happened.
+///
+/// Deck reads the first connection alone here, and the second only after
+/// everything above has happened: the order is the test's, not the
+/// scheduler's.
+#[test]
+fn r01_what_one_child_read_on_a_connection_its_parent_left_writes_nothing_on_another() {
+    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+    let _guard = fresh();
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+    let server = Server::start("r01l");
+    let accepting = Accepting::start(&server, BOTH);
+    build_peer(&server.base.join("observer"), "parent");
+    pane_b_works(&server);
+    let r = Round {
+        server: &server,
+        name: "left".into(),
+    };
+    r.start(&format!(
+        "@open @child @wait:{x1} @read @save:{told} @mark:{x2} @parent '@line:{heartbeat}' @close \
+         @open @child @wait:{y1} @load:{told} '@line:{ending}' @mark:{y2} @parent @mark:{p1} \
+         @wait:{p2} @touch @mark:{p3} @wait:{p4} @close {own} @mark:{p5} @wait:{end} {bye}",
+        x1 = r.mark("x1"),
+        x2 = r.mark("x2"),
+        y1 = r.mark("y1"),
+        y2 = r.mark("y2"),
+        told = r.mark("told"),
+        p1 = r.mark("p1"),
+        p2 = r.mark("p2"),
+        p3 = r.mark("p3"),
+        p4 = r.mark("p4"),
+        p5 = r.mark("p5"),
+        end = r.mark("end"),
+        heartbeat = step_line(serde_json::json!({"seq": 3})),
+        ending = step_line(serde_json::json!({"seq": 3, "run": 1, "state": "turn-done"})),
+        own = step(serde_json::json!({"seq": 3, "run": 1, "state": "turn-done"})),
+        bye = step(serde_json::json!({"seq": 4, "reason": "quit"})),
+    ));
+    accepting.held(true);
+    r.go("go");
+    // Both connections exist and both children were made. The parent wrote
+    // its heartbeat on the first and let go of it; the second is silent.
+    r.wait("p1");
+    let (before, agains, busy) = (written(), probe::agains(), accepting.refused("pi-busy"));
+    // Deck reads the heartbeat, and nothing else yet
+    accepting.one();
+    until("the answer to the parent's heartbeat", || {
+        probe::agains() > agains || accepting.refused("pi-busy") > busy
+    });
+    // the first child reads that answer; the second writes with what it says
+    r.go("x1");
+    r.wait("x2");
+    r.go("y1");
+    r.wait("y2");
+    // the parent looks at its connection: the kernel names the parent for it
+    r.go("p2");
+    r.wait("p3");
+    let (asked, mismatched) = (probe::agains(), accepting.refused("pi-sender-mismatch"));
+    accepting.held(false);
+    until("the answer to the child's line", || {
+        probe::agains() > asked
+            || accepting.refused("pi-sender-mismatch") > mismatched
+            || written() != before
+    });
+    assert_eq!(
+        written(),
+        before,
+        "what a child wrote was taken for its parent's"
+    );
+    assert_eq!(server.state("deck-a"), Some("working"));
+    // Why: the heartbeat met the forks that made the two children, and a
+    // look that moves is marked by a connection of the worker's own — which
+    // could not be accepted ahead of the one that was already waiting. So
+    // no nonce was made at all: there was nothing for the first child to
+    // read but a refusal, and the second wrote with the nonce it was born
+    // with, which met those same forks.
+    assert_eq!(accepting.refused("pi-busy"), busy + 1);
+    assert!(r.log().contains("\"refused\":\"busy\""), "{}", r.log());
+    assert_eq!(probe::again_reasons()[agains..], ["fork"]);
+    // the parent's own frame, after all that: its nonce was used up by the
+    // answer to the child's line, so it is asked for once more
+    r.go("p4");
+    r.wait("p5");
+    r.the_parent_s_own_ending(&before);
+    assert_eq!(probe::again_reasons()[agains..], ["fork", "nonce"]);
+    r.end();
+    pane_b_ends(&server);
+    drop(accepting);
+    drop(server);
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+}
+
+/// R01, a connection that existed before Deck last looked. A child holds a
+/// connection its parent made, on which nothing has been said; the parent
+/// goes on with its heartbeat — which meets the fork that made the child,
+/// is asked for again and is written — and then the child is TOLD the nonce
+/// the parent holds now: more than any child can find out, since that nonce
+/// came on a connection made after the child. It writes the ending of the
+/// parent's run with it, all but the end of the line; the parent looks at
+/// the connection and ends the line itself. The kernel names the parent, the
+/// nonce is the lease's own, and no fork was counted since it was made.
+/// Nothing is written: that connection was made before the look after which
+/// the nonce was made, and a child from before that look may hold it.
+#[test]
+fn r01_a_connection_made_before_deck_last_looked_is_nobody_s_whatever_it_carries() {
+    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+    let _guard = fresh();
+    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+    let server = Server::start("r01o");
+    let accepting = Accepting::start(&server, BOTH);
+    build_peer(&server.base.join("observer"), "parent");
+    pane_b_works(&server);
+    let r = Round {
+        server: &server,
+        name: "before".into(),
+    };
+    r.start(&format!(
+        "@open @child @wait:{y1} @load:{told} '@part:{ending}' @mark:{y2} @parent {heartbeat} \
+         @save:{told} @mark:{p1} @wait:{p2} @touch '@line:' @mark:{p3} @wait:{p4} @close {own} \
+         @mark:{p5} @wait:{end} '@once:{decks}' {bye}",
+        y1 = r.mark("y1"),
+        y2 = r.mark("y2"),
+        told = r.mark("told"),
+        p1 = r.mark("p1"),
+        p2 = r.mark("p2"),
+        p3 = r.mark("p3"),
+        p4 = r.mark("p4"),
+        p5 = r.mark("p5"),
+        end = r.mark("end"),
+        heartbeat = step(serde_json::json!({"seq": 3})),
+        ending = step_line(serde_json::json!({"seq": 4, "run": 1, "state": "turn-done"})),
+        own = step(serde_json::json!({"seq": 4, "run": 1, "state": "turn-done"})),
+        decks = crate::agent_pi::place_line(),
+        bye = step(serde_json::json!({"seq": 5, "reason": "quit"})),
+    ));
+    let asked = probe::agains();
+    r.go("go");
+    r.wait("p1");
+    // the heartbeat met the fork that made the child, and was then written
+    assert_eq!(probe::again_reasons()[asked..], ["fork"]);
+    assert!(r.log().contains("\"ack\":3"), "{}", r.log());
+    let (before, agains, mismatched) = (
+        written(),
+        probe::agains(),
+        accepting.refused("pi-sender-mismatch"),
+    );
+    // the child writes with the nonce it was told; the parent ends the line
+    r.go("y1");
+    r.wait("y2");
+    r.go("p2");
+    r.wait("p3");
+    until("the answer to the line the child wrote", || {
+        probe::agains() > agains
+            || accepting.refused("pi-sender-mismatch") > mismatched
+            || written() != before
+    });
+    assert_eq!(
+        written(),
+        before,
+        "what a child wrote was taken for its parent's"
+    );
+    assert_eq!(server.state("deck-a"), Some("working"));
+    // the process, the nonce and the forks were right: the connection was not
+    assert_eq!(probe::again_reasons()[agains..], ["place"]);
+    // the parent's own frame, after all that: its nonce was used up by the
+    // answer to that line, so it is asked for once more
+    r.go("p4");
+    r.wait("p5");
+    r.the_parent_s_own_ending(&before);
+    assert_eq!(probe::again_reasons()[agains..], ["place", "nonce"]);
+    // Deck's own line is Deck's alone: in anybody else's mouth it asks for
+    // nothing and is told nothing
+    let mismatched = accepting.refused("pi-sender-mismatch");
+    r.end();
+    assert_eq!(accepting.refused("pi-sender-mismatch"), mismatched + 1);
+    assert!(
+        r.log().contains("\"refused\":\"sender-mismatch\""),
+        "{}",
+        r.log()
+    );
+    assert!(!r.log().contains("\"place\""), "{}", r.log());
+    pane_b_ends(&server);
     drop(accepting);
     drop(server);
     crate::agent_reentry::lifecycle::reset_pi_for_tests();

@@ -27,6 +27,8 @@
 //   @touch           look at it as an event loop does (poll), writing nothing
 //   @close           close it
 //   @forget          forget the lease and the nonce
+//   @save:<file>     write the lease and the nonce it holds into that file
+//   @load:<file>     hold the lease and the nonce that file says
 //   @fork            start a child that executes another program; wait for it
 //   @kid             go on in a CHILD of this process with the steps up to
 //                    `@parent`: it has this process's memory and descriptors,
@@ -188,6 +190,19 @@ int main(int argc, char **argv) {
         } else if (!strcmp(s, "@forget")) {
             strcpy(lease, "0");
             nonce[0] = 0;
+        } else if (!strncmp(s, "@save:", 6)) {
+            FILE *out = fopen(s + 6, "w");
+            if (out) {
+                fprintf(out, "%s %s\n", lease, nonce);
+                fclose(out);
+            }
+        } else if (!strncmp(s, "@load:", 6)) {
+            FILE *in = fopen(s + 6, "r");
+            if (in) {
+                char given[40] = "";
+                if (fscanf(in, "%31s %39s", lease, given) == 2) snprintf(nonce, sizeof nonce, "%s", given);
+                fclose(in);
+            }
         } else if (!strcmp(s, "@fork")) {
             pid_t p = fork();
             if (!p) {

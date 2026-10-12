@@ -709,6 +709,51 @@ fn answers_are_six_closed_lines() {
 /// A line of another wire version is told so in the framing IT claims: an
 /// observer reads nothing that is not of its own version, and takes this
 /// refusal as final. Every other refusal is said in this version.
+/// Deck's own line is one exact line that no observer's message can be: its
+/// source word is not an observer's, so the parser of the family refuses it.
+/// Its answer names a place and nothing else.
+#[test]
+fn deck_s_own_line_is_no_observer_s_and_its_answer_is_a_place() {
+    let own = place_line();
+    assert_eq!(
+        own,
+        "{\"protocol\":\"pi-observer\",\"v\":2,\"source\":\"deck\"}"
+    );
+    assert!(is_family(&own), "the listener hands it to this family");
+    assert!(asks_place(&own));
+    assert_eq!(parse_message(&own).err(), Some("bad-frame"));
+    // nothing an observer sends is taken for it, and nothing like it is
+    for other in [
+        hello(|_| {}),
+        format!("{own} "),
+        format!(" {own}"),
+        own.replace("deck", "pi"),
+        own.replace("\"v\":2", "\"v\":1"),
+        own.replace('}', ",\"lease\":1}"),
+    ] {
+        assert!(!asks_place(&other), "{other}");
+    }
+    assert_eq!(
+        placed_line(41),
+        "{\"protocol\":\"pi-observer\",\"v\":2,\"place\":41}\n"
+    );
+    assert_eq!(placed(&placed_line(41)), Some(41));
+    assert_eq!(placed(&placed_line(u64::MAX)), Some(u64::MAX));
+    let nonce = Nonce::parse(NONCE).unwrap();
+    for other in [
+        nonce_line(&nonce),
+        again_line(&nonce),
+        refused_line("busy"),
+        "{\"protocol\":\"agent-lifecycle\",\"v\":2,\"place\":41}\n".to_string(),
+        "{\"protocol\":\"pi-observer\",\"v\":1,\"place\":41}\n".to_string(),
+        "{\"protocol\":\"pi-observer\",\"v\":2,\"place\":-1}\n".to_string(),
+        "{\"protocol\":\"pi-observer\",\"v\":2,\"place\":\"41\"}\n".to_string(),
+        String::new(),
+    ] {
+        assert_eq!(placed(&other), None, "{other}");
+    }
+}
+
 #[test]
 fn another_version_is_refused_in_its_own_framing() {
     let old = "{\"protocol\":\"pi-observer\",\"v\":1,\"source\":\"pi\",\"seq\":1}";

@@ -35,16 +35,18 @@
 //!   instant, the pane's foreground leader and its terminal: `transport`,
 //!   "Who may bind"), that this process has not executed another image since
 //!   it was first watched (`procinfo::InstanceWatch`: an exec keeps the pid
-//!   and the birth instant), and whether it made a child since Deck last
-//!   looked — which, with a nonce Deck gave that process alone, is what says
-//!   that a line is that process's own and no child's (`transport`, "Whose
-//!   bytes"). The backend names one accepted observer (a lease, never
-//!   reused). The observer counts its runs inside that lease. Pi's native
-//!   session id is a fourth thing, used only by the lifecycle capability and
-//!   never as an interaction id. What a line SAYS about its pane, server,
-//!   version or mode is a claim. That a process is still the instance that
-//!   attested says nothing about WHOSE program it is: it is no product
-//!   identity and admits no re-entry.
+//!   and the birth instant), whether it made a child since Deck last looked,
+//!   and — by the order in which it hands connections to the listener —
+//!   that a connection was made after that look. Together, and with a nonce
+//!   Deck gave that process alone, that is what says that a line is that
+//!   process's own and no child's (`transport`, "Whose bytes"). The backend
+//!   names one accepted observer (a lease, never reused). The observer
+//!   counts its runs inside that lease. Pi's native session id is a fourth
+//!   thing, used only by the lifecycle capability and never as an
+//!   interaction id. What a line SAYS about its pane, server, version or
+//!   mode is a claim. That a process is still the instance that attested
+//!   says nothing about WHOSE program it is: it is no product identity and
+//!   admits no re-entry.
 //! - **The wire** (`parse_message`): one JSON object per line, at most
 //!   `MAX_LINE` bytes, protocol `pi-observer`, version 2, source `pi`.
 //!   Exactly seven shapes, told apart by their exact key sets: `hello` (no
@@ -78,6 +80,12 @@
 //!   new connection with the new nonce; and `refused` with a closed code.
 //!   The bits only ever narrow: nothing Deck sends gives a running observer
 //!   a capability back.
+//! - **Deck's own line.** One more line exists on this socket and no
+//!   observer can send it: the admission worker connects to the listener it
+//!   answers for and asks for that connection's PLACE among the accepted
+//!   ones (`place_line`, source `deck`; answered `placed_line` to Deck's own
+//!   pid and to nobody else). It says nothing about any pane and changes
+//!   nothing; `transport`, "Whose bytes", says what the place is for.
 //! - **Versions.** Wire version 1 kept one connection per observer; it could
 //!   not say whose bytes a frame was and is gone. A runtime that still holds
 //!   a version-1 observer in memory (Pi loaded it before Deck was replaced)
@@ -587,6 +595,31 @@ pub(crate) fn is_family(line: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(line)
         .ok()
         .is_some_and(|value| value.get("protocol").and_then(|p| p.as_str()) == Some(FAMILY))
+}
+
+/// Deck's own line (module header): what the admission worker writes on a
+/// connection to its own listener. Its source word is no observer's, so no
+/// line an observer may send is ever taken for it.
+pub(crate) fn place_line() -> String {
+    format!("{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"source\":\"deck\"}}")
+}
+
+/// Whether `line` is that line, byte for byte.
+pub(crate) fn asks_place(line: &str) -> bool {
+    line == place_line()
+}
+
+/// The answer to it: the place of that connection in the listener's order.
+pub(crate) fn placed_line(place: u64) -> String {
+    format!("{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"place\":{place}}}\n")
+}
+
+/// The place a `placed_line` names.
+pub(crate) fn placed(line: &str) -> Option<u64> {
+    let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    (value.get("protocol")?.as_str()? == FAMILY && value.get("v")?.as_u64()? == WIRE_VERSION)
+        .then(|| value.get("place")?.as_u64())
+        .flatten()
 }
 
 /// The fields of one line, with the family's common part checked.
