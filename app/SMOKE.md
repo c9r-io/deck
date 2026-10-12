@@ -77,8 +77,9 @@ python3 scripts/pi_native.py --test-binary <that executable> \
 - [ ] Session observation (the second switch) is covered in the same run:
       the one entry replaced by the one that carries both capabilities; the
       session Pi started in; a new session, a fork, a resume and a reload in
-      the running Pi (npm install), each with Pi's own reason and the id Pi
-      names; quit against a killed Pi; a session named on the command line
+      the running Pi (on the npm install AND on the standalone build), each
+      with Pi's own reason and the id Pi names; quit against a killed Pi; a
+      session named on the command line
       (a startup, never called a resume), a path or an id that does not
       exist, an id of the user's own; one session in two panes; session
       observation without work status; a Deck restart (a snapshot, never a
@@ -94,6 +95,27 @@ python3 scripts/pi_native.py --test-binary <that executable> \
       disabling entry, with a missing or broken entry; the dialog
       notifications arriving out of order; quit, a killed Pi, and a plain
       `node` that is not Pi.
+- [ ] Three more scenarios run on both runtimes. `capabilities`: each
+      switch turned off by itself while Pi is idle and while it is in a run —
+      the stream keeps its lease and the other capability, an unread ending
+      is not removed, a run that was open ends on the same lease, nothing is
+      refused for it; turned on again nothing comes back before Pi's own
+      reload, and Settings says `needs-reload` for exactly as long as a
+      running Pi waits; both off ends the streams; a quick sequence of
+      switches. `unsupported_ids`: Pi started with a session id of 256, 257,
+      512 and 513 bytes — observed whole up to 256, said to be `unsupported`
+      beyond (never cut short, never passed over), runs reported throughout,
+      a new runtime in a session Deck keeps observed again. `exec_peer`: a
+      real program in a pane's foreground (`scripts/pi/exec-peer.c`, TEST
+      ONLY) binds, forks, then EXECUTES ANOTHER IMAGE in the same pid with
+      the connection kept — the frame the new image sends is refused
+      `peer-executed`, a silent exec is ended by the poll, and nothing of the
+      old observer is shown; a file replaced on disk under the running
+      program changes nothing.
+- [ ] The summary names its build: the commit, whether the working tree
+      differed from it and in which files, one hash over the sources as they
+      were on disk (`scripts/pi_build_identity.py` prints the same for any
+      checkout), and the hash of the test executable.
 - [ ] It does NOT cover: a model account, the real window (that is the
       `pi-live` WKWebView mode), a signed release bundle, or Pi releases
       other than the two artifacts its summary names.
@@ -823,7 +845,7 @@ python3 scripts/pi-live-verify.py --runtime npm            # the npm install of 
 python3 scripts/pi-live-verify.py --runtime standalone --standalone <unpacked official build>
 ```
 
-- [ ] Exit 0 for both runtimes. The page reports thirteen checkpoints: the
+- [ ] Exit 0 for both runtimes. The page reports sixteen checkpoints: the
       switch off and clean; on through its confirmation; a clock automation's
       run that starts Pi; Pi connected with limited coverage and no attention
       of its own; the run's first step HELD at `pi-input-unverified` through
@@ -831,11 +853,19 @@ python3 scripts/pi-live-verify.py --runtime standalone --standalone <unpacked of
       that ends while the Board is in front counted once as unread; the held
       row delivered once by Send now; the switch turned off while Pi runs
       (the card's word gone at once, a further Pi run adding none); on again,
-      connected only after Pi's own `/reload`; session observation turned on
-      (a connected Pi keeps its earlier setting until its reload, then the
-      card's payload says `observed` and nothing of the session), the
-      restart review asked of the real backend meanwhile (this card named
-      as Pi, with Pi's own reason, not selectable, in no request), and off.
+      Settings saying that a running Pi needs its reload, connected only after
+      Pi's own `/reload`; session observation turned on (a connected Pi keeps
+      its earlier setting until its reload, then the card's payload says
+      `observed` and nothing of the session); what the user SEES of that —
+      the two switches and their note in the real Settings dialog, the card's
+      status and its real "Why?" dialog, in both languages; the real restart
+      review opened on the real backend's answer (this card named as Pi, with
+      Pi's own reason, no box to tick, the one action the plain restart) and
+      closed without confirming anything; session observation off again
+      while Pi runs, after which the SAME Pi's next run is still reported;
+      and a new Pi started with a 300-byte session id, which the card says it
+      cannot observe while its runs are reported as ever. Twelve snapshots of
+      the window land in `<data dir>/evidence/`.
 - [ ] The operator's own checks, which the page cannot make: Pi's settings
       byte for byte at each step (the user's bytes, plus Deck's one entry,
       minus exactly that entry, the same bytes again), the held row's text
@@ -843,14 +873,57 @@ python3 scripts/pi-live-verify.py --runtime standalone --standalone <unpacked of
       typed, that text present exactly once after Send now, the production's
       closed app.log lines for each step and nothing of a prompt, a path, an
       answer or a native session id in that log or in Deck's data directory,
-      and the machine's own Deck unchanged.
-- [ ] The window takes the foreground and keyboard focus for about two
+      that between the narrowing and the next run's ending no observer was
+      bound and no stream ended (the same stream went on), and the machine's
+      own Deck unchanged. `result.json` names the build: the commit, the
+      working tree's difference from it, the hash over the sources, the hash
+      of every executable and observer file of the carrier, and the runtime;
+      a debug executable older than its newest source file is refused.
+- [ ] The window takes the foreground and keyboard focus for about four
       minutes. A locked screen stops the page's timers and the run with
       them; with `--host <ssh alias>` the same root is moved to the same path
       on another Mac that has a console login (AGENTS.md, "Mac mini test
       resource"), run there by the same file and trashed there afterwards.
 - [ ] Not covered: a signed release bundle (`/Applications`), a model
-      account, notification posting (the carrier is ad-hoc signed).
+      account, notification posting (the carrier is ad-hoc signed), a real
+      Claude or Codex beside the Pi (that mix is laid out from scripted
+      answers in `pi-layout`).
+
+### What Pi's rows look like (WKWebView mode `pi-layout`)
+
+`pi-layout` is presentation only. The production modules paint the real
+Settings dialog, real cards, the real "Why?" dialog and the real restart
+review in the real window (1280×800, the supported minimum), in English and
+Chinese, at 50 %, 100 % and 160 % text size. No Pi, Claude or Codex runs:
+the cards are real cards with real, empty shell sessions, and what the
+backend would answer about them is scripted in the page
+(`app/ui/test/pi-layout-smoke.mjs` lists exactly which commands). It shows
+how a state READS, never that the backend reached it.
+
+```sh
+cargo build --manifest-path app/src-tauri/Cargo.toml
+python3 scripts/pi-live-verify.py --mode pi-layout [--host <ssh alias>]
+```
+
+- [ ] Exit 0. Each scene reports by itself: the Board (a Pi's status and its
+      "Why?" link beside Claude, Codex and a shell, with long titles); the
+      "Why?" dialog for every coverage and session word; the two Settings
+      switches and their note in every state of Pi's settings entry, their
+      "Learn more" texts, and a refused switch; the restart review with two
+      Claude candidates, two Pis, Codex and a shell (everything selected and
+      the bypass policy chosen: no Pi is selected or counted), with no
+      candidate at all, with observation not set up and with a preview that
+      cannot be read; and the result list, which names no Pi.
+- [ ] For each: nothing overflows sideways, rows do not overlap, the Pi rows
+      have no box and carry Pi's own reason, the ways out are inside the
+      dialog and nothing lies over them (`elementFromPoint`), and nothing
+      shaped like a native id, a pid, a digest or a path is painted.
+- [ ] 58 snapshots of the window land in `<data dir>/evidence/`; the
+      operator checks that each is a PNG of the whole window.
+- [ ] `pilay-m-card` is a MEASUREMENT and judges nothing: how many cards'
+      top rows run over the card (an attention badge beside a title, the
+      card's own chrome) and how many status texts were cut short, per
+      language and text size.
 
 ### Claude session re-entry with real clients
 

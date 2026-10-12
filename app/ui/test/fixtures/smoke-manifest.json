@@ -308,8 +308,32 @@
         "pi-send-now": {},
         "pi-disabled": {},
         "pi-reload": {},
-        "pi-review": {},
-        "pi-session": {}
+        "pi-session": {},
+        "pi-shown": {},
+        "pi-review": {"a": 1, "b": 0},
+        "pi-narrowed": {},
+        "pi-unsupported": {}
+      }
+    },
+    "pi-layout": {
+      "terminal": "done",
+      "checks": {
+        "pilay-m-window": {"metric": true},
+        "pilay-m-card": {"metric": true},
+        "pilay-board": {"a": 6, "b": 6},
+        "pilay-why": {"a": 36, "b": 36},
+        "pilay-settings": {"a": 48, "b": 48},
+        "pilay-settings-details": {"a": 6, "b": 6},
+        "pilay-settings-refused": {"a": 6, "b": 6},
+        "pilay-review-mixed": {"a": 6, "b": 6},
+        "pilay-review-none": {"a": 6, "b": 6},
+        "pilay-review-failure": {"a": 12, "b": 12},
+        "pilay-review-result": {"a": 6, "b": 6},
+        "pilay-no-native": {},
+        "pilay-ipc": {"a": 1, "b": 0},
+        "pilay-shots": {},
+        "pilay-detail": {"failureOnly": true},
+        "pilay-exception": {"failureOnly": true}
       }
     },
     "reentry-live": {

@@ -3206,6 +3206,14 @@ export async function verifyPiLive() {
   await runPiLiveSmoke();
 }
 
+// What Pi's Settings rows, card status, "Why?" dialog and restart-review row
+// look like in the real window, in both languages and at three text sizes,
+// from scripted backend answers: presentation only (pi-layout-smoke.mjs).
+export async function verifyPiLayout() {
+  const { runPiLayoutSmoke } = await import('./pi-layout-smoke.mjs');
+  return runPiLayoutSmoke();
+}
+
 // The shell service restart with "Reopen Agent sessions" through the real
 // dialog, with real Claude Code clients in the cards, under a home the
 // operator gave this carrier: observation off and on, bypass reapplied, a
