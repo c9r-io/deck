@@ -3421,15 +3421,18 @@ fn step_line(body: serde_json::Value) -> String {
     message(frame).replace("\"@LEASE@\"", "@LEASE@")
 }
 
-/// The time bounds of the tests that run real processes: production's, but
-/// for staleness. Their stand-in observers send no heartbeat (the real one's
-/// is every five seconds), and some stay bound for the whole of a long test.
-/// What these tests prove is whose bytes a line is, never how fast the
+/// The time bounds of the tests that run real processes: none that a slow
+/// machine could reach. Their stand-in observers send no heartbeat (the real
+/// one's is every five seconds), and some stay bound for the whole of a long
+/// test. What these tests prove is whose bytes a line is, never how fast the
 /// machine was: on a hosted runner one of them outlasted `STALE_AFTER`, and
-/// the silent lease in pane B ended in the middle of it.
+/// the silent lease in pane B ended in the middle of it. None of them expects
+/// a lease to go stale, an answer to come late or a nonce to run out; those
+/// have their own tests, under bounds of their own.
 const UNHURRIED: Bounds = Bounds {
+    answer: Duration::from_secs(120),
     stale: Duration::from_secs(3600),
-    ..Bounds::LIVE
+    challenge: Duration::from_secs(120),
 };
 
 /// The production listener — accept, the first line under its deadline, the
@@ -4484,9 +4487,15 @@ fn r01_what_one_child_read_on_a_connection_its_parent_left_writes_nothing_on_ano
     r.wait("p3");
     let (asked, mismatched) = (probe::agains(), accepting.refused("pi-sender-mismatch"));
     accepting.held(false);
+    // One `sender-mismatch` is not the child's. While Deck read nothing but
+    // the heartbeat, the worker's own connection for a mark waited at the
+    // closed door and was given up; it is accepted now, and its peer is
+    // gone. That refusal comes BEFORE the answer to the child's line, which
+    // needs a mark of its own from a connection behind it in the same queue:
+    // it is no sign of that answer. A second one would be.
     until("the answer to the child's line", || {
         probe::agains() > asked
-            || accepting.refused("pi-sender-mismatch") > mismatched
+            || accepting.refused("pi-sender-mismatch") > mismatched + 1
             || written() != before
     });
     assert_eq!(
