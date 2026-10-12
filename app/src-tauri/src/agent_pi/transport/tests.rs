@@ -1355,6 +1355,7 @@ fn a_nonce_waits_a_bounded_time_and_a_bounded_number_wait() {
         challenge: Duration::from_millis(60),
         ..Bounds::LIVE
     };
+    assert!(!watching(), "nothing is kept: the worker has no timer");
     let given = match challenge(&world, &quick, Some(310)) {
         Ok(Answer::Challenge(nonce)) => nonce,
         other => panic!("{other:?}"),
@@ -1379,9 +1380,17 @@ fn a_nonce_waits_a_bounded_time_and_a_bounded_number_wait() {
     std::thread::sleep(Duration::from_millis(120));
     assert!(challenge(&world, &quick, Some(9000)).is_ok());
     assert_eq!(probe::challenges(), 1);
+    assert!(watching(), "an open nonce is looked after");
     std::thread::sleep(Duration::from_millis(120));
     sweep(&quick);
     assert_eq!(probe::challenges(), 0);
+    assert!(!watching(), "and once it ran out, nothing is");
+    // a lease is looked after while it lives, and for as long as its end
+    // is remembered
+    let lease = bound(&world, "%1", 310).unwrap();
+    assert!(watching());
+    release(lease);
+    assert!(watching(), "a frame of it is still told why it ended");
 }
 
 /// R02, with the kernel's answers described exactly. What an earlier image
@@ -3747,10 +3756,13 @@ fn r01_no_child_of_the_observer_writes_anything_for_it() {
     for (kind, child) in &kinds {
         for (what, frame) in &forged {
             let r = round(format!("looked-{kind}-{what}"));
+            // The child reads its answer only when the test says so: a read
+            // is a use of the connection too, and would name the child again.
             r.start(&format!(
-                "@open {child} '@line:{frame}' @mark:{c1} @read @mark:{c2} @parent @wait:{c1} \
-                 @touch @mark:{p1} @wait:{p2} @close {own} @mark:{p3} @wait:{end} {bye}",
+                "@open {child} '@line:{frame}' @mark:{c1} @wait:{read} @read @mark:{c2} @parent \
+                 @wait:{c1} @touch @mark:{p1} @wait:{p2} @close {own} @mark:{p3} @wait:{end} {bye}",
                 c1 = r.mark("c1"),
+                read = r.mark("read"),
                 c2 = r.mark("c2"),
                 p1 = r.mark("p1"),
                 p2 = r.mark("p2"),
@@ -3762,8 +3774,17 @@ fn r01_no_child_of_the_observer_writes_anything_for_it() {
             accepting.held(true);
             r.go("go");
             r.wait("p1");
-            let (before, agains) = (written(), probe::agains());
+            let (before, agains, mismatched) = (
+                written(),
+                probe::agains(),
+                accepting.refused("pi-sender-mismatch"),
+            );
             accepting.held(false);
+            until("the answer to the child's line", || {
+                probe::agains() == agains + 1
+                    || accepting.refused("pi-sender-mismatch") > mismatched
+            });
+            r.go("read");
             r.wait("c2");
             assert!(
                 r.log().contains("\"again\":true"),
@@ -3928,12 +3949,13 @@ fn r01_no_child_of_the_observer_writes_anything_for_it() {
         let at = frame.find("\"protocol\"").unwrap() + 5;
         let (head, tail) = frame.split_at(at);
         r.start(&format!(
-            "@open @kid '@part:{head}' @mark:{c1} @wait:{c2} '@line:{tail}' @mark:{c3} @read \
-             @mark:{c4} @parent @wait:{c1} @touch @mark:{p1} @wait:{c3} @touch @mark:{p2} \
-             @wait:{p3} @close {own} @mark:{p4} @wait:{end} {bye}",
+            "@open @kid '@part:{head}' @mark:{c1} @wait:{c2} '@line:{tail}' @mark:{c3} \
+             @wait:{read} @read @mark:{c4} @parent @wait:{c1} @touch @mark:{p1} @wait:{c3} \
+             @touch @mark:{p2} @wait:{p3} @close {own} @mark:{p4} @wait:{end} {bye}",
             c1 = r.mark("c1"),
             c2 = r.mark("c2"),
             c3 = r.mark("c3"),
+            read = r.mark("read"),
             c4 = r.mark("c4"),
             p1 = r.mark("p1"),
             p2 = r.mark("p2"),
@@ -3948,8 +3970,16 @@ fn r01_no_child_of_the_observer_writes_anything_for_it() {
         r.wait("p1");
         r.go("c2");
         r.wait("p2");
-        let (before, agains) = (written(), probe::agains());
+        let (before, agains, mismatched) = (
+            written(),
+            probe::agains(),
+            accepting.refused("pi-sender-mismatch"),
+        );
         accepting.held(false);
+        until("the answer to the child's line", || {
+            probe::agains() == agains + 1 || accepting.refused("pi-sender-mismatch") > mismatched
+        });
+        r.go("read");
         r.wait("c4");
         assert!(r.log().contains("\"again\":true"), "{}", r.log());
         assert_eq!(written(), before);

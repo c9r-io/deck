@@ -18,7 +18,10 @@
 //!   observers are bound and `MAX_CHALLENGES` nonces are open; a line is
 //!   at most `agent_pi::MAX_LINE` bytes; an answer is one short line written
 //!   within `WRITE_BUDGET`. The worker's one tmux call per batch has
-//!   `LISTING_BUDGET`. The same worker, once a second, ends what went stale.
+//!   `LISTING_BUDGET`. The same worker, once a second, ends what went stale
+//!   — for as long as a lease or an open nonce is kept; with nothing to
+//!   look after it waits for a message and for nothing else, so a Deck no
+//!   Pi speaks to has no timer here.
 //! - **An answer follows the commit, in time or not at all.** A frame is
 //!   answered `ack` only after it was verified and written. A message that
 //!   is not ready to be written `ANSWER_BUDGET` after it was handed over —
@@ -1143,16 +1146,31 @@ fn answer(mut stream: UnixStream, line: &str, budget: Duration) {
     let _ = stream.write_all(line.as_bytes());
 }
 
+/// Whether anything is kept that the worker has to look at by itself: a
+/// lease that may go stale or whose process may end, an ended one that is
+/// still remembered, a nonce that may run out.
+fn watching() -> bool {
+    with_registry(|registry| !registry.leases.is_empty() || !registry.challenges.is_empty())
+}
+
 fn worker(waiting: Receiver<Job>, world: World, report: Reporter, bounds: Bounds) {
     let every = SWEEP_EVERY
         .min(bounds.stale / 4)
         .max(Duration::from_millis(5));
     let mut swept = Instant::now();
     loop {
-        let first = match waiting.recv_timeout(every) {
-            Ok(job) => Some(job),
-            Err(RecvTimeoutError::Timeout) => None,
-            Err(RecvTimeoutError::Disconnected) => break,
+        // with nothing to look after there is nothing to wake up for
+        let first = if watching() {
+            match waiting.recv_timeout(every) {
+                Ok(job) => Some(job),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match waiting.recv() {
+                Ok(job) => Some(job),
+                Err(_) => break,
+            }
         };
         if let Some(first) = first {
             // Everything already waiting is one batch: a listing taken from
