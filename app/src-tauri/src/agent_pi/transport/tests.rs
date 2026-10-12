@@ -3421,6 +3421,17 @@ fn step_line(body: serde_json::Value) -> String {
     message(frame).replace("\"@LEASE@\"", "@LEASE@")
 }
 
+/// The time bounds of the tests that run real processes: production's, but
+/// for staleness. Their stand-in observers send no heartbeat (the real one's
+/// is every five seconds), and some stay bound for the whole of a long test.
+/// What these tests prove is whose bytes a line is, never how fast the
+/// machine was: on a hosted runner one of them outlasted `STALE_AFTER`, and
+/// the silent lease in pane B ended in the middle of it.
+const UNHURRIED: Bounds = Bounds {
+    stale: Duration::from_secs(3600),
+    ..Bounds::LIVE
+};
+
 /// The production listener — accept, the first line under its deadline, the
 /// dispatcher — on a real server's status socket, with a Pi service that
 /// asks that server's tmux and the real kernel.
@@ -3452,7 +3463,7 @@ impl Accepting {
                 }),
                 socket: "t".into(),
             },
-            Bounds::LIVE,
+            UNHURRIED,
         );
         let stop = Arc::new(AtomicBool::new(false));
         let pass = Arc::new(std::sync::atomic::AtomicI64::new(-1));
