@@ -149,8 +149,8 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // Pi run has no `needs-input`), and the ONE store writer for a verified
     // observer frame maps the closed `RunState` to them and forwards the
     // session's Signal target to the attention loop, as `ingest` does
-    ("agent_pi.rs", "parse_frame", "\"working\"", 1, Producer),
-    ("agent_pi.rs", "parse_frame", "\"turn-done\"", 1, Producer),
+    ("agent_pi.rs", "frame", "\"working\"", 1, Producer),
+    ("agent_pi.rs", "frame", "\"turn-done\"", 1, Producer),
     ("agent_status.rs", "pi_signal", "WORKING", 1, Producer),
     ("agent_status.rs", "pi_signal", "TURN_DONE", 1, Producer),
     (
@@ -691,9 +691,10 @@ fn every_pi_observer_signal_site_is_classified() {
     let wire = text("agent_pi.rs");
     assert!(wire.contains("pub(crate) enum RunState {\n    Working,\n    TurnDone,\n}"));
     let parse = {
+        // the one function that reads a run's word off the wire
         let at = wire
-            .find("pub(crate) fn parse_frame(")
-            .expect("parse_frame");
+            .find("fn frame(fields: Fields)")
+            .expect("the frame parser");
         let (open, close) = body_span(&wire, at).unwrap();
         wire[open..=close].to_string()
     };

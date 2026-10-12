@@ -43,13 +43,16 @@
 //! A fourth fact stands beside those three and is none of them: whether a
 //! process is still the EXECUTION INSTANCE it was (`InstanceWatch`). A pid and
 //! a birth instant survive an exec, so a caller that bound something to "the
-//! program that runs in this process now" — a Pi observer's stream
+//! program that runs in this process now" — a Pi observer's lease
 //! (`agent_pi::transport`), what was proven of that observer
 //! (`agent_status`) — also holds a watch of the process and asks it whenever
 //! it reads or writes: the kernel's own exec and exit reports for that pid
 //! (kqueue `EVFILT_PROC`), taken without a task port and without starting
 //! anything. It says "the same instance" or "not", and nothing about which
 //! program or whose: it is no code identity and never stands in for one.
+//! The same watch counts the kernel's fork reports for the pid: whether the
+//! process made a child between two questions, which is what decides whether
+//! anything it made in that time can be held by another process as well.
 
 mod code_identity;
 
@@ -262,8 +265,27 @@ pub(crate) fn peer_pid(_stream: &std::os::unix::net::UnixStream) -> Option<u32> 
 // an exec (the child is another process, with its own pid and birth), an
 // exec in a child is the child's, and a file replaced on disk under a
 // running program changes nothing about the image in memory, so none of the
-// three is reported. Which program a process is, or whose, is NOT answered
-// by this and is never inferred from it (`code_identity`).
+// three is reported as one. Which program a process is, or whose, is NOT
+// answered by this and is never inferred from it (`code_identity`).
+//
+// The same registration also asks for `NOTE_FORK`, and a watch counts those
+// reports (`forks`). A fork leaves the watched process what it was; what it
+// changes is who ELSE may hold what that process held: a child starts with a
+// copy of its parent's memory and of its open descriptors. The kernel posts
+// the report before it lets the child run — for `fork` and for the spawn
+// call alike (xnu `kern_fork.c`, `kern_exec.c`; measured: 20000 children of
+// each kind whose first act was one byte on an inherited connection, and the
+// report was there every time that byte had been read). So "no fork was
+// counted between two readings of the queue" means that no process came to
+// hold a copy of anything the watched process made in between, and a caller
+// that needs a connection or a secret to be that process's ALONE asks exactly
+// this (`agent_pi::transport`). It is a fact about copies made by forking; a
+// descriptor a process hands to another on purpose is that process's own act
+// and is not reported by anything here.
+//
+// Registering a pid that is already watched changes nothing that was
+// reported and not yet taken (xnu `filt_proctouch` leaves it; measured), so
+// a second watch of a process never costs the first one an exec.
 
 /// What the kernel reported of a watched process since its watch was taken.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -285,12 +307,29 @@ const INSTANCE_EXECUTED: u8 = 1;
 const INSTANCE_EXITED: u8 = 2;
 const INSTANCE_UNREADABLE: u8 = 3;
 
+/// What one watch was told so far.
+struct InstanceSeen {
+    /// One of the `INSTANCE_` words; the first that is not `SAME` stands.
+    state: std::sync::atomic::AtomicU8,
+    /// How many fork reports were taken for the process.
+    forks: std::sync::atomic::AtomicU64,
+}
+
+impl InstanceSeen {
+    fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            state: std::sync::atomic::AtomicU8::new(INSTANCE_SAME),
+            forks: std::sync::atomic::AtomicU64::new(0),
+        })
+    }
+}
+
 /// One process as the execution instance it was when `of` was called. The
 /// first thing reported of it stands for as long as the watch lives; a
 /// process is never watched again under the same watch.
 pub(crate) struct InstanceWatch {
     pid: u32,
-    state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    seen: std::sync::Arc<InstanceSeen>,
     /// Whether the kernel's queue holds a registration this watch shares
     /// (a test's stand-in has none).
     registered: bool,
@@ -301,7 +340,7 @@ pub(crate) struct InstanceWatch {
 #[cfg(target_os = "macos")]
 struct InstanceQueue {
     queue: std::os::fd::OwnedFd,
-    watched: HashMap<u32, Vec<std::sync::Arc<std::sync::atomic::AtomicU8>>>,
+    watched: HashMap<u32, Vec<std::sync::Arc<InstanceSeen>>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -332,7 +371,7 @@ impl InstanceQueue {
             ident: pid as libc::uintptr_t,
             filter: libc::EVFILT_PROC,
             flags,
-            fflags: libc::NOTE_EXEC | libc::NOTE_EXIT,
+            fflags: libc::NOTE_EXEC | libc::NOTE_EXIT | libc::NOTE_FORK,
             data: 0,
             udata: std::ptr::null_mut(),
         };
@@ -357,10 +396,10 @@ impl InstanceQueue {
             .watched
             .iter()
             .filter(|(watched, _)| pid.is_none_or(|pid| pid == **watched));
-        for (_, states) in lists {
-            for state in states {
+        for (_, watches) in lists {
+            for seen in watches {
                 // the first report stands
-                let _ = state.compare_exchange(
+                let _ = seen.state.compare_exchange(
                     INSTANCE_SAME,
                     word,
                     Ordering::AcqRel,
@@ -403,6 +442,13 @@ impl InstanceQueue {
             }
             for event in &events[..got as usize] {
                 let pid = event.ident as u32;
+                // one report may stand for several forks: what a caller asks
+                // is whether there was any, so each report counts once
+                if event.fflags & libc::NOTE_FORK != 0 {
+                    for seen in self.watched.get(&pid).into_iter().flatten() {
+                        seen.forks.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    }
+                }
                 // an exec that was followed by the exit is still an exec first
                 if event.fflags & libc::NOTE_EXEC != 0 {
                     self.mark(Some(pid), INSTANCE_EXECUTED);
@@ -437,11 +483,11 @@ impl InstanceWatch {
         if !queue.change(pid, libc::EV_ADD | libc::EV_CLEAR) {
             return None;
         }
-        let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(INSTANCE_SAME));
-        queue.watched.entry(pid).or_default().push(state.clone());
+        let seen = InstanceSeen::new();
+        queue.watched.entry(pid).or_default().push(seen.clone());
         Some(std::sync::Arc::new(Self {
             pid,
-            state,
+            seen,
             registered: true,
         }))
     }
@@ -449,6 +495,28 @@ impl InstanceWatch {
     #[cfg(not(target_os = "macos"))]
     pub(crate) fn of(_pid: u32) -> Option<std::sync::Arc<Self>> {
         None
+    }
+
+    /// Take what the kernel reported until now.
+    fn asked(&self) {
+        if !self.registered {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use crate::sync::LockRecover;
+            match INSTANCES.lock_or_recover().as_mut() {
+                Some(queue) => queue.drain(),
+                None => {
+                    let _ = self.seen.state.compare_exchange(
+                        INSTANCE_SAME,
+                        INSTANCE_UNREADABLE,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                    );
+                }
+            }
+        }
     }
 
     /// Whether the watched process is still the instance it was, asked of
@@ -460,34 +528,36 @@ impl InstanceWatch {
             INSTANCE_EXITED => Continuity::Exited,
             _ => Continuity::Unreadable,
         };
-        let known = self.state.load(std::sync::atomic::Ordering::Acquire);
-        if known != INSTANCE_SAME || !self.registered {
+        let known = self.seen.state.load(std::sync::atomic::Ordering::Acquire);
+        if known != INSTANCE_SAME {
             return word(known);
         }
-        #[cfg(target_os = "macos")]
-        {
-            use crate::sync::LockRecover;
-            match INSTANCES.lock_or_recover().as_mut() {
-                Some(queue) => queue.drain(),
-                None => return Continuity::Unreadable,
-            }
-        }
-        word(self.state.load(std::sync::atomic::Ordering::Acquire))
+        self.asked();
+        word(self.seen.state.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    /// How many fork reports the kernel has made of the watched process
+    /// since this watch was taken, asked now. A caller keeps the number and
+    /// asks again later: the same number means that the process made no
+    /// child in between (section header). It only ever grows.
+    pub(crate) fn forks(&self) -> u64 {
+        self.asked();
+        self.seen.forks.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// A watch no kernel answers, and the switch that says what happened to
-    /// its process: a test describes an exec, an exit or a failed read
-    /// exactly, without starting a program.
+    /// its process: a test describes an exec, an exit, a fork or a failed
+    /// read exactly, without starting a program.
     #[cfg(test)]
     pub(crate) fn stand_in() -> (std::sync::Arc<Self>, InstanceStandIn) {
-        let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(INSTANCE_SAME));
+        let seen = InstanceSeen::new();
         (
             std::sync::Arc::new(Self {
                 pid: 0,
-                state: state.clone(),
+                seen: seen.clone(),
                 registered: false,
             }),
-            InstanceStandIn(state),
+            InstanceStandIn(seen),
         )
     }
 }
@@ -504,11 +574,11 @@ impl Drop for InstanceWatch {
             let Some(queue) = instances.as_mut() else {
                 return;
             };
-            let Some(states) = queue.watched.get_mut(&self.pid) else {
+            let Some(watches) = queue.watched.get_mut(&self.pid) else {
                 return;
             };
-            states.retain(|state| !std::sync::Arc::ptr_eq(state, &self.state));
-            if states.is_empty() {
+            watches.retain(|seen| !std::sync::Arc::ptr_eq(seen, &self.seen));
+            if watches.is_empty() {
                 queue.watched.remove(&self.pid);
                 // nobody watches this process any more; a registration the
                 // kernel already dropped is simply not there
@@ -520,12 +590,14 @@ impl Drop for InstanceWatch {
 
 /// What a test says happened to the process of a stand-in watch.
 #[cfg(test)]
-pub(crate) struct InstanceStandIn(std::sync::Arc<std::sync::atomic::AtomicU8>);
+pub(crate) struct InstanceStandIn(std::sync::Arc<InstanceSeen>);
 
 #[cfg(test)]
 impl InstanceStandIn {
     fn put(&self, word: u8) {
-        self.0.store(word, std::sync::atomic::Ordering::Release);
+        self.0
+            .state
+            .store(word, std::sync::atomic::Ordering::Release);
     }
     pub(crate) fn executed(&self) {
         self.put(INSTANCE_EXECUTED);
@@ -535,6 +607,12 @@ impl InstanceStandIn {
     }
     pub(crate) fn unreadable(&self) {
         self.put(INSTANCE_UNREADABLE);
+    }
+    /// The process made a child.
+    pub(crate) fn forked(&self) {
+        self.0
+            .forks
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
@@ -3129,19 +3207,103 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A second watch of a process that is already watched costs the first
+    /// nothing, whenever it is taken — before the exec, after it, or WHILE
+    /// the process executes. Registering a pid again leaves what the kernel
+    /// reported and nobody took yet (xnu `filt_proctouch`), so an exec that
+    /// falls into another watch's registration is still the first watch's
+    /// report. Here one thread registers watches of a process as fast as it
+    /// can while the process executes another image, again and again: no
+    /// exec is ever missed by the watch that was there before it, and a
+    /// watch taken after the exec was reported is of the new image.
+    #[test]
+    fn a_watch_taken_while_a_process_executes_never_costs_an_earlier_one_its_report() {
+        let dir = fixture::directory("rewatch");
+        let (program, next) = (dir.join("peer"), dir.join("next"));
+        fixture::build(&program, "build-A", &[], fixture::IDENTIFIER);
+        fixture::build(&next, "build-B", &[], fixture::IDENTIFIER);
+        let (mut process, _) = Process::start(&program, None).expect("the fixture runs");
+        let pid = process.pid();
+        let (mut taken, mut reported_to_late_ones) = (0u64, 0u64);
+        for round in 0..60 {
+            let first = InstanceWatch::of(pid).expect("a watch before the exec");
+            assert_eq!(first.continuity(), Continuity::Same, "round {round}");
+            let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let registering = std::thread::spawn({
+                let busy = busy.clone();
+                move || {
+                    let mut watches = Vec::new();
+                    while busy.load(std::sync::atomic::Ordering::Acquire) {
+                        watches.push(InstanceWatch::of(pid).expect("a watch meanwhile"));
+                    }
+                    watches
+                }
+            });
+            // let the other thread get going, then execute another image
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            assert_eq!(process.exec(&next).as_deref(), Some("build-B"));
+            busy.store(false, std::sync::atomic::Ordering::Release);
+            let meanwhile = registering.join().unwrap();
+            assert_eq!(
+                first.continuity(),
+                Continuity::Executed,
+                "round {round}: the exec was reported to the watch that was there"
+            );
+            // each of the others was taken before, during or after the exec:
+            // it says "executed" or "the same", and never anything else
+            for watch in &meanwhile {
+                let said = watch.continuity();
+                assert!(
+                    matches!(said, Continuity::Same | Continuity::Executed),
+                    "round {round}: {said:?}"
+                );
+                reported_to_late_ones += u64::from(said == Continuity::Executed);
+            }
+            taken += meanwhile.len() as u64;
+            // and one taken now is of the image that runs now
+            let after = InstanceWatch::of(pid).expect("a watch after the exec");
+            assert_eq!(after.continuity(), Continuity::Same, "round {round}");
+        }
+        assert!(taken > 60, "{taken} watches were taken while it executed");
+        assert!(
+            reported_to_late_ones > 0,
+            "some of them were there before an exec: {reported_to_late_ones} of {taken}"
+        );
+        drop(process);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A fork is not an exec, and neither is an exec in a child: the
-    /// process that was watched is still the program it was.
+    /// process that was watched is still the program it was. What a fork
+    /// does change is counted: a watch says whether its process made a
+    /// child between two questions, each watch from the moment it was taken.
     #[test]
     fn a_fork_and_a_child_s_exec_are_not_this_process_s_exec() {
         let mut peer = Stepper::start(
             std::path::Path::new("/bin/bash"),
-            "echo ready; read a; /usr/bin/true; (exec /usr/bin/true); echo forked; read b",
+            "echo ready; read a; /usr/bin/true; (exec /usr/bin/true); echo forked; read b; \
+             /usr/bin/true; echo again; read c",
         );
         assert_eq!(peer.word(), "ready");
         let watch = InstanceWatch::of(peer.child.id()).expect("a watch");
+        assert_eq!(watch.forks(), 0, "no child was made since the watch");
+        assert_eq!(watch.forks(), 0, "and asking does not make one");
         peer.step();
         assert_eq!(peer.word(), "forked");
         assert_eq!(watch.continuity(), Continuity::Same);
+        let counted = watch.forks();
+        assert!(counted > 0, "two children were made: that is reported");
+        assert_eq!(watch.forks(), counted, "and nothing more until the next");
+        // a watch taken now counts from now; the first one keeps its count
+        let later = InstanceWatch::of(peer.child.id()).expect("a second watch");
+        assert_eq!((later.forks(), watch.forks()), (0, counted));
+        peer.step();
+        assert_eq!(peer.word(), "again");
+        assert!(watch.forks() > counted && later.forks() > 0);
+        assert_eq!(
+            (watch.continuity(), later.continuity()),
+            (Continuity::Same, Continuity::Same)
+        );
         peer.step();
         until_instance("the exit", || watch.continuity() == Continuity::Exited);
         peer.end();
@@ -3186,5 +3348,9 @@ mod tests {
         let (watch, switch) = InstanceWatch::stand_in();
         switch.executed();
         assert_eq!(watch.continuity(), Continuity::Executed);
+        let (watch, switch) = InstanceWatch::stand_in();
+        assert_eq!(watch.forks(), 0);
+        switch.forked();
+        assert_eq!((watch.forks(), watch.continuity()), (1, Continuity::Same));
     }
 }

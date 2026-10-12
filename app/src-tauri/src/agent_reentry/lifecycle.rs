@@ -859,6 +859,8 @@ pub(crate) fn observe_pi(
     event: SessionEvent,
     native: &NativeId,
 ) -> Result<PiNoted, &'static str> {
+    #[cfg(test)]
+    PI_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let NativeId::Kept(id) = native else {
         return Ok(pi_unsupported(lease, key, generation));
     };
@@ -929,6 +931,8 @@ pub(crate) fn pi_unsupported(
     key: &PaneKey,
     generation: ForegroundGeneration,
 ) -> PiNoted {
+    #[cfg(test)]
+    PI_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     with_pi(|sessions| {
         let already = sessions
             .get(&lease)
@@ -950,7 +954,19 @@ pub(crate) fn pi_unsupported(
 
 /// The lease is over, or may no longer observe sessions: its record goes.
 pub(crate) fn forget_pi(lease: u64) {
+    #[cfg(test)]
+    PI_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     with_pi(|sessions| sessions.remove(&lease));
+}
+
+/// How often a Pi observer's session was asked to be written, changed or
+/// forgotten, whatever became of it: a test asks whether ANYTHING was.
+#[cfg(test)]
+static PI_WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+pub(crate) fn pi_writes_for_tests() -> u64 {
+    PI_WRITES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// What a card may say about its Pi's native session: one closed word, and
@@ -2294,10 +2310,14 @@ mod tests {
         /// The id a lifecycle frame names, as the wire parser reads it: kept,
         /// or well formed and longer than this build keeps.
         fn id(text: &str) -> NativeId {
-            match crate::agent_pi::parse_frame(&format!(
-                r#"{{"protocol":"pi-observer","v":1,"source":"pi","seq":1,"event":"snapshot","nativeSessionId":"{text}"}}"#
+            match crate::agent_pi::parse_message(&format!(
+                r#"{{"protocol":"pi-observer","v":2,"source":"pi","lease":1,"nonce":"{}","seq":1,"event":"snapshot","nativeSessionId":"{text}"}}"#,
+                "0".repeat(32)
             )) {
-                Ok(crate::agent_pi::Frame::Lifecycle { native, .. }) => native,
+                Ok(crate::agent_pi::Message::Frame {
+                    frame: Ok(crate::agent_pi::Frame::Lifecycle { native, .. }),
+                    ..
+                }) => native,
                 other => panic!("{other:?}"),
             }
         }

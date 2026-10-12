@@ -7135,10 +7135,13 @@ fn a_verified_pi_is_named_refused_and_never_started_whatever_is_approved() {
         "named as Pi, with the reason that is Pi's own"
     );
     // a session observed for that Pi changes nothing about it
-    let id = match crate::agent_pi::parse_frame(
-        r#"{"protocol":"pi-observer","v":1,"source":"pi","seq":1,"event":"snapshot","nativeSessionId":"session-one"}"#,
+    let id = match crate::agent_pi::parse_message(
+        r#"{"protocol":"pi-observer","v":2,"source":"pi","lease":77,"nonce":"00000000000000000000000000000000","seq":1,"event":"snapshot","nativeSessionId":"session-one"}"#,
     ) {
-        Ok(crate::agent_pi::Frame::Lifecycle { native, .. }) => native,
+        Ok(crate::agent_pi::Message::Frame {
+            frame: Ok(crate::agent_pi::Frame::Lifecycle { native, .. }),
+            ..
+        }) => native,
         other => panic!("{other:?}"),
     };
     lifecycle::observe_pi(

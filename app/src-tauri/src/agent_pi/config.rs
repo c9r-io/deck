@@ -55,11 +55,11 @@
 //!   lost. That window is short and is not closed.
 //! - **Configured is not loaded.** A switch says what Pi will load when it
 //!   next starts or reloads. Whether a running Pi has an observer is known
-//!   only from a stream the transport verified. Turning a switch OFF acts on
-//!   a running Pi at once (its stream loses that capability and keeps the
+//!   only from a lease the transport verified. Turning a switch OFF acts on
+//!   a running Pi at once (its lease loses that capability and keeps the
 //!   other, `transport`); turning one ON does not: `needs-reload` says that
 //!   a running Pi does something else than the file names now and will go
-//!   on doing so until it loads its extensions again — its stream may do
+//!   on doing so until it loads its extensions again — its lease may do
 //!   other things than the entry says, or its observer was ended for its
 //!   capabilities and does not come back by itself.
 

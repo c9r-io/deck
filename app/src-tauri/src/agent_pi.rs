@@ -1,13 +1,13 @@
 //! agent_pi.rs — the Pi coding agent's adapter: its registration, the closed
 //! `pi-observer` wire, and (in the submodules) its one settings entry and
-//! the bounded transport that serves its streams.
+//! the bounded transport that answers its messages.
 //!
 //! Deck owns attention around work; the Agent owns the work. This adapter
 //! observes two boundaries Pi itself declares — an agent run started, an
 //! agent run settled — and, separately, which native session a Pi runtime is
 //! in. It reads no prompt, message, title, tool call, result or transcript,
-//! sends Pi nothing but acknowledgements, and starts, steers or resumes
-//! nothing.
+//! sends Pi nothing but the answers to its observer's own messages, and
+//! starts, steers or resumes nothing.
 //!
 //! # Contract
 //! - **What is supported, and what is not.** Pi 1.1.x gives an extension a
@@ -25,46 +25,69 @@
 //! - **One transport.** The observer is a Pi extension inside the signed
 //!   Deck bundle (`resources/pi/`); Pi's settings name its path, nothing is
 //!   written under the home directory but that one settings entry
-//!   (`config`). In the Pi process it holds ONE stream on the existing
-//!   status socket (`transport`). No helper is spawned per event, no second
-//!   listener exists, and nothing here speaks to Pi by RPC, SDK or a
-//!   wrapper.
+//!   (`config`). In the Pi process it speaks to the existing status socket
+//!   (`transport`), ONE message per connection: a line, Deck's answer, the
+//!   end — as the other two families on that socket do. No helper is spawned
+//!   per event, no second listener exists, no connection is kept, and
+//!   nothing here speaks to Pi by RPC, SDK or a wrapper.
 //! - **Three identities that never stand in for one another.** The kernel
-//!   says which process connected (pid and birth instant, the pane's
-//!   foreground leader, its terminal) and that this process has not
-//!   executed another image since (`procinfo::InstanceWatch`: an exec keeps
-//!   the pid and the birth instant, so those two alone would let another
-//!   program speak through an inherited connection). The backend names one
-//!   accepted connection (a lease, never reused). The observer counts its
-//!   runs inside that connection. Pi's native session id is a fourth thing,
-//!   used only by the lifecycle capability and never as an interaction id.
-//!   What a line SAYS about its pane, server, version or mode is a claim.
-//!   That a process is still the instance that connected says nothing about
-//!   WHOSE program it is: it is no product identity and admits no re-entry.
-//! - **The wire** (`parse_hello`, `parse_frame`): one JSON object per line,
-//!   at most `MAX_LINE` bytes, protocol `pi-observer`, version 1, source
-//!   `pi`. Exactly six shapes, told apart by their exact key sets:
-//!   `hello` (`socket`, `server_pid`, `pane`, `observerVersion`, `piVersion`,
-//!   `mode`, `capabilities{signal,lifecycle}`), `signal` (`seq`, `run`,
-//!   `state`), `reset` (`seq`, `reason`), `lifecycle` (`seq`, `event`,
-//!   `nativeSessionId`, and `reason` for `start` and `shutdown` only),
-//!   `unavailable` (`seq`, `unavailable`: the one closed word
+//!   says which process last used a connection (its pid; with the birth
+//!   instant, the pane's foreground leader and its terminal: `transport`,
+//!   "Who may bind"), that this process has not executed another image since
+//!   it was first watched (`procinfo::InstanceWatch`: an exec keeps the pid
+//!   and the birth instant), and whether it made a child since Deck last
+//!   looked — which, with a nonce Deck gave that process alone, is what says
+//!   that a line is that process's own and no child's (`transport`, "Whose
+//!   bytes"). The backend names one accepted observer (a lease, never
+//!   reused). The observer counts its runs inside that lease. Pi's native
+//!   session id is a fourth thing, used only by the lifecycle capability and
+//!   never as an interaction id. What a line SAYS about its pane, server,
+//!   version or mode is a claim. That a process is still the instance that
+//!   attested says nothing about WHOSE program it is: it is no product
+//!   identity and admits no re-entry.
+//! - **The wire** (`parse_message`): one JSON object per line, at most
+//!   `MAX_LINE` bytes, protocol `pi-observer`, version 2, source `pi`.
+//!   Exactly seven shapes, told apart by their exact key sets: `hello` (no
+//!   key of its own: it asks for a nonce and claims nothing), `attest`
+//!   (`nonce`, `socket`, `server_pid`, `pane`, `observerVersion`,
+//!   `piVersion`, `mode`, `capabilities{signal,lifecycle}`), and, each with
+//!   the `lease` it belongs to, the `nonce` Deck's last answer gave and its
+//!   `seq`: `signal` (`run`, `state`), `reset` (`reason`), `lifecycle`
+//!   (`event`, `nativeSessionId`, and `reason` for `start` and `shutdown`
+//!   only), `unavailable` (`unavailable`: the one closed word
 //!   `unsupported-native-id`, sent INSTEAD of a lifecycle frame whose id
 //!   does not fit a line — the id itself is never cut short, hashed or left
-//!   out silently) and `ping` (`seq`). An unknown or repeated key, a missing
-//!   one, a number that is negative, fractional or beyond 2^53-1, an unknown
-//!   word, another protocol version or mode is refused; nothing is repaired.
-//!   There is no field for a prompt, a title, a path, a model or free text.
-//! - **What Deck says to Pi**, and nothing else: `accepted`; `ack` with the
-//!   sequence number that was committed; `revoked` with the sequence number
-//!   of a frame that was NOT committed because its capability was taken from
-//!   the stream in the meantime (the stream goes on); `capabilities` with
-//!   the two bits the stream may still use, sent whenever that became less
-//!   than the observer last knew — for a hello that claims more than the
-//!   settings enable, BEFORE its `accepted`, so that no frame of the rest is
-//!   ever sent; and `refused` with a closed code, which ends the stream.
+//!   out silently) and `ping` (nothing else). An unknown or repeated key, a
+//!   missing one, a number that is negative, fractional or beyond 2^53-1, an
+//!   unknown word, another protocol version or mode is refused; nothing is
+//!   repaired. There is no field for a prompt, a title, a path, a model or
+//!   free text. A line that names a lease and carries a nonce, and is none
+//!   of the five frames, is refused as well — and ends that lease when its
+//!   sender is proven, as any other frame Deck does not expect.
+//! - **What Deck says to Pi**, one line per connection and nothing else.
+//!   Every answer that is not a refusal carries a `nonce` no one has seen
+//!   before: the one the observer's NEXT message must carry, good for that
+//!   one message. To a `hello`, the nonce alone; `accepted` with the lease
+//!   and the two capability bits it may use; `ack` with the sequence number
+//!   that was committed, or `revoked` with the number of a frame that was
+//!   NOT committed because its capability was taken from the lease in the
+//!   meantime (the lease goes on) — both with the two bits as they are now;
+//!   `again`, when the sender could not be proven for a reason that is
+//!   nobody's fault (its process made a child, or an answer was lost):
+//!   nothing was read into anything, and the same message is welcome on a
+//!   new connection with the new nonce; and `refused` with a closed code.
 //!   The bits only ever narrow: nothing Deck sends gives a running observer
 //!   a capability back.
+//! - **Versions.** Wire version 1 kept one connection per observer; it could
+//!   not say whose bytes a frame was and is gone. A runtime that still holds
+//!   a version-1 observer in memory (Pi loaded it before Deck was replaced)
+//!   is answered `bad-version` in ITS framing, which that observer takes as
+//!   final: it stops, nothing of it is recognized or shown, and Pi's next
+//!   start or reload loads the observer this build ships. Nothing of version
+//!   1 is accepted beside version 2. Such a Pi is still a Pi by its name
+//!   (`PROCESS`), so its card says `unavailable` and the hold on automatic
+//!   prompts stands; that its runtime needs a reload is not said anywhere,
+//!   because nothing of a version-1 line is proven.
 //! - **Compatibility is not identity.** `piVersion` is Pi's own exported
 //!   version, used only to decide whether this build knows the meaning of
 //!   the events (`PiVersion::supported`: 1.1.x; 1.1.0 is what ran natively).
@@ -93,9 +116,10 @@ pub(crate) const SOURCE: &str = "pi";
 pub(crate) const PROCESS: &str = "pi";
 /// The longest line of this family, in bytes.
 pub(crate) const MAX_LINE: usize = 1024;
-/// The wire version and the observer's own version this build speaks.
-const WIRE_VERSION: u64 = 1;
-const OBSERVER_VERSION: u64 = 1;
+/// The wire version and the observer's own version this build speaks
+/// (module header, "Versions").
+const WIRE_VERSION: u64 = 2;
+const OBSERVER_VERSION: u64 = 2;
 /// The largest integer a JavaScript client can count to without a gap.
 const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 /// The longest native session id this build keeps. A longer one is reported
@@ -121,7 +145,7 @@ pub(crate) enum Capability {
 }
 
 /// A set of capabilities: what an entry carries, what the settings enable,
-/// what a stream may still do.
+/// what a lease may still do.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Capabilities {
     pub(crate) signal: bool,
@@ -170,7 +194,7 @@ pub(crate) enum RunState {
     TurnDone,
 }
 
-/// Why an observer withdrew what its stream reported: Pi's own teardown
+/// Why an observer withdrew what its lease reported: Pi's own teardown
 /// reasons, or the observer's own failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ResetReason {
@@ -263,7 +287,7 @@ fn native_id(text: &str) -> Option<NativeId> {
 pub(crate) enum PiVersion {
     /// A release whose event meanings this build knows.
     Supported,
-    /// Any other release: the stream is refused and the card says so.
+    /// Any other release: the attest is refused and the card says so.
     Unsupported,
 }
 
@@ -290,7 +314,69 @@ fn pi_version(text: &str) -> Option<PiVersion> {
     })
 }
 
-/// The first line of a stream: what the observer claims about itself.
+/// A nonce: 128 bits from the system's generator, given in one answer and
+/// good for the one message that follows it. By itself it shows one thing:
+/// that the line which carries it was written after it was made, by someone
+/// who read that answer or holds a copy of the memory of one who did — never
+/// which of them (`transport`, "Whose bytes").
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Nonce([u8; 16]);
+
+impl Nonce {
+    /// A nonce nobody has seen; `None` when the system has no randomness to
+    /// give, and then nothing is answered with one.
+    pub(crate) fn fresh() -> Option<Self> {
+        use ring::rand::SecureRandom;
+        let mut bytes = [0u8; 16];
+        ring::rand::SystemRandom::new().fill(&mut bytes).ok()?;
+        Some(Self(bytes))
+    }
+
+    /// Thirty-two lowercase hexadecimal digits, and nothing else.
+    fn parse(text: &str) -> Option<Self> {
+        let digits = text.as_bytes();
+        if digits.len() != 32 {
+            return None;
+        }
+        let value = |digit: u8| match digit {
+            b'0'..=b'9' => Some(digit - b'0'),
+            b'a'..=b'f' => Some(digit - b'a' + 10),
+            _ => None,
+        };
+        let mut bytes = [0u8; 16];
+        for (at, pair) in digits.chunks(2).enumerate() {
+            bytes[at] = value(pair[0])? << 4 | value(pair[1])?;
+        }
+        Some(Self(bytes))
+    }
+
+    fn hex(&self) -> String {
+        self.0.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    /// Whether two nonces are the same one, compared without a shortcut.
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        self.0
+            .iter()
+            .zip(other.0.iter())
+            .fold(0u8, |differ, (a, b)| differ | (a ^ b))
+            == 0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn of(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl std::fmt::Debug for Nonce {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        // never printed: a log or a failed assertion must not carry one
+        f.write_str("Nonce(..)")
+    }
+}
+
+/// What an observer claims about itself and its pane, in its `attest`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Hello {
     pub(crate) socket: String,
@@ -300,7 +386,25 @@ pub(crate) struct Hello {
     pub(crate) capabilities: Capabilities,
 }
 
-/// One frame after the hello.
+/// One line of this family, as a connection carries it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Message {
+    /// A request for a nonce. It claims nothing.
+    Hello,
+    /// The observer's claims, with the nonce its hello was answered with.
+    Attest { nonce: Nonce, hello: Hello },
+    /// One frame of the lease it names, with the nonce that lease's last
+    /// answer gave. A frame that is not one of the five shapes is kept as
+    /// its refusal: whose mistake that is can only be said once the sender
+    /// is proven (`transport`, "What is checked for every frame").
+    Frame {
+        lease: u64,
+        nonce: Nonce,
+        frame: Result<Frame, &'static str>,
+    },
+}
+
+/// One frame of a lease.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Frame {
     Signal {
@@ -367,6 +471,11 @@ struct Fields {
     event: Option<String>,
     native_id: Option<String>,
     unavailable: Option<String>,
+    nonce: Option<String>,
+    lease: Option<u64>,
+    /// A key this family does not have, or one that came twice: the line is
+    /// refused, and whose line it was may still be asked (`Message::Frame`).
+    malformed: bool,
 }
 
 fn put<T, E: serde::de::Error>(slot: &mut Option<T>, value: T) -> Result<(), E> {
@@ -374,6 +483,16 @@ fn put<T, E: serde::de::Error>(slot: &mut Option<T>, value: T) -> Result<(), E> 
         return Err(E::custom("duplicate"));
     }
     Ok(())
+}
+
+/// `put` for a key of the line itself: a second one is kept as what makes
+/// the line malformed, not as a failure to read it.
+fn keep<T>(slot: &mut Option<T>, value: T, malformed: &mut bool) {
+    if slot.is_some() {
+        *malformed = true;
+    } else {
+        *slot = Some(value);
+    }
 }
 
 struct CapabilitiesVisitor;
@@ -422,33 +541,41 @@ impl<'de> Visitor<'de> for FieldsVisitor {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Fields, A::Error> {
-        use serde::de::Error;
         let mut fields = Fields::default();
+        let mut malformed = false;
         while let Some(key) = map.next_key::<String>()? {
+            let bad = &mut malformed;
             match key.as_str() {
-                "protocol" => put(&mut fields.protocol, map.next_value()?)?,
-                "v" => put(&mut fields.version, map.next_value()?)?,
-                "source" => put(&mut fields.source, map.next_value()?)?,
-                "socket" => put(&mut fields.socket, map.next_value()?)?,
-                "server_pid" => put(&mut fields.server_pid, map.next_value()?)?,
-                "pane" => put(&mut fields.pane, map.next_value()?)?,
-                "observerVersion" => put(&mut fields.observer_version, map.next_value()?)?,
-                "piVersion" => put(&mut fields.pi_version, map.next_value()?)?,
-                "mode" => put(&mut fields.mode, map.next_value()?)?,
-                "capabilities" => put(
+                "protocol" => keep(&mut fields.protocol, map.next_value()?, bad),
+                "v" => keep(&mut fields.version, map.next_value()?, bad),
+                "source" => keep(&mut fields.source, map.next_value()?, bad),
+                "socket" => keep(&mut fields.socket, map.next_value()?, bad),
+                "server_pid" => keep(&mut fields.server_pid, map.next_value()?, bad),
+                "pane" => keep(&mut fields.pane, map.next_value()?, bad),
+                "observerVersion" => keep(&mut fields.observer_version, map.next_value()?, bad),
+                "piVersion" => keep(&mut fields.pi_version, map.next_value()?, bad),
+                "mode" => keep(&mut fields.mode, map.next_value()?, bad),
+                "capabilities" => keep(
                     &mut fields.capabilities,
                     map.next_value_seed(CapabilitiesSeed)?,
-                )?,
-                "seq" => put(&mut fields.seq, map.next_value()?)?,
-                "run" => put(&mut fields.run, map.next_value()?)?,
-                "state" => put(&mut fields.state, map.next_value()?)?,
-                "reason" => put(&mut fields.reason, map.next_value()?)?,
-                "event" => put(&mut fields.event, map.next_value()?)?,
-                "nativeSessionId" => put(&mut fields.native_id, map.next_value()?)?,
-                "unavailable" => put(&mut fields.unavailable, map.next_value()?)?,
-                _ => return Err(A::Error::custom("unknown key")),
+                    bad,
+                ),
+                "seq" => keep(&mut fields.seq, map.next_value()?, bad),
+                "run" => keep(&mut fields.run, map.next_value()?, bad),
+                "state" => keep(&mut fields.state, map.next_value()?, bad),
+                "reason" => keep(&mut fields.reason, map.next_value()?, bad),
+                "event" => keep(&mut fields.event, map.next_value()?, bad),
+                "nativeSessionId" => keep(&mut fields.native_id, map.next_value()?, bad),
+                "unavailable" => keep(&mut fields.unavailable, map.next_value()?, bad),
+                "nonce" => keep(&mut fields.nonce, map.next_value()?, bad),
+                "lease" => keep(&mut fields.lease, map.next_value()?, bad),
+                _ => {
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                    malformed = true;
+                }
             }
         }
+        fields.malformed = malformed;
         Ok(fields)
     }
 }
@@ -488,8 +615,58 @@ fn count(value: Option<u64>) -> Result<u64, &'static str> {
         .ok_or("bad-frame")
 }
 
-/// The first line of a stream. The error is the closed refusal code.
-pub(crate) fn parse_hello(line: &str) -> Result<Hello, &'static str> {
+/// One line of this family. The error is the closed refusal code.
+pub(crate) fn parse_message(line: &str) -> Result<Message, &'static str> {
+    let fields = fields(line)?;
+    let nonce = match fields.nonce.as_deref() {
+        Some(nonce) => Some(Nonce::parse(nonce).ok_or("bad-frame")?),
+        None => None,
+    };
+    if let Some(lease) = fields.lease {
+        return Ok(Message::Frame {
+            lease: count(Some(lease))?,
+            nonce: nonce.ok_or("bad-frame")?,
+            frame: if fields.malformed {
+                Err("bad-frame")
+            } else {
+                frame(fields)
+            },
+        });
+    }
+    if fields.malformed {
+        return Err("bad-frame");
+    }
+    if let Some(nonce) = nonce {
+        return Ok(Message::Attest {
+            nonce,
+            hello: claims(fields)?,
+        });
+    }
+    // a hello carries nothing of its own
+    match fields {
+        Fields {
+            socket: None,
+            server_pid: None,
+            pane: None,
+            observer_version: None,
+            pi_version: None,
+            mode: None,
+            capabilities: None,
+            seq: None,
+            run: None,
+            state: None,
+            reason: None,
+            event: None,
+            native_id: None,
+            unavailable: None,
+            ..
+        } => Ok(Message::Hello),
+        _ => Err("bad-frame"),
+    }
+}
+
+/// The claims of an `attest`.
+fn claims(fields: Fields) -> Result<Hello, &'static str> {
     let Fields {
         socket,
         server_pid,
@@ -505,8 +682,9 @@ pub(crate) fn parse_hello(line: &str) -> Result<Hello, &'static str> {
         event: None,
         native_id: None,
         unavailable: None,
+        lease: None,
         ..
-    } = fields(line)?
+    } = fields
     else {
         return Err("bad-frame");
     };
@@ -551,8 +729,8 @@ pub(crate) fn parse_hello(line: &str) -> Result<Hello, &'static str> {
     })
 }
 
-/// One frame after the hello. The error is the closed refusal code.
-pub(crate) fn parse_frame(line: &str) -> Result<Frame, &'static str> {
+/// The frame of a line that names a lease.
+fn frame(fields: Fields) -> Result<Frame, &'static str> {
     let Fields {
         seq,
         run,
@@ -569,7 +747,7 @@ pub(crate) fn parse_frame(line: &str) -> Result<Frame, &'static str> {
         mode: None,
         capabilities: None,
         ..
-    } = fields(line)?
+    } = fields
     else {
         return Err("bad-frame");
     };
@@ -636,34 +814,81 @@ pub(crate) fn parse_frame(line: &str) -> Result<Frame, &'static str> {
     }
 }
 
-/// The stream is bound: the observer may send frames.
-pub(crate) fn accepted_line() -> String {
-    format!("{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"accepted\":true}}\n")
-}
-
-/// Frame `seq` was verified and committed.
-pub(crate) fn ack_line(seq: u64) -> String {
-    format!("{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"ack\":{seq}}}\n")
-}
-
-/// Frame `seq` belongs to a capability this stream no longer has: it was
-/// not committed, and the stream goes on.
-pub(crate) fn revoked_line(seq: u64) -> String {
-    format!("{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"revoked\":{seq}}}\n")
-}
-
-/// What the stream may still do. Only ever less than the observer knew.
-pub(crate) fn capabilities_line(now: Capabilities) -> String {
+fn bits(now: Capabilities) -> String {
     format!(
-        "{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"capabilities\":{{\"signal\":{},\"lifecycle\":{}}}}}\n",
+        "\"capabilities\":{{\"signal\":{},\"lifecycle\":{}}}",
         now.signal, now.lifecycle
     )
 }
 
-/// The stream is over, for a closed reason: one of `REFUSALS`, a plain word
-/// that needs no escaping.
+/// To a hello: the nonce the `attest` of this process must carry.
+pub(crate) fn nonce_line(next: &Nonce) -> String {
+    format!(
+        "{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"nonce\":\"{}\"}}\n",
+        next.hex()
+    )
+}
+
+/// The observer is bound: its lease, the nonce its first frame must carry,
+/// and what that lease may do.
+pub(crate) fn accepted_line(lease: u64, next: &Nonce, now: Capabilities) -> String {
+    format!(
+        "{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"accepted\":{lease},\"nonce\":\"{}\",{}}}\n",
+        next.hex(),
+        bits(now)
+    )
+}
+
+/// Frame `seq` was verified and committed; the nonce the next frame must
+/// carry and what the lease may do now.
+pub(crate) fn ack_line(seq: u64, next: &Nonce, now: Capabilities) -> String {
+    format!(
+        "{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"ack\":{seq},\"nonce\":\"{}\",{}}}\n",
+        next.hex(),
+        bits(now)
+    )
+}
+
+/// Frame `seq` belongs to a capability this lease no longer has: it was
+/// not committed, and the lease goes on with what it may do now.
+pub(crate) fn revoked_line(seq: u64, next: &Nonce, now: Capabilities) -> String {
+    format!(
+        "{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"revoked\":{seq},\"nonce\":\"{}\",{}}}\n",
+        next.hex(),
+        bits(now)
+    )
+}
+
+/// The sender of this connection's line could not be proven, through no
+/// fault of the line: nothing was read into anything, and the same message
+/// may come again on a new connection, with this nonce.
+pub(crate) fn again_line(next: &Nonce) -> String {
+    format!(
+        "{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"again\":true,\"nonce\":\"{}\"}}\n",
+        next.hex()
+    )
+}
+
+/// The message is refused, for a closed reason: one of `REFUSALS`, a plain
+/// word that needs no escaping.
 pub(crate) fn refused_line(code: &'static str) -> String {
-    format!("{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"refused\":\"{code}\"}}\n")
+    refused_as(code, WIRE_VERSION)
+}
+
+fn refused_as(code: &'static str, version: u64) -> String {
+    format!("{{\"protocol\":\"{FAMILY}\",\"v\":{version},\"refused\":\"{code}\"}}\n")
+}
+
+/// The refusal of `line` for `code`. A line of another wire version is told
+/// so in the framing it claims (module header, "Versions"): an observer
+/// reads nothing that is not of its own version.
+pub(crate) fn refusal_of(line: &str, code: &'static str) -> String {
+    let claimed = (code == "bad-version")
+        .then(|| serde_json::from_str::<serde_json::Value>(line).ok())
+        .flatten()
+        .and_then(|value| value.get("v").and_then(serde_json::Value::as_u64))
+        .filter(|version| (1..=99).contains(version));
+    refused_as(code, claimed.unwrap_or(WIRE_VERSION))
 }
 
 /// The refusal codes of this family: what `refused_line` may carry and what
@@ -693,6 +918,8 @@ pub(crate) const REFUSALS: &[&str] = &[
     "bad-lifecycle",
     "late",
     "stale",
+    "no-challenge",
+    "sender-mismatch",
 ];
 
 /// The drop-diagnostics name of a refusal code (`agent_status::DROP_REASONS`).
@@ -722,6 +949,8 @@ pub(crate) fn drop_reason(code: &'static str) -> &'static str {
         "late" => "pi-late",
         "bad-lifecycle" => "pi-bad-lifecycle",
         "stale" => "pi-stale",
+        "no-challenge" => "pi-no-challenge",
+        "sender-mismatch" => "pi-sender-mismatch",
         _ => "other",
     }
 }

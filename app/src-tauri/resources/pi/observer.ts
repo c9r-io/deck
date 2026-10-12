@@ -16,8 +16,8 @@
 //   or environment value other than the three routing variables is read.
 // - Observation only. It registers no tool, command, provider, shortcut or
 //   flag, sends no message, starts, switches or forks no session, runs no
-//   tool or process, and opens no network connection. Its one output is one
-//   stream connection to Deck's private status socket.
+//   tool or process, and opens no network connection. Its one output is
+//   short connections to Deck's private status socket, one per message.
 // - Routing is `DECK_STATUS_SOCK`, `TMUX` and `TMUX_PANE`, which Deck's own
 //   tmux server exports to its panes. All three must be present and well
 //   formed; there is no fallback path. The socket path is used only as a Unix
@@ -25,59 +25,86 @@
 //   name a socket owned by this user with mode 0600 in a directory of this
 //   user that nobody else can enter. These are routing claims, not proof:
 //   Deck proves who connected from the kernel.
-// - Only an interactive terminal session (`ctx.mode === "tui"`) connects.
-//   The factory registers callbacks and starts nothing; the connection is
-//   opened by `session_start`.
-// - Protocol `pi-observer` v1, one JSON line per frame, at most 1024 bytes.
-//   `hello` first; then `signal`, `lifecycle`, `unavailable`, `reset` and
-//   `ping`, numbered from 1 without a gap. ONE frame waits for its answer at
-//   a time. An answer that takes more than two seconds, a refusal, an
-//   unexpected line or a full queue closes the connection and forgets what
-//   was queued: nothing queued is ever sent on a later connection.
+// - Only an interactive terminal session (`ctx.mode === "tui"`) speaks.
+//   The factory registers callbacks and starts nothing; the first message is
+//   sent by `session_start`.
+// - Protocol `pi-observer` v2, one JSON line per message, at most 1024
+//   bytes, and ONE message per connection: connect, write the line, read
+//   Deck's one line of answer, close. No connection is ever kept or used
+//   twice, and no second one is made while one exists — for every observer
+//   this module made, whichever asks (`line`). Closing is immediate on both
+//   runtimes Pi ships on (measured), so a child that Pi makes at any instant
+//   starts with at most one of these connections, and that one carries one
+//   message. Deck's proof of whose bytes a line is rests on exactly this
+//   (`agent_pi/transport.rs`, "Whose bytes").
+// - Every answer of Deck's that is not a refusal carries a nonce, and the
+//   next message carries it back; it is kept in this closure and nowhere
+//   else. Binding takes two messages. `hello` carries nothing and is
+//   answered with a nonce; `attest` carries it with this runtime's claims
+//   (pane, versions, mode, the capabilities it loaded). Deck answers
+//   `accepted` with a lease number and the capabilities that lease may use.
+//   Every frame after that names the lease and is numbered from 1 without a
+//   gap: `signal`, `lifecycle`, `unavailable`, `reset` and `ping`. ONE frame
+//   waits for its answer at a time.
+// - `again` is an answer, not an error: Deck could not tell this process's
+//   line from a child's — Pi made a child for a tool, or an answer went
+//   missing — and read nothing into anything. The same message is sent once
+//   more with the new nonce, a few times at short intervals and then not at
+//   all. An answer that takes more than two seconds, a refusal, an
+//   unexpected line or a full queue ends the lease as far as this observer
+//   is concerned and forgets what was queued: nothing queued is ever sent
+//   under a later lease. When Deck may still hold that lease it is told so
+//   in one last `reset`.
 // - Deck may take a capability away while this runtime lives, and never
-//   gives one back. A `capabilities` line names what the stream may still
-//   do — it may come before `accepted`, when Deck's settings enable less
-//   than this runtime loaded: nothing of the rest is then sent at all. From
-//   then on nothing of a lost capability is read, queued or sent —
-//   without the lifecycle capability the session manager is not touched
-//   again — and what is left goes on on the same connection. A frame that
-//   was on its way is answered `revoked` instead of `ack`; that is an
-//   answer, not an error. A later connection of this runtime claims only
-//   what is left. Getting a capability back takes Pi loading its extensions
-//   again.
+//   gives one back. Every answer to a frame, and the acceptance itself, says
+//   what the lease may still do: from then on nothing of a lost capability
+//   is read, queued or sent — without the lifecycle capability the session
+//   manager is not touched again — and what is left goes on under the same
+//   lease. A frame that was on its way is answered `revoked` instead of
+//   `ack`; that is an answer, not an error. A later lease of this runtime
+//   claims only what is left. Getting a capability back takes Pi loading its
+//   extensions again.
 // - A run is the interval from `agent_start` to `agent_settled`. A second
 //   `agent_start` before the settlement (a retry, a queued follow-up, a
 //   continuation) is the same run. `agent_settled` without a run reports
-//   nothing. Run numbers belong to one connection: a connection accepted in
-//   the middle of a run reports that run as its run 1, and a connection
-//   accepted while idle reports nothing until the next start. An ending
-//   that happened while disconnected is never reported afterwards.
-// - With the lifecycle capability the first connection reports the session
-//   this runtime started in (`start`, with Pi's own reason); a later
-//   connection reports only what the API says now (`snapshot`), never a
-//   start again. `session_shutdown` reads the id once more, then reports
-//   `shutdown` with Pi's reason. An id is sent whole or not at all: one that
-//   does not fit a line is reported as the closed word
-//   `unsupported-native-id` in place of the frame that would have carried
-//   it — never cut short, never hashed, never passed over in silence — and
-//   after that word this connection says nothing more about sessions. An id
-//   that does not even have the shape of a Pi session id is this observer's
-//   error like any other: it ends the observer and reports nothing.
+//   nothing. Run numbers belong to one lease: a lease accepted in the middle
+//   of a run reports that run as its run 1, and a lease accepted while idle
+//   reports nothing until the next start. An ending that happened without a
+//   lease is never reported afterwards.
+// - With the lifecycle capability the first lease reports the session this
+//   runtime started in (`start`, with Pi's own reason); a later lease
+//   reports only what the API says now (`snapshot`), never a start again.
+//   `session_shutdown` reads the id once more, then reports `shutdown` with
+//   Pi's reason. An id is sent whole or not at all: one that does not fit a
+//   line is reported as the closed word `unsupported-native-id` in place of
+//   the frame that would have carried it — never cut short, never hashed,
+//   never passed over in silence — and after that word this lease says
+//   nothing more about sessions. An id that does not even have the shape of
+//   a Pi session id is this observer's error like any other: it ends the
+//   observer and reports nothing.
 // - `session_shutdown` marks this runtime disposed before anything else:
-//   timers stop, later callbacks do nothing, and nothing reconnects. The
+//   timers stop, later callbacks do nothing, and nothing binds again. The
 //   last frames (`shutdown` with the lifecycle capability, then `reset`,
-//   each with Pi's own reason) get at most 100 ms; then the socket is closed
-//   whatever was acknowledged. Deck treats a missing last frame as a lost
-//   connection.
+//   each with Pi's own reason) get at most 100 ms; then this observer's
+//   connection, if it has one, is closed and it never makes another — a
+//   runtime Pi loads afterwards meets none of this one's. Deck ends a lease
+//   that says nothing for fifteen seconds, and at once when its process is
+//   gone.
 // - A callback never throws into Pi and never waits for the socket. An
 //   internal error disposes this runtime's observer. The factory does not
 //   throw either: Pi refuses to start when an extension fails to load, so
 //   if a callback cannot be registered the observer is disposed and Pi
 //   starts as if this entry were absent.
-// - Reconnecting waits 1, 2, 5, then 10 seconds, on timers that do not keep
+// - Binding again waits 1, 2, 5, then 10 seconds, on timers that do not keep
 //   Pi alive. A refusal that cannot change while this runtime lives (this
-//   capability is turned off in Deck, this Pi release is not supported)
-//   ends the observer until Pi loads its extensions again.
+//   capability is turned off in Deck, this Pi release is not supported, Deck
+//   speaks another version of this protocol) ends the observer until Pi
+//   loads its extensions again. So does being told for twenty seconds on end
+//   that another observer of this process holds the lease: a lease this
+//   process let go of is over within fifteen, so that one is held by a
+//   second copy of Deck's entry in the same Pi — which Deck's Settings call
+//   a conflict and never write — and two observers in one process would be
+//   two connections at a time.
 //
 // The four files are JavaScript in TypeScript's syntax subset on purpose:
 // Pi loads them as they are, and Deck's gates check them without a compiler.
@@ -85,15 +112,21 @@ import fs from "node:fs";
 import net from "node:net";
 
 const PROTOCOL = "pi-observer";
-const WIRE_VERSION = 1;
-const OBSERVER_VERSION = 1;
+const WIRE_VERSION = 2;
+const OBSERVER_VERSION = 2;
 const MAX_LINE = 1024;
 const ACK_TIMEOUT_MS = 2000;
 const PING_EVERY_MS = 5000;
 const RECONNECT_MS = [1000, 2000, 5000, 10000];
+/* how long after an `again` the same message is sent once more; then not at all */
+const AGAIN_MS = [0, 2, 5, 10, 20, 50];
 const SHUTDOWN_DRAIN_MS = 100;
-/* frames that may wait behind the one that awaits its acknowledgement */
+/* frames that may wait behind the one that awaits its answer */
 const QUEUE_LIMIT = 8;
+/* messages that may wait for the one connection; one more is not sent */
+const WAITING_LIMIT = 8;
+/* how long this runtime goes on asking while another observer of its process holds the lease */
+const DUPLICATE_MS = 20000;
 /* a Unix socket address holds 104 bytes on macOS, the terminator included */
 const MAX_SOCKET_PATH = 103;
 /* an id longer than this does not fit a line: Deck is told so in one closed
@@ -109,6 +142,14 @@ const SHUTDOWN_REASONS = ["quit", "reload", "new", "resume", "fork"];
 const FINAL_REFUSALS = [
   "capability-disabled", "unsupported-pi-version", "bad-frame", "bad-version", "bad-mode", "other-server",
 ];
+/* refusals that say nothing against the message: the same one may be sent again */
+const AGAIN_REFUSALS = ["sender-mismatch", "busy", "no-peer"];
+/* refusals after which Deck may still hold the lease */
+const UNTOUCHED_REFUSALS = ["bad-frame", "bad-version", "sender-mismatch", "busy", "no-peer"];
+
+/* The one connection that exists right now for every observer this module
+   made, and the messages that wait for it to be gone (file header). */
+const line = { open: null, waiting: [] };
 
 /** The route Deck's tmux server gave this pane, or null. */
 export function route(env) {
@@ -154,30 +195,57 @@ function nativeIdOf(value) {
   return { unsupported: true };
 }
 
+/** The two capability bits of an answer, or null when they are not exactly that. */
+function bitsOf(value) {
+  return !!value && typeof value === "object" && Object.keys(value).length === 2
+    && typeof value.signal === "boolean" && typeof value.lifecycle === "boolean" ? value : null;
+}
+
+/** The nonce of an answer, or null when it carries none. */
+function nonceOf(reply) {
+  return !!reply && typeof reply.nonce === "string" && /^[0-9a-f]{32}$/.test(reply.nonce) ? reply.nonce : null;
+}
+
+/** The closed word of a refusal, or null for any other answer. */
+function refusalOf(reply) {
+  return !!reply && typeof reply.refused === "string" ? reply.refused : null;
+}
+
+const textOf = (message) => JSON.stringify({ protocol: PROTOCOL, v: WIRE_VERSION, source: "pi", ...message });
+
+const later = (wait, work) => {
+  const timer = setTimeout(work, wait);
+  timer.unref();
+  return timer;
+};
+
 /** The extension factory of one entry. `piVersion` is Pi's exported VERSION. */
 export function deckPiObserver(capabilities, piVersion) {
   const signal = capabilities.signal === true;
   const lifecycle = capabilities.lifecycle === true;
   return function deckPiObserverFactory(pi) {
     let disposed = false;
-    let ended = false; // a final refusal: nothing reconnects in this runtime
+    let ended = false; // a final refusal: nothing binds again in this runtime
+    let sealed = false; // the shutdown is over: no connection is made again
     // what this runtime may still do: Deck only ever takes away
     const may = { signal, lifecycle };
     let target = null;
     let sessions = null; // this runtime's session manager, lifecycle only
-    let first = null; // the start this runtime may report on its first connection
-    let silent = false; // this connection said that its session id cannot be sent
+    let first = null; // the start this runtime may report under its first lease
+    let silent = false; // this lease said that its session id cannot be sent
     let active = false; // a run started and has not settled
-    let socket = null;
-    let accepted = false;
-    let buffer = "";
+    let lease = null; // the number Deck accepted this observer under
+    let nonce = null; // what Deck's last answer said the next message must carry
+    let binding = false; // a hello or an attest is on its way
+    let busy = false; // a frame is on its way
+    let own = null; // this observer's connection, while it is the one that exists
     let seq = 0;
     let run = 0;
     let queue = [];
-    let awaiting = null; // { seq, timer }; seq 0 is the hello
     let ping = null;
     let retry = null;
     let attempt = 0;
+    let duplicate = null; // since when another observer of this process has held the lease
     let drained = null;
 
     const nativeId = (manager) => {
@@ -207,15 +275,6 @@ export function deckPiObserver(capabilities, piVersion) {
       retry = null;
     };
 
-    const forget = () => {
-      if (awaiting) clearTimeout(awaiting.timer);
-      awaiting = null;
-      queue = [];
-      buffer = "";
-      accepted = false;
-      silent = false;
-    };
-
     /* Deck took a capability away: nothing of it is read, queued or sent again */
     const narrow = (now) => {
       const lost = { signal: may.signal && !now.signal, lifecycle: may.lifecycle && !now.lifecycle };
@@ -232,61 +291,221 @@ export function deckPiObserver(capabilities, piVersion) {
         && !(lost.lifecycle && ("event" in frame || "unavailable" in frame)));
     };
 
-    /* this connection is over: nothing of it is kept or sent again */
-    const drop = (which) => {
-      if (socket !== which) return;
-      socket = null;
-      forget();
-      if (ping) clearInterval(ping);
-      ping = null;
-      try { which.destroy(); } catch (_) { /* already closed */ }
-      if (drained) drained();
-      else if (!disposed && !ended) reconnect();
+    const dispose = () => {
+      disposed = true;
+      stopTimers();
+      first = null;
+      sessions = null;
     };
 
-    const reconnect = () => {
-      if (disposed || ended || retry || socket) return;
+    /* One message: a connection of its own, one line, Deck's one line of
+       answer, the end. `done` hears the answer, or null when none came, and
+       never before this call has returned. While another connection exists
+       the message waits for it to be gone. */
+    const exchange = (message, done) => {
+      const heard = (reply) => {
+        try {
+          done(reply);
+        } catch (_) {
+          dispose();
+        }
+      };
+      const start = () => {
+        const text = textOf(message);
+        let which = null;
+        let finished = false;
+        let buffer = "";
+        let timer = null;
+        const finish = (reply) => {
+          if (finished) return;
+          finished = true;
+          if (timer) clearTimeout(timer);
+          if (which) {
+            // closed here and now: the next connection is made after this one is gone
+            try { which.destroy(); } catch (_) { /* already closed */ }
+            if (line.open === which) line.open = null;
+            if (own === which) own = null;
+          }
+          heard(reply);
+          // what waited for the line goes next, unless the answer's own next message took it
+          if (!line.open && line.waiting.length) line.waiting.shift()();
+        };
+        if (sealed || text.length > MAX_LINE || !privateSocket(target.path)) {
+          later(0, () => finish(null));
+          return;
+        }
+        try {
+          which = net.createConnection({ path: target.path });
+        } catch (_) {
+          which = null;
+          later(0, () => finish(null));
+          return;
+        }
+        line.open = which;
+        own = which;
+        timer = later(ACK_TIMEOUT_MS, () => finish(null));
+        which.setEncoding("utf8");
+        // this socket never keeps Pi alive
+        which.unref();
+        which.on("connect", () => {
+          if (!finished) which.write(`${text}\n`);
+        });
+        which.on("data", (chunk) => {
+          buffer += chunk;
+          if (buffer.length > 4 * MAX_LINE) {
+            finish(null);
+            return;
+          }
+          const at = buffer.indexOf("\n");
+          if (at < 0) return;
+          let reply = null;
+          try { reply = JSON.parse(buffer.slice(0, at)); } catch (_) { reply = null; }
+          const ours = !!reply && typeof reply === "object" && reply.protocol === PROTOCOL
+            // a refusal is read in whatever version it is said: `bad-version` is how another one says so
+            && (reply.v === WIRE_VERSION || refusalOf(reply) !== null);
+          finish(ours ? reply : null);
+        });
+        which.on("error", () => finish(null));
+        which.on("close", () => finish(null));
+      };
+      if (!line.open) start();
+      else if (line.waiting.length < WAITING_LIMIT) line.waiting.push(start);
+      else later(0, () => heard(null));
+    };
+
+    /* this observer is over: its connection is closed and it makes no other */
+    const seal = () => {
+      sealed = true;
+      lease = null;
+      nonce = null;
+      queue = [];
+      if (own) {
+        try { own.destroy(); } catch (_) { /* already closed */ }
+      }
+    };
+
+    const rebind = () => {
+      if (disposed || ended || retry || binding || lease !== null) return;
       const wait = RECONNECT_MS[Math.min(attempt, RECONNECT_MS.length - 1)];
       attempt += 1;
       retry = setTimeout(() => {
         retry = null;
-        connect();
+        bind();
       }, wait);
       retry.unref();
     };
 
-    const write = (which, frame, number) => {
-      const line = JSON.stringify({ protocol: PROTOCOL, v: WIRE_VERSION, source: "pi", ...frame });
-      if (line.length > MAX_LINE) return false;
-      const timer = setTimeout(() => drop(which), ACK_TIMEOUT_MS);
-      timer.unref();
-      awaiting = { seq: number, timer };
-      which.write(`${line}\n`);
-      return true;
+    /* Tell Deck, once, that this observer let go of a lease Deck may still
+       hold: a reset in the place of the frame that would have come next. A
+       frame Deck did not expect there ends the lease as well. */
+    const farewell = (mine, given, number, tries, then) => {
+      exchange({ lease: mine, nonce: given, seq: number, reason: "fault" }, (reply) => {
+        const next = nonceOf(reply);
+        if (reply && reply.again === true && next && tries < AGAIN_MS.length) {
+          later(AGAIN_MS[tries], () => farewell(mine, next, number, tries + 1, then));
+          return;
+        }
+        then();
+      });
+    };
+
+    /* The lease is over as far as this observer goes: nothing of it is kept
+       or sent again. `reply` is Deck's refusal when that is why. */
+    const lost = (reply) => {
+      const mine = lease;
+      const given = nonce;
+      const number = seq + 1;
+      lease = null;
+      nonce = null;
+      busy = false;
+      queue = [];
+      silent = false;
+      first = null;
+      if (ping) clearInterval(ping);
+      ping = null;
+      const refused = refusalOf(reply);
+      if (refused && FINAL_REFUSALS.includes(refused)) ended = true;
+      const then = () => {
+        if (drained) drained();
+        else if (disposed) seal();
+        else if (!ended) rebind();
+      };
+      if (mine !== null && given && (!refused || UNTOUCHED_REFUSALS.includes(refused))) {
+        farewell(mine, given, number, 0, then);
+      } else {
+        then();
+      }
+    };
+
+    const send = (frame, tries) => {
+      const mine = lease;
+      const number = seq + 1;
+      exchange({ lease: mine, nonce, seq: number, ...frame }, (reply) => {
+        // given up in the meantime: Deck has been told, or is being told
+        if (lease !== mine) return;
+        const next = nonceOf(reply);
+        const asked = !!reply && reply.again === true && next !== null && Object.keys(reply).length === 4;
+        if (asked) nonce = next;
+        // not believed and not blamed: the same frame once more
+        if ((asked || AGAIN_REFUSALS.includes(refusalOf(reply))) && tries < AGAIN_MS.length) {
+          later(AGAIN_MS[tries], () => {
+            if (lease === mine) send(frame, tries + 1);
+          });
+          return;
+        }
+        const bits = reply ? bitsOf(reply.capabilities) : null;
+        // `revoked` answers a frame whose capability was taken while it was on its way
+        if (asked || !bits || !next || Object.keys(reply).length !== 5
+          || (reply.ack !== number && reply.revoked !== number)) {
+          lost(asked ? null : reply);
+          return;
+        }
+        seq = number;
+        nonce = next;
+        busy = false;
+        narrow(bits);
+        // a reset that was answered is the end of this lease
+        if ("reason" in frame && !("event" in frame)) {
+          lease = null;
+          nonce = null;
+          queue = [];
+          if (ping) clearInterval(ping);
+          ping = null;
+        }
+        pump();
+      });
     };
 
     const pump = () => {
-      while (socket && accepted && !awaiting && queue.length) {
+      while (lease !== null && !busy && queue.length) {
         const frame = queue.shift();
         // a frame that cannot be written is not numbered: the next one takes its place
-        if (write(socket, { seq: seq + 1, ...frame }, seq + 1)) seq += 1;
+        if (textOf({ lease, nonce, seq: seq + 1, ...frame }).length > MAX_LINE) continue;
+        busy = true;
+        send(frame, 0);
       }
-      if (drained && socket && !awaiting && !queue.length) drained();
+      if (drained && !busy && (lease === null || !queue.length)) drained();
     };
 
     const push = (frame) => {
-      if (!socket || !accepted) return;
+      if (lease === null) return;
       if (queue.length >= QUEUE_LIMIT) {
-        drop(socket);
+        lost(null);
         return;
       }
       queue.push(frame);
       pump();
     };
 
-    const onAccepted = () => {
-      accepted = true;
+    const onAccepted = (number, given, bits) => {
+      lease = number;
+      nonce = given;
+      seq = 0;
+      run = 0;
       attempt = 0;
+      duplicate = null;
+      silent = false;
+      narrow(bits);
       if (may.lifecycle) {
         const start = first;
         first = null;
@@ -301,129 +520,69 @@ export function deckPiObserver(capabilities, piVersion) {
       }
       if (ping) clearInterval(ping);
       ping = setInterval(() => {
-        if (accepted && !awaiting && !queue.length) push({});
+        if (lease !== null && !busy && !queue.length) push({});
       }, PING_EVERY_MS);
       ping.unref();
     };
 
-    const onLine = (which, line) => {
-      let reply = null;
-      try { reply = JSON.parse(line); } catch (_) { reply = null; }
-      if (!reply || typeof reply !== "object" || reply.protocol !== PROTOCOL || reply.v !== WIRE_VERSION) {
-        drop(which);
-        return;
-      }
-      // a refusal may arrive at any time: Deck ends a stream that way too
-      if (typeof reply.refused === "string") {
-        if (FINAL_REFUSALS.includes(reply.refused)) ended = true;
-        drop(which);
-        return;
-      }
-      // what this stream may still do, at any time and in answer to nothing
-      if (reply.capabilities !== undefined) {
-        const now = reply.capabilities;
-        const bits = !!now && typeof now === "object"
-          && typeof now.signal === "boolean" && typeof now.lifecycle === "boolean";
-        if (!bits || Object.keys(reply).length !== 3) {
-          drop(which);
+    /* a binding that did not end in a lease: the start is never reported later */
+    const unbound = (reply) => {
+      binding = false;
+      first = null;
+      const refused = refusalOf(reply);
+      if (refused !== "duplicate-observer") duplicate = null;
+      else if (duplicate === null) duplicate = Date.now();
+      // held by a second observer of this process, not by a lease this one let go of
+      const second = duplicate !== null && Date.now() - duplicate > DUPLICATE_MS;
+      if (FINAL_REFUSALS.includes(refused) || second) ended = true;
+      if (!disposed && !ended) rebind();
+    };
+
+    const attest = (given, tries) => {
+      exchange({
+        nonce: given,
+        socket: target.socket,
+        server_pid: target.serverPid,
+        pane: target.pane,
+        observerVersion: OBSERVER_VERSION,
+        piVersion,
+        mode: "tui",
+        capabilities: { signal: may.signal, lifecycle: may.lifecycle },
+      }, (reply) => {
+        const next = nonceOf(reply);
+        // not believed and not blamed: the same claims once more, with the new nonce
+        if (!disposed && reply && reply.again === true && next && Object.keys(reply).length === 4
+          && tries < AGAIN_MS.length) {
+          later(AGAIN_MS[tries], () => attest(next, tries + 1));
           return;
         }
-        narrow(now);
-        pump();
-        return;
-      }
-      const waited = awaiting;
-      // `revoked` answers a frame whose capability was taken while it was on its way
-      const answered = !!waited && (waited.seq === 0
-        ? reply.accepted === true
-        : reply.ack === waited.seq || reply.revoked === waited.seq);
-      if (!answered) {
-        drop(which);
-        return;
-      }
-      clearTimeout(waited.timer);
-      awaiting = null;
-      if (waited.seq === 0) onAccepted();
-      pump();
+        const bits = reply ? bitsOf(reply.capabilities) : null;
+        if (disposed || !bits || !next || Object.keys(reply).length !== 5
+          || !Number.isSafeInteger(reply.accepted) || reply.accepted < 1) {
+          unbound(reply);
+          return;
+        }
+        binding = false;
+        onAccepted(reply.accepted, next, bits);
+      });
     };
 
-    /* what `onLine` does must never reach Pi as an exception of its socket */
-    const received = (which, line) => {
-      try {
-        onLine(which, line);
-      } catch (_) {
-        dispose();
-        drop(which);
-      }
-    };
-
-    const connect = () => {
-      if (disposed || ended || socket || !target) return;
-      // a runtime that lost both capabilities has nothing to connect for
+    const bind = () => {
+      if (disposed || ended || binding || lease !== null || !target) return;
+      // a runtime that lost both capabilities has nothing to bind for
       if (!may.signal && !may.lifecycle) {
         ended = true;
         return;
       }
-      // a connection that did not carry the start never reports it later
-      if (!privateSocket(target.path)) {
-        first = null;
-        reconnect();
-        return;
-      }
-      let which = null;
-      try {
-        which = net.createConnection({ path: target.path });
-      } catch (_) {
-        first = null;
-        reconnect();
-        return;
-      }
-      socket = which;
-      seq = 0;
-      run = 0;
-      forget();
-      which.setEncoding("utf8");
-      // this socket never keeps Pi alive
-      which.unref();
-      which.on("connect", () => {
-        if (socket !== which) return;
-        const hello = {
-          socket: target.socket,
-          server_pid: target.serverPid,
-          pane: target.pane,
-          observerVersion: OBSERVER_VERSION,
-          piVersion,
-          mode: "tui",
-          capabilities: { signal: may.signal, lifecycle: may.lifecycle },
-        };
-        if (!write(which, hello, 0)) drop(which);
-      });
-      which.on("data", (chunk) => {
-        if (socket !== which) return;
-        buffer += chunk;
-        if (buffer.length > 4 * MAX_LINE) {
-          drop(which);
+      binding = true;
+      exchange({}, (reply) => {
+        const given = reply && Object.keys(reply).length === 3 ? nonceOf(reply) : null;
+        if (!given || disposed) {
+          unbound(reply);
           return;
         }
-        for (let at = buffer.indexOf("\n"); at >= 0 && socket === which; at = buffer.indexOf("\n")) {
-          const line = buffer.slice(0, at);
-          buffer = buffer.slice(at + 1);
-          received(which, line);
-        }
+        attest(given, 0);
       });
-      const lost = () => {
-        if (socket === which) first = null;
-        drop(which);
-      };
-      which.on("error", lost);
-      which.on("close", lost);
-    };
-
-    const dispose = () => {
-      disposed = true;
-      stopTimers();
-      first = null;
-      sessions = null;
     };
 
     /* an internal error ends this runtime's observer and never reaches Pi */
@@ -432,9 +591,8 @@ export function deckPiObserver(capabilities, piVersion) {
       try {
         return work(event, ctx);
       } catch (_) {
-        const which = socket;
         dispose();
-        if (which) drop(which);
+        lost(null);
         return undefined;
       }
     };
@@ -450,13 +608,13 @@ export function deckPiObserver(capabilities, piVersion) {
         const reason = closedWord(START_REASONS, event.reason);
         first = native && reason ? { native, reason } : null;
       }
-      connect();
+      bind();
     });
 
     const onAgentStart = guarded(() => {
       if (!target || active || !may.signal) return;
       active = true;
-      if (!accepted) return;
+      if (lease === null) return;
       run += 1;
       push({ run, state: "working" });
     });
@@ -464,19 +622,16 @@ export function deckPiObserver(capabilities, piVersion) {
     const onAgentSettled = guarded(() => {
       if (!target || !active || !may.signal) return;
       active = false;
-      if (accepted && run > 0) push({ run, state: "turn-done" });
+      if (lease !== null && run > 0) push({ run, state: "turn-done" });
     });
 
     const onShutdown = guarded((event, ctx) => {
       // the last id, read before this runtime is disposed — and only by a
-      // stream that may still observe sessions and has not said it cannot
+      // lease that may still observe sessions and has not said it cannot
       const native = may.lifecycle && target && !silent ? nativeId(ctx.sessionManager) : null;
-      const which = socket;
-      const connected = accepted;
       dispose();
-      if (!which) return undefined;
-      if (!connected) {
-        drop(which);
+      if (lease === null) {
+        seal();
         return undefined;
       }
       const reason = closedWord(SHUTDOWN_REASONS, event.reason);
@@ -492,11 +647,7 @@ export function deckPiObserver(capabilities, piVersion) {
           finished = true;
           clearTimeout(limit);
           drained = null;
-          if (socket === which) {
-            socket = null;
-            forget();
-          }
-          try { which.destroy(); } catch (_) { /* already closed */ }
+          seal();
           resolve();
         };
         const limit = setTimeout(finish, SHUTDOWN_DRAIN_MS);

@@ -244,34 +244,34 @@
 //! handling apply to both. An adapter's optional `reentry` capability is
 //! static data: registered is not enabled, approved or trusted.
 //!
-//! # A third family: a Pi observer's stream
+//! # A third family: a Pi observer's messages
 //! Pi runs no helper per event. Its observer is an extension inside the Pi
-//! process that holds ONE stream on this socket for as long as that Pi runs
+//! process that speaks to this socket itself, one message per connection
 //! (`agent_pi`: the wire, the settings entry, the transport). `dispatch`
 //! asks for that family FIRST — the lifecycle family would take any line
 //! with a `protocol` key — and hands the connection to the bounded Pi
-//! transport without waiting; nothing of a Pi stream is verified or
+//! transport without waiting; nothing of a Pi message is verified or
 //! answered on the accept loop or the dispatcher, and its lines reach
 //! neither the hook parser nor the lifecycle mailbox. The reverse door is closed too: a hook line
 //! (wire v1 or v2) that names source `pi` is refused, `pi-observer-required`
 //! — Pi has no interaction id of its own, and a number an observer counts
 //! must never look like one.
-//! What a Pi stream proved is written here by four functions and nothing
+//! What a Pi observer proved is written here by four functions and nothing
 //! else. `pi_observed` records, for a pane's foreground generation, that a
 //! Pi observer was proven there and what may be said about its Signal
 //! (`PiCoverage`: `connected` is LIMITED coverage — work started, an
 //! interaction ended, never an input request; `unavailable` claims no
 //! cause; `incompatible` is a release this build does not know).
 //! A generation is a pid and a birth instant, and an exec inside that pid
-//! keeps both: what a hello proved is therefore kept with a watch of the
+//! keeps both: what an attest proved is therefore kept with a watch of the
 //! process's EXECUTION INSTANCE (`procinfo::InstanceWatch`), and every
 //! reader — the poll's evidence, the scheduler's two questions, the restart
-//! review, the projection of a word a Pi stream wrote — asks that watch
+//! review, the projection of a word a Pi observer wrote — asks that watch
 //! before it says anything. A process that executed another image is no
 //! recognized Pi and has no word, coverage or session, whatever the
 //! program before it proved; a kernel that cannot be asked leaves the
 //! recognition (it only ever adds a hold) and no word.
-//! With the separate lifecycle capability the same stream may also say
+//! With the separate lifecycle capability the same observer may also say
 //! which native session its runtime is in; that goes to `agent_reentry::
 //! lifecycle::observe_pi` and never into this store. All a card learns of
 //! it is the closed word `Evidence::pi_session` (`observed`): no id, no
@@ -282,7 +282,7 @@
 //! viewed and projection rules as a hook word. `pi_lost` withdraws exactly
 //! the observation one lease wrote, with its episode (`notify::
 //! withdraw_episode`), and turns `connected` into `unavailable`; a lost
-//! observer is never a turn that ended. The same call serves a stream that
+//! observer is never a turn that ended. The same call serves a lease that
 //! only lost its Signal capability and goes on observing sessions
 //! (`agent_pi::transport`, "Capabilities narrow"). `pi_waits_for_reload`
 //! remembers, for a recognized Pi whose observer was ended for its
@@ -479,6 +479,25 @@ impl Entry {
 pub(crate) type EpisodeId = u64;
 
 static NEXT_EPISODE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The episode the next accepted observation gets: a test asks whether any
+/// was allocated in between, whatever became of it afterwards.
+#[cfg(test)]
+pub(crate) fn next_episode_for_tests() -> EpisodeId {
+    NEXT_EPISODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How often a Pi observer's proof was written into this module's stores —
+/// recognized, a word, withdrawn, waiting for a reload — whatever became of
+/// it afterwards: a test asks whether ANYTHING was written, not only what
+/// is left.
+#[cfg(test)]
+static PI_WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+pub(crate) fn pi_writes_for_tests() -> u64 {
+    PI_WRITES.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// What a card-level surface may read about one pane's observation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -881,7 +900,7 @@ pub(crate) fn generation_evidence(
                     claude_interaction: proven.is_some_and(|r| r.claude_interaction),
                     pi,
                     pi_signal: pi.then_some(observed.unwrap_or(PiCoverage::Unavailable)),
-                    // a session is said only by a stream whose process is
+                    // a session is said only by a lease whose process is
                     // still the instance it was bound as
                     pi_session: now
                         .filter(|_| seen.is_some_and(PiSeen::continuous))
@@ -1334,6 +1353,8 @@ pub(crate) fn pi_observed(
     coverage: PiCoverage,
     instance: &Arc<InstanceWatch>,
 ) {
+    #[cfg(test)]
+    PI_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     with_generation(row, generation, |record| {
         record.pi = Some(PiSeen {
             coverage,
@@ -1349,6 +1370,8 @@ pub(crate) fn pi_observed(
 /// loads its extensions again. Forgotten with the generation, the instance
 /// or the next proven hello.
 pub(crate) fn pi_waits_for_reload(key: &PaneKey, generation: ForegroundGeneration) {
+    #[cfg(test)]
+    PI_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     with_evidence(|records| {
         if let Some(seen) = records
             .get_mut(key)
@@ -1429,6 +1452,8 @@ pub(crate) fn pi_signal(
     run: u64,
     state: crate::agent_pi::RunState,
 ) {
+    #[cfg(test)]
+    PI_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let state = match state {
         crate::agent_pi::RunState::Working => WORKING,
         crate::agent_pi::RunState::TurnDone => TURN_DONE,
@@ -1499,6 +1524,8 @@ pub(crate) fn pi_signal(
 /// pane's stays, and nothing is reported in its place — a lost observer is
 /// not a turn that ended.
 pub(crate) fn pi_lost(key: &PaneKey, generation: ForegroundGeneration, lease: u64) {
+    #[cfg(test)]
+    PI_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let withdrawn = with_agents(|agents| {
         let owned = agents.get(key).is_some_and(|entry| {
             entry.generation == generation
@@ -1593,7 +1620,7 @@ pub(crate) fn reset_for_tests() {
 // ---------- socket listener --------------------------------------------------
 
 // The accept loop never reads a byte. Every agent's Signal, every re-entry
-// receipt and every Pi stream arrives on this one socket, and a client that
+// receipt and every Pi message arrives on this one socket, and a client that
 // connects and then says nothing, or a byte now and then, must not hold any
 // of them up. So a connection's FIRST LINE is read by a task of the
 // application's async runtime, under an absolute deadline counted from the
@@ -1615,11 +1642,13 @@ pub(crate) fn reset_for_tests() {
 // completed — the helper of one word is released before that agent can
 // start the next.
 //
-// What a client sent behind its first line is never read and thrown away:
-// it is the next bytes of a Pi stream (`agent_pi::transport`), and for the
-// two one-message families — a hook word, a lifecycle receipt — it means the
-// client did not speak that family, so the message is refused
-// (`trailing-bytes`).
+// What a client sent behind its first line is never read and thrown away.
+// All three families are one message per connection — a hook word, a
+// lifecycle receipt, a Pi observer's line — so more bytes mean that the
+// client did not speak any of them, and the message is refused
+// (`trailing-bytes`): for a Pi line this is also what keeps a second
+// writer's bytes from riding behind the first (`agent_pi::transport`,
+// "Whose bytes").
 
 /// The longest first line of a connection, in bytes.
 const MAX_LINE: usize = 8 * 1024;
@@ -1868,6 +1897,8 @@ const DROP_REASONS: &[&str] = &[
     "pi-bad-native-id",
     "pi-late",
     "pi-stale",
+    "pi-no-challenge",
+    "pi-sender-mismatch",
 ];
 
 /// How often the drop summary may be written.
@@ -2038,26 +2069,23 @@ fn dispatch(
         rest,
         read_at,
     } = arrival;
-    if line.is_empty() {
-        // an empty first line is no message; bytes behind it are not a later one
-        if !rest.is_empty() {
-            note(drops, Some("trailing-bytes"));
-        }
-        return;
-    }
-    // A third closed family on the same socket: a Pi observer's stream. It
-    // stays open for as long as that Pi runs, so nothing of it is done on
-    // this thread: the connection goes to the bounded Pi transport, which
-    // never blocks here, with the bytes that came behind its hello. The
-    // line reaches neither the hook parser nor the lifecycle mailbox.
-    if crate::agent_pi::is_family(&line) {
-        pi.hand(stream, line, rest);
-        return;
-    }
-    // The two other families are one message per connection: a client that
-    // sent more did not speak either of them.
+    // Every family is one message per connection: a client that sent more
+    // spoke none of them, and an empty first line is no message at all —
+    // bytes behind it are not a later one.
     if !rest.is_empty() {
         note(drops, Some("trailing-bytes"));
+        return;
+    }
+    if line.is_empty() {
+        return;
+    }
+    // A third closed family on the same socket: a Pi observer's message.
+    // Verifying it asks the kernel and tmux, so nothing of it is done on
+    // this thread: the connection goes to the bounded Pi transport, which
+    // never blocks here and answers it. The line reaches neither the hook
+    // parser nor the lifecycle mailbox.
+    if crate::agent_pi::is_family(&line) {
+        pi.hand(stream, line);
         return;
     }
     // A separate closed protocol family on the same socket: a lifecycle
@@ -2177,6 +2205,11 @@ impl DropCounts {
     pub(crate) fn counts(&self) -> std::collections::BTreeMap<&'static str, u32> {
         self.0.lock_or_recover().counts.clone()
     }
+
+    /// The way a Pi service a test starts itself reports into these counts.
+    pub(crate) fn reporter(&self) -> crate::agent_pi::transport::Reporter {
+        pi_reporter(&self.0)
+    }
 }
 
 /// The production accept, first-line read and dispatch on a test socket:
@@ -2197,14 +2230,34 @@ pub(crate) fn serve_counting_for_tests(
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     counted: &DropCounts,
 ) {
+    let pi = crate::agent_pi::transport::Service::start(pi_reporter(&counted.0));
+    let open = std::sync::atomic::AtomicBool::new(false);
+    serve_pi_for_tests(listener, stop, &open, counted, pi);
+}
+
+/// The same with a Pi service the caller started (a test's own tmux server
+/// and settings), and a switch: while `hold` is set nothing is accepted, so
+/// what clients connect and write meanwhile waits in the kernel, unread —
+/// a test decides what has happened by the time Deck reads a byte.
+#[cfg(test)]
+pub(crate) fn serve_pi_for_tests(
+    listener: UnixListener,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    hold: &std::sync::atomic::AtomicBool,
+    counted: &DropCounts,
+    pi: crate::agent_pi::transport::Service,
+) {
     listener
         .set_nonblocking(true)
         .expect("nonblocking listener");
     let drops = counted.0.clone();
     let (receipts, worker) = Receipts::start(drops.clone());
-    let pi = crate::agent_pi::transport::Service::start(pi_reporter(&drops));
     let (intake, dispatcher) = Intake::start(drops, receipts, pi);
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
+        if hold.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(2));
+            continue;
+        }
         match listener.accept() {
             Ok((stream, _)) => intake.take(stream),
             Err(_) => std::thread::sleep(Duration::from_millis(5)),
@@ -7623,7 +7676,7 @@ mod tests {
 
     /// The two long-lived workers beside the accept loop do not wait for each
     /// other. While the receipt worker is inside a Claude code validation
-    /// that does not return, a Pi stream is taken and answered by the Pi
+    /// that does not return, a Pi message is taken and answered by the Pi
     /// transport; while the Pi admission is stuck in a pane listing, a
     /// lifecycle receipt is still handed over and settled. Neither holds the
     /// accept loop.
@@ -7651,12 +7704,7 @@ mod tests {
         );
         const ID: &str = "aaaaaaaa-0000-4000-8000-000000000001";
         let resume = lifecycle_line(r#""event":"session-start","startSource":"resume""#, ID);
-        let hello = serde_json::json!({
-            "protocol": "pi-observer", "v": 1, "source": "pi", "socket": "deck",
-            "server_pid": 42, "pane": "%3", "observerVersion": 1, "piVersion": "1.1.0",
-            "mode": "tui", "capabilities": { "signal": true, "lifecycle": false }
-        })
-        .to_string();
+        let hello = pi_hello();
         let drops = Mutex::new(Drops::new(Instant::now()));
         let answered = |service: &Service, receipts: &Receipts| -> (serde_json::Value, Duration) {
             let (mut ours, theirs) = UnixStream::pair().expect("a socket pair");
@@ -7674,6 +7722,10 @@ mod tests {
         let quick = || Bounds {
             answer: Duration::from_secs(2),
             stale: Duration::from_secs(15),
+            challenge: Duration::from_secs(5),
+        };
+        let watched = || -> Box<dyn Fn(u32) -> Option<Arc<InstanceWatch>> + Send + Sync> {
+            Box::new(|_| Some(InstanceWatch::stand_in().0))
         };
 
         // 1. the receipt worker is held inside a validation that does not return
@@ -7686,13 +7738,15 @@ mod tests {
                 process: Box::new(|_| None),
                 listing: Box::new(|| None),
                 enabled: Box::new(|| crate::agent_pi::Capabilities::NONE),
+                watch: watched(),
+                nonce: Box::new(crate::agent_pi::Nonce::fresh),
                 socket: "deck".into(),
             },
             quick(),
         );
         let (reply, handed) = answered(&pi, &worker.receipts);
         assert_eq!(reply["protocol"], "pi-observer");
-        assert!(reply["refused"].is_string(), "answered by the Pi transport");
+        assert!(reply["nonce"].is_string(), "answered by the Pi transport");
         assert!(
             handed < Duration::from_millis(500),
             "the accept loop did not wait"
@@ -7730,19 +7784,31 @@ mod tests {
                     None
                 }),
                 enabled: Box::new(|| crate::agent_pi::Capabilities::NONE),
+                watch: watched(),
+                nonce: Box::new(crate::agent_pi::Nonce::fresh),
                 socket: "deck".into(),
             },
             quick(),
         );
-        let (mut ours, theirs) = UnixStream::pair().expect("a socket pair");
-        ours.write_all(format!("{hello}\n").as_bytes()).unwrap();
-        held.hand_as(
-            theirs,
-            hello.clone(),
-            Vec::new(),
-            Some(std::process::id()),
-            Some(crate::procinfo::InstanceWatch::stand_in().0),
-        );
+        // a hello is answered with a nonce; the attest that carries it is
+        // what reaches the listing
+        let (ours, theirs) = UnixStream::pair().expect("a socket pair");
+        ours.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        held.hand_as(theirs, hello.clone(), Some(std::process::id()));
+        let mut given = String::new();
+        std::io::BufReader::new(&ours)
+            .read_line(&mut given)
+            .unwrap();
+        let given: serde_json::Value = serde_json::from_str(&given).expect("a reply line");
+        let attest = serde_json::json!({
+            "protocol": "pi-observer", "v": 2, "source": "pi", "nonce": given["nonce"],
+            "socket": "deck", "server_pid": 42, "pane": "%3", "observerVersion": 2,
+            "piVersion": "1.1.0", "mode": "tui",
+            "capabilities": { "signal": true, "lifecycle": false }
+        })
+        .to_string();
+        let (ours, theirs) = UnixStream::pair().expect("a socket pair");
+        held.hand_as(theirs, attest, Some(std::process::id()));
         inside
             .recv_timeout(Duration::from_secs(5))
             .expect("the Pi admission is inside its listing");
@@ -7768,7 +7834,7 @@ mod tests {
     /// transport and to nothing else — not the lifecycle mailbox, which
     /// would take any line with a `protocol` key, and not the hook parser.
     #[test]
-    fn the_listener_hands_a_pi_stream_to_the_pi_transport_and_to_nothing_else() {
+    fn the_listener_hands_a_pi_message_to_the_pi_transport_and_to_nothing_else() {
         use crate::agent_pi::transport::{Bounds, Service, World};
         use std::io::{BufRead, Write};
         // the mailbox is one per process: this test begins and ends an
@@ -7776,12 +7842,7 @@ mod tests {
         let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
         let _guard = STORE_TEST_LOCK.lock_or_recover();
         reset_for_tests();
-        let hello = serde_json::json!({
-            "protocol": "pi-observer", "v": 1, "source": "pi", "socket": "deck",
-            "server_pid": 42, "pane": "%3", "observerVersion": 1, "piVersion": "1.1.0",
-            "mode": "tui", "capabilities": { "signal": true, "lifecycle": false }
-        })
-        .to_string();
+        let hello = pi_hello();
         // both family tests take the line: the order of the dispatch decides
         assert!(crate::agent_pi::is_family(&hello));
         assert!(crate::agent_reentry::lifecycle::is_family(&hello));
@@ -7811,11 +7872,15 @@ mod tests {
                 process: Box::new(|_| None),
                 listing: Box::new(|| None),
                 enabled: Box::new(|| crate::agent_pi::Capabilities::NONE),
+                // the kernel gives no watch of this process: nothing is asked of it
+                watch: Box::new(|_| None),
+                nonce: Box::new(crate::agent_pi::Nonce::fresh),
                 socket: "deck".into(),
             },
             Bounds {
                 answer: Duration::from_secs(2),
                 stale: Duration::from_secs(15),
+                challenge: Duration::from_secs(5),
             },
         );
         let (mut ours, theirs) = UnixStream::pair().expect("a socket pair");
@@ -7824,10 +7889,10 @@ mod tests {
         handle_stream(theirs, &drops, &receipts, &pi);
         assert!(
             started.elapsed() < Duration::from_millis(500),
-            "the listener does not wait for the stream"
+            "the listener does not wait for the answer"
         );
-        // the Pi transport answered in its own protocol: this process is no
-        // pane's foreground program, so the stream is refused there
+        // the Pi transport answered in its own protocol: it could not watch
+        // the process that said hello, so it asked nothing of it
         ours.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut reply = String::new();
         std::io::BufReader::new(&ours)
@@ -7835,8 +7900,8 @@ mod tests {
             .unwrap();
         let reply: serde_json::Value = serde_json::from_str(&reply).expect("a reply line");
         assert_eq!(reply["protocol"], "pi-observer");
-        assert_eq!(reply["refused"], "no-peer");
-        assert_eq!(*reasons.lock_or_recover(), ["pi-no-peer"]);
+        assert_eq!(reply["refused"], "no-instance");
+        assert_eq!(*reasons.lock_or_recover(), ["pi-no-instance"]);
         // nothing of it reached the lifecycle mailbox or the hook parser
         drop(receipts);
         worker.expect("the receipt worker").join().unwrap();
@@ -7929,22 +7994,18 @@ mod tests {
         }
     }
 
+    /// A Pi observer's first message: it asks for a nonce and claims nothing.
     fn pi_hello() -> String {
-        serde_json::json!({
-            "protocol": "pi-observer", "v": 1, "source": "pi", "socket": "deck",
-            "server_pid": 42, "pane": "%3", "observerVersion": 1, "piVersion": "1.1.0",
-            "mode": "tui", "capabilities": { "signal": true, "lifecycle": false }
-        })
-        .to_string()
+        serde_json::json!({ "protocol": "pi-observer", "v": 2, "source": "pi" }).to_string()
     }
 
-    /// The reply of the Pi transport to a hello, and how long it took.
-    fn pi_answer(listening: &Listening, behind: &str) -> (serde_json::Value, Duration) {
+    /// The answer of the Pi transport to a hello, and how long it took.
+    fn pi_answer(listening: &Listening) -> (serde_json::Value, Duration) {
         use std::io::{BufRead, Write};
         let from = std::time::Instant::now();
         let mut stream = listening.connect();
         stream
-            .write_all(format!("{}\n{behind}", pi_hello()).as_bytes())
+            .write_all(format!("{}\n", pi_hello()).as_bytes())
             .unwrap();
         let mut reply = String::new();
         std::io::BufReader::new(&stream)
@@ -7958,7 +8019,7 @@ mod tests {
 
     /// One client that never finishes its first line — silent, half a line,
     /// or a byte now and then — holds nobody up: while all three are
-    /// connected, a Pi stream, a hook word and a lifecycle receipt are each
+    /// connected, a Pi message, a hook word and a lifecycle receipt are each
     /// dispatched at once. And each of the three runs out of ITS OWN time,
     /// counted from its accept: a byte that arrives resets nothing, and a
     /// line that never ended is not parsed.
@@ -8004,10 +8065,10 @@ mod tests {
         });
         std::thread::sleep(Duration::from_millis(500));
 
-        // a Pi stream: taken and answered by the Pi transport
-        let (reply, took) = pi_answer(&listening, "");
+        // a Pi message: taken and answered by the Pi transport
+        let (reply, took) = pi_answer(&listening);
         assert_eq!(reply["protocol"], "pi-observer");
-        assert!(reply["refused"].is_string(), "{reply}");
+        assert!(reply["nonce"].is_string(), "{reply}");
         assert!(took < Duration::from_millis(1000), "Pi waited {took:?}");
         // a hook word, Claude's and Codex's: handled (here refused, for the
         // server it names) while its helper is still connected
@@ -8075,10 +8136,11 @@ mod tests {
     }
 
     /// A first line is at most `MAX_LINE` bytes. What a client sent behind
-    /// its first line is never read and thrown away: for a Pi stream it is
-    /// the stream's next bytes, and for the two one-message families it
-    /// means the message is not one of theirs. A line may also end with the
-    /// client's end of its side, as before.
+    /// its first line is never read and thrown away: every family is one
+    /// message per connection, so it means that the message is none of
+    /// theirs — a Pi observer's line as well, where it is also what keeps a
+    /// second writer's bytes from riding behind the first. A line may also
+    /// end with the client's end of its side, as before.
     #[test]
     fn a_first_line_is_bounded_and_what_follows_it_is_never_thrown_away() {
         use std::io::Write;
@@ -8110,19 +8172,35 @@ mod tests {
         ended.shutdown(std::net::Shutdown::Write).unwrap();
         listening.until_counted("other-server", 1);
 
-        // a Pi hello with a frame behind it: the Pi transport's, with that
-        // frame — never "trailing bytes"
-        let frame = r#"{"protocol":"pi-observer","v":1,"source":"pi","seq":1}"#;
-        let (reply, _) = pi_answer(&listening, &format!("{frame}\n"));
+        // a Pi line alone is the Pi transport's ...
+        let (reply, _) = pi_answer(&listening);
         assert_eq!(reply["protocol"], "pi-observer");
         assert_eq!(listening.counted("trailing-bytes"), 1);
+        // ... and with anything behind it — a second line, half of one, a
+        // single byte — it is nobody's: not answered, and nothing of it
+        // reaches the transport
+        for behind in [
+            format!("{}\n", pi_hello()),
+            "{\"protocol\"".to_string(),
+            "x".to_string(),
+        ] {
+            let mut two = listening.connect();
+            two.write_all(format!("{}\n{behind}", pi_hello()).as_bytes())
+                .unwrap();
+            assert_eq!(
+                std::io::Read::read(&mut two, &mut [0u8; 1]).ok(),
+                Some(0),
+                "closed without an answer"
+            );
+        }
+        listening.until_counted("trailing-bytes", 4);
 
         // an empty first line with bytes behind it: said, not swallowed
         let mut blank = listening.connect();
         blank
             .write_all(format!("\n{foreign}\n").as_bytes())
             .unwrap();
-        listening.until_counted("trailing-bytes", 2);
+        listening.until_counted("trailing-bytes", 5);
         assert_eq!(
             listening.counted("other-server"),
             1,
@@ -8133,7 +8211,7 @@ mod tests {
         drop(listening.connect());
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(listening.counted("bad-json"), 0);
-        assert_eq!(listening.counted("trailing-bytes"), 2);
+        assert_eq!(listening.counted("trailing-bytes"), 5);
     }
 
     /// At most `MAX_FIRST_LINES` connections are read for their first line
@@ -8163,7 +8241,7 @@ mod tests {
         );
         // their time is up: every place is free again, and the next is served
         listening.until_counted("first-line-late", MAX_FIRST_LINES as u32);
-        let (reply, took) = pi_answer(&listening, "");
+        let (reply, took) = pi_answer(&listening);
         assert_eq!(reply["protocol"], "pi-observer");
         assert!(took < Duration::from_millis(1000));
         drop(held);

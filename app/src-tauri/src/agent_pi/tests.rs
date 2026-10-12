@@ -3,22 +3,44 @@
 
 use super::*;
 
+const NONCE: &str = "0123456789abcdef0123456789abcdef";
+
+/// An attest: the observer's claims and the nonce they answer.
 fn hello(change: impl FnOnce(&mut serde_json::Value)) -> String {
     let mut line = serde_json::json!({
-        "protocol": "pi-observer", "v": 1, "source": "pi", "socket": "deck",
-        "server_pid": 4242, "pane": "%7", "observerVersion": 1, "piVersion": "1.1.0",
+        "protocol": "pi-observer", "v": 2, "source": "pi", "nonce": NONCE, "socket": "deck",
+        "server_pid": 4242, "pane": "%7", "observerVersion": 2, "piVersion": "1.1.0",
         "mode": "tui", "capabilities": { "signal": true, "lifecycle": false }
     });
     change(&mut line);
     line.to_string()
 }
 
+/// A frame of lease 3, with a nonce.
 fn frame(body: serde_json::Value) -> String {
-    let mut line = serde_json::json!({ "protocol": "pi-observer", "v": 1, "source": "pi" });
+    let mut line = serde_json::json!({
+        "protocol": "pi-observer", "v": 2, "source": "pi", "lease": 3, "nonce": NONCE
+    });
     line.as_object_mut()
         .unwrap()
         .extend(body.as_object().unwrap().clone());
     line.to_string()
+}
+
+/// The claims of a line that is an attest.
+fn parse_hello(line: &str) -> Result<Hello, &'static str> {
+    match parse_message(line)? {
+        Message::Attest { hello, .. } => Ok(hello),
+        _ => Err("bad-frame"),
+    }
+}
+
+/// The frame of a line that names a lease and carries a nonce.
+fn parse_frame(line: &str) -> Result<Frame, &'static str> {
+    match parse_message(line)? {
+        Message::Frame { frame, .. } => frame,
+        _ => Err("bad-frame"),
+    }
 }
 
 #[test]
@@ -41,9 +63,140 @@ fn pi_is_registered_without_a_hook_family_or_a_reentry_capability() {
     assert_eq!(crate::admission::interactive_agent("node"), None);
 }
 
+/// The three kinds of line, told apart by the lease and the nonce: a hello
+/// has neither and nothing else, an attest has the nonce and the claims, a
+/// frame has both — and a line that is none of them is refused. What is
+/// wrong INSIDE a frame is kept as that frame's refusal: whose mistake it
+/// is can only be said once the sender is proven.
 #[test]
-fn the_hello_is_one_closed_shape() {
-    let parsed = parse_hello(&hello(|_| {})).expect("the canonical hello");
+fn a_line_is_a_hello_an_attest_or_a_frame_of_a_lease() {
+    let common = serde_json::json!({ "protocol": "pi-observer", "v": 2, "source": "pi" });
+    let with = |more: serde_json::Value| {
+        let mut line = common.clone();
+        line.as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        line.to_string()
+    };
+    assert_eq!(parse_message(&common.to_string()), Ok(Message::Hello));
+    assert!(is_family(&common.to_string()));
+    // a hello carries nothing: not a claim, not a frame's field
+    for more in [
+        serde_json::json!({"pane": "%7"}),
+        serde_json::json!({"seq": 1}),
+        serde_json::json!({"capabilities": {"signal": true, "lifecycle": false}}),
+        serde_json::json!({"run": 1, "state": "working"}),
+        serde_json::json!({"title": "x"}),
+    ] {
+        assert_eq!(
+            parse_message(&with(more.clone())),
+            Err("bad-frame"),
+            "{more}"
+        );
+    }
+    // an attest is the claims and the nonce
+    assert!(matches!(
+        parse_message(&hello(|_| {})),
+        Ok(Message::Attest { nonce, .. }) if nonce.same(&Nonce::parse(NONCE).unwrap())
+    ));
+    // a frame names its lease and carries a nonce
+    assert!(matches!(
+        parse_message(&frame(serde_json::json!({"seq": 1}))),
+        Ok(Message::Frame {
+            lease: 3,
+            frame: Ok(Frame::Ping { seq: 1 }),
+            ..
+        })
+    ));
+    // a lease that is none, a frame without its nonce, a nonce that is none
+    for more in [
+        serde_json::json!({"lease": 0, "nonce": NONCE, "seq": 1}),
+        serde_json::json!({"lease": -1, "nonce": NONCE, "seq": 1}),
+        serde_json::json!({"lease": 1.5, "nonce": NONCE, "seq": 1}),
+        serde_json::json!({"lease": "3", "nonce": NONCE, "seq": 1}),
+        serde_json::json!({"lease": 9007199254740992u64, "nonce": NONCE, "seq": 1}),
+        serde_json::json!({"lease": 3, "seq": 1}),
+        serde_json::json!({"lease": 3, "nonce": "", "seq": 1}),
+        serde_json::json!({"lease": 3, "nonce": &NONCE[1..], "seq": 1}),
+        serde_json::json!({"lease": 3, "nonce": format!("{NONCE}0"), "seq": 1}),
+        serde_json::json!({"lease": 3, "nonce": NONCE.to_uppercase(), "seq": 1}),
+        serde_json::json!({"lease": 3, "nonce": NONCE.replace('0', "g"), "seq": 1}),
+        serde_json::json!({"lease": 3, "nonce": 7, "seq": 1}),
+    ] {
+        assert_eq!(
+            parse_message(&with(more.clone())),
+            Err("bad-frame"),
+            "{more}"
+        );
+    }
+    // What is wrong inside a frame whose lease and nonce can be read — a
+    // word, a key this family does not have, a key that came twice — is the
+    // frame's refusal, with the lease and the nonce still there to ask by.
+    for line in [
+        frame(serde_json::json!({"seq": 1, "run": 1, "state": "needs-input"})),
+        frame(serde_json::json!({"seq": 1, "title": "Allow?"})),
+        frame(serde_json::json!({"seq": 1})).replacen("\"seq\":1", "\"seq\":1,\"seq\":2", 1),
+        frame(serde_json::json!({})),
+    ] {
+        assert!(
+            matches!(
+                parse_message(&line),
+                Ok(Message::Frame {
+                    lease: 3,
+                    frame: Err("bad-frame"),
+                    ..
+                })
+            ),
+            "{line}"
+        );
+    }
+    assert!(matches!(
+        parse_message(&frame(
+            serde_json::json!({"seq": 1, "event": "snapshot", "nativeSessionId": "../x"})
+        )),
+        Ok(Message::Frame {
+            frame: Err("bad-native-id"),
+            ..
+        })
+    ));
+    // another version of the wire is no line of this one, whatever it holds
+    for line in [
+        common.to_string().replace("\"v\":2", "\"v\":1"),
+        hello(|l| l["v"] = 1.into()),
+        frame(serde_json::json!({"seq": 1})).replace("\"v\":2", "\"v\":3"),
+    ] {
+        assert_eq!(parse_message(&line), Err("bad-version"), "{line}");
+    }
+}
+
+#[test]
+fn a_nonce_is_thirty_two_digits_and_never_printed() {
+    let (a, b) = (Nonce::fresh().unwrap(), Nonce::fresh().unwrap());
+    assert!(!a.same(&b), "128 bits of the system's randomness");
+    assert!(a.same(&a.clone()));
+    let text = a.hex();
+    assert_eq!(text.len(), 32);
+    assert!(text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+    assert!(Nonce::parse(&text).unwrap().same(&a));
+    assert!(Nonce::parse(NONCE).unwrap().same(&Nonce::of([
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+        0xef
+    ])));
+    // a failed assertion or a log line that holds one says nothing of it
+    assert_eq!(format!("{a:?}"), "Nonce(..)");
+    assert!(!format!(
+        "{:?}",
+        Message::Attest {
+            nonce: a.clone(),
+            hello: parse_hello(&hello(|_| {})).unwrap()
+        }
+    )
+    .contains(&text));
+}
+
+#[test]
+fn the_attest_is_one_closed_shape() {
+    let parsed = parse_hello(&hello(|_| {})).expect("the canonical attest");
     assert_eq!(
         parsed,
         Hello {
@@ -62,10 +215,12 @@ fn the_hello_is_one_closed_shape() {
     let refused = |change: &dyn Fn(&mut serde_json::Value), code: &str| {
         assert_eq!(parse_hello(&hello(change)), Err(code), "{code}");
     };
-    refused(&|l| l["v"] = 2.into(), "bad-version");
-    refused(&|l| l["v"] = serde_json::json!(1.5), "bad-frame");
-    refused(&|l| l["v"] = serde_json::json!("1"), "bad-frame");
-    refused(&|l| l["observerVersion"] = 2.into(), "bad-version");
+    refused(&|l| l["v"] = 3.into(), "bad-version");
+    refused(&|l| l["v"] = 1.into(), "bad-version");
+    refused(&|l| l["v"] = serde_json::json!(2.5), "bad-frame");
+    refused(&|l| l["v"] = serde_json::json!("2"), "bad-frame");
+    refused(&|l| l["observerVersion"] = 1.into(), "bad-version");
+    refused(&|l| l["observerVersion"] = 3.into(), "bad-version");
     refused(&|l| l["source"] = "claude-code".into(), "bad-frame");
     refused(&|l| l["protocol"] = "agent-lifecycle".into(), "bad-frame");
     refused(&|l| l["mode"] = "rpc".into(), "bad-mode");
@@ -144,6 +299,21 @@ fn the_hello_is_one_closed_shape() {
     assert_eq!(parse_hello(&twice), Err("bad-frame"));
     let twice = hello(|_| {}).replacen("\"signal\":true", "\"signal\":true,\"signal\":true", 1);
     assert_eq!(parse_hello(&twice), Err("bad-frame"));
+    // without its nonce the claims are no attest, and no hello either
+    refused(
+        &|l| {
+            l.as_object_mut().unwrap().remove("nonce");
+        },
+        "bad-frame",
+    );
+    // with a lease they are no attest but a frame, and no frame either
+    assert!(matches!(
+        parse_message(&hello(|l| l["lease"] = 3.into())),
+        Ok(Message::Frame {
+            frame: Err("bad-frame"),
+            ..
+        })
+    ));
     // not an object, trailing bytes, an oversized line
     assert_eq!(parse_hello("[]"), Err("bad-frame"));
     assert_eq!(
@@ -344,9 +514,10 @@ fn numbers_are_whole_positive_and_exact() {
     }
     // JSON has no NaN or Infinity: such a line is not JSON at all
     for text in ["NaN", "Infinity", "-Infinity", "1e400"] {
-        let line =
-            format!("{{\"protocol\":\"pi-observer\",\"v\":1,\"source\":\"pi\",\"seq\":{text}}}");
-        assert_eq!(parse_frame(&line), Err("bad-frame"), "{text}");
+        let line = format!(
+            "{{\"protocol\":\"pi-observer\",\"v\":2,\"source\":\"pi\",\"lease\":3,\"nonce\":\"{NONCE}\",\"seq\":{text}}}"
+        );
+        assert_eq!(parse_message(&line), Err("bad-frame"), "{text}");
     }
     let run = |value: serde_json::Value| {
         parse_frame(&frame(
@@ -389,7 +560,7 @@ fn a_frame_carries_no_field_of_another_shape_and_no_content() {
             "{body}"
         );
     }
-    // the hello is not a frame and a frame is not a hello
+    // an attest is not a frame and a frame is not an attest
     assert_eq!(parse_frame(&hello(|_| {})), Err("bad-frame"));
     assert_eq!(
         parse_hello(&frame(serde_json::json!({"seq": 1}))),
@@ -399,7 +570,7 @@ fn a_frame_carries_no_field_of_another_shape_and_no_content() {
         frame(serde_json::json!({"seq": 1})).replacen("\"seq\":1", "\"seq\":1,\"seq\":2", 1);
     assert_eq!(parse_frame(&twice), Err("bad-frame"));
     assert_eq!(
-        parse_frame(&frame(serde_json::json!({"seq": 1})).replace("\"v\":1", "\"v\":3")),
+        parse_frame(&frame(serde_json::json!({"seq": 1})).replace("\"v\":2", "\"v\":3")),
         Err("bad-version")
     );
 }
@@ -450,65 +621,71 @@ fn a_native_id_is_pi_s_own_shape_and_never_cut_short() {
     );
 }
 
-/// The two lines that take a capability from a running stream: what the
-/// stream may still do, and the answer to a frame that crossed the change.
+/// What Deck says: one line per connection. Every answer that is not a
+/// refusal carries the nonce the next message must carry, and every answer
+/// to an attest or a frame the two capability bits as they are.
 #[test]
-fn a_capability_is_taken_with_two_closed_lines() {
+fn answers_are_six_closed_lines() {
+    let nonce = Nonce::parse(NONCE).unwrap();
     let only_signal = Capabilities {
         signal: true,
         lifecycle: false,
     };
     assert_eq!(
-        capabilities_line(only_signal),
-        "{\"protocol\":\"pi-observer\",\"v\":1,\"capabilities\":{\"signal\":true,\"lifecycle\":false}}\n"
+        nonce_line(&nonce),
+        format!("{{\"protocol\":\"pi-observer\",\"v\":2,\"nonce\":\"{NONCE}\"}}\n")
     );
     assert_eq!(
-        revoked_line(9),
-        "{\"protocol\":\"pi-observer\",\"v\":1,\"revoked\":9}\n"
-    );
-    for (line, key) in [
-        (capabilities_line(Capabilities::NONE), "capabilities"),
-        (revoked_line(1), "revoked"),
-    ] {
-        let value: serde_json::Value = serde_json::from_str(&line).expect("JSON");
-        assert_eq!(value.as_object().unwrap().len(), 3, "{line}");
-        assert!(value.get(key).is_some() && line.ends_with('\n'));
-        // neither is an acknowledgement, an acceptance or a refusal
-        for other in ["ack", "accepted", "refused"] {
-            assert!(value.get(other).is_none(), "{line}");
-        }
-    }
-    // the two refusals of a peer that is not the instance that connected
-    for code in ["peer-executed", "no-instance"] {
-        assert!(REFUSALS.contains(&code));
-        assert_eq!(drop_reason(code), format!("pi-{code}"));
-    }
-}
-
-#[test]
-fn replies_are_three_closed_lines() {
-    assert_eq!(
-        accepted_line(),
-        "{\"protocol\":\"pi-observer\",\"v\":1,\"accepted\":true}\n"
+        accepted_line(41, &nonce, only_signal),
+        format!(
+            "{{\"protocol\":\"pi-observer\",\"v\":2,\"accepted\":41,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":true,\"lifecycle\":false}}}}\n"
+        )
     );
     assert_eq!(
-        ack_line(7),
-        "{\"protocol\":\"pi-observer\",\"v\":1,\"ack\":7}\n"
+        ack_line(7, &nonce, only_signal),
+        format!(
+            "{{\"protocol\":\"pi-observer\",\"v\":2,\"ack\":7,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":true,\"lifecycle\":false}}}}\n"
+        )
+    );
+    assert_eq!(
+        revoked_line(9, &nonce, Capabilities::NONE),
+        format!(
+            "{{\"protocol\":\"pi-observer\",\"v\":2,\"revoked\":9,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":false,\"lifecycle\":false}}}}\n"
+        )
+    );
+    assert_eq!(
+        again_line(&nonce),
+        format!("{{\"protocol\":\"pi-observer\",\"v\":2,\"again\":true,\"nonce\":\"{NONCE}\"}}\n")
     );
     assert_eq!(
         refused_line("duplicate-observer"),
-        "{\"protocol\":\"pi-observer\",\"v\":1,\"refused\":\"duplicate-observer\"}\n"
+        "{\"protocol\":\"pi-observer\",\"v\":2,\"refused\":\"duplicate-observer\"}\n"
     );
-    // each is one JSON object with nothing but those keys
-    for (line, key) in [
-        (accepted_line(), "accepted"),
-        (ack_line(7), "ack"),
-        (refused_line("busy"), "refused"),
+    // each is one JSON object with exactly its keys, and only a refusal is
+    // without a nonce
+    for (line, key, keys) in [
+        (nonce_line(&nonce), "nonce", 3),
+        (accepted_line(1, &nonce, only_signal), "accepted", 5),
+        (ack_line(7, &nonce, only_signal), "ack", 5),
+        (revoked_line(7, &nonce, only_signal), "revoked", 5),
+        (again_line(&nonce), "again", 4),
+        (refused_line("busy"), "refused", 3),
     ] {
         let value: serde_json::Value = serde_json::from_str(&line).expect("JSON");
-        let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
-        assert_eq!(keys.len(), 3, "{line}");
+        assert_eq!(value.as_object().unwrap().len(), keys, "{line}");
         assert!(value.get(key).is_some() && line.ends_with('\n'));
+        assert_eq!(value.get("nonce").is_some(), key != "refused", "{line}");
+        assert_eq!(
+            value.get("capabilities").is_some(),
+            matches!(key, "accepted" | "ack" | "revoked"),
+            "{line}"
+        );
+        // no answer is two of them
+        let named = ["accepted", "ack", "revoked", "again", "refused"]
+            .iter()
+            .filter(|other| value.get(**other).is_some())
+            .count();
+        assert_eq!(named, usize::from(key != "nonce"), "{line}");
     }
     // a refusal code is a plain word: no quote or escape can appear
     for code in REFUSALS {
@@ -519,6 +696,50 @@ fn replies_are_three_closed_lines() {
         assert_eq!(drop_reason(code), format!("pi-{code}"));
     }
     assert_eq!(drop_reason("anything-else"), "other");
+    for code in [
+        "peer-executed",
+        "no-instance",
+        "no-challenge",
+        "sender-mismatch",
+    ] {
+        assert!(REFUSALS.contains(&code));
+    }
+}
+
+/// A line of another wire version is told so in the framing IT claims: an
+/// observer reads nothing that is not of its own version, and takes this
+/// refusal as final. Every other refusal is said in this version.
+#[test]
+fn another_version_is_refused_in_its_own_framing() {
+    let old = "{\"protocol\":\"pi-observer\",\"v\":1,\"source\":\"pi\",\"seq\":1}";
+    assert_eq!(parse_message(old), Err("bad-version"));
+    assert_eq!(
+        refusal_of(old, "bad-version"),
+        "{\"protocol\":\"pi-observer\",\"v\":1,\"refused\":\"bad-version\"}\n"
+    );
+    let newer = old.replace("\"v\":1", "\"v\":7");
+    assert_eq!(
+        refusal_of(&newer, "bad-version"),
+        "{\"protocol\":\"pi-observer\",\"v\":7,\"refused\":\"bad-version\"}\n"
+    );
+    // a version that is none, or a line that is no JSON, is answered in this one
+    for line in [
+        old.replace("\"v\":1", "\"v\":0"),
+        old.replace("\"v\":1", "\"v\":100"),
+        old.replace("\"v\":1", "\"v\":\"1\""),
+        "not json".to_string(),
+    ] {
+        assert_eq!(
+            refusal_of(&line, "bad-version"),
+            refused_line("bad-version"),
+            "{line}"
+        );
+    }
+    // and no other refusal borrows a framing
+    assert_eq!(refusal_of(old, "bad-frame"), refused_line("bad-frame"));
+    // the observer's own bad version (the wire's is this one) is this framing's
+    let own = hello(|l| l["observerVersion"] = 1.into());
+    assert_eq!(refusal_of(&own, "bad-version"), refused_line("bad-version"));
 }
 
 #[test]
@@ -559,7 +780,7 @@ mod native {
     //! - the Settings commands (`agent_hooks_set("pi", …)`,
     //!   `agent_pi_lifecycle_set`, `agent_hooks_status`), the boot migration
     //!   and the dismiss command (`notify_dismiss`);
-    //! - the session observations a lifecycle stream wrote
+    //! - the session observations a lifecycle frame wrote
     //!   (`agent_reentry::lifecycle`). Their native ids appear in this
     //!   harness's trace so a run can compare them with what Pi itself
     //!   logged; that trace stays in the experiment root and is never
@@ -767,7 +988,7 @@ mod native {
                 json!({
                     "lease": seen.lease, "session": seen.session, "run": seen.run, "open": seen.open,
                     "next_seq": seen.next_seq,
-                    // what the stream may still do, as the transport holds it
+                    // what the lease may still do, as the transport holds it
                     "signal": seen.usable.signal, "lifecycle": seen.usable.lifecycle,
                 })
             })
@@ -789,7 +1010,10 @@ mod native {
         let unsupported = crate::agent_reentry::lifecycle::pi_unsupported_for_tests();
         json!({
             "store": store,
-            "streams": probe::streams(),
+            // how often a line was neither believed nor blamed, and how
+            // many nonces wait for their attest
+            "agains": probe::agains(),
+            "challenges": probe::challenges(),
             "leases": leases,
             "ended": ended,
             "sessions": sessions,
