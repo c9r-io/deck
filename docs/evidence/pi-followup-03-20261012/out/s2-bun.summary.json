@@ -1,0 +1,1448 @@
+{
+ "runtime": "bun",
+ "sha256": {
+  "bin/node": "27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+  "bin/pi-standalone": "daea10db90f7806cd0ae5be89fcf819d47b5ed3df99b7c79c31186a1cd6a6501",
+  "bin/only.node": "551687071e06eb5c38b932ff38e06f69148da23d03bf0d22547dfff51452c6a8",
+  "bin/kid": "a1fe3e5a2bfa39c6deb05c7f392f2987f4885477d7599ea50458da9b3e450d13",
+  "bin/listen": "17e364cc2b2cbc7b06b6231fa75aa04ef01bf1e36b18590be0e97dfa88ea3f47",
+  "src/probe.cjs": "592df0d3044f37b9f944946c950791a78b6ff3bf646cef52b03a450abd7fd3ca",
+  "src/only.c": "e725c77f75cdd4656867e238db54ea2d8991979482d604cf1724e959adc9ec76",
+  "src/kid.c": "7548cce4fe73e1f768144a6a6ea4f9968fc26dcdae834bcba058809e427f9afb",
+  "src/listen.c": "6cecb14721dcf36fb2f73925cb602ff0eb8b1e23b847c327e7c266186fd1c49c",
+  "src/measure.py": "66a5adf62698f4500c51936a985ddaf955ac139ec5408691957dcfe0cf4a880a"
+ },
+ "items": [
+  {
+   "phase": "identity",
+   "api": null,
+   "asked": 1,
+   "attempts": [
+    {
+     "name": "s2-bun-identity-1",
+     "pid": 11442,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 0,
+     "wall_seconds": 0.05,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {},
+   "results": [
+    {
+     "phase": "identity",
+     "name": "s2-bun-identity-1",
+     "pid": 11442,
+     "versions": {
+      "node": "24.3.0",
+      "bun": "1.3.14",
+      "uv": "1.48.0"
+     },
+     "revision": "0d9b296af33f2b851fcbf4df3e9ec89751734ba4",
+     "exec": "/private/tmp/deck-pi-r1-Vz99if/bin/pi-standalone",
+     "self": {
+      "tid": 15078734,
+      "main": true
+     },
+     "threads": [
+      {
+       "tid": 15078734,
+       "name": ""
+      },
+      {
+       "tid": 15078737,
+       "name": "JavaScriptCore libpas scavenger"
+      },
+      {
+       "tid": 15078739,
+       "name": "Heap Helper Thread"
+      },
+      {
+       "tid": 15078740,
+       "name": "Heap Helper Thread"
+      },
+      {
+       "tid": 15078741,
+       "name": "Heap Helper Thread"
+      },
+      {
+       "tid": 15078742,
+       "name": "JIT Worklist Helper Thread"
+      }
+     ]
+    }
+   ],
+   "reached": 1
+  },
+  {
+   "phase": "control",
+   "api": null,
+   "asked": 3,
+   "attempts": [
+    {
+     "name": "s2-bun-control-1",
+     "pid": 11525,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 0,
+     "wall_seconds": 1.03,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {},
+   "results": [
+    {
+     "phase": "control",
+     "i": 0,
+     "held": 7,
+     "threads_before": 8,
+     "threads_during": 8,
+     "loop_turns_under_hold": 28,
+     "finished_under_hold": false,
+     "finished_after_release_ms": 2
+    },
+    {
+     "phase": "control",
+     "i": 1,
+     "held": 7,
+     "threads_before": 8,
+     "threads_during": 8,
+     "loop_turns_under_hold": 28,
+     "finished_under_hold": false,
+     "finished_after_release_ms": 2
+    },
+    {
+     "phase": "control",
+     "i": 2,
+     "held": 7,
+     "threads_before": 8,
+     "threads_during": 8,
+     "loop_turns_under_hold": 28,
+     "finished_under_hold": false,
+     "finished_after_release_ms": 2
+    }
+   ],
+   "reached": 3
+  },
+  {
+   "phase": "connect",
+   "api": null,
+   "asked": 300,
+   "attempts": [
+    {
+     "name": "s2-bun-connect-1",
+     "pid": 11592,
+     "exit": -15,
+     "finished": false,
+     "runs_reported": 0,
+     "wall_seconds": 11.57,
+     "stopped_because_nothing_moved": {
+      "seconds_without_change": 6.0,
+      "was_about_to": "connect 20 @1791807727847",
+      "registry_stop_exit": 0
+     }
+    },
+    {
+     "name": "s2-bun-connect-2",
+     "pid": 11715,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 300,
+     "wall_seconds": 1.45,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 300,
+    "nothing_waiting_before": 300,
+    "waiting_at_return": 300,
+    "peer_is_this_process": 300,
+    "proven": 300,
+    "failed": 0,
+    "whole_holds": 300,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 11,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 8000,
+    "charged_names": [
+     "JIT Worklist Helper Thread",
+     "JavaScriptCore libpas scavenger"
+    ],
+    "held_min": 7,
+    "held_max": 7,
+    "odd": []
+   },
+   "results": [],
+   "reached": 300
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.spawnSync",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-bun-child-process-spawnSync-1",
+     "pid": 11782,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.75,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 40,
+    "pid_as_returned": 40,
+    "born_with_stdio_only": 40,
+    "proven": 40,
+    "failed": 0,
+    "whole_holds": 40,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 5,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 5000,
+    "charged_names": [
+     "JIT Worklist Helper Thread",
+     "JavaScriptCore libpas scavenger"
+    ],
+    "held_min": 5,
+    "held_max": 6,
+    "odd": []
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.spawn",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-bun-child-process-spawn-1",
+     "pid": 11923,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.75,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 40,
+    "pid_as_returned": 40,
+    "born_with_stdio_only": 40,
+    "proven": 40,
+    "failed": 0,
+    "whole_holds": 40,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 6,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 4000,
+    "charged_names": [
+     "JIT Worklist Helper Thread",
+     "JavaScriptCore libpas scavenger"
+    ],
+    "held_min": 5,
+    "held_max": 6,
+    "odd": []
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.spawn pipes+detached",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-bun-child-process-spawn-pipes-detached-1",
+     "pid": 12060,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.74,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 40,
+    "pid_as_returned": 40,
+    "born_with_stdio_only": 40,
+    "proven": 40,
+    "failed": 0,
+    "whole_holds": 40,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 6,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 4000,
+    "charged_names": [
+     "JIT Worklist Helper Thread",
+     "JavaScriptCore libpas scavenger"
+    ],
+    "held_min": 10,
+    "held_max": 10,
+    "odd": []
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.execFile",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-bun-child-process-execFile-1",
+     "pid": 12202,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.75,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 40,
+    "pid_as_returned": 40,
+    "born_with_stdio_only": 40,
+    "proven": 39,
+    "failed": 0,
+    "whole_holds": 39,
+    "a_thread_came_or_went": 1,
+    "not_all_held": 1,
+    "others_moved_runs": 1,
+    "others_charged_runs": 9,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 5000,
+    "charged_names": [
+     "JIT Worklist Helper Thread"
+    ],
+    "held_min": 10,
+    "held_max": 12,
+    "odd": [
+     {
+      "i": 4,
+      "kid": {
+       "pid": 12239,
+       "ppid": 12202,
+       "fds": [
+        {
+         "fd": 0,
+         "kind": "sock",
+         "cloexec": 0,
+         "peer": ""
+        },
+        {
+         "fd": 1,
+         "kind": "sock",
+         "cloexec": 0,
+         "peer": ""
+        },
+        {
+         "fd": 2,
+         "kind": "sock",
+         "cloexec": 0,
+         "peer": ""
+        }
+       ],
+       "sockets": 3
+      },
+      "held": 10,
+      "threads": 11,
+      "same_threads": false,
+      "all_held": false,
+      "others_moved": 1,
+      "charged": [
+       {
+        "name": "JIT Worklist Helper Thread",
+        "user_ns": 0,
+        "system_ns": 3000
+       },
+       {
+        "name": "JIT Worklist Helper Thread",
+        "user_ns": 0,
+        "system_ns": 4000
+       },
+       {
+        "name": "JIT Worklist Helper Thread",
+        "came": true
+       }
+      ],
+      "failed": null
+     }
+    ]
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.exec",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-bun-child-process-exec-1",
+     "pid": 12339,
+     "exit": -15,
+     "finished": false,
+     "runs_reported": 10,
+     "wall_seconds": 11.77,
+     "stopped_because_nothing_moved": {
+      "seconds_without_change": 6.0,
+      "was_about_to": "spawn child_process.exec 11 @1791807777216",
+      "registry_stop_exit": 0
+     }
+    },
+    {
+     "name": "s2-bun-child-process-exec-2",
+     "pid": 12521,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 30,
+     "wall_seconds": 0.85,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 0,
+    "pid_as_returned": 0,
+    "born_with_stdio_only": 40,
+    "proven": 38,
+    "failed": 0,
+    "whole_holds": 38,
+    "a_thread_came_or_went": 2,
+    "not_all_held": 2,
+    "others_moved_runs": 2,
+    "others_charged_runs": 11,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 4000,
+    "charged_names": [
+     "JIT Worklist Helper Thread",
+     "JavaScriptCore libpas scavenger"
+    ],
+    "held_min": 10,
+    "held_max": 16,
+    "odd": [
+     {
+      "i": 4,
+      "kid": {
+       "pid": 12376,
+       "ppid": 12339,
+       "fds": [
+        {
+         "fd": 0,
+         "kind": "sock",
+         "cloexec": 0,
+         "peer": ""
+        },
+        {
+         "fd": 1,
+         "kind": "sock",
+         "cloexec": 0,
+         "peer": ""
+        },
+        {
+         "fd": 2,
+         "kind": "sock",
+         "cloexec": 0,
+         "peer": ""
+        }
+       ],
+       "sockets": 3
+      },
+      "held": 10,
+      "threads": 11,
+      "same_threads": false,
+      "all_held": false,
+      "others_moved": 2,
+      "charged": [
+       {
+        "name": "JIT Worklist Helper Thread",
+        "user_ns": 0,
+        "system_ns": 3000
+       },
+       {
+        "name": "JIT Worklist Helper Thread",
+        "user_ns": 0,
+        "system_ns": 3000
+       },
+       {
+        "name": "JIT Worklist Helper Thread",
+        "came": true
+       },
+       {
+        "name": "JIT Worklist Helper Thread",
+        "came": true
+       }
+      ],
+      "failed": null
+     },
+     {
+      "i": 4,
+      "kid": {
+       "pid": 12560,
+       "ppid": 12521,
+       "fds": [
+        {
+         "fd": 0,
+         "kind": "sock",
+         "cloexec": 0,
+         "peer": ""
+        },
+        {
+         "fd": 1,
+         "kind": "sock",
+         "cloexec": 0,
+         "peer": ""
+        },
+        {
+         "fd": 2,
+         "kind": "sock",
+         "cloexec": 0,
+         "peer": ""
+        }
+       ],
+       "sockets": 3
+      },
+      "held": 14,
+      "threads": 15,
+      "same_threads": false,
+      "all_held": false,
+      "others_moved": 2,
+      "charged": [
+       {
+        "name": "JIT Worklist Helper Thread",
+        "user_ns": 0,
+        "system_ns": 3000
+       },
+       {
+        "name": "JIT Worklist Helper Thread",
+        "user_ns": 0,
+        "system_ns": 2000
+       },
+       {
+        "name": "JIT Worklist Helper Thread",
+        "came": true
+       },
+       {
+        "name": "JIT Worklist Helper Thread",
+        "came": true
+       }
+      ],
+      "failed": null
+     }
+    ]
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.execFileSync",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-bun-child-process-execFileSync-1",
+     "pid": 13818,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.75,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 0,
+    "pid_as_returned": 0,
+    "born_with_stdio_only": 40,
+    "proven": 40,
+    "failed": 0,
+    "whole_holds": 40,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 4,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 5000,
+    "charged_names": [
+     "JIT Worklist Helper Thread",
+     "JavaScriptCore libpas scavenger"
+    ],
+    "held_min": 5,
+    "held_max": 6,
+    "odd": []
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.execSync",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-bun-child-process-execSync-1",
+     "pid": 13960,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.95,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 0,
+    "pid_as_returned": 0,
+    "born_with_stdio_only": 40,
+    "proven": 39,
+    "failed": 0,
+    "whole_holds": 39,
+    "a_thread_came_or_went": 1,
+    "not_all_held": 1,
+    "others_moved_runs": 1,
+    "others_charged_runs": 3,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 4000,
+    "charged_names": [
+     "JIT Worklist Helper Thread",
+     "JavaScriptCore libpas scavenger"
+    ],
+    "held_min": 5,
+    "held_max": 6,
+    "odd": [
+     {
+      "i": 4,
+      "kid": {
+       "pid": 13997,
+       "ppid": 13960,
+       "fds": [
+        {
+         "fd": 0,
+         "kind": "chr",
+         "cloexec": 0,
+         "peer": ""
+        },
+        {
+         "fd": 1,
+         "kind": "chr",
+         "cloexec": 0,
+         "peer": ""
+        },
+        {
+         "fd": 2,
+         "kind": "chr",
+         "cloexec": 0,
+         "peer": ""
+        }
+       ],
+       "sockets": 0
+      },
+      "held": 5,
+      "threads": 6,
+      "same_threads": false,
+      "all_held": false,
+      "others_moved": 1,
+      "charged": [
+       {
+        "name": "JavaScriptCore libpas scavenger",
+        "user_ns": 0,
+        "system_ns": 4000
+       },
+       {
+        "name": "JIT Worklist Helper Thread",
+        "user_ns": 0,
+        "system_ns": 3000
+       },
+       {
+        "name": "JIT Worklist Helper Thread",
+        "came": true
+       }
+      ],
+      "failed": null
+     }
+    ]
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "forkers",
+   "api": null,
+   "asked": 5,
+   "attempts": [
+    {
+     "name": "s2-bun-forkers-1",
+     "pid": 14105,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 0,
+     "wall_seconds": 1.77,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {},
+   "results": [
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync",
+     "i": 1,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync",
+     "i": 2,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync",
+     "i": 3,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync",
+     "i": 4,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync",
+     "i": 5,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "Bun.spawn with a terminal",
+     "i": 1,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [
+      {
+       "tid": 15084743,
+       "main": true,
+       "name": ""
+      }
+     ],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 1,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "Bun.spawn with a terminal",
+     "i": 2,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [
+      {
+       "tid": 15084743,
+       "main": true,
+       "name": ""
+      }
+     ],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 1,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "Bun.spawn with a terminal",
+     "i": 3,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [
+      {
+       "tid": 15084743,
+       "main": true,
+       "name": ""
+      }
+     ],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 1,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "Bun.spawn with a terminal",
+     "i": 4,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [
+      {
+       "tid": 15084743,
+       "main": true,
+       "name": ""
+      }
+     ],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 1,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "Bun.spawn with a terminal",
+     "i": 5,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [
+      {
+       "tid": 15084743,
+       "main": true,
+       "name": ""
+      }
+     ],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 1,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "Bun.openInEditor",
+     "i": 1,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:reg",
+      "2:reg",
+      "4:reg",
+      "5:reg",
+      "6:fifo",
+      "7:fifo"
+     ],
+     "beyond_stdio": [
+      "4:reg:",
+      "5:reg:",
+      "6:fifo:",
+      "7:fifo:"
+     ],
+     "fork_calls": [
+      {
+       "tid": 15084789,
+       "main": false,
+       "name": "Open Editor"
+      }
+     ],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 1
+    },
+    {
+     "phase": "forkers",
+     "case": "Bun.openInEditor",
+     "i": 2,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:reg",
+      "2:reg",
+      "4:reg",
+      "5:reg",
+      "6:fifo",
+      "7:fifo"
+     ],
+     "beyond_stdio": [
+      "4:reg:",
+      "5:reg:",
+      "6:fifo:",
+      "7:fifo:"
+     ],
+     "fork_calls": [
+      {
+       "tid": 15084794,
+       "main": false,
+       "name": "Open Editor"
+      }
+     ],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 1
+    },
+    {
+     "phase": "forkers",
+     "case": "Bun.openInEditor",
+     "i": 3,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:reg",
+      "2:reg",
+      "4:reg",
+      "5:reg",
+      "6:fifo",
+      "7:fifo"
+     ],
+     "beyond_stdio": [
+      "4:reg:",
+      "5:reg:",
+      "6:fifo:",
+      "7:fifo:"
+     ],
+     "fork_calls": [
+      {
+       "tid": 15084798,
+       "main": false,
+       "name": "Open Editor"
+      }
+     ],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 1
+    },
+    {
+     "phase": "forkers",
+     "case": "Bun.openInEditor",
+     "i": 4,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:reg",
+      "2:reg",
+      "4:reg",
+      "5:reg",
+      "6:fifo",
+      "7:fifo"
+     ],
+     "beyond_stdio": [
+      "4:reg:",
+      "5:reg:",
+      "6:fifo:",
+      "7:fifo:"
+     ],
+     "fork_calls": [
+      {
+       "tid": 15084802,
+       "main": false,
+       "name": "Open Editor"
+      }
+     ],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 1
+    },
+    {
+     "phase": "forkers",
+     "case": "Bun.openInEditor",
+     "i": 5,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:reg",
+      "2:reg",
+      "4:reg",
+      "5:reg",
+      "6:fifo",
+      "7:fifo"
+     ],
+     "beyond_stdio": [
+      "4:reg:",
+      "5:reg:",
+      "6:fifo:",
+      "7:fifo:"
+     ],
+     "fork_calls": [
+      {
+       "tid": 15084805,
+       "main": false,
+       "name": "Open Editor"
+      }
+     ],
+     "this_thread": {
+      "tid": 15084743,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 1
+    }
+   ],
+   "reached": 5
+  },
+  {
+   "phase": "worker",
+   "api": null,
+   "asked": 100,
+   "attempts": [
+    {
+     "name": "s2-bun-worker-1",
+     "pid": 14187,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 0,
+     "wall_seconds": 0.16,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {},
+   "results": [
+    {
+     "phase": "worker",
+     "count": 100,
+     "worker": {
+      "tid": 15084983,
+      "main": false
+     },
+     "main": {
+      "tid": 15084970,
+      "main": true
+     },
+     "woke": "ok",
+     "main_thread_cpu_ns_while_asleep": 150000,
+     "asleep_ms": 119,
+     "children_made": 100,
+     "children_of_this_process": 100,
+     "written_while_main_slept": 100,
+     "born_with_stdio_only": 100
+    }
+   ],
+   "reached": 100
+  },
+  {
+   "phase": "race",
+   "api": null,
+   "asked": 1000,
+   "attempts": [
+    {
+     "name": "s2-bun-race-1",
+     "pid": 14357,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 0,
+     "wall_seconds": 2.03,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {},
+   "results": [
+    {
+     "phase": "race",
+     "worker_made_its_children_with": "posix_spawn (the ordinary way)",
+     "spawns_by_the_worker": 1000,
+     "connections_made_by_main_meanwhile": 218178,
+     "took_ms": 1336,
+     "children_made": 1000,
+     "children_of_this_process": 1000,
+     "children_born_with_more_than_stdio": 0,
+     "children_born_with_a_socket_of_this_process": 0,
+     "sockets_found_connected": 0,
+     "sockets_found_closed_by_the_listener": 0,
+     "sockets_found_unconnected": 0,
+     "children_whose_line_the_kernel_took": 0,
+     "examples": []
+    }
+   ],
+   "reached": 1000
+  },
+  {
+   "phase": "spawn",
+   "api": "Bun.spawnSync",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-bun-Bun-spawnSync-1",
+     "pid": 15430,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.69,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 40,
+    "pid_as_returned": 40,
+    "born_with_stdio_only": 40,
+    "proven": 40,
+    "failed": 0,
+    "whole_holds": 40,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 4,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 5000,
+    "charged_names": [
+     "JIT Worklist Helper Thread",
+     "JavaScriptCore libpas scavenger"
+    ],
+    "held_min": 5,
+    "held_max": 5,
+    "odd": []
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "spawn",
+   "api": "Bun.spawn",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-bun-Bun-spawn-1",
+     "pid": 15572,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.75,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 40,
+    "pid_as_returned": 40,
+    "born_with_stdio_only": 40,
+    "proven": 40,
+    "failed": 0,
+    "whole_holds": 40,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 3,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 12000,
+    "charged_names": [
+     "JIT Worklist Helper Thread",
+     "JavaScriptCore libpas scavenger"
+    ],
+    "held_min": 5,
+    "held_max": 5,
+    "odd": []
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "editor-race",
+   "api": null,
+   "asked": 1000,
+   "attempts": [
+    {
+     "name": "s2-bun-editor-race-1",
+     "pid": 15711,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 0,
+     "wall_seconds": 7.79,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {},
+   "results": [
+    {
+     "phase": "editor-race",
+     "editors_started": 1000,
+     "connections_made_by_this_thread_meanwhile": 1465,
+     "took_ms": 7224,
+     "fork_calls": 1000,
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 1000,
+     "forking_thread_names": [
+      "Open Editor"
+     ],
+     "children_made": 1000,
+     "children_of_this_process": 1000,
+     "children_born_with_a_socket_of_this_process": 9,
+     "sockets_found_connected": 9,
+     "sockets_found_closed_by_the_listener": 0,
+     "sockets_found_unconnected": 0,
+     "children_whose_line_the_kernel_took": 9,
+     "examples": [
+      {
+       "pid": 15816,
+       "ppid": 15711,
+       "fds": [
+        "0:chr",
+        "1:reg",
+        "2:reg",
+        "4:reg",
+        "5:reg",
+        "6:fifo",
+        "7:fifo",
+        "9:sock:/private/tmp/deck-pi-r1-Vz99if/a.sock:open:wrote 10"
+       ]
+      },
+      {
+       "pid": 15880,
+       "ppid": 15711,
+       "fds": [
+        "0:chr",
+        "1:reg",
+        "2:reg",
+        "4:reg",
+        "5:reg",
+        "6:fifo",
+        "7:fifo",
+        "11:sock:/private/tmp/deck-pi-r1-Vz99if/a.sock:open:wrote 10"
+       ]
+      },
+      {
+       "pid": 15915,
+       "ppid": 15711,
+       "fds": [
+        "0:chr",
+        "1:reg",
+        "2:reg",
+        "4:reg",
+        "5:reg",
+        "6:fifo",
+        "7:fifo",
+        "10:sock:/private/tmp/deck-pi-r1-Vz99if/a.sock:open:wrote 10"
+       ]
+      },
+      {
+       "pid": 16028,
+       "ppid": 15711,
+       "fds": [
+        "0:chr",
+        "1:reg",
+        "2:reg",
+        "4:reg",
+        "5:reg",
+        "6:fifo",
+        "7:fifo",
+        "11:sock:/private/tmp/deck-pi-r1-Vz99if/a.sock:open:wrote 10"
+       ]
+      },
+      {
+       "pid": 16252,
+       "ppid": 15711,
+       "fds": [
+        "0:chr",
+        "1:reg",
+        "2:reg",
+        "4:reg",
+        "5:reg",
+        "6:fifo",
+        "7:fifo",
+        "11:sock:/private/tmp/deck-pi-r1-Vz99if/a.sock:open:wrote 10"
+       ]
+      }
+     ]
+    }
+   ],
+   "reached": 1000
+  }
+ ]
+}

@@ -1,0 +1,857 @@
+{
+ "runtime": "node",
+ "sha256": {
+  "bin/node": "27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+  "bin/pi-standalone": "daea10db90f7806cd0ae5be89fcf819d47b5ed3df99b7c79c31186a1cd6a6501",
+  "bin/only.node": "551687071e06eb5c38b932ff38e06f69148da23d03bf0d22547dfff51452c6a8",
+  "bin/kid": "a1fe3e5a2bfa39c6deb05c7f392f2987f4885477d7599ea50458da9b3e450d13",
+  "bin/listen": "17e364cc2b2cbc7b06b6231fa75aa04ef01bf1e36b18590be0e97dfa88ea3f47",
+  "src/probe.cjs": "592df0d3044f37b9f944946c950791a78b6ff3bf646cef52b03a450abd7fd3ca",
+  "src/only.c": "e725c77f75cdd4656867e238db54ea2d8991979482d604cf1724e959adc9ec76",
+  "src/kid.c": "7548cce4fe73e1f768144a6a6ea4f9968fc26dcdae834bcba058809e427f9afb",
+  "src/listen.c": "6cecb14721dcf36fb2f73925cb602ff0eb8b1e23b847c327e7c266186fd1c49c",
+  "src/measure.py": "66a5adf62698f4500c51936a985ddaf955ac139ec5408691957dcfe0cf4a880a"
+ },
+ "items": [
+  {
+   "phase": "identity",
+   "api": null,
+   "asked": 1,
+   "attempts": [
+    {
+     "name": "s2-node-identity-1",
+     "pid": 7874,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 0,
+     "wall_seconds": 0.06,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {},
+   "results": [
+    {
+     "phase": "identity",
+     "name": "s2-node-identity-1",
+     "pid": 7874,
+     "versions": {
+      "node": "24.19.0",
+      "bun": null,
+      "uv": "1.52.1"
+     },
+     "revision": null,
+     "exec": "/private/tmp/deck-pi-r1-Vz99if/bin/node",
+     "self": {
+      "tid": 15071915,
+      "main": true
+     },
+     "threads": [
+      {
+       "tid": 15071915,
+       "name": "MainThread"
+      },
+      {
+       "tid": 15071920,
+       "name": "DelayedTaskSchedulerWorker"
+      },
+      {
+       "tid": 15071921,
+       "name": "V8Worker"
+      },
+      {
+       "tid": 15071922,
+       "name": "V8Worker"
+      },
+      {
+       "tid": 15071923,
+       "name": "V8Worker"
+      },
+      {
+       "tid": 15071924,
+       "name": "V8Worker"
+      },
+      {
+       "tid": 15071925,
+       "name": "SignalInspector"
+      }
+     ]
+    }
+   ],
+   "reached": 1
+  },
+  {
+   "phase": "control",
+   "api": null,
+   "asked": 3,
+   "attempts": [
+    {
+     "name": "s2-node-control-1",
+     "pid": 7941,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 0,
+     "wall_seconds": 1.02,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {},
+   "results": [
+    {
+     "phase": "control",
+     "i": 0,
+     "held": 10,
+     "threads_before": 11,
+     "threads_during": 11,
+     "loop_turns_under_hold": 28,
+     "finished_under_hold": false,
+     "finished_after_release_ms": 3
+    },
+    {
+     "phase": "control",
+     "i": 1,
+     "held": 10,
+     "threads_before": 11,
+     "threads_during": 11,
+     "loop_turns_under_hold": 28,
+     "finished_under_hold": false,
+     "finished_after_release_ms": 2
+    },
+    {
+     "phase": "control",
+     "i": 2,
+     "held": 10,
+     "threads_before": 11,
+     "threads_during": 11,
+     "loop_turns_under_hold": 28,
+     "finished_under_hold": false,
+     "finished_after_release_ms": 3
+    }
+   ],
+   "reached": 3
+  },
+  {
+   "phase": "connect",
+   "api": null,
+   "asked": 300,
+   "attempts": [
+    {
+     "name": "s2-node-connect-1",
+     "pid": 8008,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 300,
+     "wall_seconds": 1.45,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 300,
+    "nothing_waiting_before": 300,
+    "waiting_at_return": 300,
+    "peer_is_this_process": 300,
+    "proven": 300,
+    "failed": 0,
+    "whole_holds": 300,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 10,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 8000,
+    "charged_names": [
+     "V8Worker"
+    ],
+    "held_min": 6,
+    "held_max": 6,
+    "odd": []
+   },
+   "results": [],
+   "reached": 300
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.spawnSync",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-node-child-process-spawnSync-1",
+     "pid": 8075,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.81,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 40,
+    "pid_as_returned": 40,
+    "born_with_stdio_only": 40,
+    "proven": 40,
+    "failed": 0,
+    "whole_holds": 40,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 2,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 4000,
+    "charged_names": [
+     "V8Worker"
+    ],
+    "held_min": 6,
+    "held_max": 6,
+    "odd": []
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.spawn",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-node-child-process-spawn-1",
+     "pid": 8212,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.75,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 40,
+    "pid_as_returned": 40,
+    "born_with_stdio_only": 40,
+    "proven": 40,
+    "failed": 0,
+    "whole_holds": 40,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 4,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 8000,
+    "charged_names": [
+     "V8Worker"
+    ],
+    "held_min": 6,
+    "held_max": 6,
+    "odd": []
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.spawn pipes+detached",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-node-child-process-spawn-pipes-detached-1",
+     "pid": 8350,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.75,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 40,
+    "pid_as_returned": 40,
+    "born_with_stdio_only": 40,
+    "proven": 40,
+    "failed": 0,
+    "whole_holds": 40,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 6,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 6000,
+    "charged_names": [
+     "V8Worker"
+    ],
+    "held_min": 6,
+    "held_max": 6,
+    "odd": []
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.execFile",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-node-child-process-execFile-1",
+     "pid": 8487,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.75,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 40,
+    "pid_as_returned": 40,
+    "born_with_stdio_only": 40,
+    "proven": 40,
+    "failed": 0,
+    "whole_holds": 40,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 10,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 8000,
+    "charged_names": [
+     "V8Worker"
+    ],
+    "held_min": 6,
+    "held_max": 6,
+    "odd": []
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.exec",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-node-child-process-exec-1",
+     "pid": 8629,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.96,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 0,
+    "pid_as_returned": 0,
+    "born_with_stdio_only": 40,
+    "proven": 40,
+    "failed": 0,
+    "whole_holds": 40,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 9,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 2000,
+    "charged_names": [
+     "V8Worker"
+    ],
+    "held_min": 6,
+    "held_max": 6,
+    "odd": []
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.execFileSync",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-node-child-process-execFileSync-1",
+     "pid": 8766,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.76,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 0,
+    "pid_as_returned": 0,
+    "born_with_stdio_only": 40,
+    "proven": 40,
+    "failed": 0,
+    "whole_holds": 40,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 2,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 6000,
+    "charged_names": [
+     "V8Worker"
+    ],
+    "held_min": 6,
+    "held_max": 6,
+    "odd": []
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "spawn",
+   "api": "child_process.execSync",
+   "asked": 40,
+   "attempts": [
+    {
+     "name": "s2-node-child-process-execSync-1",
+     "pid": 8903,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 40,
+     "wall_seconds": 0.9,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {
+    "runs": 40,
+    "connection_kept_meanwhile": true,
+    "child_ran_under_hold": 40,
+    "child_of_this_process": 40,
+    "pid_returned": 0,
+    "pid_as_returned": 0,
+    "born_with_stdio_only": 40,
+    "proven": 40,
+    "failed": 0,
+    "whole_holds": 40,
+    "a_thread_came_or_went": 0,
+    "not_all_held": 0,
+    "others_moved_runs": 0,
+    "others_charged_runs": 2,
+    "charged_user_ns_max": 0,
+    "charged_system_ns_max": 7000,
+    "charged_names": [
+     "V8Worker"
+    ],
+    "held_min": 6,
+    "held_max": 6,
+    "odd": []
+   },
+   "results": [],
+   "reached": 40
+  },
+  {
+   "phase": "forkers",
+   "api": null,
+   "asked": 5,
+   "attempts": [
+    {
+     "name": "s2-node-forkers-1",
+     "pid": 9040,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 0,
+     "wall_seconds": 1.13,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {},
+   "results": [
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync",
+     "i": 1,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [],
+     "this_thread": {
+      "tid": 15074673,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync",
+     "i": 2,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [],
+     "this_thread": {
+      "tid": 15074673,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync",
+     "i": 3,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [],
+     "this_thread": {
+      "tid": 15074673,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync",
+     "i": 4,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [],
+     "this_thread": {
+      "tid": 15074673,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync",
+     "i": 5,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [],
+     "this_thread": {
+      "tid": 15074673,
+      "main": true
+     },
+     "forks_by_this_thread": 0,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync with uid and gid",
+     "i": 1,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [
+      {
+       "tid": 15074673,
+       "main": true,
+       "name": "MainThread"
+      }
+     ],
+     "this_thread": {
+      "tid": 15074673,
+      "main": true
+     },
+     "forks_by_this_thread": 1,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync with uid and gid",
+     "i": 2,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [
+      {
+       "tid": 15074673,
+       "main": true,
+       "name": "MainThread"
+      }
+     ],
+     "this_thread": {
+      "tid": 15074673,
+      "main": true
+     },
+     "forks_by_this_thread": 1,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync with uid and gid",
+     "i": 3,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [
+      {
+       "tid": 15074673,
+       "main": true,
+       "name": "MainThread"
+      }
+     ],
+     "this_thread": {
+      "tid": 15074673,
+      "main": true
+     },
+     "forks_by_this_thread": 1,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync with uid and gid",
+     "i": 4,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [
+      {
+       "tid": 15074673,
+       "main": true,
+       "name": "MainThread"
+      }
+     ],
+     "this_thread": {
+      "tid": 15074673,
+      "main": true
+     },
+     "forks_by_this_thread": 1,
+     "forks_by_another_thread": 0
+    },
+    {
+     "phase": "forkers",
+     "case": "child_process.spawnSync with uid and gid",
+     "i": 5,
+     "watching": true,
+     "threw": null,
+     "connection_kept_meanwhile": true,
+     "child_ran": true,
+     "child_of_this_process": true,
+     "born_with": [
+      "0:chr",
+      "1:chr",
+      "2:chr"
+     ],
+     "beyond_stdio": [],
+     "fork_calls": [
+      {
+       "tid": 15074673,
+       "main": true,
+       "name": "MainThread"
+      }
+     ],
+     "this_thread": {
+      "tid": 15074673,
+      "main": true
+     },
+     "forks_by_this_thread": 1,
+     "forks_by_another_thread": 0
+    }
+   ],
+   "reached": 5
+  },
+  {
+   "phase": "worker",
+   "api": null,
+   "asked": 100,
+   "attempts": [
+    {
+     "name": "s2-node-worker-1",
+     "pid": 9130,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 0,
+     "wall_seconds": 0.16,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {},
+   "results": [
+    {
+     "phase": "worker",
+     "count": 100,
+     "worker": {
+      "tid": 15074943,
+      "main": false
+     },
+     "main": {
+      "tid": 15074929,
+      "main": true
+     },
+     "woke": "ok",
+     "main_thread_cpu_ns_while_asleep": 102000,
+     "asleep_ms": 119,
+     "children_made": 100,
+     "children_of_this_process": 100,
+     "written_while_main_slept": 100,
+     "born_with_stdio_only": 100
+    }
+   ],
+   "reached": 100
+  },
+  {
+   "phase": "race",
+   "api": null,
+   "asked": 1000,
+   "attempts": [
+    {
+     "name": "s2-node-race-1",
+     "pid": 9297,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 0,
+     "wall_seconds": 2.05,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {},
+   "results": [
+    {
+     "phase": "race",
+     "worker_made_its_children_with": "posix_spawn (the ordinary way)",
+     "spawns_by_the_worker": 1000,
+     "connections_made_by_main_meanwhile": 289840,
+     "took_ms": 1355,
+     "children_made": 1000,
+     "children_of_this_process": 1000,
+     "children_born_with_more_than_stdio": 0,
+     "children_born_with_a_socket_of_this_process": 0,
+     "sockets_found_connected": 0,
+     "sockets_found_closed_by_the_listener": 0,
+     "sockets_found_unconnected": 0,
+     "children_whose_line_the_kernel_took": 0,
+     "examples": []
+    }
+   ],
+   "reached": 1000
+  },
+  {
+   "phase": "race-fork",
+   "api": null,
+   "asked": 1000,
+   "attempts": [
+    {
+     "name": "s2-node-race-fork-1",
+     "pid": 10370,
+     "exit": 0,
+     "finished": true,
+     "runs_reported": 0,
+     "wall_seconds": 8.35,
+     "stopped_because_nothing_moved": null
+    }
+   ],
+   "totals": {},
+   "results": [
+    {
+     "phase": "race-fork",
+     "worker_made_its_children_with": "fork and exec (uid and gid asked for)",
+     "spawns_by_the_worker": 1000,
+     "connections_made_by_main_meanwhile": 437146,
+     "took_ms": 7655,
+     "children_made": 1000,
+     "children_of_this_process": 1000,
+     "children_born_with_more_than_stdio": 0,
+     "children_born_with_a_socket_of_this_process": 0,
+     "sockets_found_connected": 0,
+     "sockets_found_closed_by_the_listener": 0,
+     "sockets_found_unconnected": 0,
+     "children_whose_line_the_kernel_took": 0,
+     "examples": []
+    }
+   ],
+   "reached": 1000
+  }
+ ]
+}

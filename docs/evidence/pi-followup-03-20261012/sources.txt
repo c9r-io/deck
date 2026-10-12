@@ -1,0 +1,36 @@
+# The sources the report cites, as fetched on 2026-10-12, with the SHA-256 of each file.
+# Node: https://nodejs.org/download/release/v24.19.0/node-v24.19.0.tar.xz
+#   archive SHA-256 f6d95e10a0431ee1067fc6aabe9f762908b4716dd35324e1ddb4b1466b76659f (equal to the release's SHASUMS256.txt)
+#   the binary measured reports node 24.19.0, uv 1.52.1, node_shared_libuv false; deps/uv/include/uv/version.h says 1.52.1
+5f110da3a2bbec06e97c72b41c83b9d2554cea6ae87b7eebcfed86ca6ef82e98  lib/net.js
+df028ee287a6adad4bb69bd5daf4975311ceffe19c95c18fdc9f0662ea32ef68  lib/child_process.js
+ace05809adf0d02482984f6b9fb8418b3c788df2d8fb8fec3527bfcfd7465d2f  lib/internal/child_process.js
+7aabc674fca48b841961212bb9dbf3185b5955585b917a8a395dba6af6090b9c  src/pipe_wrap.cc
+f4db549965708ad031d372b7b1a2a7d821527316ef9c9d8de4ca3a85b3e9b45f  src/process_wrap.cc
+57ce2e62104b374d868360e79d12efcfc43df6f448533cf13f2ac34712efcb38  src/spawn_sync.cc
+7b69ae02756dcca0be2cfdd6970651f2a071892dd655c2b4bd3589df19695659  src/node_task_runner.cc
+de026c8837ae8d74680e596ebf7f9a9d364988b83c1d559383e5d759b53042d6  src/node_worker.cc
+b338d8c1e72706281079aaf2ddbfb94512cef4dc2253c24b7af82a4f3f487b42  deps/uv/src/unix/pipe.c
+18bfd5f2045417f8ace5d76e222bf7441b31ead5fc2cbaf6225965e0afea8767  deps/uv/src/unix/core.c
+e79f9bd90787011d59d9395f46658caca2ca01d1daad84c36e3b86eba50a4a52  deps/uv/src/unix/process.c
+a859f2c21f7887d45b0372109ebc91759a6f8c408c7cbf2a12f9bbe579be403b  deps/uv/include/uv/version.h
+# Bun: https://github.com/oven-sh/bun/archive/refs/tags/bun-v1.3.14.tar.gz
+#   archive SHA-256 112a5915992807f04b183854d360c2bf87ac7c1587fb5da3c560bdbb75b8c92e
+#   tag bun-v1.3.14 = commit 0d9b296af33f2b851fcbf4df3e9ec89751734ba4; the binary measured reports 1.3.14+0d9b296af and Bun.revision 0d9b296af33f2b851fcbf4df3e9ec89751734ba4
+54eb74326b2ab42d9d9a740df8da6f243ab6683b1b664fecfb30a5bc92bc158b  src/js/node/net.ts
+5953f53c70888020f58f88cee89202e5ce3f3b2a4699eb08a04ec623b3708c5c  src/js/node/child_process.ts
+11f92992170255c1a68b652fdff4def89c0c0622bb904b833dc5dff8151e9ace  src/runtime/node/node_net_binding.zig
+1db3cc6b781648184e4d233c8eee9dffbd499be82de947d0cb68ca48536b57b8  src/runtime/socket/Listener.zig
+500366bbbafd74691ab59efadeb8e3f8dc84eb2dbeff0d7829c6aae16ca68ae4  src/runtime/socket/socket.zig
+9edbb8cd4eb5a2057fbc9610e88b2b791f547972fcff312e9f063cefe0e17a7e  src/uws_sys/SocketGroup.zig
+2a56b6ab0ab3d61cca7c2bb5e83c2e1726e081f857ddf66389e2fd168e8322fa  packages/bun-usockets/src/context.c
+ffc3ccb9db3112bdb68331cd1759c3d4efa995612855a0a51d97bdc5d2c614ce  packages/bun-usockets/src/bsd.c
+2dce5da4fe5ee715f8114d042ec4e3ce3e9e05698f45a4bc465425f255e4d9bc  src/runtime/api/bun/js_bun_spawn_bindings.zig
+d6d70450e4b5ed72256186f1d8868c97d634b1eeda1d84d742bc4f005c793959  src/runtime/api/bun/process.zig
+ab333cc6887a93231a3dd86cc1e5978c47ba99f36ba917320ed586e80bdbfad2  src/runtime/api/bun/spawn.zig
+92fe694d17223831afdd6dd8495cde3d78708f52ce5d0b914f5344b456576e2b  src/jsc/bindings/bun-spawn.cpp
+ec7a0a9d63d2bbd1549871c0e36b200336748a976c617ed593198bf5866a2872  src/jsc/bindings/BunProcess.cpp
+ad4d859752981e3d2dfa28e4482c9c9a51c8be906ecd4fd5f4ce6ed2ff4b4479  src/runtime/api/BunObject.zig
+652f00e722be1ae356842c9bae6fb3ee3b46097496714b1d82a816739e2004c1  src/cli/open.zig
+d95e4f1ca3ad35063c51ca022875abebf4442b2bbc80d67cf032ac5dbe1831dd  src/crash_handler/crash_handler.zig
+759ef3668283da37a95581e1c93fe884d9efd45ba3cd510c60ceeef27081051d  src/shell/subproc.zig

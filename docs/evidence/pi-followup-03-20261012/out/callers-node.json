@@ -1,0 +1,61 @@
+{
+ "executable": "/private/tmp/deck-pi-r1-Vz99if/bin/node",
+ "own_text_symbols": 123511,
+ "stubs_found": [
+  "_connect",
+  "_execve",
+  "_execvp",
+  "_fork",
+  "_posix_spawn",
+  "_socket",
+  "_uv__socket",
+  "_uv_spawn"
+ ],
+ "callers": {
+  "_fork": {
+   "_uv_spawn": 1
+  },
+  "_posix_spawn": {
+   "_uv_spawn": 2
+  },
+  "_execve": {
+   "__ZN4nodeL6ExecveERKN2v820FunctionCallbackInfoINS0_5ValueEEE": 1
+  },
+  "_execvp": {
+   "_uv__process_child_init": 1
+  },
+  "_socket": {
+   "_BIO_socket": 1,
+   "_default_asocket": 1,
+   "_uv__socket": 1
+  },
+  "_connect": {
+   "_BIO_connect": 1,
+   "_default_aconnect": 1,
+   "_legacycb_aconnect": 1,
+   "_uv__tcp_connect": 1,
+   "_uv__udp_connect": 1,
+   "_uv__udp_disconnect": 1,
+   "_uv_pipe_connect2": 1
+  },
+  "_uv_spawn": {
+   "__ZN4node11task_runner13ProcessRunner3RunEv": 2,
+   "__ZN4node12_GLOBAL__N_111ProcessWrap5SpawnERKN2v820FunctionCallbackInfoINS2_5ValueEEE": 1,
+   "__ZN4node17SyncProcessRunner23TryInitializeAndRunLoopEN2v85LocalINS1_5ValueEEE": 1
+  },
+  "_uv__socket": {
+   "_uv__tcp_bind": 1,
+   "_uv__tcp_connect": 1,
+   "_uv__tcp_listen": 1,
+   "_uv__udp_bind": 1,
+   "_uv__udp_connect": 2,
+   "_uv__udp_init_ex": 1,
+   "_uv__udp_recv_start": 1,
+   "_uv__udp_send": 2,
+   "_uv__udp_try_send": 1,
+   "_uv_pipe_bind2": 1,
+   "_uv_pipe_connect2": 1,
+   "_uv_tcp_init_ex": 1
+  }
+ }
+}

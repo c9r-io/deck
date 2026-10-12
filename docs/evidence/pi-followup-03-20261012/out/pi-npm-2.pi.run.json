@@ -1,0 +1,220 @@
+{
+ "name": "pi-npm-2",
+ "flavour": "npm",
+ "program": [
+  "/private/tmp/deck-pi-r1-Vz99if/bin/node",
+  "<npm-global>/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
+ ],
+ "sha256": {
+  "node": "27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+  "cli.js": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+  "r1-ext.ts": "6cf382b344c0903e7e34526357101c904d5264a382e937f2bbc8e1c7f7f62fea"
+ },
+ "registered": {
+  "pid": 17432,
+  "exit": 0
+ },
+ "wall_seconds": 0.33,
+ "exit": 0,
+ "tool_child": {
+  "pid": 17436,
+  "ppid": 17432,
+  "fds": [
+   {
+    "fd": 0,
+    "kind": "chr",
+    "cloexec": 0,
+    "peer": ""
+   },
+   {
+    "fd": 1,
+    "kind": "sock",
+    "cloexec": 0,
+    "peer": ""
+   },
+   {
+    "fd": 2,
+    "kind": "sock",
+    "cloexec": 0,
+    "peer": ""
+   }
+  ],
+  "sockets": 2
+ },
+ "events": [
+  {
+   "event": "patched",
+   "runtime": "node",
+   "version": "v24.19.0",
+   "patched": [
+    "ChildProcess.prototype.spawn",
+    "child_process.spawnSync",
+    "child_process.execSync",
+    "child_process.execFileSync"
+   ]
+  },
+  {
+   "event": "loaded",
+   "watching_forks": true,
+   "pid": 17432,
+   "exec": "/private/tmp/deck-pi-r1-Vz99if/bin/node",
+   "thread": {
+    "tid": 15091776,
+    "main": true,
+    "isMainThread": true,
+    "threadId": 0
+   },
+   "thread_names": [
+    "pi",
+    "DelayedTaskSchedulerWorker",
+    "V8Worker",
+    "V8Worker",
+    "V8Worker",
+    "V8Worker",
+    "SignalInspector",
+    "",
+    "",
+    "libuv-worker",
+    "libuv-worker",
+    "libuv-worker",
+    "libuv-worker"
+   ]
+  },
+  {
+   "event": "agent_start",
+   "thread": {
+    "isMainThread": true,
+    "threadId": 0
+   },
+   "thread_names": [
+    "pi",
+    "DelayedTaskSchedulerWorker",
+    "V8Worker",
+    "V8Worker",
+    "V8Worker",
+    "V8Worker",
+    "SignalInspector",
+    "",
+    "",
+    "libuv-worker",
+    "libuv-worker",
+    "libuv-worker",
+    "libuv-worker"
+   ]
+  },
+  {
+   "event": "provider-request",
+   "asks_for_tool": true
+  },
+  {
+   "event": "child-made",
+   "what": "ChildProcess.prototype.spawn",
+   "file": "/bin/bash",
+   "args": [
+    "-c",
+    "'/private/tmp/deck-pi-r1-Vz99if/bin/kid' '/private/tmp/deck-pi-r1-Vz99if/out/kids/pi-npm-2-tool.json'"
+   ],
+   "pid": 17436,
+   "threw": null,
+   "thread": {
+    "tid": 15091776,
+    "main": true,
+    "isMainThread": true,
+    "threadId": 0
+   },
+   "hold": {
+    "held": 12,
+    "threads": 13,
+    "same_threads": true,
+    "all_held": true,
+    "others_moved": 0,
+    "charged": [
+     {
+      "name": "V8Worker",
+      "user_ns": 0,
+      "system_ns": 2000
+     }
+    ],
+    "whole": true
+   },
+   "thread_names": [
+    "pi",
+    "DelayedTaskSchedulerWorker",
+    "V8Worker",
+    "V8Worker",
+    "V8Worker",
+    "V8Worker",
+    "SignalInspector",
+    "",
+    "",
+    "libuv-worker",
+    "libuv-worker",
+    "libuv-worker",
+    "libuv-worker"
+   ],
+   "stack": [
+    "at cp.ChildProcess.spawn (/private/tmp/deck-pi-r1-Vz99if/src/r1-ext.ts:79:12)",
+    "at spawn (node:child_process:813:9)",
+    "at Object.exec (file://<npm-global>/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-OIM2DMFI.js:723:107)",
+    "at async Object.execute (file://<npm-global>/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-OIM2DMFI.js:732:76)",
+    "at async executePreparedToolCall (file://<npm-global>/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-OIM2DMFI.js:550:18371)",
+    "at async file://<npm-global>/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-OIM2DMFI.js:550:15280",
+    "at async Promise.all (index 0)",
+    "at async executeToolCallsParallel (file://<npm-global>/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-OIM2DMFI.js:550:15588)",
+    "at async runLoop (file://<npm-global>/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-OIM2DMFI.js:550:8127)",
+    "at async runAgentLoop (file://<npm-global>/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-OIM2DMFI.js:550:5142)",
+    "at async file://<npm-global>/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-OIM2DMFI.js:550:26683",
+    "at async Agent.runWithLifecycle (file://<npm-global>/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-OIM2DMFI.js:550:28608)"
+   ]
+  },
+  {
+   "event": "provider-request",
+   "asks_for_tool": false
+  },
+  {
+   "event": "agent_end",
+   "thread": {
+    "isMainThread": true,
+    "threadId": 0
+   },
+   "thread_names": [
+    "pi",
+    "DelayedTaskSchedulerWorker",
+    "V8Worker",
+    "V8Worker",
+    "V8Worker",
+    "V8Worker",
+    "SignalInspector",
+    "",
+    "",
+    "libuv-worker",
+    "libuv-worker",
+    "libuv-worker",
+    "libuv-worker"
+   ],
+   "fork_calls_in_this_process_since_load": []
+  },
+  {
+   "event": "session_shutdown",
+   "thread": {
+    "isMainThread": true,
+    "threadId": 0
+   },
+   "thread_names": [
+    "pi",
+    "DelayedTaskSchedulerWorker",
+    "V8Worker",
+    "V8Worker",
+    "V8Worker",
+    "V8Worker",
+    "SignalInspector",
+    "",
+    "",
+    "libuv-worker",
+    "libuv-worker",
+    "libuv-worker",
+    "libuv-worker"
+   ]
+  }
+ ]
+}

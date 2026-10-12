@@ -1,0 +1,32 @@
+{
+ "executable": "/private/tmp/deck-pi-r1-Vz99if/bin/pi-standalone",
+ "own_text_symbols": 1,
+ "stubs_found": [
+  "_connect",
+  "_execve",
+  "_fork",
+  "_posix_spawn",
+  "_posix_spawnp",
+  "_socket"
+ ],
+ "callers": {
+  "_fork": {
+   "__mh_execute_header": 3
+  },
+  "_posix_spawn": {
+   "__mh_execute_header": 2
+  },
+  "_posix_spawnp": {
+   "__mh_execute_header": 1
+  },
+  "_execve": {
+   "__mh_execute_header": 3
+  },
+  "_socket": {
+   "__mh_execute_header": 3
+  },
+  "_connect": {
+   "__mh_execute_header": 6
+  }
+ }
+}
