@@ -15,3 +15,7 @@ app/src-tauri/binaries/deck-mcp-runner-*
 app/src-tauri/ui-dist/
 # local evaluation reports — working notes, never committed
 /reports/
+# design briefs and the lead's acceptance records — working notes between agents, never committed
+/docs/design/pi-v0.8.0/
+/docs/evidence/pi-followup-01-acceptance-20261012/
+/docs/evidence/pi-followup-02-acceptance-20261012/
