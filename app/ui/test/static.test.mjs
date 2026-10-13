@@ -133,8 +133,8 @@ test('innerHTML takes literals; interpolated sites are a reviewed list and none 
     'board.js': [
       'S{s.status}',       // the sidebar dot: a closed status word as a class
       'S{cards.length}',   // a column's card count: a number
-      'S{s.status}',       // the card dot: the same closed status word
     ],
+    'board-card.js': ['S{s.status}'], // the card dot: same closed status word
     'layout.js': ['S{card.status}'],   // the pane head dot: the same closed status word
     'scheduler.js': ['html'],          // the template menu's local `add(cls, html)`: literals only, checked below
     // the link menu: one button per entry of a closed action list
@@ -336,11 +336,11 @@ test('retired features do not return', () => {
   assert.match(layout, /outcome\.restored = !!started\.restored/);
   // the six-row terminal preview on Board cards (02 B v02: output is read in the terminal)
   const board = read('app/ui/js/board.js');
-  assert.doesNotMatch(board + html + read('app/ui/style.css') + read('app/ui/js/pure.js'),
+  assert.doesNotMatch(board + read('app/ui/js/board-card.js') + html + read('app/ui/style.css') + read('app/ui/js/pure.js'),
     /card-tail|cardPreviewRows|CARD_PREVIEW_ROWS|emit\('output'/);
   assert.match(board, /const tailFor = \[\];/, 'the Board poll never requests pane captures');
   // the description line is reserved so a card keeps its height with or without one
-  assert.match(board, /<div class="card-desc"><\/div>`;/);
+  assert.match(read('app/ui/js/board-card.js'), /<div class="card-desc"><\/div>`;/);
   assert.match(read('app/ui/style.css'), /\.card-desc \{[\s\S]*?min-height: 1\.23846rem;/);
   assert.match(layout, /if \(created && !restored\)[^\n]*clear_history/,
     'restored tmux history must survive the fresh-shell cleanup');
@@ -608,14 +608,14 @@ test("a click on the sidebar's reminder label does not open the session", () => 
    The real click and the height are in the reminder smoke. */
 test('a Board card shows its reminder as a label at the end of the status row', () => {
   const board = code('app/ui/js/board.js');
-  const card = board.slice(board.indexOf('export function cardEl(s)'), board.indexOf('export async function closeSession('));
-  assert.ok(card.length > 1500, 'cardEl is where a card is built');
+  const card = code('app/ui/js/board-card.js');
+  assert.ok(card.length > 1500, 'board-card owns the fixed card DOM');
   // only a card with a reminder gets one, after the row was painted
   assert.match(card, /paintCardSignalStatus\(el\.querySelector\('\.card-status'\), s\);\s*if \(s\.reminder\) el\.querySelector\('\.card-status'\)\.append\(reminderChip\(s\)\);/);
   // the card's own click handler skips it, so the label edits the reminder only
   assert.match(card, /closest\('\.card-x, \.card-pin, \.card-signal-help, \.card-reminder'\)/);
   const label = board.slice(board.indexOf('function reminderChip(s, spell = reminderShort)'), board.indexOf('export function cardEl(s)'));
-  assert.ok(label.length > 200 && label.length < 900, 'reminderChip sits right above cardEl');
+  assert.ok(label.length > 200 && label.length < 900, 'reminderChip stays in Board for the card and sidebar');
   assert.match(label, /chip\.className = 'card-reminder' \+ \(due \? ' due' : ''\);/);
   assert.match(label, /chip\.textContent = '🔔 ' \+ \(due \? t\('reminder\.dueShort'\) : spell\(s\.reminder\)\);/);
   assert.match(label, /chip\.title = reminderLabel\(s\);/);
@@ -625,6 +625,16 @@ test('a Board card shows its reminder as a label at the end of the status row', 
   const rule = read('app/ui/style.css').match(/\.card-status \.card-reminder, \.side-item \.card-reminder \{[^}]*\}/)?.[0] || '';
   for (const part of ['margin: 0 0 0 auto', 'flex: none', 'white-space: nowrap', 'line-height: 1.2']) assert.ok(rule.includes(part), part);
   for (const file of ['en.js', 'zh-Hans.js']) assert.match(read(`app/ui/js/i18n/${file}`), /"reminder\.dueShort": "(Due|到期)",/);
+});
+
+test('the card renderer delegates actions and owns no Board writer or lifecycle service', () => {
+  const card = code('app/ui/js/board-card.js');
+  assert.doesNotMatch(card, /from ['"]\.\/(board|layout|terminal|persistence)\.js['"]/);
+  assert.doesNotMatch(card, /\b(inv|provider|mutateBoard|mutateBoardDebounced|setInterval)\b/);
+  const board = code('app/ui/js/board.js');
+  assert.match(board, /open: openSession, close: closeSession/);
+  assert.match(board, /togglePinned: id => provider\.togglePinned\(id\)/);
+  assert.match(board, /context: showSessionCtx, reminderChip/);
 });
 
 // check.mjs is the gate that keeps import cycles inside the view core. It is
@@ -733,7 +743,7 @@ test('the capture-name row is really hidden when the editor marks it hidden', ()
 
 test('a star is never `disabled` while its save runs: a focused control that becomes disabled loses focus at WebKit\'s next frame', () => {
   const read = name => readFileSync(new URL(`../js/${name}`, import.meta.url), 'utf8');
-  for (const [file, handler] of [['attention.js', /pin\.onclick = async \(\) => \{[\s\S]*?\n      \};/], ['board.js', /pin\.onclick = async e => \{[\s\S]*?\n  \};/]]) {
+  for (const [file, handler] of [['attention.js', /pin\.onclick = async \(\) => \{[\s\S]*?\n      \};/], ['board-card.js', /pin\.onclick = async e => \{[\s\S]*?\n  \};/]]) {
     const body = read(file).match(handler)?.[0];
     assert.ok(body, `${file}: the star's handler`);
     assert.doesNotMatch(body, /\.disabled\s*=/, `${file}: busy is aria-disabled`);

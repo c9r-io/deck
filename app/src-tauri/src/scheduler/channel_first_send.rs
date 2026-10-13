@@ -6,7 +6,10 @@
 //! constraint: loss of proof can take automatic permission
 //! away but can never turn the row into an ordinary owner row. Admission binds
 //! current settings, the native inbox proof, the current Board's unique card
-//! and frozen run, and the exact normalized queue request. Automatic delivery
+//! and frozen run, and the exact normalized queue request. The head binding
+//! consumes documents::FrozenChannelHead: parsing and absent-field semantics
+//! belong to the document owner, not a second JSON schema in this module.
+//! The projection grants nothing by itself. Automatic delivery
 //! rechecks current settings and Board under the normal settings -> Board ->
 //! queue persist fence. Manual send-now remains the user's explicit action.
 //!
@@ -197,51 +200,41 @@ fn matching_card<'a>(
 }
 
 fn frozen_matches(
-    card: &serde_json::Value,
+    card: &crate::documents::FrozenChannelHead,
     event: &crate::inbound_channel::PendingChannelEvent,
     args: &QueueAddArgs,
     claim: &ChannelFirstSendClaim,
 ) -> bool {
-    let run = &card["channelRun"];
-    let head = &run["initialSteps"][0];
-    let target = &run["target"];
-    let frozen = &run["firstSend"];
-    card["session"] == args.session
-        && card["projectId"] == event.target.project_id
-        && run["connectionId"] == event.connection_id
-        && run["workspaceId"] == event.workspace_id
-        && run["channelId"] == event.channel_id
-        && run["ruleId"] == event.rule_id
-        && run["firstEventId"] == event.event_id
-        && run["initialQueued"] == false
-        && target["projectId"] == event.target.project_id
-        && target["dir"]
-            .as_str()
-            .and_then(crate::inbound_channel::normalized_dir)
-            .as_deref()
-            == Some(args.dir.as_str())
-        && target["cmd"] == args.cmd
-        && target["session"] == args.session
+    let head = &card.step;
+    let target = &card.target;
+    let frozen = &card.claim;
+    card.session == args.session
+        && card.project_id == event.target.project_id
+        && card.connection_id == event.connection_id
+        && card.workspace_id == event.workspace_id
+        && card.channel_id == event.channel_id
+        && card.rule_id == event.rule_id
+        && card.first_event_id == event.event_id
+        && target.project_id == event.target.project_id
+        && crate::inbound_channel::normalized_dir(&target.dir).as_deref() == Some(args.dir.as_str())
+        && target.cmd == args.cmd
+        && target.session == args.session
         && args.dir == event.target.dir
         && args.cmd == event.target.cmd
-        && frozen["inboxId"] == claim.inbox_id
-        && frozen["grantId"] == claim.grant_id
-        && frozen["grantDigest"] == claim.grant_digest
-        && frozen["skeleton"] == claim.skeleton
-        && head["operationId"].as_str() == args.operation_id.as_deref()
+        && frozen.inbox_id == claim.inbox_id
+        && frozen.grant_id == claim.grant_id
+        && frozen.grant_digest == claim.grant_digest
+        && frozen.skeleton == claim.skeleton
+        && Some(head.operation_id.as_str()) == args.operation_id.as_deref()
         && args.operation_id.as_deref() == Some(operation_id(&claim.inbox_id).as_str())
-        && head["text"]
-            .as_str()
-            .map(super::normalize_prompt)
-            .as_deref()
-            == Some(super::normalize_prompt(&args.text).as_str())
-        && head["mode"] == "at"
+        && super::normalize_prompt(&head.text) == super::normalize_prompt(&args.text)
+        && head.mode == "at"
         && args.mode == "at"
-        && head["at"].as_u64() == args.at
-        && head["tpl"].as_str() == args.tpl.as_deref()
-        && head["tplIdx"] == 1
+        && head.at == args.at
+        && Some(head.tpl.as_str()) == args.tpl.as_deref()
+        && head.tpl_idx == 1
         && args.tpl_idx == Some(1)
-        && head["tplTotal"].as_u64() == args.tpl_total.map(u64::from)
+        && Some(head.tpl_total) == args.tpl_total.map(|n| n as usize)
         && !args.review_each
         && args.group.is_none()
         && !args.external_text
@@ -425,7 +418,8 @@ pub(crate) fn admit(
         || claim.grant_id != frozen.id
         || claim.grant_digest != frozen.digest
         || claim.skeleton != frozen.skeleton
-        || !frozen_matches(card, &event, args, claim)
+        || !crate::documents::frozen_channel_head(card)
+            .is_some_and(|head| frozen_matches(&head, &event, args, claim))
     {
         return Err(DeckError::new(
             ErrorKind::Invalid,
@@ -515,6 +509,31 @@ pub(crate) fn standing(
     } else {
         Standing::Revoked
     }
+}
+
+/// The tick's candidate mutation, committed by its existing queue transaction
+/// under settings -> Board -> queue fences. Unknown sources preserve intent;
+/// only an authorized constraint can be withdrawn, once per revision.
+pub(crate) fn revoke_stale(
+    queue: &mut super::QueueState,
+    config: Option<&crate::inbound_channel::ChannelConfig>,
+    board: Option<&serde_json::Value>,
+) -> usize {
+    let mut revoked = 0;
+    for item in queue.items.iter_mut().filter(|item| {
+        item.channel_first_send
+            .as_ref()
+            .is_some_and(|constraint| constraint.authorized)
+    }) {
+        if matches!(standing(item, config, board), Standing::Revoked) {
+            if let Some(constraint) = item.channel_first_send.as_mut() {
+                constraint.authorized = false;
+            }
+            item.revision = item.revision.wrapping_add(1);
+            revoked += 1;
+        }
+    }
+    revoked
 }
 
 #[cfg(test)]

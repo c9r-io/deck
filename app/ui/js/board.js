@@ -28,6 +28,8 @@
 // Pending and due reminders protect deletion at the transaction boundary.
 // Blocked exit/run identities persist after ending the reminder; later real
 // generations keep ordinary retirement rules. Reminder responses never start work.
+// board-card.js owns card presentation/gesture routing; its actions return
+// here or to the existing layout/terminal owner, never to a second writer.
 // Live status never changes placement or durable ordering. Cards carry no
 // terminal preview: output is read in the terminal, never on the Board.
 // Codex coverage diagnostics live in the runtime attention snapshot and
@@ -57,7 +59,7 @@
 // row is durably queued; queueInboundPlan replays stable operation IDs. Its
 // rows take the owner commands for a clock run only; every other origin
 // takes the external ones (`channel_queue_add*`, the native admission).
-import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
+import { $, columnHint, ctx, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { reminderRequestId, reminderAction, reminderClaim, reminderDay, reminderDue, reminderShort, rememberRetirement, retirementBlocked, retirementKey, sameReminder } from './reminder-model.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
 import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
@@ -66,17 +68,17 @@ import { claimSessionTool, registerSessionTool, releaseSessionTool } from './ses
 import { confirmDangerDialog, reminderDialog, confirmDialog, inlineRename, projectDefaultsDialog, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, invalidateResumeSuggestions, showProjectCtx, showSessionCtx } from './terminal.js';
-import { refreshQueue, refreshQueuePlans, renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
+import { refreshQueue, refreshQueuePlans, renderQueueUI, updateQuietHints } from './scheduler.js';
 import { formatNumber, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { renderAutomations, ruleOf } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
-import { locateAttentionCard, paintCardSignalStatus, paintCardAttentionBadge, refreshAttention } from './attention.js';
+import { locateAttentionCard, refreshAttention } from './attention.js';
 import { cardLabels, dismissKey, labelsKey, seenDismissals } from './notify-model.js';
 import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, retainedBuffer } from './buffer-model.js';
 import { nextCollectedAt } from './channel-model.js';
 import { connectorAuthorityClaim, connectorFirstSendClaim, normalizeTaskPresets } from './connector-model.js';
-import { ruleLabel } from './automation-model.js';
+import { createBoardCard } from './board-card.js';
 import { formatDateTime, onLocaleChange } from './i18n.js';
 export { migrateColumnSemantics } from './board-defaults.js';
 
@@ -1559,71 +1561,13 @@ function reminderChip(s, spell = reminderShort) {
   return chip;
 }
 
+// The view owns DOM and gesture isolation; Board retains the action owners.
 export function cardEl(s) {
-  const el = document.createElement('div');
-  el.className = 'card' + (s.status === 'waiting' ? ' waiting' : s.status === 'attention' ? ' attention' : '');
-  el.dataset.sid = s.id;
-  el.draggable = true;
-
-  /* fixed shape: no hover-only rows, the description line is reserved even
-     while empty, and a poll only changes text and classes — cards never
-     change size under the pointer or when a description is added. The
-     attention badge is always present and only hidden (attention.js). */
-  el.innerHTML = `
-    <div class="card-top"><span class="dot ${s.status}"></span><span class="card-title"></span><span class="card-attention-badge" hidden></span><button class="card-pin" type="button"></button><button class="card-x" type="button">✕</button></div>
-    <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="auto-chip"></span><span class="q-chip"></span><span class="mem-chip"></span></div>
-    <div class="card-status"><span class="card-status-text"></span><button class="card-signal-help" type="button" hidden></button></div>
-    <div class="card-desc"></div>`;
-  el.querySelector('.card-title').textContent = s.title;
-  paintCardSignalStatus(el.querySelector('.card-status'), s);
-  if (s.reminder) el.querySelector('.card-status').append(reminderChip(s));
-  paintCardAttentionBadge(el.querySelector('.card-attention-badge'), s);
-  el.querySelector('.dot').title = dotTitle(s.status);
-  const pin = el.querySelector('.card-pin');
-  const pinLabel = t(s.pinned === true ? 'card.unmarkImportant' : 'card.markImportant');
-  pin.textContent = s.pinned === true ? '★' : '☆';
-  pin.classList.toggle('active', s.pinned === true);
-  pin.title = pinLabel;
-  pin.setAttribute('aria-label', pinLabel);
-  pin.setAttribute('aria-pressed', s.pinned === true ? 'true' : 'false');
-  el.querySelector('.card-x').title = t('session.closeTitle');
-  el.querySelector('.mem-chip').title = t('session.memory');
-  setMemChip(el.querySelector('.mem-chip'), s);
-  setQueueChip(el.querySelector('.q-chip'), s);   // self-fill: survives card rebuilds
-  const autoChip = el.querySelector('.auto-chip');
-  const rule = ruleOf(s.origin);
-  autoChip.textContent = rule ? '↻ ' + ruleLabel(rule) : '';
-  autoChip.hidden = !rule;
-  el.querySelector('.cmd').textContent = s.cmd ? '$ ' + s.cmd : '';
-  el.querySelector('.dir').textContent = s.dir;
-  const desc = el.querySelector('.card-desc');
-  desc.textContent = s.desc || '';
-  if (s.desc) desc.title = s.desc;
-  el.addEventListener('dragstart', e => {
-    e.dataTransfer.setData('text/deck-session', s.id);
-    el.classList.add('dragging');
+  return createBoardCard(s, {
+    open: openSession, close: closeSession,
+    togglePinned: id => provider.togglePinned(id),
+    context: showSessionCtx, reminderChip,
   });
-  el.addEventListener('dragend', () => el.classList.remove('dragging'));
-  el.querySelector('.card-x').onclick = e => {
-    e.stopPropagation();
-    closeSession(s.id);
-  };
-  /* busy is `aria-disabled`, never `disabled`, so a focused star keeps its
-     focus while the save runs (attention.js has the reason) */
-  pin.onclick = async e => {
-    e.stopPropagation();
-    if (pin.getAttribute('aria-disabled') === 'true') return;
-    pin.setAttribute('aria-disabled', 'true');
-    try { await provider.togglePinned(s.id); }
-    finally { pin.removeAttribute('aria-disabled'); }
-  };
-  el.addEventListener('click', e => {
-    e.stopPropagation();   // don't toggle the board selection underneath
-    if (e.target.closest('.card-x, .card-pin, .card-signal-help, .card-reminder')) return;
-    openSession(s.id);
-  });
-  el.oncontextmenu = e => showSessionCtx(e, s.id);
-  return el;
 }
 
 export async function closeSession(sid, needConfirm = false) {

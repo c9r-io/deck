@@ -1,6 +1,7 @@
 //! Channel permission and readiness are independent, with no live transports.
 use super::*;
 use crate::agent_status;
+use crate::context::ProbeResult;
 use crate::inbound_channel::{
     self as channel, ChannelConfig, ChannelConnection, ChannelRule, Identity,
 };
@@ -161,6 +162,55 @@ fn channel_unreadability_preserves_permission_and_recovers_without_reacceptance(
         channel_first_send::standing(&row, Some(&cfg), Some(&board)),
         channel_first_send::Standing::Clear
     ));
+}
+
+#[test]
+fn channel_tick_withdrawal_is_transactional_and_does_not_reauthorize_or_repeat() {
+    use std::sync::Mutex;
+    let (row, mut config, board) = authorized();
+    let revision = row.revision;
+    let mut owner = row.clone();
+    owner.id = "owner".into();
+    owner.channel_first_send = None;
+    let queue = Mutex::new(QueueState {
+        items: vec![row, owner],
+        ..QueueState::default()
+    });
+    let sweep = |config: Option<&ChannelConfig>,
+                 board: Option<&Value>,
+                 persist: &dyn Fn(&QueueState) -> Result<(), DeckError>| {
+        with_queue_opt(&queue, persist, |q| {
+            let count = channel_first_send::revoke_stale(q, config, board);
+            Ok((count > 0).then_some(count))
+        })
+    };
+    let no_write = |_: &QueueState| -> Result<(), DeckError> { panic!("no change, no write") };
+    assert_eq!(sweep(None, Some(&board), &no_write).unwrap(), None);
+    assert_eq!(sweep(Some(&config), None, &no_write).unwrap(), None);
+    assert_eq!(sweep(Some(&config), Some(&board), &no_write).unwrap(), None);
+    config.connection.enabled = false;
+    let refuse = |_: &QueueState| Err(DeckError::new(ErrorKind::Other, "fixture write failure"));
+    assert!(sweep(Some(&config), Some(&board), &refuse).is_err());
+    {
+        let q = queue.lock_or_recover();
+        assert!(q.items[0].channel_first_send.as_ref().unwrap().authorized);
+        assert_eq!(
+            q.items[0].revision, revision,
+            "failed persist did not commit a candidate"
+        );
+    }
+    assert_eq!(
+        sweep(Some(&config), Some(&board), &|_| Ok(())).unwrap(),
+        Some(1)
+    );
+    assert_eq!(sweep(Some(&config), Some(&board), &no_write).unwrap(), None);
+    config.connection.enabled = true;
+    assert_eq!(sweep(Some(&config), Some(&board), &no_write).unwrap(), None);
+    let q = queue.lock_or_recover();
+    assert!(!q.items[0].channel_first_send.as_ref().unwrap().authorized);
+    assert_eq!(q.items[0].revision, revision.wrapping_add(1));
+    assert!(q.items[1].channel_first_send.is_none());
+    assert_eq!(q.items[1].revision, revision);
 }
 
 #[test]
@@ -449,7 +499,7 @@ pub(crate) fn verify_native_channel_fences(
     disabled_settings: &str,
     commit_disabled_locked: &(dyn Fn() + Sync),
 ) {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
     for (before, established) in [(true, false), (true, true), (false, false), (false, true)] {
         crate::documents::save_settings(
@@ -602,6 +652,164 @@ pub(crate) fn verify_native_channel_fences(
             assert_eq!(q.deliveries[0].readiness_overridden, !established);
             assert!(q.deliveries[0].channel_first_send.is_some());
         }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum LateRevocation {
+        Prepare,
+        FinalProbe,
+    }
+
+    for stage in [LateRevocation::Prepare, LateRevocation::FinalProbe] {
+        crate::documents::save_settings(
+            active_settings.to_owned(),
+            Some(vec![channel::ChannelFirstSendRequest {
+                rule_id: "R1".into(),
+                external: true,
+                identity: None,
+            }]),
+        )
+        .unwrap();
+        let cfg = channel::read_config_strict_result().unwrap();
+        let grant = cfg.rules[0].first_send_grant.as_ref().unwrap();
+        let mut row: QueueItem = serde_json::from_value(json!({"id":"late-fence-row","session":"deck-test-channel","card_id":"S1",
+            "dir":grant.dir,"cmd":"claude","expected_process":"claude","text":"Inspect INCIDENT fixture","mode":"at","at":1,"added":1,"external":true})).unwrap();
+        row.channel_first_send = Some(ChannelFirstSendConstraint {
+            rule: "R1".into(),
+            inbox: "default/T1/E1/R1".into(),
+            grant_id: grant.id.clone(),
+            grant_digest: grant.digest.clone(),
+            operation: "late-fence-op".into(),
+            workspace: "T1".into(),
+            authorized: true,
+        });
+        let initial_revision = row.revision;
+        let qm = Mutex::new(QueueState {
+            items: vec![row],
+            ..QueueState::default()
+        });
+        let dirty = AtomicBool::new(false);
+        let fired = AtomicUsize::new(0);
+        let prepared = AtomicUsize::new(0);
+        let final_probed = AtomicUsize::new(0);
+        let persisted = AtomicUsize::new(0);
+        let persisted_withdrawal = AtomicBool::new(false);
+        let ready = || ProbeResult {
+            status: ContextStatus::Ready,
+            code: ContextCode::ProcessMatched,
+            identity: Some(PaneIdentity {
+                server_pid: 91,
+                session_id: "$fixture".into(),
+                window_id: "@fixture".into(),
+                pane_id: "%fixture".into(),
+                pane_pid: 92,
+            }),
+            current_process: Some("claude".into()),
+        };
+        let revoke = || {
+            crate::documents::save_settings(disabled_settings.to_owned(), None).unwrap();
+        };
+        let fire = |_: &QueueItem| {
+            fired.fetch_add(1, Ordering::SeqCst);
+            panic!("{stage:?}: pre-fire must reject the withdrawn channel grant")
+        };
+        let persist = |q: &QueueState| {
+            persisted.fetch_add(1, Ordering::SeqCst);
+            if q.items[0]
+                .channel_first_send
+                .as_ref()
+                .is_some_and(|constraint| !constraint.authorized)
+            {
+                persisted_withdrawal.store(true, Ordering::SeqCst);
+            }
+            save_queue(q)
+        };
+        let prepare = |_: &QueueItem, _: &dyn Fn() -> bool| {
+            prepared.fetch_add(1, Ordering::SeqCst);
+            if stage == LateRevocation::Prepare {
+                revoke();
+            }
+            Prepared::Probe(ready())
+        };
+        let final_probe = |_: &QueueItem| {
+            final_probed.fetch_add(1, Ordering::SeqCst);
+            if stage == LateRevocation::FinalProbe {
+                revoke();
+            }
+            ready()
+        };
+        let hooks = SendHooks {
+            fire: &fire,
+            persist: &persist,
+            kill: &|_| {},
+            authority: &|| None,
+            board: &|| None,
+        };
+        let context = ContextHooks {
+            prepare: &prepare,
+            final_probe: &final_probe,
+        };
+        let result = send_one_safe(
+            &qm,
+            &dirty,
+            "deck-test-channel",
+            0,
+            &Observations::new(),
+            &hooks,
+            &context,
+        );
+        assert_eq!(result, SendResult::Nothing, "{stage:?}");
+        assert_eq!(prepared.load(Ordering::SeqCst), 1, "{stage:?}");
+        assert_eq!(final_probed.load(Ordering::SeqCst), 1, "{stage:?}");
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "{stage:?}");
+        assert_eq!(persisted.load(Ordering::SeqCst), 2, "{stage:?}");
+        assert!(persisted_withdrawal.load(Ordering::SeqCst), "{stage:?}");
+        {
+            let q = qm.lock_or_recover();
+            assert_eq!(
+                q.items[0].revision,
+                initial_revision.wrapping_add(1),
+                "{stage:?}"
+            );
+            assert!(
+                !q.items[0].channel_first_send.as_ref().unwrap().authorized,
+                "{stage:?}"
+            );
+            assert!(q.pending.is_empty(), "{stage:?}");
+            assert!(q.deliveries.is_empty(), "{stage:?}");
+        }
+        let on_disk = load_queue();
+        let on_disk = on_disk
+            .items
+            .iter()
+            .find(|item| item.id == "late-fence-row")
+            .unwrap();
+        assert_eq!(
+            on_disk.revision,
+            initial_revision.wrapping_add(1),
+            "{stage:?}"
+        );
+        assert!(
+            !on_disk.channel_first_send.as_ref().unwrap().authorized,
+            "{stage:?}"
+        );
+
+        let second = send_one_safe(
+            &qm,
+            &dirty,
+            "deck-test-channel",
+            0,
+            &Observations::new(),
+            &hooks,
+            &ContextHooks {
+                prepare: &|_, _| panic!("{stage:?}: withdrawn row must not prepare again"),
+                final_probe: &|_| panic!("{stage:?}: withdrawn row must not probe again"),
+            },
+        );
+        assert_eq!(second, SendResult::Nothing, "{stage:?}");
+        assert_eq!(prepared.load(Ordering::SeqCst), 1, "{stage:?}");
+        assert_eq!(final_probed.load(Ordering::SeqCst), 1, "{stage:?}");
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "{stage:?}");
     }
 }
 

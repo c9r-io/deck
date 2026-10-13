@@ -288,6 +288,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Area | Modules |
 |---|---|
 | Board state, the one transaction queue | `ui/js/persistence.js`, `state.js`, `pure.js` |
+| Board card presentation and gesture routing | `ui/js/board-card.js`; action owners remain in `board.js`, `layout.js`, `terminal.js` |
 | Typed documents, envelopes, recovery | `storage.rs`, `documents.rs` |
 | Private data dir, atomic writes; bounded durable state | `datadir.rs`, `ledger.rs` |
 | Error type | `error.rs` |

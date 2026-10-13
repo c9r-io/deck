@@ -110,12 +110,17 @@ fn exercise(root: &std::path::Path) {
         "events natively staged after recovery are not part of the rollback"
     );
     for (key, value) in [
+        ("cardId", json!("Sother")),
+        ("dir", json!("/different-target")),
         ("text", json!("Forged")),
         ("operationId", json!("Bother")),
         ("cmd", json!("codex --no-daemon")),
         ("session", json!("deck-test-other")),
         ("mode", json!("chain")),
         ("tplIdx", json!(2)),
+        ("at", json!(now + 1)),
+        ("tpl", json!("other-template")),
+        ("tplTotal", json!(3)),
         ("reviewEach", json!(true)),
         ("group", json!("forged")),
     ] {
@@ -126,6 +131,109 @@ fn exercise(root: &std::path::Path) {
             "forged {key}"
         );
     }
+    // Mutate one side of the native/Board/request binding at a time. Each
+    // baseline is admissible; a rejection cannot be credited to a second,
+    // unrelated invalid field or to a previously revoked grant.
+    for (field, value) in [
+        ("inboxId", json!("default/T1/OTHER/R1")),
+        ("grantId", json!("other-grant")),
+        ("grantDigest", json!("0".repeat(64))),
+        ("skeleton", json!("Different {{msg.text}}")),
+    ] {
+        let mut changed = args_value.clone();
+        changed["channelFirstSend"][field] = value;
+        assert!(
+            channel_first_send::admit(&serde_json::from_value(changed).unwrap(), now).is_err(),
+            "forged request claim {field}"
+        );
+    }
+    for (path, value) in [
+        ("/origin/source", json!("clock")),
+        ("/origin/key", json!("channel:default/T1/OTHER/R1")),
+        ("/origin/badge", json!("Rother")),
+        ("/projectId", json!("Pother")),
+        ("/session", json!("deck-test-other")),
+        ("/channelRun/firstEventId", json!("OTHER")),
+        ("/channelRun/connectionId", json!("other")),
+        ("/channelRun/workspaceId", json!("T2")),
+        ("/channelRun/channelId", json!("C2")),
+        ("/channelRun/ruleId", json!("Rother")),
+        ("/channelRun/initialQueued", json!(true)),
+        ("/channelRun/target/projectId", json!("Pother")),
+        ("/channelRun/target/session", json!("deck-test-other")),
+        ("/channelRun/target/dir", json!("/different-target")),
+        ("/channelRun/target/cmd", json!("codex --no-daemon")),
+        (
+            "/channelRun/firstSend/inboxId",
+            json!("default/T1/OTHER/R1"),
+        ),
+        ("/channelRun/firstSend/grantId", json!("other-grant")),
+        ("/channelRun/firstSend/grantDigest", json!("0".repeat(64))),
+        (
+            "/channelRun/firstSend/skeleton",
+            json!("Different {{msg.text}}"),
+        ),
+        ("/channelRun/initialSteps/0/operationId", json!("Bother")),
+        ("/channelRun/initialSteps/0/text", json!("Other text")),
+        ("/channelRun/initialSteps/0/mode", json!("chain")),
+        ("/channelRun/initialSteps/0/at", json!(now + 1)),
+        ("/channelRun/initialSteps/0/tpl", json!("other-template")),
+        ("/channelRun/initialSteps/0/tplIdx", json!(2)),
+        ("/channelRun/initialSteps/0/tplTotal", json!(3)),
+    ] {
+        let mut changed = board.clone();
+        *changed["cards"][0].pointer_mut(path).unwrap() = value;
+        // This test exercises the authority boundary directly, including
+        // corrupt snapshots normally refused earlier by Board validation.
+        commit_board(&changed.to_string(), BoardStanding::Current);
+        assert!(
+            channel_first_send::admit(&args, now).is_err(),
+            "forged Board {path}"
+        );
+    }
+    let mut missing = board.clone();
+    missing["cards"][0]["channelRun"]
+        .as_object_mut()
+        .unwrap()
+        .remove("initialQueued");
+    serde_json::from_value::<BoardDoc>(missing.clone()).unwrap();
+    commit_board(&missing.to_string(), BoardStanding::Current);
+    assert!(
+        channel_first_send::admit(&args, now).is_err(),
+        "a parse default is not explicit unqueued evidence"
+    );
+    let mut extended = board.clone();
+    extended["cards"][0]["extension"] = json!({"future": [1, 2]});
+    extended["cards"][0]["channelRun"]["extension"] = json!("kept");
+    commit_board(&extended.to_string(), BoardStanding::Current);
+    assert!(
+        channel_first_send::admit(&args, now)
+            .unwrap()
+            .unwrap()
+            .authorized
+    );
+    assert_eq!(
+        board_authority().unwrap(),
+        extended,
+        "projection never rewrites extensions"
+    );
+    let mut duplicate = board.clone();
+    let mut second = duplicate["cards"][0].clone();
+    second["id"] = json!("S2");
+    second["session"] = json!("deck-test-second");
+    duplicate["cards"].as_array_mut().unwrap().push(second);
+    commit_board(&duplicate.to_string(), BoardStanding::Current);
+    assert!(
+        channel_first_send::admit(&args, now).is_err(),
+        "origin must be unique"
+    );
+    commit_board(&board.to_string(), BoardStanding::Current);
+    assert!(
+        channel_first_send::admit(&args, now)
+            .unwrap()
+            .unwrap()
+            .authorized
+    );
     let mut omitted = args_value.clone();
     omitted.as_object_mut().unwrap().remove("channelFirstSend");
     let omitted_args: QueueAddArgs = serde_json::from_value(omitted.clone()).unwrap();

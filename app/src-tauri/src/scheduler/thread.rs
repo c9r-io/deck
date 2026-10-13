@@ -5,6 +5,8 @@
 //! Native channel first-send rows are swept only while still authorized.
 //! Revocation is persisted once; source unreadability marks only dependent
 //! observations unverified, and a withdrawn row keeps its permanent hold.
+//! `channel_first_send::revoke_stale` owns the candidate mutation; this thread
+//! retains the source reads, lock order, transaction and failure/no-send path.
 
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Mutex;
@@ -294,23 +296,8 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                 }
             } else {
                 match with_queue_opt(&state.q, &save_queue, |q| {
-                    let mut revoked = 0usize;
-                    for item in q.items.iter_mut().filter(|item| {
-                        item.channel_first_send
-                            .as_ref()
-                            .is_some_and(|constraint| constraint.authorized)
-                    }) {
-                        if matches!(
-                            channel_first_send::standing(item, config.as_ref(), board.as_ref()),
-                            channel_first_send::Standing::Revoked
-                        ) {
-                            if let Some(constraint) = item.channel_first_send.as_mut() {
-                                constraint.authorized = false;
-                            }
-                            item.revision = item.revision.wrapping_add(1);
-                            revoked += 1;
-                        }
-                    }
+                    let revoked =
+                        channel_first_send::revoke_stale(q, config.as_ref(), board.as_ref());
                     Ok((revoked > 0).then_some(revoked))
                 }) {
                     Ok(Some(revoked)) => {

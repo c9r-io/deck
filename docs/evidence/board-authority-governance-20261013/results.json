@@ -1,0 +1,202 @@
+{
+  "baseline": "e1bd78eae7f6fdd1c63a276e7d00fd3857a15c79",
+  "initial_worktree": "clean",
+  "final_worktree": "uncommitted scoped governance changes",
+  "recorded_at": "2026-10-13T14:25:23.525485+00:00",
+  "environment": {
+    "os": "macOS 27.0.1 (26A434)",
+    "arch": "arm64",
+    "rust": "1.97.1",
+    "node": "24.19.0"
+  },
+  "commands": [
+    {
+      "command": "cargo test --manifest-path app/src-tauri/Cargo.toml --bin deck-app documents::channel_admission_tests::native_channel_admission_binds_source_scope_frozen_intent_and_retirement -- --exact --nocapture",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-authority-before.log",
+      "passed": 1,
+      "scope": "new admission regressions against original implementation"
+    },
+    {
+      "command": "cargo test --manifest-path app/src-tauri/Cargo.toml --bin deck-app documents::channel_admission_tests::native_channel_admission_binds_source_scope_frozen_intent_and_retirement -- --exact --nocapture",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-authority-late.log",
+      "passed": 1,
+      "scope": "typed projection and late-revocation fixture"
+    },
+    {
+      "command": "cargo test --manifest-path app/src-tauri/Cargo.toml --bin deck-app channel -- --test-threads=1",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-channel-final.log",
+      "passed": 81,
+      "failed": 0
+    },
+    {
+      "command": "node --test app/ui/test/board-card.test.mjs app/ui/test/static.test.mjs",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-card.log",
+      "scope": "renderer behavior and relocated static contracts"
+    },
+    {
+      "command": "node --check for all app/ui/js/*.js, app/ui/js/i18n/*.js, app/ui/js/*.mjs, app/ui/test/*.mjs; node app/ui/js/check.mjs; cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml; git diff --check",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-static-final.log",
+      "syntax_files": 156,
+      "modules": 62
+    },
+    {
+      "command": "scripts/ui-tests",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-ui-final.log",
+      "passed": 786,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "coverage": {
+        "lines": 94.34,
+        "branches": 89.6,
+        "functions": 87.13
+      },
+      "new_renderer_coverage": {
+        "lines": 100,
+        "branches": 100,
+        "functions": 100
+      }
+    },
+    {
+      "command": "cargo clippy --manifest-path app/src-tauri/Cargo.toml --workspace --all-targets --all-features -- -D warnings",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-clippy.log"
+    },
+    {
+      "command": "cargo test --manifest-path app/src-tauri/Cargo.toml --workspace --all-targets --all-features -- --test-threads=1",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-workspace.log",
+      "passed": 1520,
+      "failed": 0,
+      "ignored": 13,
+      "suite_summaries": 23,
+      "ignored_tests": [
+        "agent_pi::tests::native::tap",
+        "agent_reentry::claude::tests::the_production_requirement_on_named_real_executables_and_processes",
+        "agent_reentry::tests::crash_controller",
+        "agent_reentry::tests::native_m1_tap",
+        "agent_reentry::tests::native_m1_transact",
+        "agent_reentry::tests::native_step0_generation",
+        "agent_reentry::tests::native_step0_probe",
+        "agent_status::hooks::tests::lifecycle_hook_file_for_review",
+        "agent_status::hooks::tests::lifecycle_hook_writer_steps",
+        "agent_status::hooks::tests::production_read_entries_child",
+        "commands::tests::poll_cost_with_tracked_generations",
+        "procinfo::tests::executable_qualification_cost_fits_the_production_budgets",
+        "scheduler::tests::real_claude::opt_in_real_claude_first_send_matrix"
+      ]
+    },
+    {
+      "command": "python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py scripts/test_signal_candidate.py scripts/test_codex_title_probe.py scripts/test_ce_verdict.py scripts/test_reminder_verify.py scripts/test_sidecar_provenance.py",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-tooling.log",
+      "passed": 181,
+      "warnings": "12 unclosed-file ResourceWarning messages from unchanged tooling tests; not suppressed"
+    },
+    {
+      "command": "cargo build --release --locked --manifest-path app/src-tauri/Cargo.toml",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-release.log",
+      "warnings": "one pre-existing unused DELAY_NEXT_SETTLE_MS static in unchanged smoke_native.rs"
+    },
+    {
+      "command": "python3 scripts/check_local_translation_binary.py app/src-tauri/target/release/deck-app",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-linkage.log"
+    },
+    {
+      "command": "scripts/check-edr-binary app/src-tauri/target/release/deck-app",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-edr.log"
+    },
+    {
+      "command": "python3 scripts/sidecar_provenance.py check --profile release --binaries --main-product app/src-tauri/target/release/deck-app",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-release-provenance.log",
+      "sidecars": 4,
+      "main_product": true
+    },
+    {
+      "command": "python3 scripts/sidecar_provenance.py staged --profile release",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-release-staging.log",
+      "files": 68
+    },
+    {
+      "command": "cargo build --locked --manifest-path app/src-tauri/Cargo.toml",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-debug.log"
+    },
+    {
+      "command": "python3 scripts/sidecar_provenance.py check --profile debug --binaries --main-product app/src-tauri/target/debug/deck-app",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-debug-provenance.log",
+      "sidecars": 4,
+      "main_product": true
+    },
+    {
+      "command": "python3 scripts/sidecar_provenance.py staged --profile debug",
+      "exit_code": 0,
+      "log": "/tmp/deck-governance-debug-staging.log",
+      "files": 178
+    }
+  ],
+  "early_failures": [
+    {
+      "command": "cargo test --manifest-path app/src-tauri/Cargo.toml --lib documents::channel_admission_tests::native_channel_admission_binds_source_scope_frozen_intent_and_retirement -- --exact --nocapture",
+      "exit_code": 101,
+      "reason": "no library targets found; corrected to --bin deck-app"
+    },
+    {
+      "command": "cargo test --manifest-path app/src-tauri/Cargo.toml --bin deck-app documents::channel_admission_tests::native_channel_admission_binds_source_scope_frozen_intent_and_retirement -- --exact --nocapture",
+      "exit_code": 101,
+      "reason": "new test missing crate::context::ProbeResult import; import added before successful run"
+    }
+  ],
+  "source_comparison": {
+    "card_body": "identical after function signature and four action substitutions",
+    "provider": "unchanged",
+    "polling": "unchanged",
+    "coverage_exclusions": "unchanged",
+    "cycle_allowlist": "unchanged",
+    "schema_ipc_dependencies": "unchanged"
+  },
+  "scope_note": "Product logic fixed before full workspace run; later additions were thread ownership comments, documentation and a UI static boundary test. Final UI gate reran after that assertion; final release/debug builds compile the final tree.",
+  "unrun": [
+    "remote CI and multi-runner gate",
+    "Rust llvm-cov",
+    "RustSec network audit (dependencies unchanged)",
+    "macOS 14 compatibility carrier",
+    "WKWebView card layout/focus/click smoke",
+    "real authenticated Agent/Slack scenarios",
+    "Developer-ID signing, notarization, install, updater route experiments"
+  ],
+  "remaining_limits": [
+    "Pi needs-input and re-entry upstream limitations",
+    "Codex shared-daemon per-client provenance unavailable",
+    "Board polling/lifecycle remain in Board",
+    "other authority sources still use JSON",
+    "shared build outputs still require provenance checks"
+  ],
+  "final_build_context": "debug, main and four sidecars verified",
+  "files_sha256": {
+    "CLAUDE.md": "a0b23e9901768ee4e4b2cba146e73e244cfbb01719ff406df67e0fec7bddd914",
+    "app/src-tauri/src/documents.rs": "f9378f17240f302b143e9e97eb37a7de910ec9cd5d1f23d600c07ec6c6a5a7f7",
+    "app/src-tauri/src/documents/channel_admission_tests.rs": "6f80bb42c79c599ece84c27515e70351a3c7cda10e73b7a11bf45f0491944728",
+    "app/src-tauri/src/scheduler/channel_first_send.rs": "e663562cc73b807a6af6c24657bf920853979446f860d0d8f908efee1f69b6ea",
+    "app/src-tauri/src/scheduler/channel_permission_tests.rs": "642a9506699ecd8efb39e819634064f2cfa110a285247714fc3d24a88d3f0057",
+    "app/src-tauri/src/scheduler/thread.rs": "dee3b0da43c1734aeed301a61caf1554c9a77d02ad887f576f79cd6a66906e27",
+    "app/ui/js/board-card.js": "300bcdeb50524e76b3f4eeb828cf89a4802a167e4659de56d3a545b69918761a",
+    "app/ui/js/board.js": "c654d5c771c3d8c110557f53acb1ce56711ca98e20308a160e4c932aa4de2d1f",
+    "app/ui/test/board-card.test.mjs": "4874baf97776b8d9a7a699792b393d6133c7d63f5c2934d2897b452dd63a3187",
+    "app/ui/test/static.test.mjs": "0ac6e5c1c40936349d8e7c55684c1f5b4357b0a53453f04a960d4a9326386d17",
+    "docs/evidence/board-authority-governance-20261013/README.md": "c06e287c613edae51f9750d29ed5dd13497aac27b165983e2b37f33c3d72d855",
+    "docs/verification-status.md": "1a5628b62026690d4d06cb0c99a4719eb73ec89b0343e9bb4f2aecb8ac458e41"
+  }
+}

@@ -25,6 +25,12 @@
 //!   round-trip untouched and the `#[allow(dead_code)]` fields exist to be
 //!   validated, not read; `launched` defaults to true so a board written
 //!   before the field never re-runs a command.
+//! - `frozen_channel_head` projects just a channel head's typed binding from
+//!   a card in that validated snapshot, reusing the document types. It does
+//!   not confer authority: admission must first require a CURRENT Board and
+//!   bind its unique origin to the native inbox. Missing `initialQueued`
+//!   remains missing evidence, even though the document parser defaults it
+//!   to false. No projection is serialized back into the owner's document.
 //! - `LoadedDoc` carries the text, its source and at most one `UiNotice`: a
 //!   closed code the webview translates, `storage.recovered` for an in-band
 //!   load warning, or `storage.choices-withdrawn` in its place when the
@@ -426,33 +432,72 @@ struct ChannelRun {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ChannelRunTarget {
-    project_id: String,
-    dir: String,
-    cmd: String,
-    session: String,
+pub(crate) struct ChannelRunTarget {
+    pub(crate) project_id: String,
+    pub(crate) dir: String,
+    pub(crate) cmd: String,
+    pub(crate) session: String,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ChannelRunFirstSend {
-    inbox_id: String,
-    grant_id: String,
-    grant_digest: String,
-    skeleton: String,
+pub(crate) struct ChannelRunFirstSend {
+    pub(crate) inbox_id: String,
+    pub(crate) grant_id: String,
+    pub(crate) grant_digest: String,
+    pub(crate) skeleton: String,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ChannelStep {
-    operation_id: String,
-    text: String,
-    mode: String,
+pub(crate) struct ChannelStep {
+    pub(crate) operation_id: String,
+    pub(crate) text: String,
+    pub(crate) mode: String,
     #[serde(default)]
-    at: Option<u64>,
-    tpl: String,
-    tpl_idx: usize,
-    tpl_total: usize,
+    pub(crate) at: Option<u64>,
+    pub(crate) tpl: String,
+    pub(crate) tpl_idx: usize,
+    pub(crate) tpl_total: usize,
+}
+
+/// Read-only head evidence, not a new grant or a persistable Board. Only the
+/// admission binding consumes it; other sources and later steps keep their
+/// own contracts. The source card must come from `board_authority` and have
+/// already matched the native event's unique origin.
+pub(crate) struct FrozenChannelHead {
+    pub(crate) session: String,
+    pub(crate) project_id: String,
+    pub(crate) connection_id: String,
+    pub(crate) workspace_id: String,
+    pub(crate) channel_id: String,
+    pub(crate) rule_id: String,
+    pub(crate) first_event_id: String,
+    pub(crate) target: ChannelRunTarget,
+    pub(crate) claim: ChannelRunFirstSend,
+    pub(crate) step: ChannelStep,
+}
+
+pub(crate) fn frozen_channel_head(card: &serde_json::Value) -> Option<FrozenChannelHead> {
+    // A default useful for reading old content is not positive evidence that
+    // a frozen head has never been queued. Preserve the explicit-false check.
+    if card["channelRun"]["initialQueued"].as_bool() != Some(false) {
+        return None;
+    }
+    let card = BoardCard::deserialize(card).ok()?;
+    let run = card.channel_run?;
+    Some(FrozenChannelHead {
+        session: card.session,
+        project_id: card.project_id,
+        connection_id: run.connection_id,
+        workspace_id: run.workspace_id,
+        channel_id: run.channel_id,
+        rule_id: run.rule_id,
+        first_event_id: run.first_event_id,
+        target: run.target?,
+        claim: run.first_send?,
+        step: run.initial_steps.into_iter().next()?,
+    })
 }
 
 #[derive(serde::Deserialize)]
