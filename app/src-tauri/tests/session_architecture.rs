@@ -705,7 +705,7 @@ fn the_data_directory_has_one_resolver() {
     assert_eq!(
         app,
         [
-            "agent_status.rs retire_legacy_helper_copy",
+            "agent_status/hooks.rs retire_legacy_helper_copy",
             "datadir.rs deck_dir",
         ],
         "a path under the data directory starts from datadir::deck_dir(), which unit tests \

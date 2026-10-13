@@ -26,7 +26,8 @@
 //!   never a file name, a substring or a pattern. Every other string in the
 //!   array, every other key and every other byte of the file is the user's
 //!   and stays as written: the text is edited in place with the span tools
-//!   of `agent_status` and is used only when it parses back to exactly the
+//!   of `agent_status::hooks` (re-exported by `agent_status`) and is used
+//!   only when it parses back to exactly the
 //!   value that was decided. The file keeps its mode and, when it is a
 //!   symlink, stays one (`datadir::atomic_write_through_link`).
 //! - **What is not Deck's to repair is refused.** A file that is not JSON,

@@ -4307,9 +4307,11 @@ fn r01_no_child_of_the_observer_writes_anything_for_it() {
         let (_, frame) = &forged[0];
         r.start(&format!(
             "@open @child '@line:{frame}' @mark:{c1} @read @mark:{c2} @parent @wait:{c1} @close \
-             '{own_ping}' @mark:{p1} @wait:{p2} {own} @mark:{p3} @wait:{end} {bye}",
+             @sent:{sent} '{own_ping}' @mark:{p1} \
+             @wait:{p2} {own} @mark:{p3} @wait:{end} {bye}",
             c1 = r.mark("c1"),
             c2 = r.mark("c2"),
+            sent = r.mark("sent"),
             p1 = r.mark("p1"),
             p2 = r.mark("p2"),
             p3 = r.mark("p3"),
@@ -4320,8 +4322,9 @@ fn r01_no_child_of_the_observer_writes_anything_for_it() {
         accepting.held(true);
         r.go("go");
         r.wait("c1");
-        // the parent's heartbeat is connected and written; nothing is read yet
-        std::thread::sleep(Duration::from_millis(300));
+        // The parent has connected AND written its heartbeat; the marker
+        // precedes its blocking read. Elapsed time proves neither fact.
+        r.wait("sent");
         let (before, mismatched) = (written(), accepting.refused("pi-sender-mismatch"));
         accepting.held(false);
         r.wait("c2");

@@ -1,6 +1,8 @@
 //! Closed, debug-only fault injection for the packaged WKWebView gate.
 //! Hooks arm only when both smoke arguments select an isolated data root;
 //! normal and release launches cannot trigger them.
+//! Clipboard metrics read UTF-8 regardless of the launching shell's locale;
+//! the diagnostic must measure the same bytes the webview copied.
 
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
@@ -98,6 +100,13 @@ pub(crate) fn smoke_fault_set(kind: String, count: u8) -> Result<SmokeFaultState
     })
 }
 
+fn clipboard_reader() -> std::process::Command {
+    let mut command = std::process::Command::new("/usr/bin/pbpaste");
+    // LC_ALL also overrides an inherited LC_CTYPE=C. LANG alone does not.
+    command.env("LC_ALL", "en_US.UTF-8");
+    command
+}
+
 #[tauri::command]
 pub(crate) fn smoke_clipboard_metrics() -> Result<SmokeClipboardMetrics, DeckError> {
     if !enabled() {
@@ -106,7 +115,7 @@ pub(crate) fn smoke_clipboard_metrics() -> Result<SmokeClipboardMetrics, DeckErr
             "smoke clipboard metrics are unavailable",
         ));
     }
-    let out = std::process::Command::new("pbpaste")
+    let out = clipboard_reader()
         .output()
         .map_err(|_| DeckError::new(ErrorKind::Other, "clipboard reader unavailable"))?;
     if !out.status.success() {
@@ -444,6 +453,18 @@ mod tests {
     fn clipboard_hash_is_stable_and_byte_oriented() {
         assert_eq!(fnv1a64(b"DEFG"), 0xbab10472a66bfe51);
         assert_ne!(fnv1a64("中".as_bytes()), fnv1a64(b"?"));
+    }
+
+    #[test]
+    fn clipboard_reader_overrides_missing_and_non_utf8_parent_locales() {
+        // Inspect the child override without reading the user's pasteboard
+        // or changing this test process's environment. LC_ALL wins over
+        // either LC_CTYPE or LANG inherited from a C-locale shell.
+        let command = clipboard_reader();
+        assert_eq!(command.get_program(), "/usr/bin/pbpaste");
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "LC_ALL" && value == Some(std::ffi::OsStr::new("en_US.UTF-8"))
+        }));
     }
 
     #[test]

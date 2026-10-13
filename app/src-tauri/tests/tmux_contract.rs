@@ -7,6 +7,9 @@
 //! socket file, including after a panic. Tests run in parallel: a contract
 //! waits for what it needs (`wait_until`: a prompt, a finished line, a
 //! parked fixture, a marker on screen) instead of sleeping a fixed time.
+//! Every expected-success tmux call checks its exit code and stderr. A
+//! restart watches the old server's kernel exit before reusing its socket;
+//! completion of the kill command alone is not completion of server exit.
 //!
 //! The sidecar they drive is the pinned one: `committed_sidecar_matches_its_pin`
 //! hashes it against `binaries/tmux-aarch64-apple-darwin.sha256` (gate.yml
@@ -24,6 +27,7 @@
 
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::FileTypeExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -170,8 +174,9 @@ fn unique_name(prefix: &str) -> String {
     format!("{prefix}-{}-{seq}", std::process::id())
 }
 
-/// Poll `ready` every 10 ms for up to 5 s instead of sleeping a fixed time
-/// that is too long on an idle machine and too short on a loaded one.
+/// At most 500 readiness checks, separated by 10 ms. The checks themselves
+/// also take time. Preserve this existing budget while fixing synchronization;
+/// a readiness observation, not elapsed time, releases the caller.
 fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
     for _ in 0..500 {
         if ready() {
@@ -194,6 +199,74 @@ fn last_line(screen: &str) -> &str {
 struct Server(String);
 
 impl Server {
+    /// Arm an exit observation for this fixture's current server BEFORE
+    /// asking it to stop. No signal is sent by pid, and a missing listing
+    /// or a command's completion is never substituted for the exit event.
+    fn stop_before_restart(&self) {
+        let pid: usize = self.fmt("#{pid}").parse().expect("fixture server pid");
+        let fd = unsafe { libc::kqueue() };
+        assert!(fd >= 0, "kqueue: {}", std::io::Error::last_os_error());
+        let queue = unsafe { OwnedFd::from_raw_fd(fd) };
+        let change = libc::kevent {
+            ident: pid,
+            filter: libc::EVFILT_PROC,
+            flags: libc::EV_ADD | libc::EV_ONESHOT,
+            fflags: libc::NOTE_EXIT,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        assert_eq!(
+            unsafe {
+                libc::kevent(
+                    queue.as_raw_fd(),
+                    &change,
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null(),
+                )
+            },
+            0,
+            "watch fixture server: {}",
+            std::io::Error::last_os_error()
+        );
+        self.run(&["kill-server"]);
+        wait_until("the watched fixture server to exit before restart", || {
+            let mut event = std::mem::MaybeUninit::<libc::kevent>::uninit();
+            let timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            let count = unsafe {
+                libc::kevent(
+                    queue.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    event.as_mut_ptr(),
+                    1,
+                    &timeout,
+                )
+            };
+            assert!(
+                count >= 0,
+                "read fixture exit: {}",
+                std::io::Error::last_os_error()
+            );
+            if count == 0 {
+                return false;
+            }
+            let event = unsafe { event.assume_init() };
+            assert!(
+                event.ident == pid
+                    && event.filter == libc::EVFILT_PROC
+                    && event.flags & libc::EV_ERROR == 0
+                    && event.fflags & libc::NOTE_EXIT != 0,
+                "unexpected fixture exit event"
+            );
+            true
+        });
+    }
+
     fn new(tag: &str) -> Self {
         let s = Server(unique_name(&format!("deck-test-{tag}")));
         s.run(&[
@@ -225,12 +298,15 @@ impl Server {
 
     /// The shell in `target` has printed its prompt.
     fn wait_for_prompt(&self, target: &str) {
-        wait_until("the shell prompt", || {
-            !self
-                .run(&["capture-pane", "-p", "-t", target])
-                .trim()
-                .is_empty()
-        });
+        wait_until(
+            &format!("the shell prompt at {target} on {}", self.0),
+            || {
+                !self
+                    .run(&["capture-pane", "-p", "-t", target])
+                    .trim()
+                    .is_empty()
+            },
+        );
     }
 
     /// Type one line into an idle shell in `target` and return once it ran:
@@ -246,32 +322,30 @@ impl Server {
         });
     }
     fn run(&self, args: &[&str]) -> String {
-        String::from_utf8(self.run_raw(args))
+        String::from_utf8(self.run_raw_checked(args))
             .expect("tmux output utf8")
             .trim()
             .to_string()
     }
-    fn run_raw(&self, args: &[&str]) -> Vec<u8> {
-        let out = Command::new(tmux_bin())
-            .args(["-f", "/dev/null", "-L", &self.0])
-            .args(args)
-            .output()
-            .expect("tmux spawn");
-        out.stdout
-    }
     fn run_raw_checked(&self, args: &[&str]) -> Vec<u8> {
-        let out = Command::new(tmux_bin())
-            .args(["-f", "/dev/null", "-L", &self.0])
-            .args(args)
-            .output()
-            .expect("tmux spawn");
+        let out = self.output(args);
         assert!(
             out.status.success(),
-            "tmux {:?} failed: {}",
+            "tmux {:?} on {} failed ({}): {}",
             args,
+            self.0,
+            out.status,
             String::from_utf8_lossy(&out.stderr)
         );
         out.stdout
+    }
+    /// Only a test of failure reads this directly and asserts that failure.
+    fn output(&self, args: &[&str]) -> std::process::Output {
+        Command::new(tmux_bin())
+            .args(["-f", "/dev/null", "-L", &self.0])
+            .args(args)
+            .output()
+            .expect("tmux spawn")
     }
     fn run_with_stdin_checked(&self, args: &[&str], input: &[u8]) -> Vec<u8> {
         let mut child = Command::new(tmux_bin())
@@ -2035,7 +2109,7 @@ fn scheduler_context_identity_process_and_hookless_compatibility_contract(topolo
     // A new server generation (kill-server: an attached topology's other
     // sessions would keep the old server alive past a kill-session), with the
     // same topology attached again.
-    s.run(&["kill-server"]);
+    s.stop_before_restart();
     s.run(&[
         "new-session",
         "-d",
@@ -2154,7 +2228,7 @@ fn batched_capture_markers_and_dead_target_abort(topology: Topology) {
     assert!(!t_seg.contains("tee-two"), "segments must not bleed");
 
     // dead target mid-batch: everything after the failing command is lost
-    let after_dead = s.run(&[
+    let after_dead = s.output(&[
         "display-message",
         "-p",
         &format!("{MARK}gone"),
@@ -2177,6 +2251,12 @@ fn batched_capture_markers_and_dead_target_abort(topology: Topology) {
         "-S",
         "-30",
     ]);
+    assert!(
+        !after_dead.status.success(),
+        "a dead target fails the batch"
+    );
+    assert!(String::from_utf8_lossy(&after_dead.stderr).contains("can't find session: gone"));
+    let after_dead = String::from_utf8(after_dead.stdout).expect("batch utf8");
     assert!(
         !after_dead.contains("tee-one"),
         "tmux aborts a batch at the first failure — if this ever changes, \
@@ -2902,7 +2982,7 @@ fn styled_blank_rows_are_empty_to_both_capture_pane_and_the_copy_cursor() {
 
     // And tmux agrees: a cursor-right on such a row wraps to the next row's
     // column 0 instead of stepping along it.
-    s.run(&["send-keys", "-t", "t", "-X", "cancel"]);
+    assert_eq!(s.fmt("#{pane_in_mode}"), "0");
     s.run(&["copy-mode", "-H", "-t", "t"]);
     s.run(&["send-keys", "-t", "t", "-X", "top-line"]);
     s.run(&["send-keys", "-t", "t", "-X", "cursor-right"]);
@@ -2939,7 +3019,7 @@ fn selection_is_frame_relative_when_the_pane_is_scrolled() {
         sleep(Duration::from_millis(10));
     }
 
-    s.run(&["send-keys", "-t", "t", "-X", "cancel"]);
+    assert_eq!(s.fmt("#{pane_in_mode}"), "0");
     s.run(&["copy-mode", "-H", "-t", "t"]);
     let scroll = s.scroll_to_blank_top(2) as i64;
     assert!(scroll > 0, "fixture must actually be scrolled");
@@ -3239,7 +3319,7 @@ fn stale_reused_replaced_and_malformed_evidence_never_verifies() {
         s.classify(&mut evidence, &["card"], ORDINARY),
         [Verdict::Alive]
     );
-    s.run(&["kill-server"]);
+    s.stop_before_restart();
     let fresh = exit_server_named(&name);
     let decoy = fresh.shell_session("decoy");
     fresh.run(&["send-keys", "-t", &decoy, "exit 0", "Enter"]);

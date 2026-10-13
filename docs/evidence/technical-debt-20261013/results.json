@@ -1,0 +1,396 @@
+{
+  "recorded_at": "2026-10-13T07:00:41.182109+00:00",
+  "base_commit": "84b7783c51198e1a89e1929380b2a5845cc2c77b",
+  "scope": "Local bounded debt cleanup, working-tree snapshot. No push, public candidate, tag, feed change, signing, GUI launch or Mac mini experiment. Evidence README/results are excluded from their own file-hash map.",
+  "environment": {
+    "os": "macOS 27.0.1",
+    "arch": "arm64",
+    "rust": "1.97.1",
+    "node": "24.19.0"
+  },
+  "files_sha256": {
+    "CLAUDE.md": "fb92b1d36abcfbe23d8a676fe4c0fbfa91f3aa66961d7444d570041e0c8c7928",
+    "app/src-tauri/src/agent_pi/config.rs": "b036133eccbed4b7d9fb09d9f08f44a1bb74d567d119e6e6dd7ee6538f7f6893",
+    "app/src-tauri/src/agent_pi/transport/tests.rs": "8696816ca55aa6cedc5d39fe031da4bc36c332727b3908cc7fda2aff029e8338",
+    "app/src-tauri/src/agent_status.rs": "97a86c9516d9406a68b10004faa07fa5664984ea717f8299b3fd830e5f8860c8",
+    "app/src-tauri/src/agent_status/hooks.rs": "d4d9768b4a705c034e6816d84a4cb1323060e91401572a92b6feca344859d4b4",
+    "app/src-tauri/src/agent_status/hooks/tests.rs": "d6269ea608f68553cd89a206f733a11baac4398ee234ff87d5d691b7c32f2813",
+    "app/src-tauri/src/extensions.rs": "a37ec83d8771044ed08567449dd6a624346679c210c62fc26a2cbc0248dd526e",
+    "app/src-tauri/src/smoke_faults.rs": "10aec3205ddda4b2c41715d8ad54326ea8e1ced405d6fb70bf51d73296128acd",
+    "app/src-tauri/tests/edr_quiet.rs": "929bf5c02a4234c3df55d61e3804dee0784a055cc714a0d2704629524b49bf53",
+    "app/src-tauri/tests/session_architecture.rs": "f890936064731a5ce1f88a46e3500b9d4862ddc543d125ab5932339f29a8827a",
+    "app/src-tauri/tests/signal_census.rs": "953517779809212f639e08cec971db72c60a31c8c1db5da0a0a2bb3b5a67d9cf",
+    "app/src-tauri/tests/tmux_contract.rs": "de03c10d0e3ff105e53c0b59910a402323f242c6b6a5ca268fe75573ddf648a3",
+    "docs/first-party-extensions.md": "c4d781da70920cb4fca82d5bdf6bdc0d305aacc6dc300258c72527da67eb69c7",
+    "docs/verification-status.md": "ee33af4774de57ece63b2bacc1875dc7e26503f2113be2713a56159bf0960b9c",
+    "scripts/check-edr-binary": "51dc615707189bf301e79e1ffa5dda0ccb04ad03be7880fd5d72aa8e271d19dd",
+    "scripts/pi/exec-peer.c": "ed564d200b2b3128461ab88d04aea6e0f96666c65ac6a673eb59f2b5ae9e8d01",
+    "scripts/test_release_tools.py": "5f79b23c4d2d7f34407f53bef3d54e62233441fad00defd99f0f3dff6461464a"
+  },
+  "refactor_evidence": {
+    "moved_production_body_byte_identical": true,
+    "body_sha256": "c1999f617e19dee20c03a069ac084183e1397a744465f39c899b8ab092d9c747",
+    "remaining_signal_listener_body_and_tests_unchanged_except_imports_and_formatting": true,
+    "all_original_test_helpers_retained": true,
+    "raw_string_fixture_bytes_preserved": true
+  },
+  "checks": [
+    {
+      "step": "workspace",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "log_name": "deck-debt-workspace.log",
+      "log_sha256": "8b7bca9049f26139da20958958dc0973f7bbbcc5487ccdf39c50a583f337aa0e",
+      "counts": {
+        "passed": 1519,
+        "failed": 0,
+        "ignored": 13
+      },
+      "scope": "Full refactored workspace. Later changes restored original hook raw-string fixture indentation, restored the original tmux polling budget, improved tmux diagnostics, and updated comments only. final-hooks and final-tmux reran all affected tests; production bodies did not change."
+    },
+    {
+      "step": "ui-syntax",
+      "command": [
+        "node",
+        "--check",
+        "<each app/ui/js/*.js, i18n/*.js, js/*.mjs, test/*.mjs>"
+      ],
+      "exit_code": 0,
+      "log_name": "deck-debt-ui-syntax.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "step": "ui",
+      "command": [
+        "scripts/ui-tests"
+      ],
+      "exit_code": 0,
+      "log_name": "deck-debt-ui.log",
+      "log_sha256": "578cfd6937be4a4c7a26bf508b9f214adae06181c591be67ca75184f56ad3121",
+      "counts": {
+        "passed": 781,
+        "failed": 0,
+        "skipped": 0
+      },
+      "scope": "Node 24.19.0; coverage lines 94.29%, branches 89.49%, functions 87.07%; every eligible module counted. CI Node 22 was not run locally."
+    },
+    {
+      "step": "ui-identifiers",
+      "command": [
+        "node",
+        "app/ui/js/check.mjs"
+      ],
+      "exit_code": 0,
+      "log_name": "deck-debt-ui-identifiers.log",
+      "log_sha256": "304a98e22d0dfdd7549d44c19c46faf40345f57ee0d2a34cdac8cda652ce3c3c"
+    },
+    {
+      "step": "python",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "scripts/test_release_tools.py",
+        "scripts/test_edr_runtime.py",
+        "scripts/test_signal_candidate.py",
+        "scripts/test_codex_title_probe.py",
+        "scripts/test_ce_verdict.py",
+        "scripts/test_reminder_verify.py",
+        "scripts/test_sidecar_provenance.py"
+      ],
+      "exit_code": 0,
+      "log_name": "deck-debt-python.log",
+      "log_sha256": "b172d8b49d0aef2672262b243468a2185d1a3d0a75437bd7ee2ac4c83de7a121",
+      "counts": {
+        "passed": 181
+      },
+      "scope": "Expected negative-fixture error output and Python TemporaryDirectory ResourceWarnings were emitted; the suite ended OK, exit 0."
+    },
+    {
+      "step": "pi",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "--bin",
+        "deck-app",
+        "agent_pi::transport::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "log_name": "deck-debt-pi.log",
+      "log_sha256": "6c0c508677373ad2fc173cf13725ccc9e3aff8c97a97729d9a75ebf7029a0bc5",
+      "counts": {
+        "passed": 41,
+        "failed": 0,
+        "ignored": 0
+      }
+    },
+    {
+      "step": "clipboard",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "--bin",
+        "deck-app",
+        "smoke_faults::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "log_name": "deck-debt-clipboard.log",
+      "log_sha256": "493b70c419baedb119d172b59e06383400bc562d6e3e89239886ea910aee9449",
+      "counts": {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      "scope": "Constructed command and disabled-smoke guards; no user clipboard read/write or GUI run."
+    },
+    {
+      "step": "tmux-repeat-before",
+      "command": [
+        "<compiled tmux_contract executable>",
+        "scheduler_context_identity_process_and_hookless_compatibility_contract",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "log_name": "deck-debt-tmux-repeat-before.log",
+      "log_sha256": "470eb560b16df83620555e053fcfb705366b24c918b856874bf847fb5bbf079a",
+      "counts": {
+        "runs": 100,
+        "passed_topology_cases": 300,
+        "failed": 0
+      },
+      "scope": "before: exit-code diagnostics only. after: kernel exit synchronization, before final diagnostic text and restoration of original polling budget. final-tmux validates the final harness; these repetitions do not prove elimination of the historical CI failure."
+    },
+    {
+      "step": "tmux-repeat-after",
+      "command": [
+        "<compiled tmux_contract executable>",
+        "scheduler_context_identity_process_and_hookless_compatibility_contract",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "log_name": "deck-debt-tmux-repeat-after.log",
+      "log_sha256": "99defbdebfb341e622c57260999ad12be4b6b899ca560e70d9729e89b39cfd67",
+      "counts": {
+        "runs": 100,
+        "passed_topology_cases": 300,
+        "failed": 0
+      },
+      "scope": "before: exit-code diagnostics only. after: kernel exit synchronization, before final diagnostic text and restoration of original polling budget. final-tmux validates the final harness; these repetitions do not prove elimination of the historical CI failure."
+    },
+    {
+      "step": "release-build",
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-10-13T06:56:03.034014+00:00",
+      "ended_at": "2026-10-13T06:57:47.743358+00:00",
+      "log_name": "deck-debt-release-build.log",
+      "log_sha256": "221979588fe6bc6034c79b883b6084ebcfb268481025475533925cdf06b70400",
+      "warning": "Unchanged smoke_native.rs:273 DELAY_NEXT_SETTLE_MS is unused in release; build exit 0. Final all-targets/all-features clippy -D warnings passed."
+    },
+    {
+      "step": "release-edr",
+      "command": [
+        "scripts/check-edr-binary",
+        "app/src-tauri/target/release/deck-app"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-10-13T06:57:47.743837+00:00",
+      "ended_at": "2026-10-13T06:57:48.289873+00:00",
+      "log_name": "deck-debt-release-edr.log",
+      "log_sha256": "0ac55e6a92e857de8d58e9129355a64b93034646708b1ba6d6b2445dc9620ba8"
+    },
+    {
+      "step": "release-translation",
+      "command": [
+        "python3",
+        "scripts/check_local_translation_binary.py",
+        "app/src-tauri/target/release/deck-app"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-10-13T06:57:48.290162+00:00",
+      "ended_at": "2026-10-13T06:57:48.393716+00:00",
+      "log_name": "deck-debt-release-translation.log",
+      "log_sha256": "952be20932c1a39c1f74ca6c2e4b4722f2b26c34dde871cc8ec1da99d41137bb"
+    },
+    {
+      "step": "release-provenance",
+      "command": [
+        "python3",
+        "scripts/sidecar_provenance.py",
+        "check",
+        "--profile",
+        "release",
+        "--binaries"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-10-13T06:57:48.393999+00:00",
+      "ended_at": "2026-10-13T06:57:48.428975+00:00",
+      "log_name": "deck-debt-release-provenance.log",
+      "log_sha256": "95c1ed5256dab90650abfea8d86bfe8520c72333c2e0874f9cabebef584d5eb5"
+    },
+    {
+      "step": "final-fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-10-13T06:57:48.429258+00:00",
+      "ended_at": "2026-10-13T06:57:49.250222+00:00",
+      "log_name": "deck-debt-final-fmt.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "step": "final-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-10-13T06:57:49.250574+00:00",
+      "ended_at": "2026-10-13T06:58:08.320793+00:00",
+      "log_name": "deck-debt-final-clippy.log",
+      "log_sha256": "0990d511c6edd78574c08c6c6ee3cd4a4bb7727a4c5d6ac872ecb5fbc0be9fe4"
+    },
+    {
+      "step": "final-hooks",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "--bin",
+        "deck-app",
+        "agent_status::",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-10-13T06:58:08.321233+00:00",
+      "ended_at": "2026-10-13T06:58:37.517723+00:00",
+      "log_name": "deck-debt-final-hooks.log",
+      "log_sha256": "6084466845aa3b337919b152de6526807a929690664b3dcf8021807ba62f666b",
+      "counts": {
+        "passed": 65,
+        "failed": 0,
+        "ignored": 3
+      }
+    },
+    {
+      "step": "final-tmux",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "--test",
+        "tmux_contract",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-10-13T06:58:37.518686+00:00",
+      "ended_at": "2026-10-13T06:59:06.248553+00:00",
+      "log_name": "deck-debt-final-tmux.log",
+      "log_sha256": "683e08de6418dabcb664ec0060dd9a636ff2c42eb3700ea8c4cb6af177262fb5",
+      "counts": {
+        "passed": 111,
+        "failed": 0,
+        "ignored": 0
+      }
+    },
+    {
+      "step": "final-debug-build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-10-13T06:59:06.248956+00:00",
+      "ended_at": "2026-10-13T06:59:21.618812+00:00",
+      "log_name": "deck-debt-final-debug-build.log",
+      "log_sha256": "a5351c513a0499704684e97121f61fa95704c84ef9442904b7ff1e9082cc0c4e"
+    },
+    {
+      "step": "final-provenance",
+      "command": [
+        "python3",
+        "scripts/sidecar_provenance.py",
+        "check",
+        "--profile",
+        "debug",
+        "--binaries"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-10-13T06:59:21.619230+00:00",
+      "ended_at": "2026-10-13T06:59:21.657284+00:00",
+      "log_name": "deck-debt-final-provenance.log",
+      "log_sha256": "9338fbb25f1a002c5564504534d861e39b2381f39b172790bbeb85676f9e9b14"
+    }
+  ],
+  "release_binary": {
+    "file": "app/src-tauri/target/release/deck-app",
+    "sha256": "178ab5ddc93c6afbba1ea98a330e32e65d54dfc0141bc470e0885facba34905a",
+    "markers": {
+      "deck-lifecycle-helper": true,
+      "deck-bundle-requires:deck-lifecycle-helper": true
+    }
+  },
+  "not_run": [
+    "Hosted CI for this working-tree change; macOS 14 launch",
+    "Rust coverage gate / Full Local parity workload",
+    "Real Pi native matrix and real-client re-entry recertification",
+    "WKWebView clipboard run under absent and C locales",
+    "Signed/notarized installation and updater scenarios"
+  ],
+  "remaining": [
+    "Historical CI shell-prompt timeout not reproduced; cause is not uniquely established. Observe the next normal CI run with improved diagnostics.",
+    "Previous BLOCKED and UNRUN native scenarios retain their status; see docs/verification-status.md."
+  ]
+}

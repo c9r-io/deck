@@ -5,7 +5,7 @@
 //! # Contract
 //! - Three typed tables, no common interface: `SERVICES` (service
 //!   integrations; today `slack::INTEGRATION`), `AGENT_ADAPTERS` (the
-//!   declarations in `agent_status.rs` and `agent_pi.rs`) and `TRANSLATION_PROVIDERS` (the
+//!   declarations in `agent_status/hooks.rs` (re-exported by `agent_status`) and `agent_pi.rs`) and `TRANSLATION_PROVIDERS` (the
 //!   engines behind `intelligence::provider::TranslationProvider`), plus the
 //!   one engine this build selects, `TRANSLATION_ENGINE`.
 //! - Entries are source code compiled into the app. No setting, environment

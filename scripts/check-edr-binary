@@ -23,7 +23,7 @@ else
   # bundle must carry it is read from the bundle itself, with no network and
   # no version table: the application executable is searched for the helper's
   # file name. Two things put that name there, and either one is enough:
-  #   - today's literals in agent_status.rs: LIFECYCLE_HELPER_NAME, joined
+  #   - today's literals in agent_status/hooks.rs: LIFECYCLE_HELPER_NAME, joined
   #     onto the executable's directory at run time, and
   #     LIFECYCLE_HELPER_MARKER, compared against hook commands. Both are
   #     string DATA read by live code, not symbols: `strip` removes symbol

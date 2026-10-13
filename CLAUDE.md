@@ -310,7 +310,8 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | External admission policy | `admission.rs` (pinned by `tests/external_admission.rs`) |
 | Needs-attention view, away notifications, Dock badge | `ui/js/attention.js`, `attention-model.js`, `notify.rs`, `native/NotificationBridge.swift`, `ui/js/notify-model.js` (+ `docs/notifications.md`) |
 | Card Reminders | `reminder.rs`, `ui/js/reminder-model.js` (+ `docs/card-reminders.md`) |
-| Agent status hooks | `agent_status.rs`, `agent_origin.rs`, `src-tauri/status-helper/` |
+| Agent status, attribution and listener | `agent_status.rs`, `agent_origin.rs`, `src-tauri/status-helper/` |
+| Agent hooks configuration, installation and migration | `agent_status/hooks.rs` (contract), `agent_status/hooks/tests.rs` |
 | Pi agent adapter: registration, the one settings entry, observer transport | `agent_pi.rs` (contract), `agent_pi/config.rs`, `agent_pi/transport.rs` (the sender proof, wire v2), `resources/pi/` (the observer extension), `scripts/pi_native.py`, `scripts/pi-live-verify.py` |
 | Agent re-entry on a shell-service restart | `agent_reentry/` (contract in `mod.rs`), `src-tauri/lifecycle-helper/`, `procinfo.rs`, `procinfo/code_identity.rs`, `ui/js/reentry-model.js`, `restart-reentry.js` |
 | First-party extension tables | `extensions.rs`, `slack.rs` (+ `docs/first-party-extensions.md`) |
@@ -340,6 +341,10 @@ output heuristic).
   unique `DECK_SMOKE_TMUX_SOCKET`, `DECK_SMOKE_WKWEBVIEW=1 app/run.sh`; judge
   with `scripts/smoke-verdict <data-dir> <mode>` (exit 0 = green). Never point
   it at `~/.deck`.
+
+Recent validation scope, inherited native evidence and remaining gaps are indexed
+in `docs/verification-status.md`; a green gate does not close a native or
+release-install scenario it did not execute.
 
 ### WKWebView / Tauri gotchas (each cost a real bug)
 

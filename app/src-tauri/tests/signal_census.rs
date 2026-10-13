@@ -127,9 +127,13 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     ("agent_status.rs", "", "TURN_DONE", 3, Producer),
     ("agent_status.rs", "", "NEEDS_INPUT", 3, Producer),
     ("agent_status.rs", "", "WORKING", 3, Producer),
-    ("agent_status.rs", "", "\"turn-done\"", 4, Producer),
-    ("agent_status.rs", "", "\"needs-input\"", 3, Producer),
-    ("agent_status.rs", "", "\"working\"", 3, Producer),
+    ("agent_status.rs", "", "\"turn-done\"", 1, Producer),
+    ("agent_status.rs", "", "\"needs-input\"", 1, Producer),
+    ("agent_status.rs", "", "\"working\"", 1, Producer),
+    // The same hook specs, now owned by the configuration module.
+    ("agent_status/hooks.rs", "", "\"turn-done\"", 3, Producer),
+    ("agent_status/hooks.rs", "", "\"needs-input\"", 2, Producer),
+    ("agent_status/hooks.rs", "", "\"working\"", 2, Producer),
     // FR-SI-04: the interaction tracker admits words per source interaction
     // (refuses late/ended/mismatched ones); it grants nothing
     ("agent_status.rs", "admit", "NEEDS_INPUT", 4, Producer),

@@ -19,6 +19,8 @@
 //                    when the answer is `again`, the same line once more with
 //                    the new nonce, at most six times
 //   @once:{...}      the same, without trying again
+//   @sent:<file>     mark this file after the next message writes its first
+//                    line, before reading the answer (retries stay ordinary)
 //   @hello           the hello line as one message
 //   @open            make a connection and keep it, saying nothing
 //   @line:<text>     write that text and a newline on the kept connection
@@ -121,10 +123,17 @@ static void say(int fd, const char *text, int newline) {
 }
 
 // One message on a connection of its own.
+static const char *sent_marker;
 static void message(const char *text, int tries) {
     for (;;) {
         int fd = connected();
         say(fd, text, 1);
+        if (sent_marker) {
+            int marker = open(sent_marker, O_CREAT | O_WRONLY, 0600);
+            if (marker < 0) exit(5);
+            close(marker);
+            sent_marker = NULL;
+        }
         int again = answer(fd);
         close(fd);
         if (!again || --tries <= 0) return;
@@ -173,6 +182,8 @@ int main(int argc, char **argv) {
             message(s, 6);
         } else if (!strncmp(s, "@once:", 6)) {
             message(s + 6, 1);
+        } else if (!strncmp(s, "@sent:", 6)) {
+            sent_marker = s + 6;
         } else if (!strcmp(s, "@open")) {
             kept = connected();
         } else if (!strncmp(s, "@line:", 6)) {

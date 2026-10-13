@@ -306,7 +306,7 @@ const ALLOWED_EXPRESSIONS: &[(&str, &str, &str)] = &[
 
 /// Debug-only smoke instrumentation may read the pasteboard back; it is
 /// compiled into isolated smoke builds only.
-const DEBUG_ONLY_LITERALS: &[(&str, &str)] = &[("smoke_faults.rs", "pbpaste")];
+const DEBUG_ONLY_LITERALS: &[(&str, &str)] = &[("smoke_faults.rs", "/usr/bin/pbpaste")];
 
 const EXPECTED_COMMAND_SITES: usize = 23;
 

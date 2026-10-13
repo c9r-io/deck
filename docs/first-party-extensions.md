@@ -45,6 +45,12 @@ Rules the module header states and its tests pin:
 | Agent | `agent_pi::PI` (`Install::PiExtension`, no `reentry`) | `agent_hooks_set` / `agent_hooks_status` (Pi's one extension entry, `agent_pi::config`); `parse_event` REFUSES its source word on the hook path; its words arrive only as `pi-observer` messages, one per connection (`agent_pi::transport`: `Service::hand` → the proof of the sender → the `agent_status::pi_*` writers) | Kernel peer, foreground-leader, pane, execution-instance, lease and order admission; the proof that a line is the bound process's own and no child's (peer pid, the kernel's fork reports, a connection made after Deck last looked at the process, a nonce per answer); each capability of a lease taken away by itself when its switch is turned off; what a card may say (`PiCoverage`, `PiSession`); the scheduler's Pi hold: no automatic prompt is sent to a recognized Pi (`scheduler/select.rs`, `Hold::PiInputUnverified`); every consumer of its two words, as of a hook word (`tests/signal_census.rs`); remote admission, which Pi is not part of |
 | Provider | `provider::BERGAMOT` | `translation::Coordinator::from_registry` → `extensions::translation_provider`, held as `Box<dyn TranslationProvider>` | Enablement, pack download/verification/deletion, limits per mode, language gating, cancellation (a request that left `active` publishes nothing), unload; the Lens, pasteboard gate, selection ownership and where a result is shown |
 
+Hook configuration, installation and migration now live in
+`agent_status/hooks.rs`, with their own contract and tests. The parent
+`agent_status` re-exports the existing adapter and command paths; Signal
+admission and the listener stay in the parent. This changes no registration,
+IPC name or authorization rule.
+
 ## What moved, what was reused, what stays coupled
 
 Reused as they were: the dispatcher's `Source` trait, the

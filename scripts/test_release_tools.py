@@ -691,7 +691,7 @@ class EdrBinaryBundleTests(unittest.TestCase):
     SCRIPT = ROOT / "scripts" / "check-edr-binary"
     HELPER = "deck-lifecycle-helper"
     # The three spellings an application executable may carry the name in:
-    # today's two literals of agent_status.rs and the dedicated marker.
+    # today's two literals of agent_status/hooks.rs and the dedicated marker.
     EVIDENCE = {
         "name": HELPER,
         "hook-marker": f"deck.app/Contents/MacOS/{HELPER}",
@@ -928,7 +928,7 @@ class EdrBinaryBundleTests(unittest.TestCase):
         a linked release executable keeps the bytes is measured on a build, not
         proven here, and `#[used]` alone does not promise it.
         """
-        source = (ROOT / "app" / "src-tauri" / "src" / "agent_status.rs").read_text()
+        source = (ROOT / "app" / "src-tauri" / "src" / "agent_status" / "hooks.rs").read_text()
         runtime_literal = (
             f'const LIFECYCLE_HELPER_NAME: &str = "{self.HELPER}";' in source
             and re.search(r"\.join\(\s*LIFECYCLE_HELPER_NAME\s*\)", source) is not None
