@@ -1,0 +1,120 @@
+{
+  "date": "2026-10-14",
+  "timezone": "Asia/Tokyo",
+  "baseline": "9a3b85556fdde3938fc460ccde5f58c83bc6cb91",
+  "snapshot": "uncommitted local working tree; hashes exclude this results file",
+  "environment": {
+    "node": "v24.19.0",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "macos": "27.0.1",
+    "arch": "arm64"
+  },
+  "files": {
+    "app/ui/index.html": "b7bd3fe997e1262d0a2f8717ba485e77e6f028a2ca99a1ac2d0653a71f8b2914",
+    "app/ui/js/i18n/en.js": "b52d6140732a54ce2564698d8e84bdd619b4889f0c3f425028803467eb8aa79e",
+    "app/ui/js/i18n/zh-Hans.js": "f6f48a73ac55b549d378fb5095ef15a8e79794f4c11ad67b05f2e7b9514e6abc",
+    "app/ui/js/pi-model.js": "d9450a8b4229fd304f2c1971666ee922dc588ae8b42b81b7219e0f40eb0df231",
+    "app/ui/js/settings.js": "79233302e2db84bdd66cb541ca8d39108bb2b8240a446af848b6500a224179e9",
+    "app/ui/style.css": "b889bec0b440886094a17485e134d02f9c6cad99a73cc441cb2b1e8607bb3826",
+    "app/ui/test/dom.test.mjs": "5644dd766d8162d53dfd2ce2da5c45f250c0d1fed77cd05bacf06975c08a0c87",
+    "app/ui/test/settings-feedback-dom.test.mjs": "34d942eabb8d18756105f5afcf6d8f857ea67c253dbec9454c38c52babc7f6b9",
+    "app/ui/test/wk-smoke.mjs": "b54f6c1c33e1fa23ccc3a0c51eaf846e5625d78660cae56d250b69cb4b0e6daa",
+    "docs/evidence/settings-feedback-governance-20261014/README.md": "119b8f820e1a9f2c5e2ddf644e9b78cef3c50c1e18e232b14ca5a54fe72348fb",
+    "docs/evidence/settings-feedback-governance-20261014/wk-settings.log": "4813530f648958a22898f9a7b1cdb6b5f63e4e8f8b38ece2bfa6c8f385cca6b8",
+    "docs/verification-status.md": "2e73eb404ed604d11b2a333ac1fbfb8a94508142933761c3eefbac30a7fe88a1"
+  },
+  "checks": [
+    {
+      "command": "scripts/ui-tests",
+      "exit_code": 0,
+      "log": "/tmp/deck-feedback-ui-accepted.log",
+      "log_sha256": "a2cbcfb0c3e41e9462e40877269939f8d88993cbee4c458e8d975c502e8b89a3",
+      "passed": 811,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "coverage_percent": {
+        "lines": 94.48,
+        "branches": 89.9,
+        "functions": 87.56
+      }
+    },
+    {
+      "command": "node --test app/ui/test/dom.test.mjs app/ui/test/settings-feedback-dom.test.mjs",
+      "exit_code": 0,
+      "log": "/tmp/deck-feedback-hooks-final.log",
+      "log_sha256": "d456bbc181b161065ebc0914bf24cdb5f7bd4d7762f503cf92420e8ca5196d32",
+      "passed": 67,
+      "failed": 0
+    },
+    {
+      "command": "node --check (all app/ui/js/**/*.js and app/ui/test/**/*.mjs); node app/ui/js/check.mjs; git diff --check",
+      "exit_code": 0,
+      "log": "/tmp/deck-feedback-static.log",
+      "log_sha256": "d878cb6af4af63a74d61a1eacd1eaf4e39feff6849cd79bd5e3afb94e026f3f0",
+      "syntax_files": 161,
+      "modules": 62
+    },
+    {
+      "command": "cargo test --test ipc_contract --test edr_quiet --test log_privacy --test signal_census --test session_architecture",
+      "exit_code": 0,
+      "log": "/tmp/deck-feedback-native-contracts.log",
+      "log_sha256": "ba5e6de919e5ec32800a34da25ce6990f175075ff563329c50a12ba31c1d70b7",
+      "cwd": "app/src-tauri",
+      "passed": 55,
+      "failed": 0
+    },
+    {
+      "command": "DECK_SMOKE_DATA_DIR=<fresh tmp dir> DECK_SMOKE_TMUX_SOCKET=deck-smoke-settings-feedback-final-20261014 DECK_SMOKE_WKWEBVIEW=settings app/run.sh",
+      "exit_code": 0,
+      "log": "/tmp/deck-feedback-wk-launch-final.log",
+      "log_sha256": "2d2221f942514f1d008b8bce52573b0b257388e4af8ffdb11e5345897168fefa",
+      "sidecar_files": 5,
+      "frontend_files": 180,
+      "bundle_executable_files": 6
+    },
+    {
+      "command": "scripts/smoke-verdict /tmp/deck-settings-feedback-final.0Pe9i4 settings",
+      "exit_code": 0,
+      "log": "/tmp/deck-feedback-wk-verdict.log",
+      "log_sha256": "26fe2f5105fece9d58832504434a499c74eff3c4ef9a88e4a731ac46c5025377",
+      "checkpoints": 7,
+      "layout_cases": 32
+    },
+    {
+      "command": "python3 scripts/edr_runtime.py --cleanup --socket deck-smoke-settings-feedback-20261014",
+      "exit_code": 0,
+      "log": "/tmp/deck-feedback-wk-cleanup-first.log",
+      "log_sha256": "a88222099310ac559e8e77fe14b75e3eebf9a911531657ba2ab7d7fe51eb0671"
+    },
+    {
+      "command": "python3 scripts/edr_runtime.py --cleanup --socket deck-smoke-settings-feedback-final-20261014",
+      "exit_code": 0,
+      "log": "/tmp/deck-feedback-wk-cleanup-final.log",
+      "log_sha256": "e5c72f0de8347eac516204ea474bbc35007baff1a8f2b3cf42f9700cb8d06bd2"
+    },
+    {
+      "command": "python3 scripts/edr_runtime.py",
+      "exit_code": 0,
+      "log": "/tmp/deck-feedback-runtime-after.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "remaining_resources": 0
+    }
+  ],
+  "unrun": [
+    "full Rust workspace",
+    "fmt/clippy",
+    "remote CI",
+    "production or release Hooks configuration",
+    "signed install/update",
+    "Mac mini",
+    "Windows",
+    "real Agent integrations",
+    "VoiceOver spoken output"
+  ],
+  "limitations": [
+    "feedback persists across modal close/reopen only within this app process",
+    "native hook read/write failures and timeouts use mocked IPC in DOM tests",
+    "WK smoke uses a real native injected settings-save refusal in an isolated debug bundle"
+  ]
+}

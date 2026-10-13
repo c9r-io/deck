@@ -2386,6 +2386,19 @@ export async function verifySettings() {
     const { openSettings, selectSettingsSection } = await import('../js/settings.js');
     const { setLocale } = await import('../js/i18n.js');
     await openSettings();
+    // A real native save refusal must remain discoverable after closing.
+    // Keep its feedback present through every language/scale layout case.
+    const originalTheme = ctx.settings.theme;
+    $('set-theme').value = originalTheme === 'light' ? 'deck-dark' : 'light';
+    await inv('smoke_fault_set', { kind: 'settings-save', count: 1 });
+    await persistThemeChoice();
+    $('set-close').click();
+    $('settings-btn').click();
+    const feedback = document.querySelector('[data-setting-key="theme"]');
+    if (!feedback || feedback.dataset.phase !== 'failed' || feedback.hidden
+        || $('settings-issue-count').hidden || $('set-save-issues').hidden
+        || ctx.settings.theme !== originalTheme
+        || document.activeElement !== $('set-item-appearance')) throw new Error('settings feedback');
     const box = $('settings-box');
     box.style.width = '680px';
     box.style.height = '400px';
@@ -2402,7 +2415,10 @@ export async function verifySettings() {
           const frame = box.getBoundingClientRect();
           if (content.scrollWidth <= content.clientWidth + 1
               && footer.bottom <= frame.bottom && footer.top >= frame.top
-              && box.scrollHeight <= box.clientHeight + 1) passed++;
+              && box.scrollHeight <= box.clientHeight + 1
+              && $('set-save-summary').textContent.length > 0
+              && $('set-save-issues').getBoundingClientRect().right <= frame.right
+              && $('set-save-issues').getBoundingClientRect().bottom <= frame.bottom) passed++;
         }
       }
     }

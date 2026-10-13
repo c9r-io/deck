@@ -25,7 +25,7 @@
     <div class="side-list" id="side-list"></div>
     <button id="tmux-restart-btn"><span>⚠</span><span class="label" data-i18n="tmux.pendingShort">Shell service restart required</span></button>
     <button id="update-btn"><span>⬆</span><span class="label"></span></button>
-    <button class="side-new" id="settings-btn" title="Settings" data-i18n-title="app.settings"><span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="vertical-align:-2px"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v2.1M8 12.3v2.1M1.6 8h2.1M12.3 8h2.1M3.5 3.5l1.5 1.5M11 11l1.5 1.5M12.5 3.5 11 5M5 11l-1.5 1.5"/></svg></span><span class="label" data-i18n="app.settings">Settings</span></button>
+    <button class="side-new" id="settings-btn" title="Settings" data-i18n-title="app.settings"><span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="vertical-align:-2px"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v2.1M8 12.3v2.1M1.6 8h2.1M12.3 8h2.1M3.5 3.5l1.5 1.5M11 11l1.5 1.5M12.5 3.5 11 5M5 11l-1.5 1.5"/></svg></span><span class="label" data-i18n="app.settings">Settings</span><span id="settings-issue-count" hidden></span></button>
   </nav>
 
   <div id="main">
@@ -459,9 +459,13 @@
           <h2 id="set-heading-agents" data-i18n="settings.agents">Agents & notifications</h2>
           <div class="set-group" id="set-item-agent-status" data-setting-id="agent-status" tabindex="-1" role="group" aria-labelledby="set-item-agent-status-title">
             <h3 class="set-group-title" id="set-item-agent-status-title" data-i18n="settings.group.agentStatus">Agent status</h3>
+            <div class="set-read-feedback">
+              <span id="set-agent-status-read" role="status" aria-live="polite"></span>
+              <button class="btn" id="set-agent-status-retry" type="button" data-i18n="settings.readRetry" hidden>Retry reading</button>
+            </div>
             <div class="set-row">
               <label for="set-agent-hooks" data-i18n="settings.agentHooks">Claude Code</label>
-              <input type="checkbox" id="set-agent-hooks">
+              <input type="checkbox" id="set-agent-hooks" aria-describedby="set-agent-status-read" disabled>
             </div>
             <details class="set-details">
               <summary data-i18n="settings.details">Learn more</summary>
@@ -469,7 +473,7 @@
             </details>
             <div class="set-row">
               <label for="set-codex-hooks" data-i18n="settings.codexHooks">Codex</label>
-              <input type="checkbox" id="set-codex-hooks">
+              <input type="checkbox" id="set-codex-hooks" aria-describedby="set-agent-status-read" disabled>
             </div>
             <details class="set-details">
               <summary data-i18n="settings.details">Learn more</summary>
@@ -477,7 +481,7 @@
             </details>
             <div class="set-row">
               <label for="set-pi-hooks" data-i18n="settings.piSignal">Pi work status</label>
-              <input type="checkbox" id="set-pi-hooks">
+              <input type="checkbox" id="set-pi-hooks" aria-describedby="set-agent-status-read" disabled>
             </div>
             <div class="set-hint" id="set-pi-note" hidden></div>
             <details class="set-details">
@@ -486,7 +490,7 @@
             </details>
             <div class="set-row">
               <label for="set-pi-lifecycle" data-i18n="settings.piLifecycle">Pi session observation</label>
-              <input type="checkbox" id="set-pi-lifecycle">
+              <input type="checkbox" id="set-pi-lifecycle" aria-describedby="set-agent-status-read" disabled>
             </div>
             <details class="set-details">
               <summary data-i18n="settings.details">Learn more</summary>
@@ -494,9 +498,13 @@
             </details>
           </div>
           <div class="set-group" id="set-item-claude-reentry" data-setting-id="claude-reentry" tabindex="-1">
+            <div class="set-read-feedback">
+              <span id="set-claude-reentry-read" role="status" aria-live="polite"></span>
+              <button class="btn" id="set-claude-reentry-retry" type="button" data-i18n="settings.readRetry" hidden>Retry reading</button>
+            </div>
             <div class="set-row">
               <label for="set-claude-reentry" data-i18n="settings.claudeReentry">Claude session re-entry observation</label>
-              <input type="checkbox" id="set-claude-reentry">
+              <input type="checkbox" id="set-claude-reentry" aria-describedby="set-claude-reentry-read" disabled>
             </div>
             <details class="set-details">
               <summary data-i18n="settings.details">Learn more</summary>
@@ -642,7 +650,11 @@
       </div>
     </div>
     <div class="set-actions">
-      <span data-i18n="settings.immediate">Changes apply immediately</span>
+      <div class="set-save-overview">
+        <span data-i18n="settings.immediate">Changes save automatically. You can close Settings at any time.</span>
+        <span id="set-save-summary" role="status" aria-live="polite" aria-atomic="true"></span>
+        <button class="btn" id="set-save-issues" type="button" data-i18n="settings.checkChanges" hidden>Check changes</button>
+      </div>
       <button class="btn primary" id="set-close" data-i18n="common.done">Done</button>
     </div>
   </div>

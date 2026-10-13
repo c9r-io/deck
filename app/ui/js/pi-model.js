@@ -8,8 +8,8 @@
 // (the session-observation switch) and `pi_installation` (the state of
 // Deck's one entry in Pi's own settings file). All are derived from that
 // file by the backend; nothing here keeps
-// a copy, and a word this build does not know is no state at all: the switch
-// is then shown off and cannot be used. "Configured" is never shown as
+// a copy, and a word this build does not know is no state at all: the reduced
+// flags are false; settings.js shows a mixed, unusable switch. "Configured" is never shown as
 // "connected": whether a running Pi has loaded the observer is known only
 // per card, from the backend's `pi_signal`.
 // `piErrorKey` maps the closed refusal codes of the two setters to their own

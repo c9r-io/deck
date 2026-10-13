@@ -7,7 +7,21 @@
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
-## 本轮 Settings 提交一致性治理
+## 本轮 Settings 状态反馈治理
+
+基线 `9a3b855`；本轮实现与证据见
+[Settings 状态反馈治理](evidence/settings-feedback-governance-20261014/README.md)。
+Hooks 读取失败、超时和缺失/非法字段显示未知并禁用，读取重试不写配置；
+普通设置与 Hooks 保存/应用结果逐项显示，失败跨设置窗口关闭保留，侧栏提供数量与定位入口。
+反馈仅在当前应用进程内保留，未增加 schema 或授权来源。
+
+完整 UI gate 811 项、五组原生合约 55 项通过，语法/模块检查与 debug 构建来源复核通过。
+真实隔离 WKWebView 注入 native 保存失败，验证回滚、跨重开提示和定位；
+中英文、100%/160% 字号、8 个设置区共 32 组布局及 7/7 smoke 检查点通过。
+测试资源已按精确 socket 清理，最终 inventory 退出 0。真实 Hooks 写入、正式安装、完整 Rust
+workspace、fmt/clippy 与远端 CI 未执行；键盘入口、投递恢复和注意力布局仍留待后续轮次。
+
+## 上一轮 Settings 提交一致性治理
 
 基线 `ce872c1`；本轮工作树的修复、回归和本地验证见
 [Settings 提交一致性证据](evidence/settings-write-governance-20261014/README.md)。
@@ -64,7 +78,7 @@ release 二进制/来源检查通过。远端 CI、Rust llvm-cov、真实 GUI/�
 ## 治理停止边界
 
 前两轮分别拆 hooks 配置、收窄 channel head 证据表达和 Board 卡片展示职责。
-本轮只治理 Settings 写入、预览与失败回滚，不拆整个 settings 模块。
+上一轮治理 Settings 写入、预览与失败回滚；本轮补足其状态读取与保存反馈，不拆整个 settings 模块。
 Board 的 polling/lifecycle、其它来源的 JSON 授权消费、名称字符/字节兼容性和构建系统不在本轮范围。
 唯一 writer、副作用入口、恢复来源、撤销条件与锁顺序保持原状；以职责和依赖边界为验收依据，
 不以文件行数作为完成条件。第一方静态表继续保持窄接口，不扩成通用插件系统。

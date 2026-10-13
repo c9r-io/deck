@@ -7,6 +7,13 @@
 // fields when it reaches the writer. On settlement the visible settings are
 // rebuilt from the durable baseline and the remaining previews, so a failed
 // edit cannot hitchhike on another save or return through an older rollback.
+// Settings feedback is presentation only. Each setting keeps its latest
+// save/apply result beside its controls; failures survive closing Settings
+// until another edit of that setting or explicit dismissal. A quiet sidebar
+// count leads back to them. Closing never cancels a write or requires a click.
+// Hook reads have their own generation: pending/failed/malformed reads show
+// unknown, disabled controls, never "off". Retry only reads; successful
+// writes invalidate older reads and leave unrelated hook choices alone.
 // Explicit channel first-step decisions travel only with the editor's save.
 // Native canonical channel grants replace frontend copies after commit;
 // unrelated queued saves preserve that latest native result. A native
@@ -95,6 +102,73 @@ import { packStatus, packInstall, packDelete, unload } from './local-intelligenc
 /* ---------- settings ---------- */
 const SECTION_IDS = SETTINGS_SECTIONS.map(section => section.id);
 let activeSettingsSection = 'general';
+
+// Only controls in Settings get Settings feedback. Rule saves already have
+// their own editor/result path and do not become an account-level notice.
+const FEEDBACK_FIELDS = {
+  locale: ['language', 'settings.language'], editor: ['editor', 'settings.openFiles'],
+  theme: ['appearance', 'settings.theme'], font: ['appearance', 'settings.fontSize'],
+  channel: ['updates', 'settings.updateChannel'], restore: ['session-restore', 'settings.shellRecovery'],
+  notify: ['away-notifications', 'settings.group.awayNotifications'], voice: ['voice', 'settings.voice'],
+  'local-translation': ['local-translation', 'settings.localTranslation'],
+  'translation-limit': ['local-translation', 'settings.translationDocumentLimit'],
+  'shortcuts-reset': ['shortcuts', 'settings.shortcuts'],
+};
+const settingsFeedback = new Map();
+const feedbackRows = new Map();
+const feedbackFailed = entry => ['failed', 'apply-failed'].includes(entry.phase);
+function beginSettingsFeedback(key, field = FEEDBACK_FIELDS[key]) {
+  if (!field && key.startsWith('shortcut:')) field = ['shortcuts', `settings.shortcut.${key.slice(9)}`];
+  if (!field) return null;
+  const entry = { key, item: field[0], label: field[1], phase: 'saving', error: null };
+  settingsFeedback.set(key, entry);
+  renderSettingsFeedback();
+  return entry;
+}
+function finishSettingsFeedback(entry, phase, error = null) {
+  if (!entry || settingsFeedback.get(entry.key) !== entry) return;
+  entry.phase = phase; entry.error = error;
+  renderSettingsFeedback();
+}
+function renderSettingsFeedback() {
+  for (const [key, row] of feedbackRows) row.el.hidden = !settingsFeedback.has(key);
+  for (const entry of settingsFeedback.values()) {
+    let row = feedbackRows.get(entry.key);
+    if (!row) {
+      const el = document.createElement('div'); el.className = 'set-save-feedback'; el.dataset.settingKey = entry.key;
+      el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite'); el.setAttribute('aria-atomic', 'true');
+      const label = document.createElement('span'), status = document.createElement('span');
+      const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'btn';
+      dismiss.onclick = () => {
+        settingsFeedback.delete(entry.key); renderSettingsFeedback();
+        $('set-item-' + entry.item).focus({ preventScroll: true });
+      };
+      el.append(label, status, dismiss);
+      $('set-item-' + entry.item).appendChild(el);
+      row = { el, label, status, dismiss }; feedbackRows.set(entry.key, row);
+    }
+    row.el.hidden = false; row.el.dataset.phase = entry.phase;
+    row.label.textContent = t(entry.label);
+    row.status.textContent = t(entry.error || ({ saving: 'settings.saving', applying: 'settings.applying',
+      saved: 'settings.saved', 'apply-failed': 'error.settingApply' })[entry.phase]);
+    row.dismiss.hidden = !feedbackFailed(entry);
+    row.dismiss.textContent = t('settings.dismissFeedback');
+    row.dismiss.setAttribute('aria-label', t('settings.dismissNamed', { name: t(entry.label) }));
+  }
+  const entries = [...settingsFeedback.values()];
+  const failed = entries.filter(feedbackFailed);
+  const pending = entries.filter(entry => ['saving', 'applying'].includes(entry.phase));
+  $('set-save-summary').textContent = [
+    pending.length ? t('settings.pendingChanges', { count: formatNumber(pending.length) }) : '',
+    failed.length ? t('settings.failedChanges', { count: formatNumber(failed.length) }) : '',
+  ].filter(Boolean).join(' · ') || (entries.length ? t('settings.saved') : '');
+  $('set-save-issues').hidden = !failed.length;
+  $('set-save-issues').onclick = () => { if (failed[0]) locateSetting(failed[0].item); };
+  const badge = $('settings-issue-count'); badge.hidden = !failed.length;
+  badge.textContent = failed.length ? formatNumber(failed.length) : '';
+  badge.setAttribute('aria-label', t('settings.failedChanges', { count: formatNumber(failed.length) }));
+  badge.title = t('settings.failedChanges', { count: formatNumber(failed.length) });
+}
 
 export function filterSettings() {
   const results = searchSettings($('set-search').value, dictionaries);
@@ -424,6 +498,7 @@ async function commitSettings(choice) {
   const apply = choice.apply || (() => {});
   const onCommit = choice.onCommit || (() => {});
   const errorKey = choice.errorKey || 'error.settingSave';
+  const feedback = beginSettingsFeedback(key);
   // At rest ctx.settings is the settled projection (also the boot defaults
   // on first run). This never seeds the separate native authority baseline.
   if (!pendingChoices.size) committedSettings = normalizeSettings(structuredClone(ctx.settings));
@@ -455,11 +530,15 @@ async function commitSettings(choice) {
       if (saved) {
         // Effects receive the document this choice actually committed, even
         // while ctx.settings shows a newer pending preview of the same field.
+        if (choice.onCommit) finishSettingsFeedback(feedback, 'applying');
         await onCommit(saved);
+        finishSettingsFeedback(feedback, 'saved');
       } else if (failure !== WITHDRAWN && ![...pendingChoices].some(next => next.key === key)) {
+        finishSettingsFeedback(feedback, 'failed', errorKey);
         toast(t(errorKey)); uev('settings-save-fail');
       }
     } catch (_) {
+      finishSettingsFeedback(feedback, 'apply-failed');
       toast(t('error.settingApply')); uev('settings-save-fail');
     } finally {
       if (![...pendingChoices].some(next => next.key === key)) commitPending.delete(key);
@@ -542,6 +621,8 @@ export async function refreshEditors() {
 /* `target` optionally names { section, setting } to open at; anything else
    (including a click event) opens the section that was last active. */
 export async function openSettings(target) {
+  for (const [key, entry] of settingsFeedback) if (entry.phase === 'saved') settingsFeedback.delete(key);
+  renderSettingsFeedback();
   const setting = settingItem(target?.setting);
   const section = setting ? setting.section
     : isSettingsSection(target?.section) ? target.section : activeSettingsSection;
@@ -554,24 +635,7 @@ export async function openSettings(target) {
   $('set-session-restore').checked = !!ctx.settings.sessionRestore;
   renderNotifySettings();
   if (ctx.settings.notifyAway) inv('notify_status').then(renderNotifyStatus).catch(() => {});
-  $('set-agent-hooks').checked = false;
-  $('set-codex-hooks').checked = false;
-  $('set-claude-reentry').checked = false;
-  renderPiSettings(null);
-  agentHooksKnown = null;
-  renderNotifyDependency();
-  const hooksGeneration = ++agentHooksGeneration;
-  inv('agent_hooks_status')
-    .then(status => {
-      if (hooksGeneration !== agentHooksGeneration || !status || typeof status !== 'object') return;
-      $('set-agent-hooks').checked = !!(status && status.claude);
-      $('set-codex-hooks').checked = !!(status && status.codex);
-      $('set-claude-reentry').checked = !!status && status.claude_reentry === true;
-      renderPiSettings(status);
-      agentHooksKnown = { claude: status.claude === true, codex: status.codex === true };
-      renderNotifyDependency();
-    })
-    .catch(() => {});
+  refreshAgentHooks();
   renderFontScale();
   renderShortcutSettings();
   renderVoicePreferences();
@@ -706,55 +770,107 @@ let agentHooksPending = false;
 // { claude, codex } as last read or written; null while unknown.
 let agentHooksKnown = null;
 let agentHooksGeneration = 0;
+let hooksStatus = null;
+let hooksReading = false;
+// Bound a read without cancelling or repeating a native operation. A late
+// result belongs to the expired request and never updates the controls.
+async function readAgentHooksStatus() {
+  let timer;
+  try {
+    return await Promise.race([
+      inv('agent_hooks_status'),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('hooks-read-timeout')), 10000); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+function renderHooksReadState() {
+  for (const [id, field, pending] of [
+    ['set-agent-hooks', 'claude', agentHooksPending],
+    ['set-codex-hooks', 'codex', agentHooksPending],
+    ['set-claude-reentry', 'claude_reentry', claudeReentryPending],
+  ]) {
+    const box = $(id), known = !hooksReading && typeof hooksStatus?.[field] === 'boolean';
+    if (!pending) box.checked = known ? hooksStatus[field] : false;
+    box.indeterminate = !known;
+    box.disabled = pending || !known;
+  }
+  for (const [prefix, fields] of [['agent-status', ['claude', 'codex', 'pi', 'pi_lifecycle']], ['claude-reentry', ['claude_reentry']]]) {
+    const unknown = hooksReading || fields.some(field => typeof hooksStatus?.[field] !== 'boolean')
+      || (prefix === 'agent-status' && piSettingsView(hooksStatus).note === 'settings.pi.note.unknown');
+    $('set-' + prefix + '-read').textContent = unknown ? t(hooksReading ? 'settings.reading' : 'settings.readFailed') : '';
+    const retry = $('set-' + prefix + '-retry');
+    retry.hidden = !unknown;
+    retry.disabled = hooksReading || agentHooksPending || claudeReentryPending || piPending;
+  }
+  agentHooksKnown = !hooksReading && typeof hooksStatus?.claude === 'boolean' && typeof hooksStatus?.codex === 'boolean'
+    ? { claude: hooksStatus.claude, codex: hooksStatus.codex } : null;
+  renderNotifyDependency();
+  renderPiSettings(hooksReading ? null : hooksStatus);
+}
+async function refreshAgentHooks() {
+  if (agentHooksPending || claudeReentryPending || piPending) return;
+  const generation = ++agentHooksGeneration;
+  hooksReading = true; hooksStatus = null;
+  renderHooksReadState();
+  let status = null;
+  try { status = await readAgentHooksStatus(); } catch (_) { /* unknown is visible and retryable */ }
+  if (generation !== agentHooksGeneration) return;
+  hooksReading = false;
+  hooksStatus = status && typeof status === 'object' ? status : null;
+  renderHooksReadState();
+}
 function renderNotifyDependency() {
   $('set-notify-dependency').hidden = !notifyNeedsAgentStatus(agentHooksKnown);
 }
 export async function persistAgentHooksChoice(agent, boxId, confirmKey) {
-  if (agentHooksPending) return;
+  const field = agent === 'codex' ? 'codex' : 'claude';
+  if (agentHooksPending || hooksReading || typeof hooksStatus?.[field] !== 'boolean') return;
   const box = $(boxId);
+  const previous = hooksStatus[field], generation = agentHooksGeneration;
   const desired = box.checked;
   if (desired && !(await confirmDialog(t(confirmKey)))) {
     box.checked = false;
     return;
   }
+  if (agentHooksPending || generation !== agentHooksGeneration || hooksReading || typeof hooksStatus?.[field] !== 'boolean') return;
   agentHooksPending = true;
-  box.disabled = true;
+  ++agentHooksGeneration;
+  const feedback = beginSettingsFeedback('hook:' + field, ['agent-status', field === 'claude' ? 'settings.agentHooks' : 'settings.codexHooks']);
+  renderHooksReadState();
   try {
     await inv('agent_hooks_set', { agent, enable: desired });
-    if (agentHooksKnown) {
-      agentHooksKnown = { ...agentHooksKnown, [agent === 'codex' ? 'codex' : 'claude']: desired };
-      renderNotifyDependency();
-    }
+    hooksStatus = { ...hooksStatus, [field]: desired };
+    finishSettingsFeedback(feedback, 'saved');
     toast(t(agentHooksToastKey(desired, ctx.settings.notifyAway)));
   } catch (_) {
-    box.checked = !desired;
+    hooksStatus = { ...hooksStatus, [field]: previous };
+    finishSettingsFeedback(feedback, 'failed', 'error.agentHooks');
     toast(t('error.agentHooks'));
     uev('settings-save-fail');
   } finally {
     agentHooksPending = false;
-    box.disabled = false;
+    renderHooksReadState();
   }
 }
 
 /* Pi work status: the switch and the note under it, both from what the
    backend read in Pi's own settings file. `null` (not read yet, or a failed
-   read) shows the switch off and unusable, with no note. */
+   read) shows a mixed, unusable switch and an explicit unknown note. */
 let piPending = false;
-/* what the rows were last painted from: the note is a sentence, so a change
-   of language while Settings is open paints it again */
-let piShown = null;
 function renderPiSettings(status) {
-  piShown = status || null;
   const view = status ? piSettingsView(status) : { signal: false, lifecycle: false, usable: false, note: null };
   const box = $('set-pi-hooks');
-  box.checked = view.signal;
-  box.disabled = piPending || !view.usable;
+  if (!piPending) box.checked = view.signal;
+  box.indeterminate = typeof status?.pi !== 'boolean' || view.note === 'settings.pi.note.unknown';
+  box.disabled = piPending || !view.usable || box.indeterminate;
   const session = $('set-pi-lifecycle');
-  session.checked = view.lifecycle;
-  session.disabled = piPending || !view.usable;
+  if (!piPending) session.checked = view.lifecycle;
+  session.indeterminate = typeof status?.pi_lifecycle !== 'boolean' || view.note === 'settings.pi.note.unknown';
+  session.disabled = piPending || !view.usable || session.indeterminate;
   const note = $('set-pi-note');
-  note.hidden = !view.note;
-  note.textContent = view.note ? t(view.note) : '';
+  const noteKey = view.note || (!status ? (hooksReading ? 'settings.reading' : 'settings.readFailed') : null);
+  note.hidden = !noteKey;
+  note.textContent = noteKey ? t(noteKey) : '';
 }
 /* One of Pi's two switches. Each is its own choice with its own
    confirmation; both are one entry in Pi's settings file, so while one is
@@ -771,24 +887,35 @@ async function persistPiSwitch(which) {
   if (piPending) return;
   const spec = PI_SWITCHES[which];
   const box = $(spec.box);
-  const desired = box.checked;
+  if (hooksReading || box.disabled) return;
+  const desired = box.checked, generation = agentHooksGeneration;
   if (desired && !(await confirmDialog(t(spec.confirm)))) {
     box.checked = false;
     return;
   }
+  if (piPending || generation !== agentHooksGeneration || hooksReading || box.disabled) return;
   piPending = true;
+  ++agentHooksGeneration;
+  const feedback = beginSettingsFeedback('hook:pi-' + which, ['agent-status', which === 'signal' ? 'settings.piSignal' : 'settings.piLifecycle']);
   for (const each of Object.values(PI_SWITCHES)) $(each.box).disabled = true;
   try {
     await spec.write(desired);
+    finishSettingsFeedback(feedback, 'saved');
     toast(t(desired ? spec.on : spec.off));
   } catch (error) {
     box.checked = !desired;
-    toast(t(piErrorKey(typeof error === 'string' ? error : error?.message)));
+    const errorKey = piErrorKey(typeof error === 'string' ? error : error?.message);
+    finishSettingsFeedback(feedback, 'failed', errorKey);
+    toast(t(errorKey));
     uev('settings-save-fail');
   } finally {
+    // Read only Pi's fields back into the shared snapshot; unrelated switches
+    // retain their own settled observations even with a partial native reply.
+    let status = null;
+    try { status = await readAgentHooksStatus(); } catch (_) { /* shown as unknown */ }
+    hooksStatus = { ...hooksStatus, pi: status?.pi, pi_lifecycle: status?.pi_lifecycle, pi_installation: status?.pi_installation };
     piPending = false;
-    // the file is the truth: the switch and its note are read again
-    await inv('agent_hooks_status').then(renderPiSettings).catch(() => renderPiSettings(null));
+    renderHooksReadState();
   }
 }
 
@@ -797,25 +924,32 @@ async function persistPiSwitch(which) {
    is written by its own command; the agent-status switches never move it. */
 let claudeReentryPending = false;
 export async function persistClaudeReentryChoice() {
-  if (claudeReentryPending) return;
+  if (claudeReentryPending || hooksReading || typeof hooksStatus?.claude_reentry !== 'boolean') return;
+  const previous = hooksStatus.claude_reentry, generation = agentHooksGeneration;
   const box = $('set-claude-reentry');
   const desired = box.checked;
   if (desired && !(await confirmDialog(t('settings.claudeReentryEnableConfirm')))) {
     box.checked = false;
     return;
   }
+  if (claudeReentryPending || generation !== agentHooksGeneration || hooksReading || typeof hooksStatus?.claude_reentry !== 'boolean') return;
   claudeReentryPending = true;
-  box.disabled = true;
+  ++agentHooksGeneration;
+  const feedback = beginSettingsFeedback('hook:claude-reentry', ['claude-reentry', 'settings.claudeReentry']);
+  renderHooksReadState();
   try {
     await inv('agent_lifecycle_hooks_set', { enable: desired });
+    hooksStatus = { ...hooksStatus, claude_reentry: desired };
+    finishSettingsFeedback(feedback, 'saved');
     toast(t(desired ? 'settings.claudeReentryEnabled' : 'settings.claudeReentryDisabled'));
   } catch (_) {
-    box.checked = !desired;
+    hooksStatus = { ...hooksStatus, claude_reentry: previous };
+    finishSettingsFeedback(feedback, 'failed', 'error.agentHooks');
     toast(t('error.agentHooks'));
     uev('settings-save-fail');
   } finally {
     claudeReentryPending = false;
-    box.disabled = false;
+    renderHooksReadState();
   }
 }
 
@@ -1410,16 +1544,23 @@ export function initSettings() {
 
   registerShortcutAction('fontReset', () => setFontScale(1));
 
+  renderSettingsFeedback();
+  $('set-agent-status-retry').onclick = refreshAgentHooks;
+  $('set-claude-reentry-retry').onclick = refreshAgentHooks;
   onLocaleChange(() => {
+    renderSettingsFeedback();
     if ($('settings-modal').style.display === 'flex') {
       renderShortcutSettings();
       renderVoicePreferences();
-      renderPiSettings(piShown);
+      renderHooksReadState();
       filterSettings();
     }
   });
 
-  $('settings-btn').onclick = () => openSettings();
+  $('settings-btn').onclick = () => {
+    const failed = [...settingsFeedback.values()].find(feedbackFailed);
+    return openSettings(failed ? { setting: failed.item } : undefined);
+  };
   $('set-local-translation').onchange = async event => {
     if (event.target.checked) {
       await installTranslationPack(true);

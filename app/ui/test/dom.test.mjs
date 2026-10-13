@@ -1067,7 +1067,7 @@ test('the Pi work-status switch shows what Pi\'s settings say and writes through
     await openSettings();
     await tick(); await tick();
   };
-  // derived from the backend's two fields; an unread or unknown state is off and unusable
+  // Derived from native fields; unread controls are mixed, disabled, and explained.
   for (const [status, checked, disabled, said] of [
     [{ pi: false, pi_installation: 'absent' }, false, false, null],
     [{ pi: true, pi_installation: 'current' }, true, false, /already running follows when it next starts or reloads/],
@@ -1077,11 +1077,13 @@ test('the Pi work-status switch shows what Pi\'s settings say and writes through
     [{ pi: true, pi_installation: 'unsupported-location' }, true, true, /does not run from the Applications folder/],
     [{ pi: true, pi_installation: 'installed' }, false, true, /Pi status is unavailable/],
     [{ claude: true, codex: true, claude_reentry: true }, false, true, /Pi status is unavailable/],
-    [null, false, true, null],
+    [null, false, true, /Current state is unknown/],
   ]) {
     await open(status);
     assert.equal(pi.checked, checked, JSON.stringify(status));
     assert.equal(pi.disabled, disabled, JSON.stringify(status));
+    assert.equal(pi.indeterminate, status?.pi_installation === 'installed' || typeof status?.pi !== 'boolean',
+      'missing fields and unknown installation words are mixed, never a confirmed off state');
     assert.equal(note.hidden, said == null, JSON.stringify(status));
     if (said) assert.match(note.textContent, said);
     // "configured" is never shown as a connection
