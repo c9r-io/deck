@@ -5,7 +5,7 @@ globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null };
 const { ctx } = await import('../js/state.js');
 const { normalizeSettings } = await import('../js/settings-model.js');
-const { persistInbound, persistSettings, refreshChannelAuthority } = await import('../js/settings.js');
+const { persistInbound, setFontScale, refreshChannelAuthority } = await import('../js/settings.js');
 const rule = { id: 'R1', enabled: true, connectionId: 'default', channelIds: ['C1'], senderUserIds: ['U1'], senderBotIds: [],
   match: { kind: 'contains', value: 'incident' }, includeThreads: true, projectId: 'P1', columnId: 'C1',
   dir: '/tmp', cmd: 'claude', template: 'triage', idleMinutes: 30 };
@@ -22,7 +22,7 @@ test('explicit channel save accepts native canonical grant; unrelated save carri
   } } };
   assert.equal(await persistInbound({ ...ctx.settings.inbound, channelRules: [{ ...rule, firstSend: true }] }, [{ ruleId: 'R1', external: true }]), true);
   assert.equal(ctx.settings.inbound.channelRules[0].firstSendGrant.id, 'native-new');
-  await persistSettings();
+  await setFontScale(1.1);
   assert.deepEqual(calls[0].channelFirstSendRequests, [{ ruleId: 'R1', external: true }]);
   assert.equal(calls[1].channelFirstSendRequests, undefined);
   assert.equal(JSON.parse(calls[1].data).inbound.channelRules[0].firstSendGrant.id, 'native-new');

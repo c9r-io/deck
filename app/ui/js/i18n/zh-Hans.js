@@ -214,6 +214,8 @@ const dictionary = {
   'error.changeNotSaved': '更改未保存，已恢复原值',
   'error.settingsLoad': '无法载入设置，当前继续使用默认值',
   'error.settingsSave': '更新通道未能保存，已恢复之前的通道',
+  'error.settingSave': '设置未能保存，已恢复之前的值',
+  'error.settingApply': '设置已保存，但更改未能完全生效',
   'error.themeSave': '主题未能保存，已恢复之前的主题',
   'error.fontSave': '字号未能保存，已恢复之前的字号',
   'error.shortcutSave': '快捷键未能保存，已恢复之前的设置',

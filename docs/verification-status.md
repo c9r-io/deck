@@ -1,15 +1,28 @@
 # 当前验证索引
 
-更新：2026-10-13。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-10-14。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
-## 本轮 Board 与授权边界治理
+## 本轮 Settings 提交一致性治理
 
-基线 `e1bd78e`；本轮本地改动与命令结果见
+基线 `ce872c1`；本轮工作树的修复、回归和本地验证见
+[Settings 提交一致性证据](evidence/settings-write-governance-20261014/README.md)。
+每次写入只应用该操作的字段修改；失败后从已落盘状态和剩余预览重建界面。
+编辑器、语言和语音经过同一提交路径；原生语言更新在落盘后执行，生效失败不回滚已保存选择。
+
+新增 18 项 DOM 回归；完整 UI gate 804 项通过，原生 IPC/EDR/隐私/Signal/所有权合约
+55 项通过；debug 构建及 sidecar/frontend staging 来源检查通过。首次保存、规则撤销、
+原生 channel grant 保留的既有测试继续通过。实际保存和原生菜单调用在新用例中均由 mock 驱动；
+本轮未执行真实 WKWebView、用户配置、Slack/Agent 客户端、签名安装、远端 CI 或完整 Rust workspace。
+以上范围不能扩大上一轮原生认证；修改 IPC、schema 或授权语义时须重验相应原生场景。
+
+## 上一轮 Board 与授权边界治理
+
+基线 `e1bd78e`；该轮已提交为 `ce872c1`，改动与命令结果见
 [Board / authority 治理证据](evidence/board-authority-governance-20261013/README.md)。
 这是本地验证，不是该工作树的远端 CI 或原生重新认证。
 
@@ -50,8 +63,9 @@ release 二进制/来源检查通过。远端 CI、Rust llvm-cov、真实 GUI/�
 
 ## 治理停止边界
 
-上一轮只拆 hooks 配置；本轮只收窄 channel head 证据表达和一个 Board 卡片展示职责。
-Board 的 polling/lifecycle、其它来源的 JSON 授权消费、settings 大模块和构建系统仍不在本轮范围。
+前两轮分别拆 hooks 配置、收窄 channel head 证据表达和 Board 卡片展示职责。
+本轮只治理 Settings 写入、预览与失败回滚，不拆整个 settings 模块。
+Board 的 polling/lifecycle、其它来源的 JSON 授权消费、名称字符/字节兼容性和构建系统不在本轮范围。
 唯一 writer、副作用入口、恢复来源、撤销条件与锁顺序保持原状；以职责和依赖边界为验收依据，
 不以文件行数作为完成条件。第一方静态表继续保持窄接口，不扩成通用插件系统。
 

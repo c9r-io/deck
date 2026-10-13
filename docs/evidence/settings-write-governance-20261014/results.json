@@ -1,0 +1,119 @@
+{
+  "date": "2026-10-14",
+  "timezone": "Asia/Tokyo",
+  "baseline": "ce872c19dcd007603f46352d5396666652e5302d",
+  "snapshot": "uncommitted local working tree; hashes exclude this results file",
+  "environment": {
+    "node": "v24.19.0",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "macos": "27.0.1"
+  },
+  "files": {
+    "app/ui/js/settings.js": "7f9547a26042d31988706d01a464a19441271f971d97efe9b41c06d467bfe115",
+    "app/ui/js/voice-settings.js": "b86c6459e5915f3d5f1ff7066ef832a6f2707f3d2b8d10ae9136486418258ad7",
+    "app/ui/js/app.js": "b9c98a898952b9ec18929e38a2840f7f678e1b18095cc47ee68c173dfcdb929e",
+    "app/ui/js/i18n/en.js": "86339a65842026a978e229f6af84970c80e78eb58d9e05ae80c7d42d5d6ee1f0",
+    "app/ui/js/i18n/zh-Hans.js": "7403be5c3a703f08d17db792cf0d0d0cc1dae94386e24f07156121b217248571",
+    "app/ui/test/settings-write-dom.test.mjs": "8d3250de33e999ef7285527b01ce5b1eb852b623b01ebe8ff537f89ea252d948",
+    "app/ui/test/channel-settings-dom.test.mjs": "5747a30fa0160969836ea1efddfd84df37d0803416742d4279a474e3f57d5707",
+    "app/ui/test/channel-editor-race-dom.test.mjs": "df6029d96e9ba47016dd34f430af307e07af500579b0fcbd7ba993a476339f40",
+    "docs/verification-status.md": "f1a0a14e36f650778fef32a9ac6d055c012253eab0c283eac0d9fa3fb2d0bf51",
+    "docs/evidence/settings-write-governance-20261014/README.md": "1588162bd8693e926524624bc877e0514c7e2c387d75c921d4651429c9ce19fe"
+  },
+  "checks": [
+    {
+      "command": "scripts/ui-tests",
+      "exit_code": 0,
+      "passed": 804,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "coverage_percent": {
+        "lines": 94.38,
+        "branches": 89.66,
+        "functions": 87.25
+      },
+      "log": "/tmp/deck-settings-ui-final.log",
+      "log_sha256": "7547e98b1c6ca0d71b3015eb1bd71365211cd331079ad34a2c20f27cae8a76d7"
+    },
+    {
+      "command": "node --test app/ui/test/dom.test.mjs app/ui/test/settings-first-save-dom.test.mjs app/ui/test/channel-settings-dom.test.mjs app/ui/test/channel-editor-race-dom.test.mjs",
+      "exit_code": 0,
+      "passed": 100,
+      "scope": "earlier focused implementation check; final versions also covered by full gate",
+      "log": "/tmp/deck-settings-targeted.log",
+      "log_sha256": "32df6ad55bedb9ea41a317a68e4b404744ee291a49bdcc6d71ae36c259077dd7"
+    },
+    {
+      "command": "node --check (all app/ui/js/**/*.js and app/ui/test/**/*.mjs); node app/ui/js/check.mjs; git diff --check",
+      "exit_code": 0,
+      "syntax_files": 160,
+      "modules": 62,
+      "log": "/tmp/deck-settings-static.log",
+      "log_sha256": "5146f5a4dbdce117e3160799f0bf295e5f4fa4839d0606cd27cd96b4f38e0fdb"
+    },
+    {
+      "command": "cargo test --test ipc_contract --test edr_quiet --test log_privacy --test signal_census --test session_architecture",
+      "cwd": "app/src-tauri",
+      "exit_code": 0,
+      "passed": 55,
+      "failed": 0,
+      "ignored": 0,
+      "log": "/tmp/deck-settings-native-contracts.log",
+      "log_sha256": "367a0a7469b91dd986328b90bfca0e0faec165d28bad9adefdc49149e0a79dd1"
+    },
+    {
+      "command": "cargo build --bin deck-app",
+      "cwd": "app/src-tauri",
+      "exit_code": 0,
+      "log": "/tmp/deck-settings-build.log",
+      "log_sha256": "464c73ad8c8623c256eabfb3dd96362bdfba8de1653d8f2ad88ce4eb2d888417"
+    },
+    {
+      "command": "python3 scripts/sidecar_provenance.py check --profile debug --binaries --main-product app/src-tauri/target/debug/deck-app",
+      "exit_code": 0,
+      "checked_files": 5,
+      "log": "/tmp/deck-settings-provenance-final.log",
+      "log_sha256": "b03660f5a8c86610312abb7f98bd40e06a10b013d85fdc2e51b2120ea3b47b0b"
+    },
+    {
+      "command": "python3 scripts/sidecar_provenance.py staged --profile debug",
+      "exit_code": 0,
+      "staged_files": 179,
+      "log": "/tmp/deck-settings-staging.log",
+      "log_sha256": "df546612478d7c8d05afca44718fabbc11888622fb436d7fa0ef7238b485e15e"
+    },
+    {
+      "command": "node --test --test-name-pattern=\"theme failure followed by font success|two font edits: first fails, second fails\" test/settings-write-dom.test.mjs",
+      "scope": "isolated temporary copy of production modules; settings.js and voice-settings.js restored from baseline; temporary root removed after test",
+      "exit_code": 1,
+      "expected_exit_code": 1,
+      "passed": 0,
+      "failed": 2,
+      "cancelled": 0,
+      "log": "/tmp/deck-settings-red.log",
+      "log_sha256": "30a2c21e207b732e80d21650e34870272a1b029bbef8c6d3ce9cd6a7ea9118e6"
+    }
+  ],
+  "corrected_attempts": [
+    {
+      "check": "initial new DOM tests",
+      "result": "failed assertion left mock gate pending; exact test process stopped; added 5s per-test timeout and afterEach gate release, assertions preserved"
+    },
+    {
+      "command": "python3 scripts/sidecar_provenance.py check --profile debug",
+      "exit_code": 2,
+      "reason": "missing required target argument",
+      "log": "/tmp/deck-settings-provenance.log"
+    }
+  ],
+  "unrun": [
+    "real WKWebView/native menu",
+    "real user settings and production app",
+    "Mac mini and Windows",
+    "real Slack/Agent clients",
+    "full Rust workspace and fmt/clippy",
+    "release/signing/notarization/install/updater",
+    "remote CI"
+  ]
+}

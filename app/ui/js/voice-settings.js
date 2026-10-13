@@ -1,9 +1,8 @@
 // Voice preference controls own their render/save lock, while the shared
-// settings writer remains in dialogs.js. Commit before announcing changes;
+// settings writer remains in settings.js. Commit before announcing changes;
 // failed saves leave both the recorder and committed settings untouched.
 import { $, ctx } from './state.js';
 import { t } from './i18n.js';
-import { normalizeSettings } from './settings-model.js';
 import { normalizeVoicePreferences, VOICE_LANGUAGES, VOICE_LANGUAGE_NAMES } from './voice-preferences-model.js';
 
 export function createVoiceSettings(deps) {
@@ -44,9 +43,7 @@ export function createVoiceSettings(deps) {
     try {
       await deps.drain();
       controls.forEach(control => { control.disabled = true; });
-      const candidate = normalizeSettings({ ...ctx.settings, voice: value });
-      await deps.save(candidate);
-      ctx.settings = { ...ctx.settings, voice: candidate.voice };
+      if (!(await deps.save(normalizeVoicePreferences(value)))) return false;
       announceVoicePreferences();
       return true;
     } catch (_) {

@@ -20,7 +20,7 @@ const { initAutomation, openAutomations, openEditor } = await import('../js/auto
 const { provider } = await import('../js/board.js');
 const { ctx, state, store } = await import('../js/state.js');
 const { normalizeSettings, serializeSettings } = await import('../js/settings-model.js');
-const { persistInbound, persistSettings, refreshChannelAuthority, setFontScale, setShortcut } = await import('../js/settings.js');
+const { persistInbound, refreshChannelAuthority, setFontScale, setShortcut } = await import('../js/settings.js');
 const get = id => fakeDocument.getElementById(id);
 /* the list is repainted from nothing, as in a browser */
 Object.defineProperty(get('auto-list'), 'innerHTML', { get: () => '', set(value) { if (!value) this.children = []; } });
@@ -238,7 +238,7 @@ test('the next save is still cancelable after an older save\'s answer arrived', 
 test('a save queued behind another settings write is not written once its edit is gone', async () => {
   const held = deferred();
   const { calls, saves, before } = await scene([OTHERS.clock], { prepare: [() => VERIFIED], gates: [held] });
-  const unrelated = persistSettings();                 // an unrelated write occupies the writer
+  const unrelated = setFontScale(ctx.settings.fontScale === 1 ? 1.1 : 1); // an unrelated write occupies the writer
   await turn();
   assert.equal(saves.length, 1);
   const { done: saving } = await saveWaiting();                  // the identity answers at once: A is queued behind it

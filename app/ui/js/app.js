@@ -30,7 +30,6 @@ import { initInputSource } from './input-source.js';
 import { cancelTerminalSelection } from './selection.js';
 import { closeManagedForRestart, managedBlockers } from './restart-managed.js';
 import { initTranslationLens } from './translation-lens.js';
-import { persistSettings } from './settings.js';
 import { afterManagedClose, awaitReentryResult, reentryRequest, responseLost, restartOutcome } from './reentry-model.js';
 import {
   currentReentryPlan, initReentry, lockReentry, reentryConfirmLabel, reentryResultShown, refreshReentry,

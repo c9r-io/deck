@@ -215,6 +215,8 @@ const dictionary = {
   'error.changeNotSaved': 'change was not saved; the original value was restored',
   'error.settingsLoad': 'settings could not be loaded; defaults remain active',
   'error.settingsSave': 'update channel was not saved; the previous channel was restored',
+  'error.settingSave': 'setting was not saved; the previous value was restored',
+  'error.settingApply': 'setting saved, but the change could not be fully applied',
   'error.themeSave': 'theme was not saved; the previous theme was restored',
   'error.fontSave': 'font size was not saved; the previous size was restored',
   'error.shortcutSave': 'shortcuts were not saved; the previous shortcuts were restored',

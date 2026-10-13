@@ -2,8 +2,11 @@
 // theme/locale/update channel/session restore/agent hooks, inbound (Slack
 // badge + channel) connection, capability upgrade and Keychain secrets, Phone Connector and MCP settings,
 // logs, the settings writer every choice goes through and the ONE commit
-// shape (`commitSettings`: candidate first, rollback on failure) behind
-// every optimistic choice.
+// shape (`commitSettings`: field edit over the last durable settings) behind
+// every choice. Pending edits are previews only: each write rebases its own
+// fields when it reaches the writer. On settlement the visible settings are
+// rebuilt from the durable baseline and the remaining previews, so a failed
+// edit cannot hitchhike on another save or return through an older rollback.
 // Explicit channel first-step decisions travel only with the editor's save.
 // Native canonical channel grants replace frontend copies after commit;
 // unrelated queued saves preserve that latest native result. A native
@@ -20,8 +23,8 @@
 // writes its own change over the automations last known to be in the file
 // (`committedInbound`), never over the copy it was built with: it carries
 // no rule save that did not land, loses none that landed while it waited,
-// and asks for no permission. One that fails puts back the settings from
-// before it with that baseline's automations, so a rule save that landed
+// and asks for no permission. One that fails drops only its own preview,
+// retaining that baseline's automations, so a rule save that landed
 // while it waited stays in memory and in the next rule save, and a choice
 // or permission that save withdrew stays withdrawn. That baseline is told by the launch's
 // `loadSettings` (the file as loaded; a backup as native hands it over,
@@ -68,7 +71,7 @@
 // update checks) so this module never imports app.js back.
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, ctx, emit, inv, listen, store, uev } from './state.js';
-import { applyTranslations, dictionaries, formatDateTime, formatNumber, getLocale, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
+import { applyTranslations, dictionaries, formatDateTime, formatNumber, getLocale, onLocaleChange, resolveLocale, setLocale, t, translateNotice } from './i18n.js';
 import {
   CUSTOMIZABLE_SHORTCUT_ACTIONS, FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP, SHORTCUT_ACTIONS,
   normalizeSettings, parseSettings, serializeSettings,
@@ -181,10 +184,8 @@ async function refreshTranslationPack() {
   try { translationPack = await packStatus(); renderLocalTranslationSettings(); }
   catch { translationPack = null; $('set-translation-pack-status').textContent = t('settings.translationPackState.unavailable'); }
 }
-function translationChoice(enabled, documentLimitBytes) {
-  return normalizeSettings({ ...ctx.settings, localIntelligence: { translation: {
-    ...ctx.settings.localIntelligence.translation, enabled, documentLimitBytes,
-  } } });
+function translationChoice(patch) {
+  return settings => { Object.assign(settings.localIntelligence.translation, patch); };
 }
 async function saveTranslationEnabled(enabled) {
   const current = ctx.settings.localIntelligence.translation.enabled;
@@ -195,7 +196,7 @@ async function saveTranslationEnabled(enabled) {
     catch { toast(t('settings.translationUnloadFailed')); renderLocalTranslationSettings(); return false; }
   }
   const ok = await commitSettings({ key: 'local-translation', exclusive: true,
-    candidate: translationChoice(enabled, ctx.settings.localIntelligence.translation.documentLimitBytes),
+    edit: translationChoice({ enabled }),
     locked: ['set-local-translation', 'set-translation-download', 'set-translation-delete'],
     apply: renderLocalTranslationSettings,
     onCommit: () => window.dispatchEvent(new Event('deck-translation-enabled-changed')),
@@ -306,6 +307,7 @@ export function refreshChannelAuthority() {
     if (!loaded?.data) return;
     const canonical = parseSettings(loaded.data);
     fileHolds(canonical.inbound);
+    if (committedSettings) committedSettings.inbound = structuredClone(canonical.inbound);
     Object.assign(ctx.settings.inbound, structuredClone(nativeChannelSettings));
     emit('channel-authority');
   });
@@ -313,35 +315,25 @@ export function refreshChannelAuthority() {
   return operation;
 }
 const WITHDRAWN = Object.freeze({ withdrawn: true });   // what a write its owner gave up is rejected with
-function saveSettingsCandidate(candidate, { channelFirstSendRequests = [], channelIntent = false, proceed = null } = {}) {
-  const operation = settingsWriteChain.catch(() => {}).then(async () => {
-    if (proceed && !proceed()) throw WITHDRAWN;
-    // A save of another setting has no say over the automations: it writes
-    // the ones in the file, whatever was in memory when it was built.
-    // Unrelated queued settings saves must not restore a stale grant or
-    // accidentally withdraw one that an earlier explicit save just issued.
-    if (!channelIntent && committedInbound) candidate.inbound = structuredClone(committedInbound);
-    if (!channelIntent && nativeChannelSettings) Object.assign(candidate.inbound, structuredClone(nativeChannelSettings));
-    const saved = await inv('save_settings', { data: serializeSettings(candidate),
-      ...(channelFirstSendRequests.length ? { channelFirstSendRequests } : {}) });
-    if (typeof saved === 'string') {
-      const canonical = normalizeSettings(JSON.parse(saved));
-      fileHolds(canonical.inbound);
-      Object.assign(candidate.inbound, structuredClone(nativeChannelSettings));
-      if (ctx.settings !== candidate) Object.assign(ctx.settings.inbound, structuredClone(nativeChannelSettings));
-    } else committedInbound = structuredClone(candidate.inbound);
-    return saved;
-  });
-  settingsWriteChain = operation;
-  return operation;
-}
-
-export function persistSettings() {
-  return saveSettingsCandidate(ctx.settings).catch(() => uev('settings-save-fail'));
+async function writeSettingsCandidate(candidate, { channelFirstSendRequests = [], channelIntent = false } = {}) {
+  // Ordinary edits cannot carry a pending rule or replace native grants.
+  if (!channelIntent && committedInbound) candidate.inbound = structuredClone(committedInbound);
+  if (!channelIntent && nativeChannelSettings) Object.assign(candidate.inbound, structuredClone(nativeChannelSettings));
+  const saved = await inv('save_settings', { data: serializeSettings(candidate),
+    ...(channelFirstSendRequests.length ? { channelFirstSendRequests } : {}) });
+  if (typeof saved === 'string') {
+    const canonical = normalizeSettings(JSON.parse(saved));
+    fileHolds(canonical.inbound);
+    return canonical;
+  }
+  fileHolds(candidate.inbound);
+  return candidate;
 }
 
 const voiceSettings = createVoiceSettings({
-  drain: () => settingsWriteChain.catch(() => {}), save: saveSettingsCandidate,
+  drain: () => settingsWriteChain.catch(() => {}),
+  save: voice => commitSettings({ key: 'voice', preview: false,
+    edit: settings => { settings.voice = structuredClone(voice); }, errorKey: 'settings.voiceSaveFailed' }),
   failed: () => { toast(t('settings.voiceSaveFailed')); uev('settings-save-fail'); },
 });
 const { render: renderVoicePreferences, save: persistVoicePreferences, announce: announceVoicePreferences } = voiceSettings;
@@ -409,70 +401,82 @@ function announceShortcutChange() {
   }
 }
 
-/* The ONE commit shape for a settings choice; every writer above goes through
-   it. `candidate` replaces ctx.settings at once so a concurrent write of
-   another field carries it; `apply` renders a settings object (called with
-   the candidate now and with the previous settings if the write fails);
-   `locked` controls are disabled until the write settles; `onCommit` runs
-   only after the durable write. A newer write of the same `key` supersedes
-   an older one's rollback; `exclusive` refuses re-entry while that key is
-   pending. `proceed` (optional) is asked when the writer reaches this write:
-   a no withdraws it without an error. A choice with `proceed` is shown and
-   shared only once its write landed: until then ctx.settings does not hold
-   it, so a write that is withdrawn or fails has nothing to take back, and
-   then only its own field is put in, in place. A choice that fails takes its
-   own change back and never an automation the file holds: the settings put
-   back carry the writer's baseline, not the copy from before the choice.
-   Resolves true when the write landed. */
-const commitGenerations = new Map();
+/* Each choice edits only the fields it owns. The edit is replayable and
+   contains captured values, never reads controls or ctx.settings. Writes run
+   over the last successful document; previews run over that document plus
+   every still-pending optimistic edit in order. No pending choice is another
+   write's baseline. `proceed` choices (rules) and preview:false choices (voice)
+   remain invisible until durable. Native authority retains its separate file
+   baseline above. Post-commit effects share the writer's ordering, but their
+   failure cannot roll back a document that was already written. */
+let committedSettings = null;
+const pendingChoices = new Set();
 const commitPending = new Set();
+const controlLocks = new Map();
+function projectSettings() {
+  const visible = structuredClone(committedSettings);
+  for (const choice of pendingChoices) if (!choice.held) choice.edit(visible);
+  ctx.settings = normalizeSettings(visible);
+}
 async function commitSettings(choice) {
-  const { key, candidate, exclusive } = choice;
+  const { key, exclusive } = choice;
+  if (exclusive && commitPending.has(key)) return false;
   const apply = choice.apply || (() => {});
   const onCommit = choice.onCommit || (() => {});
-  const locked = choice.locked || [];
-  const errorKey = choice.errorKey || 'error.settingsSave';
-  if (exclusive && commitPending.has(key)) return false;
-  const generation = (commitGenerations.get(key) || 0) + 1;
-  commitGenerations.set(key, generation);
+  const errorKey = choice.errorKey || 'error.settingSave';
+  // At rest ctx.settings is the settled projection (also the boot defaults
+  // on first run). This never seeds the separate native authority baseline.
+  if (!pendingChoices.size) committedSettings = normalizeSettings(structuredClone(ctx.settings));
+  const pending = { ...choice, held: !!choice.proceed || choice.preview === false };
+  pendingChoices.add(pending);
   commitPending.add(key);
-  const previous = ctx.settings;
-  const controls = locked.map($);
-  controls.forEach(control => { control.disabled = true; });
-  const held = !!choice.proceed;   // kept out of ctx.settings until its write landed
-  if (!held) { ctx.settings = candidate; apply(candidate); }
-  try {
-    await saveSettingsCandidate(candidate, { channelIntent: key === 'inbound',
-      channelFirstSendRequests: choice.channelFirstSendRequests || [], proceed: choice.proceed || null });
-    if (held) {
-      /* only this choice's own field, in place: saves of other fields made
-         meanwhile keep what they changed */
-      ctx.settings[key] = structuredClone(candidate[key]);
-      apply(ctx.settings);
-    }
-    await onCommit(candidate);
-    return true;
-  } catch (error) {
-    if (error === WITHDRAWN) return false;   // never shown, never shared: nothing to put back
-    if (held) {
-      toast(t(errorKey));
-      uev('settings-save-fail');
-    } else if (generation === commitGenerations.get(key)) {
-      /* the settings from before this choice, with the automations the file
-         holds now: `previous` may be older than a rule save that landed
-         while this one waited, and the next rule save is built on these */
-      ctx.settings = committedInbound ? { ...previous, inbound: structuredClone(committedInbound) } : previous;
-      apply(ctx.settings);
-      toast(t(errorKey));
-      uev('settings-save-fail');
-    }
-    return false;
-  } finally {
-    if (generation === commitGenerations.get(key)) {
-      commitPending.delete(key);
-      controls.forEach(control => { control.disabled = false; });
-    }
+  const controls = (choice.locked || []).map($);
+  for (const control of controls) {
+    controlLocks.set(control, (controlLocks.get(control) || 0) + 1);
+    control.disabled = true;
   }
+  if (!pending.held) { projectSettings(); apply(ctx.settings); }
+  for (const control of controlLocks.keys()) control.disabled = true;
+  const operation = settingsWriteChain.catch(() => {}).then(async () => {
+    let saved = null, failure = null;
+    try {
+      if (choice.proceed && !choice.proceed()) throw WITHDRAWN;
+      const candidate = structuredClone(committedSettings);
+      choice.edit(candidate);
+      saved = await writeSettingsCandidate(normalizeSettings(candidate), { channelIntent: key === 'inbound',
+        channelFirstSendRequests: choice.channelFirstSendRequests || [] });
+      committedSettings = saved;
+    } catch (error) { failure = error; }
+    pendingChoices.delete(pending);
+    projectSettings();
+    apply(ctx.settings);
+    for (const control of controlLocks.keys()) control.disabled = true;
+    try {
+      if (saved) {
+        // Effects receive the document this choice actually committed, even
+        // while ctx.settings shows a newer pending preview of the same field.
+        await onCommit(saved);
+      } else if (failure !== WITHDRAWN && ![...pendingChoices].some(next => next.key === key)) {
+        toast(t(errorKey)); uev('settings-save-fail');
+      }
+    } catch (_) {
+      toast(t('error.settingApply')); uev('settings-save-fail');
+    } finally {
+      if (![...pendingChoices].some(next => next.key === key)) commitPending.delete(key);
+      for (const control of controls) {
+        const count = controlLocks.get(control) - 1;
+        if (count) controlLocks.set(control, count);
+        else { controlLocks.delete(control); control.disabled = false; }
+      }
+      // Released controls can have semantic disabled states (notifications
+      // off). Choices with no locks need no second rendering or status read.
+      if (controls.length) apply(ctx.settings);
+      for (const control of controlLocks.keys()) control.disabled = true;
+    }
+    return !!saved;
+  });
+  settingsWriteChain = operation;
+  return operation;
 }
 const GENERAL_CONTROLS = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-session-restore'];
 
@@ -482,27 +486,30 @@ export async function setFontScale(value) {
   const candidate = normalizeSettings({ ...ctx.settings, fontScale: bounded });
   if (candidate.fontScale === ctx.settings.fontScale) return;
   await commitSettings({
-    key: 'font', candidate, errorKey: 'error.fontSave',
+    key: 'font', edit: settings => { settings.fontScale = candidate.fontScale; }, errorKey: 'error.fontSave',
     apply: settings => { applyFontScale(settings.fontScale); renderFontScale(); },
   });
 }
 
-const commitShortcuts = candidate => commitSettings({
-  key: 'shortcuts', candidate, errorKey: 'error.shortcutSave',
+const commitShortcuts = (key, edit) => commitSettings({
+  key, edit, errorKey: 'error.shortcutSave',
   apply: () => { renderShortcutSettings(); announceShortcutChange(); },
 });
 
 export async function setShortcut(actionId, binding) {
-  await commitShortcuts(normalizeSettings({
+  const candidate = normalizeSettings({
     ...ctx.settings, shortcuts: { ...ctx.settings.shortcuts, [actionId]: binding },
-  }));
+  });
+  await commitShortcuts(`shortcut:${actionId}`, settings => { settings.shortcuts[actionId] = candidate.shortcuts[actionId]; });
 }
 
 export async function resetShortcuts() {
   const known = new Set(SHORTCUT_ACTIONS.map(action => action.id));
-  const extensions = Object.fromEntries(Object.entries(ctx.settings.shortcuts)
-    .filter(([actionId]) => !known.has(actionId)));
-  await commitShortcuts(normalizeSettings({ ...ctx.settings, shortcuts: extensions }));
+  await commitShortcuts('shortcuts-reset', settings => {
+    settings.shortcuts = Object.fromEntries(Object.entries(settings.shortcuts)
+      .filter(([actionId]) => !known.has(actionId)));
+    settings.shortcuts = normalizeSettings(settings).shortcuts;
+  });
 }
 
 // Editor names from the last detection; null until one has answered, so a
@@ -592,7 +599,8 @@ export async function persistThemeChoice() {
     accent: $('set-accent').value,
   });
   await commitSettings({
-    key: 'theme', candidate, exclusive: true, locked: GENERAL_CONTROLS, errorKey: 'error.themeSave',
+    key: 'theme', edit: settings => { settings.theme = candidate.theme; settings.accent = candidate.accent; },
+    exclusive: true, locked: GENERAL_CONTROLS, errorKey: 'error.themeSave',
     // immediate preview; a failed save shows the previous palette again
     apply: settings => {
       activateTheme(settings);
@@ -614,8 +622,8 @@ export async function persistUpdateChannelChoice() {
     }
   }
   await commitSettings({
-    key: 'channel', candidate: normalizeSettings({ ...ctx.settings, updateChannel: desired }),
-    exclusive: true, locked: GENERAL_CONTROLS,
+    key: 'channel', edit: settings => { settings.updateChannel = desired; },
+    exclusive: true, locked: GENERAL_CONTROLS, errorKey: 'error.settingsSave',
     apply: settings => { $('set-channel').value = settings.updateChannel || 'stable'; },
     onCommit: settings => {
       toast(t(settings.updateChannel === 'nightly'
@@ -639,7 +647,7 @@ export async function persistSessionRestoreChoice() {
     }
   }
   await commitSettings({
-    key: 'restore', candidate: normalizeSettings({ ...ctx.settings, sessionRestore: desired }),
+    key: 'restore', edit: settings => { settings.sessionRestore = desired; },
     exclusive: true, locked: ['set-session-restore', 'set-clear-shell'], errorKey: 'error.restoreSave',
     apply: settings => { $('set-session-restore').checked = !!settings.sessionRestore; },
     // The privacy preference persists first. A failed disable keeps the old
@@ -679,7 +687,8 @@ async function persistNotifyChoice() {
     notifySound: $('set-notify-away').checked && $('set-notify-sound').checked,
   });
   await commitSettings({
-    key: 'notify', candidate, locked: ['set-notify-away', 'set-notify-sound'],
+    key: 'notify', edit: settings => { settings.notifyAway = candidate.notifyAway; settings.notifySound = candidate.notifySound; },
+    locked: ['set-notify-away', 'set-notify-sound'],
     apply: settings => renderNotifySettings(settings),
     onCommit: async settings => {
       const status = await inv('notify_configure', {
@@ -1111,9 +1120,10 @@ async function renderTunnelForClient(client, row, actions) {
 /* One durable write for every rule/source change; a failed save leaves the
    previous settings visible instead of a rule the poller never learned. */
 export function persistInbound(inbound, channelFirstSendRequests = [], { proceed = null } = {}) {
+  const value = structuredClone(inbound);
   return commitSettings({
     proceed,
-    key: 'inbound', candidate: normalizeSettings({ ...ctx.settings, inbound }),
+    key: 'inbound', edit: settings => { settings.inbound = structuredClone(value); },
     exclusive: true, errorKey: 'error.inboundSave',
     channelFirstSendRequests,
     apply: () => renderInboundSettings(),
@@ -1422,7 +1432,7 @@ export function initSettings() {
     const documentLimitBytes = Number(event.target.value);
     if (![8192, 16384].includes(documentLimitBytes)) { renderLocalTranslationSettings(); return; }
     await commitSettings({ key: 'translation-limit', exclusive: true,
-      candidate: translationChoice(ctx.settings.localIntelligence.translation.enabled, documentLimitBytes),
+      edit: translationChoice({ documentLimitBytes }),
       locked: ['set-translation-document-limit'], apply: renderLocalTranslationSettings });
     renderLocalTranslationSettings();
   };
@@ -1441,19 +1451,25 @@ export function initSettings() {
   });
 
   $('set-editor').onchange = () => {
-    ctx.settings.editor = $('set-editor').value;
-    persistSettings();
-    toast(ctx.settings.editor ? t('settings.editorSelected', { editor: ctx.settings.editor }) : t('settings.editorSystem'));
+    const editor = $('set-editor').value;
+    return commitSettings({ key: 'editor', edit: settings => { settings.editor = editor; },
+      apply: renderEditorOptions,
+      onCommit: settings => toast(settings.editor ? t('settings.editorSelected', { editor: settings.editor }) : t('settings.editorSystem')),
+    });
   };
 
   $('set-locale').onchange = () => {
-    ctx.settings.locale = $('set-locale').value;
-    setLocale(ctx.settings.locale);
-    applyTranslations();
-    const firstEditor = $('set-editor').options && $('set-editor').options[0];
-    if (firstEditor && firstEditor.value === '') firstEditor.textContent = t('settings.systemEditor');
-    inv('set_native_locale', { locale: getLocale() }).catch(() => {});
-    persistSettings();
+    const locale = $('set-locale').value;
+    return commitSettings({ key: 'locale', edit: settings => { settings.locale = locale; },
+      apply: settings => {
+        $('set-locale').value = settings.locale;
+        setLocale(settings.locale);
+        applyTranslations();
+        const firstEditor = $('set-editor').options && $('set-editor').options[0];
+        if (firstEditor && firstEditor.value === '') firstEditor.textContent = t('settings.systemEditor');
+      },
+      onCommit: settings => inv('set_native_locale', { locale: resolveLocale(settings.locale) }),
+    });
   };
 
   $('set-theme').onchange = () => persistThemeChoice();
