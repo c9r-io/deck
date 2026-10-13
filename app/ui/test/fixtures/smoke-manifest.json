@@ -399,6 +399,7 @@
         "attention-attach-fail": {},
         "attention-attach-pending": {},
         "attention-board": {},
+        "attention-navigation": { "a": 18, "b": 0 },
         "attention-exit-before-reply": {},
         "attention-exit-generation": {},
         "attention-fixture": {},

@@ -81,6 +81,7 @@ textarea.inline-multiline::placeholder, .q-add textarea::placeholder,
 }
 .side-list { overflow-y: auto; flex: 1; padding-bottom: 8px; }
 .side-item {
+  position: relative;
   display: flex; align-items: center; gap: 8px;
   margin: 1px 10px; padding: 6px 10px;
   border-radius: 6px; cursor: pointer; color: var(--text); white-space: nowrap;
@@ -124,7 +125,7 @@ body.side-collapsed .side-home { justify-content: center; padding: 7px 0; margin
 body.side-collapsed .side-home .label { display: none; }
 body.side-collapsed .side-group { display: none; }
 body.side-collapsed .side-item { justify-content: center; padding: 8px 0; margin: 1px 8px; }
-body.side-collapsed .side-item .name, body.side-collapsed .side-item .card-reminder, body.side-collapsed .side-board-group, body.side-collapsed .side-empty { display: none; }
+body.side-collapsed .side-item .card-reminder, body.side-collapsed .side-board-group, body.side-collapsed .side-empty { display: none; }
 body.side-collapsed .side-new { padding: 8px 0; margin: 8px; }
 body.side-collapsed .side-new .label { display: none; }
 
@@ -288,7 +289,14 @@ body.side-collapsed .side-new .label { display: none; }
 .card.attention { border-color: var(--attn-border); }
 .card.attention:hover { border-color: var(--attn-border-hover); }
 .card.dragging { opacity: 0.45; }
-.card-top { display: flex; align-items: center; gap: 8px; }
+/* The badge owns a reserved second line: neither a long badge nor 160% text
+   can collapse the native title button, and status changes never resize cards. */
+.card-top { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto auto; grid-template-rows: auto 1.3em; align-items: center; gap: 4px 8px; }
+.card-top > .dot { grid-column: 1; grid-row: 1; }
+.card-top > .card-title { grid-column: 2; grid-row: 1; }
+.card-top > .card-pin { grid-column: 3; grid-row: 1; }
+.card-top > .card-x { grid-column: 4; grid-row: 1; }
+.card-top > .card-attention-badge { grid-column: 1 / -1; grid-row: 2; justify-self: start; max-width: 100%; }
 .card-title { font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* needs input / ended unread: bounded and shorter than the row, so the
    title still truncates and a card never changes height when it appears */
@@ -311,7 +319,7 @@ body.side-collapsed .side-new .label { display: none; }
   flex: none; padding: 1px 5px; border-radius: 4px;
   font-size: 0.923077rem; line-height: 1; color: transparent;
 }
-.card:hover .card-x { color: var(--faint); }
+.card:hover .card-x, .card:focus-within .card-x { color: var(--faint); }
 .card-x:hover { color: var(--danger) !important; background: var(--hover); }
 .mem-chip {
   font-family: var(--mono); font-size: 0.769231rem; color: var(--faint);
@@ -1309,3 +1317,10 @@ ul.help-list.opt-note { margin: 0 0 8px 22px; font-size: 0.846154rem; }
 .q-plan-details p { margin: 6px 0; line-height: 1.5; }
 #reminder-note-feedback { margin: 0; font-size: 0.884615rem; color: var(--muted); }
 #reminder-note-feedback.reminder-note-over { color: var(--wait); }
+
+/* Native navigation targets retain the existing card/row geometry. */
+.card-open, .side-open, .project-open { padding: 0; text-align: left; min-width: 0; }
+.card-open:focus-visible, .side-open:focus-visible, .project-open:focus-visible { outline-offset: 2px; border-radius: 2px; }
+body.side-collapsed .side-item .side-open { position: absolute; inset: 0; font-size: 0; }
+#board-attention-back { flex: none; }
+#board-attention-back[hidden] { display: none; }

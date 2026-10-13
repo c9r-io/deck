@@ -3,8 +3,8 @@
 // have empty commands under the fresh smoke data dir/socket. No agent hooks.
 // Leaves the approved fixture in the real UI for implementation screenshots.
 export async function runAttentionSmoke() {
-  const { $, ctx, inv, state, store } = await import('../js/state.js');
-  const { provider, render, pollNow, stopPolling, panes } = await import('../js/board.js');
+  const { $, ctx, emit, inv, state, store } = await import('../js/state.js');
+  const { provider, render, renderBoard, renderSidebar, renderTabs, pollNow, stopPolling, panes } = await import('../js/board.js');
   const { mutateBoard, boardData } = await import('../js/persistence.js');
   const { openSession, backToBoard, addSplit, leaveSessionView } = await import('../js/layout.js');
   const { showAttention, openAttentionCard, refreshAttention } = await import('../js/attention.js');
@@ -223,7 +223,7 @@ export async function runAttentionSmoke() {
     missing = null; await pollNow();
     ctx.attentionFilter = 'stopped'; refreshAttention();
     await openAttentionCard(samples.get('05').card.id); await pollNow();
-    await report('attention-locate-only', starts === 0 && state.view === 'board' && document.activeElement?.dataset.sid === samples.get('05').card.id);
+    await report('attention-locate-only', starts === 0 && state.view === 'board' && document.activeElement?.matches('.card-open') && document.activeElement.closest('.card')?.dataset.sid === samples.get('05').card.id);
     // The Board card badge (attention.js paintCardAttentionBadge): the Dock's
     // set, painted by cardEl and repainted in place by refreshBoardAttention.
     // Viewing clears an unread ending without a status change; a question
@@ -313,6 +313,104 @@ export async function runAttentionSmoke() {
       const failures = steps.filter(ok => !ok).length;
       await report('attention-codex-coverage', failures === 0, steps.length, failures);
     }
+    // Native navigation controls and attention's locate/open/return path.
+    // These are real production DOM/actions, over this carrier's empty shells.
+    {
+      const checks = [];
+      await reset();
+      const byCard = id => [...document.querySelectorAll('#columns .card')].find(el => el.dataset.sid === id);
+      const bySide = id => [...document.querySelectorAll('#side-list .side-item')].find(el => el.dataset.sid === id);
+      const byProject = id => [...document.querySelectorAll('#tabs .tab')].find(el => el.dataset.pid === id);
+      const native = el => el?.tagName === 'BUTTON' && el.tabIndex === 0 && !!el.getAttribute('aria-label');
+      const target = samples.get('06').card;
+      const other = samples.get('02').card;
+      const stopped = samples.get('05').card;
+      checks.push(native(byCard(target.id).querySelector('.card-open'))
+        && native(bySide(target.id).querySelector('.side-open'))
+        && native(byProject(target.projectId).querySelector('.project-open')));
+      const { inlineRename } = await import('../js/dialogs.js');
+      const renameButton = byCard(target.id).querySelector('.card-open');
+      let renameResult;
+      inlineRename(renameButton, target.title, value => { renameResult = value; });
+      const renameField = document.activeElement;
+      const renameOutsideButton = renameField.tagName === 'INPUT' && !renameField.closest('button');
+      renameField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      checks.push(renameOutsideButton && renameResult === null && document.activeElement === renameButton && renameButton.isConnected);
+      const cardOpen = byCard(target.id).querySelector('.card-open'); cardOpen.focus();
+      emit('status', target);
+      checks.push(!cardOpen.isConnected && document.activeElement === byCard(target.id).querySelector('.card-open'));
+      renderBoard();
+      checks.push(document.activeElement === byCard(target.id).querySelector('.card-open'));
+      byCard(target.id).querySelector('.card-pin').focus(); renderBoard();
+      checks.push(document.activeElement === byCard(target.id).querySelector('.card-pin'));
+      bySide(target.id).querySelector('.side-open').focus(); renderSidebar();
+      checks.push(document.activeElement === bySide(target.id).querySelector('.side-open'));
+      byProject(target.projectId).querySelector('.project-open').focus(); renderTabs();
+      checks.push(document.activeElement === byProject(target.projectId).querySelector('.project-open'));
+      const collapsed = document.body.classList.contains('side-collapsed');
+      document.body.classList.add('side-collapsed');
+      const compact = bySide(target.id).querySelector('.side-open');
+      checks.push(compact.getClientRects().length > 0 && compact.getBoundingClientRect().width > 0 && native(compact));
+      document.body.classList.toggle('side-collapsed', collapsed);
+      // Stopped cards are located without starting; Board has a direct return.
+      showAttention(); ctx.attentionFilter = 'stopped'; refreshAttention();
+      await openAttentionCard(stopped.id);
+      checks.push(state.view === 'board' && ctx.attentionReturn?.focusId === stopped.id
+        && !$('board-attention-back').hidden && document.activeElement === byCard(stopped.id).querySelector('.card-open'));
+      $('board-attention-back').click();
+      checks.push(state.view === 'attention' && ctx.attentionFilter === 'stopped'
+        && document.activeElement.closest('.attention-row')?.dataset.sid === stopped.id && starts === 0);
+      // Failed observation must locate the live card, then only the user's
+      // explicit native open activation attaches it. Returning restores context.
+      ctx.attentionFilter = 'unavailable'; refreshAttention();
+      $('attention-list').style.maxHeight = '140px'; $('attention-list').scrollTop = 70;
+      const scroll = $('attention-list').scrollTop;
+      failPoll = true; await pollNow();
+      await openAttentionCard(target.id); failPoll = false;
+      checks.push(state.view === 'board' && ctx.attentionReturn?.filter === 'unavailable');
+      byCard(target.id).querySelector('.card-open').click();
+      for (let i = 0; i < 100 && !panes.get(target.session)?.attached; i++) await pause(20);
+      checks.push(state.view === 'session' && panes.get(target.session)?.attached && ctx.attentionReturn?.focusId === target.id);
+      backToBoard();
+      checks.push(state.view === 'attention' && ctx.attentionFilter === 'unavailable'
+        && $('attention-list').scrollTop === scroll && document.activeElement.closest('.attention-row')?.dataset.sid === target.id);
+      $('attention-list').style.maxHeight = '';
+      ctx.attentionFilter = 'stopped'; refreshAttention(); await openAttentionCard(stopped.id);
+      bySide(other.id).querySelector('.side-open').click();
+      for (let i = 0; i < 100 && !panes.get(other.session)?.attached; i++) await pause(20);
+      checks.push(state.view === 'session' && panes.get(other.session)?.attached && ctx.attentionReturn === null);
+      backToBoard();
+      checks.push(state.view === 'board');
+      showAttention(); ctx.attentionFilter = 'stopped'; refreshAttention(); await openAttentionCard(stopped.id);
+      byProject(stopped.projectId).querySelector('.project-open').click();
+      checks.push(ctx.attentionReturn === null && $('board-attention-back').hidden);
+      checks.push(starts === 0);
+      // Keep the new return control and text buttons inside the supported
+      // native window at both font sizes and languages.
+      let fitting = 0;
+      for (const locale of ['en', 'zh-Hans']) for (const scale of [1, 1.6]) {
+        setLocale(locale); applyFontScale(scale); render();
+        showAttention(); ctx.attentionFilter = 'stopped'; refreshAttention(); await openAttentionCard(stopped.id);
+        const controls = [...document.querySelectorAll('.card-open, .side-open, .project-open, #board-attention-back')];
+        await pause(25);
+        // Cards, sidebar rows and project tabs have intentional scroll areas.
+        // Their buttons must fit their own row, even when that row is offscreen;
+        // the fixed Board return action must also remain inside the viewport.
+        if (controls.every(el => {
+          const r = el.getBoundingClientRect();
+          const owner = el.closest('.card, .side-item, .tab, .board-head').getBoundingClientRect();
+          const minWidth = el.matches('.card-open') ? 2 * parseFloat(getComputedStyle(el).fontSize) : 1;
+          return r.width >= minWidth && r.left >= owner.left && r.right <= owner.right
+            && r.top >= owner.top && r.bottom <= owner.bottom
+            && (el.id !== 'board-attention-back' || (r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight));
+        })) fitting++;
+      }
+      checks.push(fitting === 4);
+      const failures = checks.filter(ok => !ok).length;
+      const failureBits = checks.reduce((mask, ok, index) => ok ? mask : mask | (1 << index), 0);
+      await report('attention-navigation', failures === 0, checks.length, failureBits);
+      applyFontScale(1); setLocale('en'); await reset();
+    }
     stage = 4;
     // Real WebKit layout at the native window size, 12 locale/theme/font combinations.
     showAttention(); ctx.attentionFilter = 'pending'; refreshAttention();
@@ -381,7 +479,7 @@ export async function runAttentionSmoke() {
     const more = $('board-new-more');
     const atlas = projects.get('Atlas');
     await report('entry-head', !!more && !$('board-tpl') && $('board-auto').hidden && $('board-empty').hidden
-      && $('board-view').querySelectorAll('.board-head .btn').length === 3 && starts === 0);
+      && $('board-attention-back').hidden && $('board-view').querySelectorAll('.board-head .btn:not(#board-attention-back)').length === 3 && starts === 0);
     const emptyProject = await provider.createProject('Empty');
     switchProject(emptyProject.id); await pollNow();
     const emptyTarget = emptyProject.columns.find(c => c.semantic === 'working');
@@ -429,11 +527,11 @@ export async function runAttentionSmoke() {
     tabMenu(); $('ctx').querySelector('[data-a="automations"]').click(); await pause(60);
     const autoOpen = !$('auto-drawer').hidden;
     closeAutomations();
-    const autoBack = document.activeElement?.dataset?.pid === atlas.id;
+    const autoBack = document.activeElement?.matches('.project-open') && document.activeElement.closest('.tab')?.dataset.pid === atlas.id;
     tabMenu(); $('ctx').querySelector('[data-a="templates"]').click(); await pause(20);
     const tplOpenTab = $('tpl-modal').style.display === 'flex';
     closeTemplates();
-    const tplBackTab = document.activeElement?.dataset?.pid === atlas.id;
+    const tplBackTab = document.activeElement?.matches('.project-open') && document.activeElement.closest('.tab')?.dataset.pid === atlas.id;
     await report('entry-project-menu', autoOpen && autoBack && tplOpenTab && tplBackTab);
     const ruleId = 'entry' + Date.now().toString(36);
     const rule = { id: ruleId, source: 'clock', badge: ruleId, projectId: atlas.id, columnId: atlas.columns[1].id,

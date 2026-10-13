@@ -1,5 +1,7 @@
 // English is the canonical dictionary and the production fallback.
 const dictionary = {
+  "navigation.openSession": "Open session: {name}",
+  "navigation.openProject": "Open project: {name}",
   "tmux.reminderProtected": "Retained {count} reminder-protected cards. Managed cleanup and restart were not performed.",
   "reminder.actionFailed": "A notification action could not be saved. The reminder remains unchanged.",
   "reminder.later": "Remind later",

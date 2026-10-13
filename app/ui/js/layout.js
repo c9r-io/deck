@@ -6,6 +6,9 @@
 // Split buttons and shortcuts open the shared menu before start/attach; its
 // DOM element must stay distinct from the imported runtime state (`ctx`).
 // Attention navigation passes allowStart:false: attaching never creates a shell.
+// Its return point follows only that card from Attention to its session, or
+// from its located Board card into that session. Opening another Board card
+// clears it; switching directly between sessions preserves the current point.
 // A pane that is already open is only focused: a detached pane (shell exited,
 // attach failed) is never re-attached or restarted by a click; the poll in
 // board.js decides whether its card retires (only on the backend's verified
@@ -995,11 +998,17 @@ export function showSplitPicker(dir) {
    with a silent promise rejection and the terminal never receives output. */
 
 /* ---------- session view ---------- */
+export function attentionReturnOnOpen(sid, opts = {}, view = state.view, saved = ctx.attentionReturn) {
+  if (Object.hasOwn(opts, 'attentionReturn')) return opts.attentionReturn;
+  if (view === 'session') return saved;
+  return view === 'board' && saved?.focusId === sid ? saved : null;
+}
+
 export async function openSession(sid, opts = {}) {
   if (ctx.tmuxRestarting) return false;
   const card = provider.get(sid);
   if (!card) return;
-  ctx.attentionReturn = opts.attentionReturn || (state.view === 'session' ? ctx.attentionReturn : null);
+  ctx.attentionReturn = attentionReturnOnOpen(sid, opts);
   /* already open in a pane → just focus it. A detached pane stays detached:
      re-attaching a dead session or restarting a card mid-retirement is not
      what a click means */

@@ -4,6 +4,9 @@ import { localCandidates, localParts, noteValid, REMINDER_NOTE_BYTES, shortcutTi
 // imports these primitives; nothing here knows the settings document.
 // The lost Board's way out (`createBoardExit`) is the one flow here: the
 // app hands it the Board queue and store, so it stays testable without one.
+// Inline rename temporarily replaces a native button host with a plain span;
+// inputs never nest inside buttons. The original button is restored and
+// focused before committing, so owner renders can preserve its stable action.
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, ctx, genId, inv } from './state.js';
 import { inlineRenameValue, isComposingKeyEvent } from './pure.js';
@@ -378,6 +381,11 @@ export function autoGrowField(field) {
    many lines, so Enter there TYPES a newline and ⌘↵/⌃↵ is what commits.
    Escape restores, blur commits, and an IME's Enter never submits. */
 export function inlineRename(host, current, onDone, { allowEmpty = false, multiline = false } = {}) {
+  const button = host.tagName === 'BUTTON' ? host : null;
+  if (button) {
+    host = document.createElement('span'); host.className = button.className;
+    button.replaceWith(host);
+  }
   const field = document.createElement(multiline ? 'textarea' : 'input');
   field.value = current;
   if (multiline) {
@@ -398,6 +406,10 @@ export function inlineRename(host, current, onDone, { allowEmpty = false, multil
        therefore looks committed in the same gesture and its subsequent blur
        is guaranteed to be a no-op. */
     host.textContent = value === null ? current : value;
+    if (button) {
+      button.textContent = host.textContent; host.replaceWith(button); host = button;
+      button.focus({ preventScroll: true });
+    }
     Promise.resolve(onDone(value)).catch(() => {
       if (host.isConnected) host.textContent = current;
       toast(t('error.changeNotSaved'));

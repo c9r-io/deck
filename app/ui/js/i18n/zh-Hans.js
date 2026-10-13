@@ -1,4 +1,6 @@
 const dictionary = {
+  "navigation.openSession": "打开 session：{name}",
+  "navigation.openProject": "打开项目：{name}",
   "tmux.reminderProtected": "保留了 {count} 张提醒保护中的卡片；未执行批量清理或重启。",
   "reminder.actionFailed": "通知操作未能保存，原有提醒仍保留。",
   "reminder.later": "稍后提醒",

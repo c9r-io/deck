@@ -1,0 +1,171 @@
+{
+  "date": "2026-10-14",
+  "timezone": "Asia/Tokyo",
+  "baseline": "0743224fca2dbd8295d55501e84d2ab364cd70b4",
+  "snapshot": "Implementation and evidence committed together; hashes exclude results.json",
+  "environment": {
+    "node": "v24.19.0",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "macos": "27.0.1",
+    "arch": "arm64"
+  },
+  "checks": [
+    {
+      "command": "scripts/ui-tests",
+      "exit_code": 0,
+      "log": "/tmp/deck-navigation-ui-final.log",
+      "log_sha256": "61899f7b0a8871293d3890ed4bf48fac88b990b7aa284fe644ce517f9ce28ea9",
+      "passed": 816,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "coverage_percent": {
+        "lines": 94.44,
+        "branches": 89.85,
+        "functions": 87.56
+      }
+    },
+    {
+      "command": "node --check (162 JS/MJS files); node app/ui/js/check.mjs; git diff --check",
+      "exit_code": 0,
+      "log": "/tmp/deck-navigation-static.log",
+      "log_sha256": "f37645b27384553c943ec37470bdbbac3a1bddd40402cf2832d87ccb4b8bd170",
+      "files": 162,
+      "modules": 62
+    },
+    {
+      "command": "cargo test --test ipc_contract --test edr_quiet --test log_privacy --test signal_census --test session_architecture",
+      "exit_code": 0,
+      "log": "/tmp/deck-navigation-native-contracts.log",
+      "log_sha256": "abe4f333c9293750eabfbf34c8ca24102e8e39f9ac37cf3feaa6242fb6aacbe2",
+      "passed": 55,
+      "failed": 0
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0,
+      "log": "/tmp/deck-navigation-fmt.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+      "exit_code": 0,
+      "log": "/tmp/deck-navigation-clippy.log",
+      "log_sha256": "4867e90d14decb7502fada3fd3f4ca1a7aee92f757d4f1cc91373d3e7a472afc"
+    },
+    {
+      "command": "cargo test --workspace",
+      "exit_code": 0,
+      "log": "/tmp/deck-navigation-workspace.log",
+      "log_sha256": "da44e8572e4bd9bd14d27cd4277db7af3adcb3c436f54d995abcb899443ef8e7",
+      "suites": 17,
+      "passed": 1520,
+      "failed": 0,
+      "ignored": 13,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "command": "DECK_SMOKE_DATA_DIR=/tmp/deck-navigation-final.BwotWR DECK_SMOKE_TMUX_SOCKET=deck-smoke-navigation-final-20261014 DECK_SMOKE_WKWEBVIEW=attention app/run.sh",
+      "exit_code": 0,
+      "log": "/tmp/deck-navigation-wk-final-launch.log",
+      "log_sha256": "6fc2a4168f01608617290787e4221f629a0c1171929696ce370e01495b59a81b",
+      "sidecars_verified": 5,
+      "staged_files": 181,
+      "bundled_executables": 6
+    },
+    {
+      "command": "scripts/smoke-verdict /tmp/deck-navigation-final.BwotWR attention",
+      "exit_code": 0,
+      "log": "/tmp/deck-navigation-verdict-final.log",
+      "log_sha256": "5f9a22c932ab2538dbc5d3e9ce897633d5a7a286156b0d096744fd0eed9292dc",
+      "passed_checkpoints": 51,
+      "log_lines": 52,
+      "navigation_conditions": 18,
+      "navigation_failure_bits": 0,
+      "new_layout_cases": 4
+    },
+    {
+      "command": "python3 scripts/edr_runtime.py --cleanup --socket deck-smoke-navigation-20261014",
+      "exit_code": 0,
+      "log": "/tmp/deck-navigation-cleanup-first.log",
+      "log_sha256": "6829ad8dd5a8c6cad92924d77f4105e81d93e64d255431f1c6bd8fdad2d09361"
+    },
+    {
+      "command": "python3 scripts/edr_runtime.py --cleanup --socket deck-smoke-navigation-diagnostic-20261014",
+      "exit_code": 0,
+      "log": "/tmp/deck-navigation-cleanup-diagnostic.log",
+      "log_sha256": "5843de15da233c81ce981a89d049f67457f4be18911691aba56f57bf16a04288"
+    },
+    {
+      "command": "python3 scripts/edr_runtime.py --cleanup --socket deck-smoke-navigation-final-20261014",
+      "exit_code": 0,
+      "log": "/tmp/deck-navigation-cleanup-final.log",
+      "log_sha256": "ec675636bfc1ec8a7d1cbf034b0c69423cd6f1535f21bb09608e957da11b29dc"
+    },
+    {
+      "command": "python3 scripts/edr_runtime.py",
+      "exit_code": 0,
+      "log": "/tmp/deck-navigation-runtime-after.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "manual_native_keyboard": {
+    "result": "PASS",
+    "environment": "isolated final debug smoke app",
+    "observed": [
+      "Shift+Tab to project; Enter switched to Beacon and retained native project-button focus",
+      "Space switched back to Atlas and retained native project-button focus",
+      "Shift+Tab to sidebar local shell; Enter opened session and focused Terminal input"
+    ],
+    "voiceover_certification": "UNRUN"
+  },
+  "prior_failures": [
+    {
+      "check": "initial targeted tests",
+      "passed": 40,
+      "failed": 2,
+      "resolution": "Update old source-shape assertions for native opener/reminder construction; preserve reminder hiding/order/event constraints."
+    },
+    {
+      "check": "first WK attention",
+      "result": "FAIL",
+      "resolution": "Update focus targets and hidden Board button count; investigate actual title clipping."
+    },
+    {
+      "check": "second WK attention",
+      "result": "FAIL",
+      "navigation_failure_bits": 131072,
+      "resolution": "Native inspection confirmed 160% text collapsed title to zero width; reserve separate title/badge rows. Layout checks distinguish intentional scroll areas from clipping."
+    }
+  ],
+  "unrun": [
+    "remote CI",
+    "signed release installation/updater",
+    "Mac mini",
+    "Windows",
+    "real Agent integration",
+    "VoiceOver human reading"
+  ],
+  "files": {
+    "app/src-tauri/src/diagnostics.rs": "83bc3769a9235a629fbfa46d70c3b3eb86285e5488e98ee1f4b2ee0c185495e5",
+    "app/ui/index.html": "81703d38304bfa4daf186f519111e0cc77594434bf4e1a9a8649ed170c94c466",
+    "app/ui/js/attention.js": "01eecaa908738519933a9c3f12898bea09f1bc23868625930b61a6f991cf02f9",
+    "app/ui/js/board-card.js": "eafd58ff17ff036780c17fc123cb6c75ca79f74e5785a14c6c404243c514fb0a",
+    "app/ui/js/board.js": "3f541aa0e4f6a9c9a18670438eee987957d1c6414986e3fe0eeeb7fed96628f0",
+    "app/ui/js/dialogs.js": "7f327ec4d74080b17757b5f7cc11574c9c65495fcf00f960827c2549fbd1be3c",
+    "app/ui/js/i18n/en.js": "2399f0eadf9d06ad1ccd87ce96c06e2409576fdb363ed5ce4f86035961a4b3fc",
+    "app/ui/js/i18n/zh-Hans.js": "ea91a77058d60dbdf51c56dff8278a90e57dc26cccc868e3cb5c7e9b10a60ec4",
+    "app/ui/js/layout.js": "c7f2a3f131dcd84c4d424b3797d811474ac2a12b6115d149ebfe440f2d0bbb7b",
+    "app/ui/js/terminal.js": "9000d680a8191c5afa966335ad9ef41567ddfbe7b32fd583dd5571eb0ba25423",
+    "app/ui/style.css": "a81d2703aba9e0821330d20236f6ea95bb5a758df8a5f6c7c9f74f7ca03c52b6",
+    "app/ui/test/attention-navigation-dom.test.mjs": "eedfe21e433cbf2e5f8a8d971693adb5cf6f0bcca2be956330235531e40135fc",
+    "app/ui/test/attention-smoke.mjs": "5ad6e0b11556623b47213284d32303cbcf0cca6559205c42c27ad1b4c4b75384",
+    "app/ui/test/board-card.test.mjs": "6d8e3b5e92871682c80bcff74edec659acbab1573e757381a313b106ffa0f98f",
+    "app/ui/test/fixtures/smoke-manifest.json": "e3e5a974f6b94fb3e5908aab2e57c23fd81d997e9ae36f4d249c613be233d78f",
+    "app/ui/test/static.test.mjs": "f512ba2395e5484e716f92e4cef6095f1b9f5f9be5d7da163597d56a47bf8a30",
+    "docs/evidence/navigation-governance-20261014/README.md": "25f3213ee6d4c92a0a1f682ee1ecf2c347ba8159505b3f3a864476ac2efaa339",
+    "docs/evidence/navigation-governance-20261014/wk-attention.log": "f15aca2122991e42a5b43ad4082ddce7a694c0030e235cdde2e961b432d2a2e4",
+    "docs/verification-status.md": "3fa93d24b388fe1e772438cce413a48c7bd5ef0b89894d22ea570a112a2db8a0"
+  }
+}

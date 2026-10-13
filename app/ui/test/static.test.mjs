@@ -599,8 +599,9 @@ test("a click on the sidebar's reminder label does not open the session", () => 
   const css = read('app/ui/style.css');
   // the full-date button that took the row's width, and its rule, are gone
   assert.doesNotMatch(css, /^\.card-reminder \{/m);
-  // a collapsed sidebar shows neither the name nor the label
-  assert.match(css, /body\.side-collapsed \.side-item \.name, body\.side-collapsed \.side-item \.card-reminder,/);
+  // The compact open button remains keyboard reachable, with its text hidden; reminders stay hidden.
+  assert.match(css, /body\.side-collapsed \.side-item \.card-reminder,/);
+  assert.match(css, /body\.side-collapsed \.side-item \.side-open \{[^}]*font-size: 0;/);
 });
 
 /* 09b: a Board card shows its reminder too (docs/card-reminders.md): a short
@@ -611,7 +612,8 @@ test('a Board card shows its reminder as a label at the end of the status row', 
   const card = code('app/ui/js/board-card.js');
   assert.ok(card.length > 1500, 'board-card owns the fixed card DOM');
   // only a card with a reminder gets one, after the row was painted
-  assert.match(card, /paintCardSignalStatus\(el\.querySelector\('\.card-status'\), s\);\s*if \(s\.reminder\) el\.querySelector\('\.card-status'\)\.append\(reminderChip\(s\)\);/);
+  assert.match(card, /paintCardSignalStatus\(el\.querySelector\('\.card-status'\), s\);\s*if \(s\.reminder\) \{\s*const reminder = reminderChip\(s\);/);
+  assert.match(card, /el\.querySelector\('\.card-status'\)\.append\(reminder\);/);
   // the card's own click handler skips it, so the label edits the reminder only
   assert.match(card, /closest\('\.card-x, \.card-pin, \.card-signal-help, \.card-reminder'\)/);
   const label = board.slice(board.indexOf('function reminderChip(s, spell = reminderShort)'), board.indexOf('export function cardEl(s)'));

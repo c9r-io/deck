@@ -28,6 +28,11 @@
 // Pending and due reminders protect deletion at the transaction boundary.
 // Blocked exit/run identities persist after ending the reminder; later real
 // generations keep ordinary retirement rules. Reminder responses never start work.
+// Project/session names are native navigation buttons. Structural renders
+// restore the same action by stable id (or a safe navigation fallback if it
+// disappeared), including a single card replacement after a status change.
+// Explicit project navigation clears the attention return; only a locate
+// from attention supplies its original context through switchProject.
 // board-card.js owns card presentation/gesture routing; its actions return
 // here or to the existing layout/terminal owner, never to a second writer.
 // Live status never changes placement or durable ordering. Cards carry no
@@ -73,7 +78,7 @@ import { formatNumber, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { renderAutomations, ruleOf } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
-import { locateAttentionCard, refreshAttention } from './attention.js';
+import { locateAttentionCard, refreshAttention, showAttention } from './attention.js';
 import { cardLabels, dismissKey, labelsKey, seenDismissals } from './notify-model.js';
 import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, retainedBuffer } from './buffer-model.js';
 import { nextCollectedAt } from './channel-model.js';
@@ -1205,9 +1210,24 @@ export function markSessionsStoppedForServerRestart() {
   }
 }
 
+// Keep keyboard navigation on the same control across a synchronous rebuild.
+// This restores focus only when this container actually owned it; ordinary
+// polling must never move focus out of a terminal or another surface.
+function preserveNavigationFocus(container, fallback) {
+  const focused = document.activeElement;
+  const key = focused?.dataset?.navFocus;
+  if (!key || !container.contains(focused)) return () => {};
+  return () => {
+    const target = [...container.querySelectorAll('[data-nav-focus]')]
+      .find(el => el.dataset.navFocus === key && !el.hidden);
+    (target || $(fallback)).focus({ preventScroll: true });
+  };
+}
+
 /* ---------- sidebar ---------- */
 export function renderSidebar() {
   const list = $('side-list');
+  const restoreFocus = preserveNavigationFocus(list, 'home-btn');
   const st = list.scrollTop;
   list.innerHTML = '';
   const all = provider.list(state.projectId);
@@ -1232,8 +1252,12 @@ export function renderSidebar() {
     el.className = 'side-item' + (state.view === 'session' && state.sessionId === s.id ? ' active' : '');
     el.dataset.sid = s.id;
     el.title = s.title;
-    el.innerHTML = `<span class="dot ${s.status}"></span><span class="name"></span>`;
-    el.querySelector('.name').textContent = s.title;
+    el.innerHTML = `<span class="dot ${s.status}"></span><button class="name side-open" type="button"></button>`;
+    const opener = el.querySelector('.side-open');
+    opener.textContent = s.title;
+    opener.dataset.navFocus = `side:${s.id}:open`;
+    opener.setAttribute('aria-label', t('navigation.openSession', { name: s.title }));
+    opener.setAttribute('aria-current', state.view === 'session' && state.sessionId === s.id ? 'true' : 'false');
     if (s.pinned === true) {
       const pin = document.createElement('span');
       pin.className = 'side-pin';
@@ -1258,6 +1282,7 @@ export function renderSidebar() {
     list.appendChild(el);
     }
   }
+  restoreFocus();
   list.scrollTop = st;
   $('home-btn').classList.toggle('active', state.view === 'board');
 }
@@ -1267,7 +1292,9 @@ export function renderSidebar() {
    sidebar rebuild. Structural Board changes still call renderSidebar(). */
 export function updateSidebarSelection() {
   document.querySelectorAll('#side-list .side-item[data-sid]').forEach(el => {
-    el.classList.toggle('active', state.view === 'session' && el.dataset.sid === state.sessionId);
+    const selected = state.view === 'session' && el.dataset.sid === state.sessionId;
+    el.classList.toggle('active', selected);
+    el.querySelector('.side-open').setAttribute('aria-current', String(selected));
   });
   $('home-btn').classList.toggle('active', state.view === 'board');
 }
@@ -1283,6 +1310,7 @@ export function updateSidebarStatus(card) {
 /* ---------- project tabs ---------- */
 export function renderTabs() {
   const bar = $('tabs');
+  const restoreFocus = preserveNavigationFocus(bar, 'home-btn');
   const scrollLeft = bar.scrollLeft;
   bar.innerHTML = '';
   for (const p of provider.projects()) {
@@ -1290,8 +1318,13 @@ export function renderTabs() {
     el.className = 'tab' + (p.id === state.projectId ? ' active' : '');
     el.dataset.pid = p.id;
     el.draggable = true;
-    el.innerHTML = `<span class="name"></span>`;
-    el.querySelector('.name').textContent = p.name;
+    el.innerHTML = `<button class="name project-open" type="button"></button>`;
+    const opener = el.querySelector('.project-open');
+    opener.textContent = p.name;
+    opener.title = p.name;
+    opener.dataset.navFocus = `project:${p.id}:open`;
+    opener.setAttribute('aria-label', t('navigation.openProject', { name: p.name }));
+    opener.setAttribute('aria-current', p.id === state.projectId ? 'page' : 'false');
     if (provider.list(p.id).some(c => ctx.attention.category(c) === 'done')) {
       const done = document.createElement('span');
       done.className = 'done-dot';
@@ -1345,6 +1378,7 @@ export function renderTabs() {
     if (tab) renameTab(tab, p);
   };
   bar.appendChild(add);
+  restoreFocus();
   bar.scrollLeft = scrollLeft;
 }
 
@@ -1379,21 +1413,29 @@ export function showBoard(pid) {
   state.sessionId = null;
 }
 
-export function switchProject(pid) {
-  ctx.attentionReturn = null;
-  if (state.projectId === pid && state.view === 'board') return;
+export function switchProject(pid, { attentionReturn = null } = {}) {
+  ctx.attentionReturn = attentionReturn;
+  if (state.projectId === pid && state.view === 'board') { renderAttentionReturn(); return; }
   showBoard(pid);
   render();
   pollNow();
 }
 
 /* ---------- board ---------- */
+function renderAttentionReturn() {
+  const button = $('board-attention-back');
+  button.hidden = !ctx.attentionReturn;
+  button.textContent = t('attention.back');
+  button.onclick = () => showAttention(true);
+}
 export function renderBoard() {
   const p = activeProject();
   if (!p) return;
   $('board-title').textContent = p.name;
+  renderAttentionReturn();
   renderAutomations();   // the drawer follows the project it is open over
   const wrap = $('columns');
+  const restoreFocus = preserveNavigationFocus(wrap, 'board-new');
   /* an empty project gets one starting point above its groups: what a new
      session is, where its card will land (the same rule newSession uses) */
   const total = provider.list(p.id).length;
@@ -1501,6 +1543,7 @@ export function renderBoard() {
   };
   wrap.appendChild(ghost);
 
+  restoreFocus();
   wrap.scrollLeft = hScroll;
   wrap.querySelectorAll('.column[data-cid]').forEach(el => {
     const st = colScroll[el.dataset.cid];
@@ -1643,7 +1686,11 @@ provider.subscribe((ev, s) => {
     else if (state.view === 'board' && s.projectId === state.projectId) {
       /* start/stop changes the chip row → rebuild the one card */
       const old = document.querySelector(`.card[data-sid="${s.id}"]`);
-      if (old) old.replaceWith(cardEl(s));
+      if (old) {
+        const restoreFocus = preserveNavigationFocus($('columns'), 'board-new');
+        old.replaceWith(cardEl(s));
+        restoreFocus();
+      }
     }
     return;
   }

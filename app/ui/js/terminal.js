@@ -131,11 +131,10 @@ export function showProjectCtx(e, pid) {
     /* the managers are per project: switch first so they open over it. The
        contextmenu event's currentTarget is null by now (dispatch is over) and
        every render rebuilds the tabs, so focus returns to the tab resolved
-       at close time */
+       at close time, using its native open button */
     const tabOf = () => {
       const tab = [...document.querySelectorAll('#tabs .tab')].find(el => el.dataset.pid === pid);
-      if (tab) tab.tabIndex = -1;
-      return tab || null;
+      return tab?.querySelector('.project-open') || null;
     };
     if (a === 'defaults') { switchProject(pid); openProjectDefaults(pid, tabOf); }
     if (a === 'automations') { switchProject(pid); openAutomations({ from: tabOf }); }

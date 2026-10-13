@@ -67,6 +67,11 @@ test('fixed card shape paints data as text and keeps independent status, reminde
     assert.equal(el.draggable, true);
     assert.equal(el.className, 'card' + (status === 'stopped' ? '' : ' ' + status));
     assert.equal(el.querySelector('.card-title').textContent, f.card.title);
+    const opener = el.querySelector('.card-open');
+    assert.equal(opener.tagName, 'BUTTON', 'native Enter/Space activation uses the card click path');
+    assert.equal(opener.title, f.card.title, 'the full title remains available when clipped');
+    assert.equal(opener['aria-label'], t('navigation.openSession', { name: f.card.title }));
+    assert.equal(opener.dataset.navFocus, `card:${f.card.id}:open`);
     assert.equal(el.querySelector('.cmd').textContent, '$ ' + f.card.cmd);
     assert.equal(el.querySelector('.dir').textContent, f.card.dir);
     assert.equal(el.querySelector('.card-desc').textContent, f.card.desc);

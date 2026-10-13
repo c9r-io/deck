@@ -2,6 +2,8 @@
 // Owns the fixed card DOM, labels/chips and event isolation. No persistence,
 // polling, session lifecycle or placement decision belongs here. Actions are
 // supplied by Board and retain its existing confirmation/transaction paths.
+// The title is a native open button: Enter/Space use the same click path as
+// the pointer. Sibling actions never open the card; drag remains on the card.
 // Native ES module; imports point only to existing painters/models, never back
 // to the view core. User text enters through textContent, never markup.
 import { dotTitle, setMemChip } from './state.js';
@@ -39,13 +41,22 @@ export function createBoardCard(s, { open, close, togglePinned, context, reminde
      change size under the pointer or when a description is added. The
      attention badge is always present and only hidden (attention.js). */
   el.innerHTML = `
-    <div class="card-top"><span class="dot ${s.status}"></span><span class="card-title"></span><span class="card-attention-badge" hidden></span><button class="card-pin" type="button"></button><button class="card-x" type="button">✕</button></div>
+    <div class="card-top"><span class="dot ${s.status}"></span><button class="card-title card-open" type="button"></button><span class="card-attention-badge" hidden></span><button class="card-pin" type="button"></button><button class="card-x" type="button">✕</button></div>
     <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="auto-chip"></span><span class="q-chip"></span><span class="mem-chip"></span></div>
     <div class="card-status"><span class="card-status-text"></span><button class="card-signal-help" type="button" hidden></button></div>
     <div class="card-desc"></div>`;
-  el.querySelector('.card-title').textContent = s.title;
+  const opener = el.querySelector('.card-open');
+  opener.textContent = s.title;
+  opener.title = s.title;
+  opener.setAttribute('aria-label', t('navigation.openSession', { name: s.title }));
+  for (const [selector, action] of [['.card-open', 'open'], ['.card-pin', 'pin'], ['.card-x', 'close'], ['.card-signal-help', 'signal']]) {
+    el.querySelector(selector).dataset.navFocus = `card:${s.id}:${action}`;
+  }
   paintCardSignalStatus(el.querySelector('.card-status'), s);
-  if (s.reminder) el.querySelector('.card-status').append(reminderChip(s));
+  if (s.reminder) {
+    const reminder = reminderChip(s); reminder.dataset.navFocus = `card:${s.id}:reminder`;
+    el.querySelector('.card-status').append(reminder);
+  }
   paintCardAttentionBadge(el.querySelector('.card-attention-badge'), s);
   el.querySelector('.dot').title = dotTitle(s.status);
   const pin = el.querySelector('.card-pin');
@@ -53,9 +64,10 @@ export function createBoardCard(s, { open, close, togglePinned, context, reminde
   pin.textContent = s.pinned === true ? '★' : '☆';
   pin.classList.toggle('active', s.pinned === true);
   pin.title = pinLabel;
-  pin.setAttribute('aria-label', pinLabel);
+  pin.setAttribute('aria-label', `${pinLabel}: ${s.title}`);
   pin.setAttribute('aria-pressed', s.pinned === true ? 'true' : 'false');
   el.querySelector('.card-x').title = t('session.closeTitle');
+  el.querySelector('.card-x').setAttribute('aria-label', `${t('session.closeTitle')}: ${s.title}`);
   el.querySelector('.mem-chip').title = t('session.memory');
   setMemChip(el.querySelector('.mem-chip'), s);
   setQueueChip(el.querySelector('.q-chip'), s);   // self-fill: survives card rebuilds

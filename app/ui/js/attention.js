@@ -36,8 +36,11 @@
 //   during the round trip is located on its Board instead; opening never
 //   starts a session (`allowStart: false`). Unknown, stale and stopped
 //   entries locate the original card.
-// - Returning (`showAttention(true)`) restores project, filter, scroll and
-//   the focused row from the `ctx.attentionReturn` that `openSession` kept.
+// - Opening or locating from Attention captures project, filter, scroll and
+//   row identity. A live card returns here after its session; a stopped/stale
+//   card carries the same return point onto its Board and focuses the card's
+//   native open button. Locating from any other view carries no return point.
+//   Returning (`showAttention(true)`) restores the captured view and row.
 // - A leaf of the import graph: the Board and layout actions it calls
 //   (`pollNow`, `provider`, `render`, `switchProject`, `leaveSessionView`,
 //   `closeBuffer`, `openSession`) arrive through `initAttention(deps)` from app.js, so
@@ -330,9 +333,17 @@ export function showAttention(returning = false) {
 export function locateAttentionCard(id) {
   const card = provider.get(id);
   if (!card) { refreshAttention(); return; }
-  switchProject(card.projectId);
+  const saved = state.view === 'attention'
+    ? { projectId: state.projectId, filter: ctx.attentionFilter, scroll: $('attention-list').scrollTop, focusId: id }
+    : null;
+  switchProject(card.projectId, { attentionReturn: saved });
   const el = [...document.querySelectorAll('#columns .card')].find(item => item.dataset.sid === id);
-  if (el) { el.tabIndex = -1; el.focus({ preventScroll: true }); el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+  if (el) {
+    const target = el.querySelector('.card-open') || el;
+    if (target === el) el.tabIndex = -1;
+    target.focus({ preventScroll: true });
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
 }
 
 export async function openAttentionCard(id) {
