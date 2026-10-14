@@ -1,11 +1,12 @@
 // Derived Slack capability state. No migration boolean is persisted.
+// An unavailable status read is unknown, never a missing credential.
 export function slackConnectionView(status, settings) {
   const s = status || {};
   const inbound = settings?.inbound || {};
   const reactionEnabled = !!inbound.sources?.slack?.enabled;
   const channelEnabled = !!inbound.channelConnection?.enabled;
-  const reaction = !reactionEnabled ? 'off' : !s.userPresent ? 'needs-user' : !s.userValid ? (s.userError === 'scope' ? 'needs-scopes' : 'invalid') : 'ready';
-  const channel = !s.botPresent && (s.legacyPresent || Number(s.channelRules) > 0) ? 'upgrade-required'
+  const reaction = !status ? 'unavailable' : !reactionEnabled ? 'off' : !s.userPresent ? 'needs-user' : !s.userValid ? (s.userError === 'scope' ? 'needs-scopes' : 'invalid') : 'ready';
+  const channel = !status ? 'unavailable' : !s.botPresent && (s.legacyPresent || Number(s.channelRules) > 0) ? 'upgrade-required'
     : !channelEnabled && !s.botPresent ? 'not-enabled'
       : !s.appPresent ? 'needs-app'
       : !s.appValid ? (s.appError ? 'invalid' : 'unverified')

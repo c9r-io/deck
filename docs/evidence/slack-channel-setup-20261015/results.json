@@ -1,0 +1,110 @@
+{
+  "date": "2026-10-15",
+  "timezone": "Asia/Tokyo",
+  "baseline": "c53d3e720f37ccfc855ccc12bc98e0cdf86d4844",
+  "checks": [
+    {
+      "command": "scripts/ui-tests",
+      "exit_code": 0,
+      "log": "/tmp/deck-slack-acceptance-20261015/ui-complete.log",
+      "log_sha256": "b44ade9f225e5e025ac80f97c5022d13c454708f49fa518aaeb5bfb64a394283",
+      "passed": 826,
+      "failed": 0,
+      "skipped": 0,
+      "coverage_percent": {
+        "lines": 94.61,
+        "branches": 89.97,
+        "functions": 87.83
+      }
+    },
+    {
+      "command": "cargo test --workspace --locked",
+      "exit_code": 0,
+      "log": "/tmp/deck-slack-acceptance-20261015/rust-accepted.log",
+      "log_sha256": "be8e6159a9cc73145318092f9c542690223b9eab2f650d7ff1fb9a2e2c46269e",
+      "passed": 1521,
+      "failed": 0,
+      "ignored": 13
+    },
+    {
+      "command": "cargo fmt --all --check",
+      "exit_code": 0,
+      "log": "/tmp/deck-slack-acceptance-20261015/fmt-accepted.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+      "exit_code": 0,
+      "log": "/tmp/deck-slack-acceptance-20261015/clippy-accepted.log",
+      "log_sha256": "4163f98e05060fbdaa4032f918c2087135e88ac8a7fc126c3b9c1a815752667c"
+    },
+    {
+      "command": "DECK_SMOKE_* app/run.sh --debug-logging",
+      "exit_code": 0,
+      "log": "/tmp/deck-slack-acceptance-20261015/native-visible-build.log",
+      "log_sha256": "2b59d8ef62079245b78b8c9111f7499c9106267ad7404ccd90091c413b2562c5"
+    },
+    {
+      "command": "scripts/smoke-verdict <isolated-root> channel",
+      "exit_code": 0,
+      "log": "/tmp/deck-slack-acceptance-20261015/native-visible-verdict.log",
+      "log_sha256": "8deaa96fb38f2e962090a37b3ef97c0d3d34cf7e1b0132d112ddf7fbf7177d4a"
+    },
+    {
+      "command": "python3 scripts/edr_runtime.py --cleanup --socket <exact-smoke-socket>",
+      "exit_code": 0,
+      "log": "/tmp/deck-slack-acceptance-20261015/cleanup-complete.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "python3 scripts/edr_runtime.py --cleanup --socket <exact-smoke-socket>",
+      "exit_code": 0,
+      "log": "/tmp/deck-slack-acceptance-20261015/cleanup-visible.log",
+      "log_sha256": "58f5a3290b4435475a61a67e5b39871e4000330425c13d32f98f07c8dd39d09c"
+    },
+    {
+      "command": "python3 scripts/edr_runtime.py",
+      "exit_code": 0,
+      "log": "/tmp/deck-slack-acceptance-20261015/final-inventory.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "node --check (66 JS/MJS); node app/ui/js/check.mjs; git diff --check",
+      "exit_code": 0,
+      "log": "/tmp/deck-slack-acceptance-20261015/static-complete.log",
+      "log_sha256": "916db357a46952f502bc00bc646f43015332a19c7240c85052bb8e176a25b3a9"
+    }
+  ],
+  "live_acceptance": {
+    "workspace": "Orchestrator FR114 Sandbox A",
+    "app": "deck",
+    "mode": "isolated debug smoke; in-memory credential store",
+    "guided_existing_app_configuration": "PASS",
+    "manifest_merge_and_browser_navigation": "PASS",
+    "oauth_page_and_existing_bot_token": "PASS",
+    "immediate_token_save_then_enable": "PASS",
+    "reaction_switch_preserved": "PASS",
+    "real_socket_connected": "PASS",
+    "automatic_app_identification": "PASS",
+    "automatic_status_refresh_and_visible_success": "PASS",
+    "new_scope_grant_and_reinstall": "INAPPLICABLE: existing sandbox permissions and event subscriptions already sufficient",
+    "real_channel_message_delivery": "UNRUN: no messages sent and no real sender/channel rule configured",
+    "installed_deck": "NOT OPERATED"
+  },
+  "source_sha256": {
+    "app/src-tauri/src/slack_transport.rs": "a9ed4edee3cf2b99568cb5a1c9cba2ebd5c7c371f688c3391599902cc37a177f",
+    "app/ui/index.html": "f95dcbf29e45c74d0a24f8b5bf903c72804744b7c983dee7aa397af222ba2b1b",
+    "app/ui/js/i18n/en.js": "9c3a3720ed5b0bdcebddec2c0f4f215bbc0558c3605e7643346617cef83b19e0",
+    "app/ui/js/i18n/zh-Hans.js": "d6eafd3ece728ab44ca8f76c96ebdcd8cba9e2d267800e6e40ce3ca07923657b",
+    "app/ui/js/settings.js": "971dcb6287475768a9361f1a3267e84352e3eb464241fe1b360d73bb4e4218bb",
+    "app/ui/js/slack-connection-model.js": "92f73e4dfeacb181c05cfb2e7dd9ca5815cfa5bfea87d92609613c5e3149330c",
+    "app/ui/style.css": "d3572302dc8ecca0a80e0dac21a2870053ac51f5c336cb9112960b72dd878452",
+    "app/ui/test/fixtures/channel-fault-status.json": "5f75c1d895985954cd69e242348040e6a22300edbbd185c2604d31ca364f1ab7",
+    "app/ui/test/wk-smoke.mjs": "beff36b8e1b6cb63928b6dcf889e3b1e1f8ee9e59f63467bf7274dd24fd7769a",
+    "docs/channel-monitor.md": "64882a1f154a0e1d57621c89ec78f75ddd5121d2508857d628c38da184779493",
+    "app/ui/js/slack-setup-model.js": "1f8b97f7441a00964fcd3894910e8b6df6d91e17e41432928aad3af725dd59fd",
+    "app/ui/test/slack-setup-model.test.mjs": "036f8d8e7a43a7b2b036d33ef76e5905fbebde7448c98f3b55a2a9e3006edc6f",
+    "app/ui/test/slack-setup-dom.test.mjs": "5705f5c2f4ae942fe58c8bc9b6e8dc5f18bec6618cfb63a480c477d81a6af902",
+    "docs/verification-status.md": "722edba7de38892e427911ef29c61d888cc2d0fb4e0a1e5b552e1e994de2243e"
+  }
+}

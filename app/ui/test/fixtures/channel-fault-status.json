@@ -16,7 +16,9 @@
       "connected": false,
       "reactionEnabled": false,
       "channelEnabled": true,
-      "channelRules": 1
+      "channelRules": 1,
+      "appId": "A1",
+      "workspaceId": "T1"
     },
     "channel": {
       "enabled": true,
@@ -47,7 +49,9 @@
       "connected": false,
       "reactionEnabled": false,
       "channelEnabled": true,
-      "channelRules": 1
+      "channelRules": 1,
+      "appId": "A1",
+      "workspaceId": "T1"
     },
     "channel": {
       "enabled": true,
@@ -78,7 +82,9 @@
       "connected": true,
       "reactionEnabled": false,
       "channelEnabled": true,
-      "channelRules": 1
+      "channelRules": 1,
+      "appId": "A1",
+      "workspaceId": "T1"
     },
     "channel": {
       "enabled": true,

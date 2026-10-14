@@ -565,13 +565,25 @@
             <div class="set-hint" id="set-slack-legacy" hidden></div>
             <button class="btn" id="set-slack-legacy-clear" data-i18n="settings.channelLegacyClear" hidden>Remove legacy Slack credentials</button>
             <div class="set-row"><label for="set-channel-enabled" data-i18n="settings.channelMonitor">Channel monitoring</label><input type="checkbox" id="set-channel-enabled"><button class="btn" id="set-channel-upgrade" data-i18n="settings.channelEnable">Enable Channel Monitoring</button></div>
-            <div id="set-channel-upgrade-steps" hidden>
-              <div class="set-hint" id="set-channel-upgrade-hint" data-i18n="settings.channelUpgradeSteps">Update your existing Deck Slack app manifest, reinstall it, paste its new Bot OAuth Token, and add the Deck bot to every channel you monitor. Existing channel IDs are preserved.</div>
-              <button class="btn" id="set-channel-manifest" data-i18n="settings.channelManifest">Show unified manifest</button>
-              <textarea id="set-channel-manifest-text" readonly spellcheck="false" hidden></textarea>
+            <div id="set-channel-upgrade-steps" class="slack-setup" hidden>
+              <div class="set-hint" id="set-channel-upgrade-hint" data-i18n="settings.channelUpgradeSteps"></div>
+              <p id="set-channel-setup-feedback" role="status" aria-live="polite" tabindex="-1"></p>
+              <h4 data-i18n="settings.channelStepApp">1. Update the existing Slack app</h4>
+              <div class="set-hint" id="set-channel-app-location"></div>
+              <div class="set-row"><label for="set-channel-app-id" data-i18n="settings.channelAppId">App ID (optional)</label><input id="set-channel-app-id" autocomplete="off" spellcheck="false" placeholder="A…"><button class="btn" id="set-channel-open-app" data-i18n="settings.channelOpenApp">Open Slack app settings</button></div>
+              <div class="set-hint" data-i18n="settings.channelManifestHelp"></div>
+              <label for="set-channel-existing-manifest" data-i18n="settings.channelExistingManifest">Current App Manifest (JSON)</label>
+              <textarea id="set-channel-existing-manifest" spellcheck="false" maxlength="131072" rows="4"></textarea>
+              <button class="btn" id="set-channel-manifest" data-i18n="settings.channelManifest">Prepare, copy and open Slack</button>
+              <textarea id="set-channel-manifest-text" aria-label="Updated App Manifest" readonly spellcheck="false" rows="4" hidden></textarea>
+              <h4 data-i18n="settings.channelStepToken">2. Reinstall and copy the Bot token</h4>
+              <div class="set-hint" data-i18n="settings.channelReinstallHelp"></div>
+              <button class="btn" id="set-channel-open-oauth" data-i18n="settings.channelOpenOAuth">Open OAuth &amp; Permissions</button>
+              <h4 data-i18n="settings.channelStepEnable">3. Paste the token and enable</h4>
               <div class="set-row"><label for="set-channel-bot" data-i18n="settings.channelBotToken">Bot token</label><input type="password" id="set-channel-bot" autocomplete="off" spellcheck="false" placeholder="xoxb-…"><button class="btn" id="set-channel-bot-clear" data-i18n="common.clear">Clear</button></div>
               <div class="set-hint" id="set-channel-ids"></div>
-              <button class="btn" id="set-channel-finish" data-i18n="settings.channelFinish">Verify and enable channel monitoring</button>
+              <div class="set-hint" data-i18n="settings.channelMembershipHelp"></div>
+              <div class="set-row"><button class="btn" id="set-channel-finish" data-i18n="settings.channelFinish">Verify and enable channel monitoring</button><button class="btn" id="set-channel-cancel" data-i18n="common.cancel">Cancel</button></div>
             </div>
             <details class="set-details">
               <summary data-i18n="settings.details">Learn more</summary>

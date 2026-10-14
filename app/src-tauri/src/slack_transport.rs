@@ -2,6 +2,9 @@
 //! The loop is started once, by the Slack integration's `start` entry in the
 //! static extension tables (`slack.rs`, `extensions.rs`); `spawn` refuses a
 //! second owner.
+//! Settings may navigate to the App ID observed in the current transport epoch;
+//! the workspace ID comes from verified auth.test. These navigation hints are
+//! not credential or delivery proof.
 //! Status reads never request a Socket ticket; only explicit App-token saves
 //! and actual transport connections call apps.connections.open.
 //! The channel identity is published by this loop alone, after bot
@@ -47,6 +50,8 @@ pub(crate) struct SlackConnectionStatus {
     app_error: Option<&'static str>,
     workspace_match: bool,
     workspace: Option<String>,
+    workspace_id: Option<String>,
+    app_id: Option<String>,
     connected: bool,
     reaction_enabled: bool,
     channel_enabled: bool,
@@ -112,6 +117,15 @@ pub(crate) async fn slack_connection_status() -> Result<SlackConnectionStatus, &
             app_error,
             workspace_match,
             workspace,
+            workspace_id: user
+                .as_ref()
+                .or(bot.as_ref())
+                .and_then(|v| v.as_ref().ok())
+                .and_then(|v| v.get("team_id"))
+                .and_then(Value::as_str)
+                .filter(|s| s.len() <= 64)
+                .map(str::to_string),
+            app_id: current_app_id(),
             connected: connected(),
             reaction_enabled: cfg.slack_enabled,
             channel_enabled: channel.connection.enabled,
@@ -155,6 +169,7 @@ fn clear_legacy_with(
 }
 
 static CONNECTED: AtomicBool = AtomicBool::new(false);
+static OBSERVED_APP: Mutex<Option<(u64, String)>> = Mutex::new(None);
 static APP_VERIFIED: AtomicBool = AtomicBool::new(false);
 static EPOCH: AtomicU64 = AtomicU64::new(1);
 static WAKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
@@ -176,7 +191,17 @@ fn app_valid_fact(present: bool, verified_this_process: bool, connected: bool) -
 pub(crate) fn connected() -> bool {
     CONNECTED.load(Ordering::SeqCst)
 }
+fn current_app_id() -> Option<String> {
+    let observed = OBSERVED_APP.lock_or_recover();
+    app_id_at_epoch(observed.as_ref(), EPOCH.load(Ordering::SeqCst))
+}
+fn app_id_at_epoch(observed: Option<&(u64, String)>, epoch: u64) -> Option<String> {
+    observed
+        .filter(|(seen, _)| *seen == epoch)
+        .map(|(_, id)| id.clone())
+}
 pub(crate) fn app_credential_saved(present: bool) {
+    *OBSERVED_APP.lock_or_recover() = None;
     APP_VERIFIED.store(present, Ordering::SeqCst);
 }
 /// `channel_preparing`: a first-send save is waiting for the identity, so
@@ -572,6 +597,7 @@ pub(crate) fn socket_loop(consumers: Consumers) {
                         let value = parse_socket_text(&text)?;
                         if value.get("type").and_then(Value::as_str) == Some("hello") {
                             let verified_app = app_id(&value).ok_or("app-id")?.to_string();
+                            *OBSERVED_APP.lock_or_recover() = Some((epoch, verified_app.clone()));
                             expected_app = Some(verified_app.clone());
                             if let Some(identity) = identity.as_mut() {
                                 identity.app_id = verified_app;
@@ -686,6 +712,17 @@ mod tests {
             callers.is_empty(),
             "{callers:?} start the transport directly"
         );
+    }
+
+    #[test]
+    fn settings_app_hint_never_uses_a_previous_connection_epoch() {
+        let observed = (42, "A123".to_string());
+        assert_eq!(
+            app_id_at_epoch(Some(&observed), 42).as_deref(),
+            Some("A123")
+        );
+        assert_eq!(app_id_at_epoch(Some(&observed), 43), None);
+        assert_eq!(app_id_at_epoch(None, 42), None);
     }
 
     #[test]

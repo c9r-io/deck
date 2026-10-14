@@ -7,6 +7,11 @@
 // fields when it reaches the writer. On settlement the visible settings are
 // rebuilt from the durable baseline and the remaining previews, so a failed
 // edit cannot hitchhike on another save or return through an older rollback.
+// Slack channel setup waits for token saves, then verifies and commits once.
+// Closing/canceling invalidates an unfinished enable; switching to Slack does not.
+// Draft credentials survive status refreshes and are cleared only after saving.
+// After enabling, a bounded, read-only refresh follows connection establishment
+// while the guide stays open; readiness is never inferred from elapsed time.
 // Settings feedback is presentation only. Each setting keeps its latest
 // save/apply result beside its controls; failures survive closing Settings
 // until another edit of that setting or explicit dismissal. A quiet sidebar
@@ -89,6 +94,7 @@ import { activateTheme } from './theme.js';
 import { applyFontScale } from './font-scale.js';
 import { newlyPairedDevice } from './connector-model.js';
 import { slackConnectionView } from './slack-connection-model.js';
+import { createSlackChannelSetup, mergeSlackChannelManifest, slackAppSettingsUrl } from './slack-setup-model.js';
 import { removeLegacySlackCredentials } from './slack-legacy-cleanup.js';
 import { NOTIFY_STATUS_WORDS, agentHooksToastKey, notifyNeedsAgentStatus, notifyStatusKey } from './notify-model.js';
 import { piErrorKey, piSettingsView } from './pi-model.js';
@@ -223,6 +229,7 @@ export function locateSetting(id) {
 }
 
 function closeSettings() {
+  cancelSlackChannelSetup();
   $('settings-modal').style.display = 'none';
   $('settings-btn').focus();
 }
@@ -954,7 +961,98 @@ export async function persistClaudeReentryChoice() {
 }
 
 let channelUpgradeOpen = false;
+let slackConnection = null;
+let slackRenderGeneration = 0;
+let slackSetupRefreshGeneration = 0;
+const slackSecretWrites = new Map();
+const SLACK_TOKEN_FIELDS = [['slack-user-token', 'set-inbound-slack-user'], ['slack-app-token', 'set-inbound-slack-app'], ['slack-bot-token', 'set-channel-bot']];
+function revealSlackChannelSetup() {
+  channelUpgradeOpen = true;
+  $('set-channel-upgrade-steps').hidden = false;
+  $('set-channel-upgrade-steps').scrollIntoView?.({ block: 'nearest' });
+}
+function cancelSlackChannelSetup() {
+  slackChannelSetup.cancel();
+  slackSetupRefreshGeneration++;
+  channelUpgradeOpen = false;
+  $('set-channel-upgrade-steps').hidden = true;
+  $('set-channel-setup-feedback').textContent = '';
+  $('set-channel-existing-manifest').value = '';
+  $('set-channel-manifest-text').value = '';
+}
+function followSlackChannelConnection() {
+  const generation = ++slackSetupRefreshGeneration;
+  let remaining = 10;
+  const current = () => generation === slackSetupRefreshGeneration && channelUpgradeOpen
+    && ctx.settings.inbound.channelConnection?.enabled;
+  const refresh = async () => {
+    if (!current()) return;
+    await renderInboundSettings();
+    if (current() && slackConnection && !slackConnection.connected && --remaining > 0) {
+      setTimeout(refresh, 3000);
+    }
+  };
+  setTimeout(refresh, 1000);
+}
+const SLACK_SETUP_KEYS = Object.freeze({
+  'checking': 'settings.channelSetup.checking',
+  'needs-bot': 'settings.channelSetup.needs-bot',
+  'needs-scopes': 'settings.channelSetup.needs-scopes',
+  'needs-app': 'settings.channelSetup.needs-app',
+  'invalid-bot': 'settings.channelSetup.invalid-bot',
+  'network': 'settings.channelSetup.network',
+  'user-error': 'settings.channelSetup.user-error',
+  'workspace-mismatch': 'settings.channelSetup.workspace-mismatch',
+  'unavailable': 'settings.channelSetup.unavailable',
+  'save-error': 'settings.channelSetup.save-error',
+  'enabled': 'settings.channelSetup.enabled',
+});
+const slackChannelSetup = createSlackChannelSetup({
+  saveTokens: async () => {
+    // A blur save and a click share the same promise, including its failure.
+    const results = await Promise.all(SLACK_TOKEN_FIELDS.map(([slot, id]) => storeInboundSecret(slot, id)));
+    return results.every(Boolean);
+  },
+  readStatus: async () => (slackConnection = await inv('slack_connection_status')),
+  enable: proceed => commitSettings({ key: 'inbound', exclusive: true, proceed,
+    edit: settings => { settings.inbound.channelConnection = { enabled: true, connectionId: 'default' }; },
+    errorKey: 'error.inboundSave', apply: () => renderInboundSettings(),
+    onCommit: () => { inv('inbound_check_now').catch(() => {}); },
+  }),
+  changed: state => {
+    if (state === 'enabled') followSlackChannelConnection();
+    const checking = state === 'checking';
+    $('set-channel-enabled').disabled = checking;
+    $('set-channel-upgrade').disabled = checking;
+    $('set-channel-finish').disabled = checking;
+    if (state !== 'enabled') {
+      $('set-channel-enabled').checked = !!ctx.settings.inbound.channelConnection?.enabled;
+      revealSlackChannelSetup();
+    }
+    if (state !== 'credential-error') $('set-channel-setup-feedback').textContent = t(SLACK_SETUP_KEYS[state]);
+    if (!checking) $('set-channel-setup-feedback').focus();
+  },
+});
+async function enableSlackChannels() {
+  try { return await slackChannelSetup.run(); }
+  finally {
+    $('set-channel-enabled').disabled = false;
+    $('set-channel-upgrade').disabled = false;
+    $('set-channel-finish').disabled = false;
+  }
+}
+async function openSlackAppSettings(page) {
+  const entered = $('set-channel-app-id').value.trim();
+  if (entered && !/^A[A-Z0-9]{1,63}$/.test(entered)) {
+    $('set-channel-setup-feedback').textContent = t('settings.channelSetup.app-id');
+    return;
+  }
+  try { await inv('open_target', { kind: 'url', value: slackAppSettingsUrl(entered || slackConnection?.appId, page, slackConnection?.workspaceId), cwd: ctx.HOME }); }
+  catch (_) { $('set-channel-setup-feedback').textContent = t('error.inboundSetup'); }
+}
+
 const SLACK_STATE_KEYS = Object.freeze({
+  unavailable: 'settings.slackState.unavailable',
   ready: 'settings.slackState.ready', off: 'settings.slackState.off',
   'not-enabled': 'settings.slackState.not-enabled',
   'upgrade-required': 'settings.slackState.upgrade-required',
@@ -989,13 +1087,14 @@ function inboundSlackStatusText(status) {
 }
 
 export async function renderInboundSettings() {
+  const generation = ++slackRenderGeneration;
   $('set-inbound-slack').checked = !!ctx.settings.inbound.sources.slack.enabled;
   let status = null;
   try { status = await inv('inbound_status'); } catch (_) { status = null; }
+  if (generation !== slackRenderGeneration) return;
   const present = slot => !!(status && status.sources || []).some(s => s.secrets.some(x => x.slot === slot && x.present));
   for (const [slot, id] of [['slack-user-token', 'set-inbound-slack-user'], ['slack-app-token', 'set-inbound-slack-app']]) {
     const box = $(id);
-    box.value = '';
     box.placeholder = present(slot) ? t('settings.inboundTokenSaved') : (slot === 'slack-user-token' ? 'xoxp-…' : 'xapp-…');
     $(id + '-clear').style.display = present(slot) ? '' : 'none';
   }
@@ -1003,6 +1102,8 @@ export async function renderInboundSettings() {
   $('set-inbound-status').textContent = inboundSlackStatusText(status);
   let connection = null;
   try { connection = await inv('slack_connection_status'); } catch (_) { connection = null; }
+  if (generation !== slackRenderGeneration) return;
+  slackConnection = connection;
   const view = slackConnectionView(connection, ctx.settings);
   $('set-channel-enabled').checked = !!ctx.settings.inbound.channelConnection?.enabled;
   $('set-slack-workspace').textContent = view.workspace ? t('settings.slackWorkspace', { workspace: view.workspace }) : '';
@@ -1013,6 +1114,7 @@ export async function renderInboundSettings() {
   if (view.channel === 'ready' && view.socket === 'disconnected') $('set-channel-status').textContent += ' · ' + t('settings.channelStatus.disconnected');
   try {
     const channel = await inv('channel_status');
+    if (generation !== slackRenderGeneration) return;
     const facts = [];
     if (channel.pendingCount) facts.push(t('settings.channelPending', { count: formatNumber(channel.pendingCount) }));
     if (channel.rejectedCount) facts.push(t('settings.channelRejected', { count: formatNumber(channel.rejectedCount) }));
@@ -1024,10 +1126,12 @@ export async function renderInboundSettings() {
   $('set-slack-legacy').textContent = view.legacyNotice
     ? t(view.legacyNotice === 'retained' ? 'settings.channelLegacyRetained' : 'settings.channelLegacy') : '';
   $('set-slack-legacy-clear').hidden = !view.legacy;
-  $('set-channel-bot').value = '';
   $('set-channel-bot').placeholder = connection?.botPresent ? t('settings.inboundTokenSaved') : 'xoxb-…';
   $('set-channel-bot-clear').hidden = !connection?.botPresent;
-  $('set-channel-upgrade-steps').hidden = !channelUpgradeOpen && !connection?.botPresent;
+  $('set-channel-upgrade-steps').hidden = !channelUpgradeOpen;
+  $('set-channel-app-id').placeholder = connection?.appId || 'A…';
+  $('set-channel-app-location').textContent = t(connection?.appId ? 'settings.channelAppLocated' : 'settings.channelAppChoose');
+  $('set-channel-upgrade').textContent = t(ctx.settings.inbound.channelConnection?.enabled ? 'settings.channelManage' : 'settings.channelEnable');
   $('set-channel-upgrade-hint').textContent = t(!connection?.userPresent && !connection?.appPresent ? 'settings.channelNewSetupSteps' : 'settings.channelUpgradeSteps');
   $('set-channel-ids').textContent = [...new Set((ctx.settings.inbound.channelRules || []).flatMap(rule => rule.channelIds || []))].join(', ');
 
@@ -1277,22 +1381,33 @@ export async function persistInboundSlackChoice() {
 }
 
 const INBOUND_TOKEN_ERRORS = { scope: 'error.inboundTokenScope', workspace: 'error.inboundWorkspace', 'other-credential': 'error.inboundOtherCredential', shape: 'error.inboundTokenShape', auth: 'error.inboundTokenAuth', network: 'error.inboundTokenNetwork', slack: 'error.inboundTokenSlack', keychain: 'error.inboundToken' };
-async function storeInboundSecret(slot, inputId) {
+function storeInboundSecret(slot, inputId) {
+  if (slackSecretWrites.has(slot)) return slackSecretWrites.get(slot);
   const box = $(inputId);
   const value = box.value.trim();
-  if (!value) return;
+  if (!value) return Promise.resolve(true);
   box.disabled = true;
-  try {
-    await inv('inbound_set_secret', { slot, value });
-    toast(t('settings.inboundTokenStored'));
-  } catch (e) {
-    const code = String(e);
-    if (code.startsWith('slack:')) toast(t('error.inboundTokenSlack', { code: code.slice(6) || '?' }));
-    else toast(t(INBOUND_TOKEN_ERRORS[code] || 'error.inboundToken'));
-  } finally {
-    box.disabled = false;
-    renderInboundSettings();
-  }
+  const pending = (async () => {
+    try {
+      await inv('inbound_set_secret', { slot, value });
+      if (box.value.trim() === value) box.value = '';
+      toast(t('settings.inboundTokenStored'));
+      return true;
+    } catch (e) {
+      const code = String(e);
+      const message = code.startsWith('slack:') ? t('error.inboundTokenSlack', { code: code.slice(6) || '?' })
+        : t(INBOUND_TOKEN_ERRORS[code] || 'error.inboundToken');
+      toast(message);
+      $('set-channel-setup-feedback').textContent = message;
+      return false;
+    } finally {
+      box.disabled = false;
+      slackSecretWrites.delete(slot);
+      void renderInboundSettings();
+    }
+  })();
+  slackSecretWrites.set(slot, pending);
+  return pending;
 }
 
 async function clearInboundSecret(slot) {
@@ -1653,22 +1768,29 @@ export function initSettings() {
 
   $('set-inbound-slack').onchange = persistInboundSlackChoice;
   $('set-channel-enabled').onchange = async () => {
-    const enabled = $('set-channel-enabled').checked;
-    if (enabled) {
-      const status = await inv('slack_connection_status').catch(() => null);
-      if (!status?.botValid || !status?.appPresent || !status?.workspaceMatch) {
-        $('set-channel-enabled').checked = false;
-        channelUpgradeOpen = true;
-        $('set-channel-upgrade-steps').hidden = false;
-        toast(t('settings.slackState.upgrade-required'));
-        return;
-      }
-    }
-    await persistInbound({ ...ctx.settings.inbound, channelConnection: { enabled, connectionId: 'default' } });
+    if ($('set-channel-enabled').checked) return enableSlackChannels();
+    cancelSlackChannelSetup();
+    await persistInbound({ ...ctx.settings.inbound, channelConnection: { enabled: false, connectionId: 'default' } });
   };
-  $('set-channel-upgrade').onclick = () => { channelUpgradeOpen = true; $('set-channel-upgrade-steps').hidden = false; };
-  $('set-channel-finish').onclick = () => { $('set-channel-enabled').checked = true; $('set-channel-enabled').dispatchEvent(new Event('change')); };
-  $('set-channel-manifest').onclick = async () => { try { $('set-channel-manifest-text').value = await inv('slack_manifest'); $('set-channel-manifest-text').hidden = false; $('set-channel-manifest-text').select(); } catch (_) { toast(t('error.inboundSetup')); } };
+  $('set-channel-upgrade').onclick = () => {
+    if (ctx.settings.inbound.channelConnection?.enabled) revealSlackChannelSetup();
+    else return enableSlackChannels();
+  };
+  $('set-channel-finish').onclick = enableSlackChannels;
+  $('set-channel-cancel').onclick = cancelSlackChannelSetup;
+  $('set-channel-open-app').onclick = () => openSlackAppSettings('app-manifest');
+  $('set-channel-open-oauth').onclick = () => openSlackAppSettings('oauth');
+  $('set-channel-manifest').onclick = async () => {
+    try {
+      const required = JSON.parse(await inv('slack_manifest'));
+      const merged = mergeSlackChannelManifest($('set-channel-existing-manifest').value, required);
+      $('set-channel-manifest-text').value = merged;
+      $('set-channel-manifest-text').hidden = false;
+      await inv('write_clipboard', { text: merged });
+      $('set-channel-setup-feedback').textContent = t('settings.channelSetup.copied');
+      await openSlackAppSettings('app-manifest');
+    } catch (_) { $('set-channel-setup-feedback').textContent = t('settings.channelSetup.manifest-error'); }
+  };
   $('set-channel-bot').addEventListener('change', () => storeChannelSecret());
   $('set-channel-bot-clear').onclick = () => clearChannelSecret();
   $('set-slack-legacy-clear').onclick = clearLegacySlackCredentials;

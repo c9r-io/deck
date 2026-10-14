@@ -979,6 +979,11 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .set-details { margin: 8px 0 16px; color: var(--muted); font-size: 0.884615rem; line-height: 1.5; }
 .set-details summary { cursor: pointer; width: fit-content; }
 .set-details summary:hover { color: var(--text); }
+/* Slack's upgrade stays in Settings; the editable manifest is local draft only. */
+.slack-setup { padding: 16px; border: 1px solid var(--border-soft); border-radius: var(--radius); }
+.slack-setup h4 { margin: 16px 0 8px; }
+.slack-setup textarea { width: 100%; margin: 8px 0; padding: 8px; font: 0.85rem var(--mono); resize: vertical; }
+.slack-setup [role="status"] { line-height: 1.5; margin-bottom: 12px; }
 #set-log-size { font-family: var(--mono); font-size: 0.884615rem; color: var(--muted); overflow-wrap: anywhere; }
 .set-log-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .btn.set-danger { color: var(--danger); border-color: var(--danger); }

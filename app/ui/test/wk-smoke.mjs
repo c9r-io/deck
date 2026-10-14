@@ -2,6 +2,8 @@
 // app was launched with --smoke-wkwebview and an isolated --smoke-data-dir.
 // The Node gate runs only *.test.mjs and does not count smoke carriers.
 // Production DOM imports below run only inside the real WKWebView.
+// Channel smoke also exercises the setup guide and rejected token in the real
+// webview, with process-local smoke credentials and no Slack-side changes.
 let $, ctx, inv, state, store, panes, provider, render, pollNow, boardData;
 let renameCardInline, renderSuggest, resetSuggest, newSession;
 let showLinkCtx, toggleSidebar, addSplit, backToBoard, openSession, strToB64;
@@ -2932,6 +2934,19 @@ export async function verifyChannel() {
     await openSettings(); selectSettingsSection('integrations'); await renderConnectorSettings();
     const settingsVisible = !$('set-channel-enabled').closest('.set-group').hidden
       && $('set-channel-bot').type === 'password' && $('set-inbound-slack-app').type === 'password';
+    const { t } = await import('../js/i18n.js');
+    await $('set-channel-upgrade').onclick();
+    const guide = !$('set-channel-upgrade-steps').hidden
+      && $('set-channel-setup-feedback').textContent === t('settings.channelSetup.needs-bot')
+      && !$('set-channel-enabled').checked;
+    $('set-channel-bot').value = 'invalid-token-shape';
+    await $('set-channel-finish').onclick();
+    const rejected = $('set-channel-bot').value === 'invalid-token-shape'
+      && !$('set-channel-bot').disabled && !ctx.settings.inbound.channelConnection?.enabled
+      && $('set-channel-setup-feedback').textContent === t('error.inboundTokenShape');
+    $('set-channel-bot').value = '';
+    $('set-channel-cancel').click();
+    const guideCanceled = $('set-channel-upgrade-steps').hidden;
     $('set-close').click();
     await provider.saveTemplate(project.id, 'channel smoke', ['Inspect {{msg.text}}']);
     await provider.saveTemplate(project.id, '{text}', ['Inspect {{msg.text}}']);
@@ -2951,7 +2966,7 @@ export async function verifyChannel() {
     $('auto-save').click();
     const saved = await waitFor(() => ctx.settings.inbound.channelRules?.length === 1);
     const rule = ctx.settings.inbound.channelRules?.[0];
-    await report('channel-ui', settingsVisible && refused && saved && rule?.match?.groupCapture === 'incident'
+    await report('channel-ui', settingsVisible && guide && rejected && guideCanceled && refused && saved && rule?.match?.groupCapture === 'incident'
       && rule?.idleMinutes === 30 && rule?.cmd === 'claude --dangerously-skip-permissions', settingsVisible ? 1 : 0, refused && saved ? 1 : 0);
     // The debug seed stages events whose target command is runtime-blocked,
     // so this smoke never starts an agent: they must stay pending and no
