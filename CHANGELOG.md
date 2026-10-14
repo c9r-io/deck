@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.8.2 — 2026-10-15 (Nightly)
+
+- Slack channel monitoring for an existing Slack app: enabling it now walks
+  through three steps (update the existing app, reinstall and copy the Bot
+  token, paste and enable). Deck merges the required bot, channel scopes
+  and message events into the app's current JSON manifest while keeping
+  your other settings, copies it, and opens that app's Slack settings or
+  OAuth page. Missing Bot token, missing permissions, an invalid token, a
+  workspace mismatch and a network or status failure are each reported
+  separately instead of "Upgrade required". Credentials are saved and
+  checked before monitoring is turned on; enabling it still creates no
+  channel rule, and event delivery is confirmed only by a matching message.
+- Keyboard navigation: card titles, sidebar sessions and project names are
+  real buttons reachable with Tab and opened with Enter or Space, also with
+  the sidebar collapsed. Redrawing the Board, sidebar or project list keeps
+  focus on the same item (never taken from a terminal). Opening a card from
+  Needs attention offers "Back to Needs attention" with your project,
+  filter, scroll position and row restored. Locating a card from Needs
+  attention never starts its session. With large text, a card's title and
+  badges no longer squeeze each other.
+- Settings: changes save automatically and each one reports Saving, Saved
+  or a failure; a failed save restores the previous value, and a change
+  that saved but could not be fully applied says so. When Deck cannot read
+  the current state of a setting (such as agent hooks) it says the state
+  is unknown and offers a retry instead of showing a guess. Editor,
+  language and voice settings now go through the same single settings
+  writer as the rest.
+
 ## 0.8.1 — 2026-10-13 (Nightly)
 
 - New, off by default: Deck can show when Pi (the Pi coding agent) starts
