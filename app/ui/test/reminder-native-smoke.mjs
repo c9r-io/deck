@@ -54,7 +54,7 @@ export async function runNativeReminderSmoke() {
           await provider.rename(c.id, 'Reminder native ' + c.id.slice(-12));
           await editor(provider.get(c.id), false, false, command === 'native-create-inventory'); await pollNow();
           await openSession(c.id); await pollNow();
-          await inv('pty_write', { name: provider.get(c.id).session, dataB64: btoa('exit\r') });
+          await inv('pty_write', { name: provider.get(c.id).session, gen: ctx.ptyGens.get(provider.get(c.id).session), dataB64: btoa('exit\r') });
           leaveSessionView(); state.view = 'board'; render();
           await until(async () => { await pollNow(); return provider.get(c.id)?.reminderRetirements?.length > 0; });
           await report(provider.get(c.id).status === 'stopped', stage);

@@ -90,7 +90,7 @@ export async function runPiLiveSmoke() {
   };
   const info = async session => (await inv('poll_sessions', { names: [session], tailFor: [], checkpointShells: false }))[0];
   const fixture = () => inv('smoke_pi_fixture');
-  const type = (session, text) => inv('pty_write', { name: session, dataB64: strToB64(text) });
+  const type = (session, text) => inv('pty_write', { name: session, gen: ctx.ptyGens.get(session), dataB64: strToB64(text) });
   let rule = null, project = null, keeper = null, card = null;
   try {
     // 1. the switch: off at first, on through its confirmation

@@ -22,6 +22,11 @@
 // another pane or attachment, re-bound or replayed. Each input is ATTEMPTED
 // at most once: a failed write is not retried, and an attempt is not a claim
 // that the bytes were delivered.
+// Programmatic input uses the returned handler's `insert` entry. It is always
+// user input (never a terminal reply), with the same target, cleanup and tail.
+// A function argument prepares bytes asynchronously, after the target is bound;
+// its preparation reserves its place before later input. Empty/failed preparation
+// writes nothing and releases the tail. Callers own completion-mirror updates.
 import { isTerminalAutoReply } from './pure.js';
 
 // Content-free onData shape, never a claim about keyboard/paste provenance.
@@ -54,21 +59,29 @@ export function createTerminalDataHandler(deps) {
     if (reason) { deps.cancelled?.(reason); return undefined; }
     return write(data, bound);
   };
-  return data => {
-    const reply = isTerminalAutoReply(data);
-    if (!reply && blocked()) return;
-    if (!reply) onInput(data);
-    if (!reply && hasSelection()) appendInputCleanup(pane, cancelSelection(terminalInputDiagnostic(data)));
-    if (!reply && scrolled()) appendInputCleanup(pane, goLive());
+  const accept = (data, reply, mirror) => {
+    if (!reply && blocked()) return false;
     const bound = bind(reply);
+    if (mirror && !reply) onInput(data);
+    if (!reply && hasSelection()) appendInputCleanup(pane, cancelSelection(terminalInputDiagnostic(typeof data === 'string' ? data : '')));
+    if (!reply && scrolled()) appendInputCleanup(pane, goLive());
     if (bound?.wait) appendInputCleanup(pane, bound.wait);
+    if (typeof data === 'function') {
+      const prepare = data;
+      data = '';
+      appendInputCleanup(pane, Promise.resolve().then(prepare).then(value => { data = value; }));
+    }
+    const attempt = () => { if (data) return send(data, bound); };
     if (pane.liveQ) {
-      const attempt = () => send(data, bound);
       const q = pane.liveQ.then(attempt, attempt).then(settled, settled);
       pane.liveQ = q;
       q.then(() => { if (pane.liveQ === q) pane.liveQ = null; });
     } else {
-      send(data, bound);
+      attempt();
     }
+    return true;
   };
+  const handle = data => accept(data, isTerminalAutoReply(data), true);
+  handle.insert = data => accept(data, false, false);
+  return handle;
 }

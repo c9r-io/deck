@@ -1,0 +1,3 @@
+1792044727 [ui] smoke-check ti-ready a=1 b=0
+1792044727 [ui] smoke-check ti-ipc-spy a=1 b=1
+1792044796 [ui] smoke-check ti-order-scroll a=-1 b=2

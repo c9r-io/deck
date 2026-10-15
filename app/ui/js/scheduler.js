@@ -1,5 +1,6 @@
 // scheduler.js — the ⏱ panel: a card's LISTS of prompts to send later
 // Part of deck's no-build frontend: native ES modules, no bundler.
+// Terminal menu input is owned by layout.js and its bound pane input queue.
 //
 // # Contract
 // C v01: a list optionally leaves a durable human checkpoint after EVERY
@@ -70,7 +71,6 @@ import { autoGrowField, confirmDialog, inlineRename, toast, promptDialog } from 
 import { claimSessionTool, registerSessionPopup, registerSessionTool, releaseSessionTool } from './session-tools.js';
 // Board access is injected at boot; the queue view has no view-core imports.
 let provider, pollNow, refreshAttention, ruleOf = () => null;
-import { strToB64 } from './terminal-bytes.js';
 import { openTemplates } from './templates.js';
 import { formatInterval, formatNumber, onLocaleChange, t } from './i18n.js';
 
@@ -799,13 +799,6 @@ export function initScheduler(deps) {
     e.preventDefault();
     $('q-add-btn').click();
   });
-
-  listen('menu-clear', () => {
-    if (state.view === 'session' && ctx.term) {
-      ctx.term.clear();
-      if (ctx.attachedName) inv('pty_write', { name: ctx.attachedName, dataB64: strToB64('\x0c') }).catch(() => {});
-    }
-  }).catch(() => uev('listen-fail', 'menu-clear'));
 
   listen('queue-changed', refreshQueue).catch(() => uev('listen-fail', 'queue-changed'));
 

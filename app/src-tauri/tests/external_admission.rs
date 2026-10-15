@@ -1128,11 +1128,7 @@ const FRONTEND_SITES: &[FrontendSite] = &[
         "",
     ),
     // Keystrokes, drops, completions and voice: the local user.
-    ("layout.js", "insertDroppedFiles", "pty_write", 1, ""),
     ("layout.js", "wireTerminalInput", "pty_write", 1, ""),
-    ("terminal.js", "acceptSuggestion", "pty_write", 1, ""),
-    ("terminal.js", "acceptGhost", "pty_write", 1, ""),
-    ("scheduler.js", "initScheduler", "pty_write", 1, ""),
     ("voice-model.js", "type", "voice_deliver", 1, ""),
     ("voice-model.js", "typeText", "voice_deliver", 1, ""),
 ];

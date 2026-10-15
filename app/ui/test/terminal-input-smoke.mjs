@@ -11,13 +11,14 @@
 // identified by behaviour (`ti-composition-boundary` fails on the unpatched
 // build), not by digest; the digest is pinned by static.test.mjs.
 // Two things are scripted, in this page only: when the page RECEIVES the
-// reply to `scroll_bottom` or `attach_session` (the request has already been
+// reply to `scroll_bottom`, `attach_session` or `save_dropped_file` (the request has already been
 // sent and handled; the fetch reply is held back), and a read of each
 // `pty_write` request's `gen` argument as it leaves the page.
 export async function runTerminalInputSmoke() {
   const { ctx, inv } = await import('../js/state.js');
   const { panes, provider, render, stopPolling } = await import('../js/board.js');
-  const { addSplit, focusPane, openSession } = await import('../js/layout.js');
+  const { addSplit, backToBoard, focusPane, openSession, clearFocusedTerminal } = await import('../js/layout.js');
+  const { acceptSuggestion, acceptGhost } = await import('../js/terminal.js');
   const { strToB64 } = await import('../js/terminal-bytes.js');
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (check, budget = 8000) => {
@@ -37,7 +38,7 @@ export async function runTerminalInputSmoke() {
 
   const systemFetch = window.fetch;
   const holds = {}, writes = [];
-  let own = null;
+  let own = null, fileSaves = 0;
   const hold = command => { holds[command] = deferred(); };
   const release = command => { const held = holds[command]; delete holds[command]; if (held) held.resolve(); };
   try {
@@ -45,6 +46,7 @@ export async function runTerminalInputSmoke() {
     window.fetch = async function observed(url, init) {
       const match = /^(?:ipc:\/\/localhost|https?:\/\/ipc\.localhost)\/([^?#]+)/.exec(String(url?.url || url));
       const command = match ? decodeURIComponent(match[1]) : null;
+      if (command === 'save_dropped_file') fileSaves++;
       if (command === 'pty_write') {
         /* only the generation of this carrier's own pane A is kept */
         let gen = 'unread', name = null;
@@ -77,7 +79,7 @@ export async function runTerminalInputSmoke() {
     };
     const received = text => until(() => lines().includes(text));
     const absent = text => !lines().includes(text);
-    const raw = text => inv('pty_write', { name: a.session, dataB64: strToB64(text) });
+    const raw = text => inv('pty_write', { name: a.session, gen: ctx.ptyGens.get(a.session), dataB64: strToB64(text) });
     /* history to scroll into, then the receiver */
     await raw("PS1='$ '; PROMPT='$ '; RPROMPT=''\r"); await pause(300);
     await raw('seq 1 120\r'); await pause(400);
@@ -181,6 +183,64 @@ export async function runTerminalInputSmoke() {
     await pause(80);
     pane().term.input('\r');
     await report('ti-composition-boundary', await received('ti-ime-中文测试') && absent('ti-ime-中文c测试'));
+
+    stage = 9;
+    const unboundRefusals = [];
+    for (const binding of [{}, { gen: null }]) {
+      try { await inv('pty_write', { name: a.session, ...binding, dataB64: strToB64('ti-unbound\r') }); }
+      catch (error) { unboundRefusals.push(String(error)); }
+    }
+    pane().term.input('ti-bound\r');
+    await report('ti-backend-refuses-unbound', unboundRefusals.length === 2
+      && unboundRefusals.every(error => error === 'stale-attachment') && await received('ti-bound') && absent('ti-unbound'));
+
+    stage = 10;
+    acceptSuggestion('ti-suggestion-');
+    ctx.ghostRemainder = 'ghost'; acceptGhost();
+    pane().term.input('\r');
+    await report('ti-completion-input', await received('ti-suggestion-ghost'));
+    mark = writes.length;
+    clearFocusedTerminal(); await pause(200);
+    const clearWritten = writes.length === mark + 1 && writes[mark] === pane().inputGen;
+    // Clear the receiver's canonical input after Ctrl+L, without leaving cat.
+    pane().term.input('\x15ti-clear\r');
+    await report('ti-clear-input', clearWritten && await received('ti-clear'));
+
+    stage = 11;
+    const dropFile = (name, paste = false) => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(['fixture'], name, { type: 'image/png' }));
+      pane().body.dispatchEvent(paste
+        ? new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true })
+        : new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true }));
+    };
+    hold('save_dropped_file'); mark = writes.length;
+    let saves = fileSaves;
+    dropFile('ti-file.png');
+    pane().term.input('ti-file-end\r');
+    const saveStarted = await until(() => fileSaves > saves);
+    const fileWaited = writes.length === mark;
+    focusPane(b.session);
+    release('save_dropped_file');
+    const fileReceived = await until(() => lines().join('').replace(/\s/g, '').includes('ti-file.pngti-file-end'));
+    await report('ti-file-order-focus', saveStarted && fileWaited && fileReceived
+      && ctx.attachedName === b.session && writes.slice(mark).every(gen => gen === pane().inputGen));
+
+    stage = 12;
+    focusPane(a.session);
+    const oldFileGen = pane().inputGen;
+    hold('save_dropped_file'); mark = writes.length; saves = fileSaves;
+    dropFile('ti-old-file.png', true);
+    const pasteStarted = await until(() => fileSaves > saves);
+    backToBoard(); stopPolling();
+    await openSession(a.id); stopPolling();
+    const replacedGen = pane().inputGen;
+    release('save_dropped_file'); await pause(300);
+    const noOldWrite = writes.length === mark;
+    pane().term.input('ti-file-fresh\r');
+    await report('ti-file-replaced', pasteStarted && replacedGen > oldFileGen && noOldWrite && await received('ti-file-fresh')
+      && !lines().join('').includes('ti-old-file.png') && writes[writes.length - 1] === replacedGen);
+
   } catch (error) {
     failed = true;
     await report('ti-exception', false, stage || 1);

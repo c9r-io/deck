@@ -113,7 +113,7 @@ export async function runChannelLiveSmoke() {
       const hex = lines.slice(0, lines.lastIndexOf('DECKLIVE-END')).filter(line => /^[0-9a-f]{2,64}$/.test(line)).join('');
       params = JSON.parse(new TextDecoder().decode(Uint8Array.from(hex.match(/../g) || [], pair => parseInt(pair, 16))));
     }
-    await inv('pty_write', { name: reader.session, dataB64: strToB64("clear; printf '\\033[3J'\r") }).catch(() => {});
+    await inv('pty_write', { name: reader.session, gen: ctx.ptyGens.get(reader.session), dataB64: strToB64("clear; printf '\\033[3J'\r") }).catch(() => {});
     await pause(400);
     await provider.close(reader.id);
     await waitFor(() => store.cards.length === 0, 5000);

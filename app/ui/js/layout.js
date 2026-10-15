@@ -33,7 +33,7 @@
 // compositionstart appends its preparation to the pane's input tail, never
 // replaces it. Terminal input is never sent for "whichever attachment has this
 // name": it is bound when accepted and every pty_write it makes names one
-// generation. A keyboard input takes the pane's generation (`pane.inputGen`),
+// generation. Keyboard, completion, clear and file input take the pane's generation (`pane.inputGen`),
 // or, from the start of an attach until its reply, that attach REQUEST, whose
 // reply names the generation while the input waits on the pane's tail. An
 // automatic reply takes the generation of the pty-data frame xterm is parsing
@@ -43,6 +43,8 @@
 // (`pty-write-cancel`), never re-bound; pty_write refuses a generation that is
 // not the current attachment's. Losing focus or focusing another split
 // cancels nothing.
+// File input binds and reserves its queue position before reading/saving bytes;
+// late completion never refocuses a pane or borrows a newer attachment.
 // tmux mouse negotiation is enabled for applications. The outer client's
 // mouse-only mode requests are consumed with xterm's public parser so pointer
 // selection remains local; wheel ownership is decided from live pane state.
@@ -118,28 +120,35 @@ export function isFileDrag(dt) {
    read the bytes → backend saves them 0600 under ~/.deck/drops → the saved
    path is typed into the pane's session (quoted, no Enter — the user still
    owns submission). */
-async function insertDroppedFiles(pane, fileList) {
+export function insertDroppedFiles(pane, fileList) {
   const files = Array.from(fileList).slice(0, 4);
-  const paths = [];
-  for (const f of files) {
-    if (f.size > MAX_DROP_BYTES) { toast(t('error.fileLarge')); continue; }
-    try {
-      const b64 = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => res(String(r.result).split(',')[1] || '');
-        r.onerror = () => rej(new Error('read failed'));
-        r.readAsDataURL(f);
-      });
-      paths.push(await inv('save_dropped_file', { name: f.name || 'pasted.png', dataB64: b64 }));
-    } catch (e) {
-      toast(t('error.fileAttach'));
+  const accepted = pane.insertInput?.(async () => {
+    const paths = [];
+    for (const f of files) {
+      if (f.size > MAX_DROP_BYTES) { toast(t('error.fileLarge')); continue; }
+      try {
+        const b64 = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(String(r.result).split(',')[1] || '');
+          r.onerror = () => rej(new Error('read failed'));
+          r.readAsDataURL(f);
+        });
+        paths.push(await inv('save_dropped_file', { name: f.name || 'pasted.png', dataB64: b64 }));
+      } catch (e) {
+        toast(t('error.fileAttach'));
+      }
     }
-  }
-  if (!paths.length) return;
-  focusPane(pane.session);
-  const text = paths.map(shQuote).join(' ') + ' ';
-  inv('pty_write', { name: pane.session, dataB64: strToB64(text) })
-    .catch(() => uev('pty-write-fail'));
+    return paths.length ? paths.map(shQuote).join(' ') + ' ' : '';
+  });
+  if (accepted && panes.get(pane.session) === pane) focusPane(pane.session);
+}
+
+// The local menu action uses the same bound input path as keys and completions.
+export function clearFocusedTerminal() {
+  const pane = state.view === 'session' && panes.get(ctx.attachedName);
+  if (!pane) return;
+  pane.term.clear();
+  pane.insertInput?.('\x0c');
 }
 
 /* tmux copy-mode always exposes a copy cursor, even after the live input cell
@@ -432,7 +441,7 @@ export function wireTerminalInput(pane, term, host) {
   }, true);
 
   let odLogged = 0, escLogged = 0;
-  term.onData(createTerminalDataHandler({
+  const input = createTerminalDataHandler({
     pane,
     blocked: () => ctx.voiceDelivering === session,
     onInput: d => {
@@ -488,7 +497,9 @@ export function wireTerminalInput(pane, term, host) {
         if (String(e) === 'stale-attachment') uev('pty-write-cancel', 'backend');
         else uev('pty-write-fail');
       }),
-  }));
+  });
+  pane.insertInput = input.insert;
+  term.onData(input);
   const copyKey = createTerminalCopy({
     selection: pane.selection, term,
     copySelection: () => copyTerminalSelection(pane),
@@ -1134,6 +1145,7 @@ export function renderSessionView() {
 /* DOM wiring, run once at boot (app.js) so the module can be imported
    without a document. */
 export function initLayout() {
+  listen('menu-clear', clearFocusedTerminal).catch(() => uev('listen-fail', 'menu-clear'));
   onThemeChange(({ terminal }) => panes.forEach(pane => { pane.term.options.theme = terminal; }));
 
   /* Command-C with the focus outside every terminal: a selection still on

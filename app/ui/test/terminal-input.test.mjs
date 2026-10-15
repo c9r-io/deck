@@ -187,3 +187,26 @@ test('keyboard controls and bracketed paste retain input effects and cleanup ord
     assert.deepEqual(events, [['input', data], ['cancel'], ['write', data]]);
   }
 });
+
+
+test('programmatic input cannot masquerade as a reply or bypass blocking; failed preparation releases input', async () => {
+  const pane = {}, writes = [], binds = [];
+  let blocked = true;
+  const handle = createTerminalDataHandler({ pane, blocked: () => blocked,
+    onInput: () => {}, hasSelection: () => false, scrolled: () => false,
+    bind: reply => { binds.push(reply); return 7; },
+    write: (data, gen) => writes.push([data, gen]),
+  });
+  assert.equal(handle.insert('\x1b[0n'), false);
+  assert.equal(handle.insert(() => assert.fail('blocked preparation')), false);
+  assert.deepEqual(binds, []);
+  blocked = false;
+  handle.insert(() => { throw new Error('read failed'); });
+  handle.insert(() => '');
+  handle.insert('\x1b[0n');
+  handle('next');
+  await pane.liveQ;
+  assert.deepEqual(writes, [['\x1b[0n', 7], ['next', 7]]);
+  assert.deepEqual(binds, [false, false, false, false]);
+  assert.equal(pane.liveQ, null);
+});

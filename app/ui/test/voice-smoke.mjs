@@ -42,12 +42,12 @@ export async function runVoiceSmoke() {
     await report('voice-type-separator', await waitFor(() => visible().includes('DECK_VOICE_TYPED AFTER')));
     await pause(400);
     await report('voice-type-no-enter', !visible().includes('not found') && document.activeElement !== button);
-    await inv('pty_write', { name: card.session, dataB64: btoa('\x15') }); await pause(150);
+    await inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: btoa('\x15') }); await pause(150);
     // A foreground program without bracketed paste still takes a single line.
-    await inv('pty_write', { name: card.session, dataB64: btoa('cat\r') }); await pause(600);
+    await inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: btoa('cat\r') }); await pause(600);
     await voice.typeText(target, 'DECK_NEW_FOREGROUND');
     await report('voice-foreground-program', await waitFor(() => visible().includes('DECK_NEW_FOREGROUND')));
-    await inv('pty_write', { name: card.session, dataB64: btoa('\x15\x03') }); await pause(400);
+    await inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: btoa('\x15\x03') }); await pause(400);
     stage = 3;
     await inv('kill_session', { name: card.session });
     let ended = '';

@@ -1,0 +1,12 @@
+✖ suggestion keeps its generation behind selection cleanup (replace=true) (0.968125ms)
+✖ ghost keeps its generation behind selection cleanup (replace=true) (0.61575ms)
+✖ menu clear keeps its generation behind selection cleanup (replace=true) (0.573041ms)
+✖ delayed file cannot cross attachment replacement (new pane=false) (0.419042ms)
+ℹ tests 27
+ℹ pass 23
+ℹ fail 4
+✖ failing tests:
+✖ suggestion keeps its generation behind selection cleanup (replace=true) (0.968125ms)
+✖ ghost keeps its generation behind selection cleanup (replace=true) (0.61575ms)
+✖ menu clear keeps its generation behind selection cleanup (replace=true) (0.573041ms)
+✖ delayed file cannot cross attachment replacement (new pane=false) (0.419042ms)

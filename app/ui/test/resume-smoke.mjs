@@ -17,7 +17,7 @@ export async function runResumeSmoke() {
   };
   const ids = ['01a0b76c-b577-7493-86ef-a1f6209b823e', '0f3ab19c-4d2e-4a71-9b8c-1d2e3f4a5b6c'];
   const cards = [];
-  const write = (card, text) => inv('pty_write', { name: card.session, dataB64: strToB64(text) });
+  const write = (card, text) => inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: strToB64(text) });
   try {
     stopPolling();
     const project = provider.projects()[0];

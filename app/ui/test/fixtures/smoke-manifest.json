@@ -742,6 +742,11 @@
       "terminal": "done",
       "checks": {
         "ti-backend-refuses-stale": {},
+        "ti-backend-refuses-unbound": {},
+        "ti-completion-input": {},
+        "ti-clear-input": {},
+        "ti-file-order-focus": {},
+        "ti-file-replaced": {},
         "ti-composition-boundary": {},
         "ti-early-frame": { "b": 1 },
         "ti-early-input": {},

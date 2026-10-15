@@ -7,7 +7,24 @@
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
-## 本轮 Slack 频道配置引导
+## 本轮终端输入附着边界治理
+
+基线 `817df9b`；修复与证据见
+[终端输入附着边界治理](evidence/terminal-input-governance-20261015/README.md)。
+文件拖入/图片粘贴、补全/ghost 和菜单清屏统一进入按附着代次绑定的输入队列；
+文件读取前预留顺序，换附着取消旧输入，完成时不抢回焦点。
+后端拒绝缺失/null/过期代次，不增加授权或 readiness 来源。
+
+UI 837 项与 Rust workspace 1,521 项通过，13 项保留原有忽略；fmt/clippy、
+语法/模块和 debug 构建来源检查通过。首轮 Rust 有一项未改动的生命周期超时测试
+超限，原断言下定向 8 项及完整 workspace 重跑均通过，失败记录保留。
+反向变异准确触发四组旧附着回归失败。
+
+**原生验收 BLOCKED**：本机锁屏导致窗口不可读取、计时延迟，首轮 smoke 不计通过。
+需解锁后重跑新的隔离 `terminal-input` smoke（15 个检查点），不能据单元测试扩大
+WKWebView 认证。该轮应用和测试会话已精确清理，最终 inventory 退出 0；未发布。
+
+## 上一轮 Slack 频道配置引导
 
 基线 `c53d3e7`；实现与隔离验收见
 [Slack 频道监控配置治理](evidence/slack-channel-setup-20261015/README.md)。

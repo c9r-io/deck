@@ -171,7 +171,7 @@ async function harness() {
   const type = async (session, text) => {
     if (panes.get(session)?.attached !== true) throw new Error('pane');
     if (asks(screen(session))) throw ASKED;
-    await inv('pty_write', { name: session, dataB64: strToB64(text) });
+    await inv('pty_write', { name: session, gen: ctx.ptyGens.get(session), dataB64: strToB64(text) });
   };
   /* one line of input: the text, then Enter as a key of its own, the way the
      scheduler sends a prompt (a CR inside the burst is a pasted newline) */

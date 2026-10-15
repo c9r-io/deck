@@ -1609,9 +1609,15 @@ real IPC, `pty_write`, and an isolated tmux pane running `cat` with echo off
 as the receiver. It holds back the page's receipt of the `scroll_bottom` and
 `attach_session` replies to look at input that arrives meanwhile (a
 composition during a cleanup, input before the attach reply, a card switched
-away and back, a split losing focus), asks `pty_write` to accept a replaced
-generation, and checks the patched composition boundary by behaviour. Its
-compositions are synthetic events; it is not a system input method test.
+away and back, a split losing focus), asks `pty_write` to accept replaced,
+missing and null generations, and checks the patched composition boundary by
+behaviour. It also accepts suggestions/ghost completions and clears through
+the production input queue. Synthetic file-drop and image-paste events use
+real FileReader/save IPC; holding the save reply checks file-before-key order,
+focus preservation and cancellation after replacing an attachment. The
+receiver is harmless `cat`, not a shell executing the supplied file path.
+Compositions and drop/paste events are synthetic; this is not a system input
+method, Finder gesture or system pasteboard test.
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-ti.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-ti-UNIQUE DECK_SMOKE_WKWEBVIEW=terminal-input app/run.sh`,
 then `scripts/smoke-verdict <data-dir> terminal-input`.
 

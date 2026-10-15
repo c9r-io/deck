@@ -6,10 +6,11 @@
 //! a newer attachment.
 //! Every webview write first passes the MCP control fence: MCP-owned managed
 //! panes refuse keyboard/paste bytes until the local user takes control.
-//! A keyboard write names the attachment generation its input was bound to;
+//! Every write names the attachment generation its input was bound to;
 //! `pty_write` checks it under the same map lock that selects the writer and
 //! refuses a replaced attachment (`stale-attachment`), so bytes accepted for
-//! one attachment never reach its successor. Other callers pass no generation.
+//! one attachment never reach its successor. Missing/null generations are
+//! refused too; early frontend input waits for its own attach request.
 //!
 //! # Contract
 //! Flow control is END-TO-END. Every event carries the attachment's
@@ -872,7 +873,7 @@ mod tests {
         for (gen, text) in [
             (Some(7), "a-1 \u{4e2d}\u{6587}\n"),
             (Some(7), "a-2\n"),
-            (None, "a-3\n"),
+            (Some(7), "a-3\n"),
         ] {
             write("deck-pty-real-a", gen, text).expect("current attachment");
         }
@@ -889,6 +890,12 @@ mod tests {
         let refused = write("deck-pty-real-a", Some(7), "stale\n").unwrap_err();
         assert_eq!(refused.message(), STALE_ATTACHMENT);
         assert_eq!(refused.kind(), ErrorKind::ContextChanged);
+        assert_eq!(
+            write("deck-pty-real-a", None, "unbound\n")
+                .unwrap_err()
+                .message(),
+            STALE_ATTACHMENT
+        );
         write("deck-pty-real-a", Some(9), "fresh\n").expect("replacement");
         assert_eq!(
             read_line(&mut replacement),
@@ -907,10 +914,8 @@ mod tests {
         );
     }
 
-    /// The webview's own call shape over the IPC layer: `gen` as a number,
-    /// as null (input accepted before the attach reply) and left out (every
-    /// caller other than keyboard input) all reach `pty_write`, and a stale
-    /// number comes back as the message layout.js matches.
+    /// Missing, null and stale generations are refused over the real IPC
+    /// argument decoder; only bytes bound to the current attachment arrive.
     #[test]
     fn pty_write_accepts_the_webview_argument_shapes_over_ipc() {
         use tauri::ipc::{CallbackFn, InvokeBody};
@@ -942,28 +947,23 @@ mod tests {
             )
         };
         let data = |text: &str| B64.encode(text);
-        for (body, line) in [
-            (
-                serde_json::json!({"name": "deck-pty-ipc", "gen": 11, "dataB64": data("bound\n")}),
-                "bound\n",
-            ),
-            (
-                serde_json::json!({"name": "deck-pty-ipc", "gen": null, "dataB64": data("unbound\n")}),
-                "unbound\n",
-            ),
-            (
-                serde_json::json!({"name": "deck-pty-ipc", "dataB64": data("other caller\n")}),
-                "other caller\n",
-            ),
-        ] {
-            call(body).expect("accepted");
-            assert_eq!(read_line(&mut slave), line);
-        }
-        let refused = call(
+        for body in [
+            serde_json::json!({"name": "deck-pty-ipc", "gen": null, "dataB64": data("unbound\n")}),
+            serde_json::json!({"name": "deck-pty-ipc", "dataB64": data("missing\n")}),
             serde_json::json!({"name": "deck-pty-ipc", "gen": 10, "dataB64": data("stale\n")}),
-        )
-        .expect_err("a replaced generation");
-        assert_eq!(refused, serde_json::json!(STALE_ATTACHMENT));
+        ] {
+            assert_eq!(
+                call(body).expect_err("no current generation"),
+                serde_json::json!(STALE_ATTACHMENT)
+            );
+        }
+        call(serde_json::json!({"name": "deck-pty-ipc", "gen": 11, "dataB64": data("bound\n")}))
+            .expect("current generation");
+        assert_eq!(
+            read_line(&mut slave),
+            "bound\n",
+            "refused input delivered no bytes"
+        );
     }
 
     /// The generation is compared on the entry the write is about to use.
@@ -973,7 +973,13 @@ mod tests {
         let (_sink, _killed, _gate, _slave) = attach(&state, "deck-pty-unit-bound", 3);
         let mut map = state.map.lock_or_recover();
         assert!(bound_entry(&mut map, "deck-pty-unit-bound", Some(3)).is_ok());
-        assert!(bound_entry(&mut map, "deck-pty-unit-bound", None).is_ok());
+        assert_eq!(
+            bound_entry(&mut map, "deck-pty-unit-bound", None)
+                .err()
+                .expect("missing generation")
+                .message(),
+            STALE_ATTACHMENT
+        );
         for stale in [2, 4] {
             let refused = bound_entry(&mut map, "deck-pty-unit-bound", Some(stale))
                 .err()
@@ -1078,8 +1084,8 @@ pub(crate) fn pty_write(
 /// holds. `gen` is the generation the webview bound the input to when it
 /// accepted it; a different current generation means that attachment was
 /// replaced, and the bytes are refused instead of reaching its successor.
-/// `None` (input accepted before an attach named its generation, and every
-/// caller other than keyboard input) keeps the name-only lookup.
+/// `None` is never a target: early frontend input waits for its own attach
+/// reply, and every caller must supply that exact generation.
 fn bound_entry<'a>(
     map: &'a mut HashMap<String, PtyEntry>,
     name: &str,
@@ -1088,11 +1094,10 @@ fn bound_entry<'a>(
     let entry = map
         .get_mut(name)
         .ok_or(DeckError::new(ErrorKind::Other, "not attached"))?;
-    match gen {
-        Some(bound) if bound != entry.generation => {
-            Err(DeckError::new(ErrorKind::ContextChanged, STALE_ATTACHMENT))
-        }
-        _ => Ok(entry),
+    if gen == Some(entry.generation) {
+        Ok(entry)
+    } else {
+        Err(DeckError::new(ErrorKind::ContextChanged, STALE_ATTACHMENT))
     }
 }
 

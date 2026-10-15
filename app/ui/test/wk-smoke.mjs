@@ -555,7 +555,7 @@ async function terminalPaintSmoke(project, column) {
   };
   let mask = 0;
   try {
-    await inv('pty_write', { name: card.session,
+    await inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session),
       dataB64: strToB64("python3 -c 'import time; print(\"\\033[?1049h\\033[?1003h\\033[?1006hALT-FIXTURE\", end=\"\", flush=True); time.sleep(0.2); print(\"\\033[?1003l\\033[?1006l\\033[?1049l\", end=\"\", flush=True); [print(f\"PAINT-{i:03d}\") for i in range(100)]'\r") });
     if (await waitFor(() => renders > 0 && painted('PAINT-099'))) mask |= 1;
     const wheel = lines => pane.body.querySelector('.xterm-screen').dispatchEvent(
@@ -578,7 +578,7 @@ async function terminalPaintSmoke(project, column) {
     renders = 0;
     subscription = pane.term.onRender(() => { renders++; });
     // New bytes after reattach must repaint, not merely preserve an old DOM.
-    await inv('pty_write', { name: card.session, dataB64: strToB64("printf '%s%s\\n' 'PAINT-' 'REATTACHED'\r") });
+    await inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: strToB64("printf '%s%s\\n' 'PAINT-' 'REATTACHED'\r") });
     if (await waitFor(() => renders > 0 && painted('PAINT-REATTACHED'))) mask |= 8;
     // Production tmux now negotiates mouse with apps, but its outer capture
     // must not turn native xterm word/line selection into application input.
@@ -600,7 +600,7 @@ async function multiClickDragSmoke(pane) {
   await cancelTerminalSelection(pane);
   await inv('scroll_bottom', { name: pane.session });
   const fixtureCommand = `python3 -c '[print(f"MCD-{i:03d} alpha βeta 中文 omega") for i in range(60)]; print("MCD-END")'`;
-  await inv('pty_write', { name: pane.session, dataB64: strToB64(fixtureCommand + '\r') });
+  await inv('pty_write', { name: pane.session, gen: ctx.ptyGens.get(pane.session), dataB64: strToB64(fixtureCommand + '\r') });
   const fixtureReady = await waitFor(() =>
     visibleTerminalLine(pane, Math.floor(pane.term.rows / 2)).startsWith('MCD-'), 5000);
 
@@ -708,7 +708,7 @@ async function selectionSmoke(card) {
   selectionStage = 1;
   await openSession(card.id);
   const command = `python3 -c 'import time; f=lambda i: ((chr(96)*3+"rust") if i%101==0 else ("\\tTAB trailing   " if i%97==0 else ("" if i%89==0 else (f"R7-{i:04d}|中文|😀|é|👩‍💻️|" + ("x"*600 if i%113==0 else ""))))); [print(f(i)) for i in range(2500)]; print("R7-END",flush=True); [(time.sleep(.05),print(f"R7-LIVE-{j:03d}",flush=True)) for j in range(80)]'`;
-  await inv('pty_write', { name: card.session, dataB64: strToB64(command + '\r') });
+  await inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: strToB64(command + '\r') });
   await waitFor(async () => {
     const metrics = await inv('terminal_metrics', { name: card.session });
     return metrics.history_rows >= 2500;
@@ -791,7 +791,7 @@ async function selectionSmoke(card) {
   await cancelTerminalSelection(pane);
   await inv('scroll_bottom', { name: card.session });
   const clipboardCommand = `python3 -c '[print(f"R7C-{i:04d}|中文|😀|é|👩‍💻|END") for i in range(400)]; print("R7C-DONE")'`;
-  await inv('pty_write', { name: card.session, dataB64: strToB64(clipboardCommand + '\r') });
+  await inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: strToB64(clipboardCommand + '\r') });
   const fixtureVisible = await waitFor(() => {
     for (let row = 0; row < pane.term.rows; row++) {
       if (visibleTerminalLine(pane, row).trim() === 'R7C-DONE') return true;
@@ -1359,7 +1359,7 @@ async function pathSmoke(card) {
   const hardCut = 13; // `https://hardw`, matching the short first-row failure
   const hardPrefix = `${'H'.repeat(Math.max(0, pane.term.cols - hardCut - 1))} `;
   await inv('pty_write', {
-    name: card.session,
+    name: card.session, gen: ctx.ptyGens.get(card.session),
     dataB64: strToB64(`mkdir -p '空 格😀' && : > '空 格😀/code.rs'; printf '%s\\n' '${fixture}' '${addressFixture}' '${missingFixture}' '${urlLine}'; printf '%s%s\\n%s\\n' '${hardPrefix}' '${hardUrl.slice(0, hardCut)}' '${hardUrl.slice(hardCut)}'\r`),
   });
   const fixtureReady = await waitFor(() => {
@@ -1706,7 +1706,7 @@ async function foreignInputProof(card, guard) {
   // a pane redraw (key and focus changes can cause one) reproduces it, where
   // a local-only xterm write would be erased mid-press.
   menu.style.display = 'none'; term.focus();
-  await inv('pty_write', { name: card.session, dataB64: strToB64(`clear; printf '%s\\n' '${fixture}'\r`) });
+  await inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: strToB64(`clear; printf '%s\\n' '${fixture}'\r`) });
   const printed = await waitFor(() => {
     term.scrollToBottom();
     return term.buffer.active.getLine(term.buffer.active.viewportY)?.translateToString(true) === fixture;
@@ -1822,7 +1822,7 @@ async function imeRoutingSmoke(card) {
   dataSub.dispose();
   pane.term.textarea.value = '';
   const nativeInputExact = imeData.join('') === '?]';
-  await inv('pty_write', { name: card.session, dataB64: strToB64('\x03') });
+  await inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: strToB64('\x03') });
   const imeMask = (hadSelection && cleaned ? 1 : 0)
     | (shortcutBypassed ? 2 : 0) | (nativeInputExact ? 4 : 0);
   await report('ime-routing', imeMask === 7, imeMask, 7);
@@ -1838,7 +1838,7 @@ async function completionSmoke(card, project, column) {
   await openSession(card.id);
   const pane = panes.get(card.session);
   await inv('pty_write', {
-    name: card.session,
+    name: card.session, gen: ctx.ptyGens.get(card.session),
     dataB64: strToB64("python3 -c 'for i in range(120): print(i)'\r"),
   });
   let historyMetrics;
@@ -1983,7 +1983,7 @@ async function naturalExitFaultSmoke(project, column) {
   await pollNow();
   await pause(1100); // wait out the fresh-shell history cleanup
   await inv('pty_write', {
-    name: card.session,
+    name: card.session, gen: ctx.ptyGens.get(card.session),
     dataB64: strToB64("python3 -c '[print(f\"EXIT-{i:03d}\") for i in range(60)]'\r"),
   });
   await waitFor(async () =>
@@ -2326,7 +2326,7 @@ async function bufferSmoke(main, project, column) {
     revision: 1, collecting: false, entries: [{ id: 'Nprotect', kind: 'manual', text: 'retain', revision: 1,
       createdAt: Date.now(), updatedAt: Date.now(), copies: [] }],
   });
-  await inv('pty_write', { name: protectedCard.session, dataB64: strToB64('exit\r') });
+  await inv('pty_write', { name: protectedCard.session, gen: ctx.ptyGens.get(protectedCard.session), dataB64: strToB64('exit\r') });
   await waitFor(async () => { await pollNow(); return provider.get(protectedCard.id)?.status === 'stopped'; }, 5000);
   await report('buffer-natural-exit-retained', !!provider.get(protectedCard.id), 1, 1);
   return stopped;

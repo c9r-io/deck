@@ -37,6 +37,7 @@ globalThis.document = doc;
 const win = new Surface();
 globalThis.window = win;
 globalThis.requestAnimationFrame = fn => setImmediate(fn);
+win.cancelAnimationFrame = id => clearImmediate(id);
 globalThis.CustomEvent = globalThis.CustomEvent || class { constructor(type, init) { this.type = type; this.detail = init?.detail; } };
 
 // ---- controllable IPC -------------------------------------------------
@@ -70,7 +71,8 @@ win.__TAURI__ = { event: { listen: async (ev, cb) => { listeners[ev] = cb; retur
 const layout = await import('../js/layout.js');
 const { wireTerminalSelection } = await import('../js/selection.js');
 const { panes } = await import('../js/board.js');
-const { store } = await import('../js/state.js');
+const { store, ctx, state } = await import('../js/state.js');
+const { acceptSuggestion, acceptGhost } = await import('../js/terminal.js');
 const tick = () => new Promise(r => setImmediate(r));
 // initLayout registers the production pty-data listener the frames below go through.
 globalThis.ResizeObserver = class { observe() {} disconnect() {} };
@@ -112,8 +114,8 @@ function fixture({ scrolled = false, session = 'ime-probe-' + (++n), keep = fals
       doc.fire('pointermove', { clientX: 45 }); doc.fire('pointerup', { clientX: 45 }); await settle();
       assert.equal(pane.selection.hasSelection(), true, 'fixture: production selection exists'); },
     hold(name) { gates[name] = []; },
-    async release(name, how = 'resolve') { trace.push({ layer: 'ipc-released', name, how });
-      for (const g of gates[name].splice(0)) g[how](how === 'resolve' ? (name === 'attach_session' ? ++attachGen : {}) : new Error('probe')); delete gates[name]; await tick(); await tick(); },
+    async release(name, how = 'resolve', value = {}) { trace.push({ layer: 'ipc-released', name, how });
+      for (const g of gates[name].splice(0)) g[how](how === 'resolve' ? (name === 'attach_session' ? ++attachGen : value) : new Error('probe')); delete gates[name]; await tick(); await tick(); },
     writes: () => trace.filter(x => x.layer === 'pty_write-invoke' && x.session === session).map(x => x.text),
     entries: () => trace.filter(x => x.layer === 'onData-entry').map(x => x.text),
     calls: () => trace.filter(x => x.layer === 'pty_write-invoke' && x.session === session).map(x => [x.text, x.gen]),
@@ -328,5 +330,74 @@ test('ordinary input with no selection and no scroll is written directly, in ord
     for (const k of ['a', '中文', 'b']) f.key(k);
     assert.deepEqual(f.writes(), ['a', '中文', 'b'], 'No queue: the calls are synchronous');
     assert.equal(f.pane.liveQ ?? null, null);
+  } finally { done(); }
+});
+
+// Programmatic callers run through the same production wiring as onData.
+for (const [name, invoke, bytes] of [
+  ['suggestion', () => acceptSuggestion('echo suggestion'), '\x15echo suggestion'],
+  ['ghost', () => { ctx.lineBuf = 'echo '; ctx.ghostRemainder = 'ghost'; acceptGhost(); }, 'ghost'],
+  ['menu clear', () => listeners['menu-clear'](), '\x0c'],
+]) {
+  for (const replace of [false, true]) test(`${name} keeps its generation behind selection cleanup (replace=${replace})`, async () => {
+    const f = fixture();
+    try {
+      await f.attach(); layout.focusPane(f.session); state.view = 'session';
+      await f.select(); f.hold('terminal_selection_cancel');
+      invoke(); await tick();
+      assert.deepEqual(f.calls(), []);
+      if (replace) await f.attach();
+      f.key('after'); await tick();
+      await f.release('terminal_selection_cancel');
+      assert.deepEqual(f.calls(), (replace ? [] : [[bytes, f.pane.inputGen]]).concat([['after', f.pane.inputGen]]));
+      assert.deepEqual(f.cancels(), replace ? ['attachment'] : []);
+    } finally { done(); }
+  });
+}
+
+const fileReaders = [];
+globalThis.FileReader = class {
+  readAsDataURL() { fileReaders.push(this); }
+};
+const drop = f => layout.insertDroppedFiles(f.pane, [{ name: 'image.png', size: 3 }]);
+const finishRead = () => { const r = fileReaders.shift(); assert.ok(r); r.result = 'data:image/png;base64,YWJj'; r.onload(); };
+
+test('a file reserves input order before reading, retains its split, and never steals later focus', async () => {
+  const f = fixture();
+  try {
+    await f.attach(); const other = fixture({ keep: true }); await other.attach();
+    f.hold('save_dropped_file'); drop(f); f.key('suffix\r'); await tick();
+    layout.focusPane(other.session);
+    assert.deepEqual(f.calls(), []);
+    finishRead(); await tick(); assert.deepEqual(f.calls(), []);
+    await f.release('save_dropped_file', 'resolve', '/tmp/test image.png');
+    assert.deepEqual(f.calls(), [["'/tmp/test image.png' ", f.pane.inputGen], ['suffix\r', f.pane.inputGen]]);
+    assert.equal(ctx.attachedName, other.session);
+  } finally { done(); }
+});
+
+for (const replacePane of [false, true]) test(`delayed file cannot cross attachment replacement (new pane=${replacePane})`, async () => {
+  const f = fixture();
+  try {
+    await f.attach(); drop(f); await tick();
+    let current = f;
+    if (replacePane) { layout.leaveSessionView({ switchingSession: true }); current = fixture({ session: f.session, keep: true }); }
+    await current.attach(); current.key('fresh');
+    f.hold('save_dropped_file'); finishRead(); await tick();
+    await f.release('save_dropped_file', 'resolve', '/tmp/old.png');
+    assert.deepEqual(current.calls(), [['fresh', current.pane.inputGen]]);
+    assert.deepEqual(f.cancels(), [replacePane ? 'pane' : 'attachment']);
+  } finally { done(); }
+});
+
+test('file input before the attach reply waits for that request', async () => {
+  const f = fixture();
+  try {
+    f.hold('attach_session'); const attaching = f.attach(); await tick();
+    f.hold('save_dropped_file'); drop(f); f.key('\r'); await tick(); finishRead(); await tick();
+    await f.release('save_dropped_file', 'resolve', '/tmp/early.png');
+    assert.deepEqual(f.calls(), []);
+    await f.release('attach_session'); await attaching; await tick();
+    assert.deepEqual(f.calls(), [['/tmp/early.png ', f.pane.inputGen], ['\r', f.pane.inputGen]]);
   } finally { done(); }
 });

@@ -48,7 +48,7 @@ export async function runReminderSmoke() {
         for (let i = 0; i < 4; i++) if (!(await pollNow())) throw new Error('failed poll cannot prove retirement suppression');
         await report('reminder-restart-held', !!provider.get(protectedCard.id) && !provider.get(protectedCard.id).reminder && provider.get(protectedCard.id).reminderRetirements.length > 0);
         await openSession(protectedCard.id); await pollNow();
-        await inv('pty_write', { name: provider.get(protectedCard.id).session, dataB64: btoa('exit\r') });
+        await inv('pty_write', { name: provider.get(protectedCard.id).session, gen: ctx.ptyGens.get(provider.get(protectedCard.id).session), dataB64: btoa('exit\r') });
         await until(async () => { await pollNow(); return !provider.get(protectedCard.id); });
         await report('reminder-new-lifecycle', !provider.get(protectedCard.id));
         const sentinel = provider.list().find(c => c.title === 'Reminder lifecycle sentinel');
@@ -181,12 +181,12 @@ export async function runReminderSmoke() {
     await pollNow();
     // A real owning shell exit; no fake poll evidence or retirement flag.
     await openSession(ordinary.id);
-    await inv('pty_write', { name: provider.get(ordinary.id).session, dataB64: btoa('exit\r') });
+    await inv('pty_write', { name: provider.get(ordinary.id).session, gen: ctx.ptyGens.get(provider.get(ordinary.id).session), dataB64: btoa('exit\r') });
     await until(async () => { await pollNow(); return !provider.get(ordinary.id); });
     stage = 4;
     await openSession(protectedCard.id);
     await pollNow();
-    await inv('pty_write', { name: provider.get(protectedCard.id).session, dataB64: btoa('exit\r') });
+    await inv('pty_write', { name: provider.get(protectedCard.id).session, gen: ctx.ptyGens.get(provider.get(protectedCard.id).session), dataB64: btoa('exit\r') });
     leaveSessionView(); state.view = 'board'; render();
     await until(async () => { await pollNow(); return !provider.get(ordinary.id) && provider.get(protectedCard.id)?.reminderRetirements?.length; });
     await report('reminder-real-exit', provider.get(protectedCard.id).status === 'stopped');

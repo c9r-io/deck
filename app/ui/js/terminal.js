@@ -9,6 +9,8 @@
 // Shell-only resume prefixes also request bounded tmux exit hints. These are
 // pane-local, ephemeral and ranked before history; accepting only fills input.
 // Focus, submit and foreground changes revoke pending hint reads.
+// Suggestions and ghost completions enter the owning pane's bound input queue;
+// they never write by session name or bypass selection/live-view cleanup.
 //
 // New session (04 A v01): `newSession` is the one entry for every way a
 // session is created by hand. It starts the session FIRST
@@ -30,7 +32,6 @@ import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut, registerShortcutAction } from './shortcuts.js';
 import { openAutomations } from './automation.js';
 import { openTemplates } from './templates.js';
-import { strToB64 } from './terminal-bytes.js';
 import { linkMenuItems } from './terminal-links-model.js';
 import { writeClipboard } from './terminal-clipboard.js';
 import { createResumeCache, resumeCommands, resumeTarget } from './resume-model.js';
@@ -437,8 +438,7 @@ export function suggestions() {
 }
 
 export function acceptSuggestion(cmd) {
-  if (!ctx.attachedName) return;
-  inv('pty_write', { name: ctx.attachedName, dataB64: strToB64('\x15' + cmd) }).catch(() => {});
+  if (!panes.get(ctx.attachedName)?.insertInput?.('\x15' + cmd)) return;
   inv('record_command', { cmd }).catch(() => {});
   ctx.lineBuf = cmd;
   ctx.freshShell = false;
@@ -494,7 +494,7 @@ export function scheduleGhost() {
 export function acceptGhost() {
   if (!ctx.ghostRemainder || !ctx.attachedName) return;
   const full = ctx.lineBuf + ctx.ghostRemainder;
-  inv('pty_write', { name: ctx.attachedName, dataB64: strToB64(ctx.ghostRemainder) }).catch(() => {});
+  if (!panes.get(ctx.attachedName)?.insertInput?.(ctx.ghostRemainder)) return;
   inv('record_command', { cmd: full }).catch(() => {});
   ctx.histCache = [full, ...ctx.histCache.filter(x => x !== full)];
   ctx.lineBuf = full;

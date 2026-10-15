@@ -1,0 +1,138 @@
+{
+  "environment": {
+    "macos": "27.0.1",
+    "arch": "arm64",
+    "node": "v24.19.0",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "base": "817df9b1048f2f16911efa10f64994a117117875"
+  },
+  "backend_first_run": {
+    "fmt": 0,
+    "clippy": 0,
+    "rust": 101
+  },
+  "lifecycle_recheck": {
+    "exit_code": 0,
+    "reason": "Unchanged timing test exceeded its existing 1000ms limit on the first full run; inspect and rerun without changing assertions"
+  },
+  "backend_final": {
+    "command": "cargo test --workspace --no-fail-fast -- --test-threads=1",
+    "exit_code": 0,
+    "suites": 17,
+    "passed": 1521,
+    "failed": 0,
+    "ignored": 13
+  },
+  "frontend": {
+    "exit_code": 0,
+    "passed": 837,
+    "failed": 0,
+    "skipped": 0,
+    "coverage_percent": {
+      "lines": 94.62,
+      "branches": 89.96,
+      "functions": 87.86
+    },
+    "syntax_and_module_checks": 167
+  },
+  "focused": {
+    "exit_code": 0,
+    "passed": 43
+  },
+  "negative_control": {
+    "mutation": "Rebind programmatic input immediately before writing instead of retaining its accepted target",
+    "exit_code": 1,
+    "expected": "nonzero; stale programmatic input regressions must fail"
+  },
+  "final_checks": {
+    "fmt-check": 0,
+    "diff-check": 0,
+    "modules-final": 0,
+    "syntax:app/ui/js/layout.js": 0,
+    "syntax:app/ui/js/scheduler.js": 0,
+    "syntax:app/ui/js/terminal-input.js": 0,
+    "syntax:app/ui/js/terminal.js": 0,
+    "syntax:app/ui/test/channel-live-smoke.mjs": 0,
+    "syntax:app/ui/test/pi-live-smoke.mjs": 0,
+    "syntax:app/ui/test/reentry-live-smoke.mjs": 0,
+    "syntax:app/ui/test/reminder-native-smoke.mjs": 0,
+    "syntax:app/ui/test/reminder-smoke.mjs": 0,
+    "syntax:app/ui/test/resume-smoke.mjs": 0,
+    "syntax:app/ui/test/terminal-input-order-dom.test.mjs": 0,
+    "syntax:app/ui/test/terminal-input-smoke.mjs": 0,
+    "syntax:app/ui/test/terminal-input.test.mjs": 0,
+    "syntax:app/ui/test/voice-smoke.mjs": 0,
+    "syntax:app/ui/test/wk-smoke.mjs": 0,
+    "inventory-final": 0
+  },
+  "native": {
+    "status": "BLOCKED",
+    "reason": "Local screen remains locked; a visible WKWebView rerun is required",
+    "data_dir": "/tmp/deck-ti-governance-8gh9qmv4",
+    "socket": "deck-smoke-ti-governance-12265",
+    "mode": "terminal-input",
+    "inventory_before_exit": 0,
+    "build_exit": 0,
+    "verdict_exit": 1,
+    "limitation": "Screen locked: no CG window, timers throttled; run not accepted",
+    "cleanup_exit": 0
+  },
+  "logs": {
+    "focused.log": {
+      "path": "/tmp/deck-input-governance-20261015/focused.log",
+      "sha256": "f7fb95bfb4e272f297f20ccfa1a18e4dc9d070b2442fa0df1a9c55886716e75a"
+    },
+    "frontend.log": {
+      "path": "/tmp/deck-input-governance-20261015/frontend.log",
+      "sha256": "fea060168ed55a3d101cb9788ea9faee8b172ae5a2f4a6596c670809b2358bfa"
+    },
+    "clippy.log": {
+      "path": "/tmp/deck-input-governance-20261015/clippy.log",
+      "sha256": "c7ad0092343964a8e6392255df9770b6aaf0eaad442b2daf7738a57ae8a50923"
+    },
+    "rust.log": {
+      "path": "/tmp/deck-input-governance-20261015/rust.log",
+      "sha256": "bf07a41bb57a07792397e0de6ef3bc379e21b8521ec429845a908d40c996595b"
+    },
+    "lifecycle-recheck.log": {
+      "path": "/tmp/deck-input-governance-20261015/lifecycle-recheck.log",
+      "sha256": "f55ab9b1b612a935b444150bfd219405d6dfed5267438acf2212945fbe4e5e9d"
+    },
+    "rust-final.log": {
+      "path": "/tmp/deck-input-governance-20261015/rust-final.log",
+      "sha256": "1eda3d366e5a7e11402c4bdbfe35e656822f085c5a581135af7f6ef3c0097cf7"
+    },
+    "negative-control.log": {
+      "path": "/tmp/deck-input-governance-20261015/negative-control.log",
+      "sha256": "08ec98d9ae2d9b5ee6bd8dd3904ce658fec103e681f362dcff9373a4702754b8"
+    },
+    "build.log": {
+      "path": "/tmp/deck-input-governance-20261015/build.log",
+      "sha256": "4098c90c0f8a0c6576627813ddea998ade00155315acaa7a1af9c5f858598e8c"
+    },
+    "smoke-locked-verdict.log": {
+      "path": "/tmp/deck-input-governance-20261015/smoke-locked-verdict.log",
+      "sha256": "73a0d52fcb1a95b12dbaa09acff77ee4d71401d8b2a3581e13e349653e31e6df"
+    },
+    "smoke-locked-cleanup.log": {
+      "path": "/tmp/deck-input-governance-20261015/smoke-locked-cleanup.log",
+      "sha256": "d324a2f06020be36af23b28c77e83c5e7505c92344e8a986fc6b5b7477167c84"
+    },
+    "inventory-before.json": {
+      "path": "/tmp/deck-input-governance-20261015/inventory-before.json",
+      "sha256": "b47b9a8e92c950f39de1684a39e320e7a49989d7546f66ddf7b4fa29f7b2a6f1"
+    },
+    "inventory-final.json": {
+      "path": "/tmp/deck-input-governance-20261015/inventory-final.json",
+      "sha256": "b47b9a8e92c950f39de1684a39e320e7a49989d7546f66ddf7b4fa29f7b2a6f1"
+    },
+    "manifest-final.log": {
+      "path": "/tmp/deck-input-governance-20261015/manifest-final.log",
+      "sha256": "356ef059a4daa8b139955dc638aa6ba2198b320292dc69b528f4c8aedf76d61e"
+    },
+    "final-checks.log": {
+      "path": "/tmp/deck-input-governance-20261015/final-checks.log",
+      "sha256": "454baaf2b5cdfb53f0a9ef6a4b9369c62d27d7974c586d7f3f95052a48a46b10"
+    }
+  }
+}
