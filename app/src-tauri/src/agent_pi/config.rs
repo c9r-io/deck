@@ -716,8 +716,8 @@ pub(crate) fn agent_pi_lifecycle_set(enable: bool) -> Result<(), DeckError> {
 }
 
 /// The boot migration (stable installs only): entries that are there are
-/// moved to this bundle, nothing else. Called beside
-/// `agent_status::migrate_hooks_on_boot`.
+/// moved to this bundle, nothing else. Called only from the registry-backed
+/// `agent_status::migrate_agents_on_boot` phase.
 pub(crate) fn migrate_on_boot() {
     let Some(place) = place().filter(|place| place.bundle.is_some()) else {
         return;

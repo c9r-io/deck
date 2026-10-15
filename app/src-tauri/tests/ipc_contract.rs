@@ -3,7 +3,7 @@
 //!
 //! 1. every `#[tauri::command]` in `src/` is registered in `main.rs`'s
 //!    `generate_handler!` exactly once, and nothing else is;
-//! 2. every literal `inv('name'` / `invoke('name'` in `ui/js/*.js` and
+//! 2. every literal `inv('name'` / `invoke('name'` in `ui/js/` recursively and
 //!    `ui/index.html` names a registered command;
 //! 3. every registered command is called by a literal, produced at one of
 //!    the pinned `DYNAMIC_SITES` (a name chosen by a ternary or a plan, each
@@ -151,6 +151,16 @@ fn frontend() -> Vec<(String, String)> {
         std::fs::read_to_string(manifest("../ui/index.html")).unwrap(),
     ));
     files
+}
+
+#[test]
+fn frontend_census_includes_nested_modules_and_generated_catalog() {
+    let sources = js_sources();
+    assert!(sources.iter().any(|(name, _)| name == "i18n/en.js"));
+    assert!(sources
+        .iter()
+        .any(|(name, _)| name == "extensions-generated.js"));
+    assert!(sources.iter().any(|(name, _)| name == "extension-slack.js"));
 }
 
 fn frontend_literals() -> BTreeMap<String, BTreeSet<String>> {

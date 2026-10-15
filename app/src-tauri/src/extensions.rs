@@ -41,10 +41,12 @@
 //!   every decision they had.
 //!
 //! Adding a future extension of an existing kind = its own module + one
-//! entry in the matching table here (a service's trigger source also needs
-//! its closed name in `inbound::SOURCES`, which is a persisted settings
-//! vocabulary and therefore a core decision). See
+//! source manifest compiled into the generated matching table (a service's
+//! trigger source also needs its closed name in `inbound::SOURCES`, which is
+//! a persisted settings vocabulary and therefore a core decision). See
 //! `docs/first-party-extensions.md`.
+
+mod generated;
 
 use crate::agent_status::AgentAdapter;
 use crate::applog::applog;
@@ -52,7 +54,11 @@ use crate::error::{DeckError, ErrorKind};
 use crate::inbound::Source;
 use crate::intelligence::provider::{TranslationProvider, TranslationProviderEntry};
 use crate::keychain::Slot;
+use generated::{AGENT_ADAPTERS, SERVICES, TRANSLATION_PROVIDERS};
 use tauri::{AppHandle, Emitter};
+
+/// The generated build selection, kept at the existing core module path.
+pub(crate) const TRANSLATION_ENGINE: &str = generated::TRANSLATION_ENGINE;
 
 /// One external service: its one connection owner, the trigger sources it
 /// contributes to the dispatcher, and its credential adaptation.
@@ -80,18 +86,6 @@ pub(crate) struct ServiceIntegration {
     /// work: the service names the event, the host emits it.
     pub(crate) reannounce: fn(&dyn Fn(&'static str)),
 }
-
-/// The selected translation engine. A build has exactly one.
-pub(crate) const TRANSLATION_ENGINE: &str = "bergamot";
-
-const SERVICES: &[ServiceIntegration] = &[crate::slack::INTEGRATION];
-const AGENT_ADAPTERS: &[AgentAdapter] = &[
-    crate::agent_status::CLAUDE_CODE,
-    crate::agent_status::CODEX,
-    crate::agent_pi::PI,
-];
-const TRANSLATION_PROVIDERS: &[TranslationProviderEntry] =
-    &[crate::intelligence::provider::BERGAMOT];
 
 #[cfg(test)]
 thread_local! {

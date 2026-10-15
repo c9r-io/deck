@@ -1,0 +1,8 @@
+{
+  "id": "slack",
+  "kind": "service",
+  "rust": "crate::slack::INTEGRATION",
+  "ui": "extension-slack.js",
+  "order": 40,
+  "selected": false
+}

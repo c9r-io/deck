@@ -258,17 +258,27 @@ pub fn function_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
     Some(&source[open..=close])
 }
 
-/// (file name, contents) of every frontend module in `ui/js`.
+/// (relative path, contents) of every frontend module, including extension
+/// subdirectories. Moving a module must never remove it from an IPC census.
 pub fn js_sources() -> Vec<(String, String)> {
     let root = manifest("../ui/js");
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(&root).expect("ui/js") {
-        let path = entry.unwrap().path();
-        if path.extension().is_some_and(|x| x == "js") {
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            out.push((name, std::fs::read_to_string(&path).unwrap()));
+    fn walk(dir: &Path, root: &Path, out: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("frontend directory") {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, root, out);
+            } else if path.extension().is_some_and(|x| x == "js") {
+                let name = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                out.push((name, std::fs::read_to_string(&path).unwrap()));
+            }
         }
     }
+    let mut out = Vec::new();
+    walk(&root, &root, &mut out);
     assert!(out.len() >= 20, "frontend modules found: {}", out.len());
     out.sort();
     out

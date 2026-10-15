@@ -16,6 +16,8 @@
 // `import './x.js'` and a re-export `export … from` — between every module
 // under this directory, subdirectories included, and reports strongly
 // connected components, so a cycle is found whichever edge closes it.
+// Named import aliases bind only the local name. The exported spelling is
+// syntax at the import site, never a local declaration for later references.
 // Runs in CI (gate.yml) and exits non-zero on violations. `node check.mjs
 // <directory>` checks another module directory (ui/test/static.test.mjs
 // feeds it small fixtures).
@@ -146,7 +148,8 @@ for (const f of files) {
       if (id) declared.add(id);
     }
   }
-  for (const m of src.matchAll(/import\s*\{([^}]*)\}\s*from/g)) {
+  const namedImports = [...src.matchAll(/import\s*\{([^}]*)\}\s*from/g)];
+  for (const m of namedImports) {
     for (const n of m[1].split(',')) declared.add(n.trim().split(/\s+as\s+/).pop());
   }
   // function params & catch params & arrow params (approximate)
@@ -186,6 +189,7 @@ for (const f of files) {
 
   const unknown = new Map();
   for (const m of src.matchAll(/(?<![.\w$])([A-Za-z_$][\w$]*)\b(?!\s*:)/g)) {
+    if (namedImports.some(binding => m.index >= binding.index && m.index < binding.index + binding[0].length)) continue;
     const id = m[1];
     if (KEYWORDS.has(id) || BROWSER.has(id) || declared.has(id)) continue;
     unknown.set(id, (unknown.get(id) || 0) + 1);

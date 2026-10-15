@@ -7,6 +7,31 @@ mod shared_output;
 
 use shared_output::Placed;
 
+/// Discover only reviewed source manifests, before compiling either side of
+/// the application. Generated files stay in source for code review, the IPC /
+/// EDR censuses and no-build Node tests; CI refuses uncommitted generation
+/// drift. This is build tooling, never an application plugin loader. The UI
+/// staging contract remains an exact copy of ../ui through shared_output.
+fn compose_extensions() {
+    for path in [
+        "../extensions",
+        "../../scripts/extension_catalog.py",
+        "src/extensions/generated.rs",
+        "../ui/js/extensions-generated.js",
+    ] {
+        println!("cargo:rerun-if-changed={path}");
+    }
+    let output = std::process::Command::new("python3")
+        .arg("../../scripts/extension_catalog.py")
+        .output()
+        .expect("Python 3 is required to compose first-party extensions");
+    assert!(
+        output.status.success(),
+        "first-party extension composition failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Build signed bundle sidecars before tauri validates `externalBin`.
 /// A separate target directory avoids the cargo-in-cargo workspace lock.
 /// None is installed under the user's home directory: status-helper and
@@ -484,6 +509,7 @@ fn timing(stage: &str, started: std::time::Instant, detail: &str) {
 }
 
 fn main() {
+    compose_extensions();
     // The reference instant for everything written to a shared output. When
     // cargo's record of it is missing the outputs are still right; the next
     // build of this context only runs this script one more time.

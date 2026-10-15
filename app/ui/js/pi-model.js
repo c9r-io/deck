@@ -4,7 +4,8 @@
 // names the sentences for them.
 //
 // # Settings
-// `agent_hooks_status` carries `pi` (the work-status switch), `pi_lifecycle`
+// The Pi contribution adapts `agent_hooks_status.agents.pi` to this module's
+// closed legacy-shaped input: `pi` (the work-status switch), `pi_lifecycle`
 // (the session-observation switch) and `pi_installation` (the state of
 // Deck's one entry in Pi's own settings file). All are derived from that
 // file by the backend; nothing here keeps

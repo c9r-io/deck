@@ -34,6 +34,8 @@ REPO = Path(__file__).resolve().parent.parent
 # What decides the behaviour the Pi evidence is about: the backend, the
 # observer and its packaging, the frontend, and the drivers themselves.
 SOURCE_ROOTS = (
+    "app/extensions",
+    "scripts/extension_catalog.py",
     "app/src-tauri/src",
     "app/src-tauri/resources",
     "app/src-tauri/tests",

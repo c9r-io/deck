@@ -108,10 +108,27 @@ fn hook_commands_are_unchanged_by_protocol_v2() {
 fn hook_status_command_returns_both_closed_agent_fields() {
     let status = serde_json::to_value(agent_hooks_status()).unwrap();
     let object = status.as_object().unwrap();
-    // the two Signal toggles, the separate re-entry observation opt-in
-    // (the Lifecycle family), and Pi's two switches with the closed
-    // state of its one settings entry: five booleans and one word
-    assert_eq!(object.len(), 6);
+    // Generic per-source settings plus the legacy two Signal toggles, the
+    // separate re-entry observation opt-in, and Pi's two switches/state.
+    assert_eq!(object.len(), 7);
+    let agents = object["agents"].as_object().expect("agent status map");
+    assert_eq!(
+        agents.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["claude-code", "codex", "pi"]
+    );
+    for source in ["claude-code", "codex", "pi"] {
+        let agent = agents[source].as_object().expect("agent status");
+        assert_eq!(agent.len(), 3);
+        assert!(agent["signal"].is_boolean());
+    }
+    assert!(agents["codex"]["lifecycle"].is_null());
+    assert!(agents["codex"]["installation"].is_null());
+    assert_eq!(object["claude"], agents["claude-code"]["signal"]);
+    assert_eq!(object["codex"], agents["codex"]["signal"]);
+    assert_eq!(object["claude_reentry"], agents["claude-code"]["lifecycle"]);
+    assert_eq!(object["pi"], agents["pi"]["signal"]);
+    assert_eq!(object["pi_lifecycle"], agents["pi"]["lifecycle"]);
+    assert_eq!(object["pi_installation"], agents["pi"]["installation"]);
     assert!(object.get("pi").is_some_and(serde_json::Value::is_boolean));
     assert!(object
         .get("pi_lifecycle")
@@ -164,6 +181,121 @@ fn hook_status_command_returns_both_closed_agent_fields() {
     assert!(object
         .get("codex")
         .is_some_and(serde_json::Value::is_boolean));
+}
+
+static DUPLICATE_STATUS_READS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+fn duplicate_config_path() -> Option<std::path::PathBuf> {
+    DUPLICATE_STATUS_READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    None
+}
+
+const DUPLICATE_INSTALL: HookInstall = HookInstall {
+    hooks: &[],
+    style: HookStyle::Exec,
+    config_path: duplicate_config_path,
+    never_ran: "unused",
+    lifecycle_hooks: &[],
+};
+
+const DUPLICATE_ADAPTERS: &[AgentAdapter] = &[
+    AgentAdapter {
+        source: "duplicate",
+        class: SignalClass::Claude,
+        install: Install::Hooks(DUPLICATE_INSTALL),
+        reentry: None,
+    },
+    AgentAdapter {
+        source: "duplicate",
+        class: SignalClass::Codex,
+        install: Install::Hooks(DUPLICATE_INSTALL),
+        reentry: None,
+    },
+];
+
+const UNIQUE_ADAPTERS: &[AgentAdapter] = &[AgentAdapter {
+    source: "future-agent",
+    class: SignalClass::Claude,
+    install: Install::Hooks(DUPLICATE_INSTALL),
+    reentry: None,
+}];
+
+#[test]
+fn unique_registered_agent_appears_without_a_new_fixed_status_field() {
+    let _table = crate::extensions::testing::with_agents(UNIQUE_ADAPTERS);
+    DUPLICATE_STATUS_READS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let status = serde_json::to_value(agent_hooks_status()).unwrap();
+    assert_eq!(
+        DUPLICATE_STATUS_READS.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        status["agents"],
+        serde_json::json!({
+            "future-agent": {
+                "signal": false,
+                "lifecycle": null,
+                "installation": null
+            }
+        })
+    );
+    assert!(status.get("future-agent").is_none());
+}
+
+#[test]
+fn duplicate_agent_registry_has_no_status_reads_or_legacy_projection() {
+    let _table = crate::extensions::testing::with_agents(DUPLICATE_ADAPTERS);
+    DUPLICATE_STATUS_READS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let status = serde_json::to_value(agent_hooks_status()).unwrap();
+    assert_eq!(
+        DUPLICATE_STATUS_READS.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert_eq!(status["agents"], serde_json::json!({}));
+    assert_eq!(status["claude"], false);
+    assert_eq!(status["codex"], false);
+    assert_eq!(status["claude_reentry"], false);
+    assert_eq!(status["pi"], false);
+    assert_eq!(status["pi_lifecycle"], false);
+    assert_eq!(status["pi_installation"], "absent");
+}
+
+#[test]
+fn duplicate_agent_registry_has_no_migration_side_effects() {
+    let _table = crate::extensions::testing::with_agents(DUPLICATE_ADAPTERS);
+    let hooks = std::cell::Cell::new(0);
+    let retired = std::cell::Cell::new(0);
+    let pi = std::cell::Cell::new(0);
+    migrate_registered_agents(
+        Some("/Applications/deck.app/Contents/MacOS/deck-status-helper"),
+        |_, _| {
+            hooks.set(hooks.get() + 1);
+            false
+        },
+        || retired.set(retired.get() + 1),
+        || pi.set(pi.get() + 1),
+    );
+    assert_eq!((hooks.get(), retired.get(), pi.get()), (0, 0, 0));
+}
+
+#[test]
+fn unique_hook_adapter_participates_in_generic_migration() {
+    let _table = crate::extensions::testing::with_agents(UNIQUE_ADAPTERS);
+    let hooks = std::cell::Cell::new(0);
+    let retired = std::cell::Cell::new(0);
+    migrate_registered_agents(
+        Some("/Applications/deck.app/Contents/MacOS/deck-status-helper"),
+        |adapter, helper| {
+            assert_eq!(adapter.source, "future-agent");
+            assert!(helper.ends_with("deck-status-helper"));
+            hooks.set(hooks.get() + 1);
+            false
+        },
+        || retired.set(retired.get() + 1),
+        || panic!("a hook adapter must not run Pi migration"),
+    );
+    assert_eq!((hooks.get(), retired.get()), (1, 1));
 }
 
 #[test]

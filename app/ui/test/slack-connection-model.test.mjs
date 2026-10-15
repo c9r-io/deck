@@ -4,9 +4,10 @@ import { readFileSync } from 'node:fs';
 import { slackConnectionView } from '../js/slack-connection-model.js';
 const settings = (reaction = true, channel = false) => ({ inbound: { sources: { slack: { enabled: reaction } }, channelConnection: { enabled: channel } } });
 const base = { userPresent: true, userValid: true, appPresent: true, appValid: true, botPresent: false, legacyPresent: false, workspaceMatch: true, connected: true };
+const slackPanel = () => readFileSync(new URL('../js/extension-slack.js', import.meta.url), 'utf8');
 
 test('one Slack section preserves reaction-only readiness and offers channel upgrade', () => {
-  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const html = slackPanel();
   assert.equal((html.match(/data-setting-id="slack-reactions"/g) || []).length, 1);
   assert.equal((html.match(/data-setting-id="slack-channel"/g) || []).length, 0);
   assert.match(html, /id="set-channel-upgrade"/);
@@ -39,7 +40,7 @@ test('unified and channel-only status reconstruct from credentials and switches'
 });
 
 test('legacy cleanup visibility and capability state remain independent', () => {
-  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const html = slackPanel();
   assert.match(html, /id="set-slack-legacy-clear"[^>]*hidden/);
   const unified = { ...base, botPresent: true, botValid: true, channelRules: 2 };
   const ready = slackConnectionView({ ...unified, legacyPresent: true }, settings(true, true));

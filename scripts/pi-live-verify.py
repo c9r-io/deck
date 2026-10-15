@@ -69,7 +69,8 @@ CHECKS = ("pi-clean", "pi-enable", "pi-run-created", "pi-connected", "pi-hold", 
           "pi-send-now", "pi-disabled", "pi-reload", "pi-session", "pi-shown", "pi-review", "pi-narrowed",
           "pi-unsupported", "done")
 # what decides the carrier's behaviour and is compiled or copied into it
-BUILT_FROM = ("app/src-tauri/src", "app/src-tauri/resources", "app/src-tauri/build.rs", "app/src-tauri/build",
+BUILT_FROM = ("app/extensions", "scripts/extension_catalog.py",
+              "app/src-tauri/src", "app/src-tauri/resources", "app/src-tauri/build.rs", "app/src-tauri/build",
               "app/src-tauri/Cargo.toml", "app/src-tauri/Cargo.lock", "app/src-tauri/tauri.conf.json", "app/ui")
 # The user's own Pi settings: other keys, their own entries (one of them the
 # fixture provider, an extension of "theirs"), Pi's two-space layout. Deck's

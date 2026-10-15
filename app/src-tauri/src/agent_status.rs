@@ -102,7 +102,7 @@
 //! Explicit debug re-entry experiments may instead read/write their bound
 //! project Lifecycle hook file. Signal/global installation and boot migration
 //! keep the ordinary location restrictions; observation remains file-derived.
-//! `migrate_hooks_on_boot` (release
+//! `migrate_agents_on_boot` (release
 //! installs only) rewrites installed entries that are not what the CURRENT
 //! spec describes — `hooks_are_current` compares deck's WHOLE hook and the
 //! matcher of its group (event, matcher, helper path, style, args) and

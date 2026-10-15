@@ -1,0 +1,311 @@
+{
+  "date": "2026-10-16",
+  "baseline": "fb12d0a",
+  "scope": "three phases; build-time automatic discovery and runtime Settings composition",
+  "gates": {
+    "workflow": {
+      "exit": 0
+    },
+    "native-speech": {
+      "exit": 0
+    },
+    "native-notifications": {
+      "exit": 0
+    },
+    "smoke-guard": {
+      "exit": 0
+    },
+    "audit": {
+      "exit": 0,
+      "warnings": 8
+    },
+    "audit-tunnel": {
+      "exit": 0
+    },
+    "python-tools": {
+      "initial_exit": 1,
+      "reason": "New test omitted from unified CI unittest command; fixed gate census",
+      "final_exit": 0,
+      "passed": 189
+    },
+    "extension-catalog": {
+      "exit": 0,
+      "tests": 8
+    },
+    "backend-hooks": {
+      "exit": 0,
+      "passed": 29,
+      "ignored": 3
+    },
+    "backend-extensions": {
+      "exit": 0,
+      "passed": 6
+    },
+    "frontend": {
+      "exit": 0,
+      "passed": 845,
+      "failed": 0,
+      "skipped": 0,
+      "coverage": {
+        "lines": 94.78,
+        "branches": 90.09,
+        "functions": 88.28
+      }
+    },
+    "markup-parity": {
+      "exit": 0,
+      "preserved_ids": 397,
+      "missing": 0,
+      "duplicates": 0,
+      "changed_attributes": 0
+    },
+    "search-parity": {
+      "exit": 0,
+      "section_order_unchanged": true,
+      "item_order_unchanged": true,
+      "old_labels_and_keywords_preserved": true
+    },
+    "rust-coverage": {
+      "initial_exit": 101,
+      "reason": "Recursive scan now includes two existing attention.bell dictionary keys; pinned exact label occurrences, with no executable consumer exemption",
+      "focused_repair_exit": 0,
+      "focused_passed": 9,
+      "final_exit": 0,
+      "passed": 1527,
+      "ignored": 13,
+      "lines": 85.67,
+      "functions": 83.78
+    },
+    "bundled-tmux-pin": {
+      "exit": 0
+    },
+    "bergamot-patch": {
+      "exit": 0
+    },
+    "ce-parity": {
+      "exit": 0,
+      "verdict_exit": 0
+    },
+    "clippy-final": {
+      "exit": 0
+    },
+    "coverage-provenance": {
+      "exit": 0
+    },
+    "slack": {
+      "final_exit": 0,
+      "root": "/private/tmp/dhk-uar2oxf6",
+      "checks": 4,
+      "cleanup_exit": 0,
+      "messages_sent": 0,
+      "initial_fixture": "Rule with no target was correctly pruned; first isolated instance stopped through registry; corrected fixture has project/template."
+    },
+    "translation": {
+      "exit": 0,
+      "scenarios": 4,
+      "root": "/private/tmp/deck-translation-setup-ha1f54m5",
+      "cleanup_exit": 0
+    },
+    "hooks": {
+      "native_checkpoints": "8/8 PASS",
+      "extra_byte_roundtrip_assertion": "FAILED — pre-existing cleanup of formerly empty touched event array",
+      "baseline_engine_unchanged": true,
+      "exact_expected_cleanup_bytes": true,
+      "root": "/private/tmp/dhk-i4xqkr8w",
+      "cleanup_exit": 0
+    },
+    "pi-live": {
+      "exit": 0,
+      "checkpoints": 16,
+      "runtime": "npm 1.1.0",
+      "root": "/private/tmp/deck-pi-live-pn9fl50a",
+      "cleanup_exit": 0
+    },
+    "pi-layout": {
+      "initial_exit": 1,
+      "reason": "Old scripted fixture overrode legacy fields but retained real agents map; corrected both projections without changing assertions",
+      "final_exit": 0,
+      "checkpoints": 16,
+      "settings_cases": 48,
+      "root": "/private/tmp/deck-pi-live-ex9lob_2",
+      "cleanup_exit": 0
+    },
+    "release-build": {
+      "exit": 0,
+      "log": "/private/tmp/deck-extensions-20261016-002457/logs/release-build.log"
+    },
+    "release-translation-binary": {
+      "exit": 0,
+      "log": "/private/tmp/deck-extensions-20261016-002457/logs/release-translation-binary.log"
+    },
+    "release-edr-binary": {
+      "exit": 0,
+      "log": "/private/tmp/deck-extensions-20261016-002457/logs/release-edr-binary.log"
+    },
+    "compat-package": {
+      "exit": 0,
+      "log": "/private/tmp/deck-extensions-20261016-002457/logs/compat-package.log"
+    },
+    "debug-build-font-final": {
+      "exit": 0,
+      "log": "/private/tmp/deck-extensions-20261016-002457/logs/debug-build-font-final.log"
+    },
+    "ui-final-fixtures": {
+      "exit": 0,
+      "log": "/private/tmp/deck-extensions-20261016-002457/logs/ui-final-fixtures.log"
+    },
+    "js-syntax-closeout": {
+      "exit": 0,
+      "log": "/private/tmp/deck-extensions-20261016-002457/logs/js-syntax-closeout.log"
+    },
+    "tunnel": {
+      "fmt": 0,
+      "clippy": 0,
+      "tests": 0
+    }
+  },
+  "native_suite": {
+    "settings": {
+      "root": "/private/tmp/dhk-xpjweeud",
+      "ok": true,
+      "verdict": "smoke-verdict settings: PASS (7/7 expected checkpoints, 7 lines)",
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      }
+    },
+    "channel": {
+      "root": "/private/tmp/dhk-chwr3emy",
+      "ok": true,
+      "verdict": "smoke-verdict channel: PASS (3/3 expected checkpoints, 3 lines)",
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      }
+    },
+    "connector": {
+      "root": "/private/tmp/dhk-bdf2p9ji",
+      "ok": true,
+      "verdict": "smoke-verdict connector: PASS (5/5 expected checkpoints, 5 lines)",
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      }
+    },
+    "approval": {
+      "root": "/private/tmp/dhk-o4k1e0h8",
+      "ok": true,
+      "verdict": "smoke-verdict approval: PASS (12/12 expected checkpoints, 12 lines)",
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      }
+    },
+    "empty-start": {
+      "root": "/private/tmp/dhk-vkvnv5ji",
+      "ok": true,
+      "verdict": "smoke-verdict empty-start: PASS (5/5 expected checkpoints, 5 lines)",
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      }
+    },
+    "signal-finish": {
+      "root": "/private/tmp/dhk-wj3vptmv",
+      "ok": true,
+      "verdict": "smoke-verdict signal-finish: PASS (8/8 expected checkpoints, 8 lines)",
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      }
+    },
+    "run": {
+      "root": "/private/tmp/dhk-ejkz4izq",
+      "ok": true,
+      "verdict": "smoke-verdict run: PASS (94/94 expected checkpoints, 118 lines)",
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      }
+    }
+  },
+  "production_comparison": {
+    "processes_unchanged": true,
+    "files_unchanged": true
+  },
+  "hooks_contract": {
+    "native_checkpoints": "8/8 PASS",
+    "baseline_merge_engine_unchanged": true,
+    "exact_expected_cleanup_bytes": true,
+    "all_other_user_bytes_preserved": true,
+    "initial_extra_roundtrip_assertion": "FAILED: same-event empty array cleanup is pre-existing; original failure retained",
+    "root": "/private/tmp/dhk-i4xqkr8w",
+    "cleanup_exit": 0
+  },
+  "hooks_baseline": {
+    "baseline": "fb12d0a",
+    "merge_engine_byte_identical": true,
+    "sha256": "e424780e10a66ec84e6161242a4fb4b821de8dc82e05953bce17af31312a963f",
+    "behavior": "Removing the last Deck hook removes the emptied event list; an initially empty event populated by install has no persisted provenance."
+  },
+  "source_sha256": {
+    ".github/workflows/gate.yml": "c003cfa4e950850d75326cb1c1401ccd4f86d6e1c6729f8e7a3af17f4ab91ec7",
+    "CLAUDE.md": "0ca267195fe94e710926eee12c61b98617a1ecd2b00dddf391c4537c0ce72386",
+    "app/extensions/bergamot.json": "bcf15dd3f40f19d8ff1623db84e38b876c6b66935388c247ddb0110c61259f26",
+    "app/extensions/claude-code.json": "da70b6d516aa201e22f27f167bfdd799c4f60340bac4fc909ba0231d26542797",
+    "app/extensions/codex.json": "48703a3b2c9fa7186dcad4c777dab66ce41346355e0aea98abfda2135c0d48c0",
+    "app/extensions/pi.json": "e816bf8f9dcbb34ddb0fcc02f2b2d7a938216c651eb27d73be224c37f7628b2b",
+    "app/extensions/slack.json": "88cc8672776695e97f99b1bb8d81c59985b162da25b416a6fe7338f4caf49797",
+    "app/src-tauri/build.rs": "56c48f3671c570501e0d6a3b1e28544845b63bd18b81ab0ef445dd485c853fd8",
+    "app/src-tauri/src/agent_pi/config.rs": "8093742485662ac18e1b4fe8ab7161b118156b6a9d7533542c1b9d03d1502151",
+    "app/src-tauri/src/agent_status.rs": "9236bded26190742a4b299e2a09a5ed1417138d913e4d85feecc6b20b2bb1c6a",
+    "app/src-tauri/src/agent_status/hooks.rs": "2a020fd4e570ce0c229c8a3db2f7b8d43ffbfc637b06e18d8c5f3ada28c85332",
+    "app/src-tauri/src/agent_status/hooks/tests.rs": "754ecc5c06ef937ff13329ac0c6d9039c51b8c638e8d0d3912e8b42c05662287",
+    "app/src-tauri/src/extensions.rs": "4ae41849d032759099af2834e7fc0f7a602ca622bb3ec47bb101a5e4bb1e0f72",
+    "app/src-tauri/src/extensions/generated.rs": "59b2996629ba04a850ce381d414d0dc99dbea9dd28d853b504a550e605afda51",
+    "app/src-tauri/src/main.rs": "51723534abd8e61e7de4b0b452a76202ca0ea2224b2dd2cfa656e0a00e4fff66",
+    "app/src-tauri/tests/ipc_contract.rs": "56657572be720075c86adc66accfcb2e95eb939d39ae8c8f96b989b1b4852912",
+    "app/src-tauri/tests/signal_census.rs": "c96a4fd9ef247b5f2579818853bb3a4426ccd0f3e652781bb8d0b5659c8dfe77",
+    "app/src-tauri/tests/source_scan/mod.rs": "747fab8ce4395c022f2d63792aabe6c990a1074ef6b410f29ac227f16103a82e",
+    "app/ui/index.html": "175a51095d68c1d9e6db756ceeb4eec9ab3805db7d6ea11597d0a3271515e699",
+    "app/ui/js/check.mjs": "1799896318ba6cc55ae5bcdf1ff1f9a5e20b9edaa52a1a210498c84c1876af14",
+    "app/ui/js/extension-bergamot.js": "7ef026b5444fcf76482a5bc8e714d23f8f472a75ace5902d800ead3b93402fe9",
+    "app/ui/js/extension-claude-code.js": "81604c49f4e270e38c7f5ef18c7c2f668d76c1cd70d2a65ab7b805be09d64c49",
+    "app/ui/js/extension-codex.js": "db75077fab69207ce9242737f42672316edc46b472c5f50637700db07eac2d34",
+    "app/ui/js/extension-pi.js": "4e5db26072e5da6a5e4bd5eb2a5ba7f2bca68125fbf11045f58fe05bd749ae3c",
+    "app/ui/js/extension-slack.js": "d5bab83965506e7a8a61c3f0721ae14d8727aa69c88e9318fa2941e09203bec9",
+    "app/ui/js/extensions-generated.js": "fa2daf8198a0c7b152e3ee050d43091bcc8a562ee85d7a054ef98e2b63ecc4ec",
+    "app/ui/js/pi-model.js": "62046e2564fdb31750be7cfd8db198000af21d01254e626a71589960fb695b0c",
+    "app/ui/js/settings-extensions.js": "2f8e8b557c6ecbab7064908af44fd89e2b07629d37211e96e7970217f716f5ff",
+    "app/ui/js/settings-search-model.js": "030141827de40781ea2aafd58883a93b6f3840f147b9b66b2a3a92ee6256050c",
+    "app/ui/js/settings.js": "97868d78d8bec100be453e3e85ffa473eba88f0a31c0253aebc79e1203bfa68a",
+    "app/ui/test/fixtures/dom-fixture.mjs": "8185fa46ee801ce28dc79fc3db42d5c2dbf3dade9dd1f06c62d4778b61944f22",
+    "app/ui/test/import-alias-check.test.mjs": "66bec969ffc79c475a77e9ad7374d8d6262f012e62dea0dd18d789997fb49e26",
+    "app/ui/test/pi-layout-smoke.mjs": "c56cf422b1aff0a963d5c6b2c98fc7191e302750183111f9e9b4adb0e9b5f46f",
+    "app/ui/test/settings-extensions.test.mjs": "a571540650b79d81a0820f467cd5a948b1aba0859c9f2c97bf7639908711906c",
+    "app/ui/test/settings-search-model.test.mjs": "0be20c2ab8e86eb056870eab7c003bf8a8e64cb3324949d2d9aab87e84486d65",
+    "app/ui/test/slack-connection-model.test.mjs": "8375054e5a2097a8add45ed6ecfe9f3d3dc49801892b11364560bfde2cb50053",
+    "app/ui/test/wk-smoke.mjs": "64bd016d4ecaec9a19216af18561d4100ed284d3a88e0776791e700aa1576ec2",
+    "docs/first-party-extensions.md": "27092d8b905b91feb67d332277a1f7e7f29ada922f9a1d7c921a83bebbaa7764",
+    "docs/verification-status.md": "ec7dbc91d8435e3788e0c7d1cdc332abb0ebbaf06e8e4a3c16731ebc3f354538",
+    "scripts/check-js-syntax.py": "9797d51ba5789d5429d2943b37473d9711bd8cf27f09a0f0bd627e2b5db4f28d",
+    "scripts/extension_catalog.py": "f330ccde4cac3a58c5c713ae5027f0eee05b4061d11bf85605a95cd12d44a637",
+    "scripts/pi-live-verify.py": "b0c06be2d8cf992f2f62367a79d11078c20d2bf1beb0a105ae5bb64568481f1f",
+    "scripts/pi_build_identity.py": "bd538ea8c8ec04ba8acc4de3487fa64d977b20f67938817045ffbf687d4798b8",
+    "scripts/test_extension_catalog.py": "1f1f4350fdde929aacecb04713f21eb3b257995c91c0622cb7fca48555ce35cf"
+  },
+  "unrun": [
+    "macOS 14 execution",
+    "remote CI",
+    "real Slack message delivery",
+    "release installation and production update"
+  ],
+  "raw_evidence": "/private/tmp/deck-extensions-20261016-002457"
+}

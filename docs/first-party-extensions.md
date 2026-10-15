@@ -1,104 +1,117 @@
-# First-party extensions (phase 1)
+# First-party extensions: automatic composition and Settings contributions
 
-Deck's service knowledge, agent-specific adapter declarations and optional
-local capability are organised behind one narrow, static composition point:
-`app/src-tauri/src/extensions.rs`. This is an internal architecture seam. It
-is not a plugin system and adds nothing a user has to learn.
+Deck discovers first-party **source declarations at build time**, and mounts
+bundled Settings contributions at runtime. All code still compiles or embeds
+into the signed application. This is not an external plugin loader: no user
+setting, environment variable, download or runtime directory adds an extension.
+There is no plugin-management screen, sandbox or hot unload.
 
-## What it is
+## One composition source
 
-Three typed tables, compiled into the app, with no shared interface:
+Each `app/extensions/<id>.json` declares exactly `id`, `kind`, `rust`, `ui`,
+`order` and `selected`. The filename equals the stable id. Kinds remain three
+separate contracts, without a common execution interface:
 
-| Kind | Table | Entry | Today |
-|---|---|---|---|
-| Service integration | `SERVICES` | `extensions::ServiceIntegration` | `slack::INTEGRATION` |
-| Agent adapter | `AGENT_ADAPTERS` | `agent_status::AgentAdapter` | `CLAUDE_CODE`, `CODEX`, `agent_pi::PI` |
-| Local capability provider | `TRANSLATION_PROVIDERS` + `TRANSLATION_ENGINE` | `intelligence::provider::TranslationProviderEntry` | `BERGAMOT` |
+| Kind | Backend descriptor | Current entries |
+|---|---|---|
+| `service` | `extensions::ServiceIntegration` | Slack |
+| `agent` | `agent_status::AgentAdapter` | Claude Code, Codex, Pi |
+| `translation` | `intelligence::provider::TranslationProviderEntry` | Bergamot |
 
-Rules the module header states and its tests pin:
+`scripts/extension_catalog.py` reads only these source manifests, sorts by
+explicit unique order and generates two checked-in, reviewable files:
 
-- An entry is source code. No setting, environment variable, path or download
-  adds one. The only override is a `cfg(test)` thread-local table.
-- Registered is not enabled, connected, loaded, trusted or authorized. A
-  lookup starts nothing and adds no polling, connection or model load.
-- An identity is used only when exactly one entry carries it, at every
-  consumer and not only at the lookups; a clash has no winner, first or
-  last. Unknown or doubly registered ids fail closed at the caller. A
-  service id two entries share takes no part in start, wake,
-  re-announcement, source contribution or credential ownership. A trigger
-  source is polled only when one contributed source carries its name, the
-  dispatcher's closed `inbound::SOURCES` names it, and it is not the clock
-  the dispatcher appends itself. A clash removes only the identities in it;
-  a malformed table also starts no connection owner. This is a rule about
-  compiled-in tables: the shipped tables have no clash, and nothing a user
-  does can create one.
-- Extensions run with the application's own trust. Module visibility is an
-  architecture constraint, not a security boundary: there is no sandbox, no
-  dynamic loading, and no compatibility with any plugin ecosystem.
+- `app/src-tauri/src/extensions/generated.rs`: the three typed tables and the
+  single selected translation engine. A contract test compares each manifest
+  identity with the actual typed descriptor's identity.
+- `app/ui/js/extensions-generated.js`: static ES imports and the contribution
+  list; manifest/UI identity disagreement is refused before Settings mounts.
 
-## Production call paths
+Cargo runs composition before compiling and before the existing exact-copy UI
+staging step. No bundler or package manager is added; the frontend remains
+native ES modules. Node-only development can refresh with
+`python3 scripts/extension_catalog.py`; CI runs the same tool with `--check`
+to reject stale committed output. Never edit generated files or `ui-dist`.
 
-| Kind | Registered entry | Production callers | Decisions the core keeps |
-|---|---|---|---|
-| Service | `slack::INTEGRATION` (`slack.rs`) | `main.rs` setup → `extensions::start_services` (the only start of `slack_transport::spawn`, which refuses a second owner); `inbound::spawn_inbound` → `extensions::service_sources` (+ the built-in clock); `inbound_status` (credential presence rows, live connection); `inbound::set_secret` → `extensions::secret_owner` → `store_secret`; `inbound_setup` → `setup_url`; `inbound_check_now` → `wake_services`; the poll loop → `reannounce_services` | Board creation and persistence; dedupe ledger, pending and ACK-to-webview order; provenance, content authority, first-send permission and readiness (`scheduler/authority.rs`, `first_send.rs`, `channel_first_send.rs`, `documents.rs`); settings shape (`inbound::validate_settings`, including the channel rules); final input delivery and attention routing |
-| Agent | `agent_status::CLAUDE_CODE`, `CODEX` | `parse_event` (accepted source words), `ingest` (proof class), `agent_hooks_set`, `agent_hooks_status`, `migrate_hooks_on_boot` — all through `extensions::agent` / `agents` | Pane, ancestry, foreground-generation and interaction admission; `CodexSignalTrust`; every Signal consumer (`tests/signal_census.rs`); remote admission (`admission.rs`, which does not read the tables) |
-| Agent | `agent_pi::PI` (`Install::PiExtension`, no `reentry`) | `agent_hooks_set` / `agent_hooks_status` (Pi's one extension entry, `agent_pi::config`); `parse_event` REFUSES its source word on the hook path; its words arrive only as `pi-observer` messages, one per connection (`agent_pi::transport`: `Service::hand` → the proof of the sender → the `agent_status::pi_*` writers) | Kernel peer, foreground-leader, pane, execution-instance, lease and order admission; the proof that a line is the bound process's own and no child's (peer pid, the kernel's fork reports, a connection made after Deck last looked at the process, a nonce per answer); each capability of a lease taken away by itself when its switch is turned off; what a card may say (`PiCoverage`, `PiSession`); the scheduler's Pi hold: no automatic prompt is sent to a recognized Pi (`scheduler/select.rs`, `Hold::PiInputUnverified`); every consumer of its two words, as of a hook word (`tests/signal_census.rs`); remote admission, which Pi is not part of |
-| Provider | `provider::BERGAMOT` | `translation::Coordinator::from_registry` → `extensions::translation_provider`, held as `Box<dyn TranslationProvider>` | Enablement, pack download/verification/deletion, limits per mode, language gating, cancellation (a request that left `active` publishes nothing), unload; the Lens, pasteboard gate, selection ownership and where a result is shown |
+The generator refuses duplicate identities, implementation paths, UI modules
+or order, unknown fields/kinds, unsafe module paths, missing modules/exports,
+unregistered `extension-*.js` modules, symlink inputs/outputs and anything other
+than exactly one selected translation provider. Source generation itself does
+not install hooks, start a connection, load a model or change user data.
 
-Hook configuration, installation and migration now live in
-`agent_status/hooks.rs`, with their own contract and tests. The parent
-`agent_status` re-exports the existing adapter and command paths; Signal
-admission and the listener stay in the parent. This changes no registration,
-IPC name or authorization rule.
+## Runtime boundaries
 
-## What moved, what was reused, what stays coupled
+`extensions.rs` is still the one typed runtime composition boundary. Registered
+is not enabled, connected, loaded, trusted, ready or authorized. A lookup starts
+nothing. Duplicate identities have no winner at every consumer: malformed
+service tables start no connection owner; duplicated service/source identities
+contribute no polling or credential ownership; duplicated agent identities
+contribute no status reads or migrations. The clock remains dispatcher-owned.
 
-Reused as they were: the dispatcher's `Source` trait, the
-`TranslationProvider` trait, the shared hook merge engine and its spec
-tables, the Keychain's closed slots, every IPC command name and reply shape.
+Services retain their existing routes through start/wake/reannounce, source
+contribution, live status and credential ownership. Slack's Socket Mode owner
+is still unique. Translation still constructs its selected provider lazily and
+loads a model only when the coordinator needs it.
 
-New: `extensions.rs`, `slack.rs` (one descriptor; the credential
-verify-then-store adaptation moved here from `inbound.rs` unchanged),
-`AgentAdapter` (replaces the parallel `SOURCES` list and `agent_modules()`
-tuple array with one declaration per agent), `TranslationProviderEntry`,
-and a one-owner guard in `slack_transport::spawn`.
+Agent status reads iterate unambiguous registrations. `agent_hooks_status`
+includes an `agents` map keyed by source, with `signal`, nullable `lifecycle`
+and nullable `installation`. The old fixed keys remain compatibility projections
+of those same observations, not a second read or persistence store. Hook
+adapters use their declared config/specs; Pi retains its byte-preserving one-entry
+implementation. `migrate_agents_on_boot` is one registered phase, preserving
+hook migration, legacy-helper retirement, Pi migration, then listener startup.
+Migration updates existing opt-ins; it never enrolls an integration.
 
-Kept coupled on purpose:
+## Settings contributions
 
-- Slack-specific grant and first-send code stays in the core
-  (`scheduler/authority.rs`, `scheduler/channel_first_send.rs`,
-  `documents.rs`, `inbound.rs` `AutoSend`). An integration must not vouch
-  for its own authority.
-- `inbound::validate_settings` still calls
-  `inbound_channel::validate_settings`: the settings document is one
-  persisted schema that the core validates on load and save.
-- `inbound::SOURCES` (`slack`, `clock`) stays the closed, persisted source
-  vocabulary; the clock stays the dispatcher's built-in source.
-- `agent_hooks_status` keeps fixed reply keys (`claude`, `codex`,
-  `claude_reentry`, and Pi's `pi`, `pi_lifecycle` and `pi_installation`), and the
-  frontend Settings sections, Slack connection panel and Lens are
-  unchanged apart from Pi's own two rows. No frontend registry exists: the backend IPC contract did not
-  change, so a frontend table would only be a second description.
-- `admission::interactive_agent` (executable names) is a separate closed
-  list from the adapters' source words.
-- `scheduler` and `commands.rs` still read `agent_status` directly, and
-  `generation_evidence` still names the `codex` executable, and Pi's own
-  name, for their holds.
+Each declared `extension-*.js` exports `CONTRIBUTION`. The common host in
+`settings-extensions.js` consumes the generated directory, mounts contributions
+before Settings binds controls, and coordinates shared status reads and writes.
+Per-extension declarations provide control identity, group/order, translated
+labels/hints/confirmations, search terms and implementation bindings. Standard
+agent controls share a renderer and transaction coordination; Slack and local
+translation contribute their dedicated panels and event wiring.
 
-## Adding a future extension of an existing kind (not done here)
+`settings-search-model.js` combines core groups with contributed groups. Several
+agent contributions intentionally share `agent-status`: their labels and search
+keywords combine under that one stable group. Existing section order, setting
+ids, control ids, navigation, focus, bilingual matching and user-facing text stay
+stable. There is no second manually maintained extension search directory.
 
-- A service: its own module with a `ServiceIntegration` descriptor and one
-  entry in `SERVICES`; a new trigger source also needs its name in
-  `inbound::SOURCES` and `limits.json` (a persisted vocabulary), a Keychain
-  slot in `keychain.rs`, its rule shape in settings validation, and its
-  Settings/drawer UI. Authority for its events is a core decision.
-- An agent: one `AgentAdapter` constant and its entry in `AGENT_ADAPTERS`,
-  a Settings toggle and a reply key in `AgentHooksStatus`. Its `install`
-  says how it is installed: a hooks document (`Install::Hooks`) or one
-  extension entry in the agent's own settings (`Install::PiExtension`).
-  Signal trust and remote admission need their own, separate decisions.
-- A translation engine: a `TranslationProvider` implementation, its entry,
-  and changing `TRANSLATION_ENGINE` (one engine per build).
+Behavioral invariants are as important as markup:
+
+- An unknown, timed-out or failed read stays visibly unknown and disabled;
+  retry only reads. Older responses cannot overwrite newer choices.
+- Pi's two choices share one external config entry and a write lock. They stay
+  independent opt-ins; session observation never becomes Signal or re-entry.
+- Confirmation, rollback, persistent inline feedback and toast behavior remain
+  owned by the same user action. Mounting/importing grants nothing.
+- The one Settings document writer remains in `settings.js`. Slack authority,
+  credential verification and canonical grants stay in their existing backend
+  owners; the contribution cannot authorize its own events.
+- Translation's download/install/delete guards and the Lens entry share the
+  existing implementation. Merely registering its panel never downloads a pack.
+
+The shared Rust frontend census and JS syntax gate scan recursively, so moving a
+module into a subdirectory cannot silently remove it from their checks. Generated
+sources remain inside the existing source/coverage boundaries.
+
+## Adding a first-party extension
+
+1. Implement the appropriate typed backend descriptor and its narrow behavior.
+2. Export a UI `CONTRIBUTION` from `app/ui/js/extension-<id>.js`, reusing ordinary
+   controls or supplying a dedicated panel. Keep dependencies one-way; receive
+   host services rather than importing `settings.js` back.
+3. Add `app/extensions/<id>.json`, run the generator and review both generated
+   files. Existing-kind status/UI registration needs no central table edit.
+4. Add behavior tests and run the gates and applicable real-WKWebView acceptance.
+
+This removes composition bookkeeping, not deliberate core decisions. A new
+persisted trigger source still needs its closed `inbound::SOURCES` vocabulary,
+settings validation and fixtures; a new credential slot remains a Keychain
+change. New Signal proof, remote admission, first-send authority or re-entry
+semantics still require explicit core implementation and tests. The source
+manifest cannot expand any of those contracts.
 
 ## Optional re-entry capability of an agent adapter
 
@@ -148,12 +161,20 @@ carrier with a person operating the window. Nothing ran at
 `/Applications/deck.app`.
 That result does not certify untested platforms or a published carrier.
 
-## Compatibility and withdrawal
+## Compatibility and verification
 
-No settings key, source id, rule id, queue, inbox or ledger field changed;
-no schema version moved; nothing is migrated and no "installed extension"
-state is persisted. Existing approvals are neither invalidated nor reissued.
-Reverting the phase-1 commits restores the previous wiring with no data
-step in either direction.
+No persisted settings key, source id, approval, queue or ledger schema changes.
+No installed-plugin state or migration is introduced. The status IPC extension
+is additive; legacy keys remain available. Unknown newer state continues to
+follow the existing storage compatibility rules.
 
-Evidence: `docs/evidence/first-party-extensions-20261009/README.md`.
+Run the ordinary gates in `CLAUDE.md` and `.github/workflows/gate.yml`, including
+catalog freshness and its negative tests, frontend coverage and source census,
+Rust lint/tests/coverage and the native Settings/agent/Slack/translation checks.
+Node DOM tests alone do not certify WKWebView layout or input behavior.
+
+Historical phase-1 evidence remains at
+`docs/evidence/first-party-extensions-20261009/README.md`; it is not evidence that
+the current composition/UI refactor passed its native scenarios.
+
+Current automatic composition and native acceptance evidence: [2026-10-16 report](evidence/first-party-autoreg-20261016/README.md).

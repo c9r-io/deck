@@ -1,0 +1,8 @@
+{
+  "id": "claude-code",
+  "kind": "agent",
+  "rust": "crate::agent_status::CLAUDE_CODE",
+  "ui": "extension-claude-code.js",
+  "order": 10,
+  "selected": false
+}

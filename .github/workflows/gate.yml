@@ -80,14 +80,13 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml
 
+      - name: First-party extension catalog is complete and current
+        run: python3 scripts/extension_catalog.py --check
+
       # no-build frontend, three gates:
       # 1. real syntax check of every module (node --check)
       - name: JS syntax (node --check)
-        run: |
-          set -e
-          for f in app/ui/js/*.js app/ui/js/i18n/*.js app/ui/js/*.mjs app/ui/test/*.mjs; do
-            node --check "$f"
-          done
+        run: python3 scripts/check-js-syntax.py
       # 2. headless pure + production-module DOM tests (node:test, no npm).
       #    WKWebView smoke runs in the app separately; Node counts only .test.mjs.
       - name: JS unit tests + coverage
@@ -105,7 +104,7 @@ jobs:
         run: node app/ui/js/check.mjs
 
       - name: Release tooling fixtures
-        run: python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py scripts/test_signal_candidate.py scripts/test_codex_title_probe.py scripts/test_ce_verdict.py scripts/test_reminder_verify.py scripts/test_sidecar_provenance.py
+        run: python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py scripts/test_signal_candidate.py scripts/test_codex_title_probe.py scripts/test_ce_verdict.py scripts/test_reminder_verify.py scripts/test_sidecar_provenance.py scripts/test_extension_catalog.py
 
       - name: Workflow syntax and expression validation
         run: scripts/check-workflows

@@ -1,7 +1,8 @@
 //! Agent hooks configuration and adapter declarations.
 //!
 //! Owns the Signal and Lifecycle hook families: lossless JSON editing,
-//! installed-helper paths, opt-in reads, Settings commands and boot migration.
+//! installed-helper paths, registry-shaped opt-in reads, Settings commands and
+//! the shared agent boot-migration phase.
 //! Each family touches only its own helper markers, preserves other bytes and
 //! follows settings symlinks through the one atomic writer. A malformed or
 //! unreadable file is refused, never replaced by defaults. Toggle state is
@@ -9,7 +10,10 @@
 //!
 //! Only a stable installed bundle may write global hooks. The explicit debug
 //! re-entry experiment may edit its bound project Lifecycle hooks only.
-//! Migration updates an already installed family; it never enrolls another.
+//! Migration visits only unambiguous registered adapters and updates an already
+//! installed family; it never enrolls another. The status reply likewise reads
+//! only those adapters and projects its legacy fixed keys from the same generic
+//! per-source observations.
 //! Helpers stay in the bundle, and only the unreferenced legacy copy is retired.
 //!
 //! The adapter declarations describe installation and proof class; they grant
@@ -1026,27 +1030,36 @@ pub(crate) fn bundled_lifecycle_helper() -> Option<PathBuf> {
     Some(exe.parent()?.join(LIFECYCLE_HELPER_NAME)).filter(|helper| helper.is_file())
 }
 
+/// The explicit project-bound experiment's observation, when that mode is
+/// configured. `None` means ordinary global settings; `Err` preserves the
+/// existing fail-closed answer for an invalid experiment argument.
+fn project_lifecycle_observation() -> Result<Option<bool>, ()> {
+    match crate::launch_args::reentry_project_config() {
+        Ok(Some(path)) => Ok(Some(read_settings_value(&path).ok().is_some_and(|value| {
+            bundled_lifecycle_helper().is_some_and(|helper| {
+                hooks_are_current_of(
+                    Family::Lifecycle,
+                    &value,
+                    CLAUDE_LIFECYCLE_HOOKS,
+                    CLAUDE_CODE.source,
+                    HookStyle::ExecBrief,
+                    &helper.to_string_lossy(),
+                ) && hooks_installed_of(Family::Lifecycle, &value, CLAUDE_LIFECYCLE_HOOKS)
+            })
+        }))),
+        Ok(None) => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+
 /// Whether the user has opted in to re-entry observation: the Lifecycle
 /// family's hooks are in Claude Code's settings. Derived from that file,
 /// never stored twice. Installed is not "taking effect": only a receipt of
 /// the real exit ever counts.
 pub(crate) fn lifecycle_observation_installed() -> bool {
-    match crate::launch_args::reentry_project_config() {
-        Ok(Some(path)) => {
-            return read_settings_value(&path).ok().is_some_and(|value| {
-                bundled_lifecycle_helper().is_some_and(|helper| {
-                    hooks_are_current_of(
-                        Family::Lifecycle,
-                        &value,
-                        CLAUDE_LIFECYCLE_HOOKS,
-                        CLAUDE_CODE.source,
-                        HookStyle::ExecBrief,
-                        &helper.to_string_lossy(),
-                    ) && hooks_installed_of(Family::Lifecycle, &value, CLAUDE_LIFECYCLE_HOOKS)
-                })
-            });
-        }
-        Err(_) => return false,
+    match project_lifecycle_observation() {
+        Ok(Some(installed)) => return installed,
+        Err(()) => return false,
         Ok(None) => {}
     }
     crate::extensions::agent(CLAUDE_CODE.source)
@@ -1159,81 +1172,116 @@ pub(crate) const CODEX: AgentAdapter = AgentAdapter {
 /// (`permission_prompt|idle_prompt` → `permission_prompt`) reach users who
 /// enabled the toggle under an older version without touching it again.
 /// A non-release build returns before reading anything.
-pub(crate) fn migrate_hooks_on_boot() {
-    let Ok(helper) = installed_helper_path() else {
-        return;
+fn migrate_hook_adapter_on_boot(adapter: &AgentAdapter, helper: &str) -> bool {
+    let Some(install) = adapter.hook_install() else {
+        return false;
     };
     let mut legacy_referenced = false;
-    for adapter in crate::extensions::unambiguous_agents() {
-        let Some(install) = adapter.hook_install() else {
-            continue;
-        };
-        let (specs, source, style, never_ran) = (
-            install.hooks,
-            adapter.source,
-            install.style,
-            install.never_ran,
-        );
-        let Some(path) = (install.config_path)() else {
-            continue;
-        };
-        let Ok(value) = read_settings_value(&path) else {
-            continue;
-        };
-        // The Lifecycle family is migrated only where the user already
-        // enabled it: a user with the status hooks alone is never enrolled.
-        // A missing lifecycle helper leaves those entries exactly as they are.
-        if !install.lifecycle_hooks.is_empty()
-            && hooks_installed_of(Family::Lifecycle, &value, install.lifecycle_hooks)
-        {
-            let migrated = installed_family_helper_path(Family::Lifecycle).and_then(|helper| {
-                let edit = HookEdit::Install {
-                    specs: install.lifecycle_hooks,
-                    source,
-                    style: HookStyle::ExecBrief,
-                    helper: &helper,
-                };
-                hooks_set_of(Family::Lifecycle, &path, edit, never_ran)
-            });
-            match migrated {
-                Ok(false) => {}
-                Ok(true) => applog(&format!(
-                    "[agent-hooks] {source} lifecycle entries rewritten to the current spec"
-                )),
-                Err(e) => applog(&format!(
-                    "[agent-hooks] {source} lifecycle migration FAILED ({})",
-                    e.code()
-                )),
-            }
-        }
-        if !hooks_installed(&value, specs) {
-            continue;
-        }
-        let edit = HookEdit::Install {
-            specs,
-            source,
-            style,
-            helper: &helper,
-        };
-        match hooks_set(&path, edit, never_ran) {
-            // already what the current spec describes: the file is not written
+    let (specs, source, style, never_ran) = (
+        install.hooks,
+        adapter.source,
+        install.style,
+        install.never_ran,
+    );
+    let Some(path) = (install.config_path)() else {
+        return false;
+    };
+    let Ok(value) = read_settings_value(&path) else {
+        return false;
+    };
+    // The Lifecycle family is migrated only where the user already
+    // enabled it: a user with the status hooks alone is never enrolled.
+    // A missing lifecycle helper leaves those entries exactly as they are.
+    if !install.lifecycle_hooks.is_empty()
+        && hooks_installed_of(Family::Lifecycle, &value, install.lifecycle_hooks)
+    {
+        let migrated = installed_family_helper_path(Family::Lifecycle).and_then(|helper| {
+            let edit = HookEdit::Install {
+                specs: install.lifecycle_hooks,
+                source,
+                style: HookStyle::ExecBrief,
+                helper: &helper,
+            };
+            hooks_set_of(Family::Lifecycle, &path, edit, never_ran)
+        });
+        match migrated {
             Ok(false) => {}
             Ok(true) => applog(&format!(
-                "[agent-hooks] {source} entries rewritten to the current spec"
+                "[agent-hooks] {source} lifecycle entries rewritten to the current spec"
             )),
-            Err(e) => {
-                legacy_referenced |= serde_json::to_string(&value)
-                    .is_ok_and(|text| text.contains(LEGACY_HELPER_MARKER));
-                applog(&format!(
-                    "[agent-hooks] {source} migration FAILED ({})",
-                    e.code()
-                ));
-            }
+            Err(e) => applog(&format!(
+                "[agent-hooks] {source} lifecycle migration FAILED ({})",
+                e.code()
+            )),
         }
     }
-    if !legacy_referenced {
-        retire_legacy_helper_copy();
+    if !hooks_installed(&value, specs) {
+        return false;
     }
+    let edit = HookEdit::Install {
+        specs,
+        source,
+        style,
+        helper,
+    };
+    match hooks_set(&path, edit, never_ran) {
+        // already what the current spec describes: the file is not written
+        Ok(false) => {}
+        Ok(true) => applog(&format!(
+            "[agent-hooks] {source} entries rewritten to the current spec"
+        )),
+        Err(e) => {
+            legacy_referenced =
+                serde_json::to_string(&value).is_ok_and(|text| text.contains(LEGACY_HELPER_MARKER));
+            applog(&format!(
+                "[agent-hooks] {source} migration FAILED ({})",
+                e.code()
+            ));
+        }
+    }
+    legacy_referenced
+}
+
+/// One registry-backed boot migration phase. Registration selects which
+/// settings documents are worth reading; the closed install kind selects the
+/// existing byte-preserving implementation. A duplicate source is skipped by
+/// `unambiguous_agents`, so it causes no config read or migration side effect.
+fn migrate_registered_agents(
+    helper: Option<&str>,
+    mut migrate_hook: impl FnMut(&AgentAdapter, &str) -> bool,
+    retire_legacy: impl FnOnce(),
+    mut migrate_pi: impl FnMut(),
+) {
+    if let Some(helper) = helper {
+        let mut legacy_referenced = false;
+        let mut hooks_visited = 0usize;
+        for adapter in crate::extensions::unambiguous_agents() {
+            if matches!(adapter.install, Install::Hooks(_)) {
+                hooks_visited += 1;
+                legacy_referenced |= migrate_hook(adapter, helper);
+            }
+        }
+        if hooks_visited > 0 && !legacy_referenced {
+            retire_legacy();
+        }
+    }
+    // This second registry pass preserves the old ordering: hook migration
+    // and legacy-copy retirement complete before Pi's existing-entry move.
+    for adapter in crate::extensions::unambiguous_agents() {
+        if matches!(adapter.install, Install::PiExtension) {
+            migrate_pi();
+        }
+    }
+}
+
+pub(crate) fn migrate_agents_on_boot() {
+    let helper = installed_helper_path().ok();
+    migrate_registered_agents(
+        helper.as_deref(),
+        migrate_hook_adapter_on_boot,
+        retire_legacy_helper_copy,
+        crate::agent_pi::config::migrate_on_boot,
+    );
 }
 
 /// Remove the pre-0.5.12 `~/.deck/bin/deck-status-helper` copy (and the
@@ -1278,8 +1326,16 @@ fn hooks_set_of(
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub(crate) struct AgentSettingsStatus {
+    signal: bool,
+    lifecycle: Option<bool>,
+    installation: Option<crate::agent_pi::config::Installation>,
+}
+
 #[derive(serde::Serialize)]
 pub(crate) struct AgentHooksStatus {
+    agents: std::collections::BTreeMap<&'static str, AgentSettingsStatus>,
     claude: bool,
     codex: bool,
     /// The separate re-entry observation opt-in (Lifecycle family).
@@ -1293,35 +1349,77 @@ pub(crate) struct AgentHooksStatus {
 
 #[tauri::command]
 pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
-    // The reply keeps its fixed keys (the Settings toggles); each is
-    // answered from the registered adapter of that source word.
-    let installed = |source: &str| {
-        crate::extensions::agent(source)
-            .and_then(AgentAdapter::hook_install)
-            .is_some_and(|install| {
-                (install.config_path)()
-                    .and_then(|path| read_settings_value(&path).ok())
-                    .is_some_and(|value| hooks_installed(&value, install.hooks))
-            })
-    };
-    // Unregistered, Pi answers as absent: a registered adapter is what makes
-    // the file worth reading at all.
-    let pi = crate::extensions::agent(crate::agent_pi::SOURCE)
-        .filter(|adapter| matches!(adapter.install, Install::PiExtension))
-        .map(|_| crate::agent_pi::config::status())
+    let mut agents = std::collections::BTreeMap::new();
+    for adapter in crate::extensions::unambiguous_agents() {
+        let status = match &adapter.install {
+            Install::Hooks(install) => {
+                let value =
+                    (install.config_path)().and_then(|path| read_settings_value(&path).ok());
+                AgentSettingsStatus {
+                    signal: value
+                        .as_ref()
+                        .is_some_and(|value| hooks_installed(value, install.hooks)),
+                    lifecycle: (!install.lifecycle_hooks.is_empty()).then(|| {
+                        if adapter.source == CLAUDE_CODE.source {
+                            // Preserve the explicit project-bound re-entry
+                            // experiment's alternate settings location while
+                            // reusing the normal config read above.
+                            match project_lifecycle_observation() {
+                                Ok(Some(installed)) => installed,
+                                Err(()) => false,
+                                Ok(None) => value.as_ref().is_some_and(|value| {
+                                    hooks_installed_of(
+                                        Family::Lifecycle,
+                                        value,
+                                        install.lifecycle_hooks,
+                                    )
+                                }),
+                            }
+                        } else {
+                            value.as_ref().is_some_and(|value| {
+                                hooks_installed_of(
+                                    Family::Lifecycle,
+                                    value,
+                                    install.lifecycle_hooks,
+                                )
+                            })
+                        }
+                    }),
+                    installation: None,
+                }
+            }
+            Install::PiExtension => {
+                let status = crate::agent_pi::config::status();
+                AgentSettingsStatus {
+                    signal: status.signal,
+                    lifecycle: Some(status.lifecycle),
+                    installation: Some(status.installation),
+                }
+            }
+        };
+        agents.insert(adapter.source, status);
+    }
+    // Compatibility keys are projections of the same observations above;
+    // they never perform a second config read.
+    let claude = agents.get(CLAUDE_CODE.source).copied().unwrap_or_default();
+    let codex = agents.get(CODEX.source).copied().unwrap_or_default();
+    let pi = agents
+        .get(crate::agent_pi::SOURCE)
+        .copied()
         .unwrap_or_default();
     AgentHooksStatus {
-        claude: installed(CLAUDE_CODE.source),
-        codex: installed(CODEX.source),
-        claude_reentry: lifecycle_observation_installed(),
+        agents,
+        claude: claude.signal,
+        codex: codex.signal,
+        claude_reentry: claude.lifecycle.unwrap_or(false),
         pi: pi.signal,
-        pi_lifecycle: pi.lifecycle,
-        pi_installation: pi.installation,
+        pi_lifecycle: pi.lifecycle.unwrap_or(false),
+        pi_installation: pi.installation.unwrap_or_default(),
     }
 }
 
 /// The user-driven writer of the agent CLI config files, from an explicit
-/// Settings toggle. The only other writer is `migrate_hooks_on_boot`, which
+/// Settings toggle. The only other writer is `migrate_agents_on_boot`, which
 /// rewrites deck's own entries and nothing else.
 #[tauri::command]
 pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckError> {

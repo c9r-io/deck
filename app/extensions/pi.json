@@ -1,0 +1,8 @@
+{
+  "id": "pi",
+  "kind": "agent",
+  "rust": "crate::agent_pi::PI",
+  "ui": "extension-pi.js",
+  "order": 30,
+  "selected": false
+}

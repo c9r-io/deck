@@ -1,0 +1,8 @@
+{
+  "id": "bergamot",
+  "kind": "translation",
+  "rust": "crate::intelligence::provider::BERGAMOT",
+  "ui": "extension-bergamot.js",
+  "order": 50,
+  "selected": true
+}

@@ -35,6 +35,16 @@ export class FakeElement {
   replaceChildren(...nodes) { this.children = nodes; }
   appendChild(node) { this.children.push(node); return node; }
   append(...nodes) { this.children.push(...nodes); }
+  insertAdjacentHTML(_position, html) {
+    for (const match of String(html).matchAll(/<([a-z0-9-]+)([^>]*?)\sid="([^"]+)"([^>]*)>/gi)) {
+      const node = new FakeElement(match[1]);
+      const attributes = match[2] + match[4];
+      node.disabled = /\sdisabled(?:\s|$)/i.test(attributes);
+      node.hidden = /\shidden(?:\s|$)/i.test(attributes);
+      node.type = /\stype="([^"]+)"/i.exec(attributes)?.[1] || '';
+      ids.set(match[3], node);
+    }
+  }
   remove() { this.isConnected = false; }
   focus() { fakeDocument.activeElement = this; }
   select() { this.selected = true; }

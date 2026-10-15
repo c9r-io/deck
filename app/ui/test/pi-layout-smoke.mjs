@@ -16,7 +16,8 @@
 // cards are real cards with real (empty) shell sessions, and what the BACKEND
 // would answer about them is scripted in this page only, at the one place
 // every invoke leaves it (`window.__TAURI__.core.invoke`):
-//   - `agent_hooks_status`      each state of Pi's settings entry in turn;
+//   - `agent_hooks_status`      each state of Pi's settings entry in turn,
+//                               in both the agents map and legacy projection;
 //   - `agent_hooks_set`         refused with one closed code (the toast);
 //   - `poll_sessions`           the real answer, with the Signal fields of
 //                               this run's cards replaced;
@@ -123,7 +124,13 @@ export async function runPiLayoutSmoke() {
   const REFUSED = new Set(['kill_session', 'pty_write', 'mcp_start_session', 'voice_deliver', 'defer_tmux_restart', 'agent_pi_lifecycle_set']);
   let refused = 0;
   const script = async (command, args) => {
-    if (command === 'agent_hooks_status' && scripted.status) return { ...scripted.base, ...scripted.status, ...planted };
+    if (command === 'agent_hooks_status' && scripted.status) return {
+      ...scripted.base, ...scripted.status, ...planted,
+      agents: { ...scripted.base.agents, pi: {
+        signal: scripted.status.pi, lifecycle: scripted.status.pi_lifecycle,
+        installation: scripted.status.pi_installation, ...planted,
+      } },
+    };
     if (command === 'agent_hooks_set') throw new Error(scripted.refusal || 'pi-config-unsupported-location');
     if (command === 'poll_sessions') {
       const real = await nativeInvoke(command, args);

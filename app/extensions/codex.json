@@ -1,0 +1,8 @@
+{
+  "id": "codex",
+  "kind": "agent",
+  "rust": "crate::agent_status::CODEX",
+  "ui": "extension-codex.js",
+  "order": 20,
+  "selected": false
+}

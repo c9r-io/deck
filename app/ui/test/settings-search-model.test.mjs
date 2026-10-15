@@ -3,11 +3,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { dictionaries } from '../js/i18n.js';
+import { EXTENSION_CONTRIBUTIONS } from '../js/extensions-generated.js';
 import {
   SETTINGS_SECTIONS, SETTING_ITEMS, isSettingsSection, normalizeSearchQuery, searchSettings, sectionItems, settingItem,
 } from '../js/settings-search-model.js';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+const contributedMarkup = ['settings-extensions.js', 'extension-bergamot.js', 'extension-slack.js']
+  .map(name => readFileSync(new URL(`../js/${name}`, import.meta.url), 'utf8')).join('\n');
 const search = query => searchSettings(query, dictionaries);
 const ids = query => (search(query) || []).flatMap(result => result.items);
 
@@ -34,7 +37,14 @@ test('every setting has a unique stable id, a real section, translated labels an
   }));
   for (const item of SETTING_ITEMS) {
     assert.ok(isSettingsSection(item.section), item.id);
-    assert.match(panels[item.section], new RegExp(`id="set-item-${item.id}" data-setting-id="${item.id}"`), item.id);
+    if (item.extensionIds?.length) {
+      assert.ok(EXTENSION_CONTRIBUTIONS.some(contribution =>
+        contribution.settings?.some(declared => declared.id === item.id)), item.id);
+      if (!['agent-status', 'claude-reentry'].includes(item.id))
+        assert.match(contributedMarkup, new RegExp(`id=[\\"\\\`]set-item-${item.id}[\\"\\\`] data-setting-id=[\\"\\\`]${item.id}[\\"\\\`]`), item.id);
+    } else {
+      assert.match(panels[item.section], new RegExp(`id="set-item-${item.id}" data-setting-id="${item.id}"`), item.id);
+    }
     for (const key of item.labelKeys)
       for (const dictionary of Object.values(dictionaries)) assert.ok(dictionary[key], `${item.id}: ${key}`);
     for (const keyword of item.keywords) assert.equal(keyword, normalizeSearchQuery(keyword), 'keywords are stored normalized');

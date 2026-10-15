@@ -259,14 +259,11 @@ fn main() {
                     mcp::spawn(handle);
                 });
             }
-            // Agent-status socket: content-free state words from agent hooks
-            // (see agent_status.rs). Re-points already-installed hook
-            // entries at this install's bundled helper and retires the
-            // legacy ~/.deck/bin copy; never installs hooks by itself.
-            agent_status::migrate_hooks_on_boot();
-            // Pi's one settings entry, under the same rule: an entry that is
-            // there is moved to this install's bundle, none is ever added.
-            agent_pi::config::migrate_on_boot();
+            // Re-point each registered agent's already-installed integration
+            // at this bundle before the content-free status listener starts.
+            // This also retires an unreferenced legacy hook helper; it never
+            // installs hooks or a Pi extension the user did not enable.
+            agent_status::migrate_agents_on_boot();
             // Away notifications + Dock badge (notify.rs): the click
             // delegate and the saved switch, before the first hook event.
             {

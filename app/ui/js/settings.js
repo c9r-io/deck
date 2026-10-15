@@ -1,6 +1,5 @@
 // settings.js — the settings modal: sections, search, font scale, shortcuts,
-// theme/locale/update channel/session restore/agent hooks, inbound (Slack
-// badge + channel) connection, capability upgrade and Keychain secrets, Phone Connector and MCP settings,
+// theme/locale/update channel/session restore, Phone Connector and MCP settings,
 // logs, the settings writer every choice goes through and the ONE commit
 // shape (`commitSettings`: field edit over the last durable settings) behind
 // every choice. Pending edits are previews only: each write rebases its own
@@ -16,9 +15,10 @@
 // save/apply result beside its controls; failures survive closing Settings
 // until another edit of that setting or explicit dismissal. A quiet sidebar
 // count leads back to them. Closing never cancels a write or requires a click.
-// Hook reads have their own generation: pending/failed/malformed reads show
-// unknown, disabled controls, never "off". Retry only reads; successful
-// writes invalidate older reads and leave unrelated hook choices alone.
+// First-party Agent, Slack and local-translation panels are declared by the
+// generated extension registry and mounted by settings-extensions.js. This
+// file injects the ONE writer and existing feedback/dialog/native services;
+// extension modules own their metadata, markup and event binding.
 // Explicit channel first-step decisions travel only with the editor's save.
 // Native canonical channel grants replace frontend copies after commit;
 // unrelated queued saves preserve that latest native result. A native
@@ -59,8 +59,8 @@
 // background `detect_editors` answers, keeping the saved choice selected.
 // Away notifications name their dependency on agent-status hooks inline
 // when both are known to be off; nothing is switched on for the user.
-// Pi work status is one more switch of the agent-status group. It shows
-// `pi` of `agent_hooks_status`, which the backend derives from Deck's one
+// Pi work status is one more switch of the agent-status group. It shows the
+// `pi` entry of `agent_hooks_status.agents`, which the backend derives from Deck's one
 // entry in Pi's own settings file, and is written by `agent_hooks_set` like
 // the other two. What differs is said by pi-model.js: the note under the
 // switch names the entry's state (configured is never shown as connected),
@@ -96,9 +96,12 @@ import { newlyPairedDevice } from './connector-model.js';
 import { slackConnectionView } from './slack-connection-model.js';
 import { createSlackChannelSetup, mergeSlackChannelManifest, slackAppSettingsUrl } from './slack-setup-model.js';
 import { removeLegacySlackCredentials } from './slack-legacy-cleanup.js';
-import { NOTIFY_STATUS_WORDS, agentHooksToastKey, notifyNeedsAgentStatus, notifyStatusKey } from './notify-model.js';
-import { piErrorKey, piSettingsView } from './pi-model.js';
+import { NOTIFY_STATUS_WORDS, notifyNeedsAgentStatus, notifyStatusKey } from './notify-model.js';
 import { SETTINGS_SECTIONS, isSettingsSection, searchSettings, sectionItems, settingItem } from './settings-search-model.js';
+import {
+  initializeExtensionContributions, persistAgentContribution, refreshAgentContributions,
+  renderAgentContributions,
+} from './settings-extensions.js';
 import {
   formatShortcut, isSafeShortcut, registerShortcutAction, shortcutConflict, shortcutFromEvent,
 } from './shortcuts.js';
@@ -642,7 +645,7 @@ export async function openSettings(target) {
   $('set-session-restore').checked = !!ctx.settings.sessionRestore;
   renderNotifySettings();
   if (ctx.settings.notifyAway) inv('notify_status').then(renderNotifyStatus).catch(() => {});
-  refreshAgentHooks();
+  refreshAgentContributions();
   renderFontScale();
   renderShortcutSettings();
   renderVoicePreferences();
@@ -770,194 +773,18 @@ async function persistNotifyChoice() {
   });
 }
 
-/* Agent-status hooks: the checkbox reflects ~/.claude/settings.json itself
-   (the backend derives it), so there is no second copy of the state to keep
-   in sync and a manual edit of that file shows up here truthfully. */
-let agentHooksPending = false;
-// { claude, codex } as last read or written; null while unknown.
-let agentHooksKnown = null;
-let agentHooksGeneration = 0;
-let hooksStatus = null;
-let hooksReading = false;
-// Bound a read without cancelling or repeating a native operation. A late
-// result belongs to the expired request and never updates the controls.
-async function readAgentHooksStatus() {
-  let timer;
-  try {
-    return await Promise.race([
-      inv('agent_hooks_status'),
-      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('hooks-read-timeout')), 10000); }),
-    ]);
-  } finally { clearTimeout(timer); }
-}
-function renderHooksReadState() {
-  for (const [id, field, pending] of [
-    ['set-agent-hooks', 'claude', agentHooksPending],
-    ['set-codex-hooks', 'codex', agentHooksPending],
-    ['set-claude-reentry', 'claude_reentry', claudeReentryPending],
-  ]) {
-    const box = $(id), known = !hooksReading && typeof hooksStatus?.[field] === 'boolean';
-    if (!pending) box.checked = known ? hooksStatus[field] : false;
-    box.indeterminate = !known;
-    box.disabled = pending || !known;
-  }
-  for (const [prefix, fields] of [['agent-status', ['claude', 'codex', 'pi', 'pi_lifecycle']], ['claude-reentry', ['claude_reentry']]]) {
-    const unknown = hooksReading || fields.some(field => typeof hooksStatus?.[field] !== 'boolean')
-      || (prefix === 'agent-status' && piSettingsView(hooksStatus).note === 'settings.pi.note.unknown');
-    $('set-' + prefix + '-read').textContent = unknown ? t(hooksReading ? 'settings.reading' : 'settings.readFailed') : '';
-    const retry = $('set-' + prefix + '-retry');
-    retry.hidden = !unknown;
-    retry.disabled = hooksReading || agentHooksPending || claudeReentryPending || piPending;
-  }
-  agentHooksKnown = !hooksReading && typeof hooksStatus?.claude === 'boolean' && typeof hooksStatus?.codex === 'boolean'
-    ? { claude: hooksStatus.claude, codex: hooksStatus.codex } : null;
-  renderNotifyDependency();
-  renderPiSettings(hooksReading ? null : hooksStatus);
-}
-async function refreshAgentHooks() {
-  if (agentHooksPending || claudeReentryPending || piPending) return;
-  const generation = ++agentHooksGeneration;
-  hooksReading = true; hooksStatus = null;
-  renderHooksReadState();
-  let status = null;
-  try { status = await readAgentHooksStatus(); } catch (_) { /* unknown is visible and retryable */ }
-  if (generation !== agentHooksGeneration) return;
-  hooksReading = false;
-  hooksStatus = status && typeof status === 'object' ? status : null;
-  renderHooksReadState();
-}
-function renderNotifyDependency() {
-  $('set-notify-dependency').hidden = !notifyNeedsAgentStatus(agentHooksKnown);
-}
-export async function persistAgentHooksChoice(agent, boxId, confirmKey) {
-  const field = agent === 'codex' ? 'codex' : 'claude';
-  if (agentHooksPending || hooksReading || typeof hooksStatus?.[field] !== 'boolean') return;
-  const box = $(boxId);
-  const previous = hooksStatus[field], generation = agentHooksGeneration;
-  const desired = box.checked;
-  if (desired && !(await confirmDialog(t(confirmKey)))) {
-    box.checked = false;
-    return;
-  }
-  if (agentHooksPending || generation !== agentHooksGeneration || hooksReading || typeof hooksStatus?.[field] !== 'boolean') return;
-  agentHooksPending = true;
-  ++agentHooksGeneration;
-  const feedback = beginSettingsFeedback('hook:' + field, ['agent-status', field === 'claude' ? 'settings.agentHooks' : 'settings.codexHooks']);
-  renderHooksReadState();
-  try {
-    await inv('agent_hooks_set', { agent, enable: desired });
-    hooksStatus = { ...hooksStatus, [field]: desired };
-    finishSettingsFeedback(feedback, 'saved');
-    toast(t(agentHooksToastKey(desired, ctx.settings.notifyAway)));
-  } catch (_) {
-    hooksStatus = { ...hooksStatus, [field]: previous };
-    finishSettingsFeedback(feedback, 'failed', 'error.agentHooks');
-    toast(t('error.agentHooks'));
-    uev('settings-save-fail');
-  } finally {
-    agentHooksPending = false;
-    renderHooksReadState();
-  }
-}
+// Compatibility exports for callers and focused tests. The contribution
+// registry owns the controls and the generic host owns their state machine.
+export const persistAgentHooksChoice = (_agent, boxId) => persistAgentContribution(boxId);
+export const persistPiChoice = () => persistAgentContribution('set-pi-hooks');
+export const persistPiLifecycle = () => persistAgentContribution('set-pi-lifecycle');
+export const persistClaudeReentryChoice = () => persistAgentContribution('set-claude-reentry');
 
-/* Pi work status: the switch and the note under it, both from what the
-   backend read in Pi's own settings file. `null` (not read yet, or a failed
-   read) shows a mixed, unusable switch and an explicit unknown note. */
-let piPending = false;
-function renderPiSettings(status) {
-  const view = status ? piSettingsView(status) : { signal: false, lifecycle: false, usable: false, note: null };
-  const box = $('set-pi-hooks');
-  if (!piPending) box.checked = view.signal;
-  box.indeterminate = typeof status?.pi !== 'boolean' || view.note === 'settings.pi.note.unknown';
-  box.disabled = piPending || !view.usable || box.indeterminate;
-  const session = $('set-pi-lifecycle');
-  if (!piPending) session.checked = view.lifecycle;
-  session.indeterminate = typeof status?.pi_lifecycle !== 'boolean' || view.note === 'settings.pi.note.unknown';
-  session.disabled = piPending || !view.usable || session.indeterminate;
-  const note = $('set-pi-note');
-  const noteKey = view.note || (!status ? (hooksReading ? 'settings.reading' : 'settings.readFailed') : null);
-  note.hidden = !noteKey;
-  note.textContent = noteKey ? t(noteKey) : '';
-}
-/* One of Pi's two switches. Each is its own choice with its own
-   confirmation; both are one entry in Pi's settings file, so while one is
-   being written neither can be used. */
-const PI_SWITCHES = {
-  signal: { box: 'set-pi-hooks', confirm: 'settings.piSignalEnableConfirm', on: 'settings.piSignalEnabled', off: 'settings.piSignalDisabled',
-    write: enable => inv('agent_hooks_set', { agent: 'pi', enable }) },
-  lifecycle: { box: 'set-pi-lifecycle', confirm: 'settings.piLifecycleEnableConfirm', on: 'settings.piLifecycleEnabled', off: 'settings.piLifecycleDisabled',
-    write: enable => inv('agent_pi_lifecycle_set', { enable }) },
-};
-export const persistPiChoice = () => persistPiSwitch('signal');
-export const persistPiLifecycle = () => persistPiSwitch('lifecycle');
-async function persistPiSwitch(which) {
-  if (piPending) return;
-  const spec = PI_SWITCHES[which];
-  const box = $(spec.box);
-  if (hooksReading || box.disabled) return;
-  const desired = box.checked, generation = agentHooksGeneration;
-  if (desired && !(await confirmDialog(t(spec.confirm)))) {
-    box.checked = false;
-    return;
-  }
-  if (piPending || generation !== agentHooksGeneration || hooksReading || box.disabled) return;
-  piPending = true;
-  ++agentHooksGeneration;
-  const feedback = beginSettingsFeedback('hook:pi-' + which, ['agent-status', which === 'signal' ? 'settings.piSignal' : 'settings.piLifecycle']);
-  for (const each of Object.values(PI_SWITCHES)) $(each.box).disabled = true;
-  try {
-    await spec.write(desired);
-    finishSettingsFeedback(feedback, 'saved');
-    toast(t(desired ? spec.on : spec.off));
-  } catch (error) {
-    box.checked = !desired;
-    const errorKey = piErrorKey(typeof error === 'string' ? error : error?.message);
-    finishSettingsFeedback(feedback, 'failed', errorKey);
-    toast(t(errorKey));
-    uev('settings-save-fail');
-  } finally {
-    // Read only Pi's fields back into the shared snapshot; unrelated switches
-    // retain their own settled observations even with a partial native reply.
-    let status = null;
-    try { status = await readAgentHooksStatus(); } catch (_) { /* shown as unknown */ }
-    hooksStatus = { ...hooksStatus, pi: status?.pi, pi_lifecycle: status?.pi_lifecycle, pi_installation: status?.pi_installation };
-    piPending = false;
-    renderHooksReadState();
-  }
-}
-
-/* Claude session re-entry observation: one explicit opt-in of its own. The
-   box shows what the backend derived from the installed lifecycle hooks and
-   is written by its own command; the agent-status switches never move it. */
-let claudeReentryPending = false;
-export async function persistClaudeReentryChoice() {
-  if (claudeReentryPending || hooksReading || typeof hooksStatus?.claude_reentry !== 'boolean') return;
-  const previous = hooksStatus.claude_reentry, generation = agentHooksGeneration;
-  const box = $('set-claude-reentry');
-  const desired = box.checked;
-  if (desired && !(await confirmDialog(t('settings.claudeReentryEnableConfirm')))) {
-    box.checked = false;
-    return;
-  }
-  if (claudeReentryPending || generation !== agentHooksGeneration || hooksReading || typeof hooksStatus?.claude_reentry !== 'boolean') return;
-  claudeReentryPending = true;
-  ++agentHooksGeneration;
-  const feedback = beginSettingsFeedback('hook:claude-reentry', ['claude-reentry', 'settings.claudeReentry']);
-  renderHooksReadState();
-  try {
-    await inv('agent_lifecycle_hooks_set', { enable: desired });
-    hooksStatus = { ...hooksStatus, claude_reentry: desired };
-    finishSettingsFeedback(feedback, 'saved');
-    toast(t(desired ? 'settings.claudeReentryEnabled' : 'settings.claudeReentryDisabled'));
-  } catch (_) {
-    hooksStatus = { ...hooksStatus, claude_reentry: previous };
-    finishSettingsFeedback(feedback, 'failed', 'error.agentHooks');
-    toast(t('error.agentHooks'));
-    uev('settings-save-fail');
-  } finally {
-    claudeReentryPending = false;
-    renderHooksReadState();
-  }
+function renderNotifyDependency(agentSignals) {
+  const known = agentSignals && typeof agentSignals['claude-code'] === 'boolean'
+    && typeof agentSignals.codex === 'boolean'
+    ? { claude: agentSignals['claude-code'], codex: agentSignals.codex } : null;
+  $('set-notify-dependency').hidden = !notifyNeedsAgentStatus(known);
 }
 
 let channelUpgradeOpen = false;
@@ -1526,6 +1353,64 @@ export function mcpAuthorizationDialog(projects, options = {}) {
 /* DOM wiring, run once at boot (app.js) after initDialogs() so the module
    can be imported without a document. */
 export function initSettings() {
+  initializeExtensionContributions({
+    $, ctx, inv, t, toast, confirmDialog, confirmDangerDialog, uev,
+    beginFeedback: beginSettingsFeedback, finishFeedback: finishSettingsFeedback,
+    renderNotifyDependency,
+    bergamot: {
+      toggle: async event => {
+        if (event.target.checked) await installTranslationPack(true);
+        else await saveTranslationEnabled(false);
+        renderLocalTranslationSettings();
+      },
+      changeLimit: async event => {
+        const documentLimitBytes = Number(event.target.value);
+        if (![8192, 16384].includes(documentLimitBytes)) { renderLocalTranslationSettings(); return; }
+        await commitSettings({ key: 'translation-limit', exclusive: true,
+          edit: translationChoice({ documentLimitBytes }),
+          locked: ['set-translation-document-limit'], apply: renderLocalTranslationSettings });
+        renderLocalTranslationSettings();
+      },
+      download: () => installTranslationPack(false),
+      remove: async () => {
+        if (!(await confirmDangerDialog(t('settings.translationDeleteConfirm'), t('settings.translationDelete')))) return;
+        if (ctx.settings.localIntelligence.translation.enabled && !(await saveTranslationEnabled(false))) return;
+        try { await packDelete(); await refreshTranslationPack(); }
+        catch { toast(t('settings.translationDeleteFailed')); }
+      },
+    },
+    slack: {
+      toggle: persistInboundSlackChoice,
+      toggleChannel: async () => {
+        if ($('set-channel-enabled').checked) return enableSlackChannels();
+        cancelSlackChannelSetup();
+        await persistInbound({ ...ctx.settings.inbound, channelConnection: { enabled: false, connectionId: 'default' } });
+      },
+      upgrade: () => ctx.settings.inbound.channelConnection?.enabled ? revealSlackChannelSetup() : enableSlackChannels(),
+      finish: enableSlackChannels,
+      cancel: cancelSlackChannelSetup,
+      open: openSlackAppSettings,
+      manifest: async () => {
+        try {
+          const required = JSON.parse(await inv('slack_manifest'));
+          const merged = mergeSlackChannelManifest($('set-channel-existing-manifest').value, required);
+          $('set-channel-manifest-text').value = merged;
+          $('set-channel-manifest-text').hidden = false;
+          await inv('write_clipboard', { text: merged });
+          $('set-channel-setup-feedback').textContent = t('settings.channelSetup.copied');
+          await openSlackAppSettings('app-manifest');
+        } catch (_) { $('set-channel-setup-feedback').textContent = t('settings.channelSetup.manifest-error'); }
+      },
+      storeBot: () => storeChannelSecret(), clearBot: () => clearChannelSecret(),
+      clearLegacy: clearLegacySlackCredentials,
+      setup: async () => { try { await inv('inbound_setup', { source: 'slack' }); } catch (_) { toast(t('error.inboundSetup')); } },
+      storeUser: () => storeInboundSecret('slack-user-token', 'set-inbound-slack-user'),
+      storeApp: () => storeInboundSecret('slack-app-token', 'set-inbound-slack-app'),
+      clearUser: () => clearInboundSecret('slack-user-token'),
+      clearApp: () => clearInboundSecret('slack-app-token'),
+      checkNow: () => { inv('inbound_check_now').catch(() => {}); setTimeout(renderInboundSettings, 4000); },
+    },
+  });
   listen('connector-changed', connectorPairingChanged).catch(() => uev('listen-fail', 'connector-changed'));
   listen('channel-authority-changed', () => refreshChannelAuthority().catch(() => uev('settings-load-fail')))
     .catch(() => uev('settings-load-fail'));
@@ -1660,14 +1545,12 @@ export function initSettings() {
   registerShortcutAction('fontReset', () => setFontScale(1));
 
   renderSettingsFeedback();
-  $('set-agent-status-retry').onclick = refreshAgentHooks;
-  $('set-claude-reentry-retry').onclick = refreshAgentHooks;
   onLocaleChange(() => {
     renderSettingsFeedback();
     if ($('settings-modal').style.display === 'flex') {
       renderShortcutSettings();
       renderVoicePreferences();
-      renderHooksReadState();
+      renderAgentContributions();
       filterSettings();
     }
   });
@@ -1676,30 +1559,6 @@ export function initSettings() {
     const failed = [...settingsFeedback.values()].find(feedbackFailed);
     return openSettings(failed ? { setting: failed.item } : undefined);
   };
-  $('set-local-translation').onchange = async event => {
-    if (event.target.checked) {
-      await installTranslationPack(true);
-    } else {
-      await saveTranslationEnabled(false);
-    }
-    renderLocalTranslationSettings();
-  };
-  $('set-translation-document-limit').onchange = async event => {
-    const documentLimitBytes = Number(event.target.value);
-    if (![8192, 16384].includes(documentLimitBytes)) { renderLocalTranslationSettings(); return; }
-    await commitSettings({ key: 'translation-limit', exclusive: true,
-      edit: translationChoice({ documentLimitBytes }),
-      locked: ['set-translation-document-limit'], apply: renderLocalTranslationSettings });
-    renderLocalTranslationSettings();
-  };
-  $('set-translation-download').onclick = () => installTranslationPack(false);
-  $('set-translation-delete').onclick = async () => {
-    if (!(await confirmDangerDialog(t('settings.translationDeleteConfirm'), t('settings.translationDelete')))) return;
-    if (ctx.settings.localIntelligence.translation.enabled && !(await saveTranslationEnabled(false))) return;
-    try { await packDelete(); await refreshTranslationPack(); }
-    catch { toast(t('settings.translationDeleteFailed')); }
-  };
-
   $('set-close').onclick = closeSettings;
 
   $('settings-modal').addEventListener('mousedown', e => {
@@ -1752,66 +1611,8 @@ export function initSettings() {
 
   $('set-shortcuts-reset').onclick = resetShortcuts;
 
-  $('set-agent-hooks').onchange = () =>
-    persistAgentHooksChoice('claude-code', 'set-agent-hooks', 'settings.agentHooksEnableConfirm');
-
-  $('set-codex-hooks').onchange = () =>
-    persistAgentHooksChoice('codex', 'set-codex-hooks', 'settings.codexHooksEnableConfirm');
-
-  $('set-claude-reentry').onchange = persistClaudeReentryChoice;
-
-  $('set-pi-hooks').onchange = persistPiChoice;
-  $('set-pi-lifecycle').onchange = persistPiLifecycle;
-
   $('set-notify-away').onchange = persistNotifyChoice;
   $('set-notify-sound').onchange = persistNotifyChoice;
-
-  $('set-inbound-slack').onchange = persistInboundSlackChoice;
-  $('set-channel-enabled').onchange = async () => {
-    if ($('set-channel-enabled').checked) return enableSlackChannels();
-    cancelSlackChannelSetup();
-    await persistInbound({ ...ctx.settings.inbound, channelConnection: { enabled: false, connectionId: 'default' } });
-  };
-  $('set-channel-upgrade').onclick = () => {
-    if (ctx.settings.inbound.channelConnection?.enabled) revealSlackChannelSetup();
-    else return enableSlackChannels();
-  };
-  $('set-channel-finish').onclick = enableSlackChannels;
-  $('set-channel-cancel').onclick = cancelSlackChannelSetup;
-  $('set-channel-open-app').onclick = () => openSlackAppSettings('app-manifest');
-  $('set-channel-open-oauth').onclick = () => openSlackAppSettings('oauth');
-  $('set-channel-manifest').onclick = async () => {
-    try {
-      const required = JSON.parse(await inv('slack_manifest'));
-      const merged = mergeSlackChannelManifest($('set-channel-existing-manifest').value, required);
-      $('set-channel-manifest-text').value = merged;
-      $('set-channel-manifest-text').hidden = false;
-      await inv('write_clipboard', { text: merged });
-      $('set-channel-setup-feedback').textContent = t('settings.channelSetup.copied');
-      await openSlackAppSettings('app-manifest');
-    } catch (_) { $('set-channel-setup-feedback').textContent = t('settings.channelSetup.manifest-error'); }
-  };
-  $('set-channel-bot').addEventListener('change', () => storeChannelSecret());
-  $('set-channel-bot-clear').onclick = () => clearChannelSecret();
-  $('set-slack-legacy-clear').onclick = clearLegacySlackCredentials;
-
-  $('set-inbound-setup').onclick = async () => {
-    try { await inv('inbound_setup', { source: 'slack' }); }
-    catch (_) { toast(t('error.inboundSetup')); }
-  };
-
-  $('set-inbound-slack-user').addEventListener('change', () => storeInboundSecret('slack-user-token', 'set-inbound-slack-user'));
-
-  $('set-inbound-slack-app').addEventListener('change', () => storeInboundSecret('slack-app-token', 'set-inbound-slack-app'));
-
-  $('set-inbound-slack-user-clear').onclick = () => clearInboundSecret('slack-user-token');
-
-  $('set-inbound-slack-app-clear').onclick = () => clearInboundSecret('slack-app-token');
-
-  $('set-inbound-check').onclick = () => {
-    inv('inbound_check_now').catch(() => {});
-    setTimeout(renderInboundSettings, 4000);
-  };
 
   $('set-clear-hist').onclick = async () => {
     if (!(await confirmDialog(t('settings.clearHistoryConfirm')))) return;

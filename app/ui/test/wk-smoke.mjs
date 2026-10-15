@@ -4,6 +4,10 @@
 // Production DOM imports below run only inside the real WKWebView.
 // Channel smoke also exercises the setup guide and rejected token in the real
 // webview, with process-local smoke credentials and no Slack-side changes.
+// Inline rename temporarily replaces a navigation button with an editable
+// span; resolve that live host after entering edit mode.
+// Font layout waits for the Settings writer, including any preceding shortcut
+// write, before inspecting the requested scale.
 let $, ctx, inv, state, store, panes, provider, render, pollNow, boardData;
 let renameCardInline, renderSuggest, resetSuggest, newSession;
 let showLinkCtx, toggleSidebar, addSplit, backToBoard, openSession, strToB64;
@@ -12,7 +16,7 @@ let refreshQueue, toggleQueuePanel;
 let renderBufferUI, openBuffer, closeBuffer, switchProject;
 let activeSessionTool;
 let drainChannel, drainConnector;
-let activateTheme, persistThemeChoice, persistInbound, applyFontScale, getFontScale;
+let activateTheme, persistThemeChoice, persistInbound, setFontScale, applyFontScale, getFontScale;
 let toggleAutomations;
 let terminalLogicalLine, tokenizeTerminalLinks;
 if (typeof window !== 'undefined') {
@@ -30,7 +34,7 @@ if (typeof window !== 'undefined') {
   ({ cancelTerminalSelection, copyTerminalSelection, terminalSelectionElsewhere } = await import('../js/selection.js'));
   ({ refreshQueue, toggleQueuePanel } = await import('../js/scheduler.js'));
   ({ activateTheme } = await import('../js/theme.js'));
-  ({ persistThemeChoice, persistInbound } = await import('../js/settings.js'));
+  ({ persistThemeChoice, persistInbound, setFontScale } = await import('../js/settings.js'));
   ({ toggleAutomations } = await import('../js/automation.js'));
   ({ applyFontScale, getFontScale } = await import('../js/font-scale.js'));
   ({ drainChannel } = await import('../js/inbound.js'));
@@ -284,7 +288,7 @@ async function themeSmoke(card) {
   }));
   const jisIncreased = await waitFor(() => ctx.settings.fontScale
     === Math.min(1.6, Number((scaleBeforeShortcut + 0.1).toFixed(1))), 3000);
-  applyFontScale(1.6);
+  await setFontScale(1.6);
   await pause(80);
   $('settings-btn').click();
   const settingsOpened = await waitFor(() => $('settings-modal').style.display === 'flex', 3000);
@@ -321,7 +325,7 @@ async function themeSmoke(card) {
     | (textControlsFit ? 32 : 0) | (sessionReflows ? 64 : 0);
   await report('font-layout', fontLayoutMask === 127, fontLayoutMask, 127);
   $('set-close').click();
-  applyFontScale(ctx.settings.fontScale);
+  await setFontScale(scaleBeforeShortcut);
 }
 
 /* Sidebar collapse control under a long Nightly identity. Geometry, not class
@@ -426,7 +430,7 @@ async function renameSmoke(card) {
   await openSession(card.id);
   const host = document.querySelector(`#side-list .side-item[data-sid="${card.id}"] .name`);
   renameCardInline(card.id, host);
-  const input = host.querySelector('input');
+  const input = document.querySelector(`#side-list .side-item[data-sid="${card.id}"] .name input`);
   input.value = 'renamed-enter-smoke';
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
   const immediate = !host.querySelector('input') && host.textContent === 'renamed-enter-smoke';
