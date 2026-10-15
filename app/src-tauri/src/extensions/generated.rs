@@ -13,6 +13,9 @@ pub(super) const TRANSLATION_PROVIDERS:
     &[crate::intelligence::provider::TranslationProviderEntry] =
     &[crate::intelligence::provider::BERGAMOT];
 
+pub(super) const ACCESS_INTEGRATIONS: &[super::AccessIntegration] =
+    &[crate::connector::INTEGRATION, crate::mcp::INTEGRATION];
+
 pub(super) const TRANSLATION_ENGINE: &str = "bergamot";
 
 #[cfg(test)]
@@ -38,6 +41,13 @@ mod tests {
                 .map(|entry| entry.id)
                 .collect::<Vec<_>>(),
             ["bergamot"]
+        );
+        assert_eq!(
+            ACCESS_INTEGRATIONS
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            ["connector", "mcp"]
         );
     }
 }

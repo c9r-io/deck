@@ -105,6 +105,12 @@ use crate::ledger::{hex, random, random_id, sha};
 use crate::scheduler::Queues;
 use crate::sync::LockRecover;
 
+pub(crate) const INTEGRATION: crate::extensions::AccessIntegration =
+    crate::extensions::AccessIntegration {
+        id: "connector",
+        start: spawn_connector,
+    };
+
 /// v2 compacts terminal journal entries to tombstones (no request body) and
 /// may record the listener interface. v3 adds the device admission floor
 /// (`retiredThrough`) and each entry's `seq`; a v2 reader would drop the

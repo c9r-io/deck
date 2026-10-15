@@ -1,0 +1,8 @@
+{
+  "id": "connector",
+  "kind": "access",
+  "rust": "crate::connector::INTEGRATION",
+  "ui": "extension-connector.js",
+  "order": 60,
+  "selected": false
+}

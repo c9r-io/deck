@@ -10,6 +10,8 @@
 //! code + a detail vetted by that code's OWN closed policy (enum values /
 //! version pattern — no generic slug rule) + two ints, and redacts everything
 //! else. Terminal events optionally add run/pane/selection/attempt integer IDs
+//! Settings smoke includes fixed MCP cancellation/enable/retention/disable
+//! checkpoints; no client names, authorization roots or credentials are logged.
 //! (no text or session name) — never add a free-form log channel (log_privacy tests
 //! enforce this). Backend log lines never interpolate raw error Display text
 //! or a raw session NAME: `crate::error::err_code()` maps errors to stable
@@ -473,6 +475,11 @@ const SMOKE_CHECKS: &[&str] = &[
     "settings-viewport",
     "settings-navigation",
     "settings-logs",
+    "settings-mcp-cancel-enable",
+    "settings-mcp-enable",
+    "settings-mcp-cancel-authorize",
+    "settings-mcp-retention",
+    "settings-mcp-disable",
     "button-force-touch",
     "button-context-menu",
     "surface-context-menu",

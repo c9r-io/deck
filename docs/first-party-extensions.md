@@ -8,8 +8,9 @@ There is no plugin-management screen, sandbox or hot unload.
 
 ## One composition source
 
-Each `app/extensions/<id>.json` declares exactly `id`, `kind`, `rust`, `ui`,
-`order` and `selected`. The filename equals the stable id. Kinds remain three
+Each backend `app/extensions/<id>.json` declares exactly `id`, `kind`, `rust`, `ui`,
+`order` and `selected`. A UI-only `settings` declaration omits `rust` (and
+rejects that field rather than accepting a dummy implementation). The filename equals the stable id. Kinds remain
 separate contracts, without a common execution interface:
 
 | Kind | Backend descriptor | Current entries |
@@ -17,11 +18,13 @@ separate contracts, without a common execution interface:
 | `service` | `extensions::ServiceIntegration` | Slack |
 | `agent` | `agent_status::AgentAdapter` | Claude Code, Codex, Pi |
 | `translation` | `intelligence::provider::TranslationProviderEntry` | Bergamot |
+| `access` | `extensions::AccessIntegration` | Phone Connector, MCP |
+| `settings` | None; UI contribution only | Voice preferences |
 
 `scripts/extension_catalog.py` reads only these source manifests, sorts by
 explicit unique order and generates two checked-in, reviewable files:
 
-- `app/src-tauri/src/extensions/generated.rs`: the three typed tables and the
+- `app/src-tauri/src/extensions/generated.rs`: the four typed tables and the
   single selected translation engine. A contract test compares each manifest
   identity with the actual typed descriptor's identity.
 - `app/ui/js/extensions-generated.js`: static ES imports and the contribution
@@ -53,6 +56,15 @@ contribution, live status and credential ownership. Slack's Socket Mode owner
 is still unique. Translation still constructs its selected provider lazily and
 loads a model only when the coordinator needs it.
 
+Access registrations own only an identity and the existing startup entry.
+Boot order stays service integrations, Connector, then MCP. They do not pretend
+to be inbound trigger services and need no dummy credentials or source methods.
+MCP input/restart guards, its durable authorization ledger and execution fencing
+remain compiled core calls, independent of whether an access feature is enabled.
+Connector pairing and admission remain its native owners. Neither registration
+nor opening Settings binds an opt-out listener or authorizes a client. Voice
+preferences add no recorder startup, microphone permission or model download.
+
 Agent status reads iterate unambiguous registrations. `agent_hooks_status`
 includes an `agents` map keyed by source, with `signal`, nullable `lifecycle`
 and nullable `installation`. The old fixed keys remain compatibility projections
@@ -69,8 +81,20 @@ Each declared `extension-*.js` exports `CONTRIBUTION`. The common host in
 before Settings binds controls, and coordinates shared status reads and writes.
 Per-extension declarations provide control identity, group/order, translated
 labels/hints/confirmations, search terms and implementation bindings. Standard
-agent controls share a renderer and transaction coordination; Slack and local
-translation contribute their dedicated panels and event wiring.
+agent controls share a renderer and transaction coordination. Slack, translation,
+Connector, MCP (including its optional Tunnel presentation) and voice preferences
+own dedicated controllers as well as panels and event wiring.
+
+`create(host)` constructs an inert controller; `mount()` binds it once. The
+host dispatches `refresh`, `localeChanged`, `loaded`, `close` and the committed
+inbound-settings refresh to controllers that implement them. A failed callback
+does not prevent later contributions from running. Controllers keep their
+original read generations, cancellation and pending-write rules. The host supplies
+the one Settings commit/drain path, feedback, dialogs and native services; it
+does not assemble feature-specific Slack/Bergamot callbacks. Compatibility exports
+in `settings.js` delegate to these same controller instances for existing callers.
+Search and feedback declarations travel with the contribution. There is no second
+writer, new persisted document or runtime plugin lifecycle.
 
 `settings-search-model.js` combines core groups with contributed groups. Several
 agent contributions intentionally share `agent-status`: their labels and search
@@ -101,7 +125,8 @@ sources remain inside the existing source/coverage boundaries.
 1. Implement the appropriate typed backend descriptor and its narrow behavior.
 2. Export a UI `CONTRIBUTION` from `app/ui/js/extension-<id>.js`, reusing ordinary
    controls or supplying a dedicated panel. Keep dependencies one-way; receive
-   host services rather than importing `settings.js` back.
+   host services rather than importing `settings.js` back. A controller factory
+   must not read native state, mutate the DOM or activate anything at creation.
 3. Add `app/extensions/<id>.json`, run the generator and review both generated
    files. Existing-kind status/UI registration needs no central table edit.
 4. Add behavior tests and run the gates and applicable real-WKWebView acceptance.
@@ -177,4 +202,5 @@ Historical phase-1 evidence remains at
 `docs/evidence/first-party-extensions-20261009/README.md`; it is not evidence that
 the current composition/UI refactor passed its native scenarios.
 
-Current automatic composition and native acceptance evidence: [2026-10-16 report](evidence/first-party-autoreg-20261016/README.md).
+Automatic composition evidence: [2026-10-16 registration report](evidence/first-party-autoreg-20261016/README.md).
+Controller ownership, access registrations and preference contributions: [2026-10-16 governance report](evidence/first-party-governance-20261016/README.md).

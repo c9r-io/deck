@@ -7,7 +7,22 @@
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
-## 本轮第一方插件自动注册
+## 本轮第一方插件职责治理
+
+基线 `3261805`；实现与隔离验收见
+[第一方插件职责治理](evidence/first-party-governance-20261016/README.md)。
+Slack/Bergamot 的 Settings controller 收归贡献模块；Phone Connector、MCP（含 Tunnel 与授权对话框）
+和语音偏好纳入自动目录。Connector/MCP 使用独立 access 注册，语音仅注册 UI；核心授权和设置事务保持。
+原有 400 个界面元素及属性、搜索顺序完整保留，仅增加 3 个隐藏挂载位置。
+
+UI 847 项、Rust workspace 1,527 项、Python 190 项通过，Rust 13 项原有 ignore 保留；
+真实 WKWebView 综合 94/94、Settings 12/12（新增 5 项 MCP）、voice 18/18，
+以及 Connector、channel、approval、empty-start、signal-finish、Hooks、真实 Sandbox A Slack、
+翻译四场景和 Pi npm/布局验收均通过。完整本地门禁及首次失败/修复见报告。
+所有原生测试采用隔离 HOME、数据、carrier 与 tmux socket，按 registry 清理；
+正式 Deck 进程与配置哈希未变。macOS 14、远端 CI、真实 Slack 消息投递与麦克风录音仍为 UNRUN，未发布。
+
+## 上一轮第一方插件自动注册
 
 基线 `fb12d0a`；三步实现与隔离验收见
 [第一方插件自动注册](evidence/first-party-autoreg-20261016/README.md)。

@@ -1,0 +1,8 @@
+{
+  "id": "mcp",
+  "kind": "access",
+  "rust": "crate::mcp::INTEGRATION",
+  "ui": "extension-mcp.js",
+  "order": 70,
+  "selected": false
+}

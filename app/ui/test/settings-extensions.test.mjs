@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { FakeElement } from './fixtures/dom-fixture.mjs';
 import {
   extensionContributions, initializeExtensionContributions, refreshAgentContributions, validateExtensionContributions,
+  extensionController, runExtensionLifecycle, extensionControlsBusy,
 } from '../js/settings-extensions.js';
 
 const elements = new Map();
@@ -24,7 +25,9 @@ let statusAnswer = () => ({ agents: {
   'claude-code': { signal: true, lifecycle: false, installation: null },
   codex: { signal: false, lifecycle: null, installation: null }, pi,
 } });
+const calls = [];
 const inv = async (command, args) => {
+  calls.push(command);
   if (command === 'agent_hooks_status') return statusAnswer();
   if (command === 'agent_hooks_set') {
     writes.push([command, args]);
@@ -36,12 +39,14 @@ initializeExtensionContributions({
   $, inv, ctx: { settings: { notifyAway: false } }, t: key => key, toast() {}, uev() {},
   confirmDialog: async () => { confirmations++; return confirmBehavior(); },
   beginFeedback: () => ({}), finishFeedback() {}, renderNotifyDependency() {},
-  bergamot: { toggle() {}, changeLimit() {}, download() {}, remove() {} },
-  slack: new Proxy({}, { get: () => () => {} }),
+  listen: async () => () => {}, store: { projects: [] }, formatNumber: String, formatDateTime: String,
+  commitSettings: async () => true, persistInbound: async () => true, drainWrites: async () => {},
 });
 
+const initialCalls = calls.slice();
+
 test('registry validation rejects duplicate extension and control identities', () => {
-  assert.deepEqual(extensionContributions().map(entry => entry.id), ['claude-code', 'codex', 'pi', 'slack', 'bergamot']);
+  assert.deepEqual(extensionContributions().map(entry => entry.id), ['claude-code', 'codex', 'pi', 'slack', 'bergamot', 'connector', 'mcp', 'voice']);
   assert.throws(() => validateExtensionContributions([{ id: 'x' }, { id: 'x' }]), /duplicate/);
   assert.throws(() => validateExtensionContributions([
     { id: 'x', agentControls: [{ boxId: 'same' }] }, { id: 'y', agentControls: [{ boxId: 'same' }] },
@@ -136,4 +141,35 @@ test('Pi signal and lifecycle controls share the external-settings write lock', 
   await signal;
   assert.equal($('set-pi-hooks').checked, true);
   assert.equal($('set-pi-lifecycle').checked, false);
+});
+
+
+test('mount is once-only and feature controllers stay inert until an explicit action', () => {
+  assert.deepEqual(initialCalls, [], 'construction and mounting perform no native reads or activation');
+  const count = mounted.length;
+  const beforeWrites = writes.length;
+  initializeExtensionContributions();
+  assert.equal(mounted.length, count);
+  assert.equal(writes.length, beforeWrites);
+  assert.equal(extensionControlsBusy(), false);
+  assert.throws(() => extensionController('unknown'), /unavailable/);
+  assert.throws(() => runExtensionLifecycle('enable'), /Unknown Settings lifecycle/);
+});
+
+test('lifecycle reaches subsequent controllers after synchronous and asynchronous failures', async () => {
+  const ids = ['slack', 'bergamot', 'voice'];
+  const originals = ids.map(id => extensionController(id).close);
+  const reached = [];
+  try {
+    for (const id of ids) extensionController(id).close = () => {
+      reached.push(id);
+      if (id === 'slack') throw new Error('close failed');
+      if (id === 'bergamot') return Promise.reject(new Error('close failed'));
+    };
+    const results = await runExtensionLifecycle('close');
+    assert.deepEqual(reached, ids);
+    assert.deepEqual(results.map(result => result.status), ['rejected', 'rejected', 'fulfilled', 'fulfilled', 'fulfilled']);
+  } finally {
+    ids.forEach((id, index) => { extensionController(id).close = originals[index]; });
+  }
 });

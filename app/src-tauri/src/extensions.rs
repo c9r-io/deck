@@ -3,11 +3,14 @@
 //! build of Deck contains.
 //!
 //! # Contract
-//! - Three typed tables, no common interface: `SERVICES` (service
+//! - Four typed tables, no common interface: `SERVICES` (service
 //!   integrations; today `slack::INTEGRATION`), `AGENT_ADAPTERS` (the
 //!   declarations in `agent_status/hooks.rs` (re-exported by `agent_status`) and `agent_pi.rs`) and `TRANSLATION_PROVIDERS` (the
 //!   engines behind `intelligence::provider::TranslationProvider`), plus the
-//!   one engine this build selects, `TRANSLATION_ENGINE`.
+//!   one engine this build selects, `TRANSLATION_ENGINE`, and
+//!   `ACCESS_INTEGRATIONS` (the Phone Connector and MCP local-access
+//!   services). Settings-only contributions have no Rust table or dummy
+//!   backend declaration.
 //! - Entries are source code compiled into the app. No setting, environment
 //!   variable, path or download adds, removes or reorders one; the only
 //!   override is the `cfg(test)` thread-local table the routing tests use.
@@ -20,8 +23,11 @@
 //!   then (`intelligence/translation.rs`), and an agent adapter's source
 //!   word earns Signal only through the pane, generation and interaction
 //!   checks of `agent_status::ingest` — for Pi, the peer, lease and order
-//!   checks of `agent_pi::transport`. Remote admission (`admission.rs`)
-//!   does not read these tables.
+//!   checks of `agent_pi::transport`. Access startup initializes the compiled
+//!   Connector and MCP modules in manifest order; their enablement, guards
+//!   and authority remain owned by those modules and are never optional or
+//!   runtime-loaded. Remote admission (`admission.rs`) does not read these
+//!   tables.
 //! - No silent fallback, and no winner in a clash: an identity is used only
 //!   when EXACTLY one entry carries it, never the first or the last of
 //!   several. That holds for every consumer, not only the lookups: an
@@ -54,7 +60,7 @@ use crate::error::{DeckError, ErrorKind};
 use crate::inbound::Source;
 use crate::intelligence::provider::{TranslationProvider, TranslationProviderEntry};
 use crate::keychain::Slot;
-use generated::{AGENT_ADAPTERS, SERVICES, TRANSLATION_PROVIDERS};
+use generated::{ACCESS_INTEGRATIONS, AGENT_ADAPTERS, SERVICES, TRANSLATION_PROVIDERS};
 use tauri::{AppHandle, Emitter};
 
 /// The generated build selection, kept at the existing core module path.
@@ -87,6 +93,15 @@ pub(crate) struct ServiceIntegration {
     pub(crate) reannounce: fn(&dyn Fn(&'static str)),
 }
 
+/// One compiled local-access service. Registration controls boot composition
+/// only; its module, commands, guards and authority checks remain part of the
+/// application regardless of saved enablement.
+#[derive(Clone, Copy)]
+pub(crate) struct AccessIntegration {
+    pub(crate) id: &'static str,
+    pub(crate) start: fn(AppHandle),
+}
+
 #[cfg(test)]
 thread_local! {
     static TEST_SERVICES: std::cell::Cell<Option<&'static [ServiceIntegration]>> =
@@ -94,6 +109,8 @@ thread_local! {
     static TEST_AGENTS: std::cell::Cell<Option<&'static [AgentAdapter]>> =
         const { std::cell::Cell::new(None) };
     static TEST_PROVIDERS: std::cell::Cell<Option<&'static [TranslationProviderEntry]>> =
+        const { std::cell::Cell::new(None) };
+    static TEST_ACCESS: std::cell::Cell<Option<&'static [AccessIntegration]>> =
         const { std::cell::Cell::new(None) };
 }
 
@@ -121,6 +138,14 @@ fn translation_providers() -> &'static [TranslationProviderEntry] {
     TRANSLATION_PROVIDERS
 }
 
+fn access_integrations() -> &'static [AccessIntegration] {
+    #[cfg(test)]
+    if let Some(table) = TEST_ACCESS.with(|cell| cell.get()) {
+        return table;
+    }
+    ACCESS_INTEGRATIONS
+}
+
 /// The entry carrying `id`, only when exactly one does.
 fn exactly_one<'a, T>(table: &'a [T], id: &str, of: impl Fn(&T) -> &'static str) -> Option<&'a T> {
     let mut found = table.iter().filter(|entry| of(entry) == id);
@@ -130,6 +155,10 @@ fn exactly_one<'a, T>(table: &'a [T], id: &str, of: impl Fn(&T) -> &'static str)
 
 pub(crate) fn service(id: &str) -> Option<&'static ServiceIntegration> {
     exactly_one(services(), id, |s| s.id)
+}
+
+pub(crate) fn access(id: &str) -> Option<&'static AccessIntegration> {
+    exactly_one(access_integrations(), id, |integration| integration.id)
 }
 
 /// The services every dispatch reaches, in table order: an id two entries
@@ -202,8 +231,24 @@ pub(crate) fn check() -> Result<(), &'static str> {
         services(),
         agents(),
         translation_providers(),
+        access_integrations(),
         TRANSLATION_ENGINE,
     )
+}
+
+/// Start every registered local-access service in manifest order. A malformed
+/// table starts none, so duplicate identities can never select a winner.
+pub(crate) fn start_access_integrations(app: &AppHandle) {
+    if let Err(code) = check() {
+        applog(&format!("[extensions] access not started ({code})"));
+        return;
+    }
+    for integration in access_integrations()
+        .iter()
+        .filter(|entry| access(entry.id).is_some())
+    {
+        (integration.start)(app.clone());
+    }
 }
 
 /// Start every registered service's connection owner, once each. Malformed
@@ -238,11 +283,12 @@ pub(crate) fn reannounce_services<R: tauri::Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// The whole well-formedness rule over three tables, as one closed code.
+/// The whole well-formedness rule over four tables, as one closed code.
 fn check_tables(
     services: &[ServiceIntegration],
     agents: &[AgentAdapter],
     providers: &[TranslationProviderEntry],
+    access: &[AccessIntegration],
     engine: &str,
 ) -> Result<(), &'static str> {
     fn unique(ids: &[&str]) -> bool {
@@ -291,6 +337,9 @@ fn check_tables(
     if !providers.iter().any(|p| p.id == engine) {
         return Err("engine-unregistered");
     }
+    if !unique(&access.iter().map(|entry| entry.id).collect::<Vec<_>>()) {
+        return Err("duplicate-access");
+    }
     Ok(())
 }
 
@@ -317,6 +366,10 @@ pub(crate) mod testing {
     pub(crate) fn with_providers(table: &'static [TranslationProviderEntry]) -> Restore {
         TEST_PROVIDERS.with(|cell| cell.set(Some(table)));
         Restore(|| TEST_PROVIDERS.with(|cell| cell.set(None)))
+    }
+    pub(crate) fn with_access(table: &'static [AccessIntegration]) -> Restore {
+        TEST_ACCESS.with(|cell| cell.set(Some(table)));
+        Restore(|| TEST_ACCESS.with(|cell| cell.set(None)))
     }
 }
 
@@ -381,6 +434,7 @@ mod tests {
                 SERVICES,
                 AGENT_ADAPTERS,
                 TRANSLATION_PROVIDERS,
+                ACCESS_INTEGRATIONS,
                 TRANSLATION_ENGINE
             ),
             Ok(())
@@ -407,6 +461,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["bergamot"]
         );
+        assert_eq!(
+            ACCESS_INTEGRATIONS
+                .iter()
+                .map(|integration| integration.id)
+                .collect::<Vec<_>>(),
+            ["connector", "mcp"]
+        );
         // services plus the built-in clock are exactly the dispatcher's names
         let mut names: Vec<&str> = service_sources().iter().map(|s| s.id()).collect();
         names.push("clock");
@@ -421,18 +482,20 @@ mod tests {
         const REPEATED: &[ServiceIntegration] = &[fake("slack", repeated_source)];
         let agents = AGENT_ADAPTERS;
         let providers = TRANSLATION_PROVIDERS;
-        let run =
-            |services, agents, providers, engine| check_tables(services, agents, providers, engine);
+        let access = ACCESS_INTEGRATIONS;
+        let run = |services, agents, providers, access, engine| {
+            check_tables(services, agents, providers, access, engine)
+        };
         assert_eq!(
-            run(TWICE, agents, providers, "bergamot"),
+            run(TWICE, agents, providers, access, "bergamot"),
             Err("duplicate-service")
         );
         assert_eq!(
-            run(UNKNOWN, agents, providers, "bergamot"),
+            run(UNKNOWN, agents, providers, access, "bergamot"),
             Err("unknown-source")
         );
         assert_eq!(
-            run(REPEATED, agents, providers, "bergamot"),
+            run(REPEATED, agents, providers, access, "bergamot"),
             Err("duplicate-source")
         );
         const TWO_OWNERS: &[ServiceIntegration] = &[
@@ -446,13 +509,13 @@ mod tests {
             },
         ];
         assert_eq!(
-            run(TWO_OWNERS, agents, providers, "bergamot"),
+            run(TWO_OWNERS, agents, providers, access, "bergamot"),
             Err("duplicate-secret-owner")
         );
         const AGENT_TWICE: &[AgentAdapter] =
             &[crate::agent_status::CODEX, crate::agent_status::CODEX];
         assert_eq!(
-            run(SERVICES, AGENT_TWICE, providers, "bergamot"),
+            run(SERVICES, AGENT_TWICE, providers, access, "bergamot"),
             Err("duplicate-agent")
         );
         const PROVIDER_TWICE: &[TranslationProviderEntry] = &[
@@ -460,12 +523,26 @@ mod tests {
             crate::intelligence::provider::BERGAMOT,
         ];
         assert_eq!(
-            run(SERVICES, agents, PROVIDER_TWICE, "bergamot"),
+            run(SERVICES, agents, PROVIDER_TWICE, access, "bergamot"),
             Err("duplicate-provider")
         );
         assert_eq!(
-            run(SERVICES, agents, providers, "other-engine"),
+            run(SERVICES, agents, providers, access, "other-engine"),
             Err("engine-unregistered")
+        );
+        const ACCESS_TWICE: &[AccessIntegration] = &[
+            AccessIntegration {
+                id: "connector",
+                start: |_| {},
+            },
+            AccessIntegration {
+                id: "connector",
+                start: |_| {},
+            },
+        ];
+        assert_eq!(
+            run(SERVICES, agents, providers, ACCESS_TWICE, "bergamot"),
+            Err("duplicate-access")
         );
     }
 
@@ -480,6 +557,8 @@ mod tests {
             "an executable name is not a source"
         );
         assert!(translation_provider().is_ok());
+        assert_eq!(access("connector").map(|entry| entry.id), Some("connector"));
+        assert!(access("unknown").is_none());
         {
             const TWICE: &[ServiceIntegration] =
                 &[fake("slack", slack_source), fake("slack", slack_source)];
@@ -507,6 +586,20 @@ mod tests {
                 translation_provider().is_err(),
                 "an unregistered engine is an error, never a built-in default"
             );
+        }
+        {
+            const ACCESS_TWICE: &[AccessIntegration] = &[
+                AccessIntegration {
+                    id: "connector",
+                    start: |_| {},
+                },
+                AccessIntegration {
+                    id: "connector",
+                    start: |_| {},
+                },
+            ];
+            let _table = testing::with_access(ACCESS_TWICE);
+            assert!(access("connector").is_none(), "no first-wins lookup");
         }
         assert!(
             service("slack").is_some(),
@@ -547,7 +640,13 @@ mod tests {
             let _table = testing::with_services(CLOCK);
             assert_eq!(polled(), ["slack"], "a service never supplies the clock");
             assert_eq!(
-                check_tables(CLOCK, AGENT_ADAPTERS, TRANSLATION_PROVIDERS, "bergamot"),
+                check_tables(
+                    CLOCK,
+                    AGENT_ADAPTERS,
+                    TRANSLATION_PROVIDERS,
+                    ACCESS_INTEGRATIONS,
+                    "bergamot"
+                ),
                 Err("reserved-source")
             );
         }

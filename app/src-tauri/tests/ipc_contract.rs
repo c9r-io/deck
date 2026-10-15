@@ -48,20 +48,16 @@ const DYNAMIC_SITES: &[(&str, &str, &[&str])] = &[
         &["mcp_return_control", "mcp_takeover"],
     ),
     (
-        "settings.js",
+        "extension-mcp.js",
         "renderMcpSettings",
         &["tunnel_helper_stop", "tunnel_helper_remove"],
     ),
     (
-        "settings.js",
+        "extension-mcp.js",
         "renderTunnelForClient",
         &["tunnel_helper_start", "tunnel_helper_stop"],
     ),
-    (
-        "settings.js",
-        "initSettings",
-        &["mcp_disable", "mcp_enable"],
-    ),
+    ("extension-mcp.js", "mount", &["mcp_disable", "mcp_enable"]),
 ];
 
 /// Registered for the debug-only WKWebView smoke and fault harness; called

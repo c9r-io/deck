@@ -22,8 +22,10 @@ class CatalogTests(unittest.TestCase):
         self.add("engine", "translation", 90, selected=True)
 
     def add(self, identity, kind="agent", order=10, selected=False):
-        entry = dict(id=identity, kind=kind, rust=f"crate::test::{identity.upper().replace('-', '_')}",
-                     ui=f"extension-{identity}.js", order=order, selected=selected)
+        entry = dict(id=identity, kind=kind, ui=f"extension-{identity}.js",
+                     order=order, selected=selected)
+        if kind != "settings":
+            entry["rust"] = f"crate::test::{identity.upper().replace('-', '_')}"
         self.write(entry)
         (self.root / "app/ui/js" / entry["ui"]).write_text(f"export const CONTRIBUTION = {{ id: '{identity}' }};\n")
         return entry
@@ -49,6 +51,28 @@ class CatalogTests(unittest.TestCase):
         catalog.compose(self.root)
         self.assertNotIn(b"crate::test::EXTRA", self.snapshot()[catalog.RUST])
         self.assertNotIn(b"extension-extra.js", self.snapshot()[catalog.JS])
+
+    def test_access_has_a_typed_backend_table_and_settings_is_explicitly_ui_only(self):
+        access = self.add("connector", "access", 60)
+        settings = self.add("voice", "settings", 80)
+        catalog.compose(self.root)
+        output = self.snapshot()
+        self.assertIn(b"ACCESS_INTEGRATIONS", output[catalog.RUST])
+        self.assertIn(access["rust"].encode(), output[catalog.RUST])
+        self.assertNotIn(b"crate::test::VOICE", output[catalog.RUST])
+        self.assertIn(b'"kind": "settings"', output[catalog.JS])
+        self.assertIn(settings["ui"].encode(), output[catalog.JS])
+
+        self.write({**settings, "rust": "crate::test::VOICE"})
+        with self.assertRaisesRegex(catalog.CatalogError, "expected exactly"):
+            catalog.load(self.root)
+        self.write(settings)
+        self.write({**access, "rust": None})
+        with self.assertRaisesRegex(catalog.CatalogError, "invalid Rust"):
+            catalog.load(self.root)
+        self.write({key: value for key, value in access.items() if key != "rust"})
+        with self.assertRaisesRegex(catalog.CatalogError, "expected exactly"):
+            catalog.load(self.root)
 
     def test_explicit_order_is_independent_of_filename_and_idempotent(self):
         self.add("z-first", order=1)

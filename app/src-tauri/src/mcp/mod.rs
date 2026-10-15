@@ -171,6 +171,12 @@ use crate::error::{DeckError, ErrorKind};
 use crate::ledger::{random_id, sha};
 use crate::sync::LockRecover;
 
+pub(crate) const INTEGRATION: crate::extensions::AccessIntegration =
+    crate::extensions::AccessIntegration {
+        id: "mcp",
+        start: spawn,
+    };
+
 #[cfg(test)]
 mod admission_tests;
 mod commands;

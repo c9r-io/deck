@@ -255,8 +255,7 @@ fn main() {
                     scheduler::spawn_scheduler(handle.clone());
                     inbound::spawn_inbound(handle.clone());
                     extensions::start_services(&handle);
-                    connector::spawn_connector(handle.clone());
-                    mcp::spawn(handle);
+                    extensions::start_access_integrations(&handle);
                 });
             }
             // Re-point each registered agent's already-installed integration

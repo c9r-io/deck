@@ -315,7 +315,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Agent hooks configuration, installation and migration | `agent_status/hooks.rs` (contract), `agent_status/hooks/tests.rs` |
 | Pi agent adapter: registration, the one settings entry, observer transport | `agent_pi.rs` (contract), `agent_pi/config.rs`, `agent_pi/transport.rs` (the sender proof, wire v2), `resources/pi/` (the observer extension), `scripts/pi_native.py`, `scripts/pi-live-verify.py` |
 | Agent re-entry on a shell-service restart | `agent_reentry/` (contract in `mod.rs`), `src-tauri/lifecycle-helper/`, `procinfo.rs`, `procinfo/code_identity.rs`, `ui/js/reentry-model.js`, `restart-reentry.js` |
-| First-party extension composition and Settings contributions | `extensions.rs`, `app/extensions/*.json`, `scripts/extension_catalog.py`, `ui/js/settings-extensions.js`, `ui/js/extension-*.js` (+ `docs/first-party-extensions.md`) |
+| First-party extension composition, access startup and Settings controllers | `extensions.rs`, `app/extensions/*.json`, `scripts/extension_catalog.py`, `ui/js/settings-extensions.js`, `ui/js/extension-*.js` (Agent, Slack, translation, Connector, MCP/Tunnel, voice preferences; + `docs/first-party-extensions.md`) |
 | Updates | `updater.rs`, `relaunch.rs` |
 | File drop / image paste | `drops.rs` |
 | Smoke fault injection, native driver (debug profiles only) | `smoke_faults.rs`, `smoke_native.rs`, `native/SmokeBridge.swift` |

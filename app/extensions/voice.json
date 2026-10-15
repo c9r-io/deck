@@ -1,0 +1,7 @@
+{
+  "id": "voice",
+  "kind": "settings",
+  "ui": "extension-voice.js",
+  "order": 80,
+  "selected": false
+}

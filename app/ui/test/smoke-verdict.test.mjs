@@ -24,13 +24,13 @@ test('the recorded settings run passes with nothing unexpected', () => {
   const result = judge(settingsLog, manifest, 'settings');
   assert.deepEqual(result.failures, []);
   assert.equal(result.ok, true);
-  assert.equal(result.total, 7);
+  assert.equal(result.total, 12);
 });
 
 test('a broken copy fails for each kind of problem', () => {
   const cases = [
     [settingsLog.replace('settings-viewport a=32', 'settings-viewport a=31'), 'settings-viewport: a=31 (expected 32)'],
-    [settingsLog.replace('button-force-touch a=128', 'button-force-touch a=-128'), 'button-force-touch: a=-128'],
+    [settingsLog.replace(/button-force-touch a=\d+/, 'button-force-touch a=-128'), 'button-force-touch: a=-128'],
     [settingsLog.split('\n').filter(text => !text.includes('settings-logs')).join('\n'), 'settings-logs: missing'],
     [settingsLog.replace('done a=1', 'done a=-1'), 'done: a=-1 b=0'],
     [`${settingsLog.trimEnd()}\n${line('settings-logs', 1)}\n`, 'done: not the last checkpoint (last is settings-logs)'],
@@ -44,7 +44,7 @@ test('a broken copy fails for each kind of problem', () => {
 
 test('a name outside the mode\'s manifest entry fails the run', () => {
   for (const name of ['dropdown', '<redacted>']) {
-    const log = settingsLog.replace(line('done', 1), `${line(name, 1)}\n${line('done', 1)}`);
+    const log = settingsLog.replace(/^\d+ \[ui\] smoke-check done a=1 b=0$/m, `${line(name, 1)}\n${line('done', 1)}`);
     const result = judge(log, manifest, 'settings');
     assert.equal(result.ok, false, name);
     assert.deepEqual(result.failures, [`${name}: not in the manifest for settings`]);
@@ -84,7 +84,7 @@ test('the command line exits 0 pass, 1 fail, 2 usage', () => {
     writeFileSync(join(dir, 'app.log'), settingsLog);
     const pass = run(dir, 'settings');
     assert.equal(pass.status, 0, pass.stdout + pass.stderr);
-    assert.match(pass.stdout, /^smoke-verdict settings: PASS \(7\/7 expected checkpoints, 7 lines\)/);
+    assert.match(pass.stdout, /^smoke-verdict settings: PASS \(12\/12 expected checkpoints, 12 lines\)/);
     writeFileSync(join(dir, 'app.log'), settingsLog.replace('done a=1', 'done a=-1'));
     const fail = run(dir, 'settings');
     assert.equal(fail.status, 1);

@@ -1,0 +1,1352 @@
+{
+  "date": "2026-10-16",
+  "baseline": "3261805",
+  "raw_evidence": "/private/tmp/deck-governance-20261016",
+  "gates": {
+    "fmt": {
+      "command": "cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml",
+      "exit": 0
+    },
+    "catalog": {
+      "command": "python3 scripts/extension_catalog.py --check",
+      "exit": 0
+    },
+    "js-syntax": {
+      "command": "python3 scripts/check-js-syntax.py",
+      "exit": 0
+    },
+    "js-check": {
+      "command": "node app/ui/js/check.mjs",
+      "exit": 0
+    },
+    "python": {
+      "command": "python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py scripts/test_signal_candidate.py scripts/test_codex_title_probe.py scripts/test_ce_verdict.py scripts/test_reminder_verify.py scripts/test_sidecar_provenance.py scripts/test_extension_catalog.py",
+      "exit": 0
+    },
+    "workflow": {
+      "command": "scripts/check-workflows",
+      "exit": 0
+    },
+    "tmux-pin": {
+      "command": "shasum -a 256 -c app/src-tauri/binaries/tmux-aarch64-apple-darwin.sha256",
+      "exit": 0
+    },
+    "bergamot-pin": {
+      "command": "scripts/check-bergamot-patches",
+      "exit": 0
+    },
+    "speech": {
+      "command": "scripts/test-speech-bridge",
+      "exit": 0
+    },
+    "notification": {
+      "command": "scripts/test-notification-bridge",
+      "exit": 0
+    },
+    "smoke-guard": {
+      "command": "scripts/test-smoke-guard",
+      "exit": 0
+    },
+    "audit": {
+      "command": "cargo audit --file app/src-tauri/Cargo.lock",
+      "exit": 0
+    },
+    "fmt-final": {
+      "exit": 0,
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml"
+      ]
+    },
+    "clippy-final": {
+      "exit": 0,
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "--",
+        "-D",
+        "warnings"
+      ]
+    },
+    "debug-build": {
+      "exit": 0,
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "--bins",
+        "--examples"
+      ]
+    },
+    "rust-coverage-final": {
+      "command": [
+        "cargo",
+        "llvm-cov",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--fail-under-lines",
+        "75",
+        "--fail-under-functions",
+        "75",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit": 0
+    },
+    "coverage-provenance": {
+      "command": [
+        "python3",
+        "scripts/sidecar_provenance.py",
+        "check",
+        "--profile",
+        "debug",
+        "--coverage",
+        "--binaries"
+      ],
+      "exit": 0
+    },
+    "ce-runner-build": {
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "deck-mcp-runner",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml"
+      ],
+      "exit": 0
+    },
+    "ce-parity": {
+      "command": [
+        "python3",
+        "scripts/ce_parity.py",
+        "--plan",
+        "scripts/ce/plan-full-local-2.json",
+        "--mode",
+        "ci",
+        "--app-evidence",
+        "/private/tmp/deck-governance-20261016/ce-app-probe-final.jsonl",
+        "--deck-build",
+        "3261805-governance-worktree",
+        "--out",
+        "/private/tmp/deck-governance-20261016/ce-full-local.jsonl"
+      ],
+      "exit": 0
+    },
+    "ce-verdict": {
+      "command": [
+        "python3",
+        "scripts/ce_verdict.py",
+        "--plan",
+        "scripts/ce/plan-full-local-2.json",
+        "--evidence",
+        "/private/tmp/deck-governance-20261016/ce-full-local.jsonl",
+        "--evidence",
+        "/private/tmp/deck-governance-20261016/ce-full-local.jsonl.app.jsonl",
+        "--out",
+        "/private/tmp/deck-governance-20261016/ce-full-local-verdict.json",
+        "--gate",
+        "full_local_parity:ci"
+      ],
+      "exit": 0
+    },
+    "release-build": {
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml"
+      ],
+      "exit": 0
+    },
+    "release-translation-binary": {
+      "command": [
+        "python3",
+        "scripts/check_local_translation_binary.py",
+        "app/src-tauri/target/release/deck-app"
+      ],
+      "exit": 0
+    },
+    "release-edr-binary": {
+      "command": [
+        "scripts/check-edr-binary",
+        "app/src-tauri/target/release/deck-app"
+      ],
+      "exit": 0
+    },
+    "compat-package": {
+      "command": [
+        "scripts/package-compat-candidate"
+      ],
+      "exit": 0
+    },
+    "ui-final-fixed": {
+      "exit": 0,
+      "log": "/private/tmp/deck-governance-20261016/logs/ui-final-fixed.log"
+    },
+    "debug-build-final": {
+      "exit": 0,
+      "log": "/private/tmp/deck-governance-20261016/logs/debug-build-final.log"
+    },
+    "catalog-final": {
+      "exit": 0,
+      "log": "/private/tmp/deck-governance-20261016/logs/catalog-final.log"
+    },
+    "js-syntax-final": {
+      "exit": 0,
+      "log": "/private/tmp/deck-governance-20261016/logs/js-syntax-final.log"
+    },
+    "js-check-final": {
+      "exit": 0,
+      "log": "/private/tmp/deck-governance-20261016/logs/js-check-final.log"
+    },
+    "python-final": {
+      "exit": 0,
+      "log": "/private/tmp/deck-governance-20261016/logs/python-final.log"
+    }
+  },
+  "tunnel_gates": {
+    "tunnel-fmt": {
+      "exit": 0,
+      "command": [
+        "cargo",
+        "fmt",
+        "--check",
+        "--manifest-path",
+        "tools/deck-tunnelctl/Cargo.toml"
+      ]
+    },
+    "tunnel-clippy": {
+      "exit": 0,
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--locked",
+        "--manifest-path",
+        "tools/deck-tunnelctl/Cargo.toml",
+        "--",
+        "-D",
+        "warnings"
+      ]
+    },
+    "tunnel-tests": {
+      "exit": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--all-targets",
+        "--locked",
+        "--manifest-path",
+        "tools/deck-tunnelctl/Cargo.toml"
+      ]
+    },
+    "tunnel-audit": {
+      "exit": 0,
+      "command": [
+        "cargo",
+        "audit",
+        "--file",
+        "tools/deck-tunnelctl/Cargo.lock"
+      ]
+    }
+  },
+  "test_counts": {
+    "ui": 847,
+    "python": 190,
+    "rust_passed": 1527,
+    "rust_ignored": 13
+  },
+  "native": {
+    "settings": {
+      "root": "/private/tmp/dhk-vtnsyes7",
+      "ok": true,
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      },
+      "verdict": "smoke-verdict settings: PASS (12/12 expected checkpoints, 12 lines)"
+    },
+    "voice": {
+      "root": "/private/tmp/dhk-f9nmnxjj",
+      "ok": true,
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      },
+      "verdict": "smoke-verdict voice: PASS (18/18 expected checkpoints, 18 lines)"
+    },
+    "connector": {
+      "root": "/private/tmp/dhk-q_9cins_",
+      "ok": true,
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      },
+      "verdict": "smoke-verdict connector: PASS (5/5 expected checkpoints, 5 lines)"
+    },
+    "channel": {
+      "root": "/private/tmp/dhk-u7yra4gd",
+      "ok": true,
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      },
+      "verdict": "smoke-verdict channel: PASS (3/3 expected checkpoints, 3 lines)"
+    },
+    "approval": {
+      "root": "/private/tmp/dhk-w633_03w",
+      "ok": true,
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      },
+      "verdict": "smoke-verdict approval: PASS (12/12 expected checkpoints, 12 lines)"
+    },
+    "empty-start": {
+      "root": "/private/tmp/dhk-j83a681_",
+      "ok": true,
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      },
+      "verdict": "smoke-verdict empty-start: PASS (5/5 expected checkpoints, 5 lines)"
+    },
+    "signal-finish": {
+      "root": "/private/tmp/dhk-cho5lk39",
+      "ok": true,
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      },
+      "verdict": "smoke-verdict signal-finish: PASS (8/8 expected checkpoints, 8 lines)"
+    },
+    "run": {
+      "root": "/private/tmp/dhk-pe934a69",
+      "ok": true,
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      },
+      "verdict": "smoke-verdict run: PASS (94/94 expected checkpoints, 118 lines)"
+    },
+    "hooks-live": {
+      "root": "/private/tmp/dhk-6h_5bexg",
+      "ok": true,
+      "cleanup": {
+        "exit": 0,
+        "remaining": 0,
+        "clean": true
+      },
+      "verdict": "smoke-verdict hooks-live: PASS (8/8 expected checkpoints, 8 lines)"
+    }
+  },
+  "translation": [
+    {
+      "root": "/private/tmp/dhk-upj0yt9k",
+      "failure": null,
+      "checks": [
+        {
+          "check": "setup-controlled",
+          "ok": true,
+          "detail": {
+            "exit": 0
+          }
+        }
+      ],
+      "facts": {
+        "source": {
+          "head": "3261805eb344ba2b6def3e5340d92abe7970a23d",
+          "dirty": true,
+          "dirty_paths": [
+            "CLAUDE.md",
+            "app/extensions/connector.json",
+            "app/extensions/mcp.json",
+            "app/extensions/voice.json",
+            "app/src-tauri/src/connector/mod.rs",
+            "app/src-tauri/src/diagnostics.rs",
+            "app/src-tauri/src/extensions.rs",
+            "app/src-tauri/src/extensions/generated.rs",
+            "app/src-tauri/src/main.rs",
+            "app/src-tauri/src/mcp/mod.rs",
+            "app/src-tauri/tests/ipc_contract.rs",
+            "app/ui/index.html",
+            "app/ui/js/extension-bergamot.js",
+            "app/ui/js/extension-connector.js",
+            "app/ui/js/extension-mcp.js",
+            "app/ui/js/extension-slack.js",
+            "app/ui/js/extension-voice.js",
+            "app/ui/js/extensions-generated.js",
+            "app/ui/js/settings-extensions.js",
+            "app/ui/js/settings-search-model.js",
+            "app/ui/js/settings.js",
+            "app/ui/test/fixtures/smoke-log-settings.txt",
+            "app/ui/test/fixtures/smoke-manifest.json",
+            "app/ui/test/settings-extensions.test.mjs",
+            "app/ui/test/settings-search-model.test.mjs",
+            "app/ui/test/smoke-verdict.test.mjs",
+            "app/ui/test/wk-smoke.mjs",
+            "docs/evidence/first-party-governance-20261016/",
+            "docs/first-party-extensions.md",
+            "research_notes/",
+            "scripts/extension_catalog.py",
+            "scripts/test_extension_catalog.py"
+          ],
+          "diff_sha256": "226b44853d88e7dc740b244c86f72580e6770cefa213c05a1b4883004c184696",
+          "source_sha256": "7e84f9f800233df3837ad23950f94dbb6ac647573fe19d56a06f5620bf8792d3",
+          "source_files": 356,
+          "newest_source": "app/ui/test/fixtures/smoke-log-settings.txt",
+          "debug_executable_sha256": "cbf1a145ef326d418747613f36e46d6d262b0b9f64d06deeeb92dcfb8e57e259",
+          "built_after_every_source": true
+        },
+        "carrier": {
+          "version": "0.8.2",
+          "as_built_sha256": {
+            "Contents/MacOS/deck": "cbf1a145ef326d418747613f36e46d6d262b0b9f64d06deeeb92dcfb8e57e259",
+            "Contents/MacOS/deck-lifecycle-helper": "58ca0671e7152995a496ce067a18da7b026ef1d1abd895ca91e8d0c3f8faa32f",
+            "Contents/MacOS/deck-mcp": "d139b3c4e3d652fb024909e229bda52bce537335cb3ea427360707003c47b251",
+            "Contents/MacOS/deck-mcp-runner": "5cade76ef1eee3db2717fecb6488e69b9d0d8a571fa39ecf3f4c2cd2b76929d7",
+            "Contents/MacOS/deck-status-helper": "1facfbb230f083be9e5bf60843b4c9f7a91182736f702600cdf811097541d44b",
+            "Contents/MacOS/tmux": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0"
+          },
+          "signed_files_sha256": {
+            "Contents/MacOS/deck": "178fbdfa1e98ef20b1fe20d254c294ef63be01a0a89f597adf60904ace4f0514",
+            "Contents/MacOS/deck-lifecycle-helper": "58ca0671e7152995a496ce067a18da7b026ef1d1abd895ca91e8d0c3f8faa32f",
+            "Contents/MacOS/deck-mcp": "d139b3c4e3d652fb024909e229bda52bce537335cb3ea427360707003c47b251",
+            "Contents/MacOS/deck-mcp-runner": "5cade76ef1eee3db2717fecb6488e69b9d0d8a571fa39ecf3f4c2cd2b76929d7",
+            "Contents/MacOS/deck-status-helper": "1facfbb230f083be9e5bf60843b4c9f7a91182736f702600cdf811097541d44b",
+            "Contents/MacOS/tmux": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0"
+          },
+          "codesign_verify_exit": 0
+        }
+      },
+      "cleanup": {
+        "exit": 0,
+        "clean": true
+      },
+      "ok": true,
+      "verdicts": {
+        "setup-controlled-verdict": {
+          "ok": true,
+          "failures": [],
+          "total": 20,
+          "lines": 21
+        }
+      }
+    },
+    {
+      "root": "/private/tmp/dhk-kr6vsi0j",
+      "failure": null,
+      "checks": [
+        {
+          "check": "setup-native-install",
+          "ok": true,
+          "detail": {
+            "exit": 0
+          }
+        },
+        {
+          "check": "setup-restart-enabled",
+          "ok": true,
+          "detail": {
+            "exit": 0
+          }
+        },
+        {
+          "check": "setup-restart-disabled",
+          "ok": true,
+          "detail": {
+            "exit": 0
+          }
+        }
+      ],
+      "facts": {
+        "source": {
+          "head": "3261805eb344ba2b6def3e5340d92abe7970a23d",
+          "dirty": true,
+          "dirty_paths": [
+            "CLAUDE.md",
+            "app/extensions/connector.json",
+            "app/extensions/mcp.json",
+            "app/extensions/voice.json",
+            "app/src-tauri/src/connector/mod.rs",
+            "app/src-tauri/src/diagnostics.rs",
+            "app/src-tauri/src/extensions.rs",
+            "app/src-tauri/src/extensions/generated.rs",
+            "app/src-tauri/src/main.rs",
+            "app/src-tauri/src/mcp/mod.rs",
+            "app/src-tauri/tests/ipc_contract.rs",
+            "app/ui/index.html",
+            "app/ui/js/extension-bergamot.js",
+            "app/ui/js/extension-connector.js",
+            "app/ui/js/extension-mcp.js",
+            "app/ui/js/extension-slack.js",
+            "app/ui/js/extension-voice.js",
+            "app/ui/js/extensions-generated.js",
+            "app/ui/js/settings-extensions.js",
+            "app/ui/js/settings-search-model.js",
+            "app/ui/js/settings.js",
+            "app/ui/test/fixtures/smoke-log-settings.txt",
+            "app/ui/test/fixtures/smoke-manifest.json",
+            "app/ui/test/settings-extensions.test.mjs",
+            "app/ui/test/settings-search-model.test.mjs",
+            "app/ui/test/smoke-verdict.test.mjs",
+            "app/ui/test/wk-smoke.mjs",
+            "docs/evidence/first-party-governance-20261016/",
+            "docs/first-party-extensions.md",
+            "research_notes/",
+            "scripts/extension_catalog.py",
+            "scripts/test_extension_catalog.py"
+          ],
+          "diff_sha256": "226b44853d88e7dc740b244c86f72580e6770cefa213c05a1b4883004c184696",
+          "source_sha256": "7e84f9f800233df3837ad23950f94dbb6ac647573fe19d56a06f5620bf8792d3",
+          "source_files": 356,
+          "newest_source": "app/ui/test/fixtures/smoke-log-settings.txt",
+          "debug_executable_sha256": "cbf1a145ef326d418747613f36e46d6d262b0b9f64d06deeeb92dcfb8e57e259",
+          "built_after_every_source": true
+        },
+        "carrier": {
+          "version": "0.8.2",
+          "as_built_sha256": {
+            "Contents/MacOS/deck": "cbf1a145ef326d418747613f36e46d6d262b0b9f64d06deeeb92dcfb8e57e259",
+            "Contents/MacOS/deck-lifecycle-helper": "58ca0671e7152995a496ce067a18da7b026ef1d1abd895ca91e8d0c3f8faa32f",
+            "Contents/MacOS/deck-mcp": "d139b3c4e3d652fb024909e229bda52bce537335cb3ea427360707003c47b251",
+            "Contents/MacOS/deck-mcp-runner": "5cade76ef1eee3db2717fecb6488e69b9d0d8a571fa39ecf3f4c2cd2b76929d7",
+            "Contents/MacOS/deck-status-helper": "1facfbb230f083be9e5bf60843b4c9f7a91182736f702600cdf811097541d44b",
+            "Contents/MacOS/tmux": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0"
+          },
+          "signed_files_sha256": {
+            "Contents/MacOS/deck": "178fbdfa1e98ef20b1fe20d254c294ef63be01a0a89f597adf60904ace4f0514",
+            "Contents/MacOS/deck-lifecycle-helper": "58ca0671e7152995a496ce067a18da7b026ef1d1abd895ca91e8d0c3f8faa32f",
+            "Contents/MacOS/deck-mcp": "d139b3c4e3d652fb024909e229bda52bce537335cb3ea427360707003c47b251",
+            "Contents/MacOS/deck-mcp-runner": "5cade76ef1eee3db2717fecb6488e69b9d0d8a571fa39ecf3f4c2cd2b76929d7",
+            "Contents/MacOS/deck-status-helper": "1facfbb230f083be9e5bf60843b4c9f7a91182736f702600cdf811097541d44b",
+            "Contents/MacOS/tmux": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0"
+          },
+          "codesign_verify_exit": 0
+        }
+      },
+      "cleanup": {
+        "exit": 0,
+        "clean": true
+      },
+      "ok": true,
+      "verdicts": {
+        "setup-restart-disabled-verdict": {
+          "ok": true,
+          "failures": [],
+          "total": 11,
+          "lines": 12
+        },
+        "setup-native-install-verdict": {
+          "ok": true,
+          "failures": [],
+          "total": 12,
+          "lines": 13
+        },
+        "setup-restart-enabled-verdict": {
+          "ok": true,
+          "failures": [],
+          "total": 4,
+          "lines": 4
+        }
+      }
+    }
+  ],
+  "slack": {
+    "initial_result": {
+      "mode": "channel-fault",
+      "root": "/private/tmp/dhk-r0yx3tdr",
+      "failure": null,
+      "checks": [
+        {
+          "check": "native smoke verdict",
+          "ok": true,
+          "detail": {
+            "exit": 0
+          }
+        }
+      ],
+      "facts": {
+        "source": {
+          "head": "3261805eb344ba2b6def3e5340d92abe7970a23d",
+          "dirty": true,
+          "dirty_paths": [
+            "CLAUDE.md",
+            "app/extensions/connector.json",
+            "app/extensions/mcp.json",
+            "app/extensions/voice.json",
+            "app/src-tauri/src/connector/mod.rs",
+            "app/src-tauri/src/diagnostics.rs",
+            "app/src-tauri/src/extensions.rs",
+            "app/src-tauri/src/extensions/generated.rs",
+            "app/src-tauri/src/main.rs",
+            "app/src-tauri/src/mcp/mod.rs",
+            "app/src-tauri/tests/ipc_contract.rs",
+            "app/ui/index.html",
+            "app/ui/js/extension-bergamot.js",
+            "app/ui/js/extension-connector.js",
+            "app/ui/js/extension-mcp.js",
+            "app/ui/js/extension-slack.js",
+            "app/ui/js/extension-voice.js",
+            "app/ui/js/extensions-generated.js",
+            "app/ui/js/settings-extensions.js",
+            "app/ui/js/settings-search-model.js",
+            "app/ui/js/settings.js",
+            "app/ui/test/fixtures/smoke-log-settings.txt",
+            "app/ui/test/fixtures/smoke-manifest.json",
+            "app/ui/test/settings-extensions.test.mjs",
+            "app/ui/test/settings-search-model.test.mjs",
+            "app/ui/test/smoke-verdict.test.mjs",
+            "app/ui/test/wk-smoke.mjs",
+            "docs/evidence/first-party-governance-20261016/",
+            "docs/first-party-extensions.md",
+            "research_notes/",
+            "scripts/extension_catalog.py",
+            "scripts/test_extension_catalog.py"
+          ],
+          "diff_sha256": "226b44853d88e7dc740b244c86f72580e6770cefa213c05a1b4883004c184696",
+          "source_sha256": "7e84f9f800233df3837ad23950f94dbb6ac647573fe19d56a06f5620bf8792d3",
+          "source_files": 356,
+          "newest_source": "app/ui/test/fixtures/smoke-log-settings.txt",
+          "debug_executable_sha256": "cbf1a145ef326d418747613f36e46d6d262b0b9f64d06deeeb92dcfb8e57e259",
+          "built_after_every_source": true
+        },
+        "carrier": {
+          "version": "0.8.2",
+          "as_built_sha256": {
+            "Contents/MacOS/deck": "cbf1a145ef326d418747613f36e46d6d262b0b9f64d06deeeb92dcfb8e57e259",
+            "Contents/MacOS/deck-lifecycle-helper": "58ca0671e7152995a496ce067a18da7b026ef1d1abd895ca91e8d0c3f8faa32f",
+            "Contents/MacOS/deck-mcp": "d139b3c4e3d652fb024909e229bda52bce537335cb3ea427360707003c47b251",
+            "Contents/MacOS/deck-mcp-runner": "5cade76ef1eee3db2717fecb6488e69b9d0d8a571fa39ecf3f4c2cd2b76929d7",
+            "Contents/MacOS/deck-status-helper": "1facfbb230f083be9e5bf60843b4c9f7a91182736f702600cdf811097541d44b",
+            "Contents/MacOS/tmux": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0"
+          },
+          "signed_files_sha256": {
+            "Contents/MacOS/deck": "178fbdfa1e98ef20b1fe20d254c294ef63be01a0a89f597adf60904ace4f0514",
+            "Contents/MacOS/deck-lifecycle-helper": "58ca0671e7152995a496ce067a18da7b026ef1d1abd895ca91e8d0c3f8faa32f",
+            "Contents/MacOS/deck-mcp": "d139b3c4e3d652fb024909e229bda52bce537335cb3ea427360707003c47b251",
+            "Contents/MacOS/deck-mcp-runner": "5cade76ef1eee3db2717fecb6488e69b9d0d8a571fa39ecf3f4c2cd2b76929d7",
+            "Contents/MacOS/deck-status-helper": "1facfbb230f083be9e5bf60843b4c9f7a91182736f702600cdf811097541d44b",
+            "Contents/MacOS/tmux": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0"
+          },
+          "codesign_verify_exit": 0
+        }
+      },
+      "cleanup": {
+        "exit": 0,
+        "remaining": 1,
+        "clean": false
+      },
+      "ok": false
+    },
+    "post_termination_recheck": {
+      "remaining": [],
+      "socket_exists": false
+    },
+    "ok": true
+  },
+  "pi": {
+    "pi-layout": {
+      "root": "/private/tmp/deck-pi-live-av8tu_xd",
+      "mode": "pi-layout",
+      "runtime": null,
+      "where": "this machine",
+      "failed": [],
+      "stopped": null,
+      "cleanup": {
+        "exit": 0,
+        "processes_from_root": 0,
+        "socket_left": false
+      },
+      "checks": [
+        {
+          "check": "the carrier is this checkout's debug build: its executables byte for byte before the ad-hoc signing, which rewrote the main executable only, and the observer's files as the sources have them",
+          "ok": true,
+          "detail": {
+            "rewritten": [
+              "Contents/MacOS/deck"
+            ]
+          }
+        },
+        {
+          "check": "the page reached its end",
+          "ok": true,
+          "detail": {}
+        },
+        {
+          "check": "no Pi, Claude or Codex was started for it: the layout is painted from scripted answers",
+          "ok": true,
+          "detail": {}
+        },
+        {
+          "check": "nothing wrote Pi's settings: the file was never created",
+          "ok": true,
+          "detail": {}
+        },
+        {
+          "check": "the window snapshots were written: PNG files, each of the whole window",
+          "ok": true,
+          "detail": {
+            "written": 64,
+            "sizes": [
+              "2560x1600"
+            ]
+          }
+        },
+        {
+          "check": "this machine's own Deck is as it was: the same processes, the same file names in its data directory",
+          "ok": true,
+          "detail": {
+            "processes": 5
+          }
+        },
+        {
+          "check": "scripts/smoke-verdict pi-layout is green",
+          "ok": true,
+          "detail": {
+            "exit": 0
+          }
+        }
+      ]
+    },
+    "pi-npm": {
+      "root": "/private/tmp/deck-pi-live-4c3pxt3s",
+      "mode": "pi-live",
+      "runtime": "npm",
+      "where": "this machine",
+      "failed": [],
+      "stopped": null,
+      "cleanup": {
+        "exit": 0,
+        "processes_from_root": 0,
+        "socket_left": false
+      },
+      "checks": [
+        {
+          "check": "the carrier is this checkout's debug build: its executables byte for byte before the ad-hoc signing, which rewrote the main executable only, and the observer's files as the sources have them",
+          "ok": true,
+          "detail": {
+            "rewritten": [
+              "Contents/MacOS/deck"
+            ]
+          }
+        },
+        {
+          "check": "every checkpoint was reached",
+          "ok": true,
+          "detail": {
+            "reached": [
+              "done",
+              "pi-attention",
+              "pi-clean",
+              "pi-connected",
+              "pi-disabled",
+              "pi-enable",
+              "pi-hold",
+              "pi-narrowed",
+              "pi-reload",
+              "pi-review",
+              "pi-run-created",
+              "pi-send-now",
+              "pi-session",
+              "pi-shown",
+              "pi-turn-done",
+              "pi-unsupported"
+            ]
+          }
+        },
+        {
+          "check": "before the switch: Pi's settings are the user's, byte for byte",
+          "ok": true,
+          "detail": {}
+        },
+        {
+          "check": "after the switch: the user's bytes plus Deck's one entry",
+          "ok": true,
+          "detail": {}
+        },
+        {
+          "check": "after the switch was turned off: Deck's entry is gone and every other byte stayed",
+          "ok": true,
+          "detail": {
+            "pi_rewrote_the_file": true
+          }
+        },
+        {
+          "check": "turned on again: the same bytes as before it was turned off",
+          "ok": true,
+          "detail": {}
+        },
+        {
+          "check": "held: Deck's automatic row never reached Pi (no text in the pane, no provider request, no run)",
+          "ok": true,
+          "detail": {}
+        },
+        {
+          "check": "still not after two typed turns",
+          "ok": true,
+          "detail": {}
+        },
+        {
+          "check": "Send now delivered the row's text once",
+          "ok": true,
+          "detail": {}
+        },
+        {
+          "check": "session observation on: Deck's one entry is replaced where it stood by the one that carries both",
+          "ok": true,
+          "detail": {}
+        },
+        {
+          "check": "session observation off again: the same bytes as before it was turned on",
+          "ok": true,
+          "detail": {}
+        },
+        {
+          "check": "app.log holds the production's closed lines for each step",
+          "ok": true,
+          "detail": {
+            "missing": []
+          }
+        },
+        {
+          "check": "after session observation was taken from it, the SAME lease reported the next run",
+          "ok": true,
+          "detail": {
+            "lines_between": 4
+          }
+        },
+        {
+          "check": "and nothing of the prompt, the paths, Pi's answer or a native session id",
+          "ok": true,
+          "detail": {
+            "leaked": 0,
+            "sessions_seen": 2
+          }
+        },
+        {
+          "check": "the Pi with the 300-byte session id really had that id, by Pi's own log",
+          "ok": true,
+          "detail": {
+            "longest": 300
+          }
+        },
+        {
+          "check": "no native session id is in Deck's data directory",
+          "ok": true,
+          "detail": {
+            "files": 10
+          }
+        },
+        {
+          "check": "the window snapshots were written: PNG files, each of the whole window",
+          "ok": true,
+          "detail": {
+            "written": 13,
+            "sizes": [
+              "2560x1600"
+            ]
+          }
+        },
+        {
+          "check": "this machine's own Deck is as it was: the same processes, the same file names in its data directory",
+          "ok": true,
+          "detail": {
+            "processes": 5
+          }
+        },
+        {
+          "check": "scripts/smoke-verdict pi-live is green",
+          "ok": true,
+          "detail": {
+            "exit": 0
+          }
+        }
+      ]
+    }
+  },
+  "markup_parity": {
+    "baseline_ids": 400,
+    "current_ids": 403,
+    "missing": [],
+    "changed": [],
+    "duplicates": [],
+    "added": [
+      "set-extension-dialogs",
+      "set-extension-remote",
+      "set-extension-voice"
+    ]
+  },
+  "search_parity": {
+    "ok": true,
+    "items": [
+      {
+        "id": "language",
+        "section": "general",
+        "labelKeys": [
+          "settings.language"
+        ],
+        "keywords": [
+          "locale",
+          "english",
+          "chinese",
+          "语言",
+          "中文",
+          "英文"
+        ]
+      },
+      {
+        "id": "appearance",
+        "section": "general",
+        "labelKeys": [
+          "settings.group.appearance",
+          "settings.theme",
+          "settings.accent",
+          "settings.fontSize"
+        ],
+        "keywords": [
+          "dark",
+          "light",
+          "color",
+          "colour",
+          "contrast",
+          "text size",
+          "zoom",
+          "深色",
+          "浅色",
+          "颜色",
+          "字号",
+          "缩放"
+        ]
+      },
+      {
+        "id": "shortcuts",
+        "section": "shortcuts",
+        "labelKeys": [
+          "settings.shortcuts",
+          "settings.shortcut.newSession",
+          "settings.shortcut.toggleSidebar",
+          "settings.shortcut.splitRight",
+          "settings.shortcut.splitDown"
+        ],
+        "keywords": [
+          "keyboard",
+          "hotkey",
+          "key binding",
+          "keybinding",
+          "键盘",
+          "热键"
+        ]
+      },
+      {
+        "id": "voice",
+        "section": "terminal",
+        "labelKeys": [
+          "settings.voice",
+          "settings.voiceDefault"
+        ],
+        "keywords": [
+          "speech",
+          "dictation",
+          "microphone",
+          "mic",
+          "听写",
+          "麦克风",
+          "识别"
+        ]
+      },
+      {
+        "id": "local-translation",
+        "section": "terminal",
+        "labelKeys": [
+          "settings.localIntelligence",
+          "settings.localTranslation"
+        ],
+        "keywords": [
+          "translation",
+          "offline",
+          "local",
+          "本地",
+          "翻译",
+          "离线"
+        ]
+      },
+      {
+        "id": "editor",
+        "section": "terminal",
+        "labelKeys": [
+          "settings.openFiles"
+        ],
+        "keywords": [
+          "editor",
+          "ide",
+          "vs code",
+          "vscode",
+          "cursor",
+          "zed",
+          "编辑器"
+        ]
+      },
+      {
+        "id": "session-restore",
+        "section": "terminal",
+        "labelKeys": [
+          "settings.shellRecovery"
+        ],
+        "keywords": [
+          "restore",
+          "resume",
+          "snapshot",
+          "恢复",
+          "快照"
+        ]
+      },
+      {
+        "id": "shell-service",
+        "section": "terminal",
+        "labelKeys": [
+          "tmux.service",
+          "tmux.restart"
+        ],
+        "keywords": [
+          "tmux",
+          "server",
+          "服务",
+          "重启"
+        ]
+      },
+      {
+        "id": "agent-status",
+        "section": "agents",
+        "labelKeys": [
+          "settings.group.agentStatus",
+          "settings.agentHooks",
+          "settings.codexHooks",
+          "settings.piSignal",
+          "settings.piLifecycle"
+        ],
+        "keywords": [
+          "hook",
+          "hooks",
+          "needs input",
+          "turn finished",
+          "钩子",
+          "等待输入",
+          "codex",
+          "pi",
+          "work status",
+          "session observation",
+          "工作状态",
+          "会话观察"
+        ]
+      },
+      {
+        "id": "claude-reentry",
+        "section": "agents",
+        "labelKeys": [
+          "settings.claudeReentry"
+        ],
+        "keywords": [
+          "re-entry",
+          "reentry",
+          "reopen",
+          "lifecycle",
+          "重入",
+          "重新进入"
+        ]
+      },
+      {
+        "id": "away-notifications",
+        "section": "agents",
+        "labelKeys": [
+          "settings.group.awayNotifications",
+          "settings.notifyAway",
+          "settings.notifySound"
+        ],
+        "keywords": [
+          "notification",
+          "notifications",
+          "notify",
+          "alert",
+          "badge",
+          "dock",
+          "sound",
+          "通知",
+          "提醒",
+          "徽标",
+          "提示",
+          "声音"
+        ]
+      },
+      {
+        "id": "slack-reactions",
+        "section": "integrations",
+        "labelKeys": [
+          "settings.slack",
+          "settings.channelMonitor",
+          "settings.inboundUserToken",
+          "settings.channelBotToken",
+          "settings.inboundAppToken"
+        ],
+        "keywords": [
+          "slack",
+          "reaction",
+          "emoji",
+          "badge",
+          "channel",
+          "monitor",
+          "bot",
+          "token",
+          "keychain",
+          "标记",
+          "表情",
+          "频道",
+          "监控",
+          "令牌"
+        ]
+      },
+      {
+        "id": "connector",
+        "section": "remote",
+        "labelKeys": [
+          "connector.title",
+          "connector.address",
+          "connector.pair"
+        ],
+        "keywords": [
+          "phone",
+          "iphone",
+          "mobile",
+          "pair",
+          "pairing",
+          "qr",
+          "device",
+          "remote",
+          "手机",
+          "配对",
+          "设备",
+          "二维码",
+          "远程"
+        ]
+      },
+      {
+        "id": "mcp",
+        "section": "remote",
+        "labelKeys": [
+          "mcp.title",
+          "mcp.add",
+          "mcp.outputRetention"
+        ],
+        "keywords": [
+          "mcp",
+          "chatgpt",
+          "codex",
+          "client",
+          "authorize",
+          "authorization",
+          "tunnel",
+          "remote",
+          "terminal control",
+          "远程",
+          "控制",
+          "授权",
+          "客户端"
+        ]
+      },
+      {
+        "id": "history",
+        "section": "data",
+        "labelKeys": [
+          "settings.history"
+        ],
+        "keywords": [
+          "command history",
+          "completion",
+          "历史",
+          "补全"
+        ]
+      },
+      {
+        "id": "shell-data",
+        "section": "data",
+        "labelKeys": [
+          "settings.shellData"
+        ],
+        "keywords": [
+          "snapshot",
+          "recovery",
+          "快照",
+          "恢复"
+        ]
+      },
+      {
+        "id": "logs",
+        "section": "data",
+        "labelKeys": [
+          "settings.logs",
+          "settings.exportLogs",
+          "settings.resetLogs"
+        ],
+        "keywords": [
+          "log",
+          "logs",
+          "app.log",
+          "diagnostic",
+          "diagnostics",
+          "日志",
+          "诊断"
+        ]
+      },
+      {
+        "id": "updates",
+        "section": "about",
+        "labelKeys": [
+          "settings.updateChannel",
+          "settings.updates",
+          "settings.checkUpdates"
+        ],
+        "keywords": [
+          "update",
+          "version",
+          "nightly",
+          "stable",
+          "release",
+          "更新",
+          "版本",
+          "通道"
+        ]
+      }
+    ]
+  },
+  "production_comparison": {
+    "processes_unchanged": true,
+    "files_unchanged": true
+  },
+  "experiment_inventory": {
+    "/private/tmp/dhk-vtnsyes7": {
+      "exit": 0,
+      "output": "process pid 14957 started Fri Oct 16 01:49:21 2026: gone\ntmux-server pid 14983 started Fri Oct 16 01:49:22 2026 socket /private/tmp/dhk-vtnsyes7/tt/tmux-501/deck-smoke-hk-dhkxvtnsyes7: gone\n"
+    },
+    "/private/tmp/dhk-f9nmnxjj": {
+      "exit": 0,
+      "output": "process pid 16328 started Fri Oct 16 01:53:32 2026: gone\ntmux-server pid 16346 started Fri Oct 16 01:53:33 2026 socket /private/tmp/dhk-f9nmnxjj/tt/tmux-501/deck-smoke-hk-dhkxf9nmnxjj: gone\n"
+    },
+    "/private/tmp/dhk-q_9cins_": {
+      "exit": 0,
+      "output": "process pid 16612 started Fri Oct 16 01:53:40 2026: gone\ntmux-server pid 16629 started Fri Oct 16 01:53:41 2026 socket /private/tmp/dhk-q_9cins_/tt/tmux-501/deck-smoke-hk-dhkxqx9cinsx: gone\n"
+    },
+    "/private/tmp/dhk-u7yra4gd": {
+      "exit": 0,
+      "output": "process pid 16768 started Fri Oct 16 01:53:44 2026: gone\ntmux-server pid 16784 started Fri Oct 16 01:53:45 2026 socket /private/tmp/dhk-u7yra4gd/tt/tmux-501/deck-smoke-hk-dhkxu7yra4gd: gone\n"
+    },
+    "/private/tmp/dhk-w633_03w": {
+      "exit": 0,
+      "output": "process pid 16925 started Fri Oct 16 01:53:49 2026: gone\ntmux-server pid 16943 started Fri Oct 16 01:53:50 2026 socket /private/tmp/dhk-w633_03w/tt/tmux-501/deck-smoke-hk-dhkxw633x03w: gone\n"
+    },
+    "/private/tmp/dhk-j83a681_": {
+      "exit": 0,
+      "output": "process pid 17323 started Fri Oct 16 01:54:34 2026: gone\ntmux-server pid 17339 started Fri Oct 16 01:54:35 2026 socket /private/tmp/dhk-j83a681_/tt/tmux-501/deck-smoke-hk-dhkxj83a681x: gone\n"
+    },
+    "/private/tmp/dhk-cho5lk39": {
+      "exit": 0,
+      "output": "process pid 17721 started Fri Oct 16 01:55:01 2026: gone\ntmux-server pid 17737 started Fri Oct 16 01:55:01 2026 socket /private/tmp/dhk-cho5lk39/tt/tmux-501/deck-smoke-hk-dhkxcho5lk39: gone\nprocess pid 17794 started Fri Oct 16 01:55:04 2026: gone\nprocess pid 17821 started Fri Oct 16 01:55:07 2026: gone\n"
+    },
+    "/private/tmp/dhk-pe934a69": {
+      "exit": 0,
+      "output": "process pid 18007 started Fri Oct 16 01:55:25 2026: gone\ntmux-server pid 18022 started Fri Oct 16 01:55:26 2026 socket /private/tmp/dhk-pe934a69/tt/tmux-501/deck-smoke-hk-dhkxpe934a69: gone\n"
+    },
+    "/private/tmp/dhk-6h_5bexg": {
+      "exit": 0,
+      "output": "process pid 19501 started Fri Oct 16 01:56:16 2026: gone\ntmux-server pid 19522 started Fri Oct 16 01:56:17 2026 socket /private/tmp/dhk-6h_5bexg/tt/tmux-501/deck-smoke-hk-dhkx6hx5bexg: gone\n"
+    },
+    "/private/tmp/dhk-upj0yt9k": {
+      "exit": 0,
+      "output": "process pid 20503 started Fri Oct 16 01:59:23 2026: gone\ntmux-server pid 20520 started Fri Oct 16 01:59:24 2026 socket /private/tmp/dhk-upj0yt9k/tt/tmux-501/deck-smoke-hk-dhkxupj0yt9k: gone\n"
+    },
+    "/private/tmp/dhk-kr6vsi0j": {
+      "exit": 0,
+      "output": "process pid 20709 started Fri Oct 16 01:59:31 2026: gone\ntmux-server pid 20730 started Fri Oct 16 01:59:32 2026 socket /private/tmp/dhk-kr6vsi0j/tt/tmux-501/deck-smoke-hk-dhkxkr6vsi0j: gone\nprocess pid 20866 started Fri Oct 16 01:59:43 2026: gone\nprocess pid 20989 started Fri Oct 16 01:59:47 2026: gone\n"
+    },
+    "/private/tmp/dhk-r0yx3tdr": {
+      "exit": 0,
+      "output": "process pid 19896 started Fri Oct 16 01:57:24 2026: gone\ntmux-server pid 19912 started Fri Oct 16 01:57:25 2026 socket /private/tmp/dhk-r0yx3tdr/tt/tmux-501/deck-smoke-hk-dhkxr0yx3tdr: gone\n"
+    },
+    "/private/tmp/deck-pi-live-av8tu_xd": {
+      "exit": 0,
+      "output": "process pid 22301 started Fri Oct 16 01:59:53 2026: gone\ntmux-server pid 23117 started Fri Oct 16 01:59:56 2026 socket /private/tmp/deck-pi-live-av8tu_xd/tt/tmux-501/deck-smoke-pi-av8tuxxd: gone\nprocess pid 22811 started Fri Oct 16 01:59:55 2026: gone\n"
+    },
+    "/private/tmp/deck-pi-live-4c3pxt3s": {
+      "exit": 0,
+      "output": "process pid 24959 started Fri Oct 16 02:01:00 2026: gone\ntmux-server pid 24973 started Fri Oct 16 02:01:03 2026 socket /private/tmp/deck-pi-live-4c3pxt3s/tt/tmux-501/deck-smoke-pi-4c3pxt3s: gone\nprocess pid 24964 started Fri Oct 16 02:01:02 2026: gone\nprocess pid 25056 started Fri Oct 16 02:01:11 2026: gone\nprocess pid 25498 started Fri Oct 16 02:02:24 2026: gone\n"
+    }
+  },
+  "remaining_experiment_processes": 0,
+  "source_sha256": {
+    "CLAUDE.md": "4ba841b1b62c0eb14af81a5693358fcb79a75ca210f7fcd4d2df94bb9e01e81c",
+    "app/extensions/connector.json": "c65f50ef20cc0ae6769ea3d1ab6bbfb14d815e8ac955c45455aa09aea45601d9",
+    "app/extensions/mcp.json": "f1635ebb7d82847d03bf5a9418acad826339bd230c0b05a91d73e56d0cb528d2",
+    "app/extensions/voice.json": "054e252e2cc882510a0fda15837949c01a98e562a49c951ee1df219caf1d7c48",
+    "app/src-tauri/src/connector/mod.rs": "6f3e4ef72dd00ecf63b0084b3febbc3cfa1e96260627539a17e080eb7f713779",
+    "app/src-tauri/src/diagnostics.rs": "b13373712e37e3b83a2927d773033cbad97f35ee33a7dadc1f9351ba817c5c8e",
+    "app/src-tauri/src/extensions.rs": "e784c6657aef33ab085eee9f4297201d2ffe3ea61bd9711ffb76e9592ced313b",
+    "app/src-tauri/src/extensions/generated.rs": "ff61e91452f312dfe465ef2e15dab671ae20296b2153ad820a029c24f82afd5a",
+    "app/src-tauri/src/main.rs": "556946f80a0dbfa1dc1fae1afef67683da15c8e71d01bf935b37ffdd3b84386c",
+    "app/src-tauri/src/mcp/mod.rs": "1a140a9776ebb4ee7c0cd4da46ff362712099624ceb5027266843f4172f8d038",
+    "app/src-tauri/tests/ipc_contract.rs": "a397754f3517554d594155846ced6d49803515114a638f7018d7d9291d4a4736",
+    "app/ui/index.html": "9de4f27cdafb1df419aa443e6c4d98e8d7b7509c901453d49b1576057c5217c3",
+    "app/ui/js/extension-bergamot.js": "0d5f49602ec58d9939a15c48049a76d178b42264129e0751939e8e5f68a6e3dd",
+    "app/ui/js/extension-connector.js": "e62127aa879b212867f79fea9a7c33c58097c3c00b2f1ad13c7ee7d60ce1db22",
+    "app/ui/js/extension-mcp.js": "fbe7bde7b69415cb2f28cd94d7f33c319b84f0ac50551c5d11f725d602ddc936",
+    "app/ui/js/extension-slack.js": "4d7795268b9d7d462e4e35c3a93edbf24fdb3b82b8608967cb69ccb8a83683d8",
+    "app/ui/js/extension-voice.js": "30561dd9a59d405c25c81edeab22e28e39d470b59076fc1ac6ac8c44dcd8293d",
+    "app/ui/js/extensions-generated.js": "5b348c2f2c258cc376b84145b001bfba347a30c03b2979bfc73e1a2e8b74e21d",
+    "app/ui/js/settings-extensions.js": "14a4698b39f4cf3c3e1a4e05db65c7c00055ececd0bfe64028e03968b388ac3e",
+    "app/ui/js/settings-search-model.js": "8f5a5dff21529819c914f3ee052bce4a9a64b1cd12e259820155627f86bd5cd7",
+    "app/ui/js/settings.js": "762a296a4f4805779305d70e8efc6770c311053bf65ad2bf89497c6110d8f3ec",
+    "app/ui/test/fixtures/smoke-log-settings.txt": "a4c6b476f577f62c82b53b1249bd18d053a6091f2fac02daee78a7d9dde6d359",
+    "app/ui/test/fixtures/smoke-manifest.json": "48c9959bab058fb70df61c8e88026eb37f3b47438af714c1d61e734267489f3b",
+    "app/ui/test/settings-extensions.test.mjs": "c2f52bb59d5e35bff8e19ed5054ac838602b03dcc02096d39a99de7c3c36d1c5",
+    "app/ui/test/settings-search-model.test.mjs": "86beff82a5fbd01c834fcd2d2a9984d5072b5b7960eb38f8fd1b048b79730fbe",
+    "app/ui/test/smoke-verdict.test.mjs": "7a3b1725a367fc54f6beed1b027030c324c522b112f2cb1830dba30ba704dbae",
+    "app/ui/test/wk-smoke.mjs": "5445cf2280a913dc12a55a10f8e1009a9743e7a9c9c98051c8202d35abfacb84",
+    "docs/first-party-extensions.md": "56dec8d1d9dd2cc87413770d148237147068277e4604f679ecb656caf78ef583",
+    "docs/verification-status.md": "a87681668bf0c00f02e560ccdda010aa04f474c671e56c866403b5004c46ceac",
+    "scripts/extension_catalog.py": "645cf83d9fbe5517a51185bec367c80ddbd667557db6ffa0ea53e96a150e12c1",
+    "scripts/test_extension_catalog.py": "fbf535e705403780bb58759941fa4a6930a137118b771103d15649a4ba615089"
+  },
+  "unrun": [
+    "macOS 14 runtime",
+    "remote CI",
+    "real Slack message delivery",
+    "real microphone recording",
+    "release installation and production update"
+  ]
+}

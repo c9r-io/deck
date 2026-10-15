@@ -409,15 +409,7 @@
         </section>
         <section class="set-panel" id="set-panel-terminal" aria-labelledby="set-heading-terminal" hidden>
           <h2 id="set-heading-terminal" data-i18n="settings.terminal">Terminal & sessions</h2>
-          <fieldset class="set-group voice-preferences" id="set-item-voice" data-setting-id="voice" tabindex="-1">
-            <legend data-i18n="settings.voice">Voice input</legend>
-            <div id="set-voice-languages" class="voice-language-choices" role="group" data-i18n-aria-label="settings.voiceLanguages"></div>
-            <div class="set-row">
-              <label for="set-voice-default" data-i18n="settings.voiceDefault">Default recognition language</label>
-              <select id="set-voice-default" class="col-select"></select>
-            </div>
-            <div class="set-hint" data-i18n="settings.voiceHint">Choose at least one language. Follow system language picks among the chosen ones. Recognition files download only when a recording needs them.</div>
-          </fieldset>
+          <div id="set-extension-voice" hidden></div>
           <div id="set-extension-terminal" hidden></div>
           <div class="set-group" id="set-item-editor" data-setting-id="editor" tabindex="-1">
             <div class="set-row">
@@ -475,21 +467,7 @@
         </section>
         <section class="set-panel" id="set-panel-remote" aria-labelledby="set-heading-remote" hidden>
           <h2 id="set-heading-remote" data-i18n="settings.remote">Remote access</h2>
-          <div class="set-group" id="set-item-connector" data-setting-id="connector" tabindex="-1" role="group" aria-labelledby="set-item-connector-title">
-            <div class="set-group-head"><h3 class="set-group-title" id="set-item-connector-title" data-i18n="connector.title">Phone Connector</h3><span class="set-group-status" id="set-connector-status"></span></div>
-            <div class="set-hint" data-i18n="connector.hint">Off by default. When enabled, deck listens only on the selected local address over pinned HTTPS.</div>
-            <div class="set-row"><label for="set-connector-address" data-i18n="connector.address">Local address</label><select id="set-connector-address"></select><input id="set-connector-port" type="number" min="1024" max="65535" value="47631"><button class="btn" id="set-connector-toggle" data-i18n="connector.enable">Enable</button></div>
-            <div class="set-actions"><button class="btn" id="set-connector-pair" data-i18n="connector.pair">Pair a device…</button><button class="btn" id="set-connector-reset" data-i18n="connector.reset">Reset and re-pair…</button></div>
-            <div id="set-connector-pairing" hidden><img id="set-connector-qr" alt=""><div class="set-hint" id="set-connector-expiry"></div></div>
-            <div id="set-connector-devices"></div>
-          </div>
-          <div class="set-group" id="set-item-mcp" data-setting-id="mcp" tabindex="-1" role="group" aria-labelledby="set-item-mcp-title">
-            <div class="set-group-head"><h3 class="set-group-title" id="set-item-mcp-title" data-i18n="mcp.title">MCP terminal control</h3><span class="set-group-status" id="set-mcp-status"></span></div>
-            <div class="set-hint" data-i18n="mcp.hint">Off by default. An authorized MCP client can execute code with your account permissions and receive terminal output. This trusted-host mode is not an OS sandbox.</div>
-            <div class="set-actions mcp-settings-actions"><button class="btn" id="set-mcp-toggle" data-i18n="mcp.enable">Enable</button><button class="btn" id="set-mcp-add" data-i18n="mcp.add">Authorize this project…</button></div>
-            <div class="set-row mcp-retention-row"><label for="set-mcp-retention" data-i18n="mcp.outputRetention">Managed output retention</label><select id="set-mcp-retention"><option value="3600000" data-i18n="mcp.retention1h">1 hour</option><option value="86400000" data-i18n="mcp.retention24h">24 hours</option><option value="259200000" data-i18n="mcp.retention3d">3 days</option><option value="604800000" data-i18n="mcp.retention7d">7 days</option></select></div>
-            <div id="set-mcp-clients"></div>
-          </div>
+          <div id="set-extension-remote" hidden></div>
         </section>
         <section class="set-panel" id="set-panel-data" aria-labelledby="set-heading-data" hidden>
           <h2 id="set-heading-data" data-i18n="settings.data">Data & privacy</h2>
@@ -623,19 +601,7 @@
     </div>
   </div>
 </div>
-<div id="mcp-auth" role="dialog" aria-modal="true" aria-labelledby="mcp-auth-title">
-  <div id="mcp-auth-box">
-    <h2 id="mcp-auth-title" data-i18n="mcp.authorizeTitle">Authorize MCP client</h2>
-    <div class="set-row"><label for="mcp-auth-name" data-i18n="mcp.clientName">Name this MCP client</label><input type="text" id="mcp-auth-name" maxlength="120" autocomplete="off" spellcheck="false"></div>
-    <div class="set-row"><label for="mcp-auth-project" data-i18n="mcp.project">Project</label><div class="mcp-auth-field"><select id="mcp-auth-project" aria-describedby="mcp-auth-project-error"></select><p class="mcp-field-error" id="mcp-auth-project-error" role="alert" hidden></p></div></div>
-    <div class="set-row"><label for="mcp-auth-root" data-i18n="mcp.directory">Authorized directory</label><div class="mcp-auth-field"><input type="text" id="mcp-auth-root" autocomplete="off" spellcheck="false" aria-describedby="mcp-auth-root-error" data-i18n-placeholder="mcp.directoryPlaceholder" placeholder="/path/to/project"><p class="mcp-field-error" id="mcp-auth-root-error" role="alert" hidden></p></div></div>
-    <p class="set-hint" data-i18n="mcp.authorizeHint">Choose the project and directory explicitly. A configured project directory is filled in but remains editable. Its canonical path will be shown again before Deck creates the authorization.</p>
-    <div class="cfm-actions">
-      <button class="btn" id="mcp-auth-no" data-i18n="common.cancel">Cancel</button>
-      <button class="btn primary" id="mcp-auth-yes" data-i18n="common.continue">Continue</button>
-    </div>
-  </div>
-</div>
+<div id="set-extension-dialogs" hidden></div>
 <div id="cfm">
   <div id="cfm-box">
     <div id="cfm-msg"></div>

@@ -9,8 +9,8 @@ import {
 } from '../js/settings-search-model.js';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-const contributedMarkup = ['settings-extensions.js', 'extension-bergamot.js', 'extension-slack.js']
-  .map(name => readFileSync(new URL(`../js/${name}`, import.meta.url), 'utf8')).join('\n');
+const contributedMarkup = readFileSync(new URL('../js/settings-extensions.js', import.meta.url), 'utf8')
+  + EXTENSION_CONTRIBUTIONS.flatMap(entry => entry.slots || []).map(slot => slot.html).join('\n');
 const search = query => searchSettings(query, dictionaries);
 const ids = query => (search(query) || []).flatMap(result => result.items);
 

@@ -2388,6 +2388,37 @@ async function settingsNavigationSmoke() {
 export async function verifySettings() {
   try {
     await settingsNavigationSmoke();
+    // Exercise the registered MCP panel against this isolated carrier's real
+    // service. Merely mounting/opening Settings must not enable it or authorize
+    // a client; cancellation and the original write path remain observable.
+    const { renderMcpSettings } = await import('../js/settings.js');
+    const { openSettings: openRemote } = await import('../js/settings.js');
+    await openRemote({ section: 'remote' });
+    await renderMcpSettings();
+    const beforeMcp = await inv('mcp_status');
+    if (beforeMcp.enabled || beforeMcp.clients.length) throw new Error('MCP smoke requires fresh isolated state');
+    const cancelled = $('set-mcp-toggle').onclick();
+    const safeFocus = document.activeElement === $('cfm-no');
+    $('cfm-no').click();
+    await cancelled;
+    await report('settings-mcp-cancel-enable', safeFocus && !(await inv('mcp_status')).enabled);
+    const enabled = $('set-mcp-toggle').onclick();
+    $('cfm-yes').click();
+    await enabled;
+    await report('settings-mcp-enable', (await inv('mcp_status')).enabled && !$('set-mcp-add').disabled);
+    const adding = $('set-mcp-add').onclick();
+    const explicitTarget = $('mcp-auth-project').value === '' && $('mcp-auth-root').value === '';
+    $('mcp-auth-no').click();
+    await adding;
+    await report('settings-mcp-cancel-authorize', explicitTarget && !(await inv('mcp_status')).clients.length);
+    $('set-mcp-retention').value = '3600000';
+    await $('set-mcp-retention').onchange();
+    await renderMcpSettings();
+    await report('settings-mcp-retention', (await inv('mcp_status')).outputRetentionMs === 3600000
+      && $('set-mcp-retention').value === '3600000');
+    await $('set-mcp-toggle').onclick();
+    await report('settings-mcp-disable', !(await inv('mcp_status')).enabled && $('set-mcp-add').disabled);
+    $('set-close').click();
     await buttonForceTouchSmoke();
     const { openSettings, selectSettingsSection } = await import('../js/settings.js');
     const { setLocale } = await import('../js/i18n.js');

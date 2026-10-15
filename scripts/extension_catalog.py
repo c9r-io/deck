@@ -19,8 +19,18 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUST = pathlib.Path("app/src-tauri/src/extensions/generated.rs")
 JS = pathlib.Path("app/ui/js/extensions-generated.js")
-KINDS = ("agent", "service", "translation")
-FIELDS = {"id", "kind", "rust", "ui", "order", "selected"}
+KINDS = ("agent", "service", "translation", "access", "settings")
+COMMON_FIELDS = {"id", "kind", "ui", "order", "selected"}
+FIELDS_BY_KIND = {
+    "agent": COMMON_FIELDS | {"rust"},
+    "service": COMMON_FIELDS | {"rust"},
+    "translation": COMMON_FIELDS | {"rust"},
+    "access": COMMON_FIELDS | {"rust"},
+    # A settings contribution is intentionally UI-only. Requiring the Rust
+    # key to be absent prevents a dummy backend declaration from becoming a
+    # second, implicit registration mechanism.
+    "settings": COMMON_FIELDS,
+}
 
 
 class CatalogError(ValueError):
@@ -49,21 +59,27 @@ def load(root):
             entry = json.loads(path.read_text(), object_pairs_hook=unique_object)
         except (ValueError, OSError) as error:
             raise CatalogError(f"{path.name}: {error}") from error
-        if not isinstance(entry, dict) or set(entry) != FIELDS:
-            raise CatalogError(f"{path.name}: expected exactly {sorted(FIELDS)}")
-        identity = entry["id"]
+        if not isinstance(entry, dict):
+            raise CatalogError(f"{path.name}: expected an object")
+        identity = entry.get("id")
         if not isinstance(identity, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", identity):
             raise CatalogError(f"{path.name}: invalid id")
         if path.stem != identity:
             raise CatalogError(f"{path.name}: filename must match id")
-        if entry["kind"] not in KINDS:
+        if entry.get("kind") not in KINDS:
             raise CatalogError(f"{identity}: unknown extension kind")
+        fields = FIELDS_BY_KIND[entry["kind"]]
+        if set(entry) != fields:
+            raise CatalogError(f"{path.name}: expected exactly {sorted(fields)}")
         if type(entry["order"]) is not int or not 0 <= entry["order"] <= 10000:
             raise CatalogError(f"{identity}: order must be a bounded integer")
         if type(entry["selected"]) is not bool or (entry["selected"] and entry["kind"] != "translation"):
             raise CatalogError(f"{identity}: only a translation provider may be selected")
-        rust = entry["rust"]
-        if not isinstance(rust, str) or not re.fullmatch(r"crate(?:::[A-Za-z_][A-Za-z_0-9]*)+", rust):
+        rust = entry.get("rust")
+        if "rust" in entry and (
+            not isinstance(rust, str)
+            or not re.fullmatch(r"crate(?:::[A-Za-z_][A-Za-z_0-9]*)+", rust)
+        ):
             raise CatalogError(f"{identity}: invalid Rust declaration path")
         ui = entry["ui"]
         if not isinstance(ui, str) or not re.fullmatch(r"extension-[a-z][a-z0-9-]*\.js", ui):
@@ -74,6 +90,8 @@ def load(root):
         if not re.search(r"export\s+const\s+CONTRIBUTION\b", source.read_text()):
             raise CatalogError(f"{identity}: UI module must export CONTRIBUTION")
         for key in seen:
+            if key not in entry:
+                continue
             if entry[key] in seen[key]:
                 raise CatalogError(f"{identity}: duplicate {key}")
             seen[key].add(entry[key])
@@ -97,6 +115,7 @@ def render(entries):
         ("service", "SERVICES", "super::ServiceIntegration"),
         ("agent", "AGENT_ADAPTERS", "crate::agent_status::AgentAdapter"),
         ("translation", "TRANSLATION_PROVIDERS", "crate::intelligence::provider::TranslationProviderEntry"),
+        ("access", "ACCESS_INTEGRATIONS", "super::AccessIntegration"),
     )
     for kind, name, value_type in tables:
         rust.append(f"pub(super) const {name}: &[{value_type}] = &[")

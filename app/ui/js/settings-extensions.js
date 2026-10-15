@@ -3,6 +3,10 @@
 // declarations, mounts each extension once, performs the one shared agent
 // status read, and serializes controls which write the same external file.
 // Extensions receive narrow UI services; they never import settings.js back.
+// Controller creation is inert (no DOM, reads or activation); mount runs once.
+// Open/locale/load/close lifecycle dispatch is shared, while each controller
+// owns its asynchronous reads and cancellation. A failed contribution cannot
+// prevent the other panels from refreshing. There is no hot unload.
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { EXTENSION_CONTRIBUTIONS } from './extensions-generated.js';
 import { agentHooksToastKey } from './notify-model.js';
@@ -14,6 +18,7 @@ const sourceAdapters = new Map(EXTENSION_CONTRIBUTIONS.filter(entry => entry.age
   .map(entry => [entry.agentSource.source, entry.agentSource]));
 
 let services = null;
+const controllers = new Map();
 let mounted = false;
 let reading = false;
 let generation = 0;
@@ -184,8 +189,42 @@ export async function persistAgentContribution(boxId) {
   }
 }
 
-export function initializeExtensionContributions(host) {
+export function configureExtensionContributions(host) {
+  if (mounted) throw new Error('Settings extensions already mounted');
+  services = host;
+  controllers.clear();
+  validateExtensionContributions();
+  for (const contribution of EXTENSION_CONTRIBUTIONS) {
+    if (contribution.create) controllers.set(contribution.id, contribution.create(host));
+  }
+}
+
+export function extensionController(id) {
+  const controller = controllers.get(id);
+  if (!controller) throw new Error(`Settings controller unavailable: ${id}`);
+  return controller;
+}
+
+export function extensionControlsBusy() {
+  return [...controllers.values()].some(controller => controller.isPending?.());
+}
+
+export function runExtensionLifecycle(phase) {
+  if (!['refresh', 'localeChanged', 'loaded', 'close', 'inboundChanged'].includes(phase))
+    throw new Error(`Unknown Settings lifecycle: ${phase}`);
+  return Promise.allSettled([...controllers.values()].map(controller => {
+    try { return Promise.resolve(controller[phase]?.()); }
+    catch (error) { return Promise.reject(error); }
+  })).then(results => {
+    if (results.some(result => result.status === 'rejected')) services.uev('settings-load-fail');
+    return results;
+  });
+}
+
+export function initializeExtensionContributions(host = services) {
   if (mounted) return;
+  if (host !== services) configureExtensionContributions(host);
+  if (!services) throw new Error('Settings extension services unavailable');
   validateExtensionContributions();
   services = host;
   mountDeclaredPanels(host);
@@ -193,7 +232,10 @@ export function initializeExtensionContributions(host) {
   for (const item of new Set(controls.map(control => control.item)))
     host.$(`set-${item}-retry`).onclick = refreshAgentContributions;
   for (const contribution of EXTENSION_CONTRIBUTIONS) contribution.mount?.(host);
+  for (const controller of controllers.values()) controller.mount?.();
   mounted = true;
 }
 
 export const extensionContributions = () => EXTENSION_CONTRIBUTIONS;
+export const extensionFeedbackFields = () => Object.assign({},
+  ...EXTENSION_CONTRIBUTIONS.map(contribution => contribution.feedback || {}));
