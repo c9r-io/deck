@@ -115,7 +115,7 @@ test('both languages publish all guide topics, overview, metadata and version-sc
       assert.ok(html.includes(`<html lang="${locale ? 'zh-Hans' : 'en'}">`));
       assert.equal([...html.matchAll(/<h1\b/g)].length, 1);
       assert.match(html, /aria-current="page"/);
-      assert.match(html, /deck 0\.7\.8/);
+      assert.ok(html.includes(`deck ${config.guideVersion}`));
       assert.ok(html.includes(`<summary>${locale ? '集成' : 'Integrations'}</summary>`));
       assert.ok(html.includes(`/blob/${config.guideRef}/README.md`));
       assert.ok(html.includes(`rel="canonical" href="${config.siteUrl}/${route}"`));
@@ -135,7 +135,7 @@ test('both languages describe current voice and integration behavior', async () 
   const chinese = await readFile(path.join(dist, 'zh/guide/input-and-settings/index.html'), 'utf8');
   for (const html of [english, chinese]) {
     assert.doesNotMatch(html, /An empty draft starts recording|仅插入把文字放进终端/);
-    assert.match(html, /0\.7\.8/);
+    assert.ok(html.includes(config.guideVersion));
   }
   assert.match(english, /never sends Enter for voice input/);
   assert.match(chinese, /语音输入不会替你按回车/);

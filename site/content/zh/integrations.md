@@ -4,13 +4,13 @@
 
 ## Agent 状态
 
-如果希望在「待关注」看到输入请求和本轮结束报告，可在「设置 → 集成与自动化」启用对应的 **Claude Code** 或 **Codex** 状态集成。deck 会在该 CLI 的配置中加入 hook；它只回报固定状态词和窗格标识，不传 prompt 或终端输出。[了解状态信号 →](/zh/guide/attention/)
+如果希望在「待关注」看到输入请求和本轮结束报告，可在「设置 → Agent 与通知 → Agent 状态」开启 **Claude Code** 或 **Codex**。deck 会在该 CLI 的配置中加入几条 hook；它们只回报固定状态词和窗格标识（Codex 另带一个不透明的轮次 ID），不传 prompt、终端输出或路径。Codex 默认运行在共享的后台服务上，deck 无法确认事件来自哪个终端，因此会拒收这些事件，对应卡片不显示 agent 状态；新开 session 时用 `codex --no-daemon` 启动，才能回报状态。[了解状态信号 →](/zh/guide/attention/)
 
 ## Slack 表情标记与频道监控
 
-个人 Slack 连接可以在**你自己**给消息加上指定表情时触发自动化。在「设置 → 集成与自动化」配置连接，再到项目自动化中设置模板。触发时 deck 必须正在运行。[设置表情标记自动化 →](/zh/guide/automations/#从-slack-标记开始)
+个人 Slack 连接可以在**你自己**给消息加上指定表情时触发自动化。在「设置 → 集成 → Slack」配置连接，再到项目自动化中设置模板。触发时 deck 必须正在运行。[设置表情标记自动化 →](/zh/guide/automations/#从-slack-标记开始)
 
-**Slack 频道监控**是同一个 Deck Slack App 的可选能力：Bot token 独立，App token 共用。已有表情标记用户应更新并重装现有 App，粘贴新增 Bot token，再把 Bot 加入每个要监控的公开或私有频道；旧 Bot 的频道成员资格不会转移。项目规则需明确指定频道 ID、允许的用户或 Bot ID，以及文字匹配条件。第一条匹配消息会创建卡片并写入备忘录；后续匹配只增加笔记，不会自动发送给 agent。工作目录和裸 `claude` 或 `codex` 启动命令都来自已保存的规则。即使发送者在允许名单中，频道文字仍是不可信的 agent 输入；启用前请检查范围和模板。[阅读频道监控说明](https://github.com/c9r-io/deck/blob/main/docs/channel-monitor.md)。
+**Slack 频道监控**是同一个 Deck Slack App 的可选能力：Bot token 独立，App token 共用。已有表情标记用户应更新并重装现有 App，粘贴新增 Bot token，再把 Bot 加入每个要监控的公开或私有频道；旧 Bot 的频道成员资格不会转移。项目规则需明确指定频道 ID、允许的用户或 Bot ID，以及文字匹配条件。第一条匹配消息会创建卡片并写入备忘录；后续匹配只增加笔记，不会自动发送给 agent。工作目录和启动命令都来自已保存的规则；命令必须以 `claude` 或 `codex` 开头，可以带简单参数，包括 `--dangerously-skip-permissions` 这类跳过审批的参数。第一步默认等你处理；规则里有一个默认关闭的选项，可为以后匹配的事件自动发送第一步，它只适用于 Claude 或带 `--no-daemon` 的 Codex，也不涵盖后续步骤。即使发送者在允许名单中，频道文字仍是不可信的 agent 输入；启用前请检查范围和模板。[阅读频道监控说明](https://github.com/c9r-io/deck/blob/dcc3c064404e9eb4d392cb6228ae0b9f2cf14054/docs/channel-monitor.md)。
 
 ## 卡片备忘录
 
@@ -18,11 +18,11 @@
 
 ## 手机 Connector
 
-可选的手机 Connector 使用可直达的私有网络，将独立的 iOS 配套应用与 deck 配对。在「设置 → 集成与自动化」启用，检查配对二维码和设备列表。配对手机可以查看符合条件的 `claude` 或 `codex` 卡片最近输出、发送 prompt，也能按你在 Mac 上保存的预设创建任务。agent 可能据此以你的账号权限运行命令。不需要监听时可关闭 Connector；要终止某台手机的权限，应**撤销**该设备。它不提供公网中继，也不保证后台送达。[阅读手机 Connector 说明](https://github.com/c9r-io/deck/blob/692438f9310f079743700a10bda7cf80f77b06c6/docs/connector.md)。
+可选的手机 Connector 使用可直达的私有网络，将独立的 iOS 配套应用与 deck 配对。在「设置 → 远程访问 → 手机连接器」启用，检查配对二维码和设备列表。配对手机可以查看符合条件的 `claude` 或 `codex` 卡片最近输出、发送 prompt，也能按你在 Mac 上保存的预设创建任务。agent 可能据此以你的账号权限运行命令。不需要监听时可关闭 Connector，但关闭并不会撤销已配对的设备；要终止某台手机的权限，应**撤销**该设备。它不提供公网中继，也不保证后台送达。[阅读手机 Connector 说明](https://github.com/c9r-io/deck/blob/dcc3c064404e9eb4d392cb6228ae0b9f2cf14054/docs/connector.md)。
 
 ## Deck MCP 与 ChatGPT
 
-**MCP 终端控制**默认关闭。你需要明确授权一个 client 的项目和目录。结构化的列举、读取、搜索不会启动 shell；允许创建受管 session 是另一个选项；执行命令还需在 Mac 上对该 session 给出有时限的独立批准。获批执行使用你的 macOS 账号权限，并非文件系统沙箱。可以在 deck 设置里撤销 client。[阅读 MCP 权限说明](https://github.com/c9r-io/deck/blob/692438f9310f079743700a10bda7cf80f77b06c6/docs/mcp.md)。
+「设置 → 远程访问」中的 **MCP 终端控制**默认关闭。你需要明确授权一个 client 的项目和目录。结构化的列举、读取、搜索不会启动 shell；允许创建受管 session 是另一个选项；执行命令还需在 Mac 上对该 session 给出有时限的独立批准。获批执行使用你的 macOS 账号权限，并非文件系统沙箱。可以在 deck 设置里撤销 client。[阅读 MCP 权限说明](https://github.com/c9r-io/deck/blob/dcc3c064404e9eb4d392cb6228ae0b9f2cf14054/docs/mcp.md)。
 
 本机 STDIO 客户端可以直接使用 Deck MCP。托管的 ChatGPT 需要另装可选的 Deck Tunnel Helper 和 OpenAI 官方 `tunnel-client`；OpenAI Runtime API key 不由 Deck 保存。[阅读 Secure Tunnel 完整指南 →](/zh/docs/integrations/chatgpt-secure-tunnel/)
 

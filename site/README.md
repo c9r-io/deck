@@ -1,7 +1,7 @@
 # deck website and user guide
 
 Static source for `https://deck.c9r.io`: a product homepage and task-oriented,
-English/Simplified Chinese guide for **0.7.8 Stable**.
+English/Simplified Chinese guide for **0.7.26 Stable**.
 
 The site deliberately uses no framework, runtime JavaScript, analytics,
 cookies, forms, third-party fonts or remote assets. Common external URLs are in

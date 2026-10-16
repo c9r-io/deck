@@ -20,16 +20,16 @@ Recording requires a supported macOS 12+ on-device recognition configuration. Co
 
 | Situation | What to do |
 | --- | --- |
-| Microphone access denied | Follow the System Settings link, allow deck microphone access and explicitly start recording again |
-| Speech Recognition permission needed | Allow Speech Recognition in System Settings, then retry |
+| Microphone access denied | In System Settings → Privacy & Security → Microphone, allow deck, then start recording again yourself |
+| Speech Recognition permission needed | In System Settings → Privacy & Security → Speech Recognition, allow deck, then retry |
 | System Dictation disabled | Enable System Settings → Keyboard → Dictation, then return to deck and start recording |
 | Unsupported language or assets not ready | Choose a supported language and follow system guidance to prepare its assets |
 | Target pane or foreground program changed | Check the original terminal and start a new recording in the intended pane |
 | Typed text is uncertain | Check the terminal before trying again; Deck does not automatically resend it |
 
-Permission and Dictation setup errors offer the corresponding System Settings entry. Returning to deck never records automatically.
+After a permission or Dictation error, Deck opens the matching System Settings pane once; if it cannot, the message names the path. Returning to deck never records automatically.
 
-Use **Settings → Terminal & sessions → Voice input** to change enabled languages and the recognition default. Chinese, English and Japanese are initially available. One enabled language hides the selector. **Follow system language** does not detect your spoken language. Preferences persist across restarts; an existing session retains a still-enabled language choice.
+Use **Settings → Terminal & sessions → Voice input** to change enabled languages and the recognition default. Chinese, English and Japanese are enabled at first; you can add other listed languages, and at least one must stay enabled. **Follow system language** picks among the enabled languages; it does not detect your spoken language. A recording uses the default in force when it starts. Preferences persist across restarts.
 
 ## Everyday controls
 
@@ -46,20 +46,20 @@ Use **Settings → Terminal & sessions → Voice input** to change enabled langu
 
 ## Settings and logs
 
-Settings has six searchable categories: General & appearance, Shortcuts, Terminal & sessions, Integrations & automation, Data & logs, and About & updates.
+Settings has eight searchable categories: General & appearance, Shortcuts, Terminal & sessions, Agents & notifications, Integrations, Remote access, Data & privacy, and About & updates.
 
-Appearance offers Dark, Light, Follow System and High Contrast, with preset accents. Changes also update open terminal panes. Interface language can follow the system or use English or Simplified Chinese.
+Appearance offers Deck Dark, Light, Follow system and High Contrast, with preset accents. Changes also update open terminal panes. Interface language can follow the system or use English or Simplified Chinese.
 
-**Data & logs** exports or resets diagnostic logs. Reset asks for confirmation and clears only the current log. Command history, shell recovery data, exported logs and running sessions remain. History and recovery each have separate clear actions.
+**Data & privacy** exports or resets diagnostic logs. Reset asks for confirmation and clears only the current log. Command history, shell recovery data, exported logs and running sessions remain. History and recovery each have separate clear actions.
 
 When [reporting an issue on GitHub](https://github.com/c9r-io/deck/issues/new?template=feedback.yml), include the version, channel, reproduction steps and expected behavior. Reports are usually public; inspect screenshots and exports before sharing and remove tokens, private paths and real task content.
 
 ## Updates and versions
 
-This guide covers **deck 0.7.8 Stable**. Stable is the default channel; Nightly is an opt-in candidate channel whose features and stability may differ. Settings shows the version, channel and short commit.
+This guide covers **deck 0.7.26 Stable**. Stable is the default channel; Nightly is an opt-in candidate channel whose features and stability may differ. Settings shows the version, channel and short commit.
 
 Stable and Nightly replace the same app and share local data and tmux sessions. They cannot run side by side. Switching to Stable changes future update checks; it does not automatically downgrade a newer build. When the same Nightly version is promoted to Stable, the app archive is unchanged; no reinstall is needed just for the channel name. If you have a higher version installed, check data compatibility first.
 
-**Disabling human inspection does not undo its data upgrade.** First use moves relevant queue and settings data to v2; older builds without support refuse to read it. Do not edit version numbers or formats to bypass that check. Before downgrading, back up important data and verify the target version's compatibility. A data backup does not restore running processes.
+**Disabling human inspection does not undo its data upgrade.** First use moves relevant queue and settings data to v2; older builds without support refuse to read it. Do not edit version numbers or formats to bypass that check. Before downgrading, back up important data and verify the target version's compatibility. Other features upgrade data files the same way on first use, among them Slack channel monitoring, phone task presets, automatic first-step options and card reminders; older builds refuse those files too. A data backup does not restore running processes.
 
-For the complete maintenance reference, see the [release-channel documentation](https://github.com/c9r-io/deck/blob/692438f9310f079743700a10bda7cf80f77b06c6/docs/release-channels.md). See [privacy](/privacy/) for application data and integrations.
+For the complete maintenance reference, see the [release-channel documentation](https://github.com/c9r-io/deck/blob/dcc3c064404e9eb4d392cb6228ae0b9f2cf14054/docs/release-channels.md). See [privacy](/privacy/) for application data and integrations.
