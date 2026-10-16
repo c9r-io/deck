@@ -96,3 +96,16 @@ network-isolation guarantees for the advisory DB fetch, and an advisory
 against a transitive dev-dependency should not block unrelated pushes — a
 human triages the report instead. Revisit if the project gains more
 maintainers.
+
+## Website fonts (`site/src/assets/fonts/`)
+
+The website (deck.c9r.io, not the app) self-hosts these Latin-subset WOFF2
+files, taken unmodified from the Fontsource 5.3.0 npm packages. Each font's
+SIL Open Font License 1.1 text is beside it as `OFL-<font>.txt`.
+
+| Font | Weights | License | Source |
+|---|---|---|---|
+| Martian Mono | 800 | OFL-1.1 | https://github.com/evilmartians/mono |
+| Figtree | 400, 600 | OFL-1.1 | https://github.com/erikdkennedy/figtree |
+| IBM Plex Mono | 400, 500 | OFL-1.1 | https://github.com/IBM/plex |
+| Barlow Condensed | 600, 700 | OFL-1.1 | https://github.com/jpt/barlow |
