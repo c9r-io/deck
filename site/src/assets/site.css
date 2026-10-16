@@ -121,7 +121,9 @@ html:lang(zh-Hans) .logo { font-family: "Martian Mono", ui-monospace, monospace;
 /* home: the wall of cards */
 .hero-wall { background: var(--bg); overflow: hidden; }
 .hero-copy2 { padding-block: 64px 0; max-width: 48rem; }
-.hero-wall h1 { font-size: clamp(32px, 5.4vw, 64px); line-height: 1.05; margin-bottom: 22px; }
+.hero-wall h1 { font-size: clamp(32px, 5.4vw, 64px); line-height: 1.05; letter-spacing: var(--display-tracking); margin-bottom: 22px; }
+/* The display face has full monospace spaces; tighten English hero word gaps. */
+html:lang(en) .hero-wall h1 { word-spacing: -.2em; }
 .hero-wall h1 .hl { color: var(--amber); display: inline-block; }
 .lede2 { color: var(--muted); font-size: clamp(17px, 2vw, 19px); max-width: 36rem; margin-bottom: 28px; }
 .cta2 { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: center; }

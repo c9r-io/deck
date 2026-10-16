@@ -438,6 +438,6 @@ test('illustrative Board cards show one pinned status word and identify fictiona
     assert.equal([...wall.matchAll(/class="tile(?: [^"]+)?"/g)].length, 10);
     assert.equal([...wall.matchAll(/class="tile-st"/g)].length, 10);
     assert.doesNotMatch(wall, /badge2/);
-    assert.match(html, locale ? /class="wall-note">示例看板，任务均为虚构/ : /class="wall-note">Example Board with fictional tasks/);
+    assert.match(html, locale ? /class="wall-note">看板局部示意，任务均为虚构/ : /class="wall-note">Illustrative Board excerpt with fictional tasks/);
   }
 });
