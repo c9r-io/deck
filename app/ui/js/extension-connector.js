@@ -9,6 +9,8 @@ const PANEL_HTML = `
       <div class="set-group-head"><h3 class="set-group-title" id="set-item-connector-title" data-i18n="connector.title">Phone Connector</h3><span class="set-group-status" id="set-connector-status"></span></div>
       <div class="set-hint" data-i18n="connector.hint">Off by default. When enabled, deck listens only on the selected local address over pinned HTTPS.</div>
       <div class="set-row"><label for="set-connector-address" data-i18n="connector.address">Local address</label><select id="set-connector-address"></select><input id="set-connector-port" type="number" min="1024" max="65535" value="47631"><button class="btn" id="set-connector-toggle" data-i18n="connector.enable">Enable</button></div>
+      <div class="set-row"><label for="set-connector-board-metadata" data-i18n="connector.boardMetadata">Show all Board cards on paired phones</label><input id="set-connector-board-metadata" type="checkbox"></div>
+      <div class="set-hint" data-i18n="connector.boardMetadataHint">Shares card titles, projects, columns and order. Shell, empty-command and unsupported agent cards remain unavailable for output, messages, notes and queues.</div>
       <div class="set-actions"><button class="btn" id="set-connector-pair" data-i18n="connector.pair">Pair a device…</button><button class="btn" id="set-connector-reset" data-i18n="connector.reset">Reset and re-pair…</button></div>
       <div id="set-connector-pairing" hidden><img id="set-connector-qr" alt=""><div class="set-hint" id="set-connector-expiry"></div></div>
       <div id="set-connector-devices"></div>
@@ -52,6 +54,7 @@ export function createConnectorSettings(host) {
       : status.running ? t('connector.listening', { origin: status.origin || '' }) : t('connector.notRunning');
     $('set-connector-toggle').textContent = t(status?.enabled ? 'connector.disable' : 'connector.enable');
     $('set-connector-toggle').dataset.enabled = String(status?.enabled === true);
+    $('set-connector-board-metadata').checked = status?.scope === 'boardMetadata';
     $('set-connector-pair').disabled = !status?.running;
     $('set-connector-reset').disabled = status?.enabled === true;
     const devices = $('set-connector-devices'); devices.replaceChildren();
@@ -85,6 +88,22 @@ export function createConnectorSettings(host) {
       } catch (_) { toast(t('connector.actionFailed')); }
       await renderConnectorSettings();
     };
+    $('set-connector-board-metadata').onchange = async () => {
+      const control = $('set-connector-board-metadata');
+      const requested = control.checked;
+      if (requested && !(await confirmDialog(t('connector.boardMetadataConfirm')))) {
+        control.checked = false;
+        return;
+      }
+      control.disabled = true;
+      try {
+        await inv('connector_set_scope', { scope: requested ? 'boardMetadata' : 'agentCards' });
+      } catch (_) {
+        toast(t('connector.actionFailed'));
+      }
+      control.disabled = false;
+      await renderConnectorSettings();
+    };
     $('set-connector-pair').onclick = async () => {
       try {
         const pairing = await inv('connector_pairing');
@@ -116,7 +135,7 @@ export const CONTRIBUTION = Object.freeze({
   slots: Object.freeze([Object.freeze({ slotId: 'set-extension-remote', html: PANEL_HTML })]),
   settings: Object.freeze([Object.freeze({
     id: 'connector', section: 'remote', order: 0,
-    labelKeys: ['connector.title', 'connector.address', 'connector.pair'],
+    labelKeys: ['connector.title', 'connector.address', 'connector.boardMetadata', 'connector.pair'],
     keywords: ['phone', 'iphone', 'mobile', 'pair', 'pairing', 'qr', 'device', 'remote', '手机', '配对', '设备', '二维码', '远程'],
   })]),
   create: createConnectorSettings,

@@ -1,0 +1,6 @@
+process pid 50770 started Fri Oct 16 20:11:15 2026: running
+tmux-server pid 50784 started Fri Oct 16 20:11:17 2026 socket /private/tmp/deck-connector-diagnose-ltz6f2x0/t/tmux-501/deck-smoke-ltz6f2x0: running
+process pid 50910 started Fri Oct 16 20:11:21 2026: running
+stopped tmux-server pid 50784
+stopped process pid 50770
+stopped process pid 50910

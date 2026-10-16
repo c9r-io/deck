@@ -1,0 +1,84 @@
+{
+  "environmentReady": true,
+  "isolationVerified": true,
+  "mode": "fixed",
+  "reproductionConfirmed": null,
+  "snapshotScope": "boardMetadata",
+  "productAssertionsPassed": false,
+  "requiredTestsExecuted": true,
+  "cleanupCompleted": true,
+  "humanInterventions": 0,
+  "xcodePath": "/Volumes/Yotta/Applications/Xcode.app",
+  "developerDir": "/Volumes/Yotta/Applications/Xcode.app/Contents/Developer",
+  "tests": {
+    "hostSmoke": "PASS",
+    "simulatorUI": "FAIL",
+    "shellReturnUI": "PASS"
+  },
+  "cases": {
+    "liveSavedAgentOutput": "PASS",
+    "ordinaryShellVisibility": "UNRUN",
+    "shellWithForegroundAgent": "UNRUN",
+    "savedCommandVariants": "UNRUN",
+    "stoppedSavedAgentOutput": "FAIL",
+    "agentExitedToShell": "PASS",
+    "foregroundCycle": "FAIL",
+    "appRelaunchCredentialRecovery": "FAIL",
+    "refreshFailureRecovery": "UNRUN",
+    "saveFailure": "UNRUN",
+    "backupRecovery": "UNRUN"
+  },
+  "xcodeVersion": "Xcode 27.1\nBuild version 27A9275",
+  "simctl": "/Volumes/Yotta/Applications/Xcode.app/Contents/Developer/usr/bin/simctl",
+  "sdks": "DriverKit SDKs:\n\tDriverKit 27.0                \t-sdk driverkit27.0\n\niOS SDKs:\n\tiOS 27.1                      \t-sdk iphoneos27.1\n\niOS Simulator SDKs:\n\tSimulator - iOS 27.1          \t-sdk iphonesimulator27.1\n\nmacOS SDKs:\n\tmacOS 27.0                    \t-sdk macosx27.0\n\tmacOS 27.0                    \t-sdk macosx27.0\n\ntvOS SDKs:\n\ttvOS 27.0                     \t-sdk appletvos27.0\n\ntvOS Simulator SDKs:\n\tSimulator - tvOS 27.0         \t-sdk appletvsimulator27.0\n\nvisionOS SDKs:\n\tvisionOS 27.0                 \t-sdk xros27.0\n\nvisionOS Simulator SDKs:\n\tSimulator - visionOS 27.0     \t-sdk xrsimulator27.0\n\nwatchOS SDKs:\n\twatchOS 27.0                  \t-sdk watchos27.0\n\nwatchOS Simulator SDKs:\n\tSimulator - watchOS 27.0      \t-sdk watchsimulator27.0",
+  "projectSchemes": "Command line invocation:\n    /Volumes/Yotta/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -list -project /Users/chenhan/c9r-io/deck/connector/ios/DeckConnector.xcodeproj\n\nResolve Package Graph\n\n\nResolved source packages:\n  DeckConnector: /Users/chenhan/c9r-io/deck/connector/ios @ local\n\nInformation about project \"DeckConnector\":\n    Targets:\n        DeckConnector\n        DeckConnectorTests\n        DeckConnectorUITests\n\n    Build Configurations:\n        Debug\n        Release\n\n    If no build configuration is specified and -scheme is not passed then \"Release\" is used.\n\n    Schemes:\n        DeckConnector\n        DeckConnectorCore\n        DeckConnectorUITests",
+  "installedDeviceTypeCount": 130,
+  "availableDeviceCount": 11,
+  "selectedRuntime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+  "selectedDeviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation",
+  "head": "a326cdf3a6b3f1b18176da9079659e4762408eca",
+  "sourceDiffSHA256": "8a6cc529207b4480b0c0ed91e7abfa86c887fa110dc796737497a0cbe0a09b7a",
+  "freeBytes": 122787164160,
+  "appearance": "dark",
+  "hostBuildReusedFrom": "/tmp/deck-connector-diagnose-final-je_nehez",
+  "hostBinarySHA256": "4e9c14d9b46e0b2731335a75672b6777d72c19b81a051baa663d7d5046f22983",
+  "iosBinarySHA256": "6134f50873df04d5f217aa04b682f1716dcb7704771cc540270133f2e3e24e52",
+  "caseCorrelation": {
+    "case": "stoppedSavedAgentOutput",
+    "cardIdHash": "9a84824976694e02",
+    "shellCardIdHash": "907609df4c7d3692",
+    "request": "GET /v1/cards/<fixture-card>/output"
+  },
+  "hostIdHash": "a1f34138f54cb682",
+  "listenerPort": 61387,
+  "liveCardIdHash": "a7008cdef5f8322b",
+  "agentStartupChoices": [],
+  "agentComposerSubmit": "visible-pending-input",
+  "realAgentProbe": "PASS",
+  "realAgentMarker": "deckprobeg6zz1mqt",
+  "testCounts": {
+    "passedTests": 4,
+    "failedTests": 1,
+    "skippedTests": 0,
+    "totalTestCount": 5
+  },
+  "testResults": {
+    "testIsolatedChineseLargeText": "Passed",
+    "testIsolatedDraftsSurviveNavigationAndRelaunch": "Passed",
+    "testIsolatedLiveCodexOutput": "Passed",
+    "testIsolatedSharedShellIsMetadataOnly": "Passed",
+    "testIsolatedStoppedAgentVisibilityAndOutput": "Failed"
+  },
+  "shellReturnProbe": "PASS",
+  "shellReturnMarker": "shellmarkerg6zz1mqt",
+  "shellReturnTestCounts": {
+    "passedTests": 1,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 1
+  },
+  "shellReturnTestResults": {
+    "testIsolatedCodexExitToShellRejectsOutputAndSend": "Passed"
+  },
+  "failure": "XCTest failed; see suite log"
+}

@@ -1707,6 +1707,41 @@ test('enabling Phone Connector requires an explicit confirmation of what a paire
   assert.equal(calls.filter(cmd => cmd === 'connector_enable').length, 1);
 });
 
+test('sharing all Board metadata is a separate persisted consent', async () => {
+  const calls = [];
+  let scope = 'agentCards';
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'connector_status') return { enabled: false, running: false, address: '', port: 47631, devices: [], scope };
+    if (cmd === 'connector_addresses') return ['192.168.1.20'];
+    if (cmd === 'connector_set_scope') { scope = args.scope; return { scope }; }
+    return {};
+  } } };
+  await renderConnectorSettings();
+  const control = fakeDocument.getElementById('set-connector-board-metadata');
+  assert.equal(control.checked, false, 'existing hosts default to the restricted scope');
+
+  control.checked = true;
+  const cancelled = control.onchange();
+  assert.match(fakeDocument.getElementById('cfm-msg').textContent, /titles, project and column placement/);
+  cfmDone(false);
+  await cancelled;
+  assert.equal(control.checked, false);
+  assert.equal(calls.filter(([cmd]) => cmd === 'connector_set_scope').length, 0);
+
+  control.checked = true;
+  const accepted = control.onchange();
+  cfmDone(true);
+  await accepted;
+  assert.deepEqual(calls.find(([cmd]) => cmd === 'connector_set_scope')[1], { scope: 'boardMetadata' });
+  assert.equal(control.checked, true);
+
+  control.checked = false;
+  await control.onchange();
+  assert.equal(calls.filter(([cmd]) => cmd === 'connector_set_scope').length, 2);
+  assert.equal(scope, 'agentCards', 'narrowing the scope does not require another confirmation');
+});
+
 test('a pairing is announced by name and time and hides the spent QR code', async () => {
   const phone = { id: 'D1', name: 'Old phone', pairedAt: 1_790_000_000, revoked: false };
   let devices = [phone];

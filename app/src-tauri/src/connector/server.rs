@@ -11,6 +11,8 @@
 //! "enabled, not listening" (`connector-changed` is emitted). A connection
 //! whose local address is not the configured one is dropped unread.
 
+#[cfg(test)]
+use super::SnapshotScope;
 use super::{
     buffer, output, snapshot, CommandRequest, Config, Identity, Runtime, CLIENT_UPGRADE_REQUIRED,
     COMMAND_EXPIRED,
@@ -137,6 +139,9 @@ fn mapped_output(error_value: &DeckError) -> Resp {
         }
         "agent-not-in-foreground" if error_value.kind() == ErrorKind::Invalid => {
             error(StatusCode::CONFLICT, "agent-not-in-foreground")
+        }
+        "mcp-controlled" if error_value.kind() == ErrorKind::Perm => {
+            error(StatusCode::CONFLICT, "mcp-controlled")
         }
         "output-read-failed" if error_value.kind() == ErrorKind::Tmux => {
             error(StatusCode::SERVICE_UNAVAILABLE, "output-read-failed")
@@ -551,6 +556,7 @@ mod tests {
             address: "127.0.0.1".into(),
             port: 0,
             interface: None,
+            scope: SnapshotScope::AgentCards,
         };
         let identity = Identity::generate("127.0.0.1").unwrap();
         spawn(runtime.clone(), config, identity, 1, || false).unwrap();
@@ -602,6 +608,7 @@ mod tests {
             address: "127.0.0.1".into(),
             port: 8443,
             interface: None,
+            scope: SnapshotScope::AgentCards,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -648,6 +655,7 @@ mod tests {
             address: "127.0.0.1".into(),
             port: 0,
             interface: None,
+            scope: SnapshotScope::AgentCards,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -673,6 +681,7 @@ mod tests {
                 address: "127.0.0.1".into(),
                 port: 0,
                 interface: None,
+                scope: SnapshotScope::AgentCards,
             },
             identity,
             1,
@@ -826,6 +835,7 @@ mod tests {
         let cases = [
             (ErrorKind::NoSession, "session-unavailable"),
             (ErrorKind::Invalid, "agent-not-in-foreground"),
+            (ErrorKind::Perm, "mcp-controlled"),
             (ErrorKind::Tmux, "output-read-failed"),
             (ErrorKind::ContextChanged, "target-changed"),
             (ErrorKind::NoSession, "old-host-no-session"),
@@ -958,6 +968,7 @@ mod tests {
                 address: "not-an-address".into(),
                 port: 0,
                 interface: None,
+                scope: SnapshotScope::AgentCards,
             },
             Identity::generate("127.0.0.1").unwrap(),
             1,
@@ -981,6 +992,7 @@ mod tests {
             address: "127.0.0.1".into(),
             port: 0,
             interface: None,
+            scope: SnapshotScope::AgentCards,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -1004,6 +1016,7 @@ mod tests {
             address: "127.0.0.1".into(),
             port: 0,
             interface: None,
+            scope: SnapshotScope::AgentCards,
         };
         let port = spawn(runtime.clone(), config, identity, 1, || true).unwrap();
         let mut roots = rustls::RootCertStore::empty();
@@ -1117,6 +1130,7 @@ mod tests {
             address: "127.0.0.1".into(),
             port: 0,
             interface: None,
+            scope: SnapshotScope::AgentCards,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -1140,6 +1154,7 @@ mod tests {
             address: "127.0.0.1".into(),
             port: 0,
             interface: None,
+            scope: SnapshotScope::AgentCards,
         };
         let port = spawn(runtime.clone(), config, identity, 1, || true).unwrap();
         let mut roots = rustls::RootCertStore::empty();

@@ -1,0 +1,823 @@
+Command line invocation:
+    /Volumes/Yotta/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -xctestrun /tmp/deck-connector-diagnose-z6zu4j7o/DerivedData/Build/Products/DeckConnectorUITests-diagnose.xctestrun -destination "platform=iOS Simulator,id=41B9026C-77B1-47D6-B00C-A0F86FCC203A" -parallel-testing-enabled NO -resultBundlePath /tmp/deck-connector-diagnose-z6zu4j7o/ui.xcresult test-without-building "-only-testing:DeckConnectorUITests/ConnectorUITests/testIsolatedStoppedAgentVisibilityAndOutput" "-only-testing:DeckConnectorUITests/ConnectorUITests/testIsolatedLiveCodexOutput" "-only-testing:DeckConnectorUITests/ConnectorUITests/testIsolatedDraftsSurviveNavigationAndRelaunch" "-only-testing:DeckConnectorUITests/ConnectorUITests/testIsolatedChineseLargeText" "-only-testing:DeckConnectorUITests/ConnectorUITests/testIsolatedSharedShellIsMetadataOnly"
+
+Writing result bundle at path:
+	/tmp/deck-connector-diagnose-z6zu4j7o/ui.xcresult
+
+2026-10-16 21:02:55.093 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:03:03.565302+0900 DeckConnectorUITests-Runner[61107:20158797] [Default] Running tests...
+    t =      nans Interface orientation changed to Portrait
+Test Suite 'Selected tests' started at 2026-10-16 21:03:35.771.
+Test Suite 'DeckConnectorUITests.xctest' started at 2026-10-16 21:03:35.776.
+Test Suite 'ConnectorUITests' started at 2026-10-16 21:03:35.777.
+Test Case '-[DeckConnectorUITests.ConnectorUITests testIsolatedChineseLargeText]' started.
+    t =     0.02s Start Test at 2026-10-16 21:03:35.801
+    t =     0.52s Set Up
+    t =     0.52s     Setting device orientation to Portrait
+    t =     0.56s         Device orientation changed to Portrait
+    t =     0.63s         Wait for com.apple.springboard to idle
+    t =     1.03s Open io.c9r.deck.connector
+    t =     1.04s     Launch io.c9r.deck.connector
+2026-10-16 21:03:37.094 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: debugger version lookup failed for path '<nil>': noURL
+2026-10-16 21:03:37.094 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: no debugger version
+2026-10-16 21:03:37.115 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =     2.60s         Setting up automation session
+objc[61107]: Class UIAccessibilityLoaderWebShared is implemented in both /Library/Developer/CoreSimulator/Volumes/iOS_24A434/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebKit.axbundle/WebKit (0x102fbc398) and /Library/Developer/CoreSimulator/Volumes/iOS_24A434/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebCore.axbundle/WebCore (0x105f3c310). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+    t =    15.23s         Wait for io.c9r.deck.connector to idle
+    t =    17.96s Waiting 15.0s for "connector transport" StaticText to exist
+    t =    19.04s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" StaticText`
+    t =    19.04s         Checking existence of `"connector transport" StaticText`
+    t =    19.72s Waiting 2.0s for "connector transport" StaticText to exist
+    t =    20.77s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" StaticText`
+    t =    20.78s         Checking existence of `"connector transport" StaticText`
+    t =    21.04s Checking existence of `"connector transport" StaticText`
+    t =    21.23s Find the "connector transport" StaticText
+    t =    21.43s Find the Window (First Match)
+    t =    21.50s Checking existence of `NavigationBar (First Match)`
+    t =    21.53s Find the NavigationBar (First Match)
+    t =    21.59s Find the "connector transport" StaticText
+    t =    21.91s Added attachment named 'Chinese large text card list'
+    t =    21.91s Waiting 15.0s for "connector transport" StaticText to exist
+    t =    22.97s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" StaticText`
+    t =    22.97s         Checking existence of `"connector transport" StaticText`
+    t =    23.18s Waiting 2.0s for "connector transport" StaticText to exist
+    t =    24.25s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" StaticText`
+    t =    24.25s         Checking existence of `"connector transport" StaticText`
+    t =    24.42s Checking existence of `"connector transport" StaticText`
+    t =    24.56s Find the "connector transport" StaticText
+    t =    24.69s Find the Window (First Match)
+    t =    24.72s Checking existence of `NavigationBar (First Match)`
+    t =    24.74s Find the NavigationBar (First Match)
+    t =    24.78s Find the "connector transport" StaticText
+    t =    24.95s Tap "connector transport" StaticText
+    t =    24.95s     Wait for io.c9r.deck.connector to idle
+    t =    24.98s     Find the "connector transport" StaticText
+    t =    25.15s     Check for interrupting elements affecting "connector transport" StaticText
+    t =    25.31s     Synthesize event
+    t =    25.92s     Wait for io.c9r.deck.connector to idle
+<unknown>:0: warning: -[DeckConnectorUITests.ConnectorUITests testIsolatedChineseLargeText] : Invalid frame dimension (negative or non-finite).
+    t =    26.96s Waiting 10.0s for "connector transport" NavigationBar to exist
+    t =    28.03s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" NavigationBar`
+    t =    28.03s         Checking existence of `"connector transport" NavigationBar`
+    t =    28.21s Waiting 10.0s for "deck.output.refresh" Button to exist
+    t =    29.25s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.refresh" Button`
+    t =    29.26s         Checking existence of `"deck.output.refresh" Button`
+    t =    29.33s Find the "deck.output.refresh" Button
+    t =    29.40s Waiting 2.0s for "deck.output.unavailable" StaticText to exist
+    t =    30.42s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.unavailable" StaticText`
+    t =    30.42s         Checking existence of `"deck.output.unavailable" StaticText`
+    t =    30.57s Checking existence of `"deck.output.unavailable" StaticText`
+    t =    30.74s Find the "deck.output.unavailable" StaticText
+    t =    30.97s Find the Window (First Match)
+    t =    31.00s Checking existence of `NavigationBar (First Match)`
+    t =    31.02s Find the NavigationBar (First Match)
+    t =    31.07s Find the "deck.output.unavailable" StaticText
+    t =    31.23s Find the "deck.output.unavailable" StaticText
+    t =    31.39s Setting device orientation to Portrait
+    t =    31.40s     Wait for io.c9r.deck.connector to idle
+    t =    32.47s Find the Window (First Match)
+    t =    32.49s Waiting 2.0s for "deck.output.refresh" Button to exist
+    t =    33.53s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.refresh" Button`
+    t =    33.53s         Checking existence of `"deck.output.refresh" Button`
+    t =    33.62s Checking existence of `"deck.output.refresh" Button`
+    t =    33.74s Find the "deck.output.refresh" Button
+    t =    33.83s Find the Window (First Match)
+    t =    33.89s Checking existence of `NavigationBar (First Match)`
+    t =    33.95s Find the NavigationBar (First Match)
+    t =    34.07s Find the "deck.output.refresh" Button
+    t =    34.15s Find the "deck.output.refresh" Button
+    t =    34.31s Waiting 2.0s for "deck.output.unavailable" StaticText to exist
+    t =    35.35s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.unavailable" StaticText`
+    t =    35.35s         Checking existence of `"deck.output.unavailable" StaticText`
+    t =    35.55s Checking existence of `"deck.output.unavailable" StaticText`
+    t =    35.73s Find the "deck.output.unavailable" StaticText
+    t =    36.03s Find the Window (First Match)
+    t =    36.06s Checking existence of `NavigationBar (First Match)`
+    t =    36.10s Find the NavigationBar (First Match)
+    t =    36.16s Find the "deck.output.unavailable" StaticText
+    t =    36.60s Added attachment named 'Chinese large text 1'
+    t =    36.60s Setting device orientation to Landscape Left
+    t =    36.61s     Device orientation changed to Landscape Left
+    t =    36.71s     Interface orientation changed to Landscape Right
+    t =    36.71s     Wait for io.c9r.deck.connector to idle
+    t =    37.97s Find the Window (First Match)
+    t =    38.03s Waiting 2.0s for "deck.output.refresh" Button to exist
+    t =    39.11s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.refresh" Button`
+    t =    39.12s         Checking existence of `"deck.output.refresh" Button`
+    t =    39.22s Checking existence of `"deck.output.refresh" Button`
+    t =    39.33s Find the "deck.output.refresh" Button
+    t =    39.44s Find the Window (First Match)
+    t =    39.49s Checking existence of `NavigationBar (First Match)`
+    t =    39.52s Find the NavigationBar (First Match)
+    t =    39.59s Find the "deck.output.refresh" Button
+    t =    39.70s Checking existence of `CollectionView (First Match)`
+    t =    39.75s Find the Window (First Match)
+    t =    39.82s Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    39.87s Press Window at {{0.0, 0.0}, {667.0, 375.0}}[0.96, 0.72] for 0.1 seconds, then drag to Window at {{0.0, 0.0}, {667.0, 375.0}}[0.96, 0.47] with velocity of 250.00 pixels per second, and then hold for 0.2 seconds 
+    t =    39.87s     Wait for io.c9r.deck.connector to idle
+    t =    39.89s     Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    40.02s     Check for interrupting elements affecting Window
+    t =    40.13s     Synthesize event
+    t =    40.14s         Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    40.29s         Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    40.35s         Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    40.41s         Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    40.49s         Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    41.47s     Wait for io.c9r.deck.connector to idle
+    t =    41.53s Waiting 1.0s for "deck.output.refresh" Button to exist
+    t =    42.53s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.refresh" Button`
+    t =    42.53s         Checking existence of `"deck.output.refresh" Button`
+    t =    42.62s     Checking existence of `"deck.output.refresh" Button`
+    t =    42.73s Checking existence of `"deck.output.refresh" Button`
+    t =    42.81s Find the "deck.output.refresh" Button
+    t =    42.91s Find the Window (First Match)
+    t =    42.96s Checking existence of `NavigationBar (First Match)`
+    t =    42.99s Find the NavigationBar (First Match)
+    t =    43.04s Find the "deck.output.refresh" Button
+    t =    43.12s Find the "deck.output.refresh" Button
+    t =    43.23s Waiting 2.0s for "deck.output.unavailable" StaticText to exist
+    t =    44.31s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.unavailable" StaticText`
+    t =    44.31s         Checking existence of `"deck.output.unavailable" StaticText`
+    t =    44.50s Checking existence of `"deck.output.unavailable" StaticText`
+    t =    44.68s Find the "deck.output.unavailable" StaticText
+    t =    44.96s Find the Window (First Match)
+    t =    45.03s Checking existence of `NavigationBar (First Match)`
+    t =    45.06s Find the NavigationBar (First Match)
+    t =    45.11s Find the "deck.output.unavailable" StaticText
+    t =    45.29s Checking existence of `CollectionView (First Match)`
+    t =    45.33s Find the Window (First Match)
+    t =    45.38s Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    45.46s Press Window at {{0.0, 0.0}, {667.0, 375.0}}[0.96, 0.72] for 0.1 seconds, then drag to Window at {{0.0, 0.0}, {667.0, 375.0}}[0.96, 0.47] with velocity of 250.00 pixels per second, and then hold for 0.2 seconds 
+    t =    45.46s     Wait for io.c9r.deck.connector to idle
+    t =    45.48s     Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    45.51s     Check for interrupting elements affecting Window
+    t =    45.59s     Synthesize event
+    t =    45.60s         Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    45.68s         Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    45.75s         Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    45.81s         Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    45.91s         Find the Window at {{0.0, 0.0}, {667.0, 375.0}}
+    t =    46.88s     Wait for io.c9r.deck.connector to idle
+    t =    46.90s Waiting 1.0s for "deck.output.unavailable" StaticText to exist
+    t =    47.92s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.unavailable" StaticText`
+    t =    47.92s         Checking existence of `"deck.output.unavailable" StaticText`
+    t =    48.14s     Checking existence of `"deck.output.unavailable" StaticText`
+    t =    48.32s Checking existence of `"deck.output.unavailable" StaticText`
+    t =    48.47s Find the "deck.output.unavailable" StaticText
+    t =    48.69s Find the Window (First Match)
+    t =    48.73s Checking existence of `NavigationBar (First Match)`
+    t =    48.75s Find the NavigationBar (First Match)
+    t =    48.79s Find the "deck.output.unavailable" StaticText
+    t =    49.07s Added attachment named 'Chinese large text 3'
+    t =    49.07s Setting device orientation to Portrait
+    t =    49.09s     Device orientation changed to Portrait
+    t =    49.17s     Interface orientation changed to Portrait
+    t =    49.18s     Wait for io.c9r.deck.connector to idle
+    t =    49.88s Terminate io.c9r.deck.connector:61165
+2026-10-16 21:04:25.703 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:04:25.704 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:04:25.718 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =    50.97s Setting device orientation to Portrait
+    t =    51.01s     Wait for com.apple.springboard to idle
+    t =    51.04s Tear Down
+Test Case '-[DeckConnectorUITests.ConnectorUITests testIsolatedChineseLargeText]' passed (51.074 seconds).
+Test Case '-[DeckConnectorUITests.ConnectorUITests testIsolatedDraftsSurviveNavigationAndRelaunch]' started.
+    t =     0.00s Start Test at 2026-10-16 21:04:26.878
+    t =     0.08s Set Up
+    t =     0.10s     Setting device orientation to Portrait
+    t =     0.15s         Wait for com.apple.springboard to idle
+    t =     0.20s Open io.c9r.deck.connector
+    t =     0.20s     Launch io.c9r.deck.connector
+2026-10-16 21:04:27.090 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: debugger version lookup failed for path '<nil>': noURL
+2026-10-16 21:04:27.093 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: no debugger version
+2026-10-16 21:04:27.103 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =     0.46s         Setting up automation session
+    t =    13.19s         Wait for io.c9r.deck.connector to idle
+    t =    16.20s Waiting 15.0s for "connector transport" StaticText to exist
+    t =    17.24s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" StaticText`
+    t =    17.24s         Checking existence of `"connector transport" StaticText`
+    t =    18.07s Waiting 2.0s for "connector transport" StaticText to exist
+    t =    19.13s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" StaticText`
+    t =    19.13s         Checking existence of `"connector transport" StaticText`
+    t =    19.40s Checking existence of `"connector transport" StaticText`
+    t =    19.59s Find the "connector transport" StaticText
+    t =    19.82s Find the Window (First Match)
+    t =    19.85s Checking existence of `NavigationBar (First Match)`
+    t =    19.89s Find the NavigationBar (First Match)
+    t =    20.13s Find the "connector transport" StaticText
+    t =    20.49s Tap "connector transport" StaticText
+    t =    20.49s     Wait for io.c9r.deck.connector to idle
+    t =    20.55s     Find the "connector transport" StaticText
+    t =    20.87s     Check for interrupting elements affecting "connector transport" StaticText
+    t =    21.24s     Synthesize event
+    t =    21.75s     Wait for io.c9r.deck.connector to idle
+    t =    22.54s Waiting 10.0s for "connector transport" NavigationBar to exist
+    t =    23.60s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" NavigationBar`
+    t =    23.60s         Checking existence of `"connector transport" NavigationBar`
+    t =    23.81s Tap "Notes" Button
+    t =    23.81s     Wait for io.c9r.deck.connector to idle
+    t =    23.84s     Find the "Notes" Button
+    t =    23.94s     Check for interrupting elements affecting "Notes" Button
+    t =    24.08s     Synthesize event
+    t =    24.45s     Wait for io.c9r.deck.connector to idle
+    t =    26.03s Waiting 10.0s for "deck.note.new" TextView to exist
+    t =    27.06s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.note.new" TextView`
+    t =    27.08s         Checking existence of `"deck.note.new" TextView`
+    t =    27.34s Tap "deck.note.new" TextView
+    t =    27.34s     Wait for io.c9r.deck.connector to idle
+    t =    27.37s     Find the "deck.note.new" TextView
+    t =    27.60s     Check for interrupting elements affecting "deck.note.new" TextView
+    t =    27.76s     Synthesize event
+    t =    28.27s     Wait for io.c9r.deck.connector to idle
+<unknown>:0: warning: -[DeckConnectorUITests.ConnectorUITests testIsolatedDraftsSurviveNavigationAndRelaunch] : Invalid frame dimension (negative or non-finite).
+    t =    32.10s Type 'local-note-BEB419A...' into "deck.note.new" TextView
+    t =    32.10s     Wait for io.c9r.deck.connector to idle
+    t =    32.37s     Find the "deck.note.new" TextView
+    t =    33.11s     Check for interrupting elements affecting "deck.note.new" TextView
+    t =    33.38s     Synthesize event
+    t =    34.64s     Wait for io.c9r.deck.connector to idle
+    t =    36.86s Tap "deck.keyboard.done" Button
+    t =    36.89s     Wait for io.c9r.deck.connector to idle
+    t =    37.10s     Find the "deck.keyboard.done" Button
+    t =    37.30s     Check for interrupting elements affecting "deck.keyboard.done" Button
+    t =    37.48s     Synthesize event
+    t =    37.95s     Wait for io.c9r.deck.connector to idle
+    t =    38.33s Tap Button (Element at index 0)
+    t =    38.33s     Wait for io.c9r.deck.connector to idle
+    t =    38.42s     Find the Button (Element at index 0)
+    t =    38.55s     Check for interrupting elements affecting "BackButton" Button
+    t =    38.70s     Synthesize event
+    t =    39.09s     Wait for io.c9r.deck.connector to idle
+    t =    39.55s Waiting 15.0s for "connector transport" StaticText to exist
+    t =    40.61s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" StaticText`
+    t =    40.61s         Checking existence of `"connector transport" StaticText`
+    t =    40.96s Waiting 2.0s for "connector transport" StaticText to exist
+    t =    41.98s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" StaticText`
+    t =    41.99s         Checking existence of `"connector transport" StaticText`
+    t =    42.30s Checking existence of `"connector transport" StaticText`
+    t =    42.62s Find the "connector transport" StaticText
+    t =    43.26s Find the Window (First Match)
+    t =    43.60s Checking existence of `NavigationBar (First Match)`
+    t =    43.88s Find the NavigationBar (First Match)
+    t =    44.05s Find the "connector transport" StaticText
+    t =    44.33s Tap "connector transport" StaticText
+    t =    44.33s     Wait for io.c9r.deck.connector to idle
+    t =    44.45s     Find the "connector transport" StaticText
+    t =    44.86s     Check for interrupting elements affecting "connector transport" StaticText
+    t =    45.11s     Synthesize event
+    t =    45.75s     Wait for io.c9r.deck.connector to idle
+    t =    46.42s Waiting 10.0s for "connector transport" NavigationBar to exist
+    t =    47.49s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" NavigationBar`
+    t =    47.49s         Checking existence of `"connector transport" NavigationBar`
+    t =    47.64s Tap "Notes" Button
+    t =    47.65s     Wait for io.c9r.deck.connector to idle
+    t =    47.69s     Find the "Notes" Button
+    t =    47.81s     Check for interrupting elements affecting "Notes" Button
+    t =    47.97s     Synthesize event
+    t =    48.37s     Wait for io.c9r.deck.connector to idle
+    t =    49.87s Find the "deck.note.new" TextView
+    t =    50.16s Terminate io.c9r.deck.connector:61206
+2026-10-16 21:05:17.100 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:05:17.101 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:05:17.102 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =    51.21s Open io.c9r.deck.connector
+    t =    51.23s     Launch io.c9r.deck.connector
+2026-10-16 21:05:18.119 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: debugger version lookup failed for path '<nil>': noURL
+2026-10-16 21:05:18.119 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: no debugger version
+2026-10-16 21:05:18.126 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =    51.49s         Setting up automation session
+    t =    67.57s         Wait for io.c9r.deck.connector to idle
+    t =    70.34s Waiting 15.0s for "connector transport" StaticText to exist
+    t =    71.40s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" StaticText`
+    t =    71.42s         Checking existence of `"connector transport" StaticText`
+    t =    72.62s Waiting 2.0s for "connector transport" StaticText to exist
+    t =    73.62s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" StaticText`
+    t =    73.62s         Checking existence of `"connector transport" StaticText`
+    t =    74.10s Checking existence of `"connector transport" StaticText`
+    t =    74.38s Find the "connector transport" StaticText
+    t =    74.88s Find the Window (First Match)
+    t =    75.02s Checking existence of `NavigationBar (First Match)`
+    t =    75.07s Find the NavigationBar (First Match)
+    t =    75.41s Find the "connector transport" StaticText
+    t =    75.74s Tap "connector transport" StaticText
+    t =    75.74s     Wait for io.c9r.deck.connector to idle
+    t =    75.78s     Find the "connector transport" StaticText
+    t =    76.06s     Check for interrupting elements affecting "connector transport" StaticText
+    t =    76.26s     Synthesize event
+    t =    76.90s     Wait for io.c9r.deck.connector to idle
+    t =    77.86s Waiting 10.0s for "connector transport" NavigationBar to exist
+    t =    78.96s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" NavigationBar`
+    t =    78.96s         Checking existence of `"connector transport" NavigationBar`
+    t =    79.36s Tap "Notes" Button
+    t =    79.37s     Wait for io.c9r.deck.connector to idle
+    t =    79.41s     Find the "Notes" Button
+    t =    79.53s     Check for interrupting elements affecting "Notes" Button
+    t =    79.99s     Synthesize event
+    t =    80.60s     Wait for io.c9r.deck.connector to idle
+    t =    82.28s Waiting 10.0s for "deck.note.new" TextView to exist
+    t =    83.31s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.note.new" TextView`
+    t =    83.31s         Checking existence of `"deck.note.new" TextView`
+    t =    83.79s Find the "deck.note.new" TextView
+    t =    84.20s Waiting 2.0s for "deck.note.save" Button to exist
+    t =    85.28s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.note.save" Button`
+    t =    85.28s         Checking existence of `"deck.note.save" Button`
+    t =    85.41s Checking existence of `"deck.note.save" Button`
+    t =    85.54s Find the "deck.note.save" Button
+    t =    85.75s Find the Window (First Match)
+    t =    85.83s Checking existence of `NavigationBar (First Match)`
+    t =    85.87s Find the NavigationBar (First Match)
+    t =    86.05s Find the "deck.note.save" Button
+    t =    86.20s Find the "deck.note.save" Button
+    t =    86.40s Tap "deck.note.save" Button
+    t =    86.40s     Wait for io.c9r.deck.connector to idle
+    t =    86.42s     Find the "deck.note.save" Button
+    t =    86.56s     Check for interrupting elements affecting "deck.note.save" Button
+    t =    86.73s     Synthesize event
+    t =    87.11s     Wait for io.c9r.deck.connector to idle
+    t =    87.19s Waiting 2.0s for "deck.note.new" TextView to exist
+    t =    88.28s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.note.new" TextView`
+    t =    88.28s         Checking existence of `"deck.note.new" TextView`
+    t =    88.63s Checking existence of `"deck.note.new" TextView`
+    t =    88.93s Find the "deck.note.new" TextView
+    t =    89.54s Find the Window (First Match)
+    t =    89.83s Checking existence of `NavigationBar (First Match)`
+    t =    89.87s Find the NavigationBar (First Match)
+    t =    89.92s Find the "deck.note.new" TextView
+    t =    90.25s Find the "deck.note.new" TextView
+    t =    91.87s Checking `Expect predicate `value == nil OR value == ""` for object "deck.note.new" TextView`
+    t =    91.88s     Find the "deck.note.new" TextView
+    t =    92.46s     Find the "deck.note.new" TextView
+    t =    92.93s     Capturing element debug description
+    t =    94.45s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =    94.72s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =    94.84s         Find: Descendants matching type TextView
+    t =    94.84s         Find: Elements matching predicate '"deck.note.new" IN identifiers'
+    t =    94.85s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =    95.02s         Find: Descendants matching type TextView
+    t =    95.12s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =    95.81s Checking `Expect predicate `value == nil OR value == ""` for object "deck.note.new" TextView`
+    t =    95.82s     Find the "deck.note.new" TextView
+    t =    96.19s     Find the "deck.note.new" TextView
+    t =    96.51s     Capturing element debug description
+    t =    97.85s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =    97.99s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =    98.13s         Find: Descendants matching type TextView
+    t =    98.13s         Find: Elements matching predicate '"deck.note.new" IN identifiers'
+    t =    98.15s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =    98.34s         Find: Descendants matching type TextView
+    t =    98.35s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =    98.83s Checking `Expect predicate `value == nil OR value == ""` for object "deck.note.new" TextView`
+    t =    98.83s     Find the "deck.note.new" TextView
+    t =    99.10s     Find the "deck.note.new" TextView
+    t =    99.34s     Capturing element debug description
+    t =   100.88s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   101.12s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   101.46s         Find: Descendants matching type TextView
+    t =   101.46s         Find: Elements matching predicate '"deck.note.new" IN identifiers'
+    t =   101.48s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   101.61s         Find: Descendants matching type TextView
+    t =   101.62s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   102.79s Checking `Expect predicate `value == nil OR value == ""` for object "deck.note.new" TextView`
+    t =   102.80s     Find the "deck.note.new" TextView
+    t =   103.10s     Find the "deck.note.new" TextView
+    t =   103.38s     Capturing element debug description
+    t =   104.45s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   104.63s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   104.77s         Find: Descendants matching type TextView
+    t =   104.77s         Find: Elements matching predicate '"deck.note.new" IN identifiers'
+    t =   104.78s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   104.96s         Find: Descendants matching type TextView
+    t =   104.97s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   105.78s Checking `Expect predicate `value == nil OR value == ""` for object "deck.note.new" TextView`
+    t =   105.78s     Find the "deck.note.new" TextView
+    t =   106.02s     Find the "deck.note.new" TextView
+    t =   106.30s     Capturing element debug description
+    t =   107.84s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   107.95s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   108.07s         Find: Descendants matching type TextView
+    t =   108.07s         Find: Elements matching predicate '"deck.note.new" IN identifiers'
+    t =   108.08s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   108.20s         Find: Descendants matching type TextView
+    t =   108.21s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   108.80s Checking `Expect predicate `value == nil OR value == ""` for object "deck.note.new" TextView`
+    t =   108.80s     Find the "deck.note.new" TextView
+    t =   109.04s     Find the "deck.note.new" TextView
+    t =   109.36s     Capturing element debug description
+    t =   110.75s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   110.94s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   111.04s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+    t =   111.05s         Requesting snapshot of accessibility hierarchy for app with pid 61266
+/Users/chenhan/c9r-io/deck/connector/ios/DeckConnectorUITests/ConnectorUITests.swift:152: error: -[DeckConnectorUITests.ConnectorUITests testIsolatedDraftsSurviveNavigationAndRelaunch] : XCTAssertTrue failed - A restored note must save without needing another edit.
+    t =   112.55s Tear Down
+Test Case '-[DeckConnectorUITests.ConnectorUITests testIsolatedDraftsSurviveNavigationAndRelaunch]' failed (112.833 seconds).
+Test Case '-[DeckConnectorUITests.ConnectorUITests testIsolatedLiveCodexOutput]' started.
+    t =     0.01s Start Test at 2026-10-16 21:06:19.716
+    t =     0.06s Set Up
+    t =     0.09s     Setting device orientation to Portrait
+    t =     0.15s         Wait for io.c9r.deck.connector to idle
+    t =     0.19s Open io.c9r.deck.connector
+    t =     0.19s     Launch io.c9r.deck.connector
+    t =     0.19s         Terminate io.c9r.deck.connector:61266
+2026-10-16 21:06:19.967 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:06:19.967 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:06:19.969 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:06:21.017 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: debugger version lookup failed for path '<nil>': noURL
+2026-10-16 21:06:21.017 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: no debugger version
+2026-10-16 21:06:21.026 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =     1.69s         Setting up automation session
+    t =    15.84s         Wait for io.c9r.deck.connector to idle
+    t =    18.78s Waiting 15.0s for "connector live codex" StaticText to exist
+    t =    19.81s     Checking `Expect predicate `existsNoRetry == 1` for object "connector live codex" StaticText`
+    t =    19.81s         Checking existence of `"connector live codex" StaticText`
+    t =    21.01s Waiting 2.0s for "connector live codex" StaticText to exist
+    t =    22.05s     Checking `Expect predicate `existsNoRetry == 1` for object "connector live codex" StaticText`
+    t =    22.05s         Checking existence of `"connector live codex" StaticText`
+    t =    22.44s Checking existence of `"connector live codex" StaticText`
+    t =    22.80s Find the "connector live codex" StaticText
+    t =    23.14s Find the Window (First Match)
+    t =    23.19s Checking existence of `NavigationBar (First Match)`
+    t =    23.23s Find the NavigationBar (First Match)
+    t =    23.30s Find the "connector live codex" StaticText
+    t =    23.58s Tap "connector live codex" StaticText
+    t =    23.58s     Wait for io.c9r.deck.connector to idle
+    t =    23.63s     Find the "connector live codex" StaticText
+    t =    24.04s     Check for interrupting elements affecting "connector live codex" StaticText
+    t =    24.30s     Synthesize event
+    t =    24.83s     Wait for io.c9r.deck.connector to idle
+    t =    25.54s Waiting 10.0s for "connector live codex" NavigationBar to exist
+    t =    26.59s     Checking `Expect predicate `existsNoRetry == 1` for object "connector live codex" NavigationBar`
+    t =    26.60s         Checking existence of `"connector live codex" NavigationBar`
+    t =    26.85s Waiting 2.0s for "deck.output.text" Any to exist
+    t =    27.87s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.text" Any`
+    t =    27.87s         Checking existence of `"deck.output.text" Any`
+    t =    28.31s Checking existence of `"deck.output.text" Any`
+    t =    28.70s Find the "deck.output.text" Any
+    t =    29.15s Find the Window (First Match)
+    t =    29.17s Checking existence of `NavigationBar (First Match)`
+    t =    29.19s Find the NavigationBar (First Match)
+    t =    29.22s Find the "deck.output.text" StaticText
+    t =    29.61s Checking existence of `"deck.output.refresh" Button`
+    t =    29.69s Checking existence of `"deck.output.captured" Any`
+    t =    30.06s Find the "deck.output.text" StaticText
+    t =    30.46s Find the "deck.output.captured" Any
+    t =    30.73s Pressing Home button
+    t =    33.23s Open io.c9r.deck.connector
+    t =    33.23s     Activate io.c9r.deck.connector
+    t =    33.34s         Wait for io.c9r.deck.connector to idle
+    t =    34.45s Checking `Expect predicate `label != "Captured, 9:06:45 PM"` for object "deck.output.captured" StaticText`
+    t =    34.46s     Find the "deck.output.captured" StaticText
+    t =    34.90s     Capturing element debug description
+    t =    35.96s         Requesting snapshot of accessibility hierarchy for app with pid 61349
+    t =    36.44s         Requesting snapshot of accessibility hierarchy for app with pid 61349
+    t =    36.55s         Find: Descendants matching type Any
+    t =    36.56s         Find: Elements matching predicate '"deck.output.captured" IN identifiers'
+    t =    36.56s         Requesting snapshot of accessibility hierarchy for app with pid 61349
+    t =    36.68s         Find: Descendants matching type Any
+    t =    36.69s         Requesting snapshot of accessibility hierarchy for app with pid 61349
+    t =    38.41s Checking `Expect predicate `label != "Captured, 9:06:45 PM"` for object "deck.output.captured" StaticText`
+    t =    38.41s     Find the "deck.output.captured" StaticText
+    t =    38.88s Find the "deck.output.text" StaticText
+    t =    39.40s Find the Target Application 'io.c9r.deck.connector'
+    t =    39.61s Added attachment named 'Live output first screen'
+    t =    39.61s Terminate io.c9r.deck.connector:61349
+2026-10-16 21:06:59.379 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:06:59.381 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:06:59.382 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =    40.69s Tear Down
+Test Case '-[DeckConnectorUITests.ConnectorUITests testIsolatedLiveCodexOutput]' passed (40.741 seconds).
+Test Case '-[DeckConnectorUITests.ConnectorUITests testIsolatedSharedShellIsMetadataOnly]' started.
+    t =     0.00s Start Test at 2026-10-16 21:07:00.452
+    t =     0.05s Set Up
+    t =     0.05s     Setting device orientation to Portrait
+    t =     0.07s         Wait for com.apple.springboard to idle
+    t =     0.09s Open io.c9r.deck.connector
+    t =     0.09s     Launch io.c9r.deck.connector
+2026-10-16 21:07:00.544 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: debugger version lookup failed for path '<nil>': noURL
+2026-10-16 21:07:00.544 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: no debugger version
+2026-10-16 21:07:00.552 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =     0.32s         Setting up automation session
+    t =    15.11s         Wait for io.c9r.deck.connector to idle
+    t =    18.07s Waiting 15.0s for "connector ordinary shell" StaticText to exist
+    t =    19.12s     Checking `Expect predicate `existsNoRetry == 1` for object "connector ordinary shell" StaticText`
+    t =    19.13s         Checking existence of `"connector ordinary shell" StaticText`
+    t =    20.25s Waiting 2.0s for "connector ordinary shell" StaticText to exist
+    t =    21.31s     Checking `Expect predicate `existsNoRetry == 1` for object "connector ordinary shell" StaticText`
+    t =    21.31s         Checking existence of `"connector ordinary shell" StaticText`
+    t =    21.61s Checking existence of `"connector ordinary shell" StaticText`
+    t =    21.86s Find the "connector ordinary shell" StaticText
+    t =    22.13s Find the Window (First Match)
+    t =    22.16s Checking existence of `NavigationBar (First Match)`
+    t =    22.19s Find the NavigationBar (First Match)
+    t =    22.24s Find the "connector ordinary shell" StaticText
+    t =    22.47s Tap "connector ordinary shell" StaticText
+    t =    22.47s     Wait for io.c9r.deck.connector to idle
+    t =    22.48s     Find the "connector ordinary shell" StaticText
+    t =    22.81s     Check for interrupting elements affecting "connector ordinary shell" StaticText
+    t =    22.98s     Synthesize event
+    t =    23.50s     Wait for io.c9r.deck.connector to idle
+    t =    24.16s Waiting 10.0s for "connector ordinary shell" NavigationBar to exist
+    t =    25.21s     Checking `Expect predicate `existsNoRetry == 1` for object "connector ordinary shell" NavigationBar`
+    t =    25.21s         Checking existence of `"connector ordinary shell" NavigationBar`
+    t =    25.38s Waiting 10.0s for "deck.output.unavailable" StaticText to exist
+    t =    26.43s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.unavailable" StaticText`
+    t =    26.44s         Checking existence of `"deck.output.unavailable" StaticText`
+    t =    26.75s Find the "deck.output.unavailable" StaticText
+    t =    26.95s Checking existence of `"deck.output.text" Any`
+    t =    27.02s Find the "deck.message.send" Button
+    t =    27.09s Tap "Notes" Button
+    t =    27.09s     Wait for io.c9r.deck.connector to idle
+    t =    27.11s     Find the "Notes" Button
+    t =    27.23s     Check for interrupting elements affecting "Notes" Button
+    t =    27.33s     Synthesize event
+    t =    27.72s     Wait for io.c9r.deck.connector to idle
+    t =    29.31s Find the "deck.note.save" Button
+    t =    29.40s Terminate io.c9r.deck.connector:61419
+2026-10-16 21:07:29.898 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:07:29.900 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:07:29.901 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =    30.45s Tear Down
+Test Case '-[DeckConnectorUITests.ConnectorUITests testIsolatedSharedShellIsMetadataOnly]' passed (30.507 seconds).
+Test Case '-[DeckConnectorUITests.ConnectorUITests testIsolatedStoppedAgentVisibilityAndOutput]' started.
+    t =     0.00s Start Test at 2026-10-16 21:07:30.960
+    t =     0.05s Set Up
+    t =     0.05s     Setting device orientation to Portrait
+    t =     0.08s         Wait for com.apple.springboard to idle
+    t =     0.13s Open io.c9r.deck.connector
+    t =     0.14s     Launch io.c9r.deck.connector
+2026-10-16 21:07:31.102 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: debugger version lookup failed for path '<nil>': noURL
+2026-10-16 21:07:31.102 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: no debugger version
+2026-10-16 21:07:31.111 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =     0.40s         Setting up automation session
+    t =    16.27s         Wait for io.c9r.deck.connector to idle
+    t =    19.19s Waiting 20.0s for "connector transport" StaticText to exist
+    t =    20.24s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" StaticText`
+    t =    20.24s         Checking existence of `"connector transport" StaticText`
+    t =    20.94s Checking existence of `"connector ordinary shell" StaticText`
+    t =    21.14s Tap "connector transport" StaticText
+    t =    21.14s     Wait for io.c9r.deck.connector to idle
+    t =    21.17s     Find the "connector transport" StaticText
+    t =    21.37s     Check for interrupting elements affecting "connector transport" StaticText
+    t =    21.51s     Synthesize event
+    t =    22.00s     Wait for io.c9r.deck.connector to idle
+    t =    22.73s Waiting 2.0s for "deck.output.unavailable" StaticText to exist
+    t =    23.78s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.unavailable" StaticText`
+    t =    23.78s         Checking existence of `"deck.output.unavailable" StaticText`
+    t =    24.07s Checking existence of `"deck.output.unavailable" StaticText`
+    t =    24.29s Find the "deck.output.unavailable" StaticText
+    t =    24.57s Find the Window (First Match)
+    t =    24.60s Checking existence of `NavigationBar (First Match)`
+    t =    24.63s Find the NavigationBar (First Match)
+    t =    24.67s Find the "deck.output.unavailable" StaticText
+    t =    24.85s Find the "deck.output.unavailable" StaticText
+    t =    25.08s Tap "Notes" Button
+    t =    25.08s     Wait for io.c9r.deck.connector to idle
+    t =    25.09s     Find the "Notes" Button
+    t =    25.20s     Check for interrupting elements affecting "Notes" Button
+    t =    25.32s     Synthesize event
+    t =    25.66s     Wait for io.c9r.deck.connector to idle
+    t =    27.18s Waiting 2.0s for "deck.note.new" TextView to exist
+    t =    28.22s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.note.new" TextView`
+    t =    28.22s         Checking existence of `"deck.note.new" TextView`
+    t =    28.57s Checking existence of `"deck.note.new" TextView`
+    t =    28.84s Find the "deck.note.new" TextView
+    t =    29.08s Find the Window (First Match)
+    t =    29.11s Checking existence of `NavigationBar (First Match)`
+    t =    29.14s Find the NavigationBar (First Match)
+    t =    29.29s Find the "deck.note.new" TextView
+    t =    29.49s Find the "deck.note.new" TextView
+    t =    29.79s Tap "Output" Button
+    t =    29.79s     Wait for io.c9r.deck.connector to idle
+    t =    29.80s     Find the "Output" Button
+    t =    29.91s     Check for interrupting elements affecting "Output" Button
+    t =    30.03s     Synthesize event
+    t =    30.36s     Wait for io.c9r.deck.connector to idle
+    t =    31.95s Waiting 2.0s for "deck.message.send" Button to exist
+    t =    32.97s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.message.send" Button`
+    t =    32.98s         Checking existence of `"deck.message.send" Button`
+    t =    33.05s Checking existence of `"deck.message.send" Button`
+    t =    33.10s Find the "deck.message.send" Button
+    t =    33.18s Find the Window (First Match)
+    t =    33.21s Checking existence of `NavigationBar (First Match)`
+    t =    33.23s Find the NavigationBar (First Match)
+    t =    33.26s Find the "deck.message.send" Button
+    t =    33.32s Find the "deck.message.send" Button
+    t =    33.44s Find the "deck.message.send" Button
+    t =    33.50s Waiting 2.0s for "deck.output.unavailable" StaticText to exist
+    t =    34.54s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.unavailable" StaticText`
+    t =    34.54s         Checking existence of `"deck.output.unavailable" StaticText`
+    t =    34.71s Checking existence of `"deck.output.unavailable" StaticText`
+    t =    34.92s Find the "deck.output.unavailable" StaticText
+    t =    35.15s Find the Window (First Match)
+    t =    35.18s Checking existence of `NavigationBar (First Match)`
+    t =    35.21s Find the NavigationBar (First Match)
+    t =    35.25s Find the "deck.output.unavailable" StaticText
+    t =    35.41s Find the Target Application 'io.c9r.deck.connector'
+    t =    35.59s Added attachment named 'Stopped agent round 1'
+    t =    35.59s Pressing Home button
+    t =    36.10s Open io.c9r.deck.connector
+    t =    36.11s     Activate io.c9r.deck.connector
+    t =    36.78s         Wait for io.c9r.deck.connector to idle
+    t =    36.80s Waiting 2.0s for "deck.output.unavailable" StaticText to exist
+    t =    37.87s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.unavailable" StaticText`
+    t =    37.87s         Checking existence of `"deck.output.unavailable" StaticText`
+    t =    38.09s Checking existence of `"deck.output.unavailable" StaticText`
+    t =    38.40s Checking existence of `CollectionView (First Match)`
+    t =    38.51s Find the Window (First Match)
+    t =    38.73s Find the Window at {{0.0, 0.0}, {375.0, 667.0}}
+    t =    38.82s Swipe up CollectionView (First Match)
+    t =    38.82s     Wait for io.c9r.deck.connector to idle
+    t =    38.95s     Find the CollectionView (First Match)
+    t =    39.21s     Check for interrupting elements affecting CollectionView
+    t =    39.37s     Synthesize event
+    t =    39.97s     Wait for io.c9r.deck.connector to idle
+    t =    40.47s Waiting 1.0s for "deck.output.unavailable" StaticText to exist
+    t =    41.47s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.unavailable" StaticText`
+    t =    41.47s         Checking existence of `"deck.output.unavailable" StaticText`
+    t =    41.68s     Checking existence of `"deck.output.unavailable" StaticText`
+    t =    41.92s Checking existence of `"deck.output.unavailable" StaticText`
+    t =    42.17s Find the "deck.output.unavailable" StaticText
+    t =    42.43s Find the Window (First Match)
+    t =    42.47s Checking existence of `NavigationBar (First Match)`
+    t =    42.50s Find the NavigationBar (First Match)
+    t =    42.54s Find the "deck.output.unavailable" StaticText
+    t =    42.72s Terminate io.c9r.deck.connector:61469
+2026-10-16 21:08:13.715 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:08:13.716 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:08:13.717 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =    43.73s Open io.c9r.deck.connector
+    t =    43.74s     Launch io.c9r.deck.connector
+2026-10-16 21:08:14.702 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: debugger version lookup failed for path '<nil>': noURL
+2026-10-16 21:08:14.702 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: no debugger version
+2026-10-16 21:08:14.710 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =    43.98s         Setting up automation session
+    t =    57.08s         Wait for io.c9r.deck.connector to idle
+    t =    59.95s Waiting 20.0s for "connector transport" StaticText to exist
+    t =    60.97s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" StaticText`
+    t =    60.97s         Checking existence of `"connector transport" StaticText`
+    t =    61.57s Checking existence of `"connector ordinary shell" StaticText`
+    t =    61.80s Tap "connector transport" StaticText
+    t =    61.80s     Wait for io.c9r.deck.connector to idle
+    t =    61.81s     Find the "connector transport" StaticText
+    t =    61.99s     Check for interrupting elements affecting "connector transport" StaticText
+    t =    62.08s     Synthesize event
+    t =    62.56s     Wait for io.c9r.deck.connector to idle
+    t =    63.11s Waiting 2.0s for "deck.output.unavailable" StaticText to exist
+    t =    64.14s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.unavailable" StaticText`
+    t =    64.14s         Checking existence of `"deck.output.unavailable" StaticText`
+    t =    64.35s Checking existence of `"deck.output.unavailable" StaticText`
+    t =    64.48s Find the "deck.output.unavailable" StaticText
+    t =    64.64s Find the Window (First Match)
+    t =    64.67s Checking existence of `NavigationBar (First Match)`
+    t =    64.69s Find the NavigationBar (First Match)
+    t =    64.73s Find the "deck.output.unavailable" StaticText
+    t =    64.88s Find the "deck.output.unavailable" StaticText
+    t =    65.10s Tap "Notes" Button
+    t =    65.10s     Wait for io.c9r.deck.connector to idle
+    t =    65.11s     Find the "Notes" Button
+    t =    65.21s     Check for interrupting elements affecting "Notes" Button
+    t =    65.39s     Synthesize event
+    t =    65.76s     Wait for io.c9r.deck.connector to idle
+    t =    67.21s Waiting 2.0s for "deck.note.new" TextView to exist
+    t =    68.24s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.note.new" TextView`
+    t =    68.24s         Checking existence of `"deck.note.new" TextView`
+    t =    68.48s Checking existence of `"deck.note.new" TextView`
+    t =    68.67s Find the "deck.note.new" TextView
+    t =    68.93s Find the Window (First Match)
+    t =    68.95s Checking existence of `NavigationBar (First Match)`
+    t =    68.97s Find the NavigationBar (First Match)
+    t =    69.02s Find the "deck.note.new" TextView
+    t =    69.21s Find the "deck.note.new" TextView
+    t =    69.48s Tap "Output" Button
+    t =    69.49s     Wait for io.c9r.deck.connector to idle
+    t =    69.50s     Find the "Output" Button
+    t =    69.61s     Check for interrupting elements affecting "Output" Button
+    t =    69.71s     Synthesize event
+    t =    70.06s     Wait for io.c9r.deck.connector to idle
+    t =    71.69s Waiting 2.0s for "deck.message.send" Button to exist
+    t =    72.71s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.message.send" Button`
+    t =    72.71s         Checking existence of `"deck.message.send" Button`
+    t =    72.76s Checking existence of `"deck.message.send" Button`
+    t =    72.79s Find the "deck.message.send" Button
+    t =    72.84s Find the Window (First Match)
+    t =    72.86s Checking existence of `NavigationBar (First Match)`
+    t =    72.88s Find the NavigationBar (First Match)
+    t =    72.91s Find the "deck.message.send" Button
+    t =    72.96s Find the "deck.message.send" Button
+    t =    73.09s Find the "deck.message.send" Button
+    t =    73.14s Waiting 2.0s for "deck.output.unavailable" StaticText to exist
+    t =    74.17s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.unavailable" StaticText`
+    t =    74.17s         Checking existence of `"deck.output.unavailable" StaticText`
+    t =    74.32s Checking existence of `"deck.output.unavailable" StaticText`
+    t =    74.46s Find the "deck.output.unavailable" StaticText
+    t =    74.66s Find the Window (First Match)
+    t =    74.69s Checking existence of `NavigationBar (First Match)`
+    t =    74.75s Find the NavigationBar (First Match)
+    t =    74.78s Find the "deck.output.unavailable" StaticText
+    t =    74.95s Find the Target Application 'io.c9r.deck.connector'
+    t =    75.12s Added attachment named 'Stopped agent round 2'
+    t =    75.12s Terminate io.c9r.deck.connector:61503
+2026-10-16 21:08:46.107 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:08:46.108 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:08:46.109 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =    76.21s Open io.c9r.deck.connector
+    t =    76.22s     Launch io.c9r.deck.connector
+2026-10-16 21:08:47.178 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: debugger version lookup failed for path '<nil>': noURL
+2026-10-16 21:08:47.178 xcodebuild[61074:20158038] [MT] IDELaunchParametersSnapshot: no debugger version
+2026-10-16 21:08:47.184 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =    76.45s         Setting up automation session
+    t =    86.36s         Wait for io.c9r.deck.connector to idle
+    t =    89.20s Waiting 20.0s for "connector transport" StaticText to exist
+    t =    90.22s     Checking `Expect predicate `existsNoRetry == 1` for object "connector transport" StaticText`
+    t =    90.22s         Checking existence of `"connector transport" StaticText`
+    t =    90.60s Checking existence of `"connector ordinary shell" StaticText`
+    t =    90.72s Tap "connector transport" StaticText
+    t =    90.72s     Wait for io.c9r.deck.connector to idle
+    t =    90.73s     Find the "connector transport" StaticText
+    t =    90.86s     Check for interrupting elements affecting "connector transport" StaticText
+    t =    90.94s     Synthesize event
+    t =    91.34s     Wait for io.c9r.deck.connector to idle
+    t =    91.73s Waiting 2.0s for "deck.output.unavailable" StaticText to exist
+    t =    92.74s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.unavailable" StaticText`
+    t =    92.74s         Checking existence of `"deck.output.unavailable" StaticText`
+    t =    92.92s Checking existence of `"deck.output.unavailable" StaticText`
+    t =    93.03s Find the "deck.output.unavailable" StaticText
+    t =    93.14s Find the Window (First Match)
+    t =    93.16s Checking existence of `NavigationBar (First Match)`
+    t =    93.17s Find the NavigationBar (First Match)
+    t =    93.19s Find the "deck.output.unavailable" StaticText
+    t =    93.28s Find the "deck.output.unavailable" StaticText
+    t =    93.41s Tap "Notes" Button
+    t =    93.41s     Wait for io.c9r.deck.connector to idle
+    t =    93.41s     Find the "Notes" Button
+    t =    93.49s     Check for interrupting elements affecting "Notes" Button
+    t =    93.55s     Synthesize event
+    t =    93.88s     Wait for io.c9r.deck.connector to idle
+    t =    95.32s Waiting 2.0s for "deck.note.new" TextView to exist
+    t =    96.34s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.note.new" TextView`
+    t =    96.34s         Checking existence of `"deck.note.new" TextView`
+    t =    96.43s Checking existence of `"deck.note.new" TextView`
+    t =    96.49s Find the "deck.note.new" TextView
+    t =    96.55s Find the Window (First Match)
+    t =    96.56s Checking existence of `NavigationBar (First Match)`
+    t =    96.57s Find the NavigationBar (First Match)
+    t =    96.59s Find the "deck.note.new" TextView
+    t =    96.65s Find the "deck.note.new" TextView
+    t =    96.74s Tap "Output" Button
+    t =    96.74s     Wait for io.c9r.deck.connector to idle
+    t =    96.75s     Find the "Output" Button
+    t =    96.79s     Check for interrupting elements affecting "Output" Button
+    t =    96.85s     Synthesize event
+    t =    97.15s     Wait for io.c9r.deck.connector to idle
+    t =    98.77s Waiting 2.0s for "deck.message.send" Button to exist
+    t =    99.78s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.message.send" Button`
+    t =    99.78s         Checking existence of `"deck.message.send" Button`
+    t =    99.81s Checking existence of `"deck.message.send" Button`
+    t =    99.84s Find the "deck.message.send" Button
+    t =    99.87s Find the Window (First Match)
+    t =    99.88s Checking existence of `NavigationBar (First Match)`
+    t =    99.89s Find the NavigationBar (First Match)
+    t =    99.91s Find the "deck.message.send" Button
+    t =    99.94s Find the "deck.message.send" Button
+    t =    99.98s Find the "deck.message.send" Button
+    t =   100.01s Waiting 2.0s for "deck.output.unavailable" StaticText to exist
+    t =   101.03s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.unavailable" StaticText`
+    t =   101.03s         Checking existence of `"deck.output.unavailable" StaticText`
+    t =   101.13s Checking existence of `"deck.output.unavailable" StaticText`
+    t =   101.25s Find the "deck.output.unavailable" StaticText
+    t =   101.35s Find the Window (First Match)
+    t =   101.37s Checking existence of `NavigationBar (First Match)`
+    t =   101.38s Find the NavigationBar (First Match)
+    t =   101.40s Find the "deck.output.unavailable" StaticText
+    t =   101.49s Find the Target Application 'io.c9r.deck.connector'
+    t =   101.61s Added attachment named 'Stopped agent round 3'
+    t =   101.61s Terminate io.c9r.deck.connector:61534
+2026-10-16 21:09:12.598 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:09:12.599 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:09:12.599 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =   102.69s Tear Down
+Test Case '-[DeckConnectorUITests.ConnectorUITests testIsolatedStoppedAgentVisibilityAndOutput]' passed (102.733 seconds).
+Test Suite 'ConnectorUITests' failed at 2026-10-16 21:09:13.693.
+	 Executed 5 tests, with 1 failure (0 unexpected) in 337.888 (337.916) seconds
+Test Suite 'DeckConnectorUITests.xctest' failed at 2026-10-16 21:09:13.694.
+	 Executed 5 tests, with 1 failure (0 unexpected) in 337.888 (337.918) seconds
+Test Suite 'Selected tests' failed at 2026-10-16 21:09:13.695.
+	 Executed 5 tests, with 1 failure (0 unexpected) in 337.888 (337.924) seconds
+2026-10-16 21:09:13.805 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:09:13.806 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:09:13.808 xcodebuild[61074:20158038] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 21:09:14.098 xcodebuild[61074:20168697]  IDETestOperationsObserverDebug: Failure collecting diagnostics from simulator: Process exited with error 72:
+ xcrun: error: unable to find utility "simctl", not a developer tool or in PATH
+
+2026-10-16 21:09:14.113 xcodebuild[61074:20158038] [MT] IDETestOperationsObserverDebug: 386.993 elapsed -- Testing started completed.
+2026-10-16 21:09:14.113 xcodebuild[61074:20158038] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-10-16 21:09:14.113 xcodebuild[61074:20158038] [MT] IDETestOperationsObserverDebug: 386.993 sec, +386.993 sec -- end
+
+Test session results, code coverage, and logs:
+	/tmp/deck-connector-diagnose-z6zu4j7o/ui.xcresult
+
+Failing tests:
+	ConnectorUITests.testIsolatedDraftsSurviveNavigationAndRelaunch()
+
+** TEST EXECUTE FAILED **
+
+Testing started

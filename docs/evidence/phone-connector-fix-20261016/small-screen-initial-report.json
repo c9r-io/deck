@@ -1,0 +1,63 @@
+{
+  "environmentReady": true,
+  "isolationVerified": false,
+  "mode": "fixed",
+  "reproductionConfirmed": null,
+  "snapshotScope": "boardMetadata",
+  "productAssertionsPassed": false,
+  "requiredTestsExecuted": false,
+  "cleanupCompleted": true,
+  "humanInterventions": 0,
+  "xcodePath": "/Volumes/Yotta/Applications/Xcode.app",
+  "developerDir": "/Volumes/Yotta/Applications/Xcode.app/Contents/Developer",
+  "tests": {
+    "hostSmoke": "PASS",
+    "simulatorUI": "FAIL",
+    "shellReturnUI": "PASS",
+    "hostSmoke_ui": "PASS",
+    "hostSmoke_appmodel": "UNRUN"
+  },
+  "cases": {
+    "liveSavedAgentOutput": "PASS",
+    "ordinaryShellVisibility": "UNRUN",
+    "shellWithForegroundAgent": "UNRUN",
+    "savedCommandVariants": "UNRUN",
+    "stoppedSavedAgentOutput": "PASS",
+    "agentExitedToShell": "PASS",
+    "foregroundCycle": "PASS",
+    "appRelaunchCredentialRecovery": "PASS",
+    "refreshFailureRecovery": "UNRUN",
+    "saveFailure": "UNRUN",
+    "backupRecovery": "UNRUN"
+  },
+  "uiExitCode": 1,
+  "uiTestCounts": {
+    "passedTests": 4,
+    "failedTests": 1,
+    "skippedTests": 0,
+    "totalTestCount": 5
+  },
+  "head": "a326cdf3a6b3f1b18176da9079659e4762408eca",
+  "xcodeVersion": "Xcode 27.1\nBuild version 27A9275",
+  "selectedRuntime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+  "selectedDeviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation",
+  "hostBinarySHA256": "4e9c14d9b46e0b2731335a75672b6777d72c19b81a051baa663d7d5046f22983",
+  "iosBinarySHA256": "d1221d28eefafb6c3feb9bae62471c3af1f3466975e8c688439387302a3385d5",
+  "sourceDiffSHA256": "7808a6e252778a85611f09c5d8af7f7792a859cdbdc7cafe51b91d6a11b73931",
+  "shellReturnTestCounts": {
+    "passedTests": 1,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 1
+  },
+  "uiSimulatorUDID": "81E4F6A2-0314-4F03-8D5F-BCE7BFD820F9",
+  "uiFailure": "XCTest failed; see suite log",
+  "appmodelExitCode": 1,
+  "appmodelTestCounts": null,
+  "appmodelSimulatorUDID": "39A8A0F3-700A-4331-B116-C6299F4A8FFA",
+  "appmodelFailure": "build inputs changed during this diagnostic run",
+  "childReports": {
+    "ui": "/tmp/deck-connector-diagnose-nmiruhp0/report.json",
+    "appmodel": "/tmp/deck-connector-diagnose-jak5_giw/report.json"
+  }
+}

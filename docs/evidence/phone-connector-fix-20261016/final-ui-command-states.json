@@ -1,0 +1,16 @@
+[
+  {
+    "kind": "buffer-add",
+    "state": "applied",
+    "code": null,
+    "acceptedAt": 1792153136,
+    "updatedAt": 1792153136
+  },
+  {
+    "kind": "buffer-edit",
+    "state": "applied",
+    "code": null,
+    "acceptedAt": 1792153221,
+    "updatedAt": 1792153222
+  }
+]

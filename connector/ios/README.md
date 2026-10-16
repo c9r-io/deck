@@ -2,11 +2,13 @@
 
 Native iOS 17 SwiftUI client for the local Deck Connector protocol. It contains no shell, tmux, raw PTY, background daemon, public relay, or terminal write API. Terminal output is a bounded read-only snapshot.
 
-Scratchpad reads, edits, queueing, and queue pause/cancel are available only
-when the host reports `canQueue` for an exact desktop-saved bare `codex` or
-`claude` command. A missing capability fails closed, `unsupported-target` is
-shown as an unavailable agent card, and the phone never supplies a shell
-command.
+The Mac's local sharing control defaults to saved Codex/Claude cards. A separate
+explicit opt-in shares all Board card summaries (identity, project, column and
+order), without granting terminal, note or queue access to unsupported cards.
+The optional `capabilities` object separates output, messages, notes and queue
+permissions with reasons; a present object with a missing capability denies it.
+Older hosts retain their existing `canSend`/`canQueue` behavior. Native routes
+remain authoritative, including foreground/generation and MCP fences.
 
 ## Layout
 
@@ -16,11 +18,26 @@ command.
 - `DeckConnectorTests`: app-hosted XCTest coverage for the production `AppModel`, Simulator Keychain, and an opt-in real Deck loopback host.
 - `DeckConnector.xcodeproj`: iOS app project with a shared `DeckConnector` scheme and local package dependency.
 
-The app reconnects and refreshes snapshots when it returns to the foreground. It does not promise background connectivity. Pairing descriptors remain in memory only. The saved Keychain value binds origin, certificate pin, host ID, device ID, and bearer token with `WhenUnlockedThisDeviceOnly` accessibility. HTTP uses an ephemeral session with cookies, redirects, disk cache, and credential storage disabled. The self-signed leaf must match the pinned DER SHA-256 and also pass hostname and validity evaluation as the sole trust anchor.
+The app refreshes the Board and currently open card on foreground entry and
+then five seconds after each completed foreground refresh. Backgrounding cancels
+reads and recovery. Initial scene activity and later lifecycle events use the same
+state path; asynchronous startup resumes work from that current state instead of
+replaying a captured scene phase. Durable mutation receipts settle the editor
+before background snapshot/detail reads. Duplicate refreshes coalesce; output responses must match the
+current pairing, card, generation and request sequence. Command recovery runs
+independently, using at most eight existing-ID GETs per pass with three bounded
+passes; failed IDs rotate fairly. It never creates an automatic POST retry.
+Output appears first, with capture time, an actual refresh control, a separate
+jump-to-end control and optional line wrapping. The first capture opens at the end; subsequent output does not force scroll.
+At accessibility text sizes and in landscape, the composer scrolls with the
+content instead of covering it.
+Only network loss retains clearly marked stale content; changed identity or
+permission clears it. Notes are a secondary view with a separate durable draft.
+ It does not promise background connectivity. Pairing descriptors remain in memory only. The saved Keychain value binds origin, certificate pin, host ID, device ID, and bearer token with `WhenUnlockedThisDeviceOnly` accessibility. HTTP uses an ephemeral session with cookies, redirects, disk cache, and credential storage disabled. The self-signed leaf must match the pinned DER SHA-256 and also pass hostname and validity evaluation as the sole trust anchor.
 
 Message drafts preserve the target generation they were created against. A refresh never silently changes that binding; if the desktop target changes, the user must explicitly accept the current generation before sending. Each command's immutable ID and body is atomically persisted before POST. An unknown result is recovered by querying that same ID and is never automatically retried under a new ID. Pending sends are visible and block another send for the card.
 
-The journal is one atomic snapshot scoped by the Keychain credential's host ID and device ID. Unpairing leaves that protected directory as an archive and a new pairing receives a different scope, so old operations cannot be queried against another host or device. Each new command receives its admission `seq` (at least the clock in milliseconds, strictly increasing) in the same atomic write that records it, before the first POST; retries reuse it. The local journal is schema version 3 (independent of the host journal and wire versions; v3 adds the terminal `expired` state for a host `410`): version 1 and 2 files open with their records unchanged and are written as version 3 by the next atomic save, and any other version is refused before its records are read, leaving the file untouched. A version-1 record without `seq` gets one only from a host `404`. It keeps at most 1,000 local records in a 2 MiB file, reserves terminal-result space before POST, and only prunes locally confirmed resolved records; unresolved IDs are never evicted and the host retains its IDs independently. HTTP permits at most eight concurrent requests, cancels the underlying URLSession task with its Swift task, uses a 45-second resource timeout, and caps requests at 256 KiB and responses at 4 MiB. Pair descriptors are capped at 8 KiB before decoding, command text at 32 KiB UTF-8, serialized buffer responses at 2 MiB, and retained buffer text plus queued copies at 1 MiB.
+The journal is one atomic snapshot scoped by the Keychain credential's host ID and device ID. Unpairing leaves that protected directory as an archive and a new pairing receives a different scope, so old operations cannot be queried against another host or device. Each new command receives its admission `seq` (at least the clock in milliseconds, strictly increasing) in the same atomic write that records it, before the first POST; retries reuse it. The local journal is schema version 4 (independent of the host journal and wire versions; v3 adds terminal `expired`, v4 adds note drafts scoped by card and optional entry ID, with immutable revision identities captured by submitted commands): version 1–3 files open with their records unchanged and are written as version 4 by the next atomic save, and any other version is refused before its records are read, leaving the file untouched. A version-1 record without `seq` gets one only from a host `404`. It keeps at most 1,000 local records in a 2 MiB file, reserves terminal-result space before POST, and only prunes locally confirmed resolved records; unresolved IDs are never evicted and the host retains its IDs independently. HTTP permits at most eight concurrent requests, cancels the underlying URLSession task with its Swift task, uses a 45-second resource timeout, and caps requests at 256 KiB and responses at 4 MiB. Pair descriptors are capped at 8 KiB before decoding, command text at 32 KiB UTF-8, serialized buffer responses at 2 MiB, and retained buffer text plus queued copies at 1 MiB.
 
 ## Checks available on this machine
 
@@ -40,7 +57,7 @@ swift test -j 1 \
 
 ### Opt-in real Deck loopback transport smoke
 
-This macOS-only package test is skipped unless an isolated Deck smoke fixture has already been authorized and launched. From the isolated smoke WK bridge, call `connector_smoke_transport({cardId, shellCardId})`; after it returns, use its `{path}` result. The mode-0600 private JSON contains exactly `{ "pairingURI": "deck-connector://pair?...", "cardId": "...", "shellCardId": "..." }`. The target card must be stopped, use the saved `codex` command, report `canQueue: true` and `canSend: false`, and belong to disposable smoke data. The shell card must exist in the isolated Board and remain excluded from the Connector snapshot. The test additionally rejects any fixture whose parsed origin host is not exactly `127.0.0.1`. The returned credential remains in memory and is never written to Keychain.
+This macOS-only package test is skipped unless an isolated Deck smoke fixture has already been authorized and launched. From the isolated smoke WK bridge, call `connector_smoke_transport({cardId, shellCardId})`; after it returns, use its `{path}` result. The mode-0600 private JSON contains exactly `{ "pairingURI": "deck-connector://pair?...", "cardId": "...", "shellCardId": "...", "scope": "agentCards" }`. The target card must be stopped, use the saved `codex` command, report `canQueue: true` and `canSend: false`, and belong to disposable smoke data. The shell card must exist in the isolated Board; the default scope excludes it. `DECK_SMOKE_CONNECTOR_BOARD_METADATA=1` opts in only within this debug smoke fixture, and app-hosted/UI tests then assert visible metadata with denied read/write capabilities. The test additionally rejects any fixture whose parsed origin host is not exactly `127.0.0.1`. The returned credential remains in memory and is never written to Keychain.
 
 ```sh
 DECK_CONNECTOR_SMOKE_FIXTURE=/absolute/private/path/fixture.json \
@@ -63,10 +80,16 @@ private run directory. Set `DECK_DIAG_SUITE=ui` or `appmodel` to run one suite.
 Each suite builds and installs before obtaining its own one-use pairing fixture.
 The Debug Simulator app reads that private loopback fixture and invokes normal
 pairing; Release builds have no such bootstrap. The UI test uses the normal
-detail layout and scrolls to the output area. The stopped-session assertion
-verifies the fixed output state in three rounds; the historical defect baseline
-remains in its original report. The default report separates historical
-reproduction from current product acceptance. Unrun cases remain marked unrun.
+content-first detail layout. The stopped-session assertion runs three rounds;
+other cases cover live output, Agent exit to shell, unsaved note navigation and
+relaunch, Chinese large text/dark mode/rotation, and metadata-only shell cards.
+All AppModel tests run, including delayed-generation responses, foreground
+freshness, independent recovery, pairing fences and network stale content.
+The runner registers its host and exact tmux socket under one temporary root,
+cleans only registered resources, and audits before removing the test bundle.
+Unrun cases remain marked unrun. Set `DECK_SMOKE_CONNECTOR_BOARD_METADATA=1`
+for the expanded-sharing acceptance. Use `DECK_DIAG_DEVICE="iPhone SE (3rd generation)"`
+and `DECK_DIAG_APPEARANCE=dark` for the small-screen dark run. No production setting is changed.
 
 If Xcode is outside the default path, keep its selection scoped to the current shell:
 
@@ -165,7 +188,7 @@ Do not add an ATS exception that permits arbitrary/self-signed certificates. The
 
 ### Opt-in paired-device UI smoke
 
-The shared `DeckConnectorUITests` scheme contains only the UI test target; it does not run `DeckConnectorTests` or reset the app's Keychain pairing, drafts, or data. The read-only output test opens one explicitly named card, checks that its output accessibility label contains a non-secret marker, exercises the Latest output control, then backgrounds and reactivates the app. The process-termination test instead checks an existing non-secret note, explicitly terminates and relaunches the app, and verifies the same card and note after Keychain restoration. Each attaches one card-detail screenshot. The separate note mutation test below requires an additional opt-in. A skipped opt-in test is not a pass—confirm that the named test executed.
+The shared `DeckConnectorUITests` scheme contains only the UI test target; it does not run `DeckConnectorTests` or reset the app's Keychain pairing, drafts, or data. The read-only output test opens one explicitly named card, checks that its output accessibility label contains a non-secret marker, exercises the Jump to end control, then backgrounds and reactivates the app. The process-termination test instead checks an existing non-secret note, explicitly terminates and relaunches the app, and verifies the same card and note after Keychain restoration. Each attaches one card-detail screenshot. The separate note mutation test below requires an additional opt-in. A skipped opt-in test is not a pass—confirm that the named test executed.
 
 The verified rerun uses a full Xcode `DEVELOPER_DIR`, builds once, copies the generated test plan beside the original under `Build/Products` so its `__TESTROOT__` paths remain valid, injects the three opt-in values only into the `DeckConnectorUITests` target's `EnvironmentVariables`, and runs without rebuilding. Inspect the generated `.xctestrun` before editing it because its plist shape varies by Xcode; shell variables passed only to `xcodebuild` are not a substitute for test-runner environment injection.
 

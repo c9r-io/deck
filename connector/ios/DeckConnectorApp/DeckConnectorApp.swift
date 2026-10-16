@@ -1,3 +1,5 @@
+// Lifecycle events are the sole source of foreground state. An async startup
+// closure must not overwrite a later event with its captured environment value.
 import DeckConnectorCore
 import SwiftUI
 
@@ -31,8 +33,8 @@ struct DeckConnectorApp: App {
                     }
                     #endif
                 }
-                .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { Task { await model.refresh() } }
+                .onChange(of: scenePhase, initial: true) { _, phase in
+                    model.setForeground(phase == .active)
                 }
         }
     }

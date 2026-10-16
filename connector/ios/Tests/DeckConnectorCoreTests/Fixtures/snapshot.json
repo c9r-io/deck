@@ -2,80 +2,128 @@
   "capturedAt": 1789776000,
   "cards": [
     {
-      "buffer": {
-        "collecting": true,
-        "entryCount": 2,
-        "revision": 3
-      },
+      "buffer": { "collecting": true, "entryCount": 2, "revision": 3 },
       "canQueue": true,
       "canSend": true,
+      "capabilities": {
+        "editNotes": { "allowed": true },
+        "queue": { "allowed": true },
+        "readOutput": { "allowed": true },
+        "sendMessage": { "allowed": true }
+      },
       "columnId": "COL1",
       "generation": "gen-a",
       "id": "A",
+      "order": 0,
       "projectId": "P1",
       "status": "running",
       "title": "Agent"
     },
     {
-      "buffer": {
-        "collecting": false,
-        "entryCount": 0,
-        "revision": 0
+      "buffer": { "collecting": false, "entryCount": 0, "revision": 0 },
+      "canQueue": false,
+      "canSend": false,
+      "capabilities": {
+        "editNotes": { "allowed": false, "reason": "unsupported-target" },
+        "queue": { "allowed": false, "reason": "unsupported-target" },
+        "readOutput": { "allowed": false, "reason": "unsupported-target" },
+        "sendMessage": { "allowed": false, "reason": "unsupported-target" }
       },
+      "columnId": "COL1",
+      "generation": null,
+      "id": "B",
+      "order": 1,
+      "projectId": "P1",
+      "status": "unknown",
+      "title": "Shell"
+    },
+    {
+      "buffer": { "collecting": false, "entryCount": 0, "revision": 0 },
+      "canQueue": false,
+      "canSend": false,
+      "capabilities": {
+        "editNotes": { "allowed": false, "reason": "unsupported-target" },
+        "queue": { "allowed": false, "reason": "unsupported-target" },
+        "readOutput": { "allowed": false, "reason": "unsupported-target" },
+        "sendMessage": { "allowed": false, "reason": "unsupported-target" }
+      },
+      "columnId": "COL1",
+      "generation": null,
+      "id": "E",
+      "order": 2,
+      "projectId": "P1",
+      "status": "unknown",
+      "title": "Empty command"
+    },
+    {
+      "buffer": { "collecting": false, "entryCount": 0, "revision": 0 },
+      "canQueue": false,
+      "canSend": false,
+      "capabilities": {
+        "editNotes": { "allowed": false, "reason": "unsupported-target" },
+        "queue": { "allowed": false, "reason": "unsupported-target" },
+        "readOutput": { "allowed": false, "reason": "unsupported-target" },
+        "sendMessage": { "allowed": false, "reason": "unsupported-target" }
+      },
+      "columnId": "COL1",
+      "generation": null,
+      "id": "F",
+      "order": 3,
+      "projectId": "P1",
+      "status": "unknown",
+      "title": "Pi"
+    },
+    {
+      "buffer": { "collecting": false, "entryCount": 0, "revision": 0 },
       "canQueue": true,
       "canSend": false,
+      "capabilities": {
+        "editNotes": { "allowed": true },
+        "queue": { "allowed": true },
+        "readOutput": { "allowed": false, "reason": "session-unavailable" },
+        "sendMessage": { "allowed": false, "reason": "session-unavailable" }
+      },
       "columnId": "COL1",
       "generation": null,
       "id": "C",
+      "order": 4,
       "projectId": "P1",
       "status": "stopped",
       "title": "Stopped"
     },
     {
-      "buffer": {
-        "collecting": false,
-        "entryCount": 0,
-        "revision": 0
-      },
+      "buffer": { "collecting": false, "entryCount": 0, "revision": 0 },
       "canQueue": true,
       "canSend": false,
+      "capabilities": {
+        "editNotes": { "allowed": true },
+        "queue": { "allowed": true },
+        "readOutput": { "allowed": false, "reason": "target-unavailable" },
+        "sendMessage": { "allowed": false, "reason": "target-unavailable" }
+      },
       "columnId": "COL1",
       "generation": null,
       "id": "D",
+      "order": 5,
       "projectId": "P1",
       "status": "unknown",
       "title": "Unknown"
     }
   ],
   "hostId": "host_x",
+  "hostName": "Studio Mac",
   "projects": [
     {
-      "columns": [
-        {
-          "id": "COL1",
-          "name": "Todo"
-        }
-      ],
+      "columns": [ { "id": "COL1", "name": "Todo" } ],
       "id": "P1",
       "name": "One",
-      "presets": [
-        {
-          "id": "X",
-          "name": "Codex task"
-        }
-      ]
+      "presets": [ { "id": "X", "name": "Codex task" } ]
     }
   ],
   "queue": [
-    {
-      "cardId": "A",
-      "id": "Q1",
-      "mode": "at",
-      "paused": false,
-      "revision": "5",
-      "state": "pending"
-    }
+    { "cardId": "A", "id": "Q1", "mode": "at", "paused": false, "revision": "5", "state": "pending" }
   ],
   "revision": "rev-1",
+  "scope": "boardMetadata",
   "version": 1
 }

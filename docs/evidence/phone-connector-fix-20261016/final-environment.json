@@ -1,0 +1,17 @@
+{
+  "availableSimulators": 11,
+  "bootedSimulators": 0,
+  "experimentProcessesRemaining": [],
+  "productionPID66678Present": true,
+  "runs": {
+    "deck-connector-diagnose-r5g18az0": true,
+    "deck-connector-diagnose-4xkhs192": true,
+    "deck-connector-diagnose-3ojcr5a7": true,
+    "deck-connector-diagnose-z6zu4j7o": true,
+    "deck-connector-diagnose-u4r24mw_": true,
+    "deck-connector-diagnose-ly1txuy9": true,
+    "deck-connector-diagnose-zar9d6y3": true
+  },
+  "finalTestBundlesRemoved": true,
+  "finalTestDataRemoved": true
+}

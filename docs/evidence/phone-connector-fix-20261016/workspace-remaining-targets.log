@@ -1,0 +1,224 @@
+   Compiling deck-app v0.8.2 (/Users/chenhan/c9r-io/deck/app/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 32s
+     Running tests/tmux_contract.rs (app/src-tauri/target/debug/deps/tmux_contract-1196307ba82bd147)
+
+running 111 tests
+test a_dead_pane_is_never_observable_to_any_client ... ok
+test a_guarded_kill_server_stops_only_the_named_empty_server_and_leaves_its_socket ... ok
+test a_new_card_s_launch_command_and_delivery_land_while_unattached::bare ... ok
+test a_new_card_s_launch_command_and_delivery_land_while_unattached::query_client ... ok
+test a_new_card_s_launch_command_and_delivery_land_while_unattached::query_client_plus_pane ... ok
+test a_pane_attach_under_an_inherited_non_utf8_locale_draws_non_ascii_text_only_with_the_utf8_flag ... ok
+test a_read_only_ambient_client_refuses_send_keys ... ok
+test agent_frame_selection_copies_the_cells_the_pointer_crossed ... ok
+test agent_frame_selection_lands_on_the_rows_the_pointer_touched ... ok
+test an_inherited_non_utf8_locale_mangles_command_output_unless_the_client_carries_the_utf8_flag ... ok
+test an_offscreen_anchor_is_placed_by_moving_the_viewport_inside_the_one_list ... ok
+test application_osc52_never_becomes_a_buffer ... ok
+test batched_capture_markers_and_dead_target_abort::bare ... ok
+test batched_capture_markers_and_dead_target_abort::query_client ... ok
+test batched_capture_markers_and_dead_target_abort::query_client_plus_pane ... ok
+test bell::tests::a_bell_belongs_to_the_session_id_it_rang_in ... ok
+test bell::tests::a_bell_in_an_unwatched_shell_rings_once_until_it_is_viewed ... ok
+test bell::tests::a_session_that_reports_agent_state_never_rings ... ok
+test bell::tests::an_undecided_session_keeps_its_state_until_it_can_be_told ... ok
+test bell::tests::the_hook_appends_one_bounded_record_and_starts_nothing ... ok
+test bell::tests::the_ledger_parse_is_strict_and_skips_what_it_cannot_read ... ok
+test bell::tests::what_was_in_the_ledger_first_is_the_baseline ... ok
+test bracketed_paste_guard_uses_the_bundled_tmux_format::bare ... ok
+test bracketed_paste_guard_uses_the_bundled_tmux_format::query_client ... ok
+test bracketed_paste_guard_uses_the_bundled_tmux_format::query_client_plus_pane ... ok
+test coinciding_placements_are_an_empty_range_tmux_reports_as_no_selection ... ok
+test committed_sidecar_matches_its_pin ... ok
+test concurrent_exits_are_never_lost_to_a_polling_reader ... ok
+test copy_mode_caps_goto_line_at_the_history_it_was_entered_with ... ok
+test copy_mode_enters_on_scroll_up_and_auto_exits_at_bottom ... ok
+test copy_mode_is_a_snapshot_whose_coordinates_ignore_later_output ... ok
+test copy_mode_selection_crosses_2500_rows_with_exact_wrap_boundaries ... ok
+test copy_mode_selection_reaches_beyond_20000_rows ... ok
+test drop_removes_its_throwaway_socket_file ... ok
+test every_production_tmux_client_carries_the_utf8_flag ... ok
+test format_tabs_survive_only_with_utf8_locale ... ok
+test frozen_selection_coordinates_and_bytes_survive_viewport_scroll ... ok
+test goto_line_and_cursor_down_never_exit_scroll_exit_copy_mode ... ok
+test kill_missing_session_on_reachable_empty_server_reports_no_current_target ... ok
+test negotiated_legacy_mouse_encodings_are_exact_and_bounded ... ok
+test negotiated_sgr_wheel_reaches_the_live_application_byte_for_byte ... ok
+test negotiated_wheel_rechecks_copy_mode_and_mouse_state_at_dispatch ... ok
+test one_command_list_places_both_endpoints_and_reports_the_frame_it_ran_with ... ok
+test only_a_normal_end_of_the_owning_shell_is_verified ... ok
+test poll_formats_exist::bare ... ok
+test poll_formats_exist::query_client ... ok
+test poll_formats_exist::query_client_plus_pane ... ok
+test production_scroll_batch_enters_advances_and_exits::bare ... ok
+test production_scroll_batch_enters_advances_and_exits::query_client ... ok
+test production_scroll_batch_enters_advances_and_exits::query_client_plus_pane ... ok
+test production_scroll_cursor_stays_with_the_live_input_row::bare ... ok
+test production_scroll_cursor_stays_with_the_live_input_row::query_client ... ok
+test production_scroll_cursor_stays_with_the_live_input_row::query_client_plus_pane ... ok
+test production_selection_snapshot_matches_tmux_byte_for_byte::bare ... ok
+test production_selection_snapshot_matches_tmux_byte_for_byte::query_client ... ok
+test production_selection_snapshot_matches_tmux_byte_for_byte::query_client_plus_pane ... ok
+test production_selection_snapshot_rejoins_only_soft_wraps ... ok
+test repeated_selection_clear_then_begin_keeps_the_new_anchor_active ... ok
+test resize_junk_history_is_clearable_and_stays_zero ... ok
+test scheduler_context_identity_process_and_hookless_compatibility_contract::bare ... ok
+test scheduler_context_identity_process_and_hookless_compatibility_contract::query_client ... ok
+test scheduler_context_identity_process_and_hookless_compatibility_contract::query_client_plus_pane ... ok
+test selection_is_frame_relative_when_the_pane_is_scrolled ... ok
+test selection_snapshot_stays_exact_while_history_grows_between_captures ... ok
+test send_keys_literal_is_byte_for_byte::bare ... ok
+test send_keys_literal_is_byte_for_byte::query_client ... ok
+test send_keys_literal_is_byte_for_byte::query_client_plus_pane ... ok
+test shell_exit::tests::a_name_never_observed_or_on_another_server_is_missing ... ok
+test shell_exit::tests::a_reused_name_never_consumes_old_evidence ... ok
+test shell_exit::tests::forgetting_and_unrequested_names_drop_identities ... ok
+test shell_exit::tests::only_a_normal_final_exit_of_the_observed_identity_authorizes ... ok
+test shell_exit::tests::records_parse_strictly_and_truncated_or_malformed_chunks_are_ignored ... ok
+test shell_exit::tests::rows_from_another_server_than_the_server_line_vouch_for_nothing ... ok
+test shell_exit::tests::the_hook_is_tmux_only_bounded_and_installed_before_remain_on_exit ... ok
+test shell_exit::tests::the_last_of_several_observed_panes_ending_is_the_session_ending ... ok
+test shell_restore_bootstrap_becomes_tmux_history_without_executing_text::bare ... ok
+test shell_restore_bootstrap_becomes_tmux_history_without_executing_text::query_client ... ok
+test shell_restore_bootstrap_becomes_tmux_history_without_executing_text::query_client_plus_pane ... ok
+test single_send_keys_with_trailing_cr_executes_the_line::bare ... ok
+test single_send_keys_with_trailing_cr_executes_the_line::query_client ... ok
+test single_send_keys_with_trailing_cr_executes_the_line::query_client_plus_pane ... ok
+test stale_reused_replaced_and_malformed_evidence_never_verifies ... ok
+test styled_blank_rows_are_empty_to_both_capture_pane_and_the_copy_cursor ... ok
+test terminal_scroll::tests::negotiated_wheel_is_bounded_hex_and_keeps_history_fallbacks ... ok
+test terminal_scroll::tests::ordinary_scroll_keeps_the_live_cursor_on_its_content_row ... ok
+test terminal_scroll::tests::scroll_is_one_bounded_tmux_command_list ... ok
+test terminal_selection::tests::a_padded_short_capture_never_invents_a_wrap ... ok
+test terminal_selection::tests::a_short_frame_never_panics_and_stays_on_the_no_wrap_path ... ok
+test terminal_selection::tests::a_single_blank_row_above_the_text_wraps_without_descending_first ... ok
+test terminal_selection::tests::a_wide_grapheme_or_past_the_line_end_places_both_endpoints_identically ... ok
+test terminal_selection::tests::an_endpoint_inside_the_frame_keeps_the_current_viewport ... ok
+test terminal_selection::tests::an_endpoint_outside_the_frame_names_the_viewport_that_shows_it ... ok
+test terminal_selection::tests::an_entirely_blank_frame_needs_no_wrap_because_every_row_ends_at_column_zero ... ok
+test terminal_selection::tests::blank_rows_above_the_text_are_left_by_wrapping_not_by_a_column_move ... ok
+test terminal_selection::tests::cursor_steps_snap_wide_combining_and_zwj_cells_to_graphemes ... ok
+test terminal_selection::tests::frame_rows_keep_blank_rows_and_pad_a_short_capture ... ok
+test terminal_selection::tests::materialize_list_moves_the_viewport_only_between_differing_frames ... ok
+test terminal_selection::tests::selection_snapshot_resolves_reads_and_deletes_its_own_buffer ... ok
+test terminal_selection::tests::steps_come_from_the_target_row_so_wide_characters_above_it_never_shift_it ... ok
+test terminal_selection::tests::text_on_the_first_visible_row_descends_straight_to_the_cell ... ok
+test terminal_selection::tests::vanished_selection_never_falls_back_to_an_unrelated_buffer ... ok
+test the_alert_bell_hook_records_each_bell_where_the_poll_reads_it ... ok
+test the_bell_hook_survives_the_conf_file_quoting ... ok
+test the_bell_ledger_is_bounded_at_its_source ... ok
+test the_copy_cursor_is_a_visible_row_while_the_anchor_is_pinned_to_content ... ok
+test the_exit_ledger_is_bounded_at_its_source ... ok
+test the_query_client_keeps_its_tab_separators_under_an_inherited_non_utf8_locale_only_with_the_utf8_flag ... ok
+test the_utf8_flag_changes_neither_a_new_servers_environment_nor_its_panes_locale ... ok
+test vanished_selection_never_copies_or_deletes_an_unrelated_tmux_buffer::bare ... ok
+test vanished_selection_never_copies_or_deletes_an_unrelated_tmux_buffer::query_client ... ok
+test vanished_selection_never_copies_or_deletes_an_unrelated_tmux_buffer::query_client_plus_pane ... ok
+
+test result: ok. 111 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 94.63s
+
+   Compiling serde_json v1.0.151
+   Compiling deck-status-helper v0.1.0 (/Users/chenhan/c9r-io/deck/app/src-tauri/status-helper)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.92s
+     Running tests/cli.rs (app/src-tauri/target/debug/deps/cli-cab5b13a571398fd)
+
+running 6 tests
+test a_host_that_never_closes_is_left_after_the_read_timeout ... ok
+test a_payload_without_a_usable_id_falls_back_to_the_first_wire_version ... ok
+test no_deck_listening_is_a_silent_success ... ok
+test one_line_reaches_the_owning_decks_socket_and_the_helper_waits_for_the_close ... ok
+test outside_a_deck_pane_the_helper_says_nothing_and_succeeds ... ok
+test the_default_socket_is_under_the_helpers_home ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.10s
+
+   Compiling deck-lifecycle-helper v0.1.0 (/Users/chenhan/c9r-io/deck/app/src-tauri/lifecycle-helper)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.76s
+     Running tests/cli.rs (app/src-tauri/target/debug/deps/cli-663d55a828f19b58)
+
+running 8 tests
+test a_host_that_never_closes_is_left_at_the_deadline ... ok
+test a_refused_payload_does_nothing ... ok
+test a_stdin_that_is_never_closed_sends_nothing_and_still_exits_zero ... ok
+test an_unknown_argv_does_nothing ... ok
+test an_unusable_socket_setting_falls_back_inside_home_and_exits_zero ... ok
+test outside_a_deck_tmux_pane_nothing_is_sent ... ok
+test session_end_sends_the_exact_line ... ok
+test session_start_sends_the_exact_line_and_stays_until_the_host_closes ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.24s
+
+   Compiling proc-macro2 v1.0.107
+   Compiling libc v0.2.189
+   Compiling quote v1.0.47
+   Compiling getrandom v0.2.17
+   Compiling syn v3.0.4
+   Compiling ring v0.17.14
+   Compiling serde_derive v1.0.229
+   Compiling serde v1.0.229
+   Compiling deck-mcp-runner v0.1.0 (/Users/chenhan/c9r-io/deck/app/src-tauri/mcp-runner)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.05s
+     Running tests/runner.rs (app/src-tauri/target/debug/deps/runner-8d402f5d2316273c)
+
+running 10 tests
+test a_job_stopped_by_job_control_is_reported_and_still_stoppable ... ok
+test a_restarted_deck_is_reported_stale_but_can_still_stop ... ok
+test authentication_epoch_and_grant_fences_survive_attacker_requests ... ok
+test execution_timeout_escalates_past_an_ignored_interrupt ... ok
+test human_interrupt_key_reaches_the_job_group_not_the_runner ... ok
+test large_arguments_and_full_reads_cross_the_accepted_socket_intact ... ok
+test other_processes_cannot_starve_the_deck_connection_slots ... ok
+test reports_exit_input_and_interrupt_without_terminal_markers ... ok
+test runner_termination_kills_the_live_job_group ... ok
+test stop_escalates_and_reaps_the_job_group ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.24s
+
+   Compiling proc-macro2 v1.0.107
+   Compiling futures-channel v0.3.34
+   Compiling serde_json v1.0.151
+   Compiling getrandom v0.4.3
+   Compiling security-framework-sys v2.17.0
+   Compiling core-foundation v0.10.1
+   Compiling uuid v1.25.0
+   Compiling security-framework v3.7.0
+   Compiling quote v1.0.47
+   Compiling syn v3.0.4
+   Compiling syn v2.0.119
+   Compiling darling_core v0.24.1
+   Compiling serde_derive_internals v0.30.0
+   Compiling serde_derive v1.0.229
+   Compiling futures-macro v0.3.34
+   Compiling tokio-macros v2.7.2
+   Compiling ref-cast-impl v1.0.27
+   Compiling thiserror-impl v2.0.20
+   Compiling tracing-attributes v0.1.31
+   Compiling schemars_derive v1.2.2
+   Compiling ref-cast v1.0.27
+   Compiling tokio v1.53.1
+   Compiling futures-util v0.3.34
+   Compiling darling_macro v0.24.1
+   Compiling tracing v0.1.44
+   Compiling thiserror v2.0.20
+   Compiling serde v1.0.229
+   Compiling darling v0.24.1
+   Compiling futures-executor v0.3.34
+   Compiling tokio-util v0.7.19
+   Compiling chrono v0.4.45
+   Compiling futures v0.3.34
+   Compiling rmcp-macros v3.4.0
+   Compiling schemars v1.2.2
+   Compiling rmcp v3.4.0
+   Compiling deck-mcp v0.8.2 (/Users/chenhan/c9r-io/deck/app/src-tauri/mcp-adapter)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 51s
+     Running tests/stdio.rs (app/src-tauri/target/debug/deps/stdio-d3333002d87750fc)
+
+running 5 tests
+test a_call_without_a_sequence_names_the_field_before_connecting ... ok
+test a_lost_answer_to_a_side_effect_is_ambiguous_not_unavailable ... ok
+test control_validation_rejects_before_connecting_and_valid_samples_cross_validation ... ok
+test initializes_lists_and_calls_over_stdio_without_stdout_noise ... ok
+test negotiates_away_from_an_unsupported_protocol_version ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+

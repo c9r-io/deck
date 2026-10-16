@@ -8,6 +8,16 @@ Phone Connector is disabled by default. Enabling it in **Settings → Remote acc
 
 A paired device keeps these abilities until it is revoked. Disabling Connector stops the listener; it does not revoke devices, so their tokens work again when Connector is re-enabled on the same identity. **Revoke** a device (or **Reset and re-pair**) to end its access.
 
+By default, the phone snapshot lists only the Codex and Claude cards eligible
+for Connector notes and queues. **Show all Board cards on paired phones** is a
+separate local opt-in. It shares each card's title, project, column and Board
+order, including ordinary shells, empty saved commands and unsupported agents.
+It does not grant those additional cards terminal output, messages, notes or
+queues. Turning it off narrows the next snapshot immediately; no re-pair is
+required. Each snapshot reports the selected scope and an explicit capability
+and refusal reason for each action, while the native route repeats its normal
+admission checks before any read or mutation.
+
 When enabled, deck listens on the selected private-network address over HTTPS. Eligible IPv4 addresses are RFC1918 private space on any interface; RFC6598 100.64/10 shared space only on a VPN tunnel interface (`utun*`, for example Tailscale); and 169.254/16 link-local space only on a bridge interface (`bridge*`, a direct Thunderbolt/USB cable network). A 100.64/10 or self-assigned 169.254/16 address on Wi-Fi or Ethernet is not offered, because carrier-grade NAT and DHCP-less public networks hand those out to strangers too; public addresses are never offered or accepted. deck records the interface (for example `en0`) that carried the address when you enabled Connector. Whenever the saved listener starts again, the address must still be available on that same interface; the same private address on a different interface is treated as a different network and Connector stays off until you enable it again.
 
 While it runs, deck re-reads the Mac's interfaces about every 5 seconds. If the address is gone, has moved to another interface, or its netmask has changed, the listener stops and Settings shows "enabled, not listening"; disable and enable Connector to listen again (a restart of deck also listens again once the recorded interface carries the address). deck cannot see *which* network an interface has joined: moving to another Wi-Fi network that hands out the same address with the same netmask on the same interface — or losing and regaining the address between two checks — is not detected. Disable Connector before joining an untrusted network. Connections that do not arrive on the configured address are dropped unread.
@@ -25,14 +35,15 @@ The phone never supplies a shell command line, path, or command flag. That does 
 - **MCP-controlled sessions.** While an MCP client holds terminal control of a session (see [MCP](mcp.md)), the phone can neither send to it nor read its output — MCP output sharing is consent for the MCP client, not for the phone. Taking control back on the Mac makes the card a phone target again.
 - **Scratchpad reads, note add/edit/delete, queueing, and queue pause/cancel** work only when the saved card command launches `codex` or `claude` with at most simple arguments and the snapshot reports `canQueue`. Ordinary shell cards reject all of these routes with `unsupported-target`; the phone cannot replace the saved command.
 
-`GET /v1/snapshot` follows the same boundary: it lists only cards whose saved
-command launches `codex` or `claude` with at most simple arguments, and its queue array contains only
-items belonging to those listed cards. Ordinary shell cards and their queued
-items are not exposed to the phone.
+`GET /v1/snapshot` uses the saved local scope. The default lists only cards
+whose saved command launches `codex` or `claude` with at most simple arguments.
+The metadata opt-in lists every well-formed Board card in its saved order, but
+the queue array still contains only items belonging to eligible agent cards.
+Ordinary shell cards and their queued items never gain command access.
 
 The output GET distinguishes a missing or unreadable session (`503
 session-unavailable`), a pane whose foreground is not a supported Agent (`409
-agent-not-in-foreground`), a target changed during capture (`409
+agent-not-in-foreground`), an MCP-controlled target (`409 mcp-controlled`), a target changed during capture (`409
 context-changed`), and a probe/history/capture failure (`503
 output-read-failed`). None means task completion. The phone keeps the card and
 scratchpad, refuses shell output and input, and can refresh the snapshot and

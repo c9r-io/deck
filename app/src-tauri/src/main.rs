@@ -537,6 +537,7 @@ fn main() {
             connector::connector_addresses,
             connector::connector_enable,
             connector::connector_disable,
+            connector::connector_set_scope,
             connector::connector_pairing,
             connector::connector_revoke,
             connector::connector_reset_identity,

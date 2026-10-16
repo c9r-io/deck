@@ -18,6 +18,7 @@ pub(crate) struct Status {
     pub(super) origin: Option<String>,
     pub(super) fingerprint: Option<String>,
     pub(super) reset_required: bool,
+    pub(super) scope: SnapshotScope,
     pub(super) devices: Vec<DeviceView>,
 }
 #[derive(Serialize)]
@@ -55,6 +56,7 @@ pub(crate) fn connector_status() -> Result<Status, DeckError> {
             .identity_address
             .as_ref()
             .is_some_and(|address| !d.config.address.is_empty() && address != &d.config.address),
+        scope: d.config.scope,
         devices: d
             .devices
             .iter()
@@ -101,6 +103,7 @@ pub(crate) async fn connector_enable(address: String, port: u16) -> Result<Statu
                 address: address.clone(),
                 port,
                 interface,
+                scope: d.config.scope,
             };
             d.identity_address = Some(identity.address.clone());
             d.identity_fingerprint = Some(identity.fingerprint.clone());
@@ -117,6 +120,17 @@ pub(crate) async fn connector_enable(address: String, port: u16) -> Result<Statu
     })
     .await
     .map_err(|_| DeckError::new(ErrorKind::Other, "connector worker failed"))?
+}
+
+/// Changes only which cards appear as metadata in the phone snapshot. Every
+/// card-scoped native route continues to enforce its existing admission.
+#[tauri::command]
+pub(crate) fn connector_set_scope(scope: SnapshotScope) -> Result<Status, DeckError> {
+    rt()?.with_doc(|d| {
+        d.config.scope = scope;
+        Ok(())
+    })?;
+    connector_status()
 }
 
 #[tauri::command]

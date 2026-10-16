@@ -15,6 +15,7 @@ fn test_runtime(tag: &str) -> (Arc<Runtime>, tauri::App<tauri::test::MockRuntime
         address: "127.0.0.1".into(),
         port: 8443,
         interface: None,
+        scope: SnapshotScope::AgentCards,
     };
     save(&path, &doc).unwrap();
     let r = Arc::new(Runtime {
@@ -81,6 +82,7 @@ fn global_runtime() -> (std::sync::MutexGuard<'static, ()>, Arc<Runtime>) {
         address: "127.0.0.1".into(),
         port: 8443,
         interface: None,
+        scope: SnapshotScope::AgentCards,
     };
     save(&runtime.path, &doc).unwrap();
     *runtime.doc.lock_or_recover() = Ok(doc);
@@ -242,6 +244,7 @@ fn v1_state_loads_compacted_and_newer_versions_are_refused_untouched() {
     ];
     let mut v1 = serde_json::to_value(&doc).unwrap();
     v1["version"] = json!(1);
+    v1["config"].as_object_mut().unwrap().remove("scope");
     for entry in v1["commands"].as_array_mut().unwrap() {
         let entry = entry.as_object_mut().unwrap();
         entry.remove("id");
@@ -250,6 +253,7 @@ fn v1_state_loads_compacted_and_newer_versions_are_refused_untouched() {
     std::fs::write(&r.path, serde_json::to_vec(&v1).unwrap()).unwrap();
     let loaded = load(&r.path).unwrap();
     assert_eq!(loaded.version, VERSION);
+    assert_eq!(loaded.config.scope, SnapshotScope::AgentCards);
     assert_eq!(loaded.commands[0].id, "done");
     assert!(loaded.commands[0].request.is_none());
     assert_eq!(loaded.commands[1].request.as_ref(), Some(&open));
@@ -449,7 +453,8 @@ fn phone_output_and_send_are_limited_to_saved_agent_cards() {
         pane_calls: std::cell::Cell::new(0),
     };
     let refused = output_with(&mcp, "C1").unwrap_err();
-    assert_eq!(refused.message(), "unsupported-target");
+    assert_eq!(refused.kind(), ErrorKind::Perm);
+    assert_eq!(refused.message(), "mcp-controlled");
     assert_eq!(
         mcp.pane_calls.get(),
         0,
@@ -504,6 +509,7 @@ fn restart_listens_only_on_the_recorded_interface() {
         address: lan.to_string(),
         port: 47631,
         interface: interface.map(str::to_owned),
+        scope: SnapshotScope::AgentCards,
     };
     let at = |interface: &str, netmask: [u8; 4]| LocalAddress {
         ip: lan,
@@ -631,11 +637,13 @@ fn command_surface_preserves_the_durable_lifecycle_and_closes_on_disable() {
     let status = connector_status().unwrap();
     assert!(status.enabled);
     assert!(status.running);
+    assert_eq!(status.scope, SnapshotScope::AgentCards);
     assert_eq!(status.devices.len(), 2);
     assert!(status.origin.as_deref().unwrap().starts_with("https://"));
     let status_wire = serde_json::to_value(&status).unwrap();
     assert_eq!(status_wire["devices"].as_array().unwrap().len(), 2);
     assert_eq!(status_wire["enabled"], true);
+    assert_eq!(status_wire["scope"], "agentCards");
     assert_eq!(connector_pending().unwrap().len(), 1);
 
     let claimed = connector_claim(handle.clone()).unwrap();
@@ -861,6 +869,28 @@ fn command_surface_preserves_the_durable_lifecycle_and_closes_on_disable() {
             .is_ok_and(|ip| !connector_network_range(ip))
     }));
     assert!(!host_name().chars().any(char::is_control));
+}
+
+#[test]
+fn board_metadata_scope_is_local_durable_consent_and_can_be_narrowed() {
+    let (_global, runtime) = global_runtime();
+    let expanded = connector_set_scope(SnapshotScope::BoardMetadata).unwrap();
+    assert_eq!(expanded.scope, SnapshotScope::BoardMetadata);
+    assert_eq!(
+        runtime.read(|doc| doc.config.scope).unwrap(),
+        SnapshotScope::BoardMetadata
+    );
+    assert_eq!(
+        load(&runtime.path).unwrap().config.scope,
+        SnapshotScope::BoardMetadata
+    );
+
+    let restricted = connector_set_scope(SnapshotScope::AgentCards).unwrap();
+    assert_eq!(restricted.scope, SnapshotScope::AgentCards);
+    assert_eq!(
+        load(&runtime.path).unwrap().config.scope,
+        SnapshotScope::AgentCards
+    );
 }
 
 #[test]
@@ -2164,7 +2194,7 @@ fn projection_board() -> Value {
                 {"id":"E2","text":"two","copies":[]}
              ]}},
             {"id":"B","session":"deck-b-0001","cmd":"/bin/zsh","projectId":"P1","columnId":"COL1",
-             "title":"Shell"},
+             "title":"Shell","buffer":{"revision":9,"collecting":true,"entries":[{"id":"hidden"}]}},
             {"id":"C","session":"deck-c-0001","cmd":"codex","projectId":"P1","columnId":"COL1",
              "title":"Stopped"}
         ]
@@ -2180,29 +2210,39 @@ fn snapshot_projects_saved_agent_cards_their_queue_items_and_well_formed_project
          "mode":"at","added":1}
     ]));
     let probed = std::cell::RefCell::new(vec![]);
-    let value = snapshot_in("host_x", "rev-1", &projection_board(), &queues, |session| {
-        probed.borrow_mut().push(session.to_owned());
-        if session == "deck-a-0001" {
-            Ok(crate::context::ConnectorProbe {
-                identity: crate::context::PaneIdentity {
-                    server_pid: 1,
-                    session_id: "$1".into(),
-                    window_id: "@1".into(),
-                    pane_id: "%1".into(),
-                    pane_pid: 2,
-                },
-                agent: Some("claude".into()),
-                foreground_pid: 3,
-                start_seconds: 4,
-                start_micros: 5,
-                generation: "gen-a".into(),
-            })
-        } else {
-            Err(DeckError::new(ErrorKind::NoSession, "gone"))
-        }
-    });
+    let value = snapshot_in(
+        ("host_x", "Studio Mac"),
+        "rev-1",
+        &projection_board(),
+        &queues,
+        SnapshotScope::AgentCards,
+        |session| {
+            probed.borrow_mut().push(session.to_owned());
+            if session == "deck-a-0001" {
+                Ok(crate::context::ConnectorProbe {
+                    identity: crate::context::PaneIdentity {
+                        server_pid: 1,
+                        session_id: "$1".into(),
+                        window_id: "@1".into(),
+                        pane_id: "%1".into(),
+                        pane_pid: 2,
+                    },
+                    agent: Some("claude".into()),
+                    foreground_pid: 3,
+                    start_seconds: 4,
+                    start_micros: 5,
+                    generation: "gen-a".into(),
+                })
+            } else {
+                Err(DeckError::new(ErrorKind::NoSession, "gone"))
+            }
+        },
+        |_| Ok(()),
+    );
     assert_eq!(value["version"], 1);
     assert_eq!(value["hostId"], "host_x");
+    assert_eq!(value["hostName"], "Studio Mac");
+    assert_eq!(value["scope"], "agentCards");
     assert_eq!(value["revision"], "rev-1");
     assert_eq!(
         *probed.borrow(),
@@ -2216,6 +2256,8 @@ fn snapshot_projects_saved_agent_cards_their_queue_items_and_well_formed_project
     assert_eq!(cards[0]["generation"], "gen-a");
     assert_eq!(cards[0]["canSend"], true);
     assert_eq!(cards[0]["canQueue"], true);
+    assert_eq!(cards[0]["order"], 0);
+    assert_eq!(cards[0]["capabilities"]["readOutput"]["allowed"], true);
     assert_eq!(
         cards[0]["buffer"],
         json!({"revision":3,"collecting":true,"entryCount":2})
@@ -2224,6 +2266,11 @@ fn snapshot_projects_saved_agent_cards_their_queue_items_and_well_formed_project
     assert_eq!(cards[1]["status"], "stopped");
     assert_eq!(cards[1]["generation"], Value::Null);
     assert_eq!(cards[1]["canSend"], false);
+    assert_eq!(cards[1]["order"], 2, "order is the Board array position");
+    assert_eq!(
+        cards[1]["capabilities"]["readOutput"],
+        json!({"allowed":false,"reason":"session-unavailable"})
+    );
     assert_eq!(
         cards[1]["buffer"],
         json!({"revision":0,"collecting":false,"entryCount":0})
@@ -2239,6 +2286,78 @@ fn snapshot_projects_saved_agent_cards_their_queue_items_and_well_formed_project
     assert_eq!(queue[0]["id"], "Q1");
     assert_eq!(queue[0]["cardId"], "A");
     assert_eq!(queue[0]["revision"], "5");
+}
+
+#[test]
+fn board_metadata_scope_preserves_all_cards_but_never_expands_native_capabilities() {
+    let queues = queue_fixture(json!([]));
+    let probed = std::cell::RefCell::new(vec![]);
+    let value = snapshot_in(
+        ("host_x", "Studio Mac"),
+        "rev-1",
+        &projection_board(),
+        &queues,
+        SnapshotScope::BoardMetadata,
+        |session| {
+            probed.borrow_mut().push(session.to_owned());
+            Err(DeckError::new(ErrorKind::Tmux, "probe failed"))
+        },
+        |_| Ok(()),
+    );
+    let cards = value["cards"].as_array().unwrap();
+    assert_eq!(
+        *probed.borrow(),
+        ["deck-a-0001", "deck-c-0001"],
+        "metadata-only cards never incur a process probe"
+    );
+    assert_eq!(
+        cards
+            .iter()
+            .map(|card| card["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["A", "B", "C"]
+    );
+    let shell = &cards[1];
+    assert_eq!(shell["order"], 1);
+    assert_eq!(shell["canSend"], false);
+    assert_eq!(shell["canQueue"], false);
+    assert_eq!(
+        shell["buffer"],
+        json!({"revision":0,"collecting":false,"entryCount":0}),
+        "metadata consent does not reveal scratchpad state"
+    );
+    for action in ["readOutput", "sendMessage", "editNotes", "queue"] {
+        assert_eq!(
+            shell["capabilities"][action],
+            json!({"allowed":false,"reason":"unsupported-target"})
+        );
+    }
+}
+
+#[test]
+fn snapshot_send_and_read_capabilities_observe_the_mcp_fence() {
+    let queues = queue_fixture(json!([]));
+    let value = snapshot_in(
+        ("host_x", "Studio Mac"),
+        "rev-1",
+        &projection_board(),
+        &queues,
+        SnapshotScope::AgentCards,
+        |_| golden_probe("deck-a-0001"),
+        |_| Err(DeckError::new(ErrorKind::Perm, "MCP owns terminal control")),
+    );
+    let card = &value["cards"][0];
+    assert_eq!(card["canSend"], false);
+    assert_eq!(card["canQueue"], true);
+    assert_eq!(
+        card["capabilities"]["readOutput"]["reason"],
+        "mcp-controlled"
+    );
+    assert_eq!(
+        card["capabilities"]["sendMessage"]["reason"],
+        "mcp-controlled"
+    );
+    assert_eq!(card["capabilities"]["editNotes"]["allowed"], true);
 }
 
 #[test]
@@ -2539,6 +2658,12 @@ fn golden_board() -> Value {
                  "updatedAt":1789776004,"source":{"type":"slack","eventId":"Ev1","connection":"default",
                  "channel":"C1","rule":"r1","at":1789776003,"links":[]},"copies":[]}
              ]}},
+            {"id":"B","session":"deck-b-0001","cmd":"/bin/zsh","projectId":"P1","columnId":"COL1",
+             "title":"Shell"},
+            {"id":"E","session":"deck-e-0001","cmd":"","projectId":"P1","columnId":"COL1",
+             "title":"Empty command"},
+            {"id":"F","session":"deck-f-0001","cmd":"pi","projectId":"P1","columnId":"COL1",
+             "title":"Pi"},
             {"id":"C","session":"deck-c-0001","cmd":"codex","projectId":"P1","columnId":"COL1",
              "title":"Stopped"},
             {"id":"D","session":"deck-d-0001","cmd":"codex","projectId":"P1","columnId":"COL1",
@@ -2576,7 +2701,15 @@ fn phone_golden_projections_are_what_the_host_produces() {
         {"id":"Q1","session":"deck-a-0001","card_id":"A","dir":"/tmp","cmd":"claude","text":"hi",
          "mode":"at","added":1,"revision":5}
     ]));
-    let mut snapshot = snapshot_in("host_x", "rev-1", &golden_board(), &queues, golden_probe);
+    let mut snapshot = snapshot_in(
+        ("host_x", "Studio Mac"),
+        "rev-1",
+        &golden_board(),
+        &queues,
+        SnapshotScope::BoardMetadata,
+        golden_probe,
+        |_| Ok(()),
+    );
     snapshot["capturedAt"] = json!(1789776000);
     let (_, _, ops) = crate::scheduler::connector::snapshot(&queues, |_| true);
     let buffer = buffer_in(&golden_board(), "A", &ops).unwrap();
@@ -2605,7 +2738,10 @@ fn phone_golden_projections_are_what_the_host_produces() {
         .iter()
         .map(|card| card["status"].as_str().unwrap())
         .collect();
-    assert_eq!(statuses, ["running", "stopped", "unknown"]);
+    assert_eq!(
+        statuses,
+        ["running", "unknown", "unknown", "unknown", "stopped", "unknown"]
+    );
 }
 
 #[test]

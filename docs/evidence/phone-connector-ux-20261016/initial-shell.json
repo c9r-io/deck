@@ -1,0 +1,19 @@
+{
+  "result": "Failed",
+  "passedTests": 0,
+  "failedTests": 1,
+  "skippedTests": 0,
+  "totalTestCount": 1,
+  "testFailures": [
+    {
+      "failureText": "XCTAssertTrue failed - Expected paired test card named connector live codex.",
+      "targetName": "DeckConnectorUITests",
+      "testIdentifier": 1,
+      "testIdentifierString": "ConnectorUITests/testIsolatedCodexExitToShellRejectsOutputAndSend()",
+      "testIdentifierURL": "test://com.apple.xcode/DeckConnector/DeckConnectorUITests/ConnectorUITests/testIsolatedCodexExitToShellRejectsOutputAndSend",
+      "testName": "testIsolatedCodexExitToShellRejectsOutputAndSend()"
+    }
+  ],
+  "xcresult": "/tmp/deck-connector-diagnose-epojcgfq/shell-return.xcresult",
+  "cleanupCompleted": true
+}

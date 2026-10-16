@@ -545,7 +545,6 @@ KILL_SERVER_SITES = {
     "scripts/test-compat-candidate": ("path", None),
     "scripts/translation-lens-verify.py": ("run-name", 'socket = f"deck-smoke-tl{RUN_ID}'),
     "scripts/reminder-verify.py": ("run-name", "self.socket = 'deck-smoke-reminder-' + self.run_id"),
-    "scripts/connector-simulator-diagnose.py": ("run-name", 'SOCKET = "deck-smoke-" + RUN.name'),
 }
 BY_NAME = re.compile(r"""(^|[\s\[(,])["']?-L["']?[\s,]""")
 PRODUCT_NAME = re.compile(r"""(^|[\s\[(,])["']?-L["']?[\s,]+["']?deck["']?([\s,\])]|$)""")

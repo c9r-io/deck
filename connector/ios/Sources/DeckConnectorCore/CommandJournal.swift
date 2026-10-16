@@ -24,6 +24,10 @@ public struct CommandRecord: Codable, Equatable, Sendable, Identifiable {
     public var result: CommandResult?
     public let createdAt: Date
     public var updatedAt: Date
+    /// Local-only identity of the exact note edit present when a buffer command
+    /// was first prepared. Older journal records decode this as nil and never
+    /// gain authority to clear a note draft.
+    public internal(set) var noteDraftRevision: UUID? = nil
     public var id: String { request.id }
 }
 
@@ -41,30 +45,64 @@ public struct MessageDraft: Codable, Equatable, Sendable {
     }
 }
 
+/// An unsaved scratchpad edit. The journal binding supplies host/device scope;
+/// `entryID == nil` identifies the one new-note composer for a card, while an
+/// entry ID identifies that existing note's editor. Note drafts deliberately
+/// do not share storage or clearing behavior with message drafts.
+public struct NoteDraft: Codable, Equatable, Sendable {
+    public let cardID: String
+    public let entryID: String?
+    public let text: String
+    public let updatedAt: Date
+    /// Stable for one edit snapshot and persisted without relying on Date's
+    /// lossy ISO-8601 representation.
+    public let revision: UUID
+
+    public init(cardID: String, entryID: String?, text: String, updatedAt: Date = Date(), revision: UUID = UUID()) {
+        self.cardID = cardID
+        self.entryID = entryID
+        self.text = text
+        self.updatedAt = updatedAt
+        self.revision = revision
+    }
+
+    public static func storageKey(cardID: String, entryID: String?) -> String {
+        let entry = entryID ?? ""
+        return "\(cardID.utf8.count):\(cardID):\(entryID == nil ? -1 : entry.utf8.count):\(entry)"
+    }
+
+    public var storageKey: String {
+        Self.storageKey(cardID: cardID, entryID: entryID)
+    }
+}
+
 public struct JournalSnapshot: Codable, Equatable, Sendable {
     /// The phone's local file only, not the Connector wire or host journal
-    /// format. 2 adds `nextSequence`; 3 adds the `expired` record state. A
-    /// version-1 or -2 journal is upgraded in memory on open, with every record
-    /// unchanged, and written as version 3 by its next save (atomically, so a
+    /// format. 2 adds `nextSequence`; 3 adds the `expired` record state; 4 adds
+    /// note drafts in a namespace separate from message drafts. A version-1,
+    /// -2 or -3 journal is upgraded in memory on open, with every record and
+    /// message draft unchanged, and written as version 4 by its next save (atomically, so a
     /// failed save leaves the old file whole). Any other version is refused
     /// before its records are read, and the file is left untouched.
-    public static let currentVersion = 3
+    public static let currentVersion = 4
     public let version: Int
     public let binding: JournalBinding
     public var records: [CommandRecord]
     public var drafts: [String: MessageDraft]
+    public var noteDrafts: [String: NoteDraft]
     /// Lower bound for the next command's admission sequence.
     public var nextSequence: UInt64
 
-    public init(binding: JournalBinding, records: [CommandRecord] = [], drafts: [String: MessageDraft] = [:], nextSequence: UInt64 = 1) {
+    public init(binding: JournalBinding, records: [CommandRecord] = [], drafts: [String: MessageDraft] = [:], noteDrafts: [String: NoteDraft] = [:], nextSequence: UInt64 = 1) {
         self.version = Self.currentVersion
         self.binding = binding
         self.records = records
         self.drafts = drafts
+        self.noteDrafts = noteDrafts
         self.nextSequence = nextSequence
     }
 
-    private enum CodingKeys: String, CodingKey { case version, binding, records, drafts, nextSequence }
+    private enum CodingKeys: String, CodingKey { case version, binding, records, drafts, noteDrafts, nextSequence }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -76,6 +114,14 @@ public struct JournalSnapshot: Codable, Equatable, Sendable {
             throw DecodingError.dataCorruptedError(forKey: .records, in: values, debugDescription: "expired before journal version 3")
         }
         drafts = try values.decode([String: MessageDraft].self, forKey: .drafts)
+        if version >= 4 {
+            noteDrafts = try values.decode([String: NoteDraft].self, forKey: .noteDrafts)
+            guard noteDrafts.allSatisfy({ $0.key == $0.value.storageKey }) else {
+                throw DecodingError.dataCorruptedError(forKey: .noteDrafts, in: values, debugDescription: "note draft key does not match its identity")
+            }
+        } else {
+            noteDrafts = [:]
+        }
         nextSequence = try values.decodeIfPresent(UInt64.self, forKey: .nextSequence) ?? 1
     }
 }
@@ -116,6 +162,9 @@ public actor CommandJournal {
     private let storage: any JournalStorage
     private var state: JournalSnapshot
     private var protectedResultIDs = Set<String>()
+    /// Process-local scheduling only. A failed GET creates no durable command
+    /// fact, but it must not starve later pending IDs in bounded recovery.
+    private var lastRecoveryQueries: [String: Date] = [:]
     private var transactionBusy = false
     private var transactionWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -132,7 +181,7 @@ public actor CommandJournal {
             guard loaded.records.count <= ConnectorLimits.commandJournalEntries else { throw ConnectorError.capacityExceeded }
             // Version 1 records carry no sequence and keep their immutable
             // bodies; the upgrade only adds the counter and the version.
-            let upgraded = JournalSnapshot(binding: loaded.binding, records: loaded.records, drafts: loaded.drafts, nextSequence: loaded.nextSequence)
+            let upgraded = JournalSnapshot(binding: loaded.binding, records: loaded.records, drafts: loaded.drafts, noteDrafts: loaded.noteDrafts, nextSequence: loaded.nextSequence)
             return CommandJournal(storage: storage, state: upgraded)
         }
         return CommandJournal(storage: storage, state: JournalSnapshot(binding: binding))
@@ -142,6 +191,12 @@ public actor CommandJournal {
         await acquireTransaction()
         defer { releaseTransaction() }
         return state.drafts[cardID]
+    }
+
+    public func noteDraft(cardID: String, entryID: String?) async -> NoteDraft? {
+        await acquireTransaction()
+        defer { releaseTransaction() }
+        return state.noteDrafts[NoteDraft.storageKey(cardID: cardID, entryID: entryID)]
     }
 
     public func allRecords() async -> [CommandRecord] {
@@ -175,11 +230,38 @@ public actor CommandJournal {
         try await persistAndCommit(candidate)
     }
 
-    public func submit(_ request: CommandRequest, draftCardID: String?, using transport: any CommandTransport) async throws -> CommandResult {
+    public func saveNoteDraft(_ draft: NoteDraft) async throws {
+        guard draft.text.utf8.count <= ConnectorLimits.draftUTF8Bytes else { throw ConnectorError.requestTooLarge }
+        await acquireTransaction()
+        defer { releaseTransaction() }
+        var candidate = state
+        candidate.noteDrafts[draft.storageKey] = draft
+        try await persistAndCommit(candidate)
+    }
+
+    /// Removes a note draft only when it is still the exact snapshot whose
+    /// save succeeded. A newer edit therefore survives a late host response.
+    @discardableResult
+    public func discardNoteDraft(ifUnchanged draft: NoteDraft) async throws -> Bool {
+        await acquireTransaction()
+        defer { releaseTransaction() }
+        guard state.noteDrafts[draft.storageKey] == draft else { return false }
+        var candidate = state
+        candidate.noteDrafts.removeValue(forKey: draft.storageKey)
+        try await persistAndCommit(candidate)
+        return true
+    }
+
+    public func submit(
+        _ request: CommandRequest,
+        draftCardID: String?,
+        noteDraftRevision: UUID? = nil,
+        using transport: any CommandTransport
+    ) async throws -> CommandResult {
         // Text the host would refuse never enters the journal or takes a
         // sequence: the user fixes it and sends again.
         try WireValidator.validate(request)
-        let prepared = try await prepare(request)
+        let prepared = try await prepare(request, noteDraftRevision: noteDraftRevision)
         if let existing = prepared.existing {
             return existing
         }
@@ -221,10 +303,25 @@ public actor CommandJournal {
         return await self.record(id: id)?.result ?? result
     }
 
-    public func recover(using transport: any CommandTransport) async -> [String: Result<CommandResult, Error>] {
-        let pending = await recoverableRecords()
+    public func recover(using transport: any CommandTransport, maximumQueries: Int? = nil) async -> [String: Result<CommandResult, Error>] {
+        let recoverable = await recoverableRecords()
+        let recoverableIDs = Set(recoverable.map(\.id))
+        lastRecoveryQueries = lastRecoveryQueries.filter { recoverableIDs.contains($0.key) }
+        let ordered = recoverable.sorted {
+            let leftQuery = lastRecoveryQueries[$0.id]
+            let rightQuery = lastRecoveryQueries[$1.id]
+            if (leftQuery == nil) != (rightQuery == nil) { return leftQuery == nil }
+            let left = leftQuery ?? $0.updatedAt
+            let right = rightQuery ?? $1.updatedAt
+            if left != right { return left < right }
+            if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+            return $0.id < $1.id
+        }
+        let pending = maximumQueries.map { Array(ordered.prefix(max(0, $0))) } ?? ordered
         var outcomes: [String: Result<CommandResult, Error>] = [:]
         for record in pending {
+            if Task.isCancelled { break }
+            lastRecoveryQueries[record.id] = Date()
             do {
                 let result = try await transport.query(id: record.id)
                 guard result.id == record.id else { throw ConnectorError.invalidResponse }
@@ -239,6 +336,8 @@ public actor CommandJournal {
                 outcomes[record.id] = .failure(error)
             }
         }
+        let remainingIDs = Set(await recoverableRecords().map(\.id))
+        lastRecoveryQueries = lastRecoveryQueries.filter { remainingIDs.contains($0.key) }
         return outcomes
     }
 
@@ -247,7 +346,7 @@ public actor CommandJournal {
     /// strictly increasing within this journal, and still above an earlier
     /// installation's sequences if the journal file was lost while the
     /// device credential survived.
-    private func prepare(_ request: CommandRequest) async throws -> (existing: CommandResult?, request: CommandRequest) {
+    private func prepare(_ request: CommandRequest, noteDraftRevision: UUID?) async throws -> (existing: CommandResult?, request: CommandRequest) {
         await acquireTransaction()
         defer { releaseTransaction() }
         if let existing = state.records.first(where: { $0.id == request.id }) {
@@ -258,7 +357,14 @@ public actor CommandJournal {
         let now = Date()
         var candidate = state
         let sequenced = request.sequenced(Self.allocateSequence(&candidate, now: now))
-        candidate.records.append(CommandRecord(request: sequenced, localState: .prepared, result: nil, createdAt: now, updatedAt: now))
+        candidate.records.append(CommandRecord(
+            request: sequenced,
+            localState: .prepared,
+            result: nil,
+            createdAt: now,
+            updatedAt: now,
+            noteDraftRevision: Self.matchingNoteDraftRevision(noteDraftRevision, for: sequenced, in: candidate)
+        ))
         protectedResultIDs.insert(request.id)
         do { try await persistAndCommit(candidate, protecting: request.id) }
         catch { protectedResultIDs.remove(request.id); throw error }
@@ -270,6 +376,22 @@ public actor CommandJournal {
         let seq = max(snapshot.nextSequence, clock)
         snapshot.nextSequence = seq + 1
         return seq
+    }
+
+    private static func matchingNoteDraftRevision(_ intendedRevision: UUID?, for request: CommandRequest, in snapshot: JournalSnapshot) -> UUID? {
+        guard let intendedRevision,
+              ["buffer-add", "buffer-edit"].contains(request.kind),
+              let cardID = request.cardId,
+              case let .string(text)? = request.payload["text"] else { return nil }
+        let entryID: String?
+        if request.kind == "buffer-edit" {
+            guard case let .string(value)? = request.payload["entryId"] else { return nil }
+            entryID = value
+        } else {
+            entryID = nil
+        }
+        let draft = snapshot.noteDrafts[NoteDraft.storageKey(cardID: cardID, entryID: entryID)]
+        return draft?.revision == intendedRevision && draft?.text == text ? intendedRevision : nil
     }
 
     /// A 404 from the host proves the id was never admitted. A version-1
@@ -322,13 +444,36 @@ public actor CommandJournal {
         candidate.records[index].result = result
         candidate.records[index].updatedAt = Date()
 
+        let record = candidate.records[index]
         if let result, (result.state == .applied || result.state == .delivered),
+           record.request.kind == "send-message",
            let draftCardID,
-           case let .string(sentText)? = candidate.records[index].request.payload["text"],
+           case let .string(sentText)? = record.request.payload["text"],
            let currentDraft = candidate.drafts[draftCardID],
            currentDraft.text == sentText,
-           currentDraft.expectedGeneration == candidate.records[index].request.expectedGeneration {
+           currentDraft.expectedGeneration == record.request.expectedGeneration {
             candidate.drafts.removeValue(forKey: draftCardID)
+        }
+        if let result, (result.state == .applied || result.state == .delivered),
+           ["buffer-add", "buffer-edit"].contains(record.request.kind),
+           let cardID = record.request.cardId,
+           case let .string(sentText)? = record.request.payload["text"] {
+            let entryID: String?
+            if record.request.kind == "buffer-edit" {
+                guard case let .string(value)? = record.request.payload["entryId"] else {
+                    throw ConnectorError.invalidResponse
+                }
+                entryID = value
+            } else {
+                entryID = nil
+            }
+            let key = NoteDraft.storageKey(cardID: cardID, entryID: entryID)
+            if let currentDraft = candidate.noteDrafts[key],
+               let submittedRevision = record.noteDraftRevision,
+               currentDraft.revision == submittedRevision,
+               currentDraft.text == sentText {
+                candidate.noteDrafts.removeValue(forKey: key)
+            }
         }
         try await persistAndCommit(candidate, protecting: id)
     }

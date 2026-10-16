@@ -1,0 +1,8 @@
+{
+  "command": "DEVELOPER_DIR=<Xcode27.1>/Contents/Developer swift test --package-path connector/ios",
+  "exitCode": 0,
+  "passed": 61,
+  "skipped": 1,
+  "failed": 0,
+  "skippedReason": "realDeckLoopbackHTTPSAndWKBridgeTransport needs opt-in private fixture; real host is exercised separately by Simulator suites"
+}

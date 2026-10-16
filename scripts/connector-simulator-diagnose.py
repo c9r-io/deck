@@ -9,9 +9,6 @@ import pathlib
 import plistlib
 import re
 import shutil
-import signal
-import socket
-import stat
 import subprocess
 import sys
 import tempfile
@@ -27,6 +24,10 @@ if SUITE not in ("all", "ui", "appmodel"):
     raise SystemExit("DECK_DIAG_SUITE must be all, ui or appmodel")
 RUN = pathlib.Path(tempfile.mkdtemp(prefix="deck-connector-diagnose-", dir="/tmp"))
 os.chmod(RUN, 0o700)
+(RUN / "t").mkdir(mode=0o700)
+ENV["TMUX_TMPDIR"] = str(RUN / "t")
+subprocess.run([sys.executable, str(ROOT / "scripts/edr_runtime.py"), "experiment", "init",
+                "--root", str(RUN)], check=True, stdout=subprocess.DEVNULL)
 DATA = RUN / "host-data"
 SOCKET = "deck-smoke-" + RUN.name.removeprefix("deck-connector-diagnose-").replace("_", "")
 MANIFEST = RUN / "manifest.json"
@@ -35,7 +36,7 @@ state = {"runDir": str(RUN), "developerDir": str(DEVELOPER), "simulatorUDID": No
          "hostPID": None, "hostBundle": None, "tmuxSocket": SOCKET, "cleanupCompleted": False}
 result = {"environmentReady": False, "isolationVerified": False,
           "mode": "fixed", "reproductionConfirmed": None,
-          "historicalReproductionReport": "/tmp/deck-connector-diagnose-owuvifyn/report.json",
+          "snapshotScope": "boardMetadata" if ENV.get("DECK_SMOKE_CONNECTOR_BOARD_METADATA") == "1" else "agentCards",
           "productAssertionsPassed": False,
           "requiredTestsExecuted": False, "cleanupCompleted": False, "humanInterventions": 0,
           "xcodePath": str(XCODE), "developerDir": str(DEVELOPER),
@@ -67,7 +68,7 @@ def capture(args, timeout=30):
 
 def process_matches(pid, executable):
     try:
-        command = capture(["ps", "-p", str(pid), "-o", "command="], 5)
+        command = capture(["ps", "-p", str(pid), "-o", "comm="], 5)
         return os.path.realpath(command.split(" ", 1)[0]) == os.path.realpath(executable)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
@@ -167,7 +168,7 @@ def probe_live_agent(tmux):
                 run([str(tmux), "-L", SOCKET, "send-keys", "-t", session, "Enter"], timeout=10)
                 pending_since = time.monotonic()
             elif (not submit_again and "› Reply with only the concatenation" in output
-                  and "GPT-6-Sol" in output and time.monotonic() - pending_since > 2):
+                  and time.monotonic() - pending_since > 2):
                 # The exact prompt is still in Codex's composer after its startup dialog.
                 run([str(tmux), "-L", SOCKET, "send-keys", "-t", session, "Enter"], timeout=10)
                 submit_again = True
@@ -245,8 +246,11 @@ def main():
     iphones = [x for x in device_types if x.get("productFamily") == "iPhone"]
     if not iphones:
         raise RuntimeError("iPhone device type unavailable")
-    device_type = next((x["identifier"] for x in iphones if x["name"] == "iPhone 17"),
-                       iphones[0]["identifier"])
+    requested_device = os.environ.get("DECK_DIAG_DEVICE", "iPhone 17")
+    chosen = next((x for x in iphones if x["name"] == requested_device), None)
+    if chosen is None:
+        raise RuntimeError("requested iPhone device type is unavailable")
+    device_type = chosen["identifier"]
     result["selectedRuntime"] = runtime["identifier"]
     result["selectedDeviceType"] = device_type
     result["head"] = capture(["git", "rev-parse", "HEAD"])
@@ -256,7 +260,7 @@ def main():
     result["environmentReady"] = True
     # This test uses the existing debug smoke path, whose credential store is process local.
     keychain = (ROOT / "app/src-tauri/src/keychain.rs").read_text()
-    if "if crate::smoke_faults::enabled()" not in keychain or "cache_put(slot, Some(value.to_string()))" not in keychain:
+    if "if cfg!(test) || crate::smoke_faults::enabled()" not in keychain or "cache_put(slot, Some(value.to_string()))" not in keychain:
         raise RuntimeError("smoke Keychain isolation proof changed")
     DATA.mkdir(mode=0o700)
     state["hostData"] = str(DATA)
@@ -264,6 +268,11 @@ def main():
     save()
     run(["xcrun", "simctl", "boot", state["simulatorUDID"]], log=RUN / "sim-boot.log", timeout=60)
     run(["xcrun", "simctl", "bootstatus", state["simulatorUDID"], "-b"], log=RUN / "sim-ready.log", timeout=180)
+    appearance = os.environ.get("DECK_DIAG_APPEARANCE", "light")
+    if appearance not in ("light", "dark"):
+        raise RuntimeError("unsupported simulator appearance")
+    run(["xcrun", "simctl", "ui", state["simulatorUDID"], "appearance", appearance], log=RUN / "sim-appearance.log", timeout=30)
+    result["appearance"] = appearance
     state["simulatorRuntime"] = runtime["identifier"]
     save()
 
@@ -298,6 +307,9 @@ def main():
                        "CFBundleIdentifier": "io.c9r.deck.smoke." + RUN.name.rsplit("-", 1)[-1].replace("_", ""),
                        "CFBundleName": "deck smoke", "CFBundleVersion": version,
                        "CFBundleShortVersionString": version, "CFBundlePackageType": "APPL"}, file)
+    run([sys.executable, str(ROOT / "scripts/sidecar_provenance.py"), "check", "--profile", "debug",
+         "--bundle", str(bundle), "--main-product", str(target / "debug/deck-app")],
+        log=RUN / "sidecar-provenance.log", timeout=60)
     run(["codesign", "--force", "--sign", "-", "--entitlements",
          str(ROOT / "app/src-tauri/Entitlements.plist"), str(bundle)],
         log=RUN / "host-sign.log", timeout=60)
@@ -319,7 +331,9 @@ def main():
     if source_fingerprint() != result["sourceDiffSHA256"]:
         raise RuntimeError("build inputs changed during this diagnostic run")
     run(["xcrun", "simctl", "install", udid, str(app)], log=RUN / "sim-install.log", timeout=90)
-    open_args = ["open", "-n", str(bundle), "--args", "--smoke-data-dir", str(DATA),
+    open_args = ["open", "-n", str(bundle), "--env", "TMUX_TMPDIR=" + ENV["TMUX_TMPDIR"],
+                 "--env", "DECK_SMOKE_CONNECTOR_BOARD_METADATA=" + ENV.get("DECK_SMOKE_CONNECTOR_BOARD_METADATA", "0"),
+                 "--args", "--smoke-data-dir", str(DATA),
                  "--smoke-tmux-socket", SOCKET, "--smoke-wkwebview", "connector-transport"]
     for attempt in (1, 2):
         open_log = RUN / f"host-open-{attempt}.log"
@@ -332,23 +346,37 @@ def main():
                                and "Launchd job spawn failed" in failure)
             active = any(os.path.realpath(line.strip().split(" ", 1)[1].split(" ", 1)[0])
                          == os.path.realpath(executable)
-                         for line in capture(["ps", "-axo", "pid=,command="], 10).splitlines()
+                         for line in capture(["ps", "-axo", "pid=,comm="], 10).splitlines()
                          if len(line.strip().split(" ", 1)) == 2)
             if attempt == 2 or not known_transient or active:
                 raise
             result["hostLaunchTransientRetries"] = attempt
     fixture = DATA / "connector-smoke-transport.json"
     deadline = time.monotonic() + 90
-    while time.monotonic() < deadline and not fixture.is_file():
-        ps = capture(["ps", "-axo", "pid=,command="], 10)
+    while time.monotonic() < deadline and (
+        not fixture.is_file() or not state.get("hostRegistered") or not state.get("serverRegistered")
+    ):
+        ps = capture(["ps", "-axo", "pid=,comm="], 10)
         matches = [int(fields[0]) for line in ps.splitlines()
                    if len(fields := line.strip().split(" ", 1)) == 2 and fields[0].isdigit()
                    and os.path.realpath(fields[1].split(" ", 1)[0]) == os.path.realpath(executable)]
         if len(matches) == 1 and process_matches(matches[0], executable):
             state["hostPID"] = matches[0]
+            if not state.get("hostRegistered"):
+                run([sys.executable, str(ROOT / "scripts/edr_runtime.py"), "experiment",
+                     "add-process", "--root", str(RUN), "--pid", str(matches[0])],
+                    log=RUN / "register-host.log")
+                state["hostRegistered"] = True
+            full_socket = RUN / "t" / f"tmux-{os.getuid()}" / SOCKET
+            if full_socket.exists() and not state.get("serverRegistered"):
+                run([sys.executable, str(ROOT / "scripts/edr_runtime.py"), "experiment",
+                     "add-server", "--root", str(RUN), "--socket", str(full_socket),
+                     "--tmux", str(macos / "tmux")], log=RUN / "register-server.log")
+                state["serverRegistered"] = True
             save()
         time.sleep(0.25)
-    if not fixture.is_file() or not state["hostPID"]:
+    if (not fixture.is_file() or not state["hostPID"] or
+            not state.get("hostRegistered") or not state.get("serverRegistered")):
         raise RuntimeError("isolated host fixture was not ready")
     if fixture.stat().st_mode & 0o077:
         raise RuntimeError("pairing fixture is not private")
@@ -418,52 +446,63 @@ def main():
         shell_marker = "shellmarker" + RUN.name.removeprefix("deck-connector-diagnose-").replace("_", "")
         match[0].setdefault("TestingEnvironmentVariables", {})["DECK_DIAG_EXITED_MARKER"] = shell_marker
         match[0].setdefault("EnvironmentVariables", {})["DECK_DIAG_EXITED_MARKER"] = shell_marker
+    if SUITE == "ui":
+        for key in ("TestingEnvironmentVariables", "EnvironmentVariables"):
+            match[0].setdefault(key, {})["DECK_DIAG_SCOPE"] = result["snapshotScope"]
     with open(plan, "wb") as file:
         plistlib.dump(contents, file)
     test_command = ["xcodebuild", "-xctestrun", str(plan), "-destination", destination,
                     "-parallel-testing-enabled", "NO",
                     "-resultBundlePath", str(RUN / ("ui.xcresult" if SUITE == "ui" else "appmodel.xcresult")),
                     "test-without-building"]
-    selected = (["DeckConnectorUITests/ConnectorUITests/testIsolatedStoppedAgentVisibilityAndOutput",
-                 "DeckConnectorUITests/ConnectorUITests/testIsolatedLiveCodexOutput"]
-                if SUITE == "ui" else
-                ["DeckConnectorTests/AppModelTests/testOptInRealHostPairingBufferCASAndCredentialLifecycle",
-                 "DeckConnectorTests/AppModelTests/testOutputIssueRecoversWhenAReadableOutputArrives"])
-    test_command += ["-only-testing:" + name for name in selected]
-    test_failure = None
     if SUITE == "ui":
-        try:
-            run(test_command, log=RUN / "ui-test.log", timeout=600)
-        except Exception as error:
-            test_failure = str(error)
+        selected = [
+            "DeckConnectorUITests/ConnectorUITests/testIsolatedStoppedAgentVisibilityAndOutput",
+            "DeckConnectorUITests/ConnectorUITests/testIsolatedLiveCodexOutput",
+            "DeckConnectorUITests/ConnectorUITests/testIsolatedDraftsSurviveNavigationAndRelaunch",
+            "DeckConnectorUITests/ConnectorUITests/testIsolatedChineseLargeText",
+        ]
+        if result["snapshotScope"] == "boardMetadata":
+            selected.append("DeckConnectorUITests/ConnectorUITests/testIsolatedSharedShellIsMetadataOnly")
+        test_command += ["-only-testing:" + name for name in selected]
     else:
-        with open(RUN / "appmodel-test.log", "w") as output:
-            process = subprocess.Popen(test_command, cwd=ROOT, env=ENV, stdout=output,
-                                       stderr=subprocess.STDOUT)
-            deadline = time.monotonic() + 600
-            try:
-                while process.poll() is None and time.monotonic() < deadline:
-                    if not sim_fixture.is_file():
-                        try:
-                            sim_fixture.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                            shutil.copy2(fixture, sim_fixture)
-                            os.chmod(sim_fixture, 0o600)
-                        except FileNotFoundError:
-                            # Xcode can replace the same test app container mid-copy.
-                            pass
-                    time.sleep(0.1)
-                if process.poll() is None:
-                    raise TimeoutError("app-hosted XCTest exceeded 600 seconds")
-                if process.returncode:
-                    raise RuntimeError("app-hosted XCTest failed; see appmodel-test.log")
-            finally:
-                if process.poll() is None:
-                    process.terminate()
+        app_model_source = (ROOT / "connector/ios/DeckConnectorTests/AppModelTests.swift").read_text()
+        methods = re.findall(r"(?m)^\s+func\s+(test[A-Za-z0-9_]+)\s*\(", app_model_source)
+        if not methods or len(methods) != len(set(methods)):
+            raise RuntimeError("AppModelTests methods could not be inventoried exactly")
+        selected = ["DeckConnectorTests/AppModelTests/" + name for name in methods]
+        test_command.append("-only-testing:DeckConnectorTests/AppModelTests")
+    test_failure = None
+    suite_log = RUN / ("ui-test.log" if SUITE == "ui" else "appmodel-test.log")
+    with open(suite_log, "w") as output:
+        process = subprocess.Popen(test_command, cwd=ROOT, env=ENV, stdout=output,
+                                   stderr=subprocess.STDOUT)
+        run([sys.executable, str(ROOT / "scripts/edr_runtime.py"), "experiment", "add-process",
+             "--root", str(RUN), "--pid", str(process.pid)], log=RUN / "register-xctest.log", timeout=30)
+        deadline = time.monotonic() + 600
+        try:
+            while process.poll() is None and time.monotonic() < deadline:
+                if not sim_fixture.is_file():
                     try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=5)
+                        # Xcode can reinstall/reset the test app container after
+                        # build-for-testing. Recreate the exact private fixture path
+                        # already frozen into the xctestrun environment.
+                        sim_fixture.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        shutil.copy2(fixture, sim_fixture)
+                        os.chmod(sim_fixture, 0o600)
+                    except FileNotFoundError:
+                        # The same container may disappear again during this copy.
+                        pass
+                time.sleep(0.1)
+            if process.poll() is None:
+                raise TimeoutError("app-hosted XCTest exceeded 600 seconds")
+            if process.returncode:
+                test_failure = "XCTest failed; see suite log"
+        finally:
+            if process.poll() is None:
+                run([sys.executable, str(ROOT / "scripts/edr_runtime.py"), "experiment", "stop",
+                     "--root", str(RUN), "--pid", str(process.pid)], log=RUN / "stop-xctest.log", timeout=30)
+                process.wait(timeout=30)
     bundle = RUN / ("ui.xcresult" if SUITE == "ui" else "appmodel.xcresult")
     summary = json.loads(capture(["xcrun", "xcresulttool", "get", "test-results", "summary",
                                   "--path", str(bundle)], 30))
@@ -483,11 +522,12 @@ def main():
     observed = {node["name"].removesuffix("()"): node.get("result", "Unknown")
                 for node in test_cases(nodes)}
     result["testResults"] = observed
-    if len(observed) != len(selected):
+    expected = {name.rsplit("/", 1)[-1] for name in selected}
+    if set(observed) != expected:
         raise RuntimeError("selected XCTest cases did not all execute")
     if SUITE == "ui":
         run(["xcrun", "xcresulttool", "export", "attachments", "--path", str(bundle),
-             "--output-path", str(RUN / "screenshots"), "--filter", "Stopped agent round*"],
+             "--output-path", str(RUN / "screenshots")],
             log=RUN / "screenshot-export.log", timeout=60)
     result["tests"]["simulatorUI" if SUITE == "ui" else "appModelRealHost"] = (
         "PASS" if not test_failure and all(value == "Passed" for value in observed.values()) else "FAIL")
@@ -538,61 +578,50 @@ def main():
 
 
 def cleanup():
+    if state.get("simulatorUDID"):
+        try:
+            container = pathlib.Path(capture(["xcrun", "simctl", "get_app_container", state["simulatorUDID"],
+                                              "io.c9r.deck.connector", "data"], 15))
+            trace = container / "Documents/note-stages.log"
+            if trace.is_file() and trace.stat().st_size <= 65536:
+                shutil.copy2(trace, RUN / "note-stages.log")
+        except (OSError, subprocess.SubprocessError):
+            pass
+    journal_path = DATA / "connector.json"
+    if journal_path.is_file():
+        try:
+            document = json.loads(journal_path.read_text())
+            safe = [
+                {key: row.get(key) for key in ("kind", "state", "code", "acceptedAt", "updatedAt")}
+                for row in document.get("commands", [])
+            ]
+            (RUN / "command-state-summary.json").write_text(json.dumps(safe, indent=2) + "\n")
+        except (OSError, ValueError, TypeError, AttributeError) as error:
+            # Evidence extraction cannot prevent registered-resource cleanup.
+            result["commandStateSummaryError"] = type(error).__name__
     ok = True
     pid = state.get("hostPID")
     executable = pathlib.Path(state["hostBundle"]) / "Contents/MacOS/deck" if state.get("hostBundle") else None
     if not pid and executable:
-        for line in capture(["ps", "-axo", "pid=,command="], 10).splitlines():
+        for line in capture(["ps", "-axo", "pid=,comm="], 10).splitlines():
             fields = line.strip().split(" ", 1)
             if fields[0].isdigit() and len(fields) == 2 and \
                     os.path.realpath(fields[1].split(" ", 1)[0]) == os.path.realpath(executable):
                 pid = int(fields[0])
                 state["hostPID"] = pid
                 break
-    if pid and executable and process_matches(pid, executable):
-        os.kill(pid, signal.SIGTERM)
-        for _ in range(40):
-            if not process_matches(pid, executable):
-                break
-            time.sleep(0.25)
-        ok &= not process_matches(pid, executable)
-    if state.get("hostBundle"):
-        tmux = pathlib.Path(state["hostBundle"]) / "Contents/MacOS/tmux"
-        if tmux.is_file():
-            try:
-                metadata = json.loads(capture([str(tmux), "-L", SOCKET, "show-option", "-gv",
-                                               "@deck-server-metadata"], 10))
-                if metadata.get("source") != "smoke" or metadata.get("buildIdentifier") != result.get("head"):
-                    raise RuntimeError("tmux metadata does not match this run")
-                run([str(tmux), "-L", SOCKET, "kill-server"], log=RUN / "tmux-cleanup.log", timeout=20)
-            except subprocess.CalledProcessError:
-                pass  # This run never created a tmux server.
-            except Exception:
-                ok = False
-    socket_path = pathlib.Path(f"/private/tmp/tmux-{os.getuid()}") / SOCKET
-    if socket_path.exists():
-        mode = socket_path.stat().st_mode
-        if not stat.S_ISSOCK(mode) or socket_path.stat().st_uid != os.getuid():
-            ok = False
-        else:
-            connected = False
-            for _ in range(20):
-                probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                probe.settimeout(1)
-                try:
-                    connected = probe.connect_ex(str(socket_path)) == 0
-                finally:
-                    probe.close()
-                if not connected:
-                    break
-                time.sleep(0.25)
-            if connected:
-                ok = False
-            else:
-                try:
-                    socket_path.unlink()
-                except OSError:
-                    ok = False
+    try:
+        run([sys.executable, str(ROOT / "scripts/edr_runtime.py"), "experiment", "cleanup",
+             "--root", str(RUN)], log=RUN / "registry-cleanup.log", timeout=60)
+        # Audit while the carrier and its bundled tmux still exist: `show`
+        # refuses a server entry whose registered executable cannot be run.
+        run([sys.executable, str(ROOT / "scripts/edr_runtime.py"), "experiment", "show",
+             "--root", str(RUN)], log=RUN / "registry-audit.log", timeout=30)
+    except Exception:
+        result["cleanupCompleted"] = False
+        state["cleanupCompleted"] = False
+        save()
+        raise
     if state.get("simulatorFixture"):
         pathlib.Path(state["simulatorFixture"]).unlink(missing_ok=True)
     if state.get("simulatorUDID"):
@@ -737,6 +766,13 @@ if __name__ == "__main__":
             result["tests"][test_key] = "FAIL"
         print(str(error), file=sys.stderr)
     finally:
+        save()
+        print(str(RUN / "ready-for-review"), flush=True)
+        (RUN / "ready-for-review").touch()
+        if os.environ.get("DECK_DIAG_REVIEW") == "1":
+            deadline = time.monotonic() + 1800
+            while not (RUN / "finish-review").exists() and time.monotonic() < deadline:
+                time.sleep(1)
         cleanup()
         print(REPORT)
     suite_test = "simulatorUI" if SUITE == "ui" else "appModelRealHost"

@@ -8,11 +8,23 @@ public struct VersionedMessageDraft: Equatable, Sendable {
 
 public enum DraftSaveReceipt: Equatable, Sendable { case saved(UInt64), superseded(UInt64) }
 
+public struct VersionedNoteDraft: Equatable, Sendable {
+    public let draft: NoteDraft
+    public let version: UInt64
+    public init(draft: NoteDraft, version: UInt64) { self.draft = draft; self.version = version }
+}
+
 public protocol MessageDraftSink: Sendable {
     func saveDraft(_ draft: MessageDraft) async throws
 }
 
 extension CommandJournal: MessageDraftSink {}
+
+public protocol NoteDraftSink: Sendable {
+    func saveNoteDraft(_ draft: NoteDraft) async throws
+}
+
+extension CommandJournal: NoteDraftSink {}
 
 public actor DraftSaveCoordinator {
     private let sink: any MessageDraftSink
@@ -39,6 +51,43 @@ public actor DraftSaveCoordinator {
         defer { release() }
         try await sink.saveDraft(value.draft)
         savedVersions[value.draft.cardID] = max(savedVersions[value.draft.cardID] ?? 0, value.version)
+        return .saved(value.version)
+    }
+
+    private func acquire() async {
+        if !busy { busy = true; return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    private func release() {
+        if waiters.isEmpty { busy = false } else { waiters.removeFirst().resume() }
+    }
+}
+
+/// Serializes autosaves across every note editor sharing a journal. Versions
+/// are tracked per card/entry identity, so a delayed save for one editor cannot
+/// overwrite a newer edit while independent note editors remain independent.
+public actor NoteDraftSaveCoordinator {
+    private struct Key: Hashable, Sendable {
+        let cardID: String
+        let entryID: String?
+    }
+
+    private let sink: any NoteDraftSink
+    private var savedVersions: [Key: UInt64] = [:]
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    public init(sink: any NoteDraftSink) { self.sink = sink }
+
+    public func persist(_ value: VersionedNoteDraft) async throws -> DraftSaveReceipt {
+        await acquire()
+        defer { release() }
+        let key = Key(cardID: value.draft.cardID, entryID: value.draft.entryID)
+        let saved = savedVersions[key] ?? 0
+        guard value.version > saved else { return .superseded(saved) }
+        try await sink.saveNoteDraft(value.draft)
+        savedVersions[key] = value.version
         return .saved(value.version)
     }
 

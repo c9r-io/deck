@@ -1,0 +1,66 @@
+{
+  "runs": [
+    {
+      "runDir": "/tmp/deck-connector-diagnose-opa7k5o3",
+      "cleanupReported": true,
+      "registryStopLogComplete": true,
+      "registeredPIDsAbsent": true,
+      "noProcessesExecutingFromRoot": true,
+      "registeredSocketsRemoved": true,
+      "simulatorRemoved": true,
+      "privateHostDataRemoved": true,
+      "postDisposalRegistryShow": "passed"
+    },
+    {
+      "runDir": "/tmp/deck-connector-diagnose-epojcgfq",
+      "cleanupReported": true,
+      "registryStopLogComplete": true,
+      "registeredPIDsAbsent": true,
+      "noProcessesExecutingFromRoot": true,
+      "registeredSocketsRemoved": true,
+      "simulatorRemoved": true,
+      "privateHostDataRemoved": true,
+      "postDisposalRegistryShow": "refused: bundled tmux was already removed after successful registry cleanup; no stop attempted"
+    },
+    {
+      "runDir": "/tmp/deck-connector-diagnose-lzh_4itt",
+      "cleanupReported": true,
+      "registryStopLogComplete": true,
+      "registeredPIDsAbsent": true,
+      "noProcessesExecutingFromRoot": true,
+      "registeredSocketsRemoved": true,
+      "simulatorRemoved": true,
+      "privateHostDataRemoved": true,
+      "postDisposalRegistryShow": "refused: bundled tmux was already removed after successful registry cleanup; no stop attempted"
+    },
+    {
+      "runDir": "/tmp/deck-connector-diagnose-_56rum4z",
+      "cleanupReported": true,
+      "registryStopLogComplete": true,
+      "registeredPIDsAbsent": true,
+      "noProcessesExecutingFromRoot": true,
+      "registeredSocketsRemoved": true,
+      "simulatorRemoved": true,
+      "privateHostDataRemoved": true,
+      "postDisposalRegistryShow": "refused: bundled tmux was already removed after successful registry cleanup; no stop attempted"
+    },
+    {
+      "runDir": "/tmp/deck-connector-diagnose-kfs14u6f",
+      "cleanupReported": true,
+      "registryStopLogComplete": true,
+      "registeredPIDsAbsent": true,
+      "noProcessesExecutingFromRoot": true,
+      "registeredSocketsRemoved": true,
+      "simulatorRemoved": true,
+      "privateHostDataRemoved": true,
+      "postDisposalRegistryShow": "refused: bundled tmux was already removed after successful registry cleanup; no stop attempted"
+    }
+  ],
+  "testSimulatorsRemaining": 0,
+  "bootedSimulatorCount": 0,
+  "availableSimulatorCount": 11,
+  "installedDeckStillRunning": true,
+  "buildArtifactsMovedToTrash": "/Users/chenhan/.Trash/deck-phone-audit-20261016-13c4af8c",
+  "productionSourceModified": false,
+  "productionBoardModified": false
+}

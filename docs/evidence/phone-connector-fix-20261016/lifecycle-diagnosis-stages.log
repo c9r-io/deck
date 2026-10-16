@@ -1,0 +1,26 @@
+1792152300.526473 view-text-changed length=2 drafts=1 busy=0
+1792152301.3583999 view-text-changed length=3 drafts=1 busy=0
+1792152301.492795 view-text-changed length=4 drafts=1 busy=0
+1792152301.6712 view-text-changed length=9 drafts=1 busy=0
+1792152301.762433 view-text-changed length=10 drafts=1 busy=0
+1792152301.886119 view-text-changed length=11 drafts=1 busy=0
+1792152301.971607 view-text-changed length=12 drafts=1 busy=0
+1792152302.104142 view-text-changed length=15 drafts=1 busy=0
+1792152302.304698 view-text-changed length=21 drafts=1 busy=0
+1792152302.432325 view-text-changed length=22 drafts=1 busy=0
+1792152302.501415 view-text-changed length=23 drafts=1 busy=0
+1792152302.6126409 view-text-changed length=24 drafts=1 busy=0
+1792152302.6889791 view-text-changed length=25 drafts=1 busy=0
+1792152302.792616 view-text-changed length=26 drafts=1 busy=0
+1792152303.299755 view-text-changed length=47 drafts=1 busy=0
+1792152315.339651 view-text-changed length=47 drafts=1 busy=0
+1792152347.760991 view-text-changed length=47 drafts=1 busy=0
+1792152353.7881021 view-adding-changed value=true drafts=1 busy=0
+1792152353.847537 view-submit-start drafts=1 busy=0
+1792152353.85856 execute-start drafts=1 busy=1
+1792152354.0477772 submit-return-accepted drafts=1 busy=1
+1792152354.0501661 journal-status-return drafts=1 busy=1
+1792152354.185643 execute-return-accepted drafts=1 busy=1
+1792152354.1862879 view-submit-return applied=false length=47 drafts=1 busy=0
+1792152354.186874 view-settled length=47 saving=false drafts=1 busy=0
+1792152354.245737 view-adding-changed value=false drafts=1 busy=0

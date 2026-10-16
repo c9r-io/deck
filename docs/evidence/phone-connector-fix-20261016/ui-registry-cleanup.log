@@ -1,0 +1,5 @@
+process pid 62347 started Fri Oct 16 21:14:27 2026: running
+tmux-server pid 62367 started Fri Oct 16 21:14:32 2026 socket /private/tmp/deck-connector-diagnose-ly1txuy9/t/tmux-501/deck-smoke-ly1txuy9: running
+process pid 63280 started Fri Oct 16 21:15:28 2026: gone
+stopped tmux-server pid 62367
+stopped process pid 62347

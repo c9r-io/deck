@@ -45,6 +45,16 @@ private actor MockTransport: CommandTransport {
     func setPost(_ result: Result<CommandResult, Error>) { postResult = result }
 }
 
+private actor CancellingTransport: CommandTransport {
+    var queried: [String] = []
+    func post(command: CommandRequest) async throws -> CommandResult { throw MockFailure.offline }
+    func query(id: String) async throws -> CommandResult {
+        queried.append(id)
+        withUnsafeCurrentTask { $0?.cancel() }
+        return CommandResult(id: id, state: .accepted, code: nil, result: nil)
+    }
+}
+
 private actor DelayedPostTransport: CommandTransport {
     private var postWaiter: CheckedContinuation<CommandResult, Error>?
     private var posted = false
@@ -78,6 +88,12 @@ private func request(_ id: String = "op-1", text: String = "hello") -> CommandRe
     CommandRequest(id: id, kind: "send-message", cardId: "card", expectedGeneration: "generation-1", payload: ["text": .string(text)])
 }
 
+private func bufferRequest(_ id: String, kind: String, text: String, entryID: String? = nil) -> CommandRequest {
+    var payload: [String: JSONValue] = ["text": .string(text)]
+    if let entryID { payload["entryId"] = .string(entryID) }
+    return CommandRequest(id: id, kind: kind, cardId: "card", expectedRevision: "1", payload: payload)
+}
+
 @Test func stateWritesStayOrderedAcrossSuspendingStorage() async throws {
     let storage = ControlledStorage()
     let journal = try await CommandJournal.open(storage: storage, binding: binding)
@@ -100,6 +116,214 @@ private func request(_ id: String = "op-1", text: String = "hello") -> CommandRe
     let journal = try await CommandJournal.open(storage: storage, binding: binding)
     do { try await journal.saveDraft(MessageDraft(cardID: "card", text: "lost", expectedGeneration: "g")); Issue.record("Expected storage failure") } catch { }
     #expect(await journal.draft(for: "card") == nil)
+}
+
+@Test func noteDraftsSurviveRestartAndNewAndExistingEditorsDoNotCollide() async throws {
+    let storage = ControlledStorage()
+    var journal = try await CommandJournal.open(storage: storage, binding: binding)
+    let new = NoteDraft(cardID: "card", entryID: nil, text: "new note")
+    let existing = NoteDraft(cardID: "card", entryID: "entry", text: "existing note")
+    try await journal.saveNoteDraft(new)
+    try await journal.saveNoteDraft(existing)
+    #expect(await journal.draft(for: "card") == nil, "note text never enters the message draft namespace")
+
+    journal = try await CommandJournal.open(storage: storage, binding: binding)
+    #expect(await journal.noteDraft(cardID: "card", entryID: nil) == new)
+    #expect(await journal.noteDraft(cardID: "card", entryID: "entry") == existing)
+    #expect(await storage.snapshot?.version == 4)
+}
+
+@Test func noteDraftDiscardIsConditionalOnTheExactSavedSnapshot() async throws {
+    let journal = try await CommandJournal.open(storage: ControlledStorage(), binding: binding)
+    let submitted = NoteDraft(cardID: "card", entryID: "entry", text: "submitted")
+    try await journal.saveNoteDraft(submitted)
+    let newer = NoteDraft(cardID: "card", entryID: "entry", text: "newer")
+    try await journal.saveNoteDraft(newer)
+    #expect(try await journal.discardNoteDraft(ifUnchanged: submitted) == false)
+    #expect(await journal.noteDraft(cardID: "card", entryID: "entry") == newer)
+    #expect(try await journal.discardNoteDraft(ifUnchanged: newer) == true)
+    #expect(await journal.noteDraft(cardID: "card", entryID: "entry") == nil)
+}
+
+@Test func recoveredAppliedBufferEditAtomicallyClearsSubmittedDraftAcrossReopen() async throws {
+    let storage = ControlledStorage()
+    var journal = try await CommandJournal.open(storage: storage, binding: binding)
+    let draft = NoteDraft(cardID: "card", entryID: "entry", text: "edited", updatedAt: .distantPast)
+    try await journal.saveNoteDraft(draft)
+    let accepted = CommandResult(id: "edit", state: .accepted, code: nil, result: nil)
+    let applied = CommandResult(id: "edit", state: .applied, code: nil, result: nil)
+    let transport = MockTransport(post: .success(accepted), query: .success(applied))
+    _ = try await journal.submit(bufferRequest("edit", kind: "buffer-edit", text: draft.text, entryID: "entry"), draftCardID: nil, noteDraftRevision: draft.revision, using: transport)
+    #expect(await journal.noteDraft(cardID: "card", entryID: "entry") == draft)
+
+    journal = try await CommandJournal.open(storage: storage, binding: binding)
+    _ = await journal.recover(using: transport)
+    #expect(await journal.noteDraft(cardID: "card", entryID: "entry") == nil)
+    let reopened = try await CommandJournal.open(storage: storage, binding: binding)
+    #expect(await reopened.noteDraft(cardID: "card", entryID: "entry") == nil)
+}
+
+@Test func appliedBufferAddClearsOnlyTheNewNoteDraftNamespace() async throws {
+    let journal = try await CommandJournal.open(storage: ControlledStorage(), binding: binding)
+    let note = NoteDraft(cardID: "card", entryID: nil, text: "same", updatedAt: .distantPast)
+    try await journal.saveNoteDraft(note)
+    try await journal.saveDraft(MessageDraft(cardID: "card", text: "same", expectedGeneration: nil))
+    let applied = CommandResult(id: "add", state: .applied, code: nil, result: nil)
+    let transport = MockTransport(post: .success(applied), query: .success(applied))
+    _ = try await journal.submit(bufferRequest("add", kind: "buffer-add", text: "same"), draftCardID: nil, noteDraftRevision: note.revision, using: transport)
+    #expect(await journal.noteDraft(cardID: "card", entryID: nil) == nil)
+    #expect(await journal.draft(for: "card")?.text == "same", "buffer recovery never clears a message draft")
+}
+
+@Test func appliedBufferCommandWithoutAnExplicitRevisionPreservesTheDraft() async throws {
+    let journal = try await CommandJournal.open(storage: ControlledStorage(), binding: binding)
+    let draft = NoteDraft(cardID: "card", entryID: nil, text: "same")
+    try await journal.saveNoteDraft(draft)
+    let applied = CommandResult(id: "add", state: .applied, code: nil, result: nil)
+    let transport = MockTransport(post: .success(applied), query: .success(applied))
+
+    _ = try await journal.submit(bufferRequest("add", kind: "buffer-add", text: draft.text), draftCardID: nil, using: transport)
+
+    #expect(await journal.allRecords().first?.noteDraftRevision == nil)
+    #expect(await journal.noteDraft(cardID: "card", entryID: nil) == draft)
+}
+
+@Test func rejectedBufferEditPreservesItsDraft() async throws {
+    let journal = try await CommandJournal.open(storage: ControlledStorage(), binding: binding)
+    let draft = NoteDraft(cardID: "card", entryID: "entry", text: "keep", updatedAt: .distantPast)
+    try await journal.saveNoteDraft(draft)
+    let rejected = CommandResult(id: "edit", state: .rejected, code: "revision-changed", result: nil)
+    let transport = MockTransport(post: .success(rejected), query: .success(rejected))
+    _ = try await journal.submit(bufferRequest("edit", kind: "buffer-edit", text: draft.text, entryID: "entry"), draftCardID: nil, noteDraftRevision: draft.revision, using: transport)
+    #expect(await journal.noteDraft(cardID: "card", entryID: "entry") == draft)
+}
+
+@Test func recoveredBufferEditPreservesALaterIdenticalDraft() async throws {
+    let journal = try await CommandJournal.open(storage: ControlledStorage(), binding: binding)
+    let original = NoteDraft(cardID: "card", entryID: "entry", text: "same", updatedAt: .distantPast)
+    try await journal.saveNoteDraft(original)
+    let accepted = CommandResult(id: "edit", state: .accepted, code: nil, result: nil)
+    let applied = CommandResult(id: "edit", state: .applied, code: nil, result: nil)
+    let transport = MockTransport(post: .success(accepted), query: .success(applied))
+    _ = try await journal.submit(bufferRequest("edit", kind: "buffer-edit", text: "same", entryID: "entry"), draftCardID: nil, noteDraftRevision: original.revision, using: transport)
+    let later = NoteDraft(cardID: "card", entryID: "entry", text: "same", updatedAt: .distantFuture)
+    try await journal.saveNoteDraft(later)
+    _ = await journal.recover(using: transport)
+    #expect(await journal.noteDraft(cardID: "card", entryID: "entry") == later)
+}
+
+@Test func prepareDoesNotClaimALaterIdenticalDraftForTheIntendedEarlierRevision() async throws {
+    let journal = try await CommandJournal.open(storage: ControlledStorage(), binding: binding)
+    let original = NoteDraft(cardID: "card", entryID: "entry", text: "same")
+    try await journal.saveNoteDraft(original)
+    let later = NoteDraft(cardID: "card", entryID: "entry", text: "same")
+    try await journal.saveNoteDraft(later)
+    let applied = CommandResult(id: "edit", state: .applied, code: nil, result: nil)
+    let transport = MockTransport(post: .success(applied), query: .success(applied))
+
+    _ = try await journal.submit(
+        bufferRequest("edit", kind: "buffer-edit", text: original.text, entryID: "entry"),
+        draftCardID: nil,
+        noteDraftRevision: original.revision,
+        using: transport
+    )
+
+    #expect(await journal.allRecords().first?.noteDraftRevision == nil)
+    #expect(await journal.noteDraft(cardID: "card", entryID: "entry") == later)
+}
+
+@Test func fileReloadRecoveryPreservesLaterIdenticalDraftWithinTheSameEncodedSecond() async throws {
+    let directory = try scratchJournalDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let storage = FileJournalStorage(directory: directory)
+    var journal = try await CommandJournal.open(storage: storage, binding: binding)
+    let original = NoteDraft(cardID: "card", entryID: "entry", text: "same", updatedAt: .distantPast)
+    try await journal.saveNoteDraft(original)
+    let accepted = CommandResult(id: "edit", state: .accepted, code: nil, result: nil)
+    let applied = CommandResult(id: "edit", state: .applied, code: nil, result: nil)
+    let transport = MockTransport(post: .success(accepted), query: .success(applied))
+    _ = try await journal.submit(bufferRequest("edit", kind: "buffer-edit", text: "same", entryID: "entry"), draftCardID: nil, noteDraftRevision: original.revision, using: transport)
+    let prepared = try #require(await journal.allRecords().first)
+    #expect(prepared.noteDraftRevision == original.revision)
+
+    // This edit happened after prepare, but deliberately has the exact same
+    // timestamp and text. ISO-8601 persistence therefore cannot distinguish it.
+    let later = NoteDraft(cardID: "card", entryID: "entry", text: "same", updatedAt: prepared.createdAt)
+    try await journal.saveNoteDraft(later)
+    journal = try await CommandJournal.open(storage: storage, binding: binding)
+    let reloadedRecord = try #require(await journal.allRecords().first)
+    #expect(reloadedRecord.noteDraftRevision == original.revision)
+    #expect(await journal.noteDraft(cardID: "card", entryID: "entry")?.revision == later.revision)
+    _ = await journal.recover(using: transport)
+    let surviving = try #require(await journal.noteDraft(cardID: "card", entryID: "entry"))
+    #expect(surviving.revision == later.revision)
+    #expect(surviving.text == later.text)
+}
+
+@Test func noteDraftQuotaFailureLeavesTheLastCommittedStateWhole() async throws {
+    let storage = ControlledStorage()
+    let journal = try await CommandJournal.open(storage: storage, binding: binding)
+    let text = String(repeating: "x", count: ConnectorLimits.draftUTF8Bytes)
+    var rejectedID: String?
+    for index in 0..<100 {
+        do {
+            try await journal.saveNoteDraft(NoteDraft(cardID: "card", entryID: "entry-\(index)", text: text))
+        } catch ConnectorError.capacityExceeded {
+            rejectedID = "entry-\(index)"
+            break
+        }
+    }
+    let rejected = try #require(rejectedID)
+    #expect(await journal.noteDraft(cardID: "card", entryID: rejected) == nil)
+    #expect(await journal.noteDraft(cardID: "card", entryID: "entry-0")?.text == text)
+    let saved = try #require(await storage.snapshot)
+    let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601; encoder.outputFormatting = [.sortedKeys]
+    #expect(try encoder.encode(saved).count <= ConnectorLimits.journalBytes)
+}
+
+@Test func recoveryLimitQueriesOldestRecordsAndHonorsCancellation() async throws {
+    let base = Date(timeIntervalSince1970: 1_000)
+    let records = [
+        CommandRecord(request: request("newest"), localState: .unknown, result: nil, createdAt: base, updatedAt: base.addingTimeInterval(30)),
+        CommandRecord(request: request("oldest"), localState: .unknown, result: nil, createdAt: base, updatedAt: base.addingTimeInterval(10)),
+        CommandRecord(request: request("middle"), localState: .unknown, result: nil, createdAt: base, updatedAt: base.addingTimeInterval(20)),
+    ]
+    let journal = try await CommandJournal.open(storage: ControlledStorage(snapshot: JournalSnapshot(binding: binding, records: records)), binding: binding)
+    let limited = MockTransport(post: .failure(MockFailure.offline), query: .failure(MockFailure.offline))
+    _ = await journal.recover(using: limited, maximumQueries: 2)
+    #expect(await limited.queried == ["oldest", "middle"])
+
+    let cancellationJournal = try await CommandJournal.open(
+        storage: ControlledStorage(snapshot: JournalSnapshot(binding: binding, records: records)),
+        binding: binding
+    )
+    let cancelled = CancellingTransport()
+    let cancelledRecovery = Task { await cancellationJournal.recover(using: cancelled) }
+    _ = await cancelledRecovery.value
+    #expect(await cancelled.queried == ["oldest"], "the next query is not started after cancellation")
+}
+
+@Test func boundedRecoveryQueriesEveryPendingIDBeforeRepeatingNetworkFailures() async throws {
+    let base = Date(timeIntervalSince1970: 2_000)
+    let records = (0..<10).map { index in
+        CommandRecord(
+            request: request(String(format: "q%02d", index)),
+            localState: .unknown,
+            result: nil,
+            createdAt: base.addingTimeInterval(Double(index)),
+            updatedAt: base.addingTimeInterval(Double(index))
+        )
+    }
+    let journal = try await CommandJournal.open(
+        storage: ControlledStorage(snapshot: JournalSnapshot(binding: binding, records: records)),
+        binding: binding
+    )
+    let transport = MockTransport(post: .failure(MockFailure.offline), query: .failure(MockFailure.offline))
+    for _ in 0..<4 { _ = await journal.recover(using: transport, maximumQueries: 3) }
+    let queried = await transport.queried
+    #expect(Array(queried.prefix(10)) == records.map(\.id))
+    #expect(Set(queried.prefix(10)).count == 10)
+    #expect(queried.count == 12)
 }
 
 @Test func textTheHostWouldRefuseIsRejectedBeforeJournalingOrSending() async throws {
@@ -291,7 +515,7 @@ private func request(_ id: String = "op-1", text: String = "hello") -> CommandRe
     #expect(first >= clock, "sequences stay above an earlier installation's")
     #expect(second > first)
     let saved = try #require(await storage.snapshot)
-    #expect(saved.version == 3)
+    #expect(saved.version == 4)
     #expect(saved.nextSequence == second + 1)
     #expect(saved.records.map(\.request.seq) == [first, second], "persisted before the POST")
     // The caller's unsequenced body still identifies the same operation.
@@ -317,7 +541,7 @@ private func request(_ id: String = "op-1", text: String = "hello") -> CommandRe
     #expect(await journal.allRecords().first?.request.seq == nil, "an old body stays immutable")
     let transport = MockTransport(post: .success(CommandResult(id: "next", state: .accepted, code: nil, result: nil)), query: .failure(MockFailure.offline))
     _ = try await journal.submit(request("next"), draftCardID: "card", using: transport)
-    #expect(await storage.snapshot?.version == 3)
+    #expect(await storage.snapshot?.version == 4)
     #expect(await transport.posted.first?.seq != nil)
 }
 
@@ -363,7 +587,7 @@ private func legacyJournal(_ ids: [String], state: CommandRecord.LocalState = .u
     #expect(stored.localState == .notFound)
     #expect(stored.request.sequenced(nil) == request("legacy"), "same id and body")
     #expect(await storage.snapshot?.nextSequence == seq + 1)
-    #expect(await storage.snapshot?.version == 3, "persisted as the v3 local schema")
+    #expect(await storage.snapshot?.version == 4, "persisted as the current local schema")
     #expect(await host.posted.isEmpty)
     _ = try await journal.retryNotFound(id: "legacy", using: host)
     #expect(await host.posted.map(\.seq) == [seq])
@@ -444,7 +668,7 @@ private func legacyJournal(_ ids: [String], state: CommandRecord.LocalState = .u
     #expect(record.localState == .expired)
     #expect(record.localState != .resolved && record.localState != .notFound && record.result == nil)
     #expect(record.request.seq == seq)
-    #expect(await storage.snapshot?.version == 3, "`expired` is only ever written as v3")
+    #expect(await storage.snapshot?.version == 4, "`expired` is written in the current schema")
     let reopened = try await CommandJournal.open(storage: storage, binding: binding)
     #expect(await reopened.allRecords().first?.localState == .expired)
     _ = await reopened.recover(using: host)
@@ -507,7 +731,7 @@ private func fileVersion(_ directory: URL) throws -> Int {
 private let ambiguousResult = #"{"code":"delivery-unknown","id":"ambiguous","state":"ambiguous"}"#
 private let appliedResult = #"{"id":"resolved","state":"applied"}"#
 
-@Test func versionOneFileMigratesLazilyToVersionThree() async throws {
+@Test func versionOneFileMigratesLazilyToVersionFour() async throws {
     let directory = try scratchJournalDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let original = try writeJournal(journalJSON(version: 1, records: [
@@ -525,11 +749,11 @@ private let appliedResult = #"{"id":"resolved","state":"applied"}"#
     #expect(records[0].request == request("legacy"))
     #expect(records[1].result?.state == .applied)
     #expect(await journal.draft(for: "card")?.text == "draft")
-    // The next save writes version 3 with the records unchanged.
+    // The next save writes version 4 with the records unchanged.
     try await journal.saveDraft(MessageDraft(cardID: "other", text: "x", expectedGeneration: nil))
-    #expect(try fileVersion(directory) == 3)
+    #expect(try fileVersion(directory) == 4)
     let saved = try #require(try await storage.load())
-    #expect(saved.version == 3 && saved.records == records)
+    #expect(saved.version == 4 && saved.records == records)
     #expect(saved.nextSequence == 1)
 }
 
@@ -556,7 +780,7 @@ private let appliedResult = #"{"id":"resolved","state":"applied"}"#
     #expect(records[3].result?.state == .ambiguous && records[3].result?.code == "delivery-unknown")
     #expect(records.allSatisfy { $0.request.sequenced(nil) == request($0.id) }, "ids and bodies unchanged")
     try await journal.saveDraft(MessageDraft(cardID: "other", text: "x", expectedGeneration: nil))
-    #expect(try fileVersion(directory) == 3)
+    #expect(try fileVersion(directory) == 4)
     let saved = try #require(try await storage.load())
     #expect(saved.records == records && saved.nextSequence == 5000)
     #expect(saved.drafts["card"]?.text == "draft")
@@ -575,7 +799,7 @@ private let appliedResult = #"{"id":"resolved","state":"applied"}"#
     let legacySeq = try #require(byID["legacy"]?.request.seq)
     #expect(legacySeq >= 5000 && recovered.nextSequence == legacySeq + 1)
     #expect(!recovered.records.contains { $0.localState == .expired })
-    #expect(recovered.version == 3)
+    #expect(recovered.version == 4)
     #expect(await host.posted.isEmpty)
 }
 
@@ -595,10 +819,14 @@ private let appliedResult = #"{"id":"resolved","state":"applied"}"#
     let record = try #require(await journal.allRecords().first)
     #expect(record.localState == .expired && record.request.seq == 4100)
     #expect(try fileBytes(directory) == original, "nothing to persist, no new seq")
+    try await journal.saveNoteDraft(NoteDraft(cardID: "card", entryID: nil, text: "migrated note"))
+    #expect(try fileVersion(directory) == 4)
+    #expect(try await storage.load()?.noteDrafts.values.first?.text == "migrated note")
+    #expect(try await storage.load()?.records.first == record)
 }
 
 @Test func aNewerJournalVersionIsRefusedBeforeItsRecordsAndLeftUntouched() async throws {
-    for version in [0, 4, 99] {
+    for version in [0, 5, 99] {
         for state in ["unknown", "superseded"] {
             let directory = try scratchJournalDirectory()
             defer { try? FileManager.default.removeItem(at: directory) }
@@ -612,8 +840,8 @@ private let appliedResult = #"{"id":"resolved","state":"applied"}"#
 }
 
 @Test func anUnknownOrOutOfVersionStateFailsClosed() async throws {
-    // v3 with a state it does not define; v1/v2 never wrote `expired`.
-    for (version, state) in [(3, "vanished"), (2, "expired"), (1, "expired")] {
+    // v4 with a state it does not define; v1/v2 never wrote `expired`.
+    for (version, state) in [(4, "vanished"), (3, "vanished"), (2, "expired"), (1, "expired")] {
         let directory = try scratchJournalDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let original = try writeJournal(journalJSON(version: version, records: [recordJSON("keep", "unknown", seq: 6), recordJSON("odd", state, seq: 7)], nextSequence: 8), in: directory)
@@ -644,6 +872,6 @@ private let appliedResult = #"{"id":"resolved","state":"applied"}"#
     #expect(entries == ["journal.json"], "no partial file left behind: \(entries)")
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
     try await journal.saveDraft(MessageDraft(cardID: "other", text: "x", expectedGeneration: nil))
-    #expect(try fileVersion(directory) == 3)
+    #expect(try fileVersion(directory) == 4)
     #expect(try await storage.load()?.records.first?.request.seq == 4003)
 }

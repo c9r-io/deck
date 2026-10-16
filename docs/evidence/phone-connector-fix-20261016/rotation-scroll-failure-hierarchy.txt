@@ -1,0 +1,46 @@
+Application, 0x10e6c2440, pid: 48451, label: 'Deck Connector' <App element pid: 48451>
+  Window (Main), 0x10e6c0500, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4339581952.3>
+    Other, 0x10e6c0640, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4384080896.4>
+      Other, 0x10e6c0000, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4383989248.5>
+        Other, 0x10e6c0140, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4339580928.6>
+          Other, 0x10e67a6c0, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4728085216.7>
+            Other, 0x10e679a40, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4384088064.8>
+              NavigationBar, 0x10e67a300, {{0.0, 24.0}, {667.0, 54.0}}, identifier: 'connector transport' <AX element pid: 48451, elementOrHash.elementID: 4386900224.9>
+                Button, 0x10e679cc0, {{20.0, 24.0}, {44.0, 44.0}}, identifier: 'BackButton', label: '卡片' <AX element pid: 48451, elementOrHash.elementID: 4383279360.64>
+                StaticText, 0x10e67a080, {{237.5, 33.0}, {192.0, 26.0}}, label: 'connector transport' <AX element pid: 48451, elementOrHash.elementID: 4383459072.65>
+              Other, 0x10e67a1c0, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4340484288.10>
+                Other, 0x10e67a440, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4340673920.14>
+                  Other, 0x10e679540, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4383101312.66>
+                    Other, 0x10e6797c0, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4786037664.67>
+                      CollectionView, 0x10e679900, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4383300608.68>
+                        Other, 0x10e678640, {{-20.0, -458.0}, {707.0, 482.5}} <AX element pid: 48451, elementOrHash.elementID: 4730204672.75>
+                        Cell, 0x10e678780, {{20.0, -125.5}, {627.0, 132.5}} <AX element pid: 48451, elementOrHash.elementID: 4752633088.115>
+                          Other, 0x10e67b200, {{20.0, -125.5}, {627.0, 132.5}} <AX element pid: 48451, elementOrHash.elementID: 4755464704.117>
+                            Other, 0x10e67b0c0, {{20.0, -125.5}, {627.0, 132.5}} <AX element pid: 48451, elementOrHash.elementID: 4383470272.119>
+                          Other, 0x10e67bd40, {{20.0, -125.5}, {627.0, 132.5}} <AX element pid: 48451, elementOrHash.elementID: 4383459968.118>
+                            Other, 0x10e678b40, {{20.0, -125.5}, {627.0, 132.5}} <AX element pid: 48451, elementOrHash.elementID: 4754431488.120>
+                              Other, 0x10e67abc0, {{20.0, -125.5}, {627.0, 132.5}} <AX element pid: 48451, elementOrHash.elementID: 4786039584.121>
+                                StaticText, 0x10e679680, {{20.0, -125.5}, {627.0, 132.5}}, label: '无法读取输出时，仍可使用便签。' <AX element pid: 48451, elementOrHash.elementID: 4786033504.122>
+                        Other, 0x10e67ad00, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4383365696.70>
+                          Other, 0x10e6792c0, {{0.0, 0.0}, {667.0, 118.0}} <AX element pid: 48451, elementOrHash.elementID: 4383459520.81>
+                        Other, 0x10e678140, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4383364800.71>
+                          Other, 0x10e678dc0, {{0.0, 0.0}, {667.0, 118.0}} <AX element pid: 48451, elementOrHash.elementID: 4754971520.124>
+                        Other, 0x10e67be80, {{-20.0, 24.5}, {707.0, 1100.5}} <AX element pid: 48451, elementOrHash.elementID: 4730203648.69>
+                        Cell, 0x10e678500, {{20.0, 42.0}, {627.0, 313.0}} <AX element pid: 48451, elementOrHash.elementID: 4752629248.123>
+                          Other, 0x10e67aa80, {{20.0, 42.0}, {627.0, 313.0}} <AX element pid: 48451, elementOrHash.elementID: 4730198016.125>
+                            Other, 0x10e679180, {{20.0, 42.0}, {627.0, 313.0}} <AX element pid: 48451, elementOrHash.elementID: 4383374656.127>
+                          Other, 0x10e679f40, {{20.0, 42.0}, {627.0, 313.0}} <AX element pid: 48451, elementOrHash.elementID: 4383374208.126>
+                            Other, 0x10e6783c0, {{20.0, 42.0}, {627.0, 313.0}} <AX element pid: 48451, elementOrHash.elementID: 4754428416.128>
+                              Other, 0x10e67bac0, {{20.0, 42.0}, {627.0, 313.0}} <AX element pid: 48451, elementOrHash.elementID: 4786042784.129>
+                                TextView, 0x10e67b480, {{40.0, 57.0}, {434.5, 174.5}}, identifier: 'deck.message.draft' <AX element pid: 48451, elementOrHash.elementID: 4459668480.130>
+                                  Other, 0x10e67b5c0, {{441.5, 57.0}, {30.0, 174.5}}, label: '垂直滚动条, 1页', value: 0% <AX element pid: 48451, elementOrHash.elementID: 4755461120.134>
+                                    Other, 0x10e67b340, {{468.5, 154.5}, {3.0, 74.0}} <AX element pid: 48451, elementOrHash.elementID: 4383445376.135>
+                                StaticText, 0x10e67b840, {{48.0, 65.0}, {350.5, 125.5}}, identifier: 'deck.message.draft', label: '输入给智能体的消息…' <AX element pid: 48451, elementOrHash.elementID: 4786033344.131>
+                                Button, 0x10e67b980, {{482.5, 154.0}, {144.5, 77.5}}, identifier: 'deck.message.send', label: '发送', Disabled <AX element pid: 48451, elementOrHash.elementID: 4786031744.132>
+                                StaticText, 0x10e67b700, {{40.0, 237.5}, {530.0, 102.5}}, label: '此任务已停止。请先在桌面端启动，再发送消息。' <AX element pid: 48451, elementOrHash.elementID: 4786033024.133>
+                        Other, 0x10e67af80, {{634.0, 78.0}, {30.0, 297.0}}, label: '垂直滚动条, 4页', value: 100% <AX element pid: 48451, elementOrHash.elementID: 4755456000.80>
+                          Other, 0x10e679400, {{661.0, 273.5}, {3.0, 98.5}} <AX element pid: 48451, elementOrHash.elementID: 4383444928.92>
+                        Other, 0x10e67ae40, {{634.0, 78.0}, {30.0, 297.0}}, label: '垂直滚动条, 4页', value: 100% <AX element pid: 48451, elementOrHash.elementID: 4755456000.80>
+                          Other, 0x10e6bbc00, {{661.0, 273.5}, {3.0, 98.5}} <AX element pid: 48451, elementOrHash.elementID: 4383444928.92>
+              Toolbar, 0x10e6bbd40, {{0.0, 0.0}, {667.0, 375.0}}, identifier: 'Toolbar', label: '工具栏' <AX element pid: 48451, elementOrHash.elementID: 4384087552.11>
+                Other, 0x10e6bb0c0, {{0.0, 0.0}, {667.0, 375.0}} <AX element pid: 48451, elementOrHash.elementID: 4384088576.15>

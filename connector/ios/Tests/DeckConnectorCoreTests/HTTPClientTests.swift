@@ -173,3 +173,23 @@ struct HTTPClientTests {
     for task in tasks { _ = try? await task.value }
 }
 }
+
+private final class WrongCardOutputProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(#"{"cardId":"OTHER","generation":"g","revision":"r","capturedAt":1,"text":"private","truncated":false}"#.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+@Test func outputResponseMustBelongToTheRequestedCard() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [WrongCardOutputProtocol.self]
+    let client = try DeckHTTPClient(credential: DeviceCredential(origin: "https://deck.test", fingerprint: String(repeating: "0", count: 64), hostId: "host", deviceId: "device", token: "token"), configuration: configuration)
+    defer { client.invalidate() }
+    await #expect(throws: ConnectorError.invalidResponse) { try await client.output(cardID: "requested") }
+}

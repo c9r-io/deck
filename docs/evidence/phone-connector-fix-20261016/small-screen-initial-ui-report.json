@@ -1,0 +1,82 @@
+{
+  "environmentReady": true,
+  "isolationVerified": true,
+  "mode": "fixed",
+  "reproductionConfirmed": null,
+  "snapshotScope": "boardMetadata",
+  "productAssertionsPassed": true,
+  "requiredTestsExecuted": true,
+  "cleanupCompleted": true,
+  "humanInterventions": 0,
+  "xcodePath": "/Volumes/Yotta/Applications/Xcode.app",
+  "developerDir": "/Volumes/Yotta/Applications/Xcode.app/Contents/Developer",
+  "tests": {
+    "hostSmoke": "PASS",
+    "simulatorUI": "FAIL",
+    "shellReturnUI": "PASS"
+  },
+  "cases": {
+    "liveSavedAgentOutput": "PASS",
+    "ordinaryShellVisibility": "UNRUN",
+    "shellWithForegroundAgent": "UNRUN",
+    "savedCommandVariants": "UNRUN",
+    "stoppedSavedAgentOutput": "PASS",
+    "agentExitedToShell": "PASS",
+    "foregroundCycle": "PASS",
+    "appRelaunchCredentialRecovery": "PASS",
+    "refreshFailureRecovery": "UNRUN",
+    "saveFailure": "UNRUN",
+    "backupRecovery": "UNRUN"
+  },
+  "xcodeVersion": "Xcode 27.1\nBuild version 27A9275",
+  "simctl": "/Volumes/Yotta/Applications/Xcode.app/Contents/Developer/usr/bin/simctl",
+  "installedDeviceTypeCount": 130,
+  "availableDeviceCount": 11,
+  "selectedRuntime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+  "selectedDeviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation",
+  "head": "a326cdf3a6b3f1b18176da9079659e4762408eca",
+  "sourceDiffSHA256": "7808a6e252778a85611f09c5d8af7f7792a859cdbdc7cafe51b91d6a11b73931",
+  "freeBytes": 123257946112,
+  "appearance": "dark",
+  "hostBuildReusedFrom": "/tmp/deck-connector-diagnose-final-je_nehez",
+  "hostBinarySHA256": "4e9c14d9b46e0b2731335a75672b6777d72c19b81a051baa663d7d5046f22983",
+  "iosBinarySHA256": "d1221d28eefafb6c3feb9bae62471c3af1f3466975e8c688439387302a3385d5",
+  "caseCorrelation": {
+    "case": "stoppedSavedAgentOutput",
+    "cardIdHash": "0cf5e7d309b7454f",
+    "shellCardIdHash": "06bff28fe731e32a",
+    "request": "GET /v1/cards/<fixture-card>/output"
+  },
+  "hostIdHash": "f103aebc93ff0df2",
+  "listenerPort": 59409,
+  "liveCardIdHash": "d4c392dfc5128bdc",
+  "agentStartupChoices": [],
+  "agentComposerSubmit": "visible-pending-input",
+  "realAgentProbe": "PASS",
+  "realAgentMarker": "deckprobenmiruhp0",
+  "testCounts": {
+    "passedTests": 4,
+    "failedTests": 1,
+    "skippedTests": 0,
+    "totalTestCount": 5
+  },
+  "testResults": {
+    "testIsolatedChineseLargeText": "Failed",
+    "testIsolatedDraftsSurviveNavigationAndRelaunch": "Passed",
+    "testIsolatedLiveCodexOutput": "Passed",
+    "testIsolatedSharedShellIsMetadataOnly": "Passed",
+    "testIsolatedStoppedAgentVisibilityAndOutput": "Passed"
+  },
+  "shellReturnProbe": "PASS",
+  "shellReturnMarker": "shellmarkernmiruhp0",
+  "shellReturnTestCounts": {
+    "passedTests": 1,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 1
+  },
+  "shellReturnTestResults": {
+    "testIsolatedCodexExitToShellRejectsOutputAndSend": "Passed"
+  },
+  "failure": "XCTest failed; see suite log"
+}

@@ -1,0 +1,62 @@
+{
+  "environmentReady": true,
+  "isolationVerified": false,
+  "mode": "fixed",
+  "reproductionConfirmed": null,
+  "snapshotScope": "boardMetadata",
+  "productAssertionsPassed": false,
+  "requiredTestsExecuted": false,
+  "cleanupCompleted": true,
+  "humanInterventions": 0,
+  "xcodePath": "/Volumes/Yotta/Applications/Xcode.app",
+  "developerDir": "/Volumes/Yotta/Applications/Xcode.app/Contents/Developer",
+  "tests": {
+    "hostSmoke": "PASS",
+    "simulatorUI": "PASS",
+    "shellReturnUI": "PASS",
+    "hostSmoke_ui": "PASS",
+    "hostSmoke_appmodel": "UNRUN"
+  },
+  "cases": {
+    "liveSavedAgentOutput": "PASS",
+    "ordinaryShellVisibility": "UNRUN",
+    "shellWithForegroundAgent": "UNRUN",
+    "savedCommandVariants": "UNRUN",
+    "stoppedSavedAgentOutput": "PASS",
+    "agentExitedToShell": "PASS",
+    "foregroundCycle": "PASS",
+    "appRelaunchCredentialRecovery": "PASS",
+    "refreshFailureRecovery": "UNRUN",
+    "saveFailure": "UNRUN",
+    "backupRecovery": "UNRUN"
+  },
+  "uiExitCode": 0,
+  "uiTestCounts": {
+    "passedTests": 5,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 5
+  },
+  "head": "a326cdf3a6b3f1b18176da9079659e4762408eca",
+  "xcodeVersion": "Xcode 27.1\nBuild version 27A9275",
+  "selectedRuntime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+  "selectedDeviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+  "hostBinarySHA256": "67bbb2d364d6d951ae8b07514d157574bb90ad2fcb061f65752e0dd35d8c6078",
+  "iosBinarySHA256": "a688005d64d94f37c2b2067e8668d033f0c9e656d5a39f732f8467e4a6ea9726",
+  "sourceDiffSHA256": "f8359ccf978b63b973907b2c1ea2b6828c38166e692c5088355e5ab5639adb70",
+  "shellReturnTestCounts": {
+    "passedTests": 1,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 1
+  },
+  "uiSimulatorUDID": "891FF220-C047-49B9-B9B1-0E6066D5BBA0",
+  "appmodelExitCode": 1,
+  "appmodelTestCounts": null,
+  "appmodelSimulatorUDID": "F20AF2D3-BD83-47A1-8128-95AA2F5A0005",
+  "appmodelFailure": "build inputs changed during this diagnostic run",
+  "childReports": {
+    "ui": "/tmp/deck-connector-diagnose-a4duzkkz/report.json",
+    "appmodel": "/tmp/deck-connector-diagnose-_ghv8om7/report.json"
+  }
+}

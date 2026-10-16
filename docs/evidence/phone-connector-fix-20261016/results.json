@@ -1,0 +1,136 @@
+{
+  "status": "functional-acceptance-passed-with-workspace-gate-exception",
+  "baseline": "a326cdf3a6b3f1b18176da9079659e4762408eca",
+  "swiftCore": {
+    "total": 78,
+    "passed": 77,
+    "skipped": 1,
+    "failed": 0,
+    "log": "swift-core.log"
+  },
+  "connectorRust": {
+    "modulePassed": 64,
+    "failed": 0,
+    "source": "workspace test log; connector:: test cases"
+  },
+  "frontendInitial": {
+    "status": "failed",
+    "reason": "Two existing 1-second scan performance assertions failed during parallel compilation; the unchanged full gate later passed 849/849."
+  },
+  "frontendFinal": {
+    "passed": 849,
+    "failed": 0,
+    "skipped": 0,
+    "exitCode": 0,
+    "log": "frontend-final.log"
+  },
+  "clippy": {
+    "status": "passed",
+    "exitCode": 0,
+    "log": "clippy-final.log"
+  },
+  "catalog": {
+    "status": "passed",
+    "exitCode": 0
+  },
+  "jsSyntax": {
+    "passedModules": 178,
+    "exitCode": 0
+  },
+  "jsIdentifiers": {
+    "passedModules": 73,
+    "exitCode": 0
+  },
+  "visualFollowup": {
+    "status": "failed",
+    "run": "/tmp/deck-connector-diagnose-g6zz1mqt",
+    "uiPassed": 4,
+    "uiFailed": 1,
+    "shellReturnPassed": 1,
+    "cleanupCompleted": true,
+    "reason": "XCTest could not calculate a StaticText activation point during foregrounding. Landscape geometry assertions passed. Helper now checks noninteractive text visibility by geometry; interaction controls still require hittability.",
+    "report": "visual-followup-initial-report.json"
+  },
+  "workspace": {
+    "status": "failed",
+    "exitCode": 101,
+    "mainPassed": 1254,
+    "mainFailed": 1,
+    "mainIgnored": 13,
+    "failedTest": "agent_reentry::tests::a_controller_killed_at_any_phase_leaves_no_replay_and_no_agent_data",
+    "reason": "Expected SIGABRT at kill phase; child instead exited 101. Child panic detail was not retained by that test. Cause undetermined.",
+    "log": "workspace-final-attempt.log"
+  },
+  "reentryExactRerun": {
+    "passed": 1,
+    "failed": 0,
+    "exitCode": 0,
+    "seconds": 46.95,
+    "log": "reentry-isolated-rerun.log"
+  },
+  "remainingTargets": {
+    "tmux": 111,
+    "statusHelper": 6,
+    "lifecycleHelper": 8,
+    "mcpRunner": 10,
+    "mcpStdio": 5,
+    "failed": 0,
+    "log": "workspace-remaining-targets.log"
+  },
+  "signalCensus": {
+    "passed": 9,
+    "failed": 0,
+    "exitCode": 0,
+    "log": "signal-census.log"
+  },
+  "registryGate": {
+    "passed": 4,
+    "failed": 0,
+    "log": "registry-final.log",
+    "scope": "NamedSocketRuleTests"
+  },
+  "finalAcceptance": {
+    "status": "passed",
+    "parentRun": "/tmp/deck-connector-diagnose-u4r24mw_",
+    "uiRun": "/tmp/deck-connector-diagnose-ly1txuy9",
+    "appModelRun": "/tmp/deck-connector-diagnose-zar9d6y3",
+    "uiPassed": 5,
+    "shellReturnPassed": 1,
+    "uiFailed": 0,
+    "uiSkipped": 0,
+    "uiCleanupCompleted": true,
+    "sourceDiffSHA256": "dd6ac0c75dc713712f170391fa8d2fe9466bb2219aa25314e87c5eeb166a115e",
+    "hostBinarySHA256": "53d06100a8a82b8feb06d7deba24d320e04d5223788240d2abdc6b047fe6e23d",
+    "iosBinarySHA256": "ca5e8c5324e82d838c822e963fd13b7d823df1bc52502a6c665e30b56f2075a0",
+    "device": "iPhone SE (3rd generation)",
+    "appearance": "dark",
+    "scope": "boardMetadata",
+    "appModelPassed": 15,
+    "failed": 0,
+    "skipped": 0,
+    "totalPassed": 21,
+    "cleanupCompleted": true,
+    "report": "acceptance-report.json",
+    "environment": "final-environment.json"
+  },
+  "priorAcceptance": {
+    "scope": "boardMetadata",
+    "parentRun": "/tmp/deck-connector-diagnose-35gdb2tz",
+    "uiRun": "/tmp/deck-connector-diagnose-29a3tp2c",
+    "device": "iPhone SE (3rd generation)",
+    "appearance": "dark",
+    "hostBinarySHA256": "4e9c14d9b46e0b2731335a75672b6777d72c19b81a051baa663d7d5046f22983",
+    "status": "passed",
+    "sourceDiffSHA256": "394e8e1e93cfb5ec1c0d3a7de21e125c13b6f2fe7401d88aeb79f764ddee1fec",
+    "uiPassed": 5,
+    "shellReturnPassed": 1,
+    "appModelPassed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "cleanupCompleted": true,
+    "report": "acceptance-report.json"
+  },
+  "finalDiffCheck": {
+    "exitCode": 0
+  }
+}

@@ -68,11 +68,20 @@ private func requests(_ name: String) throws -> [[String: Any]] {
 
 @Test func hostSnapshotDecodesWithTheStatusWordsItEmits() throws {
     let snapshot = try JSONDecoder().decode(Snapshot.self, from: fixture("snapshot.json"))
-    #expect(snapshot.cards.map(\.status) == ["running", "stopped", "unknown"])
-    #expect(snapshot.cards.map(\.isStopped) == [false, true, false])
+    #expect(snapshot.cards.map(\.status) == ["running", "unknown", "unknown", "unknown", "stopped", "unknown"])
+    #expect(snapshot.cards.map(\.isStopped) == [false, false, false, false, true, false])
     let emitted = Set(snapshot.cards.map(\.status))
     #expect(CardSummary.stoppedStatuses.isSubset(of: emitted), "the phone special-cases a status the host never sends")
-    #expect(snapshot.cards[1].generation == nil)
+    #expect(snapshot.scope == "boardMetadata")
+    #expect(snapshot.hostName != nil)
+    #expect(snapshot.cards.count == 6)
+    let metadataOnly = snapshot.cards.filter { ["B", "E", "F"].contains($0.id) }
+    #expect(metadataOnly.count == 3)
+    for card in metadataOnly {
+        #expect(!card.canReadOutput && !card.maySend && !card.canEditNotes && !card.mayQueue)
+        #expect(card.capabilities?.readOutput?.reason == "unsupported-target")
+    }
+    #expect(snapshot.cards.first(where: { $0.status == "stopped" })?.generation == nil)
     #expect(snapshot.queue.first?.revision.value == "5")
 }
 

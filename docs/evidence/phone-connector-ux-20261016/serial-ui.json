@@ -1,0 +1,45 @@
+{
+  "head": "a326cdf3a6b3f1b18176da9079659e4762408eca",
+  "xcodeVersion": "Xcode 27.1\nBuild version 27A9275",
+  "selectedRuntime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+  "selectedDeviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+  "hostBinarySHA256": "9117ab0bab41948d72390dc09ab9b62a7a309b590bade0d994f326bcc294be3f",
+  "iosBinarySHA256": "a05346752566863b0cf93b38410a44b221d41f8647a8a62edb5035afa485d893",
+  "sourceDiffSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "testCounts": {
+    "passedTests": 2,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 2
+  },
+  "testResults": {
+    "testIsolatedLiveCodexOutput": "Passed",
+    "testIsolatedStoppedAgentVisibilityAndOutput": "Passed"
+  },
+  "shellReturnTestCounts": {
+    "passedTests": 1,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 1
+  },
+  "shellReturnTestResults": {
+    "testIsolatedCodexExitToShellRejectsOutputAndSend": "Passed"
+  },
+  "cases": {
+    "liveSavedAgentOutput": "PASS",
+    "ordinaryShellVisibility": "UNRUN",
+    "shellWithForegroundAgent": "UNRUN",
+    "savedCommandVariants": "UNRUN",
+    "stoppedSavedAgentOutput": "PASS",
+    "agentExitedToShell": "PASS",
+    "foregroundCycle": "PASS",
+    "appRelaunchCredentialRecovery": "PASS",
+    "refreshFailureRecovery": "UNRUN",
+    "saveFailure": "UNRUN",
+    "backupRecovery": "UNRUN"
+  },
+  "productAssertionsPassed": true,
+  "requiredTestsExecuted": true,
+  "runDir": "/tmp/deck-connector-diagnose-_56rum4z",
+  "cleanupCompleted": true
+}

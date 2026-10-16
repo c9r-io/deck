@@ -1,0 +1,56 @@
+Command line invocation:
+    /Volumes/Yotta/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -xctestrun /tmp/deck-connector-diagnose-hvhmaqlp/DerivedData/Build/Products/DeckConnector-diagnose.xctestrun -destination "platform=iOS Simulator,id=4CA3DE21-AB45-42ED-9791-597690A54CDA" -parallel-testing-enabled NO -resultBundlePath /tmp/deck-connector-diagnose-hvhmaqlp/appmodel.xcresult test-without-building "-only-testing:DeckConnectorTests/AppModelTests"
+
+Writing result bundle at path:
+	/tmp/deck-connector-diagnose-hvhmaqlp/appmodel.xcresult
+
+2026-10-16 19:33:34.915 xcodebuild[32559:19911894] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 19:33:42.050030+0900 DeckConnector[32633:19912653] [API] cannot add handler to 0 from 0 - dropping
+2026-10-16 19:33:42.068132+0900 DeckConnector[32633:19912653] [XPCErrors] non-launching port is incompatible with service identifier "com.apple.PointerUI.pointeruid.default-service"
+2026-10-16 19:33:42.071126+0900 DeckConnector[32633:19912653] [API] cannot add handler to 0 from 0 - dropping
+Test Suite 'Selected tests' started at 2026-10-16 19:33:42.620.
+Test Suite 'DeckConnectorTests.xctest' started at 2026-10-16 19:33:42.622.
+Test Suite 'AppModelTests' started at 2026-10-16 19:33:42.622.
+Test Case '-[DeckConnectorTests.AppModelTests testCancelledRecoveryCannotClearReplacementRecovery]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testCancelledRecoveryCannotClearReplacementRecovery]' passed (0.055 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testDuplicateDetailLoadsShareOneRequest]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testDuplicateDetailLoadsShareOneRequest]' passed (0.035 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testForegroundRefreshUpdatesOpenCardAndRemovedCardClearsContent]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testForegroundRefreshUpdatesOpenCardAndRemovedCardClearsContent]' passed (0.013 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testFreshStartRemainsUnpaired]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testFreshStartRemainsUnpaired]' passed (0.004 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testLateOldGenerationCannotReplaceNewContent]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testLateOldGenerationCannotReplaceNewContent]' passed (0.018 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testMalformedPairingDescriptorFailsClosedAndRemainsActionable]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testMalformedPairingDescriptorFailsClosedAndRemainsActionable]' passed (0.007 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testNetworkFailureMarksStaleButAuthorityFailureClearsOutput]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testNetworkFailureMarksStaleButAuthorityFailureClearsOutput]' passed (0.005 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testOptInRealHostPairingBufferCASAndCredentialLifecycle]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testOptInRealHostPairingBufferCASAndCredentialLifecycle]' passed (10.494 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testOutputIssueRecoversWhenAReadableOutputArrives]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testOutputIssueRecoversWhenAReadableOutputArrives]' passed (0.003 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testPairingTransitionClearsOldHostContentAndDraftMemory]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testPairingTransitionClearsOldHostContentAndDraftMemory]' passed (0.013 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testPendingRecoveryDoesNotBlockSnapshotAndNeverReposts]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testPendingRecoveryDoesNotBlockSnapshotAndNeverReposts]' passed (0.005 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testResolvedNoteDoesNotEraseNewerEditWaitingForPersistence]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testResolvedNoteDoesNotEraseNewerEditWaitingForPersistence]' passed (0.004 seconds).
+Test Suite 'AppModelTests' passed at 2026-10-16 19:33:53.289.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 10.657 (10.667) seconds
+Test Suite 'DeckConnectorTests.xctest' passed at 2026-10-16 19:33:53.289.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 10.657 (10.667) seconds
+Test Suite 'Selected tests' passed at 2026-10-16 19:33:53.289.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 10.657 (10.669) seconds
+2026-10-16 19:33:53.326 xcodebuild[32559:19911894] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 19:33:53.327 xcodebuild[32559:19911894] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 19:33:53.328 xcodebuild[32559:19911894] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 19:33:53.613 xcodebuild[32559:19911894] [MT] IDETestOperationsObserverDebug: 21.975 elapsed -- Testing started completed.
+2026-10-16 19:33:53.613 xcodebuild[32559:19911894] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-10-16 19:33:53.613 xcodebuild[32559:19911894] [MT] IDETestOperationsObserverDebug: 21.975 sec, +21.975 sec -- end
+
+Test session results, code coverage, and logs:
+	/tmp/deck-connector-diagnose-hvhmaqlp/appmodel.xcresult
+
+** TEST EXECUTE SUCCEEDED **
+
+Testing started

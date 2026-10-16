@@ -31,12 +31,17 @@
 //! slot. Each write encodes once and is atomic (temp file, file fsync,
 //! rename, directory fsync).
 //!
-//! Phone reach: every card-scoped route requires a saved `codex`/`claude`
-//! command with at most simple shell-safe arguments under the shared channel policy. Send-message and output also
+//! Phone reach: the default snapshot scope and every card-scoped route require
+//! a saved `codex`/`claude` command with at most simple shell-safe arguments
+//! under the shared channel policy. A separate local opt-in may expose every
+//! card's Board metadata, placement and order; it grants no output, input,
+//! note or queue access. The snapshot reports those permissions separately,
+//! while native admission remains authoritative. Send-message and output also
 //! require a live agent foreground process; output rechecks that identity
 //! after capture alongside the generation/card checks. A foreground agent in
-//! a plain shell card does not qualify. The snapshot exposes only those saved
-//! agent cards and queue items belonging to them. Phone text is an agent
+//! a plain shell card does not qualify. The snapshot exposes cards selected
+//! by the local scope, while its queue contains only items belonging to saved
+//! agent cards. Phone text is an agent
 //! prompt, not a shell line, but a prompt can still lead the agent to run
 //! commands. A session under MCP control (`mcp::guard_terminal_input`) is
 //! neither written (checked before delivery and before each tmux write) nor
@@ -143,6 +148,18 @@ struct Config {
     /// A restart binds only while the address is still on that interface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     interface: Option<String>,
+    /// Local consent for the metadata-only Board projection. Missing is the
+    /// historical restricted scope, so old documents fail closed.
+    #[serde(default)]
+    scope: SnapshotScope,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SnapshotScope {
+    #[default]
+    AgentCards,
+    BoardMetadata,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

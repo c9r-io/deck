@@ -1,0 +1,17 @@
+   Compiling deck-app v0.8.2 (/Users/chenhan/c9r-io/deck/app/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.82s
+     Running tests/signal_census.rs (app/src-tauri/target/debug/deps/signal_census-0c8860d0558aa568)
+
+running 9 tests
+test a_terminal_bell_is_attention_and_never_reaches_a_side_effect ... ok
+test an_interaction_boundary_is_never_side_effect_authority ... ok
+test channel_permission_is_checked_before_interaction_evidence ... ok
+test every_frontend_signal_site_is_classified ... ok
+test every_pi_observer_signal_site_is_classified ... ok
+test every_rust_signal_site_is_classified ... ok
+test only_a_real_cfg_test_declaration_hides_a_module_from_the_censuses ... ok
+test presentation_and_attention_never_reach_a_side_effect ... ok
+test signal_never_writes_content_authority ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.21s
+

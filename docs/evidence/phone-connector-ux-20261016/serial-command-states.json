@@ -1,0 +1,30 @@
+[
+  {
+    "kind": "buffer-add",
+    "state": "applied",
+    "code": null,
+    "acceptedAt": 1792140632,
+    "updatedAt": 1792140632
+  },
+  {
+    "kind": "buffer-edit",
+    "state": "applied",
+    "code": null,
+    "acceptedAt": 1792140633,
+    "updatedAt": 1792140633
+  },
+  {
+    "kind": "buffer-add",
+    "state": "rejected",
+    "code": "revision-changed",
+    "acceptedAt": 1792140634,
+    "updatedAt": 1792140635
+  },
+  {
+    "kind": "buffer-delete",
+    "state": "applied",
+    "code": null,
+    "acceptedAt": 1792140635,
+    "updatedAt": 1792140636
+  }
+]

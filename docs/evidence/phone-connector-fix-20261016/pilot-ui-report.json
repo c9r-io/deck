@@ -1,0 +1,80 @@
+{
+  "environmentReady": true,
+  "isolationVerified": true,
+  "mode": "fixed",
+  "reproductionConfirmed": null,
+  "snapshotScope": "boardMetadata",
+  "productAssertionsPassed": true,
+  "requiredTestsExecuted": true,
+  "cleanupCompleted": true,
+  "humanInterventions": 0,
+  "xcodePath": "/Volumes/Yotta/Applications/Xcode.app",
+  "developerDir": "/Volumes/Yotta/Applications/Xcode.app/Contents/Developer",
+  "tests": {
+    "hostSmoke": "PASS",
+    "simulatorUI": "PASS",
+    "shellReturnUI": "PASS"
+  },
+  "cases": {
+    "liveSavedAgentOutput": "PASS",
+    "ordinaryShellVisibility": "UNRUN",
+    "shellWithForegroundAgent": "UNRUN",
+    "savedCommandVariants": "UNRUN",
+    "stoppedSavedAgentOutput": "PASS",
+    "agentExitedToShell": "PASS",
+    "foregroundCycle": "PASS",
+    "appRelaunchCredentialRecovery": "PASS",
+    "refreshFailureRecovery": "UNRUN",
+    "saveFailure": "UNRUN",
+    "backupRecovery": "UNRUN"
+  },
+  "xcodeVersion": "Xcode 27.1\nBuild version 27A9275",
+  "simctl": "/Volumes/Yotta/Applications/Xcode.app/Contents/Developer/usr/bin/simctl",
+  "installedDeviceTypeCount": 130,
+  "availableDeviceCount": 11,
+  "selectedRuntime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+  "selectedDeviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+  "head": "a326cdf3a6b3f1b18176da9079659e4762408eca",
+  "sourceDiffSHA256": "f8359ccf978b63b973907b2c1ea2b6828c38166e692c5088355e5ab5639adb70",
+  "freeBytes": 124354269184,
+  "hostBuildReusedFrom": "/tmp/deck-connector-diagnose-current-yavc8lj5",
+  "hostBinarySHA256": "67bbb2d364d6d951ae8b07514d157574bb90ad2fcb061f65752e0dd35d8c6078",
+  "iosBinarySHA256": "a688005d64d94f37c2b2067e8668d033f0c9e656d5a39f732f8467e4a6ea9726",
+  "caseCorrelation": {
+    "case": "stoppedSavedAgentOutput",
+    "cardIdHash": "7dc3c053eddc105c",
+    "shellCardIdHash": "81ee2460bad739d5",
+    "request": "GET /v1/cards/<fixture-card>/output"
+  },
+  "hostIdHash": "7d7fc97b8eaf8d82",
+  "listenerPort": 58244,
+  "liveCardIdHash": "82a635f38d59a912",
+  "agentStartupChoices": [],
+  "agentComposerSubmit": "visible-pending-input",
+  "realAgentProbe": "PASS",
+  "realAgentMarker": "deckprobea4duzkkz",
+  "testCounts": {
+    "passedTests": 5,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 5
+  },
+  "testResults": {
+    "testIsolatedChineseLargeText": "Passed",
+    "testIsolatedDraftsSurviveNavigationAndRelaunch": "Passed",
+    "testIsolatedLiveCodexOutput": "Passed",
+    "testIsolatedSharedShellIsMetadataOnly": "Passed",
+    "testIsolatedStoppedAgentVisibilityAndOutput": "Passed"
+  },
+  "shellReturnProbe": "PASS",
+  "shellReturnMarker": "shellmarkera4duzkkz",
+  "shellReturnTestCounts": {
+    "passedTests": 1,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 1
+  },
+  "shellReturnTestResults": {
+    "testIsolatedCodexExitToShellRejectsOutputAndSend": "Passed"
+  }
+}

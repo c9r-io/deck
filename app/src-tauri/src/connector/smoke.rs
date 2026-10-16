@@ -1,4 +1,7 @@
 //! Debug-only smoke hooks: seeded state, transport path and window visibility.
+//! The isolated transport fixture may opt into Board metadata scope only when
+//! `DECK_SMOKE_CONNECTOR_BOARD_METADATA=1`; production launches cannot reach
+//! the hook because every entry point first requires the smoke argument gate.
 //!
 //! Split out of the one-file `connector/mod.rs` on 2026-09-23; the contract
 //! stays in `connector/mod.rs`.
@@ -23,6 +26,7 @@ pub(crate) fn connector_smoke_seed(
             address: "127.0.0.1".into(),
             port: 18443,
             interface: None,
+            scope: SnapshotScope::AgentCards,
         };
         if !doc.devices.iter().any(|device| device.id == "device_smoke") {
             doc.devices.push(Device {
@@ -131,6 +135,7 @@ pub(crate) fn connector_smoke_transport(
                 address: "127.0.0.1".into(),
                 port: 0,
                 interface: None,
+                scope: SnapshotScope::AgentCards,
             };
             doc.identity_address = Some(identity.address.clone());
             doc.identity_fingerprint = Some(identity.fingerprint.clone());
@@ -146,6 +151,7 @@ pub(crate) fn connector_smoke_transport(
                 address: "127.0.0.1".into(),
                 port: 0,
                 interface: None,
+                scope: SnapshotScope::AgentCards,
             },
             identity,
             epoch,
@@ -158,6 +164,7 @@ pub(crate) fn connector_smoke_transport(
                 address: "127.0.0.1".into(),
                 port,
                 interface: None,
+                scope: SnapshotScope::AgentCards,
             };
             Ok(())
         }) {
@@ -166,6 +173,11 @@ pub(crate) fn connector_smoke_transport(
         }
     }
 
+    let scope = if std::env::var("DECK_SMOKE_CONNECTOR_BOARD_METADATA").as_deref() == Ok("1") {
+        connector_set_scope(SnapshotScope::BoardMetadata)?.scope
+    } else {
+        SnapshotScope::AgentCards
+    };
     let pairing = connector_pairing()?;
     let agent_dir = crate::datadir::deck_dir().join("agent-work");
     std::fs::create_dir(&agent_dir)
@@ -181,6 +193,7 @@ pub(crate) fn connector_smoke_transport(
         "pairingURI": pairing.uri,
         "cardId": card_id,
         "shellCardId": shell_card_id,
+        "scope": scope,
     }))
     .map_err(|_| DeckError::new(ErrorKind::Other, "smoke fixture encoding failed"))?;
     if let Err(error) = crate::datadir::atomic_write(&path, &bytes) {

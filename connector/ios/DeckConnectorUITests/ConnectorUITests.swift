@@ -4,6 +4,7 @@ import XCTest
 final class ConnectorUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
     }
 
     func testIsolatedStoppedAgentVisibilityAndOutput() throws {
@@ -14,16 +15,19 @@ final class ConnectorUITests: XCTestCase {
             app.launch()
             let target = app.staticTexts["connector transport"].firstMatch
             XCTAssertTrue(target.waitForExistence(timeout: 20), "Round \(round): saved agent card must appear.")
-            XCTAssertFalse(app.staticTexts["connector ordinary shell"].exists,
-                           "Round \(round): unsupported shell card must be filtered.")
+            XCTAssertEqual(app.staticTexts["connector ordinary shell"].exists,
+                           ProcessInfo.processInfo.environment["DECK_DIAG_SCOPE"] == "boardMetadata",
+                           "Round \(round): list must match the locally authorized scope.")
             target.tap()
             let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
             XCTAssertTrue(reveal(unavailable, in: app),
                           "Round \(round): stopped output area must be reachable in the normal detail layout.")
             XCTAssertEqual(unavailable.label, Self.sessionUnavailableLabel,
                            "Round \(round): missing session must have its own output state.")
+            app.segmentedControls.buttons["Notes"].tap()
             XCTAssertTrue(revealBySwipingDown(app.textViews["deck.note.new"].firstMatch, in: app),
                           "Scratchpad remains available without a readable session.")
+            app.segmentedControls.buttons["Output"].tap()
             let send = app.buttons["deck.message.send"].firstMatch
             XCTAssertTrue(reveal(send, in: app), "The send control must remain reachable.")
             XCTAssertFalse(send.isEnabled,
@@ -61,8 +65,21 @@ final class ConnectorUITests: XCTestCase {
             XCTFail("Live Codex card did not show output or an error.")
             return
         }
+        XCTAssertTrue(app.buttons["deck.output.refresh"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["deck.output.captured"].firstMatch.exists)
         XCTAssertTrue(output.label.contains(marker),
                       "The pinned host output must contain the isolated Agent's response marker.")
+        let captured = app.descendants(matching: .any)["deck.output.captured"].firstMatch
+        let previousCapture = captured.label
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 2)
+        app.activate()
+        let refreshed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != %@", previousCapture), object: captured)
+        XCTAssertEqual(XCTWaiter.wait(for: [refreshed], timeout: 20), .completed,
+                       "Foregrounding must recapture the currently open card without a manual refresh.")
+        XCTAssertTrue(output.label.contains(marker))
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Live output first screen"; attachment.lifetime = .keepAlways; add(attachment)
         app.terminate()
     }
 
@@ -91,6 +108,113 @@ final class ConnectorUITests: XCTestCase {
                        "Output unavailable: A supported agent is not in the foreground, so its output cannot be read.")
         XCTAssertFalse(app.descendants(matching: .any)["deck.output.text"].exists,
                        "The host must not return the shell's \(marker) output as Agent output.")
+        app.terminate()
+    }
+
+    func testIsolatedSharedShellIsMetadataOnly() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        openCard(named: "connector ordinary shell", in: app)
+        let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
+        XCTAssertTrue(unavailable.waitForExistence(timeout: 10))
+        XCTAssertTrue(unavailable.label.contains("Summary only"))
+        XCTAssertFalse(app.descendants(matching: .any)["deck.output.text"].exists)
+        XCTAssertFalse(app.buttons["deck.message.send"].isEnabled)
+        app.segmentedControls.buttons["Notes"].tap()
+        XCTAssertFalse(app.buttons["deck.note.save"].isEnabled)
+        app.terminate()
+    }
+
+    func testIsolatedDraftsSurviveNavigationAndRelaunch() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        openCard(named: "connector transport", in: app)
+        app.segmentedControls.buttons["Notes"].tap()
+        let note = app.textViews["deck.note.new"].firstMatch
+        XCTAssertTrue(note.waitForExistence(timeout: 10))
+        let marker = "local-note-" + UUID().uuidString
+        note.tap(); note.typeText(marker)
+        app.buttons["deck.keyboard.done"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        openCard(named: "connector transport", in: app)
+        app.segmentedControls.buttons["Notes"].tap()
+        XCTAssertEqual(note.value as? String, marker)
+        app.terminate(); app.launch()
+        openCard(named: "connector transport", in: app)
+        app.segmentedControls.buttons["Notes"].tap()
+        XCTAssertTrue(note.waitForExistence(timeout: 10))
+        XCTAssertEqual(note.value as? String, marker, "An unsaved note must survive app termination without a desktop write.")
+        let saveNew = app.buttons["deck.note.save"]
+        XCTAssertTrue(reveal(saveNew, in: app)); saveNew.tap()
+        XCTAssertTrue(revealBySwipingDown(note, in: app), "Bring the editor back onscreen before checking its cleared value.")
+        XCTAssertTrue(waitForEmptyValue(in: note, timeout: 20),
+                       "A restored note must save without needing another edit.")
+        func openSavedNoteEditor() throws {
+            XCTAssertTrue(reveal(noteText(marker, in: app), in: app))
+            let row = try XCTUnwrap(noteRow(marker, in: app))
+            let edit = row.buttons["deck.note.edit"]
+            XCTAssertTrue(reveal(edit, in: app)); edit.tap()
+        }
+        try openSavedNoteEditor()
+        let editor = app.textViews["deck.note.edit.text"].firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        editor.tap(); editor.typeText(" unsaved-edit")
+        let edited = editor.value as? String
+        app.buttons["Cancel"].firstMatch.tap()
+        try openSavedNoteEditor()
+        XCTAssertEqual(editor.value as? String, edited, "Closing an edit must preserve its local draft.")
+        app.terminate(); app.launch()
+        openCard(named: "connector transport", in: app)
+        app.segmentedControls.buttons["Notes"].tap()
+        try openSavedNoteEditor()
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertEqual(editor.value as? String, edited)
+        app.buttons["deck.note.edit.save"].tap()
+        let savedEdit = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: editor)
+        XCTAssertEqual(XCTWaiter.wait(for: [savedEdit], timeout: 20), .completed,
+                       "A restored edit must save without needing another edit.")
+        if let edited { XCTAssertTrue(reveal(app.staticTexts[edited].firstMatch, in: app)) }
+        app.terminate()
+    }
+
+    func testIsolatedChineseLargeText() throws {
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let app = XCUIApplication()
+        app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch()
+        let card = app.staticTexts["connector transport"].firstMatch
+        _ = card.waitForExistence(timeout: 15)
+        XCTAssertTrue(reveal(card, in: app))
+        let listAttachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        listAttachment.name = "Chinese large text card list"
+        listAttachment.lifetime = .keepAlways; add(listAttachment)
+        openCard(named: "connector transport", in: app)
+        XCTAssertTrue(app.buttons["deck.output.refresh"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons["deck.output.refresh"].label, "刷新输出")
+        let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
+        XCTAssertTrue(reveal(unavailable, in: app))
+        XCTAssertTrue(unavailable.label.contains("此卡片目前没有可读取的会话"))
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            let landscape = orientation == .landscapeLeft
+            let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                let frame = app.windows.firstMatch.frame
+                return (frame.width > frame.height) == landscape
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 10), .completed,
+                           "Wait for the window to finish changing orientation.")
+            XCTAssertTrue(reveal(app.buttons["deck.output.refresh"], in: app))
+            XCTAssertTrue(reveal(unavailable, in: app))
+            let screenshot = XCUIScreen.main.screenshot()
+            XCTAssertEqual(screenshot.image.size.width > screenshot.image.size.height, landscape,
+                           "The visual evidence must have the settled screen orientation.")
+            let attachment = XCTAttachment(screenshot: screenshot)
+            attachment.name = "Chinese large text \(orientation.rawValue)"
+            attachment.lifetime = .keepAlways; add(attachment)
+        }
+        XCUIDevice.shared.orientation = .portrait
         app.terminate()
     }
 
@@ -137,6 +261,7 @@ final class ConnectorUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
         openCard(named: cardTitle, in: app)
+        app.segmentedControls.buttons["Notes"].tap()
         XCTAssertTrue(
             noteText(expectedNote, in: app).waitForExistence(timeout: 15),
             "Expected the paired scratchpad note before process termination."
@@ -145,6 +270,7 @@ final class ConnectorUITests: XCTestCase {
         app.terminate()
         app.launch()
         openCard(named: cardTitle, in: app)
+        app.segmentedControls.buttons["Notes"].tap()
         XCTAssertTrue(
             noteText(expectedNote, in: app).waitForExistence(timeout: 15),
             "Expected the paired scratchpad note after process termination and Keychain restore."
@@ -177,6 +303,7 @@ final class ConnectorUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
         openCard(named: cardTitle, in: app)
+        app.segmentedControls.buttons["Notes"].tap()
         let bufferLoaded = app.buttons["deck.note.queue-selected"]
         XCTAssertTrue(bufferLoaded.waitForExistence(timeout: 15), "Expected the scratchpad buffer to finish loading before checking the marker.")
         XCTAssertFalse(noteText(marker, in: app).exists, "The run marker already exists; investigate it instead of mutating again.")
@@ -224,6 +351,7 @@ final class ConnectorUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
         openCard(named: cardTitle, in: app)
+        app.segmentedControls.buttons["Notes"].tap()
         let bufferLoaded = app.buttons["deck.note.queue-selected"]
         XCTAssertTrue(bufferLoaded.waitForExistence(timeout: 15), "Expected the scratchpad buffer to finish loading before finding the marker.")
         guard editOnlyNote(marker, to: editedMarker, in: app) else { return }
@@ -250,6 +378,7 @@ final class ConnectorUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
         openCard(named: cardTitle, in: app)
+        app.segmentedControls.buttons["Notes"].tap()
         let bufferLoaded = app.buttons["deck.note.queue-selected"]
         XCTAssertTrue(bufferLoaded.waitForExistence(timeout: 15), "Expected the scratchpad buffer to finish loading before finding the marker.")
         guard deleteOnlyNote(marker, in: app) else { return }
@@ -257,7 +386,8 @@ final class ConnectorUITests: XCTestCase {
 
     private func openCard(named title: String, in app: XCUIApplication) {
         let card = app.staticTexts[title].firstMatch
-        XCTAssertTrue(card.waitForExistence(timeout: 15), "Expected paired test card named \(title).")
+        _ = card.waitForExistence(timeout: 15)
+        XCTAssertTrue(reveal(card, in: app), "Expected reachable paired test card named \(title).")
         card.tap()
         XCTAssertTrue(app.navigationBars[title].waitForExistence(timeout: 10), "Expected card detail for \(title).")
     }
@@ -481,20 +611,57 @@ final class ConnectorUITests: XCTestCase {
     }
 
     private func reveal(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
-        if element.waitForExistence(timeout: 2), element.isHittable { return true }
-        for _ in 0..<8 {
-            let list = app.collectionViews.firstMatch
-            if list.exists { list.swipeUp() } else { app.swipeUp() }
-            if element.waitForExistence(timeout: 1), element.isHittable { return true }
-        }
-        return false
+        reveal(element, in: app, searchDown: false)
     }
 
     private func revealBySwipingDown(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
-        if element.waitForExistence(timeout: 2), element.isHittable { return true }
-        for _ in 0..<8 {
-            app.swipeDown()
-            if element.waitForExistence(timeout: 1), element.isHittable { return true }
+        reveal(element, in: app, searchDown: true)
+    }
+
+    private func visible(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
+        guard element.exists else { return false }
+        let frame = element.frame
+        guard !frame.isNull, !frame.isInfinite, frame.width > 0, frame.height > 0 else { return false }
+        var window = app.windows.firstMatch.frame
+        if app.navigationBars.firstMatch.exists {
+            let top = max(window.minY, app.navigationBars.firstMatch.frame.maxY)
+            window = CGRect(x: window.minX, y: top, width: window.width, height: max(0, window.maxY - top))
+        }
+        // Static labels have no activation target. Validate their visible geometry
+        // instead of asking XCTest for an interaction point during foregrounding.
+        // A long terminal snapshot can extend beyond its own scroll viewport.
+        // Reading it requires a visible portion, not its offscreen center point.
+        if element.elementType == .staticText {
+            let portion = frame.intersection(window)
+            return !portion.isNull && portion.width > 0 && portion.height >= min(24, frame.height)
+        }
+        let center = CGPoint(x: frame.midX, y: frame.midY)
+        guard window.contains(center) else { return false }
+        return element.isHittable
+    }
+
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication, searchDown: Bool) -> Bool {
+        _ = element.waitForExistence(timeout: 2)
+        if visible(element, in: app) { return true }
+        // List cells leave the accessibility tree when scrolled offscreen. A
+        // missing cell does not tell us which side it is on, particularly after
+        // rotation changes the viewport. Search both directions, boundedly.
+        for down in [searchDown, !searchDown] {
+            for _ in 0..<8 {
+                let list = app.collectionViews.firstMatch
+                let surface = list.exists ? list : app
+                let window = app.windows.firstMatch
+                if window.frame.width > window.frame.height {
+                    // A full inertial swipe can skip an entire accessible row
+                    // in the short landscape viewport. Drag a quarter-screen
+                    // and hold before releasing so every intervening row is read.
+                    let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: down ? 0.47 : 0.72))
+                    let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: down ? 0.72 : 0.47))
+                    start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+                } else if down { surface.swipeDown() } else { surface.swipeUp() }
+                _ = element.waitForExistence(timeout: 1)
+                if visible(element, in: app) { return true }
+            }
         }
         return false
     }

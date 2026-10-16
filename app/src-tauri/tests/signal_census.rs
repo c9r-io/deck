@@ -275,7 +275,7 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     ),
     (
         "connector/projection.rs",
-        "snapshot_in",
+        "terminal_capability",
         ".agent",
         1,
         NotSignal,

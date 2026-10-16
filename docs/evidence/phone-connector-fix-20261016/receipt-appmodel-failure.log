@@ -1,0 +1,75 @@
+Command line invocation:
+    /Volumes/Yotta/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -xctestrun /tmp/deck-connector-diagnose-3ojcr5a7/DerivedData/Build/Products/DeckConnector-diagnose.xctestrun -destination "platform=iOS Simulator,id=B0180D0B-55B0-492A-85A2-BF2E63230CE8" -parallel-testing-enabled NO -resultBundlePath /tmp/deck-connector-diagnose-3ojcr5a7/appmodel.xcresult test-without-building "-only-testing:DeckConnectorTests/AppModelTests"
+
+Writing result bundle at path:
+	/tmp/deck-connector-diagnose-3ojcr5a7/appmodel.xcresult
+
+2026-10-16 20:57:49.327 xcodebuild[59228:20142907] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 20:58:07.744834+0900 DeckConnector[59485:20144517] [API] cannot add handler to 0 from 0 - dropping
+2026-10-16 20:58:07.765997+0900 DeckConnector[59485:20144517] [XPCErrors] non-launching port is incompatible with service identifier "com.apple.PointerUI.pointeruid.default-service"
+2026-10-16 20:58:07.770462+0900 DeckConnector[59485:20144517] [API] cannot add handler to 0 from 0 - dropping
+Test Suite 'Selected tests' started at 2026-10-16 20:58:08.604.
+Test Suite 'DeckConnectorTests.xctest' started at 2026-10-16 20:58:08.606.
+Test Suite 'AppModelTests' started at 2026-10-16 20:58:08.606.
+Test Case '-[DeckConnectorTests.AppModelTests testAppliedRestoredNoteSettlesWhileVisibleOutputReadIsSuspended]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testAppliedRestoredNoteSettlesWhileVisibleOutputReadIsSuspended]' passed (0.064 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testCancelledRecoveryCannotClearReplacementRecovery]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testCancelledRecoveryCannotClearReplacementRecovery]' passed (0.037 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testDuplicateDetailLoadsShareOneRequest]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testDuplicateDetailLoadsShareOneRequest]' passed (0.034 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testForegroundRefreshUpdatesOpenCardAndRemovedCardClearsContent]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testForegroundRefreshUpdatesOpenCardAndRemovedCardClearsContent]' passed (0.014 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testFreshStartRemainsUnpaired]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testFreshStartRemainsUnpaired]' passed (0.005 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testLateOldGenerationCannotReplaceNewContent]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testLateOldGenerationCannotReplaceNewContent]' passed (0.018 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testMalformedPairingDescriptorFailsClosedAndRemainsActionable]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testMalformedPairingDescriptorFailsClosedAndRemainsActionable]' passed (0.010 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testNetworkFailureMarksStaleButAuthorityFailureClearsOutput]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testNetworkFailureMarksStaleButAuthorityFailureClearsOutput]' passed (0.004 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testOptInRealHostPairingBufferCASAndCredentialLifecycle]' started.
+/Users/chenhan/c9r-io/deck/connector/ios/DeckConnectorTests/AppModelTests.swift:64: error: -[DeckConnectorTests.AppModelTests testOptInRealHostPairingBufferCASAndCredentialLifecycle] : failed - Original operation did not reach a terminal state.
+/Users/chenhan/c9r-io/deck/connector/ios/DeckConnectorTests/AppModelTests.swift:152: error: -[DeckConnectorTests.AppModelTests testOptInRealHostPairingBufferCASAndCredentialLifecycle] : XCTAssertEqual failed: ("0") is not equal to ("1") - Recovering the original operation must not duplicate its note.
+/Users/chenhan/c9r-io/deck/connector/ios/DeckConnectorTests/AppModelTests.swift:153: error: -[DeckConnectorTests.AppModelTests testOptInRealHostPairingBufferCASAndCredentialLifecycle] : XCTUnwrap failed: expected non-nil value of type "BufferEntry"
+Test Case '-[DeckConnectorTests.AppModelTests testOptInRealHostPairingBufferCASAndCredentialLifecycle]' failed (21.163 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testOutputIssueRecoversWhenAReadableOutputArrives]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testOutputIssueRecoversWhenAReadableOutputArrives]' passed (0.004 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testPairingTransitionClearsOldHostContentAndDraftMemory]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testPairingTransitionClearsOldHostContentAndDraftMemory]' passed (0.030 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testPendingRecoveryDoesNotBlockSnapshotAndNeverReposts]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testPendingRecoveryDoesNotBlockSnapshotAndNeverReposts]' passed (0.007 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testResolvedNoteDoesNotEraseNewerEditWaitingForPersistence]' started.
+Test Case '-[DeckConnectorTests.AppModelTests testResolvedNoteDoesNotEraseNewerEditWaitingForPersistence]' passed (0.008 seconds).
+Test Case '-[DeckConnectorTests.AppModelTests testRestoredNoteCanBeSavedWithoutAnotherEdit]' started.
+2026-10-16 20:58:30.170874+0900 DeckConnector[59485:20145458] [connection] nw_connection_copy_protocol_metadata_internal_block_invoke [C23] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+2026-10-16 20:58:30.178124+0900 DeckConnector[59485:20145458] [connection] nw_connection_copy_protocol_metadata_internal_block_invoke [C23] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+2026-10-16 20:58:30.182479+0900 DeckConnector[59485:20145458] [connection] nw_connection_copy_connected_local_endpoint_block_invoke [C23] Client called nw_connection_copy_connected_local_endpoint on unconnected nw_connection
+2026-10-16 20:58:30.191836+0900 DeckConnector[59485:20145458] [connection] nw_connection_copy_connected_remote_endpoint_block_invoke [C23] Client called nw_connection_copy_connected_remote_endpoint on unconnected nw_connection
+Test Case '-[DeckConnectorTests.AppModelTests testRestoredNoteCanBeSavedWithoutAnotherEdit]' passed (1.017 seconds).
+Test Suite 'AppModelTests' failed at 2026-10-16 20:58:31.036.
+	 Executed 14 tests, with 3 failures (0 unexpected) in 22.415 (22.430) seconds
+Test Suite 'DeckConnectorTests.xctest' failed at 2026-10-16 20:58:31.036.
+	 Executed 14 tests, with 3 failures (0 unexpected) in 22.415 (22.431) seconds
+Test Suite 'Selected tests' failed at 2026-10-16 20:58:31.040.
+	 Executed 14 tests, with 3 failures (0 unexpected) in 22.415 (22.436) seconds
+2026-10-16 20:58:31.133 xcodebuild[59228:20142907] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 20:58:31.134 xcodebuild[59228:20142907] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 20:58:31.136 xcodebuild[59228:20142907] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-16 20:58:31.452 xcodebuild[59228:20143359]  IDETestOperationsObserverDebug: Failure collecting diagnostics from simulator: Process exited with error 72:
+ xcrun: error: unable to find utility "simctl", not a developer tool or in PATH
+
+2026-10-16 20:58:31.499 xcodebuild[59228:20142907] [MT] IDETestOperationsObserverDebug: 62.595 elapsed -- Testing started completed.
+2026-10-16 20:58:31.500 xcodebuild[59228:20142907] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-10-16 20:58:31.500 xcodebuild[59228:20142907] [MT] IDETestOperationsObserverDebug: 62.595 sec, +62.595 sec -- end
+
+Test session results, code coverage, and logs:
+	/tmp/deck-connector-diagnose-3ojcr5a7/appmodel.xcresult
+
+Failing tests:
+	AppModelTests.testOptInRealHostPairingBufferCASAndCredentialLifecycle()
+	AppModelTests.testOptInRealHostPairingBufferCASAndCredentialLifecycle()
+	AppModelTests.testOptInRealHostPairingBufferCASAndCredentialLifecycle()
+
+** TEST EXECUTE FAILED **
+
+Testing started

@@ -1,0 +1,27 @@
+{
+  "result": "Failed",
+  "passedTests": 0,
+  "failedTests": 2,
+  "skippedTests": 0,
+  "totalTestCount": 2,
+  "testFailures": [
+    {
+      "failureText": "XCTAssertTrue failed - Expected paired test card named connector live codex.",
+      "targetName": "DeckConnectorUITests",
+      "testIdentifier": 1,
+      "testIdentifierString": "ConnectorUITests/testIsolatedLiveCodexOutput()",
+      "testIdentifierURL": "test://com.apple.xcode/DeckConnector/DeckConnectorUITests/ConnectorUITests/testIsolatedLiveCodexOutput",
+      "testName": "testIsolatedLiveCodexOutput()"
+    },
+    {
+      "failureText": "XCTAssertTrue failed - Round 1: saved agent card must appear.",
+      "targetName": "DeckConnectorUITests",
+      "testIdentifier": 2,
+      "testIdentifierString": "ConnectorUITests/testIsolatedStoppedAgentVisibilityAndOutput()",
+      "testIdentifierURL": "test://com.apple.xcode/DeckConnector/DeckConnectorUITests/ConnectorUITests/testIsolatedStoppedAgentVisibilityAndOutput",
+      "testName": "testIsolatedStoppedAgentVisibilityAndOutput()"
+    }
+  ],
+  "xcresult": "/tmp/deck-connector-diagnose-epojcgfq/ui.xcresult",
+  "cleanupCompleted": true
+}

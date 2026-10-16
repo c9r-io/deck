@@ -4,8 +4,9 @@ import Testing
 
 private enum DraftFailure: Error { case disk }
 
-private actor ControlledDraftSink: MessageDraftSink {
+private actor ControlledDraftSink: MessageDraftSink, NoteDraftSink {
     var saved: [MessageDraft] = []
+    var savedNotes: [NoteDraft] = []
     var shouldFail = false
     var blockNext = false
     private var blocked = false
@@ -22,6 +23,16 @@ private actor ControlledDraftSink: MessageDraftSink {
         }
         saved.append(draft)
     }
+    func saveNoteDraft(_ draft: NoteDraft) async throws {
+        if shouldFail { throw DraftFailure.disk }
+        if blockNext {
+            blockNext = false; blocked = true
+            observers.forEach { $0.resume() }; observers = []
+            await withCheckedContinuation { release = $0 }
+            blocked = false
+        }
+        savedNotes.append(draft)
+    }
     func arrangeBlock() { blockNext = true }
     func arrangeFailure(_ value: Bool) { shouldFail = value }
     func waitUntilBlocked() async { if blocked { return }; await withCheckedContinuation { observers.append($0) } }
@@ -30,6 +41,10 @@ private actor ControlledDraftSink: MessageDraftSink {
 
 private func versioned(_ text: String, _ version: UInt64, card: String = "card") -> VersionedMessageDraft {
     VersionedMessageDraft(draft: MessageDraft(cardID: card, text: text, expectedGeneration: "g"), version: version)
+}
+
+private func versionedNote(_ text: String, _ version: UInt64, card: String = "card", entry: String? = nil) -> VersionedNoteDraft {
+    VersionedNoteDraft(draft: NoteDraft(cardID: card, entryID: entry, text: text), version: version)
 }
 
 @Test func rapidDraftWritesStayOrderedAndSupersedeOlderVersion() async throws {
@@ -80,4 +95,29 @@ private func versioned(_ text: String, _ version: UInt64, card: String = "card")
     _ = try await new.persist(versioned("new binding", 1))
     #expect(await oldSink.saved.map(\.text) == ["old binding"])
     #expect(await newSink.saved.map(\.text) == ["new binding"])
+}
+
+@Test func noteDraftWritesAreImmediateOrderedAndVersionedPerEditor() async throws {
+    let sink = ControlledDraftSink()
+    let coordinator = NoteDraftSaveCoordinator(sink: sink)
+    await sink.arrangeBlock()
+    let first = Task { try await coordinator.persist(versionedNote("one", 1, entry: "a")) }
+    await sink.waitUntilBlocked()
+    let second = Task { try await coordinator.persist(versionedNote("two", 2, entry: "a")) }
+    await sink.releaseSave()
+    _ = try await first.value
+    _ = try await second.value
+    #expect(await sink.savedNotes.map(\.text) == ["one", "two"])
+    #expect(try await coordinator.persist(versionedNote("stale", 1, entry: "a")) == .superseded(2))
+    #expect(try await coordinator.persist(versionedNote("independent", 1, entry: "b")) == .saved(1))
+    #expect(await sink.savedNotes.map(\.text) == ["one", "two", "independent"])
+}
+
+@Test func failedNoteDraftWriteCanRetryTheSameVersion() async throws {
+    let sink = ControlledDraftSink()
+    let coordinator = NoteDraftSaveCoordinator(sink: sink)
+    await sink.arrangeFailure(true)
+    await #expect(throws: DraftFailure.disk) { try await coordinator.persist(versionedNote("text", 1)) }
+    await sink.arrangeFailure(false)
+    #expect(try await coordinator.persist(versionedNote("text", 1)) == .saved(1))
 }

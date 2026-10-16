@@ -1,0 +1,95 @@
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling phf_macros v0.13.1
+   Compiling thiserror-impl v1.0.69
+   Compiling darling_core v0.23.0
+   Compiling derive_more-impl v2.1.1
+   Compiling cssparser-macros v0.6.1
+   Compiling serde_derive_internals v0.29.1
+    Checking tokio v1.53.1
+   Compiling tracing-attributes v0.1.31
+   Compiling serialize-to-javascript-impl v0.1.2
+   Compiling phf v0.13.1
+   Compiling schemars_derive v0.8.22
+   Compiling derive_more v2.1.1
+   Compiling zerofrom v0.1.8
+   Compiling thiserror v1.0.69
+   Compiling darling_macro v0.23.0
+    Checking tracing v0.1.44
+    Checking tokio-util v0.7.19
+   Compiling darling v0.23.0
+    Checking hyper v1.11.0
+   Compiling web_atoms v0.2.6
+   Compiling cssparser v0.36.0
+   Compiling yoke v0.8.3
+   Compiling json-patch v3.0.1
+    Checking tower v0.5.3
+    Checking tokio-rustls v0.26.4
+   Compiling serde_with_macros v3.22.0
+    Checking hyper-util v0.1.20
+    Checking serialize-to-javascript v0.1.2
+    Checking filedescriptor v0.8.3
+   Compiling markup5ever v0.38.0
+    Checking ref-cast v1.0.27
+   Compiling darling v0.24.1
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling selectors v0.36.1
+   Compiling serde_with v3.22.0
+   Compiling html5ever v0.38.0
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+    Checking hyper-rustls v0.27.9
+    Checking portable-pty v0.8.1
+   Compiling dom_query v0.27.0
+    Checking schemars v1.2.2
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+    Checking futures v0.3.34
+   Compiling rmcp-macros v3.4.0
+    Checking deck-mcp-runner v0.1.0 (/Users/chenhan/c9r-io/deck/app/src-tauri/mcp-runner)
+    Checking deck-lifecycle-helper v0.1.0 (/Users/chenhan/c9r-io/deck/app/src-tauri/lifecycle-helper)
+   Compiling icu_provider v2.3.1
+    Checking deck-status-helper v0.1.0 (/Users/chenhan/c9r-io/deck/app/src-tauri/status-helper)
+    Checking rmcp v3.4.0
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling urlpattern v0.3.0
+   Compiling schemars v0.8.22
+    Checking tao v0.35.3
+    Checking wry v0.55.1
+    Checking tower-http v0.6.11
+    Checking reqwest v0.13.4
+    Checking tauri-utils v2.9.3
+    Checking deck-mcp v0.8.2 (/Users/chenhan/c9r-io/deck/app/src-tauri/mcp-adapter)
+    Checking tauri-runtime v2.11.3
+    Checking tauri-runtime-wry v2.11.4
+   Compiling tauri-build v2.6.3
+   Compiling tauri-plugin v2.6.3
+   Compiling tauri-codegen v2.6.3
+   Compiling tauri v2.11.5
+   Compiling tauri-plugin-updater v2.10.1
+   Compiling tauri-macros v2.6.3
+   Compiling deck-app v0.8.2 (/Users/chenhan/c9r-io/deck/app/src-tauri)
+error: this function has too many arguments (8/7)
+   --> src/connector/projection.rs:116:1
+    |
+116 | / pub(super) fn snapshot_in(
+117 | |     host_id: &str,
+118 | |     host_name: &str,
+119 | |     revision: &str,
+...   |
+124 | |     mcp_fence: impl Fn(&str) -> Result<(), DeckError>,
+125 | | ) -> Value {
+    | |__________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: could not compile `deck-app` (bin "deck-app") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `deck-app` (bin "deck-app" test) due to 1 previous error

@@ -1,0 +1,5 @@
+process pid 32174 started Fri Oct 16 19:33:15 2026: running
+tmux-server pid 32193 started Fri Oct 16 19:33:18 2026 socket /private/tmp/deck-connector-diagnose-hvhmaqlp/t/tmux-501/deck-smoke-hvhmaqlp: running
+process pid 32559 started Fri Oct 16 19:33:24 2026: gone
+stopped tmux-server pid 32193
+stopped process pid 32174

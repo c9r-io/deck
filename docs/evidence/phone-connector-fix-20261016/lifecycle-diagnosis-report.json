@@ -1,0 +1,86 @@
+{
+  "environmentReady": true,
+  "isolationVerified": true,
+  "mode": "fixed",
+  "reproductionConfirmed": null,
+  "snapshotScope": "boardMetadata",
+  "productAssertionsPassed": true,
+  "requiredTestsExecuted": true,
+  "cleanupCompleted": true,
+  "humanInterventions": 0,
+  "xcodePath": "/Volumes/Yotta/Applications/Xcode.app",
+  "developerDir": "/Volumes/Yotta/Applications/Xcode.app/Contents/Developer",
+  "tests": {
+    "hostSmoke": "PASS",
+    "simulatorUI": "FAIL",
+    "shellReturnUI": "PASS"
+  },
+  "cases": {
+    "liveSavedAgentOutput": "PASS",
+    "ordinaryShellVisibility": "UNRUN",
+    "shellWithForegroundAgent": "UNRUN",
+    "savedCommandVariants": "UNRUN",
+    "stoppedSavedAgentOutput": "PASS",
+    "agentExitedToShell": "PASS",
+    "foregroundCycle": "PASS",
+    "appRelaunchCredentialRecovery": "PASS",
+    "refreshFailureRecovery": "UNRUN",
+    "saveFailure": "UNRUN",
+    "backupRecovery": "UNRUN"
+  },
+  "xcodeVersion": "Xcode 27.1\nBuild version 27A9275",
+  "simctl": "/Volumes/Yotta/Applications/Xcode.app/Contents/Developer/usr/bin/simctl",
+  "sdks": "DriverKit SDKs:\n\tDriverKit 27.0                \t-sdk driverkit27.0\n\niOS SDKs:\n\tiOS 27.1                      \t-sdk iphoneos27.1\n\niOS Simulator SDKs:\n\tSimulator - iOS 27.1          \t-sdk iphonesimulator27.1\n\nmacOS SDKs:\n\tmacOS 27.0                    \t-sdk macosx27.0\n\tmacOS 27.0                    \t-sdk macosx27.0\n\ntvOS SDKs:\n\ttvOS 27.0                     \t-sdk appletvos27.0\n\ntvOS Simulator SDKs:\n\tSimulator - tvOS 27.0         \t-sdk appletvsimulator27.0\n\nvisionOS SDKs:\n\tvisionOS 27.0                 \t-sdk xros27.0\n\nvisionOS Simulator SDKs:\n\tSimulator - visionOS 27.0     \t-sdk xrsimulator27.0\n\nwatchOS SDKs:\n\twatchOS 27.0                  \t-sdk watchos27.0\n\nwatchOS Simulator SDKs:\n\tSimulator - watchOS 27.0      \t-sdk watchsimulator27.0",
+  "projectSchemes": "Command line invocation:\n    /Volumes/Yotta/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -list -project /Users/chenhan/c9r-io/deck/connector/ios/DeckConnector.xcodeproj\n\nResolve Package Graph\n\n\nResolved source packages:\n  DeckConnector: /Users/chenhan/c9r-io/deck/connector/ios @ local\n\nInformation about project \"DeckConnector\":\n    Targets:\n        DeckConnector\n        DeckConnectorTests\n        DeckConnectorUITests\n\n    Build Configurations:\n        Debug\n        Release\n\n    If no build configuration is specified and -scheme is not passed then \"Release\" is used.\n\n    Schemes:\n        DeckConnector\n        DeckConnectorCore\n        DeckConnectorUITests",
+  "installedDeviceTypeCount": 130,
+  "availableDeviceCount": 12,
+  "selectedRuntime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+  "selectedDeviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation",
+  "head": "a326cdf3a6b3f1b18176da9079659e4762408eca",
+  "initialGitStatus": "M app/src-tauri/src/connector/commands.rs\n M app/src-tauri/src/connector/mod.rs\n M app/src-tauri/src/connector/projection.rs\n M app/src-tauri/src/connector/server.rs\n M app/src-tauri/src/connector/smoke.rs\n M app/src-tauri/src/connector/tests.rs\n M app/src-tauri/src/main.rs\n M app/src-tauri/tests/signal_census.rs\n M app/ui/js/extension-connector.js\n M app/ui/js/i18n/en.js\n M app/ui/js/i18n/zh-Hans.js\n M app/ui/test/dom.test.mjs\n M connector/ios/DeckConnectorApp/AppModel.swift\n M connector/ios/DeckConnectorApp/DeckConnectorApp.swift\n M connector/ios/DeckConnectorApp/Localizable.xcstrings\n M connector/ios/DeckConnectorApp/Views.swift\n M connector/ios/DeckConnectorTests/AppModelTests.swift\n M connector/ios/DeckConnectorUITests/ConnectorUITests.swift\n M connector/ios/README.md\n M connector/ios/Sources/DeckConnectorCore/CommandJournal.swift\n M connector/ios/Sources/DeckConnectorCore/DraftCoordinator.swift\n M connector/ios/Sources/DeckConnectorCore/HTTPClient.swift\n M connector/ios/Sources/DeckConnectorCore/WireModels.swift\n M connector/ios/Tests/DeckConnectorCoreTests/CommandJournalTests.swift\n M connector/ios/Tests/DeckConnectorCoreTests/DraftCoordinatorTests.swift\n M connector/ios/Tests/DeckConnectorCoreTests/FixtureContractTests.swift\n M connector/ios/Tests/DeckConnectorCoreTests/Fixtures/http-status-map.json\n M connector/ios/Tests/DeckConnectorCoreTests/Fixtures/snapshot.json\n M connector/ios/Tests/DeckConnectorCoreTests/HTTPClientTests.swift\n M connector/ios/Tests/DeckConnectorCoreTests/PairingAndWireTests.swift\n M docs/connector.md\n M docs/evidence/first-party-governance-20261016/README.md\n M docs/evidence/first-party-governance-20261016/native-checkpoints.log\n M docs/evidence/first-party-governance-20261016/results.json\n M scripts/connector-simulator-diagnose.py\n M scripts/test_edr_runtime.py\n?? docs/evidence/phone-connector-fix-20261016/\n?? docs/evidence/phone-connector-ux-20261016/\n?? docs/phone-connector-diagnosis-2026-10-16.md\n?? research_notes/",
+  "sourceDiffSHA256": "24ca343b30048b41f8d28d01cf715ff273fd9f434f4721b93ef36884ee1c5430",
+  "freeBytes": 120263401472,
+  "appearance": "dark",
+  "hostBuildReusedFrom": "/tmp/deck-connector-diagnose-final-je_nehez",
+  "hostBinarySHA256": "53d06100a8a82b8feb06d7deba24d320e04d5223788240d2abdc6b047fe6e23d",
+  "iosBinarySHA256": "43f2280b08801a82548e6f28ce6184908e24fe14fb1b06af3d0848d0fb516e51",
+  "caseCorrelation": {
+    "case": "stoppedSavedAgentOutput",
+    "cardIdHash": "e89f093fc5ec354e",
+    "shellCardIdHash": "7fa46854e3245332",
+    "request": "GET /v1/cards/<fixture-card>/output"
+  },
+  "hostIdHash": "1fef37b6d72d22e5",
+  "listenerPort": 49200,
+  "liveCardIdHash": "24f660cc656099b7",
+  "agentStartupChoices": [],
+  "agentComposerSubmit": "visible-pending-input",
+  "realAgentProbe": "PASS",
+  "realAgentMarker": "deckprobez6zu4j7o",
+  "testCounts": {
+    "passedTests": 4,
+    "failedTests": 1,
+    "skippedTests": 0,
+    "totalTestCount": 5
+  },
+  "testResults": {
+    "testIsolatedChineseLargeText": "Passed",
+    "testIsolatedDraftsSurviveNavigationAndRelaunch": "Failed",
+    "testIsolatedLiveCodexOutput": "Passed",
+    "testIsolatedSharedShellIsMetadataOnly": "Passed",
+    "testIsolatedStoppedAgentVisibilityAndOutput": "Passed"
+  },
+  "shellReturnProbe": "PASS",
+  "shellReturnMarker": "shellmarkerz6zu4j7o",
+  "shellReturnTestCounts": {
+    "passedTests": 1,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 1
+  },
+  "shellReturnTestResults": {
+    "testIsolatedCodexExitToShellRejectsOutputAndSend": "Passed"
+  },
+  "failure": "XCTest failed; see suite log",
+  "finalGitStatus": "M app/src-tauri/src/connector/commands.rs\n M app/src-tauri/src/connector/mod.rs\n M app/src-tauri/src/connector/projection.rs\n M app/src-tauri/src/connector/server.rs\n M app/src-tauri/src/connector/smoke.rs\n M app/src-tauri/src/connector/tests.rs\n M app/src-tauri/src/main.rs\n M app/src-tauri/tests/signal_census.rs\n M app/ui/js/extension-connector.js\n M app/ui/js/i18n/en.js\n M app/ui/js/i18n/zh-Hans.js\n M app/ui/test/dom.test.mjs\n M connector/ios/DeckConnectorApp/AppModel.swift\n M connector/ios/DeckConnectorApp/DeckConnectorApp.swift\n M connector/ios/DeckConnectorApp/Localizable.xcstrings\n M connector/ios/DeckConnectorApp/Views.swift\n M connector/ios/DeckConnectorTests/AppModelTests.swift\n M connector/ios/DeckConnectorUITests/ConnectorUITests.swift\n M connector/ios/README.md\n M connector/ios/Sources/DeckConnectorCore/CommandJournal.swift\n M connector/ios/Sources/DeckConnectorCore/DraftCoordinator.swift\n M connector/ios/Sources/DeckConnectorCore/HTTPClient.swift\n M connector/ios/Sources/DeckConnectorCore/WireModels.swift\n M connector/ios/Tests/DeckConnectorCoreTests/CommandJournalTests.swift\n M connector/ios/Tests/DeckConnectorCoreTests/DraftCoordinatorTests.swift\n M connector/ios/Tests/DeckConnectorCoreTests/FixtureContractTests.swift\n M connector/ios/Tests/DeckConnectorCoreTests/Fixtures/http-status-map.json\n M connector/ios/Tests/DeckConnectorCoreTests/Fixtures/snapshot.json\n M connector/ios/Tests/DeckConnectorCoreTests/HTTPClientTests.swift\n M connector/ios/Tests/DeckConnectorCoreTests/PairingAndWireTests.swift\n M docs/connector.md\n M docs/evidence/first-party-governance-20261016/README.md\n M docs/evidence/first-party-governance-20261016/native-checkpoints.log\n M docs/evidence/first-party-governance-20261016/results.json\n M scripts/connector-simulator-diagnose.py\n M scripts/test_edr_runtime.py\n?? docs/evidence/phone-connector-fix-20261016/\n?? docs/evidence/phone-connector-ux-20261016/\n?? docs/phone-connector-diagnosis-2026-10-16.md\n?? research_notes/"
+}

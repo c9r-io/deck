@@ -1,0 +1,5 @@
+Query chain:
+ →Find: Target Application 'io.c9r.deck.connector'
+  ↪︎Find: Descendants matching type TextView
+    ↪︎Find: Elements matching predicate '"deck.note.new" IN identifiers'
+      ↪︎Find: First Match

@@ -1,4 +1,5 @@
-//! Board projection for the phone: saved agent cards, snapshot, buffer and bounded output.
+//! Board projection for the phone: consented Board metadata, saved agent
+//! card capabilities, buffer and bounded output.
 //!
 //! Split out of the one-file `connector/mod.rs` on 2026-09-23; the contract
 //! stays in `connector/mod.rs`. `snapshot` and `buffer` read the committed
@@ -94,26 +95,33 @@ pub(super) fn validate_buffer_target(
 
 pub(super) fn snapshot(app: &AppHandle) -> Result<Value, DeckError> {
     let (revision, b) = board_value()?;
-    let host_id = rt()?.read(|d| d.host_id.clone())?;
+    let (host_id, scope) = rt()?.read(|d| (d.host_id.clone(), d.config.scope))?;
     let queue = app.state::<Queues>();
     Ok(snapshot_in(
-        &host_id,
+        (&host_id, &host_name()),
         &revision,
         &b,
         &queue,
-        crate::context::connector_probe,
+        scope,
+        precise_connector_probe,
+        crate::mcp::guard_terminal_input,
     ))
 }
 
 /// The phone snapshot of one committed board (`revision` is its hash) and
-/// the live queues; `probe` answers each saved agent card's session.
+/// the live queues. `probe` and `mcp_fence` are the same native checks used
+/// immediately before output reads; the capability result is explanatory and
+/// never substitutes for route admission.
 pub(super) fn snapshot_in(
-    host_id: &str,
+    host: (&str, &str),
     revision: &str,
     b: &Value,
     queue: &Queues,
+    scope: SnapshotScope,
     probe: impl Fn(&str) -> Result<crate::context::ConnectorProbe, DeckError>,
+    mcp_fence: impl Fn(&str) -> Result<(), DeckError>,
 ) -> Value {
+    let (host_id, host_name) = host;
     let eligible_card_ids = b
         .get("cards")
         .and_then(Value::as_array)
@@ -134,21 +142,54 @@ pub(super) fn snapshot_in(
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|card| queue_target_supported(card))
-        .filter_map(|c| {
+        .enumerate()
+        .filter(|(_, card)| {
+            scope == SnapshotScope::BoardMetadata || queue_target_supported(card)
+        })
+        .filter_map(|(order, c)| {
             let id = c.get("id")?.as_str()?;
             let session = c.get("session")?.as_str()?;
-            let (status, probe) = probe_status(probe(session));
-            let buffer = c.get("buffer");
+            let agent_target = queue_target_supported(c);
+            let (status, probe_result, terminal) = if agent_target {
+                let (status, probe_result) = probe_status(probe(session));
+                let terminal = terminal_capability(
+                    true,
+                    probe_result.as_ref(),
+                    status,
+                    || mcp_fence(session),
+                );
+                (status, probe_result, terminal)
+            } else {
+                (
+                    "unknown",
+                    None,
+                    capability(false, Some("unsupported-target")),
+                )
+            };
+            let metadata_capability = if agent_target {
+                capability(true, None)
+            } else {
+                capability(false, Some("unsupported-target"))
+            };
+            // Metadata-only cards do not expose even note counts or collection
+            // state. Their native buffer routes remain unsupported as well.
+            let buffer = agent_target.then(|| c.get("buffer")).flatten();
             Some(json!({
                 "id":id,
                 "projectId":c.get("projectId")?.as_str()?,
                 "columnId":c.get("columnId")?.as_str()?,
                 "title":c.get("title")?.as_str()?,
+                "order":order,
                 "status":status,
-                "generation":probe.as_ref().map(|p|p.generation.clone()),
-                "canSend":queue_target_supported(c) && probe.as_ref().is_some_and(|p|p.agent.is_some()),
-                "canQueue":true,
+                "generation":agent_target.then(|| probe_result.as_ref().map(|p|p.generation.clone())).flatten(),
+                "canSend":terminal["allowed"],
+                "canQueue":agent_target,
+                "capabilities":{
+                    "readOutput":terminal.clone(),
+                    "sendMessage":terminal,
+                    "editNotes":metadata_capability.clone(),
+                    "queue":metadata_capability
+                },
                 "buffer":{
                     "revision":buffer.and_then(|v|v.get("revision")).and_then(Value::as_u64).unwrap_or(0),
                     "collecting":buffer.and_then(|v|v.get("collecting")).and_then(Value::as_bool).unwrap_or(false),
@@ -157,7 +198,40 @@ pub(super) fn snapshot_in(
             }))
         })
         .collect::<Vec<_>>();
-    json!({"version":1,"hostId":host_id,"revision":revision,"capturedAt":now(),"projects":projects,"cards":cards,"queue":items})
+    json!({"version":1,"hostId":host_id,"hostName":host_name,"scope":scope,"revision":revision,"capturedAt":now(),"projects":projects,"cards":cards,"queue":items})
+}
+
+fn capability(allowed: bool, reason: Option<&str>) -> Value {
+    match reason {
+        Some(reason) => json!({"allowed":allowed,"reason":reason}),
+        None => json!({"allowed":allowed}),
+    }
+}
+
+fn terminal_capability(
+    agent_target: bool,
+    probe: Option<&crate::context::ConnectorProbe>,
+    status: &str,
+    mcp_fence: impl FnOnce() -> Result<(), DeckError>,
+) -> Value {
+    if !agent_target {
+        return capability(false, Some("unsupported-target"));
+    }
+    let Some(probe) = probe else {
+        let reason = if status == "stopped" {
+            "session-unavailable"
+        } else {
+            "target-unavailable"
+        };
+        return capability(false, Some(reason));
+    };
+    if probe.agent.is_none() {
+        return capability(false, Some("agent-not-in-foreground"));
+    }
+    if mcp_fence().is_err() {
+        return capability(false, Some("mcp-controlled"));
+    }
+    capability(true, None)
 }
 
 pub(super) fn probe_status<T>(probe: Result<T, DeckError>) -> (&'static str, Option<T>) {
@@ -243,35 +317,43 @@ impl OutputIo for LiveOutput {
         committed_card(id)
     }
     fn probe(&self, session: &str) -> Result<crate::context::ConnectorProbe, DeckError> {
-        match crate::context::connector_probe(session) {
-            Ok(probe) => Ok(probe),
-            Err(error) if error.kind() == ErrorKind::Tmux => {
-                // A missing target can produce a malformed display-message row
-                // with exit 0. Recheck existence without parsing tmux stderr.
-                let target = crate::tmux::session_target(session);
-                match crate::tmux::tmux(&["has-session", "-t", &target]) {
-                    Err(check) if check.kind() == ErrorKind::NoSession => Err(check),
-                    Ok(_) => match crate::tmux::list_panes() {
-                        Ok(rows)
-                            if !rows.iter().any(|row| {
-                                row.session_name == session && row.window_active && row.pane_active
-                            }) =>
-                        {
-                            Err(DeckError::new(ErrorKind::NoSession, "pane unavailable"))
-                        }
-                        _ => Err(error),
-                    },
-                    Err(_) => Err(error),
-                }
-            }
-            Err(error) => Err(error),
-        }
+        precise_connector_probe(session)
     }
     fn tmux(&self, args: &[String]) -> Result<String, DeckError> {
         crate::tmux::tmux_owned(args)
     }
     fn mcp_fence(&self, session: &str) -> Result<(), DeckError> {
         crate::mcp::guard_terminal_input(session)
+    }
+}
+
+/// Resolve connector probe failures with the same exact session/pane check
+/// for snapshot capabilities and output admission. This keeps a stopped card
+/// from appearing as an unknown send target solely because tmux returned a
+/// malformed display row with exit 0.
+fn precise_connector_probe(session: &str) -> Result<crate::context::ConnectorProbe, DeckError> {
+    match crate::context::connector_probe(session) {
+        Ok(probe) => Ok(probe),
+        Err(error) if error.kind() == ErrorKind::Tmux => {
+            // A missing target can produce a malformed display-message row
+            // with exit 0. Recheck existence without parsing tmux stderr.
+            let target = crate::tmux::session_target(session);
+            match crate::tmux::tmux(&["has-session", "-t", &target]) {
+                Err(check) if check.kind() == ErrorKind::NoSession => Err(check),
+                Ok(_) => match crate::tmux::list_panes() {
+                    Ok(rows)
+                        if !rows.iter().any(|row| {
+                            row.session_name == session && row.window_active && row.pane_active
+                        }) =>
+                    {
+                        Err(DeckError::new(ErrorKind::NoSession, "pane unavailable"))
+                    }
+                    _ => Err(error),
+                },
+                Err(_) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -292,8 +374,8 @@ pub(super) fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, Dec
     let request = OUTPUT_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let card = io.card(card_id)?;
     require_agent_card(&card)?;
-    let unsupported = |_| DeckError::new(ErrorKind::Invalid, "unsupported-target");
-    io.mcp_fence(&card.session).map_err(unsupported)?;
+    let mcp_controlled = |_| DeckError::new(ErrorKind::Perm, "mcp-controlled");
+    io.mcp_fence(&card.session).map_err(mcp_controlled)?;
     let before = io
         .probe(&card.session)
         .map_err(|error| output_failure("probe-before", card_id, request, started, error))?;
@@ -337,7 +419,7 @@ pub(super) fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, Dec
         .probe(&card.session)
         .map_err(|error| output_failure("probe-after", card_id, request, started, error))?;
     let still = io.card(card_id)?;
-    io.mcp_fence(&card.session).map_err(unsupported)?;
+    io.mcp_fence(&card.session).map_err(mcp_controlled)?;
     if !still.agent_target {
         return Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"));
     }

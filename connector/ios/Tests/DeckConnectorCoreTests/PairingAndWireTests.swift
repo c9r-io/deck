@@ -116,3 +116,12 @@ import Testing
     let missing = card.replacingOccurrences(of: ",\"canQueue\":true", with: "")
     #expect(try JSONDecoder().decode(CardSummary.self, from: Data(missing.utf8)).canQueue == false)
 }
+
+@Test func explicitCapabilityObjectFailsClosedAndLegacyHostDegradesHonestly() throws {
+    let json = #"{"id":"C","projectId":"P","columnId":"K","title":"Card","status":"running","generation":"g","canSend":true,"canQueue":true,"buffer":{"revision":1,"collecting":false,"entryCount":0}}"#
+    let legacy = try JSONDecoder().decode(CardSummary.self, from: Data(json.utf8))
+    #expect(legacy.canReadOutput && legacy.maySend && legacy.canEditNotes)
+    let extended = json.dropLast() + ",\"capabilities\":{}}"
+    let unknown = try JSONDecoder().decode(CardSummary.self, from: Data(extended.utf8))
+    #expect(!unknown.canReadOutput && !unknown.maySend && !unknown.canEditNotes && !unknown.mayQueue)
+}

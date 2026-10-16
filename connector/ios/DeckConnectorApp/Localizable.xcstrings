@@ -1,204 +1,1734 @@
 {
-  "sourceLanguage" : "en",
-  "strings" : {
-    "taskDetail.output.sessionUnavailable" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "There is no readable session for this card right now." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此卡片目前没有可读取的会话。" } }
+  "sourceLanguage": "en",
+  "strings": {
+    "taskDetail.output.sessionUnavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "There is no readable session for this card right now."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此卡片目前没有可读取的会话。"
+          }
+        }
       }
     },
-    "taskDetail.output.agentNotInForeground" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "A supported agent is not in the foreground, so its output cannot be read." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "前台没有受支持的智能体，无法读取智能体输出。" } }
+    "taskDetail.output.agentNotInForeground": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A supported agent is not in the foreground, so its output cannot be read."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前台没有受支持的智能体，无法读取智能体输出。"
+          }
+        }
       }
     },
-    "taskDetail.output.readFailed" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Deck could not read the agent output. Refresh to try again." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Deck 无法读取智能体输出。请刷新后重试。" } }
+    "taskDetail.output.readFailed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deck could not read the agent output. Refresh to try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deck 无法读取智能体输出。请刷新后重试。"
+          }
+        }
       }
     },
-    "taskDetail.output.targetChanged" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "The target changed while output was being read. Refresh to try again." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "读取输出时目标发生变化。请刷新后重试。" } }
+    "taskDetail.output.targetChanged": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The target changed while output was being read. Refresh to try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "读取输出时目标发生变化。请刷新后重试。"
+          }
+        }
       }
     },
-    "taskDetail.output.unknown" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Deck could not read this output. Refresh to try again." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Deck 无法读取此输出。请刷新后重试。" } }
+    "taskDetail.output.unknown": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deck could not read this output. Refresh to try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deck 无法读取此输出。请刷新后重试。"
+          }
+        }
       }
     },
-    "taskDetail.keyboard.done" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Done" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "完成" } }
+    "taskDetail.keyboard.done": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成"
+          }
+        }
       }
     },
-    "taskDetail.output.latest" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Latest output" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最新输出" } }
+    "taskDetail.output.latest": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jump to end"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跳到末尾"
+          }
+        }
       }
     },
-    "taskDetail.message.localDraft" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "This draft is saved only on this iPhone. It is not a desktop scratchpad note." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此草稿仅保存在这台 iPhone 上，并不是桌面端的暂存区便签。" } }
+    "taskDetail.message.localDraft": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This draft is saved only on this iPhone. It is not a desktop scratchpad note."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此草稿仅保存在这台 iPhone 上，并不是桌面端的暂存区便签。"
+          }
+        }
       }
     },
-    "taskDetail.message.saveFailed" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Draft is kept on this iPhone but is not saved yet: %@" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "草稿仍保留在这台 iPhone 上，但尚未保存：%@" } }
+    "taskDetail.message.saveFailed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Draft is kept on this iPhone but is not saved yet: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草稿仍保留在这台 iPhone 上，但尚未保存：%@"
+          }
+        }
       }
     },
-    "taskDetail.message.saved" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Draft saved on this iPhone." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "草稿已保存在这台 iPhone 上。" } }
+    "taskDetail.message.saved": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Draft saved on this iPhone."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草稿已保存在这台 iPhone 上。"
+          }
+        }
       }
     },
-    "taskDetail.message.saving" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saving draft on this iPhone…" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在将草稿保存到这台 iPhone…" } }
+    "taskDetail.message.saving": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saving draft on this iPhone…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在将草稿保存到这台 iPhone…"
+          }
+        }
       }
     },
-    "taskDetail.message.send" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Send to agent" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "发送给智能体" } }
+    "taskDetail.message.send": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送"
+          }
+        }
       }
     },
-    "taskDetail.message.title" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Send to agent" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "发送给智能体" } }
+    "taskDetail.message.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send to agent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送给智能体"
+          }
+        }
       }
     },
-    "taskDetail.message.unavailable.agent" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "This task has no writable Codex or Claude target." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此任务没有可写入的 Codex 或 Claude 目标。" } }
+    "taskDetail.message.unavailable.agent": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This task has no writable Codex or Claude target."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此任务没有可写入的 Codex 或 Claude 目标。"
+          }
+        }
       }
     },
-    "taskDetail.message.unavailable.stopped" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "This task is stopped. Start it on the desktop before sending." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此任务已停止。请先在桌面端启动，再发送消息。" } }
+    "taskDetail.message.unavailable.stopped": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This task is stopped. Start it on the desktop before sending."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此任务已停止。请先在桌面端启动，再发送消息。"
+          }
+        }
       }
     },
-    "taskDetail.message.unavailable.unknown" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Deck cannot verify a writable agent target for this task." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Deck 无法确认此任务存在可写入的智能体目标。" } }
+    "taskDetail.message.unavailable.unknown": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deck cannot verify a writable agent target for this task."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deck 无法确认此任务存在可写入的智能体目标。"
+          }
+        }
       }
     },
-    "taskDetail.note.explanation" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Save a note to this card’s desktop scratchpad. Saving does not send it to the agent." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "将便签保存到此卡片的桌面端暂存区。保存不会发送给智能体。" } }
+    "taskDetail.note.explanation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save a note to this card’s desktop scratchpad. Saving does not send it to the agent."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将便签保存到此卡片的桌面端暂存区。保存不会发送给智能体。"
+          }
+        }
       }
     },
-    "taskDetail.note.failed" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Note was not saved: %@" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "便签未保存：%@" } }
+    "taskDetail.note.failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Note was not saved: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "便签未保存：%@"
+          }
+        }
       }
     },
-    "taskDetail.note.delete" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Delete" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "删除" } }
+    "taskDetail.note.delete": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除"
+          }
+        }
       }
     },
-    "taskDetail.note.external" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "External event" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "外部事件" } }
+    "taskDetail.note.external": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "External event"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外部事件"
+          }
+        }
       }
     },
-    "taskDetail.note.manual" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Manual note" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "手工便签" } }
+    "taskDetail.note.manual": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manual note"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手工便签"
+          }
+        }
       }
     },
-    "taskDetail.note.pending" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Waiting for Deck to confirm the original save…" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在等待 Deck 确认原始保存操作…" } }
+    "taskDetail.note.pending": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for Deck to confirm the original save…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在等待 Deck 确认原始保存操作…"
+          }
+        }
       }
     },
-    "taskDetail.note.placeholder" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "New scratchpad note" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "新建暂存区便签" } }
+    "taskDetail.note.placeholder": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New scratchpad note"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建暂存区便签"
+          }
+        }
       }
     },
-    "taskDetail.note.rejected" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Deck rejected the save." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Deck 拒绝了保存操作。" } }
+    "taskDetail.note.rejected": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deck rejected the save."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deck 拒绝了保存操作。"
+          }
+        }
       }
     },
-    "taskDetail.note.save" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Save note" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "保存便签" } }
+    "taskDetail.note.save": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save note"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存便签"
+          }
+        }
       }
     },
-    "taskDetail.note.saved" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saved to the desktop scratchpad." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已保存到桌面端暂存区。" } }
+    "taskDetail.note.saved": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved to the desktop scratchpad."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存到桌面端暂存区。"
+          }
+        }
       }
     },
-    "taskDetail.note.savedNewer" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saved the submitted note. Your newer text remains in the editor." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已保存提交时的便签；之后输入的新内容仍保留在编辑框中。" } }
+    "taskDetail.note.savedNewer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved the submitted note. Your newer text remains in the editor."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存提交时的便签；之后输入的新内容仍保留在编辑框中。"
+          }
+        }
       }
     },
-    "taskDetail.note.saving" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saving note…" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在保存便签…" } }
+    "taskDetail.note.saving": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saving note…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在保存便签…"
+          }
+        }
       }
     },
-    "taskDetail.queue.copy" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Queued copy: %@" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "排队副本：%@" } }
+    "taskDetail.queue.copy": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queued copy: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "排队副本：%@"
+          }
+        }
       }
     },
-    "taskDetail.queue.explanation" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Queueing creates a copy; notes remain in the scratchpad and later edits do not alter that copy." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "排队会创建副本；便签仍保留在暂存区，之后的编辑不会改变该副本。" } }
+    "taskDetail.queue.explanation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queueing creates a copy; notes remain in the scratchpad and later edits do not alter that copy."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "排队会创建副本；便签仍保留在暂存区，之后的编辑不会改变该副本。"
+          }
+        }
       }
     },
-    "taskDetail.queue.selected" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Queue selected (%lld)" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "排队所选项（%lld）" } }
+    "taskDetail.queue.selected": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queue selected (%lld)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "排队所选项（%lld）"
+          }
+        }
       }
     },
-    "taskDetail.queue.unavailable" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Queueing requires a Codex or Claude launch configuration saved on the desktop." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "排队需要桌面端已保存 Codex 或 Claude 启动配置。" } }
+    "taskDetail.queue.unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queueing requires a Codex or Claude launch configuration saved on the desktop."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "排队需要桌面端已保存 Codex 或 Claude 启动配置。"
+          }
+        }
       }
     },
-    "taskDetail.scratchpad.title" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Scratchpad" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂存区" } }
+    "taskDetail.scratchpad.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scratchpad"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂存区"
+          }
+        }
+      }
+    },
+    "Loading…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在载入…"
+          }
+        }
+      }
+    },
+    "Device revoked": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device revoked"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备已撤销"
+          }
+        }
+      }
+    },
+    "Remove pairing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove pairing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除配对"
+          }
+        }
+      }
+    },
+    "OK": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "好"
+          }
+        }
+      }
+    },
+    "Cancel": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        }
+      }
+    },
+    "Remove this pairing from this phone?": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove this pairing from this phone?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从此手机移除配对？"
+          }
+        }
+      }
+    },
+    "The local recovery archive and unresolved operation history remain on this device.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The local recovery archive and unresolved operation history remain on this device."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机仍会保留恢复记录和未确认的操作历史。"
+          }
+        }
+      }
+    },
+    "Revoke status comes from the desktop host. Remove this pairing, then create a new QR code on Deck.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revoke status comes from the desktop host. Remove this pairing, then create a new QR code on Deck."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac 已撤销此设备。请移除配对，然后在 Deck 中生成新的二维码。"
+          }
+        }
+      }
+    },
+    "Pair with Deck": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pair with Deck"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与 Deck 配对"
+          }
+        }
+      }
+    },
+    "On the desktop, enable Connector and create a short-lived pairing code. The phone connects only to that pinned HTTPS host.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On the desktop, enable Connector and create a short-lived pairing code. The phone connects only to that pinned HTTPS host."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Mac 上启用 Phone Connector 并生成配对码，然后扫码连接。"
+          }
+        }
+      }
+    },
+    "Scan QR code": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan QR code"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描二维码"
+          }
+        }
+      }
+    },
+    "Paste deck-connector:// pairing code": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste deck-connector:// pairing code"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粘贴 deck-connector:// 配对码"
+          }
+        }
+      }
+    },
+    "Pair": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pair"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配对"
+          }
+        }
+      }
+    },
+    "Scan Deck QR": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan Deck QR"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描 Deck 二维码"
+          }
+        }
+      }
+    },
+    "Pairing data is used once and is not stored. The host identity, certificate pin, device ID and token are stored together in Keychain.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pairing data is used once and is not stored. The host identity, certificate pin, device ID and token are stored together in Keychain."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配对码仅使用一次。连接凭据安全保存在钥匙串中。"
+          }
+        }
+      }
+    },
+    "Tasks": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tasks"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卡片"
+          }
+        }
+      }
+    },
+    "Queue": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "队列"
+          }
+        }
+      }
+    },
+    "New": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建"
+          }
+        }
+      }
+    },
+    "Retry task creation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry task creation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试创建卡片"
+          }
+        }
+      }
+    },
+    "Check task creation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check task creation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认创建结果"
+          }
+        }
+      }
+    },
+    "No snapshot": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No snapshot"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未取得看板"
+          }
+        }
+      }
+    },
+    "Deck must be awake, running, and reachable on the local network or your VPN.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deck must be awake, running, and reachable on the local network or your VPN."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请确保 Mac 已唤醒、Deck 正在运行，且可通过局域网或 VPN 连接。"
+          }
+        }
+      }
+    },
+    "Refresh": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refresh"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刷新"
+          }
+        }
+      }
+    },
+    "Connecting to desktop…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connecting to desktop…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在连接 Mac…"
+          }
+        }
+      }
+    },
+    "Resume": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resume"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续"
+          }
+        }
+      }
+    },
+    "Pause": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pause"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂停"
+          }
+        }
+      }
+    },
+    "Last synced": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last synced"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最近同步"
+          }
+        }
+      }
+    },
+    "All card summaries shared by this Mac. Terminal access is separate.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All card summaries shared by this Mac. Terminal access is separate."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示此 Mac 共享的全部卡片概要。终端访问权限单独控制。"
+          }
+        }
+      }
+    },
+    "Only saved Codex and Claude cards are shared. To see all card summaries, change Phone Connector sharing on your Mac.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only saved Codex and Claude cards are shared. To see all card summaries, change Phone Connector sharing on your Mac."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前仅共享已保存 Codex 或 Claude 启动命令的卡片。要查看全部卡片概要，请在 Mac 上更改 Phone Connector 共享范围。"
+          }
+        }
+      }
+    },
+    "No shared cards": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No shared cards"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有已共享的卡片"
+          }
+        }
+      }
+    },
+    "Check the sharing scope on your Mac. Refreshing does not change which cards are shared.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the sharing scope on your Mac. Refreshing does not change which cards are shared."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请检查 Mac 上的共享范围。刷新不会改变共享范围。"
+          }
+        }
+      }
+    },
+    "Session stopped": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Session stopped"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会话已停止"
+          }
+        }
+      }
+    },
+    "Session available": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Session available"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会话可用"
+          }
+        }
+      }
+    },
+    "Session status unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Session status unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法确认会话状态"
+          }
+        }
+      }
+    },
+    "Card view": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Card view"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卡片视图"
+          }
+        }
+      }
+    },
+    "Output": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输出"
+          }
+        }
+      }
+    },
+    "Notes": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "便签"
+          }
+        }
+      }
+    },
+    "Task unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Task unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卡片不可用"
+          }
+        }
+      }
+    },
+    "It may have been removed on the desktop.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "It may have been removed on the desktop."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此卡片可能已在 Mac 上移除或不再共享。"
+          }
+        }
+      }
+    },
+    "Current output": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前输出"
+          }
+        }
+      }
+    },
+    "Refresh output": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refresh output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刷新输出"
+          }
+        }
+      }
+    },
+    "Updating output": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updating output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在更新输出"
+          }
+        }
+      }
+    },
+    "Offline — showing the last available snapshot": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline — showing the last available snapshot"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已离线，当前显示上次取得的快照"
+          }
+        }
+      }
+    },
+    "Captured": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Captured"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "采集于"
+          }
+        }
+      }
+    },
+    "Snapshot may be out of date": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Snapshot may be out of date"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "快照可能已过期"
+          }
+        }
+      }
+    },
+    "Older output was truncated by the host.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Older output was truncated by the host."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "较早的输出已由 Mac 截断。"
+          }
+        }
+      }
+    },
+    "This is a bounded terminal snapshot, not complete chat history.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This is a bounded terminal snapshot, not complete chat history."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这里显示有限长度的终端快照，并非完整聊天记录。"
+          }
+        }
+      }
+    },
+    "Notes remain available when output cannot be read.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notes remain available when output cannot be read."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取输出时，仍可使用便签。"
+          }
+        }
+      }
+    },
+    "Output unavailable: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Output unavailable: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输出不可用：%@"
+          }
+        }
+      }
+    },
+    "Message the agent…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Message the agent…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入给智能体的消息…"
+          }
+        }
+      }
+    },
+    "The target changed. Review your draft before sending.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The target changed. Review your draft before sending."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标已变化，请检查草稿后再发送。"
+          }
+        }
+      }
+    },
+    "Use current target": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use current target"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用当前目标"
+          }
+        }
+      }
+    },
+    "Retry saving draft": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry saving draft"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试保存草稿"
+          }
+        }
+      }
+    },
+    "Wrap lines": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wrap lines"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动换行"
+          }
+        }
+      }
+    },
+    "New output available below": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New output available below"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下方有新输出"
+          }
+        }
+      }
+    },
+    "No output": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无输出"
+          }
+        }
+      }
+    },
+    "Summary only. Remote access requires a saved Codex or Claude command on your Mac.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Summary only. Remote access requires a saved Codex or Claude command on your Mac."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅共享概要。远程访问需要在 Mac 上保存 Codex 或 Claude 启动命令。"
+          }
+        }
+      }
+    },
+    "This card is controlled by another client. Phone access is unavailable.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This card is controlled by another client. Phone access is unavailable."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此卡片由其他客户端控制，手机暂时无法访问。"
+          }
+        }
+      }
+    },
+    "Retry delivery": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry delivery"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试发送"
+          }
+        }
+      }
+    },
+    "Check delivery": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check delivery"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认结果"
+          }
+        }
+      }
+    },
+    "Diagnostic details": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "诊断详情"
+          }
+        }
+      }
+    },
+    "Not delivered. You can retry.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not delivered. You can retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未送达，可以重试。"
+          }
+        }
+      }
+    },
+    "Delivery cannot be confirmed. Check this card on your Mac before sending again.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delivery cannot be confirmed. Check this card on your Mac before sending again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法确认是否送达。再次发送前，请先在 Mac 上检查此卡片。"
+          }
+        }
+      }
+    },
+    "Confirming delivery…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirming delivery…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在确认是否送达…"
+          }
+        }
+      }
+    },
+    "Confirming the saved edit…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirming the saved edit…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在确认便签修改…"
+          }
+        }
+      }
+    },
+    "Edit note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit note"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑便签"
+          }
+        }
+      }
+    },
+    "Save": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存"
+          }
+        }
+      }
+    },
+    "Note not confirmed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Note not confirmed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未确认保存"
+          }
+        }
+      }
+    },
+    "Scratchpad unavailable: this is not a desktop-saved Codex or Claude card.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scratchpad unavailable: this is not a desktop-saved Codex or Claude card."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "便签不可用：此卡片没有已保存的 Codex 或 Claude 启动配置。"
+          }
+        }
+      }
+    },
+    "The submitted version was saved. Your newer edits remain in this editor.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The submitted version was saved. Your newer edits remain in this editor."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存提交时的版本；之后的新编辑仍保留在此处。"
+          }
+        }
+      }
+    },
+    "This card is not available for sending.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This card is not available for sending."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此卡片目前不可发送消息。"
+          }
+        }
+      }
+    },
+    "Unsaved edits stay on this iPhone until you save the note.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unsaved edits stay on this iPhone until you save the note."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未保存的编辑仅保留在此 iPhone 上，点击“保存便签”后才会同步到 Mac。"
+          }
+        }
+      }
+    },
+    "Save the local draft before retrying.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save the local draft before retrying."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先保存本机草稿，再重试。"
+          }
+        }
+      }
+    },
+    "Notes could not be updated. Refresh to try again.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notes could not be updated. Refresh to try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法更新便签，请刷新后重试。"
+          }
+        }
+      }
+    },
+    "Refresh notes": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refresh notes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刷新便签"
+          }
+        }
       }
     }
   },
-  "version" : "1.0"
+  "version": "1.0"
 }

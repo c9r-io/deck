@@ -1,0 +1,9 @@
+   Compiling deck-app v0.8.2 (/Users/chenhan/c9r-io/deck/app/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.72s
+     Running unittests src/main.rs (app/src-tauri/target/debug/deps/deck_app-2159a79a7b5e0db1)
+
+running 1 test
+test agent_reentry::tests::a_controller_killed_at_any_phase_leaves_no_replay_and_no_agent_data ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1267 filtered out; finished in 46.95s
+

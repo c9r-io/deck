@@ -123,6 +123,8 @@ public struct DeviceCredential: Codable, Equatable, Sendable {
 public struct Snapshot: Codable, Equatable, Sendable {
     public let version: Int
     public let hostId: String
+    public let hostName: String?
+    public let scope: String?
     public let revision: WireRevision
     public let capturedAt: WireInstant
     public let projects: [ProjectSummary]
@@ -146,6 +148,18 @@ public struct BufferSummary: Codable, Equatable, Sendable {
     public let entryCount: Int
 }
 
+public struct CardCapability: Codable, Equatable, Sendable {
+    public let allowed: Bool
+    public let reason: String?
+}
+
+public struct CardCapabilities: Codable, Equatable, Sendable {
+    public let readOutput: CardCapability?
+    public let sendMessage: CardCapability?
+    public let editNotes: CardCapability?
+    public let queue: CardCapability?
+}
+
 public struct CardSummary: Codable, Identifiable, Equatable, Sendable {
     public let id: String
     public let projectId: String
@@ -156,12 +170,20 @@ public struct CardSummary: Codable, Identifiable, Equatable, Sendable {
     public let canSend: Bool
     public let canQueue: Bool
     public let buffer: BufferSummary
+    public let order: Int?
+    public let capabilities: CardCapabilities?
+    // Legacy hosts already project agent-only cards. An advertised capability
+    // object is authoritative for presentation; missing/unknown entries deny.
+    public var canReadOutput: Bool { capabilities.map { $0.readOutput?.allowed == true } ?? true }
+    public var canEditNotes: Bool { capabilities.map { $0.editNotes?.allowed == true } ?? canQueue }
+    public var maySend: Bool { canSend && (capabilities.map { $0.sendMessage?.allowed == true } ?? true) }
+    public var mayQueue: Bool { canQueue && (capabilities.map { $0.queue?.allowed == true } ?? true) }
 
-    private enum CodingKeys: String, CodingKey { case id, projectId, columnId, title, status, generation, canSend, canQueue, buffer }
+    private enum CodingKeys: String, CodingKey { case id, projectId, columnId, title, status, generation, canSend, canQueue, buffer, order, capabilities }
 
-    public init(id: String, projectId: String, columnId: String, title: String, status: String, generation: String?, canSend: Bool, canQueue: Bool, buffer: BufferSummary) {
+    public init(id: String, projectId: String, columnId: String, title: String, status: String, generation: String?, canSend: Bool, canQueue: Bool, buffer: BufferSummary, order: Int? = nil, capabilities: CardCapabilities? = nil) {
         self.id = id; self.projectId = projectId; self.columnId = columnId; self.title = title; self.status = status
-        self.generation = generation; self.canSend = canSend; self.canQueue = canQueue; self.buffer = buffer
+        self.generation = generation; self.canSend = canSend; self.canQueue = canQueue; self.buffer = buffer; self.order = order; self.capabilities = capabilities
     }
 
     /// The host's card status words are `running`, `stopped` and `unknown`
@@ -180,6 +202,8 @@ public struct CardSummary: Codable, Identifiable, Equatable, Sendable {
         canSend = try values.decode(Bool.self, forKey: .canSend)
         canQueue = try values.decodeIfPresent(Bool.self, forKey: .canQueue) ?? false
         buffer = try values.decode(BufferSummary.self, forKey: .buffer)
+        order = try values.decodeIfPresent(Int.self, forKey: .order)
+        capabilities = try values.decodeIfPresent(CardCapabilities.self, forKey: .capabilities)
     }
 }
 
@@ -290,6 +314,13 @@ public enum WireInstant: Codable, Equatable, Sendable, CustomStringConvertible {
     case text(String), integer(Int64), number(Double)
     public var description: String {
         switch self { case let .text(value): value; case let .integer(value): String(value); case let .number(value): String(value) }
+    }
+    public var date: Date? {
+        switch self {
+        case let .text(value): ISO8601DateFormatter().date(from: value)
+        case let .integer(value): Date(timeIntervalSince1970: Double(value) / (value > 10_000_000_000 ? 1000 : 1))
+        case let .number(value): Date(timeIntervalSince1970: value / (value > 10_000_000_000 ? 1000 : 1))
+        }
     }
     public init(from decoder: Decoder) throws {
         let box = try decoder.singleValueContainer()

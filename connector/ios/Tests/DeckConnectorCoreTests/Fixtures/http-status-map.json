@@ -55,6 +55,7 @@
   "outputResponses": [
     {"status": 503, "code": "session-unavailable", "phone": "outputResponse"},
     {"status": 409, "code": "agent-not-in-foreground", "phone": "outputResponse"},
+    {"status": 409, "code": "mcp-controlled", "phone": "outputResponse"},
     {"status": 503, "code": "output-read-failed", "phone": "outputResponse"},
     {"status": 409, "code": "context-changed", "phone": "outputResponse"},
     {"status": 503, "code": "unavailable", "phone": "outputResponse"}

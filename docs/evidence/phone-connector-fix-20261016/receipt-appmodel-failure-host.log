@@ -1,0 +1,12 @@
+1792151833 [tmux] using the bundled sidecar
+1792151834 [notify] boot not-determined
+1792151835 [notify] configured not-determined
+1792151835 [evt] ping emitted ok=true
+1792151835 [ui] ping-recv
+1792151835 [extensions] services started (1)
+1792151836 [ui] smoke-check connector-transport-ready a=1 b=0
+1792151837 [start] created sess-a8f9d gate=192ms create=29ms cmd=18ms total=239ms restored=false
+1792151859 [tmux-control] read channel connected
+1792151875 [poll] webview poll idle; bells observed on the scheduler tick
+1792151878 [poll] webview poll resumed
+1792151913 [exit] termination signal

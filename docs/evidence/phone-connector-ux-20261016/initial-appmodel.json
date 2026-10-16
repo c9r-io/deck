@@ -1,0 +1,19 @@
+{
+  "result": "Failed",
+  "passedTests": 1,
+  "failedTests": 1,
+  "skippedTests": 0,
+  "totalTestCount": 2,
+  "testFailures": [
+    {
+      "failureText": "failed - Original operation did not reach a terminal state.",
+      "targetName": "DeckConnectorTests",
+      "testIdentifier": 1,
+      "testIdentifierString": "AppModelTests/testOptInRealHostPairingBufferCASAndCredentialLifecycle()",
+      "testIdentifierURL": "test://com.apple.xcode/DeckConnector/DeckConnectorTests/AppModelTests/testOptInRealHostPairingBufferCASAndCredentialLifecycle",
+      "testName": "testOptInRealHostPairingBufferCASAndCredentialLifecycle()"
+    }
+  ],
+  "xcresult": "/tmp/deck-connector-diagnose-lzh_4itt/appmodel.xcresult",
+  "cleanupCompleted": true
+}

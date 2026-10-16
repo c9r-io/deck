@@ -1,0 +1,26 @@
+Attributes: TextView, 0x10fdfa940, {{32.0, 507.5}, {311.0, 90.0}}, identifier: 'deck.note.new', value: local-note-63443B9...
+Element subtree:
+ →TextView, 0x10fdfa940, {{32.0, 507.5}, {311.0, 90.0}}, identifier: 'deck.note.new', value: local-note-63443B9...
+Path to element:
+ →Application, 0x10fdbd2c0, pid: 57717, label: 'Deck Connector'
+  ↳Window, 0x10fdbf480, {{0.0, 0.0}, {375.0, 667.0}}
+   ↳Other, 0x10fdbe6c0, {{inf, inf}, {0.0, 0.0}}
+    ↳Other, 0x10fdbee40, {{inf, inf}, {0.0, 0.0}}
+     ↳Other, 0x10fdbd540, {{inf, inf}, {0.0, 0.0}}
+      ↳Other, 0x10fdbf0c0, {{inf, inf}, {0.0, 0.0}}
+       ↳Other, 0x10fdbe580, {{inf, inf}, {0.0, 0.0}}
+        ↳Other, 0x10fdbf340, {{inf, inf}, {0.0, 0.0}}
+         ↳Other, 0x10fdbed00, {{inf, inf}, {0.0, 0.0}}
+          ↳Other, 0x10fdbef80, {{inf, inf}, {0.0, 0.0}}
+           ↳Other, 0x10fdfaf80, {{inf, inf}, {0.0, 0.0}}
+            ↳CollectionView, 0x10fdfa080, {{inf, inf}, {0.0, 0.0}}
+             ↳Cell, 0x10fdfb480, {{inf, inf}, {0.0, 0.0}}
+              ↳Other, 0x10fdfb980, {{inf, inf}, {0.0, 0.0}}
+               ↳Other, 0x10fdfb5c0, {{inf, inf}, {0.0, 0.0}}
+                ↳Other, 0x10fdf97c0, {{inf, inf}, {0.0, 0.0}}
+                 ↳TextView, 0x10fdfa940, {{32.0, 507.5}, {311.0, 90.0}}, identifier: 'deck.note.new', value: local-note-63443B9...
+Query chain:
+ →Find: Target Application 'io.c9r.deck.connector'
+  ↪︎Find: Descendants matching type TextView
+    ↪︎Find: Elements matching predicate '"deck.note.new" IN identifiers'
+      ↪︎Find: First Match

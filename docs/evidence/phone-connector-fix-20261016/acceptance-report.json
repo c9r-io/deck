@@ -1,0 +1,68 @@
+{
+  "environmentReady": true,
+  "isolationVerified": true,
+  "mode": "fixed",
+  "reproductionConfirmed": null,
+  "snapshotScope": "boardMetadata",
+  "productAssertionsPassed": true,
+  "requiredTestsExecuted": true,
+  "cleanupCompleted": true,
+  "humanInterventions": 0,
+  "xcodePath": "/Volumes/Yotta/Applications/Xcode.app",
+  "developerDir": "/Volumes/Yotta/Applications/Xcode.app/Contents/Developer",
+  "tests": {
+    "hostSmoke": "PASS",
+    "simulatorUI": "PASS",
+    "shellReturnUI": "PASS",
+    "hostSmoke_ui": "PASS",
+    "appModelRealHost": "PASS",
+    "hostSmoke_appmodel": "PASS"
+  },
+  "cases": {
+    "liveSavedAgentOutput": "PASS",
+    "ordinaryShellVisibility": "PASS",
+    "shellWithForegroundAgent": "UNRUN",
+    "savedCommandVariants": "UNRUN",
+    "stoppedSavedAgentOutput": "PASS",
+    "agentExitedToShell": "PASS",
+    "foregroundCycle": "PASS",
+    "appRelaunchCredentialRecovery": "PASS",
+    "refreshFailureRecovery": "UNRUN",
+    "saveFailure": "UNRUN",
+    "backupRecovery": "UNRUN"
+  },
+  "uiExitCode": 0,
+  "uiTestCounts": {
+    "passedTests": 5,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 5
+  },
+  "head": "a326cdf3a6b3f1b18176da9079659e4762408eca",
+  "xcodeVersion": "Xcode 27.1\nBuild version 27A9275",
+  "selectedRuntime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+  "selectedDeviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation",
+  "hostBinarySHA256": "53d06100a8a82b8feb06d7deba24d320e04d5223788240d2abdc6b047fe6e23d",
+  "iosBinarySHA256": "ca5e8c5324e82d838c822e963fd13b7d823df1bc52502a6c665e30b56f2075a0",
+  "sourceDiffSHA256": "dd6ac0c75dc713712f170391fa8d2fe9466bb2219aa25314e87c5eeb166a115e",
+  "shellReturnTestCounts": {
+    "passedTests": 1,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 1
+  },
+  "uiSimulatorUDID": "B1DD82C6-A84C-4511-9BF5-6969277094F6",
+  "appmodelExitCode": 0,
+  "appmodelTestCounts": {
+    "passedTests": 15,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 15
+  },
+  "appmodelSimulatorUDID": "27D19D73-271C-48EB-891E-51549DACD2DF",
+  "childReports": {
+    "ui": "/tmp/deck-connector-diagnose-ly1txuy9/report.json",
+    "appmodel": "/tmp/deck-connector-diagnose-zar9d6y3/report.json"
+  },
+  "finalGitStatus": "M app/src-tauri/src/connector/commands.rs\n M app/src-tauri/src/connector/mod.rs\n M app/src-tauri/src/connector/projection.rs\n M app/src-tauri/src/connector/server.rs\n M app/src-tauri/src/connector/smoke.rs\n M app/src-tauri/src/connector/tests.rs\n M app/src-tauri/src/main.rs\n M app/src-tauri/tests/signal_census.rs\n M app/ui/js/extension-connector.js\n M app/ui/js/i18n/en.js\n M app/ui/js/i18n/zh-Hans.js\n M app/ui/test/dom.test.mjs\n M connector/ios/DeckConnectorApp/AppModel.swift\n M connector/ios/DeckConnectorApp/DeckConnectorApp.swift\n M connector/ios/DeckConnectorApp/Localizable.xcstrings\n M connector/ios/DeckConnectorApp/Views.swift\n M connector/ios/DeckConnectorTests/AppModelTests.swift\n M connector/ios/DeckConnectorUITests/ConnectorUITests.swift\n M connector/ios/README.md\n M connector/ios/Sources/DeckConnectorCore/CommandJournal.swift\n M connector/ios/Sources/DeckConnectorCore/DraftCoordinator.swift\n M connector/ios/Sources/DeckConnectorCore/HTTPClient.swift\n M connector/ios/Sources/DeckConnectorCore/WireModels.swift\n M connector/ios/Tests/DeckConnectorCoreTests/CommandJournalTests.swift\n M connector/ios/Tests/DeckConnectorCoreTests/DraftCoordinatorTests.swift\n M connector/ios/Tests/DeckConnectorCoreTests/FixtureContractTests.swift\n M connector/ios/Tests/DeckConnectorCoreTests/Fixtures/http-status-map.json\n M connector/ios/Tests/DeckConnectorCoreTests/Fixtures/snapshot.json\n M connector/ios/Tests/DeckConnectorCoreTests/HTTPClientTests.swift\n M connector/ios/Tests/DeckConnectorCoreTests/PairingAndWireTests.swift\n M docs/connector.md\n M docs/evidence/first-party-governance-20261016/README.md\n M docs/evidence/first-party-governance-20261016/native-checkpoints.log\n M docs/evidence/first-party-governance-20261016/results.json\n M scripts/connector-simulator-diagnose.py\n M scripts/test_edr_runtime.py\n?? docs/evidence/phone-connector-fix-20261016/\n?? docs/evidence/phone-connector-ux-20261016/\n?? docs/phone-connector-diagnosis-2026-10-16.md\n?? research_notes/"
+}

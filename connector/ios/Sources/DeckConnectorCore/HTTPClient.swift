@@ -7,7 +7,17 @@ public protocol CommandTransport: Sendable {
     func query(id: String) async throws -> CommandResult
 }
 
-public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URLSessionDataDelegate, CommandTransport, @unchecked Sendable {
+/// Reads and commands share the same authenticated host binding. A class identity
+/// lets the UI reject responses from a replaced pairing, including in-flight reads.
+public protocol ConnectorTransport: AnyObject, CommandTransport {
+    var hostID: String { get }
+    func snapshot() async throws -> Snapshot
+    func output(cardID: String) async throws -> TerminalOutput
+    func buffer(cardID: String) async throws -> CardBuffer
+    func invalidate()
+}
+
+public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URLSessionDataDelegate, ConnectorTransport, @unchecked Sendable {
     private final class CancellationBox: @unchecked Sendable {
         private let lock = NSLock()
         private var task: URLSessionDataTask?
@@ -81,6 +91,7 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
     public func output(cardID: String) async throws -> TerminalOutput {
         let output: TerminalOutput = try await request(path: "/v1/cards/\(encodePath(cardID))/output", method: "GET", body: nil, authenticated: true)
         try WireValidator.validate(output)
+        guard output.cardId == cardID else { throw ConnectorError.invalidResponse }
         return output
     }
 
