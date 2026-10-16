@@ -69,6 +69,13 @@ import { PI_COVERAGE, PI_SESSION } from './pi-model.js';
 import { CARD_QUIET_SECS, effectiveCardStatus, itemDead } from './pure.js';
 
 export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'waiting', 'done', 'followed', 'unavailable', 'stopped', 'reminder', 'reminders']);
+export const ATTENTION_SECTION_LABELS = Object.freeze({
+  /* The pending list's sections, in row order, each with its heading. Every
+     kind `attentionRows` returns under 'pending' has one; a bell is a row
+     reason, not a filter, so it has its own heading key. */
+  input: 'attention.filter.input', waiting: 'attention.filter.waiting', bell: 'attention.section.bell',
+  done: 'attention.filter.done', reminder: 'attention.filter.reminder', followed: 'attention.filter.followed',
+});
 /* most pressing first: one reason per session */
 export const DELIVERY_WAITS = Object.freeze(['ambiguous', 'failed', 'review', 'channel-stopped', 'channel-unverified', 'external', 'first-send', 'codex-signal', 'pi-input-unverified', 'authority-unverified']);
 /* the ones the backend's plan decides; never read from hook state here */
@@ -228,14 +235,6 @@ export function attentionBadge(tracker, card) {
   if (kind !== 'input' && kind !== 'done') return null;
   return { kind, stale: tracker.get(card).stale === true };
 }
-
-/* The pending list's sections, in row order, each with its heading. Every
-   kind `attentionRows` returns under 'pending' has one; a bell is a row
-   reason, not a filter, so it has its own heading key. */
-export const ATTENTION_SECTION_LABELS = Object.freeze({
-  input: 'attention.filter.input', waiting: 'attention.filter.waiting', bell: 'attention.section.bell',
-  done: 'attention.filter.done', reminder: 'attention.filter.reminder', followed: 'attention.filter.followed',
-});
 
 // Presentation order only. Never sort the durable card/project arrays.
 export function attentionRows(projects, cards, tracker, filter) {

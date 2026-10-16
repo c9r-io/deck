@@ -1179,7 +1179,8 @@ fn a_terminal_bell_is_attention_and_never_reaches_a_side_effect() {
     }
     // the frontend: the model passes the backend's word on, the list shows
     // it, and nothing else reads it. Recursive scanning also sees the two
-    // dictionaries' label keys; pin those exact literals, not whole files.
+    // dictionaries' label keys (the row reason and the pending list's section
+    // heading); pin those exact literals, not whole files.
     let js = js_sources();
     let mut frontend: Vec<&str> = js
         .iter()
@@ -1201,10 +1202,13 @@ fn a_terminal_bell_is_attention_and_never_reaches_a_side_effect() {
     for name in ["i18n/en.js", "i18n/zh-Hans.js"] {
         let source = &js.iter().find(|(file, _)| file == name).unwrap().1;
         assert_eq!(source.matches("\"attention.bell\":").count(), 1);
-        let rest = source.replace("\"attention.bell\":", "");
+        assert_eq!(source.matches("\"attention.section.bell\":").count(), 1);
+        let rest = source
+            .replace("\"attention.bell\":", "")
+            .replace("\"attention.section.bell\":", "");
         assert!(
             !rest.contains(".bell") && !rest.contains("rang(") && !rest.contains("'bell'"),
-            "{name}: only the pinned label may mention the bell projection"
+            "{name}: only the pinned labels may mention the bell projection"
         );
     }
     let model = &js
