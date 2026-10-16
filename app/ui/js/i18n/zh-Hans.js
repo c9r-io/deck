@@ -105,6 +105,7 @@ const dictionary = {
   "attention.filter.done": "结束未读",
   "attention.filter.waiting": "投递待处理",
   "attention.bell": "响过铃",
+  "attention.section.bell": "终端响铃",
   "attention.waiting.ambiguous": "投递不确定",
   "attention.waiting.failed": "投递已停止重试",
   "attention.waiting.review": "已发送，尚未检查",

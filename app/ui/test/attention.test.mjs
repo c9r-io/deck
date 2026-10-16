@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ATTENTION_BADGE_LABELS, DELIVERY_WAITS, attentionBadge, createAttentionTracker, attentionRows, codexCoverageGap, deliveryWaits } from '../js/attention-model.js';
+import { ATTENTION_BADGE_LABELS, ATTENTION_SECTION_LABELS, DELIVERY_WAITS, attentionBadge, createAttentionTracker, attentionRows, codexCoverageGap, deliveryWaits } from '../js/attention-model.js';
 import { NOTIFY_COUNTED_FILTERS } from '../js/notify-model.js';
 import { dictionaries } from '../js/i18n.js';
 import fixture from './fixtures/attention-fixture.mjs';
@@ -211,6 +211,16 @@ test('the card badge is the agent part of the Dock set: needs input or an unread
   for (const id of ['02', '03', '04', '05', '06', '09', '11', '12']) assert.equal(kinds[id], null, `card ${id}`);
   for (const [locale, dictionary] of Object.entries(dictionaries)) {
     for (const key of Object.values(ATTENTION_BADGE_LABELS)) assert.equal(typeof dictionary[key], 'string', `${locale} ${key}`);
+  }
+});
+
+test('every pending-list section, the bell included, has a heading in both languages', () => {
+  assert.deepEqual(Object.keys(ATTENTION_SECTION_LABELS), ['input', 'waiting', 'bell', 'done', 'reminder', 'followed']);
+  for (const [locale, dictionary] of Object.entries(dictionaries)) {
+    for (const key of Object.values(ATTENTION_SECTION_LABELS)) {
+      assert.equal(typeof dictionary[key], 'string', `${locale} ${key}`);
+      assert.notEqual(dictionary[key].trim(), '', `${locale} ${key}`);
+    }
   }
 });
 

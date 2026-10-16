@@ -229,6 +229,14 @@ export function attentionBadge(tracker, card) {
   return { kind, stale: tracker.get(card).stale === true };
 }
 
+/* The pending list's sections, in row order, each with its heading. Every
+   kind `attentionRows` returns under 'pending' has one; a bell is a row
+   reason, not a filter, so it has its own heading key. */
+export const ATTENTION_SECTION_LABELS = Object.freeze({
+  input: 'attention.filter.input', waiting: 'attention.filter.waiting', bell: 'attention.section.bell',
+  done: 'attention.filter.done', reminder: 'attention.filter.reminder', followed: 'attention.filter.followed',
+});
+
 // Presentation order only. Never sort the durable card/project arrays.
 export function attentionRows(projects, cards, tracker, filter) {
   const ordered = [];
@@ -249,5 +257,5 @@ export function attentionRows(projects, cards, tracker, filter) {
   }
   if (filter === 'reminder' || filter === 'reminders') return ordered.sort((a, b) => a.card.reminder.dueAt - b.card.reminder.dueAt);
   if (filter !== 'pending') return ordered;
-  return ['input', 'waiting', 'bell', 'done', 'reminder', 'followed'].flatMap(kind => ordered.filter(row => row.kind === kind));
+  return Object.keys(ATTENTION_SECTION_LABELS).flatMap(kind => ordered.filter(row => row.kind === kind));
 }

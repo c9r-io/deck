@@ -106,6 +106,7 @@ const dictionary = {
   "attention.filter.done": "Turn ended, unread",
   "attention.filter.waiting": "Delivery waiting",
   "attention.bell": "Bell",
+  "attention.section.bell": "Terminal bell",
   "attention.waiting.ambiguous": "delivery uncertain",
   "attention.waiting.failed": "delivery stopped retrying",
   "attention.waiting.review": "sent, not inspected yet",

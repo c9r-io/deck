@@ -21,7 +21,9 @@
 //   It never reflects native notification delivery.
 // - A terminal bell nobody has looked at (`tracker.rang`, attention-model.js)
 //   is a list row counted in the sidebar's pending number; the row's reason
-//   ends with it. It is not a filter, not the card badge and not a status.
+//   ends with it, and the pending list gives it its own section heading
+//   (`ATTENTION_SECTION_LABELS`). It is not a filter, not the card badge and
+//   not a status.
 // - A held delivery (`tracker.waiting`, attention-model.js) is a list row and
 //   a filter, counted in the sidebar's pending number; the row's reason ends
 //   with it. The Board card says it on its queue chip (scheduler.js), not on
@@ -46,7 +48,7 @@
 //   `closeBuffer`, `openSession`) arrive through `initAttention(deps)` from app.js, so
 //   board.js and layout.js may import this module without a cycle.
 import { $, ctx, QUIET_SECS, state, store } from './state.js';
-import { ATTENTION_BADGE_LABELS, ATTENTION_FILTERS, attentionBadge, attentionRows, codexCoverageGap } from './attention-model.js';
+import { ATTENTION_BADGE_LABELS, ATTENTION_FILTERS, ATTENTION_SECTION_LABELS, attentionBadge, attentionRows, codexCoverageGap } from './attention-model.js';
 import { piCoverage, piDetailKeys, piStatusKey } from './pi-model.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
 import { choiceDialog } from './dialogs.js';
@@ -237,7 +239,7 @@ function updateRows() {
     const { card, project, column, kind } = entry;
     if (ctx.attentionFilter === 'pending' && kind !== previousKind) {
       const heading = place(`heading-${kind}`, () => node('h2', 'attention-section'));
-      heading.textContent = t(`attention.filter.${kind}`);
+      heading.textContent = t(ATTENTION_SECTION_LABELS[kind]);
       previousKind = kind;
     }
     const row = place(`card-${card.id}`, () => {
