@@ -564,7 +564,7 @@ html:lang(zh-Hans) .board-chapter td:first-child { font-size: 15px; letter-spaci
 .doc2 h1 { font-family: var(--font-display); font-weight: var(--display-weight); letter-spacing: var(--display-tracking); font-size: clamp(30px, 4.4vw, 48px); line-height: 1.1; color: var(--text); margin: 12px 0 18px; }
 .doc2 h2 { font-size: 20px; color: var(--text); margin: 40px 0 12px; padding-top: 28px; border-top: 1px solid var(--line); }
 .doc2 p, .doc2 ul { margin: 12px 0; }
-.doc2 a { color: var(--accent); }
+.doc2 a:not(.btn) { color: var(--accent); }
 .doc2 strong { color: var(--text); }
 .doc2 .cta2 { margin-top: 28px; }
 
