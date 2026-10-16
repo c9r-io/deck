@@ -13,7 +13,8 @@
 // Two things are scripted, in this page only: when the page RECEIVES the
 // reply to `scroll_bottom`, `attach_session` or `save_dropped_file` (the request has already been
 // sent and handled; the fetch reply is held back), and a read of each
-// `pty_write` request's `gen` argument as it leaves the page.
+// `pty_write` request's `gen` argument and whether its bytes contain the
+// test-only stale file marker as it leaves the page; no bytes are logged.
 export async function runTerminalInputSmoke() {
   const { ctx, inv } = await import('../js/state.js');
   const { panes, provider, render, stopPolling } = await import('../js/board.js');
@@ -37,7 +38,7 @@ export async function runTerminalInputSmoke() {
   const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 
   const systemFetch = window.fetch;
-  const holds = {}, writes = [];
+  const holds = {}, writes = [], oldFileWrites = [];
   let own = null, fileSaves = 0;
   const hold = command => { holds[command] = deferred(); };
   const release = command => { const held = holds[command]; delete holds[command]; if (held) held.resolve(); };
@@ -49,9 +50,9 @@ export async function runTerminalInputSmoke() {
       if (command === 'save_dropped_file') fileSaves++;
       if (command === 'pty_write') {
         /* only the generation of this carrier's own pane A is kept */
-        let gen = 'unread', name = null;
-        try { const args = JSON.parse(typeof init?.body === 'string' ? init.body : new TextDecoder().decode(init?.body)); gen = args.gen ?? null; name = args.name; } catch (_) { /* stays unread */ }
-        if (name === null || name === own) writes.push(gen);
+        let gen = 'unread', name = null, oldFile = null;
+        try { const args = JSON.parse(typeof init?.body === 'string' ? init.body : new TextDecoder().decode(init?.body)); gen = args.gen ?? null; name = args.name; oldFile = atob(args.dataB64).includes('ti-old-file.png'); } catch (_) { /* stays unread */ }
+        if (name === null || name === own) { writes.push(gen); oldFileWrites.push(oldFile); }
       }
       const reply = await systemFetch.call(window, url, init);
       if (command && holds[command]) await holds[command].promise;
@@ -236,10 +237,20 @@ export async function runTerminalInputSmoke() {
     await openSession(a.id); stopPolling();
     const replacedGen = pane().inputGen;
     release('save_dropped_file'); await pause(300);
-    const noOldWrite = writes.length === mark;
+    // Reattaching xterm can itself answer terminal queries. Those replies
+    // belong to the replacement attachment; they are not the held file.
+    // Refuse every old-generation write AND every write of the stale path,
+    // including an accidental rebind of that path to the new generation.
+    const noOldWrite = writes.slice(mark).every((gen, index) => gen === replacedGen
+      && oldFileWrites[mark + index] === false);
     pane().term.input('ti-file-fresh\r');
-    await report('ti-file-replaced', pasteStarted && replacedGen > oldFileGen && noOldWrite && await received('ti-file-fresh')
-      && !lines().join('').includes('ti-old-file.png') && writes[writes.length - 1] === replacedGen);
+    const fileReplacementChecks = [pasteStarted, replacedGen > oldFileGen, noOldWrite,
+      await received('ti-file-fresh'), !lines().join('').includes('ti-old-file.png'),
+      writes[writes.length - 1] === replacedGen];
+    // Closed, content-free diagnostics identify a failed invariant without
+    // weakening any check or logging terminal text or attachment identities.
+    const fileReplacementMask = fileReplacementChecks.reduce((mask, ok, index) => mask | (ok ? 1 << index : 0), 0);
+    await report('ti-file-replaced', fileReplacementChecks.every(Boolean), 1, fileReplacementMask);
 
   } catch (error) {
     failed = true;
