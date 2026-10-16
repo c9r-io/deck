@@ -20,16 +20,22 @@ Recording requires a supported macOS 12+ on-device recognition configuration. Co
 
 | Situation | What to do |
 | --- | --- |
-| Microphone access denied | In System Settings → Privacy & Security → Microphone, allow deck, then start recording again yourself |
-| Speech Recognition permission needed | In System Settings → Privacy & Security → Speech Recognition, allow deck, then retry |
+| Microphone access denied | Follow the System Settings link, allow deck microphone access and explicitly start recording again |
+| Speech Recognition permission needed | Allow Speech Recognition in System Settings, then retry |
 | System Dictation disabled | Enable System Settings → Keyboard → Dictation, then return to deck and start recording |
 | Unsupported language or assets not ready | Choose a supported language and follow system guidance to prepare its assets |
 | Target pane or foreground program changed | Check the original terminal and start a new recording in the intended pane |
 | Typed text is uncertain | Check the terminal before trying again; Deck does not automatically resend it |
 
-After a permission or Dictation error, Deck opens the matching System Settings pane once; if it cannot, the message names the path. Returning to deck never records automatically.
+Permission and Dictation setup errors offer the corresponding System Settings entry. Returning to deck never records automatically.
 
-Use **Settings → Terminal & sessions → Voice input** to change enabled languages and the recognition default. Chinese, English and Japanese are enabled at first; you can add other listed languages, and at least one must stay enabled. **Follow system language** picks among the enabled languages; it does not detect your spoken language. A recording uses the default in force when it starts. Preferences persist across restarts.
+Use **Settings → Terminal & sessions → Voice input** to change enabled languages and the recognition default. Chinese, English and Japanese are initially available. One enabled language hides the selector. **Follow system language** does not detect your spoken language. Preferences persist across restarts; an existing session retains a still-enabled language choice.
+
+## Read with Local Translation
+
+Open **Local Translation** from the Session toolbar, or find it under **Settings → Terminal & sessions**. It is off by default. The first setup explicitly asks before downloading the offline English → Simplified Chinese pack; opening the panel alone does not read terminal text or start a download while unavailable. There is no cloud translation fallback.
+
+**Live view** translates only the focused pane's visible viewport, not its full history or an Agent transcript. **Copied text** waits for a new copy after you select that tab while Deck is in front; it does not read pre-existing clipboard text or copies made while Deck is away. You can use the Agent's own `/copy` in that scope. Closing the panel or disabling translation stops observation. Source and translation stay in memory, outside logs and terminal input; after the pack is installed, translation makes no network request. Check important wording against the source. [Translation details for this release](https://github.com/c9r-io/deck/blob/dcc3c064404e9eb4d392cb6228ae0b9f2cf14054/docs/translation-lens.md).
 
 ## Everyday controls
 
@@ -46,9 +52,9 @@ Use **Settings → Terminal & sessions → Voice input** to change enabled langu
 
 ## Settings and logs
 
-Settings has eight searchable categories: General & appearance, Shortcuts, Terminal & sessions, Agents & notifications, Integrations, Remote access, Data & privacy, and About & updates.
+Settings has eight searchable categories: **General & appearance**, **Shortcuts**, **Terminal & sessions**, **Agents & notifications**, **Integrations**, **Remote access**, **Data & privacy**, and **About & updates**. Search a setting by name, then open its result. Agent hooks and away notifications live under Agents & notifications; Slack under Integrations; Phone Connector and MCP under Remote access.
 
-Appearance offers Deck Dark, Light, Follow system and High Contrast, with preset accents. Changes also update open terminal panes. Interface language can follow the system or use English or Simplified Chinese.
+Appearance offers Dark, Light, Follow System and High Contrast, with preset accents. Changes also update open terminal panes. Interface language can follow the system or use English or Simplified Chinese.
 
 **Data & privacy** exports or resets diagnostic logs. Reset asks for confirmation and clears only the current log. Command history, shell recovery data, exported logs and running sessions remain. History and recovery each have separate clear actions.
 
@@ -60,6 +66,8 @@ This guide covers **deck 0.7.26 Stable**. Stable is the default channel; Nightly
 
 Stable and Nightly replace the same app and share local data and tmux sessions. They cannot run side by side. Switching to Stable changes future update checks; it does not automatically downgrade a newer build. When the same Nightly version is promoted to Stable, the app archive is unchanged; no reinstall is needed just for the channel name. If you have a higher version installed, check data compatibility first.
 
-**Disabling human inspection does not undo its data upgrade.** First use moves relevant queue and settings data to v2; older builds without support refuse to read it. Do not edit version numbers or formats to bypass that check. Before downgrading, back up important data and verify the target version's compatibility. Other features upgrade data files the same way on first use, among them Slack channel monitoring, phone task presets, automatic first-step options and card reminders; older builds refuse those files too. A data backup does not restore running processes.
+**Turning a feature off does not undo its data-format upgrade.** Human inspection upgrades relevant data to v2; scratchpads, integrations, first-send choices and reminders can require newer formats, up to v7 for channel first-step permission. Older builds without the matching support refuse these files. Do not edit version numbers or formats to bypass the check. Before downgrading, back up important data and verify the target build's compatibility. A backup does not restore running processes or grant automatic-send permission.
+
+If settings or the Board cannot be loaded, follow Deck's recovery notice. Automatic work may wait while recovered data or approvals cannot be verified as current. Review recovered settings before saving; recovery must not be treated as proof that an earlier approval is still valid.
 
 For the complete maintenance reference, see the [release-channel documentation](https://github.com/c9r-io/deck/blob/dcc3c064404e9eb4d392cb6228ae0b9f2cf14054/docs/release-channels.md). See [privacy](/privacy/) for application data and integrations.

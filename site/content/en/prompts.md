@@ -7,7 +7,7 @@ Put later prompts for the same session into a list so deck remembers the timing 
 1. Open a session and click **⏱** in its header.
 2. Create a list, enter the first prompt, and add subsequent rows from that list's footer.
 3. Set an optional **not before** date and time and the quiet conditions for subsequent rows.
-4. Read the list's **Send plan** and its **Send conditions** to check the session, next step and waiting conditions.
+4. Read the execution plan to check the session, next row and waiting conditions.
 
 The first row is time-based; later rows wait for their configured quiet interval. A past “not before” time is refused, never rolled to tomorrow. Each session receives one prompt at a time, at least one minute apart. Different sessions deliver independently.
 
@@ -17,9 +17,9 @@ For example, first ask an agent to investigate failing tests, then propose a fix
 
 ## Inspect before continuing
 
-Explicitly tick **Inspect after every sent step, including the last** when you create the list; it is off by default. For an existing list, click its mode under **Send plan** (**Time and quiet delivery**) to switch it on; the change applies to the list's unsent steps, and switching it off later does not release a checkpoint that already exists.
+Explicitly enable **Inspect every row before continuing**, including the last row, on the list. Existing lists remain unchanged by default.
 
-Every delivered row leaves a human checkpoint. Read the result in the terminal, then choose **Inspected, allow continuation…**. Check the next prompt and target shown in the dialog before confirming. Permission applies only to that displayed revision and target. The next row must still satisfy its schedule, quiet condition and minimum gap.
+Every delivered row leaves a human checkpoint. Read the result in the terminal, then choose **Inspected, allow next…**. Check the next prompt and target shown in the dialog before confirming. Permission applies only to that displayed revision and target. The next row must still satisfy its schedule, quiet condition and minimum gap.
 
 - Opening a pane, a turn-ending report, quiet or a permission wait does not count as inspection.
 - Editing the next row, retrying or changing the target revokes unused permission.
@@ -40,19 +40,22 @@ A list's **📋** menu can save it as a template or insert one. Insertion makes 
 
 | Panel state | Next action |
 | --- | --- |
-| Waiting for time, quiet or the minimum gap | Read the remaining conditions under the list's **Send conditions** and keep deck running |
+| Waiting for time, quiet or the minimum gap | Read the remaining conditions in the execution plan and keep deck running |
 | Waiting for inspection | Read the result and explicitly confirm the checkpoint; opening the terminal is not enough |
-| Waiting for first agent interaction | A newly started Claude or Codex, or one running since deck restarted, gets no automatic step until it has reported one interaction through the Agent status integration. Interact with the agent once, or check that it is ready and use **send now…**. Without the integration, the step waits for **send now…** |
-| Held for the agent | The agent asked for input or permission; answer it in the pane. A Codex session whose status cannot be attributed to this terminal is also held; use **send now…** |
 | Waiting for a program or context | Inspect the card's terminal and return the expected program to the foreground; avoid blind input into a shell or permission menu |
+| Waiting for first agent interaction | Check startup dialogs and the matching status integration; interact with the Agent or choose Send now after checking the target |
+| Agent requests input or permission | Answer in the terminal; automatic delivery will not answer for you |
+| External follow-up needs approval | Review the content and choose Send now, or review the applicable rule or preset approval |
+| Codex status cannot be attributed | Inspect the terminal; check hooks and the optional `--no-daemon` path for a new session. Missing evidence is not permission to auto-send |
+| Approval cannot be verified, or channel first-step permission withdrawn | Check the saved rule or preset and the reason shown. Restore a valid intended permission, or explicitly send the reviewed row; elapsed time does not grant permission |
 | Delivery failed | Resolve the cause and retry, or explicitly skip; later rows do not pass the failed row |
 | Delivery uncertain | Check the terminal, then acknowledge as sent or explicitly retry accepting a possible duplicate. deck does not auto-resend |
 | Sending; changes temporarily refused | Wait for the delivery to finish before editing, pausing or removing it |
 
-Immediately before delivery, deck rechecks the card's terminal and any identifiable foreground program. When a launch command identifies the expected program, deck waits for it to return to the foreground. Otherwise it uses compatibility mode in the same terminal, where a shell may interpret the input; inspect the target before scheduling. A target change blocks that mismatched delivery; a later attempt can recheck a replacement session generation.
+Immediately before delivery, deck rechecks the card's terminal and any identifiable foreground program. When a launch command identifies the expected program, deck waits for it to return to the foreground. Otherwise it uses compatibility mode in the same terminal, where a shell may interpret the input; inspect the target before scheduling. A target change blocks that mismatched delivery; a later attempt can recheck a replacement session generation. Agent-only external rows also require the expected Agent in the foreground and its bracketed-paste mode. Send now is your action for one row, not blanket approval for future rows; it cannot bypass the target and paste checks.
 
 ## Before you leave
 
-**The app must be running** for lists to deliver, but the target pane may be closed. The send plan, delivery records and agent observations are separate. A stale plan is not a live countdown. Delivery and inspection histories each keep up to 200 records of identifiers and times; a pending checkpoint still retains the sent text you need to inspect.
+**The app must be running** for lists to deliver, but the target pane may be closed. The execution plan, delivery records and agent observations are separate. A stale plan is not a live countdown. Delivery and inspection histories each keep up to 200 records of identifiers and times; a pending checkpoint still retains the sent text you need to inspect.
 
 First use of human inspection upgrades relevant local data formats. Turning it off does not downgrade them. Read [updates and versions](/guide/input-and-settings/#updates-and-versions) before returning to an older build.

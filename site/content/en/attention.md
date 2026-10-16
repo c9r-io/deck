@@ -1,40 +1,58 @@
 # Decide what needs attention
 
-Use Needs attention in the sidebar to gather input requests and unread turn endings across projects, reducing how often you open terminals just to check them.
+Use Needs attention in the sidebar to gather input requests, unread turn endings, waiting deliveries and reminders across projects. Deck helps you decide where to look; the program and its actual results tell you what the work needs.
 
 ## Keep a card in view
 
-Click ☆ on a card to **Follow card**. The ★ mark keeps it in Needs attention across projects until you explicitly unfollow it, including after viewing results, status changes, moving groups or restarting deck. Existing stars become follow-up marks automatically. No status integration is needed for manual follow-up.
+Click ☆ on a card to **Follow card**. The ★ mark keeps it in Needs attention across projects until you explicitly unfollow it, including after viewing results, status changes, moving groups or restarting deck. The **Followed** filter includes these cards. No status integration is needed.
 
-The **Followed** filter includes all starred cards. In Needs attention, input requests come first, then held list deliveries (**Delivery waiting**), terminal bells nobody has looked at, unread endings, due card reminders, and finally cards kept solely by manual follow-up. A card appears once even when several reasons apply; its row names each reason and keeps its live status visible. Use the star on the card or attention row to unfollow it; any other remaining reason still keeps it in the list.
+A card appears once even when several attention reasons apply. Unfollowing removes only the star: an input request, unread result, waiting delivery, unseen bell or due reminder can still keep it in the list. The Board's card positions do not change.
 
-When no status has been received, the followed count is still available. A total such as **3+** means at least three followed or reminder cards; additional agent requests are unknown. Stopped or stale sessions still lead to the original card.
+When status is unavailable, saved follow-up and reminder information remains useful. A total with **+** is a lower bound, not a complete count of Agent requests. Stopped or stale entries still lead to the original card.
 
 ## Enable the matching status integration
 
-In **Settings → Agents & notifications**, under **Agent status**, enable **Claude Code** or **Codex**, depending on the CLI you use. Both are off by default. Enabling adds deck hooks to the CLI's configuration; read the confirmation for details. Other existing hooks are preserved.
+In **Settings → Agents & notifications**, enable Agent status for **Claude Code** or **Codex**, depending on the CLI you use. Both are off by default. Enabling adds Deck hooks to the CLI's configuration; read the confirmation for details. Other existing hooks are preserved.
 
-Hooks report only fixed status words, pane identifiers and the agent's opaque turn id, not prompts, output or paths. They depend on the CLI's event support. Other CLIs still work as terminals but do not automatically gain these explicit states.
+Hooks report fixed status words, pane identifiers and opaque interaction IDs, not prompts, output or paths. Coverage depends on the CLI's events. Only the card's active pane in its current tmux window contributes Agent state; this is not coverage of every manual tmux split. Other CLIs still work as terminals without automatically gaining these states.
 
-After enabling, use the matching CLI in a deck session. If an existing run has not reported a state, check whether its configuration has taken effect. Missing reports do not mean that no attention is needed. For Codex, also review and trust the Deck hooks in Codex `/hooks`. Codex on its shared background service (the default since 0.157) cannot be reliably tied to a terminal, so deck rejects those events and the card shows **Agent status unavailable**. **Agent status not connected** means no reliable Codex status has arrived since the terminal or deck started. **Why?** on the card explains the checks. `codex --no-daemon` in a new session is a compatible path.
+For Codex, installed hooks still need review and trust in `/hooks`. For a new interactive session, `codex --no-daemon` is an optional compatibility path that gives up shared-server continuity. Deck rejects events it cannot reliably attribute to the terminal. **Agent status not connected** means no reliable observation is available; **Agent status unavailable** means Deck has established an attribution gap. **Why?** explains the situation. Neither label invents an input request or counts as urgent attention. Input-request hooks do not cover every question or MCP elicitation.
 
 ## Be told while you are away
 
-In **Settings → Agents & notifications**, under **Away notifications**, turn on **Notify me when away** (off by default). When the deck window is not in front, macOS shows a notification when an agent asks for input or ends a turn, when a list's delivery stops to wait for you, or when a program rings the terminal bell in a session without agent state. The Dock icon counts input requests, unread turn endings, waiting deliveries and unseen bells; due card reminders are counted even with the switch off. The notification carries the card title, the project name and one fixed phrase, never prompts, output or paths; click it to open the card. Agent input requests and turn endings need the status integration above; deliveries and bells do not. macOS asks for permission when you turn the switch on. **Play a sound** is a separate switch, off by default, and available only while away notifications are on.
+In **Settings → Agents & notifications**, turn on **Notify me when away**. It is off by default. When Deck is not in front, the switch allows notifications for reported input requests and unread turn endings. Those two signals need the matching Agent integration.
+
+The same switch also covers **Delivery waiting** in a list, such as inspection, uncertain delivery, a failed send, unapproved external follow-ups or a first prompt waiting for interaction. These are Deck's queue states and need no Agent integration. A normal time, quiet or minimum-gap wait does not notify. A persistent inability to verify a saved approval can notify after about a minute; this delay neither approves nor sends anything.
+
+Without Agent state, a program can also ring the terminal bell. If nobody is viewing that card, **Bell** brings it to Needs attention; while away, the switch allows a notification. Repeated bells count once until you view the card. A bell says only that the program rang, not that it finished or succeeded.
+
+The Dock counts distinct cards with applicable input requests, unread endings, waiting deliveries and unseen bells while the switch is on. Due reminders count independently. Stars alone do not notify. Notifications contain the card title, project name and a fixed phrase, never prompt text, output or paths. Opening a notification locates its card; it never sends, retries or releases a queued row.
+
+macOS asks for permission when you enable notifications. Check the shown authorization status; if blocked, allow Deck in System Settings → Notifications. **Play a sound** is separate and off by default. Focus modes and system settings can suppress a banner; a saved setting does not guarantee visible delivery.
+
+## Set a reminder to return
+
+Use **Set reminder…** in a card's context menu or Session header. Check the full date, time and time zone before saving. The saved date label opens the editor; **Due reminders** shows due items and **All reminders** also includes future ones. A reminder never sends input, starts a session, moves the card or keeps a program alive.
+
+Reminder intent survives an app restart. Saving it is separate from macOS authorization and registration; the editor shows those results. If system notifications are unavailable or denied, explicitly choose **Remind only inside Deck**. Reminders are independent of Notify me when away. A registered reminder may notify even when Deck is in front or has quit, subject to macOS delivery conditions; missed reminders remain visible inside Deck without replaying old banners.
+
+Viewing the card or dismissing a banner does not end its reminder. Change the date to remind later or explicitly end it. Future and due reminders protect the card from automatic closure; manual closure requires **Cancel reminder and close**. This protects the card, not its running process. [Closing and recovery →](/guide/sessions/)
 
 ## Read each signal
 
 | Signal | What it tells you | What to do |
 | --- | --- | --- |
-| Input requested | An agent input request was reported | Open the terminal to read the question or permission choice |
-| Turn ended · unread | A turn ending was reported and has not been successfully opened | Read the result and decide what comes next; it does not prove success |
-| Agent working | The agent reports ongoing work | Wait or inspect as needed |
+| Input requested | An Agent input request was reported | Open the terminal to read the question or permission choice |
+| Turn ended · unread | An interaction ended and has not been viewed | Read the result; it does not prove task completion, success or Agent idleness |
+| Delivery waiting | A queued row needs a person | Read the reason in ⏱ and resolve that specific wait |
+| Bell | A program rang the terminal bell | Open the card and check the program |
+| Due reminder | Your saved return time has arrived | Review the card, then end or reschedule the reminder |
+| Agent working | The Agent reports ongoing work | Wait or inspect as needed |
 | Recent output · no valid agent state | Output activity was observed | Treat it as activity, not readiness |
 | Quiet · no valid agent state | No output for a while | It may be computing, waiting for input or idle; inspect as needed |
-| Agent status not connected / Agent status unavailable | No reliable Codex status for this terminal | Click **Why?** on the card; until a reliable status arrives, the dot shows output activity only |
-| Stopped, Status not received, or · old snapshot | The original session stopped, or current information is missing | Locate the original card and check its terminal and connection |
+| Old snapshot, stale or stopped | Current information is missing or the original session stopped | Locate the original card and check its terminal and connection |
 
-Without a valid agent state, green means output in the last 15 seconds and amber means quiet. **Quiet is not ready, and it is not a turn ending.** Valid agent reports take precedence over output heuristics.
+Without a valid Agent state, green means output in the last 15 seconds and amber means quiet. **Quiet is not ready, and it is not a turn ending.** Valid Agent reports take precedence over output heuristics.
 
 ## Open and return
 
@@ -43,10 +61,10 @@ Without a valid agent state, green means output in the last 15 seconds and amber
 3. A turn ending is marked read only after the terminal attaches and displays successfully. A failed attach or merely locating a stale entry does not clear unread state.
 4. Return after handling it; the previous filter and scroll position are restored.
 
-An input request remains until its state changes. **Opened does not mean handled.** Marking a turn read here does not release a list's human inspection checkpoint. [Inspect before continuing →](/guide/prompts/#inspect-before-continuing)
+An input request remains until its state changes. **Opened does not mean handled.** Marking a turn read does not release a list's human inspection checkpoint. [Inspect before continuing →](/guide/prompts/#inspect-before-continuing)
 
 ## When the view is empty or stale
 
-Check sessions under **No valid state**, then verify that the matching integration is enabled and the CLI is still running. Failed or incomplete polls keep a labeled old snapshot; old information is not current status.
+Check sessions under **No valid state**, then verify the matching integration, hook trust and running CLI. Failed or incomplete polls keep a labeled old snapshot; old information is not current status. An empty list is not proof that all work is done.
 
-Read markers last only for this app run. Unread history and event replay are not guaranteed across app restarts. A CLI's turn-ending report can also arrive before another hook requires it to continue, so verify important results yourself.
+Viewed markers are not kept across a Deck restart; unread history and missed-event replay are not guaranteed. This differs from saved stars and reminders. An Agent may continue background work after a turn-ending report, so verify important results yourself.

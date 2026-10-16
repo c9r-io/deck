@@ -30,7 +30,7 @@
 <div class="wrap">
 <div class="hero-copy2">
 <h1 id="hero-title" class="display">十个 session，<span class="hl">其中一个在等你。</span></h1>
-<p class="lede2">deck 把 Mac 上的终端 session 都放在同一块看板上。每张卡片只显示一个状态词，不显示满屏输出。agent 通过 deck 的状态集成报告需要输入时，那张卡片会亮起来；打开它，就能在终端里看到它在问什么。</p>
+<p class="lede2">你在 deck 中启动的本地终端 session，都可以在看板上找到。每张卡片只显示一个状态词，不显示满屏输出。agent 通过 deck 的状态集成报告需要输入时，那张卡片会亮起来；打开它，就能在终端里看到它在问什么。</p>
 <div class="cta2"><a class="btn btn-primary" href="{{DOWNLOAD_URL}}">下载{{RELEASE_LABEL_ZH}}</a><a class="textlink" href="#demo">看 26 秒演示</a></div>
 <p class="meta2">原生 macOS · Apple Silicon · 已签名并通过 Apple 公证 · MIT 开源</p>
 </div>
@@ -38,12 +38,12 @@
 <div class="wall" aria-hidden="true">
 <div class="tile"><div class="tile-top"><span class="dot live c-run"></span><strong>重构调度器</strong></div><div class="tile-cmd">$ claude · ~/deck</div><div class="tile-st">运行中 · agent 报告</div></div>
 <div class="tile"><div class="tile-top"><span class="dot c-run"></span><strong>API 日志</strong></div><div class="tile-cmd">$ tail -f api.log · ~/atlas</div><div class="tile-st">近期有输出 · 无有效 agent 状态</div></div>
-<div class="tile hot"><div class="tile-top"><span class="dot"></span><strong>检查迁移方案</strong><span class="badge2">请求输入</span></div><div class="tile-cmd">$ claude · ~/atlas</div><div class="tile-st">请求输入</div></div>
+<div class="tile hot"><div class="tile-top"><span class="dot"></span><strong>检查迁移方案</strong></div><div class="tile-cmd">$ claude · ~/atlas</div><div class="tile-st">请求输入</div></div>
 <div class="tile"><div class="tile-top"><span class="dot c-quiet"></span><strong>开发服务器</strong></div><div class="tile-cmd">$ npm run dev · ~/lighthouse</div><div class="tile-st">安静 · 无有效 agent 状态</div></div>
-<div class="tile soft"><div class="tile-top"><span class="dot c-done"></span><strong>分析测试失败</strong><span class="badge2">结束未读</span></div><div class="tile-cmd">$ codex --no-daemon · ~/harbor</div><div class="tile-st">本轮结束 · 未读</div></div>
+<div class="tile soft"><div class="tile-top"><span class="dot c-done"></span><strong>分析测试失败</strong></div><div class="tile-cmd">$ codex --no-daemon · ~/harbor</div><div class="tile-st">本轮结束 · 未读</div></div>
 <div class="tile t-wide"><div class="tile-top"><span class="dot c-stop"></span><strong>夜间构建</strong></div><div class="tile-cmd">$ ./build.sh · ~/ops</div><div class="tile-st">已停止</div></div>
 <div class="tile t-mid"><div class="tile-top"><span class="dot live c-run"></span><strong>整理文档</strong></div><div class="tile-cmd">$ claude · ~/lighthouse</div><div class="tile-st">运行中 · agent 报告</div></div>
-<div class="tile t-wide"><div class="tile-top"><span class="dot c-run"></span><strong>时钟</strong></div><div class="tile-cmd">$ while true; do date; sleep 1; done</div><div class="tile-st">近期有输出 · 无有效 agent 状态</div></div>
+<div class="tile t-wide"><div class="tile-top"><span class="dot c-run"></span><strong>时钟</strong></div><div class="tile-cmd">$ while true; do date; sleep 1; done · ~/ops</div><div class="tile-st">近期有输出 · 无有效 agent 状态</div></div>
 <div class="tile t-wide"><div class="tile-top"><span class="dot c-quiet"></span><strong>开发数据库</strong></div><div class="tile-cmd">$ psql atlas_dev · ~/atlas</div><div class="tile-st">安静 · 无有效 agent 状态</div></div>
 <div class="tile t-wide"><div class="tile-top"><span class="dot live c-run"></span><strong>发布说明</strong></div><div class="tile-cmd">$ codex --no-daemon · ~/deck</div><div class="tile-st">运行中 · agent 报告</div></div>
 </div>
@@ -52,10 +52,10 @@
 
 <section class="band2" aria-labelledby="facts-title">
 <div class="wrap">
-<div class="shead"><h2 id="facts-title" class="display">其余九个照常运行，你不用逐个去看。</h2><p>几个独立任务同时运行时，你还要做别的事。反复切换窗口，只为看看有没有新问题、结果出来没有，或哪项工作该回头处理，很快就会变成负担。</p></div>
+<span id="why-title" aria-hidden="true"></span><span id="capabilities" aria-hidden="true"></span><div class="shead"><h2 id="facts-title" class="display">工作照常运行，需要关注时知道先看哪里。</h2><p>几个独立任务同时运行时，你还要做别的事。反复切换窗口，只为看看有没有新问题、结果出来没有，或哪项工作该回头处理，很快就会变成负担。</p></div>
 <div class="facts2">
 <div class="fact2"><h3><span class="sq c-run"></span>真实的终端 session</h3><p>每张卡片都是本机真实的终端 session，运行你自己的 CLI。tmux 已内置；退出 deck 后 session 仍在。</p></div>
-<div class="fact2"><h3><span class="sq c-quiet"></span>有报告才显示状态</h3><p>启用相应的状态集成后，Claude Code 和用 <code>--no-daemon</code> 启动的 Codex 会报告输入请求和本轮结束。没有报告时，deck 只会说 session 安静，或者近期有输出。</p></div>
+<div class="fact2"><h3><span class="sq c-quiet"></span>有报告才显示状态</h3><p>相应集成可接收 Claude Code 和 Codex 的输入请求及本轮结束，但需要受支持且已信任的 hook。没有报告不代表无需处理，单凭输出活动也不能判断是否已准备好。</p></div>
 <div class="fact2"><h3><span class="sq c-stop"></span>卡片由你摆放</h3><p>用项目和栏目整理 session。状态变化不会移动卡片。</p></div>
 </div>
 </div>
@@ -84,7 +84,7 @@
 
 <section class="band2" id="who" aria-labelledby="who-title">
 <div class="wrap">
-<div class="shead"><p class="kicker">谁负责什么</p><h2 id="who-title" class="display">工作交给 agent，注意力交给 deck。</h2><p>很多工具在帮你并行运行更多 agent。deck 的方向正好相反：agent 已经在管理自己的工作，而且越来越擅长；真正稀缺的是你在所有工作之间的注意力，deck 只管这一件事。它不提供模型或 AI 账号，用普通 shell 也一样可以。</p></div>
+<span id="boundary-title" aria-hidden="true"></span><div class="shead"><p class="kicker">谁负责什么</p><h2 id="who-title" class="display">工作交给 agent，注意力交给 deck。</h2><p>很多工具在帮你并行运行更多 agent。deck 的方向正好相反：agent 已经在管理自己的工作，而且越来越擅长；真正稀缺的是你在所有工作之间的注意力，deck 只管这一件事。它不提供模型或 AI 账号，用普通 shell 也一样可以。</p></div>
 <div class="who-wrap" tabindex="0" role="region" aria-label="谁负责什么">
 <table class="who">
 <thead><tr><th scope="col">事项</th><th scope="col" class="o">你的 agent</th><th scope="col" class="o">你</th><th scope="col" class="o d">deck</th></tr></thead>
@@ -106,7 +106,7 @@
 
 <section class="teaser-band" aria-labelledby="attn-title">
 <div class="wrap">
-<div class="shead"><p class="kicker">待关注</p><h2 id="attn-title" class="display">所有项目，一张列表。</h2><p>请求输入排在最前，然后是停下来等你的列表投递、没人看过的终端响铃和未读的本轮结束，最后是你加星关注的卡片。每一行都写明所在项目、栏目和列入的全部原因。</p></div>
+<div class="shead"><p class="kicker">待关注</p><h2 id="attn-title" class="display">所有项目，一张列表。</h2><p>请求输入排在最前，然后是停下来等你的列表投递、没人看过的终端响铃、未读的本轮结束和到期提醒，最后是你加星关注的卡片。每一行都写明所在项目、栏目和列入的全部原因。</p></div>
 <div class="fboard teaser" role="img" aria-label="「待关注」列表示例，三个虚构 session">
 <div class="fscroll">
 <div class="frow h"><span>session</span><span>项目 / 手工栏目</span><span>关注原因</span><span>查看记录</span></div>
@@ -114,10 +114,13 @@
 <div class="frow"><div class="fcell">分析测试失败</div><div class="fcell dim">Harbor <small>/ 进行中</small></div><div class="fcell done lc">本轮结束 · 未读</div><div class="fcell dim lc">尚未打开查看</div></div>
 <div class="frow"><div class="fcell">夜间构建跟进</div><div class="fcell dim">Ops <small>/ 稍后</small></div><div class="fcell dim lc">人工关注 · 运行中 · agent 报告</div><div class="fcell dim lc">已打开 · 不代表已处理</div></div>
 </div>
+<p class="fcap">示例任务均为虚构。在应用中，可用「请求输入」「结束未读」或「人工关注」筛选列表。</p>
 </div>
 <div class="teaser-foot"><span>不在电脑前？开启「离席时通知我」，Dock 图标会显示正在等你的数量。</span><a class="textlink" href="/zh/guide/attention/">了解「待关注」 →</a></div>
 </div>
 </section>
+
+<section class="band2" aria-labelledby="parallel-guide-title"><div class="wrap shead"><h2 id="parallel-guide-title" class="display">多个会话同时运行时，先看哪个？</h2><div><p>同时进行变更审查、问题排查和测试时，按步骤使用人工关注与状态报告，并检查没有有效信号的会话。</p><p class="linkrow"><a class="textlink" href="/zh/scenarios/parallel-sessions/">找到需要处理的工作 →</a></p></div></div></section>
 
 <section class="band2" aria-labelledby="auto-title">
 <div class="wrap split2">
@@ -138,7 +141,7 @@
 
 <section class="band2" aria-labelledby="more-title">
 <div class="wrap">
-<div class="shead"><h2 id="more-title" class="display">需要时再用。</h2><p>普通的终端用法不需要下面任何一项。每种集成都要单独设置，各有自己的边界。</p></div>
+<span id="integrations-title" aria-hidden="true"></span><div class="shead"><h2 id="more-title" class="display">需要时再用。</h2><p>普通的终端用法不需要下面任何一项。每种集成都要单独设置，各有自己的边界。</p></div>
 <div class="catalog">
 <div><h3>应用内</h3><ul>
 <li><b>分屏</b><span>并排查看多个终端。</span></li>
@@ -186,7 +189,7 @@
 <h2 id="faq-title" class="display">常见问题</h2>
 <div>
 <details><summary>我需要一直开着 deck 吗？</summary><p>如果要定时发送 prompt 或启动自动化，deck 需要保持运行。退出 deck 后，原有 session 仍可继续运行；重启机器或后台 Shell 服务则会结束其中的进程。 <a class="textlink" href="/zh/guide/sessions/">查看指南 →</a></p></details>
-<details><summary>安静代表 agent 准备好了吗？</summary><p>不代表。没有有效的 agent 状态报告时，琥珀色只说明 session 已有一段时间没有输出。启用 Claude Code 或 Codex 的状态集成后，还可以看到输入请求和本轮结束报告。Codex 只有用 <code>codex --no-daemon</code> 启动的 session 才能把状态报告给 deck；按默认方式在共享后台服务上运行时，卡片不显示 Codex 状态。本轮结束也不代表任务一定成功。 <a class="textlink" href="/zh/guide/attention/">查看指南 →</a></p></details>
+<details><summary>安静代表 agent 准备好了吗？</summary><p>不代表。没有有效的 agent 状态报告时，琥珀色只说明 session 已有一段时间没有输出。启用 Claude Code 或 Codex 的状态集成后，还可以看到输入请求和本轮结束报告。新建 Codex 会话时，<code>codex --no-daemon</code> 是可选的 hook 兼容路径，还需在 <code>/hooks</code> 中审查并信任。无法可靠归属到终端的共享服务事件会被 Deck 拒绝。本轮结束也不代表任务一定成功。 <a class="textlink" href="/zh/guide/attention/">查看指南 →</a></p></details>
 <details><summary>打开结果就会发送下一条吗？</summary><p>如果开启了人工检查，仅仅打开结果不会让列表继续，还需要点击确认。没有开启人工检查的列表，则按原有的时间和目标条件发送，不受是否打开结果影响。 <a class="textlink" href="/zh/guide/prompts/">查看指南 →</a></p></details>
 <details><summary>需要另外安装 agent 吗？</summary><p>需要。deck 已内置 tmux，但 Claude Code、Codex 等 CLI 需要自行安装和配置，账号及模型服务也由它们提供。已有的 shell、脚本和其他终端工具同样可以使用。 <a class="textlink" href="/zh/guide/start/">查看指南 →</a></p></details>
 </div>

@@ -10,23 +10,25 @@ Leaving a terminal view, quitting the app and ending a session are different act
 | Close the app window (red button or ⌘W) | Hides the window; sessions continue | The app remains running, so deliveries can continue |
 | Quit deck (⌘Q) | Sessions in private tmux keep running | No deliveries or new automation starts while the app is closed |
 | Close a card | Ends that session and removes the card | Cancels that card's pending lists |
-| Restart the Mac or background shell service | Existing processes end | Local lists remain saved. After a Mac restart they are rechecked when deck runs again; a shell-service restart from deck pauses the affected cards' lists until you resume them |
+| Restart the Mac or background shell service | Existing processes end | Local lists remain saved and are rechecked when deck runs again |
 
 > For an automation configured to close its card, leaving the pane may allow automatic finishing. Closing a pane does not itself terminate a session, but it does not promise to keep such a run forever. [Automatic finish conditions →](/guide/automations/#finishing-and-inspection)
 
 ## End a session deliberately
 
-Closing a card affects its running shell, agent and processes. The card corner × and right-click close act immediately; the in-session close action asks for confirmation. A card with a reminder or scratchpad entries always asks first: **Cancel reminder and close** cancels the reminder, and scratchpad entries are removed with the card. Check unsaved work and pending lists first.
+Closing a card affects its running shell, agent and processes. Without an active reminder, the card corner × and right-click close act immediately; the in-session close action asks for confirmation. An active reminder requires explicit **Cancel reminder and close**; a remote or automatic close cannot silently cancel it. Check unsaved work and pending lists first.
 
-Ctrl+D in a terminal is interpreted by the foreground program. At a shell prompt, Ctrl+D or `exit` ends the card's shell, and deck then closes the card as if you had closed it, cancelling its pending lists. deck does this only when tmux itself recorded that the shell exited normally. A killed session, a signal, or a lost or restarted shell service leaves the card stopped instead, and a card with a reminder or scratchpad entries is also kept. Inside an agent or another program, Ctrl+D means whatever that program decides. It is not a shortcut for closing deck.
+Ctrl+D in a terminal is interpreted by the foreground program. It exits the shell only in applicable contexts, such as at a shell prompt. It is not a universal shortcut for closing deck.
 
 An agent exiting usually returns to the shell. It does not necessarily end the card's entire session.
+
+When Deck verifies a normal exit of an ordinary card's owning shell, it can retire that card and cancel its scheduled prompts. A missing session, service loss or signal termination is not that proof: the card stays stopped. MCP-origin cards, retained scratchpads and reminders have additional retention protection. A reminder protects the card, not a process; ending it does not release an automatic retirement it previously blocked.
 
 ## When the app is upgraded
 
 Reopening the same build reuses the existing background service and processes. After installing a different build, deck may need to restart the background shell service. An empty service can be replaced automatically; an occupied service lists the effects and asks you to confirm.
 
-Choose **Later** to keep using existing sessions. The pending restart stays in the sidebar and Settings, and deck creates no new session until the service is restarted. Confirming the restart ends all processes in that service; running agents cannot be moved into the replacement.
+Choose **Later** to keep using existing sessions. The pending restart stays in the sidebar and Settings. Confirming the restart ends all processes in that service; running agents cannot be moved into the replacement.
 
 Reopening a stopped card normally starts a shell in its directory and **does not replay the launch command from card creation**. A card whose first command was never delivered is the exception. Look for an agent's resume hint and decide whether to restore it yourself. A list's delivery startup path may use the command its program needs; inspect the list separately.
 

@@ -49,13 +49,84 @@ test('pages have language, metadata, navigation, and resolved config', async () 
   }
 });
 
+function assertLocalCss(source, file) {
+  // Also works on HTML style blocks/attributes. Decode quoted attribute URLs
+  // and remove CSS comments before checking either form of resource loading.
+  const css = source.replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/&quot;|&#0*34;|&#x0*22;/gi, '"')
+    .replace(/&apos;|&#0*39;|&#x0*27;/gi, "'");
+  assert.doesNotMatch(css, /@import\s*["']\s*(?:https?:)?\/\/|url\s*\(\s*["']?\s*(?:https?:)?\/\//i, file);
+}
+
+function assertStaticPrivacy(html, route) {
+  assert.doesNotMatch(html, /<script\b/i, route);
+  assert.doesNotMatch(html, /<form\b|\son[a-z]+\s*=|javascript:/i, route);
+  assert.doesNotMatch(html, /\b(?:src|poster)\s*=\s*["'](?:https?:)?\/\//i, route);
+  assert.doesNotMatch(html, /google-analytics|googletagmanager|cloudflareinsights|plausible|posthog|segment\.com/i, route);
+  assert.doesNotMatch(html, /<link[^>]+(?:font|preconnect)/i, route);
+  // Canonical/alternate links and source-reference anchors do not load assets.
+  for (const [tag] of html.matchAll(/<link\b[^>]*>/gi)) {
+    if (/\brel\s*=\s*["'](?:stylesheet|icon|apple-touch-icon|preload|modulepreload|prefetch|dns-prefetch)["']/i.test(tag)) {
+      assert.doesNotMatch(tag, /\bhref\s*=\s*["'](?:https?:)?\/\//i, route);
+    }
+  }
+  // Keep the original global CSS/font rule, including inline style sources.
+  assert.doesNotMatch(html, /https?:\/\/[^"']+\.(?:css|woff2?)/i, route);
+  assert.doesNotMatch(html, /<(?:link|script|img|source|video|audio|iframe|embed|object)\b[^>]+https?:\/\/[^"']+\.js/i, route);
+  assertLocalCss(html, route);
+}
+
 test('every route contains no analytics, remote assets, or executable JavaScript', async () => {
-  for (const route of routes) {
-    const html = await readFile(path.join(dist, route), 'utf8');
-    assert.doesNotMatch(html, /<script\b/i, route);
-    assert.doesNotMatch(html, /google-analytics|googletagmanager|cloudflareinsights|plausible|posthog|segment\.com/i, route);
-    assert.doesNotMatch(html, /<link[^>]+(?:font|preconnect)/i, route);
-    assert.doesNotMatch(html, /https?:\/\/[^"']+\.(?:js|css|woff2?)/i, route);
+  for (const route of routes) assertStaticPrivacy(await readFile(path.join(dist, route), 'utf8'), route);
+});
+
+test('privacy guard accepts source links but rejects active content and remote resources', () => {
+  assert.doesNotThrow(() => assertStaticPrivacy('<a href="https://github.com/c9r-io/deck/blob/main/app/ui/js/attention-model.js">Source</a><link rel="stylesheet" href="/assets/site.css">', 'source reference'));
+  const forbidden = {
+    'inline script': '<script>alert(1)</script>',
+    'local script': '<script src="/assets/site.js"></script>',
+    'remote script': '<script src="https://example.com/site.js"></script>',
+    'remote stylesheet': '<link rel="stylesheet" href="https://example.com/site.css">',
+    'stylesheet without extension': '<link href="https://example.com/styles" rel="stylesheet">',
+    'protocol-relative stylesheet': '<link rel="stylesheet" href="//example.com/site.css">',
+    'remote image': '<img src="https://example.com/image.png" alt="Example">',
+    'remote video': '<source src="//example.com/demo.mp4">',
+    'remote poster': '<video poster="https://example.com/poster.jpg"></video>',
+    'remote icon': '<link rel="icon" href="https://example.com/favicon.ico">',
+    'inline CSS import': '<style>@import url("https://cdn.example.com/site.css");</style>',
+    'inline CSS string import': '<style>@import "//cdn.example.com/styles";</style>',
+    'inline CSS image': '<style>body { background: url(https://cdn.example.com/image.png); }</style>',
+    'style attribute image': '<div style="background: url(//cdn.example.com/image.png)"></div>',
+    'style attribute quoted image': '<div style="background: url(&quot;https://cdn.example.com/image.png&quot;)"></div>',
+    form: '<form action="/subscribe"><input name="email"></form>',
+    'inline event': '<a href="/" onclick="alert(1)">Home</a>',
+    'script URL': '<a href="javascript:alert(1)">Run</a>',
+  };
+  for (const [name, html] of Object.entries(forbidden)) {
+    assert.throws(() => assertStaticPrivacy(html, name), { code: 'ERR_ASSERTION' }, name);
+  }
+});
+
+test('built site stylesheet contains no remote CSS imports or resource URLs', async () => {
+  assertLocalCss(await readFile(path.join(dist, 'assets/site.css'), 'utf8'), 'assets/site.css');
+});
+
+test('CSS guard allows local assets but rejects remote imports and URLs', () => {
+  for (const css of ['@import "./local.css";', 'body { background: url(/assets/poster.jpg); }', 'body { color: #fff; }']) {
+    assert.doesNotThrow(() => assertLocalCss(css, 'local CSS'));
+  }
+  const forbidden = [
+    '@import url("https://cdn.example.com/site.css");',
+    '@import "https://cdn.example.com/styles";',
+    "@import '//cdn.example.com/styles';",
+    'body { background-image: url(https://cdn.example.com/image.png); }',
+    'body { background: url("//cdn.example.com/image.png"); }',
+    '@font-face { src: url(https://cdn.example.com/font.woff2); }',
+    '@IMPORT URL(\n "HTTPS://cdn.example.com/styles");',
+    'body { background: url(/* comment */https://cdn.example.com/image.png); }',
+  ];
+  for (const css of forbidden) {
+    assert.throws(() => assertLocalCss(css, 'remote CSS'), { code: 'ERR_ASSERTION' }, css);
   }
 });
 
@@ -115,7 +186,7 @@ test('both languages publish all guide topics, overview, metadata and version-sc
       assert.ok(html.includes(`<html lang="${locale ? 'zh-Hans' : 'en'}">`));
       assert.equal([...html.matchAll(/<h1\b/g)].length, 1);
       assert.match(html, /aria-current="page"/);
-      assert.ok(html.includes(`deck ${config.guideVersion}`));
+      assert.match(html, /deck 0\.7\.26/);
       assert.ok(html.includes(`<summary>${locale ? '集成' : 'Integrations'}</summary>`));
       assert.ok(html.includes(`/blob/${config.guideRef}/README.md`));
       assert.ok(html.includes(`rel="canonical" href="${config.siteUrl}/${route}"`));
@@ -135,7 +206,7 @@ test('both languages describe current voice and integration behavior', async () 
   const chinese = await readFile(path.join(dist, 'zh/guide/input-and-settings/index.html'), 'utf8');
   for (const html of [english, chinese]) {
     assert.doesNotMatch(html, /An empty draft starts recording|仅插入把文字放进终端/);
-    assert.ok(html.includes(config.guideVersion));
+    assert.match(html, /0\.7\.26/);
   }
   assert.match(english, /never sends Enter for voice input/);
   assert.match(chinese, /语音输入不会替你按回车/);
@@ -146,12 +217,116 @@ test('both languages describe current voice and integration behavior', async () 
   }
 });
 
+test('public guide facts and release references match the audited Stable', async () => {
+  assert.equal(config.guideVersion, '0.7.26');
+  assert.equal(config.guideRef, 'dcc3c064404e9eb4d392cb6228ae0b9f2cf14054');
+  assert.equal(config.releaseLabel, 'Stable 0.7.26');
+  assert.equal(config.releaseLabelZh, '稳定版 0.7.26');
+  for (const route of routes) {
+    const html = await readFile(path.join(dist, route), 'utf8');
+    // The shared Secure Tunnel source states its historical minimum of 0.7.8;
+    // it is not a claim that this guide still targets that release.
+    if (!route.includes('docs/integrations/')) {
+      assert.doesNotMatch(html, /0\.7\.8|692438f9310f079743700a10bda7cf80f77b06c6/, route);
+    }
+    if (route.startsWith('guide/') || route.startsWith('zh/guide/')) {
+      assert.doesNotMatch(html, /Integrations &amp; automation|集成与自动化|Data &amp; logs|数据与日志/, route);
+    }
+  }
+  for (const locale of ['', 'zh/']) {
+    const html = await readFile(path.join(dist, `${locale}guide/integrations/index.html`), 'utf8');
+    assert.doesNotMatch(html, /\/blob\/main\/docs\//);
+    for (const doc of ['channel-monitor.md', 'connector.md', 'mcp.md']) {
+      assert.ok(html.includes(`/blob/${config.guideRef}/docs/${doc}`));
+    }
+  }
+});
+
+test('automation closure requires process evidence, never a reported turn ending', async () => {
+  const en = await readFile(path.join(dist, 'guide/automations/index.html'), 'utf8');
+  const zh = await readFile(path.join(dist, 'zh/guide/automations/index.html'), 'utf8');
+  assert.match(en, /empty queue and three consecutive polls/);
+  assert.match(en, /no agent state and a shell in the foreground of the single-pane session/);
+  assert.match(en, /A reported turn ending never closes the run/);
+  assert.match(en, /retained scratchpad or an active reminder/);
+  assert.match(zh, /队列已清空，并连续三次检查到/);
+  assert.match(zh, /没有 agent 状态，且单窗格 session 的前台已经回到 shell/);
+  assert.match(zh, /本轮结束报告不会关闭运行卡片/);
+  assert.match(zh, /有需要保留的暂存区或有效提醒事项/);
+});
+
+test('both languages distinguish first-send risk, follow-up authority and attention', async () => {
+  for (const locale of ['', 'zh/']) {
+    const attention = await readFile(path.join(dist, `${locale}guide/attention/index.html`), 'utf8');
+    const automation = await readFile(path.join(dist, `${locale}guide/automations/index.html`), 'utf8');
+    const integrations = await readFile(path.join(dist, `${locale}guide/integrations/index.html`), 'utf8');
+    const settings = await readFile(path.join(dist, `${locale}guide/input-and-settings/index.html`), 'utf8');
+    for (const html of [attention, automation, integrations]) assert.match(html, /--no-daemon/);
+    assert.match(attention, /\/hooks/);
+    assert.match(attention, locale ? /有投递待处理/ : /Delivery waiting/);
+    assert.match(attention, locale ? /终端铃/ : /Bell/);
+    assert.match(attention, locale ? /仅在 Deck 内提醒/ : /Remind only inside Deck/);
+    assert.match(attention, locale ? /取消提醒并关闭/ : /Cancel reminder and close/);
+    assert.match(automation, locale ? /自动继续已批准的后续步骤/ : /Automatically continue approved follow-up steps/);
+    assert.match(automation, locale ? /短暂兼容等待不代表 agent 已就绪/ : /short compatibility wait is not evidence/);
+    assert.match(integrations, locale ? /每条后续步骤仍需/ : /Every follow-up still waits/);
+    assert.match(settings, locale ? /八类/ : /eight searchable categories/);
+    assert.match(settings, locale ? /数据与隐私/ : /Data &amp; privacy/);
+    assert.match(settings, locale ? /本地翻译/ : /Local Translation/);
+  }
+});
+
 test('Markdown supports stable Unicode anchors, duplicate headings and rejects missing structure', () => {
   const page = renderMarkdown('# Guide\n\nLead.\n\n## 下一步\n\nOne.\n\n## 下一步\n\nTwo.');
   assert.deepEqual(page.headings.map(item => item.id), ['下一步', '下一步-2']);
   assert.match(page.html, /id="下一步-2"/);
   assert.throws(() => renderMarkdown('No title.'), /exactly one H1/);
   assert.throws(() => renderMarkdown('# Only a title'), /introductory paragraph/);
+});
+
+test('parallel-session scenario is paired, discoverable and indexed alongside the versioned guide', async () => {
+  const sitemap = await readFile(path.join(dist, 'sitemap.xml'), 'utf8');
+  const redirects = await readFile(path.join(dist, '_redirects'), 'utf8');
+  for (const locale of ['', 'zh/']) {
+    const route = `/${locale}scenarios/parallel-sessions/`;
+    const other = `/${locale ? '' : 'zh/'}scenarios/parallel-sessions/`;
+    const html = await readFile(path.join(dist, locale, 'scenarios/parallel-sessions/index.html'), 'utf8');
+    const home = await readFile(path.join(dist, locale, 'index.html'), 'utf8');
+    const guide = await readFile(path.join(dist, locale, 'guide/index.html'), 'utf8');
+    assert.ok(html.includes(`<html lang="${locale ? 'zh-Hans' : 'en'}">`));
+    assert.equal([...html.matchAll(/<h1\b/g)].length, 1);
+    assert.ok(html.includes(`rel="canonical" href="${config.siteUrl}${route}"`));
+    assert.ok(html.includes(`hreflang="${locale ? 'en' : 'zh-Hans'}" href="${config.siteUrl}${other}"`));
+    assert.ok(html.includes(`class="language-link" href="${other}"`));
+    assert.ok(html.includes(`property="og:image" content="${config.siteUrl}/assets/og.png"`));
+    assert.match(html, /<meta name="description" content="[^"]+"/);
+    assert.match(html, /<th scope="col">/);
+    assert.ok(home.includes(`href="${route}"`));
+    assert.ok(guide.includes(`href="${route}"`));
+    assert.ok(sitemap.includes(`<loc>${config.siteUrl}${route}</loc>`));
+    assert.ok(redirects.includes(`${route.slice(0, -1)} ${route} 301`));
+    assert.ok(guide.includes(`deck ${config.guideVersion}`));
+  }
+});
+
+test('parallel-session scenario keeps coverage, outcome and restart limits explicit in both languages', async () => {
+  const english = await readFile(path.join(dist, 'scenarios/parallel-sessions/index.html'), 'utf8');
+  const chinese = await readFile(path.join(dist, 'zh/scenarios/parallel-sessions/index.html'), 'utf8');
+  for (const html of [english, chinese]) {
+    assert.match(html, /Codex/);
+    assert.match(html, /\/hooks/);
+    assert.match(html, /dcc3c064404e9eb4d392cb6228ae0b9f2cf14054/);
+  }
+  assert.match(english, /turn ending is not task completion or success/);
+  assert.match(english, /Quiet is not readiness/);
+  assert.match(english, /Input-request hooks do not cover every question/);
+  assert.match(english, /Unread history and missed-event replay are not guaranteed/);
+  assert.match(english, /live status never moves cards/);
+  assert.match(chinese, /本轮结束不等于任务完成或成功/);
+  assert.match(chinese, /安静不代表已准备好接收输入/);
+  assert.match(chinese, /输入请求 hook 也不能覆盖每一种提问/);
+  assert.match(chinese, /不保证保留未读历史，也不保证补回漏掉的事件/);
+  assert.match(chinese, /状态变化不会自动移动卡片/);
 });
 
 test('ChatGPT Secure Tunnel pages render both canonical repo guides with paired navigation', async () => {
@@ -201,6 +376,7 @@ async function pinnedDictionary(file) {
 }
 
 const PINNED_LABELS = {
+  scenario: ['attention.input', 'attention.doneUnread', 'attention.filter.followed', 'attention.filter.unavailable'],
   attention: ['attention.input', 'attention.doneUnread', 'attention.working', 'attention.recent', 'attention.quiet',
     'attention.filter.waiting', 'attention.filter.followed', 'attention.filter.unavailable',
     'signal.codex.unknown', 'signal.codex.unavailable', 'settings.notifyAway',
@@ -219,6 +395,7 @@ test('status words and labels quote the pinned release verbatim', async () => {
   for (const [locale, file] of [['', 'en.js'], ['zh/', 'zh-Hans.js']]) {
     const dictionary = await pinnedDictionary(file);
     const pages = {
+      scenario: await readFile(path.join(dist, `${locale}scenarios/parallel-sessions/index.html`), 'utf8'),
       attention: await readFile(path.join(dist, `${locale}guide/attention/index.html`), 'utf8'),
       home: await readFile(path.join(dist, `${locale}index.html`), 'utf8'),
     };
@@ -236,4 +413,31 @@ test('site.css takes every colour from its :root tokens', async () => {
   const tokensEnd = css.indexOf('}', css.indexOf(':root {'));
   assert.ok(tokensEnd > 0, 'site.css starts with its :root token block');
   assert.deepEqual(css.slice(tokensEnd + 1).match(/#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(/gi) ?? [], []);
+});
+
+
+test('all public pages share the site shell and published landing anchors remain usable', async () => {
+  for (const route of routes) {
+    const html = await readFile(path.join(dist, route), 'utf8');
+    assert.match(html, /<body class="site">/, route);
+    assert.match(html, /class="pillnav"/, route);
+  }
+  for (const locale of ['', 'zh/']) {
+    const home = await readFile(path.join(dist, `${locale}index.html`), 'utf8');
+    for (const anchor of ['why-title', 'capabilities', 'boundary-title', 'integrations-title', 'parallel-guide-title']) {
+      assert.ok(home.includes(`id="${anchor}"`), `${locale || 'en/'} lacks published #${anchor}`);
+    }
+  }
+});
+
+
+test('illustrative Board cards show one pinned status word and identify fictional tasks', async () => {
+  for (const locale of ['', 'zh/']) {
+    const html = await readFile(path.join(dist, `${locale}index.html`), 'utf8');
+    const wall = html.split('<div class="wall" aria-hidden="true">')[1].split('</section>')[0];
+    assert.equal([...wall.matchAll(/class="tile(?: [^"]+)?"/g)].length, 10);
+    assert.equal([...wall.matchAll(/class="tile-st"/g)].length, 10);
+    assert.doesNotMatch(wall, /badge2/);
+    assert.match(html, locale ? /class="wall-note">示例看板，任务均为虚构/ : /class="wall-note">Example Board with fictional tasks/);
+  }
 });

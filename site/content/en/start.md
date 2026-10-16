@@ -21,13 +21,13 @@ Board groups are manual. Drag cards to place them, and click a group's empty are
 
 Open **New session ▾ → Project defaults…**, also available by right-clicking the project tab. Set an optional directory and launch command. **＋** and ⌘N then use these defaults and send the command once on the first start.
 
-**New shell only** uses the project directory without sending its command. Creating a session from a path menu or a card's **New session in this directory** uses that location and always starts a shell only.
+**New shell only** uses the project directory without sending its command. Creating a session from a path menu or a card's “in this directory” action uses that location and always starts a shell only.
 
 If the directory no longer exists, deck offers cancel, edit defaults or a shell in your home directory. It does not save a new card for a failed start.
 
 ## Know when to return
 
-Work on something else, then check **Needs attention** in the sidebar for input requests and unread turn endings across projects. Explicit agent states require the matching integration; without it, deck can only observe output activity and a terminal bell rung by a program, which also brings the card into Needs attention. [Set up and understand signals →](/guide/attention/)
+Work on something else, then check **Needs attention** in the sidebar for input requests and unread turn endings across projects. Explicit agent states require the matching integration. Manual follow-up, due reminders and waiting deliveries can still bring a card to your attention without Agent hooks; output activity alone is not a request for help. [Set up and understand signals →](/guide/attention/)
 
 > An empty Needs attention view does not mean all work is complete. Sessions without a valid status report may still need a look.
 

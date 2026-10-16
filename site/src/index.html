@@ -36,7 +36,7 @@
 <div class="wrap">
 <div class="hero-copy2">
 <h1 id="hero-title" class="display">Ten sessions. <span class="hl">One of them needs you.</span></h1>
-<p class="lede2">deck puts every terminal session on your Mac on one Board. Each card shows a status word, not a wall of output. When an agent reports through deck's status integration that it needs input, that card stands out. Open it to read the terminal.</p>
+<p class="lede2">deck puts the local terminal sessions you start in it on one Board. Each card shows a status word, not a wall of output. When an agent reports through deck's status integration that it needs input, that card stands out. Open it to read the terminal.</p>
 <div class="cta2"><a class="btn btn-primary" href="{{DOWNLOAD_URL}}">Download {{RELEASE_LABEL}}</a><a class="textlink" href="#demo">Watch the 26-second demo</a></div>
 <p class="meta2">Native macOS · Apple Silicon · signed &amp; notarized · MIT</p>
 </div>
@@ -44,12 +44,12 @@
 <div class="wall" aria-hidden="true">
 <div class="tile"><div class="tile-top"><span class="dot live c-run"></span><strong>Refactor scheduler</strong></div><div class="tile-cmd">$ claude · ~/deck</div><div class="tile-st">Agent working</div></div>
 <div class="tile"><div class="tile-top"><span class="dot c-run"></span><strong>API logs</strong></div><div class="tile-cmd">$ tail -f api.log · ~/atlas</div><div class="tile-st">Recent output · no valid agent state</div></div>
-<div class="tile hot"><div class="tile-top"><span class="dot"></span><strong>Review the migration</strong><span class="badge2">Input requested</span></div><div class="tile-cmd">$ claude · ~/atlas</div><div class="tile-st">Input requested</div></div>
+<div class="tile hot"><div class="tile-top"><span class="dot"></span><strong>Review the migration</strong></div><div class="tile-cmd">$ claude · ~/atlas</div><div class="tile-st">Input requested</div></div>
 <div class="tile"><div class="tile-top"><span class="dot c-quiet"></span><strong>Dev server</strong></div><div class="tile-cmd">$ npm run dev · ~/lighthouse</div><div class="tile-st">Quiet · no valid agent state</div></div>
-<div class="tile soft"><div class="tile-top"><span class="dot c-done"></span><strong>Investigate failing tests</strong><span class="badge2">Turn ended, unread</span></div><div class="tile-cmd">$ codex --no-daemon · ~/harbor</div><div class="tile-st">Turn ended · unread</div></div>
+<div class="tile soft"><div class="tile-top"><span class="dot c-done"></span><strong>Investigate failing tests</strong></div><div class="tile-cmd">$ codex --no-daemon · ~/harbor</div><div class="tile-st">Turn ended · unread</div></div>
 <div class="tile t-wide"><div class="tile-top"><span class="dot c-stop"></span><strong>Nightly build</strong></div><div class="tile-cmd">$ ./build.sh · ~/ops</div><div class="tile-st">Stopped</div></div>
 <div class="tile t-mid"><div class="tile-top"><span class="dot live c-run"></span><strong>Docs pass</strong></div><div class="tile-cmd">$ claude · ~/lighthouse</div><div class="tile-st">Agent working</div></div>
-<div class="tile t-wide"><div class="tile-top"><span class="dot c-run"></span><strong>Clock</strong></div><div class="tile-cmd">$ while true; do date; sleep 1; done</div><div class="tile-st">Recent output · no valid agent state</div></div>
+<div class="tile t-wide"><div class="tile-top"><span class="dot c-run"></span><strong>Clock</strong></div><div class="tile-cmd">$ while true; do date; sleep 1; done · ~/ops</div><div class="tile-st">Recent output · no valid agent state</div></div>
 <div class="tile t-wide"><div class="tile-top"><span class="dot c-quiet"></span><strong>Dev database</strong></div><div class="tile-cmd">$ psql atlas_dev · ~/atlas</div><div class="tile-st">Quiet · no valid agent state</div></div>
 <div class="tile t-wide"><div class="tile-top"><span class="dot live c-run"></span><strong>Release notes</strong></div><div class="tile-cmd">$ codex --no-daemon · ~/deck</div><div class="tile-st">Agent working</div></div>
 </div>
@@ -58,10 +58,10 @@
 
 <section class="band2" aria-labelledby="facts-title">
 <div class="wrap">
-<div class="shead"><h2 id="facts-title" class="display">The other nine keep running. You don't have to read them.</h2><p>Several pieces of work can run while you do something else. Without one place to look, you switch tabs to find a question, a result worth reading, or a task you meant to revisit.</p></div>
+<span id="why-title" aria-hidden="true"></span><span id="capabilities" aria-hidden="true"></span><div class="shead"><h2 id="facts-title" class="display">Keep work running. Know where to look next.</h2><p>Several pieces of work can run while you do something else. Without one place to look, you switch tabs to find a question, a result worth reading, or a task you meant to revisit.</p></div>
 <div class="facts2">
 <div class="fact2"><h3><span class="sq c-run"></span>Real sessions</h3><p>Each card is a local terminal session running your own CLI. tmux is bundled, and sessions keep running when deck closes.</p></div>
-<div class="fact2"><h3><span class="sq c-quiet"></span>Reported, not guessed</h3><p>With the matching integration on, Claude Code and Codex (started with <code>--no-daemon</code>) report input requests and turn endings. Without a report, deck only says a session is quiet or has recent output.</p></div>
+<div class="fact2"><h3><span class="sq c-quiet"></span>Reported, not guessed</h3><p>The matching integrations can report Claude Code and Codex input requests and turn endings when their hooks are supported and trusted. Missing reports do not prove that nothing needs you; output activity alone is not readiness.</p></div>
 <div class="fact2"><h3><span class="sq c-stop"></span>You place the cards</h3><p>Arrange sessions by project and group. Status changes never move a card.</p></div>
 </div>
 </div>
@@ -90,7 +90,7 @@ Your browser does not support embedded video. <a href="/assets/demo/deck-0.6.6-2
 
 <section class="band2" id="who" aria-labelledby="who-title">
 <div class="wrap">
-<div class="shead"><p class="kicker">Who does what</p><h2 id="who-title" class="display">Your agent owns the work. deck watches where your attention goes.</h2><p>Agents already manage their own work and keep getting better at it. What gets scarce is your attention across all of them, so that is the part deck handles. It supplies no model or AI account, and works the same with a plain shell.</p></div>
+<span id="boundary-title" aria-hidden="true"></span><div class="shead"><p class="kicker">Who does what</p><h2 id="who-title" class="display">Your agent owns the work. deck watches where your attention goes.</h2><p>Agents already manage their own work and keep getting better at it. What gets scarce is your attention across all of them, so that is the part deck handles. It supplies no model or AI account, and works the same with a plain shell.</p></div>
 <div class="who-wrap" tabindex="0" role="region" aria-label="Who does what">
 <table class="who">
 <thead><tr><th scope="col">Job</th><th scope="col" class="o">Your agent</th><th scope="col" class="o">You</th><th scope="col" class="o d">deck</th></tr></thead>
@@ -112,7 +112,7 @@ Your browser does not support embedded video. <a href="/assets/demo/deck-0.6.6-2
 
 <section class="teaser-band" aria-labelledby="attn-title">
 <div class="wrap">
-<div class="shead"><p class="kicker">Needs attention</p><h2 id="attn-title" class="display">One list across every project.</h2><p>Input requests come first, then waiting list deliveries, terminal bells nobody has looked at and unread turn endings, then cards you starred to follow. Each row names its project, group and every reason it is there.</p></div>
+<div class="shead"><p class="kicker">Needs attention</p><h2 id="attn-title" class="display">One list across every project.</h2><p>Input requests come first, then waiting list deliveries, terminal bells nobody has looked at and unread turn endings, then due reminders and cards you starred to follow. Each row names its project, group and every reason it is there.</p></div>
 <div class="fboard teaser" role="img" aria-label="Example Needs attention list with three fictional sessions">
 <div class="fscroll">
 <div class="frow h"><span>Session</span><span>Project / group</span><span>Reason</span><span>Viewing record</span></div>
@@ -120,10 +120,13 @@ Your browser does not support embedded video. <a href="/assets/demo/deck-0.6.6-2
 <div class="frow"><div class="fcell">Failing tests</div><div class="fcell dim">Harbor <small>/ Working</small></div><div class="fcell done lc">Turn ended · unread</div><div class="fcell dim lc">Not yet viewed</div></div>
 <div class="frow"><div class="fcell">Nightly follow-up</div><div class="fcell dim">Ops <small>/ Later</small></div><div class="fcell dim lc">Followed · Agent working</div><div class="fcell dim lc">Viewed · not necessarily handled</div></div>
 </div>
+<p class="fcap">Illustration with fictional tasks. In the app, use “Input requested”, “Turn ended, unread” or “Followed” to filter the list.</p>
 </div>
 <div class="teaser-foot"><span>Away from the window? Turn on away notifications and the Dock icon counts what is waiting.</span><a class="textlink" href="/guide/attention/">How Needs attention works →</a></div>
 </div>
 </section>
+
+<section class="band2" aria-labelledby="parallel-guide-title"><div class="wrap shead"><h2 id="parallel-guide-title" class="display">Three sessions running. Which one needs you?</h2><div><p>Follow a review, a bug investigation and a test run across projects. Use manual follow-up and reported signals, then check sessions whose status is unavailable.</p><p class="linkrow"><a class="textlink" href="/scenarios/parallel-sessions/">Find the work that needs you →</a></p></div></div></section>
 
 <section class="band2" aria-labelledby="auto-title">
 <div class="wrap split2">
@@ -144,7 +147,7 @@ Your browser does not support embedded video. <a href="/assets/demo/deck-0.6.6-2
 
 <section class="band2" aria-labelledby="more-title">
 <div class="wrap">
-<div class="shead"><h2 id="more-title" class="display">Useful when you need them.</h2><p>Nothing here is required for ordinary terminal use. Each integration has its own setup and limits.</p></div>
+<span id="integrations-title" aria-hidden="true"></span><div class="shead"><h2 id="more-title" class="display">Useful when you need them.</h2><p>Nothing here is required for ordinary terminal use. Each integration has its own setup and limits.</p></div>
 <div class="catalog">
 <div><h3>In the app</h3><ul>
 <li><b>Split panes</b><span>View several terminals side by side.</span></li>
@@ -192,7 +195,7 @@ Your browser does not support embedded video. <a href="/assets/demo/deck-0.6.6-2
 <h2 id="faq-title" class="display">Common questions</h2>
 <div>
 <details><summary>Do I need to keep deck running?</summary><p>The app must be running for lists to deliver and automations to start. Sessions in private tmux survive quitting the app; a machine or service restart ends their processes. <a class="textlink" href="/guide/sessions/">Leave, close and recover →</a></p></details>
-<details><summary>Does quiet mean the agent is ready?</summary><p>No. Without a valid agent report, amber means the session has been quiet. Quiet is not ready. Enable the matching Claude Code or Codex status integration for explicit reports; Codex reports reach deck only from a session started with <code>codex --no-daemon</code>. A turn ending still does not prove task success. <a class="textlink" href="/guide/attention/">Read each signal →</a></p></details>
+<details><summary>Does quiet mean the agent is ready?</summary><p>No. Without a valid agent report, amber means the session has been quiet. Quiet is not ready. Enable the matching Claude Code or Codex status integration for explicit reports. For a new Codex session, <code>codex --no-daemon</code> is an optional hook compatibility path; review and trust the hooks in <code>/hooks</code>. Deck rejects shared-service events it cannot reliably attribute to the terminal. A turn ending still does not prove task success. <a class="textlink" href="/guide/attention/">Read each signal →</a></p></details>
 <details><summary>Will opening a result let the next prompt run?</summary><p>Opening marks a reported turn ending as viewed. A list with human inspection enabled waits for your explicit confirmation, and then still checks its time and target conditions. <a class="textlink" href="/guide/prompts/">Arrange follow-up input →</a></p></details>
 <details><summary>Are agent CLIs included?</summary><p>tmux is included. Install and configure your own agent CLI, or use any interactive command that works in a macOS terminal. Agent accounts and model access are managed by those tools. <a class="textlink" href="/guide/start/">Start your first task →</a></p></details>
 </div>

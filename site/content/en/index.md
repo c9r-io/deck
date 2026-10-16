@@ -14,6 +14,7 @@ deck has no cloud service, cloud account or remote server hosting your tasks. Sh
 
 | Your question | Where to go |
 | --- | --- |
+| Several terminals are open. Which one should I check? | [A practical workflow for parallel sessions](/scenarios/parallel-sessions/) |
 | What needs me now? | [Decide what needs attention](/guide/attention/) |
 | Can I arrange the next prompts in advance? | [Arrange follow-up input](/guide/prompts/) |
 | Why has the next row not been sent? | [Read delivery and inspection states](/guide/prompts/#when-a-list-does-not-continue) |
@@ -31,6 +32,6 @@ deck has no cloud service, cloud account or remote server hosting your tasks. Sh
 
 ## Version scope
 
-This guide covers **deck 0.7.26 Stable**: local sessions and automations, on-device voice typing, scratchpads, optional Slack and Phone integrations, and locally authorized MCP access. Check your installed version in Settings; earlier versions can have different features and controls. The 0.6.6 recording in the homepage demo remains a labeled example of the Board flow, not a tour of every 0.7.26 feature.
+This guide covers **deck 0.7.26 Stable**: local sessions and automation, reminders and notifications, on-device voice input and English-to-Chinese translation, card scratchpads, optional Slack and phone integrations, and locally authorized MCP access. Check your installed version in Settings; earlier versions can have different features and controls. The 0.6.6 recording in the homepage demo remains a labeled example of the Board flow, not a tour of every 0.7.26 feature.
 
 See [updates and versions](/guide/input-and-settings/#updates-and-versions) for upgrades, channel switching and older data compatibility.
