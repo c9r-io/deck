@@ -23,7 +23,7 @@ assert spec and spec.loader
 rc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rc)
 translation_binary = runpy.run_path(str(ROOT / "scripts" / "check_local_translation_binary.py"))
-stapler = runpy.run_path(str(ROOT / "scripts" / "stapler-validate"))
+stapler = runpy.run_path(str(ROOT / "scripts" / "stapler-ticket"))
 
 
 class StaplerValidationTests(unittest.TestCase):
@@ -32,11 +32,11 @@ class StaplerValidationTests(unittest.TestCase):
         'https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup'
     )
 
-    def validate(self, results):
+    def validate(self, results, operation="validate"):
         output, errors = io.StringIO(), io.StringIO()
         with patch("subprocess.run", side_effect=results) as run, patch("time.sleep") as sleep:
             with redirect_stdout(output), redirect_stderr(errors):
-                status = stapler["validate"]("/tmp/Deck test.app")
+                status = stapler["ticket"](operation, "/tmp/Deck test.app")
         return status, run, sleep, output.getvalue() + errors.getvalue()
 
     def result(self, code=0, error=""):
@@ -87,15 +87,41 @@ class StaplerValidationTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
         sleep.assert_not_called()
 
+    def test_staple_uses_the_same_closed_retry_budget_and_requires_success(self):
+        cases = [
+            ([self.result()], 0, 1),
+            ([self.result(68, self.disconnect), self.result()], 0, 2),
+            ([self.result(68, self.disconnect)] * 4, 68, 4),
+            ([self.result(68, "invalid ticket")], 68, 1),
+            ([subprocess.TimeoutExpired("xcrun", 60)], 124, 1),
+        ]
+        for results, expected, attempts in cases:
+            with self.subTest(expected=expected, attempts=attempts):
+                status, run, sleep, _ = self.validate(results, operation="staple")
+                self.assertEqual(status, expected)
+                self.assertEqual(run.call_count, attempts)
+                self.assertEqual(run.call_args.args[0][2], "staple")
+                self.assertEqual(sleep.call_count, attempts - 1)
+
+    def test_no_other_stapler_operation_can_run(self):
+        with patch("subprocess.run") as run:
+            with self.assertRaises(ValueError):
+                stapler["ticket"]("--help", "/tmp/Deck test.app")
+        run.assert_not_called()
+
     def test_all_release_validation_paths_use_the_closed_wrapper(self):
         for name in ("nightly.yml", "release.yml", "promote.yml"):
             text = (ROOT / ".github/workflows" / name).read_text()
             self.assertNotIn("xcrun stapler validate", text)
-            self.assertIn("scripts/stapler-validate", text)
+            self.assertNotIn("xcrun stapler staple", text)
+            self.assertIn("scripts/stapler-ticket validate", text)
             self.assertIn("spctl -a -vv", text)
         helper = (ROOT / "scripts/verify-tunnel-helper").read_text()
-        self.assertIn('/stapler-validate" "$app"', helper)
+        self.assertIn('/stapler-ticket" validate "$app"', helper)
         self.assertIn('spctl -a -vv -t exec "$app"', helper)
+        package = (ROOT / "scripts/package-tunnel-helper").read_text()
+        self.assertIn('scripts/stapler-ticket staple "$app"', package)
+        self.assertNotIn("xcrun stapler staple", package)
 
 
 def script_tests_the_gate_misses(gate: str, scripts: Path) -> list[str]:

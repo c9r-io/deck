@@ -102,12 +102,14 @@ notes and `publish_feed`. The workflow:
    directory for byte/hash/manifest verification;
 6. publishes the immutable prerelease only after all assets pass.
 
-Ticket validation uses `scripts/stapler-validate`: only Apple's observed
-CloudKit connection-loss error (stapler exit 68, NSURLErrorDomain -1005 at the
+Ticket attachment and validation use `scripts/stapler-ticket staple|validate`:
+only Apple's observed CloudKit connection-loss error (stapler exit 68,
+NSURLErrorDomain -1005 at the
 ticket endpoint) receives up to four attempts, with 3/6/12-second waits and a
 60-second limit per attempt. An invalid ticket, another error, timeout or
 exhausted retry budget still fails publication. No notary submission is replayed
-by this wrapper, and codesign/Gatekeeper checks remain mandatory.
+by this wrapper. Reattaching the same ticket is followed by validation, and
+codesign/Gatekeeper checks remain mandatory.
 
 The provenance records version, full commit, tag, workflow run/attempt and UTC
 time; filename, byte size and SHA-256 for every immutable artifact; bundle ID,

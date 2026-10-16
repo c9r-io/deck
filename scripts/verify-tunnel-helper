@@ -22,6 +22,6 @@ test "$(jq -er '.toolVersion' <<<"$protocol")" = \
   "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
 test "$(lipo -archs "$app/Contents/MacOS/deck-tunnelctl")" = arm64
 if [[ "${2:-}" == --stapled ]]; then
-  "$(dirname "$0")/stapler-validate" "$app"
+  "$(dirname "$0")/stapler-ticket" validate "$app"
   spctl -a -vv -t exec "$app"
 fi

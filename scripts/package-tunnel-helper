@@ -84,12 +84,13 @@ scripts/verify-tunnel-helper "$app"
 
 # Apple's notary service accepts a zip carrier. The final carrier is rebuilt
 # after stapling, then extracted and verified again before handoff.
+# Attachment and validation each retain their bounded CloudKit transport retry.
 ditto -c -k --keepParent "$app" "$scratch/notary-submission.zip"
 xcrun notarytool submit "$scratch/notary-submission.zip" --apple-id "$APPLE_ID" \
   --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait \
   --output-format json > "$scratch/notary-result.json"
 test "$(jq -er '.status' "$scratch/notary-result.json")" = Accepted
-xcrun stapler staple "$app"
+scripts/stapler-ticket staple "$app"
 scripts/verify-tunnel-helper "$app" --stapled
 binary_sha=$(shasum -a 256 "$app/Contents/MacOS/deck-tunnelctl" | cut -d ' ' -f 1)
 

@@ -214,15 +214,15 @@ jobs:
           codesign --verify --strict --verbose=2 "$app_path/Contents/MacOS/tmux"
           test "$(dwarfdump --uuid "$app_path/Contents/MacOS/$executable" | wc -l | tr -d ' ')" = 1
           test "$(dwarfdump --uuid "$app_path/Contents/MacOS/tmux" | wc -l | tr -d ' ')" = 1
-          scripts/stapler-validate "$app_path"
+          scripts/stapler-ticket validate "$app_path"
           spctl -a -vv -t exec "$app_path"
 
           dmg="candidate/deck_${CANDIDATE_VERSION}_aarch64.dmg"
           codesign --verify --verbose=2 "$dmg"
           xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" \
             --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
-          xcrun stapler staple "$dmg"
-          scripts/stapler-validate "$dmg"
+          scripts/stapler-ticket staple "$dmg"
+          scripts/stapler-ticket validate "$dmg"
           spctl -a -vv -t install "$dmg"
 
           {
