@@ -1,5 +1,7 @@
 #!/bin/bash
 # Verify the distributed app itself, including after a fresh archive extraction.
+# Ticket validation retries only bounded Apple transport failures; every other
+# verification failure remains terminal.
 set -euo pipefail
 if [[ $# -lt 1 || $# -gt 2 || ( $# -eq 2 && "$2" != --stapled ) ]]; then
   echo "usage: verify-tunnel-helper APP_PATH [--stapled]" >&2
@@ -20,6 +22,6 @@ test "$(jq -er '.toolVersion' <<<"$protocol")" = \
   "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
 test "$(lipo -archs "$app/Contents/MacOS/deck-tunnelctl")" = arm64
 if [[ "${2:-}" == --stapled ]]; then
-  xcrun stapler validate "$app"
+  "$(dirname "$0")/stapler-validate" "$app"
   spctl -a -vv -t exec "$app"
 fi

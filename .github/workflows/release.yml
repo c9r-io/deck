@@ -222,7 +222,7 @@ jobs:
             --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" --wait
           xcrun stapler staple "${dmg[0]}"
-          xcrun stapler validate "${dmg[0]}"
+          scripts/stapler-validate "${dmg[0]}"
           spctl -a -vv -t install "${dmg[0]}"
           gh release upload "$RELEASE_TAG" "${dmg[0]}" \
             -R "$GITHUB_REPOSITORY" --clobber
@@ -260,7 +260,7 @@ jobs:
             --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" --wait
           xcrun stapler staple "${dmg[0]}"
-          xcrun stapler validate "${dmg[0]}"
+          scripts/stapler-validate "${dmg[0]}"
           spctl -a -vv -t install "${dmg[0]}"
           gh release upload "$RELEASE_TAG" "${dmg[0]}" \
             -R "$GITHUB_REPOSITORY" --clobber

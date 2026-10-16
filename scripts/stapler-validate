@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Validate Apple's ticket, retrying only the observed CloudKit disconnect.
+
+Release tooling only: four attempts, each bounded to 60 seconds, with 3/6/12
+second waits. Success requires stapler's exit 0. Only exit 68 together with
+NSURLErrorDomain -1005 at Apple's ticket endpoint is retryable; invalid tickets,
+other errors and timeouts fail closed. Every completed attempt's output is retained.
+"""
+
+import argparse
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+
+def validate(path: str) -> int:
+    command = ["/usr/bin/xcrun", "stapler", "validate", str(Path(path).resolve())]
+    for attempt in range(4):
+        try:
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace", timeout=60)
+        except subprocess.TimeoutExpired:
+            print("stapler validation timed out; refusing publication", file=sys.stderr)
+            return 124
+        print(result.stdout, end="")
+        print(result.stderr, end="", file=sys.stderr)
+        output = result.stdout + result.stderr
+        retryable = (
+            result.returncode == 68
+            and "NSURLErrorDomain Code=-1005 " in output
+            and "https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup" in output
+        )
+        if not retryable or attempt == 3:
+            return result.returncode if result.returncode >= 0 else 1
+        delay = 3 * 2 ** attempt
+        print(f"Apple ticket connection lost; retrying validation in {delay}s "
+              f"(attempt {attempt + 2}/4)", file=sys.stderr, flush=True)
+        time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("path")
+    raise SystemExit(validate(parser.parse_args().path))

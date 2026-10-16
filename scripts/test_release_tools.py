@@ -23,6 +23,79 @@ assert spec and spec.loader
 rc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rc)
 translation_binary = runpy.run_path(str(ROOT / "scripts" / "check_local_translation_binary.py"))
+stapler = runpy.run_path(str(ROOT / "scripts" / "stapler-validate"))
+
+
+class StaplerValidationTests(unittest.TestCase):
+    disconnect = (
+        'Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost." '
+        'https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup'
+    )
+
+    def validate(self, results):
+        output, errors = io.StringIO(), io.StringIO()
+        with patch("subprocess.run", side_effect=results) as run, patch("time.sleep") as sleep:
+            with redirect_stdout(output), redirect_stderr(errors):
+                status = stapler["validate"]("/tmp/Deck test.app")
+        return status, run, sleep, output.getvalue() + errors.getvalue()
+
+    def result(self, code=0, error=""):
+        return subprocess.CompletedProcess([], code, "validation output\n", error)
+
+    def test_success_needs_no_retry_and_preserves_command_boundary(self):
+        status, run, sleep, output = self.validate([self.result()])
+        self.assertEqual(status, 0)
+        self.assertEqual(run.call_args.args[0], ["/usr/bin/xcrun", "stapler", "validate",
+                                                str(Path("/tmp/Deck test.app").resolve())])
+        self.assertEqual(run.call_args.kwargs["timeout"], 60)
+        sleep.assert_not_called()
+        self.assertIn("validation output", output)
+
+    def test_disconnect_can_recover_only_after_successful_validation(self):
+        status, run, sleep, output = self.validate([self.result(68, self.disconnect), self.result()])
+        self.assertEqual(status, 0)
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_called_once_with(3)
+        self.assertIn(self.disconnect, output)
+
+    def test_persistent_disconnect_fails_with_bounded_attempts(self):
+        status, run, sleep, _ = self.validate([self.result(68, self.disconnect)] * 4)
+        self.assertEqual(status, 68)
+        self.assertEqual(run.call_count, 4)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [3, 6, 12])
+
+    def test_unknown_errors_invalid_tickets_and_signals_fail_without_retry(self):
+        for result in (self.result(68, "invalid ticket"), self.result(65, self.disconnect),
+                       self.result(68, self.disconnect.replace("-1005", "-1200")),
+                       self.result(68, self.disconnect.replace("api.apple-cloudkit.com", "example.com")),
+                       self.result(-9)):
+            with self.subTest(result=result):
+                status, run, sleep, _ = self.validate([result])
+                self.assertNotEqual(status, 0)
+                self.assertEqual(run.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_invalid_ticket_after_disconnect_is_not_retried(self):
+        status, run, sleep, _ = self.validate([self.result(68, self.disconnect), self.result(65, "invalid")])
+        self.assertEqual(status, 65)
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_called_once_with(3)
+
+    def test_timeout_is_a_terminal_failure(self):
+        status, run, sleep, _ = self.validate([subprocess.TimeoutExpired("xcrun", 60)])
+        self.assertEqual(status, 124)
+        self.assertEqual(run.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_all_release_validation_paths_use_the_closed_wrapper(self):
+        for name in ("nightly.yml", "release.yml", "promote.yml"):
+            text = (ROOT / ".github/workflows" / name).read_text()
+            self.assertNotIn("xcrun stapler validate", text)
+            self.assertIn("scripts/stapler-validate", text)
+            self.assertIn("spctl -a -vv", text)
+        helper = (ROOT / "scripts/verify-tunnel-helper").read_text()
+        self.assertIn('/stapler-validate" "$app"', helper)
+        self.assertIn('spctl -a -vv -t exec "$app"', helper)
 
 
 def script_tests_the_gate_misses(gate: str, scripts: Path) -> list[str]:

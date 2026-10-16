@@ -148,12 +148,12 @@ jobs:
           codesign --verify --strict --verbose=2 "$app_path/Contents/MacOS/tmux"
           test "$(dwarfdump --uuid "$app_path/Contents/MacOS/$executable" | wc -l | tr -d ' ')" = 1
           test "$(dwarfdump --uuid "$app_path/Contents/MacOS/tmux" | wc -l | tr -d ' ')" = 1
-          xcrun stapler validate "$app_path"
+          scripts/stapler-validate "$app_path"
           spctl -a -vv -t exec "$app_path"
           dmg=(candidate/*.dmg)
           test "${#dmg[@]}" -eq 1
           codesign --verify --verbose=2 "${dmg[0]}"
-          xcrun stapler validate "${dmg[0]}"
+          scripts/stapler-validate "${dmg[0]}"
           spctl -a -vv -t install "${dmg[0]}"
       - name: Sign the unchanged archive with the production-only Stable key
         env:
