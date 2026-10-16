@@ -102,8 +102,12 @@ These rules keep the site consistent with the product it describes.
 - **Pictures come from the product's own objects** (the wall of cards, the
   Needs attention list) rather than generic landing-page devices: decorative
   glows, numbered markers that do not encode a real sequence, or an eyebrow
-  label on every section. This is the direction for the planned homepage and
-  guide redesign; the current pages predate it.
+  label on every section. The homepage hero is a wall of status-word cards
+  with one lit; guide chapters open on a header, and the Needs attention
+  chapter on a board built from the real view (`content/*/attention.*.html`).
+- Pages use `<body class="site">`. Fonts are self-hosted in
+  `assets/fonts/` with their OFL texts and listed in `THIRD_PARTY_NOTICES.md`;
+  Chinese pages use system CJK faces for headings and board cells.
 
 Do not publish directly from a developer shell. The reviewed external path is
 the manual `site-deploy` GitHub Actions workflow after the Cloudflare handoff in
