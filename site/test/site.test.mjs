@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
@@ -25,6 +26,16 @@ async function htmlRoutes(folder, prefix = '') {
   return result;
 }
 const routes = await htmlRoutes(dist);
+
+test('homepage stylesheet URLs are versioned by the CSS content they load', async () => {
+  const css = await readFile(path.join(dist, 'assets/site.css'));
+  const version = createHash('sha256').update(css).digest('hex').slice(0, 12);
+  for (const locale of ['', 'zh/']) {
+    const html = await readFile(path.join(dist, `${locale}index.html`), 'utf8');
+    const stylesheets = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)];
+    assert.deepEqual(stylesheets.map(match => match[1]), [`/assets/site.css?v=${version}`]);
+  }
+});
 
 test('build emits every public route and infrastructure file', async () => {
   for (const file of [...routes, 'assets/site.css', 'assets/og.png', 'assets/icon.svg', 'assets/icon-180.png', 'favicon.ico', 'robots.txt', 'sitemap.xml', '_headers', '_redirects']) {
