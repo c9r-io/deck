@@ -31,3 +31,18 @@ Mac 的 Phone Connector 使用三个独立共享范围，旧配置不自动升�
 首轮 iPhone SE 模拟器 UI 验收为 3 通过、2 失败，退出到 shell 的独立测试通过，registry 清理通过。失败证据保存在 `native-first-report.json` 与 `native-first-ui.log`：新测试使用中心点重新聚焦后按删除键，没有清空草稿；草稿恢复测试点击后 AX 仍显示 Output 为 Selected，未进入 Notes。后续使用已存在的末尾光标探针验证后再删除，并在页面稳定可见后点击标签、断言选中状态，再定位 lazy List 的编辑器；保存、恢复、消息回复与 shell 禁止输入断言均保留。
 
 未发布版本、未替换已安装应用、未修改生产卡片或配对。模拟器验收不代替真机 Wi-Fi/VPN、权限、锁屏/后台和 Mac 睡眠验证。用户已有的 governance 证据和 `research_notes/` 改动保留。
+
+## 发布记录
+
+用户随后明确授权提交并发布。修复及版本准备提交为
+[`e41bf49`](https://github.com/c9r-io/deck/commit/e41bf49631d858b6838b63c2efb91bc2287ab3af)。
+Mac 已发布 [0.8.4 Nightly](https://github.com/c9r-io/deck/releases/tag/nightly-v0.8.4-20261016-e41bf49)，
+完整 CI、签名、公证、staple 和 Gatekeeper 检查通过；发布后重新下载全部产物，
+验证哈希、Nightly 更新签名、commit/tag 及在线更新清单，确认 feed 指向 0.8.4。
+iPhone **1.0 (3)** 已上传并完成处理，TestFlight「个人设备」组显示「正在测试」，中文测试说明已保存。
+详见 [publication.json](publication.json)。未替换本机安装，也未代用户更新 iPhone。
+
+发布前 14 个真实 WKWebView 场景最终全部通过。首轮综合场景被编辑器窗口遮挡，
+`page-visible` 记录隐藏 197,568 ms；其余 13 场景通过。临时缩小编辑器窗口后，在新隔离根目录按原断言复验，
+综合 94/94 通过、`page-visible a=1 b=0`；随后恢复编辑器窗口，实验资源按 registry 清理。
+本地发布校验脚本首次因临时脚本导入名称错误停止；修正后完整校验退出 0，发布产物未修改。

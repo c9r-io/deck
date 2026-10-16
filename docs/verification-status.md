@@ -17,7 +17,9 @@
 Rust workspace 1,537 项、UI 849 项、Swift Core 80 项与 registry 30 项通过；Rust 13 项原有 ignore、Swift 1 项 opt-in 跳过保留。
 fmt/clippy、JS 语法/模块和扩展目录检查通过。
 iPhone SE（iOS 27.0、深色）隔离 UI 5/5、退出到 shell 1/1 通过：真实 Codex 卡片保存命令为空，手机消息发送后读取拼接回复标记；shell 便签实际保存/读回/删除，shell 发送始终禁用。
-首轮测试操作失败及修复如实记录，所有实验资源按 registry 清理。真机 Wi-Fi/VPN、锁屏/后台、Mac 睡眠仍为 UNRUN；未发布或替换安装。
+首轮测试操作失败及修复如实记录，所有实验资源按 registry 清理。真机 Wi-Fi/VPN、锁屏/后台、Mac 睡眠仍为 UNRUN。
+随后经用户明确授权，提交 `e41bf49`，发布 [0.8.4 Nightly](https://github.com/c9r-io/deck/releases/tag/nightly-v0.8.4-20261016-e41bf49) 与 TestFlight **1.0 (3)**（「个人设备」正在测试）。
+发布前 14 个 WKWebView 场景最终通过；完整 CI 和 Apple 验证通过，公开产物哈希、Nightly 签名及 0.8.4 更新清单已核验。详见本轮证据的 `publication.json`；未替换本机安装。
 
 ## 上一轮第一方插件职责治理
 

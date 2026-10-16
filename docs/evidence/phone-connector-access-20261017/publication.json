@@ -1,0 +1,64 @@
+{
+  "sourceCommit": "e41bf49631d858b6838b63c2efb91bc2287ab3af",
+  "desktop": {
+    "version": "0.8.4",
+    "tag": "nightly-v0.8.4-20261016-e41bf49",
+    "sourceCommit": "e41bf49631d858b6838b63c2efb91bc2287ab3af",
+    "releaseUrl": "https://github.com/c9r-io/deck/releases/tag/nightly-v0.8.4-20261016-e41bf49",
+    "downloadUrl": "https://github.com/c9r-io/deck/releases/download/nightly-v0.8.4-20261016-e41bf49/deck_0.8.4_aarch64.dmg",
+    "feedVersion": "0.8.4",
+    "feedMatchesCandidate": true,
+    "appleVerification": {
+      "codesign": "passed",
+      "notarization": "passed",
+      "stapler": "passed",
+      "gatekeeper": "passed"
+    },
+    "workflowConclusion": "success",
+    "workflowAttempt": 1,
+    "publishedAt": "2026-10-16T17:44:15Z",
+    "verifiedAt": "2026-10-16T17:45:39.949974+00:00",
+    "artifactHashesVerified": true,
+    "nightlyUpdaterSignatureVerified": true
+  },
+  "ios": {
+    "appId": "6813906186",
+    "bundleId": "io.c9r.deck.connector",
+    "version": "1.0",
+    "build": "3",
+    "sourceCommit": "e41bf49631d858b6838b63c2efb91bc2287ab3af",
+    "archiveExit": 0,
+    "uploadExit": 0,
+    "group": "个人设备",
+    "groupStatus": "正在测试",
+    "processingComplete": true,
+    "releaseNotesSaved": true,
+    "url": "https://appstoreconnect.apple.com/apps/6813906186/testflight/ios/5bb1954a-301a-4da5-a46c-efcfad4fc7f8",
+    "phoneInstallationObserved": false,
+    "observedAt": "2026-10-16T17:02:23.959240+00:00"
+  },
+  "preReleaseSmoke": {
+    "requiredModesPassed": 14,
+    "comprehensiveCheckpointsPassed": 94,
+    "initialRun": "FAIL: editor occlusion, page-visible recorded 197568 ms hidden; other 13 modes passed.",
+    "rerun": "PASS on fresh root after temporarily reducing editor window size; original assertions unchanged; page-visible a=1 b=0.",
+    "editorWindowRestored": true,
+    "registeredResourcesCleaned": true
+  },
+  "ci": {
+    "main": {
+      "runId": 38935383098,
+      "conclusion": "success"
+    },
+    "nightly": {
+      "runId": 38936745002,
+      "conclusion": "success",
+      "environmentApproval": "Approved by authorized account based on the explicit user release request."
+    }
+  },
+  "verificationNotes": [
+    "The first local post-publication verifier stopped at a NameError in its added signature check; corrected the temporary script import and reran against the downloaded artifacts. Final verification exited 0.",
+    "No production installation, card, or pairing was replaced during publication."
+  ],
+  "recordedAt": "2026-10-16T17:46:10.236701+00:00"
+}
