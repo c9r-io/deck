@@ -326,7 +326,7 @@ html:lang(zh-Hans) {
 
 body.site { background: var(--bg); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
 .site h1, .site h2, .site h3 { margin: 0; letter-spacing: normal; line-height: 1.2; text-wrap: balance; }
-.site p { margin: 0; }
+:where(.site) p { margin: 0; }
 .site :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
 .site code { font-family: var(--font-code); font-size: .9em; }
 .wrap { width: 100%; max-width: var(--wide); margin-inline: auto; padding-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px)); }

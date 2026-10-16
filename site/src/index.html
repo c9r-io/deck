@@ -28,37 +28,176 @@
   <meta name="twitter:image" content="{{SITE_URL}}/assets/og.png">
   <link rel="stylesheet" href="/assets/site.css">
 </head>
-<body>
+<body class="site">
 <a class="skip-link" href="#main">Skip to content</a>
-<header class="site-header"><nav class="shell nav" aria-label="Main navigation"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">▦</span><span>deck</span></a><div class="nav-links"><a class="guide-link" href="/guide/">Guide</a><a href="#capabilities">Features</a><a href="{{GITHUB_URL}}">GitHub</a><a class="language-link" href="/zh/" lang="zh-Hans">中文</a><a class="button primary" href="{{DOWNLOAD_URL}}">Download {{RELEASE_LABEL}}</a></div></nav></header>
+<div class="topbar wrap"><nav class="pillnav" aria-label="Main navigation"><a class="logo" href="/"><span class="logo-mark" aria-hidden="true"><i class="c-run"></i><i class="c-quiet"></i><i class="c-done"></i><i class="c-stop"></i></span>deck</a><a class="push" href="/guide/">Guide</a><a class="opt" href="#who">How it works</a><a class="opt" href="{{GITHUB_URL}}">GitHub</a><a href="/zh/" lang="zh-Hans">中文</a><a class="btn btn-primary" href="{{DOWNLOAD_URL}}">Download</a></nav></div>
 <main id="main">
-<section class="shell hero" aria-labelledby="hero-title">
-<div><p class="eyebrow">Native macOS · Apple Silicon</p><h1 id="hero-title">Run several things at once.<br><span class="accent">Know what needs you.</span></h1><p class="hero-copy">Run Claude Code, Codex, shells and scripts in real local terminal sessions. deck brings reported input requests and unread turn endings across your work into one place, so you can spend less time checking every terminal.</p><div class="hero-actions"><a class="button primary" href="{{DOWNLOAD_URL}}">Download {{RELEASE_LABEL}}</a><a class="button" href="/guide/start/">Quick start</a></div><p class="hero-note">Your tools keep running in local tmux sessions, even when deck is closed. No deck cloud account or hosted task server.</p></div>
-<figure class="attention-example"><div class="example-heading"><span class="brand">▦ deck</span><span>Needs attention</span></div><div class="example-body"><p class="example-scope">All projects</p><div class="attention-example-row"><span class="status-word">Input requested</span><strong>Review the migration</strong><span>Atlas / Next up</span><p>An input request was reported. Open the terminal to read it.</p></div><div class="attention-example-row"><span class="status-word done">Turn ended · unread</span><strong>Investigate failing tests</strong><span>Harbor / Working</span><p>The turn ended. Read the result and decide what follows.</p></div><p class="example-note">Follow a card manually, too. Board groups stay where you put them; a turn ending is not task completion.</p></div><figcaption>Signal example · fictional tasks, simplified layout. Explicit reports require the matching agent integration.</figcaption></figure>
+<section class="hero-wall under-nav" aria-labelledby="hero-title">
+<div class="wrap">
+<div class="hero-copy2">
+<h1 id="hero-title" class="display">Ten sessions. <span class="hl">One of them needs you.</span></h1>
+<p class="lede2">deck puts every terminal session on your Mac on one Board. Each card shows a status word, not a wall of output. When an agent reports through deck's status integration that it needs input, that card stands out. Open it to read the terminal.</p>
+<div class="cta2"><a class="btn btn-primary" href="{{DOWNLOAD_URL}}">Download {{RELEASE_LABEL}}</a><a class="textlink" href="#demo">Watch the 26-second demo</a></div>
+<p class="meta2">Native macOS · Apple Silicon · signed &amp; notarized · MIT</p>
+</div>
+<p class="wall-note">Example Board with fictional tasks: ten sessions, one of which reports “Input requested”.</p>
+<div class="wall" aria-hidden="true">
+<div class="tile"><div class="tile-top"><span class="dot live c-run"></span><strong>Refactor scheduler</strong></div><div class="tile-cmd">$ claude · ~/deck</div><div class="tile-st">Agent working</div></div>
+<div class="tile"><div class="tile-top"><span class="dot c-run"></span><strong>API logs</strong></div><div class="tile-cmd">$ tail -f api.log · ~/atlas</div><div class="tile-st">Recent output · no valid agent state</div></div>
+<div class="tile hot"><div class="tile-top"><span class="dot"></span><strong>Review the migration</strong><span class="badge2">Input requested</span></div><div class="tile-cmd">$ claude · ~/atlas</div><div class="tile-st">Input requested</div></div>
+<div class="tile"><div class="tile-top"><span class="dot c-quiet"></span><strong>Dev server</strong></div><div class="tile-cmd">$ npm run dev · ~/lighthouse</div><div class="tile-st">Quiet · no valid agent state</div></div>
+<div class="tile soft"><div class="tile-top"><span class="dot c-done"></span><strong>Investigate failing tests</strong><span class="badge2">Turn ended, unread</span></div><div class="tile-cmd">$ codex --no-daemon · ~/harbor</div><div class="tile-st">Turn ended · unread</div></div>
+<div class="tile t-wide"><div class="tile-top"><span class="dot c-stop"></span><strong>Nightly build</strong></div><div class="tile-cmd">$ ./build.sh · ~/ops</div><div class="tile-st">Stopped</div></div>
+<div class="tile t-mid"><div class="tile-top"><span class="dot live c-run"></span><strong>Docs pass</strong></div><div class="tile-cmd">$ claude · ~/lighthouse</div><div class="tile-st">Agent working</div></div>
+<div class="tile t-wide"><div class="tile-top"><span class="dot c-run"></span><strong>Clock</strong></div><div class="tile-cmd">$ while true; do date; sleep 1; done</div><div class="tile-st">Recent output · no valid agent state</div></div>
+<div class="tile t-wide"><div class="tile-top"><span class="dot c-quiet"></span><strong>Dev database</strong></div><div class="tile-cmd">$ psql atlas_dev · ~/atlas</div><div class="tile-st">Quiet · no valid agent state</div></div>
+<div class="tile t-wide"><div class="tile-top"><span class="dot live c-run"></span><strong>Release notes</strong></div><div class="tile-cmd">$ codex --no-daemon · ~/deck</div><div class="tile-st">Agent working</div></div>
+</div>
+</div>
 </section>
-<div class="shell proof-strip"><div class="proof"><strong>Persistent sessions</strong><span>Continue beyond the app</span></div><div class="proof"><strong>Your existing CLI</strong><span>Claude Code, Codex and more</span></div><div class="proof"><strong>Runs locally</strong><span>No cloud account or server to set up</span></div><div class="proof"><strong>Signed & notarized</strong><span>Apple Silicon · MIT</span></div></div>
-<section class="shell section" aria-labelledby="why-title"><div class="section-head"><p class="eyebrow">Why deck exists</p><h2 id="why-title">Stop patrolling every terminal.</h2><p>Several independent pieces of work can be running while you do something else. Without one place to check, you switch tabs to find a question, a result worth reading, or a task you meant to revisit. deck gathers the attention you can actually observe across projects, while each Agent or program continues its own work.</p></div><div class="feature-grid"><article class="feature"><span class="feature-number">Each Agent or CLI</span><h3>Owns its work</h3><p>Claude Code, Codex and other tools handle their own planning, execution, questions and permissions. They provide useful status when their integrations support it.</p></article><article class="feature"><span class="feature-number">deck</span><h3>Helps you choose where to look</h3><p>Needs attention collects supported reports and your manual follow-ups across sessions. deck does not infer task meaning, decide success or move cards based on a guess.</p></article></div></section>
-<section class="shell section demo" id="demo" aria-labelledby="demo-title">
-  <div class="section-head">
-    <p class="eyebrow">A real 26-second demo</p>
-    <h2 id="demo-title">The right session comes back into view.</h2>
-    <p id="demo-summary">Several Agent sessions are running. Needs attention brings one reported input request into view; open the right terminal, respond, review the next result, then return to the wider work.</p>
-  </div>
-  <figure class="demo-player">
-    <video controls playsinline preload="none" width="1600" height="1110" poster="/assets/demo/deck-0.6.6-poster.jpg" aria-label="Deck in use: a 26-second silent recording with Chinese captions" aria-describedby="demo-summary demo-note">
-      <source src="/assets/demo/deck-0.6.6-26s.mp4" type="video/mp4">
-      Your browser does not support embedded video. <a href="/assets/demo/deck-0.6.6-26s.mp4">Open the MP4 demo</a>.
-    </video>
-    <figcaption id="demo-note">Recorded in deck 0.6.6 (an earlier version) with example tasks and Claude Code status integration enabled. Chinese interface and captions, no audio; waiting time has been cut. <a href="/assets/demo/deck-0.6.6-26s.mp4">Open video ↗</a></figcaption>
-  </figure>
+
+<section class="band2" aria-labelledby="facts-title">
+<div class="wrap">
+<div class="shead"><h2 id="facts-title" class="display">The other nine keep running. You don't have to read them.</h2><p>Several pieces of work can run while you do something else. Without one place to look, you switch tabs to find a question, a result worth reading, or a task you meant to revisit.</p></div>
+<div class="facts2">
+<div class="fact2"><h3><span class="sq c-run"></span>Real sessions</h3><p>Each card is a local terminal session running your own CLI. tmux is bundled, and sessions keep running when deck closes.</p></div>
+<div class="fact2"><h3><span class="sq c-quiet"></span>Reported, not guessed</h3><p>With the matching integration on, Claude Code and Codex (started with <code>--no-daemon</code>) report input requests and turn endings. Without a report, deck only says a session is quiet or has recent output.</p></div>
+<div class="fact2"><h3><span class="sq c-stop"></span>You place the cards</h3><p>Arrange sessions by project and group. Status changes never move a card.</p></div>
+</div>
+</div>
 </section>
-<section class="shell section" id="capabilities"><div class="section-head"><p class="eyebrow">The foundation</p><h2>Your tools keep their own work.</h2><p>Each card is a real local terminal session. Use the Agent or CLI you already prefer; deck organizes your view of the work and routes supported attention signals across it.</p></div><div class="feature-grid journey-grid"><article class="feature"><span class="feature-number">01 · Local sessions</span><h3>Open a session</h3><p>Run shell commands, scripts, automations or installed CLIs such as Claude Code and Codex normally. tmux is bundled, and sessions continue when deck closes.</p><a class="text-link" href="/guide/start/">Getting started →</a></article><article class="feature"><span class="feature-number">02 · Your Board</span><h3>Group your sessions</h3><p>Arrange sessions by project and group, give cards recognizable names, and click one to return to its terminal. Cards stay where you put them; status changes do not move them.</p><a class="text-link" href="/guide/start/">Using the board →</a></article><article class="feature"><span class="feature-number">03 · Attention</span><h3>See what needs you</h3><p>With a matching Agent integration enabled, Needs attention gathers reported input requests and unread turn endings across projects. A manual follow-up can keep other work in view, and a terminal bell in a session without agent status or a list delivery waiting for you appears there without any integration. Missing signals are not proof that all work is done; read the result to judge success.</p><a class="text-link" href="/guide/attention/">Understanding status →</a></article></div></section>
-<section class="shell section" aria-labelledby="boundary-title"><div class="boundary"><div><p class="eyebrow">Product boundary</p><h2 id="boundary-title">deck is not another Agent.</h2><p class="hero-copy">Many tools help you run more agents in parallel. deck goes the other way: agents already manage their own work and keep getting better at it. The scarce resource is your attention across all of it, so that is what deck manages. It supplies no model or AI account, and works the same with a plain shell.</p></div><div class="boundary-list"><div class="boundary-item"><strong>No worktrees, branches or PRs</strong><span>Your agent handles its repository workflow; deck never touches your code.</span></div><div class="boundary-item"><strong>No agent orchestration</strong><span>No headless runs, agent pools, task planning or permission auto-approval.</span></div><div class="boundary-item"><strong>No judging success</strong><span>deck relays what an agent reported. Whether the work is done is yours to read and decide.</span></div><div class="boundary-item"><strong>No automatic Board</strong><span>Nothing moves a card from status or a guess about what a task means.</span></div></div></div></section>
-<section class="shell section"><div class="boundary"><div><p class="eyebrow">Optional coordination</p><h2>Spend less attention on repeated follow-up.</h2><p class="hero-copy">Start known work from a saved template, schedule prompts, or use a Slack reaction to start a session. Lists can send already arranged follow-ups when their conditions hold, with optional human inspection after each step. The Agent still decides how the work proceeds.</p><a class="text-link" href="/guide/prompts/">Read delivery and inspection states →</a></div><div class="boundary-list"><div class="boundary-item"><strong>Quiet is not ready</strong><span>No output alone cannot tell you whether a program can accept the next prompt.</span></div><div class="boundary-item"><strong>Sent is not completed</strong><span>Delivery, a turn ending and your inspection are separate facts.</span></div><div class="boundary-item"><strong>App must be running</strong><span>Lists and automation triggers need deck running, even when their terminal panes are closed.</span></div></div></div></section>
-<section class="shell section supporting"><div class="section-head"><h2>Useful controls when you need them</h2><p>View terminals in split panes, accept command suggestions, or speak directly into the selected terminal with on-device recognition; Deck never presses Enter for you. Templates, clock triggers and Slack reaction triggers are also available when useful.</p></div><a class="text-link" href="/guide/input-and-settings/">Explore input and controls →</a> <a class="text-link" href="/guide/automations/">Reuse templates and automations →</a></section>
-<section class="shell section" aria-labelledby="integrations-title"><div class="section-head"><p class="eyebrow">Optional integrations</p><h2 id="integrations-title">Choose how other tools reach your work.</h2><p>The pinned 0.7.26 guide documents card scratchpads, scoped Slack channel monitoring, an optional Phone Connector and locally authorized MCP access. Each connection has its own setup and boundaries; ordinary terminal use needs none of them.</p></div><div class="feature-grid journey-grid"><article class="feature"><h3>Collect context</h3><p>Keep notes on a card. A Slack channel rule can collect matching messages, while its saved template controls what gets queued for the agent.</p></article><article class="feature"><h3>Use a paired phone</h3><p>On a reachable private network, an authorized iOS companion can work with eligible agent cards and saved task presets.</p></article><article class="feature"><h3>Connect MCP clients</h3><p>Authorize one Deck project and root at a time. Command execution still needs a separate approval on the Mac; hosted ChatGPT can use the optional Secure Tunnel path.</p></article></div><p><a class="text-link" href="/guide/integrations/">Compare optional integrations →</a> <a class="text-link" href="/docs/integrations/chatgpt-secure-tunnel/">Connect ChatGPT →</a></p></section>
-<section class="privacy-band" id="privacy"><div class="shell section privacy-grid"><div><p class="eyebrow">Local application</p><h2>Local work, without a deck cloud workspace.</h2><p class="hero-copy">deck has no cloud service, cloud account or remote server hosting your tasks. Sessions and app data live on your Mac. Your CLI may contact its own model provider. Optional Slack, Phone Connector and Secure Tunnel integrations use their named services or private network; optional Local Translation downloads its language pack from Mozilla once you confirm; update checks connect to GitHub.</p><a class="text-link" href="/privacy/">Read the privacy details →</a></div><div class="privacy-points"><div class="privacy-point"><strong>No deck account</strong><span>No cloud workspace or sign-in.</span></div><div class="privacy-point"><strong>On-device voice</strong><span>No cloud speech fallback.</span></div><div class="privacy-point"><strong>Local data</strong><span>State in ~/.deck; tokens in Keychain.</span></div><div class="privacy-point"><strong>MIT licensed</strong><span>Read and audit the source.</span></div></div></div></section>
-<section class="shell install" id="download"><p class="eyebrow">Download</p><h2>Install deck</h2><p>Download the DMG, drag deck to Applications and open a session. The guide covers everyday terminal use and the optional features.</p><p>deck is for people with enough parallel terminal work that checking every session has become work of its own.</p><p>If that sounds familiar, give it a try.</p><div class="hero-actions centered"><a class="button primary" href="{{DOWNLOAD_URL}}">Download {{RELEASE_LABEL}}</a><a class="button" href="/guide/">Open the guide</a></div></section>
-<section class="shell section faq" id="faq"><div><h2>Common questions</h2></div><div class="faq-list"><article class="faq-item"><h3>Do I need to keep deck running?</h3><p>The app must be running for lists to deliver and automations to start. Sessions in private tmux survive quitting the app; a machine or service restart ends their processes.</p><a class="text-link" href="/guide/sessions/">Read the guide →</a></article><article class="faq-item"><h3>Does quiet mean the agent is ready?</h3><p>Without a valid agent report, amber means the session has been quiet. Quiet is not ready. Enable the matching Claude Code or Codex status integration for explicit reports. Codex reports reach deck only from a session started with <code>codex --no-daemon</code>; on its default shared background service deck shows no Codex status. A turn ending still does not prove task success.</p><a class="text-link" href="/guide/attention/">Read the guide →</a></article><article class="faq-item"><h3>Will opening a result let the next prompt run?</h3><p>Opening marks a reported turn ending as viewed. A list with human inspection enabled waits for your explicit confirmation, and then still checks its time and target conditions.</p><a class="text-link" href="/guide/prompts/">Read the guide →</a></article><article class="faq-item"><h3>Are agent CLIs included?</h3><p>tmux is included. Install and configure your own agent CLI, or use any interactive command that works in a macOS terminal. Agent accounts and model access are managed by those tools.</p><a class="text-link" href="/guide/start/">Read the guide →</a></article></div></section>
-</main><footer class="site-footer"><div class="shell footer"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">▦</span><span>deck</span></a><span>Attention across local terminal work.</span><div class="footer-links"><a href="/guide/">Guide</a><a href="{{GITHUB_URL}}">GitHub</a><a href="/privacy/">Privacy</a><a href="{{FEEDBACK_URL}}">Feedback</a><a href="{{LICENSE_URL}}">MIT</a></div></div></footer>
+
+<section class="band2" id="demo" aria-labelledby="demo-title">
+<div class="wrap">
+<div class="shead"><p class="kicker">A real 26-second recording</p><h2 id="demo-title" class="display">The right session comes back into view.</h2><p id="demo-summary">Several Agent sessions are running. Needs attention brings one input request into view; open the right terminal, respond, read the next result, then go back to the rest of the work.</p></div>
+<div class="rec">
+<video controls playsinline preload="none" width="1600" height="1110" poster="/assets/demo/deck-0.6.6-poster.jpg" aria-label="Deck in use: a 26-second silent recording with Chinese captions" aria-describedby="demo-summary demo-note">
+<source src="/assets/demo/deck-0.6.6-26s.mp4" type="video/mp4">
+Your browser does not support embedded video. <a href="/assets/demo/deck-0.6.6-26s.mp4">Open the MP4 demo</a>.
+</video>
+<div class="rec-side">
+<ol>
+<li>Needs attention lists one input request and two unread turn endings.</li>
+<li>Open the session that is waiting and answer it.</li>
+<li>Read the results that ended unread.</li>
+<li>Go back to the Board.</li>
+</ol>
+<p class="cap" id="demo-note">Recorded in deck 0.6.6 (an earlier version) with example tasks and Claude Code status integration enabled. Chinese interface and captions, no audio; waiting time has been cut. Some labels have changed since. <a class="textlink" href="/assets/demo/deck-0.6.6-26s.mp4">Open video ↗</a></p>
+</div>
+</div>
+</div>
+</section>
+
+<section class="band2" id="who" aria-labelledby="who-title">
+<div class="wrap">
+<div class="shead"><p class="kicker">Who does what</p><h2 id="who-title" class="display">Your agent owns the work. deck watches where your attention goes.</h2><p>Agents already manage their own work and keep getting better at it. What gets scarce is your attention across all of them, so that is the part deck handles. It supplies no model or AI account, and works the same with a plain shell.</p></div>
+<div class="who-wrap" tabindex="0" role="region" aria-label="Who does what">
+<table class="who">
+<thead><tr><th scope="col">Job</th><th scope="col" class="o">Your agent</th><th scope="col" class="o">You</th><th scope="col" class="o d">deck</th></tr></thead>
+<tbody>
+<tr><td>Plan the task, run tools, ask questions and permissions</td><td class="o"><span role="img" aria-label="yes"></span></td><td class="o"></td><td class="o d"></td></tr>
+<tr><td>Branches, worktrees and pull requests</td><td class="o"><span role="img" aria-label="yes"></span></td><td class="o"></td><td class="o d"></td></tr>
+<tr><td>Answer an input request</td><td class="o"></td><td class="o"><span role="img" aria-label="yes"></span></td><td class="o d"></td></tr>
+<tr><td>Decide whether the work succeeded</td><td class="o"></td><td class="o"><span role="img" aria-label="yes"></span></td><td class="o d"></td></tr>
+<tr><td>Place cards and groups on the Board</td><td class="o"></td><td class="o"><span role="img" aria-label="yes"></span></td><td class="o d"></td></tr>
+<tr><td>Keep each session running in local tmux</td><td class="o"></td><td class="o"></td><td class="o d"><span role="img" aria-label="yes"></span></td></tr>
+<tr><td>Gather reported input requests and unread turn endings across projects</td><td class="o"></td><td class="o"></td><td class="o d"><span role="img" aria-label="yes"></span></td></tr>
+<tr><td>Notify you while you're away, if you turn it on</td><td class="o"></td><td class="o"></td><td class="o d"><span role="img" aria-label="yes"></span></td></tr>
+</tbody>
+</table>
+</div>
+<p class="who-note">deck runs no headless agents, agent pools or task planning, never touches your repository, and never approves a permission for you.</p>
+</div>
+</section>
+
+<section class="teaser-band" aria-labelledby="attn-title">
+<div class="wrap">
+<div class="shead"><p class="kicker">Needs attention</p><h2 id="attn-title" class="display">One list across every project.</h2><p>Input requests come first, then waiting list deliveries, terminal bells nobody has looked at and unread turn endings, then cards you starred to follow. Each row names its project, group and every reason it is there.</p></div>
+<div class="fboard teaser" role="img" aria-label="Example Needs attention list with three fictional sessions">
+<div class="fscroll">
+<div class="frow h"><span>Session</span><span>Project / group</span><span>Reason</span><span>Viewing record</span></div>
+<div class="frow"><div class="fcell">Review migration</div><div class="fcell dim">Atlas <small>/ Next up</small></div><div class="fcell input lc">Input requested</div><div class="fcell dim lc">Not yet viewed</div></div>
+<div class="frow"><div class="fcell">Failing tests</div><div class="fcell dim">Harbor <small>/ Working</small></div><div class="fcell done lc">Turn ended · unread</div><div class="fcell dim lc">Not yet viewed</div></div>
+<div class="frow"><div class="fcell">Nightly follow-up</div><div class="fcell dim">Ops <small>/ Later</small></div><div class="fcell dim lc">Followed · Agent working</div><div class="fcell dim lc">Viewed · not necessarily handled</div></div>
+</div>
+</div>
+<div class="teaser-foot"><span>Away from the window? Turn on away notifications and the Dock icon counts what is waiting.</span><a class="textlink" href="/guide/attention/">How Needs attention works →</a></div>
+</div>
+</section>
+
+<section class="band2" aria-labelledby="auto-title">
+<div class="wrap split2">
+<div class="prose2">
+<p class="kicker">Optional coordination</p>
+<h2 id="auto-title" class="display">Less attention spent on follow-up.</h2>
+<p>Start known work from a saved template, schedule prompts, or use a Slack reaction to start a session. Lists send follow-ups you already arranged when their conditions hold, with optional human inspection after each step.</p>
+<p>The Agent still decides how the work proceeds.</p>
+<a class="textlink" href="/guide/prompts/">Read delivery and inspection states →</a>
+</div>
+<div class="truths2">
+<div class="truth2"><b>Quiet is not ready.</b><span>No output alone cannot tell you whether a program can take the next prompt.</span></div>
+<div class="truth2"><b>Sent is not completed.</b><span>Delivery, a turn ending and your inspection are separate facts.</span></div>
+<div class="truth2"><b>The app must be running.</b><span>Lists and automation triggers need deck open, even when their terminal panes are closed.</span></div>
+</div>
+</div>
+</section>
+
+<section class="band2" aria-labelledby="more-title">
+<div class="wrap">
+<div class="shead"><h2 id="more-title" class="display">Useful when you need them.</h2><p>Nothing here is required for ordinary terminal use. Each integration has its own setup and limits.</p></div>
+<div class="catalog">
+<div><h3>In the app</h3><ul>
+<li><b>Split panes</b><span>View several terminals side by side.</span></li>
+<li><b>Voice input</b><span>Speak into the selected terminal with on-device recognition. deck never presses Enter for you.</span></li>
+<li><b>Templates and clock triggers</b><span>Start repeated work the same way every time.</span></li>
+<li><b>Card scratchpads</b><span>Keep notes with the session they belong to.</span></li>
+<li><b>Local translation</b><span>Translate English terminal text into Simplified Chinese on your Mac. Off by default; the language pack downloads once, after you confirm.</span></li>
+</ul></div>
+<div><h3>Other tools</h3><ul>
+<li><b>Slack</b><span>A channel rule collects matching messages; its saved template decides what gets queued.</span></li>
+<li><b>Phone Connector</b><span>On a private network, an authorized iOS companion can work with eligible agent cards and saved task presets.</span></li>
+<li><b>MCP clients</b><span>Authorize one project and root at a time. Commands still need approval on the Mac.</span></li>
+<li><b>ChatGPT</b><span>Hosted ChatGPT can connect through the optional Secure Tunnel.</span></li>
+</ul></div>
+</div>
+<div class="linkrow"><a class="textlink" href="/guide/input-and-settings/">Input and controls →</a><a class="textlink" href="/guide/integrations/">Compare integrations →</a><a class="textlink" href="/docs/integrations/chatgpt-secure-tunnel/">Connect ChatGPT →</a></div>
+</div>
+</section>
+
+<section class="band2 alt" id="privacy" aria-labelledby="local-title">
+<div class="wrap">
+<div class="shead"><p class="kicker">Local application</p><h2 id="local-title" class="display">Your work stays on your Mac.</h2><p>deck has no cloud service, account or server hosting your tasks. Your CLI may contact its own model provider. Slack, the Phone Connector and the Secure Tunnel use their named services or your private network. Local translation downloads its language pack from Mozilla after you confirm; update checks go to GitHub.</p></div>
+<div class="points2">
+<div class="point2"><b>No deck account</b><span>No sign-in, no cloud workspace.</span></div>
+<div class="point2"><b>On-device voice</b><span>No cloud speech fallback.</span></div>
+<div class="point2"><b>Local data</b><span>State in <code>~/.deck</code>, tokens in Keychain.</span></div>
+<div class="point2"><b>MIT licensed</b><span>Read and audit the source.</span></div>
+</div>
+<div class="linkrow"><a class="textlink" href="/privacy/">Privacy details →</a></div>
+</div>
+</section>
+
+<section class="band2" id="download" aria-labelledby="dl-title">
+<div class="wrap get">
+<div><h2 id="dl-title" class="display">For when checking every session has become work of its own.</h2><p>deck is for people with enough parallel terminal work that patrolling it costs real attention. If that sounds familiar, give it a try.</p></div>
+<div>
+<div class="steps3"><div>Download the DMG.</div><div>Drag deck to Applications.</div><div>Open a session and run the CLI you already use.</div></div>
+<div class="cta2"><a class="btn btn-primary" href="{{DOWNLOAD_URL}}">Download {{RELEASE_LABEL}}</a><a class="btn btn-line" href="/guide/start/">Quick start</a></div>
+</div>
+</div>
+</section>
+
+<section class="band2" id="faq" aria-labelledby="faq-title">
+<div class="wrap qa">
+<h2 id="faq-title" class="display">Common questions</h2>
+<div>
+<details><summary>Do I need to keep deck running?</summary><p>The app must be running for lists to deliver and automations to start. Sessions in private tmux survive quitting the app; a machine or service restart ends their processes. <a class="textlink" href="/guide/sessions/">Leave, close and recover →</a></p></details>
+<details><summary>Does quiet mean the agent is ready?</summary><p>No. Without a valid agent report, amber means the session has been quiet. Quiet is not ready. Enable the matching Claude Code or Codex status integration for explicit reports; Codex reports reach deck only from a session started with <code>codex --no-daemon</code>. A turn ending still does not prove task success. <a class="textlink" href="/guide/attention/">Read each signal →</a></p></details>
+<details><summary>Will opening a result let the next prompt run?</summary><p>Opening marks a reported turn ending as viewed. A list with human inspection enabled waits for your explicit confirmation, and then still checks its time and target conditions. <a class="textlink" href="/guide/prompts/">Arrange follow-up input →</a></p></details>
+<details><summary>Are agent CLIs included?</summary><p>tmux is included. Install and configure your own agent CLI, or use any interactive command that works in a macOS terminal. Agent accounts and model access are managed by those tools. <a class="textlink" href="/guide/start/">Start your first task →</a></p></details>
+</div>
+</div>
+</section>
+</main>
+<footer class="foot2"><div class="wrap"><a class="logo" href="/"><span class="logo-mark" aria-hidden="true"><i class="c-run"></i><i class="c-quiet"></i><i class="c-done"></i><i class="c-stop"></i></span>deck</a><span>Attention across local terminal work.</span><span class="links"><a href="/guide/">Guide</a><a href="{{GITHUB_URL}}">GitHub</a><a href="/privacy/">Privacy</a><a href="{{FEEDBACK_URL}}">Feedback</a><a href="{{LICENSE_URL}}">MIT</a></span></div></footer>
 </body></html>
