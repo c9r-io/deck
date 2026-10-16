@@ -32,7 +32,19 @@ export function renderMarkdown(source) {
   const title = titles[0].text;
   const description = tokens.find(token => token.type === 'paragraph')?.text;
   if (!description) throw new Error('Each guide needs an introductory paragraph');
-  return { title, description, html: parser.parser(tokens), headings };
+  // The chapter opener shows the title and a leading paragraph; the article
+  // shows the rest. Render each token once, in order, so heading ids match.
+  const slice = list => Object.assign(list, { links: tokens.links });
+  const at = tokens.indexOf(titles[0]);
+  let next = at + 1;
+  while (tokens[next]?.type === 'space') next += 1;
+  const leading = at === tokens.findIndex(token => token.type !== 'space') && tokens[next]?.type === 'paragraph';
+  const before = parser.parser(slice(tokens.slice(0, at)));
+  const head = parser.parser(slice([titles[0]]));
+  const lede = leading ? new parser.Parser(parser.defaults).parseInline(tokens[next].tokens) : '';
+  const body = parser.parser(slice(tokens.slice(leading ? next + 1 : at + 1)));
+  const html = before + head + (leading ? `<p>${lede}</p>\n` : '') + body;
+  return { title, description, html, head, lede, body: before + body, headings };
 }
 
 export async function buildGuides(root, output, config) {
@@ -56,6 +68,10 @@ export async function buildGuides(root, output, config) {
       const toc = page.headings.map(item => `<a href="#${item.id}">${escapeHtml(item.text)}</a>`).join('');
       const previous = pages[index - 1];
       const next = pages[index + 1];
+      const board = page.slug === 'attention';
+      const fragment = async name => board ? readFile(path.join(root, 'content', locale, `attention.${name}.html`), 'utf8') : '';
+      const crumb = page.slug === 'secure-tunnel' ? zh ? '集成 / ChatGPT' : 'Integrations / ChatGPT' : `${zh ? '使用指南' : 'User guide'} / ${config.guideVersion}`;
+      const mark = '<span class="logo-mark" aria-hidden="true"><i class="c-run"></i><i class="c-quiet"></i><i class="c-done"></i><i class="c-stop"></i></span>';
       const html = `<!doctype html>
 <html lang="${zh ? 'zh-Hans' : 'en'}"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -68,16 +84,24 @@ ${cn ? `<link rel="alternate" hreflang="zh-Hans" href="${config.siteUrl}${cn}">`
 <link rel="alternate" hreflang="x-default" href="${config.siteUrl}${en}">
 <link rel="icon" href="/favicon.ico" sizes="32x32"><link rel="icon" href="/assets/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/assets/icon-180.png">
 <link rel="stylesheet" href="/assets/site.css">
-</head><body>
+</head><body class="site">
 <a class="skip-link" href="#main">${zh ? '跳到正文' : 'Skip to content'}</a>
-<header class="site-header"><nav class="shell nav" aria-label="${zh ? '主导航' : 'Main navigation'}"><a class="brand" href="${home}"><span class="brand-mark" aria-hidden="true">▦</span>deck</a><div class="nav-links"><a class="guide-link" href="${guidePath(locale, 'index')}">${zh ? '使用指南' : 'Guide'}</a><a href="${config.githubUrl}">GitHub</a><a class="language-link" href="${zh ? en : cn}" lang="${zh ? 'en' : 'zh-Hans'}">${zh ? 'EN' : '中文'}</a><a class="button primary" href="${page.slug === 'secure-tunnel' ? `${config.githubUrl}/releases` : config.downloadUrl}">${page.slug === 'secure-tunnel' ? zh ? 'Deck 发布版本' : 'Deck releases' : `${zh ? '下载' : 'Download'} ${config.guideVersion}`}</a></div></nav></header>
-<div class="shell guide-layout">
-<aside class="guide-sidebar"><details open><summary>${zh ? '使用指南' : 'User guide'}</summary><nav aria-label="${zh ? '指南章节' : 'Guide chapters'}">${nav}</nav></details>${integrations}${page.slug === 'secure-tunnel' ? '' : `<p class="guide-version">deck ${config.guideVersion} · ${zh ? '稳定版' : 'Stable'}</p>`}<a class="reference-link" href="${guidePath(locale, 'input-and-settings')}#${zh ? '更新与版本' : 'updates-and-versions'}">${zh ? '更新与版本' : 'Updates and versions'} ↗</a></aside>
-<main id="main" class="guide-article"><p class="eyebrow">${page.slug === 'secure-tunnel' ? zh ? '集成 / ChatGPT' : 'Integrations / ChatGPT' : `${zh ? '使用指南' : 'User guide'} / ${config.guideVersion}`}</p>${page.html}
-${page.slug === 'secure-tunnel' ? '' : `<nav class="chapter-pagination" aria-label="${zh ? '前后章节' : 'Previous and next chapters'}">${previous ? `<a href="${guidePath(locale, previous.slug)}"><span>${zh ? '上一章' : 'Previous'}</span>← ${escapeHtml(previous.title)}</a>` : '<span></span>'}${next ? `<a href="${guidePath(locale, next.slug)}"><span>${zh ? '下一章' : 'Next'}</span>${escapeHtml(next.title)} →</a>` : `<a href="${guidePath(locale, 'index')}">${zh ? '返回指南' : 'Back to the guide'} →</a>`}</nav>`}
-<p class="guide-source">${page.slug === 'secure-tunnel' ? `${zh ? '文档来源：' : 'Canonical source: '}<a href="${config.githubUrl}/blob/main/docs/${zh ? 'secure-tunnel.zh.md' : 'secure-tunnel.md'}">docs/secure-tunnel${zh ? '.zh' : ''}.md ↗</a>` : `${zh ? `适用于 deck ${config.guideVersion} 稳定版。技术说明：` : `For deck ${config.guideVersion} Stable. Technical reference: `}<a href="${config.githubUrl}/blob/${config.guideRef}/README.md">README ↗</a>`} · <a href="${config.feedbackUrl}">${zh ? '反馈问题' : 'Report an issue'}</a></p></main>
-<aside class="guide-toc"><nav aria-label="${zh ? '本页目录' : 'On this page'}"><p>${zh ? '本页内容' : 'On this page'}</p>${toc}</nav></aside>
-</div><footer class="site-footer"><div class="shell footer"><a class="brand" href="${home}">▦ deck</a><span>${zh ? '本地终端与 session 管理。' : 'Local terminals and session management.'}</span><div class="footer-links"><a href="${home}privacy/">${zh ? '隐私' : 'Privacy'}</a><a href="${config.githubUrl}">GitHub</a></div></div></footer>
+<div class="topbar wrap"><nav class="pillnav" aria-label="${zh ? '主导航' : 'Main navigation'}"><a class="logo" href="${home}">${mark}deck</a><a class="push" href="${guidePath(locale, 'index')}">${zh ? '使用指南' : 'Guide'}</a><a class="opt" href="${config.githubUrl}">GitHub</a><a class="language-link" href="${zh ? en : cn}" lang="${zh ? 'en' : 'zh-Hans'}">${zh ? 'EN' : '中文'}</a><a class="btn btn-primary" href="${page.slug === 'secure-tunnel' ? `${config.githubUrl}/releases` : config.downloadUrl}">${page.slug === 'secure-tunnel' ? zh ? 'Deck 发布版本' : 'Deck releases' : `${zh ? '下载' : 'Download'} ${config.guideVersion}`}</a></nav></div>
+<main id="main">
+<header class="opener under-nav${board ? ' board-opener' : ''}"><div class="wrap opener-in">
+<p class="crumb"><a href="${guidePath(locale, 'index')}">${crumb}</a></p>
+<div class="opener-head">${page.head}${page.lede ? `<p class="opener-lede">${page.lede}</p>` : ''}</div>
+${await fragment('board')}</div></header>
+${await fragment('notes')}
+<div class="wrap gshell">
+<aside class="gside"><details open><summary>${zh ? '使用指南' : 'User guide'}</summary><nav aria-label="${zh ? '指南章节' : 'Guide chapters'}">${nav}</nav></details>${integrations}${page.slug === 'secure-tunnel' ? '' : `<p class="ver">deck ${config.guideVersion} · ${zh ? '稳定版' : 'Stable'}</p>`}<a class="ref" href="${guidePath(locale, 'input-and-settings')}#${zh ? '更新与版本' : 'updates-and-versions'}">${zh ? '更新与版本' : 'Updates and versions'} ↗</a></aside>
+<article class="garticle${board ? ' board-chapter' : ''}">${page.body}
+${page.slug === 'secure-tunnel' ? '' : `<nav class="pager2" aria-label="${zh ? '前后章节' : 'Previous and next chapters'}">${previous ? `<a href="${guidePath(locale, previous.slug)}"><span>${zh ? '上一章' : 'Previous'}</span>← ${escapeHtml(previous.title)}</a>` : '<span></span>'}${next ? `<a href="${guidePath(locale, next.slug)}"><span>${zh ? '下一章' : 'Next'}</span>${escapeHtml(next.title)} →</a>` : `<a href="${guidePath(locale, 'index')}"><span>${zh ? '指南' : 'Guide'}</span>${zh ? '返回指南' : 'Back to the guide'} →</a>`}</nav>`}
+<p class="gsource">${page.slug === 'secure-tunnel' ? `${zh ? '文档来源：' : 'Canonical source: '}<a href="${config.githubUrl}/blob/main/docs/${zh ? 'secure-tunnel.zh.md' : 'secure-tunnel.md'}">docs/secure-tunnel${zh ? '.zh' : ''}.md ↗</a>` : `${zh ? `适用于 deck ${config.guideVersion} 稳定版。技术说明：` : `For deck ${config.guideVersion} Stable. Technical reference: `}<a href="${config.githubUrl}/blob/${config.guideRef}/README.md">README ↗</a>`} · <a href="${config.feedbackUrl}">${zh ? '反馈问题' : 'Report an issue'}</a></p></article>
+<aside class="gout"><nav aria-label="${zh ? '本页目录' : 'On this page'}"><p>${zh ? '本页内容' : 'On this page'}</p>${toc}</nav></aside>
+</div>
+</main>
+<footer class="foot2"><div class="wrap"><a class="logo" href="${home}">${mark}deck</a><span>${zh ? '跨任务关注，本地终端照常运行。' : 'Attention across local terminal work.'}</span><span class="links"><a href="${guidePath(locale, 'index')}">${zh ? '使用指南' : 'Guide'}</a><a href="${config.githubUrl}">GitHub</a><a href="${home}privacy/">${zh ? '隐私' : 'Privacy'}</a><a href="${config.feedbackUrl}">${zh ? '反馈' : 'Feedback'}</a></span></div></footer>
 </body></html>`;
       const folder = path.join(output, route);
       await mkdir(folder, { recursive: true });

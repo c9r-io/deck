@@ -203,7 +203,12 @@ async function pinnedDictionary(file) {
 const PINNED_LABELS = {
   attention: ['attention.input', 'attention.doneUnread', 'attention.working', 'attention.recent', 'attention.quiet',
     'attention.filter.waiting', 'attention.filter.followed', 'attention.filter.unavailable',
-    'signal.codex.unknown', 'signal.codex.unavailable', 'settings.notifyAway'],
+    'signal.codex.unknown', 'signal.codex.unavailable', 'settings.notifyAway',
+    'attention.filter.pending', 'attention.filter.input', 'attention.filter.done', 'attention.filter.stopped',
+    'attention.filter.reminder', 'attention.filter.reminders', 'attention.column.card', 'attention.column.origin',
+    'attention.column.reason', 'attention.column.viewing', 'attention.column.action', 'attention.notViewed',
+    'attention.viewed', 'attention.noSignalHint', 'attention.open', 'attention.doneRead', 'attention.waiting.review',
+    'attention.bell'],
   home: ['attention.input', 'attention.doneUnread', 'attention.working', 'attention.recent', 'attention.quiet',
     'attention.stopped', 'attention.filter.input', 'attention.filter.done', 'attention.filter.followed',
     'attention.column.card', 'attention.column.origin', 'attention.column.reason', 'attention.column.viewing',
