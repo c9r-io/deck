@@ -186,3 +186,46 @@ test('ChatGPT Secure Tunnel pages render both canonical repo guides with paired 
   assert.match(sitemap, /\/docs\/integrations\/chatgpt-secure-tunnel\//);
   assert.match(sitemap, /\/zh\/docs\/integrations\/chatgpt-secure-tunnel\//);
 });
+
+// The site documents one pinned release. Its labels are read from that
+// release's own locale files, so bumping guideRef without re-checking the
+// copy fails here instead of drifting. CI checks out full history for this.
+async function pinnedDictionary(file) {
+  let source;
+  try {
+    ({ stdout: source } = await exec('git', ['show', `${config.guideRef}:app/ui/js/i18n/${file}`], { cwd: root, maxBuffer: 16 << 20 }));
+  } catch (error) {
+    assert.fail(`cannot read ${file} at guideRef ${config.guideRef}; a shallow clone needs fetch-depth: 0 (${error.message})`);
+  }
+  return (await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)).default;
+}
+
+const PINNED_LABELS = {
+  attention: ['attention.input', 'attention.doneUnread', 'attention.working', 'attention.recent', 'attention.quiet',
+    'attention.filter.waiting', 'attention.filter.followed', 'attention.filter.unavailable',
+    'signal.codex.unknown', 'signal.codex.unavailable', 'settings.notifyAway'],
+  home: ['attention.input', 'attention.doneUnread'],
+};
+
+test('status words and labels quote the pinned release verbatim', async () => {
+  for (const [locale, file] of [['', 'en.js'], ['zh/', 'zh-Hans.js']]) {
+    const dictionary = await pinnedDictionary(file);
+    const pages = {
+      attention: await readFile(path.join(dist, `${locale}guide/attention/index.html`), 'utf8'),
+      home: await readFile(path.join(dist, `${locale}index.html`), 'utf8'),
+    };
+    for (const [page, keys] of Object.entries(PINNED_LABELS)) {
+      for (const key of keys) {
+        assert.equal(typeof dictionary[key], 'string', `${file} has no ${key} at guideRef`);
+        assert.ok(pages[page].includes(dictionary[key]), `${locale || 'en/'}${page} lacks “${dictionary[key]}” (${key})`);
+      }
+    }
+  }
+});
+
+test('site.css takes every colour from its :root tokens', async () => {
+  const css = await readFile(path.join(root, 'src/assets/site.css'), 'utf8');
+  const tokensEnd = css.indexOf('}', css.indexOf(':root {'));
+  assert.ok(tokensEnd > 0, 'site.css starts with its :root token block');
+  assert.deepEqual(css.slice(tokensEnd + 1).match(/#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(/gi) ?? [], []);
+});

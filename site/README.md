@@ -43,6 +43,9 @@ summary of the flow and a direct MP4 link.
 - Review the same facts in both languages when promoting a release. Check defaults,
   menu labels, signal semantics, failure actions and data compatibility against
   that exact release; older changelog entries are not current specifications.
+  Read the release itself: `git show <tag>:<path>` for code, module headers and
+  docs, and its `app/ui/js/i18n/en.js` / `zh-Hans.js` for every quoted label.
+  `git log <tag>..main` lists what is not in it yet; leave that off the site.
 - Write Chinese from the reader's actual situation, independently of English
   sentence structure and headings. Prefer concrete actions and complete sentences
   over engineering shorthand or slogans that tell the reader how to feel. Keep
@@ -70,8 +73,37 @@ summary of the flow and a direct MP4 link.
   Existing social-preview art remains unchanged.
 - `npm test` builds and checks all public HTML routes, local links and fragments,
   locale/version metadata, static-site privacy constraints and Markdown headings.
+  It also reads the locale files at `guideRef` and requires the status words
+  and labels in `PINNED_LABELS` verbatim on the attention chapter and homepage,
+  so bumping the pinned release without re-checking the copy fails; and it
+  requires every colour in `site.css` to come from the `:root` tokens.
 - Before publishing, verify the labeled Stable version is actually published.
   The website is deployed separately from application release promotion.
+
+## Visual design
+
+These rules keep the site consistent with the product it describes.
+
+- **Colour comes from the `:root` tokens in `assets/site.css`** and nowhere else.
+  Teal (`--accent`) marks actions and links. Amber (`--amber`) means "look
+  here": the product's status colour for an input request or a quiet session,
+  and caution notes such as product boundaries and guide callouts. Do not use
+  it for buttons or plain decoration. Green, amber, teal and grey are the app
+  icon's status colours. A translucent variant derives from its token with
+  `color-mix(in srgb, var(--token) N%, transparent)`; a new hue needs a new
+  token and a reason.
+- **Product pictures show the pinned release as it is.** A Board card has a
+  status dot, title, `$ command · directory` and one status word; it never
+  shows terminal output. Status words, filters and column headings are the
+  release's strings. Example tasks are fictional and labeled as examples.
+- **Static and quiet.** No runtime JavaScript, analytics, third-party fonts or
+  remote assets. Motion is CSS only, small, and stops under
+  `prefers-reduced-motion`.
+- **Pictures come from the product's own objects** (the wall of cards, the
+  Needs attention list) rather than generic landing-page devices: decorative
+  glows, numbered markers that do not encode a real sequence, or an eyebrow
+  label on every section. This is the direction for the planned homepage and
+  guide redesign; the current pages predate it.
 
 Do not publish directly from a developer shell. The reviewed external path is
 the manual `site-deploy` GitHub Actions workflow after the Cloudflare handoff in
