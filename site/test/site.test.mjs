@@ -204,7 +204,10 @@ const PINNED_LABELS = {
   attention: ['attention.input', 'attention.doneUnread', 'attention.working', 'attention.recent', 'attention.quiet',
     'attention.filter.waiting', 'attention.filter.followed', 'attention.filter.unavailable',
     'signal.codex.unknown', 'signal.codex.unavailable', 'settings.notifyAway'],
-  home: ['attention.input', 'attention.doneUnread'],
+  home: ['attention.input', 'attention.doneUnread', 'attention.working', 'attention.recent', 'attention.quiet',
+    'attention.stopped', 'attention.filter.input', 'attention.filter.done', 'attention.filter.followed',
+    'attention.column.card', 'attention.column.origin', 'attention.column.reason', 'attention.column.viewing',
+    'attention.notViewed', 'attention.viewed'],
 };
 
 test('status words and labels quote the pinned release verbatim', async () => {
