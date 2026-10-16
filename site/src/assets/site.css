@@ -221,9 +221,8 @@ html:lang(zh-Hans) .truth2 b { letter-spacing: 0; }
 .frow { display: grid; grid-template-columns: var(--fcols); gap: 6px; margin-bottom: 6px; min-width: var(--fmin, 760px); }
 .frow.h { font-family: var(--font-flap); font-size: 12px; letter-spacing: .14em; text-transform: var(--flap-case); color: var(--accent); margin-bottom: 8px; }
 .frow.h span { padding: 0 10px; }
-.fcell { position: relative; background: linear-gradient(var(--raised) 0 50%, var(--panel) 50% 100%); border-radius: 3px; padding: 7px 10px; font-family: var(--font-flap); font-weight: 600; font-size: 18px; letter-spacing: .05em; text-transform: var(--flap-case); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.25; color: var(--text); }
+.fcell { position: relative; background: var(--panel); border-radius: 3px; padding: 7px 10px; font-family: var(--font-flap); font-weight: 600; font-size: 18px; letter-spacing: .05em; text-transform: var(--flap-case); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.25; color: var(--text); }
 html:lang(zh-Hans) .fcell { font-size: 15px; letter-spacing: 0; font-weight: 500; }
-.fcell::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--shadow); opacity: .7; }
 .fcell small { font-size: .8em; color: var(--faint); }
 .fcell.lc { text-transform: none; letter-spacing: .02em; }
 .fcell.dim { color: var(--muted); } .fcell.input { color: var(--amber); } .fcell.done { color: var(--accent); } .fcell.act { color: var(--accent); font-size: 15px; }
