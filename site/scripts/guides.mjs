@@ -83,7 +83,7 @@ export async function buildGuides(root, output, config) {
 ${cn ? `<link rel="alternate" hreflang="zh-Hans" href="${config.siteUrl}${cn}">` : ''}
 <link rel="alternate" hreflang="x-default" href="${config.siteUrl}${en}">
 <link rel="icon" href="/favicon.ico" sizes="32x32"><link rel="icon" href="/assets/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/assets/icon-180.png">
-<link rel="stylesheet" href="/assets/site.css">
+<link rel="stylesheet" href="/assets/site.css?v=880f34f06c24">
 </head><body class="site">
 <a class="skip-link" href="#main">${zh ? '跳到正文' : 'Skip to content'}</a>
 <div class="topbar wrap"><nav class="pillnav" aria-label="${zh ? '主导航' : 'Main navigation'}"><a class="logo" href="${home}">${mark}deck</a><a class="push" href="${guidePath(locale, 'index')}">${zh ? '使用指南' : 'Guide'}</a><a class="opt" href="${config.githubUrl}">GitHub</a><a class="language-link" href="${zh ? en : cn}" lang="${zh ? 'en' : 'zh-Hans'}">${zh ? 'EN' : '中文'}</a><a class="btn btn-primary" href="${page.slug === 'secure-tunnel' ? `${config.githubUrl}/releases` : config.downloadUrl}">${page.slug === 'secure-tunnel' ? zh ? 'Deck 发布版本' : 'Deck releases' : `${zh ? '下载' : 'Download'} ${config.guideVersion}`}</a></nav></div>

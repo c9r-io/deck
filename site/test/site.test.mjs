@@ -27,13 +27,14 @@ async function htmlRoutes(folder, prefix = '') {
 }
 const routes = await htmlRoutes(dist);
 
-test('homepage stylesheet URLs are versioned by the CSS content they load', async () => {
+test('homepage and generated guide stylesheet URLs are versioned by the CSS content they load', async () => {
   const css = await readFile(path.join(dist, 'assets/site.css'));
   const version = createHash('sha256').update(css).digest('hex').slice(0, 12);
-  for (const locale of ['', 'zh/']) {
-    const html = await readFile(path.join(dist, `${locale}index.html`), 'utf8');
+  const versionedRoutes = ['index.html', 'zh/index.html', ...routes.filter(route => /^(?:zh\/)?(?:guide\/|docs\/integrations\/chatgpt-secure-tunnel\/)/.test(route))];
+  for (const route of versionedRoutes) {
+    const html = await readFile(path.join(dist, route), 'utf8');
     const stylesheets = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)];
-    assert.deepEqual(stylesheets.map(match => match[1]), [`/assets/site.css?v=${version}`]);
+    assert.deepEqual(stylesheets.map(match => match[1]), [`/assets/site.css?v=${version}`], route);
   }
 });
 
