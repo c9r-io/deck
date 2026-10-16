@@ -5,6 +5,10 @@ Native iOS 17 SwiftUI client for the local Deck Connector protocol. It contains 
 The Mac's local sharing control defaults to saved Codex/Claude cards. A separate
 explicit opt-in shares all Board card summaries (identity, project, column and
 order), without granting terminal, note or queue access to unsupported cards.
+The separate `boardAccess` opt-in also shares all current/future card output
+(including shell history) and notes. It permits direct messages to current
+Codex/Claude processes started manually, while shell input stays blocked and
+queueing still requires a saved launch command.
 The optional `capabilities` object separates output, messages, notes and queue
 permissions with reasons; a present object with a missing capability denies it.
 Older hosts retain their existing `canSend`/`canQueue` behavior. Native routes

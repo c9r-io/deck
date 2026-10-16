@@ -904,3 +904,28 @@ fn only_a_response_only_exit_gives_back_the_server_its_boot_gate_started() {
     let asked = step("retire_started_server_on(&deck_server(), &started)");
     assert!(taken < gated && gated < bounded && bounded < asked);
 }
+
+#[test]
+fn claimed_board_writes_hold_the_feature_registered_guard_through_commit() {
+    let documents = source("documents.rs");
+    let save = &documents[documents.find("pub(crate) fn save_board(").unwrap()..];
+    let guard = save
+        .find("acquire_write_claim_guard(write_claim.as_deref())?")
+        .unwrap();
+    let write = save.find("save_board_at(").unwrap();
+    let commit = save.find("commit_board(&data,").unwrap();
+    let release = save.find("drop(_write_guard)").unwrap();
+    assert!(guard < write && write < commit && commit < release);
+    assert!(source("connector/mod.rs").contains("set_write_claim_guard(board_commit_guard)"));
+    let connector = source("connector/commands.rs");
+    let guard = &connector[connector.find("fn board_commit_guard(").unwrap()..];
+    for check in [
+        "lifecycle.lock_or_recover()",
+        "runtime.feature_active()",
+        "runtime.executing(handle)?",
+        "validate_applicable(&executing.request)?",
+        "Ok(lifecycle)",
+    ] {
+        assert!(guard.contains(check), "commit fence requires {check}");
+    }
+}

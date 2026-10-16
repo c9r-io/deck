@@ -124,4 +124,16 @@ import Testing
     let extended = json.dropLast() + ",\"capabilities\":{}}"
     let unknown = try JSONDecoder().decode(CardSummary.self, from: Data(extended.utf8))
     #expect(!unknown.canReadOutput && !unknown.maySend && !unknown.canEditNotes && !unknown.mayQueue)
+
+    let notesWithoutQueue = json.dropLast() + #", "capabilities":{"readOutput":{"allowed":true},"sendMessage":{"allowed":false,"reason":"unsupported-target"},"editNotes":{"allowed":true},"queue":{"allowed":false,"reason":"unsupported-target"}}}"#
+    let boardAccessCard = try JSONDecoder().decode(CardSummary.self, from: Data(notesWithoutQueue.utf8))
+    #expect(boardAccessCard.canReadOutput && boardAccessCard.canEditNotes)
+    #expect(!boardAccessCard.maySend && !boardAccessCard.mayQueue)
+}
+
+@Test func snapshotAcceptsOptionalBoardAccessScopeWithoutChangingLegacySchema() throws {
+    let base = #"{"version":1,"hostId":"h","revision":"1","capturedAt":1,"projects":[],"cards":[],"queue":[]}"#
+    #expect(try JSONDecoder().decode(Snapshot.self, from: Data(base.utf8)).scope == nil)
+    let expanded = base.dropLast() + #", "scope":"boardAccess"}"#
+    #expect(try JSONDecoder().decode(Snapshot.self, from: Data(expanded.utf8)).scope == "boardAccess")
 }

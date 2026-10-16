@@ -85,6 +85,23 @@ private func requests(_ name: String) throws -> [[String: Any]] {
     #expect(snapshot.queue.first?.revision.value == "5")
 }
 
+@Test func boardAccessSnapshotKeepsOutputNotesMessagesAndQueueIndependent() throws {
+    let snapshot = try JSONDecoder().decode(Snapshot.self, from: fixture("snapshot-board-access.json"))
+    #expect(snapshot.scope == "boardAccess")
+    #expect(snapshot.cards.map(\.id) == ["MANUAL", "SHELL"])
+
+    let manual = try #require(snapshot.cards.first(where: { $0.id == "MANUAL" }))
+    #expect(manual.canReadOutput && manual.canEditNotes && manual.maySend)
+    #expect(!manual.mayQueue)
+    #expect(manual.capabilities?.queue?.reason == "unsupported-target")
+
+    let shell = try #require(snapshot.cards.first(where: { $0.id == "SHELL" }))
+    #expect(shell.canReadOutput && shell.canEditNotes)
+    #expect(!shell.maySend && !shell.mayQueue)
+    #expect(shell.capabilities?.sendMessage?.reason == "agent-not-in-foreground")
+    #expect(shell.capabilities?.queue?.reason == "unsupported-target")
+}
+
 @Test func hostBufferAndOutputDecodeAndValidate() throws {
     let buffer = try JSONDecoder().decode(CardBuffer.self, from: fixture("buffer.json"))
     try WireValidator.validate(buffer)

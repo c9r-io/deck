@@ -1,0 +1,5 @@
+process pid 68613 started Sat Oct 17 01:40:42 2026: running
+tmux-server pid 68651 started Sat Oct 17 01:40:43 2026 socket /private/tmp/deck-connector-diagnose-0mf970e7/t/tmux-501/deck-smoke-0mf970e7: running
+process pid 70308 started Sat Oct 17 01:40:55 2026: gone
+stopped tmux-server pid 68651
+stopped process pid 68613

@@ -1,0 +1,43 @@
+{
+  "mode": "fixed",
+  "snapshotScope": "boardAccess",
+  "isolationVerified": true,
+  "productAssertionsPassed": false,
+  "requiredTestsExecuted": true,
+  "cleanupCompleted": true,
+  "humanInterventions": 0,
+  "tests": {
+    "hostSmoke": "PASS",
+    "simulatorUI": "FAIL",
+    "shellReturnUI": "PASS"
+  },
+  "liveSavedCommandEmpty": true,
+  "realAgentProbe": "PASS",
+  "testCounts": {
+    "passedTests": 3,
+    "failedTests": 2,
+    "skippedTests": 0,
+    "totalTestCount": 5
+  },
+  "testResults": {
+    "testIsolatedBoardAccessManualAgentAndShell": "Failed",
+    "testIsolatedChineseLargeText": "Passed",
+    "testIsolatedDraftsSurviveNavigationAndRelaunch": "Failed",
+    "testIsolatedLiveCodexOutput": "Passed",
+    "testIsolatedStoppedAgentVisibilityAndOutput": "Passed"
+  },
+  "shellReturnProbe": "PASS",
+  "shellReturnTestCounts": {
+    "passedTests": 1,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 1
+  },
+  "shellReturnTestResults": {
+    "testIsolatedCodexExitToShellRejectsOutputAndSend": "Passed"
+  },
+  "failure": "XCTest failed; see suite log",
+  "sourceDiffSHA256": "0393bc5854539bccf99d44ee1f6a95262a3b6170a9cffe2074cf63e93cfdc2b8",
+  "hostBinarySHA256": "14c0cc4b65e00fa12d93a67ad3fdb1f70470df6f0d244b51293fe2a1c81bd74c",
+  "iosBinarySHA256": "45fd45f7017e886537d1bfbe25b0110fefe972a2ff16305ec462dce55f1381aa"
+}

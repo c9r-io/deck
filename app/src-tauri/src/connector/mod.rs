@@ -31,21 +31,25 @@
 //! slot. Each write encodes once and is atomic (temp file, file fsync,
 //! rename, directory fsync).
 //!
-//! Phone reach: the default snapshot scope and every card-scoped route require
-//! a saved `codex`/`claude` command with at most simple shell-safe arguments
-//! under the shared channel policy. A separate local opt-in may expose every
-//! card's Board metadata, placement and order; it grants no output, input,
-//! note or queue access. The snapshot reports those permissions separately,
-//! while native admission remains authoritative. Send-message and output also
-//! require a live agent foreground process; output rechecks that identity
-//! after capture alongside the generation/card checks. A foreground agent in
-//! a plain shell card does not qualify. The snapshot exposes cards selected
-//! by the local scope, while its queue contains only items belonging to saved
-//! agent cards. Phone text is an agent
-//! prompt, not a shell line, but a prompt can still lead the agent to run
-//! commands. A session under MCP control (`mcp::guard_terminal_input`) is
-//! neither written (checked before delivery and before each tmux write) nor
-//! read (checked before and after capture).
+//! Phone reach: the default AgentCards scope exposes saved `codex`/`claude`
+//! commands with simple shell-safe arguments under the shared channel policy.
+//! BoardMetadata adds all card summaries, never additional terminal/note access.
+//! BoardAccess is separate explicit local consent for ALL current/future cards'
+//! output (including shell history) and notes, and direct messages to a live
+//! recognized Codex/Claude foreground regardless of saved launch command.
+//! A phone never sends shell input. Queue admission/control remains saved-command
+//! based in every scope; scope grants no automation/first-send authority.
+//! Native routes enforce each capability, not the snapshot. Reads reauthorize
+//! device/feature/scope revision before returning; output also rechecks card,
+//! session, foreground generation and MCP control after capture. Process names
+//! recognize an agent; they are not executable-authenticity or readiness proof.
+//! Scope changes retire unresolved commands, including across withdrawal/regrant.
+//! Direct delivery rechecks current scope/card, executing command, device, live
+//! agent, generation and MCP fence before every write under the lifecycle lock.
+//! Phone note saves carry the claimed handle through the ONE webview Board writer
+//! to a native commit check under settings -> Board -> Connector lifecycle locks.
+//! Cleanup can still delete a paste buffer after withdrawal. An MCP-controlled
+//! session is never read or written; that grant belongs to the MCP client only.
 //!
 //! Network: RFC1918 addresses are eligible on any interface, 100.64/10 only
 //! on `utun*` and 169.254/16 only on `bridge*` (`connector_network_address`).
@@ -148,10 +152,13 @@ struct Config {
     /// A restart binds only while the address is still on that interface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     interface: Option<String>,
-    /// Local consent for the metadata-only Board projection. Missing is the
-    /// historical restricted scope, so old documents fail closed.
+    /// Local sharing consent. Missing remains the historical restricted scope;
+    /// old readers refuse the unknown BoardAccess enum without rewriting it.
     #[serde(default)]
     scope: SnapshotScope,
+    /// Fences in-flight reads across scope changes, including downgrade/regrant.
+    #[serde(default)]
+    scope_revision: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -160,6 +167,9 @@ pub(crate) enum SnapshotScope {
     #[default]
     AgentCards,
     BoardMetadata,
+    /// Explicit local consent for all current/future card output and notes,
+    /// plus direct messages to a recognized live agent (never shell input).
+    BoardAccess,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -370,6 +380,24 @@ impl Runtime {
             .ok_or_else(|| DeckError::new(ErrorKind::Perm, "unauthorized"))
     }
 
+    /// Reauthorize every GET after it has assembled its response. The scope
+    /// revision prevents an in-flight read surviving withdrawal and regrant.
+    fn authorized_read<T>(
+        &self,
+        epoch: u64,
+        token: &str,
+        read: impl FnOnce(&str) -> T,
+    ) -> Result<T, DeckError> {
+        let revision = self.read(|d| d.config.scope_revision)?;
+        let device = self.authorize(epoch, token)?;
+        let result = read(&device);
+        self.authorize(epoch, token)?;
+        if self.read(|d| d.config.scope_revision)? != revision {
+            return Err(DeckError::new(ErrorKind::ContextChanged, "target-changed"));
+        }
+        Ok(result)
+    }
+
     fn executing(&self, handle: &str) -> Result<ExecutingCommand, DeckError> {
         self.read(|d| {
             let c = d
@@ -422,6 +450,7 @@ pub(crate) fn spawn_connector(app: AppHandle) {
         running_epoch: AtomicU64::new(0),
     });
     let _ = RUNTIME.set(runtime.clone());
+    crate::documents::set_write_claim_guard(board_commit_guard);
     if runtime.read(|d| d.config.enabled).unwrap_or(false) {
         let _ = start_server(runtime);
     }

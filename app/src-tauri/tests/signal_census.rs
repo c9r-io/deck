@@ -266,6 +266,16 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         Presentation,
     ),
     // Connector: a recognized foreground agent PROCESS (`connector_probe`)
+    // BoardAccess separates read from send; these are still process facts,
+    // never agent hook words, readiness, or automatic-send authority.
+    ("connector/native.rs", "guard", ".agent", 1, NotSignal),
+    (
+        "connector/projection.rs",
+        "snapshot_in",
+        ".agent",
+        2,
+        NotSignal,
+    ),
     (
         "connector/native.rs",
         "execute_native",

@@ -2,7 +2,8 @@
 //! bounded: at most `MAX_CONNECTIONS` connections and `MAX_PER_SOURCE` per
 //! source address, a 5s TLS handshake, a 10s header read, a 30s connection
 //! and a 4 KiB pairing body. A command body is read only after its Bearer
-//! token authorizes.
+//! token authorizes. Every GET reauthorizes device/feature and checks the
+//! sharing revision after assembling its response; withdrawn reads return no content.
 //!
 //! Network: the accept loop wakes at least every 500ms; every
 //! `NETWORK_RECHECK` it re-reads the interfaces (`getifaddrs`, no spawn) and
@@ -456,51 +457,50 @@ async fn handle(
         return error(StatusCode::NOT_FOUND, "not-found");
     }
     native(state, jobs, epoch, move |state| {
-        let device = match bearer
-            .as_deref()
-            .ok_or_else(|| DeckError::new(ErrorKind::Perm, "unauthorized"))
-            .and_then(|token| state.authorize(epoch, token))
-        {
-            Ok(value) => value,
-            Err(failure) => return mapped(&failure),
+        let Some(token) = bearer.as_deref() else {
+            return error(StatusCode::UNAUTHORIZED, "unauthorized");
         };
-        if path == "/v1/snapshot" {
-            return state
-                .app
-                .as_ref()
-                .ok_or_else(|| DeckError::new(ErrorKind::Other, "connector unavailable"))
-                .and_then(snapshot)
-                .map(|value| response(StatusCode::OK, value))
-                .unwrap_or_else(|failure| mapped(&failure));
-        }
-        if let Some(id) = path.strip_prefix("/v1/commands/").and_then(decode_segment) {
-            return state
-                .command_result(&device, &id)
-                .map(|value| response(StatusCode::OK, serde_json::to_value(value).unwrap()))
-                .unwrap_or_else(|failure| mapped(&failure));
-        }
-        if let Some(rest) = path.strip_prefix("/v1/cards/") {
-            if let Some((raw, leaf)) = rest.rsplit_once('/') {
-                if let Some(id) = decode_segment(raw) {
-                    return match leaf {
-                        "output" => output(&id)
-                            .map(|value| response(StatusCode::OK, value))
-                            .unwrap_or_else(|failure| mapped_output(&failure)),
-                        "buffer" => state
-                            .app
-                            .as_ref()
-                            .ok_or_else(|| {
-                                DeckError::new(ErrorKind::Other, "connector unavailable")
-                            })
-                            .and_then(|app| buffer(app, &id))
-                            .map(|value| response(StatusCode::OK, value))
-                            .unwrap_or_else(|failure| mapped(&failure)),
-                        _ => error(StatusCode::NOT_FOUND, "not-found"),
-                    };
+        state
+            .authorized_read(epoch, token, |device| {
+                if path == "/v1/snapshot" {
+                    return state
+                        .app
+                        .as_ref()
+                        .ok_or_else(|| DeckError::new(ErrorKind::Other, "connector unavailable"))
+                        .and_then(snapshot)
+                        .map(|value| response(StatusCode::OK, value))
+                        .unwrap_or_else(|failure| mapped(&failure));
                 }
-            }
-        }
-        error(StatusCode::NOT_FOUND, "not-found")
+                if let Some(id) = path.strip_prefix("/v1/commands/").and_then(decode_segment) {
+                    return state
+                        .command_result(device, &id)
+                        .map(|value| response(StatusCode::OK, serde_json::to_value(value).unwrap()))
+                        .unwrap_or_else(|failure| mapped(&failure));
+                }
+                if let Some(rest) = path.strip_prefix("/v1/cards/") {
+                    if let Some((raw, leaf)) = rest.rsplit_once('/') {
+                        if let Some(id) = decode_segment(raw) {
+                            return match leaf {
+                                "output" => output(&id)
+                                    .map(|value| response(StatusCode::OK, value))
+                                    .unwrap_or_else(|failure| mapped_output(&failure)),
+                                "buffer" => state
+                                    .app
+                                    .as_ref()
+                                    .ok_or_else(|| {
+                                        DeckError::new(ErrorKind::Other, "connector unavailable")
+                                    })
+                                    .and_then(|app| buffer(app, &id))
+                                    .map(|value| response(StatusCode::OK, value))
+                                    .unwrap_or_else(|failure| mapped(&failure)),
+                                _ => error(StatusCode::NOT_FOUND, "not-found"),
+                            };
+                        }
+                    }
+                }
+                error(StatusCode::NOT_FOUND, "not-found")
+            })
+            .unwrap_or_else(|failure| mapped(&failure))
     })
     .await
 }
@@ -557,6 +557,7 @@ mod tests {
             port: 0,
             interface: None,
             scope: SnapshotScope::AgentCards,
+            scope_revision: 0,
         };
         let identity = Identity::generate("127.0.0.1").unwrap();
         spawn(runtime.clone(), config, identity, 1, || false).unwrap();
@@ -609,6 +610,7 @@ mod tests {
             port: 8443,
             interface: None,
             scope: SnapshotScope::AgentCards,
+            scope_revision: 0,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -656,6 +658,7 @@ mod tests {
             port: 0,
             interface: None,
             scope: SnapshotScope::AgentCards,
+            scope_revision: 0,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -682,6 +685,7 @@ mod tests {
                 port: 0,
                 interface: None,
                 scope: SnapshotScope::AgentCards,
+                scope_revision: 0,
             },
             identity,
             1,
@@ -969,6 +973,7 @@ mod tests {
                 port: 0,
                 interface: None,
                 scope: SnapshotScope::AgentCards,
+                scope_revision: 0,
             },
             Identity::generate("127.0.0.1").unwrap(),
             1,
@@ -993,6 +998,7 @@ mod tests {
             port: 0,
             interface: None,
             scope: SnapshotScope::AgentCards,
+            scope_revision: 0,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -1017,6 +1023,7 @@ mod tests {
             port: 0,
             interface: None,
             scope: SnapshotScope::AgentCards,
+            scope_revision: 0,
         };
         let port = spawn(runtime.clone(), config, identity, 1, || true).unwrap();
         let mut roots = rustls::RootCertStore::empty();
@@ -1131,6 +1138,7 @@ mod tests {
             port: 0,
             interface: None,
             scope: SnapshotScope::AgentCards,
+            scope_revision: 0,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -1155,6 +1163,7 @@ mod tests {
             port: 0,
             interface: None,
             scope: SnapshotScope::AgentCards,
+            scope_revision: 0,
         };
         let port = spawn(runtime.clone(), config, identity, 1, || true).unwrap();
         let mut roots = rustls::RootCertStore::empty();

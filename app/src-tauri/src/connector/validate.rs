@@ -3,7 +3,8 @@
 //! Split out of the one-file `connector/mod.rs` on 2026-09-23; the contract
 //! stays in `connector/mod.rs`. `validate_applicable` reads the committed
 //! board and delegates to the pure `validate_applicable_in`, which tests feed
-//! directly.
+//! directly. Note edits use current local card-access consent; copying a note
+//! into a queue still requires saved-command admission and revision checks.
 
 use super::*;
 
@@ -74,15 +75,16 @@ pub(super) fn validate_admission_board(
 
 pub(super) fn validate_applicable(request: &CommandRequest) -> Result<(), DeckError> {
     let (revision, board) = board_value()?;
-    validate_applicable_in(request, &revision, &board)
+    validate_applicable_in_scope(request, &revision, &board, current_scope()?)
 }
 
 /// Applicability of a claimed request against one committed board
 /// (`revision` is that board's hash); pure, so a test supplies the board.
-pub(super) fn validate_applicable_in(
+pub(super) fn validate_applicable_in_scope(
     request: &CommandRequest,
     revision: &str,
     board: &Value,
+    scope: SnapshotScope,
 ) -> Result<(), DeckError> {
     if request.kind == "task-create" {
         #[derive(Deserialize)]
@@ -175,7 +177,7 @@ pub(super) fn validate_applicable_in(
                     .find(|c| c.get("id").and_then(Value::as_str) == Some(id))
             })
             .ok_or_else(|| DeckError::new(ErrorKind::Missing, "card not found"))?;
-        validate_buffer_target(request, card)?;
+        validate_buffer_target(request, card, scope)?;
     }
     Ok(())
 }

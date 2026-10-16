@@ -1,0 +1,127 @@
+Command line invocation:
+    /Volumes/Yotta/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -xctestrun /tmp/deck-connector-diagnose-0mf970e7/DerivedData/Build/Products/DeckConnectorUITests-diagnose.xctestrun -destination "platform=iOS Simulator,id=F0082C32-B1A7-42FE-BF8E-10C59BE2DC96" -parallel-testing-enabled NO -resultBundlePath /tmp/deck-connector-diagnose-0mf970e7/shell-return.xcresult test-without-building "-only-testing:DeckConnectorUITests/ConnectorUITests/testIsolatedCodexExitToShellRejectsOutputAndSend"
+
+Writing result bundle at path:
+	/tmp/deck-connector-diagnose-0mf970e7/shell-return.xcresult
+
+2026-10-17 01:45:39.625 xcodebuild[78931:20645391] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-17 01:45:40.616656+0900 DeckConnectorUITests-Runner[78942:20645635] [Default] Running tests...
+    t =      nans Interface orientation changed to Portrait
+Test Suite 'Selected tests' started at 2026-10-17 01:45:42.907.
+Test Suite 'DeckConnectorUITests.xctest' started at 2026-10-17 01:45:42.908.
+Test Suite 'ConnectorUITests' started at 2026-10-17 01:45:42.908.
+Test Case '-[DeckConnectorUITests.ConnectorUITests testIsolatedCodexExitToShellRejectsOutputAndSend]' started.
+    t =     0.00s Start Test at 2026-10-17 01:45:42.910
+    t =     0.03s Set Up
+    t =     0.03s     Setting device orientation to Portrait
+    t =     0.03s         Wait for com.apple.springboard to idle
+    t =     0.04s Open io.c9r.deck.connector
+    t =     0.04s     Launch io.c9r.deck.connector
+2026-10-17 01:45:42.994 xcodebuild[78931:20645391] [MT] IDELaunchParametersSnapshot: debugger version lookup failed for path '<nil>': noURL
+2026-10-17 01:45:42.994 xcodebuild[78931:20645391] [MT] IDELaunchParametersSnapshot: no debugger version
+2026-10-17 01:45:42.998 xcodebuild[78931:20645391] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+objc[78942]: Class UIAccessibilityLoaderWebShared is implemented in both /Library/Developer/CoreSimulator/Volumes/iOS_24A434/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebKit.axbundle/WebKit (0x107298398) and /Library/Developer/CoreSimulator/Volumes/iOS_24A434/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebCore.axbundle/WebCore (0x10a33c310). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+    t =     0.50s         Setting up automation session
+    t =     2.33s         Wait for io.c9r.deck.connector to idle
+    t =     3.78s Waiting 15.0s for "connector live codex" StaticText to exist
+    t =     4.81s     Checking `Expect predicate `existsNoRetry == 1` for object "connector live codex" StaticText`
+    t =     4.81s         Checking existence of `"connector live codex" StaticText`
+    t =     4.89s Waiting 2.0s for "connector live codex" StaticText to exist
+    t =     5.92s     Checking `Expect predicate `existsNoRetry == 1` for object "connector live codex" StaticText`
+    t =     5.92s         Checking existence of `"connector live codex" StaticText`
+    t =     5.97s Checking existence of `"connector live codex" StaticText`
+    t =     6.01s Find the "connector live codex" StaticText
+    t =     6.04s Find the Window (First Match)
+    t =     6.04s Checking existence of `NavigationBar (First Match)`
+    t =     6.05s Find the NavigationBar (First Match)
+    t =     6.05s Find the "connector live codex" StaticText
+    t =     6.09s Tap "connector live codex" StaticText
+    t =     6.09s     Wait for io.c9r.deck.connector to idle
+    t =     6.09s     Find the "connector live codex" StaticText
+    t =     6.12s     Check for interrupting elements affecting "connector live codex" StaticText
+    t =     6.14s     Synthesize event
+    t =     6.45s     Wait for io.c9r.deck.connector to idle
+    t =     6.85s Waiting 10.0s for "connector live codex" NavigationBar to exist
+    t =     7.88s     Checking `Expect predicate `existsNoRetry == 1` for object "connector live codex" NavigationBar`
+    t =     7.88s         Checking existence of `"connector live codex" NavigationBar`
+    t =     7.94s Waiting 2.0s for "deck.message.draft" TextView to exist
+    t =     8.97s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.message.draft" TextView`
+    t =     8.97s         Checking existence of `"deck.message.draft" TextView`
+    t =     9.00s Checking existence of `"deck.message.draft" TextView`
+    t =     9.02s Find the "deck.message.draft" TextView
+    t =     9.03s Find the Window (First Match)
+    t =     9.04s Checking existence of `NavigationBar (First Match)`
+    t =     9.04s Find the NavigationBar (First Match)
+    t =     9.05s Find the "deck.message.draft" TextView
+    t =     9.06s Find the "deck.message.draft" TextView
+    t =     9.07s Tap "deck.message.draft" TextView
+    t =     9.07s     Wait for io.c9r.deck.connector to idle
+    t =     9.07s     Find the "deck.message.draft" TextView
+    t =     9.08s     Check for interrupting elements affecting "deck.message.draft" TextView
+    t =     9.10s     Synthesize event
+<unknown>:0: warning: -[DeckConnectorUITests.ConnectorUITests testIsolatedCodexExitToShellRejectsOutputAndSend] : Invalid frame dimension (negative or non-finite).
+    t =     9.39s     Wait for io.c9r.deck.connector to idle
+    t =     9.44s Type 'unsent-shell-test' into "deck.message.draft" TextView
+    t =     9.44s     Wait for io.c9r.deck.connector to idle
+    t =     9.81s     Find the "deck.message.draft" TextView
+    t =     9.85s     Check for interrupting elements affecting "deck.message.draft" TextView
+    t =     9.89s     Synthesize event
+    t =    10.37s     Wait for io.c9r.deck.connector to idle
+    t =    10.38s Waiting 5.0s for "deck.keyboard.done" Button to exist
+    t =    11.41s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.keyboard.done" Button`
+    t =    11.41s         Checking existence of `"deck.keyboard.done" Button`
+    t =    11.48s Tap "deck.keyboard.done" Button
+    t =    11.48s     Wait for io.c9r.deck.connector to idle
+    t =    11.75s     Find the "deck.keyboard.done" Button
+    t =    11.83s     Check for interrupting elements affecting "deck.keyboard.done" Button
+    t =    11.86s     Synthesize event
+    t =    12.15s     Wait for io.c9r.deck.connector to idle
+    t =    12.39s Waiting 2.0s for "deck.message.send" Button to exist
+    t =    13.42s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.message.send" Button`
+    t =    13.42s         Checking existence of `"deck.message.send" Button`
+    t =    13.45s Checking existence of `"deck.message.send" Button`
+    t =    13.46s Find the "deck.message.send" Button
+    t =    13.48s Find the Window (First Match)
+    t =    13.49s Checking existence of `NavigationBar (First Match)`
+    t =    13.49s Find the NavigationBar (First Match)
+    t =    13.50s Find the "deck.message.send" Button
+    t =    13.51s Find the "deck.message.send" Button
+    t =    13.53s Find the "deck.message.send" Button
+    t =    13.54s Waiting 2.0s for "deck.output.text" Any to exist
+    t =    14.58s     Checking `Expect predicate `existsNoRetry == 1` for object "deck.output.text" Any`
+    t =    14.58s         Checking existence of `"deck.output.text" Any`
+    t =    14.73s Checking existence of `"deck.output.text" Any`
+    t =    14.80s Find the "deck.output.text" Any
+    t =    14.87s Find the Window (First Match)
+    t =    14.88s Checking existence of `NavigationBar (First Match)`
+    t =    14.88s Find the NavigationBar (First Match)
+    t =    14.89s Find the "deck.output.text" StaticText
+    t =    14.96s Find the "deck.output.text" StaticText
+    t =    15.03s Terminate io.c9r.deck.connector:78954
+2026-10-17 01:45:57.950 xcodebuild[78931:20645391] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-17 01:45:57.950 xcodebuild[78931:20645391] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-17 01:45:57.950 xcodebuild[78931:20645391] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+    t =    16.08s Tear Down
+Test Case '-[DeckConnectorUITests.ConnectorUITests testIsolatedCodexExitToShellRejectsOutputAndSend]' passed (16.102 seconds).
+Test Suite 'ConnectorUITests' passed at 2026-10-17 01:45:59.013.
+	 Executed 1 test, with 0 failures (0 unexpected) in 16.102 (16.105) seconds
+Test Suite 'DeckConnectorUITests.xctest' passed at 2026-10-17 01:45:59.014.
+	 Executed 1 test, with 0 failures (0 unexpected) in 16.102 (16.106) seconds
+Test Suite 'Selected tests' passed at 2026-10-17 01:45:59.015.
+	 Executed 1 test, with 0 failures (0 unexpected) in 16.102 (16.108) seconds
+2026-10-17 01:45:59.054 xcodebuild[78931:20645391] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-17 01:45:59.054 xcodebuild[78931:20645391] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-17 01:45:59.055 xcodebuild[78931:20645391] [MT] IDESchemeActionSDKRecord: operatingSystemBuild = <DVTBuildVersion 24A94232>, error = invalidDigitCount(94232).
+2026-10-17 01:45:59.328 xcodebuild[78931:20645451]  IDETestOperationsObserverDebug: Failure collecting diagnostics from simulator: Process exited with error 72:
+ xcrun: error: unable to find utility "simctl", not a developer tool or in PATH
+
+2026-10-17 01:45:59.333 xcodebuild[78931:20645391] [MT] IDETestOperationsObserverDebug: 19.734 elapsed -- Testing started completed.
+2026-10-17 01:45:59.333 xcodebuild[78931:20645391] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-10-17 01:45:59.333 xcodebuild[78931:20645391] [MT] IDETestOperationsObserverDebug: 19.734 sec, +19.734 sec -- end
+
+Test session results, code coverage, and logs:
+	/tmp/deck-connector-diagnose-0mf970e7/shell-return.xcresult
+
+** TEST EXECUTE SUCCEEDED **
+
+Testing started

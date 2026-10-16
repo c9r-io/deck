@@ -1,0 +1,43 @@
+{
+  "mode": "fixed",
+  "snapshotScope": "boardAccess",
+  "isolationVerified": true,
+  "productAssertionsPassed": true,
+  "requiredTestsExecuted": true,
+  "cleanupCompleted": true,
+  "humanInterventions": 0,
+  "tests": {
+    "hostSmoke": "PASS",
+    "simulatorUI": "PASS",
+    "shellReturnUI": "PASS"
+  },
+  "liveSavedCommandEmpty": true,
+  "realAgentProbe": "PASS",
+  "testCounts": {
+    "passedTests": 5,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 5
+  },
+  "testResults": {
+    "testIsolatedBoardAccessManualAgentAndShell": "Passed",
+    "testIsolatedChineseLargeText": "Passed",
+    "testIsolatedDraftsSurviveNavigationAndRelaunch": "Passed",
+    "testIsolatedLiveCodexOutput": "Passed",
+    "testIsolatedStoppedAgentVisibilityAndOutput": "Passed"
+  },
+  "shellReturnProbe": "PASS",
+  "shellReturnTestCounts": {
+    "passedTests": 1,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 1
+  },
+  "shellReturnTestResults": {
+    "testIsolatedCodexExitToShellRejectsOutputAndSend": "Passed"
+  },
+  "failure": null,
+  "sourceDiffSHA256": "f5074e84350f14befe66275fe220d674afc16d3ce9b6de0286315c6d255d9bd9",
+  "hostBinarySHA256": "14c0cc4b65e00fa12d93a67ad3fdb1f70470df6f0d244b51293fe2a1c81bd74c",
+  "iosBinarySHA256": "d8b15658e0046e1c15c0fce3c845c61dd90029353443245f4ed32867b457e8b5"
+}

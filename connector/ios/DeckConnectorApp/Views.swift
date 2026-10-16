@@ -74,7 +74,7 @@ struct TaskListView: View {
                     Section {
                         DisclosureGroup {
                             Text(snapshot.hostName ?? snapshot.hostId).font(.caption)
-                            Text(snapshot.scope == "boardMetadata" ? String(localized: "All card summaries shared by this Mac. Terminal access is separate.") : String(localized: "Only saved Codex and Claude cards are shared. To see all card summaries, change Phone Connector sharing on your Mac."))
+                            Text(sharingScopeMessage(snapshot.scope))
                                 .font(.caption).foregroundStyle(.secondary)
                         } label: {
                             VStack(alignment: .leading) {
@@ -520,8 +520,8 @@ struct TaskDetailView: View {
                     Text(String(localized: "taskDetail.queue.unavailable")).font(.caption).foregroundStyle(.secondary)
                 }
                 Text(String(localized: "taskDetail.queue.explanation")).font(.caption).foregroundStyle(.secondary)
-            } else if !card.mayQueue {
-                Label("Scratchpad unavailable: this is not a desktop-saved Codex or Claude card.", systemImage: "exclamationmark.circle")
+            } else if !card.canEditNotes {
+                Label("Scratchpad access is not shared for this card. Change Phone Connector sharing on your Mac.", systemImage: "exclamationmark.circle")
                     .font(.caption).foregroundStyle(.secondary)
             } else if model.bufferErrors[card.id] == nil { ProgressView() }
         } header: { Text(String(localized: "taskDetail.scratchpad.title")) }
@@ -677,11 +677,22 @@ private struct EditNoteView: View {
 
 private func capabilityMessage(_ reason: String) -> String {
     switch reason {
-    case "unsupported-target": String(localized: "Summary only. Remote access requires a saved Codex or Claude command on your Mac.")
+    case "unsupported-target": String(localized: "This access is not shared for this card. Check Phone Connector sharing on your Mac.")
     case "mcp-controlled": String(localized: "This card is controlled by another client. Phone access is unavailable.")
     case "session-unavailable": String(localized: "taskDetail.message.unavailable.stopped")
     case "agent-not-in-foreground": String(localized: "taskDetail.message.unavailable.agent")
     default: String(localized: "taskDetail.message.unavailable.unknown")
+    }
+}
+
+private func sharingScopeMessage(_ scope: String?) -> String {
+    switch scope {
+    case "boardAccess":
+        String(localized: "All card output and notes are shared by this Mac. Messages still require a current Codex or Claude foreground; shell input is unavailable, and queued delivery requires a saved launch configuration.")
+    case "boardMetadata":
+        String(localized: "All card summaries are shared by this Mac. Output and notes require the separate Phone Connector sharing choice on your Mac.")
+    default:
+        String(localized: "Only cards with a saved Codex or Claude launch command are shared. Change Phone Connector sharing on your Mac to include other cards.")
     }
 }
 

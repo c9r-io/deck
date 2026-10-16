@@ -1696,7 +1696,8 @@ test('enabling Phone Connector requires an explicit confirmation of what a paire
   assert.equal(toggle.dataset.enabled, 'false');
   const cancelled = toggle.onclick();
   assert.equal(fakeDocument.getElementById('cfm').style.display, 'flex');
-  assert.match(fakeDocument.getElementById('cfm-msg').textContent, /submit prompts/);
+  assert.match(fakeDocument.getElementById('cfm-msg').textContent, /current Codex or Claude foreground/);
+  assert.match(fakeDocument.getElementById('cfm-msg').textContent, /Shell input is unavailable/);
   cfmDone(false);
   await cancelled;
   assert.equal(calls.filter(cmd => cmd === 'connector_enable').length, 0, 'cancel never enables');
@@ -1707,39 +1708,60 @@ test('enabling Phone Connector requires an explicit confirmation of what a paire
   assert.equal(calls.filter(cmd => cmd === 'connector_enable').length, 1);
 });
 
-test('sharing all Board metadata is a separate persisted consent', async () => {
+test('Phone Connector scope expands with confirmation and restores the host value on cancel or failure', async () => {
   const calls = [];
   let scope = 'agentCards';
+  let failNextChange = false;
   window.__TAURI__ = { core: { invoke: async (cmd, args) => {
     calls.push([cmd, args]);
     if (cmd === 'connector_status') return { enabled: false, running: false, address: '', port: 47631, devices: [], scope };
     if (cmd === 'connector_addresses') return ['192.168.1.20'];
-    if (cmd === 'connector_set_scope') { scope = args.scope; return { scope }; }
+    if (cmd === 'connector_set_scope') {
+      if (failNextChange) { failNextChange = false; throw new Error('refused'); }
+      scope = args.scope; return { scope };
+    }
     return {};
   } } };
   await renderConnectorSettings();
-  const control = fakeDocument.getElementById('set-connector-board-metadata');
-  assert.equal(control.checked, false, 'existing hosts default to the restricted scope');
+  const control = fakeDocument.getElementById('set-connector-scope');
+  assert.equal(control.value, 'agentCards', 'existing hosts retain the restricted scope');
+  assert.equal(control.disabled, false);
 
-  control.checked = true;
+  control.value = 'boardMetadata';
   const cancelled = control.onchange();
+  assert.equal(control.disabled, true, 'the scope cannot change again while confirmation is open');
   assert.match(fakeDocument.getElementById('cfm-msg').textContent, /titles, project and column placement/);
   cfmDone(false);
   await cancelled;
-  assert.equal(control.checked, false);
+  assert.equal(control.value, 'agentCards');
   assert.equal(calls.filter(([cmd]) => cmd === 'connector_set_scope').length, 0);
 
-  control.checked = true;
+  control.value = 'boardMetadata';
   const accepted = control.onchange();
   cfmDone(true);
   await accepted;
   assert.deepEqual(calls.find(([cmd]) => cmd === 'connector_set_scope')[1], { scope: 'boardMetadata' });
-  assert.equal(control.checked, true);
+  assert.equal(control.value, 'boardMetadata');
 
-  control.checked = false;
+  control.value = 'boardAccess';
+  const expanded = control.onchange();
+  assert.match(fakeDocument.getElementById('cfm-msg').textContent, /output and notes/);
+  cfmDone(true);
+  await expanded;
+  assert.equal(scope, 'boardAccess');
+
+  control.value = 'boardMetadata';
   await control.onchange();
-  assert.equal(calls.filter(([cmd]) => cmd === 'connector_set_scope').length, 2);
-  assert.equal(scope, 'agentCards', 'narrowing the scope does not require another confirmation');
+  assert.equal(scope, 'boardMetadata', 'narrowing the scope does not require another confirmation');
+
+  failNextChange = true;
+  control.value = 'boardAccess';
+  const failed = control.onchange();
+  cfmDone(true);
+  await failed;
+  assert.equal(scope, 'boardMetadata');
+  assert.equal(control.value, 'boardMetadata', 'a rejected change restores the host scope');
+  assert.equal(control.disabled, false);
 });
 
 test('a pairing is announced by name and time and hides the spent QR code', async () => {

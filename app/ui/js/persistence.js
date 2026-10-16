@@ -1,6 +1,7 @@
 // persistence.js — one global Board transaction queue
 // Part of deck's no-build frontend: native ES modules, no bundler.
 // Reminder intent and blocked retirement identities persist with their card.
+// Phone note transactions also carry their journal handle to the native commit fence.
 // Only explicit current-version changes carry claims to the native save fence.
 import { ctx, inv, store } from './state.js';
 import { createSerialTransactionQueue } from './pure.js';
@@ -63,7 +64,7 @@ function commitBoard(candidate) {
 const transactions = createSerialTransactionQueue({
   snapshot: snapshotBoard,
   serialize: candidate => JSON.stringify(boardData(candidate.projects, candidate.cards), null, 2),
-  persist: (candidate, json) => inv('save_board', { data: json, reminderChanges: candidate.reminderChanges || [] }),
+  persist: (candidate, json) => inv('save_board', { data: json, reminderChanges: candidate.reminderChanges || [], ...(candidate.connectorHandle ? { writeClaim: candidate.connectorHandle } : {}) }),
   commit: commitBoard,
 });
 

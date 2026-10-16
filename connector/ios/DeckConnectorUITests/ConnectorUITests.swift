@@ -16,7 +16,7 @@ final class ConnectorUITests: XCTestCase {
             let target = app.staticTexts["connector transport"].firstMatch
             XCTAssertTrue(target.waitForExistence(timeout: 20), "Round \(round): saved agent card must appear.")
             XCTAssertEqual(app.staticTexts["connector ordinary shell"].exists,
-                           ProcessInfo.processInfo.environment["DECK_DIAG_SCOPE"] == "boardMetadata",
+                           ProcessInfo.processInfo.environment["DECK_DIAG_SCOPE"] != "agentCards",
                            "Round \(round): list must match the locally authorized scope.")
             target.tap()
             let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
@@ -102,12 +102,18 @@ final class ConnectorUITests: XCTestCase {
         let send = app.buttons["deck.message.send"].firstMatch
         XCTAssertTrue(reveal(send, in: app), "The send control must be reachable.")
         XCTAssertFalse(send.isEnabled, "An Agent card whose foreground returned to shell must not allow sending.")
-        let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
-        XCTAssertTrue(reveal(unavailable, in: app), "The normal output area must be reachable after Agent exit.")
-        XCTAssertEqual(unavailable.label,
-                       "Output unavailable: A supported agent is not in the foreground, so its output cannot be read.")
-        XCTAssertFalse(app.descendants(matching: .any)["deck.output.text"].exists,
-                       "The host must not return the shell's \(marker) output as Agent output.")
+        if ProcessInfo.processInfo.environment["DECK_DIAG_SCOPE"] == "boardAccess" {
+            let output = app.descendants(matching: .any)["deck.output.text"].firstMatch
+            XCTAssertTrue(reveal(output, in: app), "Board Access must keep the card's bounded output readable after Agent exit.")
+            XCTAssertTrue(output.label.contains(marker), "The post-Agent shell marker must appear in Board Access output.")
+        } else {
+            let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
+            XCTAssertTrue(reveal(unavailable, in: app), "The normal output area must be reachable after Agent exit.")
+            XCTAssertEqual(unavailable.label,
+                           "Output unavailable: A supported agent is not in the foreground, so its output cannot be read.")
+            XCTAssertFalse(app.descendants(matching: .any)["deck.output.text"].exists,
+                           "The host must not return the shell's \(marker) output as Agent output.")
+        }
         app.terminate()
     }
 
@@ -118,11 +124,97 @@ final class ConnectorUITests: XCTestCase {
         openCard(named: "connector ordinary shell", in: app)
         let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
         XCTAssertTrue(unavailable.waitForExistence(timeout: 10))
-        XCTAssertTrue(unavailable.label.contains("Summary only"))
+        XCTAssertTrue(unavailable.label.contains("This access is not shared for this card."))
         XCTAssertFalse(app.descendants(matching: .any)["deck.output.text"].exists)
         XCTAssertFalse(app.buttons["deck.message.send"].isEnabled)
         app.segmentedControls.buttons["Notes"].tap()
         XCTAssertFalse(app.buttons["deck.note.save"].isEnabled)
+        app.terminate()
+    }
+
+    func testIsolatedBoardAccessManualAgentAndShell() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["DECK_DIAG_SCOPE"] == "boardAccess" else {
+            throw XCTSkip("Run the isolated diagnostic with Board Access sharing.")
+        }
+        guard let marker = environment["DECK_DIAG_EXPECTED_MARKER"], marker.hasPrefix("deckprobe") else {
+            throw XCTSkip("The isolated real Codex did not produce its expected marker.")
+        }
+
+        let app = XCUIApplication()
+        app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+
+        openCard(named: "connector ordinary shell", in: app)
+        let shellOutput = app.descendants(matching: .any)["deck.output.text"].firstMatch
+        XCTAssertTrue(reveal(shellOutput, in: app), "Board Access must expose the shell card's bounded output snapshot.")
+        XCTAssertFalse(app.staticTexts["deck.output.unavailable"].exists)
+
+        app.segmentedControls.buttons["Notes"].tap()
+        let shellNote = app.textViews["deck.note.new"].firstMatch
+        XCTAssertTrue(revealBySwipingDown(shellNote, in: app), "Board Access must expose the shell card's scratchpad.")
+        XCTAssertTrue(shellNote.isEnabled)
+        let noteProbe = "board-access-note-" + UUID().uuidString
+        shellNote.tap(); shellNote.typeText(noteProbe)
+        app.buttons["deck.keyboard.done"].tap()
+        let saveNote = app.buttons["deck.note.save"].firstMatch
+        XCTAssertTrue(reveal(saveNote, in: app) && saveNote.isEnabled,
+                      "A shell note must be editable without granting queue access.")
+        XCTAssertTrue(app.staticTexts["Queueing requires a Codex or Claude launch configuration saved on the desktop."].exists,
+                      "Queueing must still name its saved-launch requirement.")
+        saveNote.tap()
+        let savedNote = noteText(noteProbe, in: app)
+        if !savedNote.waitForExistence(timeout: 12) { checkOriginalNoteOperationOnce(in: app) }
+        XCTAssertTrue(savedNote.waitForExistence(timeout: 12),
+                      "A Board Access shell note must round-trip through the desktop scratchpad.")
+        let shellAttachment = XCTAttachment(screenshot: app.screenshot())
+        shellAttachment.name = "Board Access shell note saved"; shellAttachment.lifetime = .keepAlways; add(shellAttachment)
+        guard deleteOnlyNote(noteProbe, in: app) else { return }
+
+        app.segmentedControls.buttons["Output"].tap()
+        let shellDraft = app.textViews["deck.message.draft"].firstMatch
+        XCTAssertTrue(reveal(shellDraft, in: app))
+        let messageProbe = "board-access-message-probe"
+        shellDraft.tap(); shellDraft.typeText(messageProbe)
+        app.buttons["deck.keyboard.done"].tap()
+        let shellSend = app.buttons["deck.message.send"].firstMatch
+        XCTAssertTrue(reveal(shellSend, in: app))
+        XCTAssertFalse(shellSend.isEnabled, "Board Access must not turn shell input into a phone message target.")
+        guard replaceAllText(in: shellDraft, expectedOriginal: messageProbe, with: "") else { return }
+        app.buttons["deck.keyboard.done"].tap()
+        XCTAssertTrue(waitForEmptyValue(in: shellDraft, timeout: 3))
+
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        openCard(named: "connector live codex", in: app)
+        let agentOutput = app.descendants(matching: .any)["deck.output.text"].firstMatch
+        XCTAssertTrue(reveal(agentOutput, in: app))
+        XCTAssertTrue(agentOutput.label.contains(marker),
+                      "The manually started verified Codex must expose its bounded output snapshot.")
+        let agentDraft = app.textViews["deck.message.draft"].firstMatch
+        XCTAssertTrue(reveal(agentDraft, in: app))
+        let responseSuffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        let responseMarker = "phoneaccess" + responseSuffix
+        let prompt = "Reply only with the concatenation of these two chunks, without spaces: phoneaccess and \(responseSuffix)"
+        agentDraft.tap(); agentDraft.typeText(prompt)
+        app.buttons["deck.keyboard.done"].tap()
+        let agentSend = app.buttons["deck.message.send"].firstMatch
+        XCTAssertTrue(reveal(agentSend, in: app) && agentSend.isEnabled,
+                      "A current verified Codex foreground remains directly writable after its saved command is cleared.")
+        agentSend.tap()
+        XCTAssertTrue(waitForEmptyValue(in: agentDraft, timeout: 20),
+                      "A confirmed direct send must clear the exact submitted draft.")
+        let response = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            agentOutput.label.contains(responseMarker)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [response], timeout: 45), .completed,
+                       "Auto-refresh must show the concatenated marker that was absent from the submitted prompt.")
+
+        let messageAttachment = XCTAttachment(screenshot: app.screenshot())
+        messageAttachment.name = "Board Access manual Agent reply"; messageAttachment.lifetime = .keepAlways; add(messageAttachment)
+
+        app.segmentedControls.buttons["Notes"].tap()
+        XCTAssertTrue(app.staticTexts["Queueing requires a Codex or Claude launch configuration saved on the desktop."].waitForExistence(timeout: 10),
+                      "The manually started agent must not gain queued delivery without a saved launch configuration.")
         app.terminate()
     }
 
@@ -131,20 +223,20 @@ final class ConnectorUITests: XCTestCase {
         app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         openCard(named: "connector transport", in: app)
-        app.segmentedControls.buttons["Notes"].tap()
+        selectDetailTab("Notes", in: app)
         let note = app.textViews["deck.note.new"].firstMatch
-        XCTAssertTrue(note.waitForExistence(timeout: 10))
+        XCTAssertTrue(revealBySwipingDown(note, in: app))
         let marker = "local-note-" + UUID().uuidString
         note.tap(); note.typeText(marker)
         app.buttons["deck.keyboard.done"].tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
         openCard(named: "connector transport", in: app)
-        app.segmentedControls.buttons["Notes"].tap()
+        selectDetailTab("Notes", in: app)
         XCTAssertEqual(note.value as? String, marker)
         app.terminate(); app.launch()
         openCard(named: "connector transport", in: app)
-        app.segmentedControls.buttons["Notes"].tap()
-        XCTAssertTrue(note.waitForExistence(timeout: 10))
+        selectDetailTab("Notes", in: app)
+        XCTAssertTrue(revealBySwipingDown(note, in: app))
         XCTAssertEqual(note.value as? String, marker, "An unsaved note must survive app termination without a desktop write.")
         let saveNew = app.buttons["deck.note.save"]
         XCTAssertTrue(reveal(saveNew, in: app)); saveNew.tap()
@@ -167,7 +259,7 @@ final class ConnectorUITests: XCTestCase {
         XCTAssertEqual(editor.value as? String, edited, "Closing an edit must preserve its local draft.")
         app.terminate(); app.launch()
         openCard(named: "connector transport", in: app)
-        app.segmentedControls.buttons["Notes"].tap()
+        selectDetailTab("Notes", in: app)
         try openSavedNoteEditor()
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         XCTAssertEqual(editor.value as? String, edited)
@@ -384,6 +476,15 @@ final class ConnectorUITests: XCTestCase {
         guard deleteOnlyNote(marker, in: app) else { return }
     }
 
+    private func selectDetailTab(_ title: String, in app: XCUIApplication) {
+        let tab = app.segmentedControls.buttons[title]
+        XCTAssertTrue(revealBySwipingDown(tab, in: app), "The detail tab must be visible after navigation settles.")
+        tab.tap()
+        let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: tab)
+        XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 5), .completed,
+                       "The requested tab must actually be selected before looking for its lazy List cells.")
+    }
+
     private func openCard(named title: String, in app: XCUIApplication) {
         let card = app.staticTexts[title].firstMatch
         _ = card.waitForExistence(timeout: 15)
@@ -565,7 +666,7 @@ final class ConnectorUITests: XCTestCase {
             XCTFail("The editor did not contain the exact original marker. No edit was attempted.")
             return false
         }
-        guard isPrintableASCII(expectedOriginal), isPrintableASCII(replacement) else {
+        guard isPrintableASCII(expectedOriginal), replacement.isEmpty || isPrintableASCII(replacement) else {
             XCTFail("The physical-device replacement helper only accepts printable ASCII test markers. The edit was not saved.")
             return false
         }
@@ -585,6 +686,7 @@ final class ConnectorUITests: XCTestCase {
             XCTFail("The bounded delete sequence did not clear the complete editor. The edit was not saved.")
             return false
         }
+        if replacement.isEmpty { return true }
         editor.typeText(replacement)
         guard waitForValue(replacement, in: editor, timeout: 2) else {
             XCTFail("The editor did not contain the exact replacement. The edit was not saved.")

@@ -16,6 +16,7 @@ fn test_runtime(tag: &str) -> (Arc<Runtime>, tauri::App<tauri::test::MockRuntime
         port: 8443,
         interface: None,
         scope: SnapshotScope::AgentCards,
+        scope_revision: 0,
     };
     save(&path, &doc).unwrap();
     let r = Arc::new(Runtime {
@@ -83,6 +84,7 @@ fn global_runtime() -> (std::sync::MutexGuard<'static, ()>, Arc<Runtime>) {
         port: 8443,
         interface: None,
         scope: SnapshotScope::AgentCards,
+        scope_revision: 0,
     };
     save(&runtime.path, &doc).unwrap();
     *runtime.doc.lock_or_recover() = Ok(doc);
@@ -349,6 +351,9 @@ struct FakeOutput {
     pane_calls: std::cell::Cell<usize>,
 }
 impl OutputIo for FakeOutput {
+    fn scope(&self) -> Result<SnapshotScope, DeckError> {
+        Ok(SnapshotScope::AgentCards)
+    }
     fn card(&self, id: &str) -> Result<InternalCard, DeckError> {
         Ok(InternalCard {
             id: id.into(),
@@ -379,6 +384,9 @@ struct SavedAgentWithForeground {
     pane_calls: std::cell::Cell<usize>,
 }
 impl OutputIo for SavedAgentWithForeground {
+    fn scope(&self) -> Result<SnapshotScope, DeckError> {
+        Ok(SnapshotScope::AgentCards)
+    }
     fn card(&self, id: &str) -> Result<InternalCard, DeckError> {
         Ok(InternalCard {
             id: id.into(),
@@ -510,6 +518,7 @@ fn restart_listens_only_on_the_recorded_interface() {
         port: 47631,
         interface: interface.map(str::to_owned),
         scope: SnapshotScope::AgentCards,
+        scope_revision: 0,
     };
     let at = |interface: &str, netmask: [u8; 4]| LocalAddress {
         ip: lan,
@@ -791,7 +800,8 @@ fn command_surface_preserves_the_durable_lifecycle_and_closes_on_disable() {
     assert_eq!(
         serde_json::to_value(SmokeTransportView {
             path: "/private/fixture".into(),
-            agent_dir: "/private/agent".into()
+            agent_dir: "/private/agent".into(),
+            scope: SnapshotScope::AgentCards,
         })
         .unwrap()["path"],
         "/private/fixture"
@@ -820,6 +830,7 @@ fn command_surface_preserves_the_durable_lifecycle_and_closes_on_disable() {
     assert!(!queues.busy.lock_or_recover().contains("busy"));
 
     let transport = ConnectorTransport {
+        handle: "unused",
         card_id: "C1",
         session: "S1",
         expected_generation: "generation",
@@ -1157,7 +1168,7 @@ fn every_card_route_requires_a_saved_trusted_agent_command() {
                 seq: None,
             };
             assert_eq!(
-                validate_buffer_target(&request, &card)
+                validate_buffer_target(&request, &card, SnapshotScope::AgentCards)
                     .unwrap_err()
                     .message(),
                 "unsupported-target"
@@ -1787,6 +1798,9 @@ impl ScriptedOutput {
     }
 }
 impl OutputIo for ScriptedOutput {
+    fn scope(&self) -> Result<SnapshotScope, DeckError> {
+        Ok(SnapshotScope::AgentCards)
+    }
     fn card(&self, id: &str) -> Result<InternalCard, DeckError> {
         let index = self.card_calls.get();
         self.card_calls.set(index + 1);
@@ -2902,4 +2916,310 @@ fn paired_devices_are_the_unrevoked_ones() {
     assert_eq!(paired_devices_in(&doc), ["D0", "D1"]);
     revoke_device(&mut doc, "D0").unwrap();
     assert_eq!(paired_devices_in(&doc), ["D1"]);
+}
+
+// Legacy-scope fixtures exercise the unchanged default policy.
+fn buffer_in(
+    b: &Value,
+    id: &str,
+    ops: &[crate::scheduler::connector::OperationDto],
+) -> Result<Value, DeckError> {
+    buffer_in_scope(b, id, ops, SnapshotScope::AgentCards)
+}
+fn validate_applicable_in(r: &CommandRequest, revision: &str, b: &Value) -> Result<(), DeckError> {
+    validate_applicable_in_scope(r, revision, b, SnapshotScope::AgentCards)
+}
+
+#[test]
+fn board_access_capabilities_separate_output_notes_messages_and_queue() {
+    let queues = queue_fixture(json!([]));
+    for scope in [
+        SnapshotScope::AgentCards,
+        SnapshotScope::BoardMetadata,
+        SnapshotScope::BoardAccess,
+    ] {
+        for command in ["", "codex", "/path/to/codex", "pi"] {
+            for foreground in [Some("codex"), Some("claude"), None] {
+                for stopped in [false, true] {
+                    for controlled in [false, true] {
+                        let board = json!({"projects":[],"cards":[{"id":"A","projectId":"P","columnId":"C","session":"s","cmd":command,"title":"Manual","buffer":{"revision":1,"entries":[]}}]});
+                        let value = snapshot_in(
+                            ("h", "Mac"),
+                            "r",
+                            &board,
+                            &queues,
+                            scope,
+                            |_| {
+                                if stopped {
+                                    return Err(DeckError::new(ErrorKind::NoSession, "gone"));
+                                }
+                                let mut p = golden_probe("deck-a-0001")?;
+                                p.agent = foreground.map(str::to_owned);
+                                Ok(p)
+                            },
+                            |_| {
+                                if controlled {
+                                    Err(DeckError::new(ErrorKind::Perm, "owned"))
+                                } else {
+                                    Ok(())
+                                }
+                            },
+                        );
+                        let saved = command == "codex";
+                        if scope == SnapshotScope::AgentCards && !saved {
+                            assert!(value["cards"].as_array().unwrap().is_empty());
+                            continue;
+                        }
+                        let card = &value["cards"][0];
+                        let access = saved || scope == SnapshotScope::BoardAccess;
+                        let readable = access
+                            && !stopped
+                            && !controlled
+                            && (scope == SnapshotScope::BoardAccess || foreground.is_some());
+                        assert_eq!(card["capabilities"]["readOutput"]["allowed"], readable, "{scope:?} {command:?} {foreground:?} stopped={stopped} mcp={controlled}");
+                        assert_eq!(card["canSend"], readable && foreground.is_some());
+                        assert_eq!(
+                            card["capabilities"]["sendMessage"]["allowed"],
+                            readable && foreground.is_some()
+                        );
+                        assert_eq!(card["capabilities"]["editNotes"]["allowed"], access);
+                        assert_eq!(card["canQueue"], saved);
+                        assert_eq!(card["capabilities"]["queue"]["allowed"], saved);
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct ExpandedOutput {
+    inner: ScriptedOutput,
+    scopes: Vec<SnapshotScope>,
+    scope_calls: std::cell::Cell<usize>,
+    agent: Option<String>,
+    mcp_after: bool,
+}
+impl ExpandedOutput {
+    fn new(agent: Option<&str>) -> Self {
+        Self {
+            inner: ScriptedOutput::new("0", &["g"], &["s"]),
+            scopes: vec![SnapshotScope::BoardAccess],
+            scope_calls: std::cell::Cell::new(0),
+            agent: agent.map(str::to_owned),
+            mcp_after: false,
+        }
+    }
+}
+impl OutputIo for ExpandedOutput {
+    fn scope(&self) -> Result<SnapshotScope, DeckError> {
+        let index = self.scope_calls.get();
+        self.scope_calls.set(index + 1);
+        Ok(self.scopes[index.min(self.scopes.len() - 1)])
+    }
+    fn card(&self, id: &str) -> Result<InternalCard, DeckError> {
+        let mut c = self.inner.card(id)?;
+        c.agent_target = false;
+        Ok(c)
+    }
+    fn probe(&self, session: &str) -> Result<crate::context::ConnectorProbe, DeckError> {
+        let mut p = self.inner.probe(session)?;
+        p.agent = self.agent.clone();
+        Ok(p)
+    }
+    fn tmux(&self, args: &[String]) -> Result<String, DeckError> {
+        self.inner.tmux(args)
+    }
+    fn mcp_fence(&self, _: &str) -> Result<(), DeckError> {
+        if self.mcp_after && self.inner.probe_calls.get() > 0 {
+            Err(DeckError::new(ErrorKind::Perm, "controlled"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn explicit_board_access_reads_manual_agents_and_shells_but_discards_changed_targets() {
+    for agent in [None, Some("codex"), Some("claude")] {
+        let io = ExpandedOutput::new(agent);
+        assert_eq!(
+            output_with(&io, "A").unwrap()["text"],
+            "line one\nsecret line"
+        );
+        for scope in [SnapshotScope::AgentCards, SnapshotScope::BoardMetadata] {
+            let mut io = ExpandedOutput::new(agent);
+            io.scopes = vec![scope];
+            assert_eq!(
+                output_with(&io, "A").unwrap_err().message(),
+                "unsupported-target"
+            );
+            assert!(io.inner.tmux_calls.borrow().is_empty());
+            let mut io = ExpandedOutput::new(agent);
+            io.scopes.push(scope);
+            assert_eq!(
+                output_with(&io, "A").unwrap_err().message(),
+                "unsupported-target"
+            );
+        }
+        let mut io = ExpandedOutput::new(agent);
+        io.inner.generations.push("other");
+        assert_eq!(
+            output_with(&io, "A").unwrap_err().message(),
+            "target-changed"
+        );
+        let mut io = ExpandedOutput::new(agent);
+        io.inner.sessions.push("other");
+        assert_eq!(
+            output_with(&io, "A").unwrap_err().message(),
+            "target-changed"
+        );
+        let mut io = ExpandedOutput::new(agent);
+        io.mcp_after = true;
+        assert_eq!(
+            output_with(&io, "A").unwrap_err().message(),
+            "mcp-controlled"
+        );
+    }
+}
+
+#[test]
+fn board_access_notes_do_not_authorize_queue_and_keep_revision_checks() {
+    let board =
+        json!({"cards":[{"id":"C1","session":"s","cmd":"","buffer":{"revision":1,"entries":[]}}]});
+    assert_eq!(
+        buffer_in_scope(&board, "C1", &[], SnapshotScope::BoardAccess).unwrap()["revision"],
+        1
+    );
+    for kind in ["buffer-add", "buffer-edit", "buffer-delete", "buffer-queue"] {
+        let mut req = request(kind, "note");
+        req.kind = kind.into();
+        let result = validate_applicable_in_scope(&req, "r", &board, SnapshotScope::BoardAccess);
+        if kind == "buffer-queue" {
+            assert_eq!(result.unwrap_err().message(), "unsupported-target");
+        } else {
+            result.unwrap();
+            req.expected_revision = Some("0".into());
+            assert_eq!(
+                validate_applicable_in_scope(&req, "r", &board, SnapshotScope::BoardAccess)
+                    .unwrap_err()
+                    .message(),
+                "revision-changed"
+            );
+        }
+    }
+}
+
+#[test]
+fn scope_withdrawal_and_regrant_never_resurrect_pending_commands_or_note_commits() {
+    let (_global, runtime) = global_runtime();
+    runtime
+        .with_doc(|d| {
+            d.devices.push(device("D1"));
+            Ok(())
+        })
+        .unwrap();
+    connector_set_scope(SnapshotScope::BoardAccess).unwrap();
+    assert_eq!(
+        load(&runtime.path).unwrap().config.scope,
+        SnapshotScope::BoardAccess
+    );
+    let pending = request("pending-scope", "note");
+    let executing = request("executing-scope", "note");
+    runtime.accept(1, "D1", pending.clone()).unwrap();
+    runtime.accept(1, "D1", executing.clone()).unwrap();
+    let handle = sha(b"D1\0executing-scope");
+    connector_claim(handle.clone()).unwrap();
+    let first = runtime.read(|d| d.config.scope_revision).unwrap();
+    connector_set_scope(SnapshotScope::BoardAccess).unwrap();
+    assert_eq!(
+        runtime.read(|d| d.config.scope_revision).unwrap(),
+        first,
+        "saving unchanged consent does not cancel work"
+    );
+    connector_set_scope(SnapshotScope::BoardMetadata).unwrap();
+    connector_set_scope(SnapshotScope::BoardAccess).unwrap();
+    assert_eq!(
+        runtime.read(|d| d.config.scope_revision).unwrap(),
+        first + 2
+    );
+    assert_eq!(runtime.accept(1, "D1", pending).unwrap().state, "rejected");
+    assert_eq!(
+        runtime.accept(1, "D1", executing).unwrap().state,
+        "ambiguous"
+    );
+    assert!(runtime.executing(&handle).is_err());
+    assert!(
+        board_commit_guard(&handle).is_err(),
+        "revoked note must never acquire its commit guard"
+    );
+}
+
+#[test]
+fn get_responses_drop_content_after_scope_aba_device_revocation_or_disable() {
+    for change in ["scope-aba", "device", "disabled"] {
+        let (runtime, _app) = test_runtime(&format!("read-fence-{change}"));
+        runtime
+            .with_doc(|d| {
+                let mut entry = device("D");
+                entry.token_hash = sha(b"deck-device-v1\0token");
+                d.devices.push(entry);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            runtime.authorized_read(1, "token", |_| "content").unwrap(),
+            "content"
+        );
+        let result = runtime.authorized_read(1, "token", |_| {
+            runtime
+                .with_doc(|d| {
+                    match change {
+                        "scope-aba" => {
+                            d.config.scope_revision += 2;
+                        }
+                        "device" => {
+                            revoke_device(d, "D")?;
+                        }
+                        _ => {
+                            d.config.enabled = false;
+                        }
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            "must not escape"
+        });
+        assert!(result.is_err(), "{change}");
+    }
+}
+
+#[test]
+fn board_access_wire_fixture_matches_independent_capabilities() {
+    let board = json!({"projects":[{"id":"P1","name":"One","columns":[{"id":"COL1","name":"Todo"}]}],
+        "cards":[{"id":"MANUAL","session":"manual","cmd":"","projectId":"P1","columnId":"COL1","title":"Manual Codex","buffer":{"revision":1,"collecting":false,"entries":[{}]}},
+                 {"id":"SHELL","session":"shell","cmd":"","projectId":"P1","columnId":"COL1","title":"Shell"}]});
+    let queues = queue_fixture(json!([]));
+    let mut actual = snapshot_in(
+        ("host_x", "Studio Mac"),
+        "rev-board-access",
+        &board,
+        &queues,
+        SnapshotScope::BoardAccess,
+        |session| {
+            let mut p = golden_probe("deck-a-0001")?;
+            p.generation = format!("gen-{session}");
+            p.agent = if session == "manual" {
+                Some("codex".into())
+            } else {
+                None
+            };
+            Ok(p)
+        },
+        |_| Ok(()),
+    );
+    actual["capturedAt"] = json!(1789776000);
+    assert_eq!(
+        actual,
+        phone_json(phone_fixture!("snapshot-board-access.json"))
+    );
 }

@@ -961,34 +961,50 @@
         }
       }
     },
-    "All card summaries shared by this Mac. Terminal access is separate.": {
+    "All card output and notes are shared by this Mac. Messages still require a current Codex or Claude foreground; shell input is unavailable, and queued delivery requires a saved launch configuration.": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "All card summaries shared by this Mac. Terminal access is separate."
+            "value": "All card output and notes are shared by this Mac. Messages still require a current Codex or Claude foreground; shell input is unavailable, and queued delivery requires a saved launch configuration."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "显示此 Mac 共享的全部卡片概要。终端访问权限单独控制。"
+            "value": "此 Mac 共享全部卡片的输出和便签。发送消息仍需当前前台且已验证的 Codex 或 Claude；不能向 Shell 输入，排队发送需要已保存的启动配置。"
           }
         }
       }
     },
-    "Only saved Codex and Claude cards are shared. To see all card summaries, change Phone Connector sharing on your Mac.": {
+    "All card summaries are shared by this Mac. Output and notes require the separate Phone Connector sharing choice on your Mac.": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Only saved Codex and Claude cards are shared. To see all card summaries, change Phone Connector sharing on your Mac."
+            "value": "All card summaries are shared by this Mac. Output and notes require the separate Phone Connector sharing choice on your Mac."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "当前仅共享已保存 Codex 或 Claude 启动命令的卡片。要查看全部卡片概要，请在 Mac 上更改 Phone Connector 共享范围。"
+            "value": "此 Mac 共享全部卡片概要。输出和便签需在 Mac 上单独选择 Phone Connector 共享范围。"
+          }
+        }
+      }
+    },
+    "Only cards with a saved Codex or Claude launch command are shared. Change Phone Connector sharing on your Mac to include other cards.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only cards with a saved Codex or Claude launch command are shared. Change Phone Connector sharing on your Mac to include other cards."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅共享已保存 Codex 或 Claude 启动命令的卡片。请在 Mac 上更改 Phone Connector 共享范围以包含其他卡片。"
           }
         }
       }
@@ -1425,18 +1441,18 @@
         }
       }
     },
-    "Summary only. Remote access requires a saved Codex or Claude command on your Mac.": {
+    "This access is not shared for this card. Check Phone Connector sharing on your Mac.": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Summary only. Remote access requires a saved Codex or Claude command on your Mac."
+            "value": "This access is not shared for this card. Check Phone Connector sharing on your Mac."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "仅共享概要。远程访问需要在 Mac 上保存 Codex 或 Claude 启动命令。"
+            "value": "此卡片未共享这项访问权限。请检查 Mac 上的 Phone Connector 共享范围。"
           }
         }
       }
@@ -1617,18 +1633,18 @@
         }
       }
     },
-    "Scratchpad unavailable: this is not a desktop-saved Codex or Claude card.": {
+    "Scratchpad access is not shared for this card. Change Phone Connector sharing on your Mac.": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Scratchpad unavailable: this is not a desktop-saved Codex or Claude card."
+            "value": "Scratchpad access is not shared for this card. Change Phone Connector sharing on your Mac."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "便签不可用：此卡片没有已保存的 Codex 或 Claude 启动配置。"
+            "value": "此卡片未共享暂存区访问权限。请在 Mac 上更改 Phone Connector 共享范围。"
           }
         }
       }

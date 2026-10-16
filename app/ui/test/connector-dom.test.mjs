@@ -31,6 +31,8 @@ test('claimed buffer-add validates inside the Board transaction, persists once, 
   assert.equal(store.cards[0].buffer.entries[0].text, 'remote note');
   assert.equal(writes.length, 1, 'a replay with no pending journal command cannot duplicate the note');
   assert.ok(calls.find(([cmd]) => cmd === 'connector_validate'));
+  assert.equal(calls.find(([cmd]) => cmd === 'save_board')[1].writeClaim, handle,
+    'the claimed note handle reaches the native commit fence, beyond initial validation');
   const completed = calls.find(([cmd]) => cmd === 'connector_complete')[1];
   assert.equal(completed.state, 'applied', JSON.stringify(calls));
   assert.deepEqual(completed.result.cardId, 'S1');

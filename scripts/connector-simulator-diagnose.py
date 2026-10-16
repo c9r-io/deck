@@ -36,7 +36,7 @@ state = {"runDir": str(RUN), "developerDir": str(DEVELOPER), "simulatorUDID": No
          "hostPID": None, "hostBundle": None, "tmuxSocket": SOCKET, "cleanupCompleted": False}
 result = {"environmentReady": False, "isolationVerified": False,
           "mode": "fixed", "reproductionConfirmed": None,
-          "snapshotScope": "boardMetadata" if ENV.get("DECK_SMOKE_CONNECTOR_BOARD_METADATA") == "1" else "agentCards",
+          "snapshotScope": "boardAccess" if ENV.get("DECK_SMOKE_CONNECTOR_BOARD_ACCESS") == "1" else "boardMetadata" if ENV.get("DECK_SMOKE_CONNECTOR_BOARD_METADATA") == "1" else "agentCards",
           "productAssertionsPassed": False,
           "requiredTestsExecuted": False, "cleanupCompleted": False, "humanInterventions": 0,
           "xcodePath": str(XCODE), "developerDir": str(DEVELOPER),
@@ -78,7 +78,15 @@ def source_fingerprint():
     diff = subprocess.check_output(["git", "diff", "--binary", "HEAD", "--",
                                     "app/src-tauri", "app/ui", "connector/ios"], cwd=ROOT,
                                    env=ENV, timeout=30)
-    return hashlib.sha256(diff).hexdigest()
+    digest = hashlib.sha256(diff)
+    # New protocol fixtures and tests also belong to the build identity.
+    untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "-z", "--",
+                                         "app/src-tauri", "app/ui", "connector/ios"], cwd=ROOT,
+                                        env=ENV, timeout=30)
+    for relative in sorted(path for path in untracked.split(b"\0") if path):
+        contents = (ROOT / os.fsdecode(relative)).read_bytes()
+        digest.update(relative + b"\0" + str(len(contents)).encode() + b"\0" + contents)
+    return digest.hexdigest()
 
 
 def probe_live_agent(tmux):
@@ -96,6 +104,16 @@ def probe_live_agent(tmux):
         result["realAgentProbe"] = "BLOCKED: isolated live card was not created"
         return
     session = live["session"]
+    if result["snapshotScope"] == "boardAccess":
+        # Wait for the ordinary Board transaction to finish clearing launch metadata.
+        deadline = time.monotonic() + 10
+        while live.get("cmd") != "" and time.monotonic() < deadline:
+            time.sleep(0.1)
+            cards = json.loads(board.read_text()).get("data", {}).get("cards", [])
+            live = next(card for card in cards if card.get("id") == live["id"])
+        if live.get("cmd") != "":
+            raise RuntimeError("expanded-access live fixture still has saved launch command")
+        result["liveSavedCommandEmpty"] = True
     state["liveSession"] = session
     result["liveCardIdHash"] = hashlib.sha256(live["id"].encode()).hexdigest()[:16]
     agent_ready = False
@@ -332,6 +350,7 @@ def main():
         raise RuntimeError("build inputs changed during this diagnostic run")
     run(["xcrun", "simctl", "install", udid, str(app)], log=RUN / "sim-install.log", timeout=90)
     open_args = ["open", "-n", str(bundle), "--env", "TMUX_TMPDIR=" + ENV["TMUX_TMPDIR"],
+                 "--env", "DECK_SMOKE_CONNECTOR_BOARD_ACCESS=" + ENV.get("DECK_SMOKE_CONNECTOR_BOARD_ACCESS", "0"),
                  "--env", "DECK_SMOKE_CONNECTOR_BOARD_METADATA=" + ENV.get("DECK_SMOKE_CONNECTOR_BOARD_METADATA", "0"),
                  "--args", "--smoke-data-dir", str(DATA),
                  "--smoke-tmux-socket", SOCKET, "--smoke-wkwebview", "connector-transport"]
@@ -464,6 +483,8 @@ def main():
         ]
         if result["snapshotScope"] == "boardMetadata":
             selected.append("DeckConnectorUITests/ConnectorUITests/testIsolatedSharedShellIsMetadataOnly")
+        elif result["snapshotScope"] == "boardAccess":
+            selected.append("DeckConnectorUITests/ConnectorUITests/testIsolatedBoardAccessManualAgentAndShell")
         test_command += ["-only-testing:" + name for name in selected]
     else:
         app_model_source = (ROOT / "connector/ios/DeckConnectorTests/AppModelTests.swift").read_text()
@@ -538,6 +559,8 @@ def main():
             result["cases"]["stoppedSavedAgentOutput"] = "PASS" if stopped == "Passed" else "FAIL"
             result["cases"]["foregroundCycle"] = "PASS" if stopped == "Passed" else "FAIL"
             result["cases"]["appRelaunchCredentialRecovery"] = "PASS" if stopped == "Passed" else "FAIL"
+        if result["snapshotScope"] == "boardAccess":
+            result["cases"]["shellWithForegroundAgent"] = "PASS" if observed.get("testIsolatedBoardAccessManualAgentAndShell") == "Passed" else "FAIL"
         if live:
             result["cases"]["liveSavedAgentOutput"] = (
                 "PASS" if live == "Passed" else "BLOCKED" if live == "Skipped" else "FAIL")
@@ -571,6 +594,8 @@ def main():
         result["cases"]["ordinaryShellVisibility"] = (
             "PASS" if observed.get("testOptInRealHostPairingBufferCASAndCredentialLifecycle") == "Passed" else "FAIL")
     selected_cases = ("stoppedSavedAgentOutput", "liveSavedAgentOutput", "agentExitedToShell") if SUITE == "ui" else ("ordinaryShellVisibility",)
+    if SUITE == "ui" and result["snapshotScope"] == "boardAccess":
+        selected_cases += ("shellWithForegroundAgent",)
     result["requiredTestsExecuted"] = all(result["cases"][name] in ("PASS", "FAIL") for name in selected_cases)
     result["productAssertionsPassed"] = result["requiredTestsExecuted"] and all(result["cases"][name] == "PASS" for name in selected_cases)
     if test_failure:
@@ -733,6 +758,8 @@ def run_all():
     state["cleanupCompleted"] = result["cleanupCompleted"]
     required = ("liveSavedAgentOutput", "ordinaryShellVisibility", "stoppedSavedAgentOutput",
                 "agentExitedToShell")
+    if SUITE == "ui" and result["snapshotScope"] == "boardAccess":
+        selected_cases += ("shellWithForegroundAgent",)
     result["requiredTestsExecuted"] = all(result["cases"][name] in ("PASS", "FAIL") for name in required)
     result["productAssertionsPassed"] = result["requiredTestsExecuted"] and all(
         result["cases"][name] == "PASS" for name in required) and all(

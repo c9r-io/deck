@@ -1,0 +1,186 @@
+Building for debugging...
+[1 / 1]
+[2 / 10] DeckConnectorCore
+[3 / 33]
+[5 / 33]
+[7 / 33]
+[8 / 33]
+[11 / 33]
+[13 / 33]
+[15 / 33]
+[16 / 33]
+[19 / 33]
+[21 / 33]
+[23 / 33]
+[25 / 33] DeckConnectorCore
+/Users/chenhan/c9r-io/deck/connector/ios/Package.swift: DeckConnectorCore: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+/Users/chenhan/c9r-io/deck/connector/ios/Package.swift: DeckConnectorCoreTests-product: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/usr/lib' not found
+/Users/chenhan/c9r-io/deck/connector/ios/Package.swift: DeckConnectorCoreTests-product: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+/Users/chenhan/c9r-io/deck/connector/ios/Package.swift: DeckConnectorCoreTests-product: ld: warning: building for macOS-13.0, but linking with dylib '@rpath/Testing.framework/Versions/A/Testing' which was built for newer version 14.0
+[31 / 34] DeckConnectorCoreTests-product
+Build complete! (47.83秒)
+◇ Test run started.
+↳ Testing Library Version: 2084
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Test prepareDoesNotClaimALaterIdenticalDraftForTheIntendedEarlierRevision() started.
+◇ Suite HTTPClientTests started.
+◇ Test recoveredAppliedClearsOnlyUnchangedSubmittedDraft() started.
+◇ Test rapidDraftWritesStayOrderedAndSupersedeOlderVersion() started.
+◇ Test oversizedClosedResultIsRejectedWithoutLosingPreparedRequest() started.
+◇ Test everyValidHostRequestDecodesValidatesAndRoundTrips() started.
+◇ Test delayedWriteSerializesNewerEditAndFailureCanRetry() started.
+◇ Test rejectedBufferEditPreservesItsDraft() started.
+◇ Test failedQueryDoesNotEraseKnownAmbiguousResult() started.
+◇ Test limitsMatchTheHost() started.
+◇ Test hostPairingDescriptorAndPairResponseParse() started.
+◇ Test explicitCapabilityObjectFailsClosedAndLegacyHostDegradesHonestly() started.
+◇ Test coordinatorsDoNotCrossCredentialBinding() started.
+◇ Test boardAccessSnapshotKeepsOutputNotesMessagesAndQueueIndependent() started.
+◇ Test noteDraftDiscardIsConditionalOnTheExactSavedSnapshot() started.
+◇ Test hostSnapshotDecodesWithTheStatusWordsItEmits() started.
+◇ Test appliedBufferCommandWithoutAnExplicitRevisionPreservesTheDraft() started.
+◇ Test versionTwoFileMigratesWithoutChangingAnyRecord() started.
+◇ Test fileJournalChecksFileSizeBeforeJSONDecode() started.
+◇ Test textTheHostWouldRefuseIsRejectedBeforeJournalingOrSending() started.
+◇ Test pinnedSelfSignedIPLeafIsSoleAnchorWithHostnameAndValidityChecks() started.
+◇ Test legacyRecordGetsASequenceOnlyFromAHost404AndPersistsItBeforeTheRetry() started.
+◇ Test rustQueueAndExecutingFixturesRemainWireCompatible() started.
+◇ Test severalLegacyRecordsGetUniqueIncreasingSequences() started.
+◇ Test recoveredAppliedBufferEditAtomicallyClearsSubmittedDraftAcrossReopen() started.
+◇ Test commandResultUsesClosedBoundedPerKindSchema() started.
+◇ Test retryRequiresProvenNotFoundAndReusesImmutableRequest() started.
+◇ Test versionThreeExpiredReloadsWithoutAnyRequest() started.
+◇ Test snapshotAcceptsOptionalBoardAccessScopeWithoutChangingLegacySchema() started.
+◇ Test originMatchesSchemeHostPortAndPreservesEncodedID() started.
+◇ Test delayedAcceptedPostCannotOverwriteDeliveredQuery() started.
+◇ Test failedSecondPrepareCannotRemoveFirstRequestWhileItsPostIsRunning() started.
+◇ Test wireSchemaParsesSummaryWithoutBufferContents() started.
+◇ Test pairingDescriptorParsesAndRejectsExpiry() started.
+◇ Test versionOneJournalUpgradesWithoutRewritingItsRecords() started.
+◇ Test aFailedMigrationWriteLeavesTheVersionTwoFileIntact() started.
+◇ Test acceptedThenRecoveredAppliedUsesCanonicalResult() started.
+◇ Test recoveryLimitQueriesOldestRecordsAndHonorsCancellation() started.
+◇ Test commandTextUsesExactUTF8Limit() started.
+◇ Test legacyRecordIsNeverSequencedWithoutAHost404() started.
+◇ Test cardQueueCapabilityUsesExactFieldAndFailsClosedWhenMissing() started.
+◇ Test boundedRecoveryQueriesEveryPendingIDBeforeRepeatingNetworkFailures() started.
+◇ Test failedResultPersistenceLeavesPreparedIDForQueryRecovery() started.
+◇ Test noteDraftWritesAreImmediateOrderedAndVersionedPerEditor() started.
+◇ Test pairingDescriptorRejectsOversizedInputBeforeDecodeAndNonURLAlphabet() started.
+◇ Test pairingDescriptorAcceptsOnlyPrivateNetworkIPv4Origins() started.
+◇ Test failedPersistenceNeverCommitsMemory() started.
+◇ Test failedNoteDraftWriteCanRetryTheSameVersion() started.
+◇ Test bufferSchemaAcceptsIntegerRevisionAndEnforcesDesktopCapacity() started.
+◇ Test expiredRecordsLeaveTheReserveAndArePrunedButAmbiguousStays() started.
+◇ Test dirtyComposerIgnoresRefreshAndSendSnapshotIsExact() started.
+◇ Test byteFullArchivePrunesResolvedAndReservesFinalResult() started.
+➜ Test realDeckLoopbackHTTPSAndWKBridgeTransport() skipped: "Set DECK_CONNECTOR_SMOKE_FIXTURE to the private isolated fixture JSON to run."
+◇ Test pairingDescriptorRejectsHTTPAndMalformedFingerprint() started.
+◇ Test hostBufferAndOutputDecodeAndValidate() started.
+◇ Test wrongResponseIDNeverUpdatesAnotherRecord() started.
+◇ Test outputResponseMustBelongToTheRequestedCard() started.
+◇ Test fileReloadRecoveryPreservesLaterIdenticalDraftWithinTheSameEncodedSecond() started.
+◇ Test a410IsATerminalExpiredStateAcrossReload() started.
+◇ Test a426RetryKeepsTheOneSequence() started.
+◇ Test noteDraftQuotaFailureLeavesTheLastCommittedStateWhole() started.
+◇ Test noteDraftsSurviveRestartAndNewAndExistingEditorsDoNotCollide() started.
+◇ Test aNewerJournalVersionIsRefusedBeforeItsRecordsAndLeftUntouched() started.
+◇ Test stateWritesStayOrderedAcrossSuspendingStorage() started.
+◇ Test submitPersistsAnAdmissionSequenceBeforeTheFirstPost() started.
+◇ Test recoveredBufferEditPreservesALaterIdenticalDraft() started.
+◇ Test invalidHostRequestsTheHostRefusesAreRefusedLocallyWhenThePhoneCanTell() started.
+◇ Test anUnknownOrOutOfVersionStateFailsClosed() started.
+◇ Test journalRejectsDifferentCredentialBinding() started.
+◇ Test fullArchivePrunesOnlyConfirmedResolvedRecord() started.
+◇ Test concurrentDraftEditDuringPendingPostSurvivesDeliveredReply() started.
+◇ Test versionOneFileMigratesLazilyToVersionFour() started.
+◇ Test appliedBufferAddClearsOnlyTheNewNoteDraftNamespace() started.
+◇ Test resultCodesFollowTheHostRule() started.
+◇ Test goneCommandIsExpiredNotATransportError() started.
+✔ Test rapidDraftWritesStayOrderedAndSupersedeOlderVersion() passed after 0.004 seconds.
+✔ Test explicitCapabilityObjectFailsClosedAndLegacyHostDegradesHonestly() passed after 0.007 seconds.
+✔ Test coordinatorsDoNotCrossCredentialBinding() passed after 0.007 seconds.
+✔ Test prepareDoesNotClaimALaterIdenticalDraftForTheIntendedEarlierRevision() passed after 0.007 seconds.
+✔ Test appliedBufferCommandWithoutAnExplicitRevisionPreservesTheDraft() passed after 0.007 seconds.
+✔ Test oversizedClosedResultIsRejectedWithoutLosingPreparedRequest() passed after 0.007 seconds.
+✔ Test rejectedBufferEditPreservesItsDraft() passed after 0.007 seconds.
+✔ Test recoveredAppliedClearsOnlyUnchangedSubmittedDraft() passed after 0.008 seconds.
+✔ Test failedQueryDoesNotEraseKnownAmbiguousResult() passed after 0.007 seconds.
+✔ Test noteDraftDiscardIsConditionalOnTheExactSavedSnapshot() passed after 0.007 seconds.
+✔ Test legacyRecordGetsASequenceOnlyFromAHost404AndPersistsItBeforeTheRetry() passed after 0.007 seconds.
+✔ Test textTheHostWouldRefuseIsRejectedBeforeJournalingOrSending() passed after 0.007 seconds.
+✔ Test rustQueueAndExecutingFixturesRemainWireCompatible() passed after 0.007 seconds.
+✔ Test severalLegacyRecordsGetUniqueIncreasingSequences() passed after 0.007 seconds.
+✔ Test recoveredAppliedBufferEditAtomicallyClearsSubmittedDraftAcrossReopen() passed after 0.007 seconds.
+✔ Test commandResultUsesClosedBoundedPerKindSchema() passed after 0.007 seconds.
+✔ Test retryRequiresProvenNotFoundAndReusesImmutableRequest() passed after 0.007 seconds.
+✔ Test originMatchesSchemeHostPortAndPreservesEncodedID() passed after 0.007 seconds.
+✔ Test snapshotAcceptsOptionalBoardAccessScopeWithoutChangingLegacySchema() passed after 0.007 seconds.
+✔ Test wireSchemaParsesSummaryWithoutBufferContents() passed after 0.007 seconds.
+✔ Test pairingDescriptorParsesAndRejectsExpiry() passed after 0.007 seconds.
+✔ Test versionOneJournalUpgradesWithoutRewritingItsRecords() passed after 0.007 seconds.
+✔ Test fileJournalChecksFileSizeBeforeJSONDecode() passed after 0.008 seconds.
+✔ Test versionThreeExpiredReloadsWithoutAnyRequest() passed after 0.008 seconds.
+✔ Test acceptedThenRecoveredAppliedUsesCanonicalResult() passed after 0.008 seconds.
+✔ Test legacyRecordIsNeverSequencedWithoutAHost404() passed after 0.007 seconds.
+✔ Test cardQueueCapabilityUsesExactFieldAndFailsClosedWhenMissing() passed after 0.007 seconds.
+✔ Test aFailedMigrationWriteLeavesTheVersionTwoFileIntact() passed after 0.008 seconds.
+✔ Test boundedRecoveryQueriesEveryPendingIDBeforeRepeatingNetworkFailures() passed after 0.008 seconds.
+✔ Test failedResultPersistenceLeavesPreparedIDForQueryRecovery() passed after 0.008 seconds.
+✔ Test failedPersistenceNeverCommitsMemory() passed after 0.007 seconds.
+✔ Test pairingDescriptorRejectsOversizedInputBeforeDecodeAndNonURLAlphabet() passed after 0.007 seconds.
+✔ Test failedNoteDraftWriteCanRetryTheSameVersion() passed after 0.007 seconds.
+✔ Test commandTextUsesExactUTF8Limit() passed after 0.008 seconds.
+✔ Test bufferSchemaAcceptsIntegerRevisionAndEnforcesDesktopCapacity() passed after 0.008 seconds.
+✔ Test dirtyComposerIgnoresRefreshAndSendSnapshotIsExact() passed after 0.007 seconds.
+✔ Test pairingDescriptorAcceptsOnlyPrivateNetworkIPv4Origins() passed after 0.008 seconds.
+✔ Test pairingDescriptorRejectsHTTPAndMalformedFingerprint() passed after 0.008 seconds.
+✔ Test versionTwoFileMigratesWithoutChangingAnyRecord() passed after 0.008 seconds.
+✔ Test wrongResponseIDNeverUpdatesAnotherRecord() passed after 0.007 seconds.
+✔ Test limitsMatchTheHost() passed after 0.008 seconds.
+✔ Test boardAccessSnapshotKeepsOutputNotesMessagesAndQueueIndependent() passed after 0.008 seconds.
+✔ Test hostSnapshotDecodesWithTheStatusWordsItEmits() passed after 0.008 seconds.
+✔ Test hostBufferAndOutputDecodeAndValidate() passed after 0.008 seconds.
+✔ Test hostPairingDescriptorAndPairResponseParse() passed after 0.008 seconds.
+✔ Test a410IsATerminalExpiredStateAcrossReload() passed after 0.008 seconds.
+✔ Test noteDraftsSurviveRestartAndNewAndExistingEditorsDoNotCollide() passed after 0.008 seconds.
+✔ Test a426RetryKeepsTheOneSequence() passed after 0.008 seconds.
+✔ Test recoveredBufferEditPreservesALaterIdenticalDraft() passed after 0.008 seconds.
+✔ Test submitPersistsAnAdmissionSequenceBeforeTheFirstPost() passed after 0.008 seconds.
+✔ Test everyValidHostRequestDecodesValidatesAndRoundTrips() passed after 0.008 seconds.
+✔ Test journalRejectsDifferentCredentialBinding() passed after 0.008 seconds.
+✔ Test invalidHostRequestsTheHostRefusesAreRefusedLocallyWhenThePhoneCanTell() passed after 0.008 seconds.
+✔ Test fileReloadRecoveryPreservesLaterIdenticalDraftWithinTheSameEncodedSecond() passed after 0.008 seconds.
+✔ Test appliedBufferAddClearsOnlyTheNewNoteDraftNamespace() passed after 0.008 seconds.
+✔ Test resultCodesFollowTheHostRule() passed after 0.008 seconds.
+✔ Test versionOneFileMigratesLazilyToVersionFour() passed after 0.008 seconds.
+✔ Test aNewerJournalVersionIsRefusedBeforeItsRecordsAndLeftUntouched() passed after 0.008 seconds.
+✔ Test recoveryLimitQueriesOldestRecordsAndHonorsCancellation() passed after 0.008 seconds.
+✔ Test delayedAcceptedPostCannotOverwriteDeliveredQuery() passed after 0.009 seconds.
+✔ Test delayedWriteSerializesNewerEditAndFailureCanRetry() passed after 0.009 seconds.
+✔ Test failedSecondPrepareCannotRemoveFirstRequestWhileItsPostIsRunning() passed after 0.009 seconds.
+✔ Test concurrentDraftEditDuringPendingPostSurvivesDeliveredReply() passed after 0.008 seconds.
+✔ Test stateWritesStayOrderedAcrossSuspendingStorage() passed after 0.008 seconds.
+✔ Test noteDraftWritesAreImmediateOrderedAndVersionedPerEditor() passed after 0.009 seconds.
+✔ Test anUnknownOrOutOfVersionStateFailsClosed() passed after 0.009 seconds.
+✔ Test pinnedSelfSignedIPLeafIsSoleAnchorWithHostnameAndValidityChecks() passed after 0.009 seconds.
+✔ Test outputResponseMustBelongToTheRequestedCard() passed after 0.010 seconds.
+✔ Test goneCommandIsExpiredNotATransportError() passed after 0.010 seconds.
+◇ Test hostStatusMapMatchesThePhoneErrors() started.
+✔ Test hostStatusMapMatchesThePhoneErrors() passed after 0.003 seconds.
+◇ Test unsupportedTargetHasAnActionableClientError() started.
+✔ Test unsupportedTargetHasAnActionableClientError() passed after 0.001 seconds.
+◇ Test outputCodesStayDistinctFromCommandExpiryAndLegacyUnavailable() started.
+✔ Test outputCodesStayDistinctFromCommandExpiryAndLegacyUnavailable() passed after 0.003 seconds.
+◇ Test frozenOldOutputDecoderFailsClosedForNewCodes() started.
+✔ Test frozenOldOutputDecoderFailsClosedForNewCodes() passed after 0.001 seconds.
+◇ Test cancellingSwiftTaskCancelsUnderlyingRequestAndResumesOnce() started.
+✔ Test expiredRecordsLeaveTheReserveAndArePrunedButAmbiguousStays() passed after 0.018 seconds.
+✔ Test fullArchivePrunesOnlyConfirmedResolvedRecord() passed after 0.019 seconds.
+✔ Test cancellingSwiftTaskCancelsUnderlyingRequestAndResumesOnce() passed after 0.002 seconds.
+◇ Test pendingRequestCapRejectsNinthOverlappingPoll() started.
+✔ Test pendingRequestCapRejectsNinthOverlappingPoll() passed after 0.001 seconds.
+✔ Suite HTTPClientTests passed after 0.021 seconds.
+✔ Test byteFullArchivePrunesResolvedAndReservesFinalResult() passed after 0.033 seconds.
+✔ Test noteDraftQuotaFailureLeavesTheLastCommittedStateWhole() passed after 0.138 seconds.
+✔ Test run with 80 tests in 1 suite passed after 0.139 seconds.

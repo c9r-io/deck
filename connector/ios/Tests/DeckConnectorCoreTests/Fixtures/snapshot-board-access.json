@@ -1,0 +1,87 @@
+{
+  "capturedAt": 1789776000,
+  "cards": [
+    {
+      "buffer": {
+        "collecting": false,
+        "entryCount": 1,
+        "revision": 1
+      },
+      "canQueue": false,
+      "canSend": true,
+      "capabilities": {
+        "editNotes": {
+          "allowed": true
+        },
+        "queue": {
+          "allowed": false,
+          "reason": "unsupported-target"
+        },
+        "readOutput": {
+          "allowed": true
+        },
+        "sendMessage": {
+          "allowed": true
+        }
+      },
+      "columnId": "COL1",
+      "generation": "gen-manual",
+      "id": "MANUAL",
+      "order": 0,
+      "projectId": "P1",
+      "status": "running",
+      "title": "Manual Codex"
+    },
+    {
+      "buffer": {
+        "collecting": false,
+        "entryCount": 0,
+        "revision": 0
+      },
+      "canQueue": false,
+      "canSend": false,
+      "capabilities": {
+        "editNotes": {
+          "allowed": true
+        },
+        "queue": {
+          "allowed": false,
+          "reason": "unsupported-target"
+        },
+        "readOutput": {
+          "allowed": true
+        },
+        "sendMessage": {
+          "allowed": false,
+          "reason": "agent-not-in-foreground"
+        }
+      },
+      "columnId": "COL1",
+      "generation": "gen-shell",
+      "id": "SHELL",
+      "order": 1,
+      "projectId": "P1",
+      "status": "running",
+      "title": "Shell"
+    }
+  ],
+  "hostId": "host_x",
+  "hostName": "Studio Mac",
+  "projects": [
+    {
+      "columns": [
+        {
+          "id": "COL1",
+          "name": "Todo"
+        }
+      ],
+      "id": "P1",
+      "name": "One",
+      "presets": []
+    }
+  ],
+  "queue": [],
+  "revision": "rev-board-access",
+  "scope": "boardAccess",
+  "version": 1
+}

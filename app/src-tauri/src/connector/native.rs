@@ -1,7 +1,10 @@
 //! Native execution of a claimed command and the `Transport` impl behind it.
 //!
 //! Split out of the one-file `connector/mod.rs` on 2026-09-23; the contract
-//! stays in `connector/mod.rs`.
+//! stays in `connector/mod.rs`. Direct messages use local card-access consent
+//! plus the live agent/generation fence; queues retain saved-command admission.
+//! Every write holds lifecycle across the guard and tmux call, ordering scope
+//! and device withdrawal against side effects.
 
 use super::*;
 
@@ -30,7 +33,11 @@ pub(super) fn execute_native(
             }
             let card = committed_card(req.card_id.as_deref().ok_or(("rejected", "missing-card"))?)
                 .map_err(|_| ("rejected", "missing-card"))?;
-            require_agent_card(&card).map_err(|_| ("rejected", "unsupported-target"))?;
+            require_card_access(
+                &card,
+                current_scope().map_err(|_| ("rejected", "unsupported-target"))?,
+            )
+            .map_err(|_| ("rejected", "unsupported-target"))?;
             let probe = crate::context::connector_probe(&card.session)
                 .map_err(|_| ("rejected", "target-changed"))?;
             if !matches!(
@@ -53,6 +60,7 @@ pub(super) fn execute_native(
                 session: &card.session,
             };
             let transport = ConnectorTransport {
+                handle,
                 card_id: &card.id,
                 session: &card.session,
                 expected_generation: &probe.generation,
@@ -173,6 +181,7 @@ impl Drop for BusyClaim<'_> {
 }
 
 pub(super) struct ConnectorTransport<'a> {
+    pub(super) handle: &'a str,
     pub(super) card_id: &'a str,
     pub(super) session: &'a str,
     pub(super) expected_generation: &'a str,
@@ -185,7 +194,10 @@ impl ConnectorTransport<'_> {
         if !runtime.feature_active() {
             return Err(DeckError::new(ErrorKind::Perm, "connector unavailable"));
         }
-        if committed_card(self.card_id)?.session != self.session {
+        runtime.executing(self.handle)?;
+        let card = committed_card(self.card_id)?;
+        require_card_access(&card, current_scope()?)?;
+        if card.session != self.session {
             return Err(DeckError::new(ErrorKind::ContextChanged, "target-changed"));
         }
         // The same MCP control fence as every other terminal-input path
@@ -199,8 +211,8 @@ impl ConnectorTransport<'_> {
         if !device_active {
             return Err(DeckError::new(ErrorKind::Perm, "device revoked"));
         }
-        let generation = crate::context::connector_probe(self.session)?.generation;
-        if generation != self.expected_generation {
+        let probe = crate::context::connector_probe(self.session)?;
+        if probe.agent.is_none() || probe.generation != self.expected_generation {
             return Err(DeckError::new(ErrorKind::ContextChanged, "target-changed"));
         }
         Ok(())
@@ -213,6 +225,8 @@ impl crate::prompt_delivery::Transport for ConnectorTransport<'_> {
     }
 
     fn run(&self, args: &[String]) -> Result<String, DeckError> {
+        let runtime = rt()?;
+        let _lifecycle = runtime.lifecycle.lock_or_recover();
         // Cleanup must remain possible after a target or authorization change.
         if args.first().map(String::as_str) != Some("delete-buffer") {
             self.guard()?;
@@ -221,6 +235,8 @@ impl crate::prompt_delivery::Transport for ConnectorTransport<'_> {
     }
 
     fn run_with_stdin(&self, args: &[String], input: &[u8]) -> Result<String, DeckError> {
+        let runtime = rt()?;
+        let _lifecycle = runtime.lifecycle.lock_or_recover();
         self.guard()?;
         crate::prompt_delivery::Transport::run_with_stdin(
             &crate::prompt_delivery::TmuxTransport,

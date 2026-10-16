@@ -1,0 +1,108 @@
+{
+  "date": "2026-10-17",
+  "baseline": "cf188610c2c1493151e2fee6afea2c36944467f8",
+  "scope": "Explicit boardAccess for output, notes and direct messages to recognized live Codex/Claude; no shell input or queue expansion",
+  "gates": {
+    "rustWorkspace": {
+      "command": "cargo test --manifest-path app/src-tauri/Cargo.toml --workspace",
+      "exitCode": 0,
+      "passed": 1537,
+      "failed": 0,
+      "ignored": 13,
+      "binaries": 17,
+      "evidence": "rust-workspace-summary.log"
+    },
+    "clippy": {
+      "command": "cargo clippy --manifest-path app/src-tauri/Cargo.toml --workspace --all-targets --all-features -- -D warnings",
+      "exitCode": 0
+    },
+    "rustfmt": {
+      "command": "cargo fmt --manifest-path app/src-tauri/Cargo.toml -- --check",
+      "exitCode": 0
+    },
+    "frontend": {
+      "command": "scripts/ui-tests",
+      "exitCode": 0,
+      "passed": 849,
+      "failed": 0,
+      "skipped": 0
+    },
+    "jsSyntax": {
+      "command": "python3 scripts/check-js-syntax.py",
+      "exitCode": 0,
+      "modules": 178
+    },
+    "jsModules": {
+      "command": "node app/ui/js/check.mjs",
+      "exitCode": 0,
+      "modules": 73
+    },
+    "extensionCatalog": {
+      "command": "python3 scripts/extension_catalog.py --check",
+      "exitCode": 0
+    },
+    "swiftCore": {
+      "command": "swift test --package-path connector/ios",
+      "exitCode": 0,
+      "passed": 80,
+      "optInLiveTransportSkipped": 1
+    },
+    "experimentRegistry": {
+      "command": "python3 scripts/test_edr_runtime.py",
+      "exitCode": 0,
+      "passed": 30
+    },
+    "pythonSyntax": {
+      "command": "python3 -m py_compile scripts/connector-simulator-diagnose.py",
+      "exitCode": 0
+    }
+  },
+  "native": {
+    "command": "DECK_DIAG_SUITE=ui DECK_SMOKE_CONNECTOR_BOARD_ACCESS=1 DECK_DIAG_DEVICE='iPhone SE (3rd generation)' DECK_DIAG_APPEARANCE=dark python3 -u scripts/connector-simulator-diagnose.py",
+    "exitCode": 0,
+    "report": "native-final-report.json",
+    "device": "iPhone SE (3rd generation), iOS 27.0 simulator, dark",
+    "build": "Final UI test bundle rebuilt; reused isolated host target compiled from unchanged production source for second run. Binary provenance verified.",
+    "testCounts": {
+      "passedTests": 5,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "totalTestCount": 5
+    },
+    "shellReturnTestCounts": {
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "totalTestCount": 1
+    },
+    "liveSavedCommandEmpty": true,
+    "realAgentProbe": "PASS",
+    "cleanupCompleted": true,
+    "visualReview": [
+      "manual-agent-reply.png",
+      "shell-note-saved.png",
+      "chinese-large-text-landscape.png"
+    ]
+  },
+  "initialFailures": [
+    "Wrong cargo library target: no tests executed; corrected to the application binary.",
+    "Test fixtures: unknown fake probe session and missing added scope field; corrected before final gates.",
+    "Initial workspace main suite passed 1261/0/13; external admission textual assertion did not match rustfmt output, updated while retaining scope/agent/MCP assertions.",
+    "Closed documents dependency gate rejected direct Connector dependency; replaced with a registered opaque write-claim guard, no allowlist expansion.",
+    "Signal census required two new foreground process consumers to be explicitly registered as NotSignal; no Signal authority added.",
+    "First simulator run: 3 passed, 2 failed (draft caret clearing and Notes tab selection); shell return passed; registry cleanup passed. UI helpers repaired without weakening assertions. See native-first-report.json and native-first-ui.log."
+  ],
+  "limits": [
+    "No physical iPhone Wi-Fi/VPN, permission, background/lock-screen or Mac sleep certification in this run.",
+    "Recognized process name plus kernel process birth/pane generation is not executable authenticity or Agent readiness proof.",
+    "No release, production install replacement, production card mutation or pairing change.",
+    "Legacy-scope native UI scenario was not rerun; its backend capability matrix remains covered by Rust tests."
+  ],
+  "userChangesPreserved": [
+    "docs/evidence/first-party-governance-20261016/README.md",
+    "docs/evidence/first-party-governance-20261016/native-checkpoints.log",
+    "docs/evidence/first-party-governance-20261016/results.json",
+    "research_notes/"
+  ],
+  "status": "PASS within documented scope"
+}

@@ -1,6 +1,7 @@
 //! Debug-only smoke hooks: seeded state, transport path and window visibility.
 //! The isolated transport fixture may opt into Board metadata scope only when
-//! `DECK_SMOKE_CONNECTOR_BOARD_METADATA=1`; production launches cannot reach
+//! `DECK_SMOKE_CONNECTOR_BOARD_METADATA=1` or full direct access with
+//! `DECK_SMOKE_CONNECTOR_BOARD_ACCESS=1`; production launches cannot reach
 //! the hook because every entry point first requires the smoke argument gate.
 //!
 //! Split out of the one-file `connector/mod.rs` on 2026-09-23; the contract
@@ -27,6 +28,7 @@ pub(crate) fn connector_smoke_seed(
             port: 18443,
             interface: None,
             scope: SnapshotScope::AgentCards,
+            scope_revision: 0,
         };
         if !doc.devices.iter().any(|device| device.id == "device_smoke") {
             doc.devices.push(Device {
@@ -63,6 +65,7 @@ pub(crate) fn connector_smoke_seed(
 pub(crate) struct SmokeTransportView {
     pub(super) path: String,
     pub(super) agent_dir: String,
+    pub(super) scope: SnapshotScope,
 }
 
 pub(super) fn require_smoke_session_stopped(
@@ -136,6 +139,7 @@ pub(crate) fn connector_smoke_transport(
                 port: 0,
                 interface: None,
                 scope: SnapshotScope::AgentCards,
+                scope_revision: 0,
             };
             doc.identity_address = Some(identity.address.clone());
             doc.identity_fingerprint = Some(identity.fingerprint.clone());
@@ -152,6 +156,7 @@ pub(crate) fn connector_smoke_transport(
                 port: 0,
                 interface: None,
                 scope: SnapshotScope::AgentCards,
+                scope_revision: 0,
             },
             identity,
             epoch,
@@ -165,6 +170,7 @@ pub(crate) fn connector_smoke_transport(
                 port,
                 interface: None,
                 scope: SnapshotScope::AgentCards,
+                scope_revision: 0,
             };
             Ok(())
         }) {
@@ -173,7 +179,9 @@ pub(crate) fn connector_smoke_transport(
         }
     }
 
-    let scope = if std::env::var("DECK_SMOKE_CONNECTOR_BOARD_METADATA").as_deref() == Ok("1") {
+    let scope = if std::env::var("DECK_SMOKE_CONNECTOR_BOARD_ACCESS").as_deref() == Ok("1") {
+        connector_set_scope(SnapshotScope::BoardAccess)?.scope
+    } else if std::env::var("DECK_SMOKE_CONNECTOR_BOARD_METADATA").as_deref() == Ok("1") {
         connector_set_scope(SnapshotScope::BoardMetadata)?.scope
     } else {
         SnapshotScope::AgentCards
@@ -207,6 +215,7 @@ pub(crate) fn connector_smoke_transport(
     Ok(SmokeTransportView {
         path,
         agent_dir: agent_dir.to_string_lossy().into_owned(),
+        scope,
     })
 }
 

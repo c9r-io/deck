@@ -1,10 +1,10 @@
 //! Board projection for the phone: consented Board metadata, saved agent
-//! card capabilities, buffer and bounded output.
+//! card capabilities, explicit Board access, buffer and bounded output.
 //!
 //! Split out of the one-file `connector/mod.rs` on 2026-09-23; the contract
 //! stays in `connector/mod.rs`. `snapshot` and `buffer` read the committed
 //! board and the managed queues, then delegate to the pure `snapshot_in`
-//! (with the pane probe injected) and `buffer_in`, which tests feed directly.
+//! (with the pane probe injected) and `buffer_in_scope`, which tests feed directly.
 //! Output maps failures only within the read operation: a missing pane before
 //! capture is unavailable, while loss during capture is a changed target.
 
@@ -14,9 +14,8 @@ use super::*;
 pub(super) struct InternalCard {
     pub(super) id: String,
     pub(super) session: String,
-    /// The card's SAVED command is Codex or Claude. Phone text and phone
-    /// output reads are limited to such cards; a live foreground agent in an
-    /// ordinary shell card does not qualify.
+    /// Saved command admission for queues and legacy scopes. BoardAccess
+    /// separately permits direct access without rewriting this configuration.
     pub(super) agent_target: bool,
 }
 pub(super) fn board_value() -> Result<(String, Value), DeckError> {
@@ -65,6 +64,23 @@ pub(super) fn require_agent_card(card: &InternalCard) -> Result<(), DeckError> {
     }
 }
 
+/// Launch configuration remains necessary for queued delivery. Direct access
+/// may instead be explicitly authorized for the whole Board on this Mac.
+pub(super) fn require_card_access(
+    card: &InternalCard,
+    scope: SnapshotScope,
+) -> Result<(), DeckError> {
+    if scope == SnapshotScope::BoardAccess {
+        Ok(())
+    } else {
+        require_agent_card(card)
+    }
+}
+
+pub(super) fn current_scope() -> Result<SnapshotScope, DeckError> {
+    rt()?.read(|d| d.config.scope)
+}
+
 pub(super) fn require_queue_target(card: &Value) -> Result<(), DeckError> {
     if queue_target_supported(card) {
         Ok(())
@@ -76,8 +92,11 @@ pub(super) fn require_queue_target(card: &Value) -> Result<(), DeckError> {
 pub(super) fn validate_buffer_target(
     request: &CommandRequest,
     card: &Value,
+    scope: SnapshotScope,
 ) -> Result<(), DeckError> {
-    require_queue_target(card)?;
+    if request.kind == "buffer-queue" || scope != SnapshotScope::BoardAccess {
+        require_queue_target(card)?;
+    }
     let current = card
         .get("buffer")
         .and_then(|buffer| buffer.get("revision"))
@@ -144,18 +163,20 @@ pub(super) fn snapshot_in(
         .flatten()
         .enumerate()
         .filter(|(_, card)| {
-            scope == SnapshotScope::BoardMetadata || queue_target_supported(card)
+            scope != SnapshotScope::AgentCards || queue_target_supported(card)
         })
         .filter_map(|(order, c)| {
             let id = c.get("id")?.as_str()?;
             let session = c.get("session")?.as_str()?;
             let agent_target = queue_target_supported(c);
-            let (status, probe_result, terminal) = if agent_target {
+            let access = agent_target || scope == SnapshotScope::BoardAccess;
+            let (status, probe_result, terminal) = if access {
                 let (status, probe_result) = probe_status(probe(session));
                 let terminal = terminal_capability(
                     true,
                     probe_result.as_ref(),
                     status,
+                    scope != SnapshotScope::BoardAccess,
                     || mcp_fence(session),
                 );
                 (status, probe_result, terminal)
@@ -166,14 +187,14 @@ pub(super) fn snapshot_in(
                     capability(false, Some("unsupported-target")),
                 )
             };
-            let metadata_capability = if agent_target {
+            let metadata_capability = if access {
                 capability(true, None)
             } else {
                 capability(false, Some("unsupported-target"))
             };
             // Metadata-only cards do not expose even note counts or collection
             // state. Their native buffer routes remain unsupported as well.
-            let buffer = agent_target.then(|| c.get("buffer")).flatten();
+            let buffer = access.then(|| c.get("buffer")).flatten();
             Some(json!({
                 "id":id,
                 "projectId":c.get("projectId")?.as_str()?,
@@ -181,14 +202,14 @@ pub(super) fn snapshot_in(
                 "title":c.get("title")?.as_str()?,
                 "order":order,
                 "status":status,
-                "generation":agent_target.then(|| probe_result.as_ref().map(|p|p.generation.clone())).flatten(),
-                "canSend":terminal["allowed"],
+                "generation":access.then(|| probe_result.as_ref().map(|p|p.generation.clone())).flatten(),
+                "canSend":terminal["allowed"] == true && probe_result.as_ref().is_some_and(|p|p.agent.is_some()),
                 "canQueue":agent_target,
                 "capabilities":{
                     "readOutput":terminal.clone(),
-                    "sendMessage":terminal,
+                    "sendMessage": if terminal["allowed"] == true && probe_result.as_ref().is_some_and(|p|p.agent.is_none()) { capability(false, Some("agent-not-in-foreground")) } else { terminal },
                     "editNotes":metadata_capability.clone(),
-                    "queue":metadata_capability
+                    "queue":capability(agent_target, (!agent_target).then_some("unsupported-target"))
                 },
                 "buffer":{
                     "revision":buffer.and_then(|v|v.get("revision")).and_then(Value::as_u64).unwrap_or(0),
@@ -212,6 +233,7 @@ fn terminal_capability(
     agent_target: bool,
     probe: Option<&crate::context::ConnectorProbe>,
     status: &str,
+    require_agent: bool,
     mcp_fence: impl FnOnce() -> Result<(), DeckError>,
 ) -> Value {
     if !agent_target {
@@ -225,7 +247,7 @@ fn terminal_capability(
         };
         return capability(false, Some(reason));
     };
-    if probe.agent.is_none() {
+    if require_agent && probe.agent.is_none() {
         return capability(false, Some("agent-not-in-foreground"));
     }
     if mcp_fence().is_err() {
@@ -246,15 +268,16 @@ pub(super) fn buffer(app: &AppHandle, card_id: &str) -> Result<Value, DeckError>
     let (_, b) = board_value()?;
     let queues = app.state::<Queues>();
     let (_, _, ops) = crate::scheduler::connector::snapshot(&queues, |_| true);
-    buffer_in(&b, card_id, &ops)
+    buffer_in_scope(&b, card_id, &ops, current_scope()?)
 }
 
-/// One saved agent card's buffer from a committed board, each copy stamped
+/// One authorized card's buffer from a committed board, each copy stamped
 /// with its queue operation's state (`uncertain` when the queue lost it).
-pub(super) fn buffer_in(
+pub(super) fn buffer_in_scope(
     b: &Value,
     card_id: &str,
     ops: &[crate::scheduler::connector::OperationDto],
+    scope: SnapshotScope,
 ) -> Result<Value, DeckError> {
     let c = b
         .get("cards")
@@ -264,7 +287,9 @@ pub(super) fn buffer_in(
                 .find(|c| c.get("id").and_then(Value::as_str) == Some(card_id))
         })
         .ok_or_else(|| DeckError::new(ErrorKind::Missing, "card not found"))?;
-    require_queue_target(c)?;
+    if scope != SnapshotScope::BoardAccess {
+        require_queue_target(c)?;
+    }
     let mut out = c
         .get("buffer")
         .cloned()
@@ -303,6 +328,7 @@ pub(super) fn bounded_output(text: String, history_size: usize) -> (String, bool
 /// The side effects of an output read, injectable so the target check is
 /// provably ahead of every pane access.
 pub(super) trait OutputIo {
+    fn scope(&self) -> Result<SnapshotScope, DeckError>;
     fn card(&self, id: &str) -> Result<InternalCard, DeckError>;
     fn probe(&self, session: &str) -> Result<crate::context::ConnectorProbe, DeckError>;
     fn tmux(&self, args: &[String]) -> Result<String, DeckError>;
@@ -313,6 +339,9 @@ pub(super) trait OutputIo {
 pub(super) struct LiveOutput;
 
 impl OutputIo for LiveOutput {
+    fn scope(&self) -> Result<SnapshotScope, DeckError> {
+        current_scope()
+    }
     fn card(&self, id: &str) -> Result<InternalCard, DeckError> {
         committed_card(id)
     }
@@ -361,25 +390,23 @@ pub(super) fn output(card_id: &str) -> Result<Value, DeckError> {
     output_with(&LiveOutput, card_id)
 }
 
-/// Phone output reads are limited to cards with a saved Codex/Claude command
-/// and a live Codex/Claude foreground process. Both are rechecked after the
-/// capture, so a pane that has fallen back to a shell is never read. The
-/// capture is the pane's last 200 lines while the agent runs; those can still
-/// hold shell output from before the agent started (documented limit,
-/// `docs/connector.md`). A session under MCP control is never read: MCP
-/// output sharing is consent for the MCP client, not for a phone. The fence
-/// is checked before any pane access and again after the capture.
+/// Legacy scopes require a saved agent command plus live agent. BoardAccess
+/// permits any live pane's output, including shell history. Every scope keeps
+/// the exact pane/generation and current card/scope checks before and after
+/// capture, and MCP ownership always blocks reads. The HTTP layer separately
+/// fences device withdrawal and scope ABA before returning captured content.
 pub(super) fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, DeckError> {
     let started = std::time::Instant::now();
     let request = OUTPUT_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let card = io.card(card_id)?;
-    require_agent_card(&card)?;
+    let scope = io.scope()?;
+    require_card_access(&card, scope)?;
     let mcp_controlled = |_| DeckError::new(ErrorKind::Perm, "mcp-controlled");
     io.mcp_fence(&card.session).map_err(mcp_controlled)?;
     let before = io
         .probe(&card.session)
         .map_err(|error| output_failure("probe-before", card_id, request, started, error))?;
-    if before.agent.is_none() {
+    if scope != SnapshotScope::BoardAccess && before.agent.is_none() {
         return Err(DeckError::new(
             ErrorKind::Invalid,
             "agent-not-in-foreground",
@@ -420,10 +447,8 @@ pub(super) fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, Dec
         .map_err(|error| output_failure("probe-after", card_id, request, started, error))?;
     let still = io.card(card_id)?;
     io.mcp_fence(&card.session).map_err(mcp_controlled)?;
-    if !still.agent_target {
-        return Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"));
-    }
-    if after.agent.is_none() {
+    require_card_access(&still, io.scope()?)?;
+    if scope != io.scope()? || (scope != SnapshotScope::BoardAccess && after.agent.is_none()) {
         return Err(DeckError::new(ErrorKind::ContextChanged, "target-changed"));
     }
     if before.generation != after.generation || still.session != card.session {

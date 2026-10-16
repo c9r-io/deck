@@ -62,7 +62,7 @@ public enum ConnectorError: Error, Equatable, LocalizedError, Sendable {
         case .commandExpired: "The host no longer keeps this operation's outcome. It may or may not have run, and it will not be sent again."
         case .capacityExceeded: "The local recovery archive has no safe space for another operation while unresolved operations and drafts are preserved."
         case .upgradeRequired: "The Deck host requires a newer version of this app. Update it before sending."
-        case .unsupportedTarget: "This action is available only for a card whose saved desktop command is exactly Codex or Claude."
+        case .unsupportedTarget: "This action is unavailable for this card. Check Phone Connector sharing on your Mac; queued delivery requires a saved Codex or Claude launch configuration."
         case .outputResponse: "The Deck host could not read this card's output. Refresh to try again."
         case let .transport(message): message
         }

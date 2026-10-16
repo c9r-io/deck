@@ -3153,12 +3153,20 @@ export async function verifyConnectorTransport() {
       && provider.get(card.id)?.cmd === 'codex' && provider.get(card.id)?.buffer?.entries?.length === 1
       && provider.get(shellCard.id)?.cmd === ''
       && JSON.parse((await inv('load_board')).data).cards.some(c => c.id === shellCard.id), 1, 0);
+    if (transport.scope === 'boardAccess') {
+      await inv('start_session', { name: shellCard.session, dir: '/tmp', cmd: '', restoreShell: false });
+    }
     // A real interactive Codex is launched through Deck's ordinary card path.
     // Its private work directory has no host credentials or pairing fixture.
     if (transport.agentDir) {
       try {
-        await provider.createStarted({ projectId: project.id, columnId: column.id,
+        const { card: live } = await provider.createStarted({ projectId: project.id, columnId: column.id,
           title: 'connector live codex', cmd: 'codex', dir: transport.agentDir });
+        if (transport.scope === 'boardAccess') {
+          // Match an existing shell-created card without restarting its Agent.
+          const { mutateBoard } = await import('../js/persistence.js');
+          await mutateBoard(draft => { draft.cards.find(card => card.id === live.id).cmd = ''; });
+        }
       } catch (_) { /* The independent live-Agent case reports this as unavailable. */ }
     }
   } catch (_) {

@@ -45,6 +45,7 @@ async function mutateBuffer(handle, request) {
       result = { buffer: deleteEntry(base, entryId) };
     }
     if (result.error || bufferLimitError(result.buffer)) throw new Error(result.error || 'buffer capacity');
+    draft.connectorHandle = handle;
     mutationPrepared = true; card.buffer = result.buffer; savedRevision = revision(result.buffer);
   }); } catch (error) { if (error && typeof error === 'object') error.effectPossible = mutationPrepared; throw error; }
   notifyCard(cardId);

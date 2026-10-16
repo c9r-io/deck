@@ -1,0 +1,35 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.97s
+     Running unittests src/main.rs (app/src-tauri/target/debug/deps/deck_app-74ddfb6938e78a9f)
+test result: ok. 1261 passed; 0 failed; 13 ignored; 0 measured; 0 filtered out; finished in 427.65s
+     Running tests/edr_quiet.rs (app/src-tauri/target/debug/deps/edr_quiet-99e55604b2a7846d)
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.74s
+     Running tests/external_admission.rs (app/src-tauri/target/debug/deps/external_admission-c7ba91c1dc08246d)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.82s
+     Running tests/ipc_contract.rs (app/src-tauri/target/debug/deps/ipc_contract-c5e55ca1853fe15a)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+     Running tests/log_privacy.rs (app/src-tauri/target/debug/deps/log_privacy-3fa13b1798969647)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running tests/session_architecture.rs (app/src-tauri/target/debug/deps/session_architecture-36a0b131ebb69a42)
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.20s
+     Running tests/shared_output.rs (app/src-tauri/target/debug/deps/shared_output-7e3ed0cf606927e6)
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running tests/signal_census.rs (app/src-tauri/target/debug/deps/signal_census-214016d97e37bea2)
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s
+     Running tests/tmux_contract.rs (app/src-tauri/target/debug/deps/tmux_contract-2968b35e2b5676f5)
+test result: ok. 111 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.35s
+     Running unittests src/main.rs (app/src-tauri/target/debug/deps/deck_lifecycle_helper-e890b148b7bb0e90)
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+     Running tests/cli.rs (app/src-tauri/target/debug/deps/cli-b7c87eba1de49c9b)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.74s
+     Running unittests src/main.rs (app/src-tauri/target/debug/deps/deck_mcp-960d6a55fc429b16)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/stdio.rs (app/src-tauri/target/debug/deps/stdio-df9397a5d60d8ed0)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+     Running unittests src/main.rs (app/src-tauri/target/debug/deps/deck_mcp_runner-49d0852dee9ac9fd)
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/runner.rs (app/src-tauri/target/debug/deps/runner-6e048b0a3290362e)
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.30s
+     Running unittests src/main.rs (app/src-tauri/target/debug/deps/deck_status_helper-2864f07b28288e0d)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/cli.rs (app/src-tauri/target/debug/deps/cli-e584f57ca52b09c0)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.24s

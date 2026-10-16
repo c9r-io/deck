@@ -8,15 +8,23 @@ Phone Connector is disabled by default. Enabling it in **Settings → Remote acc
 
 A paired device keeps these abilities until it is revoked. Disabling Connector stops the listener; it does not revoke devices, so their tokens work again when Connector is re-enabled on the same identity. **Revoke** a device (or **Reset and re-pair**) to end its access.
 
-By default, the phone snapshot lists only the Codex and Claude cards eligible
-for Connector notes and queues. **Show all Board cards on paired phones** is a
-separate local opt-in. It shares each card's title, project, column and Board
-order, including ordinary shells, empty saved commands and unsupported agents.
-It does not grant those additional cards terminal output, messages, notes or
-queues. Turning it off narrows the next snapshot immediately; no re-pair is
-required. Each snapshot reports the selected scope and an explicit capability
-and refusal reason for each action, while the native route repeats its normal
-admission checks before any read or mutation.
+The Mac sharing selector has three explicit scopes. Existing installations keep
+what they previously selected; updating never expands consent:
+
+- **Saved Codex/Claude cards** (default): the existing saved-command policy.
+- **All card summaries**: all titles, projects, columns and order; additional
+  cards still have no output, messages, notes or queue permission.
+- **All card output and notes** (`boardAccess`): all current and future Board
+  cards' bounded output, including ordinary shell history, plus scratchpad
+  editing. Messages can reach a current Codex/Claude foreground even when the
+  card was created as a shell or uses a wrapper/path. Shell input stays blocked.
+
+The third choice requires its own confirmation on the Mac. It works on existing
+cards without restarting sessions, editing saved commands or re-pairing. Each
+snapshot advertises output, message, note and queue capabilities separately.
+Queueing still requires a saved supported launch command because it may need to
+restart a stopped session. A scope change retires unresolved phone operations;
+re-enabling sharing does not replay them. Reads and writes recheck current access.
 
 When enabled, deck listens on the selected private-network address over HTTPS. Eligible IPv4 addresses are RFC1918 private space on any interface; RFC6598 100.64/10 shared space only on a VPN tunnel interface (`utun*`, for example Tailscale); and 169.254/16 link-local space only on a bridge interface (`bridge*`, a direct Thunderbolt/USB cable network). A 100.64/10 or self-assigned 169.254/16 address on Wi-Fi or Ethernet is not offered, because carrier-grade NAT and DHCP-less public networks hand those out to strangers too; public addresses are never offered or accepted. deck records the interface (for example `en0`) that carried the address when you enabled Connector. Whenever the saved listener starts again, the address must still be available on that same interface; the same private address on a different interface is treated as a different network and Connector stays off until you enable it again.
 
@@ -30,23 +38,25 @@ Changing to an address outside the current certificate requires **Reset and re-p
 
 The phone never supplies a shell command line, path, or command flag. That does not mean phone text cannot cause commands to run: text is delivered as a **prompt to an agent**, and an agent may act on it.
 
-- **Send message** and **output** work only on cards whose *saved* command launches `codex` or `claude` with at most simple, shell-safe arguments (the same rule as Slack channels) and whose pane currently has Codex or Claude in the foreground. Environment prefixes, executable paths and shell syntax are not phone targets. Output checks the foreground agent both before and after capture, so a saved agent card that has fallen back to a shell is not readable. While the agent runs, the returned text is the pane's last 200 lines, which can still include shell output from before the agent started (for example a command you ran between two agent sessions); clear the pane first if that history is sensitive. An ordinary shell card — even one where you started an agent by hand — is never readable or writable from the phone.
-- **Task presets.** Projects can define up to 50 phone task presets under **Project defaults**. A preset fixes its group, card title, directory, `codex` or `claude` command with optional simple arguments, and up to 20 initial steps on the Mac. The phone receives only each preset's ID and name. By default the first step of a task created from the phone waits until you interact with the freshly started agent once on the Mac, or use Send now. A preset can instead carry the same explicit choice a clock or Slack rule has, **Send the first step to a newly started agent without waiting for readiness** (see [Automations](auto-respond.md)): it is ticked on the Mac only, after a confirmation, and the phone can neither set nor see it. It covers the first step alone. Later steps wait for Send now unless the preset is also approved with **Automatically continue approved follow-up steps**, in the same place: that approves the preset as it stands (its directory, its command and every step), so later steps continue once the agent is safely ready, and editing any of those unticks it until you approve again. Neither choice applies to messages or scratchpad notes sent from the phone, which always wait for Send now. Revoking a paired device takes back both from the tasks it created, for every step not yet sent. Unticking the first-send choice, or changing the preset's command or directory, withdraws it from tasks whose first step has not been sent. Once a preset uses either choice, older Deck versions refuse to open the Board and ask for an update.
+- **Output** in the two legacy scopes requires a saved supported Codex/Claude command and a live agent foreground. In BoardAccess it works on any live card, including a plain shell or unsupported agent. Both paths check the exact pane/foreground generation before and after capture and discard changed targets. The snapshot contains at most the recent 200 history lines plus visible pane content, capped at 64 KiB, and can include earlier shell history.
+- **Send message** always requires a live recognized Codex/Claude foreground and the generation selected by the phone. BoardAccess additionally admits manually started agents regardless of saved command. Before each write, the host checks current card/scope, command/device authorization, generation, MCP control and the existing literal paste/Enter checks. Foreground recognition uses process names and kernel process identity; it is not binary-authenticity or Agent-readiness proof.
 - **MCP-controlled sessions.** While an MCP client holds terminal control of a session (see [MCP](mcp.md)), the phone can neither send to it nor read its output — MCP output sharing is consent for the MCP client, not for the phone. Taking control back on the Mac makes the card a phone target again.
-- **Scratchpad reads, note add/edit/delete, queueing, and queue pause/cancel** work only when the saved card command launches `codex` or `claude` with at most simple arguments and the snapshot reports `canQueue`. Ordinary shell cards reject all of these routes with `unsupported-target`; the phone cannot replace the saved command.
+- **Scratchpad reads and note add/edit/delete** are allowed for saved agent cards, or for every Board card under BoardAccess, including stopped cards. Edits retain revision/CAS checks and the claimed command is revalidated at the Board commit boundary under the lifecycle fence.
+- **Queueing and queue pause/cancel** still require a saved card command launching `codex` or `claude` with simple safe arguments. Expanded direct access grants no automatic input or first-send authority and does not rewrite commands.
 
-`GET /v1/snapshot` uses the saved local scope. The default lists only cards
-whose saved command launches `codex` or `claude` with at most simple arguments.
-The metadata opt-in lists every well-formed Board card in its saved order, but
-the queue array still contains only items belonging to eligible agent cards.
-Ordinary shell cards and their queued items never gain command access.
+`GET /v1/snapshot` preserves saved Board order and reports independent capabilities.
+Every GET rechecks device/feature authorization and the scope revision after reading;
+withdrawal followed by regrant still discards an in-flight response. Older desktop
+readers refuse the new scope enum, leaving its file untouched; missing scope keeps
+the original default. iOS reads explicit capabilities and treats unknown/missing
+capability entries as denied.
 
 The output GET distinguishes a missing or unreadable session (`503
 session-unavailable`), a pane whose foreground is not a supported Agent (`409
 agent-not-in-foreground`), an MCP-controlled target (`409 mcp-controlled`), a target changed during capture (`409
 context-changed`), and a probe/history/capture failure (`503
 output-read-failed`). None means task completion. The phone keeps the card and
-scratchpad, refuses shell output and input, and can refresh the snapshot and
+scratchpad, always refuses shell input, and can refresh the snapshot and
 output after the target becomes readable again. The host logs the failure
 stage, closed ErrorKind, per-run card tag, request counter and duration for
 real read failures, without terminal text or underlying stderr. Older hosts'

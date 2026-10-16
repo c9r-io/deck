@@ -6,8 +6,8 @@
 //! card command launches `claude`/`codex` with simple arguments, the row is marked `external`),
 //! a verbatim external entry through `validate_add`'s `external_text` gate
 //! (same agent check plus the leading `!`/`/`/`#` refusal), and the phone's
-//! direct send-message through the same agent predicate
-//! (`connector::require_agent_card`). This file makes a new path fail CI:
+//! direct send-message through locally consented card access plus the live
+//! agent predicate (`connector::require_card_access`, `connector_probe`). This file makes a new path fail CI:
 //!
 //! 1. every production site that creates a queue item (`QueueItem {`,
 //!    `items.push(`...) is pinned to an exact file + function + count and
@@ -1005,7 +1005,8 @@ fn every_terminal_input_site_is_reviewed() {
     );
     assert!(body("agent_reentry/launch.rs", "edge_exact").contains("live_generation("));
     assert!(body("tmux_lifecycle.rs", "restart_transaction_on").contains("plan.reopen("));
-    // The phone's direct path uses the same agent predicate as the queue.
+    // Direct phone messages require locally consented access AND a live agent.
+    // Queue admission remains saved-command based even in BoardAccess.
     let native = body("connector/native.rs", "execute_native");
     let send = native
         .split("\"send-message\" =>")
@@ -1013,7 +1014,8 @@ fn every_terminal_input_site_is_reviewed() {
         .and_then(|tail| tail.split("prompt_delivery::deliver_with(").next())
         .expect("send-message delivery");
     for required in [
-        "require_agent_card(&card)",
+        "require_card_access(",
+        "current_scope()",
         "guard_terminal_input(&card.session)",
         ".agent",
     ] {

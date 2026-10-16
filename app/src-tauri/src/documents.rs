@@ -3,6 +3,10 @@
 //! the load/save commands plus the settings readers other modules use.
 //!
 //! # Contract
+//! - Phone note saves carry their claimed journal handle to the disk boundary.
+//!   An opaque write claim is checked by the feature-registered guard under
+//!   settings -> Board. Its returned guard lives through the commit; the door
+//!   knows neither the claim format nor its authorization policy.
 //! - One rule set, two doors. `BoardDoc` / `SettingsDoc` deserialize through
 //!   `try_from`, so the loads (quarantine-first recovery on failure) and
 //!   `save_board` / `save_settings` (reject before touching disk) run
@@ -1291,6 +1295,28 @@ fn withdraw_preset_choices(payload: &str) -> Option<String> {
 
 /// The one observer of a commit (see the header): set once at boot by the
 /// feature that projects the committed Board, never replaced.
+/// A feature may register the guard for opaque claims carried by Board saves.
+/// The document door knows neither the claim format nor the feature's policy.
+/// The guard is held across validation and commit, under settings -> Board.
+type WriteClaimGuard = fn(&str) -> Result<std::sync::MutexGuard<'static, ()>, DeckError>;
+static WRITE_CLAIM_GUARD: OnceLock<WriteClaimGuard> = OnceLock::new();
+
+pub(crate) fn set_write_claim_guard(guard: WriteClaimGuard) {
+    let _ = WRITE_CLAIM_GUARD.set(guard);
+}
+
+fn acquire_write_claim_guard(
+    claim: Option<&str>,
+) -> Result<Option<std::sync::MutexGuard<'static, ()>>, DeckError> {
+    let Some(claim) = claim else {
+        return Ok(None);
+    };
+    let guard = WRITE_CLAIM_GUARD
+        .get()
+        .ok_or_else(|| DeckError::new(ErrorKind::Perm, "board write authorization unavailable"))?;
+    guard(claim).map(Some)
+}
+
 type CommitObserver = fn(&str);
 static COMMIT_OBSERVER: OnceLock<CommitObserver> = OnceLock::new();
 
@@ -1404,6 +1430,7 @@ pub(crate) fn save_board(
     app: tauri::AppHandle,
     data: String,
     reminder_changes: Option<Vec<crate::reminder::Claim>>,
+    write_claim: Option<String>,
 ) -> Result<(), DeckError> {
     if crate::smoke_faults::take("board-save") {
         return Err(DeckError::new(
@@ -1417,6 +1444,7 @@ pub(crate) fn save_board(
     let path = board_path();
     let _settings_fence = storage::settings_fence();
     let _board_fence = board_fence();
+    let _write_guard = acquire_write_claim_guard(write_claim.as_deref())?;
     let prior_board = committed_board();
     let authority_changed = prior_board
         .as_deref()
@@ -1436,6 +1464,7 @@ pub(crate) fn save_board(
     if saved.is_ok() {
         let _ = commit_board(&data, BoardStanding::Current);
     }
+    drop(_write_guard);
     drop(_board_fence);
     drop(_settings_fence);
     if retired {

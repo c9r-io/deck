@@ -1,7 +1,8 @@
 //! Local Tauri commands: status, enable/disable, pairing, revocation, pending intents, claim/complete/validate, native execution.
 //!
 //! Split out of the one-file `connector/mod.rs` on 2026-09-23; the contract
-//! stays in `connector/mod.rs`. `connector_validate` and
+//! stays in `connector/mod.rs`. Local scope changes retire pending intent;
+//! phone note commits revalidate under the lifecycle lock at the Board write. `connector_validate` and
 //! `connector_validate_admission` are thin over `validate_claimed` and
 //! `validate_claimed_admission`, which take the board-side check (or the
 //! board loader) as an argument so tests never read the committed board.
@@ -104,6 +105,7 @@ pub(crate) async fn connector_enable(address: String, port: u16) -> Result<Statu
                 port,
                 interface,
                 scope: d.config.scope,
+                scope_revision: d.config.scope_revision,
             };
             d.identity_address = Some(identity.address.clone());
             d.identity_fingerprint = Some(identity.fingerprint.clone());
@@ -122,12 +124,21 @@ pub(crate) async fn connector_enable(address: String, port: u16) -> Result<Statu
     .map_err(|_| DeckError::new(ErrorKind::Other, "connector worker failed"))?
 }
 
-/// Changes only which cards appear as metadata in the phone snapshot. Every
-/// card-scoped native route continues to enforce its existing admission.
+/// Local sharing consent. A change retires unresolved requests and fences
+/// reads even if the user immediately restores the previous scope.
 #[tauri::command]
 pub(crate) fn connector_set_scope(scope: SnapshotScope) -> Result<Status, DeckError> {
-    rt()?.with_doc(|d| {
-        d.config.scope = scope;
+    let r = rt()?;
+    let _lifecycle = r.lifecycle.lock_or_recover();
+    r.with_doc(|d| {
+        if d.config.scope != scope {
+            d.config.scope_revision =
+                d.config.scope_revision.checked_add(1).ok_or_else(|| {
+                    DeckError::new(ErrorKind::Other, "sharing revision exhausted")
+                })?;
+            invalidate_commands(d, None, "unsupported-target");
+            d.config.scope = scope;
+        }
         Ok(())
     })?;
     connector_status()
@@ -449,6 +460,28 @@ pub(super) fn validate_claimed(
     })??;
     applicable(&request)?;
     Ok(true)
+}
+
+/// Called with the settings and Board fences held, before the Board disk write.
+/// Local scope/device withdrawal uses the same lifecycle lock, so a successful
+/// withdrawal cannot race a previously validated phone note into persistence.
+pub(super) fn board_commit_guard(
+    handle: &str,
+) -> Result<std::sync::MutexGuard<'static, ()>, DeckError> {
+    let runtime = rt()?;
+    let lifecycle = runtime.lifecycle.lock_or_recover();
+    if !runtime.feature_active() {
+        return Err(DeckError::new(ErrorKind::Perm, "connector unavailable"));
+    }
+    let executing = runtime.executing(handle)?;
+    if !matches!(
+        executing.request.kind.as_str(),
+        "buffer-add" | "buffer-edit" | "buffer-delete"
+    ) {
+        return Err(DeckError::new(ErrorKind::Invalid, "invalid buffer commit"));
+    }
+    validate_applicable(&executing.request)?;
+    Ok(lifecycle)
 }
 
 #[tauri::command]
