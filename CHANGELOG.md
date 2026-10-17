@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.5 — 2026-10-17 (Nightly)
+
+- Phone Connector: trust one phone on the Mac. Each paired device in
+  Settings → Remote access can be trusted ("Trust this device…", with a
+  confirmation naming the device); right after a phone pairs, Deck offers
+  this by name. A trusted phone can read every card's output (including
+  shell history), edit notes and message the current Codex or Claude
+  foreground, also for manually started agents, whatever "Phone access" is
+  set to. Stopping trust or revoking the device ends it; the phone never
+  gets shell input, queueing without a saved launch command, or any
+  automation authority. Existing settings are kept and never widened.
+- Phone Connector: the Mac now says what the kept "Phone access" choice
+  withholds and how many cards untrusted phones cannot read, and each
+  paired device shows when it last synced and which app build it runs.
+- Fixed: a refused phone message under "All card output and notes" could be
+  described as a queue limit; an MCP-controlled session is now reported as
+  such.
+- Security: the updater no longer pulls the Windows-only zip extractor
+  (zip 4.6.1, RUSTSEC-2026-0367/0368/0369); macOS updates are unchanged.
+
+iPhone app (TestFlight 1.0 (4)): a short setup note names your Mac and the
+exact step when output is not shared, and can be kept collapsed; an
+unreachable Mac shows a checklist (Mac awake, Deck running, same network,
+Local Network permission) instead of a raw error, without waiting up to
+45 seconds; read content stays visible but marked as stale while offline;
+a draft typed before sharing was enabled asks before it is sent.
+
 ## 0.8.2 — 2026-10-15 (Nightly)
 
 - Slack channel monitoring for an existing Slack app: enabling it now walks
