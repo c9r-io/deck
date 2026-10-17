@@ -42,7 +42,12 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
     private var pending: [Int: Pending] = [:]
     private var session: URLSession!
 
-    private static func makeConfiguration() -> URLSessionConfiguration {
+    /// Pairing waits for connectivity so the first request survives iOS's
+    /// Local Network permission prompt. A paired client fails fast instead:
+    /// when the Mac refuses connections (Connector disabled, Deck quit) a
+    /// waiting request would keep the last content looking current for the
+    /// whole resource timeout before the app could say it is offline.
+    static func makeConfiguration(waitsForConnectivity: Bool = false) -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
@@ -50,7 +55,7 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpShouldSetCookies = false
-        configuration.waitsForConnectivity = true
+        configuration.waitsForConnectivity = waitsForConnectivity
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 45
         return configuration
@@ -72,7 +77,8 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
     }
 
     public convenience init(pairing: PairingPayload) throws {
-        try self.init(credential: DeviceCredential(origin: pairing.origin, fingerprint: pairing.fingerprint, hostId: pairing.hostId, deviceId: "pairing", token: ""))
+        try self.init(credential: DeviceCredential(origin: pairing.origin, fingerprint: pairing.fingerprint, hostId: pairing.hostId, deviceId: "pairing", token: ""),
+                      configuration: Self.makeConfiguration(waitsForConnectivity: true))
     }
 
     deinit { session?.invalidateAndCancel() }
@@ -227,7 +233,10 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
-        if let error { finish(taskID: task.taskIdentifier, result: .failure(ConnectorError.transport(error.localizedDescription))) }
+        // URLError stays typed so the app can tell network loss (keep stale
+        // content, name what to check) from other failures; a cancelled pin
+        // challenge is URLError.cancelled and still fails closed.
+        if let error { finish(taskID: task.taskIdentifier, result: .failure((error as? URLError) ?? ConnectorError.transport(error.localizedDescription))) }
         else {
             lock.lock()
             let item = pending[task.taskIdentifier]

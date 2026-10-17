@@ -39,6 +39,7 @@ pub(crate) fn connector_smoke_seed(
                 revoked_at: None,
                 history_pruned: false,
                 retired_through: 0,
+                trusted: false,
             });
         }
         Ok(())

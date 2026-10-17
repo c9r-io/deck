@@ -15,8 +15,8 @@
 #[cfg(test)]
 use super::SnapshotScope;
 use super::{
-    buffer, output, snapshot, CommandRequest, Config, Identity, Runtime, CLIENT_UPGRADE_REQUIRED,
-    COMMAND_EXPIRED,
+    buffer, note_device_seen, output, snapshot, CommandRequest, Config, Identity, Runtime,
+    CLIENT_UPGRADE_REQUIRED, COMMAND_EXPIRED,
 };
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Bytes, Incoming};
@@ -396,6 +396,11 @@ async fn handle(
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
     let bearer = token(&request);
+    let user_agent = request
+        .headers()
+        .get("user-agent")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.chars().take(256).collect::<String>());
 
     if method == Method::POST && path == "/v1/pair" {
         let bytes = match body(request, MAX_PAIR_BODY).await {
@@ -467,8 +472,11 @@ async fn handle(
                         .app
                         .as_ref()
                         .ok_or_else(|| DeckError::new(ErrorKind::Other, "connector unavailable"))
-                        .and_then(snapshot)
-                        .map(|value| response(StatusCode::OK, value))
+                        .and_then(|app| snapshot(app, device))
+                        .map(|value| {
+                            note_device_seen(device, user_agent.as_deref());
+                            response(StatusCode::OK, value)
+                        })
                         .unwrap_or_else(|failure| mapped(&failure));
                 }
                 if let Some(id) = path.strip_prefix("/v1/commands/").and_then(decode_segment) {
@@ -481,7 +489,7 @@ async fn handle(
                     if let Some((raw, leaf)) = rest.rsplit_once('/') {
                         if let Some(id) = decode_segment(raw) {
                             return match leaf {
-                                "output" => output(&id)
+                                "output" => output(device, &id)
                                     .map(|value| response(StatusCode::OK, value))
                                     .unwrap_or_else(|failure| mapped_output(&failure)),
                                 "buffer" => state
@@ -490,7 +498,7 @@ async fn handle(
                                     .ok_or_else(|| {
                                         DeckError::new(ErrorKind::Other, "connector unavailable")
                                     })
-                                    .and_then(|app| buffer(app, &id))
+                                    .and_then(|app| buffer(app, device, &id))
                                     .map(|value| response(StatusCode::OK, value))
                                     .unwrap_or_else(|failure| mapped(&failure)),
                                 _ => error(StatusCode::NOT_FOUND, "not-found"),

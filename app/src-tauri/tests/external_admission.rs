@@ -1006,7 +1006,9 @@ fn every_terminal_input_site_is_reviewed() {
     assert!(body("agent_reentry/launch.rs", "edge_exact").contains("live_generation("));
     assert!(body("tmux_lifecycle.rs", "restart_transaction_on").contains("plan.reopen("));
     // Direct phone messages require locally consented access AND a live agent.
-    // Queue admission remains saved-command based even in BoardAccess.
+    // Consent is resolved for the sending device (global scope, or explicit
+    // per-device trust that ends with revocation). Queue admission remains
+    // saved-command based even in BoardAccess or for a trusted device.
     let native = body("connector/native.rs", "execute_native");
     let send = native
         .split("\"send-message\" =>")
@@ -1015,7 +1017,7 @@ fn every_terminal_input_site_is_reviewed() {
         .expect("send-message delivery");
     for required in [
         "require_card_access(",
-        "current_scope()",
+        "scope_for(device_id)",
         "guard_terminal_input(&card.session)",
         ".agent",
     ] {
@@ -1025,6 +1027,16 @@ fn every_terminal_input_site_is_reviewed() {
         );
     }
     assert!(native.contains("expected_process: Some(agent)"));
+    assert!(
+        body("connector/native.rs", "guard")
+            .contains("require_card_access(&card, scope_for(self.device_id)?)"),
+        "every phone write rechecks the sending device's consent"
+    );
+    let effective = body("connector/mod.rs", "effective_scope");
+    assert!(
+        effective.contains("device.revoked_at.is_none()") && effective.contains("device.trusted"),
+        "per-device trust applies only to an active, explicitly trusted device"
+    );
     assert!(body("connector/projection.rs", "queue_target_supported")
         .contains("crate::admission::channel_agent_command"));
     assert!(body("scheduler/delivery.rs", "fire_item").contains("literal_request(item"));

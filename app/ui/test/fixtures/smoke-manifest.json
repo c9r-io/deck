@@ -398,6 +398,13 @@
         "connector-transport-ready": {}
       }
     },
+    "connector-device": {
+      "terminal": null,
+      "checks": {
+        "connector-device-ready": {},
+        "connector-device-step": {}
+      }
+    },
     "attention": {
       "terminal": "done",
       "checks": {

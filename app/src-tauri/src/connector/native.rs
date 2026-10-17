@@ -35,7 +35,7 @@ pub(super) fn execute_native(
                 .map_err(|_| ("rejected", "missing-card"))?;
             require_card_access(
                 &card,
-                current_scope().map_err(|_| ("rejected", "unsupported-target"))?,
+                scope_for(device_id).map_err(|_| ("rejected", "unsupported-target"))?,
             )
             .map_err(|_| ("rejected", "unsupported-target"))?;
             let probe = crate::context::connector_probe(&card.session)
@@ -196,7 +196,7 @@ impl ConnectorTransport<'_> {
         }
         runtime.executing(self.handle)?;
         let card = committed_card(self.card_id)?;
-        require_card_access(&card, current_scope()?)?;
+        require_card_access(&card, scope_for(self.device_id)?)?;
         if card.session != self.session {
             return Err(DeckError::new(ErrorKind::ContextChanged, "target-changed"));
         }

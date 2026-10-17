@@ -14,7 +14,8 @@ final class ConnectorUITests: XCTestCase {
         for round in 1...3 {
             app.launch()
             let target = app.staticTexts["connector transport"].firstMatch
-            XCTAssertTrue(target.waitForExistence(timeout: 20), "Round \(round): saved agent card must appear.")
+            _ = app.staticTexts["Tasks"].waitForExistence(timeout: 20)
+            XCTAssertTrue(reveal(target, in: app), "Round \(round): saved agent card must appear.")
             XCTAssertEqual(app.staticTexts["connector ordinary shell"].exists,
                            ProcessInfo.processInfo.environment["DECK_DIAG_SCOPE"] != "agentCards",
                            "Round \(round): list must match the locally authorized scope.")
@@ -124,7 +125,9 @@ final class ConnectorUITests: XCTestCase {
         openCard(named: "connector ordinary shell", in: app)
         let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
         XCTAssertTrue(unavailable.waitForExistence(timeout: 10))
-        XCTAssertTrue(unavailable.label.contains("This access is not shared for this card."))
+        // Summaries-only sharing names the Mac action that would add output.
+        XCTAssertTrue(unavailable.label.contains("are not shared") && unavailable.label.contains("“Trust this device…”"),
+                      unavailable.label)
         XCTAssertFalse(app.descendants(matching: .any)["deck.output.text"].exists)
         XCTAssertFalse(app.buttons["deck.message.send"].isEnabled)
         app.segmentedControls.buttons["Notes"].tap()
@@ -322,7 +325,7 @@ final class ConnectorUITests: XCTestCase {
         let expectedOutput = environment["DECK_UI_EXPECTED_OUTPUT"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !expectedOutput.isEmpty else { throw XCTSkip("DECK_UI_EXPECTED_OUTPUT is required.") }
 
-        let app = XCUIApplication()
+        let app = pairedApp()
         app.launch()
         openCard(named: cardTitle, in: app)
         assertLatestOutput(expectedOutput, in: app)
@@ -350,7 +353,7 @@ final class ConnectorUITests: XCTestCase {
         let expectedNote = environment["DECK_UI_EXPECTED_NOTE"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !expectedNote.isEmpty else { throw XCTSkip("DECK_UI_EXPECTED_NOTE is required.") }
 
-        let app = XCUIApplication()
+        let app = pairedApp()
         app.launch()
         openCard(named: cardTitle, in: app)
         app.segmentedControls.buttons["Notes"].tap()
@@ -392,7 +395,7 @@ final class ConnectorUITests: XCTestCase {
         }
         let editedMarker = marker + "-edited"
 
-        let app = XCUIApplication()
+        let app = pairedApp()
         app.launch()
         openCard(named: cardTitle, in: app)
         app.segmentedControls.buttons["Notes"].tap()
@@ -440,7 +443,7 @@ final class ConnectorUITests: XCTestCase {
         }
         let editedMarker = marker + "-edited"
 
-        let app = XCUIApplication()
+        let app = pairedApp()
         app.launch()
         openCard(named: cardTitle, in: app)
         app.segmentedControls.buttons["Notes"].tap()
@@ -467,13 +470,23 @@ final class ConnectorUITests: XCTestCase {
             return
         }
 
-        let app = XCUIApplication()
+        let app = pairedApp()
         app.launch()
         openCard(named: cardTitle, in: app)
         app.segmentedControls.buttons["Notes"].tap()
         let bufferLoaded = app.buttons["deck.note.queue-selected"]
         XCTAssertTrue(bufferLoaded.waitForExistence(timeout: 15), "Expected the scratchpad buffer to finish loading before finding the marker.")
         guard deleteOnlyNote(marker, in: app) else { return }
+    }
+
+    /// The paired tests address English labels; DECK_UI_LANGUAGE=en pins the
+    /// app language when the device itself uses another one.
+    private func pairedApp() -> XCUIApplication {
+        let app = XCUIApplication()
+        if ProcessInfo.processInfo.environment["DECK_UI_LANGUAGE"] == "en" {
+            app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        }
+        return app
     }
 
     private func selectDetailTab(_ title: String, in app: XCUIApplication) {
@@ -769,3 +782,540 @@ final class ConnectorUITests: XCTestCase {
     }
 
 }
+
+// Physical-device acceptance against an isolated Deck host on the private LAN.
+// Every test is skipped unless DECK_DEVICE_ACCEPTANCE=1 is injected into this
+// runner; the external driver (scripts/connector-device-acceptance.py) pairs
+// through the product's paste field, watches the `DECKSTEP <name>` activities
+// below in the live xcodebuild log, and answers by changing the isolated host
+// through its production Settings handlers. The phone side waits only on what
+// the app itself shows. Nothing here writes Keychain or seeds a snapshot.
+extension ConnectorUITests {
+    private var deviceEnvironment: [String: String] { ProcessInfo.processInfo.environment }
+
+    private func requireDeviceAcceptance(_ keys: [String] = []) throws -> [String: String] {
+        let environment = deviceEnvironment
+        guard environment["DECK_DEVICE_ACCEPTANCE"] == "1" else {
+            throw XCTSkip("Set DECK_DEVICE_ACCEPTANCE=1 in the copied device test plan.")
+        }
+        for key in keys where (environment[key] ?? "").isEmpty {
+            XCTFail("\(key) is required for the device acceptance run.")
+        }
+        return environment
+    }
+
+    private func chineseApp(largeText: Bool = false) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments += ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        if largeText { app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"] }
+        return app
+    }
+
+    private func deckStep(_ name: String) {
+        XCTContext.runActivity(named: "DECKSTEP \(name)") { _ in }
+    }
+
+    private func keepScreenshot(_ name: String, _ app: XCUIApplication) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    /// Answers a system permission alert by one of its localized button titles.
+    @discardableResult
+    private func answerSystemAlert(_ titles: [String], timeout: TimeInterval = 8) -> String? {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let alert = springboard.alerts.firstMatch
+        guard alert.waitForExistence(timeout: timeout) else { return nil }
+        for title in titles {
+            let button = alert.buttons[title]
+            if button.exists { button.tap(); return title }
+        }
+        XCTFail("Unexpected system alert buttons: \(alert.buttons.allElementsBoundByIndex.map(\.label))")
+        return nil
+    }
+
+    private func waitUntil(_ timeout: TimeInterval, _ condition: @escaping () -> Bool) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in condition() }, object: nil)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func outputText(_ app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any)["deck.output.text"].firstMatch
+    }
+
+    private func pairField(_ app: XCUIApplication) -> XCUIElement {
+        let identified = app.textFields["deck.pair.descriptor"]
+        return identified.exists ? identified : app.textFields.firstMatch
+    }
+
+    /// Camera denial first, then the product's paste entry and the system
+    /// Local Network prompt. Works for the older build too (label fallback).
+    private func pairByPaste(_ uri: String, host: String, in app: XCUIApplication, cameraDenial: Bool) {
+        let scan = app.buttons["deck.pair.scan"].exists ? app.buttons["deck.pair.scan"] : app.buttons["扫描二维码"]
+        XCTAssertTrue(scan.waitForExistence(timeout: 20), "The unpaired app must offer pairing.")
+        keepScreenshot("unpaired", app)
+        if cameraDenial {
+            scan.tap()
+            let answered = answerSystemAlert(["不允许", "Don’t Allow", "Don't Allow"])
+            deckStep("camera-alert-\(answered == nil ? "absent" : "denied")")
+            let unavailable = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@ OR label CONTAINS %@", "Camera access", "相机")).firstMatch
+            XCTAssertTrue(unavailable.waitForExistence(timeout: 8), "A denied camera must explain the paste alternative.")
+            keepScreenshot("camera-denied", app)
+            app.buttons["取消"].firstMatch.tap()
+        }
+        let field = pairField(app)
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        field.tap()
+        field.typeText(uri)
+        let submit = app.buttons["deck.pair.submit"].exists ? app.buttons["deck.pair.submit"] : app.buttons["配对"]
+        XCTAssertTrue(submit.isEnabled)
+        submit.tap()
+        let localNetwork = answerSystemAlert(["允许", "Allow"], timeout: 15)
+        deckStep("local-network-\(localNetwork == nil ? "no-prompt" : "allowed")")
+        XCTAssertTrue(app.staticTexts[host].firstMatch.waitForExistence(timeout: 45),
+                      "Pairing must reach the isolated host over the private LAN and show its name.")
+    }
+
+    private func pairingScan(_ app: XCUIApplication) -> XCUIElement {
+        app.buttons["deck.pair.scan"].exists ? app.buttons["deck.pair.scan"] : app.buttons["扫描二维码"]
+    }
+
+    /// iOS keeps an app's Keychain item across uninstall, so a reinstalled
+    /// test variant can wake up with an earlier run's pairing. Remove it the
+    /// way a user would (revoked screen or menu → 移除配对 → confirm).
+    /// Returns whether a pairing was present.
+    @discardableResult
+    private func removePairingIfPresent(_ app: XCUIApplication) -> Bool {
+        if pairingScan(app).waitForExistence(timeout: 6) { return false }
+        answerSystemAlert(["允许", "Allow"], timeout: 3)
+        let remove = app.buttons["移除配对"].firstMatch
+        if !remove.waitForExistence(timeout: 5) {
+            let menu = app.navigationBars.buttons.allElementsBoundByIndex.last
+            XCTAssertNotNil(menu, "The paired list must offer its menu."); menu?.tap()
+            XCTAssertTrue(remove.waitForExistence(timeout: 5), "The menu must offer Remove pairing.")
+        }
+        remove.tap()
+        let confirm = app.sheets.buttons["移除配对"].exists ? app.sheets.buttons["移除配对"] : app.buttons.matching(identifier: "移除配对").element(boundBy: max(0, app.buttons.matching(identifier: "移除配对").count - 1))
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5)); confirm.tap()
+        XCTAssertTrue(pairingScan(app).waitForExistence(timeout: 15), "Removing the pairing must return to the pairing screen.")
+        return true
+    }
+
+    // Z1: cleanup — removes this test variant's pairing through the app so no
+    // credential is left in the phone's Keychain when the variant is uninstalled.
+    func testDeviceZ1RemovePairing() throws {
+        _ = try requireDeviceAcceptance()
+        let app = chineseApp()
+        app.launch()
+        let removed = removePairingIfPresent(app)
+        deckStep(removed ? "pairing-removed" : "no-pairing")
+        XCTAssertTrue(pairingScan(app).exists)
+        keepScreenshot("unpaired-for-cleanup", app)
+        app.terminate()
+    }
+
+    // A0: proves the runner controls the app on this phone (launch, query,
+    // screenshot) before any pairing exists.
+    func testDeviceA0ControlLaunch() throws {
+        _ = try requireDeviceAcceptance()
+        let app = chineseApp()
+        app.launch()
+        let scan = app.buttons["deck.pair.scan"].exists ? app.buttons["deck.pair.scan"] : app.buttons["扫描二维码"]
+        XCTAssertTrue(scan.waitForExistence(timeout: 20), "A fresh test variant must open on the pairing screen.")
+        keepScreenshot("control-launch", app)
+        deckStep("control-ok")
+        app.terminate()
+    }
+
+    // R1: the published 1.0 (3) source, built as the test variant, against the
+    // kept summaries-only scope reproduces the field screenshot exactly.
+    func testDeviceR1OldBuildReproducesFieldDenial() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_PAIRING_URI", "DECK_DEVICE_HOST", "DECK_DEVICE_AGENT_TITLE"])
+        let app = chineseApp()
+        app.launch()
+        deckStep("control-ok")
+        if removePairingIfPresent(app) { deckStep("stale-pairing-removed") }
+        pairByPaste(environment["DECK_DEVICE_PAIRING_URI"]!, host: environment["DECK_DEVICE_HOST"]!, in: app, cameraDenial: true)
+        let legacy = "此卡片未共享这项访问权限。请检查 Mac 上的 Phone Connector 共享范围。"
+        let rowReason = app.staticTexts[legacy].firstMatch
+        XCTAssertTrue(rowReason.waitForExistence(timeout: 20), "The old build must show the field's generic denial on the list.")
+        keepScreenshot("old-build-list", app)
+        openCard(named: environment["DECK_DEVICE_AGENT_TITLE"]!, in: app)
+        let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
+        XCTAssertTrue(reveal(unavailable, in: app))
+        XCTAssertTrue(unavailable.label.contains(legacy), "Old detail: \(unavailable.label)")
+        let send = app.buttons["deck.message.send"].firstMatch
+        XCTAssertTrue(reveal(send, in: app))
+        XCTAssertFalse(send.isEnabled)
+        keepScreenshot("old-build-detail", app)
+        deckStep("old-build-reproduced")
+    }
+
+    // U1: the new build installed over the paired old build keeps the pairing,
+    // names the exact Mac setting, converges after the explicit grant without
+    // re-pairing, and delivers a phone message to a manually started Claude.
+    func testDeviceU1UpgradeGuidesGrantAndDelivers() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_HOST", "DECK_DEVICE_AGENT_TITLE", "DECK_DEVICE_AGENT_MARKER", "DECK_DEVICE_NONCE"])
+        let host = environment["DECK_DEVICE_HOST"]!
+        let agent = environment["DECK_DEVICE_AGENT_TITLE"]!
+        let app = chineseApp()
+        app.launch()
+        XCTAssertTrue(app.staticTexts[host].firstMatch.waitForExistence(timeout: 30), "Upgrade must keep the existing pairing.")
+        XCTAssertFalse(app.textFields["deck.pair.descriptor"].exists, "Upgrade must not ask to pair again.")
+        let setup = app.staticTexts["deck.sharing.setup"].firstMatch
+        XCTAssertTrue(setup.waitForExistence(timeout: 20), "The kept summaries-only scope must lead with setup guidance.")
+        XCTAssertTrue(setup.label.contains("「\(host)」") && setup.label.contains("「信任此设备」") && setup.label.contains("「设置 → 远程访问」")
+                      && setup.label.contains("下次回到") && setup.label.contains("无需重新配对"),
+                      "Setup must name the host and the exact desktop action: \(setup.label)")
+        // Compact enough that the first card stays on the first screen.
+        XCTAssertTrue(app.staticTexts[environment["DECK_DEVICE_AGENT_TITLE"]!].firstMatch.isHittable,
+                      "The setup note must not push the cards off the first screen.")
+        XCTAssertTrue(app.staticTexts["输出和消息尚未共享"].firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["输出未共享"].firstMatch.exists, "Each affected card carries one short marker.")
+        keepScreenshot("new-build-list-setup", app)
+        // Keeping the current sharing collapses the guidance for this host and
+        // scope across relaunch; it can be shown again.
+        app.buttons["deck.sharing.keep"].tap()
+        let collapsed = app.staticTexts["deck.sharing.collapsed"].firstMatch
+        XCTAssertTrue(collapsed.waitForExistence(timeout: 5)); XCTAssertFalse(setup.exists)
+        app.terminate(); app.launch()
+        XCTAssertTrue(collapsed.waitForExistence(timeout: 30), "The kept choice survives relaunch.")
+        XCTAssertFalse(setup.exists)
+        keepScreenshot("new-build-list-collapsed", app)
+        app.buttons["deck.sharing.show"].tap()
+        XCTAssertTrue(setup.waitForExistence(timeout: 5))
+        app.descendants(matching: .any)["deck.sharing.details"].firstMatch.tap()
+        // The disclosure's own identifier masks its rows' identifiers; match the visible text.
+        let version = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Deck Connector 1.0 (4)")).firstMatch
+        XCTAssertTrue(version.waitForExistence(timeout: 5), "The phone shows its own build for diagnosis.")
+        keepScreenshot("new-build-version", app)
+        deckStep("upgrade-kept-pairing")
+
+        openCard(named: agent, in: app)
+        let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
+        XCTAssertTrue(reveal(unavailable, in: app))
+        XCTAssertTrue(unavailable.label.contains("「\(host)」") && unavailable.label.contains("「信任此设备」"), unavailable.label)
+        let send = app.buttons["deck.message.send"].firstMatch
+        XCTAssertTrue(reveal(send, in: app)); XCTAssertFalse(send.isEnabled)
+        // Like the field screenshot: a draft typed while output is not shared.
+        let draft = app.textViews["deck.message.draft"].firstMatch
+        XCTAssertTrue(reveal(draft, in: app))
+        clearDraft(draft, in: app)
+        draft.tap(); draft.typeText("test")
+        app.buttons["deck.keyboard.done"].tap()
+        keepScreenshot("new-build-detail-before-grant", app)
+
+        // The driver trusts this device on the Mac only after this step.
+        deckStep("ready-trust")
+        let output = outputText(app)
+        XCTAssertTrue(waitUntil(60) { output.exists && output.label.contains(environment["DECK_DEVICE_AGENT_MARKER"]!) },
+                      "The open detail must converge to the granted output without re-pairing or relaunch.")
+        XCTAssertFalse(app.staticTexts["deck.output.unavailable"].exists)
+        keepScreenshot("after-grant-output", app)
+        deckStep("granted-output-visible")
+        // The pre-grant draft never silently retargets: it asks for explicit acceptance.
+        let unconfirmed = app.staticTexts["deck.message.targetChanged"].firstMatch
+        XCTAssertTrue(reveal(unconfirmed, in: app))
+        XCTAssertTrue(unconfirmed.label.contains("目标可确认之前"), unconfirmed.label)
+        XCTAssertFalse(app.buttons["deck.message.send"].firstMatch.isEnabled)
+        keepScreenshot("pre-grant-draft-needs-acceptance", app)
+        app.buttons["使用当前目标"].firstMatch.tap()
+        XCTAssertTrue(replaceAllText(in: draft, expectedOriginal: "test", with: ""))
+        app.buttons["deck.keyboard.done"].tap()
+
+        sendAndAwaitReply(nonce: environment["DECK_DEVICE_NONCE"]!, tag: "first", in: app)
+
+        // Response loss: the host applies the send but answers 504. The phone
+        // must confirm the original operation, never post a second one.
+        deckStep("ready-fault")
+        XCTAssertTrue(waitUntil(5) { true })
+        sendAndAwaitReply(nonce: environment["DECK_DEVICE_NONCE"]! + "r", tag: "lost-response", in: app)
+        app.terminate()
+    }
+
+    /// Removes a leftover durable draft of any content from an earlier run.
+    private func clearDraft(_ draft: XCUIElement, in app: XCUIApplication) {
+        guard let value = draft.value as? String, !value.isEmpty else { return }
+        draft.tap()
+        // The short editor shows only the first lines; delete from the last
+        // visible caret position until nothing remains (bounded).
+        for _ in 0..<6 {
+            guard let remaining = draft.value as? String, !remaining.isEmpty else { break }
+            draft.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.98)).tap()
+            draft.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: remaining.count + 2))
+        }
+        XCTAssertTrue(waitForEmptyValue(in: draft, timeout: 3), "A leftover draft must be cleared before this run.")
+        app.buttons["deck.keyboard.done"].tap()
+    }
+
+    private func sendAndAwaitReply(nonce: String, tag: String, in app: XCUIApplication) {
+        let draft = app.textViews["deck.message.draft"].firstMatch
+        XCTAssertTrue(reveal(draft, in: app))
+        let first = "DQA"
+        let expected = first + nonce
+        draft.tap()
+        draft.typeText("只回复把 \(first) 和 \(nonce) 直接拼接后的一个词，不要加空格，也不要调用任何工具。")
+        app.buttons["deck.keyboard.done"].tap()
+        let send = app.buttons["deck.message.send"].firstMatch
+        XCTAssertTrue(reveal(send, in: app) && send.isEnabled, "A manually started Claude foreground must accept a phone message.")
+        send.tap()
+        deckStep("sent-\(tag)")
+        XCTAssertTrue(waitForEmptyValue(in: draft, timeout: 45), "The send must be confirmed and its exact draft cleared (\(tag)).")
+        let output = outputText(app)
+        XCTAssertTrue(waitUntil(90) { output.exists && output.label.contains(expected) },
+                      "The agent's reply must contain the concatenated marker absent from the prompt (\(tag)).")
+        keepScreenshot("reply-\(tag)", app)
+        deckStep("reply-\(tag)")
+    }
+
+    // S1: under Board access a plain shell's output is readable, sending stays
+    // disabled, and a stopped card says so; then sharing changes take effect
+    // on an open detail and regrant revives no old operation.
+    func testDeviceS1ShellStoppedAndWithdrawal() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_SHELL_TITLE", "DECK_DEVICE_SHELL_MARKER", "DECK_DEVICE_STOPPED_TITLE", "DECK_DEVICE_HOST"])
+        let app = chineseApp()
+        app.launch()
+        openCard(named: environment["DECK_DEVICE_STOPPED_TITLE"]!, in: app)
+        let stopped = app.staticTexts["deck.output.unavailable"].firstMatch
+        XCTAssertTrue(reveal(stopped, in: app))
+        XCTAssertTrue(stopped.label.contains("没有可读取的会话") || stopped.label.contains("会话"), stopped.label)
+        let stoppedSend = app.buttons["deck.message.send"].firstMatch
+        XCTAssertTrue(reveal(stoppedSend, in: app)); XCTAssertFalse(stoppedSend.isEnabled)
+        keepScreenshot("stopped-card", app)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        openCard(named: environment["DECK_DEVICE_SHELL_TITLE"]!, in: app)
+        let output = outputText(app)
+        XCTAssertTrue(waitUntil(30) { output.exists && output.label.contains(environment["DECK_DEVICE_SHELL_MARKER"]!) },
+                      "Board access must expose a plain shell's bounded output.")
+        let draft = app.textViews["deck.message.draft"].firstMatch
+        XCTAssertTrue(reveal(draft, in: app))
+        draft.tap(); draft.typeText("echo must-not-run")
+        app.buttons["deck.keyboard.done"].tap()
+        let send = app.buttons["deck.message.send"].firstMatch
+        XCTAssertTrue(reveal(send, in: app)); XCTAssertFalse(send.isEnabled, "A phone must never send shell input.")
+        keepScreenshot("shell-output-send-disabled", app)
+        XCTAssertTrue(replaceAllText(in: draft, expectedOriginal: "echo must-not-run", with: ""))
+        app.buttons["deck.keyboard.done"].tap()
+        deckStep("shell-checked")
+
+        deckStep("ready-downgrade")
+        XCTAssertTrue(waitUntil(30) { !self.outputText(app).exists && app.staticTexts["deck.output.unavailable"].exists },
+                      "Narrowing sharing must remove the open shell output promptly.")
+        keepScreenshot("after-downgrade", app)
+        deckStep("downgrade-observed")
+        deckStep("ready-regrant")
+        XCTAssertTrue(waitUntil(30) { self.outputText(app).exists }, "Regranting must restore output for the open card.")
+        deckStep("regrant-observed")
+
+        deckStep("ready-disable")
+        XCTAssertTrue(waitUntil(30) { app.descendants(matching: .any).containing(NSPredicate(format: "label CONTAINS %@", "离线")).firstMatch.exists
+                                      || app.images["wifi.slash"].exists },
+                      "Disabling Connector must be visible as a connection problem, not as a sharing choice.")
+        keepScreenshot("connector-disabled", app)
+        deckStep("disable-observed")
+        deckStep("ready-enable")
+        XCTAssertTrue(waitUntil(45) { self.outputText(app).exists && !app.images["wifi.slash"].exists }, "Re-enabling must recover without re-pairing.")
+        deckStep("enable-observed")
+        app.terminate()
+    }
+
+    // E1: after the Agent exits to its shell, Board access still reads output
+    // and sending is disabled.
+    func testDeviceE1AgentExitToShell() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_AGENT_TITLE", "DECK_DEVICE_EXIT_MARKER"])
+        let app = chineseApp()
+        app.launch()
+        openCard(named: environment["DECK_DEVICE_AGENT_TITLE"]!, in: app)
+        let output = outputText(app)
+        XCTAssertTrue(waitUntil(45) { output.exists && output.label.contains(environment["DECK_DEVICE_EXIT_MARKER"]!) },
+                      "Shell output after the Agent exited stays readable under Board access.")
+        let send = app.buttons["deck.message.send"].firstMatch
+        XCTAssertTrue(reveal(send, in: app)); XCTAssertFalse(send.isEnabled)
+        keepScreenshot("agent-exited-to-shell", app)
+        app.terminate()
+    }
+
+    // D1: message and note drafts survive navigation, background and process
+    // termination; the restored note saves without another edit.
+    func testDeviceD1DraftsSurviveNavigationBackgroundAndRelaunch() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_SHELL_TITLE", "DECK_DEVICE_NONCE"])
+        let title = environment["DECK_DEVICE_SHELL_TITLE"]!
+        let app = chineseApp()
+        app.launch()
+        openCard(named: title, in: app)
+        let message = "draft-\(environment["DECK_DEVICE_NONCE"]!)"
+        let draft = app.textViews["deck.message.draft"].firstMatch
+        XCTAssertTrue(reveal(draft, in: app)); draft.tap(); draft.typeText(message)
+        app.buttons["deck.keyboard.done"].tap()
+        selectDetailTab("便签", in: app)
+        let note = app.textViews["deck.note.new"].firstMatch
+        XCTAssertTrue(revealBySwipingDown(note, in: app))
+        let noteMarker = "DQA-NOTE-DRAFT-\(environment["DECK_DEVICE_NONCE"]!)"
+        note.tap(); note.typeText(noteMarker)
+        app.buttons["deck.keyboard.done"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        openCard(named: title, in: app)
+        XCTAssertTrue(reveal(draft, in: app)); XCTAssertEqual(draft.value as? String, message)
+        app.terminate(); app.launch()
+        openCard(named: title, in: app)
+        XCTAssertTrue(reveal(draft, in: app)); XCTAssertEqual(draft.value as? String, message, "A message draft must survive termination.")
+        selectDetailTab("便签", in: app)
+        XCTAssertTrue(revealBySwipingDown(note, in: app)); XCTAssertEqual(note.value as? String, noteMarker)
+        keepScreenshot("drafts-restored", app)
+        let save = app.buttons["deck.note.save"]
+        XCTAssertTrue(reveal(save, in: app) && save.isEnabled); save.tap()
+        deckStep("draft-note-saved")
+        let saved = noteText(noteMarker, in: app)
+        if !saved.waitForExistence(timeout: 15) { checkOriginalNoteOperationOnce(in: app) }
+        XCTAssertTrue(saved.waitForExistence(timeout: 15), "The restored note must save once without another edit.")
+        guard deleteOnlyNote(noteMarker, in: app) else { return }
+        selectDetailTab("输出", in: app)
+        XCTAssertTrue(replaceAllText(in: draft, expectedOriginal: message, with: ""))
+        app.buttons["deck.keyboard.done"].tap()
+        deckStep("drafts-done")
+        app.terminate()
+    }
+
+    // V1: Chinese at an accessibility text size in portrait with the keyboard
+    // open keeps the output and the send area reachable.
+    func testDeviceV1ChineseLargeTextKeyboardPortrait() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_SHELL_TITLE"])
+        XCUIDevice.shared.orientation = .portrait
+        let app = chineseApp(largeText: true)
+        app.launch()
+        openCard(named: environment["DECK_DEVICE_SHELL_TITLE"]!, in: app)
+        XCTAssertTrue(reveal(outputText(app), in: app), "Output must be reachable.")
+        let draft = app.textViews["deck.message.draft"].firstMatch
+        XCTAssertTrue(reveal(draft, in: app)); draft.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        keepScreenshot("large-text-keyboard-portrait", app)
+        app.buttons["deck.keyboard.done"].tap()
+        XCTAssertTrue(reveal(app.buttons["deck.output.refresh"], in: app))
+        app.terminate()
+    }
+
+    // V2: the same in landscape. It fails rather than passing in portrait
+    // when the phone does not rotate (for example under rotation lock).
+    func testDeviceV2ChineseLargeTextLandscape() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_SHELL_TITLE"])
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let app = chineseApp(largeText: true)
+        app.launch()
+        openCard(named: environment["DECK_DEVICE_SHELL_TITLE"]!, in: app)
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let rotated = waitUntil(5) { let size = XCUIScreen.main.screenshot().image.size; return size.width > size.height }
+        keepScreenshot("large-text-landscape-attempt", app)
+        XCTAssertTrue(rotated, "The phone did not rotate; landscape cannot be judged on this device state.")
+        guard rotated else { return }
+        XCTAssertTrue(outputText(app).waitForExistence(timeout: 20), "Output must be present in landscape.")
+        // On a physical device the coordinate drags in `reveal` do not follow
+        // the rotation; scroll the list itself, boundedly.
+        let draft = app.textViews["deck.message.draft"].firstMatch
+        let list = app.collectionViews.firstMatch
+        for _ in 0..<30 where !(draft.exists && draft.isHittable) { list.swipeUp() }
+        XCTAssertTrue(draft.exists && draft.isHittable, "The composer must be reachable in landscape at accessibility text size.")
+        draft.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        keepScreenshot("large-text-keyboard-landscape", app)
+        app.buttons["deck.keyboard.done"].tap()
+        app.terminate()
+    }
+
+    // L1: a real device lock (not app termination) with a detail open; after
+    // waking, the same pairing resumes and the output is captured anew.
+    func testDeviceL1LockAndUnlockResumes() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_SHELL_TITLE"])
+        let app = chineseApp()
+        app.launch()
+        openCard(named: environment["DECK_DEVICE_SHELL_TITLE"]!, in: app)
+        let captured = app.descendants(matching: .any)["deck.output.captured"].firstMatch
+        XCTAssertTrue(waitUntil(30) { captured.exists })
+        let before = captured.label
+        XCUIDevice.shared.perform(NSSelectorFromString("pressLockButton"))
+        deckStep("locked")
+        Thread.sleep(forTimeInterval: 20)
+        XCUIDevice.shared.press(.home)
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        deckStep("woken")
+        XCTAssertTrue(app.navigationBars[environment["DECK_DEVICE_SHELL_TITLE"]!].waitForExistence(timeout: 30),
+                      "After unlocking, the app must return to the open card without re-pairing.")
+        XCTAssertFalse(app.textFields["deck.pair.descriptor"].exists)
+        XCTAssertTrue(waitUntil(30) { captured.exists && captured.label != before }, "Output must be captured again after unlocking.")
+        keepScreenshot("after-unlock", app)
+        app.terminate()
+    }
+
+    /// Sets this test variant's Local Network permission in the Settings app.
+    /// Returns false (without guessing) when the expected rows are not found.
+    private func setLocalNetwork(_ enabled: Bool, appName: String) -> Bool {
+        let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+        settings.terminate(); settings.launch()
+        func open(_ titles: [String]) -> Bool {
+            for _ in 0..<12 {
+                for title in titles {
+                    let cell = settings.staticTexts[title].firstMatch
+                    if cell.exists && cell.isHittable { cell.tap(); return true }
+                }
+                settings.swipeUp()
+            }
+            return false
+        }
+        // Privacy & Security → Local Network lists one switch per app, labeled
+        // with the app's name. Only the exact test variant's switch is touched;
+        // the row text opens a detail page, so tap the switch end itself.
+        guard open(["隐私与安全性", "Privacy & Security"]), open(["本地网络", "Local Network"]) else { return false }
+        let toggle = settings.switches.matching(NSPredicate(format: "label == %@", appName)).firstMatch
+        guard toggle.waitForExistence(timeout: 5) else { return false }
+        let isOn = (toggle.value as? String) == "1"
+        if isOn != enabled { toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap() }
+        let settled = waitUntil(5) { ((toggle.value as? String) == "1") == enabled }
+        keepScreenshot("local-network-\(enabled ? "allowed" : "denied")", settings)
+        return settled
+    }
+
+    // N1: with Local Network access turned off for this app, the phone says
+    // where to look instead of showing a raw error; turning it back on recovers.
+    func testDeviceN1LocalNetworkDeniedIsActionable() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_HOST", "DECK_DEVICE_ADDRESS"])
+        let host = environment["DECK_DEVICE_HOST"]!
+        defer { _ = setLocalNetwork(true, appName: "Deck QA") }
+        XCTAssertTrue(setLocalNetwork(false, appName: "Deck QA"), "Could not turn off Local Network access in Settings.")
+        deckStep("local-network-denied")
+        let app = chineseApp()
+        app.launch()
+        // A cold launch has no snapshot yet, so the hint names the paired address.
+        let address = environment["DECK_DEVICE_ADDRESS"]!
+        let hint = app.staticTexts.matching(NSPredicate(format: "(label CONTAINS %@ OR label CONTAINS %@) AND label CONTAINS %@",
+                                                        "「\(host)」", "「\(address)」", "本地网络")).firstMatch
+        XCTAssertTrue(hint.waitForExistence(timeout: 60), "A denied Local Network permission must lead to the actionable checklist.")
+        keepScreenshot("local-network-denied-app", app)
+        XCTAssertTrue(setLocalNetwork(true, appName: "Deck QA"), "Could not restore Local Network access.")
+        deckStep("local-network-restored")
+        app.activate()
+        XCTAssertTrue(waitUntil(60) { !hint.exists && app.staticTexts[host].firstMatch.exists }, "Restoring access must recover without re-pairing.")
+        keepScreenshot("local-network-restored-app", app)
+        app.terminate()
+    }
+
+    // X1: revoking this device on the Mac while a detail is open removes its
+    // content and leaves an unpaired, explained state.
+    func testDeviceX1RevokeWhileOpen() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_SHELL_TITLE"])
+        let app = chineseApp()
+        app.launch()
+        openCard(named: environment["DECK_DEVICE_SHELL_TITLE"]!, in: app)
+        XCTAssertTrue(waitUntil(30) { self.outputText(app).exists })
+        deckStep("ready-revoke")
+        XCTAssertTrue(waitUntil(45) { !self.outputText(app).exists }, "Revocation must remove shared output from the open detail.")
+        keepScreenshot("after-revoke", app)
+        deckStep("revoke-observed")
+        app.terminate()
+    }
+}
+

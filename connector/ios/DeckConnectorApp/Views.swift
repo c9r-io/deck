@@ -42,11 +42,14 @@ struct PairingView: View {
                 Section("Pair with Deck") {
                     Text("On the desktop, enable Connector and create a short-lived pairing code. The phone connects only to that pinned HTTPS host.")
                     Button("Scan QR code") { scanning = true }
+                        .accessibilityIdentifier("deck.pair.scan")
                     TextField("Paste deck-connector:// pairing code", text: $descriptor, axis: .vertical)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .accessibilityIdentifier("deck.pair.descriptor")
                     Button("Pair") { Task { await model.pair(descriptor: descriptor); descriptor = "" } }
                         .disabled(descriptor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("deck.pair.submit")
                 }
                 Section { Text("Pairing data is used once and is not stored. The host identity, certificate pin, device ID and token are stored together in Keychain.").font(.footnote).foregroundStyle(.secondary) }
             }
@@ -65,6 +68,8 @@ struct PairingView: View {
 struct TaskListView: View {
     @EnvironmentObject private var model: AppModel
     @Binding var confirmUnpair: Bool
+    /// "<host id>|<scope>" the user chose to keep; a per-phone convenience only.
+    @AppStorage("deck.sharing.kept") private var keptSharing = ""
 
     var body: some View {
         NavigationStack {
@@ -76,6 +81,9 @@ struct TaskListView: View {
                             Text(snapshot.hostName ?? snapshot.hostId).font(.caption)
                             Text(sharingScopeMessage(snapshot.scope))
                                 .font(.caption).foregroundStyle(.secondary)
+                            Text(String(format: String(localized: "sharing.thisApp"), appVersionDescription))
+                                .font(.caption).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("deck.sharing.appVersion")
                         } label: {
                             VStack(alignment: .leading) {
                                 Label(snapshot.hostName ?? snapshot.hostId, systemImage: "desktopcomputer")
@@ -85,6 +93,9 @@ struct TaskListView: View {
                                 }
                             }
                         }.accessibilityIdentifier("deck.sharing.details")
+                    }
+                    if SharingGuide.needsFullAccessSetup(snapshot) {
+                        sharingSetupSection(snapshot)
                     }
                     if snapshot.cards.isEmpty {
                         ContentUnavailableView("No shared cards", systemImage: "rectangle.stack", description: Text("Check the sharing scope on your Mac. Refreshing does not change which cards are shared."))
@@ -137,8 +148,42 @@ struct TaskListView: View {
         }
     }
 
+    /// Setup guidance leads the list until the user chooses to keep the
+    /// current sharing; it then stays one line for this host and scope and
+    /// returns by itself when the Mac's choice changes.
+    @ViewBuilder private func sharingSetupSection(_ snapshot: Snapshot) -> some View {
+        let key = "\(snapshot.hostId)|\(snapshot.scope ?? "")"
+        Section {
+            if keptSharing == key {
+                HStack {
+                    Label(String(localized: "sharing.setup.collapsed"), systemImage: "lock")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("deck.sharing.collapsed")
+                    Spacer()
+                    Button(String(localized: "sharing.setup.show")) { keptSharing = "" }
+                        .font(.footnote).accessibilityIdentifier("deck.sharing.show")
+                }
+            } else {
+                Label(String(localized: "sharing.setup.title"), systemImage: "lock.rectangle.on.rectangle")
+                    .font(.subheadline.weight(.semibold))
+                // One short paragraph so the cards stay on the first screen of a small phone.
+                Text(String(format: String(localized: "sharing.setup.body"), snapshot.hostName ?? snapshot.hostId))
+                    .font(.footnote)
+                    .accessibilityIdentifier("deck.sharing.setup")
+                Button(String(localized: "sharing.setup.keep")) { keptSharing = key }
+                    .font(.footnote)
+                    .accessibilityIdentifier("deck.sharing.keep")
+            }
+        }
+    }
+
     private func cardStatus(_ card: CardSummary) -> String {
-        if let reason = card.capabilities?.readOutput?.reason { return capabilityMessage(reason) }
+        if let reason = card.capabilities?.readOutput?.reason {
+            if SharingGuide.remedy(reason: reason, kind: .readOutput, scope: model.snapshot?.scope) == .chooseFullAccess {
+                return String(localized: "sharing.row.notShared")
+            }
+            return capabilityMessage(reason, kind: .readOutput, snapshot: model.snapshot)
+        }
         if card.isStopped { return String(localized: "Session stopped") }
         return card.status == "running" ? String(localized: "Session available") : String(localized: "Session status unavailable")
     }
@@ -318,8 +363,8 @@ struct TaskDetailView: View {
         case .agentNotInForeground: String(localized: "taskDetail.output.agentNotInForeground")
         case .readFailed: String(localized: "taskDetail.output.readFailed")
         case .targetChanged: String(localized: "taskDetail.output.targetChanged")
-        case .unsupportedTarget: capabilityMessage("unsupported-target")
-        case .controlled: capabilityMessage("mcp-controlled")
+        case .unsupportedTarget: capabilityMessage("unsupported-target", kind: .readOutput, snapshot: model.snapshot)
+        case .controlled: capabilityMessage("mcp-controlled", kind: .readOutput, snapshot: model.snapshot)
         case .unknown: String(localized: "taskDetail.output.unknown")
         }
     }
@@ -329,7 +374,7 @@ struct TaskDetailView: View {
         let pending = model.pendingSends[card.id]
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .bottom) {
-                TextEditor(text: Binding(get: { composer.text }, set: { value in composer.edit(value); model.stageDraft(composer.snapshot) }))
+                TextEditor(text: Binding(get: { composer.text }, set: { value in composer.edit(value, currentGeneration: card.generation); model.stageDraft(composer.snapshot) }))
                     .frame(height: composerHeight)
                     .overlay(alignment: .topLeading) {
                         if composer.text.isEmpty { Text("Message the agent…").foregroundStyle(.secondary).padding(8).allowsHitTesting(false) }
@@ -369,7 +414,11 @@ struct TaskDetailView: View {
             if let pending {
                 OperationStatusView(record: pending)
             } else if generationChanged && !composer.text.isEmpty {
-                Text("The target changed. Review your draft before sending.").font(.caption).foregroundStyle(.orange)
+                Text(composer.expectedGeneration == nil
+                     ? String(localized: "taskDetail.message.unconfirmedTarget")
+                     : String(localized: "The target changed. Review your draft before sending."))
+                    .font(.caption).foregroundStyle(.orange)
+                    .accessibilityIdentifier("deck.message.targetChanged")
                 Button("Use current target") { composer.acceptGeneration(card.generation); model.stageDraft(composer.snapshot) }
             } else if !card.maySend {
                 Text(sendUnavailableReason(card)).font(.caption).foregroundStyle(.secondary)
@@ -401,7 +450,7 @@ struct TaskDetailView: View {
     }
 
     private func sendUnavailableReason(_ card: CardSummary) -> String {
-        if let reason = card.capabilities?.sendMessage?.reason { return capabilityMessage(reason) }
+        if let reason = card.capabilities?.sendMessage?.reason { return capabilityMessage(reason, kind: .sendMessage, snapshot: model.snapshot) }
         if card.isStopped {
             return String(localized: "taskDetail.message.unavailable.stopped")
         }
@@ -521,7 +570,7 @@ struct TaskDetailView: View {
                 }
                 Text(String(localized: "taskDetail.queue.explanation")).font(.caption).foregroundStyle(.secondary)
             } else if !card.canEditNotes {
-                Label("Scratchpad access is not shared for this card. Change Phone Connector sharing on your Mac.", systemImage: "exclamationmark.circle")
+                Label(capabilityMessage(card.capabilities?.editNotes?.reason ?? "unsupported-target", kind: .editNotes, snapshot: model.snapshot), systemImage: "exclamationmark.circle")
                     .font(.caption).foregroundStyle(.secondary)
             } else if model.bufferErrors[card.id] == nil { ProgressView() }
         } header: { Text(String(localized: "taskDetail.scratchpad.title")) }
@@ -675,7 +724,27 @@ private struct EditNoteView: View {
 
 }
 
-private func capabilityMessage(_ reason: String) -> String {
+/// One explanation per denied capability. A sharing denial names the Mac and
+/// the exact desktop setting; a queue denial names the launch configuration.
+func capabilityMessage(_ reason: String, kind: CardCapabilityKind, snapshot: Snapshot?) -> String {
+    switch SharingGuide.remedy(reason: reason, kind: kind, scope: snapshot?.scope) {
+    case .chooseFullAccess:
+        return String(format: String(localized: "sharing.card.chooseFullAccess"), snapshot?.hostName ?? snapshot?.hostId ?? "Mac")
+    case .savedLaunchCommand:
+        return String(localized: "taskDetail.queue.unavailable")
+    case .generic, nil:
+        return legacyCapabilityMessage(reason)
+    }
+}
+
+let appVersionDescription: String = {
+    let info = Bundle.main.infoDictionary
+    let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+    let build = info?["CFBundleVersion"] as? String ?? "?"
+    return "\(version) (\(build))"
+}()
+
+private func legacyCapabilityMessage(_ reason: String) -> String {
     switch reason {
     case "unsupported-target": String(localized: "This access is not shared for this card. Check Phone Connector sharing on your Mac.")
     case "mcp-controlled": String(localized: "This card is controlled by another client. Phone access is unavailable.")

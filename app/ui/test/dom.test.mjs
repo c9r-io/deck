@@ -1761,7 +1761,58 @@ test('Phone Connector scope expands with confirmation and restores the host valu
   await failed;
   assert.equal(scope, 'boardMetadata');
   assert.equal(control.value, 'boardMetadata', 'a rejected change restores the host scope');
+  assert.match(fakeDocument.getElementById('set-connector-scope-effect').textContent, /^Now: phones list every card, but only/,
+    'the hint describes the scope the host actually kept, including what it withholds');
   assert.equal(control.disabled, false);
+});
+
+test('a newly paired phone is offered trust by name, and trust is per device and confirmed', async () => {
+  const calls = [];
+  const phone = { id: 'D1', name: 'My iPhone', pairedAt: 1_790_000_000, revoked: false, trusted: false };
+  let devices = [];
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'connector_status') return { enabled: true, running: true, address: '192.168.1.20', port: 47631, devices,
+      scope: 'boardMetadata', withheldCards: 3 };
+    if (cmd === 'connector_addresses') return ['192.168.1.20'];
+    if (cmd === 'connector_pairing') return { svg: '<svg/>', expiresAt: Math.floor(Date.now() / 1000) + 300 };
+    if (cmd === 'connector_set_trusted') { devices = devices.map(x => x.id === args.deviceId ? { ...x, trusted: args.trusted } : x); return {}; }
+    return {};
+  } } };
+  fakeDocument.getElementById('set-connector-pairing').hidden = true;
+  await renderConnectorSettings();
+  assert.match(fakeDocument.getElementById('set-connector-withheld').textContent, /^3 Board cards do not share their output with untrusted phones/);
+  await fakeDocument.getElementById('set-connector-pair').onclick();
+  assert.equal(fakeDocument.getElementById('set-connector-pair-scope').hidden, false);
+  assert.match(fakeDocument.getElementById('set-connector-pair-scope-text').textContent, /trust this phone right here/);
+
+  devices = [{ ...phone }];
+  await connectorPairingChanged();
+  const offer = fakeDocument.getElementById('set-connector-new-device');
+  assert.equal(offer.hidden, false, 'the new device is offered trust right after pairing');
+  assert.match(fakeDocument.getElementById('set-connector-new-device-text').textContent, /“My iPhone” is paired/);
+
+  const cancelled = fakeDocument.getElementById('set-connector-new-device-trust').onclick();
+  assert.match(fakeDocument.getElementById('cfm-msg').textContent, /Trust “My iPhone”\?.*shell output and history.*Shell input stays unavailable/s);
+  cfmDone(false);
+  await cancelled;
+  assert.equal(calls.filter(([cmd]) => cmd === 'connector_set_trusted').length, 0, 'cancel trusts nothing');
+
+  const accepted = fakeDocument.getElementById('set-connector-new-device-trust').onclick();
+  cfmDone(true);
+  await accepted;
+  assert.deepEqual(calls.find(([cmd]) => cmd === 'connector_set_trusted')[1], { deviceId: 'D1', trusted: true });
+  assert.equal(offer.hidden, true, 'a trusted device needs no further offer');
+  const row = fakeDocument.getElementById('set-connector-devices').children[0];
+  assert.match(row.children[1].textContent, /^trusted · paired /);
+  const toggle = [...row.children].find(child => child.dataset?.deviceTrust);
+  assert.equal(toggle.dataset.deviceTrust, 'untrust');
+
+  await toggle.onclick();
+  assert.deepEqual(calls.filter(([cmd]) => cmd === 'connector_set_trusted').at(-1)[1], { deviceId: 'D1', trusted: false },
+    'stopping trust needs no confirmation');
+  assert.equal(fakeDocument.getElementById('set-connector-scope').value, 'boardMetadata', 'trust never changes the global scope');
+  fakeDocument.getElementById('set-connector-pairing').hidden = true;
 });
 
 test('a pairing is announced by name and time and hides the spent QR code', async () => {
@@ -1775,6 +1826,12 @@ test('a pairing is announced by name and time and hides the spent QR code', asyn
   await renderConnectorSettings();
   const row = fakeDocument.getElementById('set-connector-devices').children[0];
   assert.match(row.children[1].textContent, /^paired /, 'each device shows when it was paired');
+  assert.match(row.children[1].textContent, /not synced since Deck started/, 'an unseen device says so');
+  devices = [{ ...phone, lastSeenAt: 1_790_000_050, clientBuild: '4' }];
+  await renderConnectorSettings();
+  assert.match(fakeDocument.getElementById('set-connector-devices').children[0].children[1].textContent,
+    /^paired .* · last synced .* · app build 4$/, 'last sync and app build identify the phone actually reaching this Mac');
+  devices = [phone];
 
   const pairing = fakeDocument.getElementById('set-connector-pairing');
   pairing.hidden = false;

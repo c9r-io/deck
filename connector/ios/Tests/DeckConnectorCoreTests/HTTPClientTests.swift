@@ -193,3 +193,29 @@ private final class WrongCardOutputProtocol: URLProtocol, @unchecked Sendable {
     defer { client.invalidate() }
     await #expect(throws: ConnectorError.invalidResponse) { try await client.output(cardID: "requested") }
 }
+
+@Test func onlyPairingWaitsForConnectivity() {
+    // A paired client must surface a refused/unreachable Mac promptly.
+    #expect(DeckHTTPClient.makeConfiguration().waitsForConnectivity == false)
+    #expect(DeckHTTPClient.makeConfiguration(waitsForConnectivity: true).waitsForConnectivity == true)
+    #expect(DeckHTTPClient.makeConfiguration().timeoutIntervalForResource == 45)
+}
+
+@Test func refusedConnectionSurfacesPromptlyAsTypedURLError() async throws {
+    // Nothing listens on port 1: the paired client must fail fast with a
+    // URLError (network loss), not wait for connectivity or erase the type.
+    let credential = DeviceCredential(origin: "https://127.0.0.1:1", fingerprint: String(repeating: "a", count: 64),
+                                      hostId: "h", deviceId: "d", token: "t")
+    let client = try DeckHTTPClient(credential: credential)
+    defer { client.invalidate() }
+    let started = Date()
+    do {
+        _ = try await client.snapshot()
+        Issue.record("A refused connection cannot succeed.")
+    } catch let error as URLError {
+        #expect([.cannotConnectToHost, .networkConnectionLost, .notConnectedToInternet].contains(error.code), "\(error.code)")
+    } catch {
+        Issue.record("Expected a URLError, got \(error)")
+    }
+    #expect(Date().timeIntervalSince(started) < 10)
+}

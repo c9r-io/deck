@@ -684,7 +684,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在 Mac 上启用 Phone Connector 并生成配对码，然后扫码连接。"
+            "value": "在 Mac 的 Deck「设置」→「远程访问」中启用手机连接器并生成配对码，然后扫码或粘贴配对码连接。"
           }
         }
       }
@@ -982,13 +982,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "All card summaries are shared by this Mac. Output and notes require the separate Phone Connector sharing choice on your Mac."
+            "value": "This Mac's “Phone access” is “All card summaries”: every card is listed, but only cards with a saved Codex/Claude launch command share output and notes."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此 Mac 共享全部卡片概要。输出和便签需在 Mac 上单独选择 Phone Connector 共享范围。"
+            "value": "此 Mac 的「手机访问范围」为「全部卡片概要」：可看到全部卡片，但只有已保存 Codex/Claude 启动命令的卡片能查看输出和便签。"
           }
         }
       }
@@ -998,13 +998,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Only cards with a saved Codex or Claude launch command are shared. Change Phone Connector sharing on your Mac to include other cards."
+            "value": "This Mac's “Phone access” is “Saved Codex/Claude cards”: only cards with a saved Codex/Claude launch command are listed."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "仅共享已保存 Codex 或 Claude 启动命令的卡片。请在 Mac 上更改 Phone Connector 共享范围以包含其他卡片。"
+            "value": "此 Mac 的「手机访问范围」为「已保存的 Codex/Claude 卡片」：只显示已保存 Codex/Claude 启动命令的卡片。"
           }
         }
       }
@@ -1036,7 +1036,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请检查 Mac 上的共享范围。刷新不会改变共享范围。"
+            "value": "请在 Mac 的 Deck「设置」→「远程访问」中检查「手机访问范围」。刷新不会改变共享范围。"
           }
         }
       }
@@ -1452,7 +1452,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此卡片未共享这项访问权限。请检查 Mac 上的 Phone Connector 共享范围。"
+            "value": "此卡片未共享这项访问权限。请在 Mac 上的 Deck「设置」→「远程访问」→「手机访问范围」中检查。"
           }
         }
       }
@@ -1633,22 +1633,6 @@
         }
       }
     },
-    "Scratchpad access is not shared for this card. Change Phone Connector sharing on your Mac.": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Scratchpad access is not shared for this card. Change Phone Connector sharing on your Mac."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此卡片未共享暂存区访问权限。请在 Mac 上更改 Phone Connector 共享范围。"
-          }
-        }
-      }
-    },
     "The submitted version was saved. Your newer edits remain in this editor.": {
       "localizations": {
         "en": {
@@ -1741,6 +1725,182 @@
           "stringUnit": {
             "state": "translated",
             "value": "刷新便签"
+          }
+        }
+      }
+    },
+    "sharing.setup.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Output and messages are not shared yet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输出和消息尚未共享"
+          }
+        }
+      }
+    },
+    "sharing.setup.body": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next time you are at “%@”, choose “Trust this device…” for this phone in Deck → Settings → Remote access to read every card’s output and send messages. Once is enough; no re-pairing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下次回到「%@」时，在 Deck「设置 → 远程访问」中对这台手机选择「信任此设备」，即可查看所有卡片的输出并发送消息。只需一次，无需重新配对。"
+          }
+        }
+      }
+    },
+    "sharing.row.notShared": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Output not shared"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输出未共享"
+          }
+        }
+      }
+    },
+    "sharing.card.chooseFullAccess": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Output, messages and notes for this card are not shared. On “%@”, open Deck → Settings → Remote access and choose “Trust this device…” for this phone."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此卡片的输出、消息和便签未共享。请在「%@」上打开 Deck →「设置」→「远程访问」，对这台手机选择「信任此设备」。"
+          }
+        }
+      }
+    },
+    "sharing.thisApp": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This iPhone: Deck Connector %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此 iPhone：Deck Connector %@"
+          }
+        }
+      }
+    },
+    "Camera access is unavailable. Cancel and paste the Deck pairing code instead.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Camera access is unavailable. Cancel and paste the Deck pairing code instead."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法使用相机。请取消，然后粘贴 Deck 配对代码。"
+          }
+        }
+      }
+    },
+    "taskDetail.message.unconfirmedTarget": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This draft was written before its target could be confirmed. Review it, then tap Use current target to send it here."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此草稿写于目标可确认之前。请检查后点「使用当前目标」，再发送到这里。"
+          }
+        }
+      }
+    },
+    "connection.unreachable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cannot reach “%@”. Check that the Mac is awake with Deck running and Phone Connector enabled, that this iPhone is on the same network or VPN, and that Deck Connector is allowed in Settings → Privacy & Security → Local Network."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法连接到「%@」。请确认 Mac 已唤醒、Deck 正在运行且已启用手机连接器；这台 iPhone 与 Mac 在同一网络或 VPN；并已在 iPhone「设置」→「隐私与安全性」→「本地网络」中允许 Deck Connector。"
+          }
+        }
+      }
+    },
+    "sharing.setup.keep": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep current sharing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保持当前设置"
+          }
+        }
+      }
+    },
+    "sharing.setup.collapsed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some cards do not share output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分卡片未共享输出"
+          }
+        }
+      }
+    },
+    "sharing.setup.show": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show how"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看说明"
           }
         }
       }

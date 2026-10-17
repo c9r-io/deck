@@ -103,6 +103,7 @@ fn device(id: &str) -> Device {
         revoked_at: None,
         history_pruned: false,
         retired_through: 0,
+        trusted: false,
     }
 }
 fn tombstone(device_id: &str, request: &CommandRequest, state: &str) -> JournalEntry {
@@ -615,6 +616,44 @@ fn command_id_and_text_rules() {
 }
 
 #[test]
+fn withheld_cards_counts_only_scope_limited_output() {
+    let board = json!({"cards":[
+        {"id":"a","cmd":"claude"},
+        {"id":"b","cmd":""},
+        {"id":"c","cmd":"/usr/local/bin/codex --yolo"},
+        {"id":"d"}
+    ]});
+    assert_eq!(withheld_cards(&board, SnapshotScope::AgentCards), 3);
+    assert_eq!(withheld_cards(&board, SnapshotScope::BoardMetadata), 3);
+    assert_eq!(withheld_cards(&board, SnapshotScope::BoardAccess), 0);
+    assert_eq!(withheld_cards(&json!({}), SnapshotScope::BoardMetadata), 0);
+}
+
+#[test]
+fn client_build_accepts_only_the_app_user_agent_build_number() {
+    assert_eq!(
+        client_build("DeckConnector/3 CFNetwork/3860 Darwin/25.6.0").as_deref(),
+        Some("3")
+    );
+    assert_eq!(
+        client_build("DeckConnector/123456789").as_deref(),
+        Some("123456789")
+    );
+    for rejected in [
+        "",
+        "DeckConnector/",
+        "DeckConnector/1234567890",
+        "DeckConnector/1.0",
+        "curl/8.7.1",
+        " Other/1 DeckConnector/4",
+        "DeckConnectorX/4",
+        "DeckConnector/4\u{202e}",
+    ] {
+        assert_eq!(client_build(rejected), None, "{rejected}");
+    }
+}
+
+#[test]
 fn command_surface_preserves_the_durable_lifecycle_and_closes_on_disable() {
     use crate::prompt_delivery::Transport;
 
@@ -630,6 +669,7 @@ fn command_surface_preserves_the_durable_lifecycle_and_closes_on_disable() {
                     revoked_at: None,
                     history_pruned: false,
                     retired_through: 0,
+                    trusted: false,
                 });
             }
             Ok(())
@@ -654,6 +694,21 @@ fn command_surface_preserves_the_durable_lifecycle_and_closes_on_disable() {
     assert_eq!(status_wire["enabled"], true);
     assert_eq!(status_wire["scope"], "agentCards");
     assert_eq!(connector_pending().unwrap().len(), 1);
+    // Last-seen diagnostics are memory-only presentation for the Settings row.
+    assert!(status_wire["devices"][1]["lastSeenAt"].is_null());
+    note_device_seen("D2", Some("DeckConnector/4 CFNetwork/3860 Darwin/25.6.0"));
+    let seen = serde_json::to_value(connector_status().unwrap()).unwrap();
+    let d2 = seen["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == "D2")
+        .unwrap()
+        .clone();
+    assert!(d2["lastSeenAt"].as_u64().is_some());
+    assert_eq!(d2["clientBuild"], "4");
+    note_device_seen("D2", Some("DeckConnector/4.0<script> x"));
+    assert_eq!(device_seen("D2").unwrap().client_build, None);
 
     let claimed = connector_claim(handle.clone()).unwrap();
     assert_eq!(claimed.request.id, "surface");
@@ -959,6 +1014,7 @@ fn escaped_32k_text_roundtrips_but_larger_text_is_rejected_before_acceptance() {
                 revoked_at: None,
                 history_pruned: false,
                 retired_through: 0,
+                trusted: false,
             });
             Ok(())
         })
@@ -1022,6 +1078,7 @@ fn admission_reserves_enough_space_for_terminal_result_at_byte_capacity() {
         revoked_at: None,
         history_pruned: false,
         retired_through: 0,
+        trusted: false,
     });
     let make = |index: usize| {
         let request = request(&format!("I{index}"), &"x".repeat(MAX_TEXT));
@@ -1305,6 +1362,7 @@ fn journal_ids_are_device_scoped_immutable_and_cross_device_private() {
             revoked_at: None,
             history_pruned: false,
             retired_through: 0,
+            trusted: false,
         });
         d.devices.push(Device {
             id: "D2".into(),
@@ -1314,6 +1372,7 @@ fn journal_ids_are_device_scoped_immutable_and_cross_device_private() {
             revoked_at: None,
             history_pruned: false,
             retired_through: 0,
+            trusted: false,
         });
         Ok(())
     })
@@ -1353,6 +1412,7 @@ fn executing_recovers_ambiguous_and_unresolved_capacity_is_bounded() {
             revoked_at: None,
             history_pruned: false,
             retired_through: 0,
+            trusted: false,
         });
         let request = request("I", "a");
         d.commands.push(JournalEntry {
@@ -1520,6 +1580,7 @@ fn disable_and_revocation_close_existing_epochs_and_pending_work() {
                 revoked_at: None,
                 history_pruned: false,
                 retired_through: 0,
+                trusted: false,
             });
             Ok(())
         })
@@ -1953,7 +2014,9 @@ fn phone_output_succeeds_only_when_target_and_generation_survive_the_capture() {
     assert_eq!(moved.message(), "target-changed");
 
     assert!(
-        LiveOutput.mcp_fence("deck-nobody-0001").is_ok(),
+        LiveOutput { device_id: "D1" }
+            .mcp_fence("deck-nobody-0001")
+            .is_ok(),
         "a session no MCP client controls is not fenced"
     );
 }
@@ -2511,7 +2574,7 @@ fn claimed_commands_are_validated_only_while_executing_and_authorized() {
     };
 
     // Accepted but unclaimed: not ours to validate yet.
-    let early = validate_claimed(&added, |_| panic!("never checked")).unwrap_err();
+    let early = validate_claimed(&added, |_, _| panic!("never checked")).unwrap_err();
     assert_eq!(early.kind(), ErrorKind::ContextChanged);
     assert_eq!(early.message(), "command authorization changed");
     assert_eq!(
@@ -2521,7 +2584,9 @@ fn claimed_commands_are_validated_only_while_executing_and_authorized() {
         "command authorization changed"
     );
     assert_eq!(
-        validate_claimed("missing", |_| Ok(())).unwrap_err().kind(),
+        validate_claimed("missing", |_, _| Ok(()))
+            .unwrap_err()
+            .kind(),
         ErrorKind::Missing
     );
     assert_eq!(
@@ -2534,14 +2599,14 @@ fn claimed_commands_are_validated_only_while_executing_and_authorized() {
     connector_claim(added.clone()).unwrap();
     connector_claim(queued.clone()).unwrap();
     let seen = std::cell::Cell::new(None);
-    assert!(validate_claimed(&added, |request| {
+    assert!(validate_claimed(&added, |request, _| {
         seen.set(Some(request.id.clone()));
         validate_applicable_in(request, "rev", &board(1, ""))
     })
     .unwrap());
     assert_eq!(seen.take().as_deref(), Some("added"));
     assert_eq!(
-        validate_claimed(&added, |request| validate_applicable_in(
+        validate_claimed(&added, |request, _| validate_applicable_in(
             request,
             "rev",
             &board(2, "")
@@ -2584,7 +2649,7 @@ fn claimed_commands_are_validated_only_while_executing_and_authorized() {
         "device revoked"
     );
     assert_eq!(
-        validate_claimed(&added, |_| Ok(())).unwrap_err().kind(),
+        validate_claimed(&added, |_, _| Ok(())).unwrap_err().kind(),
         ErrorKind::ContextChanged
     );
     assert_eq!(
@@ -2597,7 +2662,7 @@ fn claimed_commands_are_validated_only_while_executing_and_authorized() {
     // A listener epoch that moved on makes both refuse before any read.
     runtime.server_epoch.store(2, Ordering::SeqCst);
     assert_eq!(
-        validate_claimed(&added, |_| Ok(())).unwrap_err().kind(),
+        validate_claimed(&added, |_, _| Ok(())).unwrap_err().kind(),
         ErrorKind::Perm
     );
     assert_eq!(
@@ -3222,4 +3287,107 @@ fn board_access_wire_fixture_matches_independent_capabilities() {
         actual,
         phone_json(phone_fixture!("snapshot-board-access.json"))
     );
+}
+
+#[test]
+fn trusted_device_alone_gets_board_access_and_trust_changes_retire_its_pending_work() {
+    let (_global, runtime) = global_runtime();
+    runtime
+        .with_doc(|d| {
+            d.devices.push(device("D1"));
+            d.devices.push(device("D2"));
+            Ok(())
+        })
+        .unwrap();
+    // Untrusted devices follow the global scope; trust is per device.
+    assert_eq!(scope_for("D1").unwrap(), SnapshotScope::AgentCards);
+    let d1 = request("trust-d1", "note");
+    let d2 = request("trust-d2", "note");
+    runtime.accept(1, "D1", d1.clone()).unwrap();
+    runtime.accept(1, "D2", d2.clone()).unwrap();
+    let before = runtime.read(|d| d.config.scope_revision).unwrap();
+
+    let status = connector_set_trusted("D1".into(), true).unwrap();
+    assert!(status.devices.iter().any(|x| x.id == "D1" && x.trusted));
+    assert!(status.devices.iter().any(|x| x.id == "D2" && !x.trusted));
+    assert_eq!(scope_for("D1").unwrap(), SnapshotScope::BoardAccess);
+    assert_eq!(scope_for("D2").unwrap(), SnapshotScope::AgentCards);
+    assert_eq!(
+        runtime.read(|d| d.config.scope).unwrap(),
+        SnapshotScope::AgentCards,
+        "trust never changes the global choice"
+    );
+    assert_eq!(
+        runtime.read(|d| d.config.scope_revision).unwrap(),
+        before + 1,
+        "in-flight reads are fenced like a scope change"
+    );
+    assert_eq!(runtime.accept(1, "D1", d1).unwrap().state, "rejected");
+    assert_eq!(
+        runtime.accept(1, "D2", d2).unwrap().state,
+        "accepted",
+        "another device's pending work is untouched"
+    );
+    // Durable, and omitted from disk while false.
+    let saved = std::fs::read_to_string(&runtime.path).unwrap();
+    assert_eq!(saved.matches("\"trusted\":true").count(), 1);
+    assert!(load(&runtime.path).unwrap().devices[0].trusted);
+
+    // Saving the same choice is a no-op; unknown or revoked devices cannot be trusted.
+    connector_set_trusted("D1".into(), true).unwrap();
+    assert_eq!(
+        runtime.read(|d| d.config.scope_revision).unwrap(),
+        before + 1
+    );
+    assert_eq!(
+        connector_set_trusted("nobody".into(), true)
+            .err()
+            .unwrap()
+            .kind(),
+        ErrorKind::Missing
+    );
+    connector_revoke("D1".into()).unwrap();
+    assert_eq!(
+        scope_for("D1").unwrap(),
+        SnapshotScope::AgentCards,
+        "revocation ends trust"
+    );
+    assert!(!connector_status()
+        .unwrap()
+        .devices
+        .iter()
+        .any(|x| x.trusted));
+    assert_eq!(
+        connector_set_trusted("D1".into(), false)
+            .err()
+            .unwrap()
+            .kind(),
+        ErrorKind::Missing
+    );
+}
+
+#[test]
+fn trusted_device_reads_shell_output_but_still_never_queues_without_a_saved_command() {
+    let mut doc = DiskDoc::fresh().unwrap();
+    doc.config.scope = SnapshotScope::BoardMetadata;
+    let mut trusted = device("D1");
+    trusted.trusted = true;
+    doc.devices.push(trusted);
+    doc.devices.push(device("D2"));
+    assert_eq!(effective_scope(&doc, "D1"), SnapshotScope::BoardAccess);
+    assert_eq!(effective_scope(&doc, "D2"), SnapshotScope::BoardMetadata);
+    assert_eq!(
+        effective_scope(&doc, "unknown"),
+        SnapshotScope::BoardMetadata
+    );
+    // Queue admission is saved-command based in every scope, trusted or not.
+    let shell = json!({"id":"S","session":"s","cmd":""});
+    assert!(require_queue_target(&shell).is_err());
+    assert!(require_card_access(
+        &card_in(&json!({"cards":[shell]}), "S").unwrap(),
+        effective_scope(&doc, "D1")
+    )
+    .is_ok());
+    doc.devices[0].revoked_at = Some(1);
+    assert_eq!(effective_scope(&doc, "D1"), SnapshotScope::BoardMetadata);
 }

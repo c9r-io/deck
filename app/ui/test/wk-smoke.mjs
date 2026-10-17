@@ -3175,6 +3175,12 @@ export async function verifyConnectorTransport() {
   }
 }
 
+// Held open for the physical-iPhone acceptance driver; see its carrier file.
+export async function verifyConnectorDevice() {
+  const { runConnectorDeviceSmoke } = await import('./connector-device-smoke.mjs');
+  await runConnectorDeviceSmoke();
+}
+
 // Separate, fresh-root scenario; no real agent installation or prompts.
 export async function verifyAttention() {
   const { runAttentionSmoke } = await import('./attention-smoke.mjs');

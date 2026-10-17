@@ -601,6 +601,8 @@ const SMOKE_CHECKS: &[&str] = &[
     "connector-settings",
     "connector-apply",
     "connector-transport-ready",
+    "connector-device-ready",
+    "connector-device-step",
     "voice-workspace",
     "voice-button-idle",
     "voice-type-visible",

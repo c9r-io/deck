@@ -56,6 +56,8 @@ pub(crate) fn take(kind: &str) -> bool {
         return false;
     }
     *count -= 1;
+    // Debug smoke only: a closed kind name proves an injected fault fired.
+    crate::applog::applog(&format!("[smoke-fault] fired kind={kind}"));
     true
 }
 

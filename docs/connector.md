@@ -14,7 +14,7 @@ what they previously selected; updating never expands consent:
 - **Saved Codex/Claude cards** (default): the existing saved-command policy.
 - **All card summaries**: all titles, projects, columns and order; additional
   cards still have no output, messages, notes or queue permission.
-- **All card output and notes** (`boardAccess`): all current and future Board
+- **All card output and notes** (`boardAccess`, also what a trusted device gets): all current and future Board
   cards' bounded output, including ordinary shell history, plus scratchpad
   editing. Messages can reach a current Codex/Claude foreground even when the
   card was created as a shell or uses a wrapper/path. Shell input stays blocked.
@@ -22,6 +22,39 @@ what they previously selected; updating never expands consent:
 The third choice requires its own confirmation on the Mac. It works on existing
 cards without restarting sessions, editing saved commands or re-pairing. Each
 snapshot advertises output, message, note and queue capabilities separately.
+
+The hint under **Phone access** always describes the scope this Mac currently
+keeps: what a paired phone can do now, what it cannot, and which choice adds
+output. When a listed card lacks output, messages or notes only because of the
+kept scope, the phone leads its list with a setup note naming the Mac and the
+exact path (Deck → Settings → Remote access → Phone Connector → Phone access →
+All card output and notes), and each such card says "not shared". The wire
+code stays `unsupported-target`; the phone derives the remedy from the
+advertised scope and the denied capability (queueing always names the saved
+launch command instead). Each device row on the Mac also shows when that device
+last received a snapshot from this process and the app build its HTTP client
+announced (`DeckConnector/<build>`), kept in memory only; a phone talking to
+another host, or still running an older build, is visible there.
+
+**Trust this device.** Each active paired device can be trusted on the Mac
+(device row, or the offer shown by name right after it pairs). A trusted device
+gets exactly the third scope's access — all card output including shell
+history, notes, and messages to a current Codex/Claude foreground — whatever
+the global choice is, until trust is stopped or the device is revoked; other
+devices keep the global choice. Trusting asks for confirmation naming the
+device; stopping trust does not. Like a scope change, a trust change discards
+in-flight reads and retires that device's unresolved commands. Trust adds no
+shell input, no queueing without a saved launch command and no automation or
+first-send authority; the target, generation and MCP fences still apply. The
+flag is stored on the device record (omitted while false); an older Deck
+ignores it, which narrows access rather than widening it.
+
+The decision is meant to happen while the user is still at the Mac. Settings
+states how many Board cards an untrusted phone cannot read output from under
+the kept scope, and a pairing code shown under a narrower scope says that the
+new phone can be trusted right there. A phone never widens its own access. On the phone, the setup note can be
+collapsed with **Keep current sharing**; it stays one line for that host and
+scope (a per-phone preference) and returns when the Mac's choice changes.
 Queueing still requires a saved supported launch command because it may need to
 restart a stopped session. A scope change retires unresolved phone operations;
 re-enabling sharing does not replay them. Reads and writes recheck current access.
@@ -39,7 +72,7 @@ Changing to an address outside the current certificate requires **Reset and re-p
 The phone never supplies a shell command line, path, or command flag. That does not mean phone text cannot cause commands to run: text is delivered as a **prompt to an agent**, and an agent may act on it.
 
 - **Output** in the two legacy scopes requires a saved supported Codex/Claude command and a live agent foreground. In BoardAccess it works on any live card, including a plain shell or unsupported agent. Both paths check the exact pane/foreground generation before and after capture and discard changed targets. The snapshot contains at most the recent 200 history lines plus visible pane content, capped at 64 KiB, and can include earlier shell history.
-- **Send message** always requires a live recognized Codex/Claude foreground and the generation selected by the phone. BoardAccess additionally admits manually started agents regardless of saved command. Before each write, the host checks current card/scope, command/device authorization, generation, MCP control and the existing literal paste/Enter checks. Foreground recognition uses process names and kernel process identity; it is not binary-authenticity or Agent-readiness proof.
+- **Send message** always requires a live recognized Codex/Claude foreground and the generation selected by the phone. A draft binds to the generation visible when its first character is typed; a draft written while no target was shared asks for explicit acceptance of the current target before it can be sent. BoardAccess additionally admits manually started agents regardless of saved command. Before each write, the host checks current card/scope, command/device authorization, generation, MCP control and the existing literal paste/Enter checks. Foreground recognition uses process names and kernel process identity; it is not binary-authenticity or Agent-readiness proof.
 - **MCP-controlled sessions.** While an MCP client holds terminal control of a session (see [MCP](mcp.md)), the phone can neither send to it nor read its output — MCP output sharing is consent for the MCP client, not for the phone. Taking control back on the Mac makes the card a phone target again.
 - **Scratchpad reads and note add/edit/delete** are allowed for saved agent cards, or for every Board card under BoardAccess, including stopped cards. Edits retain revision/CAS checks and the claimed command is revalidated at the Board commit boundary under the lifecycle fence.
 - **Queueing and queue pause/cancel** still require a saved card command launching `codex` or `claude` with simple safe arguments. Expanded direct access grants no automatic input or first-send authority and does not rewrite commands.
@@ -65,6 +98,8 @@ command journal's `410 expired` handling; operation IDs, sequences and replay
 rules remain unchanged.
 
 Remote commands first enter a bounded native journal and are then handled by the same serialized Board writer as desktop actions. Buffer edits use the visible buffer revision and manual-entry rules. Queue requests persist immutable copies before scheduler admission and retain deterministic operation IDs. Task creation starts the deterministic session before committing a card with its frozen initial plan; an unknown matching session is left as an ambiguous orphan and is never adopted. Connector rows carry no automatic-sending approval: a paired phone is not prompt authority, so every follow-up step of a Connector-created run waits for **Send now** on the desktop (`docs/scheduler-context-safety.md`, "Automation delivery authority").
+
+When the paired Mac cannot be reached (asleep, Deck quit or Connector disabled, another network, or iOS Local Network access turned off for the app), the phone fails fast instead of waiting for connectivity, keeps already-read content marked as stale, and lists those checks with the Mac's name or paired address; it cannot tell them apart and does not guess. Only the one-time pairing request waits for connectivity, so it survives iOS's first Local Network prompt.
 
 Connector uses the existing local network, including a VPN that already provides direct reachability and assigns an address in the allowed ranges above; it does not create a network, public relay, or APNs path. The iOS app refreshes when opened or returned to the foreground and does not promise background delivery. See the [iOS client README](../connector/ios/README.md) for the required Xcode, Simulator, signing, and physical-device gates.
 

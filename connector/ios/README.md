@@ -39,7 +39,7 @@ Only network loss retains clearly marked stale content; changed identity or
 permission clears it. Notes are a secondary view with a separate durable draft.
  It does not promise background connectivity. Pairing descriptors remain in memory only. The saved Keychain value binds origin, certificate pin, host ID, device ID, and bearer token with `WhenUnlockedThisDeviceOnly` accessibility. HTTP uses an ephemeral session with cookies, redirects, disk cache, and credential storage disabled. The self-signed leaf must match the pinned DER SHA-256 and also pass hostname and validity evaluation as the sole trust anchor.
 
-Message drafts preserve the target generation they were created against. A refresh never silently changes that binding; if the desktop target changes, the user must explicitly accept the current generation before sending. Each command's immutable ID and body is atomically persisted before POST. An unknown result is recovered by querying that same ID and is never automatically retried under a new ID. Pending sends are visible and block another send for the card.
+Message drafts preserve the target generation that was current when their first character was typed (an empty composer follows the card). A refresh never silently changes that binding; if the desktop target changes, the user must explicitly accept the current generation before sending. Each command's immutable ID and body is atomically persisted before POST. An unknown result is recovered by querying that same ID and is never automatically retried under a new ID. Pending sends are visible and block another send for the card.
 
 The journal is one atomic snapshot scoped by the Keychain credential's host ID and device ID. Unpairing leaves that protected directory as an archive and a new pairing receives a different scope, so old operations cannot be queried against another host or device. Each new command receives its admission `seq` (at least the clock in milliseconds, strictly increasing) in the same atomic write that records it, before the first POST; retries reuse it. The local journal is schema version 4 (independent of the host journal and wire versions; v3 adds terminal `expired`, v4 adds note drafts scoped by card and optional entry ID, with immutable revision identities captured by submitted commands): version 1–3 files open with their records unchanged and are written as version 4 by the next atomic save, and any other version is refused before its records are read, leaving the file untouched. A version-1 record without `seq` gets one only from a host `404`. It keeps at most 1,000 local records in a 2 MiB file, reserves terminal-result space before POST, and only prunes locally confirmed resolved records; unresolved IDs are never evicted and the host retains its IDs independently. HTTP permits at most eight concurrent requests, cancels the underlying URLSession task with its Swift task, uses a 45-second resource timeout, and caps requests at 256 KiB and responses at 4 MiB. Pair descriptors are capped at 8 KiB before decoding, command text at 32 KiB UTF-8, serialized buffer responses at 2 MiB, and retained buffer text plus queued copies at 1 MiB.
 
@@ -177,6 +177,38 @@ Before each upload, increment `CURRENT_PROJECT_VERSION`; App Store Connect rejec
 
 Archive with the full Xcode toolchain and automatic signing, then distribute the archive to App Store Connect from Xcode Organizer or with an `app-store-connect` export options plist. Do not commit the archive, IPA, export options containing account-specific values, or App Store credentials. A successful upload still needs to finish App Store Connect processing before the build becomes installable; confirm its final TestFlight status rather than treating the upload response as availability.
 
+## Physical-device acceptance against an isolated LAN host
+
+`scripts/connector-device-acceptance.py` drives the `ConnectorUITests`
+`testDevice*` methods on a connected development iPhone against an isolated
+debug Deck host that listens on this Mac's private Wi-Fi address. The app is
+built as a side-by-side test variant: `DECK_CONNECTOR_BUNDLE_ID=io.c9r.deck.connector.qa`
+and `DECK_CONNECTOR_DISPLAY_NAME="Deck QA"` (project build settings that default
+to the shipping identity). Its own application identifier gives it a separate
+container and default Keychain access group, so the installed app, its pairing
+and drafts are untouched; it is signed with the existing development profile
+and needs no App ID change. Permissions (camera, Local Network) are per
+variant. The variant is not the TestFlight build; the shipping identity is
+covered by the same source and the unchanged `Info.plist` expansion.
+
+Subcommands: `prepare` (experiment root and registry, isolated host build,
+new iOS source plus the published e41bf49 source as the same variant),
+`host` (launch the `connector-device` smoke carrier, register it, enable the
+listener through the production Settings handlers, decode the rendered
+pairing QR and cross-check its pin and SAN against the served certificate),
+`agents` (type a shell marker and start `claude` by hand in an empty-command
+card), `test <method> [KEY=VALUE…]` (inject values into a private copy of the
+test plan, answer `DECKSTEP` markers with host steps such as `grant`,
+`downgrade`, `disable`, `fault`, `revoke`), `pair-refresh`, `rebuild-host`,
+`rebuild-ios`, `step <word>`, `tmux`, and `cleanup` (registry only, uninstall
+only the two test apps). Pairing uses the app's paste field; nothing writes
+Keychain or seeds a snapshot. iOS keeps an app's Keychain item when the app is
+uninstalled, so `cleanup` first runs `testDeviceZ1RemovePairing` (the app's
+own Remove pairing) whenever any device test ran, and only then uninstalls the
+variant and its runner; `testDeviceR1…` likewise removes a pairing left by an
+earlier run before it pairs. Claude runs under the real home in a private
+work directory and leaves its own session history there.
+
 ## Required physical-device gate
 
 On a Mac with an assigned Development Team, install a signed development build on a physical iPhone and verify:
@@ -226,6 +258,8 @@ xcodebuild -xctestrun "$DECK_UI_RUN" \
 ```
 
 Run `DeckConnectorUITests/ConnectorUITests/testPairedCardOutputSurvivesProcessTermination` with `DECK_UI_PAIRED_SMOKE=1`, the exact `DECK_UI_CARD_TITLE`, and a non-secret existing `DECK_UI_EXPECTED_NOTE`. It covers an explicit app-process termination and relaunch by verifying the same card and scratchpad note before and after Keychain restoration, without mutating the note. This does not simulate a locked Keychain or prolonged iOS background eviction; verify those separately on the physical-device gate.
+
+These paired tests address English labels; on a device whose language is not English also set `DECK_UI_LANGUAGE=en` for the runner, which pins only the app's language for that launch.
 
 Use a new result-bundle path for every run; do not pre-delete an existing result. Add `-allowProvisioningUpdates` to the build step only when the already authorized Team/device needs normal profile resolution—do not use this procedure to register additional devices by default. The verified run completed in 21.393 seconds with 1 test passed, 0 skipped, and 0 failed; require those exact counts rather than treating an opt-in skip as success. Its single card-detail screenshot supports visual review, while the assertion proves only that the complete accessibility label contains the marker, not that the marker's text range is visible inside the clipped viewport.
 

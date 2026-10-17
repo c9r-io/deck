@@ -163,11 +163,25 @@ final class AppModel: ObservableObject {
     }
 
     func commandFailureMessage(_ code: String?) -> String {
-        if code == "unsupported-target" { return ConnectorError.unsupportedTarget.localizedDescription }
+        if code == "unsupported-target" {
+            // A rejected command reports the denial without its kind; queue
+            // commands are the only ones BoardAccess refuses this way.
+            let kind: CardCapabilityKind = snapshot?.scope == SharingScope.boardAccess.rawValue ? .queue : .sendMessage
+            return capabilityMessage(code ?? "", kind: kind, snapshot: snapshot)
+        }
         return code ?? "The command was rejected."
     }
 
     private let credentialStore = KeychainCredentialStore()
+    /// The paired origin's address, shown when the host name is not known yet
+    /// (a cold launch that cannot reach the Mac). It matches the address the
+    /// Mac's Settings show for its listener.
+    private var pairedAddress: String?
+    static func address(of origin: String) -> String? {
+        URLComponents(string: origin).flatMap { components in
+            components.host.map { host in components.port.map { "\(host):\($0)" } ?? host }
+        }
+    }
     private var client: (any ConnectorTransport)?
     private var journal: CommandJournal?
     private var draftCoordinator: DraftSaveCoordinator?
@@ -207,6 +221,7 @@ final class AppModel: ObservableObject {
                 journal = openedJournal
                 draftCoordinator = DraftSaveCoordinator(sink: openedJournal)
                 client = try DeckHTTPClient(credential: credential)
+                pairedAddress = Self.address(of: credential.origin)
                 connection = .connecting
                 await refresh()
                 // beginBinding cancels the old loop. Resume from the current
@@ -240,12 +255,14 @@ final class AppModel: ObservableObject {
             journal = openedJournal
             draftCoordinator = DraftSaveCoordinator(sink: openedJournal)
             client = try DeckHTTPClient(credential: credential)
+            pairedAddress = Self.address(of: credential.origin)
             await refresh()
             if isCurrent(journal: openedJournal, epoch: epoch), foreground { setForeground(true) }
         } catch {
             guard epoch == bindingEpoch else { return }
             connection = .unpaired
-            message = error.localizedDescription
+            let host = (try? PairingDescriptor.parse(raw))?.hostName ?? "Mac"
+            message = Self.isNetworkLoss(error) ? Self.unreachableMessage(host: host) : error.localizedDescription
         }
     }
 
@@ -259,6 +276,7 @@ final class AppModel: ObservableObject {
             try credentialStore.delete()
             client?.invalidate()
             client = nil
+            pairedAddress = nil
             journal = nil
             draftCoordinator = nil
             noteCoordinator = nil; noteDrafts = [:]; noteDraftErrors = [:]; noteVersions = [:]
@@ -324,7 +342,9 @@ final class AppModel: ObservableObject {
                 if !Self.isNetworkLoss(error) { clearRemoteContent() }
                 if let error = error as? ConnectorError, [.invalidResponse, .certificateMismatch, .untrustedServer, .redirected].contains(error) { snapshot = nil }
                 staleOutputs.formUnion(outputs.keys)
-                connection = .offline(error.localizedDescription)
+                connection = .offline(Self.isNetworkLoss(error)
+                    ? Self.unreachableMessage(host: snapshot?.hostName ?? pairedAddress ?? "Mac")
+                    : error.localizedDescription)
             }
         }
     }
@@ -395,6 +415,13 @@ final class AppModel: ObservableObject {
             if error as? ConnectorError == .revoked { clearRemoteContent(); snapshot = nil; connection = .revoked }
             else { receiveOutput(cardID: card.id, result: .failure(error)) }
         }
+    }
+
+    /// The phone cannot tell a sleeping Mac, a stopped listener, another
+    /// network or a denied Local Network permission apart; name every place
+    /// the user can check instead of guessing one.
+    static func unreachableMessage(host: String) -> String {
+        String(format: String(localized: "connection.unreachable"), host)
     }
 
     static func isNetworkLoss(_ error: Error) -> Bool {

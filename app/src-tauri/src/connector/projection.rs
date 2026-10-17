@@ -77,8 +77,9 @@ pub(super) fn require_card_access(
     }
 }
 
-pub(super) fn current_scope() -> Result<SnapshotScope, DeckError> {
-    rt()?.read(|d| d.config.scope)
+/// The scope governing `device_id` (trusted devices get BoardAccess).
+pub(super) fn scope_for(device_id: &str) -> Result<SnapshotScope, DeckError> {
+    rt()?.read(|d| effective_scope(d, device_id))
 }
 
 pub(super) fn require_queue_target(card: &Value) -> Result<(), DeckError> {
@@ -112,9 +113,9 @@ pub(super) fn validate_buffer_target(
     Ok(())
 }
 
-pub(super) fn snapshot(app: &AppHandle) -> Result<Value, DeckError> {
+pub(super) fn snapshot(app: &AppHandle, device_id: &str) -> Result<Value, DeckError> {
     let (revision, b) = board_value()?;
-    let (host_id, scope) = rt()?.read(|d| (d.host_id.clone(), d.config.scope))?;
+    let (host_id, scope) = rt()?.read(|d| (d.host_id.clone(), effective_scope(d, device_id)))?;
     let queue = app.state::<Queues>();
     Ok(snapshot_in(
         (&host_id, &host_name()),
@@ -222,6 +223,22 @@ pub(super) fn snapshot_in(
     json!({"version":1,"hostId":host_id,"hostName":host_name,"scope":scope,"revision":revision,"capturedAt":now(),"projects":projects,"cards":cards,"queue":items})
 }
 
+/// How many committed Board cards a paired phone cannot read output from
+/// only because of the kept scope (cards without a saved Codex/Claude launch
+/// command). Settings shows it next to the scope choice; it is a fact about
+/// the Board, not a probe of what is running, and grants nothing.
+pub(super) fn withheld_cards(b: &Value, scope: SnapshotScope) -> usize {
+    if scope == SnapshotScope::BoardAccess {
+        return 0;
+    }
+    b.get("cards")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|card| !queue_target_supported(card))
+        .count()
+}
+
 fn capability(allowed: bool, reason: Option<&str>) -> Value {
     match reason {
         Some(reason) => json!({"allowed":allowed,"reason":reason}),
@@ -264,11 +281,11 @@ pub(super) fn probe_status<T>(probe: Result<T, DeckError>) -> (&'static str, Opt
     }
 }
 
-pub(super) fn buffer(app: &AppHandle, card_id: &str) -> Result<Value, DeckError> {
+pub(super) fn buffer(app: &AppHandle, device_id: &str, card_id: &str) -> Result<Value, DeckError> {
     let (_, b) = board_value()?;
     let queues = app.state::<Queues>();
     let (_, _, ops) = crate::scheduler::connector::snapshot(&queues, |_| true);
-    buffer_in_scope(&b, card_id, &ops, current_scope()?)
+    buffer_in_scope(&b, card_id, &ops, scope_for(device_id)?)
 }
 
 /// One authorized card's buffer from a committed board, each copy stamped
@@ -336,11 +353,14 @@ pub(super) trait OutputIo {
     fn mcp_fence(&self, session: &str) -> Result<(), DeckError>;
 }
 
-pub(super) struct LiveOutput;
+/// Live output for one requesting device (its effective scope).
+pub(super) struct LiveOutput<'a> {
+    pub(super) device_id: &'a str,
+}
 
-impl OutputIo for LiveOutput {
+impl OutputIo for LiveOutput<'_> {
     fn scope(&self) -> Result<SnapshotScope, DeckError> {
-        current_scope()
+        scope_for(self.device_id)
     }
     fn card(&self, id: &str) -> Result<InternalCard, DeckError> {
         committed_card(id)
@@ -386,8 +406,8 @@ fn precise_connector_probe(session: &str) -> Result<crate::context::ConnectorPro
     }
 }
 
-pub(super) fn output(card_id: &str) -> Result<Value, DeckError> {
-    output_with(&LiveOutput, card_id)
+pub(super) fn output(device_id: &str, card_id: &str) -> Result<Value, DeckError> {
+    output_with(&LiveOutput { device_id }, card_id)
 }
 
 /// Legacy scopes require a saved agent command plus live agent. BoardAccess

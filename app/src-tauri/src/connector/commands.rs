@@ -20,6 +20,9 @@ pub(crate) struct Status {
     pub(super) fingerprint: Option<String>,
     pub(super) reset_required: bool,
     pub(super) scope: SnapshotScope,
+    /// Board cards whose output the kept scope does not share (None when
+    /// the Board cannot be read); presentation for Settings only.
+    pub(super) withheld_cards: Option<usize>,
     pub(super) devices: Vec<DeviceView>,
 }
 #[derive(Serialize)]
@@ -29,6 +32,11 @@ pub(super) struct DeviceView {
     pub(super) name: String,
     pub(super) paired_at: u64,
     pub(super) revoked: bool,
+    /// Explicit local trust (BoardAccess for this device only).
+    pub(super) trusted: bool,
+    /// Diagnostic, process-memory only (`DEVICE_SEEN`): last snapshot served.
+    pub(super) last_seen_at: Option<u64>,
+    pub(super) client_build: Option<String>,
 }
 
 #[tauri::command]
@@ -41,6 +49,7 @@ pub(crate) fn connector_addresses() -> Vec<String> {
 #[tauri::command]
 pub(crate) fn connector_status() -> Result<Status, DeckError> {
     let r = rt()?;
+    let board = board_value().ok().map(|(_, board)| board);
     r.read(|d| Status {
         enabled: d.config.enabled,
         running: d.config.enabled
@@ -58,14 +67,23 @@ pub(crate) fn connector_status() -> Result<Status, DeckError> {
             .as_ref()
             .is_some_and(|address| !d.config.address.is_empty() && address != &d.config.address),
         scope: d.config.scope,
+        withheld_cards: board
+            .as_ref()
+            .map(|board| withheld_cards(board, d.config.scope)),
         devices: d
             .devices
             .iter()
-            .map(|x| DeviceView {
-                id: x.id.clone(),
-                name: x.name.clone(),
-                paired_at: x.paired_at,
-                revoked: x.revoked_at.is_some(),
+            .map(|x| {
+                let seen = device_seen(&x.id);
+                DeviceView {
+                    id: x.id.clone(),
+                    name: x.name.clone(),
+                    paired_at: x.paired_at,
+                    revoked: x.revoked_at.is_some(),
+                    trusted: x.trusted && x.revoked_at.is_none(),
+                    last_seen_at: seen.as_ref().map(|seen| seen.at),
+                    client_build: seen.and_then(|seen| seen.client_build),
+                }
             })
             .collect(),
     })
@@ -139,6 +157,34 @@ pub(crate) fn connector_set_scope(scope: SnapshotScope) -> Result<Status, DeckEr
             invalidate_commands(d, None, "unsupported-target");
             d.config.scope = scope;
         }
+        Ok(())
+    })?;
+    connector_status()
+}
+
+/// Trust or stop trusting one active paired device. Like a scope change it
+/// bumps the scope revision (in-flight reads are discarded) and retires that
+/// device's unresolved commands; nothing pending is replayed afterwards.
+#[tauri::command]
+pub(crate) fn connector_set_trusted(device_id: String, trusted: bool) -> Result<Status, DeckError> {
+    let r = rt()?;
+    let _lifecycle = r.lifecycle.lock_or_recover();
+    r.with_doc(|d| {
+        let device = d
+            .devices
+            .iter_mut()
+            .find(|x| x.id == device_id && x.revoked_at.is_none())
+            .ok_or_else(|| DeckError::new(ErrorKind::Missing, "device not found"))?;
+        if device.trusted == trusted {
+            return Ok(());
+        }
+        device.trusted = trusted;
+        d.config.scope_revision = d
+            .config
+            .scope_revision
+            .checked_add(1)
+            .ok_or_else(|| DeckError::new(ErrorKind::Other, "sharing revision exhausted"))?;
+        invalidate_commands(d, Some(&device_id), "unsupported-target");
         Ok(())
     })?;
     connector_status()
@@ -432,7 +478,7 @@ pub(crate) fn connector_validate(handle: String) -> Result<bool, DeckError> {
 /// through `applicable` (the committed-board check in production).
 pub(super) fn validate_claimed(
     handle: &str,
-    applicable: impl FnOnce(&CommandRequest) -> Result<(), DeckError>,
+    applicable: impl FnOnce(&CommandRequest, &str) -> Result<(), DeckError>,
 ) -> Result<bool, DeckError> {
     let r = rt()?;
     let _lifecycle = r.lifecycle.lock_or_recover();
@@ -456,9 +502,9 @@ pub(super) fn validate_claimed(
                 "command authorization changed",
             ));
         }
-        c.body().cloned()
+        Ok((c.body()?.clone(), c.device_id.clone()))
     })??;
-    applicable(&request)?;
+    applicable(&request.0, &request.1)?;
     Ok(true)
 }
 
@@ -480,7 +526,7 @@ pub(super) fn board_commit_guard(
     ) {
         return Err(DeckError::new(ErrorKind::Invalid, "invalid buffer commit"));
     }
-    validate_applicable(&executing.request)?;
+    validate_applicable(&executing.request, &executing.device_id)?;
     Ok(lifecycle)
 }
 

@@ -37,6 +37,7 @@ const CARRIERS = {
   'reentry-smoke.mjs': ['reentry'],
   'ux-layers-smoke.mjs': ['ux-layers'],
   'terminal-input-smoke.mjs': ['terminal-input'],
+  'connector-device-smoke.mjs': ['connector-device'],
 };
 
 /* Names built at runtime, which a single-line literal scan cannot read:

@@ -1,0 +1,391 @@
+{
+  "round": "phone-connector-device-20261017",
+  "baseline": {
+    "head": "ce0bf6586b506258321dbf022eaaa54948c12f16",
+    "workingTreeUncommitted": true,
+    "finalRunSourceDiffSHA256": "19b5763549ba89d3d88e5efad3b96a01d9379c146ac1dfb81a25d876af8390dd",
+    "sourceChangedAfterFinalBuild": []
+  },
+  "environment": {
+    "mac": "macOS 27.0.1 (26A434), Apple Silicon",
+    "xcode": "Xcode 27.1 Build version 27A9275",
+    "rustc": "1.97.1",
+    "device": {
+      "model": "iPhone 13 Pro (iPhone14,2)",
+      "ios": "26.6.2 (23G90)",
+      "control": "USB (XCTest)",
+      "dataPath": "Wi-Fi, private LAN HTTPS to the isolated host (address redacted)",
+      "passcodeRequiredWhileLocked": false
+    },
+    "productionDeck": {
+      "path": "/Applications/deck.app",
+      "version": "0.8.4",
+      "touched": false,
+      "connectorScope": "boardMetadata (unchanged)"
+    },
+    "originalPhoneApp": {
+      "bundle": "io.c9r.deck.connector",
+      "build": "1",
+      "touched": false
+    },
+    "testVariant": {
+      "bundle": "io.c9r.deck.connector.qa",
+      "display": "Deck QA",
+      "newBuild": "4",
+      "publishedSourceBuild": "3",
+      "publishedSource": "e41bf49 (TestFlight 1.0 (3))",
+      "signing": "existing wildcard development profile, no account change"
+    },
+    "binaries": {
+      "hostSHA256": "bbb2cf65b161f34d43a27626ae539d7ae83668f5ad6ff1f4d0b760502b1849ce",
+      "iosNewSHA256": "6029c68014f27e97c728f1acb15b4d6c57c562c47d60a78834c849735d1824be",
+      "iosPublishedSourceSHA256": "1bf8530cfaf97228c79ae4e929fc3a94a2a4309fa8fd82b3270b4c949ae9b859"
+    },
+    "tls": {
+      "pinMatchesDescriptor": true,
+      "sanContainsListenerAddress": true
+    }
+  },
+  "rootCause": {
+    "confirmed": [
+      "Field Mac kept the legacy boardMetadata scope while all four cards have an empty saved command; the backend correctly denies output/messages/notes.",
+      "Delivery chain was fine: running Mac process is 0.8.4 (e41bf49); the phone screenshot text exists only since e41bf49.",
+      "Guidance defect: the phone showed one generic sentence naming 'Phone Connector 共享范围', a term the Chinese desktop never shows; the scope explanation was hidden in a collapsed disclosure; the desktop hint was static and never said what the kept scope withholds; queue denial reused the sharing sentence.",
+      "Exact reproduction of the field screenshots on the physical iPhone with the published source (R1)."
+    ],
+    "unconfirmed": [
+      "Which phone build the user runs was inferred from screenshot text, not observed on the user's phone.",
+      "Whether the user's phone reaches the production host was not observed (that phone was not used)."
+    ]
+  },
+  "defectsFoundOnDevice": [
+    {
+      "id": "D1",
+      "what": "Draft typed while output was unshared reported 'target changed' after grant",
+      "fix": "draft binds at first character; unconfirmed-target wording"
+    },
+    {
+      "id": "D2",
+      "what": "Paired client waited for connectivity: disabled/unreachable Mac looked current for up to 45 s",
+      "fix": "only pairing waits; paired client fails fast"
+    },
+    {
+      "id": "D3",
+      "what": "HTTP client erased URLError, so network loss was never recognized (content cleared, raw system text)",
+      "fix": "URLError kept typed"
+    },
+    {
+      "id": "D4",
+      "what": "Local Network denial showed 'disconnected from the internet'",
+      "fix": "actionable checklist naming host or paired address"
+    },
+    {
+      "id": "D5",
+      "what": "Setup guidance invisible to accessibility (Section identifier) ",
+      "fix": "identifier on the body text"
+    }
+  ],
+  "matrix": {
+    "A.originalSymptomOldBuild": "PASS",
+    "A.upgradeKeepsPairing": "PASS",
+    "A.explicitGrantConvergesOpenDetail": "PASS",
+    "A.desktopSettingsMatchesRuntimeAndPhone": "PASS",
+    "A.restartKeepsConfig": "PARTIAL: phone process restart PASS (D1, paired restart test); Mac host restart UNRUN",
+    "A.upgradeDoesNotWidenScope": "PASS",
+    "A.oldClientNewHost": "PASS",
+    "A.newClientOldHost": "UNRUN",
+    "A.oldestBuilds": "UNRUN",
+    "B.emptyCmdManualClaudeOutputAndMessage": "PASS",
+    "B.shellOutputReadableSendDisabled": "PASS",
+    "B.stoppedCard": "PASS",
+    "B.savedAgentCardListed": "PASS (visual only, R1 screenshot; not asserted)",
+    "B.mcpControlledOnDevice": "UNRUN",
+    "B.fullCapabilityMatrix": "PASS (Rust backend tests)",
+    "C.messageDeliveredOnceAgentReply": "PASS",
+    "C.lostResponseRecoveredOnce": "PASS",
+    "C.notesCRUDDiskVerified": "PASS",
+    "C.draftsNavigationBackgroundRelaunch": "PASS",
+    "D.freshOnOpenForegroundRefresh": "PASS",
+    "D.downgradeRegrantOpenDetail": "PASS",
+    "D.disableEnable": "PASS",
+    "D.revokeOpenDetail": "PASS",
+    "D.agentExitToShell": "PASS",
+    "D.rapidCardSwitchGenerationRaceOnDevice": "UNRUN (AppModel tests cover ordering)",
+    "D.regrantDoesNotReviveOldOperationsOnDevice": "UNRUN (Rust tests cover)",
+    "E.realLAN": "PASS",
+    "E.offlineRecovery": "PASS",
+    "E.foregroundBackgroundRelaunch": "PASS",
+    "E.cameraDeniedPastePairing": "PASS",
+    "E.localNetworkDeniedActionable": "PASS",
+    "E.lockUnlockResume": "PASS",
+    "E.keychainUnavailableWhileLocked": "BLOCKED (device did not require a passcode while locked)",
+    "E.chineseDarkLargeTextPortraitKeyboard": "PASS",
+    "E.landscapeLargeTextKeyboard": "PASS",
+    "E.macSleep": "UNRUN",
+    "E.vpnOrNetworkSwitch": "UNRUN",
+    "P1.withheldCardsFact": "PASS",
+    "P1.collapseKeepCurrentSharing": "PASS",
+    "P1.pairingTimeGuidanceAndTrustOffer": "PASS (WK carrier b=15; DOM test; desktop snapshots)",
+    "P1.compactSetupKeepsFirstCardOnScreen": "PASS (U1 isHittable on iPhone 13 Pro; simulator iPhone SE list test)",
+    "TRUST.perDeviceGrantOnDevice": "PASS",
+    "TRUST.untrustOnDevice": "PASS",
+    "TRUST.globalScopeUnchanged": "PASS"
+  },
+  "hostCrossChecks": {
+    "sendMessageCommandsBeforeRevoke": 2,
+    "bothDelivered": true,
+    "claudeTranscriptPrompts": 2,
+    "claudeReplies": 2,
+    "agentPaneReplies": 2,
+    "faultInjectedResponseLoss": 1,
+    "noteTransitionsOnDisk": [
+      "absent",
+      "added",
+      "edited",
+      "deleted"
+    ],
+    "latencySeconds": {
+      "trustToOutput": 3.6,
+      "untrustObserved": 3.2,
+      "retrustObserved": 5.2,
+      "disableObserved": 5.5,
+      "enableObserved": 5.2,
+      "revokeObserved": 4.2,
+      "replyAfterSend": 5.5,
+      "replyAfterLostResponse": 7.6
+    }
+  },
+  "gates": {
+    "frontStatic": {
+      "fmt": "PASS",
+      "extensionCatalog": "PASS",
+      "jsSyntax": "PASS",
+      "uiTests": "PASS 850/850 (one earlier attempt hung after Pi observer tests for 20 min; log kept; rerun alone passed)",
+      "jsModuleCheck": "PASS",
+      "speech/notify/smokeGuard": "PASS",
+      "releaseTools+registry": "PASS",
+      "workflows": "PASS"
+    },
+    "cargoAudit": "FAIL pre-existing: zip 4.6.1 via tauri-plugin-updater (RUSTSEC-2026-0367/0368/0369, 2026-10-09/10); Cargo.lock unchanged by this round",
+    "tunnelHelper": "PASS fmt/clippy/audit",
+    "clippy": "PASS",
+    "cargoTestWorkspace": "PASS 1541 passed, 0 failed, 13 ignored (earlier attempts: two census failures fixed; one run voided by edits during build)",
+    "llvmCovCI": "PASS 1541/0/13; lines 85.61%, functions 83.68%",
+    "sidecarProvenanceCoverage": "PASS",
+    "releaseBuild": "PASS",
+    "edrBinary": "PASS",
+    "localTranslationBinary": "PASS",
+    "swiftCore": "PASS 85 passed, 1 opt-in skipped (no Core change after)",
+    "simulatorAppModel": "PASS 15/15 (boardMetadata real host); an earlier run with board-access env failed one scope-branch assertion that only supports the two legacy scopes",
+    "simulatorUI": "PASS 5/5 + shell-return 1/1 (iPhone SE, dark, boardMetadata); earlier: one run voided (inputs changed), one failure that exposed the oversized setup note (fixed)",
+    "wkConnectorDeviceCarrier": "PASS (ready b=15, every step ok)",
+    "notRun": [
+      "CE parity steps (CI-only)",
+      "package-compat-candidate (CI-only)",
+      "other WK smoke modes (no change to their areas)"
+    ]
+  },
+  "cleanup": {
+    "registry": "all registered processes/servers gone (3 roots)",
+    "phoneApps": "only io.c9r.deck.connector build 1 remains",
+    "testKeychainCredential": "removed through the app (Z1) in every run; one cleanup had skipped Z1 and was corrected (credential found and removed, then no-pairing)",
+    "realHomeFootprint": [
+      "~/.claude/projects/-private-tmp-dpa-<run>-agent-work (one per device run: 5x3puvax, v2vb4bfb, zq0tbnm8, nr4baexm, k7pb05cy, hd93tfae)"
+    ],
+    "privateEvidence": "~/c9r-io/deck-device-evidence-20261017 (0700, not committed)"
+  },
+  "finalRun": {
+    "root": "/tmp/dpa-hd93tfae (private copy: ~/c9r-io/deck-device-evidence-20261017/final-trust)",
+    "deviceTests": [
+      {
+        "test": "testDeviceR1OldBuildReproducesFieldDenial",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 37.7,
+        "steps": [
+          "camera-alert-denied",
+          "control-ok",
+          "local-network-allowed",
+          "old-build-reproduced"
+        ]
+      },
+      {
+        "test": "testDeviceU1UpgradeGuidesGrantAndDelivers",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 74.2,
+        "steps": [
+          "granted-output-visible",
+          "ready-fault",
+          "ready-trust",
+          "reply-first",
+          "reply-lost-response",
+          "sent-first",
+          "sent-lost-response",
+          "upgrade-kept-pairing"
+        ]
+      },
+      {
+        "test": "testDeviceS1ShellStoppedAndWithdrawal",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 54.7,
+        "steps": [
+          "disable-observed",
+          "downgrade-observed",
+          "enable-observed",
+          "ready-disable",
+          "ready-downgrade",
+          "ready-enable",
+          "ready-regrant",
+          "regrant-observed",
+          "shell-checked"
+        ]
+      },
+      {
+        "test": "testPairedCardOutputSurvivesForegroundCycle",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 18.9,
+        "steps": []
+      },
+      {
+        "test": "testPairedCardOutputSurvivesProcessTermination",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 23.4,
+        "steps": []
+      },
+      {
+        "test": "testPairedScratchpadNoteCRUD",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 59.1,
+        "steps": []
+      },
+      {
+        "test": "testDeviceD1DraftsSurviveNavigationBackgroundAndRelaunch",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 75.8,
+        "steps": [
+          "draft-note-saved",
+          "drafts-done"
+        ]
+      },
+      {
+        "test": "testDeviceV1ChineseLargeTextKeyboardPortrait",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 63.0,
+        "steps": []
+      },
+      {
+        "test": "testDeviceV2ChineseLargeTextLandscape",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 26.5,
+        "steps": []
+      },
+      {
+        "test": "testDeviceL1LockAndUnlockResumes",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 41.6,
+        "steps": [
+          "locked",
+          "woken"
+        ]
+      },
+      {
+        "test": "testDeviceN1LocalNetworkDeniedIsActionable",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 73.4,
+        "steps": [
+          "local-network-denied",
+          "local-network-restored"
+        ]
+      },
+      {
+        "test": "testDeviceE1AgentExitToShell",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 14.5,
+        "steps": []
+      },
+      {
+        "test": "testDeviceX1RevokeWhileOpen",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 17.1,
+        "steps": [
+          "ready-revoke",
+          "revoke-observed"
+        ]
+      },
+      {
+        "test": "testDeviceZ1RemovePairing",
+        "verdict": "PASS",
+        "executed": 1,
+        "failures": 0,
+        "skipped": 0,
+        "seconds": 28.6,
+        "steps": [
+          "pairing-removed"
+        ]
+      }
+    ]
+  },
+  "perDeviceTrust": {
+    "decision": "user-approved tier 1: per-device trust = BoardAccess for that device only; global scope unchanged; no shell input, no queue without saved command, no automation/first-send authority",
+    "deviceVerified": [
+      "trust via the post-pairing offer converges an open detail (3.6 s)",
+      "untrust removes shell output (3.2 s)",
+      "re-trust restores (5.2 s)",
+      "global scope stays boardMetadata throughout",
+      "revoke ends trust (device record trusted+revoked; status reports untrusted)"
+    ],
+    "backendTests": [
+      "trusted_device_alone_gets_board_access_and_trust_changes_retire_its_pending_work",
+      "trusted_device_reads_shell_output_but_still_never_queues_without_a_saved_command"
+    ],
+    "censusUpdated": [
+      "tests/external_admission.rs: send-message checks scope_for(device_id); transport guard rechecks; trust requires an active, explicitly trusted device",
+      "tests/session_architecture.rs: note commit fence validates for the sending device"
+    ]
+  },
+  "residuals": [
+    "After sending, the reply lands below the viewport ('下方有新输出'); the user must tap 跳到末尾",
+    "Landscape + accessibility size + keyboard covers most output",
+    "iOS reports every device name as 'iPhone'; several iPhones are hard to tell apart on the Mac",
+    "Keychain unavailability while locked unproven (no passcode required)",
+    "Mac sleep, VPN/network switch, Mac-side Deck restart, old host + new client: UNRUN"
+  ]
+}

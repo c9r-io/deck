@@ -74,7 +74,7 @@ private func versionedNote(_ text: String, _ version: UInt64, card: String = "ca
 
 @Test func dirtyComposerIgnoresRefreshAndSendSnapshotIsExact() async throws {
     var state = ComposerDraftState(cardID: "card", remote: MessageDraft(cardID: "card", text: "remote", expectedGeneration: "g"), fallbackGeneration: "g")
-    state.edit("visible")
+    state.edit("visible", currentGeneration: "g")
     state.merge(remote: MessageDraft(cardID: "card", text: "stale refresh", expectedGeneration: "g"), fallbackGeneration: "g")
     #expect(state.text == "visible")
 
@@ -82,7 +82,7 @@ private func versionedNote(_ text: String, _ version: UInt64, card: String = "ca
     let coordinator = DraftSaveCoordinator(sink: sink)
     let visible = state.snapshot
     _ = try await coordinator.persistForSend(visible)
-    state.edit("newer while sending")
+    state.edit("newer while sending", currentGeneration: "g")
     state.clearIfUnchanged(sentVersion: visible.version, fallbackGeneration: "g")
     #expect(state.text == "newer while sending")
     #expect(await sink.saved.last?.text == "visible")
@@ -121,3 +121,18 @@ private func versionedNote(_ text: String, _ version: UInt64, card: String = "ca
     await sink.arrangeFailure(false)
     #expect(try await coordinator.persist(versionedNote("text", 1)) == .saved(1))
 }
+
+@Test func emptyComposerFollowsTheTargetUntilTheFirstCharacter() {
+    // Opened while output was not shared: no generation was projected yet.
+    var state = ComposerDraftState(cardID: "card", remote: nil, fallbackGeneration: nil)
+    state.edit("hello", currentGeneration: "g1")
+    #expect(state.expectedGeneration == "g1", "The first character binds the draft to the visible target.")
+    // A non-empty draft keeps its binding when the target changes later.
+    state.edit("hello again", currentGeneration: "g2")
+    #expect(state.expectedGeneration == "g1")
+    // Clearing the text and typing anew binds to the target visible then.
+    state.edit("", currentGeneration: "g2")
+    state.edit("new", currentGeneration: "g2")
+    #expect(state.expectedGeneration == "g2")
+}
+

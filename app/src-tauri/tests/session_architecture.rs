@@ -923,7 +923,8 @@ fn claimed_board_writes_hold_the_feature_registered_guard_through_commit() {
         "lifecycle.lock_or_recover()",
         "runtime.feature_active()",
         "runtime.executing(handle)?",
-        "validate_applicable(&executing.request)?",
+        // Consent is resolved for the device that sent the note.
+        "validate_applicable(&executing.request, &executing.device_id)?",
         "Ok(lifecycle)",
     ] {
         assert!(guard.contains(check), "commit fence requires {check}");

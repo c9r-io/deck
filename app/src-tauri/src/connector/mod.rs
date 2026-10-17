@@ -31,6 +31,12 @@
 //! slot. Each write encodes once and is atomic (temp file, file fsync,
 //! rename, directory fsync).
 //!
+//! Per-device trust: a device the user trusted on the Mac is served as
+//! BoardAccess whatever the global scope is (`effective_scope`); every read
+//! and write below resolves the scope for the requesting device. Changing
+//! trust bumps the scope revision and retires that device's unresolved
+//! commands, exactly like a scope change. Trust never adds shell input,
+//! queue admission without a saved command, or any automation authority.
 //! Phone reach: the default AgentCards scope exposes saved `codex`/`claude`
 //! commands with simple shell-safe arguments under the shared channel policy.
 //! BoardMetadata adds all card summaries, never additional terminal/note access.
@@ -60,6 +66,11 @@
 //! Pairing strips bidi, zero-width and tag characters from the supplied
 //! device name before validation and persistence, then emits
 //! `connector-changed` so the desktop can show it at once.
+//! A served snapshot records, in process memory only, when that device was
+//! last seen and the all-digit build from its `DeckConnector/<build>`
+//! User-Agent; Settings shows both so a user can tell an unreachable host or
+//! an old phone build from a sharing choice. Never persisted, logged or used
+//! for authority.
 //!
 //! Layout (one contract, one file per concern; every file starts with
 //! `use super::*` and exposes its items `pub(super)`): this file holds the
@@ -188,6 +199,26 @@ struct Device {
     /// must carry a higher one.
     #[serde(default, skip_serializing_if = "is_zero")]
     retired_through: u64,
+    /// Explicit local trust for this paired device: while it is active the
+    /// device gets BoardAccess regardless of the global scope. Set only from
+    /// the Mac (`connector_set_trusted`); an older reader ignores the field,
+    /// which narrows access rather than widening it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    trusted: bool,
+}
+
+/// The scope that governs one device's reads and writes: BoardAccess for an
+/// active trusted device, otherwise the global scope.
+fn effective_scope(doc: &DiskDoc, device_id: &str) -> SnapshotScope {
+    let trusted = doc
+        .devices
+        .iter()
+        .any(|device| device.id == device_id && device.revoked_at.is_none() && device.trusted);
+    if trusted {
+        SnapshotScope::BoardAccess
+    } else {
+        doc.config.scope
+    }
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -315,6 +346,48 @@ struct Runtime {
     running_epoch: AtomicU64,
 }
 static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
+
+/// When each paired device last received a snapshot, and the app build its
+/// HTTP client announced. Process memory only, never persisted or logged:
+/// a restart forgets it. It lets the Mac show whether a phone is actually
+/// reaching THIS host and with which build; it is never authority.
+static DEVICE_SEEN: OnceLock<Mutex<std::collections::HashMap<String, DeviceSeen>>> =
+    OnceLock::new();
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct DeviceSeen {
+    pub(super) at: u64,
+    pub(super) client_build: Option<String>,
+}
+
+fn device_seen_map() -> &'static Mutex<std::collections::HashMap<String, DeviceSeen>> {
+    DEVICE_SEEN.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+pub(super) fn note_device_seen(device_id: &str, user_agent: Option<&str>) {
+    device_seen_map().lock_or_recover().insert(
+        device_id.to_owned(),
+        DeviceSeen {
+            at: now(),
+            client_build: user_agent.and_then(client_build),
+        },
+    );
+}
+
+pub(super) fn device_seen(device_id: &str) -> Option<DeviceSeen> {
+    device_seen_map().lock_or_recover().get(device_id).cloned()
+}
+
+/// The iOS app's default URLSession User-Agent starts `DeckConnector/<build>`.
+/// Only a short all-digit build survives; anything else is not shown.
+pub(super) fn client_build(user_agent: &str) -> Option<String> {
+    let build = user_agent
+        .split_whitespace()
+        .next()?
+        .strip_prefix("DeckConnector/")?;
+    (!build.is_empty() && build.len() <= 9 && build.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| build.to_owned())
+}
 
 impl Runtime {
     fn with_doc<T>(

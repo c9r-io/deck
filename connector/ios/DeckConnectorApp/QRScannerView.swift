@@ -67,7 +67,7 @@ final class ScannerController: UIViewController {
 
     private func showUnavailable() {
         let label = UILabel(frame: view.bounds.insetBy(dx: 24, dy: 24))
-        label.text = "Camera access is unavailable. Cancel and paste the Deck pairing code instead."
+        label.text = String(localized: "Camera access is unavailable. Cancel and paste the Deck pairing code instead.")
         label.textColor = .white
         label.textAlignment = .center
         label.numberOfLines = 0

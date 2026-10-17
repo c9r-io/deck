@@ -101,6 +101,11 @@ public actor NoteDraftSaveCoordinator {
     }
 }
 
+/// A message draft is bound to the target generation that was current when
+/// its first character was typed. An empty composer holds no intent, so it
+/// follows the card (for example from "not shared" to a newly shared live
+/// Agent) instead of later reporting a target change the user never saw.
+/// Once text exists, a changed generation still requires explicit acceptance.
 public struct ComposerDraftState: Equatable, Sendable {
     public private(set) var cardID: String
     public private(set) var text: String
@@ -125,7 +130,10 @@ public struct ComposerDraftState: Equatable, Sendable {
         VersionedMessageDraft(draft: MessageDraft(cardID: cardID, text: text, expectedGeneration: expectedGeneration), version: version)
     }
 
-    public mutating func edit(_ value: String) { version &+= 1; text = value; persistenceError = nil; hasLocalEdits = true }
+    public mutating func edit(_ value: String, currentGeneration: String?) {
+        if text.isEmpty && !value.isEmpty { expectedGeneration = currentGeneration }
+        version &+= 1; text = value; persistenceError = nil; hasLocalEdits = true
+    }
     public mutating func acceptGeneration(_ generation: String?) { version &+= 1; expectedGeneration = generation; persistenceError = nil; hasLocalEdits = true }
 
     public mutating func merge(remote: MessageDraft?, fallbackGeneration: String?) {

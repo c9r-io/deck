@@ -73,9 +73,12 @@ pub(super) fn validate_admission_board(
     Ok(())
 }
 
-pub(super) fn validate_applicable(request: &CommandRequest) -> Result<(), DeckError> {
+pub(super) fn validate_applicable(
+    request: &CommandRequest,
+    device_id: &str,
+) -> Result<(), DeckError> {
     let (revision, board) = board_value()?;
-    validate_applicable_in_scope(request, &revision, &board, current_scope()?)
+    validate_applicable_in_scope(request, &revision, &board, scope_for(device_id)?)
 }
 
 /// Applicability of a claimed request against one committed board

@@ -198,7 +198,9 @@ settings file"), `reentry-live` → `reentry-live-relaunch` (real Claude
 clients under a home of their own; see "Claude session re-entry with real
 clients"),
 `connector-transport` (stays
-open for the Swift transport test; see `connector/ios/README.md`), and two
+open for the Swift transport test; see `connector/ios/README.md`),
+`connector-device` (stays open for the physical-iPhone driver
+`scripts/connector-device-acceptance.py`), and two
 that relaunch a finished `run` root: `ambiguous` (relaunch with
 `app/run.sh --smoke-fault queue-save` so the boot repair write fails) and
 `restart`. A relaunch appends to the same `app.log`; judge each mode before
