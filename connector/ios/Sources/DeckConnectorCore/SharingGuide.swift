@@ -39,6 +39,18 @@ public enum SharingGuide {
         }
     }
 
+    /// The capability a rejected command exercised, from its own wire kind —
+    /// never from the current scope (a direct message refused under
+    /// BoardAccess is not a queue limit).
+    public static func capability(forCommand kind: String) -> CardCapabilityKind? {
+        switch kind {
+        case "send-message": .sendMessage
+        case "buffer-add", "buffer-edit", "buffer-delete": .editNotes
+        case "buffer-queue", "queue-pause", "queue-cancel": .queue
+        default: nil
+        }
+    }
+
     /// True when at least one listed card lacks output, messages or notes only
     /// because of this Mac's sharing choice. The list then leads with setup.
     public static func needsFullAccessSetup(_ snapshot: Snapshot) -> Bool {

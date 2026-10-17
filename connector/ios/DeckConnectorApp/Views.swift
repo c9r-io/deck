@@ -308,7 +308,7 @@ struct TaskDetailView: View {
                 noteSaveState = hasNewerDraft ? .savedWithNewerDraft : .saved
                 self.pendingAdd = nil
             case .rejected:
-                noteSaveState = .failed(model.commandFailureMessage(result.code))
+                noteSaveState = .failed(model.commandFailureMessage(result.code, commandKind: "buffer-add"))
                 self.pendingAdd = nil
             case .accepted, .ambiguous, .delivered:
                 break
@@ -320,7 +320,7 @@ struct TaskDetailView: View {
                 if selection == pendingQueue.selection { selection.removeAll() }
                 self.pendingQueue = nil
             case .rejected:
-                model.message = model.commandFailureMessage(result.code)
+                model.message = model.commandFailureMessage(result.code, commandKind: "buffer-queue")
                 self.pendingQueue = nil
             case .accepted, .ambiguous:
                 break
@@ -717,7 +717,7 @@ private struct EditNoteView: View {
             else { error = String(localized: "The submitted version was saved. Your newer edits remain in this editor.") }
         case .rejected:
             self.pendingOperation = nil
-            error = model.commandFailureMessage(result.code)
+            error = model.commandFailureMessage(result.code, commandKind: "buffer-edit")
         case .accepted, .ambiguous: break
         }
     }

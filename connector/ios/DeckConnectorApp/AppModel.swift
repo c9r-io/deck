@@ -162,14 +162,20 @@ final class AppModel: ObservableObject {
         loadingDetails = []
     }
 
-    func commandFailureMessage(_ code: String?) -> String {
-        if code == "unsupported-target" {
-            // A rejected command reports the denial without its kind; queue
-            // commands are the only ones BoardAccess refuses this way.
-            let kind: CardCapabilityKind = snapshot?.scope == SharingScope.boardAccess.rawValue ? .queue : .sendMessage
-            return capabilityMessage(code ?? "", kind: kind, snapshot: snapshot)
+    /// Explains a rejected command by the operation it was and the code the
+    /// host returned. Sharing and control denials get their own sentences;
+    /// other codes stay as the host stated them.
+    func commandFailureMessage(_ code: String?, commandKind: String) -> String {
+        switch code {
+        case "unsupported-target":
+            let kind = SharingGuide.capability(forCommand: commandKind)
+            return kind.map { capabilityMessage("unsupported-target", kind: $0, snapshot: snapshot) }
+                ?? ConnectorError.unsupportedTarget.localizedDescription
+        case "mcp-controlled":
+            return capabilityMessage("mcp-controlled", kind: .sendMessage, snapshot: snapshot)
+        default:
+            return code ?? "The command was rejected."
         }
-        return code ?? "The command was rejected."
     }
 
     private let credentialStore = KeychainCredentialStore()
@@ -692,14 +698,14 @@ final class AppModel: ObservableObject {
             }
             guard isCurrent(client: client, journal: journal, epoch: epoch) else { return .failed("Pairing changed.") }
             if result.state == .rejected || result.state == .ambiguous {
-                message = commandFailureMessage(result.code)
+                message = commandFailureMessage(result.code, commandKind: command.kind)
             }
             scheduleRefreshAfterMutation(client: client, journal: journal, epoch: epoch)
             traceNote("execute-return-\(result.state.rawValue)")
             switch result.state {
             case .applied, .delivered: return .applied
             case .accepted, .ambiguous: return .pending(id: command.id, state: result.state.rawValue)
-            case .rejected: return .failed(commandFailureMessage(result.code))
+            case .rejected: return .failed(commandFailureMessage(result.code, commandKind: command.kind))
             }
         } catch {
             guard isCurrent(client: client, journal: journal, epoch: epoch) else { return .failed("Pairing changed.") }

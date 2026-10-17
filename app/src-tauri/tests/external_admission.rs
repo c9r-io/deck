@@ -1019,6 +1019,7 @@ fn every_terminal_input_site_is_reviewed() {
         "require_card_access(",
         "scope_for(device_id)",
         "guard_terminal_input(&card.session)",
+        ".map_err(|_| (\"rejected\", \"mcp-controlled\"))",
         ".agent",
     ] {
         assert!(

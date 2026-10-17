@@ -18,7 +18,10 @@ tauri-build = { version = "2", features = [] }
 core-foundation = "0.10"
 libc = "0.2"
 tauri = { version = "2", features = [] }
-tauri-plugin-updater = "2"
+# Default features minus "zip": that feature only adds the Windows zip and
+# Linux AppImage extractors (zip 4.x, RUSTSEC-2026-0367..0369); the macOS
+# .app.tar.gz installer uses its unconditional tar/flate2 dependencies.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls"] }
 # The updater plugin's own installer runs an admin AppleScript when the
 # bundle is not writable and a PATH `touch` on success; deck uses only its
 # check/download/verify half and unpacks the verified archive itself with

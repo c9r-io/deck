@@ -46,3 +46,13 @@ private let allowed = CardCapability(allowed: true, reason: nil)
     #expect(!SharingGuide.needsFullAccessSetup(snapshot(scope: "boardAccess", cards: [queueOnly, stopped])))
     #expect(!SharingGuide.needsFullAccessSetup(snapshot(scope: nil, cards: [summaryOnly])))
 }
+
+@Test func rejectedCommandsAreExplainedByTheirOwnKind() {
+    #expect(SharingGuide.capability(forCommand: "send-message") == .sendMessage)
+    for kind in ["buffer-add", "buffer-edit", "buffer-delete"] { #expect(SharingGuide.capability(forCommand: kind) == .editNotes) }
+    for kind in ["buffer-queue", "queue-pause", "queue-cancel"] { #expect(SharingGuide.capability(forCommand: kind) == .queue) }
+    #expect(SharingGuide.capability(forCommand: "task-create") == nil)
+    // A direct message refused under BoardAccess is never a queue limit.
+    #expect(SharingGuide.remedy(reason: "unsupported-target", kind: .sendMessage, scope: "boardAccess") != .savedLaunchCommand)
+}
+

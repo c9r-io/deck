@@ -50,8 +50,10 @@ pub(super) fn execute_native(
                 .agent
                 .as_deref()
                 .ok_or(("rejected", "agent-not-ready"))?;
+            // MCP control is its own refusal: the phone must not explain it
+            // as a sharing or launch-configuration limit.
             crate::mcp::guard_terminal_input(&card.session)
-                .map_err(|_| ("rejected", "unsupported-target"))?;
+                .map_err(|_| ("rejected", "mcp-controlled"))?;
             if !crate::scheduler::claim_session(&queues.busy, &card.session) {
                 return Err(("rejected", "session-busy"));
             }
