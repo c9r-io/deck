@@ -1,0 +1,37 @@
+{
+  "sourceCommit": "8a8d6eb21695dfca38d6ea7b6405ed7b610bad67",
+  "desktop": {
+    "version": "0.8.5",
+    "tag": "nightly-v0.8.5-20261017-8a8d6eb",
+    "workflowRunId": 39023645510,
+    "workflowConclusion": "success",
+    "workflowAttempt": 1,
+    "pushCiRunId": 39022151021,
+    "pushCiConclusion": "success",
+    "pushCiCommit": "be9ae97",
+    "feedVersion": "0.8.5",
+    "environmentApproval": "approved once with a comment, on the user's explicit request",
+    "postPublicationCheck": {
+      "dmgStaplerValidate": "passed",
+      "dmgGatekeeper": "accepted (Notarized Developer ID)",
+      "appGatekeeper": "accepted (Notarized Developer ID)",
+      "appVersion": "0.8.5",
+      "sha256MatchesSHA256SUMS": true
+    }
+  },
+  "ios": {
+    "bundleId": "io.c9r.deck.connector",
+    "version": "1.0",
+    "build": "4",
+    "sourceCommit": "be9ae97 (iOS sources unchanged in 8a8d6eb)",
+    "archiveExit": 0,
+    "uploadExit": 0,
+    "uploadMessage": "Upload succeeded",
+    "processingComplete": "UNVERIFIED (no App Store Connect web or API access in this session)",
+    "testFlightGroupStatus": "UNVERIFIED",
+    "releaseNotesSaved": false,
+    "phoneInstallationObserved": false
+  },
+  "localGateBeforePush": "fmt, cargo audit, ui-tests 850, check.mjs, workflows, clippy, llvm-cov 1541/0/13 (lines 85.61%), sidecar, release build, translation and EDR binary checks: all PASS",
+  "recordedAt": "2026-10-17T10:45:22.611527+00:00"
+}

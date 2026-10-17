@@ -22,7 +22,9 @@
 `cargo audit` FAIL：HEAD 既有的 `zip 4.6.1`（经 updater 引入）。
 BLOCKED：锁屏期间 Keychain 不可读（设备未要求密码）。
 UNRUN：Mac 睡眠、VPN、Mac 端重启 Deck、旧主机 + 新客户端。
-未提交、未发布。
+提交 `9a92480`；随后 `be9ae97` 修复了 MCP 拒绝被误解释为排队限制的问题（P2），并去掉了更新插件中仅 Windows 使用的 zip 依赖，`cargo audit` 恢复通过。
+经用户授权发布 Nightly 0.8.5（`8a8d6eb`，run 39023645510，一次通过）；发布后核对了 DMG 公证、Gatekeeper 与哈希。
+iOS 1.0 (4) 已上传，App Store Connect 处理状态未在本会话核实；见 `publication.json`。
 
 ## 上一轮 Phone Connector 现有卡片访问
 
