@@ -177,6 +177,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # the same updater key as the build step: only for re-signing the
+          # updater archive after the app had to be stapled here
+          TAURI_SIGNING_PRIVATE_KEY: ${{ needs.resolve.outputs.signing_epoch == 'legacy-stable-v1' && secrets.LEGACY_TAURI_SIGNING_PRIVATE_KEY || secrets.NIGHTLY_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ needs.resolve.outputs.signing_epoch == 'legacy-stable-v1' && secrets.LEGACY_TAURI_SIGNING_PRIVATE_KEY_PASSWORD || secrets.NIGHTLY_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           mkdir candidate unpacked
@@ -214,7 +218,33 @@ jobs:
           codesign --verify --strict --verbose=2 "$app_path/Contents/MacOS/tmux"
           test "$(dwarfdump --uuid "$app_path/Contents/MacOS/$executable" | wc -l | tr -d ' ')" = 1
           test "$(dwarfdump --uuid "$app_path/Contents/MacOS/tmux" | wc -l | tr -d ' ')" = 1
-          scripts/stapler-ticket validate "$app_path"
+          # Tauri's own staple of deck.app has silently left no ticket on
+          # several runs (0.8.2, 0.8.6, 0.8.7) while the notarization it
+          # waited for had succeeded. Then the ticket is attached here, with
+          # the wrapper's bounded transport retry, and the updater archive
+          # is rebuilt from the stapled app and signed again with the same
+          # updater key, so the candidate's app carries its ticket (the
+          # minisign verification below checks the new signature). A ticket
+          # that is present is validated and left as Tauri wrote it.
+          if ! scripts/stapler-ticket validate "$app_path"; then
+            echo "::warning::deck.app carried no stapled ticket after the build; attaching it here and re-signing the updater archive"
+            scripts/stapler-ticket staple "$app_path"
+            scripts/stapler-ticket validate "$app_path"
+            test -s "$app_path/Contents/CodeResources"
+            rm -f candidate/deck_aarch64.app.tar.gz candidate/deck_aarch64.app.tar.gz.sig
+            COPYFILE_DISABLE=1 tar --no-xattrs -czf candidate/deck_aarch64.app.tar.gz -C unpacked deck.app
+            # the Tauri CLI the build step installed globally (tauri-action
+            # runs `npm install -g @tauri-apps/cli@v2` for a project without
+            # package.json); its signer reads the two TAURI_SIGNING_* names
+            command -v tauri >/dev/null
+            tauri signer sign candidate/deck_aarch64.app.tar.gz
+            test -s candidate/deck_aarch64.app.tar.gz.sig
+            # the archive is what the candidate carries: read it back once
+            rm -rf unpacked && mkdir unpacked
+            tar -xzf candidate/deck_aarch64.app.tar.gz -C unpacked
+            codesign --verify --deep --strict --verbose=2 "$app_path"
+            scripts/stapler-ticket validate "$app_path"
+          fi
           spctl -a -vv -t exec "$app_path"
 
           dmg="candidate/deck_${CANDIDATE_VERSION}_aarch64.dmg"

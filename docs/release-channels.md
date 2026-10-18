@@ -111,6 +111,17 @@ exhausted retry budget still fails publication. No notary submission is replayed
 by this wrapper. Reattaching the same ticket is followed by validation, and
 codesign/Gatekeeper checks remain mandatory.
 
+Tauri's own staple of `deck.app` (inside its build step) has several times
+left the app without a ticket and printed no error, although the notarization
+it waited for had succeeded (0.8.2, 0.8.6, 0.8.7). The verify step therefore
+validates the unpacked app first and, only when it carries no ticket, attaches
+the ticket itself through the wrapper above, rebuilds the updater archive from
+the stapled app and signs it again with the same updater key, then reads the
+archive back and verifies it like any other. An app that already carries its
+ticket is left exactly as Tauri wrote it. The DMG is notarized and stapled on
+its own either way; on that fallback path the app inside the DMG keeps no
+stapled ticket of its own (Gatekeeper assesses it online at its first launch).
+
 The provenance records version, full commit, tag, workflow run/attempt and UTC
 time; filename, byte size and SHA-256 for every immutable artifact; bundle ID,
 updater target, updater-key epoch, test result, public Team ID/identity label

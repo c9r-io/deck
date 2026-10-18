@@ -122,6 +122,19 @@ class StaplerValidationTests(unittest.TestCase):
         package = (ROOT / "scripts/package-tunnel-helper").read_text()
         self.assertIn('scripts/stapler-ticket staple "$app"', package)
         self.assertNotIn("xcrun stapler staple", package)
+        # the app's missing-ticket fallback: validated first, stapled through
+        # the wrapper only then, and the updater archive re-signed and read back
+        nightly = (ROOT / ".github/workflows/nightly.yml").read_text()
+        fallback = nightly.index('if ! scripts/stapler-ticket validate "$app_path"; then')
+        block = nightly[fallback:nightly.index("spctl -a -vv -t exec", fallback)]
+        for line in (
+            'scripts/stapler-ticket staple "$app_path"',
+            "tauri signer sign candidate/deck_aarch64.app.tar.gz",
+            "tar -xzf candidate/deck_aarch64.app.tar.gz -C unpacked",
+            'scripts/stapler-ticket validate "$app_path"',
+        ):
+            self.assertIn(line, block)
+        self.assertNotIn("xcrun stapler", block)
 
 
 def script_tests_the_gate_misses(gate: str, scripts: Path) -> list[str]:
