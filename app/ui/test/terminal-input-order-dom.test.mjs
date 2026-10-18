@@ -424,3 +424,14 @@ test('the production wiring feeds the IME probe what xterm emits and logs its su
   assert.ok(ime.every(x => x.pane === pane));
   done();
 });
+
+test('a probe that throws never stops the input it observes', async () => {
+  const f = fixture();
+  await f.attach();
+  f.pane.imeProbe.data = () => { throw new Error('probe defect'); };
+  f.key('a'); await tick();
+  f.textarea.fire('compositionend', { data: '中' });
+  f.key('中'); await tick();
+  assert.deepEqual(f.writes(), ['a', '中']);
+  done();
+});

@@ -501,10 +501,14 @@ export function wireTerminalInput(pane, term, host) {
   });
   pane.insertInput = input.insert;
   /* content-free IME commit probe (terminal-ime-probe.js): it sees what
-     xterm emits before the input handler queues the write */
+     xterm emits before the input handler queues the write. Observation
+     never decides input: whatever the probe does, the input goes on. */
   pane.imeProbe = wireImeProbe(term.textarea, (code, detail, a, b) =>
     uev(code, detail, a, b, pane.selection?.traceContext?.() ?? null));
-  term.onData(data => { pane.imeProbe.data(data); input(data); });
+  term.onData(data => {
+    try { pane.imeProbe.data(data); } catch (_) { /* the probe only observes */ }
+    input(data);
+  });
   const copyKey = createTerminalCopy({
     selection: pane.selection, term,
     copySelection: () => copyTerminalSelection(pane),
