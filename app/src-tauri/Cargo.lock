@@ -604,7 +604,7 @@ dependencies = [
 
 [[package]]
 name = "deck-app"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "base64 0.22.1",
  "core-foundation",
@@ -647,7 +647,7 @@ dependencies = [
 
 [[package]]
 name = "deck-mcp"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "libc",
  "rmcp",

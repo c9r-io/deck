@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.6 — 2026-10-18 (Nightly)
+
+- Agent re-entry after an update: the restart review now opens only after
+  the Board has loaded, so the Claude sessions running in cards are offered
+  for re-entry. Before, right after an update, the review listed none and the
+  restart ended them.
+- A shell-service restart no longer stops halfway after its Agents have
+  exited. Shell snapshots that may refuse the restart are now taken before
+  any Agent is asked to exit; afterwards each exited Agent's resume hint is
+  saved when it can be read, and otherwise skipped (that card's older
+  snapshot is removed so it reopens as a clean shell). The log names why a
+  snapshot failed or was skipped.
+- When Deck cannot tell which Agent sessions could be reopened (no current
+  Board, or the check did not answer in time), the restart review says so,
+  instead of showing nothing as if there were none.
+- Diagnostics: an always-on, content-free probe records when the text the
+  terminal sent differs from the word the input method committed, to find
+  the cause of garbled IME input. It logs only labels, lengths and counts,
+  never text, and never affects typing.
+
 ## 0.8.5 — 2026-10-17 (Nightly)
 
 - Phone Connector: trust one phone on the Mac. Each paired device in
