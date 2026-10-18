@@ -599,7 +599,11 @@ export async function boot() {
     ctx.buildIdentity = await inv('build_identity');
   } catch (e) { /* label stays empty */ }
   renderBuildIdentity();
-  await refreshTmuxLifecycle({ prompt: true });
+  /* the status and its notice now; the review itself only after the Board
+     loaded (below): its re-entry preview reads the card ↔ session binding
+     from the Board this process committed, and before load_board there is
+     none, so every Agent session would read as "nothing to reopen" */
+  await refreshTmuxLifecycle();
   window.addEventListener('deck-update-channel-changed', () => {
     ctx.pendingUpdate = null;
     $('update-btn').style.display = 'none';
@@ -674,7 +678,7 @@ export async function boot() {
   if (visible) await revealThemedWindow();
   state.projectId = store.projects[0].id;
   render();
-  refreshReentry();   // a restart review opened before the Board loaded gets its card titles
+  if (ctx.tmuxServerStatus?.shouldPrompt) showTmuxLifecycle(ctx.tmuxServerStatus, false);
   /* A launch the system made to deliver "remind in 1 hour" while deck was not
      running (reminder.rs, response-only launch): transact that answer and
      nothing else. The backend then ends the process, or says that deck stays
