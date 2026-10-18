@@ -55,14 +55,14 @@ class StaplerValidationTests(unittest.TestCase):
         status, run, sleep, output = self.validate([self.result(68, self.disconnect), self.result()])
         self.assertEqual(status, 0)
         self.assertEqual(run.call_count, 2)
-        sleep.assert_called_once_with(3)
+        sleep.assert_called_once_with(5)
         self.assertIn(self.disconnect, output)
 
     def test_persistent_disconnect_fails_with_bounded_attempts(self):
-        status, run, sleep, _ = self.validate([self.result(68, self.disconnect)] * 4)
+        status, run, sleep, _ = self.validate([self.result(68, self.disconnect)] * 6)
         self.assertEqual(status, 68)
-        self.assertEqual(run.call_count, 4)
-        self.assertEqual([c.args[0] for c in sleep.call_args_list], [3, 6, 12])
+        self.assertEqual(run.call_count, 6)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [5, 10, 20, 40, 80])
 
     def test_unknown_errors_invalid_tickets_and_signals_fail_without_retry(self):
         for result in (self.result(68, "invalid ticket"), self.result(65, self.disconnect),
@@ -79,7 +79,7 @@ class StaplerValidationTests(unittest.TestCase):
         status, run, sleep, _ = self.validate([self.result(68, self.disconnect), self.result(65, "invalid")])
         self.assertEqual(status, 65)
         self.assertEqual(run.call_count, 2)
-        sleep.assert_called_once_with(3)
+        sleep.assert_called_once_with(5)
 
     def test_timeout_is_a_terminal_failure(self):
         status, run, sleep, _ = self.validate([subprocess.TimeoutExpired("xcrun", 60)])
@@ -91,7 +91,7 @@ class StaplerValidationTests(unittest.TestCase):
         cases = [
             ([self.result()], 0, 1),
             ([self.result(68, self.disconnect), self.result()], 0, 2),
-            ([self.result(68, self.disconnect)] * 4, 68, 4),
+            ([self.result(68, self.disconnect)] * 6, 68, 6),
             ([self.result(68, "invalid ticket")], 68, 1),
             ([subprocess.TimeoutExpired("xcrun", 60)], 124, 1),
         ]

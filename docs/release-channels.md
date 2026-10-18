@@ -105,8 +105,8 @@ notes and `publish_feed`. The workflow:
 Ticket attachment and validation use `scripts/stapler-ticket staple|validate`:
 only Apple's observed CloudKit connection-loss error (stapler exit 68,
 NSURLErrorDomain -1005 at the
-ticket endpoint) receives up to four attempts, with 3/6/12-second waits and a
-60-second limit per attempt. An invalid ticket, another error, timeout or
+ticket endpoint) receives up to six attempts, with 5/10/20/40/80-second waits
+(about two and a half minutes in all) and a 60-second limit per attempt. An invalid ticket, another error, timeout or
 exhausted retry budget still fails publication. No notary submission is replayed
 by this wrapper. Reattaching the same ticket is followed by validation, and
 codesign/Gatekeeper checks remain mandatory.
