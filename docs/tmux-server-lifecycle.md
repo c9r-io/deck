@@ -238,6 +238,17 @@ The backend owns one serialized restart operation:
    with zero sessions has an empty pane set even though tmux's `list-panes -a`
    reports `no current target`. Deck accepts that response only after another
    probe confirms the same server is still reachable and empty;
+   with shell restore on, checkpoint every shell pane that is not an agent
+   about to exit — strictly, BEFORE the first exit key, so a snapshot that
+   cannot be taken refuses the restart while every agent still runs; then
+   exit the agents and read each one's resume hint best effort: a pane that
+   cannot be read (pane lost, foreground still changing, unusable cwd, a
+   failed write) is skipped with a closed `snapshot-skipped` reason and its
+   older snapshot removed, never a refusal. After the exit only identity and
+   safety checks may refuse (a pane lost or added, another server, the
+   re-entry seal, the queue pause, the deadline); an exited agent's pane is
+   compared by identity alone (`tmux::unchanged_after_exit`), since its shell
+   may run something of its own for a moment;
 3. persist a content-free restart intent (written once, before the stop;
    no progress phase is recorded — recovery never needs one);
 4. request `kill-server`, wait for exit, and remove only a validated stale

@@ -486,26 +486,34 @@ fn capture(observation: &ShellObservation) -> Result<ShellSnapshot, DeckError> {
     })
 }
 
-/// Explicit restart bypasses the periodic throttle and waits for durable writes.
-/// Advance the epoch so a periodic capture made before agent exit cannot later
-/// overwrite the resume hint. The existing IO/epoch guard still honors clear.
+/// Begin an explicit restart's checkpoint: advance the epoch so a periodic
+/// capture made before agent exit cannot later overwrite the resume hint.
+/// Both phases below write under the epoch returned here; the existing
+/// IO/epoch guard still honors a clear made meanwhile.
+pub(crate) fn begin_restart_checkpoint() -> u64 {
+    let mut tracker = TRACKER.lock_or_recover();
+    tracker.epoch += 1;
+    tracker.epoch
+}
+
+/// Phase one of an explicit restart, BEFORE any exit key: checkpoint every
+/// shell pane except the agents about to exit (`exiting`). Strict — any
+/// failure refuses the restart while nothing irreversible has happened.
+/// Bypasses the periodic throttle and waits for durable writes.
 ///
 /// `list` and `run` are the restart's own reads of the server it is about to
 /// replace (`restart::prepare` hands on what it was given), so the capture
 /// and the restart can never look at two different servers.
 pub(crate) fn checkpoint_before_restart(
     rows: &[crate::tmux::PaneRow],
+    exiting: &[crate::tmux::PaneRow],
+    epoch: u64,
     list: &dyn Fn() -> Result<Vec<crate::tmux::PaneRow>, DeckError>,
     run: &dyn Fn(&[String]) -> Result<String, DeckError>,
     progress: &dyn Fn(&str, usize, usize),
 ) -> Result<(), DeckError> {
-    let epoch = {
-        let mut tracker = TRACKER.lock_or_recover();
-        tracker.epoch += 1;
-        tracker.epoch
-    };
     let began = std::time::Instant::now();
-    let mut snapshots = capture_restart_rows(rows, list, run)?;
+    let mut snapshots = capture_restart_rows(rows, exiting, list, run)?;
     // Settle all panes together, not 100ms per card. Compare the bounded text
     // twice; a still-changing tail gets one more observation, then aborts.
     let mut stable = snapshots.is_empty();
@@ -515,7 +523,7 @@ pub(crate) fn checkpoint_before_restart(
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
         crate::session_runtime::check_deadline()?;
-        let next = capture_restart_rows(rows, list, run)?;
+        let next = capture_restart_rows(rows, exiting, list, run)?;
         stable = snapshots
             .iter()
             .zip(&next)
@@ -542,19 +550,168 @@ pub(crate) fn checkpoint_before_restart(
                 "tmux-restart-snapshot-cancelled",
             ));
         }
-        applog(&format!(
-            "[tmux-restart] snapshot-saved {} bytes={} elapsed_ms={}",
-            crate::applog::session_tag(&snapshot.session),
-            snapshot.transcript.len(),
-            began.elapsed().as_millis()
-        ));
+        log_restart_saved(snapshot, began);
         progress("saving", index + 1, snapshots.len());
     }
     crate::session_runtime::check_deadline()
 }
 
+/// The closed reason a restart checkpoint failed, for the log line. The
+/// error's own text never reaches the log.
+pub(crate) fn restart_snapshot_reason(error: &DeckError) -> &'static str {
+    match error.message() {
+        "tmux-restart-output-unstable" => "unstable",
+        "tmux-restart-snapshot-cancelled" => "cancelled",
+        "tmux-restart-snapshot-target-changed" => "target-changed",
+        "tmux-restart-snapshot-invalid-cwd" => "invalid-cwd",
+        _ if error.restart_failure().is_some() => "deadline",
+        _ => error.code(),
+    }
+}
+
+/// Phase two, AFTER the agents exited: the resume hint each one left in its
+/// pane. Best effort and never a reason to refuse the restart — the agents
+/// are already gone, so refusing here would only lose them. Each pane is
+/// captured until two reads agree (at most three, 100 ms apart) while its
+/// foreground is a shell with a usable directory; otherwise it is skipped
+/// with one closed reason, and its older snapshot (taken before the agent
+/// started, so not what the pane last showed) is removed, so the restored
+/// pane opens as a clean shell instead of with stale text.
+///
+/// A session with more than one pane (panes the user added in tmux) keeps
+/// what phase one saved for its other panes: its agent pane is skipped
+/// without removing anything, since that file is the other panes' snapshot.
+pub(crate) fn checkpoint_exited_agents(
+    exited: &[crate::tmux::PaneRow],
+    all: &[crate::tmux::PaneRow],
+    epoch: u64,
+    list: &dyn Fn() -> Result<Vec<crate::tmux::PaneRow>, DeckError>,
+    run: &dyn Fn(&[String]) -> Result<String, DeckError>,
+) {
+    for row in exited {
+        let began = std::time::Instant::now();
+        if all
+            .iter()
+            .filter(|r| r.session_name == row.session_name)
+            .count()
+            > 1
+        {
+            applog(&format!(
+                "[tmux-restart] snapshot-skipped {} reason=multiple-panes stale_removed=false elapsed_ms=0",
+                crate::applog::session_tag(&row.session_name)
+            ));
+            continue;
+        }
+        match capture_exited_agent(row, epoch, list, run) {
+            Ok(snapshot) => log_restart_saved(&snapshot, began),
+            Err(reason) => {
+                let removed = remove_stale_snapshot(&row.session_name);
+                applog(&format!(
+                    "[tmux-restart] snapshot-skipped {} reason={reason} stale_removed={removed} elapsed_ms={}",
+                    crate::applog::session_tag(&row.session_name),
+                    began.elapsed().as_millis()
+                ));
+            }
+        }
+    }
+}
+
+fn capture_exited_agent(
+    row: &crate::tmux::PaneRow,
+    epoch: u64,
+    list: &dyn Fn() -> Result<Vec<crate::tmux::PaneRow>, DeckError>,
+    run: &dyn Fn(&[String]) -> Result<String, DeckError>,
+) -> Result<ShellSnapshot, &'static str> {
+    let mut previous: Option<ShellSnapshot> = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        crate::session_runtime::check_deadline().map_err(|_| "deadline")?;
+        let rows = list().map_err(|_| "list-failed")?;
+        let Some(now) = rows.iter().find(|now| crate::tmux::same_pane(row, now)) else {
+            return Err("pane-lost");
+        };
+        if !crate::context::shell_process(Some(&now.command)) {
+            // e.g. a prompt helper the shell runs after the agent quit; read again
+            previous = None;
+            continue;
+        }
+        if !valid_cwd(&now.path) {
+            return Err("invalid-cwd");
+        }
+        let raw = run(&[
+            "capture-pane".into(),
+            "-p".into(),
+            "-J".into(),
+            "-t".into(),
+            now.pane_id.clone(),
+            "-S".into(),
+            format!("-{MAX_TRANSCRIPT_LINES}"),
+        ])
+        .map_err(|_| "capture-failed")?;
+        let snapshot = ShellSnapshot {
+            session: now.session_name.clone(),
+            cwd: now.path.clone(),
+            transcript: sanitize_transcript(&raw),
+            updated: now_epoch(),
+        };
+        if previous
+            .as_ref()
+            .is_some_and(|p| p.transcript == snapshot.transcript && p.cwd == snapshot.cwd)
+        {
+            return match save_snapshot(&snapshot, epoch) {
+                Ok(true) => Ok(snapshot),
+                Ok(false) => Err("cancelled"),
+                Err(_) => Err("io"),
+            };
+        }
+        previous = Some(snapshot);
+    }
+    Err(if previous.is_some() {
+        "unstable"
+    } else {
+        "foreground"
+    })
+}
+
+/// Remove one session's snapshot files without moving the epoch: the other
+/// panes of the same restart keep writing under it.
+fn remove_stale_snapshot(session: &str) -> bool {
+    if validate_session_name(session).is_err() {
+        return false;
+    }
+    TRACKER.lock_or_recover().saved.remove(session);
+    let _io = SNAPSHOT_IO.lock_or_recover();
+    remove_snapshot_files_in(&snapshot_dir(), session).is_ok()
+}
+
+/// Test seam: an older snapshot of `session`, as a periodic checkpoint taken
+/// before an agent started would have left it.
+#[cfg(test)]
+pub(crate) fn seed_snapshot_for_test(session: &str, cwd: &str, transcript: &str) {
+    let epoch = TRACKER.lock_or_recover().epoch;
+    let snapshot = ShellSnapshot {
+        session: session.into(),
+        cwd: cwd.into(),
+        transcript: transcript.into(),
+        updated: now_epoch(),
+    };
+    assert!(save_snapshot(&snapshot, epoch).expect("seed snapshot"));
+}
+
+fn log_restart_saved(snapshot: &ShellSnapshot, began: std::time::Instant) {
+    applog(&format!(
+        "[tmux-restart] snapshot-saved {} bytes={} elapsed_ms={}",
+        crate::applog::session_tag(&snapshot.session),
+        snapshot.transcript.len(),
+        began.elapsed().as_millis()
+    ));
+}
+
 fn capture_restart_rows(
     rows: &[crate::tmux::PaneRow],
+    exiting: &[crate::tmux::PaneRow],
     list: &dyn Fn() -> Result<Vec<crate::tmux::PaneRow>, DeckError>,
     run: &dyn Fn(&[String]) -> Result<String, DeckError>,
 ) -> Result<Vec<ShellSnapshot>, DeckError> {
@@ -567,6 +724,12 @@ fn capture_restart_rows(
     let mut snapshots: Vec<ShellSnapshot> = Vec::new();
     for row in rows {
         crate::session_runtime::check_deadline()?;
+        if exiting
+            .iter()
+            .any(|agent| crate::tmux::same_pane(agent, row))
+        {
+            continue; // phase two reads it after the agent exited
+        }
         let observation = ShellObservation {
             session: row.session_name.clone(),
             activity: row.window_activity,
@@ -1132,6 +1295,8 @@ mod tests {
         assert_eq!(
             checkpoint_before_restart(
                 &[],
+                &[],
+                begin_restart_checkpoint(),
                 &crate::tmux::list_panes,
                 &|_| Err(DeckError::new(ErrorKind::Other, "not reached")),
                 &|_, _, _| {}

@@ -1,6 +1,12 @@
 //! Bounded, content-free coordination for an intentional shell-service restart.
 //! Exit keys are guarded by the observed tmux generation and foreground name.
 //! A timeout before kill-server aborts: elapsed time never proves a saved resume.
+//! Order: what may refuse the restart for the shells' sake (their snapshots)
+//! runs BEFORE the first exit key; after it only identity and safety checks
+//! may still refuse (a pane lost or added, another server, the re-entry
+//! seal, the queue pause, the deadline). The exited agents' resume hints are
+//! read best effort and an exited agent's pane may change foreground
+//! (`tmux::unchanged_after_exit`): refusing there would only lose the agents.
 //! The lifecycle supplies the pane reader so a verified, reachable empty
 //! server can be checked without treating tmux's missing pane target as loss,
 //! and the key sender of the same server handle.
@@ -140,7 +146,7 @@ pub(crate) fn prepare(
     list: &dyn Fn() -> Result<Vec<PaneRow>, DeckError>,
     send: &dyn Fn(&[String]) -> Result<String, DeckError>,
     progress: &dyn Fn(&str, usize, usize),
-) -> Result<Vec<PaneRow>, DeckError> {
+) -> Result<Prepared, DeckError> {
     check_deadline()?;
     // The exit keys below may end a shell (a second Ctrl+D landing after its
     // agent already quit). That is Deck's own keystroke, not the user's, so
@@ -183,6 +189,27 @@ pub(crate) fn prepare(
             .count()
             .saturating_sub(total)
     ));
+    let exiting: Vec<PaneRow> = targets.iter().map(|(row, _)| row.clone()).collect();
+    // Everything that may refuse the restart for the shells' sake runs
+    // BEFORE the first exit key: an agent that exits cannot be brought
+    // back by refusing afterwards.
+    let epoch = if save_shells {
+        let epoch = crate::shell_state::begin_restart_checkpoint();
+        progress("saving", 0, rows.len().saturating_sub(total));
+        crate::shell_state::checkpoint_before_restart(&rows, &exiting, epoch, list, send, progress)
+            .map_err(|e| {
+                applog(&format!(
+                    "[tmux-restart] snapshot-failed code={} reason={} elapsed_ms={}",
+                    e.code(),
+                    crate::shell_state::restart_snapshot_reason(&e),
+                    started.elapsed().as_millis()
+                ));
+                DeckError::restart(RestartFailure::SnapshotFailed)
+            })?;
+        Some(epoch)
+    } else {
+        None
+    };
     exit_agents(targets, EXIT_BUDGET, list, send, progress)?;
     if total > 0 && !save_shells {
         std::thread::sleep(Duration::from_millis(100));
@@ -196,25 +223,34 @@ pub(crate) fn prepare(
     {
         return Err(DeckError::restart(RestartFailure::ImpactChanged));
     }
-    progress("saving", 0, final_rows.len());
-    if save_shells {
-        crate::shell_state::checkpoint_before_restart(&final_rows, list, send, progress).map_err(
-            |e| {
-                applog(&format!(
-                    "[tmux-restart] snapshot-failed code={} elapsed_ms={}",
-                    e.code(),
-                    started.elapsed().as_millis()
-                ));
-                DeckError::restart(RestartFailure::SnapshotFailed)
-            },
-        )?;
+    // After the exit only the resume hints are read, best effort: a pane
+    // that cannot be read is skipped, never a refusal (`shell_state`).
+    if let Some(epoch) = epoch.filter(|_| total > 0) {
+        let exited: Vec<PaneRow> = final_rows
+            .iter()
+            .filter(|now| exiting.iter().any(|agent| same_pane(agent, now)))
+            .cloned()
+            .collect();
+        crate::shell_state::checkpoint_exited_agents(&exited, &final_rows, epoch, list, send);
     }
     applog(&format!(
         "[tmux-restart] prepared agents={total} restore_enabled={save_shells} elapsed_ms={}",
         started.elapsed().as_millis()
     ));
     check_deadline()?;
-    Ok(final_rows)
+    Ok(Prepared {
+        rows: final_rows,
+        exited: exiting,
+    })
+}
+
+/// What `prepare` leaves for the replacement: the panes as read after the
+/// exit, and the agents it exited, whose foreground is expected to differ
+/// from the reviewed listing (`tmux::unchanged_after_exit`).
+#[derive(Debug)]
+pub(crate) struct Prepared {
+    pub(crate) rows: Vec<PaneRow>,
+    pub(crate) exited: Vec<PaneRow>,
 }
 
 #[cfg(test)]
@@ -427,6 +463,229 @@ mod tests {
             "budget is shared, not per agent"
         );
         assert_eq!(server.rows().unwrap().len(), 3);
+    }
+
+    fn unique(name: &str) -> String {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        format!(
+            "{name}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    fn send_on<'a>(
+        server: &'a Server,
+        sent: &'a std::cell::RefCell<Vec<String>>,
+    ) -> impl Fn(&[String]) -> Result<String, DeckError> + 'a {
+        move |args: &[String]| {
+            sent.borrow_mut().push(args.join(" "));
+            server.run(&args.iter().map(String::as_str).collect::<Vec<_>>())
+        }
+    }
+
+    /// A shell snapshot that cannot be taken refuses the restart BEFORE any
+    /// exit key: the agent is still running and can still be re-entered.
+    #[test]
+    fn a_shell_snapshot_failure_refuses_before_any_exit_key() {
+        use crate::sync::LockRecover;
+        // the snapshot epoch is process-wide; one restart at a time, as in production
+        let _epoch = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        let server = Server::new();
+        let agent = unique("rx-agent");
+        let plain = unique("rx-plain");
+        server.fixture(&agent, 2);
+        server
+            .run(&["new-session", "-d", "-s", &plain, "/bin/sh"])
+            .unwrap();
+        let reviewed = server.rows().unwrap();
+        let frozen: Vec<PaneRow> = reviewed
+            .iter()
+            .filter(|r| r.session_name == agent)
+            .cloned()
+            .collect();
+        // the second listing (phase one's own check) sees the plain pane changed
+        let reads = std::cell::Cell::new(0);
+        let list = || {
+            reads.set(reads.get() + 1);
+            let mut rows = server.rows()?;
+            if reads.get() == 2 {
+                for row in rows.iter_mut().filter(|r| r.session_name == plain) {
+                    row.command = "vim".into();
+                }
+            }
+            Ok(rows)
+        };
+        let sent = std::cell::RefCell::new(Vec::new());
+        let error = prepare(
+            &reviewed,
+            true,
+            &frozen,
+            &list,
+            &send_on(&server, &sent),
+            &|_, _, _| {},
+        )
+        .unwrap_err();
+        assert_eq!(error.message(), "tmux-restart-snapshot-failed");
+        assert!(
+            sent.borrow().iter().all(|args| !args.contains("C-d")),
+            "no exit key was sent: {:?}",
+            sent.borrow()
+        );
+        assert!(server
+            .rows()
+            .unwrap()
+            .iter()
+            .any(|r| r.session_name == agent && r.command == "dd"));
+    }
+
+    /// After the agent exited, its pane may run something of its own for a
+    /// moment. That is neither a refusal nor a reason to keep an older
+    /// snapshot: the hint is skipped and the stale file removed.
+    #[test]
+    fn an_exited_agent_pane_that_changes_foreground_is_skipped_not_refused() {
+        use crate::sync::LockRecover;
+        // the snapshot epoch is process-wide; one restart at a time, as in production
+        let _epoch = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        let server = Server::new();
+        let agent = unique("rx-flicker");
+        server.fixture(&agent, 2);
+        crate::shell_state::seed_snapshot_for_test(&agent, "/tmp", "before the agent started");
+        let reviewed = server.rows().unwrap();
+        let frozen = reviewed.clone();
+        // once the pane reads as a shell, every later read shows a helper
+        let back = std::cell::Cell::new(false);
+        let list = || {
+            let mut rows = server.rows()?;
+            for row in rows.iter_mut().filter(|r| r.session_name == agent) {
+                if back.get() {
+                    row.command = "git".into();
+                } else if crate::context::shell_process(Some(&row.command)) {
+                    back.set(true);
+                }
+            }
+            Ok(rows)
+        };
+        let sent = std::cell::RefCell::new(Vec::new());
+        let prepared = prepare(
+            &reviewed,
+            true,
+            &frozen,
+            &list,
+            &send_on(&server, &sent),
+            &|_, _, _| {},
+        )
+        .expect("the restart goes on");
+        assert!(sent.borrow().iter().any(|args| args.contains("C-d")));
+        assert_eq!(prepared.exited.len(), 1);
+        assert!(
+            crate::shell_state::load_snapshot(&agent).unwrap().is_none(),
+            "the stale snapshot is gone"
+        );
+        // the final comparison accepts the exited pane's foreground changing
+        // again (helper → shell), but not a changed pane identity
+        let mut now = list().unwrap();
+        for row in now.iter_mut().filter(|r| r.session_name == agent) {
+            row.command = "sh".into();
+        }
+        assert!(!unchanged_rows(&prepared.rows, &now));
+        assert!(crate::tmux::unchanged_after_exit(
+            &prepared.rows,
+            &now,
+            &prepared.exited
+        ));
+        let mut other = now.clone();
+        other[0].pane_pid += 1;
+        assert!(!crate::tmux::unchanged_after_exit(
+            &prepared.rows,
+            &other,
+            &prepared.exited
+        ));
+    }
+
+    /// The ordinary path: the exited agent's resume hint is what is saved.
+    #[test]
+    fn an_exited_agents_resume_hint_is_saved_after_the_exit() {
+        use crate::sync::LockRecover;
+        // the snapshot epoch is process-wide; one restart at a time, as in production
+        let _epoch = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        let server = Server::new();
+        let agent = unique("rx-hint");
+        server.fixture(&agent, 2);
+        let reviewed = server.rows().unwrap();
+        let sent = std::cell::RefCell::new(Vec::new());
+        prepare(
+            &reviewed,
+            true,
+            &reviewed,
+            &|| server.rows(),
+            &send_on(&server, &sent),
+            &|_, _, _| {},
+        )
+        .expect("prepared");
+        let saved = crate::shell_state::load_snapshot(&agent)
+            .unwrap()
+            .expect("hint saved");
+        assert!(saved.transcript.contains("RESUME-FIXTURE"));
+    }
+
+    #[test]
+    fn unchanged_after_exit_relaxes_only_the_exited_panes_foreground() {
+        let row = |pane: &str, command: &str| PaneRow {
+            server_pid: 1,
+            session_id: "$1".into(),
+            session_name: pane.into(),
+            pane_id: pane.into(),
+            pane_pid: 9,
+            command: command.into(),
+            ..PaneRow::default()
+        };
+        let before = [row("%1", "zsh"), row("%2", "zsh")];
+        let exited = [row("%1", "claude")];
+        assert!(crate::tmux::unchanged_after_exit(
+            &before,
+            &[row("%1", "git"), row("%2", "zsh")],
+            &exited
+        ));
+        assert!(!crate::tmux::unchanged_after_exit(
+            &before,
+            &[row("%1", "zsh"), row("%2", "vim")],
+            &exited
+        ));
+        assert!(!crate::tmux::unchanged_after_exit(
+            &before,
+            &[row("%1", "zsh")],
+            &exited
+        ));
+        assert!(!crate::tmux::unchanged_after_exit(
+            &before,
+            &[row("%1", "zsh"), row("%3", "zsh")],
+            &exited
+        ));
+    }
+
+    #[test]
+    fn restart_snapshot_reasons_are_closed() {
+        use crate::shell_state::restart_snapshot_reason as reason;
+        for (message, expected) in [
+            ("tmux-restart-output-unstable", "unstable"),
+            ("tmux-restart-snapshot-cancelled", "cancelled"),
+            ("tmux-restart-snapshot-target-changed", "target-changed"),
+            ("tmux-restart-snapshot-invalid-cwd", "invalid-cwd"),
+        ] {
+            assert_eq!(
+                reason(&DeckError::new(ErrorKind::Recovery, message)),
+                expected
+            );
+        }
+        assert_eq!(
+            reason(&DeckError::restart(RestartFailure::Deadline)),
+            "deadline"
+        );
+        assert_eq!(
+            reason(&DeckError::new(ErrorKind::Perm, "/private/path")),
+            "perm"
+        );
     }
 
     #[test]

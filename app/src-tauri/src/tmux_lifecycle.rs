@@ -858,7 +858,7 @@ fn prepare_restart_with(
     frozen: &[tmux::PaneRow],
     progress: &dyn Fn(&str, usize, usize),
 ) -> Result<ServerSnapshot, DeckError> {
-    let prepared_rows = crate::restart::prepare(
+    let prepared = crate::restart::prepare(
         &snapshot.panes,
         restore_shells,
         frozen,
@@ -878,7 +878,7 @@ fn prepare_restart_with(
         _ => return Err(DeckError::restart(RestartFailure::ImpactChanged)),
     };
     let checked_rows = restart_panes_on(server, &post_exit)?;
-    if !crate::tmux::unchanged_rows(&prepared_rows, &checked_rows) {
+    if !crate::tmux::unchanged_after_exit(&prepared.rows, &checked_rows, &prepared.exited) {
         return Err(DeckError::restart(RestartFailure::ImpactChanged));
     }
     Ok(*post_exit)

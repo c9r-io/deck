@@ -617,6 +617,24 @@ pub(crate) fn unchanged_rows(before: &[PaneRow], after: &[PaneRow]) -> bool {
                 .any(|now| same_pane(row, now) && row.command == now.command)
         })
 }
+/// `unchanged_rows` for the read made after a restart exited its agents:
+/// every pane keeps its identity, and every pane but the exited agents'
+/// keeps its foreground. An exited agent's pane is back at its shell, which
+/// may be running something of its own for a moment (a prompt helper), so
+/// only its identity is compared there.
+pub(crate) fn unchanged_after_exit(
+    before: &[PaneRow],
+    after: &[PaneRow],
+    exited: &[PaneRow],
+) -> bool {
+    before.len() == after.len()
+        && before.iter().all(|row| {
+            let relaxed = exited.iter().any(|agent| same_pane(agent, row));
+            after
+                .iter()
+                .any(|now| same_pane(row, now) && (relaxed || row.command == now.command))
+        })
+}
 pub(crate) fn same_pane(a: &PaneRow, b: &PaneRow) -> bool {
     a.server_pid == b.server_pid
         && a.session_name == b.session_name
