@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.8.7 — 2026-10-18 (Nightly)
+
+- Codex sessions can be reopened after a shell-service restart, for Codex
+  clients started with `--no-daemon`. The restart review lists them as
+  "Codex ·" rows beside Claude's; once the new setting "Codex session
+  re-entry observation" is on (it adds two session start/end hooks to
+  `~/.codex/hooks.json`, which Codex asks you to trust once in `/hooks`),
+  a ticked Codex card is re-entered with `codex resume --no-daemon <id>`
+  into the thread the client was in when it exited. Deck reads that thread
+  from Codex's own hook receipts crossed with the resume hint Codex prints
+  as it leaves; pane text alone never names a session.
+- A reopened Codex row says "started", not "re-entered": Codex reports
+  entering a session only at its first turn, so Deck confirms the start
+  (the client, its arguments, directory and environment) and nothing more.
+  Under the "reapply bypass" policy a `--yolo` launch gets `--yolo` again;
+  under the ordinary policy a `--yolo` launch is asked for the workspace
+  profile with approvals on request, because a bare Codex resume would keep
+  bypass (the row says so). Sessions with an active goal or queued input
+  may continue on their own; the review says so.
+- The restart result offers "Insert resume command" on a card that was
+  neither reopened nor started: it opens the card and puts the resume
+  command the pane's own exit hint names on the input line, without
+  submitting it.
+- Shell completion for `codex … resume` now also recognizes `--no-daemon`.
+
 ## 0.8.6 — 2026-10-18 (Nightly)
 
 - Agent re-entry after an update: the restart review now opens only after
