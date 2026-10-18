@@ -16,7 +16,7 @@
 
 所有原生实例使用临时根目录中的独立 carrier、HOME、数据和 tmux socket。进程与 server 启动即登记，停止只经 `scripts/edr_runtime.py experiment`。正式 `/Applications/deck.app` 未替换，生产配置未用于测试。
 
-完整原始日志：`/private/tmp/deck-governance-20261016/logs`。机器可读汇总见 [results.json](results.json)，原生检查点见 [native-checkpoints.log](native-checkpoints.log)。
+完整原始日志留在本地验收目录，不纳入仓库；公开汇总以 `<local-evidence>` 指代。机器可读汇总见 [results.json](results.json)，原生检查点见 [native-checkpoints.log](native-checkpoints.log)。
 
 ## 已完成的原生与前端验证
 
@@ -62,3 +62,9 @@ Rust 首轮完整命令在主应用阶段返回 101（1,251 通过、1 失败、
 真实 Slack 验收只覆盖既有 Sandbox A 凭据、连接和故障恢复，不发送消息。语音原生检查不申请真实麦克风权限。macOS 14、远端 CI、真实 Slack 消息投递、生产安装及升级未执行，不能从本轮本机通过结果推定通过。
 
 上一轮 Hooks 额外整文件往返检查发现的既有空 `Notification` 数组清理语义保留在[上一轮记录](../first-party-autoreg-20261016/README.md)，本轮未改变合并引擎，也不将该额外断言计为本轮通过。
+
+## 公开证据脱敏复核
+
+检查范围为本次提交的 34 个文件及新增内容。新增内容未检出真实个人目录、姓名、邮箱、Slack 工作区/App ID 或完整凭据。源文件中的既有脱敏测试样例、网络测试夹具及公开仓库链接与新增内容分开核对，本次未修改这些测试或清理整个仓库历史。
+
+本目录公开副本中的实验根目录改用场景别名，registry 输出只保留资源类型和退出状态，去掉 PID、UID、socket 路径和进程启动时间；与本轮无关的未跟踪目录名改为占位符。检查点绝对时间改为相对秒数，原间隔、顺序、检查点名称和参数不变。测试结果、失败记录、构建和源文件哈希均保留；原始证据与别名对应关系只留在本地。此操作未修改产品代码或重写 Git 历史。

@@ -1,7 +1,7 @@
 {
   "date": "2026-10-16",
   "baseline": "3261805",
-  "raw_evidence": "/private/tmp/deck-governance-20261016",
+  "raw_evidence": "<local-evidence>",
   "gates": {
     "fmt": {
       "command": "cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml",
@@ -142,11 +142,11 @@
         "--mode",
         "ci",
         "--app-evidence",
-        "/private/tmp/deck-governance-20261016/ce-app-probe-final.jsonl",
+        "<local-evidence>/ce-app-probe-final.jsonl",
         "--deck-build",
         "3261805-governance-worktree",
         "--out",
-        "/private/tmp/deck-governance-20261016/ce-full-local.jsonl"
+        "<local-evidence>/ce-full-local.jsonl"
       ],
       "exit": 0
     },
@@ -157,11 +157,11 @@
         "--plan",
         "scripts/ce/plan-full-local-2.json",
         "--evidence",
-        "/private/tmp/deck-governance-20261016/ce-full-local.jsonl",
+        "<local-evidence>/ce-full-local.jsonl",
         "--evidence",
-        "/private/tmp/deck-governance-20261016/ce-full-local.jsonl.app.jsonl",
+        "<local-evidence>/ce-full-local.jsonl.app.jsonl",
         "--out",
-        "/private/tmp/deck-governance-20261016/ce-full-local-verdict.json",
+        "<local-evidence>/ce-full-local-verdict.json",
         "--gate",
         "full_local_parity:ci"
       ],
@@ -201,27 +201,27 @@
     },
     "ui-final-fixed": {
       "exit": 0,
-      "log": "/private/tmp/deck-governance-20261016/logs/ui-final-fixed.log"
+      "log": "<local-evidence>/logs/ui-final-fixed.log"
     },
     "debug-build-final": {
       "exit": 0,
-      "log": "/private/tmp/deck-governance-20261016/logs/debug-build-final.log"
+      "log": "<local-evidence>/logs/debug-build-final.log"
     },
     "catalog-final": {
       "exit": 0,
-      "log": "/private/tmp/deck-governance-20261016/logs/catalog-final.log"
+      "log": "<local-evidence>/logs/catalog-final.log"
     },
     "js-syntax-final": {
       "exit": 0,
-      "log": "/private/tmp/deck-governance-20261016/logs/js-syntax-final.log"
+      "log": "<local-evidence>/logs/js-syntax-final.log"
     },
     "js-check-final": {
       "exit": 0,
-      "log": "/private/tmp/deck-governance-20261016/logs/js-check-final.log"
+      "log": "<local-evidence>/logs/js-check-final.log"
     },
     "python-final": {
       "exit": 0,
-      "log": "/private/tmp/deck-governance-20261016/logs/python-final.log"
+      "log": "<local-evidence>/logs/python-final.log"
     }
   },
   "tunnel_gates": {
@@ -278,7 +278,7 @@
   },
   "native": {
     "settings": {
-      "root": "/private/tmp/dhk-vtnsyes7",
+      "root": "<experiment:settings>",
       "ok": true,
       "cleanup": {
         "exit": 0,
@@ -288,7 +288,7 @@
       "verdict": "smoke-verdict settings: PASS (12/12 expected checkpoints, 12 lines)"
     },
     "voice": {
-      "root": "/private/tmp/dhk-f9nmnxjj",
+      "root": "<experiment:voice>",
       "ok": true,
       "cleanup": {
         "exit": 0,
@@ -298,7 +298,7 @@
       "verdict": "smoke-verdict voice: PASS (18/18 expected checkpoints, 18 lines)"
     },
     "connector": {
-      "root": "/private/tmp/dhk-q_9cins_",
+      "root": "<experiment:connector>",
       "ok": true,
       "cleanup": {
         "exit": 0,
@@ -308,7 +308,7 @@
       "verdict": "smoke-verdict connector: PASS (5/5 expected checkpoints, 5 lines)"
     },
     "channel": {
-      "root": "/private/tmp/dhk-u7yra4gd",
+      "root": "<experiment:channel>",
       "ok": true,
       "cleanup": {
         "exit": 0,
@@ -318,7 +318,7 @@
       "verdict": "smoke-verdict channel: PASS (3/3 expected checkpoints, 3 lines)"
     },
     "approval": {
-      "root": "/private/tmp/dhk-w633_03w",
+      "root": "<experiment:approval>",
       "ok": true,
       "cleanup": {
         "exit": 0,
@@ -328,7 +328,7 @@
       "verdict": "smoke-verdict approval: PASS (12/12 expected checkpoints, 12 lines)"
     },
     "empty-start": {
-      "root": "/private/tmp/dhk-j83a681_",
+      "root": "<experiment:empty-start>",
       "ok": true,
       "cleanup": {
         "exit": 0,
@@ -338,7 +338,7 @@
       "verdict": "smoke-verdict empty-start: PASS (5/5 expected checkpoints, 5 lines)"
     },
     "signal-finish": {
-      "root": "/private/tmp/dhk-cho5lk39",
+      "root": "<experiment:signal-finish>",
       "ok": true,
       "cleanup": {
         "exit": 0,
@@ -348,7 +348,7 @@
       "verdict": "smoke-verdict signal-finish: PASS (8/8 expected checkpoints, 8 lines)"
     },
     "run": {
-      "root": "/private/tmp/dhk-pe934a69",
+      "root": "<experiment:run>",
       "ok": true,
       "cleanup": {
         "exit": 0,
@@ -358,7 +358,7 @@
       "verdict": "smoke-verdict run: PASS (94/94 expected checkpoints, 118 lines)"
     },
     "hooks-live": {
-      "root": "/private/tmp/dhk-6h_5bexg",
+      "root": "<experiment:hooks-live>",
       "ok": true,
       "cleanup": {
         "exit": 0,
@@ -370,7 +370,7 @@
   },
   "translation": [
     {
-      "root": "/private/tmp/dhk-upj0yt9k",
+      "root": "<experiment:translation-1>",
       "failure": null,
       "checks": [
         {
@@ -415,7 +415,7 @@
             "app/ui/test/wk-smoke.mjs",
             "docs/evidence/first-party-governance-20261016/",
             "docs/first-party-extensions.md",
-            "research_notes/",
+            "<unrelated-untracked-directory>",
             "scripts/extension_catalog.py",
             "scripts/test_extension_catalog.py"
           ],
@@ -462,7 +462,7 @@
       }
     },
     {
-      "root": "/private/tmp/dhk-kr6vsi0j",
+      "root": "<experiment:translation-2>",
       "failure": null,
       "checks": [
         {
@@ -521,7 +521,7 @@
             "app/ui/test/wk-smoke.mjs",
             "docs/evidence/first-party-governance-20261016/",
             "docs/first-party-extensions.md",
-            "research_notes/",
+            "<unrelated-untracked-directory>",
             "scripts/extension_catalog.py",
             "scripts/test_extension_catalog.py"
           ],
@@ -583,7 +583,7 @@
   "slack": {
     "initial_result": {
       "mode": "channel-fault",
-      "root": "/private/tmp/dhk-r0yx3tdr",
+      "root": "<experiment:slack>",
       "failure": null,
       "checks": [
         {
@@ -628,7 +628,7 @@
             "app/ui/test/wk-smoke.mjs",
             "docs/evidence/first-party-governance-20261016/",
             "docs/first-party-extensions.md",
-            "research_notes/",
+            "<unrelated-untracked-directory>",
             "scripts/extension_catalog.py",
             "scripts/test_extension_catalog.py"
           ],
@@ -675,7 +675,7 @@
   },
   "pi": {
     "pi-layout": {
-      "root": "/private/tmp/deck-pi-live-av8tu_xd",
+      "root": "<experiment:pi-layout>",
       "mode": "pi-layout",
       "runtime": null,
       "where": "this machine",
@@ -738,7 +738,7 @@
       ]
     },
     "pi-npm": {
-      "root": "/private/tmp/deck-pi-live-4c3pxt3s",
+      "root": "<experiment:pi-npm>",
       "mode": "pi-live",
       "runtime": "npm",
       "where": "this machine",
@@ -1251,61 +1251,219 @@
     "files_unchanged": true
   },
   "experiment_inventory": {
-    "/private/tmp/dhk-vtnsyes7": {
+    "<experiment:settings>": {
       "exit": 0,
-      "output": "process pid 14957 started Fri Oct 16 01:49:21 2026: gone\ntmux-server pid 14983 started Fri Oct 16 01:49:22 2026 socket /private/tmp/dhk-vtnsyes7/tt/tmux-501/deck-smoke-hk-dhkxvtnsyes7: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        }
+      ]
     },
-    "/private/tmp/dhk-f9nmnxjj": {
+    "<experiment:voice>": {
       "exit": 0,
-      "output": "process pid 16328 started Fri Oct 16 01:53:32 2026: gone\ntmux-server pid 16346 started Fri Oct 16 01:53:33 2026 socket /private/tmp/dhk-f9nmnxjj/tt/tmux-501/deck-smoke-hk-dhkxf9nmnxjj: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        }
+      ]
     },
-    "/private/tmp/dhk-q_9cins_": {
+    "<experiment:connector>": {
       "exit": 0,
-      "output": "process pid 16612 started Fri Oct 16 01:53:40 2026: gone\ntmux-server pid 16629 started Fri Oct 16 01:53:41 2026 socket /private/tmp/dhk-q_9cins_/tt/tmux-501/deck-smoke-hk-dhkxqx9cinsx: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        }
+      ]
     },
-    "/private/tmp/dhk-u7yra4gd": {
+    "<experiment:channel>": {
       "exit": 0,
-      "output": "process pid 16768 started Fri Oct 16 01:53:44 2026: gone\ntmux-server pid 16784 started Fri Oct 16 01:53:45 2026 socket /private/tmp/dhk-u7yra4gd/tt/tmux-501/deck-smoke-hk-dhkxu7yra4gd: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        }
+      ]
     },
-    "/private/tmp/dhk-w633_03w": {
+    "<experiment:approval>": {
       "exit": 0,
-      "output": "process pid 16925 started Fri Oct 16 01:53:49 2026: gone\ntmux-server pid 16943 started Fri Oct 16 01:53:50 2026 socket /private/tmp/dhk-w633_03w/tt/tmux-501/deck-smoke-hk-dhkxw633x03w: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        }
+      ]
     },
-    "/private/tmp/dhk-j83a681_": {
+    "<experiment:empty-start>": {
       "exit": 0,
-      "output": "process pid 17323 started Fri Oct 16 01:54:34 2026: gone\ntmux-server pid 17339 started Fri Oct 16 01:54:35 2026 socket /private/tmp/dhk-j83a681_/tt/tmux-501/deck-smoke-hk-dhkxj83a681x: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        }
+      ]
     },
-    "/private/tmp/dhk-cho5lk39": {
+    "<experiment:signal-finish>": {
       "exit": 0,
-      "output": "process pid 17721 started Fri Oct 16 01:55:01 2026: gone\ntmux-server pid 17737 started Fri Oct 16 01:55:01 2026 socket /private/tmp/dhk-cho5lk39/tt/tmux-501/deck-smoke-hk-dhkxcho5lk39: gone\nprocess pid 17794 started Fri Oct 16 01:55:04 2026: gone\nprocess pid 17821 started Fri Oct 16 01:55:07 2026: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        },
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "process",
+          "state": "gone"
+        }
+      ]
     },
-    "/private/tmp/dhk-pe934a69": {
+    "<experiment:run>": {
       "exit": 0,
-      "output": "process pid 18007 started Fri Oct 16 01:55:25 2026: gone\ntmux-server pid 18022 started Fri Oct 16 01:55:26 2026 socket /private/tmp/dhk-pe934a69/tt/tmux-501/deck-smoke-hk-dhkxpe934a69: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        }
+      ]
     },
-    "/private/tmp/dhk-6h_5bexg": {
+    "<experiment:hooks-live>": {
       "exit": 0,
-      "output": "process pid 19501 started Fri Oct 16 01:56:16 2026: gone\ntmux-server pid 19522 started Fri Oct 16 01:56:17 2026 socket /private/tmp/dhk-6h_5bexg/tt/tmux-501/deck-smoke-hk-dhkx6hx5bexg: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        }
+      ]
     },
-    "/private/tmp/dhk-upj0yt9k": {
+    "<experiment:translation-1>": {
       "exit": 0,
-      "output": "process pid 20503 started Fri Oct 16 01:59:23 2026: gone\ntmux-server pid 20520 started Fri Oct 16 01:59:24 2026 socket /private/tmp/dhk-upj0yt9k/tt/tmux-501/deck-smoke-hk-dhkxupj0yt9k: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        }
+      ]
     },
-    "/private/tmp/dhk-kr6vsi0j": {
+    "<experiment:translation-2>": {
       "exit": 0,
-      "output": "process pid 20709 started Fri Oct 16 01:59:31 2026: gone\ntmux-server pid 20730 started Fri Oct 16 01:59:32 2026 socket /private/tmp/dhk-kr6vsi0j/tt/tmux-501/deck-smoke-hk-dhkxkr6vsi0j: gone\nprocess pid 20866 started Fri Oct 16 01:59:43 2026: gone\nprocess pid 20989 started Fri Oct 16 01:59:47 2026: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        },
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "process",
+          "state": "gone"
+        }
+      ]
     },
-    "/private/tmp/dhk-r0yx3tdr": {
+    "<experiment:slack>": {
       "exit": 0,
-      "output": "process pid 19896 started Fri Oct 16 01:57:24 2026: gone\ntmux-server pid 19912 started Fri Oct 16 01:57:25 2026 socket /private/tmp/dhk-r0yx3tdr/tt/tmux-501/deck-smoke-hk-dhkxr0yx3tdr: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        }
+      ]
     },
-    "/private/tmp/deck-pi-live-av8tu_xd": {
+    "<experiment:pi-layout>": {
       "exit": 0,
-      "output": "process pid 22301 started Fri Oct 16 01:59:53 2026: gone\ntmux-server pid 23117 started Fri Oct 16 01:59:56 2026 socket /private/tmp/deck-pi-live-av8tu_xd/tt/tmux-501/deck-smoke-pi-av8tuxxd: gone\nprocess pid 22811 started Fri Oct 16 01:59:55 2026: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        },
+        {
+          "kind": "process",
+          "state": "gone"
+        }
+      ]
     },
-    "/private/tmp/deck-pi-live-4c3pxt3s": {
+    "<experiment:pi-npm>": {
       "exit": 0,
-      "output": "process pid 24959 started Fri Oct 16 02:01:00 2026: gone\ntmux-server pid 24973 started Fri Oct 16 02:01:03 2026 socket /private/tmp/deck-pi-live-4c3pxt3s/tt/tmux-501/deck-smoke-pi-4c3pxt3s: gone\nprocess pid 24964 started Fri Oct 16 02:01:02 2026: gone\nprocess pid 25056 started Fri Oct 16 02:01:11 2026: gone\nprocess pid 25498 started Fri Oct 16 02:02:24 2026: gone\n"
+      "resources": [
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "tmux-server",
+          "state": "gone"
+        },
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "process",
+          "state": "gone"
+        },
+        {
+          "kind": "process",
+          "state": "gone"
+        }
+      ]
     }
   },
   "remaining_experiment_processes": 0,
@@ -1348,5 +1506,13 @@
     "real Slack message delivery",
     "real microphone recording",
     "release installation and production update"
-  ]
+  ],
+  "privacy": {
+    "scope": "Public governance evidence only; raw evidence retained locally.",
+    "experiment_roots": "Stable per-scenario aliases; no local root, socket path, PID, UID or process start time.",
+    "unrelated_workspace_paths": "Replaced by a placeholder without removing the dirty-worktree fact.",
+    "checkpoint_time": "Seconds relative to the first checkpoint, starting at 1; intervals and checkpoint payloads preserved.",
+    "source_hashes": "Original tested-source and binary hashes preserved.",
+    "resources_verified_gone": 36
+  }
 }
