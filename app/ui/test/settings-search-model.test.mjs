@@ -40,7 +40,7 @@ test('every setting has a unique stable id, a real section, translated labels an
     if (item.extensionIds?.length) {
       assert.ok(EXTENSION_CONTRIBUTIONS.some(contribution =>
         contribution.settings?.some(declared => declared.id === item.id)), item.id);
-      if (!['agent-status', 'claude-reentry'].includes(item.id))
+      if (!['agent-status', 'claude-reentry', 'codex-reentry'].includes(item.id))
         assert.match(contributedMarkup, new RegExp(`id=[\\"\\\`]set-item-${item.id}[\\"\\\`] data-setting-id=[\\"\\\`]${item.id}[\\"\\\`]`), item.id);
     } else {
       assert.match(panels[item.section], new RegExp(`id="set-item-${item.id}" data-setting-id="${item.id}"`), item.id);
@@ -49,7 +49,7 @@ test('every setting has a unique stable id, a real section, translated labels an
       for (const dictionary of Object.values(dictionaries)) assert.ok(dictionary[key], `${item.id}: ${key}`);
     for (const keyword of item.keywords) assert.equal(keyword, normalizeSearchQuery(keyword), 'keywords are stored normalized');
   }
-  assert.deepEqual(sectionItems('agents').map(item => item.id), ['agent-status', 'claude-reentry', 'away-notifications']);
+  assert.deepEqual(sectionItems('agents').map(item => item.id), ['agent-status', 'claude-reentry', 'codex-reentry', 'away-notifications']);
   assert.deepEqual(sectionItems('remote').map(item => item.id), ['connector', 'mcp']);
 });
 
@@ -85,10 +85,13 @@ test('aliases reach the setting a user means', () => {
   assert.deepEqual(ids('chatgpt'), ['mcp']);
   assert.deepEqual(ids('授权'), ['mcp']);
   assert.deepEqual(ids('tmux'), ['shell-service']);
-  // Claude session re-entry observation is its own setting, found in either language
-  for (const query of ['re-entry', 'reentry', 'reopen', '重入', '会话重入观察', 'Claude session re-entry observation']) {
-    assert.deepEqual(ids(query), ['claude-reentry'], query);
+  // each Agent's session re-entry observation is its own setting, found in either language
+  for (const query of ['re-entry', 'reentry', 'reopen', '重入', '会话重入观察']) {
+    assert.deepEqual(ids(query), ['claude-reentry', 'codex-reentry'], query);
   }
+  assert.deepEqual(ids('Claude session re-entry observation'), ['claude-reentry']);
+  assert.deepEqual(ids('Codex session re-entry observation'), ['codex-reentry']);
+  assert.deepEqual(ids('codex 重入'), ['codex-reentry']);
 });
 
 test('a notification search shows only the notification group, not the pages around it', () => {
@@ -116,14 +119,14 @@ test('matching is case-insensitive, trims whitespace and needs every term', () =
   assert.deepEqual(search('  SLACK  '), search('slack'));
   assert.deepEqual(ids('slack'), ['slack-reactions']);
   assert.deepEqual(ids('slack channel'), ['slack-reactions']);
-  assert.deepEqual(ids('codex'), ['agent-status', 'mcp']);
+  assert.deepEqual(ids('codex'), ['agent-status', 'codex-reentry', 'mcp']);
   assert.deepEqual(ids('codex hook'), ['agent-status']);
 });
 
 test('a section title shows that section when no setting names the query', () => {
   assert.deepEqual(search('Data & privacy'), [{ section: 'data', items: ['history', 'shell-data', 'logs'] }]);
   assert.deepEqual(search('数据与隐私'), [{ section: 'data', items: ['history', 'shell-data', 'logs'] }]);
-  assert.deepEqual(search('agents & notifications'), [{ section: 'agents', items: ['agent-status', 'claude-reentry', 'away-notifications'] }]);
+  assert.deepEqual(search('agents & notifications'), [{ section: 'agents', items: ['agent-status', 'claude-reentry', 'codex-reentry', 'away-notifications'] }]);
   assert.deepEqual(search('About & updates'), [{ section: 'about', items: ['updates'] }]);
 });
 

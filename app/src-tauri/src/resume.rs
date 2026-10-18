@@ -32,7 +32,10 @@ fn uuid(value: &str) -> bool {
         })
 }
 
-fn extract(text: &str) -> Vec<ResumeHint> {
+/// Every exit hint of `text` in order of appearance, repeats kept: the
+/// reader of what one exit printed (`agent_reentry`, the difference of two
+/// such readings of one pane) counts them.
+fn hints_in_order(text: &str) -> Vec<ResumeHint> {
     let mut hints = Vec::new();
     let mut remaining = 0;
     for line in text.lines() {
@@ -58,12 +61,10 @@ fn extract(text: &str) -> Vec<ResumeHint> {
                 ("codex", "resume") | ("claude", "--resume") | ("claude", "-r")
             ) && uuid(id)
             {
-                let hint = ResumeHint {
+                hints.push(ResumeHint {
                     agent: agent.to_string(),
                     id: id.to_ascii_lowercase(),
-                };
-                hints.retain(|old| old != &hint);
-                hints.push(hint);
+                });
             }
         }
         // Only blanks may separate the heading and command. An input prompt,
@@ -72,7 +73,28 @@ fn extract(text: &str) -> Vec<ResumeHint> {
             remaining = 0;
         }
     }
+    hints
+}
+
+/// The most recent distinct hints, newest first.
+fn extract(text: &str) -> Vec<ResumeHint> {
+    let mut hints: Vec<ResumeHint> = Vec::new();
+    for hint in hints_in_order(text) {
+        hints.retain(|old| old != &hint);
+        hints.push(hint);
+    }
     hints.into_iter().rev().take(8).collect()
+}
+
+/// The ids `text` shows as `<launcher> resume <id>` exit hints, in order of
+/// appearance and with repeats: what a pane printed, for the one reader
+/// that compares two readings of the same pane.
+pub(crate) fn printed(text: &str, launcher: &str) -> Vec<String> {
+    hints_in_order(text)
+        .into_iter()
+        .filter(|hint| hint.agent == launcher)
+        .map(|hint| hint.id)
+        .collect()
 }
 
 #[tauri::command]
@@ -147,6 +169,14 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn printed_keeps_order_and_repeats_for_one_launcher() {
+        let text = format!("To continue this session, run:\n  codex resume {A}\nx\nTo continue this session, run:\n  codex resume {B}\nTo continue this session, run:\n  claude --resume {A}\nTo continue this session, run:\n  codex resume {A}");
+        assert_eq!(printed(&text, "codex"), [A, B, A]);
+        assert_eq!(printed(&text, "claude"), [A]);
+        assert_eq!(printed("", "codex"), Vec::<String>::new());
     }
 
     #[test]

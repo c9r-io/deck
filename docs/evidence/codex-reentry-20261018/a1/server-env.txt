@@ -1,0 +1,8 @@
+DECK_STATUS_SOCK=<ROOT>/base/status.sock
+HOME=<ROOT>/h
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+PWD=<REPO>
+SHELL=/bin/zsh
+TERM=xterm-256color
+TMUX_TMPDIR=<ROOT>/t
+ZDOTDIR=<ROOT>/zdot

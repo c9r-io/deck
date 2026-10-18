@@ -1,0 +1,5 @@
+  >_ OpenAI Codex (v0.163.0)
+     <ROOT>/w/b
+› Ask Codex to do anything
+  stub-model default · <ROOT>/w/b
+  ? for shortcuts

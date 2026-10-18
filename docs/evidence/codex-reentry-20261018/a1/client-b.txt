@@ -1,0 +1,1 @@
+64896 64733 64896 ttys006  Sun Oct 18 22:35:15 2026     /opt/homebrew/Caskroom/codex/0.163.0/bin/codex --no-daemon

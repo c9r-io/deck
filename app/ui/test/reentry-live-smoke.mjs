@@ -224,7 +224,7 @@ async function harness() {
     && all(row, 'input[type="checkbox"]').some(box => !box.disabled);
   const isOff = row => !!row && row.matches('div.reentry-off') && all(row, 'input').length === 0;
   const ticked = () => rows().filter(row => row.querySelector('input[type="checkbox"]')?.checked);
-  const bypassRows = list => list.filter(row => text(row, '.reentry-note') === t('reentry.profile.bypass'));
+  const bypassRows = list => list.filter(row => text(row, '.reentry-note') === t('reentry.profile.bypass', { agent: 'Claude' }));
   /* "Select all candidates": the one box above the list */
   const selectAll = () => [...section().children].find(node => node.matches('label.reentry-choice')
     && text(node, '.reentry-choice-text') === t('reentry.selectAll'))?.querySelector('input');

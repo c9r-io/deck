@@ -1,0 +1,4 @@
+  permissions: YOLO mode
+  Directory:           <ROOT>/w/a
+  Permissions:         Full Access
+  Session:             <id-a>

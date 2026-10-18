@@ -446,6 +446,22 @@ export function acceptSuggestion(cmd) {
   if (ctx.term) ctx.term.focus();
 }
 
+/* The newest resume command the attached pane's own exit hint names, put on
+   the shell's input line and never submitted: the backend reads the hint
+   from the pane (`terminal_resume_hints`, shells only), so a pane that shows
+   none gets nothing. The restart result's "Insert resume command" uses it. */
+export async function insertResumeHint() {
+  const pane = panes.get(ctx.attachedName);
+  const card = provider.get(state.sessionId);
+  if (!pane || !SHELL_FG.test(card?.fg || '')) return false;
+  let hints = [];
+  try { hints = await inv('terminal_resume_hints', { name: pane.session }); } catch (_) { return false; }
+  const hint = Array.isArray(hints) ? hints.find(h => h && (h.agent === 'codex' || h.agent === 'claude') && typeof h.id === 'string') : null;
+  if (!hint || panes.get(ctx.attachedName) !== pane) return false;
+  acceptSuggestion(hint.agent === 'codex' ? `codex resume ${hint.id}` : `claude --resume ${hint.id}`);
+  return true;
+}
+
 /* ---------- inline ghost suggestion (Warp-style) ---------- */
 /* cell size from public layout only: .xterm-screen is sized to exactly
    cols×rows cells, so division measures a cell without any xterm private

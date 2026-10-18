@@ -1,0 +1,6 @@
+
+thread 'agent_reentry::tests::native_m1_transact' (23052538) panicked at src/agent_reentry/tests.rs:5738:5:
+assertion `left == right` failed: stage M1: a check failed
+  left: 4
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

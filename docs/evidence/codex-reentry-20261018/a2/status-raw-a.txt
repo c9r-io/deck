@@ -1,0 +1,3 @@
+  Directory:           <ROOT>/w/a
+  Permissions:         Workspace (Ask for approval)
+  Session:             <id-a>

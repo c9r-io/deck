@@ -114,6 +114,15 @@ const NATIVE_SESSION_KEYS = new Map([
   ['settings.claudeReentryEnableConfirm', 'the Claude session a client is in when it starts or exits'],
   ['settings.claudeReentryEnabled', 'names the setting (Claude session re-entry observation)'],
   ['settings.claudeReentryDisabled', 'names the setting (Claude session re-entry observation)'],
+  ['settings.codexReentry', 'the setting is named after the Codex session whose start and end it observes'],
+  ['settings.codexReentryHint', 'Codex session start/end hooks and the Codex sessions offered for reopening'],
+  ['settings.codexReentryEnableConfirm', 'the Codex session a client is in when it starts or exits'],
+  ['settings.codexReentryEnabled', 'names the setting (Codex session re-entry observation)'],
+  ['settings.codexReentryDisabled', 'names the setting (Codex session re-entry observation)'],
+  ['reentry.note.codex', 'the native session Codex reports entering at its first turn, and one that may continue on its own'],
+  ['reentry.reason.observation-off', 'quotes the setting name (session re-entry observation) of the row\'s Agent'],
+  ['reentry.result.started', 'the native session the Codex client exited in and was started with'],
+  ['reentry.result.startedDetail', 'the native session Deck did not observe being entered'],
   ['reentry.heading', 'the product action: reopen the Agent session'],
   ['reentry.summary', 'counts Claude sessions that can be reopened'],
   ['reentry.summary.none', 'no Agent session can be reopened'],
@@ -160,7 +169,7 @@ test('会话 names only the Agent native session, in an enumerated list of strin
   // the list is exact: every entry exists, says 会话, and carries its reason
   for (const [key, reason] of NATIVE_SESSION_KEYS) {
     assert.match(zh[key] ?? '', /会话/, `${key} is listed but does not use the term`);
-    assert.match(key, /^(?:reentry\.|settings\.claudeReentry|settings\.piLifecycle|signal\.pi\.session(?:Unsupported)?$)/,
+    assert.match(key, /^(?:reentry\.|settings\.claudeReentry|settings\.codexReentry|settings\.piLifecycle|signal\.pi\.session(?:Unsupported)?$)/,
       `${key}: only re-entry copy and Pi's session observation are about a native session`);
     assert.ok(reason.length > 10, key);
   }
@@ -202,9 +211,9 @@ test('every object has exactly one name in each dictionary', () => {
   // permission that is in effect
   assert.equal(zh['reentry.policy.bypassWarning'], '如果运行期间降低过权限，此次重新施加 bypass 会再次启用 bypass。');
   assert.equal(en['reentry.policy.bypassWarning'], 'If you lowered permissions while the session ran, reapplying bypass now will enable bypass again.');
-  assert.equal(zh['reentry.result.confirmed'], '已确认重新进入 Claude 会话；已按本次授权发送 bypass 参数。');
-  assert.equal(en['reentry.result.confirmed'], 'Claude session re-entry confirmed. The bypass flag was sent as authorized.');
-  assert.equal(zh['reentry.warning.bypass-reauthorized'], 'Deck 未独立验证 Claude 当前有效权限。');
+  assert.equal(zh['reentry.result.confirmed'], '已确认重新进入 {agent} 会话；已按本次授权发送 bypass 参数。');
+  assert.equal(en['reentry.result.confirmed'], '{agent} session re-entry confirmed. The bypass flag was sent as authorized.');
+  assert.equal(zh['reentry.warning.bypass-reauthorized'], 'Deck 未独立验证 {agent} 当前有效权限。');
   assert.equal(zh['reentry.result.unconfirmed'], '已尝试发送重入请求，结果未确认');
   for (const [key, value] of [...Object.entries(zh), ...Object.entries(en)].filter(([key]) => key.startsWith('reentry.'))) {
     assert.doesNotMatch(value, /已恢复|权限已验证|有效权限为|bypass (?:was |is )?restored|permission (?:was |is )?verified|bypass is (?:on|active|in effect)/i, key);

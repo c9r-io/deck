@@ -580,7 +580,7 @@ export async function runPiLayoutSmoke() {
         $('tmux-restart').textContent === t('reentry.confirm', { count: 2 }),
         // choosing everything and the bypass policy chose no Pi and counted none
         all(section(), '.reentry-choice-text').some(node => node.textContent === t('reentry.policy.bypass', { count: 1 })),
-        rowOf(cards.claude)?.querySelector('.reentry-note').textContent === t('reentry.profile.bypass'),
+        rowOf(cards.claude)?.querySelector('.reentry-note').textContent === t('reentry.profile.bypass', { agent: 'Claude' }),
         noOverflowX(section().querySelector('.reentry-policy')) && insideX(rect(section().querySelector('.reentry-policy')), rect(section())),
       ];
       mixedAll += 1;

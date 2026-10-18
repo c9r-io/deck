@@ -9,6 +9,7 @@ const hints = [{ agent: 'codex', id: A }, { agent: 'claude', id: B }];
 test('resume completion preserves flags, whitespace, quoted values and partial UUID casing', () => {
   for (const line of [
     'codex resume', 'codex --yolo resume ', 'codex resume --yolo',
+    'codex --no-daemon resume', 'codex --no-daemon --yolo resume', 'codex resume --no-daemon ',
     'codex  --model gpt-5 --profile work resume  ',
     'codex -c model="some model" resume', "codex --cd '/tmp/my repo' resume",
   ]) {

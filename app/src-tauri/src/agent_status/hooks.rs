@@ -132,6 +132,16 @@ const CODEX_HOOKS: &[HookSpec] = &[
     ("Interrupt", None, "turn-done"),
 ];
 
+/// Codex lifecycle receipts for re-entry (the Lifecycle family), the same
+/// two events and helper words as Claude's, written in Codex's shell form
+/// (`ShellBrief`): one simple command, so the user's shell execs the helper
+/// and it is the client's direct child. Codex asks the user to trust the
+/// two entries in its `/hooks` view once.
+const CODEX_LIFECYCLE_HOOKS: &[HookSpec] = &[
+    ("SessionStart", None, "session-start"),
+    ("SessionEnd", None, "session-end"),
+];
+
 /// How an agent runs a hook command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HookStyle {
@@ -145,6 +155,19 @@ pub(crate) enum HookStyle {
     /// Exec form with a one-second hook timeout: a lifecycle receipt is
     /// synchronous with the client's exit and must never stretch it.
     ExecBrief,
+    /// Shell form with a one-second timeout and no `async`: the lifecycle
+    /// receipt of an agent whose hooks have no exec form (Codex). One
+    /// simple command, nothing the shell would keep running itself.
+    ShellBrief,
+}
+
+/// The style the Lifecycle family is written in for an agent whose Signal
+/// hooks are written in `style`: the brief form of the same shape.
+fn lifecycle_style(style: HookStyle) -> HookStyle {
+    match style {
+        HookStyle::Exec | HookStyle::ExecBrief => HookStyle::ExecBrief,
+        HookStyle::ShellAsync | HookStyle::ShellBrief => HookStyle::ShellBrief,
+    }
 }
 
 /// One deck hook object in the agent's document shape.
@@ -159,6 +182,10 @@ fn hook_value(style: HookStyle, helper: &str, source: &str, state: &str) -> serd
         HookStyle::ShellAsync => serde_json::json!({
             "type": "command", "command": format!("\"{helper}\" {source} {state}"),
             "timeout": 10, "async": true
+        }),
+        HookStyle::ShellBrief => serde_json::json!({
+            "type": "command", "command": format!("\"{helper}\" {source} {state}"),
+            "timeout": 1
         }),
     }
 }
@@ -1052,17 +1079,20 @@ fn project_lifecycle_observation() -> Result<Option<bool>, ()> {
     }
 }
 
-/// Whether the user has opted in to re-entry observation: the Lifecycle
-/// family's hooks are in Claude Code's settings. Derived from that file,
-/// never stored twice. Installed is not "taking effect": only a receipt of
-/// the real exit ever counts.
-pub(crate) fn lifecycle_observation_installed() -> bool {
-    match project_lifecycle_observation() {
-        Ok(Some(installed)) => return installed,
-        Err(()) => return false,
-        Ok(None) => {}
+/// Whether the user has opted in to re-entry observation for `source`: the
+/// Lifecycle family's hooks are in that agent's hooks file. Derived from
+/// that file, never stored twice. Installed is not "taking effect": only a
+/// receipt of the real exit ever counts. Claude's answer honors the
+/// project-bound experiment's alternate location.
+pub(crate) fn lifecycle_observation_installed_for(source: &str) -> bool {
+    if source == CLAUDE_CODE.source {
+        match project_lifecycle_observation() {
+            Ok(Some(installed)) => return installed,
+            Err(()) => return false,
+            Ok(None) => {}
+        }
     }
-    crate::extensions::agent(CLAUDE_CODE.source)
+    crate::extensions::agent(source)
         .and_then(AgentAdapter::hook_install)
         .is_some_and(|install| {
             !install.lifecycle_hooks.is_empty()
@@ -1157,9 +1187,9 @@ pub(crate) const CODEX: AgentAdapter = AgentAdapter {
         style: HookStyle::ShellAsync,
         config_path: codex_hooks_path,
         never_ran: "Codex has never run on this Mac — nothing to configure",
-        lifecycle_hooks: &[],
+        lifecycle_hooks: CODEX_LIFECYCLE_HOOKS,
     }),
-    reentry: None,
+    reentry: Some(&crate::agent_reentry::codex::CAPABILITY),
 };
 
 /// Boot migration, the one write outside the Settings toggle: when hooks are
@@ -1199,7 +1229,7 @@ fn migrate_hook_adapter_on_boot(adapter: &AgentAdapter, helper: &str) -> bool {
             let edit = HookEdit::Install {
                 specs: install.lifecycle_hooks,
                 source,
-                style: HookStyle::ExecBrief,
+                style: lifecycle_style(install.style),
                 helper: &helper,
             };
             hooks_set_of(Family::Lifecycle, &path, edit, never_ran)
@@ -1475,23 +1505,32 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
     result
 }
 
-/// The user's explicit opt-in to Claude session re-entry observation: adds
-/// or removes ONLY the Lifecycle family's `SessionStart`/`SessionEnd` hooks.
-/// The status hooks, the user's hooks and every other byte stay; a release
-/// install is required exactly as for the status hooks, so a development or
-/// smoke build never edits the agent's settings.
+/// The user's explicit opt-in to one agent's session re-entry observation
+/// (`source`; Claude Code when none is named): adds or removes ONLY the
+/// Lifecycle family's `SessionStart`/`SessionEnd` hooks in that agent's
+/// hooks file. The status hooks, the user's hooks and every other byte
+/// stay; a release install is required exactly as for the status hooks, so
+/// a development or smoke build never edits the agent's settings.
 #[tauri::command]
-pub(crate) fn agent_lifecycle_hooks_set(enable: bool) -> Result<(), DeckError> {
-    let adapter = crate::extensions::agent(CLAUDE_CODE.source)
+pub(crate) fn agent_lifecycle_hooks_set(
+    enable: bool,
+    source: Option<String>,
+) -> Result<(), DeckError> {
+    let source = source.as_deref().unwrap_or(CLAUDE_CODE.source);
+    let adapter = crate::extensions::agent(source)
         .filter(|adapter| adapter.reentry.is_some())
         .ok_or(DeckError::new(ErrorKind::Other, "unknown agent"))?;
     let install = adapter
         .hook_install()
         .filter(|install| !install.lifecycle_hooks.is_empty())
         .ok_or(DeckError::new(ErrorKind::Other, "unknown agent"))?;
-    let path = match crate::launch_args::reentry_project_config()
-        .map_err(|reason| DeckError::new(ErrorKind::Other, reason))?
-    {
+    let project = if source == CLAUDE_CODE.source {
+        crate::launch_args::reentry_project_config()
+            .map_err(|reason| DeckError::new(ErrorKind::Other, reason))?
+    } else {
+        None
+    };
+    let path = match project {
         Some(path) => path,
         None => {
             (install.config_path)().ok_or(DeckError::new(ErrorKind::Other, "no home directory"))?
@@ -1502,7 +1541,7 @@ pub(crate) fn agent_lifecycle_hooks_set(enable: bool) -> Result<(), DeckError> {
             let edit = HookEdit::Install {
                 specs: install.lifecycle_hooks,
                 source: adapter.source,
-                style: HookStyle::ExecBrief,
+                style: lifecycle_style(install.style),
                 helper: &helper,
             };
             hooks_set_of(Family::Lifecycle, &path, edit, install.never_ran)
@@ -1517,7 +1556,7 @@ pub(crate) fn agent_lifecycle_hooks_set(enable: bool) -> Result<(), DeckError> {
     }
     .map(|_written| ());
     applog(&format!(
-        "[agent-hooks] lifecycle {} {}",
+        "[agent-hooks] {source} lifecycle {} {}",
         if enable { "install" } else { "remove" },
         result.as_ref().map_or_else(|e| e.code(), |()| "ok")
     ));

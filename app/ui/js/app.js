@@ -12,7 +12,7 @@ import {
   projectDefaultsSummary, prepareCardsForServerRestart, provider, render, startPolling, stopPolling, switchProject,
 } from './board.js';
 import { closePaneBySid, initLayout, leaveSessionView, openSession } from './layout.js';
-import { initTerminalChrome, newDefaultSession } from './terminal.js';
+import { initTerminalChrome, insertResumeHint, newDefaultSession } from './terminal.js';
 import { initScheduler, refreshQueue } from './scheduler.js';
 import { initTemplates } from './templates.js';
 import { startInbound } from './inbound.js';
@@ -524,7 +524,12 @@ function initModules() {
   initReentry({
     titleOf: id => provider.get(id)?.title ?? null,
     openCard: openResultCard,
-    openSetup: () => { closeLifecycleModal(); openSettings({ section: 'agents', setting: 'claude-reentry' }); },
+    // open the card, then put its pane's own resume hint on the input line
+    insertResume: async id => { await openResultCard(id); if (state.sessionId === id) await insertResumeHint(); },
+    openSetup: source => {
+      closeLifecycleModal();
+      openSettings({ section: 'agents', setting: source === 'codex' ? 'codex-reentry' : 'claude-reentry' });
+    },
     changed: renderRestartLabel,
     managed: () => managedBlockers(ctx.tmuxServerStatus).length > 0,
   });

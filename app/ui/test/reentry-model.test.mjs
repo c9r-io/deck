@@ -7,7 +7,7 @@ import {
 } from '../js/reentry-model.js';
 import { dictionaries, setLocale, t } from '../js/i18n.js';
 
-const candidate = (id, launchProfile) => ({ cardId: id, session: `deck-${id}`, kind: 'candidate', reason: null, launchProfile });
+const candidate = (id, launchProfile, observed = true) => ({ cardId: id, session: `deck-${id}`, kind: 'candidate', reason: null, launchProfile, source: 'claude-code', observed });
 const mixed = (token = 'T1') => ({
   token, lifecycleObservation: true,
   entries: [candidate('A', 'bypass'), candidate('B', 'ordinary'), candidate('C', 'ordinary')],
@@ -92,7 +92,7 @@ test('the profile comes from the preview alone: nothing saved on a card can enab
   const plan = selectAll(reentryPlan(preview));
   assert.equal(planCounts(plan).bypass, 0);
   assert.equal(withPolicy(plan, POLICY_BYPASS).policy, POLICY_ORDINARY);
-  assert.deepEqual(Object.keys(plan.entries[0]).sort(), ['cardId', 'kind', 'profile', 'reason', 'session', 'source']);
+  assert.deepEqual(Object.keys(plan.entries[0]).sort(), ['cardId', 'kind', 'observed', 'profile', 'reason', 'session', 'source']);
 });
 
 test('the request holds the selected candidate ids only', () => {
@@ -186,7 +186,7 @@ test('backend phases map to the three user stages', () => {
 });
 
 const entry = (cardId, outcome, extra = {}) => ({
-  cardId, session: `deck-${cardId}`, outcome, reason: null, warnings: [], shell: true, clientObserved: false, ...extra,
+  cardId, session: `deck-${cardId}`, source: 'claude-code', outcome, reason: null, warnings: [], shell: true, clientObserved: false, ...extra,
 });
 const complete = (entries, serverReplaced = true) => ({ requestId: 'R1', state: 'complete', serverReplaced, entries });
 
@@ -637,7 +637,7 @@ test('a check that did not finish is said as that, never as a changed program, a
   // the preview row
   const plan = reentryPlan({ token: 'T', lifecycleObservation: true, entries: [
     { cardId: 'U', session: 'deck-U', kind: 'unsupported', reason: 'check-incomplete', launchProfile: null },
-    { cardId: 'X', session: 'deck-X', kind: 'unsupported', reason: 'executable-unavailable', launchProfile: null },
+    { cardId: 'X', session: 'deck-X', kind: 'unsupported', reason: 'executable-unavailable', launchProfile: null, source: 'claude-code' },
   ] });
   const rows = planView(plan).rows;
   assert.deepEqual(rows.map(row => row.note.key), ['reentry.reason.check-incomplete', 'reentry.reason.executable-unavailable']);
@@ -684,7 +684,7 @@ test('a Pi card is named with its own reason, can never be chosen, and is never 
   const preview = {
     token: 'tok', lifecycleObservation: true,
     entries: [
-      { cardId: 'A', session: 'deck-a', kind: 'candidate', launchProfile: 'bypass', source: 'claude-code' },
+      { cardId: 'A', session: 'deck-a', kind: 'candidate', launchProfile: 'bypass', source: 'claude-code', observed: true },
       { cardId: 'P', session: 'deck-p', kind: 'unsupported', reason: 'client-identity-unverifiable', source: 'pi' },
       { cardId: 'Q', session: 'deck-q', kind: 'unsupported', reason: 'unsupported-agent' },
     ],
@@ -694,7 +694,7 @@ test('a Pi card is named with its own reason, can never be chosen, and is never 
   const pi = rows(plan).find(row => row.cardId === 'P');
   assert.equal(pi.source, 'pi');
   assert.equal(pi.selectable, false);
-  assert.deepEqual(pi.note, { key: 'reentry.reason.client-identity-unverifiable' });
+  assert.deepEqual(pi.note, { key: 'reentry.reason.client-identity-unverifiable', params: { agent: 'Pi' } });
   assert.equal(rows(plan).find(row => row.cardId === 'A').source, 'claude-code');
   assert.equal(rows(plan).find(row => row.cardId === 'Q').source, null);
   // choosing everything, and reapplying bypass, choose the Claude card and nothing of Pi
@@ -743,4 +743,71 @@ test('what Deck could not find out is said as unknown, never as nothing to reope
     assert.notEqual(t('reentry.summary.unknown'), 'reentry.summary.unknown');
   }
   setLocale('en');
+});
+
+test('a Codex row is labelled Codex, says its note once, and is chosen only while its own observation is on', () => {
+  const codex = (id, launchProfile, observed = true) => ({ ...candidate(id, launchProfile, observed), source: 'codex' });
+  const preview = { token: 'T', lifecycleObservation: true, entries: [candidate('A', 'bypass'), codex('X', 'bypass'), codex('Y', 'ordinary')] };
+  const plan = selectAll(reentryPlan(preview));
+  const view = planView(plan);
+  assert.deepEqual(view.rows.map(row => [row.cardId, row.source, row.selectable, say(row.note)]), [
+    ['A', 'claude-code', true, 'Claude · Launch profile: bypass'],
+    ['X', 'codex', true, 'Codex · Launch profile: bypass'],
+    ['Y', 'codex', true, 'Codex · Launch profile: ordinary'],
+  ]);
+  // the Codex note stands once among the scope notes, and only with a Codex row to choose
+  assert.equal(view.notes.filter(note => note.key === 'reentry.note.codex').length, 1);
+  assert.equal(planView(selectAll(reentryPlan({ ...preview, entries: [candidate('A', 'bypass')] }))).notes.some(note => note.key === 'reentry.note.codex'), false);
+  assert.deepEqual(planCounts(plan), { candidates: 3, candidateBypass: 2, selected: 3, bypass: 2, unknown: 0 });
+  assert.deepEqual(reentryRequest(plan).cards, ['A', 'X', 'Y']);
+  // a Codex candidate whose own observation is off cannot be chosen; the one setup hint names its agent
+  const off = selectAll(reentryPlan({ ...preview, entries: [candidate('A', 'bypass'), codex('X', 'bypass', false)] }));
+  const offView = planView(off);
+  assert.deepEqual(offView.rows.map(row => [row.cardId, row.selectable, row.checked]), [['A', true, true], ['X', false, false]]);
+  assert.equal(offView.setup, true);
+  assert.equal(offView.setupSource, 'codex');
+  assert.deepEqual(reentryRequest(off).cards, ['A']);
+  assert.deepEqual(offView.summary, { key: 'reentry.summary', params: { count: 1, bypass: 1 } });
+  // the backend's own word for that row, worded for its agent
+  const ruled = planView(reentryPlan({ ...preview, entries: [
+    { cardId: 'X', session: 'deck-X', kind: 'unsupported', reason: 'observation-off', launchProfile: null, source: 'codex' },
+  ] }));
+  assert.equal(say(ruled.rows[0].note), 'Codex session re-entry observation is not installed for this Agent. Turn it on in Settings.');
+  assert.equal(ruled.setup, false, 'a ruled-out row is not a candidate: the setting is named in its own line');
+});
+
+test('a started Codex entry is counted as started, never as re-entered, and says what Deck did not observe', () => {
+  const started = (id, extra = {}) => entry(id, 'started', { source: 'codex', clientObserved: true, ...extra });
+  const view = projectResult({ replaced: true, requested: ['A', 'X', 'Y', 'Z'], result: reentryResult(complete([
+    entry('A', 'confirmed'),
+    started('X', { warnings: ['ordinary-profile-requested'] }),
+    started('Y', { warnings: ['bypass-reauthorized'] }),
+    entry('Z', 'unconfirmed', { source: 'codex', reason: 'launch-unconfirmed', clientObserved: true }),
+  ])) });
+  setLocale('en');
+  assert.deepEqual(view.rows.map(row => [row.cardId, row.tone, row.started === true, say(row.line)]), [
+    ['A', 'ok', false, 'Claude session re-entry confirmed. No bypass flag was added.'],
+    ['X', 'ok', true, 'Codex started with the session it exited in. It reports entering a session only at its first turn.'],
+    ['Y', 'ok', true, 'Codex started with the session it exited in. It reports entering a session only at its first turn.'],
+    ['Z', 'warn', false, 'Codex started, but re-entry could not be confirmed'],
+  ]);
+  assert.deepEqual(view.rows[1].details.map(say), [
+    'Deck did not observe the session being entered. Open the card to continue.',
+    'The ordinary profile was requested: Codex keeps bypass on a bare resume, so the sandbox and approval words that undo it were sent. Codex writes back what it applied.',
+  ]);
+  assert.deepEqual(view.rows[2].details.map(say), [
+    'Deck did not observe the session being entered. Open the card to continue.',
+    'Deck did not independently verify Codex’s current effective permission.',
+  ]);
+  assert.deepEqual(view.summary, { key: 'reentry.result.summaryStarted', params: { confirmed: 1, started: 2, other: 1 } });
+  // nothing says a started session was entered, resumed or restored
+  const said = view.rows.slice(1, 3).flatMap(row => [say(row.line), ...row.details.map(say)]).join(' ');
+  assert.doesNotMatch(said, /re-entered|re-entry confirmed|resumed|restored|entered the session/i);
+  setLocale('zh-Hans');
+  assert.equal(say(view.rows[1].line), 'Codex 已以退出时的会话启动；它只在第一个回合时报告进入了哪个会话。');
+  assert.equal(say(view.summary), '1 个已重新进入 · 2 个已启动 · 1 个需查看');
+  setLocale('en');
+  // with an entry still in progress the started count keeps its own place
+  const pending = projectResult({ replaced: true, requested: ['X', 'P'], result: reentryResult({ requestId: 'R', state: 'running', serverReplaced: true, entries: [started('X', { settled: true }), entry('P', 'unconfirmed', { settled: false })] }) });
+  assert.deepEqual(pending.summary, { key: 'reentry.result.summaryPendingStarted', params: { confirmed: 0, started: 1, pending: 1, other: 0 } });
 });

@@ -18,7 +18,11 @@
 // A card is named by its Board title; a card the Board no longer has is named
 // by its session only when that passes the model's display guard. The result
 // offers "Open card" per entry through the caller's existing navigation: no
-// retry, no replay of a command.
+// retry, no replay of a command. An entry that was not reopened or started
+// also offers "Insert resume command": the caller opens the card and puts
+// the resume command the pane's own exit hint names into the shell's input
+// line, without submitting it (`terminal.insertResumeHint`); nothing is
+// typed where no hint is shown.
 // Progress has two forms and `showRestartProgress` picks by what THIS restart
 // asked for: a restart with no re-entry request keeps the per-phase text on
 // the restart button, exactly as before re-entry existed, and never shows the
@@ -36,6 +40,7 @@ import {
 
 let titleOf = () => null;
 let openCard = () => {};
+let insertResume = () => {};
 let openSetup = () => {};
 let changed = () => {};
 let managed = () => false;
@@ -94,7 +99,7 @@ export function renderReentryPreview() {
     const open = el('button', 'btn', t('reentry.setupOpen'));
     open.type = 'button';
     open.disabled = locked;
-    open.onclick = () => openSetup();
+    open.onclick = () => openSetup(view.setupSource);
     setup.append(el('span', null, t('reentry.setupHint')), open);
     box.append(setup);
   }
@@ -193,6 +198,14 @@ function renderResult() {
       open.type = 'button';
       open.onclick = () => openCard(row.cardId);
       head.append(open);
+      // a card whose client was neither reopened nor started: the pane's
+      // own exit hint can be put on the input line, never submitted
+      if (row.tone === 'warn' || row.tone === 'info') {
+        const insert = el('button', 'btn reentry-open', t('reentry.result.insertResume'));
+        insert.type = 'button';
+        insert.onclick = () => insertResume(row.cardId);
+        head.append(insert);
+      }
     }
     item.append(head);
     for (const detail of row.details) item.append(el('div', 'reentry-hint', say(detail)));
@@ -222,4 +235,5 @@ export function refreshReentry() {
 
 export function initReentry(deps) {
   ({ titleOf, openCard, openSetup, changed, managed } = deps);
+  insertResume = deps.insertResume || (() => {});
 }

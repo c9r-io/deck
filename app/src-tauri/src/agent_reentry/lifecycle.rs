@@ -15,10 +15,13 @@
 //!
 //! **What a receipt means is its source's, not this module's.** A source
 //! that may send receipts declares a `ReceiptContract` on its re-entry
-//! capability (`ReentryCapability::receipts`; today only Claude Code,
-//! `claude.rs`): the pure decoding of its own words and its own native id
-//! into its closed tag of `Event`, and the two reducers over a lease's
-//! record (`final_session`, `entered`). This module owns the wire framing,
+//! capability (`ReentryCapability::receipts`; Claude Code in `claude.rs`,
+//! Codex in `codex.rs`): the pure decoding of its own words and its own
+//! native id into its closed tag of `Event`, and the two reducers over a
+//! lease's record (`final_session` — which may also be handed the ids the
+//! exiting client printed to its pane, as the core read them, for a source
+//! whose receipt alone does not name the current session — and `entered`).
+//! This module owns the wire framing,
 //! the origin and kernel attribution, the lease, the queue, the deadlines,
 //! the mailbox and every fence below, and it keeps a record without reading
 //! what its facts say: a source without a contract can send no receipt, and
@@ -126,6 +129,8 @@ type Generation = (u32, (u64, u32));
 pub(crate) enum Event {
     /// A receipt of Claude Code, in Claude's own words (`claude.rs`).
     Claude(super::claude::Told),
+    /// A receipt of Codex, in its own words (`codex.rs`).
+    Codex(super::codex::Told),
     /// Not a wire event: the lease's record reached its bound and at least
     /// one fact was not kept.
     Overflow,
@@ -150,8 +155,9 @@ pub(crate) struct ReceiptContract {
     /// source's own rule; the error is a closed reason.
     pub(crate) decode: fn(&Words) -> Result<(Event, String), &'static str>,
     /// The final native session of an exited client, from the record of its
-    /// exit lease.
-    pub(crate) final_session: fn(&[Fact]) -> Option<String>,
+    /// exit lease and — for a source with an exit hint — the ids its pane
+    /// printed between the freeze and the seal, in order (empty otherwise).
+    pub(crate) final_session: fn(&[Fact], &[String]) -> Option<String>,
     /// What a launch lease's record says about entering the wanted session.
     pub(crate) entered: fn(&[Fact], &str) -> Receipt,
 }
@@ -1109,7 +1115,7 @@ mod tests {
                 "lifecycle-bad-version",
             ),
             (
-                good.replace("claude-code", "codex"),
+                good.replace("claude-code", "pi"),
                 "lifecycle-unknown-source",
             ),
             (good.replace(ID, &ID.to_uppercase()), "lifecycle-bad-id"),
@@ -1188,11 +1194,11 @@ mod tests {
             fact(claude::started(StartSource::Resume), THIRD),
             fact(claude::ended(PromptInputExit), THIRD),
         ];
-        assert_eq!(final_session(&facts).as_deref(), Some(THIRD));
+        assert_eq!(final_session(&facts, &[]).as_deref(), Some(THIRD));
         // the same final fact twice is one fact
         let mut repeated = facts.clone();
         repeated.push(fact(claude::ended(PromptInputExit), THIRD));
-        assert_eq!(final_session(&repeated).as_deref(), Some(THIRD));
+        assert_eq!(final_session(&repeated, &[]).as_deref(), Some(THIRD));
         // no applicable end: a clear, resume, logout or other end names nothing
         for reason in [
             EndReason::Clear,
@@ -1200,18 +1206,22 @@ mod tests {
             Logout,
             EndReason::Other,
         ] {
-            assert_eq!(final_session(&[fact(claude::ended(reason), ID)]), None);
+            assert_eq!(final_session(&[fact(claude::ended(reason), ID)], &[]), None);
         }
-        assert_eq!(final_session(&facts[..5]), None, "a start is not an exit");
-        assert_eq!(final_session(&[]), None);
+        assert_eq!(
+            final_session(&facts[..5], &[]),
+            None,
+            "a start is not an exit"
+        );
+        assert_eq!(final_session(&[], &[]), None);
         // two different final ids never resolve to the later one
         let mut conflicting = facts.clone();
         conflicting.push(fact(claude::ended(PromptInputExit), OTHER));
-        assert_eq!(final_session(&conflicting), None);
+        assert_eq!(final_session(&conflicting, &[]), None);
         // something after the final end makes it not final
         let mut trailing = facts;
         trailing.push(fact(claude::started(Startup), OTHER));
-        assert_eq!(final_session(&trailing), None);
+        assert_eq!(final_session(&trailing, &[]), None);
     }
 
     #[test]
@@ -1511,7 +1521,7 @@ mod tests {
             // bound, and still there after the validation: recorded
             assert_eq!(report(&|_| true, true), Ok(()));
             assert_eq!((placed.get(), validated.get()), (2, 1));
-            assert_eq!(final_session(&peek(0)).as_deref(), Some(ID));
+            assert_eq!(final_session(&peek(0), &[]).as_deref(), Some(ID));
         });
     }
 
@@ -1627,7 +1637,7 @@ mod tests {
                 far(),
             );
             assert_eq!((result, validations), (Ok(()), 1));
-            assert_eq!(final_session(&peek(0)).as_deref(), Some(ID));
+            assert_eq!(final_session(&peek(0), &[]).as_deref(), Some(ID));
         });
     }
 
@@ -2021,9 +2031,9 @@ mod tests {
             for _ in 0..MAX_FACTS {
                 assert_eq!(attributed(end_wire(ID), &table, &again), Ok(()));
             }
-            assert_eq!(final_session(&peek(0)).as_deref(), Some(ID));
+            assert_eq!(final_session(&peek(0), &[]).as_deref(), Some(ID));
             assert!(attributed(end_wire(ID), &table, &again).is_err());
-            assert_eq!(final_session(&seal(0)), None);
+            assert_eq!(final_session(&seal(0), &[]), None);
         });
     }
 
@@ -2085,7 +2095,7 @@ mod tests {
             assert!(peek(0).is_empty(), "and its mailbox took nothing");
             // the next operation's own claim is a fact, as ever
             assert_eq!(settled(own, &validated), Ok(()));
-            assert_eq!(final_session(&peek(0)).as_deref(), Some(OTHER));
+            assert_eq!(final_session(&peek(0), &[]).as_deref(), Some(OTHER));
             assert_eq!(peek(0).len(), 1);
             // and a claim of an operation that is simply over has no mailbox
             let last = claim(end_wire(ID)).expect("armed");
@@ -2140,7 +2150,7 @@ mod tests {
                 far(),
             );
             assert_eq!((result, validations), (Ok(()), 1));
-            assert_eq!(final_session(&peek(0)).as_deref(), Some(ID));
+            assert_eq!(final_session(&peek(0), &[]).as_deref(), Some(ID));
         });
     }
 
@@ -2634,8 +2644,8 @@ mod tests {
                     .and_then(|adapter| adapter.reentry)
                     .map(|capability| capability.receipts)
             };
-            assert!(contract("claude-code").is_some());
-            assert!(contract("pi").is_none() && contract("codex").is_none());
+            assert!(contract("claude-code").is_some() && contract("codex").is_some());
+            assert!(contract("pi").is_none());
             let line = r#"{"protocol":"agent-lifecycle","v":1,"source":"pi","event":"session-start","nativeSessionId":"731c5908-251a-4388-b3a3-4719ad442bce","startSource":"resume","socket":"deck","server_pid":42,"pane":"%1"}"#;
             assert_eq!(
                 parse(line, contract).unwrap_err(),

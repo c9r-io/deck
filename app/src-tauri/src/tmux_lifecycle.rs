@@ -1566,15 +1566,15 @@ pub(crate) struct ReentryParts<'a> {
     pub(crate) tmux: &'a dyn Fn(&[&str]) -> Result<String, DeckError>,
     pub(crate) tmux_stdin: crate::agent_reentry::TmuxStdin<'a>,
     pub(crate) socket: &'a str,
-    pub(crate) capability: &'a crate::agent_reentry::ReentryCapability,
+    /// The adapters with a re-entry capability, each with its own two
+    /// facts: its lifecycle hooks are installed (the user's explicit
+    /// opt-in), and what the process that starts this server hands it is a
+    /// supported baseline for that adapter's grammar
+    /// (`procinfo::own_baseline_supported` for deck's own server).
+    pub(crate) adapters: &'a [crate::agent_reentry::Adapter],
     /// The bundled lifecycle helper, when this build has one.
     pub(crate) helper: Option<PathBuf>,
-    /// The lifecycle hooks are installed (the user's explicit opt-in).
-    pub(crate) hooks_installed: bool,
     pub(crate) home: &'a Path,
-    /// What the process that starts this server hands it is a supported
-    /// baseline (`procinfo::own_baseline_supported` for deck's own server).
-    pub(crate) baseline: bool,
 }
 
 /// Run `work` with the re-entry environment assembled from `parts`.
@@ -1582,7 +1582,15 @@ pub(crate) fn assemble_reentry_env<R>(
     parts: &ReentryParts<'_>,
     work: impl FnOnce(&crate::agent_reentry::Env) -> R,
 ) -> R {
-    let observation = parts.helper.is_some() && parts.hooks_installed;
+    // without the helper nothing can report: no adapter observes
+    let adapters: Vec<crate::agent_reentry::Adapter> = parts
+        .adapters
+        .iter()
+        .map(|adapter| crate::agent_reentry::Adapter {
+            observation: parts.helper.is_some() && adapter.observation,
+            ..*adapter
+        })
+        .collect();
     let helper = parts.helper.clone().unwrap_or_default();
     let login_shell = crate::procinfo::login_shell().unwrap_or_default();
     let create = |name: &str, dir: &Path, restore: bool| {
@@ -1604,34 +1612,43 @@ pub(crate) fn assemble_reentry_env<R>(
         tmux_stdin: parts.tmux_stdin,
         socket: parts.socket,
         cards: &board_cards,
-        capability: parts.capability,
+        adapters: &adapters,
         helper: &helper,
         home: parts.home,
         login_shell: &login_shell,
-        observation,
-        baseline: parts.baseline,
         fenced: &fenced,
         create_shell: &create,
     })
 }
 
 /// Run `work` with production's one re-entry environment: deck's own tmux
-/// server, the committed Board, Claude's registered capability, the bundled
-/// lifecycle helper and the user's home. `None` when no adapter has the
-/// capability or the home is unknown.
+/// server, the committed Board, every registered adapter's capability with
+/// its own observation and baseline, the bundled lifecycle helper and the
+/// user's home. `None` when no adapter has the capability or the home is
+/// unknown.
 fn with_reentry_env<R>(work: impl FnOnce(&crate::agent_reentry::Env) -> R) -> Option<R> {
-    let capability = crate::extensions::agent(crate::agent_status::CLAUDE_CODE.source)?.reentry?;
     let home = dirs::home_dir()?;
+    let adapters: Vec<crate::agent_reentry::Adapter> = crate::extensions::unambiguous_agents()
+        .filter_map(|adapter| adapter.reentry)
+        .map(|capability| crate::agent_reentry::Adapter {
+            capability,
+            observation: crate::agent_status::lifecycle_observation_installed_for(
+                capability.source,
+            ),
+            baseline: crate::procinfo::own_baseline_supported(&home, capability.grammar),
+        })
+        .collect();
+    if adapters.is_empty() {
+        return None;
+    }
     Some(assemble_reentry_env(
         &ReentryParts {
             tmux: &tmux,
             tmux_stdin: &tmux::tmux_with_stdin,
             socket: tmux::socket(),
-            capability,
+            adapters: &adapters,
             helper: crate::agent_status::bundled_lifecycle_helper(),
-            hooks_installed: crate::agent_status::lifecycle_observation_installed(),
             home: &home,
-            baseline: crate::procinfo::own_baseline_supported(&home, capability.grammar),
         },
         work,
     ))

@@ -4,7 +4,7 @@
 // from the current pane are used; this module never persists them.
 
 const FLAGS = {
-  codex: new Set(['--yolo', '--dangerously-bypass-approvals-and-sandbox', '--full-auto', '--search', '--no-alt-screen', '--oss', '--all']),
+  codex: new Set(['--yolo', '--dangerously-bypass-approvals-and-sandbox', '--full-auto', '--search', '--no-alt-screen', '--no-daemon', '--oss', '--all']),
   claude: new Set(['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions', '--verbose', '--debug', '--chrome', '--no-chrome']),
 };
 const VALUES = {

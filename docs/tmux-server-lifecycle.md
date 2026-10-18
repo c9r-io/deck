@@ -577,6 +577,50 @@ Signal or authority is created, no card moves, and a client the user opened
 elsewhere with the same session is outside every check. After a crash nothing
 re-enters: the plan, the ids and the launch slots were process memory.
 
+### Codex (embedded `--no-daemon` clients, since 2026-10-18)
+
+Codex has the same capability through its own adapter (`agent_reentry/codex.rs`),
+admitted by OpenAI's signing identity for the `codex` executable, with these
+differences, each the adapter's own:
+
+- **Supported launch**: a direct client started with `--no-daemon` (required),
+  `--yolo` or not, the `resume` word alone or with one id, a model, added
+  directories. A shared-daemon client (no `--no-daemon`), a prompt, `exec`, an
+  approval or profile flag, a `-c` override or the hook-trust bypass is
+  unsupported and never re-entered automatically.
+- **The final session is the hook crossed with the exit hint.** Codex's
+  `SessionEnd` has no "current" mark, its reason is the constant `other`, and a
+  client that switched threads reports one end per loaded thread at its exit.
+  What names the current thread is the exit summary the TUI prints to the pane
+  as it leaves (`To continue this session, run: codex resume <id>`). Deck reads
+  the pane's main screen at the freeze (before any exit key; through the
+  alternate screen while the TUI holds one) and again at the seal, takes the
+  difference as what the exit printed, and accepts a printed id only among the
+  ids the client's own kernel-attributed receipts reported; with nothing printed
+  exactly one reported end names it; anything else skips the card. Pane text
+  alone never names a session, and the capture is memory only.
+- **No entry receipt before the first turn**: Codex runs `SessionStart` inside
+  the first turn only. A started client whose launch image, directory and
+  environment match the request is `started`, never `confirmed`; a `resume`
+  receipt that does arrive inside the post share confirms it by the same rule
+  as Claude's. A session with an active goal or queued input may continue on
+  its own: the dialog says so.
+- **Permissions**: Codex restores every omitted field from the thread's last
+  saved settings, bypass included. Policy B sends `--yolo` again. Policy A on a
+  bypass launch sends `--sandbox workspace-write --ask-for-approval on-request`,
+  the two words that undo what `--yolo` set (the warning
+  `ordinary-profile-requested`); an ordinary launch is a bare resume under either
+  policy. The saved reviewer and roots stay the session's own. Codex writes back
+  what it applied.
+- **Hooks**: the Codex opt-in writes the two lifecycle entries to
+  `~/.codex/hooks.json` as one simple command each (`HookStyle::ShellBrief`);
+  Codex asks the user to trust them once in `/hooks`. Hooks run through the
+  user's shell, and the helper is the client's direct child because zsh and
+  bash exec a simple command; under another shell the receipt is refused by the
+  kernel attribution and the card is skipped.
+
+Evidence: `docs/evidence/codex-reentry-20261018/README.md`.
+
 ## Security and privacy boundary of re-entry
 
 The lifecycle helper is a second bundled sidecar with its own closed wire; it

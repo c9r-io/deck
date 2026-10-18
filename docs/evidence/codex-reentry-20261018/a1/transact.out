@@ -1,0 +1,42 @@
+
+running 1 test
+M1 capability=production source=codex cards=2 policy=ordinary
+M1 check=data-directory-inside-the-experiment ok
+M1 check=old-server-environment ok
+M1 old card=a pane=64728 client=64786@1792330504.933350
+M1 old card=b pane=64733 client=64896@1792330515.296436
+M1 check=old-clients-in-the-foreground ok panes=2
+M1 check=preview-candidates-and-launch-profiles ok
+M1 check=preview-carries-no-native-identity FAIL
+M1 restart old-server=64727 new-server=65133 replaced=true state=Complete
+M1 check=server-replaced-and-settled ok
+M1 entry card=a outcome=started reason=none shell=true client=true settled=true warnings=1 warning-codes=ordinary-profile-requested
+M1 entry card=b outcome=started reason=none shell=true client=true settled=true warnings=0 warning-codes=none
+M1 check=every-entry-has-its-own-expected-outcome ok
+M1 check=policy-a-notes-the-ordinary-profile-on-the-bypass-launches-only ok
+M1 check=one-request-per-launched-entry ok requests=2 enters=2
+M1 check=every-request-is-the-executable-resume-and-one-id FAIL
+M1 request card=a bypass-override=unknown
+M1 request card=b bypass-override=false
+M1 check=the-bypass-flag-is-on-the-requests-this-policy-decides-and-on-no-other FAIL with-the-flag=0
+M1 check=requests-name-the-sessions-the-clients-exited-in FAIL recorded-final-sessions=2
+M1 info no-earlier-session-was-recorded-for-this-matrix
+M1 check=a-repeated-invoke-reads-the-stored-result ok
+M1 check=queue-row-paused-on-disk-before-the-kill ok
+M1 check=queue-row-still-paused-after-the-reentry ok
+M1 check=new-server-environment ok
+M1 new card=a pane=65140 client=65149@1792330556.422063 old-client-gone=true
+M1 new card=b pane=65154 client=65185@1792330557.179919 old-client-gone=true
+M1 check=a-new-generation-for-every-launched-entry ok
+M1 check=new-generation-recorded-for-the-driver ok
+M1 check=lifecycle-file-names-the-server-only ok
+M1 info signal-observations-on-the-new-panes=0
+M1 result failed-checks=4
+test agent_reentry::tests::native_m1_transact ... FAILED
+
+failures:
+
+failures:
+    agent_reentry::tests::native_m1_transact
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1294 filtered out; finished in 9.13s

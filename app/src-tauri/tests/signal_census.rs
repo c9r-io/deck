@@ -269,6 +269,9 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // BoardAccess separates read from send; these are still process facts,
     // never agent hook words, readiness, or automatic-send authority.
     ("connector/native.rs", "guard", ".agent", 1, NotSignal),
+    // the launcher word of an exit hint (`codex` / `claude`): an agent CLI
+    // name on a parsed line, never a Signal word
+    ("resume.rs", "printed", ".agent", 1, NotSignal),
     (
         "connector/projection.rs",
         "snapshot_in",
@@ -559,6 +562,9 @@ const JS: &[(&str, &str, &str, usize, Class)] = &[
     // an i18n key (`queue.stage.agent`) and an agent CLI name
     ("queue-review.js", "stageKeys", ".agent", 1, NotSignal),
     ("resume-model.js", "resumeCommands", ".agent", 2, NotSignal),
+    // the exit hint's launcher word, put on the input line and never
+    // submitted: an agent CLI name, never a Signal word
+    ("terminal.js", "insertResumeHint", ".agent", 3, NotSignal),
 ];
 
 /// `pollSessionsNow` projects every card's status AND, in the same loop,

@@ -445,15 +445,22 @@ mod tests {
             AGENT_ADAPTERS.iter().map(|a| a.source).collect::<Vec<_>>(),
             ["claude-code", "codex", "pi"]
         );
-        // registered is not re-entered: only Claude declares that capability
+        // registered is not re-entered: Claude and Codex declare that
+        // capability, each under its own source word; Pi does not
         assert_eq!(
             AGENT_ADAPTERS
                 .iter()
                 .filter(|a| a.reentry.is_some())
                 .map(|a| a.source)
                 .collect::<Vec<_>>(),
-            ["claude-code"]
+            ["claude-code", "codex"]
         );
+        assert!(AGENT_ADAPTERS
+            .iter()
+            .filter_map(|a| a.reentry)
+            .all(|capability| AGENT_ADAPTERS
+                .iter()
+                .any(|a| a.source == capability.source && a.reentry.is_some())));
         assert_eq!(
             TRANSLATION_PROVIDERS
                 .iter()

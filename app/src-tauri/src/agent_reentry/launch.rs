@@ -58,7 +58,14 @@ pub(crate) struct Target<'a> {
     pub(crate) row: &'a PaneRow,
     pub(crate) shell_birth: (u64, u32),
     pub(crate) cwd: &'a DirRef,
+    /// The entry's adapter's baseline: what Deck handed its server carries
+    /// the expected home and no name that adapter's grammar refuses.
+    pub(crate) baseline: bool,
 }
+
+/// The file name of the one login shell whose line editor the launch sink
+/// is written against (the system's own build of it), for every adapter.
+const LOGIN_SHELL: &str = "zsh";
 
 /// The single command line for `executable` and closed argument `words`:
 /// one line, the path as one single-quoted word. `None` for a path that
@@ -83,19 +90,19 @@ const READY_FORMAT: &str = "#{pid}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{p
 
 /// The supported shell's name, when the user's login shell is that shell.
 fn shell_name(env: &Env) -> Option<&'static str> {
-    let supported = env.capability.login_shell;
-    (env.login_shell.file_name().and_then(|name| name.to_str()) == Some(supported))
-        .then_some(supported)
+    (env.login_shell.file_name().and_then(|name| name.to_str()) == Some(LOGIN_SHELL))
+        .then_some(LOGIN_SHELL)
 }
 
-/// Everything about the launch that is known before the restart: the
-/// baseline Deck hands over is a supported one, and the login shell is the
-/// system's own build of the supported shell. Shown in the preview and
+/// What is known about the launch before the restart, for every adapter:
+/// the login shell is the system's own build of the supported shell. The
+/// other condition, the baseline Deck hands over, is each adapter's own
+/// (`Adapter::baseline`) and is read beside this. Shown in the preview and
 /// required at freeze, so a setup that is known to be unsupported is never
 /// discovered after the exit. It says nothing about the shell's startup
 /// files: those run later and are the accepted window (module header).
 pub(crate) fn supported_before_restart(env: &Env) -> bool {
-    env.baseline && shell_name(env).is_some() && crate::procinfo::system_file(env.login_shell)
+    shell_name(env).is_some() && crate::procinfo::system_file(env.login_shell)
 }
 
 /// What one tmux environment scope says about one variable. The four
@@ -163,7 +170,7 @@ fn tmux_variable(env: &Env, scope: &[&str], name: &str) -> Variable {
 /// control characters in an escaped form, so two different values can print
 /// alike; the post-launch check reads the client's own launch environment
 /// from the kernel and does not depend on this spelling.
-pub(super) fn baseline_home(env: &Env, session: &str) -> bool {
+pub(super) fn baseline_home(env: &Env, session: &str, baseline: bool) -> bool {
     let target = crate::tmux::session_target(session);
     let home = match tmux_variable(env, &["-t", &target], "HOME") {
         Variable::Set(local) => Some(local),
@@ -173,7 +180,7 @@ pub(super) fn baseline_home(env: &Env, session: &str) -> bool {
         },
         Variable::Removed | Variable::Unavailable => None,
     };
-    env.baseline && home.as_deref().map(Path::new) == Some(env.home)
+    baseline && home.as_deref().map(Path::new) == Some(env.home)
 }
 
 /// What the kernel says about the target's input edge at this instant: the
@@ -202,7 +209,7 @@ fn ready(env: &Env, target: &Target) -> bool {
     let edge = (env.tmux)(&["display-message", "-p", "-t", &row.pane_id, READY_FORMAT]);
     edge.ok().as_deref().map(str::trim_end) == Some(expected.as_str())
         && edge_exact(env, target)
-        && baseline_home(env, &row.session_name)
+        && baseline_home(env, &row.session_name, target.baseline)
 }
 
 /// Wait, reading only, until the target's input edge is positively verified
@@ -240,6 +247,7 @@ pub(crate) fn actual_context(
     executable: &crate::procinfo::ExecutableRef,
     words: &[String],
     cwd: &DirRef,
+    grammar: &crate::procinfo::LaunchGrammar,
 ) -> crate::procinfo::LaunchCheck {
     crate::procinfo::check_launch(
         client.0,
@@ -248,7 +256,7 @@ pub(crate) fn actual_context(
             executable,
             words,
             home: env.home,
-            grammar: env.capability.grammar,
+            grammar,
             cwd,
         },
     )

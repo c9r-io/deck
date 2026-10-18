@@ -192,6 +192,25 @@ fn session_end_sends_the_exact_line() {
     assert_silent_success(&finish(child, Duration::from_secs(3)));
 }
 
+/// The same helper speaks for Codex under its own source word, with
+/// Codex's constant end reason mapped like any other.
+#[test]
+fn codex_session_end_sends_the_exact_line_under_its_source_word() {
+    let home = Private::new();
+    let listener = home.listen();
+    let payload = format!(
+        r#"{{"reason":"other","session_id":"{ID}","cwd":"/Users/SENTINEL","transcript_path":"/SENTINEL"}}"#
+    );
+    let child = run(helper(&home, &["codex", "session-end"]), &payload);
+    let mut stream = accept(&listener, Duration::from_secs(3)).expect("a connection");
+    assert_eq!(
+        read_line(&mut stream),
+        format!("{{\"protocol\":\"agent-lifecycle\",\"v\":1,\"source\":\"codex\",\"event\":\"session-end\",\"nativeSessionId\":\"{ID}\",\"endReason\":\"other\",\"socket\":\"deck-dev\",\"server_pid\":4242,\"pane\":\"%7\"}}\n")
+    );
+    drop(stream);
+    assert_silent_success(&finish(child, Duration::from_secs(3)));
+}
+
 #[test]
 fn a_host_that_never_closes_is_left_at_the_deadline() {
     let home = Private::new();
@@ -251,8 +270,10 @@ fn an_unknown_argv_does_nothing() {
     for args in [
         &[][..],
         &["claude-code"],
-        &["codex", "session-start"],
+        &["pi", "session-start"],
+        &["Codex", "session-end"],
         &["claude-code", "turn-done"],
+        &["codex", "turn-done"],
         &["claude-code", "session-start", "extra"],
     ] {
         let child = run(helper(&home, args), &start_payload());

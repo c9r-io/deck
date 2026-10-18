@@ -1,0 +1,63 @@
+[a1] init root=<ROOT> policy=ordinary
+[a1] init done: stub port=64471, hooks and trust state written
+[a1] server pid=64727 socket=<ROOT>/t/tmux-501/deck-smoke-cx-a1 sessions=a,b
+[a1] card a started: 64786 Sun Oct 18 22:35:04 2026     /opt/homebrew/Caskroom/codex/0.163.0/bin/codex
+[a1] card b started: 64896 Sun Oct 18 22:35:15 2026     /opt/homebrew/Caskroom/codex/0.163.0/bin/codex
+[a1] card a: 0 rollouts for its directory, not one
+[a1] ids: one writer lock per client; finals (digests) recorded
+[a1] transaction begins at 22:35:48: policy=ordinary cards a=bypass,b=ordinary expect started
+  M1 capability=production source=codex cards=2 policy=ordinary
+  M1 check=data-directory-inside-the-experiment ok
+  M1 check=old-server-environment ok
+  M1 old card=a pane=64728 client=64786@1792330504.933350
+  M1 old card=b pane=64733 client=64896@1792330515.296436
+  M1 check=old-clients-in-the-foreground ok panes=2
+  M1 check=preview-candidates-and-launch-profiles ok
+  M1 check=preview-carries-no-native-identity FAIL
+  M1 restart old-server=64727 new-server=65133 replaced=true state=Complete
+  M1 check=server-replaced-and-settled ok
+  M1 entry card=a outcome=started reason=none shell=true client=true settled=true warnings=1 warning-codes=ordinary-profile-requested
+  M1 entry card=b outcome=started reason=none shell=true client=true settled=true warnings=0 warning-codes=none
+  M1 check=every-entry-has-its-own-expected-outcome ok
+  M1 check=policy-a-notes-the-ordinary-profile-on-the-bypass-launches-only ok
+  M1 check=one-request-per-launched-entry ok requests=2 enters=2
+  M1 check=every-request-is-the-executable-resume-and-one-id FAIL
+  M1 request card=a bypass-override=unknown
+  M1 request card=b bypass-override=false
+  M1 check=the-bypass-flag-is-on-the-requests-this-policy-decides-and-on-no-other FAIL with-the-flag=0
+  M1 check=requests-name-the-sessions-the-clients-exited-in FAIL recorded-final-sessions=2
+  M1 info no-earlier-session-was-recorded-for-this-matrix
+  M1 check=a-repeated-invoke-reads-the-stored-result ok
+  M1 check=queue-row-paused-on-disk-before-the-kill ok
+  M1 check=queue-row-still-paused-after-the-reentry ok
+  M1 check=new-server-environment ok
+  M1 new card=a pane=65140 client=65149@1792330556.422063 old-client-gone=true
+  M1 new card=b pane=65154 client=65185@1792330557.179919 old-client-gone=true
+  M1 check=a-new-generation-for-every-launched-entry ok
+  M1 check=new-generation-recorded-for-the-driver ok
+  M1 check=lifecycle-file-names-the-server-only ok
+  M1 info signal-observations-on-the-new-panes=0
+  M1 result failed-checks=4
+[a1] transaction ended at 22:35:59: controller exit=101 failed-checks=4
+[a1] card a: new client 65149 Sun Oct 18 22:35:56 2026     /opt/homebrew/Caskroom/codex/0.163.0/bin/codex session=matches-the-exited-one Permissions:         Workspace (Ask for approval) 
+[a1] card b: new client 65185 Sun Oct 18 22:35:57 2026     /opt/homebrew/Caskroom/codex/0.163.0/bin/codex session=matches-the-exited-one Permissions:         Workspace (Ask for approval) 
+[a1] end begins
+process pid 64501 started Sun Oct 18 22:31:35 2026: running
+tmux-server pid 64727 started Sun Oct 18 22:35:00 2026 socket <ROOT>/t/tmux-501/deck-smoke-cx-a1: gone
+process pid 64786 started Sun Oct 18 22:35:04 2026: gone
+process pid 64896 started Sun Oct 18 22:35:15 2026: gone
+tmux-server pid 65133 started Sun Oct 18 22:35:55 2026 socket <ROOT>/t/tmux-501/deck-smoke-cx-a1: running
+process pid 65149 started Sun Oct 18 22:35:56 2026: running
+process pid 65185 started Sun Oct 18 22:35:57 2026: running
+stopped tmux-server pid 65133
+stopped process pid 64501
+stopped process pid 65149
+stopped process pid 65185
+process pid 64501 started Sun Oct 18 22:31:35 2026: gone
+tmux-server pid 64727 started Sun Oct 18 22:35:00 2026 socket <ROOT>/t/tmux-501/deck-smoke-cx-a1: gone
+process pid 64786 started Sun Oct 18 22:35:04 2026: gone
+process pid 64896 started Sun Oct 18 22:35:15 2026: gone
+tmux-server pid 65133 started Sun Oct 18 22:35:55 2026 socket <ROOT>/t/tmux-501/deck-smoke-cx-a1: gone
+process pid 65149 started Sun Oct 18 22:35:56 2026: gone
+process pid 65185 started Sun Oct 18 22:35:57 2026: gone
+[a1] STILL RUNNING from the root: 64503 <ROOT>/bin/stub <ROOT>/ev

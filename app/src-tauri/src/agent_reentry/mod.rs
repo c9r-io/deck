@@ -1,5 +1,6 @@
-//! Reopen Agent session: re-entering the exact native Claude session a
-//! client was in when the user's own shell-service restart ended it.
+//! Reopen Agent session: re-entering the exact native session a client
+//! (Claude Code, or an embedded Codex) was in when the user's own
+//! shell-service restart ended it.
 //!
 //! Deck owns attention around work; the Agent owns the work. This module
 //! coordinates one thing — user restart → the managed old client ends → the
@@ -8,6 +9,35 @@
 //! instruction, moves or retires no card, and a confirmed re-entry means
 //! only "this client entered that session at the receipt": never task
 //! resumed, input ready, tool authority or task success.
+//!
+//! # Adapters
+//! Each agent with the capability declares it as static data and pure
+//! functions (`ReentryCapability`: `claude.rs`, `codex.rs`); the registry
+//! lists them (`extensions.rs`) and the environment carries each with its
+//! own two facts, observation and baseline (`Adapter`). The core asks each
+//! adapter's product of a pane's foreground in turn (`inspect`), keeps
+//! which adapter a client is, and takes that adapter's receipts, request
+//! and exit hint for its entry. What differs between adapters is theirs:
+//! - **The final session.** Claude's exit receipt names it alone. Codex's
+//!   does not (no "current" mark, one `SessionEnd` per loaded thread), so
+//!   its adapter also reads what the client printed to its pane as it left
+//!   — the resume hint, by the one pure reader `resume::printed` — as the
+//!   difference between a capture taken at the freeze, before any exit
+//!   key, and one taken at the seal (`printed`, `newly_printed`), and
+//!   crosses it with the kernel-attributed receipts: a printed id counts
+//!   only among the ids the client itself reported. Pane text alone never
+//!   names a session.
+//! - **Confirmation.** An adapter that sends no entry receipt before the
+//!   first input (`entry_receipt: false`) has a weaker best outcome:
+//!   `Started` — the pane's foreground client is a child of the new shell,
+//!   executes the frozen file, was started by exactly the request in the
+//!   expected context, and no receipt contradicts it. A resume receipt
+//!   that does arrive confirms it like any other.
+//! - **The grant.** `decide` grants the bypass override as before; an
+//!   adapter whose bare resume would keep bypass asks for the ordinary
+//!   profile under Policy A on a bypass launch (`Grant::Lower`, said as
+//!   `OrdinaryProfileRequested`); one whose bare resume lowers by itself
+//!   adds nothing.
 //!
 //! # Contract
 //! - **Transaction memory only.** Preview, frozen plan, native ids, launch
@@ -194,6 +224,7 @@
 //! one terminal-input site is `launch.rs`.
 
 pub(crate) mod claude;
+pub(crate) mod codex;
 pub(crate) mod launch;
 pub(crate) mod lifecycle;
 #[cfg(test)]
@@ -220,25 +251,73 @@ use crate::tmux::{same_pane, PaneRow};
 /// it names no release: a client is admitted by what its running code is
 /// (`product`), never by a version, a file name or a digest.
 pub(crate) struct ReentryCapability {
+    /// The adapter's source word: what its lifecycle receipts name
+    /// themselves, and the label of its rows in the preview.
+    pub(crate) source: &'static str,
     /// Whose code a client must be: the product's code requirement, checked
     /// against the running image and its file (`procinfo::qualify_client`).
     pub(crate) product: &'static ProductIdentity,
     /// The launcher's own file name: a hint for wording a refusal about a
-    /// process that carries it. It admits nothing and refuses nothing — a
-    /// client that runs under its release's file name is the product all
-    /// the same.
+    /// process that carries it, and the order the adapters are asked in. It
+    /// admits nothing and refuses nothing — a client that runs under its
+    /// release's file name is the product all the same.
     pub(crate) launcher: &'static str,
     pub(crate) grammar: &'static LaunchGrammar,
-    /// The file name of the one login shell whose line editor the launch
-    /// sink is written against (the system's own build of it).
-    pub(crate) login_shell: &'static str,
-    /// Argument words for (exact id, bypass override decided by the core).
-    pub(crate) request: fn(&str, bool) -> Option<Vec<String>>,
+    /// Argument words for (exact id, the grant the core decided).
+    pub(crate) request: fn(&str, Grant) -> Option<Request>,
     /// What this source's lifecycle receipts mean: the decoding of its own
     /// words and id, and the reducers over a lease's record
     /// (`lifecycle::ReceiptContract`). Without a capability a source has no
     /// contract and can send no receipt.
     pub(crate) receipts: &'static lifecycle::ReceiptContract,
+    /// The launcher word of the resume command this client prints to its
+    /// pane as it exits (`<word> resume <id>`, read by `resume::printed`),
+    /// for a source whose exit receipt alone does not name the current
+    /// session: the core hands `final_session` the ids printed between the
+    /// freeze and the seal. `None`: the receipt names it by itself and no
+    /// pane text is read.
+    pub(crate) exit_hint: Option<&'static str>,
+    /// Whether a started client reports entering the session before any
+    /// input, inside the post share. `false`: a client that was started by
+    /// exactly the request, in the expected context, and sent no receipt
+    /// is `Started` — never `Confirmed`; a resume receipt that does arrive
+    /// confirms it like any other.
+    pub(crate) entry_receipt: bool,
+}
+
+/// What the core decided for one request, handed to the adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Grant {
+    /// The exact resume and nothing else.
+    Plain,
+    /// Policy B's reauthorization: the bypass override is added.
+    Reapply,
+    /// Policy A on a bypass launch: an adapter whose bare resume would keep
+    /// bypass asks for the ordinary profile instead; one whose bare resume
+    /// does not keep it adds nothing.
+    Lower,
+}
+
+/// The argument words of one request, and whether they ask the client for
+/// the ordinary profile (`Grant::Lower` where the adapter has words for it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Request {
+    pub(crate) words: Vec<String>,
+    pub(crate) lowered: bool,
+}
+
+/// One adapter as this environment sees it: its static capability and the
+/// two facts about THIS process that decide whether its candidates can be
+/// launched at all.
+#[derive(Clone, Copy)]
+pub(crate) struct Adapter {
+    pub(crate) capability: &'static ReentryCapability,
+    /// Its lifecycle hooks are installed (the user's explicit opt-in) and
+    /// the bundled helper exists.
+    pub(crate) observation: bool,
+    /// What Deck handed its server carries the expected home and no name
+    /// this adapter's grammar refuses (`procinfo::own_baseline_supported`).
+    pub(crate) baseline: bool,
 }
 
 // ---------- closed vocabulary -------------------------------------------------
@@ -266,6 +345,13 @@ pub(crate) enum Outcome {
     NotAttempted,
     RefusedBeforeLaunch,
     Confirmed,
+    /// The one request was typed, the client it started is the pane's
+    /// foreground, executes the frozen file, was started by exactly that
+    /// request in the expected context — and its adapter sends no entry
+    /// receipt before the first input (`entry_receipt: false`). Said only
+    /// of such an adapter: it is a statement about the start, never that
+    /// the session was entered.
+    Started,
     Unconfirmed,
     KnownNoLaunchFailure,
 }
@@ -274,6 +360,11 @@ pub(crate) enum Outcome {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Reason {
     UnsupportedAgent,
+    /// A verified candidate of an adapter whose lifecycle hooks are not
+    /// installed, while another adapter's are: nothing of its exit could
+    /// be received. The user's setting, not something wrong with the
+    /// session.
+    ObservationOff,
     /// The foreground is a Pi whose observer Deck verified, and Deck has no
     /// way to prove whose code a Pi client runs (an npm install is Node's
     /// image, the standalone build is ad-hoc signed): Pi has no re-entry
@@ -302,6 +393,7 @@ impl Reason {
     fn code(self) -> &'static str {
         match self {
             Reason::UnsupportedAgent => "unsupported-agent",
+            Reason::ObservationOff => "observation-off",
             Reason::ClientIdentityUnverifiable => "client-identity-unverifiable",
             Reason::MultiplePanes => "multiple-panes",
             Reason::IdentityUnavailable => "identity-unavailable",
@@ -324,6 +416,11 @@ pub(crate) enum Warning {
     LaunchProfileUnconfirmed,
     BypassReauthorized,
     AdditionalDirsNotRestored,
+    /// Policy A on a bypass launch of an adapter whose bare resume keeps
+    /// bypass: the request asked for the ordinary profile with the words
+    /// that undo the bypass launch, and the client writes back what it
+    /// applied.
+    OrdinaryProfileRequested,
 }
 
 fn profile_word(profile: LaunchProfile) -> &'static str {
@@ -432,12 +529,17 @@ pub(crate) struct PreviewEntryView {
     /// named `agent`: that is the Signal word's field in the poll payload.)
     source: Option<&'static str>,
     launch_profile: Option<&'static str>,
+    /// A candidate whose adapter's lifecycle hooks are installed: the only
+    /// rows that can be ticked. `false` on every other row.
+    observed: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PreviewView {
     token: String,
+    /// Some adapter's lifecycle hooks are installed. With none, no row can
+    /// be ticked and the dialog names the setting.
     lifecycle_observation: bool,
     /// Whether the card ↔ session binding could be read at all: `false`
     /// when this process holds no current Board (not loaded yet, or one
@@ -452,6 +554,8 @@ pub(crate) struct PreviewView {
 pub(crate) struct EntryView {
     pub(crate) card_id: String,
     pub(crate) session: String,
+    /// The source word of the client's adapter: the label of the row.
+    pub(crate) source: Option<&'static str>,
     pub(crate) outcome: Outcome,
     pub(crate) reason: Option<Reason>,
     pub(crate) warnings: Vec<Warning>,
@@ -514,19 +618,15 @@ pub(crate) struct Env<'a> {
     /// (card id, session) of every card on the committed Board; `None` when
     /// the Board cannot be read.
     pub(crate) cards: &'a dyn Fn() -> Option<Vec<(String, String)>>,
-    pub(crate) capability: &'a ReentryCapability,
+    /// The adapters with a re-entry capability, in registry order, each
+    /// with its observation and baseline facts.
+    pub(crate) adapters: &'a [Adapter],
     /// The bundled lifecycle helper a receipt's reporter must be executing.
     pub(crate) helper: &'a Path,
     /// The home directory a supported client and its new shell run under.
     pub(crate) home: &'a Path,
     /// The user's login shell as the account database names it.
     pub(crate) login_shell: &'a Path,
-    /// The lifecycle hooks are installed (the user's explicit opt-in).
-    pub(crate) observation: bool,
-    /// What Deck handed to the server it starts carries the expected home
-    /// and no refused name (`procinfo::own_baseline_supported`). A baseline
-    /// only: not what a shell's startup files leave behind.
-    pub(crate) baseline: bool,
     /// Run `work` while holding the Board writer's fence
     /// (`documents::board_fence`): no Board commit can land between the
     /// binding check and the irreversible input made inside it.
@@ -540,6 +640,18 @@ pub(crate) struct Env<'a> {
 impl Env<'_> {
     fn rows(&self) -> Result<Vec<PaneRow>, DeckError> {
         crate::tmux::list_panes_with(self.tmux)
+    }
+
+    /// The adapter of a source word, if this environment has it.
+    fn adapter(&self, source: &str) -> Option<&Adapter> {
+        self.adapters
+            .iter()
+            .find(|adapter| adapter.capability.source == source)
+    }
+
+    /// Some adapter's observation is on.
+    fn any_observation(&self) -> bool {
+        self.adapters.iter().any(|adapter| adapter.observation)
     }
 }
 
@@ -557,6 +669,14 @@ struct Client {
     profile: LaunchProfile,
     additional_dirs: bool,
     cwd: DirRef,
+    /// The source word of the adapter whose product this client is.
+    source: &'static str,
+}
+
+impl Client {
+    fn capability(&self, env: &Env) -> Option<&'static ReentryCapability> {
+        env.adapter(self.source).map(|adapter| adapter.capability)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -565,6 +685,10 @@ struct Inspected {
     reason: Option<Reason>,
     shell_birth: Option<Birth>,
     client: Option<Client>,
+    /// The adapter a refused row is worded for: the one whose launcher the
+    /// process is named after (the name chooses the words and nothing
+    /// else), or the client's own. `None` where no adapter is known.
+    source: Option<&'static str>,
 }
 
 impl Inspected {
@@ -574,6 +698,14 @@ impl Inspected {
             reason: Some(reason),
             shell_birth: None,
             client: None,
+            source: None,
+        }
+    }
+
+    fn refused_as(kind: Kind, reason: Reason, source: &'static str) -> Self {
+        Self {
+            source: Some(source),
+            ..Self::refused(kind, reason)
         }
     }
 }
@@ -609,6 +741,7 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
             reason: None,
             shell_birth: Some(shell_birth),
             client: None,
+            source: None,
         };
     }
     // A Pi whose observer Deck verified for this very foreground generation.
@@ -618,69 +751,94 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
     if crate::agent_status::pi_proven(row, foreground) {
         return Inspected::refused(Kind::Unsupported, Reason::ClientIdentityUnverifiable);
     }
-    let capability = env.capability;
-    let read = crate::procinfo::qualify_client(
-        foreground.pid(),
-        foreground.birth(),
-        &ClientSpec {
-            product: capability.product,
-            launcher: capability.launcher,
-            grammar: capability.grammar,
-            home: env.home,
-        },
-        known,
-    );
-    let qualified = match read {
-        ClientRead::Gone => {
-            return Inspected::refused(Kind::Unsupported, Reason::IdentityUnavailable)
-        }
-        // Nothing is known about what it runs: the question was not answered,
-        // or not inside this phase. That is a check that did not finish —
-        // not a shell, not an unsupported program and not a changed one —
-        // whatever the process is called.
-        ClientRead::NotProduct {
-            why: NotProduct::Unreadable,
-            ..
-        } => return Inspected::refused(Kind::Unsupported, Reason::CheckIncomplete),
-        // Some other program: a shell, or a foreground this feature does
-        // not know.
-        ClientRead::NotProduct { named: false, .. } => {
-            return if crate::context::shell_process(Some(&row.command)) {
-                Inspected {
-                    kind: Kind::Shell,
-                    reason: None,
-                    shell_birth: Some(shell_birth),
-                    client: None,
-                }
-            } else {
-                Inspected::refused(Kind::Unsupported, Reason::UnsupportedAgent)
+    // Each adapter's product is asked in turn — the one whose launcher the
+    // pane names first, so the common case costs one dynamic validation.
+    // The name only orders the questions: it admits and refuses nothing.
+    // A foreground that is positively some other program to every adapter
+    // is a shell or an unsupported agent; anything else ends the question
+    // where it is, as today.
+    let mut ordered: Vec<&Adapter> = env.adapters.iter().collect();
+    ordered.sort_by_key(|adapter| adapter.capability.launcher != row.command);
+    let mut found = None;
+    for adapter in ordered {
+        let capability = adapter.capability;
+        let read = crate::procinfo::qualify_client(
+            foreground.pid(),
+            foreground.birth(),
+            &ClientSpec {
+                product: capability.product,
+                launcher: capability.launcher,
+                grammar: capability.grammar,
+                home: env.home,
+            },
+            known,
+        );
+        match read {
+            ClientRead::Gone => {
+                return Inspected::refused(Kind::Unsupported, Reason::IdentityUnavailable)
+            }
+            // Nothing is known about what it runs: the question was not
+            // answered, or not inside this phase. That is a check that did
+            // not finish — not a shell, not an unsupported program and not a
+            // changed one — whatever the process is called.
+            ClientRead::NotProduct {
+                why: NotProduct::Unreadable,
+                ..
+            } => return Inspected::refused(Kind::Unsupported, Reason::CheckIncomplete),
+            // some other program than this adapter's: ask the next one
+            ClientRead::NotProduct { named: false, .. } => continue,
+            // It carries this launcher's name and its running code was
+            // shown not to be the product's: never a candidate, whatever it
+            // reports later. The name only chooses the words; it was not
+            // what refused it.
+            ClientRead::NotProduct { named: true, why } => {
+                return Inspected::refused_as(
+                    Kind::Unsupported,
+                    match why {
+                        NotProduct::Other => Reason::IdentityUnavailable,
+                        NotProduct::Diverged => Reason::ExecutableUnavailable,
+                        NotProduct::Unreadable => Reason::CheckIncomplete,
+                    },
+                    capability.source,
+                )
+            }
+            ClientRead::Product(qualified) => {
+                found = Some((capability, qualified));
+                break;
             }
         }
-        // It carries the launcher's name and its running code was shown not
-        // to be the product's: never a candidate, whatever it reports later.
-        // The name only chooses the words; it was not what refused it.
-        ClientRead::NotProduct { named: true, why } => {
-            return Inspected::refused(
-                Kind::Unsupported,
-                match why {
-                    NotProduct::Other => Reason::IdentityUnavailable,
-                    NotProduct::Diverged => Reason::ExecutableUnavailable,
-                    NotProduct::Unreadable => Reason::CheckIncomplete,
-                },
-            )
-        }
-        ClientRead::Product(qualified) => qualified,
+    }
+    let Some((capability, qualified)) = found else {
+        // Some other program: a shell, or a foreground this feature does
+        // not know.
+        return if crate::context::shell_process(Some(&row.command)) {
+            Inspected {
+                kind: Kind::Shell,
+                reason: None,
+                shell_birth: Some(shell_birth),
+                client: None,
+                source: None,
+            }
+        } else {
+            Inspected::refused(Kind::Unsupported, Reason::UnsupportedAgent)
+        };
     };
     let executable = match qualified.executable {
         Ok(executable) => executable,
-        Err(why) => return Inspected::refused(Kind::Unsupported, unavailable(why)),
+        Err(why) => {
+            return Inspected::refused_as(Kind::Unsupported, unavailable(why), capability.source)
+        }
     };
     // a direct foreground launch: the pane's own shell is the client's parent
     let direct = table
         .get(&foreground.pid())
         .is_some_and(|client| client.ppid == row.pane_pid);
     let Some(cwd) = qualified.cwd.filter(DirRef::is_dir) else {
-        return Inspected::refused(Kind::Unsupported, Reason::IdentityUnavailable);
+        return Inspected::refused_as(
+            Kind::Unsupported,
+            Reason::IdentityUnavailable,
+            capability.source,
+        );
     };
     if !direct
         || !matches!(
@@ -688,12 +846,17 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
             LaunchProfile::Bypass | LaunchProfile::Ordinary
         )
     {
-        return Inspected::refused(Kind::Unsupported, Reason::IdentityUnavailable);
+        return Inspected::refused_as(
+            Kind::Unsupported,
+            Reason::IdentityUnavailable,
+            capability.source,
+        );
     }
     Inspected {
         kind: Kind::Candidate,
         reason: None,
         shell_birth: Some(shell_birth),
+        source: Some(capability.source),
         client: Some(Client {
             pid: foreground.pid(),
             birth: foreground.birth(),
@@ -701,6 +864,7 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
             profile: qualified.profile,
             additional_dirs: qualified.additional_dirs,
             cwd,
+            source: capability.source,
         }),
     }
 }
@@ -931,50 +1095,78 @@ pub(crate) struct Previewed {
 pub(crate) fn read_preview(env: &Env) -> Result<Previewed, DeckError> {
     let (entries, board_known) = previewed(env)?;
     let token = opaque_token()?;
-    let baseline = launch::supported_before_restart(env);
-    let launchable = env.observation && baseline;
+    let shell = launch::supported_before_restart(env);
+    // what each row is before the restart, and whether it can be ticked
+    let classified: Vec<(Kind, Option<Reason>, bool)> = entries
+        .iter()
+        .map(|entry| {
+            // Conditions known before the restart are shown now, not
+            // discovered after the client was exited, and each as what it
+            // is. Without a supported baseline for the client's adapter and
+            // the supported login shell nothing would be typed: the entry
+            // is not a candidate. Observation that is off for every adapter
+            // is the user's own setting, not something wrong with the
+            // session: the entry stays a candidate and
+            // `lifecycle_observation: false` says why none can be chosen,
+            // so the dialog can name the setting instead of an unverifiable
+            // session. Observation that is off for this adapter alone,
+            // while another's is on, is said of this row (`ObservationOff`).
+            // Either way nothing is kept below: no token, no approval.
+            let adapter = entry
+                .inspected
+                .client
+                .as_ref()
+                .and_then(|client| env.adapter(client.source));
+            match (entry.inspected.kind, adapter) {
+                (Kind::Candidate, Some(adapter)) if !(shell && adapter.baseline) => {
+                    (Kind::Unsupported, Some(Reason::IdentityUnavailable), false)
+                }
+                (Kind::Candidate, Some(adapter))
+                    if !adapter.observation && env.any_observation() =>
+                {
+                    (Kind::Unsupported, Some(Reason::ObservationOff), false)
+                }
+                (Kind::Candidate, Some(adapter)) => (Kind::Candidate, None, adapter.observation),
+                (Kind::Candidate, None) => {
+                    (Kind::Unsupported, Some(Reason::IdentityUnavailable), false)
+                }
+                (kind, _) => (kind, entry.inspected.reason, false),
+            }
+        })
+        .collect();
+    // a token exists only where something could be launched at all: the
+    // supported shell and some adapter that observes under a supported
+    // baseline (whether or not a row of its is listed right now)
+    let launchable = shell
+        && env
+            .adapters
+            .iter()
+            .any(|adapter| adapter.observation && adapter.baseline);
     let view = PreviewView {
         token: token.clone(),
-        lifecycle_observation: env.observation,
+        lifecycle_observation: env.any_observation(),
         board_known,
         entries: entries
             .iter()
-            .map(|entry| {
-                // Conditions known before the restart are shown now, not
-                // discovered after the client was exited, and each as what
-                // it is. Without a supported baseline and the supported
-                // login shell nothing would be typed: the entry is not a
-                // candidate. Observation that is merely off is the user's
-                // own setting, not something wrong with the session: the
-                // entry stays a candidate and `lifecycle_observation: false`
-                // says why none of them can be chosen, so the dialog can
-                // name the setting instead of an unverifiable session.
-                // Either way nothing is kept below: no token, no approval.
-                let (kind, reason) = match entry.inspected.kind {
-                    Kind::Candidate if !baseline => {
-                        (Kind::Unsupported, Some(Reason::IdentityUnavailable))
-                    }
-                    kind => (kind, entry.inspected.reason),
-                };
-                PreviewEntryView {
-                    card_id: entry.card_id.clone(),
-                    session: entry.row.session_name.clone(),
-                    kind,
-                    reason,
-                    source: match (kind, reason) {
-                        (Kind::Candidate, _) => Some(crate::agent_status::CLAUDE_CODE.source),
-                        (_, Some(Reason::ClientIdentityUnverifiable)) => {
-                            Some(crate::agent_pi::SOURCE)
-                        }
-                        _ => None,
-                    },
-                    launch_profile: entry
-                        .inspected
-                        .client
-                        .as_ref()
-                        .filter(|_| kind == Kind::Candidate)
-                        .map(|client| profile_word(client.profile)),
-                }
+            .zip(&classified)
+            .map(|(entry, (kind, reason, observed))| PreviewEntryView {
+                card_id: entry.card_id.clone(),
+                session: entry.row.session_name.clone(),
+                kind: *kind,
+                reason: *reason,
+                source: match reason {
+                    Some(Reason::ClientIdentityUnverifiable) => Some(crate::agent_pi::SOURCE),
+                    // a candidate's adapter, or the one a refused row is
+                    // worded for (a label; it admits nothing)
+                    _ => entry.inspected.source,
+                },
+                launch_profile: entry
+                    .inspected
+                    .client
+                    .as_ref()
+                    .filter(|_| *kind == Kind::Candidate)
+                    .map(|client| profile_word(client.profile)),
+                observed: *observed,
             })
             .collect(),
     };
@@ -1130,6 +1322,48 @@ struct Entry {
     new: Option<PaneRow>,
     /// The request was submitted and a receipt is awaited.
     awaiting: bool,
+    /// The instant the request was submitted.
+    sent_at: Option<Instant>,
+    /// For an adapter with an exit hint: the resume ids the old client's
+    /// pane already showed at the freeze, with multiplicity, so that what
+    /// the exit prints is read as the difference (`printed`).
+    printed_before: Vec<String>,
+}
+
+/// The resume ids `pane` shows for `launcher`, with multiplicity and in
+/// order of appearance: a bounded read of the main screen's tail, through
+/// the alternate screen while the client holds one. The text is reduced
+/// here and dropped; nothing of it is logged. `None` when the pane could
+/// not be read.
+fn printed(env: &Env, pane: &str, launcher: &str) -> Option<Vec<String>> {
+    let alternate = (env.tmux)(&["display-message", "-p", "-t", pane, "#{alternate_on}"]).ok()?;
+    let mut args = vec!["capture-pane", "-p", "-J"];
+    if alternate.trim() == "1" {
+        args.push("-a");
+    }
+    args.extend(["-t", pane, "-S", "-300"]);
+    let text = (env.tmux)(&args).ok()?;
+    Some(crate::resume::printed(&text, launcher))
+}
+
+/// What `after` shows beyond `before`, by multiplicity, in `after`'s order.
+fn newly_printed(before: &[String], after: &[String]) -> Vec<String> {
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    after
+        .iter()
+        .filter(|id| {
+            let count = seen.entry(id.as_str()).or_default();
+            *count += 1;
+            *count > before.iter().filter(|old| old == id).count()
+        })
+        .cloned()
+        .collect()
+}
+
+/// The baseline of the client's adapter, as this environment read it.
+fn capability_baseline(env: &Env, client: &Client) -> bool {
+    env.adapter(client.source)
+        .is_some_and(|adapter| adapter.baseline)
 }
 
 /// One restart's frozen re-entry plan. Dropping it — on completion, on any
@@ -1159,6 +1393,10 @@ pub(crate) const CONFIRM_SHARE: Duration = Duration::from_millis(1000);
 const ATTEMPT_FLOOR: Duration = Duration::from_millis(1500);
 /// How long after the last awaited receipt the facts stay open.
 const SETTLE: Duration = Duration::from_millis(400);
+/// How long a started client of an adapter that sends no entry receipt is
+/// watched before its launch is checked: long enough for a start that
+/// fails at once (an id the client does not know) to have left.
+const OBSERVE: Duration = Duration::from_millis(1500);
 /// How long one new shell may take to show a positively verified prompt.
 const READY_BUDGET: Duration = Duration::from_secs(6);
 
@@ -1174,6 +1412,11 @@ pub(crate) fn freeze(
     if !launch::supported_before_restart(env) {
         return Err(expired_preview());
     }
+    let shown_adapter = |client: &Client| -> Result<&Adapter, DeckError> {
+        env.adapter(client.source)
+            .filter(|adapter| adapter.observation && adapter.baseline)
+            .ok_or_else(expired_preview)
+    };
     // The token is consumed whatever follows: an approval is used once.
     let preview = with_registry(|registry| {
         if registry.active.is_some() {
@@ -1209,6 +1452,8 @@ pub(crate) fn freeze(
         else {
             return Err(expired_preview());
         };
+        // its adapter must still be one whose candidates can be launched
+        let capability = shown_adapter(shown_client)?.capability;
         let session = &shown.row.session_name;
         // the card still names this session, and nothing else does
         let bound = cards.iter().filter(|(_, s)| s == session).count() == 1
@@ -1243,6 +1488,7 @@ pub(crate) fn freeze(
                     && client.birth == shown_client.birth
                     && client.executable == shown_client.executable
                     && client.cwd == shown_client.cwd
+                    && client.source == shown_client.source
             });
         let frozen = match (&now.client, now.reason) {
             (Some(client), _) => client.profile,
@@ -1283,6 +1529,7 @@ pub(crate) fn freeze(
         let mut view = EntryView {
             card_id: card.clone(),
             session: session.clone(),
+            source: Some(shown_client.source),
             outcome: Outcome::NotAttempted,
             reason: None,
             warnings: Vec::new(),
@@ -1305,6 +1552,15 @@ pub(crate) fn freeze(
         if client.additional_dirs {
             view.warnings.push(Warning::AdditionalDirsNotRestored);
         }
+        // What the pane shows now, before any exit key, for an adapter whose
+        // exit is read with the pane: a pane that cannot be read leaves the
+        // receipts alone to name the session (`final_session`).
+        let printed_before = match capability.exit_hint {
+            Some(launcher) if eligible => {
+                printed(env, &panes[0].pane_id, launcher).unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
         entries.push((
             Entry {
                 view,
@@ -1317,6 +1573,8 @@ pub(crate) fn freeze(
                 slot: Slot::Armed,
                 new: None,
                 awaiting: false,
+                sent_at: None,
+                printed_before,
             },
             eligible,
         ));
@@ -1421,7 +1679,18 @@ impl Plan {
             if entry.view.reason.is_some() {
                 continue;
             }
-            entry.final_id = (env.capability.receipts.final_session)(&facts);
+            let Some(capability) = entry.client.capability(env) else {
+                entry.view.reason = Some(Reason::IdentityUnavailable);
+                continue;
+            };
+            // what the exit printed: the pane now, beyond what it showed
+            // at the freeze (an adapter with an exit hint only)
+            let printed_now = capability
+                .exit_hint
+                .and_then(|launcher| printed(env, &entry.old.pane_id, launcher))
+                .map(|now| newly_printed(&entry.printed_before, &now))
+                .unwrap_or_default();
+            entry.final_id = (capability.receipts.final_session)(&facts, &printed_now);
             if entry.final_id.is_none() {
                 entry.view.reason = Some(Reason::FinalSessionUnconfirmed);
             } else if !entry.client.cwd.is_dir() {
@@ -1475,6 +1744,7 @@ impl Plan {
                 Outcome::NotAttempted => "not-attempted",
                 Outcome::RefusedBeforeLaunch => "refused-before-launch",
                 Outcome::Confirmed => "confirmed",
+                Outcome::Started => "started",
                 Outcome::Unconfirmed => "unconfirmed",
                 Outcome::KnownNoLaunchFailure => "known-no-launch-failure",
             },
@@ -1535,8 +1805,21 @@ impl Plan {
                 }
                 let facts = lifecycle::peek(index);
                 let wanted = entry.final_id.as_deref().unwrap_or_default();
-                match (env.capability.receipts.entered)(&facts, wanted) {
-                    lifecycle::Receipt::Pending => pending = true,
+                let Some(capability) = entry.client.capability(env) else {
+                    Self::settle(entry, Outcome::Unconfirmed, Some(Reason::LaunchUnconfirmed));
+                    continue;
+                };
+                match (capability.receipts.entered)(&facts, wanted) {
+                    // An adapter that sends no entry receipt is not waited
+                    // for past its observation moment: its check comes
+                    // below, on the client that is then in the foreground.
+                    lifecycle::Receipt::Pending => {
+                        let watched = !capability.entry_receipt
+                            && entry.sent_at.is_some_and(|at| at.elapsed() >= OBSERVE);
+                        if !watched {
+                            pending = true;
+                        }
+                    }
                     // Settled as confirmed only below, from the sealed
                     // facts, so a conflicting fact that arrives while other
                     // entries are still awaited counts against it.
@@ -1592,9 +1875,9 @@ impl Plan {
                 continue;
             }
             let wanted = entry.final_id.as_deref().unwrap_or_default();
-            let entered = match (env.capability.receipts.entered)(&facts, wanted) {
-                lifecycle::Receipt::Entered(client) => Some(client),
-                _ => None,
+            let Some(capability) = entry.client.capability(env) else {
+                Self::settle(entry, Outcome::Unconfirmed, Some(Reason::LaunchUnconfirmed));
+                continue;
             };
             // A receipt is history. At completion the client that reported
             // must still be alive and still be the pane's foreground
@@ -1605,6 +1888,23 @@ impl Plan {
                     crate::agent_status::live_generation(row.pane_pid)
                         .is_some_and(|foreground| (foreground.pid(), foreground.birth()) == *client)
                 })
+            };
+            // What is checked below, and what a match is called: the client
+            // that reported entering (`Confirmed`), or — for an adapter that
+            // sends no entry receipt, with no receipt at all — the pane's
+            // foreground generation now, a child of the new shell, which a
+            // match makes `Started` and never more.
+            let (entered, started_only) = match (capability.receipts.entered)(&facts, wanted) {
+                lifecycle::Receipt::Entered(client) => (Some(client), false),
+                lifecycle::Receipt::Pending if !capability.entry_receipt && facts.is_empty() => (
+                    entry.new.as_ref().and_then(|row| {
+                        crate::agent_status::live_generation(row.pane_pid)
+                            .filter(|foreground| foreground.pid() != row.pane_pid)
+                            .map(|foreground| (foreground.pid(), foreground.birth()))
+                    }),
+                    true,
+                ),
+                _ => (None, false),
             };
             let present = entered.filter(&foreground_is);
             // The started client against what this operation asked for,
@@ -1619,6 +1919,7 @@ impl Plan {
                     &entry.client.executable,
                     &entry.request,
                     &entry.client.cwd,
+                    capability.grammar,
                 );
                 (client, context)
             });
@@ -1653,7 +1954,12 @@ impl Plan {
                     if entry.bypass {
                         entry.view.warnings.push(Warning::BypassReauthorized);
                     }
-                    Self::settle(entry, Outcome::Confirmed, None);
+                    let outcome = if started_only {
+                        Outcome::Started
+                    } else {
+                        Outcome::Confirmed
+                    };
+                    Self::settle(entry, outcome, None);
                 }
                 reason => Self::settle(entry, Outcome::Unconfirmed, reason),
             }
@@ -1753,23 +2059,42 @@ impl Plan {
             row,
             shell_birth,
             cwd: &cwd,
+            baseline: capability_baseline(env, &entry.client),
         };
         if !launch::wait_ready(env, &target, ready_end) {
             return refuse(entry, Outcome::RefusedBeforeLaunch, Reason::LaunchRefused);
         }
         // Rebuilt from structured fields: the exact frozen executable, the
-        // sealed id, and the override only when `decide` granted it.
-        let words = entry
+        // sealed id, and the grant — the override only when `decide`
+        // granted it; the ordinary profile asked for where a bare resume of
+        // a bypass launch would keep bypass (the adapter knows whether its
+        // own would); nothing else.
+        let Some(capability) = entry.client.capability(env) else {
+            return refuse(
+                entry,
+                Outcome::RefusedBeforeLaunch,
+                Reason::IdentityUnavailable,
+            );
+        };
+        let grant = if entry.bypass {
+            Grant::Reapply
+        } else if entry.client.profile == LaunchProfile::Bypass {
+            Grant::Lower
+        } else {
+            Grant::Plain
+        };
+        let request = entry
             .final_id
             .as_deref()
-            .and_then(|id| (env.capability.request)(id, entry.bypass));
-        let line = words
-            .as_deref()
-            .and_then(|words| launch::command_line(entry.client.executable.path(), words));
-        let (Some(words), Some(line)) = (words, line) else {
+            .and_then(|id| (capability.request)(id, grant));
+        let line = request.as_ref().and_then(|request| {
+            launch::command_line(entry.client.executable.path(), &request.words)
+        });
+        let (Some(request), Some(line)) = (request, line) else {
             return refuse(entry, Outcome::RefusedBeforeLaunch, Reason::LaunchRefused);
         };
-        entry.request = words;
+        let lowered = request.lowered;
+        entry.request = request.words;
         if end.saturating_duration_since(Instant::now()) < ATTEMPT_FLOOR {
             return refuse(entry, Outcome::RefusedBeforeLaunch, Reason::LaunchRefused);
         }
@@ -1820,9 +2145,18 @@ impl Plan {
                 refuse(entry, Outcome::KnownNoLaunchFailure, Reason::LaunchRefused)
             }
             Some(launch::Sent::Unknown) => {
+                if lowered {
+                    entry.view.warnings.push(Warning::OrdinaryProfileRequested);
+                }
                 refuse(entry, Outcome::Unconfirmed, Reason::LaunchUnconfirmed)
             }
-            Some(launch::Sent::Submitted) => entry.awaiting = true,
+            Some(launch::Sent::Submitted) => {
+                if lowered {
+                    entry.view.warnings.push(Warning::OrdinaryProfileRequested);
+                }
+                entry.awaiting = true;
+                entry.sent_at = Some(Instant::now());
+            }
         }
     }
 }
@@ -1857,7 +2191,7 @@ impl Drop for Plan {
             result
                 .entries
                 .iter()
-                .filter(|entry| entry.outcome == Outcome::Confirmed)
+                .filter(|entry| matches!(entry.outcome, Outcome::Confirmed | Outcome::Started))
                 .count()
         ));
         with_registry(|registry| {

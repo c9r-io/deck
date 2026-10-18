@@ -4517,7 +4517,7 @@ mod tests {
         let facts = lifecycle::seal(0);
         assert_eq!(facts.len(), 1, "exactly its own fact");
         assert_eq!(
-            crate::agent_reentry::claude::final_session(&facts).as_deref(),
+            crate::agent_reentry::claude::final_session(&facts, &[]).as_deref(),
             Some(OWN)
         );
         worker.stop();

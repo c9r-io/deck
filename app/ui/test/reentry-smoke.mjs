@@ -79,7 +79,7 @@ export async function runReentrySmoke() {
   const NATIVE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32,}|48211|\/Users\/|\.jsonl|tok-reentry/i;
 
   const TOKEN = 'tok-reentry-2';
-  const candidate = (cardId, session, launchProfile) => ({ cardId, session, kind: 'candidate', reason: null, launchProfile, ...planted });
+  const candidate = (cardId, session, launchProfile) => ({ cardId, session, kind: 'candidate', reason: null, launchProfile, observed: true, ...planted });
   const previews = [
     { token: 'tok-reentry-1', lifecycleObservation: true, ...planted, entries: [
       { cardId: 'RS1', session: 'deck-shell-s1', kind: 'shell', reason: null, launchProfile: null, ...planted },
@@ -223,7 +223,7 @@ export async function runReentrySmoke() {
     const notes = rows.map(row => row.querySelector('.reentry-note')?.textContent);
     const names = rows.map(row => row.querySelector('.reentry-choice-text')?.textContent);
     const listed = rows.length === 4
-      && notes.join('|') === ['reentry.profile.bypass', 'reentry.profile.ordinary', 'reentry.profile.unknown', 'reentry.kind.shell'].map(key => t(key)).join('|')
+      && notes.join('|') === ['reentry.profile.bypass', 'reentry.profile.ordinary', 'reentry.profile.unknown', 'reentry.kind.shell'].map(key => t(key, { agent: 'Claude' })).join('|')
       && names.join('|') === ['deck-atlas-a1', 'deck-borealis-b1', t('reentry.unknownCard'), 'deck-shell-s1'].join('|')
       && saidOnce(section(), t('reentry.summary', { count: 3, bypass: 1 })) === 1;
     await report('reentry-preview', listed, rows.length, boxes().length);

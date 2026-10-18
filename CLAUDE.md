@@ -314,7 +314,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Agent status, attribution and listener | `agent_status.rs`, `agent_origin.rs`, `src-tauri/status-helper/` |
 | Agent hooks configuration, installation and migration | `agent_status/hooks.rs` (contract), `agent_status/hooks/tests.rs` |
 | Pi agent adapter: registration, the one settings entry, observer transport | `agent_pi.rs` (contract), `agent_pi/config.rs`, `agent_pi/transport.rs` (the sender proof, wire v2), `resources/pi/` (the observer extension), `scripts/pi_native.py`, `scripts/pi-live-verify.py` |
-| Agent re-entry on a shell-service restart | `agent_reentry/` (contract in `mod.rs`), `src-tauri/lifecycle-helper/`, `procinfo.rs`, `procinfo/code_identity.rs`, `ui/js/reentry-model.js`, `restart-reentry.js` |
+| Agent re-entry on a shell-service restart | `agent_reentry/` (contract in `mod.rs`; adapters `claude.rs`, `codex.rs`), `src-tauri/lifecycle-helper/`, `procinfo.rs`, `procinfo/code_identity.rs`, `resume.rs` (`printed`, the one pane-text reader), `ui/js/reentry-model.js`, `restart-reentry.js` |
 | First-party extension composition, access startup and Settings controllers | `extensions.rs`, `app/extensions/*.json`, `scripts/extension_catalog.py`, `ui/js/settings-extensions.js`, `ui/js/extension-*.js` (Agent, Slack, translation, Connector, MCP/Tunnel, voice preferences; + `docs/first-party-extensions.md`) |
 | Updates | `updater.rs`, `relaunch.rs` |
 | File drop / image paste | `drops.rs` |
@@ -392,12 +392,19 @@ Chromium testing of the mock catches none of these; verify in the real app.
   "New shell only" and every context entry create shells.
 - **Agent re-entry is the one other program start, and never reads the card's
   command.** On a confirmed shell-service restart with ticked cards it types
-  one request per entry: the frozen executable with `--resume <native
-  session>`, plus the bypass flag only under that restart's Policy B. One
-  attempt, never retried; a client is admitted by verified code identity,
-  never a release list; a confirmed entry is not readiness, authority or task
-  progress. Contract: `agent_reentry/mod.rs`; evidence and limits:
-  `docs/evidence/closeout-20261011/reentry-acceptance.md`.
+  one request per entry: the frozen executable with its adapter's exact-id
+  resume words (Claude `--resume <native session>`; Codex `resume
+  --no-daemon <native session>`), plus the bypass override only under that
+  restart's Policy B, or the words that ask Codex for the ordinary profile
+  under Policy A on a bypass launch. One attempt, never retried; a client is
+  admitted by verified code identity, never a release list; a confirmed or
+  started entry is not readiness, authority or task progress. Codex's final
+  session is its receipts crossed with the resume hint its pane printed at
+  the exit; pane text alone never names a session, and a Codex entry is at
+  best `started` (no entry receipt before its first turn). Contract:
+  `agent_reentry/mod.rs`; evidence and limits:
+  `docs/evidence/closeout-20261011/reentry-acceptance.md`,
+  `docs/evidence/codex-reentry-20261018/README.md`.
 - **A card is persisted only after its session started**
   (`provider.createStarted` kills the session if the write fails; a missing
   directory asks the user, never leaves a stopped card).

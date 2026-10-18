@@ -121,7 +121,7 @@ fn hook_status_command_returns_both_closed_agent_fields() {
         assert_eq!(agent.len(), 3);
         assert!(agent["signal"].is_boolean());
     }
-    assert!(agents["codex"]["lifecycle"].is_null());
+    assert!(agents["codex"]["lifecycle"].is_boolean());
     assert!(agents["codex"]["installation"].is_null());
     assert_eq!(object["claude"], agents["claude-code"]["signal"]);
     assert_eq!(object["codex"], agents["codex"]["signal"]);
@@ -1473,7 +1473,7 @@ fn a_moved_bundle_updates_the_lifecycle_hooks_and_keeps_a_user_hook_in_their_gro
 }
 
 #[test]
-fn only_claude_declares_a_reentry_capability_and_lifecycle_hooks() {
+fn claude_and_codex_declare_a_reentry_capability_and_lifecycle_hooks() {
     let claude = crate::extensions::agent("claude-code").expect("registered");
     assert!(claude.reentry.is_some());
     assert_eq!(
@@ -1481,12 +1481,24 @@ fn only_claude_declares_a_reentry_capability_and_lifecycle_hooks() {
         2
     );
     let codex = crate::extensions::agent("codex").expect("registered");
-    assert!(codex.reentry.is_none(), "Codex is never re-entered");
     assert!(codex
-        .hook_install()
-        .expect("hooks")
-        .lifecycle_hooks
-        .is_empty());
+        .reentry
+        .is_some_and(|capability| capability.source == "codex"));
+    assert_eq!(
+        codex.hook_install().expect("hooks").lifecycle_hooks,
+        CLAUDE_LIFECYCLE_HOOKS,
+        "the same two events and helper words, in Codex's shell form"
+    );
+    assert_eq!(
+        lifecycle_style(HookStyle::ShellAsync),
+        HookStyle::ShellBrief
+    );
+    assert_eq!(lifecycle_style(HookStyle::Exec), HookStyle::ExecBrief);
+    assert_eq!(
+        hook_value(HookStyle::ShellBrief, HELPER, "codex", "session-end"),
+        serde_json::json!({"type": "command", "command": format!("\"{HELPER}\" codex session-end"), "timeout": 1}),
+        "one simple command, no async: the shell execs the helper"
+    );
     // Pi: registered, no hook family at all and no re-entry capability
     let pi = crate::extensions::agent("pi").expect("registered");
     assert!(pi.reentry.is_none(), "Pi is never re-entered");
@@ -1512,8 +1524,10 @@ fn only_claude_declares_a_reentry_capability_and_lifecycle_hooks() {
     ] {
         assert_eq!(family.owns(command), owns, "{family:?} {command}");
     }
-    // a development build cannot install either family
-    assert!(agent_lifecycle_hooks_set(true).is_err());
+    // a development build cannot install either family, for either source
+    assert!(agent_lifecycle_hooks_set(true, None).is_err());
+    assert!(agent_lifecycle_hooks_set(true, Some("codex".into())).is_err());
+    assert!(agent_lifecycle_hooks_set(true, Some("pi".into())).is_err());
 }
 
 /// Not a test of its own: the child of
@@ -1535,7 +1549,7 @@ fn production_read_entries_child() {
         return println!("ENTRIES unavailable");
     };
     let helper = bundled_lifecycle_helper();
-    let installed = lifecycle_observation_installed();
+    let installed = lifecycle_observation_installed_for(CLAUDE_CODE.source);
     let baseline = crate::procinfo::own_baseline_supported(&home, capability.grammar);
     // the assembly reads no pane here: its tmux is never called
     let tmux = |_: &[&str]| Err(DeckError::new(ErrorKind::Tmux, "not called"));
@@ -1545,13 +1559,15 @@ fn production_read_entries_child() {
             tmux: &tmux,
             tmux_stdin: &tmux_stdin,
             socket: "unused",
-            capability,
+            adapters: &[crate::agent_reentry::Adapter {
+                capability,
+                observation: installed,
+                baseline,
+            }],
             helper: helper.clone(),
-            hooks_installed: installed,
             home: &home,
-            baseline,
         },
-        |env| (env.observation, env.baseline),
+        |env| (env.adapters[0].observation, env.adapters[0].baseline),
     );
     println!(
             "ENTRIES settings-say-installed={installed} helper-beside-the-executable={} baseline-supported={baseline} assembly-observes={observes} assembly-baseline={assembled_baseline}",

@@ -88,9 +88,13 @@ export const POLICY_BYPASS = 'reapply-bypass';
 const KINDS = ['candidate', 'shell', 'unsupported'];
 // which agent a row is, when the backend knows (its adapter's source word):
 // a label, never a permission
-const SOURCES = ['claude-code', 'pi'];
+const SOURCES = ['claude-code', 'codex', 'pi'];
+// the display name each source word gets in a sentence; an unknown source
+// is "the Agent"
+const AGENT_NAMES = { 'claude-code': 'Claude', codex: 'Codex', pi: 'Pi' };
+const agentOf = source => (own(AGENT_NAMES, source) ? AGENT_NAMES[source] : 'Agent');
 const PROFILES = ['bypass', 'ordinary', 'unknown'];
-const OUTCOMES = ['not-attempted', 'refused-before-launch', 'confirmed', 'unconfirmed', 'known-no-launch-failure'];
+const OUTCOMES = ['not-attempted', 'refused-before-launch', 'confirmed', 'started', 'unconfirmed', 'known-no-launch-failure'];
 
 const PROFILE_KEYS = {
   bypass: 'reentry.profile.bypass',
@@ -99,6 +103,7 @@ const PROFILE_KEYS = {
 };
 const REASON_KEYS = {
   'unsupported-agent': 'reentry.reason.unsupported-agent',
+  'observation-off': 'reentry.reason.observation-off',
   'client-identity-unverifiable': 'reentry.reason.client-identity-unverifiable',
   'multiple-panes': 'reentry.reason.multiple-panes',
   'identity-unavailable': 'reentry.reason.identity-unavailable',
@@ -122,6 +127,7 @@ const WARNING_KEYS = {
   'launch-profile-unconfirmed': 'reentry.warning.launch-profile-unconfirmed',
   'bypass-reauthorized': 'reentry.warning.bypass-reauthorized',
   'additional-dirs-not-restored': 'reentry.warning.additional-dirs-not-restored',
+  'ordinary-profile-requested': 'reentry.warning.ordinary-profile-requested',
 };
 const STAGES = ['preparing', 'restarting', 'reopening'];
 const STAGE_KEYS = {
@@ -131,9 +137,9 @@ const STAGE_KEYS = {
 };
 const PHASE_STAGE = { exiting: 'preparing', saving: 'preparing', replacing: 'restarting', reopening: 'reopening' };
 
+const own = (map, code) => (typeof code === 'string' && Object.hasOwn(map, code) ? map[code] : null);
 const text = (key, params) => (params ? { key, params } : { key });
 const idOf = value => (typeof value === 'string' && value ? value : null);
-const own = (map, code) => (typeof code === 'string' && Object.hasOwn(map, code) ? map[code] : null);
 
 const NATIVE_SHAPES = [
   /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
@@ -171,6 +177,9 @@ function previewEntry(raw, repeated) {
     reason: kind === 'candidate' ? null : (own(REASON_KEYS, raw.reason) ? raw.reason : null),
     source: SOURCES.includes(raw.source) ? raw.source : null,
     profile: kind !== 'candidate' ? null : PROFILES.includes(raw.launchProfile) ? raw.launchProfile : 'unknown',
+    // a candidate whose adapter's lifecycle observation is on: the only
+    // rows that can be ticked (the backend's own flag, per row)
+    observed: kind === 'candidate' && raw.observed === true,
   };
 }
 
@@ -196,7 +205,7 @@ export function reentryPlan(preview) {
   };
 }
 
-const selectable = (plan, entry) => plan.observation && entry.kind === 'candidate';
+const selectable = (plan, entry) => plan.observation && entry.kind === 'candidate' && entry.observed;
 const selectedEntries = plan => plan.entries.filter(entry => selectable(plan, entry) && plan.selected.includes(entry.cardId));
 
 export function planCounts(plan) {
@@ -241,7 +250,7 @@ export function reentryRequest(plan) {
   return { token: plan.token, cards, policy: settled(plan, plan.selected, plan.policy).policy };
 }
 
-const signature = entry => [entry.cardId, entry.session, entry.kind, entry.reason, entry.profile].join('\0');
+const signature = entry => [entry.cardId, entry.session, entry.kind, entry.reason, entry.profile, entry.observed].join('\0');
 
 /** After the listed managed cards were closed: the request against the FRESH
  *  preview, or `{ changed: true }` when that preview is not the reviewed list
@@ -264,30 +273,39 @@ export function afterManagedClose(plan, freshPreview, closedCardIds) {
 /** Everything the preview section shows, as dictionary keys and counts. */
 export function planView(plan, { managed = false } = {}) {
   const counts = planCounts(plan);
-  const listed = plan.entries.filter(entry => entry.kind === 'candidate').length;
+  const candidates = plan.entries.filter(entry => entry.kind === 'candidate');
+  const listed = candidates.length;
+  // candidates whose adapter's observation is off: the one setup hint
+  // names the first one's agent
+  const unobserved = candidates.filter(entry => !selectable(plan, entry));
   const rows = plan.entries.map(entry => ({
     cardId: entry.cardId,
     session: entry.session,
     source: entry.source ?? null,
     selectable: selectable(plan, entry),
     checked: plan.selected.includes(entry.cardId),
-    note: entry.kind === 'candidate' ? text(PROFILE_KEYS[entry.profile])
+    note: entry.kind === 'candidate' ? text(PROFILE_KEYS[entry.profile], { agent: agentOf(entry.source) })
       : entry.kind === 'shell' ? text('reentry.kind.shell')
-        : text(own(REASON_KEYS, entry.reason) || 'reentry.reason.identity-unavailable'),
+        : text(own(REASON_KEYS, entry.reason) || 'reentry.reason.identity-unavailable', { agent: agentOf(entry.source) }),
   }));
   const bypassOn = counts.bypass > 0;
+  // Codex reports entering a session only at its first turn, and may go on
+  // with an active goal by itself: said once when a Codex row can be chosen
+  const codex = candidates.some(entry => selectable(plan, entry) && entry.source === 'codex');
   return {
     visible: plan.entries.length > 0 || plan.unknown === true,
     summary: plan.unknown === true ? text('reentry.summary.unknown')
       : !listed ? text('reentry.summary.none')
-      : !plan.observation ? text('reentry.summary.unavailable', { count: listed })
+      : !counts.candidates ? text('reentry.summary.unavailable', { count: listed })
         : text('reentry.summary', { count: counts.candidates, bypass: counts.candidateBypass }),
-    setup: listed > 0 && !plan.observation,
+    setup: unobserved.length > 0,
+    setupSource: unobserved[0]?.source ?? null,
     rows,
     canSelect: counts.candidates > 0,
     // said once for the whole confirmation, under either policy
     notes: counts.candidates > 0
-      ? ['reentry.note.ordinary', 'reentry.note.scope', 'reentry.note.context', 'reentry.note.dirs'].map(key => text(key)) : [],
+      ? ['reentry.note.ordinary', 'reentry.note.scope', 'reentry.note.context', 'reentry.note.dirs', ...(codex ? ['reentry.note.codex'] : [])]
+        .map(key => text(key)) : [],
     help: counts.candidates > 0 ? [text('reentry.note.otherClients'), text('reentry.help.context')] : [],
     allSelected: counts.candidates > 0 && counts.selected === counts.candidates,
     policy: plan.policy,
@@ -354,6 +372,7 @@ export function reentryResult(raw) {
         // final once the backend says so, or once the whole operation is
         settled: state === 'complete' || entry.settled === true,
         session: idOf(entry.session) || '',
+        source: SOURCES.includes(entry.source) ? entry.source : null,
         outcome: OUTCOMES.includes(entry.outcome) ? entry.outcome : null,
         reason: own(REASON_KEYS, entry.reason) ? entry.reason : null,
         warnings: (Array.isArray(entry.warnings) ? entry.warnings : []).filter(code => own(WARNING_KEYS, code)),
@@ -374,10 +393,10 @@ export function restartOutcome(answer) {
 
 // one line per entry: launch-profile-unconfirmed already says that bypass was
 // not reapplied, so the pair is shown once
-function warningLines(warnings) {
+function warningLines(warnings, agent) {
   const codes = [...new Set(warnings)];
   const merged = codes.includes('launch-profile-unconfirmed') ? codes.filter(code => code !== 'bypass-not-reapplied') : codes;
-  return merged.map(code => text(WARNING_KEYS[code]));
+  return merged.map(code => text(WARNING_KEYS[code], { agent }));
 }
 
 // An entry whose outcome is not final yet: in progress while the list is
@@ -391,28 +410,37 @@ function pendingRow(base, pollEnded) {
 // `running`: the operation this entry belongs to has not completed. Only then
 // can an entry be unsettled, and only the boolean true settles it.
 function resultRow(entry, running, pollEnded) {
-  const base = { cardId: entry.cardId, session: entry.session, shell: entry.shell };
+  const base = { cardId: entry.cardId, session: entry.session, shell: entry.shell, started: false };
   if (running && entry.settled !== true) return pendingRow(base, pollEnded);
-  // the bypass mark belongs to a confirmed entry alone: nothing about a flag
-  // is said for an entry whose request may never have arrived
-  const warnings = warningLines(entry.outcome === 'confirmed' ? entry.warnings
-    : entry.warnings.filter(code => code !== 'bypass-reauthorized'));
+  const agent = agentOf(entry.source);
+  const A = { agent };
+  // the bypass mark belongs to a confirmed or started entry alone: nothing
+  // about a flag is said for an entry whose request may never have arrived
+  const verified = entry.outcome === 'confirmed' || entry.outcome === 'started';
+  const warnings = warningLines(verified ? entry.warnings
+    : entry.warnings.filter(code => code !== 'bypass-reauthorized'), agent);
   const reason = own(REASON_KEYS, entry.reason);
   if (entry.outcome === 'confirmed') {
     return { ...base, tone: 'ok', details: warnings,
-      line: text(entry.warnings.includes('bypass-reauthorized') ? 'reentry.result.confirmed' : 'reentry.result.confirmedOrdinary') };
+      line: text(entry.warnings.includes('bypass-reauthorized') ? 'reentry.result.confirmed' : 'reentry.result.confirmedOrdinary', A) };
+  }
+  // started by exactly the request, in the expected context, by an agent
+  // that reports entering only at its first turn: never "re-entered"
+  if (entry.outcome === 'started') {
+    return { ...base, tone: 'ok', started: true, details: [text('reentry.result.startedDetail', A), ...warnings],
+      line: text('reentry.result.started', A) };
   }
   if (entry.outcome === 'unconfirmed') {
     const context = CONTEXT_REASONS.includes(entry.reason);
-    const more = reason && entry.reason !== 'launch-unconfirmed' ? [text(reason)] : [];
+    const more = reason && entry.reason !== 'launch-unconfirmed' ? [text(reason, A)] : [];
     return { ...base, tone: 'warn', details: [...more, ...(context ? [] : [text('reentry.result.check')]), ...warnings],
-      line: text(entry.clientObserved || context ? 'reentry.result.startedUnconfirmed' : 'reentry.result.unconfirmed') };
+      line: text(entry.clientObserved || context ? 'reentry.result.startedUnconfirmed' : 'reentry.result.unconfirmed', A) };
   }
   if (!entry.outcome) {
     return { ...base, tone: 'warn', line: text('reentry.result.unknown'), details: [text('reentry.result.check')] };
   }
-  return { ...base, tone: 'info', details: [...(reason ? [text(reason)] : []), ...warnings],
-    line: text(entry.outcome === 'not-attempted' ? 'reentry.result.notAttempted' : 'reentry.result.notStarted') };
+  return { ...base, tone: 'info', details: [...(reason ? [text(reason, A)] : []), ...warnings],
+    line: text(entry.outcome === 'not-attempted' ? 'reentry.result.notAttempted' : 'reentry.result.notStarted', A) };
 }
 
 /** The result list. `replaced` is the shell service conclusion (the call's
@@ -434,16 +462,21 @@ export function projectResult({ replaced, result, requested = [], pollEnded = fa
     rows.push(pending ? pendingRow({ cardId, session: '', shell: false }, ended)
       : { cardId, session: '', shell: false, tone: 'warn', line: text('reentry.result.unknown'), details: [text('reentry.result.check')] });
   }
-  const confirmed = rows.filter(row => row.tone === 'ok').length;
+  const started = rows.filter(row => row.started).length;
+  const confirmed = rows.filter(row => row.tone === 'ok').length - started;
   const waiting = rows.filter(row => row.tone === 'pending').length;
-  const other = rows.length - confirmed - waiting;
+  const other = rows.length - confirmed - started - waiting;
+  // a started entry is counted as such, never among the re-entered
+  const summary = !rows.length ? null
+    : started && waiting ? text('reentry.result.summaryPendingStarted', { confirmed, started, pending: waiting, other })
+    : started ? text('reentry.result.summaryStarted', { confirmed, started, other })
+    : waiting ? text('reentry.result.summaryPending', { confirmed, pending: waiting, other })
+      : text('reentry.result.summary', { confirmed, other });
   return {
     replaced: done,
     pending,
     title: text(done ? 'reentry.result.restarted' : 'reentry.result.notRestarted'),
-    summary: !rows.length ? null
-      : waiting ? text('reentry.result.summaryPending', { confirmed, pending: waiting, other })
-        : text('reentry.result.summary', { confirmed, other }),
+    summary,
     notes: [
       ...(done ? [] : [text('reentry.result.agentsMayHaveExited')]),
       ...(waiting ? [text(ended ? 'reentry.result.pendingEnded' : 'reentry.result.pending')] : []),

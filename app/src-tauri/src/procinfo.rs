@@ -788,6 +788,12 @@ pub(crate) struct LaunchGrammar {
     /// this shape and is dropped (it never stands in for a final session id).
     pub(crate) resume: &'static str,
     pub(crate) resume_value: fn(&str) -> bool,
+    /// The resume word may stand alone (a native picker): still a supported
+    /// launch, with no id.
+    pub(crate) resume_optional: bool,
+    /// Flags without a value that MUST be present, each exactly once, for
+    /// the launch to be supported at all (a topology the adapter requires).
+    pub(crate) required: &'static [&'static str],
     /// A permission-mode flag and the values that still classify `Ordinary`.
     pub(crate) mode: &'static str,
     pub(crate) ordinary_modes: &'static [&'static str],
@@ -875,6 +881,10 @@ fn reduce_launch(
 ) -> (LaunchProfile, bool) {
     let unsupported = (LaunchProfile::Unsupported, false);
     let (mut bypass, mut mode, mut directories, mut resumed) = (false, false, false, false);
+    // a bare resume word still waits for its id, which may follow the
+    // flags as a positional word (`resume --flag <id>`)
+    let mut id_pending = false;
+    let mut required_seen = vec![false; grammar.required.len()];
     let mut rest = argv.iter().skip(1).copied().peekable();
     while let Some(token) = rest.next() {
         let (flag, inline) = match token.split_once('=') {
@@ -889,10 +899,26 @@ fn reduce_launch(
         if flag == grammar.bypass && inline.is_none() {
             bypass = true;
         } else if flag == grammar.resume {
-            if resumed || !value(&mut rest).is_some_and(|id| (grammar.resume_value)(id)) {
+            if resumed {
+                return unsupported;
+            }
+            // a bare resume word is a picker: supported only where the
+            // adapter says so, and the next word must not be its value
+            let bare = inline.is_none() && rest.peek().is_none_or(|next| next.starts_with('-'));
+            if bare {
+                if !grammar.resume_optional {
+                    return unsupported;
+                }
+                id_pending = true;
+            } else if !value(&mut rest).is_some_and(|id| (grammar.resume_value)(id)) {
                 return unsupported;
             }
             resumed = true;
+        } else if let Some(at) = grammar.required.iter().position(|name| *name == flag) {
+            if inline.is_some() || required_seen[at] {
+                return unsupported;
+            }
+            required_seen[at] = true;
         } else if flag == grammar.mode {
             if mode || !value(&mut rest).is_some_and(|m| grammar.ordinary_modes.contains(&m)) {
                 return unsupported;
@@ -908,11 +934,17 @@ fn reduce_launch(
             }
             while rest.next_if(|next| !next.starts_with('-')).is_some() {}
             directories = true;
+        } else if id_pending && inline.is_none() && (grammar.resume_value)(token) {
+            // the bare resume word's id, after the flags
+            id_pending = false;
         } else {
             return unsupported;
         }
     }
-    if (bypass && mode) || !environment_supported(env, home, grammar) {
+    if (bypass && mode)
+        || required_seen.iter().any(|seen| !seen)
+        || !environment_supported(env, home, grammar)
+    {
         return unsupported;
     }
     let profile = if bypass {
@@ -2048,6 +2080,8 @@ mod tests {
         bypass: "--dangerously-skip-permissions",
         resume: "--resume",
         resume_value: id_shape,
+        resume_optional: false,
+        required: &[],
         mode: "--permission-mode",
         ordinary_modes: &["default", "plan", "acceptEdits"],
         dropped: &["--model"],
@@ -2113,6 +2147,77 @@ mod tests {
             vec!["--add-dir"],
             vec!["fix the bug"],
             vec!["-p", "hello"],
+        ] {
+            assert_eq!(
+                reduced(&unsupported),
+                (Unsupported, false),
+                "{unsupported:?}"
+            );
+        }
+    }
+
+    /// A grammar with a required flag and a bare resume word (Codex's
+    /// shape): the flag must be there exactly once and without a value; the
+    /// resume word stands alone or carries one id of the native shape.
+    #[test]
+    fn a_required_flag_and_a_bare_resume_word_classify_as_the_grammar_says() {
+        use LaunchProfile::*;
+        const CODEX_LIKE: LaunchGrammar = LaunchGrammar {
+            bypass: "--yolo",
+            resume: "resume",
+            resume_optional: true,
+            required: &["--no-daemon"],
+            mode: "--sandbox",
+            ordinary_modes: &["workspace-write", "read-only"],
+            dropped: &["--model", "-m"],
+            directories: "--add-dir",
+            ..GRAMMAR
+        };
+        let reduced = |args: &[&str]| {
+            let mut argv = vec!["codex"];
+            argv.extend_from_slice(args);
+            reduce_launch(&argv, HOME, "/Users/u", &CODEX_LIKE)
+        };
+        assert_eq!(reduced(&["--no-daemon"]), (Ordinary, false));
+        assert_eq!(reduced(&["--no-daemon", "--yolo"]), (Bypass, false));
+        assert_eq!(
+            reduced(&["--yolo", "--no-daemon", "resume"]),
+            (Bypass, false)
+        );
+        assert_eq!(reduced(&["--no-daemon", "resume", UUID]), (Ordinary, false));
+        assert_eq!(
+            reduced(&["resume", "--no-daemon", "--yolo", UUID]),
+            (Bypass, false)
+        );
+        assert_eq!(
+            reduced(&["resume", "--no-daemon", "-m", "gpt-5", UUID]),
+            (Ordinary, false)
+        );
+        assert_eq!(
+            reduced(&["--no-daemon", "-m", "gpt-5", "--add-dir", "/a"]),
+            (Ordinary, true)
+        );
+        assert_eq!(
+            reduced(&["--no-daemon", "--sandbox", "read-only", "resume"]),
+            (Ordinary, false)
+        );
+        for unsupported in [
+            vec![],
+            vec!["--yolo"],
+            vec!["resume", UUID],
+            vec!["--no-daemon", "--no-daemon"],
+            vec!["--no-daemon=1"],
+            vec!["--no-daemon", "resume", "latest"],
+            vec!["--no-daemon", "resume", "--last"],
+            vec!["--no-daemon", "resume", UUID, "resume"],
+            vec!["resume", "--no-daemon", UUID, UUID],
+            vec!["--no-daemon", UUID],
+            vec!["--no-daemon", "--sandbox", "danger-full-access"],
+            vec!["--no-daemon", "--yolo", "--sandbox", "read-only"],
+            vec!["--no-daemon", "--ask-for-approval", "never"],
+            vec!["--no-daemon", "--dangerously-bypass-hook-trust"],
+            vec!["--no-daemon", "fix the bug"],
+            vec!["--no-daemon", "exec", "hi"],
         ] {
             assert_eq!(
                 reduced(&unsupported),

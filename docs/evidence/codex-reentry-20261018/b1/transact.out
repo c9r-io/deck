@@ -1,0 +1,37 @@
+
+running 1 test
+M1 capability=production source=codex cards=2 policy=reapply-bypass
+M1 check=data-directory-inside-the-experiment ok
+M1 check=old-server-environment ok
+M1 old card=a pane=66100 client=66196@1792330856.694990
+M1 old card=b pane=66111 client=66343@1792330857.142394
+M1 check=old-clients-in-the-foreground ok panes=2
+M1 check=preview-candidates-and-launch-profiles ok
+M1 check=preview-carries-no-native-identity ok
+M1 restart old-server=66099 new-server=66750 replaced=true state=Complete
+M1 check=server-replaced-and-settled ok
+M1 entry card=a outcome=started reason=none shell=true client=true settled=true warnings=1 warning-codes=bypass-reauthorized
+M1 entry card=b outcome=started reason=none shell=true client=true settled=true warnings=0 warning-codes=none
+M1 check=every-entry-has-its-own-expected-outcome ok
+M1 check=policy-b-notes-the-reauthorization-on-the-bypass-launches-only ok
+M1 check=one-request-per-launched-entry ok requests=2 enters=2
+M1 check=every-request-is-the-executable-the-reauthorized-flag-or-none-resume-and-one-id ok
+M1 request card=a bypass-override=true
+M1 request card=b bypass-override=false
+M1 check=the-bypass-flag-is-on-the-requests-this-policy-decides-and-on-no-other ok with-the-flag=1
+M1 check=requests-name-the-sessions-the-clients-exited-in ok recorded-final-sessions=2
+M1 info no-earlier-session-was-recorded-for-this-matrix
+M1 check=a-repeated-invoke-reads-the-stored-result ok
+M1 check=queue-row-paused-on-disk-before-the-kill ok
+M1 check=queue-row-still-paused-after-the-reentry ok
+M1 check=new-server-environment ok
+M1 new card=a pane=66767 client=66784@1792330865.989485 old-client-gone=true
+M1 new card=b pane=66792 client=66854@1792330866.673158 old-client-gone=true
+M1 check=a-new-generation-for-every-launched-entry ok
+M1 check=new-generation-recorded-for-the-driver ok
+M1 check=lifecycle-file-names-the-server-only ok
+M1 info signal-observations-on-the-new-panes=0
+M1 result failed-checks=0
+test agent_reentry::tests::native_m1_transact ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1294 filtered out; finished in 9.00s

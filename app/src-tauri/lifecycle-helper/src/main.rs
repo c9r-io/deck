@@ -1,13 +1,15 @@
 //! deck-lifecycle-helper — invoked by an agent's session lifecycle hooks
-//! (Claude Code `SessionStart` / `SessionEnd` today) inside a deck tmux pane.
+//! (Claude Code's and Codex's `SessionStart` / `SessionEnd`) inside a deck
+//! tmux pane.
 //! It forwards ONE closed lifecycle fact plus the pane identity it inherited
 //! from the environment to deck's local status socket, then exits 0 no matter
 //! what: a hook helper must never break the agent that invoked it, and it has
 //! nowhere safe to log. No stdout, no stderr, no log, no file.
 //!
 //! CLI: `deck-lifecycle-helper <source> <event>` with source exactly
-//! `claude-code` and event exactly `session-start` or `session-end`. Any other
-//! argv sends nothing.
+//! `claude-code` or `codex` and event exactly `session-start` or
+//! `session-end`. Any other argv sends nothing. The source word is written
+//! to the wire as given; what it means is the host's adapter's.
 //!
 //! A separate closed protocol family. This helper never extends
 //! `deck-status-helper`'s payload contract (that helper still reads exactly
@@ -27,7 +29,8 @@
 //! - session-start only, `source`: mapped to the closed word
 //!   `startup | resume | clear | compact`, any other string to `other`.
 //! - session-end only, `reason`: mapped to `clear | resume | logout`,
-//!   `prompt_input_exit` to `prompt-input-exit`, any other string to `other`.
+//!   `prompt_input_exit` to `prompt-input-exit`, any other string to `other`
+//!   (Codex's reason is always `other`; both agents name both keys).
 //!
 //! The native strings are compared in place and only the mapped static word
 //! is kept, so an unknown value can never reach the wire. A missing, nested,
@@ -81,8 +84,8 @@ const STDIN_BUDGET: Duration = Duration::from_millis(300);
 /// One deadline for connect + write + wait-for-close.
 const SOCKET_BUDGET: Duration = Duration::from_millis(500);
 
-/// The only agent source this helper speaks for.
-const SOURCE: &str = "claude-code";
+/// The agent sources this helper speaks for.
+const SOURCES: [&str; 2] = ["claude-code", "codex"];
 
 /// The lifecycle event named by argv.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,19 +94,19 @@ enum Event {
     SessionEnd,
 }
 
-/// `<program> <source> <event>`, exact spellings and nothing after them.
-fn parse_args(args: &[String]) -> Option<Event> {
+/// `<program> <source> <event>`, exact spellings and nothing after them:
+/// the event, and the source word as one of the static spellings.
+fn parse_args(args: &[String]) -> Option<(&'static str, Event)> {
     let [_, source, event] = args else {
         return None;
     };
-    if source != SOURCE {
-        return None;
-    }
-    match event.as_str() {
-        "session-start" => Some(Event::SessionStart),
-        "session-end" => Some(Event::SessionEnd),
-        _ => None,
-    }
+    let source = *SOURCES.iter().find(|known| *known == source)?;
+    let event = match event.as_str() {
+        "session-start" => Event::SessionStart,
+        "session-end" => Event::SessionEnd,
+        _ => return None,
+    };
+    Some((source, event))
 }
 
 /// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, lowercase hex.
@@ -351,7 +354,13 @@ fn parse_tmux_env(tmux: &str) -> Option<(String, u32)> {
 /// The one wire line for `event`, or None when any field is not in its
 /// validated shape. Every field is re-checked here, so plain `format!` is
 /// safe JSON whatever the caller passed.
-fn build_line(event: Event, fields: &Fields, tmux: &str, pane: &str) -> Option<String> {
+fn build_line(
+    source: &'static str,
+    event: Event,
+    fields: &Fields,
+    tmux: &str,
+    pane: &str,
+) -> Option<String> {
     if !uuid_ok(&fields.session_id) || !detail_word_ok(event, fields.detail) || !pane_ok(pane) {
         return None;
     }
@@ -361,7 +370,7 @@ fn build_line(event: Event, fields: &Fields, tmux: &str, pane: &str) -> Option<S
         Event::SessionEnd => ("session-end", "endReason"),
     };
     let line = format!(
-        "{{\"protocol\":\"agent-lifecycle\",\"v\":1,\"source\":\"{SOURCE}\",\"event\":\"{event_word}\",\"nativeSessionId\":\"{id}\",\"{detail_key}\":\"{detail}\",\"socket\":\"{socket_name}\",\"server_pid\":{server_pid},\"pane\":\"{pane}\"}}\n",
+        "{{\"protocol\":\"agent-lifecycle\",\"v\":1,\"source\":\"{source}\",\"event\":\"{event_word}\",\"nativeSessionId\":\"{id}\",\"{detail_key}\":\"{detail}\",\"socket\":\"{socket_name}\",\"server_pid\":{server_pid},\"pane\":\"{pane}\"}}\n",
         id = fields.session_id,
         detail = fields.detail,
     );
@@ -376,9 +385,9 @@ fn message_for(
     tmux: Option<&str>,
     pane: Option<&str>,
 ) -> Option<String> {
-    let event = parse_args(args)?;
+    let (source, event) = parse_args(args)?;
     let fields = extract(payload, event)?;
-    build_line(event, &fields, tmux?, pane?)
+    build_line(source, event, &fields, tmux?, pane?)
 }
 
 /// Time left before `deadline`, None once it has passed.
@@ -486,19 +495,28 @@ mod tests {
     }
 
     #[test]
-    fn argv_accepts_only_the_two_exact_invocations() {
+    fn argv_accepts_only_the_exact_invocations_of_the_two_sources() {
         assert_eq!(
             parse_args(&args(&["h", "claude-code", "session-start"])),
-            Some(Event::SessionStart)
+            Some(("claude-code", Event::SessionStart))
         );
         assert_eq!(
             parse_args(&args(&["h", "claude-code", "session-end"])),
-            Some(Event::SessionEnd)
+            Some(("claude-code", Event::SessionEnd))
+        );
+        assert_eq!(
+            parse_args(&args(&["h", "codex", "session-end"])),
+            Some(("codex", Event::SessionEnd))
+        );
+        assert_eq!(
+            parse_args(&args(&["h", "codex", "session-start"])),
+            Some(("codex", Event::SessionStart))
         );
         for bad in [
             &["h"][..],
             &["h", "claude-code"],
-            &["h", "codex", "session-start"],
+            &["h", "pi", "session-start"],
+            &["h", "Codex", "session-end"],
             &["h", "Claude-Code", "session-start"],
             &["h", "claude-code", "SessionStart"],
             &["h", "claude-code", "session_start"],
@@ -516,7 +534,7 @@ mod tests {
         let payload = format!(r#"{{"session_id":"{ID}","source":"startup","reason":"clear"}}"#);
         for bad in [
             &["h"][..],
-            &["h", "codex", "session-start"],
+            &["h", "pi", "session-start"],
             &["h", "claude-code", "needs-input"],
             &["h", "claude-code", "session-end", "x"],
         ] {
@@ -1054,7 +1072,8 @@ mod tests {
             (Event::SessionStart, "startup"),
             (Event::SessionEnd, "prompt-input-exit"),
         ] {
-            let line = build_line(event, &fields(detail), &tmux, "%123456789").unwrap();
+            let line =
+                build_line("claude-code", event, &fields(detail), &tmux, "%123456789").unwrap();
             assert!(line.len() <= MAX_LINE, "{}", line.len());
             assert!(line.ends_with("}\n"));
             assert_eq!(line.matches('\n').count(), 1);
@@ -1065,7 +1084,7 @@ mod tests {
     #[test]
     fn the_line_is_built_only_from_validated_fields() {
         let good = fields("startup");
-        assert!(build_line(Event::SessionStart, &good, TMUX, "%7").is_some());
+        assert!(build_line("claude-code", Event::SessionStart, &good, TMUX, "%7").is_some());
         // a detail word of the other event, or outside both sets
         for (event, detail) in [
             (Event::SessionStart, "logout"),
@@ -1075,7 +1094,7 @@ mod tests {
             (Event::SessionStart, "x\",\"y\":\""),
         ] {
             assert_eq!(
-                build_line(event, &fields(detail), TMUX, "%7"),
+                build_line("claude-code", event, &fields(detail), TMUX, "%7"),
                 None,
                 "{detail}"
             );
@@ -1084,17 +1103,20 @@ mod tests {
             session_id: "\",\"pane\":\"%9".into(),
             detail: "startup",
         };
-        assert_eq!(build_line(Event::SessionStart, &bad_id, TMUX, "%7"), None);
+        assert_eq!(
+            build_line("claude-code", Event::SessionStart, &bad_id, TMUX, "%7"),
+            None
+        );
         for pane in ["", "%", "7", "%7a", "%1234567890", "%7\""] {
             assert_eq!(
-                build_line(Event::SessionStart, &good, TMUX, pane),
+                build_line("claude-code", Event::SessionStart, &good, TMUX, pane),
                 None,
                 "{pane:?}"
             );
         }
         for tmux in ["", "/t/deck", "/t/other,1,0", "/t/deck,x,0", "/t/deck,-1,0"] {
             assert_eq!(
-                build_line(Event::SessionStart, &good, tmux, "%7"),
+                build_line("claude-code", Event::SessionStart, &good, tmux, "%7"),
                 None,
                 "{tmux:?}"
             );

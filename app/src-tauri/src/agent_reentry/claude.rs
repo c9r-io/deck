@@ -174,7 +174,7 @@
 //!   scale, and not the signed carrier.
 
 use super::lifecycle::{self, Event, Fact, Receipt, ReceiptContract, Words};
-use super::ReentryCapability;
+use super::{Grant, ReentryCapability, Request};
 use crate::procinfo::{LaunchGrammar, ProductIdentity};
 
 /// Whose code a client must be: Claude Code as Anthropic signs it. This is
@@ -207,6 +207,8 @@ const GRAMMAR: LaunchGrammar = LaunchGrammar {
     bypass: BYPASS,
     resume: RESUME,
     resume_value: native_id_ok,
+    resume_optional: false,
+    required: &[],
     mode: "--permission-mode",
     ordinary_modes: &["default", "plan", "acceptEdits"],
     dropped: &["--model"],
@@ -227,28 +229,36 @@ pub(crate) fn native_id_ok(id: &str) -> bool {
 
 /// The argument words of an exact-id request, in the one order this build
 /// produces: the override, when the core granted it, before `--resume`.
-/// (What ran natively in that order is the module header's record.) `None`
-/// for anything that is not a native session id.
-fn request(native_id: &str, bypass: bool) -> Option<Vec<String>> {
+/// (What ran natively in that order is the module header's record.) A
+/// `Lower` grant is the bare request: a Claude resume without the override
+/// does not keep bypass, so nothing is added to lower it. `None` for
+/// anything that is not a native session id.
+fn request(native_id: &str, grant: Grant) -> Option<Request> {
     if !native_id_ok(native_id) {
         return None;
     }
     let mut words = Vec::with_capacity(3);
-    if bypass {
+    if grant == Grant::Reapply {
         words.push(BYPASS.to_string());
     }
     words.push(RESUME.to_string());
     words.push(native_id.to_string());
-    Some(words)
+    Some(Request {
+        words,
+        lowered: false,
+    })
 }
 
 pub(crate) const CAPABILITY: ReentryCapability = ReentryCapability {
+    source: "claude-code",
     product: &PRODUCT,
     launcher: "claude",
     grammar: &GRAMMAR,
-    login_shell: "zsh",
     request,
     receipts: &RECEIPTS,
+    // the exit receipt names the final session by itself
+    exit_hint: None,
+    entry_receipt: true,
 };
 
 /// What Claude Code's lifecycle receipts mean (`lifecycle::ReceiptContract`):
@@ -309,8 +319,9 @@ fn decode(words: &Words) -> Result<(Event, String), &'static str> {
 /// end (`prompt-input-exit`), which must be the LAST fact and the only such
 /// id. `clear`, `resume`, `logout` and `other` ends switch or name nothing;
 /// two different final ids never resolve to the later one, and an
-/// incomplete record names nothing.
-pub(crate) fn final_session(facts: &[Fact]) -> Option<String> {
+/// incomplete record names nothing. What the pane printed is not read:
+/// Claude's receipt names the session on its own (`exit_hint: None`).
+pub(crate) fn final_session(facts: &[Fact], _printed: &[String]) -> Option<String> {
     let exit = ended(EndReason::PromptInputExit);
     let last = facts.last()?;
     if !lifecycle::complete(facts) || last.event != exit {
@@ -397,12 +408,17 @@ mod tests {
 
     #[test]
     fn a_request_is_only_the_exact_id_and_the_optional_bypass_flag() {
-        assert_eq!(request(ID, false).unwrap(), ["--resume", ID]);
+        let request = |id, grant| request(id, grant).map(|request| request.words);
+        assert_eq!(request(ID, Grant::Plain).unwrap(), ["--resume", ID]);
+        assert_eq!(request(ID, Grant::Lower).unwrap(), ["--resume", ID]);
         assert_eq!(
-            request(ID, true).unwrap(),
+            request(ID, Grant::Reapply).unwrap(),
             ["--dangerously-skip-permissions", "--resume", ID]
         );
-        for words in [request(ID, false).unwrap(), request(ID, true).unwrap()] {
+        for words in [
+            request(ID, Grant::Plain).unwrap(),
+            request(ID, Grant::Reapply).unwrap(),
+        ] {
             for banned in [
                 "--permission-mode",
                 "default",
@@ -429,7 +445,7 @@ mod tests {
             "latest",
         ] {
             assert!(!native_id_ok(bad), "{bad:?}");
-            assert!(request(bad, true).is_none(), "{bad:?}");
+            assert!(request(bad, Grant::Reapply).is_none(), "{bad:?}");
         }
     }
 
@@ -464,15 +480,18 @@ mod tests {
     #[test]
     fn no_release_is_named_at_runtime() {
         let ReentryCapability {
+            source: _,
             product: _,
             launcher: _,
             grammar: _,
-            login_shell: _,
             request: _,
             receipts: _,
+            exit_hint: _,
+            entry_receipt: _,
         } = CAPABILITY;
         let sources = [
             ("claude.rs", production(include_str!("claude.rs"))),
+            ("codex.rs", production(include_str!("codex.rs"))),
             ("mod.rs", production(include_str!("mod.rs"))),
             ("launch.rs", production(include_str!("launch.rs"))),
             ("lifecycle.rs", production(include_str!("lifecycle.rs"))),

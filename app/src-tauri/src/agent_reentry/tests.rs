@@ -156,6 +156,7 @@ fn the_sources_read_no_saved_command_and_reach_no_signal_or_scheduler_state() {
     for (name, source) in [
         ("mod.rs", include_str!("mod.rs")),
         ("claude.rs", include_str!("claude.rs")),
+        ("codex.rs", include_str!("codex.rs")),
         ("lifecycle.rs", include_str!("lifecycle.rs")),
         ("launch.rs", include_str!("launch.rs")),
     ] {
@@ -164,6 +165,12 @@ fn the_sources_read_no_saved_command_and_reach_no_signal_or_scheduler_state() {
             .filter(|line| !line.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
+        // The pane's own exit hint is read through exactly one pure reader
+        // (`resume::printed`, ordered ids for one launcher), and only to be
+        // crossed with the client's kernel-attributed exit receipt
+        // (`codex::final_session`); the completion path's hint cache and
+        // command are never reached from here.
+        let code = code.replace("crate::resume::printed(", "");
         for banned in [
             "[\"cmd\"]",
             ".cmd",
@@ -173,6 +180,7 @@ fn the_sources_read_no_saved_command_and_reach_no_signal_or_scheduler_state() {
             "with_agents",
             "generation_evidence",
             "crate::resume",
+            "terminal_resume_hints",
             "shell_state",
             "Command::new",
             "run-shell",
@@ -191,6 +199,7 @@ fn views_carry_closed_codes_and_no_native_identity() {
     let view = EntryView {
         card_id: "c1".into(),
         session: "s1".into(),
+        source: Some("claude-code"),
         outcome: Outcome::Confirmed,
         reason: None,
         warnings: vec![Warning::BypassReauthorized],
@@ -216,10 +225,25 @@ fn views_carry_closed_codes_and_no_native_identity() {
             "session",
             "settled",
             "shell",
+            "source",
             "warnings"
         ]
     );
     assert_eq!(json["outcome"], "confirmed");
+    assert_eq!(json["source"], "claude-code");
+    assert_eq!(
+        serde_json::to_value(Outcome::Started).unwrap(),
+        "started",
+        "the started outcome is its own closed word"
+    );
+    assert_eq!(
+        serde_json::to_value(Reason::ObservationOff).unwrap(),
+        "observation-off"
+    );
+    assert_eq!(
+        serde_json::to_value(Warning::OrdinaryProfileRequested).unwrap(),
+        "ordinary-profile-requested"
+    );
     assert_eq!(json["warnings"][0], "bypass-reauthorized");
     let approval: Result<Approval, _> = serde_json::from_str(
         r#"{"token":"t","cards":["c1"],"policy":"reapply-bypass","nativeSessionId":"x"}"#,
@@ -247,6 +271,7 @@ fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
         view: EntryView {
             card_id: card.into(),
             session: card.into(),
+            source: Some(claude::CAPABILITY.source),
             outcome: Outcome::NotAttempted,
             reason: None,
             warnings: Vec::new(),
@@ -263,6 +288,7 @@ fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
             profile: Ordinary,
             additional_dirs: false,
             cwd: DirRef::for_tests(&std::env::temp_dir()),
+            source: claude::CAPABILITY.source,
         },
         bypass: false,
         final_id: None,
@@ -270,6 +296,8 @@ fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
         slot: Slot::Armed,
         new: None,
         awaiting: false,
+        sent_at: None,
+        printed_before: Vec::new(),
     };
     let mut plan = Plan {
         shared: Arc::new(Mutex::new(ReentryResult {
@@ -323,7 +351,7 @@ fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
 #[test]
 fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
     assert_eq!(
-        claude::final_session(&[]),
+        claude::final_session(&[], &[]),
         None,
         "no receipt, no final session"
     );
@@ -337,6 +365,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
         view: EntryView {
             card_id: card.into(),
             session: card.into(),
+            source: Some(claude::CAPABILITY.source),
             outcome: Outcome::NotAttempted,
             reason: None,
             warnings: Vec::new(),
@@ -353,6 +382,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
             profile: Bypass,
             additional_dirs: false,
             cwd: DirRef::for_tests(&std::env::temp_dir()),
+            source: claude::CAPABILITY.source,
         },
         bypass: true,
         final_id: None,
@@ -360,6 +390,8 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
         slot: Slot::Armed,
         new: None,
         awaiting: false,
+        sent_at: None,
+        printed_before: Vec::new(),
     };
     let mut plan = Plan {
         shared: Arc::new(Mutex::new(ReentryResult {
@@ -423,12 +455,14 @@ fn bare_env<R>(cards: &[(&str, &str)], work: impl FnOnce(&Env) -> R) -> R {
         tmux_stdin: &refuse_stdin,
         socket: "deck-smoke-bare",
         cards: &cards,
-        capability: &claude::CAPABILITY,
+        adapters: &[Adapter {
+            capability: &claude::CAPABILITY,
+            observation: true,
+            baseline: true,
+        }],
         helper: Path::new("/nonexistent/helper"),
         home: Path::new("/nonexistent/home"),
         login_shell: Path::new("/bin/zsh"),
-        observation: true,
-        baseline: true,
         fenced: &fenced,
         create_shell: &create,
     })
@@ -452,6 +486,9 @@ struct World {
     /// More names every server of this world hands to its panes (a native
     /// world only: what the driver's own server was given beyond the six).
     extra: Vec<(String, String)>,
+    /// The tmux program this world's calls run: the bundled sidecar, or in
+    /// a native world the driver's registered copy of it (`DECK_M1_TMUX`).
+    tmux_bin: PathBuf,
     socket: String,
     agent: PathBuf,
     helper: PathBuf,
@@ -587,6 +624,12 @@ const ID_X: &str = "dddddddd-0000-4000-8000-000000000004";
 
 impl World {
     fn new() -> Self {
+        Self::new_with(Self::capability())
+    }
+
+    /// A world whose one adapter is `capability` (the Claude-like stand-in
+    /// by default; `codex_capability` for the Codex-like one).
+    fn new_with(capability: &'static ReentryCapability) -> Self {
         // before anything is created: a stand-in that does not compile fails
         // here and leaves no directory behind
         standin_program();
@@ -595,7 +638,9 @@ impl World {
         let base = PathBuf::from(format!("/tmp/deck-rt-{}-{seq}", std::process::id()));
         std::fs::create_dir_all(base.join("cards")).expect("world dir");
         let socket = format!("deck-smoke-reentry-{}-{seq}", std::process::id());
-        Self::open(&base, &socket, true)
+        let mut world = Self::open(&base, &socket, true);
+        world.capability = capability;
+        world
     }
 
     /// The same world from another process (the crash controller): it takes
@@ -636,6 +681,7 @@ impl World {
             home: base.clone(),
             zdot: None,
             extra: Vec::new(),
+            tmux_bin: Self::bundled_tmux(),
             base,
             cards: RefCell::new(Vec::new()),
             calls: RefCell::new(Vec::new()),
@@ -717,6 +763,11 @@ impl World {
             home: home.to_path_buf(),
             zdot: Some(zdot.to_path_buf()),
             extra,
+            // the driver's registered copy of the sidecar, when it names one
+            tmux_bin: std::env::var_os("DECK_M1_TMUX")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute() && path.is_file())
+                .unwrap_or_else(Self::bundled_tmux),
             base,
             cards: RefCell::new(Vec::new()),
             calls: RefCell::new(Vec::new()),
@@ -731,6 +782,10 @@ impl World {
             _board: held,
             _lock: lock,
         }
+    }
+
+    fn bundled_tmux() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries/tmux-aarch64-apple-darwin")
     }
 
     fn board_file(&self) -> PathBuf {
@@ -753,17 +808,16 @@ impl World {
     /// A tmux runner for this server that borrows nothing from the world,
     /// for hooks that must be `'static`.
     fn remote(&self) -> impl Fn(&[&str]) -> Result<String, DeckError> + 'static {
-        let (base, home, zdot, socket, extra) = (
+        let (base, home, zdot, socket, extra, tmux_bin) = (
             self.base.clone(),
             self.home.clone(),
             self.zdot.clone(),
             self.socket.clone(),
             self.extra.clone(),
+            self.tmux_bin.clone(),
         );
         move |args| {
-            let mut command = Command::new(
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries/tmux-aarch64-apple-darwin"),
-            );
+            let mut command = Command::new(&tmux_bin);
             command
                 .env_clear()
                 .env("HOME", &home)
@@ -798,12 +852,32 @@ impl World {
     fn capability() -> &'static ReentryCapability {
         static STANDIN: std::sync::OnceLock<ReentryCapability> = std::sync::OnceLock::new();
         STANDIN.get_or_init(|| ReentryCapability {
+            source: claude::CAPABILITY.source,
             product: fixture::product(AGENT_IDENTIFIER),
             launcher: "fake_reentry_agent",
             grammar: claude::CAPABILITY.grammar,
-            login_shell: "zsh",
             request: claude::CAPABILITY.request,
             receipts: claude::CAPABILITY.receipts,
+            exit_hint: None,
+            entry_receipt: true,
+        })
+    }
+
+    /// The Codex-like stand-in: the same test product and launcher under
+    /// Codex's grammar, request, receipts, exit hint and no entry receipt —
+    /// so the stand-in's hooks say `codex` and the production lookup gives
+    /// them Codex's contract.
+    fn codex_capability() -> &'static ReentryCapability {
+        static STANDIN: std::sync::OnceLock<ReentryCapability> = std::sync::OnceLock::new();
+        STANDIN.get_or_init(|| ReentryCapability {
+            source: codex::CAPABILITY.source,
+            product: fixture::product(AGENT_IDENTIFIER),
+            launcher: "fake_reentry_agent",
+            grammar: codex::CAPABILITY.grammar,
+            request: codex::CAPABILITY.request,
+            receipts: codex::CAPABILITY.receipts,
+            exit_hint: codex::CAPABILITY.exit_hint,
+            entry_receipt: codex::CAPABILITY.entry_receipt,
         })
     }
 
@@ -816,19 +890,19 @@ impl World {
             return None;
         }
         Some(Box::leak(Box::new(ReentryCapability {
+            source: claude::CAPABILITY.source,
             product: fixture::product_of(binary),
             launcher: claude::CAPABILITY.launcher,
             grammar: claude::CAPABILITY.grammar,
-            login_shell: claude::CAPABILITY.login_shell,
             request: claude::CAPABILITY.request,
             receipts: claude::CAPABILITY.receipts,
+            exit_hint: None,
+            entry_receipt: true,
         })))
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries/tmux-aarch64-apple-darwin"),
-        );
+        let mut command = Command::new(&self.tmux_bin);
         command
             .env_clear()
             .env("HOME", &self.home)
@@ -906,11 +980,13 @@ impl World {
                 tmux: &tmux,
                 tmux_stdin: &tmux_stdin,
                 socket: &self.socket,
-                capability: self.capability,
+                adapters: &[Adapter {
+                    capability: self.capability,
+                    observation: self.observation.get(),
+                    baseline: self.baseline.get(),
+                }],
                 helper: Some(self.helper.clone()),
-                hooks_installed: self.observation.get(),
                 home: &self.home,
-                baseline: self.baseline.get(),
             },
             work,
         )
@@ -1210,6 +1286,251 @@ fn mixed_three_cards_under_policy_b_reapply_bypass_only_to_the_bypass_launch() {
     assert_eq!(entry(&result, "a").warnings, [Warning::BypassReauthorized]);
     assert!(entry(&result, "b").warnings.is_empty());
     assert!(entry(&result, "c").warnings.is_empty());
+}
+
+const ID_C1: &str = "c1c1c1c1-0000-4000-8000-000000000011";
+const ID_C2: &str = "c2c2c2c2-0000-4000-8000-000000000012";
+const ID_C3: &str = "c3c3c3c3-0000-4000-8000-000000000013";
+const ID_D1: &str = "d1d1d1d1-0000-4000-8000-000000000014";
+const ID_D2: &str = "d2d2d2d2-0000-4000-8000-000000000015";
+const ID_E: &str = "e1e1e1e1-0000-4000-8000-000000000016";
+
+/// Five Codex-like cards through the whole transaction, once per policy.
+/// The stand-in says `codex`, sends no entry receipt, ends every session
+/// with the constant reason and prints the exit hint as Codex does:
+/// a (bypass launch), b (ordinary), c (holds three sessions and reports
+/// every end as it leaves, prints the current one), d (holds two, prints
+/// nothing: two ends name no session), e (prints an id it never reported).
+fn codex_like(policy: Policy) -> (World, ReentryResult) {
+    let world = World::new_with(World::codex_capability());
+    let plan = |session: &str, more: &str| {
+        format!("source=codex\nexit=other\nresume=silent\nsession={session}\n{more}")
+    };
+    world.card(
+        "a",
+        &plan(ID_A, "exit-print=hint"),
+        Some("{agent} --no-daemon --yolo"),
+    );
+    world.card(
+        "b",
+        &plan(ID_B, "exit-print=hint"),
+        Some("{agent} --no-daemon"),
+    );
+    world.card(
+        "c",
+        &plan(
+            ID_C3,
+            &format!("exit-also={ID_C1},{ID_C2}\nexit-print=hint"),
+        ),
+        Some("{agent} --no-daemon"),
+    );
+    world.card(
+        "d",
+        &plan(ID_D2, &format!("exit-also={ID_D1}")),
+        Some("{agent} --no-daemon"),
+    );
+    world.card(
+        "e",
+        &plan(ID_E, &format!("exit-print=hint:{ID_X}")),
+        Some("{agent} --no-daemon"),
+    );
+    let (token, view) = world.preview();
+    let rows: Vec<(&str, &str, &str, bool)> = view["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["kind"].as_str().unwrap(),
+                entry["source"].as_str().unwrap(),
+                entry["launchProfile"].as_str().unwrap(),
+                entry["observed"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("candidate", "codex", "bypass", true),
+            ("candidate", "codex", "ordinary", true),
+            ("candidate", "codex", "ordinary", true),
+            ("candidate", "codex", "ordinary", true),
+            ("candidate", "codex", "ordinary", true),
+        ]
+    );
+    let text = view.to_string();
+    for private in [
+        ID_A,
+        ID_B,
+        ID_C3,
+        ID_D1,
+        ID_E,
+        "fake_reentry_agent",
+        "/tmp",
+        "sha",
+        "pid",
+    ] {
+        assert!(!text.contains(private), "the preview leaks {private}");
+    }
+    let approval = world.approval(&token, &["a", "b", "c", "d", "e"], policy);
+    let (_, _, result) = world.restart("req-codex", &approval).expect("restart");
+    let result = result.expect("a re-entry result");
+    assert!(result.server_replaced);
+    assert_eq!(result.state, OperationState::Complete);
+    for card in ["a", "b", "c"] {
+        let entry = entry(&result, card);
+        assert_eq!(
+            entry.outcome,
+            Outcome::Started,
+            "{card}: {:?}",
+            entry.reason
+        );
+        assert_eq!(entry.source, Some("codex"));
+        assert!(entry.shell && entry.client_observed, "{card}");
+    }
+    // two ends and nothing printed; a printed id the client never reported
+    for card in ["d", "e"] {
+        let entry = entry(&result, card);
+        assert_eq!(entry.outcome, Outcome::NotAttempted, "{card}");
+        assert_eq!(
+            entry.reason,
+            Some(Reason::FinalSessionUnconfirmed),
+            "{card}"
+        );
+        assert!(
+            !entry.shell,
+            "{card}: no shell for a card that is left to the user"
+        );
+    }
+    (world, result)
+}
+
+#[test]
+fn codex_like_cards_are_started_under_policy_a_with_the_ordinary_profile_asked_of_a_bypass_launch()
+{
+    let (world, result) = codex_like(Policy::Ordinary);
+    let request = |id: &str, grant: &str| {
+        format!("'{}' resume --no-daemon {grant}{id}", world.agent.display())
+    };
+    assert_eq!(
+        world.pasted(),
+        [
+            request(
+                ID_A,
+                "--sandbox workspace-write --ask-for-approval on-request "
+            ),
+            request(ID_B, ""),
+            request(ID_C3, ""),
+        ],
+        "exactly one transport per launched entry, the id each client exited in"
+    );
+    assert_eq!(world.enters(), 3);
+    // the new clients recorded exactly those words, after the five starts
+    assert_eq!(
+        world.launches()[5..],
+        [
+            format!(
+                "resume --no-daemon --sandbox workspace-write --ask-for-approval on-request {ID_A}"
+            ),
+            format!("resume --no-daemon {ID_B}"),
+            format!("resume --no-daemon {ID_C3}"),
+        ]
+    );
+    // the lowering is said on the bypass launch alone; nothing says bypass
+    assert_eq!(
+        entry(&result, "a").warnings,
+        [Warning::OrdinaryProfileRequested]
+    );
+    assert!(entry(&result, "b").warnings.is_empty());
+    assert!(entry(&result, "c").warnings.is_empty());
+    assert!(result
+        .entries
+        .iter()
+        .all(|entry| !entry.warnings.contains(&Warning::BypassReauthorized)));
+}
+
+#[test]
+fn codex_like_cards_are_started_under_policy_b_with_bypass_reapplied_to_the_bypass_launch_only() {
+    let (world, result) = codex_like(Policy::ReapplyBypass);
+    let request = |id: &str, grant: &str| {
+        format!("'{}' resume --no-daemon {grant}{id}", world.agent.display())
+    };
+    assert_eq!(
+        world.pasted(),
+        [
+            request(ID_A, "--yolo "),
+            request(ID_B, ""),
+            request(ID_C3, ""),
+        ]
+    );
+    assert_eq!(
+        world.launches()[5..],
+        [
+            format!("resume --no-daemon --yolo {ID_A}"),
+            format!("resume --no-daemon {ID_B}"),
+            format!("resume --no-daemon {ID_C3}"),
+        ]
+    );
+    assert_eq!(entry(&result, "a").warnings, [Warning::BypassReauthorized]);
+    assert!(entry(&result, "b").warnings.is_empty());
+    assert!(entry(&result, "c").warnings.is_empty());
+    // a repeated invoke reads the stored result; nothing was sent twice
+    assert_eq!(known("req-codex"), Some(result));
+    assert_eq!(world.enters(), 3);
+}
+
+/// A Codex-like client that does report entering (a turn began at once)
+/// is confirmed by the same rule as Claude's; one that reports another
+/// session is not.
+#[test]
+fn a_codex_like_entry_receipt_confirms_and_a_wrong_one_does_not() {
+    let world = World::new_with(World::codex_capability());
+    world.card(
+        "a",
+        &format!("source=codex\nexit=other\nexit-print=hint\nsession={ID_A}"),
+        Some("{agent} --no-daemon"),
+    );
+    world.card(
+        "b",
+        &format!("source=codex\nexit=other\nexit-print=hint\nsession={ID_B}\nresume=wrong:{ID_X}"),
+        Some("{agent} --no-daemon"),
+    );
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["a", "b"], Policy::Ordinary);
+    let (_, _, result) = world
+        .restart("req-codex-receipt", &approval)
+        .expect("restart");
+    let result = result.unwrap();
+    assert_eq!(entry(&result, "a").outcome, Outcome::Confirmed);
+    assert_eq!(entry(&result, "b").outcome, Outcome::Unconfirmed);
+    assert_eq!(entry(&result, "b").reason, Some(Reason::LaunchUnconfirmed));
+    assert_eq!(world.enters(), 2);
+}
+
+/// The delta of two readings of one pane: what the exit printed, by
+/// multiplicity and in order, whatever the pane showed before.
+#[test]
+fn newly_printed_is_the_difference_by_multiplicity_in_order() {
+    let ids = |list: &[&str]| -> Vec<String> { list.iter().map(|id| id.to_string()).collect() };
+    assert_eq!(newly_printed(&[], &ids(&[ID_A])), ids(&[ID_A]));
+    assert_eq!(
+        newly_printed(&ids(&[ID_A]), &ids(&[ID_A])),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        newly_printed(&ids(&[ID_A]), &ids(&[ID_A, ID_A])),
+        ids(&[ID_A])
+    );
+    assert_eq!(
+        newly_printed(&ids(&[ID_A, ID_B]), &ids(&[ID_A, ID_B, ID_C, ID_A])),
+        ids(&[ID_C, ID_A])
+    );
+    // a window that scrolled: an old id that fell out is not "printed"
+    assert_eq!(
+        newly_printed(&ids(&[ID_A, ID_B]), &ids(&[ID_B])),
+        Vec::<String>::new()
+    );
+    assert_eq!(newly_printed(&ids(&[ID_A]), &[]), Vec::<String>::new());
 }
 
 /// One client switches A → B → C in place and exits at C. The request names
@@ -2234,7 +2555,7 @@ fn scripted_env<R>(
 
 /// `scripted_env` for a given capability.
 fn scripted_env_for<R>(
-    capability: &ReentryCapability,
+    capability: &'static ReentryCapability,
     home: &Path,
     answer: &dyn Fn(&[&str]) -> Result<String, DeckError>,
     work: impl FnOnce(&Env) -> R,
@@ -2249,12 +2570,14 @@ fn scripted_env_for<R>(
         tmux_stdin: &refuse_stdin,
         socket: "deck-smoke-scripted",
         cards: &cards,
-        capability,
+        adapters: &[Adapter {
+            capability,
+            observation: true,
+            baseline: true,
+        }],
         helper: Path::new("/nonexistent/helper"),
         home,
         login_shell: Path::new("/bin/zsh"),
-        observation: true,
-        baseline: true,
         fenced: &fenced,
         create_shell: &create,
     })
@@ -2344,7 +2667,7 @@ fn the_baseline_home_falls_back_to_the_global_scope_only_on_a_positive_absence()
                 .take()
                 .expect("each scope is asked at most once")
         };
-        let got = scripted_env(home, &answer, |env| launch::baseline_home(env, "a"));
+        let got = scripted_env(home, &answer, |env| launch::baseline_home(env, "a", true));
         assert_eq!(got, supported, "row {index}");
         let asked = asked.borrow();
         assert_eq!(asked[0], "show-environment -t =a HOME", "row {index}");
@@ -2829,7 +3152,10 @@ fn the_production_assembly_reads_the_committed_board_under_the_real_fence() {
         assert!(held, "the fenced section holds documents::board_fence");
         assert_eq!(cards, Some(vec![("card-a".into(), "a".into())]));
         assert!(!crate::documents::board_fence_busy(), "and releases it");
-        assert!(env.observation && env.baseline);
+        assert!(env
+            .adapters
+            .iter()
+            .all(|adapter| adapter.observation && adapter.baseline));
         assert_eq!(env.login_shell, Path::new("/bin/zsh"));
     });
     // a real save is what the reader sees next
@@ -2873,7 +3199,7 @@ fn the_production_assembly_reads_the_committed_board_under_the_real_fence() {
     assert!(world.pasted().is_empty());
     // without the opt-in there is no observation, whatever helper exists
     world.observation.set(false);
-    world.with_env(|env| assert!(!env.observation));
+    world.with_env(|env| assert!(env.adapters.iter().all(|adapter| !adapter.observation)));
 }
 
 /// (session, paused) of every row of the queue document at `path`, through
@@ -4295,7 +4621,12 @@ fn native_step0_probe() {
     // id carries nothing but, when asked for, the grammar's own bypass flag.
     let bypass = var("DECK_N0_BYPASS").is_some_and(|flag| flag == "1");
     let words = match var("DECK_N0_RESUME") {
-        Some(id) => (capability.request)(&id, bypass).expect("a native-shaped id"),
+        Some(id) => {
+            let grant = if bypass { Grant::Reapply } else { Grant::Plain };
+            (capability.request)(&id, grant)
+                .expect("a native-shaped id")
+                .words
+        }
         None if bypass => vec![capability.grammar.bypass.to_string()],
         None => Vec::new(),
     };
@@ -4728,12 +5059,14 @@ fn native_m1_tap() {
                         info.pid, info.start_seconds, info.start_micros
                     )
                 });
-        let fact = match lifecycle::parse(line, |source| {
-            (source == "claude-code").then_some(&claude::RECEIPTS)
+        let fact = match lifecycle::parse(line, |source| match source {
+            "claude-code" => Some(&claude::RECEIPTS),
+            "codex" => Some(&codex::RECEIPTS),
+            _ => None,
         }) {
             Ok(wire) => {
-                let (event, word) = match wire.event {
-                    lifecycle::Event::Claude(claude::Told::Start(source)) => (
+                let start = |source: claude::StartSource| {
+                    (
                         "session-start",
                         match source {
                             claude::StartSource::Startup => "startup",
@@ -4742,8 +5075,10 @@ fn native_m1_tap() {
                             claude::StartSource::Compact => "compact",
                             claude::StartSource::Other => "other",
                         },
-                    ),
-                    lifecycle::Event::Claude(claude::Told::End(reason)) => (
+                    )
+                };
+                let end = |reason: claude::EndReason| {
+                    (
                         "session-end",
                         match reason {
                             claude::EndReason::Clear => "clear",
@@ -4752,7 +5087,13 @@ fn native_m1_tap() {
                             claude::EndReason::PromptInputExit => "prompt-input-exit",
                             claude::EndReason::Other => "other",
                         },
-                    ),
+                    )
+                };
+                let (event, word) = match wire.event {
+                    lifecycle::Event::Claude(claude::Told::Start(source))
+                    | lifecycle::Event::Codex(codex::Told::Start(source)) => start(source),
+                    lifecycle::Event::Claude(claude::Told::End(reason))
+                    | lifecycle::Event::Codex(codex::Told::End(reason)) => end(reason),
                     lifecycle::Event::Overflow => ("none", "overflow"),
                 };
                 format!(
@@ -4866,11 +5207,14 @@ fn native_m1_transact() {
     // Two modes, each with its own kind of binary: a stand-in (never
     // production's product) under its own stand-in capability, or a real
     // client — any release of the product — under production's capability.
-    let product = ExecutableRef::read(&client, claude::CAPABILITY.product).is_ok();
+    // a real client is admitted under the production capability whose
+    // product it is: Claude's or Codex's
+    let production: Option<&'static ReentryCapability> = [&claude::CAPABILITY, &codex::CAPABILITY]
+        .into_iter()
+        .find(|capability| ExecutableRef::read(&client, capability.product).is_ok());
     let capability: Option<&'static ReentryCapability> = match standin {
         true => World::standin_capability(&client),
-        false if product => Some(&claude::CAPABILITY),
-        false => None,
+        false => production,
     };
     let Some(capability) = capability else {
         println!("M1 refused=client-does-not-fit-the-mode");
@@ -4902,8 +5246,9 @@ fn native_m1_transact() {
         )
     });
     println!(
-        "M1 capability={} cards={} policy={}",
+        "M1 capability={} source={} cards={} policy={}",
         if standin { "stand-in" } else { "production" },
+        capability.source,
         cards.len(),
         if policy == Policy::ReapplyBypass {
             "reapply-bypass"
@@ -5008,17 +5353,21 @@ fn native_m1_transact() {
         .and_then(|name| name.to_str())
         .unwrap_or("?");
     let shown = view.to_string();
+    // The file name is private unless it is the adapter's own source word
+    // (`codex` is both): the preview labels a row with that closed word.
+    let name_private = client_name != capability.source;
     check(
         "preview-carries-no-native-identity",
         ![
             home.to_str().unwrap_or("?"),
             world.base.to_str().unwrap_or("?"),
-            client_name,
+            client.to_str().unwrap_or("?"),
             "sha",
             "pid",
         ]
         .iter()
-        .any(|private| shown.contains(private)),
+        .any(|private| shown.contains(private))
+            && !(name_private && shown.contains(client_name)),
         "",
     );
     let token = view["token"].as_str().unwrap_or_default().to_string();
@@ -5124,14 +5473,32 @@ fn native_m1_transact() {
             .iter()
             .any(|(card, profile)| card == name && profile == "bypass")
     };
+    // what a lowered request of this adapter says of itself: nothing for
+    // Claude (its bare resume lowers by itself), the ordinary-profile word
+    // for Codex (its bare resume would keep bypass)
+    let lowers = (capability.request)(ID_A, Grant::Lower).is_some_and(|request| request.lowered);
+    let verified =
+        |entry: &EntryView| matches!(entry.outcome, Outcome::Confirmed | Outcome::Started);
     if reapply {
         // B's own word for what it did — "reauthorized", never "kept" — is on
-        // exactly the confirmed entries of the bypass launches
+        // exactly the confirmed or started entries of the bypass launches
         check(
             "policy-b-notes-the-reauthorization-on-the-bypass-launches-only",
             result.entries.iter().all(|entry| {
-                if started_with_bypass(&entry.session) && entry.outcome == Outcome::Confirmed {
+                if started_with_bypass(&entry.session) && verified(entry) {
                     entry.warnings == [Warning::BypassReauthorized]
+                } else {
+                    entry.warnings.is_empty()
+                }
+            }),
+            "",
+        );
+    } else if lowers {
+        check(
+            "policy-a-notes-the-ordinary-profile-on-the-bypass-launches-only",
+            result.entries.iter().all(|entry| {
+                if started_with_bypass(&entry.session) && verified(entry) {
+                    entry.warnings == [Warning::OrdinaryProfileRequested]
                 } else {
                     entry.warnings.is_empty()
                 }
@@ -5149,29 +5516,44 @@ fn native_m1_transact() {
     // ---- once only, and exactly the request
     let launched: Vec<&str> = expect
         .iter()
-        .filter(|(_, wanted)| wanted == "confirmed" || wanted == "unconfirmed")
+        .filter(|(_, wanted)| {
+            wanted == "confirmed" || wanted == "unconfirmed" || wanted == "started"
+        })
         .map(|(name, _)| name.as_str())
         .collect();
     let pasted = world.pasted();
-    let prefix = format!("'{}' --resume ", client.display());
-    let overridden = format!(
-        "'{}' --dangerously-skip-permissions --resume ",
-        client.display()
+    // The three request shapes of this adapter, built by the production
+    // request builder for a placeholder id: everything but the id. (carries
+    // the override, the id). Nothing but the frozen executable, the
+    // adapter's own words and one native-shaped id makes such a line — and,
+    // under Policy B only, the reauthorized words: no other word can hide in
+    // it, and under Policy A a line with the override is not a request at
+    // all.
+    let shape = |grant: Grant| -> String {
+        let words = (capability.request)(ID_A, grant)
+            .expect("the placeholder id")
+            .words;
+        let line = launch::command_line(&client, &words).expect("a command line");
+        line.strip_suffix(ID_A).expect("the id last").to_string()
+    };
+    let (plain, overridden, lowered) = (
+        shape(Grant::Plain),
+        shape(Grant::Reapply),
+        shape(Grant::Lower),
     );
-    // (carries the override, the id). Nothing but the frozen executable, the
-    // resume flag and one native-shaped id makes such a line — and, under
-    // Policy B only, the one bypass flag before them: no other word can hide
-    // in it, and under Policy A a line with the flag is not a request at all
+    // the longer shapes first: the plain shape is a prefix of the others
     let requests: Vec<(bool, &str)> = pasted
         .iter()
         .filter_map(|text| {
-            text.strip_prefix(&prefix)
-                .map(|id| (false, id))
+            text.strip_prefix(&overridden)
+                .filter(|_| reapply)
+                .map(|id| (true, id))
                 .or_else(|| {
-                    text.strip_prefix(&overridden)
-                        .filter(|_| reapply)
-                        .map(|id| (true, id))
+                    text.strip_prefix(&lowered)
+                        .filter(|_| !reapply && lowers)
+                        .map(|id| (false, id))
                 })
+                .or_else(|| text.strip_prefix(&plain).map(|id| (false, id)))
         })
         .filter(|(_, id)| claude::native_id_ok(id))
         .collect();
@@ -5889,11 +6271,13 @@ fn remote_read(world: &World) -> impl FnOnce() -> Result<Previewed, DeckError> +
                 tmux: &tmux,
                 tmux_stdin: &|_, _| Err(DeckError::new(ErrorKind::Tmux, "a preview types nothing")),
                 socket: &socket,
-                capability,
+                adapters: &[Adapter {
+                    capability,
+                    observation,
+                    baseline,
+                }],
                 helper: Some(helper),
-                hooks_installed: observation,
                 home: &home,
-                baseline,
             },
             read_preview,
         )

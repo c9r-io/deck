@@ -1,0 +1,1 @@
+66854 66792 /opt/homebrew/Caskroom/codex/0.163.0/bin/codex resume --no-daemon <id-b>

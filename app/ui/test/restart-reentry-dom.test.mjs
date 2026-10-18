@@ -16,11 +16,12 @@ const {
 } = await import('../js/restart-reentry.js');
 
 const titles = new Map([['A', 'project A'], ['B', 'project B'], ['C', 'a card with a very long name '.repeat(8).trim()]]);
-const seen = { opened: [], setup: 0, changed: 0, managed: false };
+const seen = { opened: [], inserted: [], setup: 0, setupSources: [], changed: 0, managed: false };
 initReentry({
   titleOf: id => titles.get(id) ?? null,
   openCard: id => seen.opened.push(id),
-  openSetup: () => { seen.setup++; },
+  insertResume: id => seen.inserted.push(id),
+  openSetup: source => { seen.setup++; seen.setupSources.push(source ?? null); },
   changed: () => { seen.changed++; },
   managed: () => seen.managed,
 });
@@ -33,7 +34,7 @@ const inputs = (node, type) => walk(node).filter(item => item.tagName === 'INPUT
 const buttons = node => walk(node).filter(item => item.tagName === 'BUTTON');
 const click = input => { input.checked = input.type === 'radio' ? true : !input.checked; input.fire('change'); };
 
-const candidate = (id, launchProfile) => ({ cardId: id, session: `deck-${id}`, kind: 'candidate', reason: null, launchProfile });
+const candidate = (id, launchProfile, observed = true) => ({ cardId: id, session: `deck-${id}`, kind: 'candidate', reason: null, launchProfile, source: 'claude-code', observed });
 const mixed = (token = 'T1') => ({
   token, lifecycleObservation: true,
   entries: [candidate('A', 'bypass'), candidate('B', 'ordinary'), candidate('C', 'ordinary'),
@@ -150,10 +151,10 @@ test('progress shows the three stages with the current one and its counts', () =
 });
 
 const entry = (cardId, outcome, extra = {}) => ({
-  cardId, session: `deck-${cardId}`, outcome, reason: null, warnings: [], shell: true, clientObserved: false, ...extra,
+  cardId, session: `deck-${cardId}`, source: 'claude-code', outcome, reason: null, warnings: [], shell: true, clientObserved: false, ...extra,
 });
 
-test('the result list replaces the review, names the server outcome first and offers only "Open card"', () => {
+test('the result list replaces the review, names the server outcome first and offers "Open card", with the resume insert on an entry to check', () => {
   showReentryPreview(mixed());
   const view = showReentryResult({
     replaced: true,
@@ -178,10 +179,13 @@ test('the result list replaces the review, names the server outcome first and of
   assert.ok(!said.some(line => /bypass (?:was |is )?(?:restored|reapplied)|permission (?:was |is )?verified|bypass is (?:on|active|in effect)/i.test(line)));
   assert.ok(said.includes('Queues remain paused.'));
   const actions = buttons(result);
-  assert.deepEqual(actions.map(button => button.textContent), ['Open card', 'Open card', 'Open card']);
+  // the insert is offered on the entry to check alone: never on a reopened one
+  assert.deepEqual(actions.map(button => button.textContent), ['Open card', 'Open card', 'Open card', 'Insert resume command']);
   assert.ok(!said.some(line => /retry|try again now|restart failed|did not complete/i.test(line)));
   actions[2].onclick();
   assert.deepEqual(seen.opened, ['C']);
+  actions[3].onclick();
+  assert.deepEqual(seen.inserted, ['C']);
   // a locale change repaints the same result
   setLocale('zh-Hans');
   refreshReentry();
@@ -283,7 +287,7 @@ test('the startup configuration note is in the confirmation once, under either p
   showReentryPreview(null);
 });
 
-test('a start with a different or unverified startup configuration is listed as unconfirmed with its reason and only "Open card"', () => {
+test('a start with a different or unverified startup configuration is listed as unconfirmed with its reason, "Open card" and the resume insert', () => {
   showReentryPreview(mixed());
   showReentryResult({
     replaced: true,
@@ -301,7 +305,8 @@ test('a start with a different or unverified startup configuration is listed as 
   assert.ok(texts(rows[1]).includes('Claude started, but with a different startup configuration than expected; open the card to check.'));
   assert.ok(texts(rows[2]).includes('Claude started, but its startup configuration could not be verified; open the card to check.'));
   assert.ok(!texts(result).includes('Open this card to check the current client before trying again.'), 'no advice about trying again');
-  assert.deepEqual(buttons(result).map(button => button.textContent), ['Open card', 'Open card', 'Open card']);
+  assert.deepEqual(buttons(result).map(button => button.textContent),
+    ['Open card', 'Open card', 'Insert resume command', 'Open card', 'Insert resume command']);
   assert.ok(!texts(result).some(line => /retry|try again|undo/i.test(line)));
   assert.equal(box('tmux-lifecycle-title').textContent, 'Shell service restarted');
   setLocale('zh-Hans');

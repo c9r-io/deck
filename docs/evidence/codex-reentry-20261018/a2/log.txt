@@ -1,0 +1,67 @@
+[a2] init root=<ROOT> policy=ordinary
+[a2] init done: stub port=64517, hooks and trust state written
+[a2] server pid=66098 socket=<ROOT>/t/tmux-501/deck-smoke-cx-a2 sessions=a,b
+[a2] card a started: 66197 Sun Oct 18 22:40:56 2026     /opt/homebrew/Caskroom/codex/0.163.0/bin/codex
+[a2] card b started: 66345 Sun Oct 18 22:40:57 2026     /opt/homebrew/Caskroom/codex/0.163.0/bin/codex
+[a2] ids: one writer lock per client; finals (digests) recorded
+[a2] transaction begins at 22:40:57: policy=ordinary cards a=bypass,b=ordinary expect started
+  M1 capability=production source=codex cards=2 policy=ordinary
+  M1 check=data-directory-inside-the-experiment ok
+  M1 check=old-server-environment ok
+  M1 old card=a pane=66101 client=66197@1792330856.695053
+  M1 old card=b pane=66110 client=66345@1792330857.142801
+  M1 check=old-clients-in-the-foreground ok panes=2
+  M1 check=preview-candidates-and-launch-profiles ok
+  M1 check=preview-carries-no-native-identity ok
+  M1 restart old-server=66098 new-server=66753 replaced=true state=Complete
+  M1 check=server-replaced-and-settled ok
+  M1 entry card=a outcome=started reason=none shell=true client=true settled=true warnings=1 warning-codes=ordinary-profile-requested
+  M1 entry card=b outcome=started reason=none shell=true client=true settled=true warnings=0 warning-codes=none
+  M1 check=every-entry-has-its-own-expected-outcome ok
+  M1 check=policy-a-notes-the-ordinary-profile-on-the-bypass-launches-only ok
+  M1 check=one-request-per-launched-entry ok requests=2 enters=2
+  M1 check=every-request-is-the-executable-resume-and-one-id ok
+  M1 request card=a bypass-override=false
+  M1 request card=b bypass-override=false
+  M1 check=the-bypass-flag-is-on-the-requests-this-policy-decides-and-on-no-other ok with-the-flag=0
+  M1 check=requests-name-the-sessions-the-clients-exited-in ok recorded-final-sessions=2
+  M1 info no-earlier-session-was-recorded-for-this-matrix
+  M1 check=a-repeated-invoke-reads-the-stored-result ok
+  M1 check=queue-row-paused-on-disk-before-the-kill ok
+  M1 check=queue-row-still-paused-after-the-reentry ok
+  M1 check=new-server-environment ok
+  M1 new card=a pane=66766 client=66785@1792330865.991533 old-client-gone=true
+  M1 new card=b pane=66795 client=66855@1792330866.673158 old-client-gone=true
+  M1 check=a-new-generation-for-every-launched-entry ok
+  M1 check=new-generation-recorded-for-the-driver ok
+  M1 check=lifecycle-file-names-the-server-only ok
+  M1 info signal-observations-on-the-new-panes=0
+  M1 result failed-checks=0
+[a2] transaction ended at 22:41:08: controller exit=0 failed-checks=0
+[a2] end begins
+[a2] STILL RUNNING from the root: 65633 /bin/zsh -c source <SNAPSHOT> 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && { \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'export CX_PROBE=<REPO>/app/src-tauri/target/debug/deps/deck_app-04bec202e0b1cc91 && bash docs/evidence/codex-reentry-20261018/run-campaign.sh a2 ordinary 2>&1 | sed '"'"'s#<ROOT>#<ROOT>#g'"'"'' < /dev/null && pwd -P >| /tmp/claude-d465-cwd
+65635 sed s#<ROOT>#<ROOT>#g
+65666 <ROOT>/bin/stub <ROOT>/ev
+66753 <ROOT>/bin/tmux -f /dev/null -L deck-smoke-cx-a2 start-server ; set-option -g exit-empty off ; set-option -g @deck-server-metadata {"schemaVersion":1,"protocolVersion":1,"channel":"development","bundleIdentifier":"io.c9r.deck.dev","appVersion":"0.8.6","buildIdentifier":"5ad1ca82e47dc30093e1bd41d2d5097469bc97bb","helperVersion":"unknown","createdAt":1792330864,"source":"development"}
+[a2] card a: new client 66785 Sun Oct 18 22:41:05 2026     /opt/homebrew/Caskroom/codex/0.163.0/bin/codex session=matches-the-exited-one Permissions:         Workspace (Ask for approval) 
+[a2] card b: new client 66855 Sun Oct 18 22:41:06 2026     /opt/homebrew/Caskroom/codex/0.163.0/bin/codex session=matches-the-exited-one Permissions:         Workspace (Ask for approval) 
+[a2] end begins
+process pid 65666 started Sun Oct 18 22:37:55 2026: running
+tmux-server pid 66098 started Sun Oct 18 22:40:56 2026 socket <ROOT>/t/tmux-501/deck-smoke-cx-a2: gone
+process pid 66197 started Sun Oct 18 22:40:56 2026: gone
+process pid 66345 started Sun Oct 18 22:40:57 2026: gone
+tmux-server pid 66753 started Sun Oct 18 22:41:04 2026 socket <ROOT>/t/tmux-501/deck-smoke-cx-a2: running
+process pid 66785 started Sun Oct 18 22:41:05 2026: running
+process pid 66855 started Sun Oct 18 22:41:06 2026: running
+stopped tmux-server pid 66753
+stopped process pid 65666
+stopped process pid 66785
+stopped process pid 66855
+process pid 65666 started Sun Oct 18 22:37:55 2026: gone
+tmux-server pid 66098 started Sun Oct 18 22:40:56 2026 socket <ROOT>/t/tmux-501/deck-smoke-cx-a2: gone
+process pid 66197 started Sun Oct 18 22:40:56 2026: gone
+process pid 66345 started Sun Oct 18 22:40:57 2026: gone
+tmux-server pid 66753 started Sun Oct 18 22:41:04 2026 socket <ROOT>/t/tmux-501/deck-smoke-cx-a2: gone
+process pid 66785 started Sun Oct 18 22:41:05 2026: gone
+process pid 66855 started Sun Oct 18 22:41:06 2026: gone
+[a2] end done: cleanup exit=0

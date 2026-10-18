@@ -21,6 +21,15 @@
 //! and then reports the session it was ORIGINALLY asked to resume;
 //! `resume=exec:<program>` replaces it with ANOTHER program — another build
 //! at another path — under the same pid, which then reports that session;
+//! `source=<word>` names the source word its hooks are run with (default
+//! `claude-code`; `codex` for a stand-in of that client), `exit-print=hint`
+//! makes it print the Codex-shaped exit hint for its final session to the
+//! pane before it leaves (and `exit-print=hint:<uuid>` one that names
+//! another id), `exit-also=<uuid>,<uuid>` makes it report the end of those
+//! other sessions too as it leaves (a client that switched threads and
+//! reports every loaded one at its exit, as Codex does), and a request of
+//! the shape `resume [flags] <uuid>` is read as a resume of that id beside
+//! `--resume <uuid>`;
 //! `exit=exec:<program>` does the same at the exit, and the other program
 //! reports the final session and leaves; `resume=both:<uuid>` reports a
 //! resume of that other id and then of the asked one; `resume=late:<ms>`
@@ -205,8 +214,12 @@ fn run_hook(program: &str, word: &str, payload: &str) {
 }
 
 fn run_hook_as(command: &mut Command, word: &str, payload: &str) {
+    let source = plan()
+        .get("source")
+        .cloned()
+        .unwrap_or_else(|| "claude-code".into());
     command
-        .args(["claude-code", word])
+        .args([source.as_str(), word])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -318,7 +331,14 @@ fn main() {
         .iter()
         .position(|arg| arg == "--resume")
         .and_then(|at| args.get(at + 1))
-        .cloned();
+        .cloned()
+        .or_else(|| {
+            // Codex's shape: the `resume` word, then flags, then the id
+            args.iter()
+                .position(|arg| arg == "resume")
+                .and_then(|at| args[at + 1..].iter().find(|arg| !arg.starts_with('-')))
+                .cloned()
+        });
     let fresh = plan
         .get("session")
         .cloned()
@@ -521,6 +541,29 @@ fn main() {
                 _ => 0,
             };
         }
+    }
+    // what a Codex-like client prints to its pane as it leaves: the exit
+    // hint naming its final session (or another id, when the plan says so)
+    if let Some(print) = plan.get("exit-print") {
+        let named = match print.strip_prefix("hint:") {
+            Some(other) => other.to_string(),
+            None => session.clone(),
+        };
+        restore();
+        let mut out = std::io::stdout();
+        let _ = write!(
+            out,
+            "\r\nTo continue this session, run:\r\n\r\n  codex resume {named}\r\n\r\nOr run codex resume and select the session.\r\n"
+        );
+        let _ = out.flush();
+    }
+    // the other sessions this client still holds, each ended as it leaves
+    for other in plan
+        .get("exit-also")
+        .map(|ids| ids.split(',').map(str::to_string).collect::<Vec<_>>())
+        .unwrap_or_default()
+    {
+        hook("session-end", &other, "other");
     }
     match exit.as_str() {
         "no-end" => {}
