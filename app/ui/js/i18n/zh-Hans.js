@@ -1261,6 +1261,7 @@ const dictionary = {
   'reentry.heading': '重新进入 Agent 会话',
   'reentry.summary': '{count} 个 Claude 会话预计可重新进入，其中 {bypass} 个以 bypass profile 启动',
   'reentry.summary.none': '这里没有可自动重新进入的 Agent 会话。',
+  'reentry.summary.unknown': 'Deck 暂时无法确定哪些 Agent 会话可以重新进入。现在重启，正在运行的 Agent 会随 Shell 服务一起结束。',
   'reentry.summary.unavailable': '发现 {count} 个 Claude 会话，但目前还不能自动重新进入。',
   'reentry.setupHint': '重新进入需要“Claude 会话重入观察”，它目前是关闭的。可以在设置中开启。',
   'reentry.setupOpen': '打开设置',

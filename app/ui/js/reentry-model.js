@@ -152,8 +152,12 @@ export function displayable(value) {
 /* ---------- plan ---------- */
 
 const EMPTY_PLAN = Object.freeze({
-  token: '', observation: false, entries: Object.freeze([]), selected: Object.freeze([]), policy: POLICY_ORDINARY,
+  token: '', observation: false, unknown: false, entries: Object.freeze([]), selected: Object.freeze([]), policy: POLICY_ORDINARY,
 });
+/* What Deck could not find out is said as such, never as "nothing to
+   reopen": a preview that could not be read (`{ unknown: true }`, app.js)
+   or one read without a current Board (`boardKnown: false`). */
+const UNKNOWN_PLAN = Object.freeze({ ...EMPTY_PLAN, unknown: true });
 
 function previewEntry(raw, repeated) {
   const cardId = idOf(raw?.cardId);
@@ -173,7 +177,9 @@ function previewEntry(raw, repeated) {
 /** A fresh plan for this preview: nothing selected, ordinary policy. A
  *  preview that is missing or unusable gives the empty plan (shell-only). */
 export function reentryPlan(preview) {
+  if (preview?.unknown === true) return UNKNOWN_PLAN;
   if (!preview || typeof preview !== 'object' || !idOf(preview.token) || !Array.isArray(preview.entries)) return EMPTY_PLAN;
+  if (preview.boardKnown === false) return UNKNOWN_PLAN;
   const seen = new Set(), repeated = new Set();
   for (const raw of preview.entries) {
     const id = idOf(raw?.cardId);
@@ -183,6 +189,7 @@ export function reentryPlan(preview) {
   return {
     token: preview.token,
     observation: preview.lifecycleObservation === true,
+    unknown: false,
     entries: preview.entries.map(raw => previewEntry(raw, repeated)).filter(Boolean),
     selected: [],
     policy: POLICY_ORDINARY,
@@ -270,8 +277,9 @@ export function planView(plan, { managed = false } = {}) {
   }));
   const bypassOn = counts.bypass > 0;
   return {
-    visible: plan.entries.length > 0,
-    summary: !listed ? text('reentry.summary.none')
+    visible: plan.entries.length > 0 || plan.unknown === true,
+    summary: plan.unknown === true ? text('reentry.summary.unknown')
+      : !listed ? text('reentry.summary.none')
       : !plan.observation ? text('reentry.summary.unavailable', { count: listed })
         : text('reentry.summary', { count: counts.candidates, bypass: counts.candidateBypass }),
     setup: listed > 0 && !plan.observation,

@@ -2054,6 +2054,7 @@ fn a_known_unsupported_baseline_is_shown_before_the_restart_and_types_nothing() 
     // the ordinary configuration offers the candidate
     let (_, view) = world.preview();
     assert_eq!(view["entries"][0]["kind"], "candidate");
+    assert_eq!(view["boardKnown"], true);
     assert_eq!(view["entries"][0]["launchProfile"], "bypass");
     world.baseline.set(false);
     let (token, view) = world.preview();
@@ -2847,6 +2848,10 @@ fn the_production_assembly_reads_the_committed_board_under_the_real_fence() {
     world.with_env(|env| assert_eq!((env.cards)(), None));
     let (token, view) = world.preview();
     assert_eq!(view["entries"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        view["boardKnown"], false,
+        "unknown, never \"nothing to reopen\""
+    );
     let old = world.server_pid();
     let error = world
         .restart(
@@ -2861,7 +2866,9 @@ fn the_production_assembly_reads_the_committed_board_under_the_real_fence() {
     let (_, source, _) = test_door::load(&world.board_file()).unwrap().unwrap();
     assert_eq!(source, "backup");
     world.with_env(|env| assert_eq!((env.cards)(), None));
-    assert_eq!(world.preview().1["entries"].as_array().unwrap().len(), 0);
+    let (_, recovered) = world.preview();
+    assert_eq!(recovered["entries"].as_array().unwrap().len(), 0);
+    assert_eq!(recovered["boardKnown"], false);
     assert_eq!(world.server_pid(), old);
     assert!(world.pasted().is_empty());
     // without the opt-in there is no observation, whatever helper exists
@@ -6799,6 +6806,7 @@ fn canned(token: &str) -> Previewed {
         view: PreviewView {
             token: token.into(),
             lifecycle_observation: true,
+            board_known: true,
             entries: Vec::new(),
         },
         kept: Some(Preview {

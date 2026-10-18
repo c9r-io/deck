@@ -717,3 +717,30 @@ test('a Pi card is named with its own reason, can never be chosen, and is never 
   const observed = reentryPlan({ ...preview, entries: [{ ...preview.entries[1], piSession: 'observed', nativeSessionId: 'x' }] });
   assert.deepEqual(rows(observed)[0], { ...pi });
 });
+
+test('what Deck could not find out is said as unknown, never as nothing to reopen', () => {
+  for (const preview of [
+    { unknown: true },
+    { token: 'tok-unknown', lifecycleObservation: true, boardKnown: false, entries: [] },
+  ]) {
+    const plan = reentryPlan(preview);
+    assert.equal(plan.unknown, true);
+    assert.equal(reentryRequest(withAllSelected(plan, true)), null, 'nothing can be selected');
+    const view = planView(plan);
+    assert.equal(view.visible, true, 'the section is shown');
+    assert.deepEqual(view.summary, { key: 'reentry.summary.unknown' });
+    assert.equal(view.canSelect, false);
+    assert.equal(view.setup, false);
+    assert.equal(view.confirm, null, 'the confirm button keeps its shell-only label');
+  }
+  // a known Board with no candidate is still "none"; a missing field is a known Board
+  const none = planView(reentryPlan({ token: 'tok-none', lifecycleObservation: true, boardKnown: true, entries: [] }));
+  assert.equal(none.visible, false);
+  assert.equal(reentryPlan({ token: 'tok-old', lifecycleObservation: true, entries: [] }).unknown, false);
+  assert.equal(reentryPlan(null).unknown, false, 'no preview at all stays the plain restart');
+  for (const locale of ['en', 'zh-Hans']) {
+    setLocale(locale);
+    assert.notEqual(t('reentry.summary.unknown'), 'reentry.summary.unknown');
+  }
+  setLocale('en');
+});

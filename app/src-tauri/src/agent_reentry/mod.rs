@@ -439,6 +439,11 @@ pub(crate) struct PreviewEntryView {
 pub(crate) struct PreviewView {
     token: String,
     lifecycle_observation: bool,
+    /// Whether the card ↔ session binding could be read at all: `false`
+    /// when this process holds no current Board (not loaded yet, or one
+    /// answered from the backup). Its empty `entries` then mean "unknown",
+    /// never "nothing to reopen", and the dialog says so.
+    board_known: bool,
     entries: Vec<PreviewEntryView>,
 }
 
@@ -872,10 +877,13 @@ fn opaque_token() -> Result<String, DeckError> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Each card's session that is live, and what it is for re-entry.
-fn previewed(env: &Env) -> Result<Vec<PreviewEntry>, DeckError> {
+/// Each card's session that is live, and what it is for re-entry, and
+/// whether the Board that binds cards to sessions could be read at all.
+fn previewed(env: &Env) -> Result<(Vec<PreviewEntry>, bool), DeckError> {
     let rows = env.rows()?;
-    let cards = (env.cards)().unwrap_or_default();
+    let Some(cards) = (env.cards)() else {
+        return Ok((Vec::new(), false));
+    };
     let mut entries: Vec<PreviewEntry> = Vec::new();
     // The references this preview has validated so far. Clients that share
     // one binary read and validate it once; each is still bound to it on its
@@ -905,7 +913,7 @@ fn previewed(env: &Env) -> Result<Vec<PreviewEntry>, DeckError> {
             inspected,
         });
     }
-    Ok(entries)
+    Ok((entries, true))
 }
 
 /// What one preview read, before anybody was answered with it. Nothing of it
@@ -921,13 +929,14 @@ pub(crate) struct Previewed {
 /// client's program runs under the calling thread's deadline, which the
 /// caller owns (`preview_bounded`).
 pub(crate) fn read_preview(env: &Env) -> Result<Previewed, DeckError> {
-    let entries = previewed(env)?;
+    let (entries, board_known) = previewed(env)?;
     let token = opaque_token()?;
     let baseline = launch::supported_before_restart(env);
     let launchable = env.observation && baseline;
     let view = PreviewView {
         token: token.clone(),
         lifecycle_observation: env.observation,
+        board_known,
         entries: entries
             .iter()
             .map(|entry| {

@@ -198,7 +198,11 @@ async function loadReentryPreview(status) {
   const generation = ++previewGeneration;
   if (!window.__TAURI__ || !(status?.sessionCount > 0)) return;
   let preview = null;
-  try { preview = await inv('agent_reentry_preview'); } catch (_) { preview = null; }
+  /* a build without the capability has nothing to say; any other failure
+     (busy, timed out) is said as "cannot tell yet", never as "none" */
+  try { preview = await inv('agent_reentry_preview'); } catch (e) {
+    preview = String(e) === 'reentry-unavailable' ? null : { unknown: true };
+  }
   if (generation !== previewGeneration || ctx.tmuxRestarting || reentryResultShown()
       || $('tmux-lifecycle-modal').style.display !== 'flex') return;
   showReentryPreview(preview);

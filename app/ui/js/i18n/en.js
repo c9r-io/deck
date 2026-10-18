@@ -1262,6 +1262,7 @@ const dictionary = {
   'reentry.heading': 'Reopen Agent sessions',
   'reentry.summary': '{count} Claude session(s) can likely be reopened; {bypass} launched with a bypass profile',
   'reentry.summary.none': 'No session here can be reopened automatically.',
+  'reentry.summary.unknown': 'Deck cannot tell yet which Agent sessions could be reopened. If you restart now, running Agents end with the shell service.',
   'reentry.summary.unavailable': '{count} Claude session(s) found, but they cannot be reopened automatically yet.',
   'reentry.setupHint': 'Reopening needs Claude session re-entry observation, which is off. You can turn it on in Settings.',
   'reentry.setupOpen': 'Open Settings',

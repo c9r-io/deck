@@ -117,6 +117,7 @@ const NATIVE_SESSION_KEYS = new Map([
   ['reentry.heading', 'the product action: reopen the Agent session'],
   ['reentry.summary', 'counts Claude sessions that can be reopened'],
   ['reentry.summary.none', 'no Agent session can be reopened'],
+  ['reentry.summary.unknown', 'which Agent sessions could be reopened is not known yet'],
   ['reentry.summary.unavailable', 'counts Claude sessions that were found'],
   ['reentry.setupHint', 'quotes the setting name (Claude session re-entry observation)'],
   ['reentry.policy.bypass', 'Claude sessions launched with a bypass profile'],

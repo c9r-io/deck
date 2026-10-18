@@ -440,3 +440,17 @@ test('nothing shaped like a native id, a pid, a digest or a path is rendered, wh
   for (const line of rendered) assert.doesNotMatch(line, native);
   showReentryPreview(null);
 });
+
+test('a preview Deck could not read is shown as "cannot tell yet", with nothing to choose', () => {
+  for (const preview of [{ unknown: true }, { token: 'tok-board', lifecycleObservation: true, boardKnown: false, entries: [] }]) {
+    showReentryPreview(preview);
+    const section = box('tmux-reentry');
+    assert.equal(section.hidden, false, 'the section says so instead of disappearing');
+    assert.ok(texts(section).some(text => text.startsWith('Deck cannot tell yet')));
+    assert.equal(inputs(section).length, 0);
+    assert.equal(buttons(section).length, 0);
+    assert.equal(reentryRequest(currentReentryPlan()), null, 'the restart stays shell-only');
+  }
+  showReentryPreview(null);
+  assert.equal(box('tmux-reentry').hidden, true, 'no preview at all is still the plain restart');
+});
