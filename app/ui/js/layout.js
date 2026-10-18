@@ -69,6 +69,7 @@ import { showAttention } from './attention.js';
 import { createMcpSessionUiGate, resetMcpSessionControls } from './mcp-session-ui.js';
 import { refreshInputSource } from './input-source.js';
 import { appendInputCleanup, createTerminalDataHandler } from './terminal-input.js';
+import { wireImeProbe } from './terminal-ime-probe.js';
 import { keepLocalTerminalMouse } from './terminal-mouse.js';
 
 const mcpUiGate = createMcpSessionUiGate();
@@ -499,7 +500,11 @@ export function wireTerminalInput(pane, term, host) {
       }),
   });
   pane.insertInput = input.insert;
-  term.onData(input);
+  /* content-free IME commit probe (terminal-ime-probe.js): it sees what
+     xterm emits before the input handler queues the write */
+  pane.imeProbe = wireImeProbe(term.textarea, (code, detail, a, b) =>
+    uev(code, detail, a, b, pane.selection?.traceContext?.() ?? null));
+  term.onData(data => { pane.imeProbe.data(data); input(data); });
   const copyKey = createTerminalCopy({
     selection: pane.selection, term,
     copySelection: () => copyTerminalSelection(pane),
@@ -935,6 +940,7 @@ export function closePaneBySid(sid, opts = {}) {
   entry.disposeLinks?.();
   if (entry.selection) entry.selection.dispose();
   entry.scrollCursorObserver?.disconnect();
+  entry.imeProbe?.dispose();
   if (opts.detach !== false) inv('detach_session', { name: entry.session }).catch(() => {});
   try { entry.term.dispose(); } catch (e) { /* already gone */ }
   const quickBar = $('quick-bar');
@@ -1063,6 +1069,7 @@ export function leaveSessionView({ switchingSession = false, detach = true } = {
     p.disposeLinks?.();
     if (p.selection) p.selection.dispose();
     p.scrollCursorObserver?.disconnect();
+    p.imeProbe?.dispose();
     if (detach) inv('detach_session', { name: p.session }).catch(() => {});
     try { p.term.dispose(); } catch (e) { /* fine */ }
     p.el.remove();

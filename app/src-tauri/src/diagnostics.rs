@@ -95,6 +95,14 @@
 //! `native-end-<reason>` (a = rows, b = age ms) — pointer, input, output,
 //! buffer, deck, dispose, other — so a `keydown-none` that followed a native
 //! selection says what took it away.
+//!
+//! IME commits are probed always-on, content-free (`ui/js/terminal-ime-probe.js`
+//! owns the contract): per pane, whether xterm emitted what the IME committed
+//! (`ime-commit` missing/partial/differs/doubled/extra, a/b = committed and
+//! emitted lengths) with the textarea state that would explain it
+//! (`ime-context`, `ime-textarea`), composition order anomalies (`ime-state`)
+//! and one `ime-summary` (compositions, non-matches) when the pane is disposed.
+//! A match is never logged; each anomaly label is capped per pane.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -1012,6 +1020,29 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     ("pty-rx", DetailPolicy::None),
     ("keydown", DetailPolicy::Closed(KEY_CLASSES)),
     ("composition", DetailPolicy::Closed(&["start", "end"])),
+    // always-on IME commit probe (ui/js/terminal-ime-probe.js): labels,
+    // lengths and flags only, never the committed or emitted text
+    (
+        "ime-commit",
+        DetailPolicy::Closed(&["missing", "partial", "differs", "doubled", "extra"]),
+    ),
+    (
+        "ime-context",
+        DetailPolicy::Closed(&["caret-end", "caret-inside", "range", "unknown"]),
+    ),
+    (
+        "ime-textarea",
+        DetailPolicy::Closed(&["caret-inside", "range"]),
+    ),
+    (
+        "ime-state",
+        DetailPolicy::Closed(&[
+            "blur-composing",
+            "start-while-composing",
+            "end-without-start",
+        ]),
+    ),
+    ("ime-summary", DetailPolicy::None),
     (
         "terminal-copy",
         DetailPolicy::Closed(&[
@@ -1102,7 +1133,15 @@ fn format_scoped_ui_event(
     let mut line = format_ui_event(code, detail, a, b)?;
     if matches!(
         code,
-        "terminal-copy" | "terminal-selection" | "terminal-link" | "clipboard-write"
+        "terminal-copy"
+            | "terminal-selection"
+            | "terminal-link"
+            | "clipboard-write"
+            | "ime-commit"
+            | "ime-context"
+            | "ime-textarea"
+            | "ime-state"
+            | "ime-summary"
     ) {
         if let Some(c) = context {
             line.push_str(&format!(
@@ -1532,6 +1571,57 @@ mod tests {
                 "revoke reason cancel-{reason} must stay loggable"
             );
         }
+    }
+
+    #[test]
+    fn ime_probe_lines_are_closed_scoped_and_survive_sanitization() {
+        for (code, details) in [
+            (
+                "ime-commit",
+                &["missing", "partial", "differs", "doubled", "extra"][..],
+            ),
+            (
+                "ime-context",
+                &["caret-end", "caret-inside", "range", "unknown"][..],
+            ),
+            ("ime-textarea", &["caret-inside", "range"][..]),
+            (
+                "ime-state",
+                &[
+                    "blur-composing",
+                    "start-while-composing",
+                    "end-without-start",
+                ][..],
+            ),
+        ] {
+            for detail in details {
+                let line = format_ui_event(code, Some(detail), Some(2), Some(7)).unwrap();
+                assert_eq!(line, format!("[ui] {code} {detail} a=2 b=7"));
+                assert_eq!(crate::redact::sanitize_log(&line), line);
+            }
+            // committed text, or anything else, never passes as a label
+            for detail in ["中文", "ok", "zhongwen", "differs "] {
+                assert_eq!(
+                    format_ui_event(code, Some(detail), None, None).unwrap(),
+                    format!("[ui] {code} <redacted>")
+                );
+            }
+        }
+        assert_eq!(
+            format_ui_event("ime-summary", Some("中文"), Some(3), Some(1)).unwrap(),
+            "[ui] ime-summary <redacted> a=3 b=1"
+        );
+        let context = TerminalEventContext {
+            run: 9,
+            pane: 4,
+            selection: 0,
+            gesture: 0,
+            attempt: 0,
+        };
+        assert_eq!(
+            format_scoped_ui_event("ime-summary", None, Some(3), Some(1), Some(&context)).unwrap(),
+            "[ui] ime-summary a=3 b=1 run=9 pane=4 selection=0 gesture=0 attempt=0"
+        );
     }
 
     #[test]

@@ -46,7 +46,7 @@ const rejections = []; process.on('unhandledRejection', e => rejections.push(Str
 const b64 = s => Buffer.from(s, 'base64').toString('utf8');
 const listeners = {};
 win.__TAURI__ = { event: { listen: async (ev, cb) => { listeners[ev] = cb; return () => {}; } }, core: { invoke: (name, args) => {
-  if (name === 'ui_event') { if (args.code === 'pty-write-cancel') trace.push({ layer: 'cancel', reason: args.detail }); if (args.code === 'pty-write-fail') trace.push({ layer: 'write-fail' }); return Promise.resolve(); }
+  if (name === 'ui_event') { if (String(args.code).startsWith('ime-')) trace.push({ layer: 'ime', code: args.code, detail: args.detail, a: args.a, b: args.b, pane: args.context?.pane ?? null }); if (args.code === 'pty-write-cancel') trace.push({ layer: 'cancel', reason: args.detail }); if (args.code === 'pty-write-fail') trace.push({ layer: 'write-fail' }); return Promise.resolve(); }
   if (name === 'pty_write') {            // layer 2: order of production write calls
     const text = b64(args.dataB64);
     // Order and arguments of production write calls. Nothing after this line is a backend.
@@ -400,4 +400,27 @@ test('file input before the attach reply waits for that request', async () => {
     await f.release('attach_session'); await attaching; await tick();
     assert.deepEqual(f.calls(), [['/tmp/early.png ', f.pane.inputGen], ['\r', f.pane.inputGen]]);
   } finally { done(); }
+});
+
+test('the production wiring feeds the IME probe what xterm emits and logs its summary on leave', async () => {
+  const f = fixture();
+  await f.attach();
+  f.textarea.fire('compositionstart');
+  f.textarea.fire('compositionend', { data: '中文' });
+  f.key('中文'); await tick();
+  f.textarea.fire('compositionstart');
+  f.textarea.fire('compositionend', { data: '测试' });
+  f.key('别的'); await tick();
+  assert.deepEqual(f.writes(), ['中文', '别的'], 'the probe observes; the writes are unchanged');
+  layout.leaveSessionView({ detach: false });
+  const ime = trace.filter(x => x.layer === 'ime');
+  const pane = ime[0]?.pane;
+  assert.ok(Number.isInteger(pane), 'IME lines carry the selection trace pane id');
+  assert.deepEqual(ime.map(({ code, detail, a, b }) => [code, detail, a, b]), [
+    ['ime-commit', 'differs', 2, 2],
+    ['ime-context', 'unknown', 0, 0],
+    ['ime-summary', null, 2, 1],
+  ]);
+  assert.ok(ime.every(x => x.pane === pane));
+  done();
 });
