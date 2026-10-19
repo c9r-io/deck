@@ -412,9 +412,10 @@ fn literal_extraction_reads_one_line_only() {
 
 /// Card keys `persistence.js` writes that `BoardCard` deliberately does not
 /// declare: the backend keeps them as part of the document and never reads
-/// them. Everything else the frontend persists is a typed, validated
-/// `BoardCard` field.
-const FRONTEND_ONLY_CARD_KEYS: &[&str] = &["desc", "origin"];
+/// them (`quietDone`, the card's choice to keep its turn endings quiet,
+/// reaches notify.rs only through the labels the webview sends). Everything
+/// else the frontend persists is a typed, validated `BoardCard` field.
+const FRONTEND_ONLY_CARD_KEYS: &[&str] = &["desc", "origin", "quietDone"];
 
 /// JSON keys of the fields `BoardCard` declares (`src/documents.rs`), read
 /// from its source: a field's own name, or its `#[serde(rename = "…")]`.

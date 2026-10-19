@@ -127,7 +127,8 @@ export function schedulePreview(schedule, nowSecs = Math.floor(Date.now() / 1000
 export const triggerText = rule => (rule.source === 'clock'
   ? scheduleText(rule.schedule)
   : rule.source === 'channel' ? t('automation.trigger.channelSummary', { count: formatNumber(rule.channelIds.length) })
-    : t('automation.trigger.badge', { badge: rule.badge }));
+    : rule.source === 'agent' ? t('automation.trigger.agentSummary', { id: rule.badge })
+      : t('automation.trigger.badge', { badge: rule.badge }));
 
 /* "Close the card" depends on the program exiting, and an interactive agent
    does not exit by itself: its card stays and a clock rule's next slot is
@@ -135,7 +136,8 @@ export const triggerText = rule => (rule.source === 'clock'
    slot to skip; a channel rule has no finish choice. */
 export const finishHintShown = (trigger, finish) => trigger === 'clock' && finish === 'close';
 
-export const ruleLabel = rule => rule.name || (rule.source === 'clock' || rule.source === 'channel' ? rule.id : `:${rule.badge}:`);
+export const ruleLabel = rule => rule.name || (rule.source === 'clock' || rule.source === 'channel' ? rule.id
+  : rule.source === 'agent' ? rule.badge : `:${rule.badge}:`);
 
 /* one recorded run as a line: its outcome decides the mark and the words;
    `openable` says a running run still has a card to open */
@@ -181,7 +183,7 @@ export function ruleFacts(rule, { columnName = null, home = '', slackConnected =
     rows.push(['automation.channelFirstSend.scope', t(rule.firstSend === true && rule.firstSendGrant
       ? 'automation.channelFirstSend.on' : 'automation.channelFirstSend.off')]);
   } else {
-    rows.push(['automation.kv.connection', t(slackConnected ? 'automation.slackOn' : 'automation.slackOff')]);
+    if (rule.source === 'slack') rows.push(['automation.kv.connection', t(slackConnected ? 'automation.slackOn' : 'automation.slackOff')]);
     rows.push(['automation.kv.autoSend', approvalText(rule, approval)]);
     rows.push(['automation.kv.firstSend', firstSendText(rule)]);
   }
@@ -223,6 +225,15 @@ export function composeRule(fields, { previous = null, rules = [], projectId, ge
     const id = previous && previous.source === 'slack' ? previous.id : genId('R');
     if (badgeTaken(rules, badge, id)) return fail('automation.badgeTaken', 'auto-badge', { badge });
     return { rule: { id, source: 'slack', badge, ...shared, enabled: true } };
+  }
+  /* an Agent handover rule: its badge is the automation id a delegated
+     client names (spelled like a badge), one rule per id */
+  if (fields.trigger === 'agent') {
+    const badge = (fields.badge || '').trim();
+    if (!INBOUND_BADGE_RE.test(badge)) return fail('automation.invalidAgentId', 'auto-badge');
+    const id = previous && previous.source === 'agent' ? previous.id : genId('R');
+    if (badgeTaken(rules, badge, id, 'agent')) return fail('automation.agentIdTaken', 'auto-badge', { badge });
+    return { rule: { id, source: 'agent', badge, ...shared, enabled: true } };
   }
   if (!name) return fail('automation.needsName', 'auto-name');
   const read = scheduleFromFields(fields);
@@ -303,7 +314,7 @@ export async function approveRule(rule, template, { external = false } = {}) {
 export async function grantDetail(rule, template) {
   const grant = rule?.autoSend;
   if (!grant) return 'none';
-  if (rule.source !== 'slack') return 'stale-rule';
+  if (!['slack', 'agent'].includes(rule.source)) return 'stale-rule';
   if (!template) return 'stale-template';
   const current = await templateGrant(template);
   if (JSON.stringify(current.steps) !== JSON.stringify(grant.steps)
@@ -326,7 +337,7 @@ export async function grantState(rule, template) {
 export async function approvalsVoidedBy(rules, projectId, name, before, after) {
   const out = [];
   for (const rule of Array.isArray(rules) ? rules : []) {
-    if (!rule?.autoSend || rule.source !== 'slack' || rule.projectId !== projectId || rule.template !== name) continue;
+    if (!rule?.autoSend || !['slack', 'agent'].includes(rule.source) || rule.projectId !== projectId || rule.template !== name) continue;
     if ((await grantState(rule, { name, steps: before })) !== 'valid') continue;
     if ((await grantState(rule, { name, steps: after })) !== 'valid') out.push(rule);
   }
@@ -360,7 +371,7 @@ export function firstSendSupported(cmd) {
 export function withFirstSend(rule, on) {
   const next = { ...rule };
   delete next.firstSendWithoutReadiness;
-  if (on === true && ['slack', 'clock'].includes(next.source)) next.firstSendWithoutReadiness = true;
+  if (on === true && ['slack', 'clock', 'agent'].includes(next.source)) next.firstSendWithoutReadiness = true;
   return next;
 }
 

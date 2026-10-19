@@ -28,6 +28,20 @@ pub(super) fn map_error(error: DeckError) -> Value {
             "Do not resubmit it unchanged. Inspect the current state (deck_session_inspect, deck_capabilities); send a NEW request with a new request_id and the current sequence only if the effect is still wanted.",
         );
     }
+    if error.message() == AUTOMATION_NOT_FOUND {
+        return error_value(
+            "AUTOMATION_NOT_FOUND",
+            "no enabled Agent automation with that id accepts triggers",
+            "Read deck_automation_list and use one of the listed ids.",
+        );
+    }
+    if error.message() == AUTOMATION_UNAVAILABLE {
+        return error_value(
+            "AUTOMATION_UNAVAILABLE",
+            "Deck cannot read the automation's rule or template right now",
+            "Retry later; if it persists, ask the local Deck user to check Settings and the Board.",
+        );
+    }
     if error.message() == RUNNER_STALE {
         return error_value(
             "RUNNER_STALE",

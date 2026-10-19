@@ -179,7 +179,8 @@
       },
       "reminderRetirements": [
         "exit:deck-reminder-card-cd90/1790000000"
-      ]
+      ],
+      "quietDone": true
     }
   ]
 }

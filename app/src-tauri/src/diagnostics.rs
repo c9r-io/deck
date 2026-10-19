@@ -165,6 +165,7 @@ const INBOUND_OUTCOMES: &[&str] = &[
     "no-rule-target",
     "no-template",
     "blocked",
+    "rule-changed",
     "create-fail",
     "queue-fail",
     "channel-queue-fail",

@@ -61,7 +61,7 @@ export function normalizeFontScale(value) {
   return Number((Math.round(number / FONT_SCALE_STEP) * FONT_SCALE_STEP).toFixed(1));
 }
 
-export const INBOUND_SOURCES = Object.freeze(['slack', 'clock']);
+export const INBOUND_SOURCES = Object.freeze(['slack', 'clock', 'agent']);
 /* sources with an on/off switch of their own; the clock is on whenever one
    of its rules is enabled */
 const INBOUND_TOGGLES = Object.freeze(['slack']);
@@ -159,11 +159,11 @@ export function normalizeInbound(value) {
       since: Number.isInteger(r.since) && r.since >= 0 ? r.since : 0,
     };
     if (!LOCAL_ID_RE.test(rule.id) || rule.id.length > INBOUND_RULE_ID_MAX) continue;
-    const autoSend = rule.source === 'slack' ? normalizeAutoSend(r.autoSend) : null;
+    const autoSend = ['slack', 'agent'].includes(rule.source) ? normalizeAutoSend(r.autoSend) : null;
     if (autoSend) rule.autoSend = autoSend;
     /* a Slack badge or clock rule's first-send readiness override (automation-model.js
        `withFirstSend`); anything but an explicit true reads as off */
-    if (['slack', 'clock'].includes(rule.source) && r.firstSendWithoutReadiness === true) rule.firstSendWithoutReadiness = true;
+    if (['slack', 'clock', 'agent'].includes(rule.source) && r.firstSendWithoutReadiness === true) rule.firstSendWithoutReadiness = true;
     if (rule.source === 'clock') {
       rule.badge = rule.id;
       rule.schedule = normalizeSchedule(r.schedule);

@@ -271,8 +271,8 @@ export function ruleByOrigin(rules, origin) {
 
 /* one automation per badge across every project: the dispatcher matches a
    badge to ONE rule, so a second rule for it would never fire */
-export const badgeTaken = (rules, badge, exceptId = null) => (Array.isArray(rules) ? rules : [])
-  .some(r => r && r.source === 'slack' && r.badge === badge && r.id !== exceptId);
+export const badgeTaken = (rules, badge, exceptId = null, source = 'slack') => (Array.isArray(rules) ? rules : [])
+  .some(r => r && r.source === source && r.badge === badge && r.id !== exceptId);
 
 /* ---------- serialized board transactions ---------- */
 const cloneJson = value => JSON.parse(JSON.stringify(value));

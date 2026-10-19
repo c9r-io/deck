@@ -67,9 +67,20 @@
 //!   calls `observe` on the listener thread and `reconcile` calls `retain`,
 //!   so a notification is posted even while App Nap has frozen the
 //!   webview's poll. The webview supplies what Rust cannot know: card
-//!   labels (`notify_cards`: session → title + project, memory only), the
+//!   labels (`notify_cards`: session → title + project + the card's own
+//!   quiet choice, memory only), the
 //!   fact that a `turn-done` was viewed (`notify_dismiss`), and the
 //!   settings (`notify_configure`).
+//! - **A card can be kept quiet for routine endings.** The card's own
+//!   choice (`quietDone` on the Board, the card's context menu) reaches
+//!   this module as `CardLabel::quiet`: a `turn-done` of that session is
+//!   then neither posted nor counted on the Dock — the ending is still
+//!   recorded, the card still shows it, and `needs-input`, a held delivery
+//!   and a bell are announced as for any card. Attention policy, not a
+//!   fact about the agent: it changes what is announced, never what is
+//!   observed, and the webview's needs-attention list applies the same
+//!   choice (`attention-model.js`). Made for a card that ends a turn every
+//!   few minutes by design (a patrol on `/loop`).
 //! - **Content is a closed set.** The title is the card's own title, the
 //!   body is one of four fixed phrases (`body_text`, en / zh-Hans, following
 //!   the locale setting; two for an agent, one for a held delivery, one for
@@ -159,6 +170,10 @@ pub(crate) struct CardLabel {
     pub(crate) title: String,
     #[serde(default)]
     pub(crate) project: String,
+    /// The card asked to keep its routine turn endings quiet (module
+    /// header): no notification and no Dock count for a `turn-done`.
+    #[serde(default)]
+    pub(crate) quiet: bool,
 }
 
 #[derive(Default)]
@@ -188,6 +203,13 @@ pub(crate) struct Notify {
 
 fn unread(seen: &crate::agent_status::Observation) -> bool {
     seen.state == TURN_DONE && !seen.viewed
+}
+
+impl Notify {
+    /// The card's own choice to keep its turn endings quiet.
+    fn quiet(&self, session: &str) -> bool {
+        self.labels.get(session).is_some_and(|label| label.quiet)
+    }
 }
 
 /// What the module asks of the platform; `SystemNative` is the bridge and
@@ -251,7 +273,7 @@ fn can_post(native: &dyn Native) -> bool {
 fn badge_count(n: &Notify) -> usize {
     n.states
         .iter()
-        .filter(|(_, seen)| seen.state == NEEDS_INPUT || unread(seen))
+        .filter(|(session, seen)| seen.state == NEEDS_INPUT || (unread(seen) && !n.quiet(session)))
         .count()
 }
 
@@ -259,7 +281,9 @@ fn push_badge(n: &Notify, native: &dyn Native) {
     let sessions = n
         .states
         .iter()
-        .filter(|(_, seen)| n.enabled && (seen.state == NEEDS_INPUT || unread(seen)))
+        .filter(|(session, seen)| {
+            n.enabled && (seen.state == NEEDS_INPUT || (unread(seen) && !n.quiet(session)))
+        })
         .map(|(session, _)| session.clone())
         .chain(n.waits.keys().filter(|_| n.enabled).cloned())
         .chain(n.bells.keys().filter(|_| n.enabled).cloned());
@@ -291,11 +315,14 @@ pub(crate) fn observe_with(
         return;
     }
     let announces = seen.state == NEEDS_INPUT || seen.state == TURN_DONE;
+    // the card's own choice: a routine ending of a quiet card is recorded
+    // and shown on the card, announced nowhere (module header)
+    let quiet = seen.state == TURN_DONE && n.quiet(session);
     // a changed episode replaces the previous notification (the identifier
     // is the session), so an unread `turn-done` is not left under a newer
     // `needs-input` and vice versa
     withdraw(n, native, session);
-    if !announces {
+    if !announces || quiet {
         push_badge(n, native);
         return;
     }
@@ -904,7 +931,70 @@ mod tests {
             session: session.into(),
             title: title.into(),
             project: project.into(),
+            quiet: false,
         }
+    }
+
+    /// A card kept quiet: its turn endings are neither posted nor counted,
+    /// its input requests and the Dock count of other cards are untouched,
+    /// and the ending is still recorded as unread for the card itself.
+    #[test]
+    fn a_quiet_card_announces_input_requests_but_not_its_turn_endings() {
+        let (mut n, fake) = ready();
+        set_labels_with(
+            &mut n,
+            vec![
+                CardLabel {
+                    quiet: true,
+                    ..label("deck-card-ab12", "Patrol", "deck")
+                },
+                label("deck-card-cd34", "Write docs", ""),
+            ],
+        )
+        .unwrap();
+        observe_word(&mut n, &fake, "deck-card-ab12", TURN_DONE, true, "en");
+        assert!(
+            fake.calls().is_empty(),
+            "a routine ending of a quiet card posts nothing"
+        );
+        assert_eq!(*fake.badge.borrow(), Some(0));
+        assert!(
+            unread(n.states.get("deck-card-ab12").unwrap()),
+            "still recorded for the card"
+        );
+        assert_eq!(badge_count(&n), 0);
+        observe_word(&mut n, &fake, "deck-card-ab12", NEEDS_INPUT, true, "en");
+        assert_eq!(
+            fake.calls(),
+            ["post deck-card-ab12 [Patrol] [deck · asked for your input] sound=false"]
+        );
+        assert_eq!(*fake.badge.borrow(), Some(1));
+        fake.clear();
+        // another card's ending counts as always
+        observe_word(&mut n, &fake, "deck-card-cd34", TURN_DONE, true, "en");
+        assert_eq!(
+            fake.calls(),
+            ["post deck-card-cd34 [Write docs] [a turn has ended] sound=false"]
+        );
+        assert_eq!(*fake.badge.borrow(), Some(2));
+        // the choice withdrawn: the next ending is announced again
+        set_labels_with(
+            &mut n,
+            vec![
+                label("deck-card-ab12", "Patrol", "deck"),
+                label("deck-card-cd34", "Write docs", ""),
+            ],
+        )
+        .unwrap();
+        fake.clear();
+        observe_word(&mut n, &fake, "deck-card-ab12", "working", true, "en");
+        observe_word(&mut n, &fake, "deck-card-ab12", TURN_DONE, true, "en");
+        assert!(
+            fake.calls()
+                .iter()
+                .any(|call| call
+                    .starts_with("post deck-card-ab12 [Patrol] [deck · a turn has ended]"))
+        );
     }
 
     fn ready() -> (Notify, Fake) {

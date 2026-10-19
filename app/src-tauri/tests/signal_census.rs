@@ -198,7 +198,9 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     ("notify.rs", "unread", "TURN_DONE", 1, Attention),
     ("notify.rs", "dismiss_with", "TURN_DONE", 1, Attention),
     ("agent_status.rs", "mark_viewed", "TURN_DONE", 1, Attention),
-    ("notify.rs", "observe_with", "TURN_DONE", 2, Attention),
+    // the third read is the card's own quiet choice: a routine ending of a
+    // quiet card is announced nowhere (attention policy, never a fact)
+    ("notify.rs", "observe_with", "TURN_DONE", 3, Attention),
     // the scheduler's agent hold: may only withhold an automatic paste
     (
         "scheduler/select.rs",

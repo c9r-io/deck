@@ -816,9 +816,23 @@ fn send_one_guarded(
         let needs = |source| approval == Some(source) || policy == Some(source);
         let config = needs(first_send::Backing::Settings).then(|| (h.authority)());
         let board = needs(first_send::Backing::Board).then(|| (h.board)());
+        // an Agent rule's approval or override also rests on the MCP
+        // client's delegation: read under the same fence its withdrawal
+        // takes (`mcp/automation.rs`)
+        let wants_delegations = automatic
+            && (sel
+                .authority
+                .as_ref()
+                .is_some_and(|a| a.trigger == TriggerClass::Agent)
+                || sel
+                    .readiness_override
+                    .as_ref()
+                    .is_some_and(|o| o.trigger == first_send::FirstSendOrigin::Agent));
+        let delegations = wants_delegations.then(first_send::delegations);
         let sources = first_send::Sources {
             settings: config.as_ref().and_then(Option::as_ref),
             board: board.as_ref().and_then(Option::as_ref),
+            delegations: delegations.as_ref().and_then(Option::as_ref),
         };
         if approval.is_some() {
             match fence(&sel, sources) {
@@ -1319,6 +1333,14 @@ fn send_one_safe_requested_with_stabilization(
                         mark_authority_unverified(&mut latest);
                     }
                 }
+            }
+            if bound
+                .readiness_override
+                .as_ref()
+                .is_some_and(|o| o.trigger == first_send::FirstSendOrigin::Agent)
+                && first_send::delegations().is_none()
+            {
+                mark_authority_unverified(&mut latest);
             }
             let still_selected = {
                 let q = qm.lock_or_recover();

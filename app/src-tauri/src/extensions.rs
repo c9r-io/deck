@@ -475,9 +475,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["connector", "mcp"]
         );
-        // services plus the built-in clock are exactly the dispatcher's names
+        // services plus the built-in clock and Agent trigger are exactly
+        // the dispatcher's names
         let mut names: Vec<&str> = service_sources().iter().map(|s| s.id()).collect();
-        names.push("clock");
+        names.extend(crate::inbound::BUILT_IN_SOURCES);
         assert_eq!(names, crate::inbound::SOURCES);
     }
 

@@ -218,12 +218,13 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         // a phone task's override and approval are backed by the Board side
         // instead (the current Board and the devices still paired), and are
         // swept against it the same way
-        let (needs_settings, needs_board) = {
+        let (needs_settings, needs_board, needs_delegations) = {
             let q = state.q.lock_or_recover();
             let relies = |source| any_authority(&q, source) || first_send::any_override(&q, source);
             (
                 relies(first_send::Backing::Settings),
                 relies(first_send::Backing::Board),
+                any_agent_delegation(&q),
             )
         };
         if needs_settings || needs_board {
@@ -231,6 +232,10 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                 .then(crate::inbound::read_config_strict)
                 .flatten();
             let board = needs_board.then(first_send::phone_tasks).flatten();
+            // an Agent rule's rows rest on the settings AND the MCP
+            // delegation; an unreadable ledger holds them like unreadable
+            // settings
+            let delegations = needs_delegations.then(first_send::delegations).flatten();
             // no proof either way: rows, approvals and overrides stay;
             // automatic sends that rely on one hold this tick
             if let Some(seen) = listing.as_mut() {
@@ -240,11 +245,15 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                 if needs_board && board.is_none() {
                     mark_board_unverified(seen);
                 }
+                if needs_delegations && delegations.is_none() {
+                    mark_authority_unverified(seen);
+                }
             }
             if config.is_some() || board.is_some() {
                 let sources = first_send::Sources {
                     settings: config.as_ref(),
                     board: board.as_ref(),
+                    delegations: delegations.as_ref(),
                 };
                 match with_queue_opt(&state.q, &save_queue, |q| {
                     let approvals = revoke_stale(q, sources);

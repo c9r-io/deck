@@ -2,7 +2,8 @@
   "about": "One clock run with the first-send option, in both list forms: the card the webview persists for it and the call it queues the head row with. inbound-dom.test.mjs proves these are what the real dispatcher produces from `event` and each `rule` (generated ids, the session name and the date in the title are mapped to the fixed ones here). scheduler/tests.rs proves scheduler/first_send.rs `clock_head_matches` accepts each and refuses it with any field it reads changed or missing. `firstSendSources` is the closed list of rule sources that may carry the option; both sides hold their own spelling of it to this one.",
   "firstSendSources": [
     "slack",
-    "clock"
+    "clock",
+    "agent"
   ],
   "now": 1790000100,
   "event": {

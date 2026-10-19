@@ -33,6 +33,8 @@ fn client() -> Client {
             roots: vec!["/nonexistent-deck-admission".into()],
         }],
         create_sequence: 0,
+        allow_automations: false,
+        trigger_sequence: 0,
     }
 }
 

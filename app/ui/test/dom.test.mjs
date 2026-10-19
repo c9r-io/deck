@@ -1844,3 +1844,38 @@ test('a pairing is announced by name and time and hides the spent QR code', asyn
   assert.match(fakeDocument.getElementById('toasts').children.at(-1).textContent, /Paired “Unknown iPhone”/);
   assert.equal(fakeDocument.getElementById('set-connector-devices').children.length, 2);
 });
+
+test('an MCP client row grants and withdraws the automation delegation as its own choice', async () => {
+  const calls = [];
+  let allowed = false;
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'mcp_status') return { enabled: true, outputRetentionMs: 86_400_000,
+      clients: [{ id: 'client_live', name: 'Patrol', revoked: false, allowCreate: false, allowAutomations: allowed, projects: [] }] };
+    if (cmd === 'tunnel_helper_status') return new Promise(() => {});
+    if (cmd === 'mcp_client_automations') { allowed = args.allowed; return; }
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  await renderMcpSettings();
+  let row = fakeDocument.getElementById('set-mcp-clients').children[0];
+  assert.ok(!row.children[0].children[1].textContent.includes('automations delegated'));
+  let button = row.children[1].children.find(b => String(b.className).includes('mcp-automations'));
+  assert.equal(button.textContent, 'Delegate automations');
+  // granting asks once; the row then says so and offers to stop
+  button.fire('click');
+  await tick();
+  assert.equal(fakeDocument.getElementById('cfm').style.display, 'flex');
+  assert.match(fakeDocument.getElementById('cfm-msg').textContent, /Delegate Patrol to trigger your Agent automations/);
+  cfmDone(true);
+  await tick(); await tick();
+  assert.ok(calls.some(([cmd, args]) => cmd === 'mcp_client_automations' && args.clientId === 'client_live' && args.allowed === true));
+  row = fakeDocument.getElementById('set-mcp-clients').children[0];
+  assert.ok(row.children[0].children[1].textContent.includes('automations delegated'));
+  button = row.children[1].children.find(b => String(b.className).includes('mcp-automations'));
+  assert.equal(button.textContent, 'Stop automations');
+  // withdrawing never asks
+  button.fire('click');
+  await tick(); await tick();
+  assert.equal(fakeDocument.getElementById('cfm').style.display, 'none');
+  assert.ok(calls.some(([cmd, args]) => cmd === 'mcp_client_automations' && args.allowed === false));
+});

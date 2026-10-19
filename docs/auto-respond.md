@@ -264,6 +264,51 @@ way).
   after a restart it starts only inside the rule's grace and is otherwise
   recorded as `skipped (missed)`, as after any launch.
 
+## The Agent handover trigger
+
+The third source is an **Agent**: an MCP client you delegated under
+**Settings → Remote access** (the client row's **Delegate automations**,
+or the question asked when the client is authorized) names one of your
+Agent rules by its **automation id** and hands over one classified item —
+text plus who it came from, where it lives and a link. A typical client is
+a patrol skill in a Claude Code card that checks Slack, Notion, ClickUp and
+GitHub every few minutes for mentions you have not handled and classifies
+them; which items are new, and what they mean, is the client's business.
+Deck's part is the one it already has for a badge: the rule names the
+column, directory, command and template, Deck creates a fresh card with
+the template filled from the item (`{{msg.text}}`, `{{msg.from}}`,
+`{{msg.where}}`, `{{msg.link}}`), and the rule's own choices decide how
+the steps are sent. The client never types into a session, and no
+execution window, control lease or managed session is involved; the
+delegation is its own revocable choice, never implied by letting a client
+create shell cards.
+
+An Agent rule has the badge rule's choices: **Automatically continue
+approved follow-up steps** (with the second tick for steps that paste the
+item's content), **Send the first step … without waiting for readiness**,
+inspection and the finish mode. What replaces your reaction on a message
+is your standing delegation to the client: the rule's approval and its
+first-send choice stand only while the rule is unchanged (its content
+digest) AND the client is still delegated. Unticking the delegation on the
+client's row, revoking the client or turning MCP off withdraws them from
+the steps not yet sent, exactly as editing the rule does, and nothing
+regains them later. A rule the client cannot reach (a command the remote
+admission refuses) is listed but not offered.
+
+What the client is promised is the rule's **revision**, the same digest
+the approval uses; a handover against a stale revision is refused with the
+current one, and an item accepted before an edit is skipped with
+`rule-changed` instead of starting under a rule the client did not see.
+Items wait in `~/.deck/agent-inbox.json` until Deck handles them (a Deck
+restart loses nothing; a rule deleted afterwards skips its items), and the
+client can read each item's outcome from its operation: the card it made,
+or the closed reason it was skipped for.
+
+Any card can keep its routine turn endings quiet (the card's context menu,
+"Keep routine turn endings quiet"): useful for the patrol card itself,
+whose every iteration ends a turn. Input requests and held deliveries stay
+loud (`docs/notifications.md`).
+
 ## What deck keeps
 
 
@@ -272,6 +317,12 @@ way).
   id (a badge name for a Slack trigger), slot or message key, card id,
   start/end instants and a closed outcome word (running / closed / skipped
   with its reason). Capped at 200 runs.
+- `~/.deck/agent-inbox.json`: the items delegated MCP clients handed over —
+  the item text and its three context fields (your own delegated content,
+  bounded), the client's public id, the operation id, the rule and the
+  revision it was accepted against, and each item's consumption fact
+  (handled with its card or its closed reason). Never a credential; pruned
+  after 45 days.
 - The expanded template prompts are frozen in the private card document until
   every row is queued. This lets deck retry a partial queue write after a
   restart without creating a second card or sending a row twice. The queue

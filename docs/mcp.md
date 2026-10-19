@@ -35,6 +35,13 @@ item or background service is created.
    the client may run any program as your logged-in user, including interpreters
    and shells. It is not a sandbox.
    Control-lease Request/Renew never creates or extends this window.
+5. **Automation delegation** is a separate question, asked after the
+   session one and answerable later from the client's row (**Delegate
+   automations** / **Stop automations**). With it the client may list your
+   Agent automations and hand over items to them (`docs/auto-respond.md`,
+   "The Agent handover trigger"); the rules' own sending choices still
+   apply, and withdrawing the delegation stops the steps those items have
+   not sent yet. It grants no session, execution or stdin authority.
 
 Disabling the feature or revoking a client fences new side effects in memory
 first (before waiting for any in-flight dispatch), advances session control
@@ -104,6 +111,8 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_job_input` | Write only to the named still-running child's stdin. Never falls back to terminal typing. |
 | `deck_job_interrupt` | Request SIGINT for the active job's owned process group; read again to confirm exit. |
 | `deck_session_close` | Use Deck's ordinary close transaction; running jobs require explicit confirmation. |
+| `deck_automation_list` | The Agent automations this client is delegated to trigger: each rule's automation id, name, project and current revision, plus `nextTriggerSequence`. Needs the client's separate **automation delegation**. |
+| `deck_automation_trigger` | Hand one classified item (`text`, optional `from`/`where`/`link`) to one automation by id and revision. Deck creates the rule's card and sends its approved steps; the operation reports `committed` with `cardId` or `rejected` with a closed code (`RULE_CHANGED` with `currentRevision`, `TARGET_MISSING`, `TEMPLATE_MISSING`, `RULE_BLOCKED`, `RULE_MISSING`, `CLIENT_REVOKED`). Not session or execution authority. |
 
 All input schemas reject unknown fields. Side-effecting tools advertise
 `readOnlyHint=false`, `destructiveHint=true`, `idempotentHint=false` and
@@ -149,7 +158,13 @@ second time:
 - `deck_session_create` names the client's `create_sequence`
   (`nextCreateSequence` in `deck_capabilities` and `deck_sessions_list`).
   Each accepted create advances it, so concurrent creates are serialized:
-  the loser receives `STALE_REQUEST` and re-reads the value.
+  the loser receives `STALE_REQUEST` and re-reads the value;
+- `deck_automation_trigger` names the client's `trigger_sequence`
+  (`nextTriggerSequence` in `deck_capabilities` and `deck_automation_list`)
+  the same way, and the rule's `expected_revision`. Its record takes the
+  same per-client replay window as a create. A trigger accepted before a
+  Deck restart is not turned ambiguous: its truth is the durable inbox
+  item, which Deck reconciles at start.
 
 Neither sequence is an execution grant: advancing one never creates or
 extends an execution window.
@@ -332,7 +347,9 @@ the managed runner as MCP's and keeps refusing terminal input to it, and
 treats every other session as it would without MCP; restarting the tmux
 server is refused while such a runner lives. State schema v6 is distinct
 from Deck control protocol v5 and from the MCP standard version negotiated by
-the SDK. v3/v4/v5 state upgrades in place to v6: control/create sequences are
+the SDK. A ledger that holds an automation delegation, a trigger sequence
+or a trigger record is written at sticky v7, which a v6 build refuses
+untouched (MCP off for that run, everything else unaffected). v3/v4/v5 state upgrades in place to v6: control/create sequences are
 added at 0; legacy `allowShell` fields are accepted but ignored and omitted on
 a later save (sticky: an older build refuses the new state untouched). Clients, grants,
 sessions and history are kept; nothing is re-paired. v1/v2 state migrates disabled: old clients are retained only as

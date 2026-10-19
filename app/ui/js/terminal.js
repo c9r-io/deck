@@ -94,10 +94,11 @@ export function showSessionCtx(e, sid) {
     ? e.currentTarget.querySelector('.name, .card-title') : null;
   const ctx = $('ctx');
   ctx.onkeydown = null;
-  ctx.innerHTML = '<button data-a="rename"></button><button data-a="desc"></button><button data-a="buffer"></button><button data-a="reminder"></button><button data-a="here"></button><hr><button data-a="close" class="danger"></button>';
+  ctx.innerHTML = '<button data-a="rename"></button><button data-a="desc"></button><button data-a="buffer"></button><button data-a="reminder"></button><button data-a="quiet"></button><button data-a="here"></button><hr><button data-a="close" class="danger"></button>';
   ctx.querySelector('[data-a="rename"]').textContent = t('menu.renameCard');
   ctx.querySelector('[data-a="desc"]').textContent = t(s.desc ? 'menu.editDescription' : 'menu.addDescription');
   ctx.querySelector('[data-a="reminder"]').textContent = t('reminder.set');
+  ctx.querySelector('[data-a="quiet"]').textContent = t(s.quietDone === true ? 'menu.loudDone' : 'menu.quietDone');
   ctx.querySelector('[data-a="buffer"]').textContent = t('buffer.open');
   ctx.querySelector('[data-a="here"]').textContent = t('menu.newSessionHere');
   ctx.querySelector('[data-a="close"]').textContent = t('menu.closeSession');
@@ -107,6 +108,7 @@ export function showSessionCtx(e, sid) {
     if (a === 'rename') renameCardInline(sid, renameHost);
     if (a === 'desc') editDescInline(sid);
     if (a === 'reminder') editReminder(sid);
+    if (a === 'quiet') provider.toggleQuietDone(sid);
     if (a === 'buffer') openBuffer(sid);
     if (a === 'here') newSession(s.dir, { projectId: s.projectId });
     if (a === 'close') closeSession(sid);

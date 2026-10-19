@@ -128,3 +128,25 @@ test('enabling an integration mentions away notifications only while they are of
       `${locale}: names the group as Settings does`);
   }
 });
+
+test('a card kept quiet carries its choice in its label, and the key changes with it', () => {
+  const loud = cardLabels([card('C1', 'deck-card-aa', 'Patrol', 'P1')], projects);
+  const quiet = cardLabels([{ ...card('C1', 'deck-card-aa', 'Patrol', 'P1'), quietDone: true }], projects);
+  assert.equal('quiet' in loud[0], false, 'absent means announced, as before');
+  assert.equal(quiet[0].quiet, true);
+  assert.notEqual(labelsKey(loud), labelsKey(quiet));
+  assert.equal('quiet' in cardLabels([{ ...card('C1', 'deck-card-aa', 'Patrol', 'P1'), quietDone: 'yes' }], projects)[0], false, 'only a real true');
+});
+
+test('a quiet card\'s unread turn ending is not an attention row; its input request still is', () => {
+  const tracker = createAttentionTracker();
+  const quiet = { id: 'Q1', session: 'deck-q', quietDone: true };
+  const loud = { id: 'L1', session: 'deck-l' };
+  const info = (name, agent) => ({ name, alive: true, agent, idle_secs: 0, episode: 7, episode_viewed: false });
+  tracker.record([quiet, loud], [info('deck-q', 'turn-done'), info('deck-l', 'turn-done')], new Set(), 100);
+  assert.equal(tracker.category(loud), 'done');
+  assert.equal(tracker.category(quiet), 'other');
+  assert.equal(tracker.counts([quiet, loud]).done, 1);
+  tracker.record([quiet, loud], [info('deck-q', 'needs-input'), info('deck-l', 'turn-done')], new Set(), 200);
+  assert.equal(tracker.category(quiet), 'input', 'the choice covers routine endings only');
+});

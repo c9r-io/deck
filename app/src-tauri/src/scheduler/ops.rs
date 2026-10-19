@@ -830,6 +830,11 @@ pub(super) fn admit_authority(args: &mut QueueAddArgs, texts: &[String]) {
         .event
         .as_deref()
         .and_then(|key| crate::inbound::pending_event(key, &claim.rule));
+    // for an Agent item: the delegated client the inbox holds for it
+    let client = claim
+        .event
+        .as_deref()
+        .and_then(crate::inbound::pending_client);
     for (k, text) in texts.iter().enumerate() {
         let step = AuthorityClaim {
             step: claim.step.saturating_add(k as u32),
@@ -838,6 +843,7 @@ pub(super) fn admit_authority(args: &mut QueueAddArgs, texts: &[String]) {
         let proof = Proof {
             skeleton: claim.skeletons.get(k).and_then(Option::as_deref),
             event: event.as_ref(),
+            client: client.as_deref(),
         };
         let verdict = match &preset {
             Some((board, task)) => verify_preset_claim(
@@ -856,6 +862,19 @@ pub(super) fn admit_authority(args: &mut QueueAddArgs, texts: &[String]) {
                 proof,
             ),
         };
+        // an Agent rule's approval also rests on the client's delegation,
+        // read now; unreadable proves nothing and admits nothing
+        let verdict = verdict.and_then(|authority| {
+            let delegated = authority
+                .delegation
+                .as_ref()
+                .map(|source| first_send::delegation_stands(&source.client));
+            match delegated {
+                Some(Some(true)) | None => Ok(authority),
+                Some(Some(false)) => Err("delegation"),
+                Some(None) => Err("delegation-unverified"),
+            }
+        });
         args.granted.push(match verdict {
             Ok(authority) => Some(authority),
             Err(code) => {
@@ -902,6 +921,7 @@ pub(super) fn admit_first_send(args: &mut QueueAddArgs) {
     }
     let config = crate::inbound::read_config_strict();
     let event = crate::inbound::pending_event(&claim.event, &claim.rule);
+    let client = crate::inbound::pending_client(&claim.event);
     if let Some(rule) = config
         .as_ref()
         .and_then(|c| c.rules.iter().find(|r| r.id == claim.rule))
@@ -925,14 +945,28 @@ pub(super) fn admit_first_send(args: &mut QueueAddArgs) {
             }
         }
     }
-    match first_send::verify(
+    let verdict = first_send::verify(
         config.as_ref(),
         &claim,
         &args.cmd,
         &args.mode,
         args.external_text,
         event.as_ref(),
-    ) {
+        client.as_deref(),
+    )
+    .and_then(|granted| {
+        // an Agent run's override also rests on the client's delegation
+        match granted
+            .delegation
+            .as_ref()
+            .map(|source| first_send::delegation_stands(&source.client))
+        {
+            Some(Some(true)) | None => Ok(granted),
+            Some(Some(false)) => Err("delegation"),
+            Some(None) => Err("delegation-unverified"),
+        }
+    });
+    match verdict {
         Ok(granted) => args.first_send_granted = Some(granted),
         Err(code) => applog(&format!(
             "[queue] first-send policy not applied ({code}) — the first step waits for an agent interaction"

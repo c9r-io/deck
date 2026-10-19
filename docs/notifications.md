@@ -121,6 +121,17 @@ another app, or on another Space. A notification is posted at the moment
 of the transition into one of the two states; a repeated report of the
 same word posts nothing.
 
+### A card you keep quiet
+
+A card's context menu offers **Keep routine turn endings quiet**. For that
+card a turn ending is still recorded and shown on the card, but it is not
+posted, not counted on the Dock and not a row of the needs-attention view;
+an input request, a held delivery and a terminal bell are announced as for
+any card, and **Announce turn endings again** undoes the choice. It is the
+card's own choice, kept with the card on the Board, made for a card that
+ends a turn every few minutes by design (a patrol running `/loop`). It
+changes what is announced, never what is observed.
+
 ## What a notification contains
 
 - Title: the card's title; one longer than 512 bytes is shown by its

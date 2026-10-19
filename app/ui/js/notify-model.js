@@ -51,13 +51,15 @@ export function cardLabels(cards, projects) {
       session: card.session,
       title: labelTitle(card.title),
       project: names.get(card.projectId) || '',
+      /* the card's own choice to keep routine endings quiet (notify.rs) */
+      ...(card.quietDone === true ? { quiet: true } : {}),
     }))
     .sort((a, b) => (a.session < b.session ? -1 : a.session > b.session ? 1 : 0));
 }
 
 /** One string that changes exactly when the labels do. */
 export function labelsKey(labels) {
-  return labels.map(l => `${l.session}\u0000${l.title}\u0000${l.project}`).join('\u0001');
+  return labels.map(l => `${l.session}\u0000${l.title}\u0000${l.project}\u0000${l.quiet === true ? 'q' : ''}`).join('\u0001');
 }
 
 /** The in-flight key of one dismissal. */

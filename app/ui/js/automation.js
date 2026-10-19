@@ -308,7 +308,7 @@ export function renderAutomations() {
    computed from rules as they were, and is dropped unpublished. */
 async function refreshApprovals(seq) {
   const next = new Map();
-  for (const rule of rulesOf().filter(r => r.source === 'slack')) {
+  for (const rule of rulesOf().filter(r => ['slack', 'agent'].includes(r.source))) {
     const key = approvalKey(rule);
     next.set(rule.id, { key, detail: await grantDetail(rule, ruleTemplate(rule)).catch(() => 'unknown') });
   }
@@ -402,6 +402,11 @@ function syncEditor() {
   $('auto-anchor-hint').hidden = !interval;
   syncPreview();
   $('auto-slack-state').textContent = t(slackConnected() ? 'automation.slackOn' : 'automation.slackOffHint');
+  /* one input: a Slack rule's badge, an Agent rule's automation id */
+  const badgeLabel = $('auto-badge-label');
+  badgeLabel.dataset.i18n = trigger === 'agent' ? 'automation.agentId' : 'automation.badge';
+  badgeLabel.textContent = t(badgeLabel.dataset.i18n);
+  $('auto-badge').placeholder = trigger === 'agent' ? 'slack-mention' : 'bug';
   $('auto-capture-row').hidden = trigger !== 'channel' || $('auto-match-kind').value !== 'regex';
   syncFinishHint();
   syncFirstSendState();
@@ -443,7 +448,7 @@ function syncFirstSendState() {
 function syncApproval() {
   const project = activeProject();
   const template = (project?.templates || []).find(tp => tp.name === $('auto-template').value);
-  const slack = segGet('auto-trigger') === 'slack';
+  const slack = ['slack', 'agent'].includes(segGet('auto-trigger'));
   $('auto-send-external-row').hidden = !slack || !templateCarriesMessage(template);
   $('auto-send-external').disabled = !$('auto-send').checked;
   if (!$('auto-send').checked) $('auto-send-external').checked = false;
@@ -553,9 +558,9 @@ export function openEditor(rule) {
   const clock = !rule || rule.source === 'clock';
   const channel = rule?.source === 'channel';
   const schedule = clock && rule ? rule.schedule : { unit: 'day', days: [], minute: 540 };
-  segSet('auto-trigger', channel ? 'channel' : clock ? 'clock' : 'slack');
+  segSet('auto-trigger', channel ? 'channel' : clock ? 'clock' : rule.source === 'agent' ? 'agent' : 'slack');
   $('auto-name').value = rule ? rule.name : '';
-  $('auto-badge').value = rule?.source === 'slack' ? rule.badge : '';
+  $('auto-badge').value = ['slack', 'agent'].includes(rule?.source) ? rule.badge : '';
   $('auto-channel-ids').value = channel ? rule.channelIds.join(', ') : '';
   $('auto-sender-users').value = channel ? rule.senderUserIds.join(', ') : '';
   $('auto-sender-bots').value = channel ? rule.senderBotIds.join(', ') : '';
@@ -584,7 +589,7 @@ export function openEditor(rule) {
   fillTargets(rule);
   $('auto-review').checked = rule?.reviewEach === true;
   segSet('auto-finish', rule ? (rule.finish === 'close' ? 'close' : 'keep') : 'close');
-  const approval = rule?.source === 'slack' ? approvalOf(rule) : 'none';
+  const approval = ['slack', 'agent'].includes(rule?.source) ? approvalOf(rule) : 'none';
   /* an approval nothing was computed for yet is the rule's own until it is
      checked: shown as held and waiting, not as on and not as taken away */
   const unchecked = approval === 'checking' || approval === 'unknown';
@@ -595,7 +600,7 @@ export function openEditor(rule) {
   approvalNote(unchecked ? 'automation.autoSend.checking' : null);
   editing.approval = unchecked ? checkApproval(editing, rule) : null;
   editing.tick = approval === 'valid' ? tickNow(rule.autoSend) : null;
-  $('auto-first-send').checked = ['slack', 'clock'].includes(rule?.source) && rule.firstSendWithoutReadiness === true;
+  $('auto-first-send').checked = ['slack', 'clock', 'agent'].includes(rule?.source) && rule.firstSendWithoutReadiness === true;
   $('auto-channel-first-send').checked = channel && rule.firstSend === true && !!rule.firstSendGrant;
   channelVerifyStatus(null);
   syncEditor();
@@ -664,7 +669,7 @@ function readEditor() {
     if (read.focus) $(read.focus).focus();
     return null;
   }
-  const blocked = read.rule.source === 'slack' && channelBlockReason(read.rule, project);
+  const blocked = ['slack', 'agent'].includes(read.rule.source) && channelBlockReason(read.rule, project);
   if (blocked) {
     toast(t(blocked === 'command' ? 'automation.invalidChannelCommand' : 'automation.invalidChannelTemplate'));
     $(blocked === 'command' ? 'auto-cmd' : 'auto-template').focus();
@@ -681,7 +686,7 @@ function readEditor() {
    withdrawn first, so it is never signed for steps the user did not see. */
 function approvalIntent(rule) {
   withdrawDrifted();
-  if (rule.source !== 'slack' || !$('auto-send').checked || !editing?.tick) return null;
+  if (!['slack', 'agent'].includes(rule.source) || !$('auto-send').checked || !editing?.tick) return null;
   const template = ruleTemplate(rule);
   if (!template) return null;
   return { template: structuredClone(template), stored: editing.tick.stored, external: $('auto-send-external').checked };
@@ -884,6 +889,7 @@ export function showNewSessionMenu(anchor) {
     menuItem('◷ ' + t('menu.autoClock'), { run: go(() => openAutomations({ from: anchor, trigger: 'clock' })) }),
     menuItem('◇ ' + t('menu.autoSlack'), { run: go(() => openAutomations({ from: anchor, trigger: 'slack' })) }),
     menuItem('▤ ' + t('menu.autoChannel'), { run: go(() => openAutomations({ from: anchor, trigger: 'channel' })) }),
+    menuItem('◆ ' + t('menu.autoAgent'), { run: go(() => openAutomations({ from: anchor, trigger: 'agent' })) }),
     document.createElement('hr'),
     menuLabel(t('menu.manageHeading')),
     menuItem('⚑ ' + t('menu.projectDefaults'), { sub: p ? projectDefaultsSummary(p) : '', run: go(() => openProjectDefaults(p && p.id, anchor)) }),

@@ -74,7 +74,7 @@
         </details>
         <div id="auto-list"></div>
         <div id="auto-editor" hidden>
-          <div class="set-row q-p q-p-clock q-p-slack">
+          <div class="set-row q-p q-p-clock q-p-slack q-p-agent">
             <label for="auto-name" data-i18n="automation.name">Name</label>
             <input id="auto-name" autocomplete="off" spellcheck="false" maxlength="120" placeholder="morning tests" data-i18n-placeholder="automation.namePlaceholder">
           </div>
@@ -85,13 +85,15 @@
               <button type="button" data-v="clock" aria-pressed="true" data-i18n="automation.trigger.clock">clock</button>
               <button type="button" data-v="slack" aria-pressed="false" data-i18n="automation.trigger.slack">Slack badge</button>
               <button type="button" data-v="channel" aria-pressed="false" data-i18n="automation.trigger.channel">Slack channel</button>
+              <button type="button" data-v="agent" aria-pressed="false" data-i18n="automation.trigger.agent">Agent handover</button>
             </div>
           </div>
-          <div class="set-row q-p q-p-slack">
-            <label for="auto-badge" data-i18n="automation.badge">Badge</label>
+          <div class="set-row q-p q-p-slack q-p-agent">
+            <label for="auto-badge" id="auto-badge-label" data-i18n="automation.badge">Badge</label>
             <input id="auto-badge" autocomplete="off" spellcheck="false" maxlength="64" placeholder="bug">
           </div>
           <div class="set-hint auto-editor-hint q-p q-p-slack" id="auto-slack-state"></div>
+          <div class="set-hint auto-editor-hint q-p q-p-agent" id="auto-agent-hint" data-i18n="automation.agentHint">An MCP client you delegated under Settings → Remote access names this id and hands over one classified item. Deck creates a fresh card and sends this rule's template with the item filled in, under the choices below; the client never types into a session.</div>
           <div class="q-p q-p-channel auto-channel-fields">
             <div class="set-row"><label for="auto-channel-ids" data-i18n="automation.channelIds">Channel IDs</label><input id="auto-channel-ids" autocomplete="off" spellcheck="false" placeholder="C0123, G0456"></div>
             <div class="set-row"><label for="auto-sender-users" data-i18n="automation.senderUsers">Allowed user IDs</label><input id="auto-sender-users" autocomplete="off" spellcheck="false" placeholder="U0123, W0456"></div>
@@ -145,21 +147,21 @@
             <button class="btn" id="auto-tpl-manage" type="button" data-i18n="automation.manageTemplates">Templates…</button>
           </div>
           <h3 class="auto-section" data-i18n="automation.section.send">Sending and inspection</h3>
-          <label class="q-review-option q-p q-p-slack"><input type="checkbox" id="auto-send" aria-describedby="auto-send-hint"><span data-i18n="automation.autoSend.option">Automatically continue approved follow-up steps</span></label>
+          <label class="q-review-option q-p q-p-slack q-p-agent"><input type="checkbox" id="auto-send" aria-describedby="auto-send-hint"><span data-i18n="automation.autoSend.option">Automatically continue approved follow-up steps</span></label>
           <p class="q-hint opt-note" id="auto-send-check" role="status" hidden></p>
-          <p class="q-hint opt-note q-p q-p-slack" id="auto-send-hint" data-i18n="automation.autoSend.hint">Your reaction approves the run and its first step for that message. The text is read when Deck handles the reaction, so an edit made after you reacted may be what gets sent. With this on, the later steps of this version of the template continue once the agent is safely ready, without a Send now for each. Editing the rule or its template turns this off until you approve again.</p>
-          <details class="set-details opt-note q-p q-p-slack">
+          <p class="q-hint opt-note q-p q-p-slack q-p-agent" id="auto-send-hint" data-i18n="automation.autoSend.hint">Your reaction approves the run and its first step for that message. The text is read when Deck handles the reaction, so an edit made after you reacted may be what gets sent. With this on, the later steps of this version of the template continue once the agent is safely ready, without a Send now for each. Editing the rule or its template turns this off until you approve again.</p>
+          <details class="set-details opt-note q-p q-p-slack q-p-agent">
             <summary data-i18n="automation.autoSend.scope">What this approval covers</summary>
             <ul class="help-list">
               <li data-i18n="automation.autoSend.scope.pauses">An agent asking for input or permission, and inspection checkpoints, still pause the automation; this approval never answers them for you.</li>
               <li data-i18n="automation.autoSend.scope.first">The first step is not covered: how it reaches a newly started agent is decided by the separate first-step option.</li>
             </ul>
           </details>
-          <label class="q-review-option opt-note q-p q-p-slack" id="auto-send-external-row"><input type="checkbox" id="auto-send-external"><span data-i18n="automation.autoSend.external">Also send steps that contain Slack message content. External messages are untrusted input and may influence the agent.</span></label>
-          <label class="q-review-option q-p q-p-slack q-p-clock"><input type="checkbox" id="auto-first-send" aria-describedby="auto-first-send-hint auto-first-send-state"><span data-i18n="automation.firstSend.option">Send the first step to a newly started agent without waiting for readiness</span></label>
-          <p class="q-hint opt-note opt-risk q-p q-p-slack q-p-clock" id="auto-first-send-hint" data-i18n="automation.firstSend.hint">With this on, Deck starts the agent and sends the first step after a short compatibility wait; later runs no longer wait for you. The wait is not readiness proof: a Trust, Update, sign-in, permission or other startup dialog may receive the text and Enter. Works with Claude, or Codex with --no-daemon.</p>
-          <p class="q-hint opt-note opt-state q-p q-p-slack q-p-clock" id="auto-first-send-state" role="status"></p>
-          <details class="set-details opt-note q-p q-p-slack q-p-clock">
+          <label class="q-review-option opt-note q-p q-p-slack q-p-agent" id="auto-send-external-row"><input type="checkbox" id="auto-send-external"><span data-i18n="automation.autoSend.external">Also send steps that contain Slack message content. External messages are untrusted input and may influence the agent.</span></label>
+          <label class="q-review-option q-p q-p-slack q-p-clock q-p-agent"><input type="checkbox" id="auto-first-send" aria-describedby="auto-first-send-hint auto-first-send-state"><span data-i18n="automation.firstSend.option">Send the first step to a newly started agent without waiting for readiness</span></label>
+          <p class="q-hint opt-note opt-risk q-p q-p-slack q-p-clock q-p-agent" id="auto-first-send-hint" data-i18n="automation.firstSend.hint">With this on, Deck starts the agent and sends the first step after a short compatibility wait; later runs no longer wait for you. The wait is not readiness proof: a Trust, Update, sign-in, permission or other startup dialog may receive the text and Enter. Works with Claude, or Codex with --no-daemon.</p>
+          <p class="q-hint opt-note opt-state q-p q-p-slack q-p-clock q-p-agent" id="auto-first-send-state" role="status"></p>
+          <details class="set-details opt-note q-p q-p-slack q-p-clock q-p-agent">
             <summary data-i18n="automation.firstSend.kept">Checks that still apply</summary>
             <p data-i18n="automation.firstSend.kept.body">Real blocking conditions and configured inspection checkpoints still apply, and later steps keep their normal checks. This option covers only a newly started agent’s first step; Deck starts the agent with no prompt bytes.</p>
           </details>
@@ -172,10 +174,10 @@
             <li data-i18n="automation.channelFirstSend.fact.excludes">Not included: Agent tool permissions, or automatic sending of later template steps.</li>
             <li data-i18n="automation.channelFirstSend.fact.revoke">After turning it off: only unsent first steps covered by this permission are stopped; Agents keep running and typed text is not retracted.</li>
           </ul>
-          <label class="q-review-option q-p q-p-clock q-p-slack"><input type="checkbox" id="auto-review" aria-describedby="auto-review-hint"><span data-i18n="queue.review.option">Inspect after every sent step, including the last</span></label>
-          <p class="q-hint opt-note q-p q-p-clock q-p-slack" id="auto-review-hint" data-i18n="automation.review.hint">Applies to runs created from now on, not to existing cards.</p>
-          <h3 class="auto-section q-p q-p-clock q-p-slack" data-i18n="automation.section.card">Keeping the card</h3>
-          <div class="set-row q-p q-p-clock q-p-slack">
+          <label class="q-review-option q-p q-p-clock q-p-slack q-p-agent"><input type="checkbox" id="auto-review" aria-describedby="auto-review-hint"><span data-i18n="queue.review.option">Inspect after every sent step, including the last</span></label>
+          <p class="q-hint opt-note q-p q-p-clock q-p-slack q-p-agent" id="auto-review-hint" data-i18n="automation.review.hint">Applies to runs created from now on, not to existing cards.</p>
+          <h3 class="auto-section q-p q-p-clock q-p-slack q-p-agent" data-i18n="automation.section.card">Keeping the card</h3>
+          <div class="set-row q-p q-p-clock q-p-slack q-p-agent">
             <label data-i18n="automation.finish">When done</label>
             <div class="seg" id="auto-finish" role="radiogroup" aria-label="When done" data-i18n-aria-label="automation.finish">
               <button type="button" data-v="close" aria-pressed="true" data-i18n="automation.finish.close">close the card</button>

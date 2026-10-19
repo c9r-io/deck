@@ -681,6 +681,9 @@ pub(crate) fn queue_view(q: QueueState) -> QueueView {
         if relies(first_send::Backing::Board) && first_send::phone_tasks().is_none() {
             mark_board_unverified(seen);
         }
+        if any_agent_delegation(&q) && first_send::delegations().is_none() {
+            mark_authority_unverified(seen);
+        }
     }
     let channel_unverified = q.items.iter().any(|item| {
         item.channel_first_send

@@ -59,6 +59,7 @@ export function createMcpSettings(host) {
       label.textContent = client.name;
       const scope = document.createElement('span'); scope.style.color = 'var(--muted)';
       scope.textContent = t('mcp.projectCount', { count: formatNumber(client.projects?.length || 0) })
+        + (client.allowAutomations && !client.revoked ? ` · ${t('mcp.automationsOn')}` : '')
         + (client.revoked ? ` · ${t('mcp.revoked')}` : '');
       details.append(label, scope);
       const actions = document.createElement('div'); actions.className = 'mcp-client-actions';
@@ -78,7 +79,18 @@ export function createMcpSettings(host) {
           try { await inv('mcp_client_revoke', { clientId: client.id }); await renderMcpSettings(); }
           catch (_) { toast(t('mcp.actionFailed')); }
         };
-        actions.append(copy, revoke);
+        /* the automation delegation is its own choice: granted with its
+           own confirmation, withdrawn without one, never implied by the
+           session permission (mcp/automation.rs) */
+        const delegate = document.createElement('button'); delegate.className = 'btn mcp-automations';
+        delegate.textContent = t(client.allowAutomations ? 'mcp.automationsWithdraw' : 'mcp.automationsAllow');
+        delegate.onclick = async () => {
+          const allowed = !client.allowAutomations;
+          if (allowed && !await confirmDangerDialog(t('mcp.automationsAllowConfirm', { name: client.name }), t('mcp.automationsAllow'))) return;
+          try { await inv('mcp_client_automations', { clientId: client.id, allowed }); await renderMcpSettings(); }
+          catch (_) { toast(t('mcp.actionFailed')); }
+        };
+        actions.append(copy, delegate, revoke);
       } else {
         const remove = document.createElement('button'); remove.className = 'btn set-danger'; remove.textContent = t('mcp.delete');
         remove.onclick = async () => {
@@ -299,8 +311,9 @@ export function createMcpSettings(host) {
       if (!store.projects.some(candidate => candidate.id === project.id)) { toast(t('mcp.projectUnavailable')); return; }
       if (!(await confirmDangerDialog(t('mcp.authorizeConfirm', { name: project.name, root }), t('mcp.add')))) return;
       const allowCreate = await confirmDialog(t('mcp.allowCreateConfirm'));
+      const allowAutomations = await confirmDialog(t('mcp.allowAutomationsConfirm'));
       try {
-        await inv('mcp_client_add', { name, projects: [{ projectId: project.id, roots: [root] }], allowCreate });
+        await inv('mcp_client_add', { name, projects: [{ projectId: project.id, roots: [root] }], allowCreate, allowAutomations });
         await renderMcpSettings();
       } catch (error) {
         toast(String(error).includes('MCP project no longer exists') ? t('mcp.projectUnavailable') : t('mcp.actionFailed'));

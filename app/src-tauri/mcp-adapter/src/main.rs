@@ -45,7 +45,8 @@ const BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
 /// Deck may legitimately take longer than one runner round trip: a request
 /// can wait for the delivery lock behind an in-flight job dispatch.
 const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const MUTATING: [&str; 6] = [
+const MUTATING: [&str; 7] = [
+    "deck_automation_trigger",
     "deck_session_create",
     "deck_session_control",
     "deck_exec",
@@ -92,6 +93,36 @@ struct CreateInput {
 #[serde(deny_unknown_fields)]
 struct OperationInput {
     operation_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct TriggerInput {
+    /// Stable idempotency key for this invocation; persist it before the
+    /// first attempt and reuse it on every retry of the same item.
+    request_id: String,
+    /// This client's current trigger sequence (`nextTriggerSequence` from
+    /// deck_automation_list or deck_capabilities). Deck accepts a trigger
+    /// only at the current value.
+    trigger_sequence: u64,
+    /// The automation id from deck_automation_list.
+    automation_id: String,
+    /// The automation's revision from deck_automation_list; the trigger is
+    /// refused when the rule or its template changed since.
+    expected_revision: String,
+    /// The item as the agent classified it (at most 16 KiB): what the user
+    /// should act on. Newlines are kept; it is pasted into the automation's
+    /// template where it carries {{msg.text}}.
+    text: String,
+    /// Who the item came from (one line, at most 1 KiB).
+    #[serde(default)]
+    from: Option<String>,
+    /// Where it lives, e.g. a channel or repository (one line, at most 1 KiB).
+    #[serde(default, rename = "where")]
+    where_: Option<String>,
+    /// A link back to the source item (one line, at most 1 KiB).
+    #[serde(default)]
+    link: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -360,6 +391,16 @@ impl DeckServer {
             tool::<CloseInput>(
                 "deck_session_close",
                 "Close an authorized MCP-managed session through Deck's ordinary schedule, tmux, and Board transaction path. A running job is refused unless explicitly confirmed.",
+                mutating.clone(),
+            ),
+            tool::<Empty>(
+                "deck_automation_list",
+                "List the Deck automations this client is delegated to trigger: each Agent rule's id, name, project and current revision, plus nextTriggerSequence. Requires the local automation delegation for this client.",
+                ro,
+            ),
+            tool::<TriggerInput>(
+                "deck_automation_trigger",
+                "Hand one classified item to one Deck automation by id and revision. Deck creates a card and runs the rule's own approved steps; this is a side effect with an operation to poll (deck_operation_get: committed with cardId, or rejected with a code). Not session or execution authority.",
                 mutating,
             ),
         ];
@@ -531,6 +572,21 @@ impl DeckServer {
             }
             "deck_session_close" => {
                 self.invoke::<CloseInput>("deck_session_close", arguments)
+                    .await
+            }
+            "deck_automation_list" => {
+                self.invoke::<Empty>("deck_automation_list", arguments)
+                    .await
+            }
+            "deck_automation_trigger" => {
+                if let Err(issue) = validate_sequence(
+                    &arguments,
+                    "trigger_sequence",
+                    "non-negative integer (nextTriggerSequence from deck_automation_list or deck_capabilities)",
+                ) {
+                    return invalid_arguments(issue);
+                }
+                self.invoke::<TriggerInput>("deck_automation_trigger", arguments)
                     .await
             }
             _ => CallToolResult::structured_error(json!({

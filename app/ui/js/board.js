@@ -586,7 +586,7 @@ export const provider = {
         skeletons: (approval.skeletons || []).slice(step, step + count) } } : {});
       /* the first-send readiness override belongs to the head row alone
          (scheduler/first_send.rs); re-checked by source-specific native admission */
-      const firstSend = ['slack', 'clock'].includes(card.origin.source) && plan.firstSend?.rule
+      const firstSend = ['slack', 'clock', 'agent'].includes(card.origin.source) && plan.firstSend?.rule
         ? { firstSend: { rule: plan.firstSend.rule, event: card.origin.key } } : {};
       if (plan.reviewEach) {
         const first = plan.initialSteps[0];
@@ -634,6 +634,26 @@ export const provider = {
     }
     const c = this.get(sid);
     if (applied && c) emit('list', c);
+    return applied;
+  },
+  /* the card's own choice to keep its routine turn endings quiet: no
+     notification, no Dock count, not a needs-attention row (notify.rs,
+     attention-model.js); input requests and held deliveries stay loud */
+  async toggleQuietDone(sid) {
+    let applied = false;
+    try {
+      await mutateBoard(draft => {
+        const c = draft.cards.find(x => x.id === sid);
+        if (!c) return { noop: true };
+        if (c.quietDone === true) delete c.quietDone; else c.quietDone = true;
+        applied = true;
+      });
+    } catch (_) {
+      toast(t('error.importantSave'));
+      return false;
+    }
+    const c = this.get(sid);
+    if (applied && c) { emit('list', c); syncNotify(); }
     return applied;
   },
   observeDir(sid, dir) {

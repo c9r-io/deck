@@ -187,28 +187,36 @@ evolution; it makes scope expansion deliberate.
   one card from a locally saved project preset, and the first message matched
   by a saved Slack channel rule (`inbound.js`) may create that rule's
   collection card; both use `provider.createStarted`, and neither moves or
-  retires a card. Nothing else retires or relocates a card on its own.
+  retires a card. An item a delegated MCP client hands to an Agent rule
+  (`mcp/automation.rs` → `inbound_agent.rs` → the ordinary dispatcher)
+  creates that rule's card exactly as a badge does. Nothing else retires or
+  relocates a card on its own.
 - **Deck may coordinate an Agent session ≠ Deck owns Agent execution.**
   Deck owns attention around work; the Agent owns the work. No headless
   agent transport, `-p`/`exec`/SDK orchestration, agent pools, worktrees or
   permission auto-approval. Three row facts stay separate
   (`scheduler/authority.rs`): external **provenance** (`external`, never
   cleared) ≠ **content authority** (`authority`: the user's explicit,
-  revision-bound approval of a Slack badge automation's or a phone task
-  preset's exact steps, checked by the backend at admission and revoked by
-  the tick; being paired is never prompt authority, and text the phone
-  supplies is never approved) ≠ **input readiness**
+  revision-bound approval of a Slack badge automation's, an Agent
+  automation's or a phone task preset's exact steps, checked by the backend
+  at admission and revoked by the tick; being paired is never prompt
+  authority, text the phone supplies is never approved, and an Agent
+  rule's approval also rests on the user's standing delegation to the MCP
+  client that handed the item over — withdrawn under the settings fence,
+  `mcp/automation.rs`) ≠ **input readiness**
   (every scheduler hold, including the first-interaction gate). An approval
   releases only the external-follow-up hold; the fresh-start pass never types
-  into an interactive agent. A separately enabled, native-verified Slack badge, clock or phone task
+  into an interactive agent. A separately enabled, native-verified Slack badge, clock, Agent or phone task
   preset first-send override may send the head row on a later pass after bounded compatibility
   stabilization and current fences; it is not Agent readiness evidence.
   A channel rule may separately grant fully revocable permission for future
   scoped events to send a new run's first step. A native-proven channel head
   retains its authorization constraint after withdrawal or text edits;
   existing interaction evidence never bypasses that constraint. This does
-  not expand `StepAuthority` / `TriggerClass`, later-step or tool authority.
-  No Signal word, quiet
+  not expand later-step or tool authority, and `TriggerClass` stays the
+  closed list of three (Slack badge, phone task preset, delegated Agent
+  client), each tied to its own revocation source; a fourth is a hard-rule
+  change. No Signal word, quiet
   time or activity ever creates, restores or upgrades authority
   (`tests/signal_census.rs`).
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the
@@ -255,7 +263,10 @@ evolution; it makes scope expansion deliberate.
   frozen targets/claims, queue constraints,
   snapshots and audit semantics require sticky v7. A clock schedule that
   repeats every N > 1 units from an anchor date upgrades settings.json to
-  sticky v8. Channel inbox v2 protects
+  sticky v8. An Agent trigger rule (settings.json) and the queue origins it
+  admits (queue.json) upgrade to sticky v9, and an MCP ledger holding an
+  automation delegation or a trigger record is written at its own sticky
+  v7. Channel inbox v2 protects
   native staged grant references; v1 entries gain no new permission. A
   settings backup is handed to the webview without channel grants. Native
   template edits retire affected grants before the Board write, under
@@ -300,7 +311,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | tmux sidecar and long-lived clients | `tmux.rs`, `tmux_clients.rs` |
 | tmux server lifecycle, restart, verified shell exit, restart recovery | `tmux_lifecycle.rs`, `restart.rs`, `session_runtime.rs`, `shell_exit.rs`, `shell_state.rs` (+ `docs/tmux-server-lifecycle.md`) |
 | PTY attach bridge | `pty.rs` |
-| MCP terminal control | `mcp/` (contract in `mcp/mod.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/`, `ui/js/mcp.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`) |
+| MCP terminal control and automation delegation | `mcp/` (contract in `mcp/mod.rs`; delegation in `mcp/automation.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/`, `ui/js/mcp.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`) |
 | Controlled Execution calibration (CE1) | `scripts/ce/`, `scripts/ce_parity.py`, `scripts/ce_verdict.py`, `mcp/tests.rs` `ce1_probe_*` (+ `docs/ce-calibration.md`) |
 | Voice input, shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice*.js` (+ `docs/voice-input.md`) |
 | Local translation, pasteboard observation, Lens | `native/BergamotBridge.cpp`, `native/PasteboardBridge.swift`, `vendor/bergamot/`, `intelligence/`, `ui/js/local-intelligence.js`, `translation-lens*.js` (+ `docs/translation-lens.md`) |
@@ -309,7 +320,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Settings (the ONE settings writer), dialogs, dropdowns | `ui/js/settings.js`, `settings-search-model.js`, `dialogs.js`, `dropdown.js` |
 | Lists (the ⏱ panel), delivery state machine | `scheduler/`, `context.rs`, `ui/js/scheduler.js`, `queue-review.js` (+ `docs/scheduler-context-safety.md`) |
 | Automation authority and first-send overrides | `scheduler/authority.rs`, `first_send.rs`, `channel_first_send.rs`, `inbound_channel.rs`, `ui/js/automation-model.js`, `connector-model.js`, `channel-model.js` (+ `docs/channel-monitor.md`) |
-| Automations: inbound sources, drawer, templates, Keychain | `inbound.rs`, `inbound_slack.rs`, `inbound_clock.rs`, `keychain.rs`, `ui/js/inbound.js`, `automation.js`, `templates.js` (+ `docs/auto-respond.md`) |
+| Automations: inbound sources, drawer, templates, Keychain | `inbound.rs`, `inbound_slack.rs`, `inbound_clock.rs`, `inbound_agent.rs` (the Agent handover inbox), `keychain.rs`, `ui/js/inbound.js`, `automation.js`, `templates.js` (+ `docs/auto-respond.md`) |
 | External admission policy | `admission.rs` (pinned by `tests/external_admission.rs`) |
 | Needs-attention view, away notifications, Dock badge | `ui/js/attention.js`, `attention-model.js`, `notify.rs`, `native/NotificationBridge.swift`, `ui/js/notify-model.js` (+ `docs/notifications.md`) |
 | Card Reminders | `reminder.rs`, `ui/js/reminder-model.js` (+ `docs/card-reminders.md`) |

@@ -125,7 +125,7 @@ try {
   assert.equal(initialized.result.serverInfo.name, 'deck-mcp');
   child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
   const listed = await request('tools/list');
-  assert.equal(listed.result.tools.length, 14);
+  assert.equal(listed.result.tools.length, 16);
   for (const name of ['deck_project_list', 'deck_project_read', 'deck_project_search']) {
     assert.ok(listed.result.tools.some(tool => tool.name === name), `${name} is registered`);
   }

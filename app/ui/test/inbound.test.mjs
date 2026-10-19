@@ -227,3 +227,13 @@ test('the first-send override survives normalization on a Slack badge rule only'
   assert.equal(flag('truthy'), undefined, 'only an explicit true');
   assert.equal(flag('daily'), true, 'an explicitly enabled clock rule keeps it');
 });
+
+test('an Agent handover rule survives settings normalization with its approval and first-send choice', () => {
+  const agent = { id: 'G1', source: 'agent', badge: 'slack-mention', projectId: 'P1', columnId: 'C1', cmd: 'claude', template: 't', dir: '',
+    autoSend: { digest: 'a'.repeat(64), steps: ['b'.repeat(64)], classes: ['fixed'], external: false }, firstSendWithoutReadiness: true };
+  const { rules } = normalizeInbound({ rules: [agent, { ...agent, id: 'G2', badge: 'Not An Id' }, { ...agent, id: 'G3', badge: 'github-mention', schedule: { unit: 'day', minute: 1 } }] });
+  assert.deepEqual(rules.map(r => r.id), ['G1', 'G3'], 'the id is spelled like a badge; a stray schedule is dropped, not the rule');
+  assert.deepEqual(rules[0].autoSend, agent.autoSend);
+  assert.equal(rules[0].firstSendWithoutReadiness, true);
+  assert.equal('schedule' in rules[1], false);
+});

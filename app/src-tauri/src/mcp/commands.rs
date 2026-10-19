@@ -25,6 +25,8 @@ pub(crate) struct ClientView {
     pub(super) name: String,
     pub(super) revoked: bool,
     pub(super) allow_create: bool,
+    /// May trigger the Agent automations (`mcp/automation.rs`).
+    pub(super) allow_automations: bool,
     pub(super) projects: Vec<ProjectScope>,
     /// Its adapter was last refused for a control-protocol mismatch
     /// (`control::route`): the integration has to be restarted. Absent from
@@ -55,6 +57,7 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
                 name: client.name.clone(),
                 revoked: client.revoked_at.is_some() || emergency.clients.contains(&client.id),
                 allow_create: client.allow_create,
+                allow_automations: client.allow_automations,
                 projects: client.projects.clone(),
                 adapter_refused: client.revoked_at.is_none()
                     && emergency.refused_adapters.contains(&client.id),
@@ -230,6 +233,11 @@ pub(super) fn disable(runtime: &Runtime) -> Result<(), DeckError> {
             Err(error) => return Err(DeckError::from(error)),
         }
     }
+    // Disabling withdraws every automation delegation: ordered against the
+    // scheduler's firing-intent transaction by the settings fence
+    // (`automation.rs`), taken before the delivery lock as the scheduler
+    // never takes the latter.
+    let _fence = crate::storage::settings_fence();
     let _delivery = runtime.delivery.lock_or_recover();
     let sessions = runtime.write(|doc| {
         doc.config.enabled = false;
@@ -247,6 +255,7 @@ pub(super) fn disable(runtime: &Runtime) -> Result<(), DeckError> {
         doc.reject_pending(|_| true, "feature-disabled");
         Ok(doc.sessions.clone())
     })?;
+    retire_inbox();
     let mut uncertain = false;
     for session in sessions {
         uncertain |=
@@ -266,6 +275,7 @@ pub(crate) fn mcp_client_add(
     name: String,
     projects: Vec<ProjectScopeInput>,
     allow_create: bool,
+    allow_automations: bool,
 ) -> Result<ClientView, DeckError> {
     if !valid_title(&name) || projects.is_empty() || projects.len() > MAX_PROJECTS_PER_CLIENT {
         return Err(DeckError::new(
@@ -299,6 +309,8 @@ pub(crate) fn mcp_client_add(
             allow_create,
             projects: scopes,
             create_sequence: 0,
+            allow_automations,
+            trigger_sequence: 0,
         };
         doc.config.clients.push(client.clone());
         Ok(ClientView {
@@ -307,6 +319,7 @@ pub(crate) fn mcp_client_add(
             name: client.name,
             revoked: false,
             allow_create: client.allow_create,
+            allow_automations: client.allow_automations,
             projects: client.projects,
         })
     });
@@ -380,6 +393,10 @@ pub(super) fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), 
     } else {
         Ok(())
     };
+    // Revocation also withdraws the client's automation delegation: the
+    // settings fence orders it against the scheduler's firing-intent
+    // transaction (`automation.rs`).
+    let _fence = crate::storage::settings_fence();
     let _delivery = runtime.delivery.lock_or_recover();
     let sessions = runtime.write(|doc| {
         let client = doc
@@ -424,6 +441,7 @@ pub(super) fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), 
             .cloned()
             .collect::<Vec<_>>())
     })?;
+    retire_inbox_for(&client_id);
     let mut uncertain = false;
     for session in sessions {
         uncertain |=
@@ -437,6 +455,16 @@ pub(super) fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), 
         ));
     }
     Ok(())
+}
+
+/// Withdraw (or restore) one client's automation delegation without
+/// revoking the client (`mcp/automation.rs`).
+#[tauri::command(async)]
+pub(crate) fn mcp_client_automations(client_id: String, allowed: bool) -> Result<(), DeckError> {
+    if !valid_id(&client_id) {
+        return Err(DeckError::new(ErrorKind::Invalid, "invalid MCP client id"));
+    }
+    client_automations(runtime()?, &client_id, allowed)
 }
 
 /// Remove a local authorization display record after revocation has already

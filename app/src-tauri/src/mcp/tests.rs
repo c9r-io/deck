@@ -317,6 +317,8 @@ fn client_record(root: &Path) -> Client {
             roots: vec![std::fs::canonicalize(root).unwrap().display().to_string()],
         }],
         create_sequence: 0,
+        allow_automations: false,
+        trigger_sequence: 0,
     }
 }
 
@@ -837,6 +839,8 @@ fn authorization_is_client_project_session_and_control_scoped() {
             roots: vec![root.clone()],
         }],
         create_sequence: 0,
+        allow_automations: false,
+        trigger_sequence: 0,
     });
     let disabled = match client(&doc, "client_a") {
         Err(error) => error,
@@ -1488,13 +1492,14 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
     assert!(!status.socket_ready);
     assert_eq!(status.clients.len(), 1);
     assert!(mcp_adapter_path().is_err());
-    assert!(mcp_client_add("".into(), vec![], false).is_err());
+    assert!(mcp_client_add("".into(), vec![], false, false).is_err());
     assert!(mcp_client_add(
         "Bad scope".into(),
         vec![ProjectScopeInput {
             project_id: "bad id".into(),
             roots: vec![root.display().to_string()],
         }],
+        false,
         false,
     )
     .is_err());
@@ -1505,6 +1510,7 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
             roots: vec![root.display().to_string()],
         }],
         true,
+        false,
     )
     .unwrap();
     assert_eq!(added.name, "Client B");
@@ -2097,10 +2103,26 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
     );
 
     let mut invalid = DiskDoc {
-        version: STATE_VERSION + 1,
+        version: STATE_VERSION_AUTOMATIONS + 1,
         ..DiskDoc::default()
     };
     assert!(validate_doc(&invalid).is_err());
+    // the automation-delegation version is accepted without delegation
+    // (sticky), and required once a client holds one
+    invalid.version = STATE_VERSION_AUTOMATIONS;
+    assert!(validate_doc(&invalid).is_ok());
+    invalid.version = STATE_VERSION;
+    invalid.config.clients.push(Client {
+        allow_automations: true,
+        ..client_record(&root)
+    });
+    assert!(
+        validate_doc(&invalid).is_err(),
+        "a delegated client needs the automation version"
+    );
+    invalid.version = STATE_VERSION_AUTOMATIONS;
+    assert!(validate_doc(&invalid).is_ok());
+    invalid.config.clients.clear();
     invalid.version = STATE_VERSION;
     invalid.config.clients.push(Client {
         id: "bad id".into(),
@@ -2111,6 +2133,8 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
         allow_create: false,
         projects: vec![],
         create_sequence: 0,
+        allow_automations: false,
+        trigger_sequence: 0,
     });
     assert!(validate_doc(&invalid).is_err());
     std::fs::remove_dir_all(root).unwrap();
@@ -3057,7 +3081,7 @@ fn v3_state_upgrades_stickily_and_future_state_is_refused() {
     // The v3 build accepted exactly version 3; the same rule refuses a
     // future schema here.
     let mut future = saved.clone();
-    future["version"] = json!(STATE_VERSION + 1);
+    future["version"] = json!(STATE_VERSION_AUTOMATIONS + 1);
     std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
     assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
     assert_eq!(
@@ -5340,4 +5364,264 @@ fn ce1_probe_full_local_exec_cwd_outside_the_project_root() {
     drop(runner);
     std::fs::remove_dir_all(root).unwrap();
     std::fs::remove_dir_all(outside).unwrap();
+}
+
+/// Automation delegation (`automation.rs`): a client lists and triggers the
+/// user's Agent rules only with the separate local choice; a trigger is
+/// bound to the client's sequence and the rule's revision, accepted through
+/// the agent inbox (staged → committed) and replayed by request id; the
+/// dispatcher's outcome settles the record; withdrawing the choice rejects
+/// what was accepted and retires the inbox items, and the delegation set
+/// the scheduler reads follows every switch.
+#[test]
+fn automation_delegation_lists_triggers_replays_and_withdraws() {
+    let _serial = crate::inbound_agent::STORE_TESTS.lock_or_recover();
+    let (runtime, _runner, root) = fixture("automation-delegation", "svc_test");
+    crate::inbound_agent::redirect_for_tests(Some(root.join("agent-inbox.json")));
+    let rule: crate::inbound::Rule = serde_json::from_value(json!({
+        "id": "g1", "source": "agent", "badge": "triage", "projectId": "P1", "columnId": "C1",
+        "cmd": "claude", "template": "mention", "name": "Mentions"
+    }))
+    .unwrap();
+    let blocked: crate::inbound::Rule = serde_json::from_value(json!({
+        "id": "g2", "source": "agent", "badge": "shelled", "projectId": "P1", "columnId": "C1",
+        "cmd": "claude; sh", "template": "mention"
+    }))
+    .unwrap();
+    let config = crate::inbound::Config {
+        slack_enabled: false,
+        rules: vec![rule, blocked],
+    };
+    CONFIG_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(Some(config)));
+    let revision = "c".repeat(64);
+    crate::inbound_agent::REVISION_FOR_TESTS
+        .with(|cell| *cell.borrow_mut() = Some(Some(revision.clone())));
+    let call = |tool: &str, args: Value| route(&runtime, request(tool, args));
+    // without the choice: nothing, whatever the client may create
+    let denied = call("deck_automation_list", json!({}));
+    assert_eq!(denied["error"]["code"], "PERMISSION_DENIED", "{denied}");
+    assert_eq!(
+        call("deck_capabilities", json!({}))["mayTriggerAutomations"],
+        false
+    );
+    runtime
+        .write(|doc| {
+            doc.config.clients[0].allow_automations = true;
+            Ok(())
+        })
+        .unwrap();
+    // the ledger now carries the delegation: written at the sticky version
+    let saved: Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+    assert_eq!(saved["version"], STATE_VERSION_AUTOMATIONS);
+    let listed = call("deck_automation_list", json!({}));
+    assert_eq!(listed["ok"], true, "{listed}");
+    assert_eq!(listed["nextTriggerSequence"], 0);
+    assert_eq!(
+        listed["automations"],
+        json!([{"id": "triage", "name": "Mentions", "projectId": "P1", "revision": revision}]),
+        "the blocked rule is not offered"
+    );
+    let trigger = |request_id: &str, sequence: u64, id: &str, rev: &str, text: &str| {
+        call(
+            "deck_automation_trigger",
+            json!({"request_id": request_id, "trigger_sequence": sequence, "automation_id": id,
+                   "expected_revision": rev, "text": text, "from": "alice", "where": "#ops"}),
+        )
+    };
+    let changed = trigger("req_1", 0, "triage", &"d".repeat(64), "please review");
+    assert_eq!(changed["error"]["code"], "RULE_CHANGED", "{changed}");
+    assert_eq!(changed["error"]["currentRevision"], revision);
+    assert_eq!(
+        trigger("req_1", 1, "triage", &revision, "please review")["error"]["code"],
+        "STALE_REQUEST"
+    );
+    assert_eq!(
+        trigger("req_1", 0, "shelled", &revision, "x")["error"]["code"],
+        "AUTOMATION_NOT_FOUND"
+    );
+    assert_eq!(
+        trigger("req_1", 0, "nothing", &revision, "x")["error"]["code"],
+        "AUTOMATION_NOT_FOUND"
+    );
+    assert_eq!(
+        trigger("req_1", 0, "triage", &revision, "   ")["error"]["code"],
+        "INVALID_ARGUMENTS"
+    );
+    // nothing above was accepted: the sequence and the inbox are untouched
+    assert_eq!(
+        call("deck_automation_list", json!({}))["nextTriggerSequence"],
+        0
+    );
+    // accepted: operation + sequence + committed inbox entry
+    let accepted = trigger("req_1", 0, "triage", &revision, "please review");
+    assert_eq!(accepted["state"], "accepted", "{accepted}");
+    assert_eq!(accepted["kind"], TRIGGER_KIND);
+    let operation_id = accepted["operationId"].as_str().unwrap().to_owned();
+    assert_eq!(accepted["result"]["automationId"], "triage");
+    assert_eq!(
+        crate::inbound_agent::entry_state(&operation_id).map(|(state, _)| state),
+        Some(crate::inbound_agent::EntryState::Committed)
+    );
+    assert_eq!(
+        crate::inbound_agent::pending_client(&operation_id).as_deref(),
+        Some("client_a")
+    );
+    assert_eq!(
+        call("deck_capabilities", json!({}))["nextTriggerSequence"],
+        1
+    );
+    // replay: the same record, no second entry; other arguments conflict
+    let replay = trigger("req_1", 0, "triage", &revision, "please review");
+    assert_eq!(replay["operationId"], operation_id);
+    assert_eq!(
+        trigger("req_1", 1, "triage", &revision, "something else")["error"]["code"],
+        "REQUEST_ID_CONFLICT"
+    );
+    // the dispatcher's acknowledgment settles the record
+    outcome_in(&runtime, &operation_id, "committed", None, Some("S1")).unwrap();
+    let fetched = call("deck_operation_get", json!({"operation_id": operation_id}));
+    assert_eq!(fetched["state"], "committed", "{fetched}");
+    assert_eq!(fetched["result"]["cardId"], "S1");
+    outcome_in(&runtime, &operation_id, "rejected", Some("LATE"), None).unwrap();
+    assert_eq!(
+        call("deck_operation_get", json!({"operation_id": operation_id}))["state"],
+        "committed",
+        "a terminal record is left alone"
+    );
+    // the delegation set the scheduler reads, and its withdrawal
+    assert!(
+        automation_delegations().unwrap().is_empty(),
+        "no RUNTIME in tests: nothing is delegated"
+    );
+    let second = trigger("req_2", 1, "triage", &revision, "another");
+    let second_id = second["operationId"].as_str().unwrap().to_owned();
+    client_automations(&runtime, "client_a", false).unwrap();
+    assert_eq!(
+        call("deck_operation_get", json!({"operation_id": &second_id}))["state"],
+        "rejected"
+    );
+    assert_eq!(
+        crate::inbound_agent::entry_state(&second_id),
+        Some((
+            crate::inbound_agent::EntryState::Handled,
+            Some("client-revoked".into())
+        ))
+    );
+    assert_eq!(
+        call("deck_automation_list", json!({}))["error"]["code"],
+        "PERMISSION_DENIED"
+    );
+    // restored: new runs again, the retired item stays retired
+    client_automations(&runtime, "client_a", true).unwrap();
+    assert_eq!(call("deck_automation_list", json!({}))["ok"], true);
+    assert_eq!(
+        crate::inbound_agent::entry_state(&second_id).map(|(state, _)| state),
+        Some(crate::inbound_agent::EntryState::Handled)
+    );
+    // a client revocation withdraws it too, with the client
+    let third = trigger("req_3", 2, "triage", &revision, "third");
+    let third_id = third["operationId"].as_str().unwrap().to_owned();
+    client_revoke(&runtime, "client_a".into()).unwrap();
+    assert_eq!(
+        crate::inbound_agent::entry_state(&third_id).map(|(state, _)| state),
+        Some(crate::inbound_agent::EntryState::Handled)
+    );
+    assert!(runtime
+        .read(|doc| doc
+            .operations
+            .iter()
+            .any(|op| op.operation_id == third_id && op.state == "rejected"))
+        .unwrap());
+    CONFIG_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    crate::inbound_agent::REVISION_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    crate::inbound_agent::redirect_for_tests(None);
+}
+
+/// After a restart the truth of an accepted trigger is its inbox entry:
+/// `load` leaves it accepted (no `deck-restarted`), `reconcile_inbox`
+/// commits a staged entry, and an entry the inbox lost makes the record
+/// ambiguous instead of pretending.
+#[test]
+fn accepted_triggers_are_reconciled_against_the_inbox_after_a_restart() {
+    let _serial = crate::inbound_agent::STORE_TESTS.lock_or_recover();
+    let (runtime, _runner, root) = fixture("automation-restart", "svc_test");
+    crate::inbound_agent::redirect_for_tests(Some(root.join("agent-inbox.json")));
+    let staged = crate::inbound_agent::Submission {
+        client: "client_a".into(),
+        request_id: "req_s".into(),
+        request_hash: "a".repeat(64),
+        operation_id: "op_staged".into(),
+        rule: "triage".into(),
+        revision: "c".repeat(64),
+        text: "x".into(),
+        from: String::new(),
+        where_: String::new(),
+        link: String::new(),
+    };
+    crate::inbound_agent::stage(staged, 1).unwrap();
+    runtime
+        .write(|doc| {
+            doc.config.clients[0].allow_automations = true;
+            for (id, request) in [("op_staged", "req_s"), ("op_lost", "req_l")] {
+                doc.operations.push(Operation {
+                    operation_id: id.into(),
+                    request_id: request.into(),
+                    kind: TRIGGER_KIND.into(),
+                    ..operation(TRIGGER_KIND, "accepted")
+                });
+            }
+            doc.operations.push(operation("session-create", "accepted"));
+            Ok(())
+        })
+        .unwrap();
+    let loaded = load(&runtime.path).unwrap();
+    let state = |id: &str| {
+        loaded
+            .operations
+            .iter()
+            .find(|op| op.operation_id == id)
+            .map(|op| (op.state.clone(), op.code.clone()))
+            .unwrap()
+    };
+    assert_eq!(state("op_staged"), ("accepted".into(), None));
+    assert_eq!(state("op_lost"), ("accepted".into(), None));
+    assert_eq!(
+        state("op_a"),
+        ("ambiguous".into(), Some("deck-restarted".into())),
+        "a Board create is still never replayed"
+    );
+    let reloaded = Arc::new(Runtime {
+        app: None,
+        path: runtime.path.clone(),
+        socket: root.join("control.sock"),
+        doc: Mutex::new(Ok(loaded)),
+        io: Mutex::new(()),
+        delivery: Mutex::new(()),
+        emergency: Mutex::new(EmergencyFences::default()),
+        service_instance: "svc_next".into(),
+        runner_auth: Mutex::new(HashMap::new()),
+        started: Instant::now(),
+    });
+    reconcile_inbox(&reloaded);
+    assert_eq!(
+        crate::inbound_agent::entry_state("op_staged").map(|(state, _)| state),
+        Some(crate::inbound_agent::EntryState::Committed)
+    );
+    let after = |id: &str| {
+        reloaded
+            .read(|doc| {
+                doc.operations
+                    .iter()
+                    .find(|op| op.operation_id == id)
+                    .map(|op| (op.state.clone(), op.code.clone()))
+                    .unwrap()
+            })
+            .unwrap()
+    };
+    assert_eq!(after("op_staged"), ("accepted".into(), None));
+    assert_eq!(
+        after("op_lost"),
+        ("ambiguous".into(), Some("inbox-lost".into()))
+    );
+    crate::inbound_agent::redirect_for_tests(None);
 }

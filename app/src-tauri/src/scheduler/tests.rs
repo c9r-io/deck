@@ -4053,6 +4053,7 @@ fn step_authority(k: u32) -> StepAuthority {
         },
         trigger: TriggerClass::SlackBadge,
         connector: None,
+        delegation: None,
     }
 }
 
@@ -4203,6 +4204,7 @@ fn a_claim_is_admitted_only_against_the_current_valid_grant() {
         let proof = Proof {
             skeleton: (c.step == 1).then_some(skeleton.as_str()),
             event: Some(&event),
+            client: None,
         };
         verify_claim(config, c, cmd, text, verbatim, proof)
     };
@@ -4377,7 +4379,11 @@ fn a_bounded_row_is_authorized_only_as_the_expansion_of_its_approved_step() {
             "codex --yolo",
             text,
             false,
-            Proof { skeleton, event },
+            Proof {
+                skeleton,
+                event,
+                client: None,
+            },
         )
     };
     // the expansion is deterministic and matches the webview's
@@ -5703,6 +5709,7 @@ while (sysread(STDIN, my $b, 1)) { printf $l "%02x", ord($b); }
             trigger: first_send::FirstSendOrigin::SlackBadge,
             clock_target: None,
             connector: None,
+            delegation: None,
         });
     }
     let session = row.session.clone();
@@ -5832,6 +5839,7 @@ fn first_send_override() -> ReadinessOverride {
         trigger: first_send::FirstSendOrigin::SlackBadge,
         clock_target: None,
         connector: None,
+        delegation: None,
     }
 }
 
@@ -5908,7 +5916,7 @@ fn only_verified_automation_head_rows_can_be_admitted_with_the_override() {
                   mode: &str,
                   verbatim: bool,
                   event: Option<&crate::inbound::Event>| {
-        first_send::verify(config, &claim, cmd, mode, verbatim, event)
+        first_send::verify(config, &claim, cmd, mode, verbatim, event, None)
     };
     assert_eq!(
         verify(Some(&config), "claude", "at", false, Some(&event)),
@@ -5961,6 +5969,7 @@ fn only_verified_automation_head_rows_can_be_admitted_with_the_override() {
                 dir: clock.dir.clone()
             }),
             connector: None,
+            delegation: None,
         })
     );
     assert_eq!(
@@ -6004,7 +6013,7 @@ fn the_override_reaches_claude_and_codex_no_daemon_only() {
     for (cmd, ok) in [("codex", false), ("codex --no-daemon", true)] {
         let config = config_with(vec![first_send_rule(cmd)]);
         assert_eq!(
-            first_send::verify(Some(&config), &claim, cmd, "at", false, Some(&event)).is_ok(),
+            first_send::verify(Some(&config), &claim, cmd, "at", false, Some(&event), None).is_ok(),
             ok,
             "{cmd}"
         );
@@ -6744,7 +6753,8 @@ fn channel_monitor_connector_and_manual_head_rows_cannot_use_the_override() {
             "claude",
             "at",
             false,
-            Some(&event)
+            Some(&event),
+            None,
         ),
         Err("no-rule")
     );
@@ -6755,7 +6765,8 @@ fn channel_monitor_connector_and_manual_head_rows_cannot_use_the_override() {
             "claude",
             "at",
             true,
-            Some(&event)
+            Some(&event),
+            None,
         ),
         Err("verbatim"),
         "a verbatim external text (Connector buffer) never carries it"
@@ -7685,6 +7696,7 @@ fn clock_first_send_head() -> QueueItem {
             dir: rule.dir,
         }),
         connector: None,
+        delegation: None,
     });
     row
 }
@@ -7850,7 +7862,8 @@ fn the_clock_head_check_reads_the_card_and_call_the_webview_writes() {
                 &args.cmd,
                 &args.mode,
                 args.external_text,
-                Some(&event)
+                Some(&event),
+                None,
             )
             .is_ok(),
             "{name}"
@@ -7937,6 +7950,7 @@ fn the_clock_head_check_reads_the_card_and_call_the_webview_writes() {
             "at",
             false,
             Some(&event),
+            Some("client_a"),
         );
         assert_eq!(
             verdict.is_ok(),
@@ -7961,14 +7975,31 @@ fn clock_admission_rejects_forged_event_rule_slot_source_step_and_owner_target()
     };
     let event = slack_event(&claim.event, &rule.id, "clock");
     let config = config_with(vec![rule.clone()]);
-    assert!(first_send::verify(Some(&config), &claim, "claude", "at", false, Some(&event)).is_ok());
+    assert!(first_send::verify(
+        Some(&config),
+        &claim,
+        "claude",
+        "at",
+        false,
+        Some(&event),
+        None
+    )
+    .is_ok());
     for bad in [
         slack_event("wrong-slot", &rule.id, "clock"),
         slack_event(&claim.event, "wrong-rule", "clock"),
         slack_event(&claim.event, &rule.id, "slack"),
     ] {
         assert_eq!(
-            first_send::verify(Some(&config), &claim, "claude", "at", false, Some(&bad)),
+            first_send::verify(
+                Some(&config),
+                &claim,
+                "claude",
+                "at",
+                false,
+                Some(&bad),
+                None
+            ),
             Err("event")
         );
     }
@@ -7979,12 +8010,13 @@ fn clock_admission_rejects_forged_event_rule_slot_source_step_and_owner_target()
             "claude",
             "chain",
             false,
-            Some(&event)
+            Some(&event),
+            None,
         ),
         Err("step")
     );
     assert_eq!(
-        first_send::verify(Some(&config), &claim, "claude", "at", false, None),
+        first_send::verify(Some(&config), &claim, "claude", "at", false, None, None),
         Err("no-event")
     );
     let args: QueueAddArgs = serde_json::from_value(serde_json::json!({"session":"s", "cardId":"card", "operationId":"head-op", "cmd":"claude", "dir":"/work", "text":"first", "mode":"at", "at":NOW, "tpl":"tpl", "tplIdx":1})).unwrap();
@@ -8315,6 +8347,7 @@ fn preset_override() -> ReadinessOverride {
         rule: "R1".into(),
         trigger: first_send::FirstSendOrigin::Connector,
         clock_target: None,
+        delegation: None,
         connector: Some(first_send::ConnectorTarget {
             project: "P1".into(),
             dir: "/work".into(),
@@ -8343,6 +8376,7 @@ fn board_sources(tasks: &first_send::PhoneTasks) -> first_send::Sources<'_> {
     first_send::Sources {
         settings: None,
         board: Some(tasks),
+        delegations: None,
     }
 }
 
@@ -8821,6 +8855,7 @@ fn preset_authority(grant: &str, step: u32) -> StepAuthority {
         step,
         class: ContentClass::Fixed,
         trigger: TriggerClass::Connector,
+        delegation: None,
         connector: Some(PresetSource {
             project: "P1".into(),
             device: "dev_1".into(),
@@ -9439,6 +9474,7 @@ fn waiting_rows_sendable(q: &QueueState) -> bool {
     let sources = first_send::Sources {
         settings: None,
         board: tasks.as_ref(),
+        delegations: None,
     };
     q.items.iter().any(|row| {
         (row.readiness_override.is_some() && first_send::fence(row, sources) == Fence::Clear)
@@ -9452,6 +9488,7 @@ fn tick_sweep(q: &mut QueueState) {
     let sources = first_send::Sources {
         settings: None,
         board: tasks.as_ref(),
+        delegations: None,
     };
     revoke_stale(q, sources);
     first_send::revoke_stale(q, sources);
@@ -9876,4 +9913,264 @@ fn a_lasting_unverified_hold_changes_no_authority_and_keeps_send_now() {
     // a row that left the queue is forgotten
     attention_tick(&qs(vec![]), NOW, Some(&unverified), &mut since, &mut waits);
     assert!(since.is_empty() && waits.is_empty());
+}
+
+/* ---------- an Agent rule's approval and override rest on the delegation ---------- */
+
+fn agent_sources<'a>(
+    config: &'a crate::inbound::Config,
+    delegations: Option<&'a std::collections::HashSet<String>>,
+) -> first_send::Sources<'a> {
+    first_send::Sources {
+        settings: Some(config),
+        board: None,
+        delegations,
+    }
+}
+
+/// The fixture rule as an Agent rule, re-approved for that spelling.
+fn agent_rule() -> crate::inbound::Rule {
+    let mut rule = granted_rule();
+    rule.source = "agent".into();
+    rule.badge = "triage".into();
+    regrant(rule)
+}
+
+fn agent_event(key: &str) -> crate::inbound::Event {
+    slack_event(key, "triage", "agent")
+}
+
+fn delegations_for_tests(answer: Option<&[&str]>) {
+    first_send::DELEGATIONS_FOR_TESTS.with(|cell| {
+        *cell.borrow_mut() = Some(answer.map(|clients| {
+            clients
+                .iter()
+                .map(|client| client.to_string())
+                .collect::<std::collections::HashSet<String>>()
+        }));
+    });
+}
+
+/// `verify_claim` admits an Agent rule's steps exactly like a badge rule's,
+/// minting the Agent trigger with the client the inbox named; without a
+/// client it refuses. The approval then stands only while the settings
+/// grant it AND the client is delegated: an unreadable ledger holds, a
+/// withdrawn delegation revokes, at the fence and in the sweep alike.
+#[test]
+fn an_agent_rule_s_approval_rests_on_the_client_s_delegation() {
+    let rule = agent_rule();
+    let grant = rule.auto_send.clone().unwrap();
+    let config = config_with(vec![rule.clone()]);
+    let fixture = grant_fixture();
+    let steps: Vec<String> = fixture["templateSteps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| normalize_template_step(s.as_str().unwrap()))
+        .collect();
+    let event = agent_event("op_1");
+    let claim = |step: u32| AuthorityClaim {
+        rule: rule.id.clone(),
+        grant: grant.digest.clone(),
+        step,
+        event: Some("op_1".into()),
+        skeletons: vec![],
+        preset_project: None,
+    };
+    let fixed = claim(0);
+    let proof = |client: Option<&'static str>| Proof {
+        skeleton: None,
+        event: Some(&event),
+        client,
+    };
+    let text = normalize_prompt(&steps[0]);
+    let authority = verify_claim(
+        Some(&config),
+        &fixed,
+        &rule.cmd,
+        &text,
+        false,
+        proof(Some("client_a")),
+    )
+    .unwrap();
+    assert_eq!(authority.trigger, TriggerClass::Agent);
+    assert_eq!(
+        authority.delegation,
+        Some(AgentSource {
+            client: "client_a".into()
+        })
+    );
+    assert_eq!(
+        verify_claim(Some(&config), &fixed, &rule.cmd, &text, false, proof(None)),
+        Err("no-client")
+    );
+    // a Slack event for an Agent rule is not its event
+    let slack = slack_event("op_1", "triage", "slack");
+    let bounded = AuthorityClaim {
+        step: 1,
+        skeletons: vec![Some(steps[1].clone())],
+        ..claim(1)
+    };
+    let expanded = normalize_prompt(&expand_bounded(&steps[1], &event));
+    assert!(verify_claim(
+        Some(&config),
+        &bounded,
+        &rule.cmd,
+        &expanded,
+        false,
+        Proof {
+            skeleton: Some(&steps[1]),
+            event: Some(&event),
+            client: Some("client_a")
+        }
+    )
+    .is_ok());
+    assert_eq!(
+        verify_claim(
+            Some(&config),
+            &bounded,
+            &rule.cmd,
+            &expanded,
+            false,
+            Proof {
+                skeleton: Some(&steps[1]),
+                event: Some(&slack),
+                client: Some("client_a")
+            }
+        ),
+        Err("event")
+    );
+    // the fence and the sweep
+    let row = external_step("a", Some(authority.clone()));
+    assert_eq!(fence(&row, agent_sources(&config, None)), Fence::Unverified);
+    let nobody = std::collections::HashSet::new();
+    assert_eq!(
+        fence(&row, agent_sources(&config, Some(&nobody))),
+        Fence::Revoked
+    );
+    let delegated: std::collections::HashSet<String> =
+        ["client_a".to_string()].into_iter().collect();
+    assert_eq!(
+        fence(&row, agent_sources(&config, Some(&delegated))),
+        Fence::Clear
+    );
+    let mut q = qs(vec![row.clone()]);
+    assert!(any_agent_delegation(&q));
+    assert_eq!(
+        revoke_stale(&mut q, agent_sources(&config, None)),
+        0,
+        "unreadable: kept"
+    );
+    assert_eq!(
+        revoke_stale(&mut q, agent_sources(&config, Some(&delegated))),
+        0
+    );
+    assert_eq!(
+        revoke_stale(&mut q, agent_sources(&config, Some(&nobody))),
+        1
+    );
+    assert!(q.items[0].authority.is_none());
+    assert!(!any_agent_delegation(&q));
+    // a badge rule's approval never asks the ledger
+    let badge = external_step("b", Some(step_authority(0)));
+    let badge_config = config_with(vec![granted_rule()]);
+    assert_eq!(
+        fence(
+            &badge,
+            first_send::Sources {
+                settings: Some(&badge_config),
+                board: None,
+                delegations: None,
+            }
+        ),
+        Fence::Clear
+    );
+}
+
+/// The first-send override of an Agent rule's head row: minted with the
+/// client, standing only while the rule and the delegation allow it.
+#[test]
+fn an_agent_rule_s_first_send_override_rests_on_the_client_s_delegation() {
+    let mut rule = agent_rule();
+    rule.auto_send = None;
+    rule.cmd = "claude".into();
+    rule.first_send_without_readiness = true;
+    let config = config_with(vec![rule.clone()]);
+    let event = agent_event("op_1");
+    let claim = first_send::FirstSendClaim {
+        rule: rule.id.clone(),
+        event: "op_1".into(),
+        preset_project: None,
+    };
+    let verify = |client: Option<&str>| {
+        first_send::verify(
+            Some(&config),
+            &claim,
+            "claude",
+            "at",
+            false,
+            Some(&event),
+            client,
+        )
+    };
+    let granted = verify(Some("client_a")).unwrap();
+    assert_eq!(granted.trigger, first_send::FirstSendOrigin::Agent);
+    assert_eq!(
+        granted.delegation,
+        Some(AgentSource {
+            client: "client_a".into()
+        })
+    );
+    assert_eq!(verify(None), Err("no-client"));
+    let mut paused = rule.clone();
+    paused.enabled = false;
+    assert_eq!(
+        first_send::verify(
+            Some(&config_with(vec![paused])),
+            &claim,
+            "claude",
+            "at",
+            false,
+            Some(&event),
+            Some("client_a")
+        ),
+        Err("trigger"),
+        "a paused Agent rule starts nothing"
+    );
+    let mut head = overridden_head("h");
+    head.readiness_override = Some(granted);
+    assert_eq!(
+        first_send::fence(&head, agent_sources(&config, None)),
+        Fence::Unverified
+    );
+    let nobody = std::collections::HashSet::new();
+    assert_eq!(
+        first_send::fence(&head, agent_sources(&config, Some(&nobody))),
+        Fence::Revoked
+    );
+    let delegated: std::collections::HashSet<String> =
+        ["client_a".to_string()].into_iter().collect();
+    assert_eq!(
+        first_send::fence(&head, agent_sources(&config, Some(&delegated))),
+        Fence::Clear
+    );
+    let mut q = qs(vec![head]);
+    assert!(any_agent_delegation(&q));
+    assert_eq!(
+        first_send::revoke_stale(&mut q, agent_sources(&config, Some(&nobody))),
+        1
+    );
+    assert!(q.items[0].readiness_override.is_none());
+    // the hook the pre-fire path reads, under a test's answer
+    delegations_for_tests(None);
+    assert_eq!(first_send::delegation_stands("client_a"), None);
+    delegations_for_tests(Some(&["client_a"]));
+    assert_eq!(first_send::delegation_stands("client_a"), Some(true));
+    assert_eq!(first_send::delegation_stands("client_b"), Some(false));
+    first_send::DELEGATIONS_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    assert_eq!(
+        first_send::delegation_stands("client_a"),
+        Some(false),
+        "no MCP runtime in tests: nothing is delegated"
+    );
 }

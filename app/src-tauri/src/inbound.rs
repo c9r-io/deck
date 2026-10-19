@@ -53,9 +53,13 @@
 //! and its credential adaptation reach this dispatcher only through the
 //! static extension tables (`extensions.rs`; Slack's entry is `slack.rs`):
 //! this file starts no service connection and verifies no service token.
-//! The clock is the dispatcher's own built-in source. `SOURCES` stays the
+//! The clock and the Agent trigger (`inbound_agent.rs`: items a delegated
+//! MCP client hands over through a durable inbox) are the dispatcher's own
+//! built-in sources. `SOURCES` stays the
 //! closed, persisted source vocabulary, and the settings shape — channel
-//! rules included — is still validated here.
+//! rules included — is still validated here. An Agent item is acked like a
+//! badge item; its consumption fact is the inbox entry, and `inbound_pending`
+//! marks it `blocked: rule-changed` when its rule's revision moved.
 //! A badge item's ack carries the card it created, so the run ledger and the
 //! finish rule cover both triggers.
 //! Credential verification and Keychain writes run on the blocking pool,
@@ -132,14 +136,21 @@ use crate::keychain;
 use crate::storage;
 use crate::sync::LockRecover;
 
-pub(crate) const SOURCES: &[&str] = &["slack", "clock"];
+pub(crate) const SOURCES: &[&str] = &["slack", "clock", "agent"];
 /// The sources the dispatcher appends itself (`spawn_inbound`); a registered
 /// service never supplies one of these names.
-pub(crate) const BUILT_IN_SOURCES: &[&str] = &["clock"];
+pub(crate) const BUILT_IN_SOURCES: &[&str] = &["clock", "agent"];
 const MAX_RUNS: usize = 200;
 /// Closed vocabulary of what became of a run.
 const RUN_OUTCOMES: &[&str] = &["running", "closed", "skipped"];
-const SKIP_REASONS: &[&str] = &["busy", "no-rule-target", "no-template", "missed"];
+const SKIP_REASONS: &[&str] = &[
+    "busy",
+    "no-rule-target",
+    "no-template",
+    "missed",
+    "blocked",
+    "rule-changed",
+];
 /// Default grace of a clock rule, in minutes; 1440 means the whole day.
 pub(crate) const DEFAULT_GRACE_MIN: u32 = 15;
 pub(crate) const MAX_GRACE_MIN: u32 = 1440;
@@ -204,12 +215,12 @@ pub(crate) struct Rule {
     /// later the slot is recorded as missed
     #[serde(default = "default_grace")]
     pub(crate) grace_min: u32,
-    /// Slack badge rules only: the user's explicit approval for Deck to send
-    /// this exact version of the rule's steps without a per-row send-now
-    /// (`scheduler/authority.rs`). Absent on every legacy rule.
+    /// Slack badge and Agent rules only: the user's explicit approval for
+    /// Deck to send this exact version of the rule's steps without a per-row
+    /// send-now (`scheduler/authority.rs`). Absent on every legacy rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) auto_send: Option<AutoSend>,
-    /// Slack badge and clock rules: the user explicitly accepted that the first
+    /// Slack badge, clock and Agent rules: the user explicitly accepted that the first
     /// step of this rule's runs may be sent to a freshly started agent
     /// without first-interaction evidence (`scheduler/first_send.rs`). A
     /// readiness-risk policy, not an approval and never readiness. Absent
@@ -595,20 +606,20 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
                 ));
             }
             if let Some(grant) = &rule.auto_send {
-                if rule.source != "slack" {
+                if !matches!(rule.source.as_str(), "slack" | "agent") {
                     return Err(DeckError::new(
                         ErrorKind::InvalidDoc,
-                        "only a Slack badge rule carries an automation approval",
+                        "only a Slack badge or Agent rule carries an automation approval",
                     ));
                 }
                 grant.validate()?;
             }
             if rule.first_send_without_readiness
-                && !matches!(rule.source.as_str(), "slack" | "clock")
+                && !matches!(rule.source.as_str(), "slack" | "clock" | "agent")
             {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
-                    "only a Slack badge or clock rule may send its first step without readiness",
+                    "only a Slack badge, clock or Agent rule may send its first step without readiness",
                 ));
             }
             if !ids.insert(rule.id.clone()) {
@@ -848,6 +859,12 @@ pub(crate) struct PendingView {
     pub(crate) id: u64,
     pub(crate) event: Event,
     pub(crate) rule: Rule,
+    /// An Agent item the webview must skip with this reason instead of
+    /// creating a card: `rule-changed` (the rule or its template is no
+    /// longer the revision the client was promised). Computed at each
+    /// `inbound_pending`, never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) blocked: Option<String>,
 }
 
 struct Pending {
@@ -980,6 +997,7 @@ pub(crate) fn offer<R: tauri::Runtime>(
                     id,
                     event: ev,
                     rule: rule.clone(),
+                    blocked: None,
                 },
                 emitted_at: Instant::now(),
             });
@@ -1114,7 +1132,55 @@ pub(crate) fn inbound_status() -> InboundStatus {
 
 #[tauri::command]
 pub(crate) fn inbound_pending() -> Vec<PendingView> {
-    with_rt(|rt| rt.pending.iter().map(|p| p.view.clone()).collect())
+    let views: Vec<PendingView> = with_rt(|rt| rt.pending.iter().map(|p| p.view.clone()).collect());
+    if !views.iter().any(|v| v.event.source == "agent") {
+        return views;
+    }
+    // An Agent item was accepted against one revision of its rule and
+    // template; the webview must not create its card under another. The
+    // current rule comes from the settings as they are now, the template
+    // from the committed Board.
+    let current = pending_config();
+    views
+        .into_iter()
+        .map(|mut v| {
+            if v.event.source == "agent" {
+                let frozen = crate::inbound_agent::revision_of(&v.event.key);
+                let now = current
+                    .rules
+                    .iter()
+                    .find(|r| r.source == "agent" && r.badge == v.event.badge && r.enabled)
+                    .and_then(crate::inbound_agent::current_revision);
+                if frozen.is_none() || now.is_none() || frozen != now {
+                    v.blocked = Some("rule-changed".into());
+                }
+            }
+            v
+        })
+        .collect()
+}
+
+/// The settings as they are now, for `inbound_pending`'s revision check.
+fn pending_config() -> Config {
+    #[cfg(test)]
+    if let Some(forced) = PENDING_CONFIG_FOR_TESTS.with(|cell| cell.borrow().clone()) {
+        return forced;
+    }
+    read_config()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's settings in place of the settings file (`Some(config)`).
+    static PENDING_CONFIG_FOR_TESTS: std::cell::RefCell<Option<Config>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The MCP client that handed over Agent item `key`, proof material for
+/// the authority a row admitted from it carries (`scheduler/authority.rs`).
+/// `None` for every other source.
+pub(crate) fn pending_client(key: &str) -> Option<String> {
+    crate::inbound_agent::pending_client(key)
 }
 
 /// The still-pending native Slack badge or clock event `key` matched to rule `rule_id` — the
@@ -1129,7 +1195,7 @@ pub(crate) fn pending_event(key: &str, rule_id: &str) -> Option<Event> {
             .iter()
             .map(|p| &p.view)
             .find(|v| {
-                matches!(v.event.source.as_str(), "slack" | "clock")
+                matches!(v.event.source.as_str(), "slack" | "clock" | "agent")
                     && v.event.key == key
                     && v.rule.id == rule_id
             })
@@ -1192,6 +1258,22 @@ pub(crate) fn inbound_ack(
         let ev = &p.view.event;
         let now = now_secs();
         rt.doc.mark(&ev.source, &ev.key, &ev.badge, now);
+        if ev.source == "agent" {
+            // the consumption fact lives in the agent inbox (which tells
+            // MCP the operation's outcome); the seen ledger is secondary
+            if let Err(e) = crate::inbound_agent::handled(
+                &ev.key,
+                &outcome,
+                card.as_deref(),
+                (!reason.is_empty()).then_some(reason.as_str()),
+                now,
+            ) {
+                applog(&format!(
+                    "[inbound] agent item ack not recorded ({})",
+                    e.code()
+                ));
+            }
+        }
         // a clock slot records every outcome (its drawer history); a badge
         // records only the run it started, so the finish rule can close the
         // card it created and the drawer can show when the badge last fired
@@ -1342,6 +1424,7 @@ pub(crate) fn spawn_inbound(app: AppHandle) {
         // clock is the dispatcher's own built-in source.
         let mut sources = crate::extensions::service_sources();
         sources.push(Box::new(crate::inbound_clock::Clock::default()));
+        sources.push(Box::new(crate::inbound_agent::AgentSource::default()));
         let mut failures = 0u32;
         wait_for_tick(Duration::from_secs(5));
         loop {
@@ -1469,8 +1552,17 @@ mod tests {
             1
         );
         assert_eq!(body.matches("inbound_clock::Clock::default()").count(), 1);
+        assert_eq!(
+            body.matches("inbound_agent::AgentSource::default()")
+                .count(),
+            1
+        );
+        use crate::inbound_agent::AgentSource;
         use crate::inbound_clock::Clock;
-        assert_eq!(BUILT_IN_SOURCES, [Clock::default().id()]);
+        assert_eq!(
+            BUILT_IN_SOURCES,
+            [Clock::default().id(), AgentSource::default().id()]
+        );
     }
 
     #[test]
@@ -2552,5 +2644,97 @@ mod tests {
         );
         let err = set_secret("nope", "x").unwrap_err();
         assert_eq!(err.message(), "unknown credential slot");
+    }
+
+    /// An Agent item is offered from the inbox like a badge event, judged
+    /// against the rule's revision at every `inbound_pending` (a moved rule
+    /// blocks it with its reason), and acknowledged into the inbox as a
+    /// consumption fact.
+    #[test]
+    fn an_agent_item_is_blocked_when_its_rule_moved_and_its_ack_reaches_the_inbox() {
+        let _serial = TEST_LOCK.lock_or_recover();
+        let _inbox = crate::inbound_agent::STORE_TESTS.lock_or_recover();
+        let dir = crate::test_dir::TestDir::new("inbound-agent-item");
+        *TEST_DOC_PATH.lock_or_recover() = Some(dir.join("inbound.json"));
+        *RT.lock_or_recover() = Some(Runtime {
+            doc: InboundDoc::default(),
+            dirty: false,
+            pending: Vec::new(),
+            next_id: 1,
+            poll_wanted: false,
+            statuses: Vec::new(),
+        });
+        crate::inbound_agent::redirect_for_tests(Some(dir.join("agent-inbox.json")));
+        let revision = "c".repeat(64);
+        let (id, _) = crate::inbound_agent::stage(
+            crate::inbound_agent::Submission {
+                client: "client_a".into(),
+                request_id: "req_1".into(),
+                request_hash: "a".repeat(64),
+                operation_id: "op_item".into(),
+                rule: "triage".into(),
+                revision: revision.clone(),
+                text: "please review".into(),
+                from: "alice".into(),
+                where_: "#ops".into(),
+                link: String::new(),
+            },
+            1,
+        )
+        .unwrap();
+        crate::inbound_agent::commit("client_a", "req_1", &id).unwrap();
+        let app = tauri::test::mock_app();
+        let cfg = config_from_value(Some(&json!({"rules": [{
+            "id": "g1", "source": "agent", "badge": "triage", "projectId": "P1",
+            "columnId": "C1", "cmd": "claude", "template": "mention"
+        }]})));
+        PENDING_CONFIG_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(cfg.clone()));
+        let mut source = crate::inbound_agent::AgentSource::default();
+        let events = source.poll(&cfg, &[]).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(offer(app.handle(), &cfg, events, true), 1);
+        // the rule as the client saw it: offered; moved: blocked
+        crate::inbound_agent::REVISION_FOR_TESTS
+            .with(|cell| *cell.borrow_mut() = Some(Some(revision.clone())));
+        let views = inbound_pending();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].event.source, "agent");
+        assert_eq!(views[0].event.key, "op_item");
+        assert_eq!(views[0].blocked, None);
+        assert_eq!(pending_client("op_item").as_deref(), Some("client_a"));
+        assert_eq!(
+            pending_event("op_item", "g1").map(|e| e.text),
+            Some("please review".into())
+        );
+        crate::inbound_agent::REVISION_FOR_TESTS
+            .with(|cell| *cell.borrow_mut() = Some(Some("d".repeat(64))));
+        assert_eq!(
+            inbound_pending()[0].blocked.as_deref(),
+            Some("rule-changed")
+        );
+        crate::inbound_agent::REVISION_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(None));
+        assert_eq!(
+            inbound_pending()[0].blocked.as_deref(),
+            Some("rule-changed"),
+            "no revision at all is no match either"
+        );
+        // the webview's ack: seen ledger, inbox consumption fact with the reason
+        let item = views[0].id;
+        inbound_ack(item, "skipped".into(), None, Some("rule-changed".into())).unwrap();
+        assert!(inbound_pending().is_empty());
+        assert_eq!(
+            crate::inbound_agent::entry_state("op_item"),
+            Some((
+                crate::inbound_agent::EntryState::Handled,
+                Some("rule-changed".into())
+            ))
+        );
+        // offered again by the poll? no: handled entries are not events
+        assert!(source.poll(&cfg, &[]).unwrap().is_empty());
+        crate::inbound_agent::REVISION_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+        PENDING_CONFIG_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+        crate::inbound_agent::redirect_for_tests(None);
+        *TEST_DOC_PATH.lock_or_recover() = None;
+        *RT.lock_or_recover() = None;
     }
 }

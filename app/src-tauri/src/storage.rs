@@ -109,9 +109,29 @@ use std::sync::Mutex;
 // v5 protects card reminders and blocked retirement identities; v6 protects
 // a phone task preset's first-send choice and approval and their queue
 // origins; v7 protects channel first-send grants, frozen claims and queue
-// constraints; v8 protects a clock schedule's interval and anchor date.
-// Ordinary documents keep v1; upgrades are sticky.
-pub const SCHEMA_VERSION: u64 = 8;
+// constraints; v8 protects a clock schedule's interval and anchor date; v9
+// protects an Agent trigger rule (settings.json) and the queue origins it
+// admits (a row's or a delivery's authority or override with the agent
+// trigger word). Ordinary documents keep v1; upgrades are sticky.
+pub const SCHEMA_VERSION: u64 = 9;
+
+// An Agent rule is a source word a v8 reader rejects wholesale (its settings
+// validation refuses the unknown source, which would quarantine the file),
+// and the queue origins it admits are closed words a v8 reader decodes as
+// damage. Refuse both files untouched instead.
+fn uses_agent_trigger(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(o) => {
+            o.get("source").and_then(|v| v.as_str()) == Some("agent")
+                || ["readiness_override", "authority"]
+                    .iter()
+                    .any(|key| o.get(*key).is_some_and(|v| v["trigger"] == "agent"))
+                || o.values().any(uses_agent_trigger)
+        }
+        serde_json::Value::Array(a) => a.iter().any(uses_agent_trigger),
+        _ => false,
+    }
+}
 
 /// The two documents whose review fields an old reader could misinterpret as
 /// ordinary state (queue rows it would resend; finish rules it would apply).
@@ -787,7 +807,11 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let feature_version = if name == "settings.json" && uses_schedule_interval(&data) {
+    let feature_version = if matches!(name.as_ref(), "queue.json" | "settings.json")
+        && uses_agent_trigger(&data)
+    {
+        9
+    } else if name == "settings.json" && uses_schedule_interval(&data) {
         8
     } else if matches!(name.as_ref(), "deck.json" | "queue.json" | "settings.json")
         && uses_channel_first_send(&data)
@@ -2335,5 +2359,62 @@ mod tests {
         assert_eq!(listing(&d), before);
         assert!(p.is_dir(), "left where it was");
         assert!(take_notices().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod agent_trigger_version_tests {
+    use super::*;
+    use crate::test_dir::TestDir;
+
+    /// An Agent trigger rule and the queue origins it admits take sticky
+    /// v9 on settings.json and queue.json only; deck.json keeps its own
+    /// version (its reader admits the rows without authority and holds).
+    #[test]
+    fn agent_trigger_documents_upgrade_to_sticky_v9_only_when_used() {
+        let dir = TestDir::new("agent-trigger-version");
+        let settings = |source: &str| serde_json::json!({"inbound":{"rules":[{"id":"g1","source":source,"badge":"triage","projectId":"P1","columnId":"C1","cmd":"claude","template":"t"}]}});
+        let queue = |trigger: &str| serde_json::json!({"items":[{"id":"q1","authority":{"rule":"g1","grant":"a","step":0,"class":"fixed","trigger":trigger}}]});
+        for (name, plain, used) in [
+            ("settings.json", settings("slack"), settings("agent")),
+            ("queue.json", queue("slack-badge"), queue("agent")),
+            (
+                "queue.json",
+                serde_json::json!({"items":[{"id":"q1","readiness_override":{"rule":"g1","trigger":"clock"}}]}),
+                serde_json::json!({"items":[{"id":"q1","readiness_override":{"rule":"g1","trigger":"agent"}}]}),
+            ),
+        ] {
+            let case = dir.join(format!("{name}-{}", used.to_string().len()));
+            std::fs::create_dir_all(&case).unwrap();
+            let p = case.join(name);
+            save_typed::<serde_json::Value>(&p, &plain.to_string()).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert!(raw["schema_version"].as_u64().unwrap() < 9, "{name}");
+            save_typed::<serde_json::Value>(&p, &used.to_string()).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert_eq!(raw["schema_version"], 9, "{name}");
+            assert!(
+                envelope_payload_for(&raw, 8).is_err(),
+                "{name}: a v8 reader refuses it"
+            );
+            // sticky: the rule or row gone, the version stays
+            save_typed::<serde_json::Value>(&p, &plain.to_string()).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert_eq!(raw["schema_version"], 9, "{name}: sticky");
+        }
+        // the Board never takes v9 for an agent-origin card or its frozen plan
+        let p = dir.join("deck.json");
+        save_typed::<serde_json::Value>(
+            &p,
+            &serde_json::json!({"cards":[{"id":"S1","origin":{"source":"agent","key":"op_1","badge":"triage"},
+                "inboundPlan":{"operationId":"B1","initialSteps":[],"initialQueued":true,"authority":{"trigger":"agent"}}}]})
+            .to_string(),
+        )
+        .unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert!(raw["schema_version"].as_u64().unwrap() < 9);
     }
 }

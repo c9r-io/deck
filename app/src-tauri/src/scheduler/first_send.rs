@@ -135,6 +135,7 @@
 //!   Signal word, quiet time, title or timer is one.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 use super::*;
 use crate::inbound::{Config, Event, Rule};
@@ -152,6 +153,11 @@ pub(crate) struct ReadinessOverride {
     /// preset id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) connector: Option<ConnectorTarget>,
+    /// Present exactly for `FirstSendOrigin::Agent`: the delegated client
+    /// whose item made the run; the override stands only while that
+    /// delegation does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) delegation: Option<AgentSource>,
 }
 
 /// Readiness origins are independent of Slack content-authority triggers.
@@ -161,6 +167,9 @@ pub(crate) enum FirstSendOrigin {
     SlackBadge,
     Clock,
     Connector,
+    /// an Agent rule's run, made from an item a delegated MCP client handed
+    /// over
+    Agent,
 }
 
 /// Which document backs an override: the one it is admitted, swept and
@@ -174,18 +183,21 @@ pub(crate) enum Backing {
 impl FirstSendOrigin {
     pub(crate) fn backing(self) -> Backing {
         match self {
-            Self::SlackBadge | Self::Clock => Backing::Settings,
+            Self::SlackBadge | Self::Clock | Self::Agent => Backing::Settings,
             Self::Connector => Backing::Board,
         }
     }
 }
 
 /// What a row's override or approval is checked against, each `None` when
-/// that source could not be read as current.
+/// that source could not be read as current. `delegations` is the third
+/// source, beside the settings, for an Agent rule's rows: the MCP clients
+/// whose automation delegation stands (`delegations()`).
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Sources<'a> {
     pub(crate) settings: Option<&'a Config>,
     pub(crate) board: Option<&'a PhoneTasks>,
+    pub(crate) delegations: Option<&'a HashSet<String>>,
 }
 
 impl<'a> From<&'a Config> for Sources<'a> {
@@ -193,8 +205,33 @@ impl<'a> From<&'a Config> for Sources<'a> {
         Self {
             settings: Some(config),
             board: None,
+            delegations: None,
         }
     }
+}
+
+/// The MCP clients whose automation delegation stands now
+/// (`mcp::automation_delegations`): `None` only when the MCP ledger cannot
+/// be read, which proves nothing either way. Read beside the settings,
+/// under the same fence the delegation writes take.
+pub(crate) fn delegations() -> Option<HashSet<String>> {
+    #[cfg(test)]
+    if let Some(forced) = DELEGATIONS_FOR_TESTS.with(|cell| cell.borrow().clone()) {
+        return forced;
+    }
+    crate::mcp::automation_delegations()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's answer in place of the MCP ledger (`Some(answer)`).
+    pub(crate) static DELEGATIONS_FOR_TESTS: std::cell::RefCell<Option<Option<HashSet<String>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether `client`'s delegation stands now (`None`: unreadable).
+pub(crate) fn delegation_stands(client: &str) -> Option<bool> {
+    delegations().map(|clients| clients.contains(client))
 }
 
 /// The Board-side source: what a phone task's override and approval are
@@ -273,15 +310,16 @@ pub(crate) fn supported_command(cmd: &str) -> bool {
 /// Whether `rule` currently allows the override for a row launched with
 /// `cmd`.
 fn allows(rule: &Rule, cmd: &str) -> bool {
-    matches!(rule.source.as_str(), "slack" | "clock")
-        && (rule.source != "clock" || rule.enabled)
+    matches!(rule.source.as_str(), "slack" | "clock" | "agent")
+        && (rule.source == "slack" || rule.enabled)
         && rule.first_send_without_readiness
         && rule.cmd == cmd
         && supported_command(cmd)
 }
 
 /// Check a head row's claim (module header). `mode` is the row's mode,
-/// `event` the backend's own copy of the claimed inbound event.
+/// `event` the backend's own copy of the claimed inbound event, `client`
+/// the delegated MCP client the inbox holds for an Agent item.
 pub(crate) fn verify(
     config: Option<&Config>,
     claim: &FirstSendClaim,
@@ -289,6 +327,7 @@ pub(crate) fn verify(
     mode: &str,
     external_text: bool,
     event: Option<&Event>,
+    client: Option<&str>,
 ) -> Result<ReadinessOverride, Refusal> {
     if external_text {
         return Err("verbatim");
@@ -302,8 +341,8 @@ pub(crate) fn verify(
         .iter()
         .find(|r| r.id == claim.rule)
         .ok_or("no-rule")?;
-    if !matches!(rule.source.as_str(), "slack" | "clock")
-        || (rule.source == "clock" && !rule.enabled)
+    if !matches!(rule.source.as_str(), "slack" | "clock" | "agent")
+        || (rule.source != "slack" && !rule.enabled)
     {
         return Err("trigger");
     }
@@ -320,18 +359,27 @@ pub(crate) fn verify(
     if event.source != rule.source || event.badge != rule.badge || event.key != claim.event {
         return Err("event");
     }
+    let agent = (rule.source == "agent")
+        .then(|| {
+            client.map(|client| AgentSource {
+                client: client.to_string(),
+            })
+        })
+        .map(|source| source.ok_or("no-client"))
+        .transpose()?;
     Ok(ReadinessOverride {
         rule: rule.id.clone(),
-        trigger: if rule.source == "clock" {
-            FirstSendOrigin::Clock
-        } else {
-            FirstSendOrigin::SlackBadge
+        trigger: match rule.source.as_str() {
+            "clock" => FirstSendOrigin::Clock,
+            "agent" => FirstSendOrigin::Agent,
+            _ => FirstSendOrigin::SlackBadge,
         },
         clock_target: (rule.source == "clock").then(|| ClockTarget {
             project: rule.project_id.clone(),
             dir: rule.dir.clone(),
         }),
         connector: None,
+        delegation: agent,
     })
 }
 
@@ -415,6 +463,7 @@ pub(crate) fn verify_connector(
         rule: claim.rule.clone(),
         trigger: FirstSendOrigin::Connector,
         clock_target: None,
+        delegation: None,
         connector: Some(ConnectorTarget {
             project: project.to_owned(),
             dir: dir.to_owned(),
@@ -553,6 +602,7 @@ fn rule_still_allows(config: &Config, i: &QueueItem, o: &ReadinessOverride) -> b
                                 .as_ref()
                                 .is_some_and(|t| t.project == rule.project_id && t.dir == rule.dir)
                     }
+                    FirstSendOrigin::Agent => rule.source == "agent" && o.delegation.is_some(),
                     FirstSendOrigin::Connector => false,
                 }
         })
@@ -573,7 +623,19 @@ fn preset_still_allows(tasks: &PhoneTasks, i: &QueueItem, o: &ReadinessOverride)
 fn standing(sources: Sources<'_>, i: &QueueItem) -> Option<bool> {
     let o = i.readiness_override.as_ref()?;
     match o.trigger.backing() {
-        Backing::Settings => sources.settings.map(|c| rule_still_allows(c, i, o)),
+        Backing::Settings => {
+            let allowed = sources.settings.map(|c| rule_still_allows(c, i, o))?;
+            if o.trigger != FirstSendOrigin::Agent {
+                return Some(allowed);
+            }
+            // an Agent run's override also rests on the client's delegation
+            let delegated = sources.delegations.map(|delegations| {
+                o.delegation
+                    .as_ref()
+                    .is_some_and(|source| delegations.contains(&source.client))
+            })?;
+            Some(allowed && delegated)
+        }
         Backing::Board => sources.board.map(|b| preset_still_allows(b, i, o)),
     }
 }

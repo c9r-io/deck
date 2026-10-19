@@ -1,11 +1,30 @@
 # 当前验证索引
 
-更新：2026-10-19（时钟自动化间隔）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-10-20（Agent 交来触发源）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
+
+## 本轮 Agent 交来触发源（委托 MCP 客户端触发自动化）
+
+基线 `5791b84`。设计稿、三轮交叉审查与设计基线在仓库外 `~/c9r-io/deck-mention-patrol-20261019/`
+（`design-baseline-v1.md`、`detailed-design-v1.md`、evidence-v06a-20261020）。
+内容：新事件源 `agent`（`inbound_agent.rs`，持久暂存 `~/.deck/agent-inbox.json`，staged → committed → handled）；
+MCP 两个工具 `deck_automation_list` / `deck_automation_trigger`、客户端独立的「自动化委托」选择、`trigger_sequence`、
+按规则修订号拒绝 `RULE_CHANGED`、三写接受事务与重启对账；`TriggerClass::Agent` / `FirstSendOrigin::Agent` 带客户端，
+授权与首发覆盖同时依赖设置与委托，撤销走 settings fence；自动化抽屉的「Agent 交来」触发项；远程访问客户端行的委托按钮；
+卡片级「普通轮次结束不提醒」；settings.json / queue.json sticky v9，mcp.json sticky v7。
+
+实现前证据：V14（连接器可用）由用户以日常使用确认；V06a 在 Claude Code 2.1.303 上复测通过（候选 20/20，基线 6/10，见 evidence-v06a）。
+
+门禁（本机，隔离 HOME、空 TMPDIR）：`cargo fmt --check` 通过；CI 形式 clippy 0 告警；
+`cargo llvm-cov --workspace --all-targets --all-features --locked -- --test-threads=1`：deck-app 1,302 项通过、13 项既有 ignore，各集成与 sidecar 测试套件全部通过，
+行覆盖 86.66%、函数覆盖 84.14%，测试 TMPDIR 无残留；`scripts/ui-tests` 883 项通过并满足覆盖阈值；JS 语法 183 模块、`check.mjs` 74 模块、扩展目录检查通过；
+`sidecar_provenance.py check --profile debug --binaries` 通过（本机的 clippy 在 llvm-cov 之后重建了 debug 侧车，所以 `--coverage` 形式的检查留给 CI 的原始顺序）。
+UNRUN：真实 Deck 窗口里的端到端（委托客户端 → 建卡 → 首发 → 后续步骤）、WKWebView smoke 新模式、发布 carrier；
+`deck_automation_trigger` 对真实 Claude Code `claude mcp add` 配置的实机调用。
 
 ## 本轮 时钟自动化：每 N 天／周／月加起算日
 

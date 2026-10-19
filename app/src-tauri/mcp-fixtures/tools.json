@@ -1,5 +1,7 @@
 {
   "tools": [
+    "deck_automation_list",
+    "deck_automation_trigger",
     "deck_capabilities",
     "deck_exec",
     "deck_job_input",
@@ -16,6 +18,7 @@
     "deck_sessions_list"
   ],
   "mutating": [
+    "deck_automation_trigger",
     "deck_exec",
     "deck_job_input",
     "deck_job_interrupt",

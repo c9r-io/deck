@@ -240,10 +240,12 @@ rule (New session ▾ → Automations… on the Board, or the ↻ chip once the
 project has one) with a **trigger** — a clock (every day,
 chosen weekdays or days of the month, at a local time; optionally every N
 days, weeks or months counting from a date, so a sprint event is "every 2
-weeks on Mon") or a **Slack badge**
+weeks on Mon"), a **Slack badge**
 (an emoji reaction you put on a message; see
 [docs/auto-respond.md](auto-respond.md) for the one-app Slack
-connection in Settings). When it fires, deck creates a fresh card in a
+connection in Settings) or an **Agent handover** (an MCP client you
+delegated under Settings → Remote access names the rule by its automation
+id and hands over one classified item; the same document). When it fires, deck creates a fresh card in a
 column, launches the command and queues a template in a new session. A launch
 command may restore its own prior context; a clock runs one card at a time.
 With "close the card", the finish check requires an empty queue and the

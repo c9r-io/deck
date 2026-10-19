@@ -417,14 +417,15 @@ test('forensic reasons and movement sources are closed at the Rust log boundary'
   assert.doesNotMatch(read('app/ui/js/selection-forensics.js'), /getSelection\(|terminal_selection_copy|clipboard|session/);
 });
 
-test('the first-send option is a separate, unticked box for Slack badge and clock rules, shown with its warning', () => {
+test('the first-send option is a separate, unticked box for Slack badge, clock and Agent rules, shown with its warning', () => {
   const html = read('app/ui/index.html');
   // every trigger-bound control of the editor carries a `q-p-<trigger>` class
   const triggers = classes => classes.split(' ').filter(name => name.startsWith('q-p-')).sort();
   const box = /<label class="([^"]*)"><input type="checkbox" id="auto-first-send"([^>]*)>/.exec(html);
   assert.ok(box, 'the box exists');
-  // the override exists for a Slack badge run and a clock run (scheduler/first_send.rs), nothing else
-  assert.deepEqual(triggers(box[1]), ['q-p-clock', 'q-p-slack'], 'shown for exactly the Slack badge and clock triggers');
+  // the override exists for a Slack badge run, a clock run and an Agent
+  // handover run (scheduler/first_send.rs), nothing else
+  assert.deepEqual(triggers(box[1]), ['q-p-agent', 'q-p-clock', 'q-p-slack'], 'shown for exactly the Slack badge, clock and Agent triggers');
   assert.equal(/checked/.test(box[2]), false, 'unticked by default');
   const hint = /<p\b[^>]*\bid="auto-first-send-hint"[^>]*>/.exec(html);
   assert.ok(hint, 'the warning exists');

@@ -8,6 +8,7 @@ import { createSerialTransactionQueue } from './pure.js';
 
 const PERSISTED_CARD_KEYS = new Set([
   'id', 'projectId', 'columnId', 'title', 'desc', 'cmd', 'dir', 'session', 'pinned', 'origin', 'launched', 'buffer', 'channelRun', 'connectorRun', 'inboundPlan', 'reminder', 'reminderRetirements',
+  'quietDone',
 ]);
 
 /* A card created by an automation remembers which trigger item it came from, so
@@ -29,6 +30,9 @@ export function boardData(projects = store.projects, cards = store.cards) {
       title: c.title, desc: c.desc || '', cmd: c.cmd, dir: c.dir, session: c.session,
       pinned: c.pinned === true,
       launched: c.launched !== false,   // absent on older boards = already launched
+      /* the card's own choice to keep routine turn endings quiet
+         (notify.rs); absent means announced, as before */
+      ...(c.quietDone === true ? { quietDone: true } : {}),
       ...(cardOrigin(c) ? { origin: cardOrigin(c) } : {}),
       ...(c.reminder ? { reminder: c.reminder } : {}),
       ...(c.reminderRetirements ? { reminderRetirements: c.reminderRetirements } : {}),

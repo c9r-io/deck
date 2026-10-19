@@ -36,6 +36,23 @@ pub(super) struct OperationArgs {
     pub(super) operation_id: String,
 }
 
+/// `deck_automation_trigger`: one classified item for one Agent rule.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TriggerArgs {
+    pub(super) request_id: String,
+    pub(super) trigger_sequence: u64,
+    pub(super) automation_id: String,
+    pub(super) expected_revision: String,
+    pub(super) text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) from: Option<String>,
+    #[serde(default, rename = "where", skip_serializing_if = "Option::is_none")]
+    pub(super) where_: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) link: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionArgs {

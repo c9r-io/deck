@@ -521,3 +521,43 @@ test('a placeable channel event is created and acknowledged without a pending no
   assert.deepEqual([inbox.acks, inbox.creates, inbox.pending.length], [['default/T1/E401/rule'], 1, 0]);
   assert.equal(toastTexts().length - before, 0);
 });
+
+/* An item a delegated Agent handed over is a badge-shaped run from the
+   webview's side: the external commands, the rule's approval claimed with
+   the `agent` trigger, the first-send claim on the head row; and the
+   dispatcher's `blocked` verdict (the rule's revision moved) skips it with
+   its reason before any card exists. */
+test('an Agent handover item claims the approval with the agent trigger, and a blocked one is skipped with its reason', async () => {
+  const { approveRule } = await import('../js/automation-model.js');
+  const savedListeners = [...listeners]; listeners.clear();
+  try {
+    const steps = ['Triage {{msg.text}}', 'Report back.'];
+    const rule = await approveRule({ ...item.rule, id: 'rule-g', source: 'agent', badge: 'slack-mention', firstSendWithoutReadiness: true },
+      { name: 'triage', steps }, { external: true });
+    const handed = { id: 'item-g', event: { source: 'agent', key: 'op_1', badge: 'slack-mention', text: 'please review', from: 'alice', where: '#ops', link: '' }, rule };
+    const f = setup([handed], '', steps);
+    provider.queueInboundPlan = realQueueInboundPlan;
+    await drainInbound();
+    const card = store.cards[0];
+    assert.deepEqual(card.origin, { source: 'agent', key: 'op_1', badge: 'slack-mention' });
+    assert.deepEqual(card.inboundPlan.authority, { rule: 'rule-g', grant: rule.autoSend.digest, trigger: 'agent',
+      classes: ['bounded', 'fixed'], event: 'op_1', skeletons: ['Triage {{msg.text}}', null] });
+    assert.deepEqual(card.inboundPlan.firstSend, { rule: 'rule-g' });
+    const claims = f.calls.filter(([name]) => name === 'channel_queue_add').map(([, args]) => args.args);
+    assert.deepEqual(claims.map(claim => claim.authority?.step), [0, 1]);
+    assert.deepEqual(claims.map(claim => claim.firstSend), [{ rule: 'rule-g', event: 'op_1' }, undefined]);
+    assert.equal(f.calls.filter(([name]) => name === 'queue_add').length, 0);
+    assert.ok(f.calls.some(([name, args]) => name === 'inbound_ack' && args.outcome === 'done' && args.card === card.id));
+    // the dispatcher says the rule moved: skipped with the reason, no card
+    const blocked = setup([{ ...handed, id: 'item-h', blocked: 'rule-changed' }], '', steps);
+    provider.queueInboundPlan = realQueueInboundPlan;
+    await drainInbound();
+    assert.equal(store.cards.length, 0);
+    assert.ok(blocked.calls.some(([name, args]) => name === 'inbound_ack' && args.id === 'item-h'
+      && args.outcome === 'skipped' && args.reason === 'rule-changed'));
+    assert.equal(blocked.calls.filter(([name]) => name === 'create').length, 0);
+  } finally {
+    provider.queueInboundPlan = realQueueInboundPlan;
+    listeners.clear(); for (const listener of savedListeners) listeners.add(listener);
+  }
+});

@@ -141,6 +141,31 @@
 //! The control socket is bound under a private temporary name, made 0600, and
 //! atomically renamed into place; Deck never changes its process-wide umask.
 //!
+//! Automation delegation (`automation.rs`, `docs/mcp.md`): a client with the
+//! separate local choice `allow_automations` may list the user's Agent
+//! rules (`deck_automation_list`: id, name, project, current revision) and
+//! hand over one item to one of them (`deck_automation_trigger`). It is
+//! not session or execution authority: no execution window, control lease
+//! or managed session is involved, and the item reaches a terminal only
+//! through the dispatcher's external queue path under the rule's own
+//! approvals. A trigger is bound to the client's `trigger_sequence` exactly
+//! as a create is bound to `create_sequence` (replay by request id first,
+//! `STALE_REQUEST` once retired; records take the same per-client window),
+//! and to the rule's `revision`, refused as `RULE_CHANGED` when the rule or
+//! its template moved. Acceptance is three writes: the agent inbox entry
+//! (`inbound_agent::stage`), the operation plus the sequence (`write`), the
+//! entry's commit; a replay settles a crash between them, and `spawn`
+//! reconciles accepted trigger records against the inbox instead of
+//! turning them `ambiguous` on restart (their truth is the entry). The
+//! dispatcher's acknowledgment settles the record (`automation_outcome`:
+//! `committed` with the card, `rejected` with a closed code). Withdrawing
+//! the choice, revoking the client or disabling the feature rejects the
+//! client's accepted triggers and retires its inbox items, under
+//! `storage::settings_fence` so the scheduler's firing-intent transaction,
+//! which re-reads `automation_delegations` under the same fence, never
+//! starts a send on a withdrawn delegation. A ledger holding any of this
+//! is written at `STATE_VERSION_AUTOMATIONS` (sticky).
+//!
 //! Layout (one contract, one file per concern; every file starts with
 //! `use super::*` and exposes its items `pub(super)`): `state` holds the disk
 //! document, its records, the runtime and load/validate/compact/save;
@@ -148,7 +173,8 @@
 //! operation records, stable error codes, reservation and emergency fences;
 //! `runner` the pane runner's private control channel; `wire` the request
 //! envelope and argument shapes; `project` list/read/search; `session` the
-//! session-level requests including close; `jobs` exec, job reads and every
+//! session-level requests including close; `automation` the automation
+//! delegation above; `jobs` exec, job reads and every
 //! job side effect; `control` request routing plus the socket thread; and
 //! `commands` the local Tauri commands and the guards other modules call
 //! (`spawn` registers `guard_server_restart` with `tmux_lifecycle`, which
@@ -179,6 +205,7 @@ pub(crate) const INTEGRATION: crate::extensions::AccessIntegration =
 
 #[cfg(test)]
 mod admission_tests;
+mod automation;
 mod commands;
 mod control;
 mod grants;
@@ -192,6 +219,8 @@ mod state;
 mod tests;
 mod wire;
 
+use automation::*;
+pub(crate) use automation::{automation_delegations, automation_outcome};
 pub(crate) use commands::*;
 pub(crate) use control::*;
 use grants::*;
@@ -204,6 +233,9 @@ use state::*;
 use wire::*;
 
 const STATE_VERSION: u32 = 6;
+/// The sticky version a ledger takes once it holds automation delegation
+/// (`automation::uses_automations`): a v6 build refuses it untouched.
+const STATE_VERSION_AUTOMATIONS: u32 = 7;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

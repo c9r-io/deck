@@ -382,3 +382,37 @@ test('a stale approval says whether the template or the rule changed', async () 
     'an approval that was not valid before is not "voided" by this save');
   assert.deepEqual(await approvalsVoidedBy(null, rule.projectId, rule.template, template.steps, changed), []);
 });
+
+/* ---------- the Agent handover trigger ---------- */
+const agentRule = (over = {}) => slackRule({ id: 'g1', source: 'agent', badge: 'slack-mention', ...over });
+
+test('an Agent handover rule composes like a badge rule with an automation id, one rule per id', async () => {
+  const fields = { trigger: 'agent', name: ' Mentions ', badge: ' slack-mention ', columnId: 'C', template: 'tpl', cmd: 'claude', dir: '/w', finish: 'close', reviewEach: false };
+  ids = 0;
+  const made = composeRule(fields, { projectId: 'P', genId, rules: [] });
+  assert.deepEqual(made.rule, { id: 'R1', source: 'agent', badge: 'slack-mention', projectId: 'P', columnId: 'C', cmd: 'claude',
+    template: 'tpl', dir: '/w', name: 'Mentions', enabled: true, finish: 'close' });
+  assert.equal(composeRule({ ...fields, badge: 'Slack Mention' }, { projectId: 'P', genId }).error, 'automation.invalidAgentId');
+  // one rule per id among Agent rules; a Slack badge of the same spelling is another namespace
+  assert.deepEqual(composeRule(fields, { projectId: 'P', genId, rules: [agentRule()] }),
+    { error: 'automation.agentIdTaken', focus: 'auto-badge', params: { badge: 'slack-mention' } });
+  assert.equal(composeRule(fields, { projectId: 'P', genId, rules: [slackRule({ badge: 'slack-mention' })] }).error, undefined);
+  // editing keeps the id; a trigger change mints a new one
+  assert.equal(composeRule(fields, { projectId: 'P', genId, previous: agentRule(), rules: [agentRule()] }).rule.id, 'g1');
+  assert.notEqual(composeRule(fields, { projectId: 'P', genId, previous: slackRule(), rules: [] }).rule.id, 'r1');
+  // the same approval and first-send choices as a badge rule
+  const template = { name: 'tpl', steps: ['Triage {{msg.text}}', 'Report.'] };
+  const approved = await approveRule(agentRule({ cmd: 'claude' }), template, { external: true });
+  assert.equal(await grantState(approved, template), 'valid');
+  assert.equal(await grantState({ ...approved, source: 'channel' }, template), 'stale');
+  assert.equal(withFirstSend(agentRule(), true).firstSendWithoutReadiness, true);
+  // how it reads
+  assert.equal(triggerText(agentRule()), 'handed over by an Agent as slack-mention');
+  assert.equal(ruleLabel(agentRule()), 'slack-mention');
+  assert.equal(ruleLabel(agentRule({ name: 'Mentions' })), 'Mentions');
+  const facts = Object.fromEntries(ruleFacts(agentRule(), { columnName: 'Working' }));
+  assert.equal('automation.kv.connection' in facts, false, 'no Slack connection row');
+  assert.equal(facts['automation.kv.autoSend'], 'off — each follow-up waits for Send now');
+  assert.equal(facts['automation.kv.firstSend'], 'waits for your first interaction or Send now');
+  assert.deepEqual(recentRuns([{ rule: 'slack-mention', started: 1 }, { rule: 'g1', started: 2 }], agentRule()).map(r => r.started), [1]);
+});

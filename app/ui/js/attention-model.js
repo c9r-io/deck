@@ -126,7 +126,9 @@ export function createAttentionTracker() {
     if (!value) return 'unknown';
     if (!value.alive) return 'stopped';
     if (value.agent === 'needs-input') return 'input';
-    if (value.agent === 'turn-done' && !value.seen) return 'done';
+    /* a card kept quiet (notify.rs `CardLabel::quiet`): its routine
+       endings are not attention rows either */
+    if (value.agent === 'turn-done' && !value.seen) return card.quietDone === true ? 'other' : 'done';
     if (!value.agent) return 'unavailable';
     return 'other';
   };

@@ -236,8 +236,9 @@ const SCHEDULER_NAMES_INBOUND: &[(&str, usize, &str)] = &[
     ),
     (
         "scheduler/ops.rs",
-        6,
-        "admission: the settings read, the pending event, the clock slot",
+        8,
+        "admission: the settings read, the pending event, the clock slot, and the client the \
+         inbox names for an Agent item (approval and first-send)",
     ),
     (
         "scheduler/thread.rs",
@@ -290,8 +291,14 @@ fn the_scheduler_names_the_rule_model_only_where_registered() {
         .collect();
     assert_eq!(
         back,
-        [("inbound.rs".to_string(), 1), ("inbound_channel.rs".to_string(), 7)],
-        "badge wakes the scheduler; channel reuses only normalization, supported-command and placeholder classification"
+        [
+            ("inbound.rs".to_string(), 1),
+            ("inbound_agent.rs".to_string(), 1),
+            ("inbound_channel.rs".to_string(), 7)
+        ],
+        "badge wakes the scheduler; the Agent inbox computes a rule's revision with the authority \
+         module's own digest and step helpers; channel reuses only normalization, \
+         supported-command and placeholder classification"
     );
     assert!(code_only(&source("inbound.rs")).contains("crate::scheduler::wake_scheduler();"));
     let channel = code_only(production_region(&source("inbound_channel.rs")));

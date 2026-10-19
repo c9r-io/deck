@@ -10,7 +10,9 @@ use super::*;
 /// added there without listing the tool here (and in
 /// `mcp-fixtures/tools.json`) is unreachable; the tests hold this list equal
 /// to the fixture and check that every member routes.
-pub(super) const CONTROL_TOOLS: [&str; 14] = [
+pub(super) const CONTROL_TOOLS: [&str; 16] = [
+    "deck_automation_list",
+    "deck_automation_trigger",
     "deck_capabilities",
     "deck_project_list",
     "deck_project_read",
@@ -178,6 +180,12 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
                 request.arguments,
             ),
             "deck_session_close" => session_close(runtime, &request.client_id, request.arguments),
+            "deck_automation_list" => {
+                automation_list(runtime, &request.client_id, request.arguments)
+            }
+            "deck_automation_trigger" => {
+                automation_trigger(runtime, &request.client_id, request.arguments)
+            }
             _ => unsupported(),
         }
     };
@@ -186,7 +194,11 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
             Some("read-denied")
         } else if matches!(
             audit_tool.as_str(),
-            "deck_exec" | "deck_job_input" | "deck_session_create" | "deck_session_close"
+            "deck_exec"
+                | "deck_job_input"
+                | "deck_session_create"
+                | "deck_session_close"
+                | "deck_automation_trigger"
         ) {
             Some("request-denied")
         } else {
@@ -416,6 +428,7 @@ pub(crate) fn spawn(app: AppHandle) {
         started: Instant::now(),
     });
     let _ = RUNTIME.set(runtime.clone());
+    reconcile_inbox(&runtime);
     std::thread::Builder::new()
         .name("deck-mcp-control".into())
         .spawn(move || {

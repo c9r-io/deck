@@ -7,7 +7,7 @@
     "item_max_attempts": 8
   },
   "inbound": {
-    "sources": ["slack", "clock"],
+    "sources": ["slack", "clock", "agent"],
     "schedule_units": ["day", "week", "month"],
     "schedule_every_max": 12,
     "anchor_year_min": 1970,

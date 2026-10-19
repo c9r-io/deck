@@ -281,6 +281,23 @@ expected process and the bracketed-paste check all still apply.
   the run. By default it is a safety boundary; the only way past it is the
   explicit per-rule first-send readiness override below.
 
+### An Agent rule's approval and delegation
+
+An Agent rule (`inbound_agent.rs`, `docs/auto-respond.md`) is approved and
+proven exactly like a badge rule — the same content-addressed grant, the
+same bounded expansion over the dispatcher's own copy of the item — and its
+`StepAuthority` carries `TriggerClass::Agent` with the MCP client the inbox
+named for the item. It stands only while the settings still grant it AND
+that client's automation delegation stands (`first_send::Sources::
+delegations`, read from `mcp::automation_delegations`): an unreadable MCP
+ledger is `Unverified` like unreadable settings, a withdrawn delegation is
+`Revoked`, at the tick's sweep and at the pre-fire fence alike. The
+withdrawal — the client's choice unticked, the client revoked, MCP
+disabled — is written under `storage::settings_fence`, the lock the firing
+intent transaction holds while it reads the delegation, so no automatic
+send begins on a delegation withdrawn before it. The head row's first-send
+override (`FirstSendOrigin::Agent`) rests on the same two sources.
+
 ## First-send readiness override
 
 Three things stay distinct: **run/content approval** (the Slack reaction,

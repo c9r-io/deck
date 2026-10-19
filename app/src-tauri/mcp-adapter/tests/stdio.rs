@@ -147,7 +147,7 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
     input.flush().unwrap();
     let listed = read_response(&mut output, 2);
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 14);
+    assert_eq!(tools.len(), 16);
     let listed_names = tools
         .iter()
         .map(|tool| tool["name"].as_str().unwrap().to_owned())
@@ -217,6 +217,11 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
     // so the field must be there, required, and a plain non-negative integer.
     assert_sequence_field(create, "create_sequence");
     assert_sequence_field(control, "control_sequence");
+    let trigger = tools
+        .iter()
+        .find(|tool| tool["name"] == "deck_automation_trigger")
+        .unwrap();
+    assert_sequence_field(trigger, "trigger_sequence");
     assert_eq!(
         control["inputSchema"]["properties"]["lease_ms"]["minimum"],
         1000

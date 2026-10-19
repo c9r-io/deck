@@ -155,6 +155,22 @@
 //! - Not readiness, and not the first-send readiness override: a badge
 //!   rule's separate risk acceptance for its runs' head row lives in
 //!   `first_send.rs` and never writes or reads `StepAuthority`.
+//! - An Agent rule (`TriggerClass::Agent`, `inbound_agent.rs`): the same
+//!   content-addressed grant and the same bounded proof as a badge rule,
+//!   over the dispatcher's own copy of the item a delegated MCP client
+//!   handed over. What replaces the user's per-message reaction is their
+//!   standing delegation to that client (`mcp::automation_delegations`),
+//!   so the authority carries the client (`AgentSource`, taken from the
+//!   inbox at admission, `Proof::client`) and stands only while the rule's
+//!   grant is valid AND the client is still delegated: `Sources::
+//!   delegations` is read beside the settings, `None` (an unreadable MCP
+//!   ledger) holds like unreadable settings, and withdrawing the delegation
+//!   — the client's choice unticked, the client revoked, MCP disabled — is
+//!   a settings-fenced write (`mcp/automation.rs`), so the pre-fire read
+//!   under `storage::settings_fence` never starts a send on a delegation
+//!   that was withdrawn before it. A row never regains authority here
+//!   either. The trigger word and the client field are closed persisted
+//!   words: queue.json takes sticky v9 for them (`storage.rs`).
 
 use serde::{Deserialize, Serialize};
 
@@ -198,6 +214,15 @@ pub(crate) enum TriggerClass {
     SlackBadge,
     /// a phone task preset's approval (`rule` is the preset id)
     Connector,
+    /// an Agent rule's approval, admitted for an item a delegated MCP
+    /// client handed over (`agent` names the client)
+    Agent,
+}
+
+/// The delegated client whose item an Agent rule's run was made from.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct AgentSource {
+    pub(crate) client: String,
 }
 
 /// The preset a phone task's approval came from: its project, and the paired
@@ -240,6 +265,9 @@ pub(crate) struct AuthorityClaim {
 pub(crate) struct Proof<'a> {
     pub(crate) skeleton: Option<&'a str>,
     pub(crate) event: Option<&'a crate::inbound::Event>,
+    /// For an Agent rule: the client the inbox holds for the event
+    /// (`inbound::pending_client`).
+    pub(crate) client: Option<&'a str>,
 }
 
 /// The durable fact on a row: this exact step of this exact grant was
@@ -254,6 +282,10 @@ pub(crate) struct StepAuthority {
     /// Present exactly for `TriggerClass::Connector`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) connector: Option<PresetSource>,
+    /// Present exactly for `TriggerClass::Agent`: the delegated client the
+    /// approval also rests on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) delegation: Option<AgentSource>,
 }
 
 fn finish_word(rule: &Rule) -> &'static str {
@@ -286,11 +318,12 @@ pub(crate) fn grant_digest(rule: &Rule, grant: &AutoSend) -> String {
     crate::ledger::sha(manifest.to_string().as_bytes())
 }
 
-/// The rule's grant when it is a Slack badge rule's and still matches the
-/// rule (an approval for another version of the rule is void).
+/// The rule's grant when it is a Slack badge or Agent rule's and still
+/// matches the rule (an approval for another version of the rule is void).
 pub(crate) fn valid_grant(rule: &Rule) -> Option<&AutoSend> {
     let grant = rule.auto_send.as_ref()?;
-    (rule.source == "slack" && grant.digest == grant_digest(rule, grant)).then_some(grant)
+    (matches!(rule.source.as_str(), "slack" | "agent") && grant.digest == grant_digest(rule, grant))
+        .then_some(grant)
 }
 
 /// Why a claim was not admitted: closed codes for the log.
@@ -351,7 +384,7 @@ pub(crate) fn verify_claim(
                 return Err("class");
             }
             let event = proof.event.ok_or("no-event")?;
-            if event.source != "slack"
+            if event.source != rule.source
                 || event.badge != rule.badge
                 || claim.event.as_deref() != Some(event.key.as_str())
             {
@@ -362,13 +395,26 @@ pub(crate) fn verify_claim(
             }
         }
     }
+    let agent = (rule.source == "agent")
+        .then(|| {
+            proof.client.map(|client| AgentSource {
+                client: client.to_string(),
+            })
+        })
+        .map(|source| source.ok_or("no-client"))
+        .transpose()?;
     Ok(StepAuthority {
         rule: rule.id.clone(),
         grant: grant.digest.clone(),
         step: claim.step,
         class,
-        trigger: TriggerClass::SlackBadge,
+        trigger: if agent.is_some() {
+            TriggerClass::Agent
+        } else {
+            TriggerClass::SlackBadge
+        },
         connector: None,
+        delegation: agent,
     })
 }
 
@@ -450,6 +496,7 @@ pub(crate) fn verify_preset_claim(
         step: claim.step,
         class: ContentClass::Fixed,
         trigger: TriggerClass::Connector,
+        delegation: None,
         connector: Some(PresetSource {
             project: project.to_owned(),
             device: proof.device_id.clone(),
@@ -600,9 +647,24 @@ pub(crate) enum Fence {
 /// Which document backs an approval (`first_send::Backing`).
 pub(crate) fn backing(authority: &StepAuthority) -> first_send::Backing {
     match authority.trigger {
-        TriggerClass::SlackBadge => first_send::Backing::Settings,
+        TriggerClass::SlackBadge | TriggerClass::Agent => first_send::Backing::Settings,
         TriggerClass::Connector => first_send::Backing::Board,
     }
+}
+
+/// Whether any unsent row's approval or override rests on an MCP client's
+/// delegation (the tick and the queue view read that source only then).
+pub(crate) fn any_agent_delegation(q: &QueueState) -> bool {
+    q.items.iter().any(|i| {
+        matches!(i.state, ItemState::Pending | ItemState::Failed)
+            && (i
+                .authority
+                .as_ref()
+                .is_some_and(|a| a.trigger == TriggerClass::Agent)
+                || i.readiness_override
+                    .as_ref()
+                    .is_some_and(|o| o.trigger == first_send::FirstSendOrigin::Agent))
+    })
 }
 
 /// The source that backs this row's approval, when an automatic send of it
@@ -632,7 +694,20 @@ pub(crate) fn fence(i: &QueueItem, sources: first_send::Sources<'_>) -> Fence {
 /// could not be read, which proves nothing either way.
 fn standing(sources: first_send::Sources<'_>, authority: &StepAuthority) -> Option<bool> {
     match backing(authority) {
-        first_send::Backing::Settings => sources.settings.map(|c| still_granted(c, authority)),
+        first_send::Backing::Settings => {
+            let granted = sources.settings.map(|c| still_granted(c, authority))?;
+            if authority.trigger != TriggerClass::Agent {
+                return Some(granted);
+            }
+            // an Agent rule's approval also rests on the client's delegation
+            let delegated = sources.delegations.map(|delegations| {
+                authority
+                    .delegation
+                    .as_ref()
+                    .is_some_and(|source| delegations.contains(&source.client))
+            })?;
+            Some(granted && delegated)
+        }
         first_send::Backing::Board => sources.board.map(|t| preset_still_grants(t, authority)),
     }
 }

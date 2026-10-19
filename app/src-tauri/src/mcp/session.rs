@@ -70,7 +70,9 @@ pub(super) fn capabilities(
                 "reliableJobExitTracking": true,
                 "authorizedWorkspaces": client.projects,
                 "mayCreateSession": client.allow_create,
-                "nextCreateSequence": client.create_sequence
+                "nextCreateSequence": client.create_sequence,
+                "mayTriggerAutomations": client.allow_automations,
+                "nextTriggerSequence": client.trigger_sequence
             }))
         })
         .map_err(map_error)?

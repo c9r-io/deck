@@ -23,6 +23,7 @@ mod error;
 mod extensions;
 mod history;
 mod inbound;
+mod inbound_agent;
 mod inbound_channel;
 mod inbound_clock;
 mod inbound_slack;
@@ -562,6 +563,7 @@ fn main() {
             mcp::mcp_client_add,
             mcp::mcp_client_revoke,
             mcp::mcp_client_delete,
+            mcp::mcp_client_automations,
             mcp::mcp_scope_preview,
             mcp::mcp_execution_grant,
             mcp::mcp_execution_revoke,

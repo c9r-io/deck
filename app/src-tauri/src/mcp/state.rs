@@ -53,6 +53,14 @@ pub(super) struct Client {
     /// value, so a create whose record was retired can never be accepted again.
     #[serde(default)]
     pub(super) create_sequence: u64,
+    /// The user's separate choice that this client may trigger the Agent
+    /// rules of the Automations drawer (`automation.rs`). Never implied by
+    /// `allow_create`; withdrawn and restored by `client_automations`.
+    #[serde(default)]
+    pub(super) allow_automations: bool,
+    /// Triggers this client has had accepted; bound like `create_sequence`.
+    #[serde(default)]
+    pub(super) trigger_sequence: u64,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -488,11 +496,15 @@ pub(super) fn load(path: &Path) -> Result<DiskDoc, DeckError> {
     for operation in &mut doc.operations {
         // Nothing accepted before a restart is replayed — not even a Board
         // create or close. Its outcome is unknown, so it is ambiguous; the
-        // client inspects state and decides under a new request id.
-        if matches!(
-            operation.state.as_str(),
-            "accepted" | "executing" | "admitted"
-        ) {
+        // client inspects state and decides under a new request id. An
+        // automation trigger is the one exception: its truth is its durable
+        // inbox entry, which `automation::reconcile_inbox` reads at spawn.
+        if operation.kind != super::automation::TRIGGER_KIND
+            && matches!(
+                operation.state.as_str(),
+                "accepted" | "executing" | "admitted"
+            )
+        {
             operation.state = "ambiguous".into();
             operation.code = Some("deck-restarted".into());
             operation.updated_at = now_ms();
@@ -562,6 +574,14 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
             "committed" | "rejected" | "ambiguous"
         )
     };
+    // Board results and automation triggers stay queryable for a bounded
+    // per-client window, even after their session (if any) is gone.
+    let windowed = |kind: &str| {
+        matches!(
+            kind,
+            "session-create" | "session-close" | super::automation::TRIGGER_KIND
+        )
+    };
     let bound_live = |operation: &Operation| {
         operation
             .session_id
@@ -575,9 +595,7 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
         if !terminal(operation) {
             continue;
         }
-        if matches!(operation.kind.as_str(), "session-create" | "session-close") {
-            // Board results stay queryable for a bounded per-client window,
-            // even after their session is gone.
+        if windowed(&operation.kind) {
             let kept = creates_kept
                 .entry(format!("{}\0{}", operation.client_id, operation.kind))
                 .or_default();
@@ -638,7 +656,12 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
 
 pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
-    let clients_valid = doc.version == STATE_VERSION
+    let version_valid = if super::automation::uses_automations(doc) {
+        doc.version == STATE_VERSION_AUTOMATIONS
+    } else {
+        matches!(doc.version, STATE_VERSION | STATE_VERSION_AUTOMATIONS)
+    };
+    let clients_valid = version_valid
         && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)
             .contains(&doc.config.output_retention_ms)
         && doc.config.clients.len() <= MAX_CLIENTS
@@ -778,6 +801,11 @@ impl Runtime {
         )
         .map_err(|_| DeckError::new(ErrorKind::Other, "MCP state clone failed"))?;
         let result = mutate(&mut candidate)?;
+        // sticky: a ledger that holds automation delegation is written at
+        // the version older builds refuse, and never goes back
+        if super::automation::uses_automations(&candidate) {
+            candidate.version = candidate.version.max(STATE_VERSION_AUTOMATIONS);
+        }
         save(&self.path, &candidate)?;
         *guard = Ok(candidate);
         Ok(result)
