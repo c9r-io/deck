@@ -253,7 +253,9 @@ evolution; it makes scope expansion deliberate.
   first-send choice or approval (deck.json) and the queue origins they admit
   (queue.json) upgrade to sticky v6. Channel first-step permission,
   frozen targets/claims, queue constraints,
-  snapshots and audit semantics require sticky v7. Channel inbox v2 protects
+  snapshots and audit semantics require sticky v7. A clock schedule that
+  repeats every N > 1 units from an anchor date upgrades settings.json to
+  sticky v8. Channel inbox v2 protects
   native staged grant references; v1 entries gain no new permission. A
   settings backup is handed to the webview without channel grants. Native
   template edits retire affected grants before the Board write, under

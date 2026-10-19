@@ -135,6 +135,20 @@ test('clock rules normalize their schedule and keep their id as badge; slack rul
   assert.equal(normalizeSchedule({ unit: 'day', minute: 1440 }), null);
   assert.equal(normalizeSchedule({ unit: 'year', days: [1], minute: 0 }), null);
   assert.equal(normalizeSchedule(null), null);
+  /* an interval and its anchor come through together; 1 is written as absent */
+  assert.deepEqual(normalizeSchedule({ unit: 'week', every: 2, anchor: '2026-10-19', days: [1, 5], minute: 540 }),
+    { unit: 'week', days: [1, 5], minute: 540, every: 2, anchor: '2026-10-19' });
+  assert.deepEqual(normalizeSchedule({ unit: 'day', every: 3, anchor: '2026-10-30', minute: 0 }),
+    { unit: 'day', days: [], minute: 0, every: 3, anchor: '2026-10-30' });
+  assert.deepEqual(normalizeSchedule({ unit: 'month', every: 12, anchor: '2026-10-01', days: [1], minute: 0 }),
+    { unit: 'month', days: [1], minute: 0, every: 12, anchor: '2026-10-01' });
+  assert.deepEqual(normalizeSchedule({ unit: 'day', every: 1, minute: 0 }), { unit: 'day', days: [], minute: 0 }, 'an explicit 1 leaves no trace');
+  assert.equal(normalizeSchedule({ unit: 'day', every: 13, anchor: '2026-10-19', minute: 0 }), null);
+  assert.equal(normalizeSchedule({ unit: 'day', every: 0, minute: 0 }), null);
+  assert.equal(normalizeSchedule({ unit: 'day', every: '2', anchor: '2026-10-19', minute: 0 }), null, 'a string interval');
+  assert.equal(normalizeSchedule({ unit: 'day', every: 2, minute: 0 }), null, 'an interval without its anchor');
+  assert.equal(normalizeSchedule({ unit: 'day', anchor: '2026-10-19', minute: 0 }), null, 'an anchor without an interval');
+  assert.equal(normalizeSchedule({ unit: 'day', every: 2, anchor: '2026-02-30', minute: 0 }), null, 'not a date');
   const { rules } = normalizeInbound({ rules: [
     clockRule({ badge: 'whatever', finish: 'archive', since: -5, enabled: undefined }),
     clockRule({ id: 'a2', badge: 'a2', schedule: { unit: 'week', days: [] } }),

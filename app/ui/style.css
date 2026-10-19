@@ -1037,6 +1037,10 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
    this rule it was squeezed to nothing beside a label that wraps) */
 #auto-editor input:not([type=checkbox]) { flex: 1; min-width: 0; font-size: 0.923077rem; padding: 5px 8px; border-radius: 6px; background: var(--raised); border: 1px solid var(--border); }
 #auto-editor input[type=time] { flex: none; width: auto; }
+#auto-editor #auto-every { flex: none; width: 3.5em; }
+#auto-editor #auto-dom { flex: none; width: 7em; font-family: var(--mono); }
+#auto-editor input[type=date] { flex: none; width: auto; }
+#auto-editor .auto-every-word { color: var(--muted); flex: none; }
 #auto-editor #auto-badge { flex: 0 1 14em; font-family: var(--mono); }
 #auto-editor .auto-editor-hint { margin: 0 0 8px 86px; }
 #auto-editor .dd { flex: 1; min-width: 0; }

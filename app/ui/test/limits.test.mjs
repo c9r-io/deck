@@ -11,14 +11,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  AGENT_STATES, CHAIN_QUIET_SECS, CONTEXT_STATUS_KEYS, INBOUND_BADGE_RE, ITEM_MAX_ATTEMPTS,
+  AGENT_STATES, ANCHOR_YEAR_MAX, ANCHOR_YEAR_MIN, CHAIN_QUIET_SECS, CONTEXT_STATUS_KEYS, INBOUND_BADGE_RE, ITEM_MAX_ATTEMPTS,
   LOCAL_ID_RE, MAX_DROP_BYTES, MAX_QUIET_SECS, MCP_ERROR_KEYS, MIN_QUIET_SECS,
   TEMPLATE_STEPS_MAX, templateNameProblem,
 } from '../js/pure.js';
 import {
   ACCENTS, AUTO_SEND_CLASSES, AUTO_SEND_MAX_STEPS, DEFAULT_GRACE_MIN, FINISH_MODES, FONT_SCALE_MAX, FONT_SCALE_MIN, INBOUND_CMD_MAX,
   INBOUND_NAME_MAX, INBOUND_RULE_ID_MAX, INBOUND_SOURCES, MAX_GRACE_MIN, MAX_INBOUND_RULES,
-  SCHEDULE_UNITS, SHORTCUT_MAX_LEN, TEMPLATE_NAME_MAX, THEMES, UPDATE_CHANNELS,
+  SCHEDULE_EVERY_MAX, SCHEDULE_UNITS, SHORTCUT_MAX_LEN, TEMPLATE_NAME_MAX, THEMES, UPDATE_CHANNELS,
 } from '../js/settings-model.js';
 import {
   CHANNEL_IDLE_MAX, CHANNEL_IDS_MAX, CHANNEL_KEYWORD_MAX_CHARS, CHANNEL_KEYWORDS_MAX, CHANNEL_RULES_MAX,
@@ -45,7 +45,8 @@ test('scheduler mirrors', () => {
 
 test('inbound rule mirrors', () => {
   assert.deepEqual({
-    sources: [...INBOUND_SOURCES], schedule_units: [...SCHEDULE_UNITS], finish_modes: [...FINISH_MODES],
+    sources: [...INBOUND_SOURCES], schedule_units: [...SCHEDULE_UNITS], schedule_every_max: SCHEDULE_EVERY_MAX,
+    anchor_year_min: ANCHOR_YEAR_MIN, anchor_year_max: ANCHOR_YEAR_MAX, finish_modes: [...FINISH_MODES],
     grace_min_default: DEFAULT_GRACE_MIN, grace_min_max: MAX_GRACE_MIN, rules_max: MAX_INBOUND_RULES,
     rule_id_max: INBOUND_RULE_ID_MAX, rule_name_max_chars: INBOUND_NAME_MAX,
     rule_cmd_max_chars: INBOUND_CMD_MAX, template_name_max_chars: TEMPLATE_NAME_MAX,

@@ -9,6 +9,9 @@
   "inbound": {
     "sources": ["slack", "clock"],
     "schedule_units": ["day", "week", "month"],
+    "schedule_every_max": 12,
+    "anchor_year_min": 1970,
+    "anchor_year_max": 2999,
     "finish_modes": ["keep", "close"],
     "grace_min_default": 15,
     "grace_min_max": 1440,

@@ -68,10 +68,15 @@
 //! The CLOCK source (`inbound_clock.rs`, "自动化") is a source whose events
 //! are local-time slots: a `clock` rule carries a `schedule` (a minute of the
 //! day on every day / listed ISO weekdays / listed days of month, a day the
-//! month lacks meaning its last), its badge IS its id, and every poll offers
-//! `(clock, <slot epoch>, <rule id>)` for a slot that is due today and not
-//! older than the rule's `since` — the ledger's dedupe is what makes each slot
-//! fire once, and there is no baseline (clock events are live by nature). A
+//! month lacks meaning its last; repeating every 1..=12 units from an anchor
+//! date when `every > 1`, see `Schedule`), its badge IS its id, and every
+//! poll offers `(clock, <slot key>, <rule id>)` for a slot that is due today
+//! and not older than the rule's `since` — the ledger's dedupe is what makes
+//! each slot fire once, and there is no baseline (clock events are live by
+//! nature). A slot's KEY is local midnight plus the rule's minute, one value
+//! per day; the instant it is DUE is the zone's reading of that wall time
+//! (`procinfo::wall_time_epoch`), which differs from the key only on a DST
+//! switch day, and `slot_missed` judges grace by that instant. A
 //! slot deck slept through is caught up only inside the rule's grace
 //! (`graceMin`, default 15 minutes, 1440 = the rest of the day): past it the
 //! dispatcher records the slot as a `skipped (missed)` run and never offers
@@ -140,6 +145,11 @@ pub(crate) const DEFAULT_GRACE_MIN: u32 = 15;
 pub(crate) const MAX_GRACE_MIN: u32 = 1440;
 pub(crate) const MAX_RULES: usize = 32;
 pub(crate) const SCHEDULE_UNITS: &[&str] = &["day", "week", "month"];
+/// A schedule repeats every 1..=12 of its unit (every 12 months is a year).
+pub(crate) const SCHEDULE_EVERY_MAX: u32 = 12;
+/// An interval schedule's anchor date is a real calendar date in this span.
+pub(crate) const ANCHOR_YEAR_MIN: i32 = 1970;
+pub(crate) const ANCHOR_YEAR_MAX: i32 = 2999;
 /// `""` on disk reads as "keep".
 pub(crate) const FINISH_MODES: &[&str] = &["keep", "close"];
 pub(crate) const RULE_ID_MAX: usize = 64;
@@ -275,7 +285,16 @@ fn default_grace() -> u32 {
 
 /// A clock rule's cadence: `minute` of the local day on every day / the
 /// listed ISO weekdays (1 = Monday) / the listed days of month (1..=31; a day
-/// the month lacks means its last day).
+/// the month lacks means its last day), repeating `every` units (1 on every
+/// legacy rule and absent on disk then) counted from the calendar date
+/// `anchor` (`YYYY-MM-DD`, present exactly when `every > 1`). The period
+/// that holds the anchor is an on period (its ISO week, Monday-first; its
+/// month; the day itself), nothing before the anchor has a slot, and the
+/// phase never moves: a skipped or missed slot does not shift the next one.
+/// `since` and pause/resume stay what they were (the "never catch up"
+/// bound), so an interval rule's phase survives both. Twin of
+/// settings-model.js `normalizeSchedule` and pure.js `scheduleMatchesDay`;
+/// both sides are pinned to ui/test/fixtures/schedule-cases.json.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct Schedule {
     /// "day" | "week" | "month"
@@ -283,6 +302,45 @@ pub(crate) struct Schedule {
     #[serde(default)]
     pub(crate) days: Vec<u32>,
     pub(crate) minute: u32,
+    /// every N units, 1..=`SCHEDULE_EVERY_MAX`; 1 is written as absent
+    #[serde(default = "default_every", skip_serializing_if = "is_one")]
+    pub(crate) every: u32,
+    /// the calendar date the interval counts from; only with `every > 1`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) anchor: Option<String>,
+}
+
+fn default_every() -> u32 {
+    1
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_one(every: &u32) -> bool {
+    *every == 1
+}
+
+/// `YYYY-MM-DD` as a real calendar date within the anchor span, else None.
+pub(crate) fn parse_anchor(text: &str) -> Option<(i32, u32, u32)> {
+    let bytes = text.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+    let digits = |s: &str| {
+        s.bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| s.parse::<u32>().ok())
+            .flatten()
+    };
+    let year = digits(&text[0..4])? as i32;
+    let month = digits(&text[5..7])?;
+    let day = digits(&text[8..10])?;
+    if !(ANCHOR_YEAR_MIN..=ANCHOR_YEAR_MAX).contains(&year) || !(1..=12).contains(&month) {
+        return None;
+    }
+    if day == 0 || day > crate::procinfo::days_in_month(year, month as i32 - 1) {
+        return None;
+    }
+    Some((year, month, day))
 }
 
 impl Schedule {
@@ -293,6 +351,17 @@ impl Schedule {
         }
         if !SCHEDULE_UNITS.contains(&self.unit.as_str()) {
             return bad("schedule unit must be day, week or month");
+        }
+        if self.every == 0 || self.every > SCHEDULE_EVERY_MAX {
+            return bad("schedule interval must be 1 to 12");
+        }
+        match (&self.anchor, self.every > 1) {
+            (None, true) => return bad("an interval schedule needs its anchor date"),
+            (Some(_), false) => return bad("only an interval schedule carries an anchor date"),
+            (Some(anchor), true) if parse_anchor(anchor).is_none() => {
+                return bad("schedule anchor must be a calendar date")
+            }
+            _ => {}
         }
         let limit = match self.unit.as_str() {
             "day" => return Ok(()),
@@ -310,6 +379,9 @@ impl Schedule {
 
     /// Does the schedule have a slot on the local day `clock` describes?
     pub(crate) fn matches_day(&self, clock: &crate::procinfo::LocalClock) -> bool {
+        if self.every > 1 && !self.in_period(clock) {
+            return false;
+        }
         match self.unit.as_str() {
             "day" => true,
             "week" => self.days.contains(&clock.wday),
@@ -317,6 +389,33 @@ impl Schedule {
                 .days
                 .iter()
                 .any(|&d| d == clock.mday || (d > clock.mdays && clock.mday == clock.mdays)),
+            _ => false,
+        }
+    }
+
+    /// Is the local day on or after the anchor and in an on period of the
+    /// interval? Pure calendar arithmetic (`procinfo::days_from_civil`), so
+    /// the zone, the year number and ISO week numbering play no part.
+    fn in_period(&self, clock: &crate::procinfo::LocalClock) -> bool {
+        use crate::procinfo::{days_from_civil, iso_weekday_of};
+        let Some((year, month, day)) = self.anchor.as_deref().and_then(parse_anchor) else {
+            return false;
+        };
+        let today = days_from_civil(clock.year, clock.month, clock.mday);
+        let anchor = days_from_civil(year, month, day);
+        if today < anchor {
+            return false;
+        }
+        let every = i64::from(self.every);
+        let week_start = |days: i64| days - i64::from(iso_weekday_of(days) - 1);
+        match self.unit.as_str() {
+            "day" => (today - anchor) % every == 0,
+            "week" => ((week_start(today) - week_start(anchor)) / 7) % every == 0,
+            "month" => {
+                let months = (i64::from(clock.year) * 12 + i64::from(clock.month) - 1)
+                    - (i64::from(year) * 12 + i64::from(month) - 1);
+                months % every == 0
+            }
             _ => false,
         }
     }
@@ -908,11 +1007,23 @@ pub(crate) fn offer<R: tauri::Runtime>(
     fresh
 }
 
-/// A clock slot (`key` = its epoch second) whose grace has run out at `now`.
-/// An unparsable key is never missed: the ordinary path refuses it.
+/// A clock slot whose grace has run out at `now`. `key` is the slot's
+/// identity, local midnight plus the rule's minute; the instant the slot
+/// was due is the zone's reading of that wall time on that day
+/// (`procinfo::slot_instant`), which on a DST switch day is not the key.
+/// An unparsable key, or a rule without a schedule, is never missed: the
+/// ordinary path refuses it.
 pub(crate) fn slot_missed(key: &str, rule: &Rule, now: u64) -> bool {
+    let Some(minute) = rule.schedule.as_ref().map(|s| s.minute) else {
+        return false;
+    };
     key.parse::<u64>()
-        .map(|slot| now > slot + u64::from(rule.grace_min.min(MAX_GRACE_MIN)) * 60)
+        .ok()
+        .and_then(|key| key.checked_sub(u64::from(minute) * 60))
+        .map(|day_start| {
+            let due = crate::procinfo::slot_instant(day_start, minute);
+            now > due + u64::from(rule.grace_min.min(MAX_GRACE_MIN)) * 60
+        })
         .unwrap_or(false)
 }
 
@@ -1654,23 +1765,134 @@ mod tests {
             "an old rule gets the default grace"
         );
         let r = cfg.rules[0].clone();
-        assert!(
-            !slot_missed("1000", &r, 1000 + 15 * 60),
-            "the last second of grace"
-        );
-        assert!(slot_missed("1000", &r, 1000 + 15 * 60 + 1));
-        assert!(!slot_missed("x", &r, u64::MAX));
-        let whole_day = Rule {
-            grace_min: 1440,
-            ..r.clone()
-        };
-        assert!(!slot_missed("1000", &whole_day, 1000 + 86_400));
-        let none = Rule { grace_min: 0, ..r };
-        assert!(!slot_missed("1000", &none, 1000));
-        assert!(slot_missed("1000", &none, 1001));
+        {
+            // grace is judged from the slot's due instant: under UTC that is
+            // the key itself (minute 5 of a calendar day)
+            let _tz = crate::procinfo::tz_test::TZ_TESTS.lock_or_recover();
+            let _zone = crate::procinfo::tz_test::TzOverride::set("UTC");
+            let slot = crate::procinfo::LocalClock::civil(2026, 10, 19, 5).now;
+            let key = slot.to_string();
+            assert!(
+                !slot_missed(&key, &r, slot + 15 * 60),
+                "the last second of grace"
+            );
+            assert!(slot_missed(&key, &r, slot + 15 * 60 + 1));
+            assert!(!slot_missed("x", &r, u64::MAX));
+            assert!(
+                !slot_missed("1", &r, u64::MAX),
+                "a key before its own minute"
+            );
+            let whole_day = Rule {
+                grace_min: 1440,
+                ..r.clone()
+            };
+            assert!(!slot_missed(&key, &whole_day, slot + 86_400));
+            let none = Rule {
+                grace_min: 0,
+                ..r.clone()
+            };
+            assert!(!slot_missed(&key, &none, slot));
+            assert!(slot_missed(&key, &none, slot + 1));
+            let unscheduled = Rule {
+                schedule: None,
+                ..r.clone()
+            };
+            assert!(!slot_missed(&key, &unscheduled, u64::MAX));
+        }
         let round = serde_json::to_value(&cfg.rules[0]).unwrap();
         assert_eq!(round["schedule"]["minute"], json!(5));
         assert_eq!(round["finish"], json!("close"));
+        assert!(
+            round["schedule"].get("every").is_none() && round["schedule"].get("anchor").is_none(),
+            "a legacy schedule round-trips without the interval fields: {round}"
+        );
+    }
+
+    #[test]
+    fn interval_schedules_need_a_bounded_interval_and_a_real_anchor() {
+        let ok = |s: Value| validate_settings(&json!({"rules": [clock_rule("a1", s)]})).is_ok();
+        let err = |s: Value| {
+            validate_settings(&json!({"rules": [clock_rule("a1", s)]}))
+                .unwrap_err()
+                .message()
+                .to_string()
+        };
+        assert!(ok(
+            json!({"unit": "week", "every": 2, "anchor": "2026-10-19", "days": [1], "minute": 540})
+        ));
+        assert!(ok(
+            json!({"unit": "month", "every": 12, "anchor": "2026-10-01", "days": [1], "minute": 0})
+        ));
+        assert!(ok(
+            json!({"unit": "day", "every": 3, "anchor": "2026-10-30", "minute": 0})
+        ));
+        assert!(
+            ok(json!({"unit": "day", "every": 1, "minute": 0})),
+            "an explicit 1 is the default"
+        );
+        assert_eq!(
+            err(
+                json!({"unit": "week", "every": 13, "anchor": "2026-10-19", "days": [1], "minute": 0})
+            ),
+            "schedule interval must be 1 to 12"
+        );
+        assert_eq!(
+            err(json!({"unit": "week", "every": 0, "days": [1], "minute": 0})),
+            "schedule interval must be 1 to 12"
+        );
+        assert_eq!(
+            err(json!({"unit": "week", "every": 2, "days": [1], "minute": 0})),
+            "an interval schedule needs its anchor date"
+        );
+        assert_eq!(
+            err(json!({"unit": "week", "anchor": "2026-10-19", "days": [1], "minute": 0})),
+            "only an interval schedule carries an anchor date"
+        );
+        for bad in [
+            "2026-02-30",
+            "2026-13-01",
+            "26-10-19",
+            "2026/10/19",
+            "1969-12-31",
+            "3000-01-01",
+            "2026-10-1",
+            "2026-1a-19",
+            "",
+        ] {
+            assert_eq!(
+                err(json!({"unit": "day", "every": 2, "anchor": bad, "minute": 0})),
+                "schedule anchor must be a calendar date",
+                "{bad}"
+            );
+        }
+        assert!(
+            !ok(json!({"unit": "day", "every": "2", "anchor": "2026-10-19", "minute": 0})),
+            "a string interval is the wrong shape"
+        );
+        assert_eq!(
+            parse_anchor("2028-02-29"),
+            Some((2028, 2, 29)),
+            "a leap day is real"
+        );
+        assert_eq!(parse_anchor("2027-02-29"), None);
+        // the interval fields round-trip, and 1 never reaches the disk
+        let cfg = config_from_value(Some(&json!({"rules": [clock_rule(
+            "a1",
+            json!({"unit": "week", "every": 2, "anchor": "2026-10-19", "days": [1], "minute": 540})
+        )]})));
+        let schedule = cfg.rules[0].schedule.as_ref().unwrap();
+        assert_eq!(
+            (schedule.every, schedule.anchor.as_deref()),
+            (2, Some("2026-10-19"))
+        );
+        let round = serde_json::to_value(schedule).unwrap();
+        assert_eq!(round["every"], json!(2));
+        assert_eq!(round["anchor"], json!("2026-10-19"));
+        let legacy = config_from_value(Some(
+            &json!({"rules": [clock_rule("a1", json!({"unit": "day", "minute": 5}))]}),
+        ));
+        let schedule = legacy.rules[0].schedule.as_ref().unwrap();
+        assert_eq!((schedule.every, schedule.anchor.as_deref()), (1, None));
     }
 
     #[test]
@@ -1995,13 +2217,23 @@ mod tests {
         assert_eq!(inbound_runs()[0].outcome, "closed");
 
         // a clock slot: created → running run bound to its card; the same
-        // slot offered again is a duplicate; run_ended closes it
+        // slot offered again is a duplicate; run_ended closes it. A slot's
+        // key is local midnight plus the rule's minute (inbound_clock.rs),
+        // and its grace is judged from that wall time: under UTC both are
+        // plain arithmetic on `now_secs()`, and a rule at the current
+        // minute has a slot that is due and inside its grace.
+        let _tz = crate::procinfo::tz_test::TZ_TESTS.lock_or_recover();
+        let _zone = crate::procinfo::tz_test::TzOverride::set("UTC");
+        let now = now_secs();
+        let midnight = now - now % 86_400;
+        let minute = ((now - midnight) / 60) as u32;
+        let fresh_key = midnight + u64::from(minute) * 60;
         let clock_cfg = config_from_value(Some(&json!({
-            "rules": [clock_rule("a1", json!({"unit": "day", "minute": 0}))]
+            "rules": [clock_rule("a1", json!({"unit": "day", "minute": minute}))]
         })));
         let slot = Event {
             source: "clock".into(),
-            key: now_secs().to_string(),
+            key: fresh_key.to_string(),
             badge: "a1".into(),
             text: "Morning tests".into(),
             from: String::new(),
@@ -2039,8 +2271,10 @@ mod tests {
         assert!(inbound_run_ended("bad id!".into()).is_err());
         assert_eq!(inbound_runs()[1].outcome, "closed");
         assert!(inbound_runs()[1].ended.is_some());
+        // a second key of the same rule (synthetic: the dispatcher reads
+        // only its day and the rule's minute, so it is due and not missed)
         let busy = Event {
-            key: (now_secs() - 60).to_string(),
+            key: (fresh_key + 60).to_string(),
             ..inbound_runs()
                 .first()
                 .map(|_| Event {
@@ -2062,11 +2296,12 @@ mod tests {
             ("skipped", "busy")
         );
         assert!(last.ended.is_some());
-        // a slot older than the rule's grace is recorded missed and never
-        // reaches the webview; offered again it is a duplicate
+        // a slot older than the rule's grace (yesterday's) is recorded
+        // missed and never reaches the webview; offered again it is a
+        // duplicate
         let stale = Event {
             source: "clock".into(),
-            key: (now_secs() - 3600).to_string(),
+            key: (fresh_key - 86_400).to_string(),
             badge: "a1".into(),
             text: String::new(),
             from: String::new(),
@@ -2109,36 +2344,85 @@ mod tests {
 
     #[test]
     fn schedules_match_the_local_calendar_day() {
-        let clock = |wday: u32, mday: u32, mdays: u32| {
-            let mut c = crate::procinfo::LocalClock::synthetic(1_000_000, 540);
-            c.wday = wday;
-            c.mday = mday;
-            c.mdays = mdays;
-            c
-        };
+        // a consistent clock on a real date (no zone needed: matching reads
+        // the date, never mktime)
+        let clock = crate::procinfo::LocalClock::civil;
         let schedule = |unit: &str, days: &[u32]| Schedule {
             unit: unit.into(),
             days: days.to_vec(),
             minute: 540,
+            every: 1,
+            anchor: None,
         };
-        assert!(schedule("day", &[]).matches_day(&clock(7, 31, 31)));
+        assert!(schedule("day", &[]).matches_day(&clock(2026, 10, 25, 540)));
         let weekly = schedule("week", &[1, 3]);
-        assert!(weekly.matches_day(&clock(1, 5, 30)));
-        assert!(weekly.matches_day(&clock(3, 5, 30)));
-        assert!(!weekly.matches_day(&clock(2, 5, 30)));
+        assert!(weekly.matches_day(&clock(2026, 10, 19, 540)), "Monday");
+        assert!(weekly.matches_day(&clock(2026, 10, 21, 540)), "Wednesday");
+        assert!(!weekly.matches_day(&clock(2026, 10, 20, 540)), "Tuesday");
         let monthly = schedule("month", &[15, 31]);
-        assert!(monthly.matches_day(&clock(1, 15, 30)));
-        assert!(monthly.matches_day(&clock(1, 31, 31)));
+        assert!(monthly.matches_day(&clock(2026, 11, 15, 540)));
+        assert!(monthly.matches_day(&clock(2026, 10, 31, 540)));
         assert!(
-            monthly.matches_day(&clock(1, 30, 30)),
+            monthly.matches_day(&clock(2026, 11, 30, 540)),
             "a day the month lacks means its last day"
         );
-        assert!(!monthly.matches_day(&clock(1, 29, 30)));
+        assert!(!monthly.matches_day(&clock(2026, 11, 29, 540)));
         assert!(
-            monthly.matches_day(&clock(1, 28, 28)),
+            monthly.matches_day(&clock(2027, 2, 28, 540)),
             "February's last day stands in for the 31st"
         );
-        assert!(!schedule("year", &[1]).matches_day(&clock(1, 1, 31)));
+        assert!(!schedule("year", &[1]).matches_day(&clock(2026, 10, 1, 540)));
+        // an interval without a readable anchor never matches (the validator
+        // refuses it before it is stored)
+        let broken = Schedule {
+            every: 2,
+            anchor: Some("nope".into()),
+            ..schedule("day", &[])
+        };
+        assert!(!broken.matches_day(&clock(2026, 10, 19, 540)));
+    }
+
+    /// The shared calendar fixture, read exactly as the webview reads it
+    /// (ui/test/fixtures/schedule-cases.json `days`): from each case's
+    /// start date, the first matching calendar days are the listed ones.
+    #[test]
+    fn interval_schedules_match_the_shared_fixture() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../ui/test/fixtures/schedule-cases.json"))
+                .unwrap();
+        let cases = fixture["days"].as_array().unwrap();
+        assert!(cases.len() >= 12);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let schedule: Schedule = serde_json::from_value(case["schedule"].clone()).unwrap();
+            schedule
+                .validate()
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let (year, month, day) = parse_anchor(case["from"].as_str().unwrap()).unwrap();
+            let expect: Vec<&str> = case["expect"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            let first = crate::procinfo::days_from_civil(year, month, day);
+            let mut got = Vec::new();
+            for days in first..first + 2000 {
+                let (y, m, d) = crate::procinfo::civil_from_days(days);
+                if schedule.matches_day(&crate::procinfo::LocalClock::civil(
+                    y,
+                    m,
+                    d,
+                    schedule.minute,
+                )) {
+                    got.push(format!("{y:04}-{m:02}-{d:02}"));
+                    if got.len() == expect.len() {
+                        break;
+                    }
+                }
+            }
+            assert_eq!(got, expect, "{name}");
+        }
     }
 
     #[test]

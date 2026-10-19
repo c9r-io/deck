@@ -20,7 +20,9 @@
 //!   card reminder or a blocked retirement identity; v7 for native channel
 //!   first-send grants, frozen Board runs and constrained queue/delivery
 //!   records. These sources stay v7 even when only their snapshot or audit
-//!   retains the fact. A settings v2 barrier
+//!   retains the fact; v8 settings.json holding a clock rule whose schedule
+//!   repeats every N > 1 units from an anchor date (a v7 reader would run
+//!   it every unit and its webview would save it back that way). A settings v2 barrier
 //!   precedes the first reviewed queue save, so an old automation finish
 //!   rule never takes a refused queue for an empty one;
 //! - loading is TYPED: a file must parse as JSON, carry a readable envelope
@@ -107,9 +109,9 @@ use std::sync::Mutex;
 // v5 protects card reminders and blocked retirement identities; v6 protects
 // a phone task preset's first-send choice and approval and their queue
 // origins; v7 protects channel first-send grants, frozen claims and queue
-// constraints.
+// constraints; v8 protects a clock schedule's interval and anchor date.
 // Ordinary documents keep v1; upgrades are sticky.
-pub const SCHEMA_VERSION: u64 = 7;
+pub const SCHEMA_VERSION: u64 = 8;
 
 /// The two documents whose review fields an old reader could misinterpret as
 /// ordinary state (queue rows it would resend; finish rules it would apply).
@@ -127,6 +129,27 @@ fn uses_review(v: &serde_json::Value) -> bool {
                 || uses_review(v)
         }),
         serde_json::Value::Array(a) => a.iter().any(uses_review),
+        _ => false,
+    }
+}
+
+// A clock schedule that repeats every N > 1 units from an anchor date
+// (settings.json only). A v7 reader knows neither field: its serde drops
+// them, so the rule would fire every unit, and its webview's normalization
+// would save it back without them. Refuse the file untouched instead.
+fn uses_schedule_interval(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(o) => {
+            (o.get("source").and_then(|v| v.as_str()) == Some("clock")
+                && o.get("schedule").is_some_and(|s| {
+                    s.get("every")
+                        .and_then(|v| v.as_u64())
+                        .is_some_and(|n| n > 1)
+                        || s.get("anchor").is_some()
+                }))
+                || o.values().any(uses_schedule_interval)
+        }
+        serde_json::Value::Array(a) => a.iter().any(uses_schedule_interval),
         _ => false,
     }
 }
@@ -764,7 +787,9 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let feature_version = if matches!(name.as_ref(), "deck.json" | "queue.json" | "settings.json")
+    let feature_version = if name == "settings.json" && uses_schedule_interval(&data) {
+        8
+    } else if matches!(name.as_ref(), "deck.json" | "queue.json" | "settings.json")
         && uses_channel_first_send(&data)
     {
         7
@@ -1712,6 +1737,77 @@ mod tests {
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             assert_eq!(sticky["schema_version"], 7, "{name}: sticky");
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    /// A clock rule that repeats every N > 1 units is refused by a v7 reader
+    /// instead of being run every unit and saved back without its interval.
+    #[test]
+    fn clock_interval_settings_upgrade_to_sticky_v8_only_when_used() {
+        let dir = tdir("clock-interval-version");
+        let interval = |schedule: serde_json::Value| serde_json::json!({"inbound":{"rules":[{"id":"a1","source":"clock","badge":"a1","schedule":schedule}]}});
+        for (index, data) in [
+            interval(serde_json::json!({"unit":"week","every":2,"anchor":"2026-10-19","days":[1],"minute":540})),
+            interval(serde_json::json!({"unit":"month","every":12,"anchor":"2026-10-01","days":[1],"minute":0})),
+            // an anchor alone is refused by the validator, but it is still
+            // a newer fact an old reader would drop
+            interval(serde_json::json!({"unit":"day","anchor":"2026-10-19","minute":0})),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let case = dir.join(index.to_string());
+            std::fs::create_dir_all(&case).unwrap();
+            let p = case.join("settings.json");
+            // the plain rule first: an interval of 1 (absent) stays below v8
+            save_typed::<serde_json::Value>(
+                &p,
+                &interval(serde_json::json!({"unit":"week","days":[1],"minute":540})).to_string(),
+            )
+            .unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert!(raw["schema_version"].as_u64().unwrap() < 8, "case {index}");
+            save_typed::<serde_json::Value>(&p, &data.to_string()).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert_eq!(raw["schema_version"], 8, "case {index}");
+            assert!(envelope_payload_for(&raw, 7).is_err(), "case {index}");
+            // sticky: the interval withdrawn, the version stays
+            save_typed::<serde_json::Value>(
+                &p,
+                &interval(serde_json::json!({"unit":"week","days":[1],"minute":540})).to_string(),
+            )
+            .unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert_eq!(raw["schema_version"], 8, "case {index}: sticky");
+        }
+        // an explicit interval of 1 and a Slack rule's stray field are not the fact
+        for (index, data) in [
+            interval(serde_json::json!({"unit":"week","every":1,"days":[1],"minute":540})),
+            serde_json::json!({"inbound":{"rules":[{"id":"r","source":"slack","badge":"deck","schedule":{"every":2}}]}}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let case = dir.join(format!("plain-{index}"));
+            std::fs::create_dir_all(&case).unwrap();
+            let p = case.join("settings.json");
+            save_typed::<serde_json::Value>(&p, &data.to_string()).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert!(raw["schema_version"].as_u64().unwrap() < 8, "plain {index}");
+        }
+        // only settings.json carries schedules: the Board never takes v8 for one
+        let p = dir.join("deck.json");
+        save_typed::<serde_json::Value>(
+            &p,
+            &interval(serde_json::json!({"unit":"week","every":2,"anchor":"2026-10-19","days":[1],"minute":540}))
+                .to_string(),
+        )
+        .unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert!(raw["schema_version"].as_u64().unwrap() < 8);
         let _ = std::fs::remove_dir_all(dir);
     }
     #[test]

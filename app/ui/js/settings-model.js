@@ -4,7 +4,7 @@ import { DEFAULT_VOICE_PREFERENCES, normalizeVoicePreferences } from './voice-pr
 // Channel first-step permission uses its own native-issued grant preserved
 // by normalizeChannelConfig; normalization never creates a grant.
 import { normalizeChannelConfig } from './channel-model.js';
-import { INBOUND_BADGE_RE, LOCAL_ID_RE } from './pure.js';
+import { INBOUND_BADGE_RE, LOCAL_ID_RE, parseCivilDate } from './pure.js';
 
 export const THEMES = Object.freeze(['deck-dark', 'light', 'system', 'high-contrast']);
 export const ACCENTS = Object.freeze(['teal', 'blue', 'purple', 'orange']);
@@ -66,6 +66,8 @@ export const INBOUND_SOURCES = Object.freeze(['slack', 'clock']);
    of its rules is enabled */
 const INBOUND_TOGGLES = Object.freeze(['slack']);
 export const SCHEDULE_UNITS = Object.freeze(['day', 'week', 'month']);
+/* a schedule repeats every 1..12 of its unit (every 12 months is a year) */
+export const SCHEDULE_EVERY_MAX = 12;
 export const FINISH_MODES = Object.freeze(['keep', 'close']);
 /* how long after its slot a clock rule may still start a run, in minutes:
    the editor offers two choices — the default, and 1440 = the rest of the
@@ -108,18 +110,28 @@ export const DEFAULT_INBOUND = Object.freeze({
 
 /* A clock rule's schedule, or null when it is not one the backend accepts:
    a minute of the day on every day / listed ISO weekdays / listed days of
-   month, days sorted and unique. */
+   month, days sorted and unique; repeating `every` units (1..12, 1 when
+   absent) from the calendar date `anchor`, which is present exactly when
+   every > 1 (pure.js `parseCivilDate`). An interval of 1 is written as
+   absent, so a legacy rule round-trips byte for byte. */
 export function normalizeSchedule(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const unit = String(raw.unit ?? '');
   const minute = Number(raw.minute);
   if (!SCHEDULE_UNITS.includes(unit) || !Number.isInteger(minute) || minute < 0 || minute >= 1440) return null;
-  if (unit === 'day') return { unit, days: [], minute };
+  /* the interval is strict like the backend's integer: a string is the
+     wrong shape, not a number to repair */
+  const every = raw.every == null ? 1 : raw.every;
+  if (!Number.isInteger(every) || every < 1 || every > SCHEDULE_EVERY_MAX) return null;
+  if ((every > 1) !== (raw.anchor != null)) return null;
+  if (every > 1 && !parseCivilDate(raw.anchor)) return null;
+  const interval = every > 1 ? { every, anchor: String(raw.anchor) } : {};
+  if (unit === 'day') return { unit, days: [], minute, ...interval };
   const limit = unit === 'week' ? 7 : 31;
   const days = [...new Set((Array.isArray(raw.days) ? raw.days : []).map(Number))]
     .filter(d => Number.isInteger(d) && d >= 1 && d <= limit)
     .sort((a, b) => a - b);
-  return days.length ? { unit, days, minute } : null;
+  return days.length ? { unit, days, minute, ...interval } : null;
 }
 
 /* Mirrors the backend's structural validation (inbound::validate_settings):

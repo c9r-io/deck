@@ -1868,24 +1868,135 @@ pub(crate) struct LocalClock {
     pub(crate) mday: u32,
     /// how many days this local month has
     pub(crate) mdays: u32,
+    /// calendar year of the local day
+    pub(crate) year: i32,
+    /// month of the local day, 1-based
+    pub(crate) month: u32,
 }
 
 impl LocalClock {
-    /// A clock at `min` on Monday the 1st of a 31-day month: the platform
-    /// fallback, and what unit tests use for a deterministic day.
+    /// A clock at `min` whose date is the UTC calendar day of its midnight:
+    /// every field agrees with every other (the platform fallback). Tests
+    /// that need a particular date build one with `civil`.
     pub(crate) fn synthetic(now: u64, min: u32) -> Self {
+        let day_start = now.saturating_sub(u64::from(min) * 60);
+        let days = (day_start / 86_400) as i64;
+        let (year, month, mday) = civil_from_days(days);
         LocalClock {
             now,
             min,
-            day_start: now.saturating_sub(u64::from(min) * 60),
-            wday: 1,
-            mday: 1,
-            mdays: 31,
+            day_start,
+            wday: iso_weekday_of(days),
+            mday,
+            mdays: days_in_month(year, month as i32 - 1),
+            year,
+            month,
+        }
+    }
+
+    /// The instant a clock rule's slot at `minute` is due on this day: the
+    /// zone's reading of that wall time (`wall_time_epoch`). This is NOT
+    /// the slot's key (`day_start + minute * 60`, one value per day): on a
+    /// DST switch day the two differ by the shift for wall times after it.
+    pub(crate) fn instant(&self, minute: u32) -> u64 {
+        wall_time_epoch(self.year, self.month, self.mday, minute)
+    }
+
+    /// A clock at `minute` on a calendar date in a zone without offset:
+    /// `now`, `day_start` and the date agree, so a test holding the TZ lock
+    /// under `TzOverride::set("UTC")` gets the same instants from mktime.
+    #[cfg(test)]
+    pub(crate) fn civil(year: i32, month: u32, mday: u32, minute: u32) -> Self {
+        let days = days_from_civil(year, month, mday);
+        let day_start = u64::try_from(days).unwrap_or(0) * 86_400;
+        LocalClock {
+            now: day_start + u64::from(minute) * 60,
+            min: minute,
+            day_start,
+            wday: iso_weekday_of(days),
+            mday,
+            mdays: days_in_month(year, month as i32 - 1),
+            year,
+            month,
         }
     }
 }
 
-fn days_in_month(year: i32, month0: i32) -> u32 {
+/// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's
+/// `days_from_civil`): pure arithmetic, no zone, so two dates compare the
+/// same on every machine.
+pub(crate) fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let y = i64::from(year) - i64::from(month <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let m = i64::from(month);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// The date of day number `days` (the inverse of `days_from_civil`).
+pub(crate) fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (year as i32, month, day)
+}
+
+/// ISO weekday (1 = Monday … 7 = Sunday) of day number `days`; 1970-01-01
+/// was a Thursday.
+pub(crate) fn iso_weekday_of(days: i64) -> u32 {
+    ((days + 3).rem_euclid(7) + 1) as u32
+}
+
+/// The epoch second the local zone gives wall time `minute` on the calendar
+/// date: `mktime` with the DST flag left to the zone, so a wall time the
+/// spring switch skips moves forward by the gap (02:30 → 03:30) and one the
+/// autumn switch repeats is its first occurrence. Pinned by
+/// `wall_times_follow_the_zone_contract` and, on the webview side, by
+/// ui/test/schedule-instants.test.mjs against the same fixture.
+pub(crate) fn wall_time_epoch(year: i32, month: u32, mday: u32, minute: u32) -> u64 {
+    // SAFETY: a zeroed `tm` is a valid value (null zone pointer) and mktime
+    // only reads and normalizes the stack-owned struct.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    tm.tm_year = year - 1900;
+    tm.tm_mon = month as i32 - 1;
+    tm.tm_mday = mday as i32;
+    tm.tm_hour = (minute / 60) as i32;
+    tm.tm_min = (minute % 60) as i32;
+    tm.tm_isdst = -1;
+    u64::try_from(unsafe { libc::mktime(&mut tm) }).unwrap_or(0)
+}
+
+/// The due instant of the slot whose key is `day_start + minute * 60`: the
+/// key's day read back from the zone, then its wall time. The dispatcher
+/// judges a slot's grace with this, never with the key itself (on a switch
+/// day the key can sit an hour before the wall time).
+pub(crate) fn slot_instant(day_start: u64, minute: u32) -> u64 {
+    let at = libc::time_t::try_from(day_start).unwrap_or(0);
+    let mut tm = std::mem::MaybeUninit::<libc::tm>::zeroed();
+    // SAFETY: plain libc time calls on stack-owned values.
+    let tm = unsafe {
+        if libc::localtime_r(&at, tm.as_mut_ptr()).is_null() {
+            return day_start + u64::from(minute) * 60;
+        }
+        tm.assume_init()
+    };
+    wall_time_epoch(
+        tm.tm_year + 1900,
+        (tm.tm_mon.clamp(0, 11) + 1) as u32,
+        tm.tm_mday.clamp(1, 31) as u32,
+        minute,
+    )
+}
+
+pub(crate) fn days_in_month(year: i32, month0: i32) -> u32 {
     match month0 {
         1 => {
             if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
@@ -1915,7 +2026,7 @@ pub(crate) fn local_clock() -> LocalClock {
 
 /// The local wall clock at epoch second `now` (the caller has refreshed the
 /// zone).
-fn clock_at(now: libc::time_t) -> LocalClock {
+pub(crate) fn clock_at(now: libc::time_t) -> LocalClock {
     let epoch = u64::try_from(now).unwrap_or(0);
     let mut tm = std::mem::MaybeUninit::<libc::tm>::zeroed();
     // SAFETY: plain libc time calls on stack-owned values.
@@ -1947,12 +2058,52 @@ fn clock_at(now: libc::time_t) -> LocalClock {
         wday: ((tm.tm_wday.clamp(0, 6) + 6) % 7 + 1) as u32,
         mday: tm.tm_mday.clamp(1, 31) as u32,
         mdays: days_in_month(tm.tm_year + 1900, tm.tm_mon.clamp(0, 11)),
+        year: tm.tm_year + 1900,
+        month: (tm.tm_mon.clamp(0, 11) + 1) as u32,
     }
 }
 
 /// Local wall-clock minutes since midnight.
 pub(crate) fn local_minutes() -> u32 {
     local_clock().min
+}
+
+/// Test support for code that reads the zone: `TZ` is process-wide, so the
+/// tests that change it (`TzOverride`) and the tests that read the real
+/// local clock hold `TZ_TESTS` for their whole body. Shared with the clock
+/// rule tests in `inbound.rs` and `inbound_clock.rs`.
+#[cfg(test)]
+pub(crate) mod tz_test {
+    pub(crate) static TZ_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    extern "C" {
+        fn tzset();
+    }
+
+    /// Sets `TZ` for one test and restores the previous value (and the libc
+    /// zone) when dropped, a failed assertion included.
+    pub(crate) struct TzOverride(Option<std::ffi::OsString>);
+
+    impl TzOverride {
+        pub(crate) fn set(zone: &str) -> Self {
+            let before = std::env::var_os("TZ");
+            std::env::set_var("TZ", zone);
+            // SAFETY: tzset only re-reads the environment.
+            unsafe { tzset() };
+            TzOverride(before)
+        }
+    }
+
+    impl Drop for TzOverride {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("TZ", value),
+                None => std::env::remove_var("TZ"),
+            }
+            // SAFETY: as above.
+            unsafe { tzset() };
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3121,38 +3272,7 @@ mod tests {
         assert_eq!(ancestry_in(&table, 99, 32), Vec::<u32>::new());
     }
 
-    /// `TZ` is process-wide: the one test that changes it and every test
-    /// that reads the real local clock hold this lock.
-    static TZ_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    extern "C" {
-        fn tzset();
-    }
-
-    /// Sets `TZ` for one test and restores the previous value (and the libc
-    /// zone) when dropped, a failed assertion included.
-    struct TzOverride(Option<std::ffi::OsString>);
-
-    impl TzOverride {
-        fn set(zone: &str) -> Self {
-            let before = std::env::var_os("TZ");
-            std::env::set_var("TZ", zone);
-            // SAFETY: tzset only re-reads the environment.
-            unsafe { tzset() };
-            TzOverride(before)
-        }
-    }
-
-    impl Drop for TzOverride {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(value) => std::env::set_var("TZ", value),
-                None => std::env::remove_var("TZ"),
-            }
-            // SAFETY: as above.
-            unsafe { tzset() };
-        }
-    }
+    use super::tz_test::{TzOverride, TZ_TESTS};
 
     #[test]
     fn local_clock_is_a_consistent_local_day() {
@@ -3198,8 +3318,100 @@ mod tests {
                 assert_eq!(c.min, min, "wall minute at {at}");
                 assert_eq!(c.day_start, midnight, "day start at {at}");
                 assert_eq!(c.wday, 7, "both switch days are Sundays");
+                assert_eq!(
+                    (c.year, c.month),
+                    (2026, if midnight == spring_midnight { 3 } else { 11 })
+                );
             }
         }
+    }
+
+    /// The zone contract the webview's preview is pinned to as well
+    /// (ui/test/fixtures/schedule-cases.json `instants`): a wall time the
+    /// spring switch skips moves forward by the gap, one the autumn switch
+    /// repeats is its first occurrence, and every other wall time is
+    /// itself. The slot KEY (`day_start + minute * 60`) is the same value
+    /// before and after this change for every case, so an update never
+    /// hands a slot a second identity; `slot_instant` reads the key back to
+    /// the same instant `LocalClock::instant` gives.
+    #[test]
+    fn wall_times_follow_the_zone_contract() {
+        let _tz = TZ_TESTS.lock_or_recover();
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../ui/test/fixtures/schedule-cases.json"))
+                .unwrap();
+        let cases = fixture["instants"].as_array().unwrap();
+        assert!(cases.len() >= 4);
+        for case in cases {
+            let _zone = TzOverride::set(case["zone"].as_str().unwrap());
+            let date = case["date"].as_str().unwrap();
+            let (year, month, mday) = (
+                date[0..4].parse::<i32>().unwrap(),
+                date[5..7].parse::<u32>().unwrap(),
+                date[8..10].parse::<u32>().unwrap(),
+            );
+            let minute = case["minute"].as_u64().unwrap() as u32;
+            let at = case["at"].as_u64().unwrap();
+            let key = case["key"].as_u64().unwrap();
+            assert_eq!(
+                wall_time_epoch(year, month, mday, minute),
+                at,
+                "{date} {minute}"
+            );
+            // the clock read at that instant is on that day and gives the same key
+            let clock = clock_at(at as libc::time_t);
+            assert_eq!((clock.year, clock.month, clock.mday), (year, month, mday));
+            assert_eq!(clock.day_start + u64::from(minute) * 60, key, "{date} key");
+            assert_eq!(clock.instant(minute), at, "{date} instant");
+            assert_eq!(
+                slot_instant(clock.day_start, minute),
+                at,
+                "{date} from the key"
+            );
+            // reading the clock later the same day changes neither (22 hours
+            // on: the spring switch day has only 23)
+            let later = clock_at((clock.day_start + 22 * 3600) as libc::time_t);
+            assert_eq!(later.mday, mday, "{date}: still that day");
+            assert_eq!(later.day_start + u64::from(minute) * 60, key);
+            assert_eq!(later.instant(minute), at);
+        }
+    }
+
+    #[test]
+    fn calendar_arithmetic_round_trips_and_agrees_with_the_zone() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(2000, 3, 1), 11_017);
+        assert_eq!(days_from_civil(2026, 10, 19), 20_745);
+        assert_eq!(iso_weekday_of(0), 4, "1970-01-01 was a Thursday");
+        assert_eq!(iso_weekday_of(20_745), 1, "2026-10-19 is a Monday");
+        assert_eq!(iso_weekday_of(-1), 3, "1969-12-31 was a Wednesday");
+        for days in [-1_000_000i64, -1, 0, 1, 11_017, 20_745, 1_000_000] {
+            let (y, m, d) = civil_from_days(days);
+            assert_eq!(days_from_civil(y, m, d), days, "{days}");
+            assert!((1..=12).contains(&m) && (1..=days_in_month(y, m as i32 - 1)).contains(&d));
+        }
+        let civil = LocalClock::civil(2026, 10, 19, 540);
+        assert_eq!(
+            (civil.year, civil.month, civil.mday, civil.wday, civil.mdays),
+            (2026, 10, 19, 1, 31)
+        );
+        assert_eq!(civil.day_start, 20_745 * 86_400);
+        assert_eq!(civil.now, civil.day_start + 540 * 60);
+        let synthetic = LocalClock::synthetic(civil.now, 540);
+        assert_eq!(
+            synthetic, civil,
+            "synthetic derives the same consistent date"
+        );
+        let _tz = TZ_TESTS.lock_or_recover();
+        let _zone = TzOverride::set("UTC");
+        assert_eq!(
+            civil.instant(540),
+            civil.now,
+            "under UTC the civil clock and mktime agree"
+        );
+        assert_eq!(slot_instant(civil.day_start, 540), civil.now);
+        let read = clock_at(civil.now as libc::time_t);
+        assert_eq!(read, civil);
     }
 
     // ---------- execution instances: the kernel's own reports ---------------------

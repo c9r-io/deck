@@ -188,6 +188,21 @@ card in the rule's column (title `name · MM-DD`), launches the command and
 queues the template, exactly like a badge would; nothing is typed into an
 existing session. The command may independently resume its own prior context.
 
+A schedule may repeat **every N** days, weeks or months (1 to 12; every 12
+months is once a year) **counting from** a calendar date: the week (Monday
+to Sunday), month or day that date falls in is an on period, nothing before
+the date runs, and the phase never moves — a slot that was skipped, missed
+or started late does not shift the next one, and pausing, resuming or
+editing the time or weekdays keeps the date you set. A sprint event is
+"every 2 weeks on Mon, counting from the sprint's first Monday". The
+editor shows the next three slots before you save, so the phase is read,
+not guessed. N is 1 unless you set it, and a rule with N = 1 is stored
+exactly as before; the date exists only together with an interval, so
+"from next month, every week" is not something a rule can say. Settings
+holding an interval rule are written in a format older decks refuse
+untouched (they would otherwise run it every week and save it back that
+way).
+
 - One run at a time: a slot that comes due while the rule's previous card is
   still on the Board is skipped and recorded as such.
 - A slot deck slept through (asleep, updating, not running) still starts a
@@ -196,9 +211,14 @@ existing session. The command may independently resume its own prior context.
   is otherwise recorded as a `skipped (missed)` run without a card, so
   opening deck in the evening does not start the morning's job. Yesterday's
   slots are never considered. Slots older than the rule's last schedule
-  change or resume never fire. Slot keys come from `mktime` of local
-  midnight, one value for the whole day, so a DST switch never hands a slot
-  two keys.
+  change or resume never fire. A slot's key is `mktime` of local midnight
+  plus the rule's minute, one value for the whole day, so a DST switch never
+  hands a slot two keys and an update never gives one a second identity;
+  the instant the slot is due is that day's wall time, so a 09:00 rule runs
+  at 09:00 on a switch day too (and its grace counts from 09:00). A wall
+  time the spring switch skips (02:30) runs at the shifted time (03:30);
+  one the autumn switch repeats (01:30) runs at its first occurrence, once.
+  The drawer's "next" and the editor's preview follow the same contract.
 - **close the card** (both triggers): the finish check requires an empty
   queue, no agent state and a shell back in the foreground — the agent
   program exited. This must hold for three consecutive polls, and never

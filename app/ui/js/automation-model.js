@@ -34,8 +34,8 @@
 // `scheduler/channel_first_send.rs`); its rule facts do not advertise the
 // badge follow-up approval or inherit the clock/badge readiness-only flag.
 import { channelAgentCommand } from './channel-model.js';
-import { badgeTaken, hmToMin, INBOUND_BADGE_RE, INBOUND_PLACEHOLDERS, minToHM, nextScheduleSlot, normalizeTemplateStep } from './pure.js';
-import { DEFAULT_GRACE_MIN, GRACE_CHOICES } from './settings-model.js';
+import { badgeTaken, hmToMin, INBOUND_BADGE_RE, INBOUND_PLACEHOLDERS, isoWeekday, minToHM, nextScheduleSlot, nextScheduleSlots, normalizeTemplateStep, parseCivilDate, runDateLabel } from './pure.js';
+import { DEFAULT_GRACE_MIN, GRACE_CHOICES, SCHEDULE_EVERY_MAX } from './settings-model.js';
 import { formatNumber, t } from './i18n.js';
 import { fmtClock } from './scheduler-model.js';
 
@@ -52,18 +52,75 @@ export function graceText(minutes) {
    too — an edit never silently rewrites it */
 export const graceOptions = value => [...new Set([...GRACE_CHOICES, value])].sort((a, b) => a - b);
 
-/* "every Mon, Wed, Fri at 09:00" in the user's language */
+/* "every Mon, Wed, Fri at 09:00" / "every 2 weeks on Mon at 09:00, from
+   2026-10-19" in the user's language */
 export function scheduleText(schedule) {
   const time = minToHM(schedule.minute);
+  const interval = schedule.every > 1;
+  const count = interval ? formatNumber(schedule.every) : '';
+  const from = interval ? schedule.anchor : '';
   if (schedule.unit === 'week') {
     const days = schedule.days.map(d => t(`automation.wd.${d}`)).join(t('automation.listSeparator'));
-    return t('automation.schedule.week', { days, time });
+    return interval ? t('automation.schedule.everyWeek', { count, days, time, from }) : t('automation.schedule.week', { days, time });
   }
   if (schedule.unit === 'month') {
     const days = schedule.days.map(d => formatNumber(d)).join(t('automation.listSeparator'));
-    return t('automation.schedule.month', { days, time });
+    return interval ? t('automation.schedule.everyMonth', { count, days, time, from }) : t('automation.schedule.month', { days, time });
   }
-  return t('automation.schedule.day', { time });
+  return interval ? t('automation.schedule.everyDay', { count, time, from }) : t('automation.schedule.day', { time });
+}
+
+/* "1, 15, 31" → sorted unique days of the month, or null when any part is
+   not one; an empty field is null too */
+export function parseMonthDays(text) {
+  const parts = String(text ?? '').split(/[\s,、，]+/).filter(Boolean);
+  if (!parts.length) return null;
+  const days = parts.map(part => (/^\d{1,2}$/.test(part) ? Number(part) : NaN));
+  if (days.some(d => !Number.isInteger(d) || d < 1 || d > 31)) return null;
+  return [...new Set(days)].sort((a, b) => a - b);
+}
+
+/* The editor's schedule controls → a schedule (the shape inbound.rs
+   validates), or `{ error, focus }`: `unit`, the pressed weekday `days`,
+   the `monthDays` text, the `time`, and `every` with its `anchor` date,
+   which is stored only when every > 1 (the same rule as the backend, so an
+   interval of 1 leaves a legacy rule byte for byte). */
+export function scheduleFromFields(fields) {
+  const fail = (error, focus = null) => ({ error, focus });
+  const unit = fields.unit;
+  const every = fields.every === '' || fields.every == null ? 1 : Number(fields.every);
+  if (!Number.isInteger(every) || every < 1 || every > SCHEDULE_EVERY_MAX) return fail('automation.badEvery', 'auto-every');
+  let days = [];
+  if (unit === 'week') {
+    days = fields.days;
+    if (!days.length) return fail('automation.needsDays');
+  }
+  if (unit === 'month') {
+    days = parseMonthDays(fields.monthDays);
+    if (!days) return fail('automation.badMonthDays', 'auto-dom');
+  }
+  if (!fields.time) return fail('automation.needsTime', 'auto-time');
+  const schedule = { unit, days, minute: hmToMin(fields.time) };
+  if (every > 1) {
+    if (!parseCivilDate(fields.anchor)) return fail('automation.needsAnchor', 'auto-anchor');
+    schedule.every = every;
+    schedule.anchor = String(fields.anchor);
+  }
+  return { schedule };
+}
+
+/* the editor's preview line: the next three slots as date and weekday (the
+   year too when it is not this year), or a dash when none is within reach.
+   A schedule still being edited is judged from now, as its save would be. */
+export function schedulePreview(schedule, nowSecs = Math.floor(Date.now() / 1000)) {
+  const slots = nextScheduleSlots(schedule, nowSecs, nowSecs, 3);
+  if (!slots.length) return '—';
+  const year = new Date(nowSecs * 1000).getFullYear();
+  return slots.map(slot => {
+    const d = new Date(slot * 1000);
+    const date = (d.getFullYear() === year ? '' : `${d.getFullYear()}-`) + runDateLabel(slot);
+    return t('automation.preview.item', { date, wd: t(`automation.wd.${isoWeekday(d)}`) });
+  }).join(' · ');
 }
 
 /* what a rule's trigger reads as on its head line */
@@ -144,7 +201,9 @@ export const recentRuns = (runs, rule) => runs
    rules, for the one-badge-per-rule check; `genId` mints an id when the
    trigger changed or the rule is new. A clock rule's id doubles as its
    badge (the backend spells it lowercase) and its `since` moves to now when
-   the schedule changed, so a slot earlier today never fires late. */
+   the schedule changed (its interval and anchor included), so a slot
+   earlier today never fires late; the anchor itself is kept as the user
+   set it, so an edit never shifts an interval rule's phase. */
 export function composeRule(fields, { previous = null, rules = [], projectId, genId, nowSecs = Math.floor(Date.now() / 1000) }) {
   const fail = (error, focus = null, params = {}) => ({ error, focus, params });
   const name = (fields.name || '').trim();
@@ -166,12 +225,10 @@ export function composeRule(fields, { previous = null, rules = [], projectId, ge
     return { rule: { id, source: 'slack', badge, ...shared, enabled: true } };
   }
   if (!name) return fail('automation.needsName', 'auto-name');
-  const unit = fields.unit;
-  const days = unit === 'week' ? fields.days : unit === 'month' ? [Number(fields.dayOfMonth)] : [];
-  if (unit === 'week' && !days.length) return fail('automation.needsDays');
-  if (!fields.time) return fail('automation.needsTime', 'auto-time');
+  const read = scheduleFromFields(fields);
+  if (read.error) return fail(read.error, read.focus);
+  const { schedule } = read;
   const id = previous && previous.source === 'clock' ? previous.id : genId('a');
-  const schedule = { unit, days, minute: hmToMin(fields.time) };
   const changed = !previous || previous.source !== 'clock' || JSON.stringify(previous.schedule) !== JSON.stringify(schedule);
   return {
     rule: {

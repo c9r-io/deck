@@ -9,6 +9,7 @@
       "terminal": "done",
       "checks": {
         "automation": {},
+        "automation-editor": {},
         "board-concurrency": {},
         "board-fault": {},
         "buffer-board-overlay": {},

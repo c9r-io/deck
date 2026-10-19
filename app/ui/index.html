@@ -104,16 +104,24 @@
             <div class="set-hint" data-i18n="automation.channelHint">Messages are grouped only by this rule’s channel and optional named regex capture. 0 keeps collecting until you stop it manually.</div>
           </div>
           <div class="set-row q-p q-p-clock">
-            <label data-i18n="automation.when">When</label>
+            <label for="auto-every" data-i18n="automation.when">When</label>
+            <span class="auto-every-word" data-i18n="automation.every">every</span>
+            <input type="number" id="auto-every" min="1" max="12" step="1" value="1" aria-label="Repeat every" data-i18n-aria-label="automation.everyLabel">
             <select id="auto-unit">
-              <option value="day" data-i18n="automation.unit.day">every day</option>
-              <option value="week" data-i18n="automation.unit.week">every week on</option>
-              <option value="month" data-i18n="automation.unit.month">every month on day</option>
+              <option value="day" data-i18n="automation.unit.day">day(s) at</option>
+              <option value="week" data-i18n="automation.unit.week">week(s) on</option>
+              <option value="month" data-i18n="automation.unit.month">month(s) on day</option>
             </select>
             <span id="auto-days" class="q-days" role="group" aria-label="Weekdays" data-i18n-aria-label="automation.weekdays"></span>
-            <select id="auto-dom"></select>
+            <input id="auto-dom" autocomplete="off" spellcheck="false" placeholder="1, 15" aria-label="Days of the month" data-i18n-aria-label="automation.monthDays">
             <input type="time" id="auto-time" value="09:00">
           </div>
+          <div class="set-row q-p q-p-clock" id="auto-anchor-row">
+            <label for="auto-anchor" data-i18n="automation.from">Counting from</label>
+            <input type="date" id="auto-anchor">
+          </div>
+          <div class="set-hint q-p q-p-clock" id="auto-anchor-hint" data-i18n="automation.fromHint">The week (day, month) this date falls in is an on period and nothing before it runs; pausing, missed slots and later edits do not shift it.</div>
+          <div class="set-hint q-p q-p-clock" id="auto-preview" aria-live="polite"></div>
           <div class="set-row q-p q-p-clock">
             <label for="auto-grace" data-i18n="automation.grace">If missed</label>
             <select id="auto-grace"></select>

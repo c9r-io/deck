@@ -4,12 +4,13 @@ process.env.TZ = 'UTC'; // date math below assumes a fixed zone
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   sessionName, fmtMem, fmtEvery, minToHM, hmToMin, winHas, hasWindow,
   nextFire, groupQueue, groupSteps, itemDead, blockedBy, listKey, listRepeats, listScheduleArgs, projectRules, ruleByOrigin, badgeTaken,
   chainQuietHint, contextStatusKey, CHAIN_QUIET_SECS, shQuote, 
   MIN_QUIET_SECS, MAX_QUIET_SECS, quietSecsOf, localEpoch, isoDate, isoTime,
-  scheduleMatchesDay, nextScheduleSlot, createConfirmationCounter, isoWeekday, daysInMonth, runFinishHolds, toggleClockRule,
+  scheduleMatchesDay, nextScheduleSlot, nextScheduleSlots, parseCivilDate, civilDay, createConfirmationCounter, isoWeekday, daysInMonth, runFinishHolds, toggleClockRule,
   createExitRetirementTracker, createSerialTransactionQueue, sidebarGroups,
    createTerminalResizeCoordinator, newSessionColumn, createTerminalSelectionModel,
   projectDefaults, newSessionPlan, collapseHome, isNotDirectoryError,
@@ -1282,6 +1283,48 @@ test('nextScheduleSlot is the first future slot, honouring since', () => {
   const since = secs(new Date(2026, 8, 15, 0, 0));
   assert.equal(nextScheduleSlot(daily, nineToday - 600, since), secs(new Date(2026, 8, 15, 9, 0)));
   assert.equal(nextScheduleSlot({ unit: 'year', days: [], minute: 0 }, nineToday), null);
+});
+
+/* the shared calendar fixture, read exactly as inbound.rs reads it: from
+   each case's start date, the first matching days are the listed ones, and
+   the next-slot scan finds the same days in order */
+test('interval schedules match the shared fixture and the next-slot scan agrees', () => {
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/schedule-cases.json', import.meta.url), 'utf8'));
+  assert.ok(fixture.days.length >= 12);
+  const civil = text => { const [y, m, d] = text.split('-').map(Number); return new Date(y, m - 1, d); };
+  const label = isoDate;
+  for (const { name, schedule, from, expect } of fixture.days) {
+    const got = [];
+    for (let d = civil(from), i = 0; i < 2000 && got.length < expect.length; i++, d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) {
+      if (scheduleMatchesDay(schedule, d)) got.push(label(d));
+    }
+    assert.deepEqual(got, expect, name);
+    const start = Math.floor(civil(from).getTime() / 1000) - 1;
+    assert.deepEqual(nextScheduleSlots(schedule, start, 0, expect.length).map(slot => label(new Date(slot * 1000))), expect, `${name}: next slots`);
+    for (const slot of nextScheduleSlots(schedule, start, 0, expect.length)) {
+      const d = new Date(slot * 1000);
+      assert.equal(d.getHours() * 60 + d.getMinutes(), schedule.minute, `${name}: at the wall time`);
+    }
+  }
+  /* an anchor without the interval, or a wrong one, matches nothing */
+  assert.ok(!scheduleMatchesDay({ unit: 'day', days: [], minute: 0, every: 2, anchor: 'nope' }, new Date(2026, 9, 19)));
+  assert.ok(scheduleMatchesDay({ unit: 'day', days: [], minute: 0, every: 1, anchor: 'nope' }, new Date(2026, 9, 19)), 'interval 1 reads no anchor');
+  assert.deepEqual(nextScheduleSlots({ unit: 'week', days: [1], minute: 540, every: 2, anchor: '2027-03-01' }, Math.floor(new Date(2026, 9, 19).getTime() / 1000), 0, 2)
+    .map(slot => label(new Date(slot * 1000))), ['2027-03-01', '2027-03-15'], 'a far anchor starts the scan');
+  assert.equal(nextScheduleSlot({ unit: 'week', days: [1], minute: 540, every: 2, anchor: '2027-03-01' }, Math.floor(new Date(2026, 9, 19).getTime() / 1000), Math.floor(new Date(2027, 2, 2).getTime() / 1000)),
+    Math.floor(new Date(2027, 2, 15, 9, 0).getTime() / 1000), 'since still applies after the anchor');
+  assert.deepEqual(nextScheduleSlots({ unit: 'week', days: [1], minute: 540 }, null, 0, 0), []);
+});
+
+test('a calendar date is parsed strictly and counted without a zone', () => {
+  assert.deepEqual(parseCivilDate('2026-10-19'), { y: 2026, m: 10, d: 19 });
+  assert.deepEqual(parseCivilDate('2028-02-29'), { y: 2028, m: 2, d: 29 }, 'a leap day');
+  for (const bad of ['2027-02-29', '2026-13-01', '2026-00-10', '2026-10-32', '26-10-19', '2026/10/19', '1969-12-31', '3000-01-01', '2026-10-1', '', null, undefined, 20261019]) {
+    assert.equal(parseCivilDate(bad), null, String(bad));
+  }
+  assert.equal(civilDay(1970, 1, 1), 0);
+  assert.equal(civilDay(2026, 10, 19), 20745);
+  assert.equal(civilDay(2000, 3, 1), 11017);
 });
 
 test('a close finish rule holds only for an unwatched, drained run whose program left the foreground', () => {

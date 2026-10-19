@@ -635,6 +635,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "voice-exception-4",
     "dropdown",
     "automation",
+    "automation-editor",
     "rename-restart",
     "done",
     "tl-a01-display",

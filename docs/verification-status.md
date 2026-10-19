@@ -1,13 +1,28 @@
 # 当前验证索引
 
-更新：2026-10-17（Phone Connector 第三轮）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-10-19（时钟自动化间隔）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
-## 本轮 Phone Connector 真机验收与按设备信任
+## 本轮 时钟自动化：每 N 天／周／月加起算日
+
+基线 `cdf0cdd`。设计稿与 Codex 复审在仓库外
+`~/c9r-io/deck-clock-recurrence-20261019/`（merged-proposal.md v2、codex-review-20261019.md）。
+内容：schedule 增加 `every`（1..12，为 1 时不落盘）与 `anchor`（日历日期，仅随 every > 1 存在，兼作下界）；
+槽位身份键保持「零点加分钟」不变，到期与宽限改按 mktime 解析钟表时间（切换日 09:00 不再偏一小时）；
+编辑器一行式「每 N 单位」、起算日、每月多日文本框、未来三次预览；含间隔规则的 settings.json 升 sticky v8。
+
+门禁：CI 形式 clippy 0 告警；`cargo llvm-cov` 工作区 1,567 项通过、13 项既有 ignore，行覆盖 85.8%，测试 TMPDIR 无残留；
+`scripts/ui-tests` 877 项通过（含共享 fixture 两段、America/New_York 与 Asia/Tokyo 时区契约、fake-DOM 编辑器往返、smoke 清单钉住）；
+JS 语法／模块、扩展目录检查通过。
+WKWebView `run` smoke（隔离根 `/private/tmp/deck-clock.xmJifF`，socket `deck-smoke-clock-65345`，清理后 PID 核对为空）：
+新增 `automation-editor` **PASS**（a=255/255：新建每 2 周、起算日、预览、保存、重开、改每 3 个月「1, 15」、暂停恢复保相位），
+既有 `automation` PASS（63/63）；整体判定 **FAIL**，唯一红项是与本次无关的 `input-isolation-proof`（a=-24，前台／就绪位未满足：桌面当时在使用），
+按既有规则需在无人操作的桌面上重跑一次，**待重跑**。
+UNRUN：macOS 之外的时区切换日实机触发（仅契约测试）；发布 carrier。
 
 基线 `ce0bf65`（未提交）；详见
 [根因、修复与 iPhone 真机验收](evidence/phone-connector-device-20261017/README.md)。

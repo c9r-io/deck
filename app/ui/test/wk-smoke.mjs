@@ -17,7 +17,7 @@ let renderBufferUI, openBuffer, closeBuffer, switchProject;
 let activeSessionTool;
 let drainChannel, drainConnector;
 let activateTheme, persistThemeChoice, persistInbound, setFontScale, applyFontScale, getFontScale;
-let toggleAutomations;
+let toggleAutomations, openEditor;
 let terminalLogicalLine, tokenizeTerminalLinks;
 if (typeof window !== 'undefined') {
   ({ $, ctx, inv, state, store } = await import('../js/state.js'));
@@ -35,7 +35,7 @@ if (typeof window !== 'undefined') {
   ({ refreshQueue, toggleQueuePanel } = await import('../js/scheduler.js'));
   ({ activateTheme } = await import('../js/theme.js'));
   ({ persistThemeChoice, persistInbound, setFontScale } = await import('../js/settings.js'));
-  ({ toggleAutomations } = await import('../js/automation.js'));
+  ({ toggleAutomations, openEditor } = await import('../js/automation.js'));
   ({ applyFontScale, getFontScale } = await import('../js/font-scale.js'));
   ({ drainChannel } = await import('../js/inbound.js'));
   ({ drainConnector } = await import('../js/connector.js'));
@@ -2062,6 +2062,80 @@ async function automationSmoke(project, column) {
   await report('automation', mask === 63, mask, 63);
 }
 
+/* The clock editor in the real engine: an interval rule's controls — "every
+   N", its counting-from date, the weekday chips, the days-of-month text —
+   go into the saved rule, come back when it is reopened, the preview line
+   reads them as they stand, and pause/resume keep the date (the fake-DOM
+   twin is automation-clock-editor-dom.test.mjs; this is the native half,
+   over real inputs, real change events and the real settings write). The
+   counting-from date is years away and the command empty, so no slot of
+   the rule can come due during the run. */
+async function automationEditorSmoke(project, column) {
+  const { t } = await import('../js/i18n.js');
+  const { schedulePreview } = await import('../js/automation-model.js');
+  const template = 'smoke-automation-editor';
+  await provider.saveTemplate(project.id, template, ['echo automation-editor-smoke']);
+  const name = 'Smoke sprint ' + Date.now().toString(36);
+  const rules = () => ctx.settings.inbound.rules;
+  const mine = () => rules().find(r => r.source === 'clock' && r.name === name);
+  const same = (schedule, want) => JSON.stringify(schedule) === JSON.stringify(want);
+  const set = (id, value, event = 'input') => { $(id).value = value; $(id).dispatchEvent(new Event(event, { bubbles: true })); };
+  const pressed = () => [...document.querySelectorAll('#auto-days .q-day[aria-pressed="true"]')].map(b => b.dataset.d).join();
+  state.view === 'board' || backToBoard();
+  toggleAutomations();
+  await pause(200);
+  openEditor(null);
+  await pause(100);
+  $('auto-name').value = name;
+  set('auto-column', column.id, 'change');
+  set('auto-template', template, 'change');
+  set('auto-cmd', '');
+  set('auto-unit', 'week', 'change');
+  const rowHiddenAtOne = $('auto-anchor-row').hidden;
+  for (const b of document.querySelectorAll('#auto-days .q-day')) {
+    if ((b.getAttribute('aria-pressed') === 'true') !== (b.dataset.d === '1')) b.click();
+  }
+  set('auto-every', '2');
+  const rowShown = rowHiddenAtOne && !$('auto-anchor-row').hidden && /^\d{4}-\d{2}-\d{2}$/.test($('auto-anchor').value);
+  set('auto-anchor', '2030-01-07');
+  set('auto-time', '09:00');
+  const biweekly = { unit: 'week', days: [1], minute: 540, every: 2, anchor: '2030-01-07' };
+  const previewText = $('auto-preview').textContent;
+  const previewOk = previewText === t('automation.preview', { slots: schedulePreview(biweekly) }) && !previewText.includes('—');
+  $('auto-save').click();
+  const saved = await waitFor(() => same(mine()?.schedule, biweekly), 5000);
+  const first = mine();
+  if (first) openEditor(first);
+  await pause(100);
+  const reopened = !!first && $('auto-every').value === '2' && $('auto-anchor').value === '2030-01-07'
+    && !$('auto-anchor-row').hidden && pressed() === '1'
+    && $('auto-preview').textContent === t('automation.preview', { slots: schedulePreview(biweekly) });
+  set('auto-unit', 'month', 'change');
+  set('auto-dom', '15, 1');
+  set('auto-every', '3');
+  set('auto-anchor', '2030-01-01');
+  const quarterly = { unit: 'month', days: [1, 15], minute: 540, every: 3, anchor: '2030-01-01' };
+  $('auto-save').click();
+  const monthSaved = await waitFor(() => same(mine()?.schedule, quarterly), 5000) && mine().id === first?.id;
+  if (mine()) openEditor(mine());
+  await pause(100);
+  const monthReopened = $('auto-dom').value === '1, 15' && $('auto-every').value === '3' && $('auto-anchor').value === '2030-01-01';
+  $('auto-cancel').click();
+  await pause(100);
+  const row = () => [...document.querySelectorAll('#auto-drawer .auto-rule')].find(el => el.textContent.includes(name));
+  const since = mine()?.since;
+  row()?.querySelector('.ar-pause')?.click();
+  const paused = await waitFor(() => mine()?.enabled === false, 5000) && same(mine().schedule, quarterly) && mine().since === since;
+  row()?.querySelector('.ar-pause')?.click();
+  const resumed = await waitFor(() => mine()?.enabled === true, 5000) && same(mine().schedule, quarterly) && mine().since >= since;
+  await persistInbound({ ...ctx.settings.inbound, rules: ctx.settings.inbound.rules.filter(r => r.name !== name) });
+  await provider.deleteTemplate(project.id, template);
+  toggleAutomations();
+  const mask = (saved ? 1 : 0) | (rowShown ? 2 : 0) | (previewOk ? 4 : 0) | (reopened ? 8 : 0)
+    | (monthSaved ? 16 : 0) | (monthReopened ? 32 : 0) | (paused ? 64 : 0) | (resumed ? 128 : 0);
+  await report('automation-editor', mask === 255, mask, 255);
+}
+
 /* Prompts became multi-line, so the queue's field became a textarea and the
    panel rows became collapsible. Both are exactly the class of change a fake
    document cannot judge: WebKit REFUSES keyboard input in a textarea that
@@ -2616,6 +2690,7 @@ export async function run() {
     await report('scheduler-context', mask === 31, mask, 31);
     stage = 15;
     await automationSmoke(project, column);
+    await automationEditorSmoke(project, column);
     await terminalPaintSmoke(project, column);
     await inv('smoke_seed_ambiguous');
     await report('page-visible', shown && visibility.hidden === 0 && !document.hidden,

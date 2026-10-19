@@ -238,7 +238,9 @@ failed row until you decide.
 **Automations.** A standing job is not a card's list: it is a project-level
 rule (New session ▾ → Automations… on the Board, or the ↻ chip once the
 project has one) with a **trigger** — a clock (every day,
-chosen weekdays or days of the month, at a local time) or a **Slack badge**
+chosen weekdays or days of the month, at a local time; optionally every N
+days, weeks or months counting from a date, so a sprint event is "every 2
+weeks on Mon") or a **Slack badge**
 (an emoji reaction you put on a message; see
 [docs/auto-respond.md](auto-respond.md) for the one-app Slack
 connection in Settings). When it fires, deck creates a fresh card in a

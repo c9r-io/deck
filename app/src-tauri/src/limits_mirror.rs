@@ -82,6 +82,9 @@ fn inbound_rule_limits_match_the_fixture() {
     let i = &limits()["inbound"];
     assert_eq!(words(&i["sources"]), SOURCES);
     assert_eq!(words(&i["schedule_units"]), SCHEDULE_UNITS);
+    assert_eq!(number(&i["schedule_every_max"]), SCHEDULE_EVERY_MAX as u64);
+    assert_eq!(number(&i["anchor_year_min"]), ANCHOR_YEAR_MIN as u64);
+    assert_eq!(number(&i["anchor_year_max"]), ANCHOR_YEAR_MAX as u64);
     assert_eq!(words(&i["finish_modes"]), FINISH_MODES);
     assert_eq!(number(&i["grace_min_default"]), DEFAULT_GRACE_MIN as u64);
     assert_eq!(number(&i["grace_min_max"]), MAX_GRACE_MIN as u64);

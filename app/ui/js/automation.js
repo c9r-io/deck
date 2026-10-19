@@ -53,8 +53,13 @@
 // a failed load every rule looks orphaned, and one project event there (an
 // operation that changed nothing announces one) would save settings without
 // any of them. Weekday chips
-// and day-of-month options are built here (their labels go through the
-// locale), so the editor is rebuilt on a language change; the drawer itself
+// are built here (their labels go through the locale), so the editor is
+// rebuilt on a language change; days of the month are a text field ("1,
+// 15"), so every saved day comes back on edit. A schedule's interval ("every
+// N" with its counting-from date, automation-model.js `scheduleFromFields`)
+// shows the date row only while N > 1 and fills today into an empty one,
+// and the preview line under the controls (`schedulePreview`) reads the
+// next three slots from the controls as they stand; the drawer itself
 // is re-rendered on every Board transaction and every inbound change while
 // open. A clock rule's `since` moves to now whenever its schedule changes
 // or it is resumed from pause, so a slot earlier that day is never caught up
@@ -142,8 +147,8 @@
 import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { persistInbound } from './settings.js';
-import { minToHM, normalizeTemplateStep, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
-import { approveRule, composeRule, finishHintShown, firstSendNeedsConfirm, firstSendSupported, firstSendText, withFirstSend, graceOptions, graceText, grantDetail, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, templateCarriesMessage, triggerText } from './automation-model.js';
+import { isoDate, minToHM, normalizeTemplateStep, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
+import { approveRule, composeRule, finishHintShown, firstSendNeedsConfirm, firstSendSupported, firstSendText, withFirstSend, graceOptions, graceText, grantDetail, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, scheduleFromFields, schedulePreview, templateCarriesMessage, triggerText } from './automation-model.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN } from './settings-model.js';
@@ -343,19 +348,28 @@ function buildDayControls() {
     b.type = 'button'; b.className = 'q-day'; b.dataset.d = String(d);
     b.textContent = t(`automation.wd.${d}`);
     b.setAttribute('aria-pressed', pressed.has(d) ? 'true' : 'false');
-    b.onclick = () => b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+    b.onclick = () => {
+      b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+      syncPreview();
+    };
     days.appendChild(b);
   }
-  const dom = $('auto-dom');
-  const keep = dom.value || '1';
-  dom.innerHTML = '';
-  for (let d = 1; d <= 31; d++) {
-    const o = document.createElement('option');
-    o.value = String(d); o.textContent = formatNumber(d);
-    dom.appendChild(o);
-  }
-  dom.value = keep;
   buildGraceOptions(Number($('auto-grace').value) || DEFAULT_GRACE_MIN);
+}
+
+/* the schedule controls as `scheduleFromFields` reads them */
+const scheduleFields = () => ({
+  unit: $('auto-unit').value, days: pressedDays(), monthDays: $('auto-dom').value,
+  time: $('auto-time').value, every: $('auto-every').value, anchor: $('auto-anchor').value,
+});
+
+/* automation-model.js `schedulePreview`: the next three slots of the
+   schedule as the controls stand, so an interval's phase is read before it
+   is saved; a schedule that cannot be read yet shows a dash */
+function syncPreview() {
+  if (segGet('auto-trigger') !== 'clock') return;
+  const read = scheduleFromFields(scheduleFields());
+  $('auto-preview').textContent = t('automation.preview', { slots: read.error ? '—' : schedulePreview(read.schedule) });
 }
 
 /* the grace select: the two choices plus a saved rule's other value */
@@ -380,6 +394,13 @@ function syncEditor() {
   const unit = $('auto-unit').value;
   $('auto-days').hidden = trigger !== 'clock' || unit !== 'week';
   $('auto-dom').hidden = trigger !== 'clock' || unit !== 'month';
+  /* an interval counts from a date: the row appears with the interval, and
+     a date not chosen yet starts as today */
+  const interval = trigger === 'clock' && Number($('auto-every').value) > 1;
+  if (interval && !$('auto-anchor').value) $('auto-anchor').value = isoDate(new Date());
+  $('auto-anchor-row').hidden = !interval;
+  $('auto-anchor-hint').hidden = !interval;
+  syncPreview();
   $('auto-slack-state').textContent = t(slackConnected() ? 'automation.slackOn' : 'automation.slackOffHint');
   $('auto-capture-row').hidden = trigger !== 'channel' || $('auto-match-kind').value !== 'regex';
   syncFinishHint();
@@ -545,11 +566,14 @@ export function openEditor(rule) {
   $('auto-threads').checked = !channel || rule.includeThreads !== false;
   $('auto-idle').value = channel ? rule.idleMinutes : CHANNEL_IDLE_DEFAULT;
   $('auto-unit').value = schedule.unit;
+  $('auto-every').value = String(schedule.every > 1 ? schedule.every : 1);
+  $('auto-anchor').value = schedule.every > 1 ? schedule.anchor : '';
   buildDayControls();
   if (schedule.unit === 'week') {
     $('auto-days').querySelectorAll('.q-day').forEach(b => b.setAttribute('aria-pressed', schedule.days.includes(Number(b.dataset.d)) ? 'true' : 'false'));
   }
-  if (schedule.unit === 'month') $('auto-dom').value = String(schedule.days[0] || 1);
+  /* every saved day of the month comes back, not only the first */
+  $('auto-dom').value = schedule.unit === 'month' ? schedule.days.join(', ') : '1';
   $('auto-time').value = minToHM(schedule.minute);
   buildGraceOptions(rule && clock ? (rule.graceMin ?? DEFAULT_GRACE_MIN) : DEFAULT_GRACE_MIN);
   /* a new rule starts from the project's defaults (04): saved into the rule
@@ -632,8 +656,7 @@ function readEditor() {
     cmd: $('auto-cmd').value, dir: $('auto-dir').value,
     finish: segGet('auto-finish'), reviewEach: $('auto-review').checked,
     badge: $('auto-badge').value,
-    unit: $('auto-unit').value, days: pressedDays(), dayOfMonth: $('auto-dom').value,
-    time: $('auto-time').value, graceMin: $('auto-grace').value,
+    ...scheduleFields(), graceMin: $('auto-grace').value,
   };
   const read = composeRule(fields, { previous, rules: allRules(), projectId: project.id, genId });
   if (read.error) {
@@ -955,6 +978,8 @@ export function initAutomation(deps) {
   }
   $('auto-template').addEventListener('change', syncApproval);
   $('auto-unit').addEventListener('change', syncEditor);
+  $('auto-every').addEventListener('input', syncEditor);
+  for (const id of ['auto-anchor', 'auto-time', 'auto-dom']) $(id).addEventListener('input', syncPreview);
   $('auto-match-kind').addEventListener('change', syncEditor);
   $('auto-trigger').querySelectorAll('button').forEach(b => {
     b.onclick = () => {
@@ -975,7 +1000,7 @@ export function initAutomation(deps) {
     if (editing) closeEditor(); else closeAutomations();
   });
   buildDayControls();
-  onLocaleChange(() => { buildDayControls(); syncFirstSendState(); renderAutomations(); });
+  onLocaleChange(() => { buildDayControls(); syncFirstSendState(); if (editing) syncPreview(); renderAutomations(); });
   unsubscribe = provider.subscribe(ev => {
     if (ev === 'projects') withdrawDrifted();
     if (ev === 'projects' || ev === 'list' || ev === 'channel-authority') renderAutomations();

@@ -1,0 +1,96 @@
+{
+  "about": "Clock rule schedules, pinned on both sides. `days`: from the calendar date `from` (inclusive), the first calendar days the schedule has a slot on, in order — pure calendar, no zone, no `since`; pure.test.mjs runs them through scheduleMatchesDay / nextScheduleSlots and inbound.rs through Schedule::matches_day. `instants`: the zone contract for a slot's due instant (procinfo.rs `wall_time_epoch`, pure.js `nextScheduleSlot`): a wall time the spring switch skips moves forward by the gap, one the autumn switch repeats is its first occurrence; `key` is the slot's identity (`day_start + minute * 60`), unchanged by the contract. Expected dates were generated with Python's datetime, independently of either implementation.",
+  "days": [
+    {
+      "name": "biweekly Monday from its anchor",
+      "schedule": { "unit": "week", "every": 2, "anchor": "2026-10-19", "days": [1], "minute": 540 },
+      "from": "2026-10-19",
+      "expect": ["2026-10-19", "2026-11-02", "2026-11-16", "2026-11-30"]
+    },
+    {
+      "name": "anchor on a Wednesday: the Monday before it never fires",
+      "schedule": { "unit": "week", "every": 2, "anchor": "2026-10-21", "days": [1, 5], "minute": 540 },
+      "from": "2026-10-19",
+      "expect": ["2026-10-23", "2026-11-02", "2026-11-06", "2026-11-16", "2026-11-20"]
+    },
+    {
+      "name": "Sunday anchor: its ISO week began the Monday before",
+      "schedule": { "unit": "week", "every": 2, "anchor": "2026-10-25", "days": [1, 7], "minute": 540 },
+      "from": "2026-10-19",
+      "expect": ["2026-10-25", "2026-11-02", "2026-11-08", "2026-11-16", "2026-11-22"]
+    },
+    {
+      "name": "across the year end of a 53-week ISO year",
+      "schedule": { "unit": "week", "every": 2, "anchor": "2026-12-14", "days": [1], "minute": 540 },
+      "from": "2026-12-14",
+      "expect": ["2026-12-14", "2026-12-28", "2027-01-11", "2027-01-25"]
+    },
+    {
+      "name": "quarterly on the 1st",
+      "schedule": { "unit": "month", "every": 3, "anchor": "2026-10-01", "days": [1], "minute": 540 },
+      "from": "2026-10-01",
+      "expect": ["2026-10-01", "2027-01-01", "2027-04-01", "2027-07-01"]
+    },
+    {
+      "name": "every second month on the 31st: short months end on their last day",
+      "schedule": { "unit": "month", "every": 2, "anchor": "2026-10-31", "days": [31], "minute": 540 },
+      "from": "2026-10-31",
+      "expect": ["2026-10-31", "2026-12-31", "2027-02-28", "2027-04-30"]
+    },
+    {
+      "name": "yearly as every 12 months: three previews span three years",
+      "schedule": { "unit": "month", "every": 12, "anchor": "2026-10-01", "days": [1], "minute": 540 },
+      "from": "2026-10-02",
+      "expect": ["2027-10-01", "2028-10-01", "2029-10-01"]
+    },
+    {
+      "name": "every third day across a month end",
+      "schedule": { "unit": "day", "every": 3, "anchor": "2026-10-30", "days": [], "minute": 540 },
+      "from": "2026-10-28",
+      "expect": ["2026-10-30", "2026-11-02", "2026-11-05"]
+    },
+    {
+      "name": "an anchor in the future: nothing before it",
+      "schedule": { "unit": "week", "every": 2, "anchor": "2027-03-01", "days": [1], "minute": 540 },
+      "from": "2026-10-19",
+      "expect": ["2027-03-01", "2027-03-15", "2027-03-29"]
+    },
+    {
+      "name": "every week (interval 1) is today's behaviour",
+      "schedule": { "unit": "week", "days": [1, 3], "minute": 540 },
+      "from": "2026-10-19",
+      "expect": ["2026-10-19", "2026-10-21", "2026-10-26"]
+    },
+    {
+      "name": "monthly on two days (interval 1)",
+      "schedule": { "unit": "month", "days": [1, 15], "minute": 540 },
+      "from": "2026-10-19",
+      "expect": ["2026-11-01", "2026-11-15", "2026-12-01"]
+    },
+    {
+      "name": "three weekdays every second week, starting mid-week",
+      "schedule": { "unit": "week", "every": 2, "anchor": "2026-10-19", "days": [1, 3, 5], "minute": 540 },
+      "from": "2026-10-20",
+      "expect": ["2026-10-21", "2026-10-23", "2026-11-02", "2026-11-04", "2026-11-06"]
+    },
+    {
+      "name": "every second day over a leap day",
+      "schedule": { "unit": "day", "every": 2, "anchor": "2028-02-27", "days": [], "minute": 540 },
+      "from": "2028-02-27",
+      "expect": ["2028-02-27", "2028-02-29", "2028-03-02"]
+    },
+    {
+      "name": "every day (interval 1)",
+      "schedule": { "unit": "day", "days": [], "minute": 60 },
+      "from": "2026-12-31",
+      "expect": ["2026-12-31", "2027-01-01"]
+    }
+  ],
+  "instants": [
+    { "zone": "America/New_York", "date": "2026-03-08", "minute": 150, "at": 1772955000, "key": 1772955000, "reads": "03:30 EDT: the spring switch skips 02:30" },
+    { "zone": "America/New_York", "date": "2026-11-01", "minute": 90, "at": 1793511000, "key": 1793511000, "reads": "01:30 EDT: the first of the two 01:30s" },
+    { "zone": "America/New_York", "date": "2026-03-08", "minute": 540, "at": 1772974800, "key": 1772978400, "reads": "09:00 EDT; the key is an hour later" },
+    { "zone": "America/New_York", "date": "2026-11-01", "minute": 540, "at": 1793541600, "key": 1793538000, "reads": "09:00 EST; the key is an hour earlier" },
+    { "zone": "Asia/Tokyo", "date": "2026-10-19", "minute": 540, "at": 1792368000, "key": 1792368000, "reads": "09:00 JST: no DST, key and instant agree" }
+  ]
+}

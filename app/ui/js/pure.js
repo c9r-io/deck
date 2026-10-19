@@ -895,15 +895,56 @@ export function planInbound(item, { cards, projects, home }) {
 /* ---------- clock automations ----------
    Twin of `Schedule` in inbound.rs: a minute of the local day on every day /
    the listed ISO weekdays (1 = Monday) / the listed days of the month, where
-   a day the month lacks means its last day. */
+   a day the month lacks means its last day; repeating `every` units (1 when
+   absent) counted from the calendar date `anchor` ("YYYY-MM-DD", present
+   only with every > 1). The period holding the anchor is an on period (its
+   ISO week, Monday first; its month; the day itself), nothing before the
+   anchor has a slot, and the phase never moves: a skipped or missed slot
+   does not shift the next one. Pure arithmetic on day numbers, so the zone,
+   the year number and ISO week numbering play no part; both sides are
+   pinned to test/fixtures/schedule-cases.json. A slot's INSTANT is the
+   local wall time of that day (`new Date(y, m, d, hh, mm)`): a time the
+   spring switch skips moves forward by the gap, one the autumn switch
+   repeats is its first occurrence — the same contract as the backend's
+   mktime, pinned by the fixture's `instants` (schedule-instants.test.mjs). */
 export const runDateLabel = epoch => {
   const d = new Date(epoch * 1000);
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 export const isoWeekday = d => ((d.getDay() + 6) % 7) + 1;
 export const daysInMonth = d => new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+/* an interval schedule's anchor is a real calendar date in this span
+   (mirrors inbound.rs) */
+export const ANCHOR_YEAR_MIN = 1970;
+export const ANCHOR_YEAR_MAX = 2999;
+/* "YYYY-MM-DD" as a real calendar date, else null */
+export function parseCivilDate(text) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(text ?? ''));
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (y < ANCHOR_YEAR_MIN || y > ANCHOR_YEAR_MAX || mo < 1 || mo > 12 || d < 1 || d > new Date(y, mo, 0).getDate()) return null;
+  return { y, m: mo, d };
+}
+/* days since 1970-01-01 of a calendar date, no zone involved */
+export const civilDay = (y, m, d) => Math.round(Date.UTC(y, m - 1, d) / 86400000);
+const isoWeekdayOfDay = days => ((days + 3) % 7 + 7) % 7 + 1;
+const weekStart = days => days - (isoWeekdayOfDay(days) - 1);
+/* is the local date `d` on or after the anchor and in an on period? */
+function inPeriod(schedule, d) {
+  const anchor = parseCivilDate(schedule.anchor);
+  if (!anchor) return false;
+  const today = civilDay(d.getFullYear(), d.getMonth() + 1, d.getDate());
+  const base = civilDay(anchor.y, anchor.m, anchor.d);
+  if (today < base) return false;
+  const every = schedule.every;
+  if (schedule.unit === 'day') return (today - base) % every === 0;
+  if (schedule.unit === 'week') return ((weekStart(today) - weekStart(base)) / 7) % every === 0;
+  if (schedule.unit === 'month') return ((d.getFullYear() * 12 + d.getMonth()) - (anchor.y * 12 + anchor.m - 1)) % every === 0;
+  return false;
+}
 export function scheduleMatchesDay(schedule, d) {
   if (!schedule) return false;
+  if (schedule.every > 1 && !inPeriod(schedule, d)) return false;
   if (schedule.unit === 'day') return true;
   if (schedule.unit === 'week') return schedule.days.includes(isoWeekday(d));
   if (schedule.unit === 'month') {
@@ -914,12 +955,19 @@ export function scheduleMatchesDay(schedule, d) {
 }
 
 /* the first slot after `now` (and not before `since`); null when no day
-   matches within a year. The backend offers today's slot until midnight, so
-   "next" from the user's side is always a future instant. */
+   matches within 400 days of the scan's start — today, or the anchor when
+   that is later (nothing fires before it). 400 days cover the longest gap
+   between two slots (every 12 months). The backend offers today's slot
+   until midnight, so "next" from the user's side is always a future
+   instant. */
 export function nextScheduleSlot(schedule, now, since = 0) {
   if (now == null) now = Math.floor(Date.now() / 1000);
   const base = new Date(now * 1000);
-  for (let d = 0; d < 400; d++) {
+  const anchor = schedule.every > 1 ? parseCivilDate(schedule.anchor) : null;
+  const first = anchor
+    ? Math.max(0, civilDay(anchor.y, anchor.m, anchor.d) - civilDay(base.getFullYear(), base.getMonth() + 1, base.getDate()))
+    : 0;
+  for (let d = first; d < first + 400; d++) {
     const slotDate = new Date(base.getFullYear(), base.getMonth(), base.getDate() + d,
       Math.floor(schedule.minute / 60), schedule.minute % 60, 0, 0);
     if (!scheduleMatchesDay(schedule, slotDate)) continue;
@@ -928,6 +976,20 @@ export function nextScheduleSlot(schedule, now, since = 0) {
     return slot;
   }
   return null;
+}
+
+/* the first `n` slots after `now`, each found from the one before it: an
+   every-12-months rule's three slots span three years, more than one scan */
+export function nextScheduleSlots(schedule, now, since = 0, n = 3) {
+  const out = [];
+  let cursor = now == null ? Math.floor(Date.now() / 1000) : now;
+  while (out.length < n) {
+    const next = nextScheduleSlot(schedule, cursor, since);
+    if (next == null) break;
+    out.push(next);
+    cursor = next;
+  }
+  return out;
 }
 
 /* a condition that must hold on N consecutive observations before it counts:

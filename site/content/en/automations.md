@@ -24,7 +24,7 @@ An automation references a template and sends it on each new run. Try a run that
 
 1. Choose **New on a clock…** from **New session ▾**, or create a clock rule in Automations.
 2. Set its name, destination group, working directory, launch command and template.
-3. Choose every day, selected weekdays or days of the month, and a local time.
+3. Choose every day, selected weekdays or days of the month, and a local time. For a sprint rhythm set **every 2 weeks** (any interval from 1 to 12 days, weeks or months) and the date to count from; the editor shows the next three slots before you save.
 4. Choose the grace period for missed slots and whether to keep or close the card afterwards.
 5. Save and check the next slot and recent run history.
 

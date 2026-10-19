@@ -3,7 +3,7 @@
 // The drawer itself (automation.js) is verified by the WKWebView smoke.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { approvalText, approveRule, composeRule, firstSendNeedsConfirm, firstSendSupported, firstSendText, withFirstSend, graceOptions, graceText, grantDigest, grantManifest, grantState, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, scheduleText, stepClass, templateCarriesMessage, triggerText } from '../js/automation-model.js';
+import { approvalText, approveRule, composeRule, firstSendNeedsConfirm, firstSendSupported, firstSendText, withFirstSend, graceOptions, graceText, grantDigest, grantManifest, grantState, liveRules, mergeRules, parseMonthDays, recentRuns, ruleFacts, ruleLabel, runSummary, scheduleFromFields, schedulePreview, scheduleText, stepClass, templateCarriesMessage, triggerText } from '../js/automation-model.js';
 import { readFileSync } from 'node:fs';
 import { GRACE_CHOICES } from '../js/settings-model.js';
 import { setLocale } from '../js/i18n.js';
@@ -82,7 +82,7 @@ test('recent runs belong to the rule by id (clock) or badge (Slack), newest firs
 });
 
 test('composing a rule refuses what is missing and names the control to focus', () => {
-  const base = { trigger: 'clock', name: 'Nightly', columnId: 'C', template: 'tpl', cmd: 'claude', dir: '/w', finish: 'close', reviewEach: false, unit: 'week', days: [1, 3], dayOfMonth: '1', time: '09:00', graceMin: '15' };
+  const base = { trigger: 'clock', name: 'Nightly', columnId: 'C', template: 'tpl', cmd: 'claude', dir: '/w', finish: 'close', reviewEach: false, unit: 'week', days: [1, 3], monthDays: '1', time: '09:00', graceMin: '15' };
   const opts = { projectId: 'P', genId, nowSecs };
   assert.deepEqual(composeRule({ ...base, columnId: '' }, opts), { error: 'automation.needsColumn', focus: 'auto-column', params: {} });
   assert.deepEqual(composeRule({ ...base, template: '' }, opts), { error: 'automation.needsTemplate', focus: 'auto-template', params: {} });
@@ -96,21 +96,76 @@ test('composing a rule refuses what is missing and names the control to focus', 
 });
 
 test('a composed clock rule uses its id as its badge and starts its schedule at now', () => {
-  const fields = { trigger: 'clock', name: ' Nightly ', columnId: 'C', template: 'tpl', cmd: ' claude ', dir: '/w', finish: 'keep', reviewEach: true, unit: 'week', days: [1, 3], dayOfMonth: '1', time: '09:00', graceMin: '1440' };
+  const fields = { trigger: 'clock', name: ' Nightly ', columnId: 'C', template: 'tpl', cmd: ' claude ', dir: '/w', finish: 'keep', reviewEach: true, unit: 'week', days: [1, 3], monthDays: '1', time: '09:00', graceMin: '1440' };
   ids = 0;
   const { rule } = composeRule(fields, { projectId: 'P', genId, nowSecs });
   assert.deepEqual(rule, {
     id: 'a1', source: 'clock', badge: 'a1', projectId: 'P', columnId: 'C', cmd: 'claude', template: 'tpl', dir: '/w', name: 'Nightly',
     enabled: true, finish: 'keep', reviewEach: true, schedule: { unit: 'week', days: [1, 3], minute: 540 }, graceMin: 1440, since: nowSecs,
   });
-  const monthly = composeRule({ ...fields, unit: 'month', dayOfMonth: '15' }, { projectId: 'P', genId, nowSecs }).rule;
+  const monthly = composeRule({ ...fields, unit: 'month', monthDays: '15' }, { projectId: 'P', genId, nowSecs }).rule;
   assert.deepEqual(monthly.schedule, { unit: 'month', days: [15], minute: 540 });
   assert.equal('reviewEach' in composeRule({ ...fields, reviewEach: false }, { projectId: 'P', genId, nowSecs }).rule, false);
 });
 
+test('an interval schedule reads with its count and date, and is read from the controls only with a real anchor', () => {
+  assert.equal(scheduleText({ unit: 'week', days: [1, 5], minute: 540, every: 2, anchor: '2026-10-19' }), 'every 2 weeks on Mon, Fri at 09:00, from 2026-10-19');
+  assert.equal(scheduleText({ unit: 'month', days: [1], minute: 0, every: 3, anchor: '2026-10-01' }), 'every 3 months on day 1 at 00:00, from 2026-10-01');
+  assert.equal(scheduleText({ unit: 'day', days: [], minute: 60, every: 3, anchor: '2026-10-30' }), 'every 3 days at 01:00, from 2026-10-30');
+  assert.equal(scheduleText({ unit: 'day', days: [], minute: 60, every: 1 }), 'every day at 01:00', 'an interval of 1 reads as before');
+  const fields = { unit: 'week', days: [1, 5], monthDays: '1', time: '09:00', every: '2', anchor: '2026-10-19' };
+  assert.deepEqual(scheduleFromFields(fields), { schedule: { unit: 'week', days: [1, 5], minute: 540, every: 2, anchor: '2026-10-19' } });
+  assert.deepEqual(scheduleFromFields({ ...fields, every: '1' }), { schedule: { unit: 'week', days: [1, 5], minute: 540 } }, 'an interval of 1 stores no date');
+  assert.deepEqual(scheduleFromFields({ ...fields, every: '' }), { schedule: { unit: 'week', days: [1, 5], minute: 540 } }, 'an empty box is 1');
+  for (const every of ['13', '0', '2.5', 'x']) {
+    assert.deepEqual(scheduleFromFields({ ...fields, every }), { error: 'automation.badEvery', focus: 'auto-every' }, every);
+  }
+  for (const anchor of ['', '2026-02-30', '19.10.2026']) {
+    assert.deepEqual(scheduleFromFields({ ...fields, anchor }), { error: 'automation.needsAnchor', focus: 'auto-anchor' }, anchor);
+  }
+  assert.deepEqual(scheduleFromFields({ ...fields, days: [] }), { error: 'automation.needsDays', focus: null });
+  assert.deepEqual(scheduleFromFields({ ...fields, time: '' }), { error: 'automation.needsTime', focus: 'auto-time' });
+  assert.deepEqual(scheduleFromFields({ ...fields, unit: 'month', monthDays: '15, 1, 15' }),
+    { schedule: { unit: 'month', days: [1, 15], minute: 540, every: 2, anchor: '2026-10-19' } }, 'sorted and unique');
+  for (const monthDays of ['0, 40', '', '1.5', '1, x', '32']) {
+    assert.deepEqual(scheduleFromFields({ ...fields, unit: 'month', monthDays }), { error: 'automation.badMonthDays', focus: 'auto-dom' }, monthDays);
+  }
+  assert.deepEqual(scheduleFromFields({ ...fields, unit: 'day' }), { schedule: { unit: 'day', days: [], minute: 540, every: 2, anchor: '2026-10-19' } });
+  assert.deepEqual(parseMonthDays('31、1，15 2'), [1, 2, 15, 31], 'every separator a keyboard offers');
+  assert.equal(parseMonthDays('1.5'), null);
+  assert.equal(parseMonthDays(null), null);
+});
+
+test('an interval rule composes with its anchor; a new interval or date starts fresh, a rename keeps both', () => {
+  const previous = clockRule({ since: 1000, schedule: { unit: 'week', days: [1], minute: 540, every: 2, anchor: '2026-10-19' } });
+  const fields = { trigger: 'clock', name: 'Sprint', columnId: 'C', template: 'tpl', cmd: 'claude', dir: '/w', finish: 'close', reviewEach: false,
+    unit: 'week', days: [1], monthDays: '1', time: '09:00', every: '2', anchor: '2026-10-19', graceMin: '15' };
+  const opts = { previous, projectId: 'P', genId, nowSecs };
+  const same = composeRule(fields, opts).rule;
+  assert.deepEqual([same.since, same.schedule], [1000, { unit: 'week', days: [1], minute: 540, every: 2, anchor: '2026-10-19' }], 'a rename keeps the phase and since');
+  const widened = composeRule({ ...fields, every: '3' }, opts).rule;
+  assert.deepEqual([widened.since, widened.schedule.every, widened.schedule.anchor], [nowSecs, 3, '2026-10-19'], 'a new interval keeps the date the user set');
+  const moved = composeRule({ ...fields, anchor: '2026-10-26' }, opts).rule;
+  assert.deepEqual([moved.since, moved.schedule.anchor], [nowSecs, '2026-10-26']);
+  const plain = composeRule({ ...fields, every: '1' }, opts).rule;
+  assert.deepEqual([plain.since, plain.schedule], [nowSecs, { unit: 'week', days: [1], minute: 540 }], 'back to every week: no date stored');
+  assert.deepEqual(composeRule({ ...fields, anchor: '' }, opts), { error: 'automation.needsAnchor', focus: 'auto-anchor', params: {} });
+  assert.deepEqual(composeRule({ ...fields, every: '99' }, opts), { error: 'automation.badEvery', focus: 'auto-every', params: {} });
+  assert.equal(triggerText(same), 'every 2 weeks on Mon at 09:00, from 2026-10-19');
+});
+
+test('the preview names the next three slots with their weekdays, the year only when it is not this one', () => {
+  const now = Math.floor(new Date(2026, 9, 19, 8, 0).getTime() / 1000);     // Monday 2026-10-19, 08:00
+  assert.equal(schedulePreview({ unit: 'week', days: [1], minute: 540, every: 2, anchor: '2026-10-19' }, now), 'Mon 10-19 · Mon 11-02 · Mon 11-16');
+  assert.equal(schedulePreview({ unit: 'week', days: [1], minute: 420, every: 2, anchor: '2026-10-19' }, now), 'Mon 11-02 · Mon 11-16 · Mon 11-30', 'a slot earlier today is not next');
+  assert.equal(schedulePreview({ unit: 'month', days: [1], minute: 540, every: 12, anchor: '2026-10-01' }, now), 'Fri 2027-10-01 · Sun 2028-10-01 · Mon 2029-10-01');
+  assert.equal(schedulePreview({ unit: 'week', days: [1], minute: 540, every: 2, anchor: '2027-03-01' }, now), 'Mon 2027-03-01 · Mon 2027-03-15 · Mon 2027-03-29');
+  assert.equal(schedulePreview({ unit: 'day', days: [], minute: 540 }, now), 'Mon 10-19 · Tue 10-20 · Wed 10-21', 'a plain rule previews too');
+});
+
 test('editing keeps the rule\'s id and pause state; only a changed schedule or trigger starts fresh', () => {
   const previous = clockRule({ enabled: false, since: 1000 });
-  const fields = { trigger: 'clock', name: 'Nightly', columnId: 'C', template: 'tpl', cmd: 'claude', dir: '/w', finish: 'close', reviewEach: false, unit: 'week', days: [1, 3], dayOfMonth: '1', time: '09:00', graceMin: '15' };
+  const fields = { trigger: 'clock', name: 'Nightly', columnId: 'C', template: 'tpl', cmd: 'claude', dir: '/w', finish: 'close', reviewEach: false, unit: 'week', days: [1, 3], monthDays: '1', time: '09:00', graceMin: '15' };
   const same = composeRule(fields, { previous, projectId: 'P', genId, nowSecs }).rule;
   assert.deepEqual([same.id, same.enabled, same.since], ['a1', false, 1000]);
   const moved = composeRule({ ...fields, time: '10:00' }, { previous, projectId: 'P', genId, nowSecs }).rule;
