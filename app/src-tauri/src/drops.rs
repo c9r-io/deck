@@ -136,8 +136,8 @@ mod tests {
     #[test]
     fn dropped_files_land_private_unique_and_bounded() {
         use std::os::unix::fs::PermissionsExt;
-        let d = std::env::temp_dir().join(format!("deck-drops-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let root = crate::test_dir::TestDir::new("drops");
+        let d = root.join("drops");
         let p1 = save_drop_into(&d, "shot.png", b"AAAA").unwrap();
         let p2 = save_drop_into(&d, "shot.png", b"BBBB").unwrap();
         assert_ne!(p1, p2, "same name twice → distinct files");
@@ -152,9 +152,7 @@ mod tests {
 
     #[test]
     fn old_drops_are_pruned_fresh_ones_kept() {
-        let d = std::env::temp_dir().join(format!("deck-prune-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::test_dir::TestDir::new("prune");
         let old = d.join("old.png");
         let fresh = d.join("fresh.png");
         std::fs::write(&old, "x").unwrap();

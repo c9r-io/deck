@@ -1014,11 +1014,8 @@ pub(crate) fn save_typed_ephemeral<T: DeserializeOwned>(
 mod tests {
     use super::*;
 
-    fn tdir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("deck-storage-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tdir(tag: &str) -> crate::test_dir::TestDir {
+        crate::test_dir::TestDir::new(&format!("storage-{tag}"))
     }
 
     fn load_doc(p: &Path) -> Result<Option<LoadOutcome>, DeckError> {
@@ -1582,7 +1579,8 @@ mod tests {
 
     #[test]
     fn review_envelope_barrier_never_overwrites_concurrent_settings() {
-        let path = tdir("review-settings-race").join("settings.json");
+        let dir = tdir("review-settings-race");
+        let path = dir.join("settings.json");
         save_typed::<Doc>(&path, r#"{"v":0}"#).unwrap();
         std::thread::scope(|scope| {
             scope.spawn(|| {
@@ -2218,7 +2216,8 @@ mod tests {
         assert_eq!(kept, 2, "both damaged files are kept");
 
         // a real first run still gets the empty barrier
-        let fresh = tdir("review-first").join("settings.json");
+        let dir = tdir("review-first");
+        let fresh = dir.join("settings.json");
         ensure_review_schema::<serde_json::Value>(&fresh).unwrap();
         assert_eq!(on_disk(&fresh)["schema_version"], 2);
         assert_eq!(on_disk(&fresh)["data"], serde_json::json!({}));

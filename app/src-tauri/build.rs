@@ -218,8 +218,13 @@ fn build_native_bridges() {
     };
     let started = std::time::Instant::now();
     let object = out.join("NativeBridges.o");
+    // The Swift driver leaves a `TemporaryDirectory.*` in its TMPDIR after
+    // every compile: give it one inside OUT_DIR, removed once it is done.
+    let swift_tmp = out.join("swiftc-tmp");
+    let _ = std::fs::remove_dir_all(&swift_tmp);
+    std::fs::create_dir_all(&swift_tmp).expect("a TMPDIR for swiftc");
     let mut compiler = std::process::Command::new("xcrun");
-    compiler.arg("swiftc");
+    compiler.arg("swiftc").env("TMPDIR", &swift_tmp);
     // A release must include the same modern path exercised by local device
     // testing. Older developer toolchains may still build the legacy debug app.
     if std::env::var("PROFILE").as_deref() == Ok("release")
@@ -250,6 +255,7 @@ fn build_native_bridges() {
         .status()
         .expect("Swift compiler is required (use the macOS 26 SDK for SpeechAnalyzer)");
     assert!(status.success(), "failed to compile the native bridges");
+    let _ = std::fs::remove_dir_all(&swift_tmp);
     let status = std::process::Command::new("xcrun")
         .args(["libtool", "-static", "-o"])
         .arg(out.join("libdeck_native.a"))

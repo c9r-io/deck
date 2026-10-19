@@ -103,8 +103,17 @@ jobs:
       - name: JS unresolved-identifier scan
         run: node app/ui/js/check.mjs
 
+      - name: An empty TMPDIR for the release tooling fixtures
+        run: mkdir "$RUNNER_TEMP/deck-python-tests"
+
       - name: Release tooling fixtures
+        env:
+          # Their own TMPDIR: the next step refuses anything left in it.
+          TMPDIR: ${{ runner.temp }}/deck-python-tests
         run: python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py scripts/test_signal_candidate.py scripts/test_codex_title_probe.py scripts/test_ce_verdict.py scripts/test_reminder_verify.py scripts/test_sidecar_provenance.py scripts/test_extension_catalog.py
+
+      - name: The release tooling fixtures left nothing in their TMPDIR
+        run: scripts/check-test-tmpdir "$RUNNER_TEMP/deck-python-tests"
 
       - name: Workflow syntax and expression validation
         run: scripts/check-workflows
@@ -195,6 +204,9 @@ jobs:
       - name: cargo clippy -D warnings
         run: cargo clippy --workspace --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings
 
+      - name: An empty TMPDIR for the tests
+        run: mkdir "$RUNNER_TEMP/deck-tests"
+
       # The Full Local B-admission lane is the deck-app test ce1_probe_*; it
       # runs inside the coverage step below instead of a second, separately
       # built `cargo test`. This step names the evidence file it must write
@@ -222,7 +234,12 @@ jobs:
           DECK_CE_DECK_BUILD: ${{ steps.ce-probe.outputs.DECK_CE_DECK_BUILD }}
           DECK_CE_PLAN_ID: ${{ steps.ce-probe.outputs.DECK_CE_PLAN_ID }}
           DECK_CE_CASE: ${{ steps.ce-probe.outputs.DECK_CE_CASE }}
+          # Their own TMPDIR: the next step refuses anything left in it.
+          TMPDIR: ${{ runner.temp }}/deck-tests
         run: cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
+
+      - name: The tests left nothing in their TMPDIR
+        run: scripts/check-test-tmpdir "$RUNNER_TEMP/deck-tests"
 
       # binaries/ is ONE directory for every build context
       # (app/src-tauri/build/shared_output.rs). The tests above ran the

@@ -2061,11 +2061,10 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
-    fn temp_store(tag: &str) -> InboxStore {
-        let dir = std::env::temp_dir().join(format!("deck-channel-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        InboxStore::load(dir.join("inbox.json")).unwrap()
+    /// A store in its own test directory; keep the directory as long as the store.
+    fn temp_store(tag: &str) -> (InboxStore, crate::test_dir::TestDir) {
+        let dir = crate::test_dir::TestDir::new(&format!("channel-{tag}"));
+        (InboxStore::load(dir.join("inbox.json")).unwrap(), dir)
     }
 
     fn rule() -> ChannelRule {
@@ -2290,7 +2289,7 @@ mod tests {
 
     #[test]
     fn stage_refuses_structurally_invalid_entries_before_writing() {
-        let mut store = temp_store("stage-invalid");
+        let (mut store, _dir) = temp_store("stage-invalid");
         let event = parse_message(
             &serde_json::from_str(&envelope(json!({}))).unwrap(),
             &identity(),
@@ -2335,7 +2334,7 @@ mod tests {
                 "\"event_id\":\"Ev1\"",
                 &format!("\"event_id\":\"Ev{index}\""),
             );
-            let mut store = temp_store(&format!("reload-{index}"));
+            let (mut store, _dir) = temp_store(&format!("reload-{index}"));
             let Ok(entries) = entries_from_envelope(&cfg, &identity(), &text, 2_000_000_001) else {
                 continue;
             };
@@ -2343,7 +2342,7 @@ mod tests {
                 assert!(InboxStore::load(store.path.clone()).is_ok(), "{extra}");
             }
         }
-        let mut store = temp_store("reload-team");
+        let (mut store, _dir) = temp_store("reload-team");
         let odd_team = Identity {
             team_id: "t-lower".into(),
             ..identity()
@@ -2527,7 +2526,7 @@ mod tests {
 
     #[test]
     fn durable_stage_precedes_platform_ack_and_recovers() {
-        let mut store = temp_store("stage");
+        let (mut store, _dir) = temp_store("stage");
         let cfg = config();
         assert_eq!(
             process_envelope(
@@ -2572,7 +2571,7 @@ mod tests {
 
     #[test]
     fn canceled_applied_event_cannot_be_reintroduced_by_a_stale_drain() {
-        let mut store = temp_store("cancel-stale");
+        let (mut store, _dir) = temp_store("cancel-stale");
         let event = parse_message(
             &serde_json::from_str(&envelope(json!({}))).unwrap(),
             &identity(),
@@ -2600,7 +2599,7 @@ mod tests {
 
     #[test]
     fn capacity_failure_withholds_ack() {
-        let mut store = temp_store("full");
+        let (mut store, _dir) = temp_store("full");
         store.doc.pending = (0..MAX_PENDING)
             .map(|i| {
                 let mut p = event_entries(
@@ -2655,7 +2654,7 @@ mod tests {
 
     #[test]
     fn full_dedupe_ledger_allows_ack_and_known_retry_but_refuses_unknown() {
-        let mut store = temp_store("ledger-full");
+        let (mut store, _dir) = temp_store("ledger-full");
         let event = parse_message(
             &serde_json::from_str(&envelope(json!({}))).unwrap(),
             &identity(),
@@ -2707,7 +2706,7 @@ mod tests {
     fn disabled_config_stops_new_staging_but_preserves_pending_entries() {
         let mut disabled = config();
         disabled.connection.enabled = false;
-        let mut store = temp_store("disabled-pending");
+        let (mut store, _dir) = temp_store("disabled-pending");
         store
             .stage(
                 event_entries(
@@ -2739,7 +2738,7 @@ mod tests {
 
     #[test]
     fn deterministic_rejections_ack_without_staging() {
-        let mut store = temp_store("deterministic");
+        let (mut store, _dir) = temp_store("deterministic");
         let oversize = envelope(json!({"text": format!("INC-42 {}", "x".repeat(MAX_BODY_BYTES))}));
         let huge = format!("{}{}", envelope(json!({})), " ".repeat(MAX_ENVELOPE_BYTES));
         let future = envelope(json!({})).replace("2000000000", "2000000302");
@@ -2777,14 +2776,14 @@ mod tests {
 
     #[test]
     fn inbox_load_is_byte_bounded_and_revalidates_queued_targets() {
-        let store = temp_store("reload-validation");
+        let (store, _dir) = temp_store("reload-validation");
         std::fs::write(&store.path, vec![b'x'; MAX_FILE_BYTES + 1]).unwrap();
         assert_eq!(
             InboxStore::load(store.path.clone()).err().unwrap().kind(),
             ErrorKind::Recovery
         );
 
-        let mut store = temp_store("reload-target");
+        let (mut store, _dir) = temp_store("reload-target");
         let event = parse_message(
             &serde_json::from_str(&envelope(json!({}))).unwrap(),
             &identity(),
@@ -2813,7 +2812,7 @@ mod tests {
         .unwrap();
         let entries = event_entries(&enterprise, &event);
         assert_eq!(entries.len(), 1);
-        let mut store = temp_store("enterprise-user");
+        let (mut store, _dir) = temp_store("enterprise-user");
         store.stage(entries, 2_000_000_001).unwrap();
         let recovered = InboxStore::load(store.path).unwrap();
         assert_eq!(
@@ -3213,7 +3212,7 @@ mod tests {
 
     #[test]
     fn inbox_load_refuses_newer_versions_duplicates_and_bad_ledgers() {
-        let store = temp_store("load-shape");
+        let (store, _dir) = temp_store("load-shape");
         let path = store.path.clone();
         let err = |doc: Value| {
             std::fs::write(&path, doc.to_string()).unwrap();
@@ -3276,7 +3275,7 @@ mod tests {
 
     #[test]
     fn ack_refuses_unknown_events_before_writing() {
-        let mut store = temp_store("ack-unknown");
+        let (mut store, _dir) = temp_store("ack-unknown");
         let event = parse_message(
             &serde_json::from_str(&envelope(json!({}))).unwrap(),
             &identity(),

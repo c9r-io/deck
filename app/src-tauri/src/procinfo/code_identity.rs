@@ -410,8 +410,14 @@ mod tests {
             std::fs::canonicalize(&dir).expect("canonical fixture directory")
         }
 
-        fn run(tool: &str, args: &[&str]) {
-            let output = Command::new(tool).args(args).output().expect(tool);
+        /// Run `tool`; `tmpdir` becomes its TMPDIR when given.
+        fn run(tool: &str, args: &[&str], tmpdir: Option<&Path>) {
+            let mut command = Command::new(tool);
+            command.args(args);
+            if let Some(tmpdir) = tmpdir {
+                command.env("TMPDIR", tmpdir);
+            }
+            let output = command.output().expect(tool);
             assert!(
                 output.status.success(),
                 "{tool} {args:?}: {}",
@@ -424,6 +430,7 @@ mod tests {
             run(
                 "/usr/bin/codesign",
                 &["-f", "-s", "-", "-i", identifier, path.to_str().unwrap()],
+                None,
             );
         }
 
@@ -432,6 +439,7 @@ mod tests {
             run(
                 "/usr/bin/codesign",
                 &["--remove-signature", path.to_str().unwrap()],
+                None,
             );
         }
 
@@ -484,7 +492,12 @@ mod tests {
                 args.extend(["-arch", arch]);
             }
             args.push(source.to_str().unwrap());
-            run("/usr/bin/cc", &args);
+            // A build for several architectures leaves empty per-architecture
+            // directories in the compiler's TMPDIR: give it one of its own.
+            let scratch = path.with_extension("cc-tmp");
+            std::fs::create_dir_all(&scratch).expect("fixture compiler TMPDIR");
+            run("/usr/bin/cc", &args, Some(&scratch));
+            std::fs::remove_dir_all(&scratch).expect("fixture compiler TMPDIR removed");
             std::fs::remove_file(&source).expect("fixture source removed");
             sign(path, identifier);
         }

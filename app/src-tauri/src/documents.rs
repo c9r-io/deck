@@ -3891,9 +3891,7 @@ mod tests {
 
     #[test]
     fn save_rejection_touches_neither_main_nor_backup() {
-        let d = std::env::temp_dir().join(format!("deck-savereject-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::test_dir::TestDir::new("savereject");
         let p = d.join("deck.json");
         let good = board(&card("s1", "P1", "C1", "deck-t-ab12"));
         save_validated::<BoardDoc>(&p, &good, "board").unwrap();

@@ -124,13 +124,9 @@ pub(crate) fn write_bounded(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    fn tdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("deck-ledger-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn tdir(tag: &str) -> crate::test_dir::TestDir {
+        crate::test_dir::TestDir::new(&format!("ledger-{tag}"))
     }
 
     #[test]
@@ -148,7 +144,8 @@ mod tests {
 
     #[test]
     fn absent_document_is_none_and_round_trips_within_the_bound() {
-        let path = tdir("roundtrip").join("doc.json");
+        let dir = tdir("roundtrip");
+        let path = dir.join("doc.json");
         assert!(load_bounded::<Vec<u32>>(&path, 64, "doc")
             .unwrap()
             .is_none());
@@ -162,7 +159,8 @@ mod tests {
 
     #[test]
     fn oversized_and_undecodable_files_report_recovery_without_decoding() {
-        let path = tdir("oversize").join("doc.json");
+        let dir = tdir("oversize");
+        let path = dir.join("doc.json");
         std::fs::write(&path, b"[1,2,3]").unwrap();
         let error = load_bounded::<Vec<u32>>(&path, 4, "the doc").unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Recovery);
@@ -175,7 +173,8 @@ mod tests {
 
     #[test]
     fn a_write_over_the_bound_is_refused_before_touching_the_file() {
-        let path = tdir("cap").join("doc.json");
+        let dir = tdir("cap");
+        let path = dir.join("doc.json");
         let error = write_bounded(&path, b"12345", 4, "the doc").unwrap_err();
         assert_eq!(error.kind(), ErrorKind::DiskFull);
         assert_eq!(error.message(), "the doc capacity reached");

@@ -274,17 +274,11 @@ impl Drop for FakeRunner {
     }
 }
 
-fn test_root(tag: &str) -> PathBuf {
-    // A per-process counter instead of a timestamp keeps runner socket
-    // paths below SUN_LEN under a long macOS TMPDIR.
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let root = std::env::temp_dir().join(format!(
-        "deck-mcp-{tag}-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&root).unwrap();
-    root
+/// A test's own directory, removed when the test ends. Its name carries a
+/// per-process counter instead of a timestamp, which keeps runner socket
+/// paths below SUN_LEN under a long macOS TMPDIR.
+fn test_root(tag: &str) -> crate::test_dir::TestDir {
+    crate::test_dir::TestDir::new(&format!("mcp-{tag}"))
 }
 
 #[test]
@@ -1038,7 +1032,7 @@ fn corrupt_or_extended_state_fails_closed() {
 // ---------- an unreadable ledger: ordinary sessions keep their terminal ----------
 
 /// The runtime `spawn` builds when mcp.json could not be loaded.
-fn unreadable_runtime(tag: &str) -> (Runtime, PathBuf) {
+fn unreadable_runtime(tag: &str) -> (Runtime, crate::test_dir::TestDir) {
     let root = test_root(tag);
     let path = root.join("mcp.json");
     // written by a deck this build does not understand
@@ -2223,7 +2217,7 @@ fn concurrent_create_reserves_one_operation_and_one_plan() {
 }
 
 /// Runtime + fake runner + one managed session (`mcp_a`, card `M1`).
-fn fixture(tag: &str, service: &str) -> (Arc<Runtime>, FakeRunner, PathBuf) {
+fn fixture(tag: &str, service: &str) -> (Arc<Runtime>, FakeRunner, crate::test_dir::TestDir) {
     let root = test_root(tag);
     let runner = FakeRunner::start(&root, "g_a");
     // This fixture represents an already-established session. Tests that
@@ -4441,7 +4435,7 @@ fn control_request_must_arrive_complete_within_the_deadline() {
 
 /// Runtime with one client scoped to `root` and no managed session: the
 /// structured project reads need no runner.
-fn project_runtime(tag: &str) -> (Arc<Runtime>, PathBuf) {
+fn project_runtime(tag: &str) -> (Arc<Runtime>, crate::test_dir::TestDir) {
     let root = test_root(tag);
     let mut doc = DiskDoc::default();
     doc.config.enabled = true;

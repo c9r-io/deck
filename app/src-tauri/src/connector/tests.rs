@@ -1,48 +1,18 @@
 //! Unit tests for the Connector host; moved out of `connector/mod.rs` on 2026-09-23.
 //!
-//! Every file a Connector test writes lives in a directory from `temp_path`,
-//! named for the test and this process and removed when the test's guard
-//! drops, also when an assertion fails, so a test run leaves nothing behind
-//! in the temporary directory. `connector_tests_take_temporary_paths_only_from_temp_path`
-//! pins that no other temporary path appears in the Connector's sources.
+//! Every file a Connector test writes lives in a `crate::test_dir::TestDir`,
+//! removed when the test's guard drops, also when an assertion fails; the
+//! process-wide runtime's directory is removed at the end of each test that
+//! holds it.
 
 use super::*;
+use crate::test_dir::{temp_path, TestDir};
 use rustls::pki_types::{CertificateDer, ServerName};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
-/// The one place a Connector test takes a temporary path from: named for the
-/// test and this process, so a leftover can always be attributed.
-fn temp_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("deck-connector-{name}-{}", std::process::id()))
-}
-
 /// The document's file name inside a test directory.
-const TEST_DOC: &str = "connector.json";
-
-/// One test's private directory, removed when the value drops.
-pub(super) struct TestDir(PathBuf);
-
-impl TestDir {
-    pub(super) fn new(tag: &str) -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let dir = temp_path(&format!("{tag}-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
-
-    /// The Connector document's path inside the directory.
-    pub(super) fn file(&self) -> PathBuf {
-        self.0.join(TEST_DOC)
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+pub(super) const TEST_DOC: &str = "connector.json";
 
 /// What a test keeps while it uses a `test_runtime`: the mock app and the
 /// directory of the runtime's document.
@@ -53,8 +23,8 @@ struct Held {
 
 fn test_runtime(tag: &str) -> (Arc<Runtime>, Held) {
     let app = tauri::test::mock_app();
-    let dir = TestDir::new(tag);
-    let path = dir.file();
+    let dir = TestDir::new(&format!("connector-{tag}"));
+    let path = dir.join(TEST_DOC);
     let mut doc = DiskDoc::fresh().unwrap();
     doc.config = Config {
         enabled: true,
@@ -127,7 +97,7 @@ impl Drop for GlobalHeld {
 /// (127.0.0.1:8443, epoch 1 listening); hold the guard for the whole test.
 fn global_runtime() -> (GlobalHeld, Arc<Runtime>) {
     let lock = GLOBAL.lock_or_recover();
-    let dir = temp_path("global");
+    let dir = temp_path("connector-global");
     let runtime = RUNTIME
         .get_or_init(|| {
             Arc::new(Runtime {
@@ -3461,32 +3431,4 @@ fn trusted_device_reads_shell_output_but_still_never_queues_without_a_saved_comm
     .is_ok());
     doc.devices[0].revoked_at = Some(1);
     assert_eq!(effective_scope(&doc, "D1"), SnapshotScope::BoardMetadata);
-}
-
-#[test]
-fn connector_tests_take_temporary_paths_only_from_temp_path() {
-    // Built at run time so that this test's own text is not a match.
-    let call = ["temp_dir", "()"].concat();
-    let users: Vec<(&str, usize)> = [
-        ("commands.rs", include_str!("commands.rs")),
-        ("identity.rs", include_str!("identity.rs")),
-        ("journal.rs", include_str!("journal.rs")),
-        ("mod.rs", include_str!("mod.rs")),
-        ("native.rs", include_str!("native.rs")),
-        ("network.rs", include_str!("network.rs")),
-        ("projection.rs", include_str!("projection.rs")),
-        ("server.rs", include_str!("server.rs")),
-        ("smoke.rs", include_str!("smoke.rs")),
-        ("tests.rs", include_str!("tests.rs")),
-        ("validate.rs", include_str!("validate.rs")),
-    ]
-    .iter()
-    .map(|(name, text)| (*name, text.matches(call.as_str()).count()))
-    .filter(|(_, count)| *count > 0)
-    .collect();
-    assert_eq!(
-        users,
-        [("tests.rs", 1)],
-        "a temporary path outside `temp_path` is not removed when its test ends"
-    );
 }

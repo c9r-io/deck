@@ -8,6 +8,7 @@ import os
 import plistlib
 import re
 import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,14 @@ rc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rc)
 translation_binary = runpy.run_path(str(ROOT / "scripts" / "check_local_translation_binary.py"))
 stapler = runpy.run_path(str(ROOT / "scripts" / "stapler-ticket"))
+
+
+
+def temp_dir(case: unittest.TestCase, prefix: str) -> Path:
+    """A fresh directory removed when `case` ends, also when it fails."""
+    directory = Path(tempfile.mkdtemp(prefix=prefix))
+    case.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+    return directory
 
 
 class StaplerValidationTests(unittest.TestCase):
@@ -163,7 +172,7 @@ def script_tests_the_gate_misses(gate: str, scripts: Path) -> list[str]:
 
 class VersionToolTests(unittest.TestCase):
     def fixture(self, tauri: str = "0.4.37", cargo: str = "0.4.37", lock: str = "0.4.37", adapter: str | None = None) -> Path:
-        root = Path(tempfile.mkdtemp(prefix="deck-version-test-"))
+        root = temp_dir(self, "deck-version-test-")
         source = root / "app" / "src-tauri"
         source.mkdir(parents=True)
         (source / "tauri.conf.json").write_text(json.dumps({"version": tauri}, indent=2) + "\n")
@@ -232,7 +241,7 @@ class ReleaseChannelTests(unittest.TestCase):
     tag = "nightly-v0.4.37-20260829-aaaaaaa"
 
     def candidate_fixture(self) -> tuple[Path, dict[str, object]]:
-        directory = Path(tempfile.mkdtemp(prefix="deck-candidate-test-"))
+        directory = temp_dir(self, "deck-candidate-test-")
         signature = base64.b64encode(
             b"untrusted comment: signature from tauri secret key\nRUSAMPLE\n"
         ).decode()
@@ -361,7 +370,7 @@ class ReleaseChannelTests(unittest.TestCase):
             rc.assert_no_stable_conflict(self.version, [], [f"v{self.version}"])
 
     def test_promotion_workflow_build_commands_are_forbidden(self) -> None:
-        path = Path(tempfile.mkdtemp(prefix="deck-promotion-test-")) / "promote.yml"
+        path = temp_dir(self, "deck-promotion-test-") / "promote.yml"
         path.write_text("run: gh release download\n")
         rc.assert_promotion_has_no_build_commands(path)
         path.write_text("run: cargo build --release\n")
@@ -386,7 +395,7 @@ class ReleaseChannelTests(unittest.TestCase):
             self.assertNotIn("jedisct1/minisign", workflow, name)
 
     def test_workflow_gates_fail_closed(self) -> None:
-        directory = Path(tempfile.mkdtemp(prefix="deck-gates-test-"))
+        directory = temp_dir(self, "deck-gates-test-")
         path = directory / "build.yml"
         gated = (
             "jobs:\n"
@@ -720,7 +729,7 @@ class ReleaseChannelTests(unittest.TestCase):
                 rc.create_provenance(**values)
 
     def test_checksum_and_release_asset_parsers_fail_closed(self) -> None:
-        directory = Path(tempfile.mkdtemp(prefix="deck-sums-test-"))
+        directory = temp_dir(self, "deck-sums-test-")
         (directory / "a.txt").write_text("a")
         (directory / "b.txt").write_text("b")
         sums = directory / "SHA256SUMS"

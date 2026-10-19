@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# The gate runs a test suite with TMPDIR set to an empty directory, then
+# calls this with that directory: the suite must leave nothing there. A Rust
+# unit test takes its files from `test_dir::TestDir` (removed when it drops)
+# and a Python test registers `addCleanup`, so an entry here is a test that
+# keeps files after it ends.
+set -euo pipefail
+dir=${1:?usage: scripts/check-test-tmpdir <directory>}
+dir=${dir%/}
+[ -d "$dir" ] || { echo "check-test-tmpdir: $dir is not a directory" >&2; exit 2; }
+left=$(find "$dir" -mindepth 1 -maxdepth 1 | LC_ALL=C sort)
+if [ -n "$left" ]; then
+  count=$(printf '%s\n' "$left" | wc -l | tr -d ' ')
+  noun=entries; [ "$count" = 1 ] && noun=entry
+  echo "check-test-tmpdir: the tests left $count $noun in $dir:" >&2
+  printf '%s\n' "$left" | sed "s#^$dir/#  #" >&2
+  exit 1
+fi
+echo "check-test-tmpdir: $dir is empty"

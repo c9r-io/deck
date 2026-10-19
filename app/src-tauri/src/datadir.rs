@@ -288,18 +288,34 @@ pub(crate) fn deck_dir() -> PathBuf {
 }
 
 /// In a unit-test build: one private directory per test process, empty at
-/// first use, so no test shares the data of the person running it. The name
-/// is short on purpose: socket paths built under it must fit `sun_path`.
+/// first use, so no test shares the data of the person running it, and
+/// removed when the process exits. The name is short on purpose: socket
+/// paths built under it must fit `sun_path`.
+#[cfg(test)]
+static TEST_DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 #[cfg(test)]
 pub(crate) fn deck_dir() -> PathBuf {
-    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("deck-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        create_private_dir(&dir).expect("a private data directory for this test process");
-        dir
-    })
-    .clone()
+    TEST_DATA_DIR
+        .get_or_init(|| {
+            let dir = std::env::temp_dir().join(format!("deck-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            create_private_dir(&dir).expect("a private data directory for this test process");
+            // SAFETY: registers a plain function that captures nothing.
+            unsafe { libc::atexit(remove_test_data_dir) };
+            dir
+        })
+        .clone()
+}
+
+/// The `atexit` handler of the test data directory. The test harness exits
+/// normally after failed tests too; only a killed or aborted process keeps
+/// its directory.
+#[cfg(test)]
+extern "C" fn remove_test_data_dir() {
+    if let Some(dir) = TEST_DATA_DIR.get() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 /// chmod 0600 — best-effort, silent (fixes pre-existing lax modes; new files
@@ -320,11 +336,8 @@ pub(crate) fn now_epoch() -> u64 {
 mod tests {
     use super::*;
 
-    fn tdir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("deck-datadir-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tdir(tag: &str) -> crate::test_dir::TestDir {
+        crate::test_dir::TestDir::new(&format!("datadir-{tag}"))
     }
 
     fn mode_of(p: &Path) -> u32 {
@@ -496,7 +509,8 @@ mod tests {
 
     #[test]
     fn harden_creates_a_missing_dir_private() {
-        let d = tdir("hardennew").join("fresh");
+        let dir = tdir("hardennew");
+        let d = dir.join("fresh");
         harden_data_dir(&d).unwrap();
         assert_eq!(mode_of(&d), 0o700);
     }

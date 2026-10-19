@@ -62,6 +62,8 @@ mod sync;
 mod terminal;
 mod terminal_scroll;
 mod terminal_selection;
+#[cfg(test)]
+mod test_dir;
 mod tmux;
 mod tmux_clients;
 mod tmux_lifecycle;

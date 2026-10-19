@@ -515,8 +515,9 @@ async fn handle(
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::TestDir;
+    use super::super::tests::TEST_DOC;
     use super::*;
+    use crate::test_dir::TestDir;
     use base64::Engine;
     use rustls::pki_types::{CertificateDer, ServerName};
     use std::io::{Read, Write};
@@ -544,12 +545,12 @@ mod tests {
 
     #[test]
     fn listener_stops_when_its_network_changes() {
-        let dir = TestDir::new("network-test");
+        let dir = TestDir::new("connector-network-test");
         let mut doc = super::super::DiskDoc::fresh().unwrap();
         doc.config.enabled = true;
         let runtime = Arc::new(Runtime {
             app: None,
-            path: dir.file(),
+            path: dir.join(TEST_DOC),
             doc: Mutex::new(Ok(doc)),
             pairing: Mutex::new(None),
             lifecycle: Mutex::new(()),
@@ -605,8 +606,8 @@ mod tests {
 
     #[test]
     fn inactive_epoch_and_exhausted_native_jobs_fail_closed_without_unauthorized() {
-        let dir = TestDir::new("server-test");
-        let path = dir.file();
+        let dir = TestDir::new("connector-server-test");
+        let path = dir.join(TEST_DOC);
         let mut doc = super::super::DiskDoc::fresh().unwrap();
         doc.config = Config {
             enabled: true,
@@ -650,8 +651,8 @@ mod tests {
 
     #[test]
     fn ephemeral_loopback_server_uses_real_tls_and_pair_route() {
-        let dir = TestDir::new("loopback-test");
-        let path = dir.file();
+        let dir = TestDir::new("connector-loopback-test");
+        let path = dir.join(TEST_DOC);
         let mut doc = super::super::DiskDoc::fresh().unwrap();
         doc.config = Config {
             enabled: true,
@@ -956,10 +957,10 @@ mod tests {
 
         let mut doc = super::super::DiskDoc::fresh().unwrap();
         doc.config.enabled = true;
-        let dir = TestDir::new("never-written");
+        let dir = TestDir::new("connector-never-written");
         let runtime = Arc::new(Runtime {
             app: None,
-            path: dir.file(),
+            path: dir.join(TEST_DOC),
             doc: Mutex::new(Ok(doc)),
             pairing: Mutex::new(None),
             lifecycle: Mutex::new(()),
@@ -987,8 +988,8 @@ mod tests {
 
     #[test]
     fn get_routes_answer_from_the_journal_and_refuse_everything_else_closed() {
-        let dir = TestDir::new("routes");
-        let path = dir.file();
+        let dir = TestDir::new("connector-routes");
+        let path = dir.join(TEST_DOC);
         let mut doc = super::super::DiskDoc::fresh().unwrap();
         doc.config = Config {
             enabled: true,
@@ -1123,8 +1124,8 @@ mod tests {
 
     #[test]
     fn f4_http_post_admission_refuses_a_retired_command_without_a_prior_get() {
-        let dir = TestDir::new("f4-http");
-        let path = dir.file();
+        let dir = TestDir::new("connector-f4-http");
+        let path = dir.join(TEST_DOC);
         let mut doc = super::super::DiskDoc::fresh().unwrap();
         doc.config = Config {
             enabled: true,

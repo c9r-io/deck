@@ -192,9 +192,7 @@ mod tests {
 
     #[test]
     fn concurrent_records_lose_no_update() {
-        let d = std::env::temp_dir().join(format!("deck-hist-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::test_dir::TestDir::new("hist");
         let p = d.join("history.json");
         std::thread::scope(|s| {
             for k in 0..4 {
@@ -213,9 +211,7 @@ mod tests {
     fn history_files_are_user_only_and_clear_removes_backup() {
         use std::os::unix::fs::PermissionsExt;
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        let d = std::env::temp_dir().join(format!("deck-hist-perm-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::test_dir::TestDir::new("hist-perm");
         let p = d.join("history.json");
         record_into(&p, "first-command").unwrap();
         record_into(&p, "second-command").unwrap(); // creates the .bak
@@ -232,9 +228,7 @@ mod tests {
 
     #[test]
     fn legacy_v1_string_array_migrates() {
-        let d = std::env::temp_dir().join(format!("deck-hist-v1-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::test_dir::TestDir::new("hist-v1");
         let p = d.join("history.json");
         std::fs::write(&p, r#"["ls","make"]"#).unwrap();
         let v = read_history_from(&p);

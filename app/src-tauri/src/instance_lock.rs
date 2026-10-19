@@ -30,14 +30,9 @@ pub fn acquire_instance_lock(dir: &Path) -> Result<(), DeckError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    fn tdir(tag: &str) -> PathBuf {
-        let d =
-            std::env::temp_dir().join(format!("deck-instance-lock-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tdir(tag: &str) -> crate::test_dir::TestDir {
+        crate::test_dir::TestDir::new(&format!("instance-lock-{tag}"))
     }
 
     fn mode_of(p: &Path) -> u32 {

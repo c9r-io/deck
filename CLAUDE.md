@@ -334,6 +334,10 @@ output heuristic).
   --all-features -D warnings` (the CI form), `cargo test --workspace`.
   `src-tauri/Cargo.toml` is the one workspace root; the compiler is pinned by
   `rust-toolchain.toml`.
+- Tests leave nothing behind: a Rust unit test takes its files from
+  `test_dir::TestDir` (removed when it drops), a Python test registers
+  `addCleanup`. The gate runs both suites in an empty `TMPDIR` and
+  `scripts/check-test-tmpdir` fails on any leftover.
 - Mirrored frontend/backend constants are one list,
   `ui/test/fixtures/limits.json`.
 - The vendored xterm carries exactly ONE pinned upstream change
