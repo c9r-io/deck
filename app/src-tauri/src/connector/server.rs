@@ -515,6 +515,7 @@ async fn handle(
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::TestDir;
     use super::*;
     use base64::Engine;
     use rustls::pki_types::{CertificateDer, ServerName};
@@ -543,16 +544,12 @@ mod tests {
 
     #[test]
     fn listener_stops_when_its_network_changes() {
-        let path = std::env::temp_dir().join(format!(
-            "deck-connector-network-test-{}-{}",
-            std::process::id(),
-            super::super::now()
-        ));
+        let dir = TestDir::new("network-test");
         let mut doc = super::super::DiskDoc::fresh().unwrap();
         doc.config.enabled = true;
         let runtime = Arc::new(Runtime {
             app: None,
-            path: path.clone(),
+            path: dir.file(),
             doc: Mutex::new(Ok(doc)),
             pairing: Mutex::new(None),
             lifecycle: Mutex::new(()),
@@ -579,7 +576,6 @@ mod tests {
             0,
             "a changed network stops the listener"
         );
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -609,8 +605,8 @@ mod tests {
 
     #[test]
     fn inactive_epoch_and_exhausted_native_jobs_fail_closed_without_unauthorized() {
-        let path =
-            std::env::temp_dir().join(format!("deck-connector-server-test-{}", std::process::id()));
+        let dir = TestDir::new("server-test");
+        let path = dir.file();
         let mut doc = super::super::DiskDoc::fresh().unwrap();
         doc.config = Config {
             enabled: true,
@@ -654,11 +650,8 @@ mod tests {
 
     #[test]
     fn ephemeral_loopback_server_uses_real_tls_and_pair_route() {
-        let path = std::env::temp_dir().join(format!(
-            "deck-connector-loopback-test-{}-{}",
-            std::process::id(),
-            super::super::now()
-        ));
+        let dir = TestDir::new("loopback-test");
+        let path = dir.file();
         let mut doc = super::super::DiskDoc::fresh().unwrap();
         doc.config = Config {
             enabled: true,
@@ -671,7 +664,7 @@ mod tests {
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
             app: None,
-            path: path.clone(),
+            path,
             doc: Mutex::new(Ok(doc)),
             pairing: Mutex::new(Some(super::super::Pairing {
                 code: "smoke-code".into(),
@@ -747,7 +740,6 @@ mod tests {
         stream.read_exact(&mut head).unwrap();
         assert_eq!(&head, b"HTTP/1.1 401");
         runtime.server_epoch.store(2, Ordering::SeqCst);
-        let _ = std::fs::remove_file(path);
     }
 
     /// One HTTPS request over loopback; returns (status, body).
@@ -964,9 +956,10 @@ mod tests {
 
         let mut doc = super::super::DiskDoc::fresh().unwrap();
         doc.config.enabled = true;
+        let dir = TestDir::new("never-written");
         let runtime = Arc::new(Runtime {
             app: None,
-            path: std::env::temp_dir().join("deck-connector-never-written"),
+            path: dir.file(),
             doc: Mutex::new(Ok(doc)),
             pairing: Mutex::new(None),
             lifecycle: Mutex::new(()),
@@ -994,11 +987,8 @@ mod tests {
 
     #[test]
     fn get_routes_answer_from_the_journal_and_refuse_everything_else_closed() {
-        let path = std::env::temp_dir().join(format!(
-            "deck-connector-routes-{}-{}",
-            std::process::id(),
-            super::super::now()
-        ));
+        let dir = TestDir::new("routes");
+        let path = dir.file();
         let mut doc = super::super::DiskDoc::fresh().unwrap();
         doc.config = Config {
             enabled: true,
@@ -1011,7 +1001,7 @@ mod tests {
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
             app: None,
-            path: path.clone(),
+            path,
             doc: Mutex::new(Ok(doc)),
             pairing: Mutex::new(Some(super::super::Pairing {
                 code: "route-code".into(),
@@ -1129,16 +1119,12 @@ mod tests {
         assert_eq!(get("/v2/snapshot", &token).0, 404);
 
         runtime.server_epoch.store(2, Ordering::SeqCst);
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn f4_http_post_admission_refuses_a_retired_command_without_a_prior_get() {
-        let path = std::env::temp_dir().join(format!(
-            "deck-connector-f4-http-{}-{}",
-            std::process::id(),
-            super::super::now()
-        ));
+        let dir = TestDir::new("f4-http");
+        let path = dir.file();
         let mut doc = super::super::DiskDoc::fresh().unwrap();
         doc.config = Config {
             enabled: true,
@@ -1151,7 +1137,7 @@ mod tests {
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
             app: None,
-            path: path.clone(),
+            path,
             doc: Mutex::new(Ok(doc)),
             pairing: Mutex::new(Some(super::super::Pairing {
                 code: "f4-code".into(),
@@ -1275,6 +1261,5 @@ mod tests {
         ));
         assert_eq!(status, 202, "{body}");
         runtime.server_epoch.store(2, Ordering::SeqCst);
-        let _ = std::fs::remove_file(path);
     }
 }

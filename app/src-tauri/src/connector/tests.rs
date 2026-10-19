@@ -1,14 +1,60 @@
 //! Unit tests for the Connector host; moved out of `connector/mod.rs` on 2026-09-23.
+//!
+//! Every file a Connector test writes lives in a directory from `temp_path`,
+//! named for the test and this process and removed when the test's guard
+//! drops, also when an assertion fails, so a test run leaves nothing behind
+//! in the temporary directory. `connector_tests_take_temporary_paths_only_from_temp_path`
+//! pins that no other temporary path appears in the Connector's sources.
 
 use super::*;
 use rustls::pki_types::{CertificateDer, ServerName};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
-fn test_runtime(tag: &str) -> (Arc<Runtime>, tauri::App<tauri::test::MockRuntime>) {
+/// The one place a Connector test takes a temporary path from: named for the
+/// test and this process, so a leftover can always be attributed.
+fn temp_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("deck-connector-{name}-{}", std::process::id()))
+}
+
+/// The document's file name inside a test directory.
+const TEST_DOC: &str = "connector.json";
+
+/// One test's private directory, removed when the value drops.
+pub(super) struct TestDir(PathBuf);
+
+impl TestDir {
+    pub(super) fn new(tag: &str) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = temp_path(&format!("{tag}-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    /// The Connector document's path inside the directory.
+    pub(super) fn file(&self) -> PathBuf {
+        self.0.join(TEST_DOC)
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// What a test keeps while it uses a `test_runtime`: the mock app and the
+/// directory of the runtime's document.
+struct Held {
+    _app: tauri::App<tauri::test::MockRuntime>,
+    _dir: TestDir,
+}
+
+fn test_runtime(tag: &str) -> (Arc<Runtime>, Held) {
     let app = tauri::test::mock_app();
-    let path = std::env::temp_dir().join(format!("deck-connector-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_file(&path);
+    let dir = TestDir::new(tag);
+    let path = dir.file();
     let mut doc = DiskDoc::fresh().unwrap();
     doc.config = Config {
         enabled: true,
@@ -21,14 +67,20 @@ fn test_runtime(tag: &str) -> (Arc<Runtime>, tauri::App<tauri::test::MockRuntime
     save(&path, &doc).unwrap();
     let r = Arc::new(Runtime {
         app: None,
-        path: path.clone(),
+        path,
         doc: Mutex::new(Ok(doc)),
         pairing: Mutex::new(None),
         lifecycle: Mutex::new(()),
         server_epoch: AtomicU64::new(1),
         running_epoch: AtomicU64::new(1),
     });
-    (r, app)
+    (
+        r,
+        Held {
+            _app: app,
+            _dir: dir,
+        },
+    )
 }
 fn request(id: &str, text: &str) -> CommandRequest {
     CommandRequest {
@@ -57,18 +109,30 @@ fn next_seq() -> u64 {
 /// Serialises the tests that reach the process-wide runtime through `rt()`.
 static GLOBAL: Mutex<()> = Mutex::new(());
 
+/// What a test holds while it uses the process-wide runtime: the lock that
+/// serialises those tests, and the removal of the runtime's directory, done
+/// before the lock is released so the next test's document is never removed.
+struct GlobalHeld {
+    dir: PathBuf,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for GlobalHeld {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 /// The one runtime the Tauri commands see, reset to a fresh enabled document
 /// (127.0.0.1:8443, epoch 1 listening); hold the guard for the whole test.
-fn global_runtime() -> (std::sync::MutexGuard<'static, ()>, Arc<Runtime>) {
-    let guard = GLOBAL.lock_or_recover();
+fn global_runtime() -> (GlobalHeld, Arc<Runtime>) {
+    let lock = GLOBAL.lock_or_recover();
+    let dir = temp_path("global");
     let runtime = RUNTIME
         .get_or_init(|| {
-            let path =
-                std::env::temp_dir().join(format!("deck-connector-global-{}", std::process::id()));
-            let _ = std::fs::remove_file(&path);
             Arc::new(Runtime {
                 app: None,
-                path,
+                path: dir.join(TEST_DOC),
                 doc: Mutex::new(DiskDoc::fresh()),
                 pairing: Mutex::new(None),
                 lifecycle: Mutex::new(()),
@@ -77,6 +141,13 @@ fn global_runtime() -> (std::sync::MutexGuard<'static, ()>, Arc<Runtime>) {
             })
         })
         .clone();
+    assert_eq!(
+        runtime.path,
+        dir.join(TEST_DOC),
+        "only the runtime this helper made"
+    );
+    std::fs::create_dir_all(&dir).unwrap();
+    let held = GlobalHeld { dir, _lock: lock };
     let mut doc = DiskDoc::fresh().unwrap();
     doc.config = Config {
         enabled: true,
@@ -91,7 +162,7 @@ fn global_runtime() -> (std::sync::MutexGuard<'static, ()>, Arc<Runtime>) {
     *runtime.pairing.lock_or_recover() = None;
     runtime.server_epoch.store(1, Ordering::SeqCst);
     runtime.running_epoch.store(1, Ordering::SeqCst);
-    (guard, runtime)
+    (held, runtime)
 }
 
 fn device(id: &str) -> Device {
@@ -132,7 +203,7 @@ fn pending(device_id: &str, request: &CommandRequest, state: &str) -> JournalEnt
 
 #[test]
 fn resolved_commands_are_persisted_as_tombstones_that_replay_their_result() {
-    let (r, _app) = test_runtime("tombstone-replay");
+    let (r, _held) = test_runtime("tombstone-replay");
     r.with_doc(|d| {
         d.devices.push(device("D"));
         Ok(())
@@ -171,7 +242,7 @@ fn resolved_commands_are_persisted_as_tombstones_that_replay_their_result() {
 
 #[test]
 fn dropped_tombstones_mark_the_device_so_unknown_ids_are_expired_not_missing() {
-    let (r, _app) = test_runtime("tombstone-bound");
+    let (r, _held) = test_runtime("tombstone-bound");
     r.with_doc(|d| {
         d.devices.push(device("D"));
         d.devices.push(device("E"));
@@ -218,7 +289,7 @@ fn dropped_tombstones_mark_the_device_so_unknown_ids_are_expired_not_missing() {
 
 #[test]
 fn admission_encodes_the_document_once() {
-    let (r, _app) = test_runtime("single-encode");
+    let (r, _held) = test_runtime("single-encode");
     r.with_doc(|d| {
         d.devices.push(device("D"));
         Ok(())
@@ -231,7 +302,7 @@ fn admission_encodes_the_document_once() {
 
 #[test]
 fn v1_state_loads_compacted_and_newer_versions_are_refused_untouched() {
-    let (r, _app) = test_runtime("v1-migration");
+    let (r, _held) = test_runtime("v1-migration");
     let done = request("done", "old body");
     let open = request("open", "queued body");
     let mut doc = r.read(Clone::clone).unwrap();
@@ -320,7 +391,7 @@ fn revocation_drops_history_and_frees_device_capacity_only_when_idle() {
 
 #[test]
 fn pairing_reuses_a_revoked_device_slot() {
-    let (r, _app) = test_runtime("device-capacity");
+    let (r, _held) = test_runtime("device-capacity");
     r.with_doc(|d| {
         d.devices = (0..MAX_DEVICES).map(|i| device(&format!("D{i}"))).collect();
         Ok(())
@@ -1003,7 +1074,7 @@ fn terminal_results_are_closed_and_kind_specific() {
 
 #[test]
 fn escaped_32k_text_roundtrips_but_larger_text_is_rejected_before_acceptance() {
-    let (runtime, _app) = test_runtime("text-cap");
+    let (runtime, _held) = test_runtime("text-cap");
     runtime
         .with_doc(|doc| {
             doc.devices.push(Device {
@@ -1041,7 +1112,7 @@ fn escaped_32k_text_roundtrips_but_larger_text_is_rejected_before_acceptance() {
 
 #[test]
 fn save_and_load_share_the_same_byte_cap_and_failed_growth_does_not_commit() {
-    let (runtime, _app) = test_runtime("state-cap");
+    let (runtime, _held) = test_runtime("state-cap");
     let original_host = runtime.read(|doc| doc.host_id.clone()).unwrap();
     assert_eq!(
         runtime
@@ -1068,7 +1139,7 @@ fn save_and_load_share_the_same_byte_cap_and_failed_growth_does_not_commit() {
 
 #[test]
 fn admission_reserves_enough_space_for_terminal_result_at_byte_capacity() {
-    let (runtime, _app) = test_runtime("terminal-reserve");
+    let (runtime, _held) = test_runtime("terminal-reserve");
     let mut doc = runtime.read(Clone::clone).unwrap();
     doc.devices.push(Device {
         id: "D".into(),
@@ -1352,7 +1423,7 @@ fn smoke_transport_accepts_only_authoritatively_absent_sessions() {
 
 #[test]
 fn journal_ids_are_device_scoped_immutable_and_cross_device_private() {
-    let (r, _app) = test_runtime("journal");
+    let (r, _held) = test_runtime("journal");
     r.with_doc(|d| {
         d.devices.push(Device {
             id: "D1".into(),
@@ -1402,7 +1473,7 @@ fn journal_ids_are_device_scoped_immutable_and_cross_device_private() {
 
 #[test]
 fn executing_recovers_ambiguous_and_unresolved_capacity_is_bounded() {
-    let (r, _app) = test_runtime("crash");
+    let (r, _held) = test_runtime("crash");
     r.with_doc(|d| {
         d.devices.push(Device {
             id: "D".into(),
@@ -1460,7 +1531,7 @@ fn executing_recovers_ambiguous_and_unresolved_capacity_is_bounded() {
 
 #[test]
 fn terminal_history_does_not_consume_unresolved_command_capacity() {
-    let (r, _app) = test_runtime("terminal-capacity");
+    let (r, _held) = test_runtime("terminal-capacity");
     let history = (0..MAX_COMMANDS)
         .map(|i| request(&format!("I{i}"), "a"))
         .collect::<Vec<_>>();
@@ -1488,7 +1559,7 @@ fn terminal_history_does_not_consume_unresolved_command_capacity() {
 
 #[test]
 fn pairing_expires_consumes_once_and_revocation_blocks_auth() {
-    let (r, _app) = test_runtime("pair");
+    let (r, _held) = test_runtime("pair");
     *r.pairing.lock_or_recover() = Some(Pairing {
         code: "secret".into(),
         expires_at: now() - 1,
@@ -1517,7 +1588,7 @@ fn pairing_expires_consumes_once_and_revocation_blocks_auth() {
 
 #[test]
 fn pairing_strips_invisible_device_name_characters() {
-    let (runtime, _app) = test_runtime("pair-device-name");
+    let (runtime, _held) = test_runtime("pair-device-name");
     *runtime.pairing.lock_or_recover() = Some(Pairing {
         code: "secret".into(),
         expires_at: now() + 30,
@@ -1540,7 +1611,7 @@ fn pairing_strips_invisible_device_name_characters() {
 
 #[test]
 fn pairing_is_consumed_once_under_concurrency() {
-    let (runtime, _app) = test_runtime("pair-race");
+    let (runtime, _held) = test_runtime("pair-race");
     *runtime.pairing.lock_or_recover() = Some(Pairing {
         code: "secret".into(),
         expires_at: now() + 30,
@@ -1568,7 +1639,7 @@ fn pairing_is_consumed_once_under_concurrency() {
 
 #[test]
 fn disable_and_revocation_close_existing_epochs_and_pending_work() {
-    let (runtime, _app) = test_runtime("lifecycle");
+    let (runtime, _held) = test_runtime("lifecycle");
     let token = "token";
     runtime
         .with_doc(|doc| {
@@ -1709,7 +1780,7 @@ fn accepted_count(r: &Runtime) -> usize {
 
 #[test]
 fn f4_a_retired_command_is_never_admitted_again() {
-    let (r, _app) = test_runtime("f4-retired");
+    let (r, _held) = test_runtime("f4-retired");
     r.with_doc(|d| {
         d.devices.push(device("D"));
         Ok(())
@@ -1771,7 +1842,7 @@ fn f4_a_retired_command_is_never_admitted_again() {
 
 #[test]
 fn f4_concurrent_identical_posts_admit_once() {
-    let (r, _app) = test_runtime("f4-concurrent");
+    let (r, _held) = test_runtime("f4-concurrent");
     r.with_doc(|d| {
         d.devices.push(device("D"));
         Ok(())
@@ -1796,7 +1867,7 @@ fn f4_concurrent_identical_posts_admit_once() {
 
 #[test]
 fn f4_crash_boundaries_never_admit_twice_or_guess_success() {
-    let (r, _app) = test_runtime("f4-crash");
+    let (r, _held) = test_runtime("f4-crash");
     r.with_doc(|d| {
         d.devices.push(device("D"));
         Ok(())
@@ -3222,7 +3293,7 @@ fn scope_withdrawal_and_regrant_never_resurrect_pending_commands_or_note_commits
 #[test]
 fn get_responses_drop_content_after_scope_aba_device_revocation_or_disable() {
     for change in ["scope-aba", "device", "disabled"] {
-        let (runtime, _app) = test_runtime(&format!("read-fence-{change}"));
+        let (runtime, _held) = test_runtime(&format!("read-fence-{change}"));
         runtime
             .with_doc(|d| {
                 let mut entry = device("D");
@@ -3390,4 +3461,32 @@ fn trusted_device_reads_shell_output_but_still_never_queues_without_a_saved_comm
     .is_ok());
     doc.devices[0].revoked_at = Some(1);
     assert_eq!(effective_scope(&doc, "D1"), SnapshotScope::BoardMetadata);
+}
+
+#[test]
+fn connector_tests_take_temporary_paths_only_from_temp_path() {
+    // Built at run time so that this test's own text is not a match.
+    let call = ["temp_dir", "()"].concat();
+    let users: Vec<(&str, usize)> = [
+        ("commands.rs", include_str!("commands.rs")),
+        ("identity.rs", include_str!("identity.rs")),
+        ("journal.rs", include_str!("journal.rs")),
+        ("mod.rs", include_str!("mod.rs")),
+        ("native.rs", include_str!("native.rs")),
+        ("network.rs", include_str!("network.rs")),
+        ("projection.rs", include_str!("projection.rs")),
+        ("server.rs", include_str!("server.rs")),
+        ("smoke.rs", include_str!("smoke.rs")),
+        ("tests.rs", include_str!("tests.rs")),
+        ("validate.rs", include_str!("validate.rs")),
+    ]
+    .iter()
+    .map(|(name, text)| (*name, text.matches(call.as_str()).count()))
+    .filter(|(_, count)| *count > 0)
+    .collect();
+    assert_eq!(
+        users,
+        [("tests.rs", 1)],
+        "a temporary path outside `temp_path` is not removed when its test ends"
+    );
 }
