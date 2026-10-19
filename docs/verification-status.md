@@ -23,8 +23,15 @@ MCP 两个工具 `deck_automation_list` / `deck_automation_trigger`、客户端�
 `cargo llvm-cov --workspace --all-targets --all-features --locked -- --test-threads=1`：deck-app 1,302 项通过、13 项既有 ignore，各集成与 sidecar 测试套件全部通过，
 行覆盖 86.66%、函数覆盖 84.14%，测试 TMPDIR 无残留；`scripts/ui-tests` 883 项通过并满足覆盖阈值；JS 语法 183 模块、`check.mjs` 74 模块、扩展目录检查通过；
 `sidecar_provenance.py check --profile debug --binaries` 通过（本机的 clippy 在 llvm-cov 之后重建了 debug 侧车，所以 `--coverage` 形式的检查留给 CI 的原始顺序）。
-UNRUN：真实 Deck 窗口里的端到端（委托客户端 → 建卡 → 首发 → 后续步骤）、WKWebView smoke 新模式、发布 carrier；
-`deck_automation_trigger` 对真实 Claude Code `claude mcp add` 配置的实机调用。
+端到端（2026-10-20，Mac mini 测试机，隔离根目录 + 实验注册表）：新增 WKWebView 模式 `agent-live`（`app/ui/test/agent-live-smoke.mjs`，场景文件 `rehearsal` / `live`）与独立客户端 `scripts/mcp-agent-e2e.py`（Python，走生产 STDIO 协议与控制套接字）；
+隔离 smoke 启动把铸出的客户端凭证留在隔离数据目录的 `evidence/mcp-credential-<client>`（`keychain.rs` 的 debug 专用接缝，供 adapter 的 `--credential-fd` 读取；发布构建没有这个分支）。
+`rehearsal`（测试机自己的 Claude 2.1.296 在重定位 HOME 下未登录，首发逃生口关闭）两次 **PASS** 12/12：
+开启远程访问并授权客户端+委托 → Claude 状态钩子装入该 HOME → 编辑器保存"Agent 交来"规则（批准 + 外部内容） → 客户端真实调用 `deck_automation_list` / `deck_automation_trigger`
+（错误修订 `RULE_CHANGED` 带 currentRevision、错误序号 `STALE_REQUEST`、同 id 重放得同一 operation、异内容 `REQUEST_ID_CONFLICT`、序号递增）→ 1.0 秒内建卡并 committed 返回 cardId
+→ 3 条外部行、首行停在 `first-send`、Claude 登录屏无任何输入 → 客户端行按钮撤销委托后 3 条未发行被清扫、30 秒内无投递 → 关卡 → 按钮重新委托 → 关卡后重放同 request_id 得同一 committed operation、卡片 0→0、收件箱不变。
+资源经注册表停止，机器自身的 `~/.deck`、已安装 Deck 及其 `deck` 服务前后一致。第一次排练停在设置阶段（驱动把适配器写成 `claude`，钩子开关要的是来源词 `claude-code`；carrier 的 tmux 服务在启动时就建立，须在启动后立即注册），已修正。
+`live`（登录的真 Claude 在卡片里：逃生口首发、真实 turn-done 后的后续步骤、撤销后第三步被扣住）：**待运行**，根目录与私有钥匙串已备好，等待所有者一次授权。
+UNRUN：发布 carrier；`claude mcp add` 配置下由真实 Claude Code 作为调用方（本轮调用方是独立客户端）。
 
 ## 本轮 时钟自动化：每 N 天／周／月加起算日
 

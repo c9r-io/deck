@@ -7,7 +7,12 @@
 // prompt for a new binary. Callers receive the bytes; nothing here logs,
 // returns or interpolates a token into any error string.
 // Unit tests and isolated smoke launches never call the operating-system
-// credential APIs; their optional credential values remain process-local.
+// credential APIs; their optional credential values remain process-local,
+// with one debug-only exception: the MCP client credential an isolated
+// smoke launch mints is kept as a 0600 file under that launch's own data
+// root (`evidence/mcp-credential-<client>`), because the external debug
+// adapter still has to present it over the control socket and reads it
+// through its `--credential-fd` seam. A release build has no such branch.
 
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
@@ -209,11 +214,28 @@ pub(crate) fn set_mcp_credential(account: &str, value: &str) -> Result<(), DeckE
     {
         return Err(DeckError::new(ErrorKind::Invalid, "invalid MCP credential"));
     }
-    if cfg!(test) || crate::smoke_faults::enabled() {
+    if cfg!(test) {
         return Ok(());
+    }
+    if crate::smoke_faults::enabled() {
+        let path = smoke_mcp_credential_path(account);
+        if let Some(dir) = path.parent() {
+            crate::datadir::create_private_dir(dir)?;
+        }
+        return crate::datadir::write_private(&path, value.as_bytes());
     }
     set_generic_password(MCP_SERVICE, account, value.as_bytes())
         .map_err(|_| DeckError::new(ErrorKind::Other, "keychain"))
+}
+
+/// Where an isolated smoke launch keeps one client's credential (header):
+/// under its own data root, never the Keychain. `account` passed
+/// `valid_mcp_account`, so the name holds nothing but `client_` and
+/// alphanumerics.
+fn smoke_mcp_credential_path(account: &str) -> std::path::PathBuf {
+    crate::datadir::deck_dir()
+        .join("evidence")
+        .join(format!("mcp-credential-{account}"))
 }
 
 pub(crate) fn clear_mcp_credential(account: &str) -> Result<(), DeckError> {
@@ -223,8 +245,15 @@ pub(crate) fn clear_mcp_credential(account: &str) -> Result<(), DeckError> {
             "invalid MCP credential account",
         ));
     }
-    if cfg!(test) || crate::smoke_faults::enabled() {
+    if cfg!(test) {
         return Ok(());
+    }
+    if crate::smoke_faults::enabled() {
+        return match std::fs::remove_file(smoke_mcp_credential_path(account)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(DeckError::new(ErrorKind::Other, "keychain")),
+        };
     }
     match delete_generic_password(MCP_SERVICE, account) {
         Ok(()) => Ok(()),

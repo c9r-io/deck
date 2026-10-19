@@ -460,3 +460,13 @@ stdin, and interrupts a long-running job. It first proves execution is denied,
 then waits for an explicit local execution-window approval. It must never target
 a real business repository. UI takeover is a separate manual step because the
 local human, not a remote client, owns that transition.
+
+The Agent handover tools have their own independent client,
+`scripts/mcp-agent-e2e.py` (Python, so it also runs on a machine without
+node), for the `agent-live` WKWebView smoke: `deck_automation_list`, a wrong
+revision (`RULE_CHANGED`), a wrong sequence (`STALE_REQUEST`), one
+`deck_automation_trigger` polled to `committed` with its `cardId`, the same
+request replayed and a conflicting one, and the replay against the closed
+card. An isolated smoke launch keeps the client credential it mints at
+`<data>/evidence/mcp-credential-<client id>` instead of the Keychain; the
+sequence is in app/SMOKE.md, "Agent handover: delegated MCP client".

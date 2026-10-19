@@ -174,6 +174,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("selection-events", "m.verifySelectionEvents()"),
     ("signal-finish", "m.verifySignalFinish()"),
     ("authority-live", "m.verifyAuthorityLive()"),
+    ("agent-live", "m.verifyAgentLive()"),
     ("empty-start", "m.verifyEmptyStart()"),
     ("clock-live", "m.verifyClockLive()"),
     ("reminder", "m.verifyReminder()"),

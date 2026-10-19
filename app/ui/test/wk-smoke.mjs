@@ -3280,6 +3280,13 @@ export async function verifyEmptyStart() {
   await runEmptyStartSmoke();
 }
 
+// The Agent handover trigger end to end: an external delegated MCP client
+// hands an item over, a real Claude Code in the card (agent-live-smoke.mjs).
+export async function verifyAgentLive() {
+  const { runAgentLiveSmoke } = await import('./agent-live-smoke.mjs');
+  await runAgentLiveSmoke();
+}
+
 // Terminal input ordering and target identity through the real IPC and a
 // real pane (terminal-input-smoke.mjs).
 export async function verifyTerminalInput() {

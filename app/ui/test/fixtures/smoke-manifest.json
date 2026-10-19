@@ -751,6 +751,23 @@
         "authority-live-setup": {}
       }
     },
+    "agent-live": {
+      "terminal": "done",
+      "checks": {
+        "agent-live-client": {},
+        "agent-live-hooks": {},
+        "agent-live-rule": {},
+        "agent-live-armed": {},
+        "agent-live-card": { "a": 3 },
+        "agent-live-first": {},
+        "agent-live-chain": {},
+        "agent-live-withdrawn": {},
+        "agent-live-withheld": {},
+        "agent-live-closed": {},
+        "agent-live-redelegated": {},
+        "agent-live-exception": { "failureOnly": true }
+      }
+    },
     "terminal-input": {
       "terminal": "done",
       "checks": {

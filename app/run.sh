@@ -141,7 +141,7 @@ if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
   if [ -n "${DECK_SMOKE_WKWEBVIEW:-}" ]; then
     SMOKE_MODE=$DECK_SMOKE_WKWEBVIEW
     case "$SMOKE_MODE" in
-      run|restart|ambiguous|settings|attention|review|review-restart|voice|translation|translation-native|translation-guard|resume|buffer|buffer-narrow|channel|channel-fault|channel-first-send|channel-live|channel-live-replay|hooks-live|pi-live|pi-layout|reentry-live|reentry-live-relaunch|connector|connector-transport|connector-device|selection-events|signal-finish|authority-live|empty-start|clock-live|reminder|reminder-native|board-lost|approval|reentry|ux-layers|terminal-input) ;;
+      run|restart|ambiguous|settings|attention|review|review-restart|voice|translation|translation-native|translation-guard|resume|buffer|buffer-narrow|channel|channel-fault|channel-first-send|channel-live|channel-live-replay|hooks-live|pi-live|pi-layout|reentry-live|reentry-live-relaunch|connector|connector-transport|connector-device|selection-events|signal-finish|authority-live|agent-live|empty-start|clock-live|reminder|reminder-native|board-lost|approval|reentry|ux-layers|terminal-input) ;;
       *) SMOKE_MODE=run ;;
     esac
     # the signal-finish smoke's fake agent: a debug example, never bundled

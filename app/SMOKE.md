@@ -332,6 +332,59 @@ Judge the bootstrap windows with `scripts/signal-candidate`
 (`claude-bootstrap-waits` / `codex-bootstrap-waits`). Record CLI versions
 before and after; quit only this instance and stop its server.
 
+## Agent handover: delegated MCP client (WKWebView mode `agent-live`)
+
+`agent-live` is the Agent handover trigger end to end in the real window:
+an EXTERNAL client (`scripts/mcp-agent-e2e.py`) is the delegated MCP
+integration and a real Claude Code runs in the card. Debug carrier only, on
+a root of its own: the carrier sits at `<root>/home/Applications/deck.app`
+(status hooks are installed only from a stable location) and is opened with
+`env -i /usr/bin/open -n --env HOME=<root>/home --env
+CLAUDE_CONFIG_DIR=<root>/home/.claude --env TMUX_TMPDIR=<root>/t`, a PATH
+that resolves `claude`, `USER`/`LOGNAME`, an absolute `--smoke-data-dir`
+and a unique `deck-smoke-…` socket; `<root>/work` is the rule's directory
+and the client's scope root. The scenario file
+`<data>/translation-fixture/scenario` says `live` (a Claude signed in under
+that home, with trust and the first-run screens answered beforehand in a
+separate session; the rule sends its first step without readiness) or
+`rehearsal` (no sign-in: the first-send policy stays off and every row is
+held, so nothing is ever typed into Claude's login screen).
+
+The page enables Remote access and authorizes one client with the
+automation delegation (the Settings dialog's own IPCs), turns the Claude
+status hooks on, saves a three-step template (step 2 carries `{{msg.text}}`)
+and an "Agent handover" rule through the automation editor (approval,
+external-content consent, first-send under `live`), reports
+`agent-live-armed` and waits for the client. Run it with the client id from
+the instance's `mcp.json` and the credential the smoke launch left at
+`<data>/evidence/mcp-credential-<client id>` (an isolated smoke launch never
+uses the Keychain; the debug adapter reads it through `--credential-fd`):
+
+```sh
+python3 scripts/mcp-agent-e2e.py --adapter <bundle>/Contents/MacOS/deck-mcp \
+  --socket <data>/mcp-control.sock --client-id <client id> \
+  --credential-file <data>/evidence/mcp-credential-<client id> \
+  --automation patrol-mention --request-id <unique> --evidence <dir> \
+  --text "…" --from "…" --where "…" --link "…"
+```
+
+The client lists the automations, proves `RULE_CHANGED` (a wrong revision)
+and `STALE_REQUEST` (a wrong sequence), hands one item over, polls the
+operation to `committed` with its `cardId`, replays the same request id
+(the same operation) and a changed one (`REQUEST_ID_CONFLICT`). The page
+then checks the card and its three external rows, the first delivery (under
+the escape hatch in `live`; held at `first-send` in `rehearsal`), the second
+after the real turn boundary and the chain quiet (`live`), withdraws the
+delegation through the client row's "Stop automations" button, checks that
+the sweep took the approval and the override off every unsent row and that
+nothing more is delivered, closes the card and delegates the client again
+through the same button and its confirmation. After `done`, replay the
+request against the closed card (`--replay-only` with the recorded sequence
+and operation id): the same committed operation comes back, the sequence
+stays, and no card is created. Judge with `scripts/smoke-verdict <data>
+agent-live`. The Mac mini runner and the round's evidence live outside the
+repository.
+
 ## Signal integrity: automation finish (FR-SI-01)
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-signal.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-signal-UNIQUE DECK_SMOKE_WKWEBVIEW=signal-finish app/run.sh`.
