@@ -18,10 +18,13 @@
 门禁：CI 形式 clippy 0 告警；`cargo llvm-cov` 工作区 1,567 项通过、13 项既有 ignore，行覆盖 85.8%，测试 TMPDIR 无残留；
 `scripts/ui-tests` 877 项通过（含共享 fixture 两段、America/New_York 与 Asia/Tokyo 时区契约、fake-DOM 编辑器往返、smoke 清单钉住）；
 JS 语法／模块、扩展目录检查通过。
-WKWebView `run` smoke（隔离根 `/private/tmp/deck-clock.xmJifF`，socket `deck-smoke-clock-65345`，清理后 PID 核对为空）：
-新增 `automation-editor` **PASS**（a=255/255：新建每 2 周、起算日、预览、保存、重开、改每 3 个月「1, 15」、暂停恢复保相位），
-既有 `automation` PASS（63/63）；整体判定 **FAIL**，唯一红项是与本次无关的 `input-isolation-proof`（a=-24，前台／就绪位未满足：桌面当时在使用），
-按既有规则需在无人操作的桌面上重跑一次，**待重跑**。
+WKWebView `run` smoke：Mac mini 测试机上一次 **PASS**（95/95；`4100b70` 的调试构建做成 ad-hoc 签名 carrier，隔离根 `/private/tmp/deck-verify-v3c664fa4`，
+`open --env TMUX_TMPDIR` 加 `--smoke-*` 参数启动，20 秒内隔离 `app.log` 出现，进程与 tmux 服务经 `edr_runtime.py experiment` 注册并只由其 `cleanup` 停止，
+残留为空，根已移入该机回收站；其 `~/.deck` 与已安装 Deck 的 `deck` 服务前后一致）：
+新增 `automation-editor` 255/255（新建每 2 周、起算日、预览、保存、重开、改每 3 个月「1, 15」、暂停恢复保相位），既有 `automation` 63/63，`page-visible` 1，`input-isolation-proof` 31。
+此前在本机的三次运行：改动相关的两项检查三次全绿，整体判定三次都红在环境项上（第一次 `input-isolation-proof`，桌面在使用；
+第二次页面被生产 Deck 窗口遮住 202 秒；第三次页面隐藏 11 秒，原因未定），不作为通过依据。
+证据（本机三次与 mini 一次的 app.log 与判定）：`~/c9r-io/deck-clock-recurrence-20261019/evidence/`。
 UNRUN：macOS 之外的时区切换日实机触发（仅契约测试）；发布 carrier。
 
 基线 `ce0bf65`（未提交）；详见
