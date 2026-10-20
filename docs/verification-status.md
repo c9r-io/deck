@@ -30,8 +30,12 @@ MCP 两个工具 `deck_automation_list` / `deck_automation_trigger`、客户端�
 （错误修订 `RULE_CHANGED` 带 currentRevision、错误序号 `STALE_REQUEST`、同 id 重放得同一 operation、异内容 `REQUEST_ID_CONFLICT`、序号递增）→ 1.0 秒内建卡并 committed 返回 cardId
 → 3 条外部行、首行停在 `first-send`、Claude 登录屏无任何输入 → 客户端行按钮撤销委托后 3 条未发行被清扫、30 秒内无投递 → 关卡 → 按钮重新委托 → 关卡后重放同 request_id 得同一 committed operation、卡片 0→0、收件箱不变。
 资源经注册表停止，机器自身的 `~/.deck`、已安装 Deck 及其 `deck` 服务前后一致。第一次排练停在设置阶段（驱动把适配器写成 `claude`，钩子开关要的是来源词 `claude-code`；carrier 的 tmux 服务在启动时就建立，须在启动后立即注册），已修正。
-`live`（登录的真 Claude 在卡片里：逃生口首发、真实 turn-done 后的后续步骤、撤销后第三步被扣住）：**待运行**，根目录与私有钥匙串已备好，等待所有者一次授权。
-UNRUN：发布 carrier；`claude mcp add` 配置下由真实 Claude Code 作为调用方（本轮调用方是独立客户端）。
+`live`（登录的真 Claude 2.1.296 在卡片里，首发逃生口开启；重定位 HOME + 私有钥匙串下登录，所有者只做一次 OAuth 授权，其余免人工）**PASS** 12/12（2026-10-20 09:54–10:03）：
+触发后 8 秒首行以逃生口投递（delivery `class: fixed`、step 0、mode `at`、automatic），卡片里的 Claude 回复 `AGENT-LIVE-STEP-1-OK`；真实 turn-done 之后约 3 分钟，第二行（含交来事项文本的外部行，`class: bounded`、mode `chain`）投递并得到 `AGENT-LIVE-STEP-2-OK Please`；
+撤销委托后第三行的授权与首发覆盖被清扫，300 秒内无投递，关卡时该行 canceled（全部 pane 截取中无 STEP-3）；重新委托后关卡后重放同 request_id 得同一 committed operation、卡片 0→0、收件箱不变。
+收尾：`claude auth logout` 后 `claude auth status` 读回 loggedIn false → 删除私有钥匙串 → 注册表清理 → 根目录 rm -rf；机器自身钥匙串视图前后均只有 login keychain，正式 `deck` 服务未动。
+教训：tmux 把发起 `respawn-window` 的未 attach 客户端的 PATH 交给新 pane（从 SSH shell 发起时登录窗口丢了 `~/.local/bin`），spawn pane 一律在与服务器相同的 env 前缀下进行。
+UNRUN：发布 carrier；`claude mcp add` 配置下由真实 Claude Code 作为调用方（本轮调用方是走同一生产协议与套接字的独立客户端）；macOS 27 之外的版本。
 
 ## 本轮 时钟自动化：每 N 天／周／月加起算日
 
