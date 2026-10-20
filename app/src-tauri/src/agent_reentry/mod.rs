@@ -409,6 +409,27 @@ impl Reason {
     }
 }
 
+/// `code:count` per reason, in first-seen order, comma-separated; `none`
+/// when there is none. Closed words and numbers only: no card, session or
+/// path ever enters this line.
+fn reason_counts(reasons: impl Iterator<Item = Reason>) -> String {
+    let mut counts: Vec<(Reason, usize)> = Vec::new();
+    for reason in reasons {
+        match counts.iter_mut().find(|(seen, _)| *seen == reason) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((reason, 1)),
+        }
+    }
+    if counts.is_empty() {
+        return "none".into();
+    }
+    counts
+        .iter()
+        .map(|(reason, count)| format!("{}:{count}", reason.code()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Warning {
@@ -986,12 +1007,13 @@ impl Turn {
             return Err(preview_timeout());
         }
         applog(&format!(
-            "[agent-reentry] preview sessions={} candidates={}",
+            "[agent-reentry] preview sessions={} candidates={} reasons={}",
             view.entries.len(),
             view.entries
                 .iter()
                 .filter(|entry| entry.kind == Kind::Candidate)
-                .count()
+                .count(),
+            reason_counts(view.entries.iter().filter_map(|entry| entry.reason))
         ));
         Ok(view)
     }

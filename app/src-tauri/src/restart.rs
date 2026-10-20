@@ -11,10 +11,14 @@
 //! server can be checked without treating tmux's missing pane target as loss,
 //! and the key sender of the same server handle.
 //! A client that runs under its release's file name (tmux then shows a
-//! version, and argv[0] is a path) is exited as Claude only when the re-entry
-//! transaction froze that exact pane as a direct client of the product, by
-//! its running code (`frozen`): never by a version-shaped name, never for
-//! another pane.
+//! version, and argv[0] is a path — every client Deck's own re-entry
+//! started, and one started through a path or a wrapper) is exited as an
+//! agent only by its running code: the re-entry transaction froze that
+//! exact pane as a direct client of the product (`frozen`), or the pane's
+//! non-shell foreground leader runs valid code of a re-entry adapter's
+//! product right now (`running_agent`, one dynamic validation under the
+//! prepare deadline, its generation checked before and after). Never by a
+//! version-shaped name; a late or unreadable answer sends no key.
 use std::time::{Duration, Instant};
 
 use crate::applog::{applog, session_tag};
@@ -50,6 +54,21 @@ fn agent(command: &str, argv: Option<&str>) -> Option<Agent> {
         _ => None,
     }
 }
+/// Which agent the process `pid` born at `birth` is by its running code:
+/// each re-entry adapter's product, asked in turn (`procinfo::runs_product`,
+/// under the caller's deadline). `None` for anything else, and for an
+/// answer that did not come in time.
+fn running_agent(pid: u32, birth: (u64, u32)) -> Option<Agent> {
+    use crate::agent_reentry::{claude, codex};
+    [
+        (claude::CAPABILITY.product, Agent::Claude),
+        (codex::CAPABILITY.product, Agent::Codex),
+    ]
+    .into_iter()
+    .find(|(product, _)| crate::procinfo::runs_product(pid, birth, product))
+    .map(|(_, kind)| kind)
+}
+
 fn exit_keys(row: &PaneRow) -> Vec<String> {
     let actual = "#{pid}:#{session_id}:#{window_id}:#{pane_id}:#{pane_pid}:#{pane_current_command}";
     let expected = format!(
@@ -159,9 +178,11 @@ pub(crate) fn prepare(
     }
     let processes = crate::procinfo::processes();
     let mut targets = Vec::new();
+    let mut by_code = 0usize;
     for row in &rows {
-        let argv = crate::procinfo::tty_device(&row.tty)
-            .and_then(|device| crate::procinfo::foreground_leader(&processes, device))
+        let leader = crate::procinfo::tty_device(&row.tty)
+            .and_then(|device| crate::procinfo::foreground_leader(&processes, device));
+        let argv = leader
             .and_then(crate::procinfo::argv0)
             .and_then(|s| crate::context::sanitize_process(&s));
         // What the re-entry transaction froze for this exact pane and
@@ -171,7 +192,23 @@ pub(crate) fn prepare(
             .iter()
             .any(|known| same_pane(known, row) && known.command == row.command)
             .then_some(Agent::Claude);
-        if let Some(kind) = agent(&row.command, argv.as_deref()).or(reentered) {
+        // Any other foreground that is not a shell: the product by its
+        // running code, or nothing (a client Deck itself re-entered runs
+        // under its release's file name, and so may one the user started
+        // through a path or a wrapper).
+        let running = || {
+            if crate::context::shell_process(Some(&row.command)) {
+                return None;
+            }
+            let info = processes.get(&leader?)?;
+            let found = running_agent(info.pid, (info.start_seconds, info.start_micros));
+            by_code += usize::from(found.is_some());
+            found
+        };
+        if let Some(kind) = agent(&row.command, argv.as_deref())
+            .or(reentered)
+            .or_else(running)
+        {
             // Only a sanitized executable may enter the tmux format expression.
             if crate::context::sanitize_process(&row.command).as_deref() != Some(&row.command) {
                 return Err(error("tmux-restart-agent-unrecognized"));
@@ -181,9 +218,10 @@ pub(crate) fn prepare(
     }
     let total = targets.len();
     applog(&format!(
-        "[tmux-restart] classified panes={} agents={} other_foreground={}",
+        "[tmux-restart] classified panes={} agents={} by_code={} other_foreground={}",
         rows.len(),
         total,
+        by_code,
         rows.iter()
             .filter(|r| !crate::context::shell_process(Some(&r.command)))
             .count()
@@ -715,6 +753,70 @@ mod tests {
         ] {
             assert!(!unchanged_rows(std::slice::from_ref(&row), &[changed]));
         }
+    }
+
+    /// A foreground that is neither named as an agent, nor frozen, nor
+    /// either product by its running code gets no exit key, even with the
+    /// running-code question asked under a live deadline.
+    #[test]
+    fn an_unnamed_unfrozen_foreground_that_is_no_product_gets_no_key() {
+        use crate::sync::LockRecover;
+        let _epoch = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        let _phase = crate::session_runtime::test_phase();
+        let server = Server::new();
+        let other = unique("rx-other");
+        server.fixture(&other, 2);
+        let reviewed = server.rows().unwrap();
+        let sent = std::cell::RefCell::new(Vec::new());
+        let prepared = prepare(
+            &reviewed,
+            false,
+            &[],
+            &|| server.rows(),
+            &send_on(&server, &sent),
+            &|_, _, _| {},
+        )
+        .expect("the restart goes on");
+        assert!(prepared.exited.is_empty());
+        assert!(
+            sent.borrow().iter().all(|args| !args.contains("C-d")),
+            "no exit key: {:?}",
+            sent.borrow()
+        );
+        // the test process itself is no product either, and a dead
+        // generation is never one
+        let me = std::process::id();
+        let birth = crate::procinfo::process_start(me).unwrap();
+        assert_eq!(running_agent(me, birth), None);
+        assert_eq!(running_agent(me, (birth.0 + 1, birth.1)), None);
+    }
+
+    /// `running_agent` against one REAL running client the caller names
+    /// (`DECK_RESTART_AGENT_PROBE`, a pid) and the kind it must be
+    /// (`DECK_RESTART_AGENT_EXPECT`: `claude`, `codex` or `none`). Read-only;
+    /// prints closed words and milliseconds only.
+    #[test]
+    #[ignore = "requires an explicitly named real process; sends nothing"]
+    fn running_agent_on_a_named_real_process() {
+        let _phase = crate::session_runtime::test_phase();
+        let pid: u32 = std::env::var("DECK_RESTART_AGENT_PROBE")
+            .expect("DECK_RESTART_AGENT_PROBE")
+            .parse()
+            .expect("a pid");
+        let expect = match std::env::var("DECK_RESTART_AGENT_EXPECT").as_deref() {
+            Ok("claude") => Some(Agent::Claude),
+            Ok("codex") => Some(Agent::Codex),
+            Ok("none") => None,
+            other => panic!("DECK_RESTART_AGENT_EXPECT: {other:?}"),
+        };
+        let birth = crate::procinfo::process_start(pid).expect("the named process exists");
+        let started = Instant::now();
+        let found = running_agent(pid, birth);
+        println!(
+            "running_agent={found:?} ms={}",
+            started.elapsed().as_millis()
+        );
+        assert_eq!(found, expect);
     }
 
     #[test]

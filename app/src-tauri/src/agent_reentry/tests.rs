@@ -7615,3 +7615,22 @@ fn a_verified_pi_is_named_refused_and_never_started_whatever_is_approved() {
     crate::agent_status::reset_for_tests();
     lifecycle::reset_pi_for_tests();
 }
+
+/// The preview's log line counts each refusal by its closed code, in
+/// first-seen order, and says `none` when nothing was refused.
+#[test]
+fn preview_reasons_are_counted_in_closed_words() {
+    assert_eq!(reason_counts(std::iter::empty()), "none");
+    assert_eq!(
+        reason_counts(
+            [
+                Reason::ObservationOff,
+                Reason::IdentityUnavailable,
+                Reason::ObservationOff,
+                Reason::ExecutableUnavailable,
+            ]
+            .into_iter()
+        ),
+        "observation-off:2,identity-unavailable:1,executable-unavailable:1"
+    );
+}

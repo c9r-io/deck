@@ -1497,6 +1497,20 @@ pub(crate) fn qualify_client(
     })
 }
 
+/// Whether the process `pid` born at `birth` runs, right now, valid code of
+/// `product`: the first question of `qualify_client` alone, for a caller
+/// that needs to know only WHAT runs (the restart's graceful exit), not
+/// which file, profile or directory. One dynamic validation under the
+/// caller's deadline (`validated`), the generation checked before and after;
+/// no file is read or hashed. A late, unreadable, diverged or absent answer
+/// is `false`: never the product on a guess.
+#[cfg(target_os = "macos")]
+pub(crate) fn runs_product(pid: u32, birth: (u64, u32), product: &ProductIdentity) -> bool {
+    process_start(pid) == Some(birth)
+        && validated(|| code_identity::running_product(pid, product)) == Some(Running::Is)
+        && process_start(pid) == Some(birth)
+}
+
 /// What one re-entry operation expects of the client it started. Every
 /// field is Deck's own data — the frozen executable, the request words this
 /// operation built, the expected home, the frozen directory; nothing here is
