@@ -1460,7 +1460,7 @@ pub(crate) fn qualify_client(
     let executable = match reused {
         Some(known) => Ok(known.clone()),
         None => {
-            let not = match validated(|| code_identity::running_product(pid, spec.product)) {
+            let not = match running_product(pid, spec.product) {
                 Some(Running::Is) => None,
                 Some(Running::IsNot) => Some(NotProduct::Other),
                 Some(Running::Diverged) => Some(NotProduct::Diverged),
@@ -1507,8 +1507,15 @@ pub(crate) fn qualify_client(
 #[cfg(target_os = "macos")]
 pub(crate) fn runs_product(pid: u32, birth: (u64, u32), product: &ProductIdentity) -> bool {
     process_start(pid) == Some(birth)
-        && validated(|| code_identity::running_product(pid, product)) == Some(Running::Is)
+        && running_product(pid, product) == Some(Running::Is)
         && process_start(pid) == Some(birth)
+}
+
+/// The one place the running-product question is asked, always through its
+/// deadline owner (`validated`): `None` is no answer in time.
+#[cfg(target_os = "macos")]
+fn running_product(pid: u32, product: &ProductIdentity) -> Option<Running> {
+    validated(|| code_identity::running_product(pid, product))
 }
 
 /// What one re-entry operation expects of the client it started. Every
