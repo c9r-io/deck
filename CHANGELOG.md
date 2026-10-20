@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.9 — 2026-10-20 (Nightly)
+
+- The shell-service restart after an update now exits every Claude Code or
+  Codex client it can recognize by its running code, not only those named
+  `claude` or `codex`. A client Deck's own re-entry had started runs under
+  its release's file name (`versions/2.1.x`), as does one started through a
+  path or a wrapper; at the next update such clients were neither asked to
+  exit nor had their final session recorded, and the restart took them down
+  with the server. The check is one signature validation of the running
+  program under the restart's deadline; an answer that does not come in
+  time still sends no key.
+- app.log names why the re-entry review refused its rows
+  (`[agent-reentry] preview … reasons=identity-unavailable:2,…`) and how
+  many agents the restart recognized by running code
+  (`[tmux-restart] classified … by_code=`): closed words and counts only.
+
 ## 0.8.8 — 2026-10-20 (Nightly)
 
 - A third automation trigger, "Agent handover": an MCP client you delegated
