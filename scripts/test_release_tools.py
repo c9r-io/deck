@@ -146,6 +146,52 @@ class StaplerValidationTests(unittest.TestCase):
         self.assertNotIn("xcrun stapler", block)
 
 
+class AppleTicketOverTcpTests(unittest.TestCase):
+    """Every job that reaches Apple's ticket service first moves it to TCP
+    (scripts/apple-ticket-over-tcp, actions/runner-images#14924): after its
+    checkout, before its first build, notarization, staple or validate."""
+
+    APPLE = (
+        "tauri-apps/tauri-action@",
+        "xcrun notarytool",
+        "scripts/stapler-ticket",
+        "scripts/verify-tunnel-helper",
+        "scripts/package-tunnel-helper",
+    )
+    STEP = "run: scripts/apple-ticket-over-tcp"
+
+    def test_every_job_that_reaches_apple_goes_over_tcp_first(self):
+        covered = 0
+        for name in ("nightly.yml", "release.yml", "promote.yml"):
+            text = (ROOT / ".github/workflows" / name).read_text()
+            for job, body in rc.workflow_jobs(text).items():
+                uses = [body.index(word) for word in self.APPLE if word in body]
+                if not uses:
+                    self.assertNotIn(self.STEP, body, f"{name}:{job}")
+                    continue
+                covered += 1
+                with self.subTest(workflow=name, job=job):
+                    self.assertEqual(body.count(self.STEP), 1)
+                    step = body.index(self.STEP)
+                    self.assertLess(body.index("actions/checkout@"), step)
+                    self.assertLess(step, min(uses))
+        # nightly build-sign + publish, release build-macos + repair-dmg, promote
+        self.assertEqual(covered, 5)
+
+    def test_it_refuses_to_run_outside_a_hosted_runner(self):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GITHUB_ACTIONS", "RUNNER_ENVIRONMENT")}
+        result = subprocess.run([str(ROOT / "scripts/apple-ticket-over-tcp")],
+                                env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("refusing", result.stderr)
+        text = (ROOT / "scripts/apple-ticket-over-tcp").read_text()
+        self.assertIn(
+            'echo "block return out quick proto udp from any to any port 443" | sudo pfctl -f -',
+            text,
+        )
+
+
 def script_tests_the_gate_misses(gate: str, scripts: Path) -> list[str]:
     """Test files beside the tools that no gate step runs.
 

@@ -1,0 +1,35 @@
+#!/bin/bash
+# Make this CI job reach Apple's ticket service over TCP.
+#
+# `xcrun stapler` talks to Apple's CloudKit ticket service over HTTP/3, which
+# runs on UDP port 443. On GitHub's hosted macOS runners that path has dropped
+# connections since 2026-10-12 (NSURLErrorDomain -1005, stapler exit 68), while
+# the same requests over ordinary HTTPS (TCP) work. GitHub reproduced it and
+# published this workaround: actions/runner-images#14924. Deck's Nightly
+# build-sign failed 12 of 19 attempts from 2026-10-12 to 2026-10-20 after
+# nearly none before.
+#
+# "block return" refuses outbound UDP 443 at once, so the client falls back to
+# TCP instead of waiting for a timeout. The rule replaces the runner's pf
+# ruleset and lives only in this ephemeral VM. Run it after checkout and before
+# the job's first notarization, staple or validate (the Tauri build staples
+# deck.app itself). scripts/stapler-ticket keeps its bounded retries as the
+# second layer.
+#
+# CI only: it refuses to run anywhere but a GitHub-hosted macOS runner.
+set -euo pipefail
+
+if [[ "${GITHUB_ACTIONS:-}" != "true" || "${RUNNER_ENVIRONMENT:-}" != "github-hosted" \
+      || "$(uname -s)" != "Darwin" ]]; then
+  echo "apple-ticket-over-tcp: only on a GitHub-hosted macOS runner; refusing" >&2
+  exit 1
+fi
+
+echo "block return out quick proto udp from any to any port 443" | sudo pfctl -f -
+sudo pfctl -E
+rules="$(sudo pfctl -s rules)"
+if ! grep -q 'block return out quick proto udp from any to any port = 443' <<<"$rules"; then
+  echo "apple-ticket-over-tcp: the UDP 443 rule is not loaded" >&2
+  exit 1
+fi
+echo "apple-ticket-over-tcp: outbound UDP 443 refused; Apple ticket traffic uses TCP"

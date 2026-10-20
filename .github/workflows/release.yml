@@ -153,6 +153,9 @@ jobs:
             app/src-tauri/target
           key: ${{ runner.os }}-xcode26.3-cargo-${{ hashFiles('app/src-tauri/Cargo.lock') }}
 
+      - name: Reach Apple's ticket service over TCP
+        run: scripts/apple-ticket-over-tcp
+
       - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -240,6 +243,12 @@ jobs:
       group: stable-release-${{ inputs.repair_dmg_tag }}
       cancel-in-progress: false
     steps:
+      # the repair step runs the repository's ticket wrapper
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Reach Apple's ticket service over TCP
+        run: scripts/apple-ticket-over-tcp
       - name: Download, notarize, staple, and replace published DMG
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

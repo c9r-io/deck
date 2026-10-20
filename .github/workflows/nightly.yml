@@ -148,6 +148,8 @@ jobs:
             ~/.cargo/git
             app/src-tauri/target
           key: ${{ runner.os }}-nightly-xcode26.3-cargo-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+      - name: Reach Apple's ticket service over TCP
+        run: scripts/apple-ticket-over-tcp
       - name: Build, sign, notarize app and updater archive
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
@@ -322,6 +324,8 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ needs.resolve.outputs.sha }}
+      - name: Reach Apple's ticket service over TCP
+        run: scripts/apple-ticket-over-tcp
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: signed-nightly-candidate

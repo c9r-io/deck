@@ -103,6 +103,8 @@ jobs:
         run: |
           set -euo pipefail
           scripts/release_channels.py assert-no-build .github/workflows/promote.yml
+      - name: Reach Apple's ticket service over TCP
+        run: scripts/apple-ticket-over-tcp
       - name: Download and validate the published candidate
         env:
           GH_TOKEN: ${{ github.token }}
