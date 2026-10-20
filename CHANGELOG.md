@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.8.8 — 2026-10-20 (Nightly)
+
+- A third automation trigger, "Agent handover": an MCP client you delegated
+  under Settings → Remote access (the authorize flow asks that as a separate
+  question; a client's row can delegate or stop automations later) names an
+  Agent rule by its automation id and hands over one classified item
+  through two new tools, `deck_automation_list` and
+  `deck_automation_trigger`. Deck creates the rule's card as a Slack badge
+  would and sends the rule's own approved steps; the item's text, sender,
+  place and link reach the template as `{{msg.text}}`, `{{msg.from}}`,
+  `{{msg.where}}` and `{{msg.link}}`. A rule changed since the client listed
+  it is refused with `RULE_CHANGED` and its current revision; a request
+  replayed with the same id returns the same operation, a conflicting one
+  is refused; withdrawing the delegation takes the approval and the
+  first-send override off every step not yet sent. Handed-over items are
+  kept in `~/.deck/agent-inbox.json`; settings.json and queue.json holding
+  an Agent rule are sticky v9, mcp.json holding a delegation is sticky v7.
+- A card's context menu can keep its routine turn endings quiet: no
+  notification and no Dock badge for an ordinary turn-done on that card.
+  Input requests, held deliveries and bells stay loud.
+- Clock automations can repeat every N days, weeks or months from a
+  counting-from date ("every 2 weeks on Mon, from the sprint's first
+  Monday"); a skipped, missed or late slot never shifts the next one. A
+  rule due at 09:00 fires at 09:00 on a DST switch day, and the editor
+  shows the next three slots and takes days of the month as text
+  ("1, 15"). settings.json holding an interval rule is sticky v8.
+- Tests and the gate: every test leaves its temporary directory empty, and
+  the gate fails on any leftover.
+
 ## 0.8.7 — 2026-10-18 (Nightly)
 
 - Codex sessions can be reopened after a shell-service restart, for Codex
