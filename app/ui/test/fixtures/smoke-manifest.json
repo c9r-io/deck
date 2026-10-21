@@ -49,6 +49,7 @@
         "page-visible": {},
         "link-scan-bounded": {},
         "multiline-prompt": {},
+        "terminal-find": {},
         "natural-fault": {},
         "path-editor": {},
         "path-menu": {},

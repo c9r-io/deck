@@ -71,6 +71,7 @@ import { refreshInputSource } from './input-source.js';
 import { appendInputCleanup, createTerminalDataHandler } from './terminal-input.js';
 import { wireImeProbe } from './terminal-ime-probe.js';
 import { keepLocalTerminalMouse } from './terminal-mouse.js';
+import { createTerminalFind } from './terminal-find.js';
 
 const mcpUiGate = createMcpSessionUiGate();
 
@@ -188,6 +189,32 @@ function setScrollCursorVisible(pane, visible) {
     });
   }
   pane.stripScrollCursor();
+}
+
+/* ⌘F: the pane's find bar, built on first use (terminal-find.js). A search
+   is tmux copy-mode, so its reply drives the same presentation a wheel
+   scroll does: the copy cursor hidden, the scrollback chip shown. */
+export function openTerminalFind(pane) {
+  if (!pane.find) {
+    pane.find = createTerminalFind({
+      mount: pane.el,
+      run: async ({ query, step, turn }) => {
+        if (hasTerminalSelection(pane)) await cancelTerminalSelection(pane, 'other');
+        return inv('terminal_search', { name: pane.session, query, step, turn });
+      },
+      live: () => goLive(pane.session),
+      onResult: result => {
+        const inMode = !!result?.active;
+        setScrollCursorVisible(pane, !inMode);
+        const c = provider.get(pane.sid);
+        if (c && !!c.scrolled !== inMode) { c.scrolled = inMode; updatePaneChrome(c); }
+      },
+      available: () => panes.get(pane.session) === pane && pane.attached !== false,
+      focusTerminal: () => pane.term.focus(),
+      t,
+    });
+  }
+  pane.find.open();
 }
 
 export function createPane(card) {
@@ -945,6 +972,7 @@ export function closePaneBySid(sid, opts = {}) {
   if (entry.selection) entry.selection.dispose();
   entry.scrollCursorObserver?.disconnect();
   entry.imeProbe?.dispose();
+  entry.find?.dispose();
   if (opts.detach !== false) inv('detach_session', { name: entry.session }).catch(() => {});
   try { entry.term.dispose(); } catch (e) { /* already gone */ }
   const quickBar = $('quick-bar');
@@ -1074,6 +1102,7 @@ export function leaveSessionView({ switchingSession = false, detach = true } = {
     if (p.selection) p.selection.dispose();
     p.scrollCursorObserver?.disconnect();
     p.imeProbe?.dispose();
+    p.find?.dispose();
     if (detach) inv('detach_session', { name: p.session }).catch(() => {});
     try { p.term.dispose(); } catch (e) { /* fine */ }
     p.el.remove();
@@ -1233,6 +1262,10 @@ export function initLayout() {
   registerShortcutAction('splitRight', () => showSplitPicker('row'));
 
   registerShortcutAction('splitDown', () => showSplitPicker('col'));
+  registerShortcutAction('findInTerminal', () => {
+    const pane = state.view === 'session' && panes.get(ctx.attachedName);
+    if (pane) openTerminalFind(pane);
+  });
 
   listen('pty-data', ev => {
     const { name, gen, seq, data } = ev.payload;

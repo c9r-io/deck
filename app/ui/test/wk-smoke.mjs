@@ -305,7 +305,7 @@ async function themeSmoke(card) {
     Math.round(settingsBox.clientHeight), Math.round(innerHeight));
   const shortcutIds = [...settingsBox.querySelectorAll('.shortcut-capture')]
     .map(button => button.dataset.action).join(',');
-  const fixedFontHidden = shortcutIds === 'newSession,toggleSidebar,splitRight,splitDown,translationLens';
+  const fixedFontHidden = shortcutIds === 'newSession,toggleSidebar,splitRight,splitDown,translationLens,findInTerminal';
   const rowsStacked = [...settingsBox.querySelectorAll('.set-row')].every(row => {
     const label = row.querySelector(':scope > label');
     if (!label || !row.getClientRects().length) return true;
@@ -2149,6 +2149,63 @@ async function automationEditorSmoke(project, column) {
    a bubbling `change` the form logic already listens for (q-win appears
    once a cadence is chosen, and hides again through the mutation observer
    when the select is hidden). */
+/* ⌘F over tmux's own search, through the production shortcut and bar. The
+   fixture builds each needle from two halves so the echoed command line
+   holds no match. a = mask of the eight steps below. */
+async function terminalFindSmoke(card) {
+  const { t } = await import('../js/i18n.js');
+  let mask = 0;
+  await openSession(card.id);
+  const pane = panes.get(card.session);
+  await inv('scroll_bottom', { name: card.session });
+  const command = 'for i in $(seq 1 300); do echo find-row-$i; '
+    + '[ $i = 60 ] && echo "FIND-nee""dle one"; [ $i = 200 ] && echo "FIND-nee""dle two"; done; echo "FIND-""END"';
+  await inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: strToB64(command + '\r') });
+  await waitFor(() => {
+    const buffer = pane.term.buffer.active;
+    for (let row = 0; row < pane.term.rows; row++) {
+      if (buffer.getLine(buffer.viewportY + row)?.translateToString(true) === 'FIND-END') return true;
+    }
+    return false;
+  }, 10_000);
+  const metrics = () => inv('terminal_metrics', { name: card.session });
+  const key = (target, k, extra = {}) => target.dispatchEvent(new KeyboardEvent('keydown', {
+    key: k, bubbles: true, cancelable: true, ...extra,
+  }));
+  key(document, 'f', { code: 'KeyF', metaKey: true });
+  const bar = pane.el.querySelector('.tfind');
+  const input = bar?.querySelector('.tfind-q');
+  if (bar && !bar.hidden && document.activeElement === input) mask |= 1;
+  if (input) {
+    input.value = 'FIND-needle';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  }
+  const counted = await waitFor(() => pane.find?.view().label === t('find.count', { count: 2 }), 5000);
+  const first = await metrics();
+  if (counted && first.in_copy_mode && first.scroll_position > 0
+      && !pane.body.querySelector('.xterm-cursor') && pane.el.querySelector('.scrollchip')) mask |= 2;
+  if (input) key(input, 'Enter');
+  let olderAt = 0;
+  if (await waitFor(async () => (olderAt = (await metrics()).scroll_position) > first.scroll_position, 3000)) mask |= 4;
+  if (input) key(input, 'Enter', { shiftKey: true });
+  if (await waitFor(async () => (await metrics()).scroll_position < olderAt, 3000)) mask |= 8;
+  if (input) key(input, 'Escape');
+  const kept = await metrics();
+  if (bar?.hidden && kept.in_copy_mode && document.activeElement === pane.term.textarea) mask |= 16;
+  key(document, 'f', { code: 'KeyF', metaKey: true });
+  if (!bar?.hidden && input?.value === 'FIND-needle' && input.selectionStart === 0
+      && input.selectionEnd === input.value.length) mask |= 32;
+  if (input) {
+    input.value = 'FIND-no-such-text';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  }
+  if (await waitFor(() => pane.find?.view().label === t('find.none'), 5000)) mask |= 64;
+  if (input) key(input, 'Escape');
+  pane.el.querySelector('.scrollchip')?.click();
+  if (await waitFor(async () => !(await metrics()).in_copy_mode, 3000)) mask |= 128;
+  await report('terminal-find', mask === 255, mask, 255);
+}
+
 async function dropdownSmoke(card) {
   await openSession(card.id);
   toggleQueuePanel(true);
@@ -2647,6 +2704,7 @@ export async function run() {
     stage = 13;
     await dropdownSmoke(main);
     await multilinePromptSmoke(main);
+    await terminalFindSmoke(main);
     await bufferSmoke(main, project, column);
     stage = 14;
     await inv('queue_add', { args: {

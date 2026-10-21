@@ -512,6 +512,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "ambiguous-boot",
     "scheduler-context",
     "multiline-prompt",
+    "terminal-find",
     "buffer-board-overlay",
     "buffer-attention-overlay",
     "buffer-attention-cleanup",

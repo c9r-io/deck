@@ -174,6 +174,31 @@ pub(crate) fn scroll_bottom(name: String) -> Result<(), DeckError> {
     Ok(())
 }
 
+/// One find-bar step (`terminal_search.rs` holds the contract): probe the
+/// pane, then run the step and its report in one tmux command list, both
+/// under the operation lock that orders wheel, selection and resize work.
+/// Only integers come back; the query is never logged.
+#[tauri::command]
+pub(crate) fn terminal_search(
+    name: String,
+    query: String,
+    step: String,
+    turn: bool,
+) -> Result<crate::terminal_search::TerminalSearchResult, DeckError> {
+    let _operation = terminal_selection_operation_lock().lock_or_recover();
+    validate_session_name(&name)?;
+    let step = crate::terminal_search::FindStep::parse(&step)?;
+    crate::terminal_search::validate_query(&query)?;
+    let target = pane_target(&name);
+    let probe = crate::terminal_search::parse_probe(&tmux_owned(
+        &crate::terminal_search::probe_args(&target),
+    )?)?;
+    let report = tmux_owned(&crate::terminal_search::step_args(
+        &target, &query, step, probe, turn,
+    ))?;
+    crate::terminal_search::parse_report(&report)
+}
+
 /// Fresh shells accumulate junk history from the attach-time resize
 /// reflow (blank lines pushed into scrollback), which made "empty" shells
 /// scrollable. Called once for sessions deck itself just started.
@@ -1436,6 +1461,7 @@ mod tests {
         );
         assert!(scroll_session(bad.clone(), 1, None, None).is_err());
         assert!(scroll_bottom(bad.clone()).is_err());
+        assert!(terminal_search(bad.clone(), "q".into(), "start".into(), false).is_err());
         clear_history(bad.clone());
         assert!(terminal_metrics(bad.clone()).is_err());
         assert!(crate::commands::kill_session(bad.clone(), None).is_err());

@@ -77,7 +77,7 @@ test('custom shortcut normalization is closed, safe and conflict-aware', () => {
     'custom actions cannot shadow a fixed font shortcut');
   assert.equal(shortcutActionForEvent(key('K', { metaKey: true, shiftKey: true }), bindings), 'newSession');
   assert.deepEqual(CUSTOMIZABLE_SHORTCUT_ACTIONS.map(action => action.id), [
-    'newSession', 'toggleSidebar', 'splitRight', 'splitDown', 'translationLens',
+    'newSession', 'toggleSidebar', 'splitRight', 'splitDown', 'translationLens', 'findInTerminal',
   ]);
 });
 

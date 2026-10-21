@@ -1,13 +1,27 @@
 # 当前验证索引
 
-更新：2026-10-20（Agent 交来触发源）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-10-21（卡片内查找 ⌘F）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
-## 本轮 Agent 交来触发源（委托 MCP 客户端触发自动化）
+## 本轮 卡片内查找（⌘F）
+
+基线 `d7d1203`。内容：`terminal_search.rs` + `terminal.rs` 的 `terminal_search` 命令（tmux copy-mode 原生字面搜索，只读回整数，不读 pane 文本、不记查询词；
+查询以 `send-keys -F`、`#` 加倍并以 `#{l:}` 结尾、`--` 前缀作为单个 argv 交给 tmux，防尾部 `;` 被当作命令分隔、`-` 开头被当作选项）；
+前端 `terminal-find.js` / `terminal-find-model.js`（每个 pane 一个查找条，防抖 150 ms、输入法组字中不搜、单请求在途、Esc 停在命中处、清空查询回到实时画面）；
+快捷键 `findInTerminal`（默认 ⌘F，可自定义）；查询上限 256 字节镜像在 `limits.json`。
+
+门禁（本机，隔离 HOME、短 TMPDIR）：`cargo fmt`；CI 形式 clippy 0 告警；`cargo llvm-cov --workspace --all-targets --all-features --locked -- --test-threads=1`：
+deck-app 1,310 项通过、14 项既有 ignore，各套件全部通过，行覆盖 86.67%、函数覆盖 84.19%，TMPDIR 无残留（含内置 tmux 3.7c 的真实搜索测试：步进、转向、大小写、`a;`、`-x`、`#{pane_id}`、中文、`a; kill-server` 只作字面）；
+`scripts/ui-tests` 893 项通过并满足覆盖阈值；JS 语法 187 模块、`check.mjs` 76 模块通过。
+前一次同形式运行中 `restart::tests::a_shell_snapshot_failure_refuses_before_any_exit_key` 连续失败（`tmux-server-impact-changed`），随后在本改动与干净 HEAD 上单独、成组、整模块各多次通过，HEAD 的 CI 为绿：**待观测**，与本改动无关。
+原生（2026-10-21，Mac mini 测试机，隔离根目录 + 实验注册表）：WKWebView `run` 模式新增 `terminal-find` 检查 **PASS** 255/255（生产快捷键打开、计数、older/newer 视口移动、Esc 保持 copy-mode 与焦点回终端、重开保留并全选查询、无结果、chip 回到实时），整次 run **PASS** 96/96；机器自身 `~/.deck` 与 `deck` 服务前后一致。
+UNRUN：发布 carrier；真实输入法在查找框内组字（只覆盖了组字事件的单元测试）；全屏程序（alternate screen）的提示只在单元测试中覆盖。
+
+## 上一轮 Agent 交来触发源（委托 MCP 客户端触发自动化）
 
 基线 `5791b84`。设计稿、三轮交叉审查与设计基线在仓库外 `~/c9r-io/deck-mention-patrol-20261019/`
 （`design-baseline-v1.md`、`detailed-design-v1.md`、evidence-v06a-20261020）。
@@ -37,7 +51,7 @@ MCP 两个工具 `deck_automation_list` / `deck_automation_trigger`、客户端�
 教训：tmux 把发起 `respawn-window` 的未 attach 客户端的 PATH 交给新 pane（从 SSH shell 发起时登录窗口丢了 `~/.local/bin`），spawn pane 一律在与服务器相同的 env 前缀下进行。
 UNRUN：发布 carrier；`claude mcp add` 配置下由真实 Claude Code 作为调用方（本轮调用方是走同一生产协议与套接字的独立客户端）；macOS 27 之外的版本。
 
-## 本轮 时钟自动化：每 N 天／周／月加起算日
+## 上一轮 时钟自动化：每 N 天／周／月加起算日
 
 基线 `cdf0cdd`。设计稿与 Codex 复审在仓库外
 `~/c9r-io/deck-clock-recurrence-20261019/`（merged-proposal.md v2、codex-review-20261019.md）。

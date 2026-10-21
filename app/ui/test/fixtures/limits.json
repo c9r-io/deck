@@ -76,6 +76,7 @@
     ]
   },
   "drop_max_bytes": 33554432,
+  "find_query_max_bytes": 256,
   "translation_max_bytes": 16384,
   "translation_live_bytes": 4096,
   "translation_document_choices": [8192, 16384],

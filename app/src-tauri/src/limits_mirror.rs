@@ -42,6 +42,14 @@ fn translation_input_bound_matches_frontend() {
     );
 }
 
+#[test]
+fn find_query_bound_matches_frontend() {
+    assert_eq!(
+        number(&limits()["find_query_max_bytes"]),
+        crate::terminal_search::QUERY_MAX_BYTES as u64
+    );
+}
+
 fn words(value: &Value) -> Vec<&str> {
     value
         .as_array()

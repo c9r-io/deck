@@ -1,4 +1,5 @@
 import { REMINDER_NOTE_BYTES } from '../js/reminder-model.js';
+import { FIND_QUERY_MAX_BYTES } from '../js/terminal-find-model.js';
 // Frontend ↔ backend mirrored constants. This is the JS half of the mirror:
 // test/fixtures/limits.json is the one list, this file holds the frontend
 // exports to it, and src-tauri/src/limits_mirror.rs holds the Rust constants
@@ -100,6 +101,10 @@ test('closed status vocabularies', () => {
       assert.equal(typeof dictionary[`notice.${code}`], 'string', `${locale} notice.${code}`);
     }
   }
+});
+
+test('find query bound matches the native fixture', () => {
+  assert.equal(FIND_QUERY_MAX_BYTES, limits.find_query_max_bytes);
 });
 
 test('reminder note bounds match the native fixture', () => {

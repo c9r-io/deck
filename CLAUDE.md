@@ -315,7 +315,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Controlled Execution calibration (CE1) | `scripts/ce/`, `scripts/ce_parity.py`, `scripts/ce_verdict.py`, `mcp/tests.rs` `ce1_probe_*` (+ `docs/ce-calibration.md`) |
 | Voice input, shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice*.js` (+ `docs/voice-input.md`) |
 | Local translation, pasteboard observation, Lens | `native/BergamotBridge.cpp`, `native/PasteboardBridge.swift`, `vendor/bergamot/`, `intelligence/`, `ui/js/local-intelligence.js`, `translation-lens*.js` (+ `docs/translation-lens.md`) |
-| Terminal scroll, selection, links, clipboard | `terminal.rs`, `terminal_selection.rs`, `terminal_scroll.rs`, `links.rs`, `ui/js/selection.js`, `layout.js`, `terminal-links*.js`, `terminal-clipboard.js`, `terminal-bytes.js`, `terminal-ime-probe.js` (always-on content-free IME commit probe) |
+| Terminal scroll, selection, find (⌘F), links, clipboard | `terminal.rs`, `terminal_selection.rs`, `terminal_scroll.rs`, `terminal_search.rs`, `links.rs`, `ui/js/selection.js`, `layout.js`, `terminal-links*.js`, `terminal-clipboard.js`, `terminal-bytes.js`, `terminal-ime-probe.js` (always-on content-free IME commit probe), `terminal-find.js`, `terminal-find-model.js` |
 | Completion bar, context menus, the ONE new-session path | `ui/js/terminal.js` (`newSession`), `board.js` (`provider.createStarted`), `pure.js` (`newSessionPlan`) |
 | Settings (the ONE settings writer), dialogs, dropdowns | `ui/js/settings.js`, `settings-search-model.js`, `dialogs.js`, `dropdown.js` |
 | Lists (the ⏱ panel), delivery state machine | `scheduler/`, `context.rs`, `ui/js/scheduler.js`, `queue-review.js` (+ `docs/scheduler-context-safety.md`) |

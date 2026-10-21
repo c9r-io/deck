@@ -413,6 +413,26 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .spane.file-drop { box-shadow: inset 0 0 0 2px var(--accent); }
 .spane-body { flex: 1; min-height: 0; position: relative; overflow: hidden; padding: 8px 6px 8px 12px; }
 .spane-body .xterm { height: 100%; }
+/* find bar (terminal-find.js): floats over the pane's top-right corner */
+.spane { position: relative; }
+.tfind {
+  position: absolute; top: calc(1.75rem + 8px); right: 14px; z-index: 7;
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 4px 4px 8px; border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--border);
+  box-shadow: 0 8px 24px var(--shadow-menu); font-size: 0.846154rem; color: var(--muted);
+}
+.tfind[hidden] { display: none; }
+.tfind-q {
+  width: 200px; padding: 3px 6px; border-radius: 5px;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  font: inherit; outline: none;
+}
+.tfind-q:focus { border-color: var(--accent); }
+.tfind-n { min-width: 64px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tfind[data-state="miss"] .tfind-n { color: var(--danger); }
+.tfind button { flex: none; padding: 1px 6px; border-radius: 4px; color: var(--muted); }
+.tfind button:hover { color: var(--text); background: var(--hover); }
 .split-divider-v { width: 5px; flex: none; background: var(--border-soft); cursor: col-resize; }
 .split-divider-h { height: 5px; flex: none; background: var(--border-soft); cursor: row-resize; }
 .split-divider-v:hover, .split-divider-h:hover { background: var(--accent-dim); }

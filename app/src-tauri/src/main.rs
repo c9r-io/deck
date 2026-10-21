@@ -62,6 +62,7 @@ mod storage;
 mod sync;
 mod terminal;
 mod terminal_scroll;
+mod terminal_search;
 mod terminal_selection;
 #[cfg(test)]
 mod test_dir;
@@ -461,6 +462,7 @@ fn main() {
             commands::kill_session,
             terminal::scroll_session,
             terminal::scroll_bottom,
+            terminal::terminal_search,
             terminal::clear_history,
             terminal::terminal_selection_start,
             terminal::terminal_selection_update,

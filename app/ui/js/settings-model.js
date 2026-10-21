@@ -21,6 +21,7 @@ export const SHORTCUT_ACTIONS = Object.freeze([
   Object.freeze({ id: 'splitRight', defaultBinding: 'Meta+KeyD', customizable: true }),
   Object.freeze({ id: 'splitDown', defaultBinding: 'Meta+Shift+KeyD', customizable: true }),
   Object.freeze({ id: 'translationLens', defaultBinding: 'Meta+Shift+KeyT', customizable: true }),
+  Object.freeze({ id: 'findInTerminal', defaultBinding: 'Meta+KeyF', customizable: true }),
   Object.freeze({ id: 'fontIncrease', defaultBinding: 'Meta+Equal', customizable: false }),
   Object.freeze({ id: 'fontDecrease', defaultBinding: 'Meta+Minus', customizable: false }),
   Object.freeze({ id: 'fontReset', defaultBinding: 'Meta+Digit0', customizable: false }),
