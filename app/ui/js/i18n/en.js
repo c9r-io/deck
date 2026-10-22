@@ -889,7 +889,7 @@ const dictionary = {
   'templates.nameHint': 'Templates belong to this project. Steps are queued in order: the first is sent once the card’s command is in the foreground, the rest follow it. A step may span many lines — it is pasted exactly as it reads.',
   'templates.steps': 'Steps',
   'templates.stepPlaceholder': 'add a step — one prompt, as many lines as you like; ⌘↵ to add',
-  'templates.placeholders': '{{msg.text}} {{msg.from}} {{msg.where}} {{msg.link}} — filled in when a Slack-badge automation uses this template. A step that starts with a slash command hands the message to that skill.',
+  'templates.placeholders': '{{msg.text}} {{msg.from}} {{msg.where}} {{msg.link}} — filled in when a Slack-badge automation uses this template, each inside an <external_message> block that tells the agent it is material, not instructions. A step that starts with a slash command hands the message to that skill.',
   'templates.empty': 'No templates in this project yet. Create one here, or save a list as one from its 📋 menu on a card.',
   'templates.noSteps': 'No steps yet — add the first prompt below.',
   'templates.noMatch': 'No template matches.',

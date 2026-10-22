@@ -5,6 +5,14 @@ use crate::inbound_channel as channel;
 use crate::scheduler::{channel_first_send, QueueAddArgs};
 use serde_json::{json, Value};
 
+/// The fixture template's first step over the fixture event, its message fenced.
+fn inspected() -> String {
+    format!(
+        "Inspect {}",
+        crate::scheduler::external_block("INCIDENT fixture")
+    )
+}
+
 #[test]
 fn native_channel_admission_binds_source_scope_frozen_intent_and_retirement() {
     const CHILD: &str = "DECK_CHANNEL_AUTHORITY_TEST_CHILD";
@@ -73,12 +81,12 @@ fn exercise(root: &std::path::Path) {
         "origin":{"source":"channel","key":event.operation_key,"badge":"R1"},"buffer":{"revision":1,"collecting":true,"entries":[]},
         "channelRun":{"groupKey":event.group_key,"firstEventId":"E1","connectionId":"default","workspaceId":"T1","channelId":"C1","ruleId":"R1",
             "lastCollectedAt":now,"idleMinutes":15,"collecting":true,"initialQueued":false,"target":{"projectId":"P1","dir":dir,"cmd":"claude","session":"deck-test-channel"},
-            "firstSend":claim,"initialSteps":[{"operationId":op,"text":"Inspect INCIDENT fixture","mode":"at","at":now,"tpl":"triage","tplIdx":1,"tplTotal":2},
+            "firstSend":claim,"initialSteps":[{"operationId":op,"text":inspected(),"mode":"at","at":now,"tpl":"triage","tplIdx":1,"tplTotal":2},
             {"operationId":"Blater","text":"Later","mode":"chain","tpl":"triage","tplIdx":2,"tplTotal":2}]}}]);
     serde_json::from_value::<BoardDoc>(board.clone()).unwrap();
     reconcile_channel_board_evidence(None, &board.to_string()).unwrap();
     commit_board(&board.to_string(), BoardStanding::Current);
-    let args_value = json!({"session":"deck-test-channel","cardId":"S1","operationId":op,"dir":dir,"cmd":"claude","text":"Inspect INCIDENT fixture",
+    let args_value = json!({"session":"deck-test-channel","cardId":"S1","operationId":op,"dir":dir,"cmd":"claude","text":inspected(),
         "mode":"at","at":now,"tpl":"triage","tplIdx":1,"tplTotal":2,"channelFirstSend":claim});
     let args: QueueAddArgs = serde_json::from_value(args_value.clone()).unwrap();
     assert!(
@@ -849,7 +857,7 @@ fn a_run_acknowledged_by_an_older_deck_finishes_its_plan() {
                 "channelRun":{"groupKey":"default/T1/C1/R1","firstEventId":event,"connectionId":"default","workspaceId":"T1",
                     "channelId":"C1","ruleId":"R1","lastCollectedAt":now - 100,"idleMinutes":0,"collecting":true,"initialQueued":false,
                     "initialSteps":[
-                        {"operationId":format!("B{event}0"),"text":"Inspect INCIDENT fixture","mode":"at","at":now - 100,"tpl":"triage","tplIdx":1,"tplTotal":2},
+                        {"operationId":format!("B{event}0"),"text":inspected(),"mode":"at","at":now - 100,"tpl":"triage","tplIdx":1,"tplTotal":2},
                         {"operationId":format!("B{event}1"),"text":"Later","mode":"chain","tpl":"triage","tplIdx":2,"tplTotal":2}]}})
             };
             let mut board = closure_board(json!(["Inspect {{msg.text}}", "Later"]));
@@ -925,7 +933,7 @@ fn a_run_acknowledged_by_an_older_deck_finishes_its_plan() {
                 &dir,
                 &event,
                 staged,
-                &["Inspect INCIDENT fixture", "Later"],
+                &[inspected().as_str(), "Later"],
             );
             let prior = board.to_string();
             board["cards"].as_array_mut().unwrap().push(card.clone());

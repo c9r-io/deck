@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { appliedChannelCard, channelFirstSendNeedsUpdate, channelFirstSendRecipe, channelFirstSendScope } from '../js/channel-model.js';
 import { channelAgentCommand, channelBlockReason, channelDigestId, channelRunExpired, channelSource, channelTemplatePlan, collectingCard, createPendingNotices, nextCollectedAt, normalizeChannelConfig, unfinishedChannelPlans } from '../js/channel-model.js';
+import { externalBlock } from '../js/pure.js';
 
 const rule = { id: 'R1', enabled: true, channelIds: ['C1'], senderUserIds: ['U1'], senderBotIds: [],
   match: { kind: 'regex', value: 'INC-(?<incident>[0-9]+)', groupCapture: 'incident' }, includeThreads: true,
@@ -132,7 +133,7 @@ test('template plan freezes expanded text and source retains reference ids witho
   const item = { body: 'INC-4 failed', channelId: 'C1', eventId: 'Ev1', connectionId: 'default', workspaceId: 'T1',
     ruleId: 'R1', occurredAt: 123, messageTs: '123.4', senderUserId: 'U1', target: { cmd: 'claude', template: 'triage' } };
   const plan = channelTemplatePlan(item, { templates: [{ name: 'triage', steps: ['Handle {{msg.text}} in {{msg.where}}'] }] }, 500);
-  assert.deepEqual(plan.texts, ['Handle INC-4 failed in C1']);
+  assert.deepEqual(plan.texts, [`Handle ${externalBlock('INC-4 failed')} in ${externalBlock('C1')}`]);
   assert.deepEqual(channelSource(item).links, []);
   assert.equal(channelSource(item).messageTs, '123.4');
 });
@@ -177,7 +178,7 @@ test('a staged head keeps its native recipe across a template edit before first 
   const item = { id: 'default/T1/E1/R1', body: 'Original event', channelId: 'C1', target: rule,
     firstSendGrant: { id: 'g1', digest: 'd1', skeleton: 'Inspect {{msg.text}}' } };
   const plan = channelTemplatePlan(item, { templates: [{ name: 'triage', steps: ['New first', 'New later'] }] }, 100);
-  assert.deepEqual(plan.texts, ['Inspect Original event', 'New later']);
+  assert.deepEqual(plan.texts, [`Inspect ${externalBlock('Original event')}`, 'New later']);
   assert.equal(plan.firstSend.skeleton, 'Inspect {{msg.text}}');
   assert.equal(channelTemplatePlan({ ...item, firstSendGrant: { id: 'g1', digest: 'd1' } },
     { templates: [{ name: 'triage', steps: ['New first'] }] }, 100).error, 'template');

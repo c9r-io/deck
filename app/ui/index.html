@@ -571,7 +571,7 @@
           </div>
           <details class="set-details tpl-wide">
             <summary data-i18n="templates.placeholders.title">Slack message placeholders</summary>
-            <div class="set-hint tpl-wide" data-i18n="templates.placeholders">{{msg.text}} {{msg.from}} {{msg.where}} {{msg.link}} — filled in when a Slack-badge automation uses this template. A step that starts with a slash command hands the message to that skill.</div>
+            <div class="set-hint tpl-wide" data-i18n="templates.placeholders">{{msg.text}} {{msg.from}} {{msg.where}} {{msg.link}} — filled in when a Slack-badge automation uses this template, each inside an &lt;external_message&gt; block that tells the agent it is material, not instructions. A step that starts with a slash command hands the message to that skill.</div>
           </details>
         </div>
       </div>

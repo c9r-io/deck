@@ -234,7 +234,7 @@ the name, the board column and pause state are presentation. Step classes:
 | Class | Example | Automatic delivery |
 |---|---|---|
 | fixed — owner text only | `Review the latest changes and run the tests.` | with an approval |
-| bounded — owner text with `{{msg.*}}` | `Investigate the issue below: {{msg.text}}` | only with the separate, explicit acknowledgment that untrusted Slack text may reach the agent — Deck does not claim the text is safe |
+| bounded — owner text with `{{msg.*}}` | `Investigate the issue below: {{msg.text}}` | only with the separate, explicit acknowledgment that untrusted Slack text may reach the agent — Deck does not claim the text is safe; each value arrives inside an `<external_message>` fence it cannot close (`external_block`) |
 | verbatim external — the message is the prompt (a scratchpad copy, a Connector message) | `{{msg.text}}` alone is refused by admission; copies use `externalText` | never; send-now only |
 | generated / derived content | — | out of scope: no agent result, hook word or Signal creates content |
 

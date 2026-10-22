@@ -888,7 +888,7 @@ const dictionary = {
   'templates.nameHint': '模板属于当前项目。步骤按顺序排队：第一条在卡片命令进入前台后发送，其余依次接上。单个步骤可以写多行 — 原样粘贴。',
   'templates.steps': '步骤',
   'templates.stepPlaceholder': '新增步骤 — 一条 prompt，可以写多行；⌘↵ 添加',
-  'templates.placeholders': '{{msg.text}} {{msg.from}} {{msg.where}} {{msg.link}} — Slack 标记触发的自动化使用该模板时填入。以斜杠命令开头的步骤会把消息交给对应 skill。',
+  'templates.placeholders': '{{msg.text}} {{msg.from}} {{msg.where}} {{msg.link}} — Slack 标记触发的自动化使用该模板时填入，每个值都包在 <external_message> 块里，并注明是素材而不是指令。以斜杠命令开头的步骤会把消息交给对应 skill。',
   'templates.empty': '当前项目还没有模板。可以在这里新建，也可以在卡片列表的 📋 菜单里用 ☆ 把列表存为模板。',
   'templates.noSteps': '还没有步骤 — 在下方添加第一条 prompt。',
   'templates.noMatch': '没有匹配的模板。',

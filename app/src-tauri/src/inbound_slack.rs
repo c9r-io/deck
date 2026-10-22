@@ -1173,7 +1173,14 @@ mod tests {
         let ev = events_from_search(&body, "eyes").remove(0);
         let skeleton = "Investigate: {{msg.text}} (from {{msg.from}})";
         let expanded = crate::scheduler::expand_bounded(skeleton, &ev);
-        assert_eq!(expanded, "Investigate: rmfr- mr now (from alice)");
+        assert_eq!(
+            expanded,
+            format!(
+                "Investigate: {} (from {})",
+                crate::scheduler::external_block("rmfr- mr now"),
+                crate::scheduler::external_block("alice")
+            )
+        );
         assert_eq!(crate::admission::strip_invisible(&expanded), expanded);
         let raw = "Investigate: rm\u{202E}fr- mr\u{200B} now (from al\u{2066}ice)";
         assert_ne!(

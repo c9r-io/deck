@@ -164,7 +164,9 @@ fn expand(skeleton: &str, event: &crate::inbound_channel::PendingChannelEvent) -
             "link" => Some(""),
             _ => None,
         };
-        value.map(flatten).unwrap_or_else(|| caps[0].to_owned())
+        value
+            .map(|v| super::authority::external_block(&flatten(v)))
+            .unwrap_or_else(|| caps[0].to_owned())
     });
     super::normalize_prompt(&out)
 }
