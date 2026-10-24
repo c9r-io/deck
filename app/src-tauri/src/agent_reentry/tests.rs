@@ -268,6 +268,7 @@ fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
     let birth = crate::procinfo::process_start(me).expect("own birth");
     let own = ExecutableRef::of_this_test();
     let entry = |card: &str, client_birth: (u64, u32)| Entry {
+        tag: "agent-reentry",
         view: EntryView {
             card_id: card.into(),
             session: card.into(),
@@ -310,6 +311,8 @@ fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
         // generation of the same pid that does not exist
         entries: vec![entry("alive", birth), entry("gone", (birth.0 + 1, birth.1))],
         reread: Vec::new(),
+        settled: Vec::new(),
+        tag: "agent-reentry",
     };
     lifecycle::begin("deck-smoke-seal", Path::new("/nonexistent/helper"));
     for (index, id) in [(0, ID_A), (1, ID_B)] {
@@ -362,6 +365,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
     let gone = (birth.0 + 1, birth.1);
     let own = ExecutableRef::of_this_test();
     let entry = |card: &str| Entry {
+        tag: "agent-reentry",
         view: EntryView {
             card_id: card.into(),
             session: card.into(),
@@ -402,6 +406,8 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
         })),
         entries: vec![entry("one"), entry("two"), entry("three")],
         reread: Vec::new(),
+        settled: Vec::new(),
+        tag: "agent-reentry",
     };
     lifecycle::begin("deck-smoke-same", Path::new("/nonexistent/helper"));
     for (index, id) in [(0, ID_A), (1, ID_A), (2, ID_C)] {
@@ -7633,4 +7639,223 @@ fn preview_reasons_are_counted_in_closed_words() {
         ),
         "observation-off:2,identity-unavailable:1,executable-unavailable:1"
     );
+}
+
+// ---------- crash recovery (`recovery.rs`) -------------------------------------------
+
+/// What the recorder keeps of `card`'s running client: its generation, the
+/// server's, the stand-in program and the card's directory.
+fn recorded(world: &World, card: &str, id: &str, server: recovery::Gen) -> recovery::Record {
+    let pid = world.foreground_pid(card);
+    let birth = crate::procinfo::process_start(pid).expect("the client's birth");
+    recovery::Record {
+        card_id: format!("card-{card}"),
+        session: card.to_string(),
+        source: "claude-code".into(),
+        native_id: id.to_string(),
+        client: recovery::Gen::of(pid, birth),
+        server,
+        pane: "%0".into(),
+        executable: world.agent.clone(),
+        cwd: world.base.join("cards").join(card),
+        recorded_at: 1_800_000_000,
+    }
+}
+
+/// The shell service is lost: the server and every client with it, then a
+/// fresh empty server, as Deck's boot gate starts one.
+fn lose_the_server(world: &World, clients: &[recovery::Gen]) {
+    world.raw(&["kill-server"]).expect("the old server stops");
+    world.wait("the old clients to end", || {
+        clients.iter().all(|client| {
+            crate::procinfo::generation_liveness(client.pid, client.birth())
+                == crate::procinfo::Liveness::Gone
+        })
+    });
+    world
+        .raw(&["start-server", ";", "set-option", "-g", "exit-empty", "off"])
+        .expect("a fresh server");
+}
+
+#[test]
+fn a_lost_server_is_recovered_once_with_the_plain_resume_of_each_recorded_session() {
+    let world = World::new();
+    // one card started with the bypass flag: a recovery never reapplies it
+    world.card(
+        "a",
+        &format!("session={ID_A}"),
+        Some(&format!("{{agent}} {BYPASS}")),
+    );
+    world.card("b", &format!("session={ID_B}"), Some("{agent}"));
+    let old = world.server_pid();
+    let server = recovery::Gen::of(
+        old,
+        crate::procinfo::process_start(old).expect("the server's birth"),
+    );
+    let records = vec![
+        recorded(&world, "a", ID_A, server),
+        recorded(&world, "b", ID_B, server),
+    ];
+    let store = world.base.join("agent-recovery.json");
+    recovery::write_for_tests(&store, records.clone());
+    // while the server runs, nothing is offered
+    let view = world
+        .with_env(|env| recovery::offer(env, &store))
+        .expect("an offer");
+    assert!(view.token.is_none() && view.entries.is_empty());
+    lose_the_server(&world, &[records[0].client, records[1].client]);
+    let view = world
+        .with_env(|env| recovery::offer(env, &store))
+        .expect("an offer");
+    let json = serde_json::to_value(&view).unwrap().to_string();
+    for private in [ID_A, ID_B, "fake_reentry_agent", "/tmp", "pid"] {
+        assert!(!json.contains(private), "the offer leaks {private}");
+    }
+    assert_eq!(view.entries.len(), 2);
+    assert!(view.entries.iter().all(|entry| entry.blocked.is_none()));
+    let token = view.token.clone().expect("a token");
+    let now = world.server_pid();
+    assert_ne!(now, old);
+    // the restart's own witness: the exclusive activity guard
+    let _scope = crate::session_runtime::test_activity_scope();
+    let held = crate::session_runtime::exclusive().expect("the activity guard");
+    let approval = recovery::RecoveryApproval {
+        token: token.clone(),
+        cards: vec!["card-a".into(), "card-b".into()],
+    };
+    let result = world
+        .with_env(|env| {
+            recovery::run(
+                env,
+                &store,
+                "req-recover",
+                &approval,
+                now,
+                false,
+                &held,
+                &|_, _, _| {},
+            )
+        })
+        .expect("the recovery ran")
+        .expect("its result");
+    assert!(!result.server_replaced, "a recovery replaces no server");
+    assert_eq!(result.state, OperationState::Complete);
+    for card in ["a", "b"] {
+        let entry = entry(&result, card);
+        assert_eq!(entry.outcome, Outcome::Confirmed, "{card}");
+        assert!(entry.shell && entry.client_observed, "{card}");
+        assert!(entry.warnings.is_empty(), "{card}");
+    }
+    let pasted = world.pasted();
+    assert_eq!(pasted.len(), 2, "exactly one transport per card");
+    for (text, id) in pasted.iter().zip([ID_A, ID_B]) {
+        assert!(text.ends_with(&format!(" --resume {id}")), "{text}");
+        assert!(!text.contains(BYPASS), "never the bypass flag: {text}");
+    }
+    assert_eq!(
+        world.launches()[2..],
+        [ID_A, ID_B].map(|id| format!("--resume {id}"))
+    );
+    // once only: the records are gone and the token is spent
+    assert_eq!(recovery::load_for_tests(&store).unwrap(), Vec::new());
+    let again = world.with_env(|env| {
+        recovery::run(
+            env,
+            &store,
+            "req-recover-2",
+            &approval,
+            now,
+            false,
+            &held,
+            &|_, _, _| {},
+        )
+    });
+    assert_eq!(
+        again.map(|_| ()).unwrap_err().message(),
+        "recovery-offer-expired"
+    );
+    assert_eq!(world.pasted().len(), 2, "nothing was typed again");
+    let view = world
+        .with_env(|env| recovery::offer(env, &store))
+        .expect("an offer");
+    assert!(view.token.is_none() && view.entries.is_empty());
+}
+
+#[test]
+fn a_recovery_offers_only_what_it_can_do_and_types_into_no_open_shell() {
+    let world = World::new();
+    world.card("a", &format!("session={ID_A}"), Some("{agent}"));
+    world.card("b", &format!("session={ID_B}"), Some("{agent}"));
+    world.card("c", &format!("session={ID_C}"), Some("{agent}"));
+    let old = world.server_pid();
+    let server = recovery::Gen::of(old, crate::procinfo::process_start(old).unwrap());
+    let mut records = vec![
+        recorded(&world, "a", ID_A, server),
+        recorded(&world, "b", ID_B, server),
+        recorded(&world, "c", ID_C, server),
+    ];
+    // a fourth record whose card the Board no longer has
+    let mut gone = records[2].clone();
+    gone.card_id = "card-gone".into();
+    gone.session = "gone".into();
+    gone.native_id = ID_X.into();
+    // a generation that is certainly over: c's client, born a moment later
+    gone.client.micros = gone.client.micros.wrapping_add(1);
+    records.push(gone);
+    let store = world.base.join("agent-recovery.json");
+    recovery::write_for_tests(&store, records.clone());
+    lose_the_server(
+        &world,
+        &[records[0].client, records[1].client, records[2].client],
+    );
+    // b's shell was opened meanwhile; c's directory was removed
+    world
+        .raw(&["new-session", "-d", "-s", "b"])
+        .expect("b's shell");
+    std::fs::remove_dir_all(world.base.join("cards").join("c")).unwrap();
+    let view = world
+        .with_env(|env| recovery::offer(env, &store))
+        .expect("an offer");
+    let blocked: Vec<(String, Option<recovery::Blocked>)> = view
+        .entries
+        .iter()
+        .map(|entry| (entry.card_id.clone(), entry.blocked))
+        .collect();
+    assert_eq!(blocked.len(), 3, "the card the Board lost is not offered");
+    for (card, want) in [
+        ("card-a", None),
+        ("card-b", Some(recovery::Blocked::ShellOpen)),
+        ("card-c", Some(recovery::Blocked::DirectoryMissing)),
+    ] {
+        assert!(blocked.contains(&(card.to_string(), want)), "{card}");
+    }
+    // a blocked card cannot be approved
+    // the restart's own witness: the exclusive activity guard
+    let _scope = crate::session_runtime::test_activity_scope();
+    let held = crate::session_runtime::exclusive().expect("the activity guard");
+    let token = view.token.clone().unwrap();
+    let refused = world.with_env(|env| {
+        recovery::run(
+            env,
+            &store,
+            "req-blocked",
+            &recovery::RecoveryApproval {
+                token: token.clone(),
+                cards: vec!["card-b".into()],
+            },
+            world.server_pid(),
+            false,
+            &held,
+            &|_, _, _| {},
+        )
+    });
+    assert!(refused.is_err());
+    assert!(world.pasted().is_empty(), "nothing was typed");
+    // declining deletes every record the offer read, the lost card's too
+    let view = world
+        .with_env(|env| recovery::offer(env, &store))
+        .expect("an offer");
+    recovery::decline(view.token.as_deref().unwrap(), &store).expect("declined");
+    assert_eq!(recovery::load_for_tests(&store).unwrap(), Vec::new());
+    assert!(world.pasted().is_empty());
 }

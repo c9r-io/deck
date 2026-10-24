@@ -443,6 +443,14 @@ function resultRow(entry, running, pollEnded) {
     line: text(entry.outcome === 'not-attempted' ? 'reentry.result.notAttempted' : 'reentry.result.notStarted', A) };
 }
 
+/** One result row per entry of a reduced ReentryResult, worded exactly as
+ *  the restart's list words them; a crash recovery (`recovery-model.js`)
+ *  shares them and says its own title. */
+export function entryRows(result, { pollEnded = false } = {}) {
+  const pending = !!result && result.state !== 'complete';
+  return (result?.entries || []).map(entry => resultRow(entry, pending, pending && pollEnded === true));
+}
+
 /** The result list. `replaced` is the shell service conclusion (the call's
  *  flag, the operation's, or the observed server); `result` a reduced
  *  ReentryResult or null when the operation is not known; `requested` the

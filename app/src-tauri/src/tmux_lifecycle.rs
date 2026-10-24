@@ -1538,7 +1538,7 @@ pub(crate) struct RestartReply {
 /// material, never the ground for an input. Called under
 /// `documents::board_fence` for the launch, where the commit it sees and
 /// the input it allows cannot be reordered.
-fn board_cards() -> Option<Vec<(String, String)>> {
+pub(crate) fn board_cards() -> Option<Vec<(String, String)>> {
     let board = crate::documents::board_authority()?;
     Some(
         board["cards"]
@@ -1681,6 +1681,99 @@ pub(crate) async fn agent_reentry_preview() -> Result<crate::agent_reentry::Prev
 #[tauri::command]
 pub(crate) fn agent_reentry_operation(request_id: String) -> crate::agent_reentry::OperationView {
     crate::agent_reentry::operation(&request_id)
+}
+
+/// The crash-recovery offer (`agent_reentry::recovery`): the cards whose
+/// recorded Claude session was interrupted with the shell service, and a
+/// single-use token. Reads only (lost records no card can take are
+/// deleted); starts and types nothing.
+#[tauri::command]
+pub(crate) async fn agent_recovery_offer(
+) -> Result<crate::agent_reentry::recovery::OfferView, DeckError> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let _deadline = crate::session_runtime::Deadline::until(
+            std::time::Instant::now() + Duration::from_secs(5),
+        );
+        let store = crate::agent_reentry::recovery::store();
+        with_reentry_env(|env| crate::agent_reentry::recovery::offer(env, &store))
+            .unwrap_or_else(|| Err(reentry_unavailable()))
+    })
+    .await
+    .map_err(|_| DeckError::new(ErrorKind::Other, "recovery-offer-failed"))?
+}
+
+/// The user declined the offer: its records are deleted, nothing starts.
+#[tauri::command]
+pub(crate) async fn agent_recovery_decline(token: String) -> Result<(), DeckError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::agent_reentry::recovery::decline(&token, &crate::agent_reentry::recovery::store())
+    })
+    .await
+    .map_err(|_| DeckError::new(ErrorKind::Other, "recovery-decline-failed"))?
+}
+
+/// One confirmed crash recovery: under the lifecycle operation gate and the
+/// exclusive activity guard (the restart's two try-locks), on Deck's server
+/// as it is now, one plain resume per ticked card through re-entry's own
+/// launch and confirmation. A repeated request id reads what that operation
+/// settled and executes nothing.
+#[tauri::command]
+pub(crate) async fn agent_recovery_run(
+    app: tauri::AppHandle,
+    request_id: String,
+    approval: crate::agent_reentry::recovery::RecoveryApproval,
+    restore_shells: bool,
+) -> Result<crate::agent_reentry::ReentryResult, DeckError> {
+    use tauri::Emitter;
+    if let Some(result) = crate::agent_reentry::known(&request_id) {
+        return Ok(result);
+    }
+    let started = std::time::Instant::now();
+    let limit = started
+        + crate::agent_reentry::recovery::PREPARE_SHARE
+        + crate::agent_reentry::POST_BUDGET
+        + crate::agent_reentry::CONFIRM_SHARE
+        + Duration::from_secs(5);
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::session_runtime::run_bounded(limit, move || {
+            let _operation = try_operation()?;
+            let activity = crate::session_runtime::exclusive()?;
+            let server = deck_server();
+            let server_pid = match probe_server_on(&server) {
+                Probe::Reachable(snapshot) => snapshot.pid,
+                Probe::Absent => start_current_server_on(&server, &current_build())?.pid,
+                Probe::Unreachable => {
+                    return Err(DeckError::new(ErrorKind::Tmux, "tmux-server-unreachable"))
+                }
+            };
+            let progress = |phase: &str, completed: usize, total: usize| {
+                let _ = app.emit(
+                    "agent-recovery-progress",
+                    serde_json::json!({
+                        "requestId": request_id, "phase": phase, "completed": completed,
+                        "total": total, "elapsedMs": started.elapsed().as_millis() as u64,
+                    }),
+                );
+            };
+            let store = crate::agent_reentry::recovery::store();
+            let settled = with_reentry_env(|env| {
+                crate::agent_reentry::recovery::run(
+                    env,
+                    &store,
+                    &request_id,
+                    &approval,
+                    server_pid,
+                    restore_shells,
+                    &activity,
+                    &progress,
+                )
+            })
+            .ok_or_else(reentry_unavailable)??;
+            settled.ok_or_else(reentry_unavailable)
+        })
+    })
+    .await
+    .map_err(|_| DeckError::new(ErrorKind::Other, "recovery-worker-failed"))?
 }
 
 #[tauri::command]

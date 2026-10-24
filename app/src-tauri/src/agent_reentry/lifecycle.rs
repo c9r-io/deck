@@ -83,9 +83,12 @@
 //! A lease keeps at most `MAX_FACTS` facts; one more marks its
 //! record incomplete (`Event::Overflow`), and an incomplete record names no
 //! final session and confirms no entry. An event without a matching lease is
-//! dropped: there is no session registry, no "latest id", and nothing here
-//! reaches the Signal store, interactions, episodes, the scheduler, any
-//! readiness or any authority. The three sources of trust stay separate:
+//! dropped here: this mailbox keeps no session registry and no "latest id",
+//! and nothing here reaches the Signal store, interactions, episodes, the
+//! scheduler, any readiness or any authority. (The same line, parsed by the
+//! same `parse`, also goes to the crash-recovery recorder, which attributes
+//! it on its own and keeps its own file — `recovery.rs`; it is never a fact
+//! of a lease and confirms nothing here.) The three sources of trust stay separate:
 //! the kernel proves which process reported, the Agent states its native
 //! fact, and only the user's confirmation of this restart authorizes a
 //! launch. Same-user code inside the client's own tree can still misreport;
@@ -94,7 +97,9 @@
 //!
 //! **Who waits for the validation.** Not the status listener: that thread
 //! serves every agent's Signal on the same socket, and of a lifecycle line
-//! it does only `claim` — one short mailbox lock — before it hands the
+//! it does only `claim` — one short mailbox lock — besides the recovery
+//! record's one process-table read (`agent_status::record_session`, kernel
+//! reads only), before it hands the
 //! connection to the one receipt worker and goes back to accepting
 //! (`agent_status::Receipts`: one thread, one bounded queue; a full queue
 //! drops the receipt). The worker calls `receive` under the receipt's

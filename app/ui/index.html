@@ -601,6 +601,23 @@
     </div>
   </div>
 </div>
+<div id="recovery-modal">
+  <div id="recovery-box" role="dialog" aria-modal="true" aria-labelledby="recovery-title">
+    <div id="recovery-title" data-i18n="recovery.title">Recover interrupted Agent sessions</div>
+    <div id="recovery-body">
+      <div id="recovery-message" data-i18n="recovery.message">The shell service ended unexpectedly.</div>
+      <div id="recovery-list"></div>
+      <div id="recovery-notes" class="reentry-notes" data-i18n="recovery.note">Each card is resumed once with the plain resume command.</div>
+      <div id="recovery-progress" role="status" aria-live="polite" hidden></div>
+      <div id="recovery-result" hidden></div>
+    </div>
+    <div class="tmux-lifecycle-actions">
+      <button class="btn" id="recovery-decline" data-i18n="recovery.decline">Don’t recover</button>
+      <button class="btn primary" id="recovery-confirm"></button>
+      <button class="btn primary" id="recovery-done" data-i18n="common.done" style="display:none">Done</button>
+    </div>
+  </div>
+</div>
 <div id="ppd">
   <div id="ppd-box">
     <div id="ppd-msg"></div>

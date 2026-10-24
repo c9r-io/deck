@@ -1293,6 +1293,12 @@ impl DirRef {
     pub(crate) fn for_tests(path: &std::path::Path) -> Self {
         Self(path.to_path_buf())
     }
+    /// A directory a crash-recovery record kept (`agent_reentry::recovery`):
+    /// the kernel's reading of a client that no longer exists. Only an
+    /// absolute path is taken; `is_dir` asks again before any use.
+    pub(crate) fn recorded(path: &std::path::Path) -> Option<Self> {
+        path.is_absolute().then(|| Self(path.to_path_buf()))
+    }
     pub(crate) fn path(&self) -> &std::path::Path {
         &self.0
     }
@@ -1509,6 +1515,48 @@ pub(crate) fn runs_product(pid: u32, birth: (u64, u32), product: &ProductIdentit
     process_start(pid) == Some(birth)
         && running_product(pid, product) == Some(Running::Is)
         && process_start(pid) == Some(birth)
+}
+
+/// What a crash-recovery record keeps of one running client
+/// (`agent_reentry::recovery`): the real path of the file it runs and its
+/// working directory. No digest and no code identity: the file is read and
+/// validated in full only when a recovery is confirmed, because the process
+/// this was read from will not exist then.
+#[derive(Debug)]
+pub(crate) struct StandingClient {
+    pub(crate) image: std::path::PathBuf,
+    pub(crate) cwd: DirRef,
+}
+
+/// The process `pid` born at `birth`, while it runs: valid code of the
+/// product (one dynamic validation under the caller's deadline), started in
+/// a supported launch shape under the expected home and without a refused
+/// environment name (`Ordinary` or `Bypass`), with a readable working
+/// directory. `None` for anything else, for a late answer, and for a
+/// process that changed meanwhile. Nothing is hashed.
+#[cfg(target_os = "macos")]
+pub(crate) fn standing_client(
+    pid: u32,
+    birth: (u64, u32),
+    spec: &ClientSpec<'_>,
+) -> Option<StandingClient> {
+    let alive = || process_start(pid) == Some(birth);
+    if !alive() {
+        return None;
+    }
+    let image = image_path(pid)?;
+    if running_product(pid, spec.product) != Some(Running::Is) {
+        return None;
+    }
+    let args = procargs2(pid)?;
+    let (_, argv, env) = parse_procargs2_image(&args)?;
+    let (profile, _) = reduce_launch(&argv, &env, spec.home.to_str()?, spec.grammar);
+    if !matches!(profile, LaunchProfile::Ordinary | LaunchProfile::Bypass) {
+        return None;
+    }
+    let cwd = working_dir(pid)?;
+    (alive() && image_path(pid).as_deref() == Some(image.as_path()))
+        .then_some(StandingClient { image, cwd })
 }
 
 /// The one place the running-product question is asked, always through its

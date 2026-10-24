@@ -41,10 +41,15 @@
 //!
 //! # Contract
 //! - **Transaction memory only.** Preview, frozen plan, native ids, launch
-//!   slots and results live in this process and die with it. Nothing here is
-//!   written to disk: no registry, recovery queue or replay journal, and the
-//!   lifecycle file (`tmux_lifecycle::RestartIntent`) carries no Agent data.
-//!   After a crash nothing re-enters; the user's manual resume hint remains.
+//!   slots and results live in this process and die with it. Nothing of a
+//!   restart's re-entry is written to disk: no registry, recovery queue or
+//!   replay journal, and the lifecycle file (`tmux_lifecycle::RestartIntent`)
+//!   carries no Agent data. A crash during a restart re-enters nothing.
+//!   What a LOST shell service leaves behind is a separate operation with its
+//!   own record (`recovery.rs`: one Claude session per card, written on
+//!   lifecycle events, offered only after the server and client are gone,
+//!   deleted before its one launch); it reuses this plan's post phase
+//!   (`Plan::recovered` → `reopen`) and nothing of a restart.
 //! - **States.** Preview → Frozen → Exiting → Prepared → Replacing →
 //!   ShellsReopening → Launching → Confirming → Complete. A preview issues a
 //!   single-use opaque token, and only for an answer its caller received in
@@ -227,6 +232,7 @@ pub(crate) mod claude;
 pub(crate) mod codex;
 pub(crate) mod launch;
 pub(crate) mod lifecycle;
+pub(crate) mod recovery;
 #[cfg(test)]
 mod tests;
 
@@ -1328,6 +1334,9 @@ enum Slot {
 }
 
 struct Entry {
+    /// The log tag of the operation this entry belongs to: a restart's
+    /// re-entry or a crash recovery (`recovery.rs`).
+    tag: &'static str,
     view: EntryView,
     old: PaneRow,
     shell_birth: Birth,
@@ -1399,6 +1408,11 @@ pub(crate) struct Plan {
     /// checks the file's state (`ExecutableRef::same_state`) right before
     /// its own input. Lives and dies with the plan.
     reread: Vec<ExecutableRef>,
+    /// Entries settled before the plan was made (a crash recovery's cards
+    /// that could not be prepared). Shown after `entries`; never launched.
+    settled: Vec<EntryView>,
+    /// The operation's log tag (`Entry::tag`).
+    tag: &'static str,
 }
 
 /// A whole-restart share for shell creation, launch and receipts
@@ -1585,6 +1599,7 @@ pub(crate) fn freeze(
         };
         entries.push((
             Entry {
+                tag: "agent-reentry",
                 view,
                 old: panes[0].clone(),
                 shell_birth: shown_shell,
@@ -1636,16 +1651,181 @@ pub(crate) fn freeze(
         shared,
         entries: entries.into_iter().map(|(entry, _)| entry).collect(),
         reread: Vec::new(),
+        settled: Vec::new(),
+        tag: "agent-reentry",
     })
+}
+
+/// One ticked card of a crash recovery as `recovery::run` prepared it from
+/// its record: ready to launch, or settled with the reason it cannot be.
+pub(crate) struct Recovered {
+    card_id: String,
+    session: String,
+    ready: Option<RecoveredClient>,
+    reason: Option<Reason>,
+}
+
+/// What a record and the program read now give the launch: the exact
+/// native session, the ended client's generation (still alive means not
+/// ended: refused at launch), the program validated just now and the
+/// recorded directory.
+struct RecoveredClient {
+    native_id: String,
+    client: (u32, Birth),
+    executable: ExecutableRef,
+    cwd: DirRef,
+}
+
+impl Recovered {
+    pub(crate) fn ready(
+        card_id: String,
+        session: String,
+        native_id: String,
+        client: (u32, Birth),
+        executable: ExecutableRef,
+        cwd: DirRef,
+    ) -> Self {
+        Self {
+            card_id,
+            session,
+            ready: Some(RecoveredClient {
+                native_id,
+                client,
+                executable,
+                cwd,
+            }),
+            reason: None,
+        }
+    }
+    pub(crate) fn refused(card_id: String, reason: Reason) -> Self {
+        Self::refused_session(card_id, String::new(), reason)
+    }
+    pub(crate) fn refused_session(card_id: String, session: String, reason: Reason) -> Self {
+        Self {
+            card_id,
+            session,
+            ready: None,
+            reason: Some(reason),
+        }
+    }
+    pub(crate) fn is_ready(&self) -> bool {
+        self.ready.is_some()
+    }
+}
+
+impl Plan {
+    /// A crash recovery's plan (`recovery.rs`): no exit to seal — the old
+    /// clients are gone with their server — so every ready entry starts
+    /// with its final session known and its one slot armed, and the post
+    /// phase is `reopen`, exactly as after a restart. The request is the
+    /// plain resume: no bypass is granted (`bypass: false`, an `Ordinary`
+    /// profile). Without Claude's lifecycle observation nothing could
+    /// confirm an entry, so none is launched.
+    pub(crate) fn recovered(
+        env: &Env,
+        request_id: &str,
+        entries: Vec<Recovered>,
+    ) -> Result<Plan, DeckError> {
+        let source = claude::CAPABILITY.source;
+        let observed = env
+            .adapter(source)
+            .is_some_and(|adapter| adapter.observation && adapter.baseline);
+        let mut ready = Vec::new();
+        let mut settled = Vec::new();
+        for item in entries {
+            let mut view = EntryView {
+                card_id: item.card_id,
+                session: item.session,
+                source: Some(source),
+                outcome: Outcome::NotAttempted,
+                reason: item.reason,
+                warnings: Vec::new(),
+                shell: false,
+                client_observed: false,
+                settled: true,
+            };
+            match item.ready {
+                Some(client) if observed => {
+                    view.settled = false;
+                    ready.push(Entry {
+                        tag: "agent-recovery",
+                        view,
+                        old: PaneRow::default(),
+                        shell_birth: (0, 0),
+                        client: Client {
+                            pid: client.client.0,
+                            birth: client.client.1,
+                            executable: client.executable,
+                            profile: LaunchProfile::Ordinary,
+                            additional_dirs: false,
+                            cwd: client.cwd,
+                            source,
+                        },
+                        bypass: false,
+                        final_id: Some(client.native_id),
+                        request: Vec::new(),
+                        slot: Slot::Armed,
+                        new: None,
+                        awaiting: false,
+                        sent_at: None,
+                        printed_before: Vec::new(),
+                    });
+                }
+                Some(_) => {
+                    view.reason = Some(Reason::ObservationOff);
+                    settled.push(view);
+                }
+                None => settled.push(view),
+            }
+        }
+        let shared = Arc::new(Mutex::new(ReentryResult {
+            request_id: request_id.to_string(),
+            state: OperationState::Running,
+            server_replaced: false,
+            entries: ready
+                .iter()
+                .map(|entry| entry.view.clone())
+                .chain(settled.iter().cloned())
+                .collect(),
+        }));
+        with_registry(|registry| {
+            if registry.active.is_some() {
+                return Err(DeckError::new(
+                    ErrorKind::Tmux,
+                    "tmux-server-restart-in-progress",
+                ));
+            }
+            registry.active = Some(shared.clone());
+            Ok(())
+        })?;
+        lifecycle::begin(env.socket, env.helper);
+        applog(&format!(
+            "[agent-recovery] planned entries={} ready={}",
+            ready.len() + settled.len(),
+            ready.len()
+        ));
+        Ok(Plan {
+            shared,
+            entries: ready,
+            reread: Vec::new(),
+            settled,
+            tag: "agent-recovery",
+        })
+    }
 }
 
 impl Plan {
     fn publish(&self) {
-        self.shared.lock_or_recover().entries = self
-            .entries
+        self.shared.lock_or_recover().entries = self.views();
+    }
+
+    /// Every entry's view: the plan's own, then those settled before it.
+    fn views(&self) -> Vec<EntryView> {
+        self.entries
             .iter()
             .map(|entry| entry.view.clone())
-            .collect();
+            .chain(self.settled.iter().cloned())
+            .collect()
     }
 
     /// The frozen clients' panes: the restart's graceful-exit path treats
@@ -1760,7 +1940,8 @@ impl Plan {
         entry.view.settled = true;
         entry.awaiting = false;
         applog(&format!(
-            "[agent-reentry] entry {} outcome={} reason={}",
+            "[{}] entry {} outcome={} reason={}",
+            entry.tag,
             session_tag(&entry.view.session),
             match outcome {
                 Outcome::NotAttempted => "not-attempted",
@@ -2188,11 +2369,7 @@ impl Drop for Plan {
         lifecycle::end();
         let mut result = {
             let mut shared = self.shared.lock_or_recover();
-            shared.entries = self
-                .entries
-                .iter()
-                .map(|entry| entry.view.clone())
-                .collect();
+            shared.entries = self.views();
             shared.state = OperationState::Complete;
             for view in &mut shared.entries {
                 view.settled = true;
@@ -2207,7 +2384,8 @@ impl Drop for Plan {
             }
         }
         applog(&format!(
-            "[agent-reentry] complete replaced={} entries={} confirmed={}",
+            "[{}] complete replaced={} entries={} confirmed={}",
+            self.tag,
             result.server_replaced,
             result.entries.len(),
             result

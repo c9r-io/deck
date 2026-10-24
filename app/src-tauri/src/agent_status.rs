@@ -229,7 +229,10 @@
 //! a call that cannot be interrupted; the dispatcher is every agent's
 //! Signal path, so it never makes that call: it names the lease (one short
 //! lock) and hands the connection to ONE receipt worker over a bounded
-//! queue without waiting (`Receipts`). A receipt that takes long, or never
+//! queue without waiting (`Receipts`). Before that it reads one process
+//! table for the crash-recovery record (`record_session`: kernel reads
+//! only, handed to the recorder's own worker without waiting,
+//! `agent_reentry::recovery`). A receipt that takes long, or never
 //! returns, delays no Signal and starts no further thread; receipts that
 //! pile up behind it are refused — a full queue at once, a waited one when
 //! its own deadline has passed — and a refused receipt is only an entry
@@ -2124,6 +2127,11 @@ fn dispatch(
     // fact — or refuses it — while the helper is still connected, and whose
     // close of the stream is the helper's ACK.
     if crate::agent_reentry::lifecycle::is_family(&line) {
+        // The crash-recovery record (`agent_reentry::recovery`) is kept
+        // whether or not an operation is in flight: one process table, read
+        // here while the helper is connected, goes to the recorder's own
+        // worker; nothing of it waits on this thread.
+        record_session(&line, &stream);
         // Without an operation every client's start and end lands here all
         // day long: that ordinary case is dropped without a line.
         if let Some(reason) = lifecycle_receipt(&line, stream, receipts, read_at)
@@ -2201,6 +2209,37 @@ fn lifecycle_receipt(
         peer,
         deadline,
     })
+}
+
+/// One lifecycle line for the crash-recovery record: the closed parse,
+/// then what the kernel says of the peer while it is still connected — it
+/// executes the bundled lifecycle helper, and its direct parent — from one
+/// process table, handed to the recorder without waiting
+/// (`agent_reentry::recovery::observation`, `hand`). Kernel reads only; a
+/// line that is not Claude Code's, or a peer that is not the helper,
+/// records nothing.
+fn record_session(line: &str, stream: &UnixStream) {
+    use crate::agent_reentry::{lifecycle, recovery};
+    let Ok(wire) = lifecycle::parse(line, |source| {
+        crate::extensions::agent(source)
+            .and_then(|adapter| adapter.reentry)
+            .map(|capability| capability.receipts)
+    }) else {
+        return;
+    };
+    let helper = crate::agent_status::bundled_lifecycle_helper();
+    let Some(observation) = recovery::observation(
+        wire,
+        crate::procinfo::peer_pid(stream),
+        helper.as_deref(),
+        crate::procinfo::processes,
+        &crate::procinfo::runs_file,
+    ) else {
+        return;
+    };
+    if let Err(reason) = recovery::hand(observation) {
+        applog(&format!("[agent-recovery] not-recorded reason={reason}"));
+    }
 }
 
 /// The Pi transport's way into the bounded drop diagnostics: it names a

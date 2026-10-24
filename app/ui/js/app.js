@@ -35,6 +35,7 @@ import {
   currentReentryPlan, initReentry, lockReentry, reentryConfirmLabel, reentryResultShown, refreshReentry,
   showReentryPreview, showReentryProgress, showReentryResult, showRestartProgress,
 } from './restart-reentry.js';
+import { initRecovery, offerRecovery, refreshRecovery } from './agent-recovery.js';
 
 setLocale('system');
 activateTheme({ theme: 'deck-dark', accent: 'teal' });
@@ -533,6 +534,18 @@ function initModules() {
     changed: renderRestartLabel,
     managed: () => managedBlockers(ctx.tmuxServerStatus).length > 0,
   });
+  initRecovery({
+    titleOf: id => provider.get(id)?.title ?? null,
+    openCard: async id => {
+      const card = provider.get(id);
+      if (!card) return;
+      switchProject(card.projectId);
+      await pollNow();
+      if (provider.get(id)) openSession(id);
+    },
+    restoreShells: () => !!ctx.settings.sessionRestore,
+    changed: () => pollNow(),
+  });
   wireChrome();
 }
 
@@ -700,6 +713,9 @@ export async function boot() {
   }
   startPolling();
   if (!loadErr) startReminders();
+  /* after load_board: the offer names cards by the Board this process
+     committed, and only a current Board can be offered from */
+  if (!loadErr) offerRecovery();
   listen('board-lost', () => offerBoardExit()).catch(() => uev('listen-fail', 'board-lost'));
   if (recovery?.state === 'lost') offerBoardExit(recovery);
 
@@ -817,6 +833,7 @@ function wireChrome() {
     renderBuildIdentity();
     renderTmuxDiagnostics();
     refreshReentry();
+    refreshRecovery();
     renderRestartLabel();
     render();
     refreshQueue();

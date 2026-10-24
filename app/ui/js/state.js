@@ -29,6 +29,8 @@ export const ctx = {
   pendingUpdate: null,
   tmuxServerStatus: null,
   tmuxRestarting: false,
+  /* sessions an open crash-recovery offer holds back (agent-recovery.js) */
+  recoveryHold: null,
   updateDownloadBytes: 0,
   lastPollError: null,
   destructiveCards: new Set(),

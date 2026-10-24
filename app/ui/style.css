@@ -896,6 +896,25 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .reentry-result-row.pending .reentry-mark { color: var(--muted); }
 .reentry-open { flex: none; padding: 3px 9px; font-size: 0.846154rem; }
 #tmux-view-sessions { margin-right: auto; }
+/* Recover interrupted Agent sessions (agent-recovery.js): its own modal,
+   laid out like the restart review's re-entry box. */
+#recovery-modal {
+  position: fixed; inset: 0; z-index: 72; display: none;
+  background: var(--modal-overlay); align-items: flex-start; justify-content: center;
+}
+#recovery-box {
+  margin-top: 8vh; width: 560px; max-width: calc(100vw - 40px); max-height: 84vh;
+  display: flex; flex-direction: column; box-sizing: border-box;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 18px; box-shadow: 0 16px 48px var(--shadow-modal);
+}
+#recovery-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; font-size: 0.923077rem; }
+#recovery-title { font-size: 1.15385rem; font-weight: 600; margin-bottom: 9px; }
+#recovery-message { color: var(--muted); font-size: 1rem; line-height: 1.55; margin-bottom: 10px; }
+#recovery-list[hidden], #recovery-notes[hidden], #recovery-message[hidden], #recovery-progress[hidden], #recovery-result[hidden] { display: none; }
+.recovery-rows { max-height: 40vh; }
+#recovery-progress { margin-top: 10px; }
+#recovery-decline { margin-right: auto; }
 .tmux-diag { font-family: var(--mono); font-size: 0.807692rem; color: var(--muted); line-height: 1.55; overflow-wrap: anywhere; }
 
 #settings-modal, #tpl-modal {

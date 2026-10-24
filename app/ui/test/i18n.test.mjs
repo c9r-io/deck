@@ -152,6 +152,13 @@ const NATIVE_SESSION_KEYS = new Map([
   ['settings.piLifecycleDisabled', 'names the setting (Pi session observation)'],
   ['signal.pi.session', 'the native Pi session a card currently runs'],
   ['signal.pi.sessionUnsupported', 'the native Pi session whose id Deck does not support'],
+  ['recovery.title', 'the native Claude sessions a lost shell service interrupted'],
+  ['recovery.message', 'the native Claude session each card was in when the service was lost'],
+  ['recovery.note', 'how a native Claude session is resumed by the recovery'],
+  ['recovery.recordedAt', 'when the native Claude session of the card was recorded'],
+  ['recovery.blocked.observation-off', 'names the setting (Claude session re-entry observation)'],
+  ['recovery.result.title', 'the native Claude sessions the recovery was asked for'],
+  ['recovery.result.footer', 'the native Claude sessions that are not offered again'],
 ]);
 // The two agent-status hints predate this rule and stay as they were.
 const SESSION_TERM_LEGACY = /^settings.(agentHooks|codexHooks)/;
@@ -169,8 +176,8 @@ test('会话 names only the Agent native session, in an enumerated list of strin
   // the list is exact: every entry exists, says 会话, and carries its reason
   for (const [key, reason] of NATIVE_SESSION_KEYS) {
     assert.match(zh[key] ?? '', /会话/, `${key} is listed but does not use the term`);
-    assert.match(key, /^(?:reentry\.|settings\.claudeReentry|settings\.codexReentry|settings\.piLifecycle|signal\.pi\.session(?:Unsupported)?$)/,
-      `${key}: only re-entry copy and Pi's session observation are about a native session`);
+    assert.match(key, /^(?:reentry\.|recovery\.|settings\.claudeReentry|settings\.codexReentry|settings\.piLifecycle|signal\.pi\.session(?:Unsupported)?$)/,
+      `${key}: only re-entry and recovery copy and Pi's session observation are about a native session`);
     assert.ok(reason.length > 10, key);
   }
   // no namespace is exempt: a new re-entry or settings string is held to the rule

@@ -327,7 +327,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Agent status, attribution and listener | `agent_status.rs`, `agent_origin.rs`, `src-tauri/status-helper/` |
 | Agent hooks configuration, installation and migration | `agent_status/hooks.rs` (contract), `agent_status/hooks/tests.rs` |
 | Pi agent adapter: registration, the one settings entry, observer transport | `agent_pi.rs` (contract), `agent_pi/config.rs`, `agent_pi/transport.rs` (the sender proof, wire v2), `resources/pi/` (the observer extension), `scripts/pi_native.py`, `scripts/pi-live-verify.py` |
-| Agent re-entry on a shell-service restart | `agent_reentry/` (contract in `mod.rs`; adapters `claude.rs`, `codex.rs`), `src-tauri/lifecycle-helper/`, `procinfo.rs`, `procinfo/code_identity.rs`, `resume.rs` (`printed`, the one pane-text reader), `ui/js/reentry-model.js`, `restart-reentry.js` |
+| Agent re-entry on a shell-service restart, crash recovery | `agent_reentry/` (contract in `mod.rs`; adapters `claude.rs`, `codex.rs`; crash recovery `recovery.rs`, `ui/js/recovery-model.js`, `agent-recovery.js`), `src-tauri/lifecycle-helper/`, `procinfo.rs`, `procinfo/code_identity.rs`, `resume.rs` (`printed`, the one pane-text reader), `ui/js/reentry-model.js`, `restart-reentry.js` |
 | First-party extension composition, access startup and Settings controllers | `extensions.rs`, `app/extensions/*.json`, `scripts/extension_catalog.py`, `ui/js/settings-extensions.js`, `ui/js/extension-*.js` (Agent, Slack, translation, Connector, MCP/Tunnel, voice preferences; + `docs/first-party-extensions.md`) |
 | Updates | `updater.rs`, `relaunch.rs` |
 | File drop / image paste | `drops.rs` |
@@ -422,6 +422,13 @@ Chromium testing of the mock catches none of these; verify in the real app.
   `agent_reentry/mod.rs`; evidence and limits:
   `docs/evidence/closeout-20261011/reentry-acceptance.md`,
   `docs/evidence/codex-reentry-20261018/README.md`.
+  Its second trigger is **crash recovery** (`agent_reentry/recovery.rs`),
+  a separate operation with its own dialog: after the shell service was
+  LOST (server and client generations both gone), the user ticks cards from
+  a record each Claude `SessionStart` wrote (`~/.deck/agent-recovery.json`);
+  each gets one plain `--resume <native session>` — never the bypass flag —
+  through the same post phase. Records are deleted before the launch; Codex
+  is not recorded.
 - **A card is persisted only after its session started**
   (`provider.createStarted` kills the session if the write fails; a missing
   directory asks the user, never leaves a stopped card).

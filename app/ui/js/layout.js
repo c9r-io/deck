@@ -848,6 +848,9 @@ async function attachPane(pane, { allowStart = true } = {}, request) {
       // A managed runner may only be created through the durable MCP/Board
       // transaction. Never turn a stopped MCP card into an ordinary shell.
       if (card.origin?.source === 'mcp') return outcome;
+      // An open recovery offer for this card (agent-recovery.js): a shell
+      // started now would make its recovery impossible.
+      if (ctx.recoveryHold?.has(card.session)) return outcome;
       const cmd = startCommand(card);
       const started = await inv('start_session', {
         name: card.session, dir: card.dir, cmd,

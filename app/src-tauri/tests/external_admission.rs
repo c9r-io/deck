@@ -975,8 +975,8 @@ fn every_terminal_input_site_is_reviewed() {
     );
     assert_eq!(
         core.matches("Slot::Armed").count(),
-        2,
-        "armed at freeze, read once, never re-armed"
+        3,
+        "armed at freeze or when a crash recovery is planned, read once, never re-armed"
     );
     assert!(body("commands.rs", "create_reentry_shell")
         .contains("create_session(run, stdin, name, dir, \"\","));

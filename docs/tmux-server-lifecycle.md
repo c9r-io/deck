@@ -636,3 +636,49 @@ committed last as authority (`documents::board_authority`), under the Board
 writer's fence; a Board answered from a backup names no card. Same-user code inside the client's own process tree
 can still misreport; that residual is accepted for this one user-confirmed
 side effect and extends to nothing else.
+
+## Recover interrupted Agent sessions (after the shell service was lost)
+
+Re-entry above covers the user's own restart. A frozen Mac, a power cut or a
+tmux server that died ends every client with no exit sequence at all, and
+nothing of that transaction survives the process. Recovery is a separate
+operation for that case, Claude Code only; its contract is the header of
+`agent_reentry/recovery.rs`.
+
+- **Record, on events.** Every Claude Code `SessionStart` the lifecycle
+  helper reports — leased or not — is also attributed for the record: the
+  peer executes the bundled helper, its direct parent is the pane's current
+  foreground client, the pane is on Deck's own server, and the client runs
+  Claude Code's code in a supported launch shape. The committed Board's one
+  card for that session gets one record (`~/.deck/agent-recovery.json`, v1,
+  bounded, 0600): native id, client and server generations, executable path,
+  working directory. A user-caused end (`prompt-input-exit`, `logout`)
+  deletes it; `clear`/`resume` are replaced by the next start; `other`
+  deletes nothing. While the server still runs, a record whose client left
+  its pane is pruned after two sightings a minute apart. A file of a later
+  version, or one that cannot be read, is left untouched and used for nothing.
+- **Offer.** After the Board loaded, the frontend asks once
+  (`agent_recovery_offer`). A record is offered when its server generation
+  and its client generation are both gone and the Board still binds its card
+  to its session alone. A card whose shell is open, whose directory or
+  program is missing, or without the lifecycle observation is listed and
+  cannot be ticked. Its own dialog ("Recover interrupted Agent sessions")
+  starts with every tickable card ticked; nothing launches before the user
+  confirms. While it is open the offered cards' shells are not started.
+- **Once only.** Declining (`agent_recovery_decline`) or confirming
+  (`agent_recovery_run`) deletes every record the offer read; a confirmed
+  recovery deletes them before the first shell is created, so a crash during
+  it never offers the same session twice.
+- **Launch.** Under the restart's two try-locks, the recorded program is read
+  and validated in full as Claude Code now (the old image no longer exists —
+  a weaker identity than a restart's binding of the running client), and each
+  ticked card gets the plain `<program> --resume <id>`: never the bypass flag,
+  whatever the old client was started with. Shell creation, readiness, the
+  Board fence, the single slot, receipts and confirmation are re-entry's
+  `Plan::reopen` unchanged; results read like a restart's entries.
+- **Not covered.** Codex (its receipts cannot name the current session
+  without the exit hint a crash never prints); a session started while Deck
+  was not running, or whose start was dropped by a full queue; a client that
+  died alone and was not pruned before the crash (offered; resuming it is
+  harmless). A Deck crash with tmux still running offers nothing — the clients
+  are still in their panes.

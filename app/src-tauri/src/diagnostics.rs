@@ -192,6 +192,7 @@ const LISTEN_TARGETS: &[&str] = &[
     "connector-changed",
     "mcp-changed",
     "board-lost",
+    "agent-recovery-progress",
 ];
 
 /// Keydown CATEGORIES — the frontend classifies before sending; a raw key
@@ -1019,6 +1020,9 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     ),
     ("notify-open", DetailPolicy::None),
     ("board-load-fail", DetailPolicy::None),
+    ("recovery-offer-fail", DetailPolicy::None),
+    ("recovery-decline-fail", DetailPolicy::None),
+    ("recovery-run-fail", DetailPolicy::None),
     ("settings-load-fail", DetailPolicy::None),
     ("settings-save-fail", DetailPolicy::None),
     ("inbound", DetailPolicy::Closed(INBOUND_OUTCOMES)),
