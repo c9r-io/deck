@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.11 — 2026-10-25 (Nightly)
+
+- Recover interrupted Claude sessions: when the Mac freezes, loses power
+  or the shell service dies, the next launch of Deck shows its own dialog,
+  "Recover interrupted Agent sessions", listing the cards that were in a
+  Claude Code session at that moment (all ticked). Confirming opens each
+  card's shell and resumes that exact session once with the plain
+  `claude --resume <session>`: permission prompts are never skipped, even
+  for a session started with bypass, and no prompt is sent. Declining or
+  confirming forgets these sessions, so they are never offered twice. It
+  needs Claude session re-entry observation on (Settings → Agents) and is
+  separate from the "Reopen Agent sessions" choice of a restart. Deck keeps
+  the records in `~/.deck/agent-recovery.json`, written on each Claude
+  `SessionStart` and deleted when you exit Claude yourself. Not covered:
+  Codex, and Claude run with `CLAUDE_CONFIG_DIR`.
+
 ## 0.8.10 — 2026-10-23 (Nightly)
 
 - Find in a card's terminal: ⌘F opens a find bar on the focused card.
