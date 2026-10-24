@@ -1,6 +1,6 @@
 # 当前验证索引
 
-更新：2026-10-24（中断会话恢复）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-10-25（中断会话恢复：Mac mini 原生端到端）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
@@ -19,7 +19,15 @@
 门禁（本机，隔离 HOME、短 TMPDIR）：`cargo fmt`；CI 形式 clippy 0 告警；`cargo llvm-cov --workspace --all-targets --all-features --locked -- --test-threads=1`：deck-app 1,320 项通过、14 项既有 ignore，各套件全部通过，行覆盖 86.52%、函数覆盖 84.01%，TMPDIR 无残留；`scripts/ui-tests` 通过并满足覆盖阈值；JS 语法 191 模块、`check.mjs` 78 模块通过。新增测试：`recovery_tests.rs` 7 项（记录/删除/替换、归属拒绝、版本与损坏文件不覆盖、清理宽限、提出条件、令牌一次性）；
 `agent_reentry/tests.rs` 2 项真实 tmux + 真实 lifecycle helper + 替身客户端（丢失 server → 提出 → 两张卡各一次 `--resume <id>` 且无 bypass、回执确认、记录清空、令牌失效；
 已开 shell / 目录缺失不可勾选、拒绝删除全部记录、不输入任何内容）；前端 `recovery-model.test.mjs`、`agent-recovery-dom.test.mjs`。
-UNRUN：真实 Claude Code 的 `SessionStart` → 记录 → 真实断电/强制重启 → 恢复的原生端到端；WKWebView 对话框 smoke；发布载体。
+原生端到端（2026-10-25，Mac mini，macOS 27.0.1，真实 Claude Code 2.1.296 已登录于隔离 home，本仓库 debug 载体，WKWebView 模式 `recovery-live` → `recovery-live-relaunch`）：**PASS**。
+第一次启动：经设置开关打开观测；A `claude`（一轮、`/clear`、再一轮），B `claude --dangerously-skip-permissions`（一轮），D `cat`；记录文件得到 A、B 两条（D 无），A 的记录是 `/clear` 之后的会话。
+丢失：`edr_runtime.py experiment stop --crash` 先 SIGKILL 载体再 SIGKILL 其 tmux server（不发任何退出请求，socket 文件留下）；10 s 后无客户端存活，记录仍为 2 条。
+第二次启动（同一数据根、socket 名与 home，载体新起 server）：对话框自动出现，A、B 已勾选、D 不在列表，确认一次，两行均为“确认进入，未添加 bypass”；
+进程表中两个新客户端恰为 `<版本化 claude> --resume <记录的 id>`，各一个，均无 bypass 参数；A 的画面显示 `deckra2`、不显示 `deckra1`，B 的模式行不是 bypass；A 恢复后再答一轮；再次询问不提出任何项；恢复后的新 `SessionStart` 重新写入两条记录。
+两次 smoke-verdict 均 PASS（4/4、7/7）。机器自身的 `~/.deck`、已安装 Deck 及其 `deck` tmux server 前后一致；测试账号已登出，私有钥匙串与根目录已删除。
+前三次尝试的失败均在测试一侧：启动器带了 `CLAUDE_CONFIG_DIR`（Claude 语法按设计拒绝该变量，记录被拒为 `recovery-not-supported`，与重启重入一致）；上一轮残留的 hooks；页面在恢复后过早读取画面，以及结果句缺 `{agent}` 参数（`reentry-live-smoke.mjs` 的同一比较一并修正）。
+SIGKILL 不等于断电：内核、磁盘缓存、launchd 都还在，`/private/tmp` 也未被重启清空。
+UNRUN：真实断电或强制重启；发布载体；`CLAUDE_CONFIG_DIR` 或非默认 home 下的 Claude（按设计不记录）。
 
 ## 上一轮 自动化模板中的外部消息围栏
 

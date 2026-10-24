@@ -371,6 +371,25 @@
         "relive-hold": {}
       }
     },
+    "recovery-live": {
+      "terminal": "done",
+      "checks": {
+        "rclive-clean": {"a": 15},
+        "rclive-observe": {"a": 7},
+        "rclive-cards": {"a": 2, "b": 3}
+      }
+    },
+    "recovery-live-relaunch": {
+      "terminal": "done",
+      "checks": {
+        "rclive-offer": {"a": 127, "b": 2},
+        "rclive-result": {"a": 31, "b": 2},
+        "rclive-resumed": {"a": 63},
+        "rclive-turn": {},
+        "rclive-again": {"a": 7, "b": 0},
+        "rclive-hold": {"metric": true}
+      }
+    },
     "channel-first-send": {
       "terminal": "done",
       "checks": {

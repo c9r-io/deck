@@ -169,6 +169,8 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("pi-layout", "m.verifyPiLayout()"),
     ("reentry-live", "m.verifyReentryLive()"),
     ("reentry-live-relaunch", "m.verifyReentryLiveRelaunch()"),
+    ("recovery-live", "m.verifyRecoveryLive()"),
+    ("recovery-live-relaunch", "m.verifyRecoveryLiveRelaunch()"),
     ("connector", "m.verifyConnector()"),
     ("connector-transport", "m.verifyConnectorTransport()"),
     ("connector-device", "m.verifyConnectorDevice()"),

@@ -3449,6 +3449,19 @@ export async function verifyReentryLiveRelaunch() {
   await runReentryLiveRelaunchSmoke();
 }
 
+// Crash recovery with real Claude Code clients: the launch before a lost
+// shell service, and the launch after it whose dialog recovers the sessions
+// (recovery-live-smoke.mjs). The operator causes the loss in between.
+export async function verifyRecoveryLive() {
+  const { runRecoveryLiveSmoke } = await import('./recovery-live-smoke.mjs');
+  await runRecoveryLiveSmoke();
+}
+
+export async function verifyRecoveryLiveRelaunch() {
+  const { runRecoveryLiveRelaunchSmoke } = await import('./recovery-live-smoke.mjs');
+  await runRecoveryLiveRelaunchSmoke();
+}
+
 // The lost Board's way out, on a root the operator seeded with nothing
 // loadable (board-lost-smoke.mjs).
 export async function verifyBoardLost() {

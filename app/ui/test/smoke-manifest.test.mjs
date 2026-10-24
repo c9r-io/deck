@@ -29,6 +29,7 @@ const CARRIERS = {
   'pi-live-smoke.mjs': ['pi-live'],
   'pi-layout-smoke.mjs': ['pi-layout'],
   'reentry-live-smoke.mjs': ['reentry-live', 'reentry-live-relaunch'],
+  'recovery-live-smoke.mjs': ['recovery-live', 'recovery-live-relaunch'],
   'reminder-smoke.mjs': ['reminder'],
   'reminder-native-smoke.mjs': ['reminder-native'],
   'authority-smoke.mjs': ['authority-live', 'empty-start'],

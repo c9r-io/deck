@@ -81,13 +81,16 @@ python3 scripts/edr_runtime.py experiment add-server --root <root> --socket <ful
 python3 scripts/edr_runtime.py experiment add-process --root <root> --pid <pid>
 python3 scripts/edr_runtime.py experiment show --root <root>
 python3 scripts/edr_runtime.py experiment stop --root <root> --pid <pid>
+python3 scripts/edr_runtime.py experiment stop --root <root> --pid <pid> --crash
 python3 scripts/edr_runtime.py experiment cleanup --root <root>
 ```
 
 On the Mac mini the same file is read from standard input:
 `ssh macmini "python3 - experiment cleanup --root <root>" < scripts/edr_runtime.py`.
 
-`stop` ends one registered resource and leaves the rest running. `cleanup`
+`stop` ends one registered resource and leaves the rest running. `--crash`
+is a loss under test (a power-loss rehearsal), not a way to stop: the same
+verification, then one SIGKILL, and a server's socket file is left behind. `cleanup`
 verifies every entry again before it stops anything: the socket path
 is inside the root, the server that answers on it reports the registered pid,
 and that pid still has the registered start time and executable. One entry that

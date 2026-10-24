@@ -1101,6 +1101,43 @@ under a person's home.
       permission in effect. Stop the isolated tmux server after the run (that
       ends the clients) and remove the home.
 
+### Crash recovery of Claude sessions with real clients
+
+`recovery-live` → `recovery-live-relaunch` is "Recover interrupted Agent
+sessions" in the real window with real Claude Code clients, across a loss of
+the shell service. Like `reentry-live` it starts real clients on a signed-in
+account and writes the home's global `~/.claude/settings.json`: never under a
+person's home.
+
+- [ ] Prepare `/private/tmp/deck-rclive-<12 hex>/` as for `reentry-live`
+      (carrier at `home/Applications/deck.app`, its own keychain, Claude
+      signed in, `home/work/{a,b}` trusted, the bypass warning accepted,
+      `home/work/d` existing, no Deck hook in the home's settings). Do NOT
+      set `CLAUDE_CONFIG_DIR`: Deck refuses to record a client that runs with
+      it (`recovery-not-supported`), as restart re-entry does. Scenario word
+      `rclive-<12 hex>`; launch with `--smoke-wkwebview recovery-live`.
+- [ ] The page switches observation on (`rclive-observe`), starts A
+      (`claude`, a turn, `/clear`, a turn), B (`claude
+      --dangerously-skip-permissions`, a turn) and D (`cat`) (`rclive-cards`),
+      reports `done` and waits. Read `<data dir>/agent-recovery.json` (two
+      records, A's the session after `/clear`) and the process table.
+- [ ] The loss: SIGKILL the app, then its tmux server, through
+      `scripts/edr_runtime.py experiment stop --pid <pid> --crash`. Nothing is
+      asked to quit; the socket file stays. Check that no client survives.
+- [ ] Launch the same data root, socket name and home with
+      `--smoke-wkwebview recovery-live-relaunch`: the dialog opens by itself
+      with A and B ticked and D not listed (`rclive-offer`); one confirmation;
+      both rows say the session was entered with no bypass flag
+      (`rclive-result`); A shows its turn after `/clear` and not the one
+      before, B's mode line is not bypass (`rclive-resumed`); A answers one
+      more turn (`rclive-turn`); nothing is offered again (`rclive-again`). At
+      `rclive-hold` read the process table: each new client is the versioned
+      `claude --resume <the recorded id>`, once, with no bypass flag.
+- [ ] Judge each launch with `scripts/smoke-verdict <data dir> <mode>` (copy
+      the app.log before the relaunch). A SIGKILL is not a power loss: the
+      kernel, disk cache and launchd survive it. The 2026-10-25 run and its
+      runner are recorded in `docs/verification-status.md`.
+
 ### Connector post-accept recovery
 
 - [ ] Launch the isolated `connector-transport` runner with

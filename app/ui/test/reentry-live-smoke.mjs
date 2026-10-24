@@ -73,9 +73,9 @@
 // "shift+tab to cycle".
 const READY = /(auto mode|bypass permissions|accept edits|plan mode|manual mode) on/;
 const BUSY = /esc to interrupt/;              // a line of a screen that is still working
-const REPLY_MARK = '⏺';                       // what an assistant line starts with
+export const REPLY_MARK = '⏺';                       // what an assistant line starts with
 const PLAN_LINE = /plan mode on/;             // the mode line in plan mode
-const BYPASS_LINE = /bypass permissions on/;  // the mode line under bypass
+export const BYPASS_LINE = /bypass permissions on/;  // the mode line under bypass
 // Screens that ask something: nothing is ever typed into one. A new folder is
 // asked about with "No, exit" selected, and so is the bypass warning.
 const DIALOG = [/Yes, I trust this folder/, /Yes, I accept/, /Select login method/, /Press Enter to continue/,
@@ -84,10 +84,10 @@ const DIALOG = [/Yes, I trust this folder/, /Yes, I accept/, /Select login metho
 
 // What the page types into a client, and what the cards run.
 const PROMPT = 'Reply with exactly this one word and nothing else: ';
-const CLEAR = '/clear';
+export const CLEAR = '/clear';
 const NEXT_MODE = '\x1b[Z';                   // Shift+Tab: the next permission mode
-const AGENT = 'claude';
-const AGENT_BYPASS = 'claude --dangerously-skip-permissions';
+export const AGENT = 'claude';
+export const AGENT_BYPASS = 'claude --dangerously-skip-permissions';
 const QUEUED = `${PROMPT}deckqueued`;
 const HELD_SECS = 86400;                      // the queued prompt's "not before": a day from now
 
@@ -95,7 +95,9 @@ const HELD_SECS = 86400;                      // the queued prompt's "not before
 // place that types throw it; the mode's catch fails the checkpoint and ends.
 const ASKED = new Error('dialog');
 
-async function harness() {
+// `prefix` names the scenario word's family: `relive` here,
+// `rclive` for recovery-live-smoke.mjs, which reuses this harness.
+export async function harness(prefix = 'relive') {
   const { $, ctx, inv, state, store } = await import('../js/state.js');
   const { panes, provider } = await import('../js/board.js');
   const { openSession } = await import('../js/layout.js');
@@ -130,7 +132,7 @@ async function harness() {
   /* the operator's directories: only a word of the expected shape names a root */
   const workDir = async () => {
     const word = await inv('smoke_native_scenario');
-    return /^relive-[0-9a-f]{12}$/.test(word) ? `/private/tmp/deck-${word}/home/work` : '';
+    return new RegExp(`^${prefix}-[0-9a-f]{12}$`).test(word) ? `/private/tmp/deck-${word}/home/work` : '';
   };
 
   /* ---- a card's pane: read, and typed into, only while it is the one shown ---- */
@@ -258,10 +260,10 @@ async function harness() {
   const details = row => (row ? all(row, '.reentry-hint').map(node => node.textContent) : []);
   /* the row that says `key` about `card`, in the dialog's own sentence */
   const says = (card, key) => resultRows()
-    .find(row => head(row) === t('reentry.result.line', { card: titleOf(card), result: t(key) }));
+    .find(row => head(row) === t('reentry.result.line', { card: titleOf(card), result: t(key, { agent: 'Claude' }) }));
   const confirmed = () => resultRows().filter(row => row.classList.contains('ok'));
   /* rows that speak of the bypass flag: the Policy B sentence or its detail line */
-  const flagged = () => resultRows().filter(row => head(row).includes(t('reentry.result.confirmed'))
+  const flagged = () => resultRows().filter(row => head(row).includes(t('reentry.result.confirmed', { agent: 'Claude' }))
     || details(row).includes(t('reentry.warning.bypass-reauthorized')));
   const footer = () => all($('tmux-result'), '.reentry-notes > div').map(node => node.textContent);
 
@@ -286,7 +288,7 @@ async function harness() {
     };
   };
 
-  return { $, inv, store, provider, t, pause, waitFor, report, metric, bits, hold, workDir, shows, start, waitReady, type, say,
+  return { $, inv, store, provider, t, pause, waitFor, report, metric, bits, hold, workDir, shows, show, start, waitReady, type, say,
     ask, hooks, openAgents, enable, section, all, text, rows, radios, rowOf, selectable, isOff, ticked, bypassRows,
     selectAll, untouched, openReview, leaveReview, conclude, resultRows, details, says, confirmed, flagged, footer,
     queueLater, queued, failed: () => failed };

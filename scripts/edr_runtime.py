@@ -23,7 +23,7 @@ debug bundles (a release carrier, a relocated home, another machine):
   edr_runtime.py experiment add-server --root DIR --socket PATH --tmux FILE
   edr_runtime.py experiment add-process --root DIR --pid N
   edr_runtime.py experiment show --root DIR
-  edr_runtime.py experiment stop --root DIR --pid N
+  edr_runtime.py experiment stop --root DIR --pid N [--crash]
   edr_runtime.py experiment cleanup --root DIR
 
 A run registers what it starts, when it starts it, in `DIR/experiment.json`:
@@ -32,7 +32,10 @@ reports on that path, that process's start time and executable; for a
 process its pid, start time and executable.
 
 `stop` stops ONE registered resource and leaves the rest running (an
-application between two launches on one server). A server the experiment
+application between two launches on one server). With `--crash` it is the
+loss under test, not a cleanup: after the same verification the pid gets
+SIGKILL and nothing else (no `kill-server`, no SIGTERM first, a server's
+socket file is left behind as a crash leaves it). A server the experiment
 replaces on the same socket (a restart under test) is registered again; the
 earlier entry then reads as gone.
 
@@ -507,6 +510,23 @@ def stop(root: Path, entry: dict) -> None:
             socket_path.unlink()
 
 
+def crash(entry: dict) -> None:
+    """SIGKILL one verified entry, the way a power loss or a crash ends it: nothing
+    is asked to quit and nothing is tidied after it."""
+    def still_it() -> bool:
+        now = identity(entry["pid"])
+        return now is not None and now[0] == entry["started"] and now[1] == entry["executable"]
+
+    if not still_it():
+        return
+    os.kill(entry["pid"], signal.SIGKILL)
+    deadline = time.monotonic() + 3
+    while still_it() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if still_it():
+        raise RuntimeError(f"pid {entry['pid']} did not stop")
+
+
 def running_from(root: Path) -> list[tuple[int, str]]:
     """Every process whose program is a file inside `root`, apart from this one."""
     table = run(["/bin/ps", "-axo", "pid=,comm="])
@@ -561,7 +581,10 @@ def experiment(args: argparse.Namespace) -> int:
                 raise Refused(f"pid {args.pid} is registered {len(named)} times; only a resource registered once is stopped")
             entry, state = checked(root, named[0], servers(document))
             print(f"{entry['kind']} pid {entry['pid']} started {entry['started']}: {state}")
-            if state == "running":
+            if state == "running" and getattr(args, "crash", False):
+                crash(entry)
+                print(f"killed {entry['kind']} pid {entry['pid']} (SIGKILL)")
+            elif state == "running":
                 stop(root, entry)
                 print(f"stopped {entry['kind']} pid {entry['pid']}")
             return 0
@@ -610,7 +633,10 @@ def main() -> int:
         registry.add_argument("--socket")
         registry.add_argument("--tmux")
         registry.add_argument("--pid", type=int)
+        registry.add_argument("--crash", action="store_true")
         chosen = registry.parse_args(sys.argv[2:])
+        if chosen.crash and chosen.action != "stop":
+            registry.error("--crash belongs to stop")
         if chosen.action == "add-server" and not (chosen.socket and chosen.tmux):
             registry.error("add-server needs --socket and --tmux")
         if chosen.action in ("add-process", "stop") and chosen.pid is None:

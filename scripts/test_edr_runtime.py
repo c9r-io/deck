@@ -265,6 +265,31 @@ class ExperimentTests(Fixture):
         self.assertTrue(self.alive(self.tmux, self.socket, self.server), "stopping one resource stopped the server too")
         self.assertTrue(self.sentinel_alive())
 
+    def test_a_crash_is_one_sigkill_of_the_verified_pid_and_leaves_the_socket_behind(self):
+        self.register()
+        napper = self.nap()
+        self.assertEqual(self.tool("add-process", "--pid", str(napper)).returncode, 0)
+        # the same verification as a stop: an unregistered pid is refused
+        other = self.tool("stop", "--pid", str(self.sentinel), "--crash")
+        self.assertEqual(other.returncode, 3, other.stdout + other.stderr)
+        self.assertTrue(self.sentinel_alive(), "the sentinel was touched")
+        killed = self.tool("stop", "--pid", str(self.server), "--crash")
+        self.assertEqual(killed.returncode, 0, killed.stdout + killed.stderr)
+        self.assertIn(f"killed tmux-server pid {self.server} (SIGKILL)", killed.stdout)
+        self.assertIsNone(MODULE.identity(self.server), "the server survived its SIGKILL")
+        self.assertTrue(self.socket.is_socket(), "a crash tidied the socket file away")
+        self.assertIsNone(self.naps[0].poll(), "crashing the server stopped another resource")
+        process = self.tool("stop", "--pid", str(napper), "--crash")
+        self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+        self.assertEqual(self.naps[0].wait(timeout=5), -9)
+        # what is left is read as gone, and the cleanup says so
+        done = self.tool("cleanup")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(done.stdout.count(": gone"), 2)
+        self.assertTrue(self.sentinel_alive())
+        usage = self.tool("cleanup", "--crash")
+        self.assertEqual(usage.returncode, 2)
+
     def test_a_process_started_by_its_bare_name_is_registered_from_any_directory(self):
         # found in use: a keep-awake started as `caffeinate` shows no path, and the tool, run from a
         # person's home, resolved the bare name against that home and refused its own experiment's process
