@@ -37,7 +37,7 @@ const item = (id, section, labelKeys, keywords, order = 0) =>
 
 const CORE_SETTING_ITEMS = [
   item('language', 'general', ['settings.language'],
-    ['locale', 'english', 'chinese', '语言', '中文', '英文'], 0),
+    ['locale', 'english', 'chinese', 'japanese', 'korean', 'spanish', 'german', '语言', '中文', '英文', '日本語', '한국어', 'español', 'deutsch'], 0),
   item('appearance', 'general', ['settings.group.appearance', 'settings.theme', 'settings.accent', 'settings.fontSize'],
     ['dark', 'light', 'color', 'colour', 'contrast', 'text size', 'zoom', '深色', '浅色', '颜色', '字号', '缩放'], 1),
   item('shortcuts', 'shortcuts', ['settings.shortcuts', 'settings.shortcut.newSession', 'settings.shortcut.toggleSidebar',

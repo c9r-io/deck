@@ -98,15 +98,42 @@ const NATIVE_ZH_HANS: NativeStrings = NativeStrings {
     check_updates: "检查更新…",
     terminal: "终端",
 };
+const NATIVE_JA: NativeStrings = NativeStrings {
+    clear: "クリア",
+    export_logs: "ログを書き出す…",
+    check_updates: "アップデートを確認…",
+    terminal: "ターミナル",
+};
+const NATIVE_KO: NativeStrings = NativeStrings {
+    clear: "지우기",
+    export_logs: "로그 내보내기…",
+    check_updates: "업데이트 확인…",
+    terminal: "터미널",
+};
+const NATIVE_ES: NativeStrings = NativeStrings {
+    clear: "Borrar",
+    export_logs: "Exportar registros…",
+    check_updates: "Buscar actualizaciones…",
+    terminal: "Terminal",
+};
+const NATIVE_DE: NativeStrings = NativeStrings {
+    clear: "Löschen",
+    export_logs: "Protokolle exportieren…",
+    check_updates: "Nach Updates suchen…",
+    terminal: "Terminal",
+};
 
 /// The webview resolves `system` against `navigator.languages` (`i18n.js`)
 /// and reports the RESOLVED locale here, so the native menu never has to
 /// read system preferences itself (no `defaults` spawn).
 fn native_strings(locale: &str) -> NativeStrings {
-    if locale == "zh-Hans" {
-        NATIVE_ZH_HANS
-    } else {
-        NATIVE_EN
+    match locale {
+        "zh-Hans" => NATIVE_ZH_HANS,
+        "ja" => NATIVE_JA,
+        "ko" => NATIVE_KO,
+        "es" => NATIVE_ES,
+        "de" => NATIVE_DE,
+        _ => NATIVE_EN,
     }
 }
 
@@ -119,7 +146,7 @@ struct NativeMenu {
 
 #[tauri::command]
 fn set_native_locale(locale: String, menu: tauri::State<'_, NativeMenu>) -> Result<(), DeckError> {
-    if !matches!(locale.as_str(), "en" | "zh-Hans") {
+    if !documents::set_resolved_locale(&locale) {
         return Err(DeckError::new(ErrorKind::Other, "invalid locale"));
     }
     let s = native_strings(&locale);
@@ -167,6 +194,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("hooks-live", "m.verifyHooksLive()"),
     ("pi-live", "m.verifyPiLive()"),
     ("pi-layout", "m.verifyPiLayout()"),
+    ("locale-layout", "m.verifyLocaleLayout()"),
     ("reentry-live", "m.verifyReentryLive()"),
     ("reentry-live-relaunch", "m.verifyReentryLiveRelaunch()"),
     ("recovery-live", "m.verifyRecoveryLive()"),
@@ -322,7 +350,7 @@ fn main() {
             // Native menu: the default set restores all standard macOS
             // shortcuts (⌘C/V/A/Z/Q/H/M/W…); Terminal→Clear adds ⌘K.
             let handle = app.handle();
-            let strings = native_strings(&documents::locale_setting());
+            let strings = native_strings(&documents::native_locale());
             let menu = tauri::menu::Menu::default(handle)?;
             let clear = tauri::menu::MenuItemBuilder::with_id("clear", strings.clear)
                 .accelerator("Cmd+K")

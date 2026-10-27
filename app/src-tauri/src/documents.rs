@@ -334,7 +334,7 @@ pub(crate) const FONT_SCALE_MIN: f64 = 0.5;
 pub(crate) const FONT_SCALE_MAX: f64 = 1.6;
 pub(crate) const THEMES: &[&str] = &["deck-dark", "light", "system", "high-contrast"];
 pub(crate) const ACCENTS: &[&str] = &["teal", "blue", "purple", "orange"];
-pub(crate) const LOCALES: &[&str] = &["system", "en", "zh-Hans"];
+pub(crate) const LOCALES: &[&str] = &["system", "en", "zh-Hans", "ja", "ko", "es", "de"];
 pub(crate) const SHORTCUTS_MAX: usize = 64;
 pub(crate) const SHORTCUT_MAX_LEN: usize = 64;
 
@@ -1029,7 +1029,7 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
             if !LOCALES.contains(&locale.as_str()) {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
-                    "locale must be system, en, or zh-Hans",
+                    "locale must be system, en, zh-Hans, ja, ko, es, or de",
                 ));
             }
         }
@@ -2263,7 +2263,7 @@ fn editor_from(settings: Option<&serde_json::Value>) -> Option<String> {
 fn locale_from(settings: Option<&serde_json::Value>) -> String {
     settings
         .and_then(|v| v.get("locale")?.as_str().map(str::to_owned))
-        .filter(|v| matches!(v.as_str(), "system" | "en" | "zh-Hans"))
+        .filter(|v| LOCALES.contains(&v.as_str()))
         .unwrap_or_else(|| "system".into())
 }
 
@@ -2280,6 +2280,33 @@ pub(crate) fn editor_app() -> Option<String> {
 
 pub(crate) fn locale_setting() -> String {
     locale_from(settings_value().as_ref())
+}
+
+/// The concrete UI language the webview resolved (`set_native_locale`); for a
+/// `system` setting it is what native text follows, so no native reader
+/// consults the system preferences itself.
+static RESOLVED_LOCALE: Mutex<Option<&'static str>> = Mutex::new(None);
+
+/// Records the webview's resolved language; refuses `system` and unknown words.
+pub(crate) fn set_resolved_locale(locale: &str) -> bool {
+    let Some(known) = LOCALES.iter().find(|l| **l == locale && **l != "system") else {
+        return false;
+    };
+    *RESOLVED_LOCALE.lock_or_recover() = Some(known);
+    true
+}
+
+/// The language of native text (menu, notifications, reminders): the setting,
+/// or for `system` the webview's resolved language once it has reported one.
+pub(crate) fn native_locale() -> String {
+    native_locale_from(&locale_setting(), *RESOLVED_LOCALE.lock_or_recover())
+}
+
+fn native_locale_from(setting: &str, resolved: Option<&str>) -> String {
+    match (setting, resolved) {
+        ("system", Some(resolved)) => resolved.to_string(),
+        _ => setting.to_string(),
+    }
 }
 
 /// The away-notification switch and its sound, both off unless saved true.
@@ -2443,7 +2470,13 @@ mod tests {
         assert_eq!(locale_from(None), "system");
         assert_eq!(locale_from(Some(&v(r#"{"locale":"zh-Hans"}"#))), "zh-Hans");
         assert_eq!(locale_from(Some(&v(r#"{"locale":"en"}"#))), "en");
+        assert_eq!(locale_from(Some(&v(r#"{"locale":"ja"}"#))), "ja");
         assert_eq!(locale_from(Some(&v(r#"{"locale":"fr"}"#))), "system");
+        // native text follows an explicit setting, and `system` only once the webview resolved it
+        assert_eq!(native_locale_from("de", Some("ja")), "de");
+        assert_eq!(native_locale_from("system", Some("ko")), "ko");
+        assert_eq!(native_locale_from("system", None), "system");
+        assert!(!set_resolved_locale("system") && !set_resolved_locale("fr"));
 
         assert_eq!(editor_from(None), None);
         assert_eq!(
@@ -3780,7 +3813,7 @@ mod tests {
             "only a real true turns a flag on"
         );
         assert_eq!(notify_from(None), (false, false));
-        for locale in ["system", "en", "zh-Hans"] {
+        for locale in ["system", "en", "zh-Hans", "ja", "ko", "es", "de"] {
             assert!(
                 serde_json::from_str::<SettingsDoc>(&format!(r#"{{"locale":"{locale}"}}"#)).is_ok()
             );

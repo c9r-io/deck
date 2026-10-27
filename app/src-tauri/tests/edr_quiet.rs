@@ -560,20 +560,35 @@ fn native_notifications_are_in_process_and_content_closed() {
         ["body", "categoryIdentifier", "sound", "title"],
         "a new notification field carries content the contract does not name"
     );
-    // a reminder's body is the project name and one fixed phrase per locale,
-    // and its two actions have fixed titles
+    // a reminder's body is the project name and one fixed phrase per UI
+    // language, and its two actions have fixed titles (`reminderWords`)
     for (fixed, times) in [
         (
-            "content.body = project.isEmpty ? phrase : \"\\(project) — \\(phrase)\"",
+            "content.body = project.isEmpty ? words.body : \"\\(project) — \\(words.body)\"",
             1,
         ),
-        ("\"Return to this card\"", 1),
-        ("\"回到此卡片\"", 1),
         ("UNNotificationAction(", 2),
-        ("\"Open card\"", 1),
-        ("\"打开卡片\"", 1),
-        ("\"Remind in 1 hour\"", 1),
-        ("\"推迟1小时\"", 1),
+        (
+            "\"Return to this card\", \"Open card\", \"Remind in 1 hour\"",
+            1,
+        ),
+        ("\"回到此卡片\", \"打开卡片\", \"推迟1小时\"", 1),
+        (
+            "\"このカードに戻る\", \"カードを開く\", \"1時間後に再通知\"",
+            1,
+        ),
+        (
+            "\"이 카드로 돌아가기\", \"카드 열기\", \"1시간 후 다시 알림\"",
+            1,
+        ),
+        (
+            "\"Volver a esta tarjeta\", \"Abrir tarjeta\", \"Recordar en 1 hora\"",
+            1,
+        ),
+        (
+            "\"Zu dieser Karte zurückkehren\", \"Karte öffnen\", \"In 1 Stunde erinnern\"",
+            1,
+        ),
     ] {
         assert_eq!(swift.matches(fixed).count(), times, "{fixed}");
     }

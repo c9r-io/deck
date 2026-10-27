@@ -1,19 +1,30 @@
+// Six UI languages. `system` takes the first macOS preferred language Deck has
+// (Traditional Chinese has no dictionary and is skipped); none → English.
 import { en } from './i18n/en.js';
 import { zhHans } from './i18n/zh-Hans.js';
+import { ja } from './i18n/ja.js';
+import { ko } from './i18n/ko.js';
+import { es } from './i18n/es.js';
+import { de } from './i18n/de.js';
 
-export const dictionaries = Object.freeze({ en, 'zh-Hans': zhHans });
-export const LOCALE_CHOICES = Object.freeze(['system', 'en', 'zh-Hans']);
+export const dictionaries = Object.freeze({ en, 'zh-Hans': zhHans, ja, ko, es, de });
+export const LOCALES = Object.freeze(['en', 'zh-Hans', 'ja', 'ko', 'es', 'de']);
+export const LOCALE_CHOICES = Object.freeze(['system', ...LOCALES]);
 let preference = 'system';
 let locale = 'en';
 const subscribers = new Set();
 
 export function resolveSystemLocale(languages = (globalThis.navigator?.languages || [globalThis.navigator?.language])) {
-  const tags = (languages || []).filter(Boolean).map(String);
-  return tags.some(tag => /^zh(?:-Hans(?:-|$)|-(?:CN|SG)(?:-|$))/i.test(tag)) ? 'zh-Hans' : 'en';
+  for (const tag of (languages || []).filter(Boolean).map(String)) {
+    if (/^zh(?:-Hans(?:-|$)|-(?:CN|SG)(?:-|$)|$)/i.test(tag)) return 'zh-Hans';
+    const base = tag.split('-')[0].toLowerCase();
+    if (base !== 'zh' && LOCALES.includes(base)) return base;
+  }
+  return 'en';
 }
 
 export function resolveLocale(value, languages) {
-  return value === 'zh-Hans' ? 'zh-Hans' : value === 'en' ? 'en' : resolveSystemLocale(languages);
+  return LOCALES.includes(value) ? value : resolveSystemLocale(languages);
 }
 
 export function getLocale() { return locale; }

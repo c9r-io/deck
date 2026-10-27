@@ -2,22 +2,41 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDefaultColumns, migrateColumnSemantics } from '../js/board-defaults.js';
 import {
-  dictionaries, dictionaryAudit, getLocale, resolveLocale, resolveSystemLocale,
+  dictionaries, dictionaryAudit, getLocale, resolveLocale, resolveSystemLocale, LOCALE_CHOICES,
   applyTranslations, setLocale, t,
 } from '../js/i18n.js';
 import { parseSettings, serializeSettings } from '../js/settings-model.js';
 
-test('system locale recognizes only Simplified Chinese variants', () => {
+test('system locale takes the first preferred language Deck has; Traditional Chinese has none', () => {
   assert.equal(resolveSystemLocale(['zh-CN']), 'zh-Hans');
   assert.equal(resolveSystemLocale(['zh-SG', 'en-US']), 'zh-Hans');
   assert.equal(resolveSystemLocale(['zh-Hans-CN']), 'zh-Hans');
-  assert.equal(resolveSystemLocale(['zh-Hant-TW', 'ja-JP']), 'en');
+  assert.equal(resolveSystemLocale(['zh-Hans-JP', 'ja-JP']), 'zh-Hans');
+  assert.equal(resolveSystemLocale(['zh-Hant-TW', 'ja-JP']), 'ja', 'Traditional Chinese is skipped');
+  assert.equal(resolveSystemLocale(['zh-Hant-TW']), 'en');
+  assert.equal(resolveSystemLocale(['en-US', 'zh-CN']), 'en', 'order decides');
+  assert.equal(resolveSystemLocale(['ko-KR']), 'ko');
+  assert.equal(resolveSystemLocale(['es-MX']), 'es');
+  assert.equal(resolveSystemLocale(['fr-FR', 'de-AT']), 'de');
   assert.equal(resolveSystemLocale(['fr-FR']), 'en');
+  assert.equal(resolveSystemLocale([]), 'en');
   assert.equal(resolveLocale('bogus', ['en-US']), 'en');
   assert.equal(resolveLocale('zh-Hans', ['en-US']), 'zh-Hans');
+  assert.equal(resolveLocale('ja', ['en-US']), 'ja');
+  assert.deepEqual(LOCALE_CHOICES, ['system', 'en', 'zh-Hans', 'ja', 'ko', 'es', 'de']);
 });
 
-test('English and Simplified Chinese dictionaries have exactly the same keys', () => {
+test('every dictionary keeps the placeholders and markup of the English string', () => {
+  const tokens = value => [...new Set(value.match(/\{\{[^}]+\}\}|\{[A-Za-z][A-Za-z0-9_]*\}|<\/?external_message>/g) || [])].sort();
+  for (const [locale, dict] of Object.entries(dictionaries)) {
+    for (const [key, value] of Object.entries(dictionaries.en)) {
+      assert.deepEqual(tokens(dict[key] ?? ''), tokens(value), `${locale} ${key}`);
+      if (value.trim()) assert.ok(dict[key].trim(), `${locale} ${key} is not empty`);
+    }
+  }
+});
+
+test('all dictionaries have exactly the same keys', () => {
   const audit = dictionaryAudit();
   for (const [locale, result] of Object.entries(audit)) {
     assert.deepEqual(result, { missing: [], orphan: [] }, locale);
@@ -298,9 +317,19 @@ test('agent signal wording never claims task completion or a present wait', () =
   }
   const en = /needs? (your )?input|turn finished|finished (its|a) turn|waiting for your (review|input)|task (is )?(complete|done|finished)/i;
   const zh = /已完成本轮|本轮完成|完成一轮|已完成一轮|等待你的输入|需要你的输入|正在等待你|任务已完成/;
+  const others = {
+    ja: /タスク(?:が|は)?完了|作業(?:が|は)?完了|入力を待っています|あなたの入力が必要/,
+    ko: /작업(?:이|을)? 완료|입력을 기다리고 있습니다|입력이 필요합니다/,
+    es: /tarea (?:completada|terminada)|est[aá] esperando (?:tu|su) entrada|necesita tu entrada/i,
+    de: /Aufgabe (?:erledigt|abgeschlossen)|wartet auf Ihre Eingabe|benötigt Ihre Eingabe/i,
+  };
   for (const key of SIGNAL_COPY_KEYS) {
     assert.doesNotMatch(dictionaries.en[key], en, key);
     assert.doesNotMatch(dictionaries['zh-Hans'][key], zh, key);
+    for (const [locale, pattern] of Object.entries(others)) {
+      assert.equal(typeof dictionaries[locale][key], 'string', `${locale} ${key}`);
+      assert.doesNotMatch(dictionaries[locale][key], pattern, `${locale} ${key}`);
+    }
   }
   assert.match(dictionaries.en['session.status.done'], /turn ended/i);
   assert.match(dictionaries.en['attention.input'], /requested/i);

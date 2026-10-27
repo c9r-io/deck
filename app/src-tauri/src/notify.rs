@@ -82,7 +82,7 @@
 //!   choice (`attention-model.js`). Made for a card that ends a turn every
 //!   few minutes by design (a patrol on `/loop`).
 //! - **Content is a closed set.** The title is the card's own title, the
-//!   body is one of four fixed phrases (`body_text`, en / zh-Hans, following
+//!   body is one of four fixed phrases (`body_text`, one set per UI language, following
 //!   the locale setting; two for an agent, one for a held delivery, one for
 //!   a terminal bell) prefixed
 //!   by the project name. No prompt, output,
@@ -248,16 +248,46 @@ pub(crate) fn body_text(locale: &str, state: &str, project: &str) -> String {
     } else {
         1
     };
-    let phrase = match (locale == "zh-Hans", kind) {
-        (true, 0) => "请求了你的输入",
-        (true, 2) => "有投递待处理",
-        (true, 3) => "程序响了终端铃",
-        (true, _) => "一轮已结束",
-        (false, 0) => "asked for your input",
-        (false, 2) => "a delivery is waiting",
-        (false, 3) => "a program rang the terminal bell",
-        (false, _) => "a turn has ended",
+    // [input requested, turn ended, delivery waiting, bell]
+    let phrases: [&str; 4] = match locale {
+        "zh-Hans" => [
+            "请求了你的输入",
+            "一轮已结束",
+            "有投递待处理",
+            "程序响了终端铃",
+        ],
+        "ja" => [
+            "入力を求めました",
+            "ターンが終了しました",
+            "送信が保留中です",
+            "プログラムがターミナルのベルを鳴らしました",
+        ],
+        "ko" => [
+            "입력을 요청했습니다",
+            "턴이 종료되었습니다",
+            "대기 중인 전송이 있습니다",
+            "프로그램이 터미널 벨을 울렸습니다",
+        ],
+        "es" => [
+            "solicitó tu entrada",
+            "terminó un turno",
+            "hay un envío pendiente",
+            "un programa hizo sonar la campana del terminal",
+        ],
+        "de" => [
+            "hat eine Eingabe angefordert",
+            "eine Runde ist beendet",
+            "eine Zustellung wartet",
+            "ein Programm hat die Terminalglocke geläutet",
+        ],
+        _ => [
+            "asked for your input",
+            "a turn has ended",
+            "a delivery is waiting",
+            "a program rang the terminal bell",
+        ],
     };
+    let phrase = phrases[kind];
     if project.is_empty() {
         phrase.to_string()
     } else {
@@ -718,7 +748,7 @@ pub(crate) fn observe(session: &str, seen: crate::agent_status::Observation) {
     if NOTIFY.lock_or_recover().states.get(session) == Some(&seen) {
         return;
     }
-    let locale = crate::documents::locale_setting();
+    let locale = crate::documents::native_locale();
     observe_with(
         &mut NOTIFY.lock_or_recover(),
         &SystemNative,
@@ -735,7 +765,7 @@ pub(crate) fn delivery_waits(waits: HashMap<String, String>) {
     if NOTIFY.lock_or_recover().waits == waits {
         return;
     }
-    let locale = crate::documents::locale_setting();
+    let locale = crate::documents::native_locale();
     waits_with(
         &mut NOTIFY.lock_or_recover(),
         &SystemNative,
@@ -751,7 +781,7 @@ pub(crate) fn bells(rung: HashMap<String, String>) {
     if NOTIFY.lock_or_recover().bells == rung {
         return;
     }
-    let locale = crate::documents::locale_setting();
+    let locale = crate::documents::native_locale();
     own_with(
         &mut NOTIFY.lock_or_recover(),
         &SystemNative,
@@ -1337,6 +1367,22 @@ mod tests {
             "deck · 请求了你的输入"
         );
         assert_eq!(body_text("zh-Hans", TURN_DONE, ""), "一轮已结束");
+        assert_eq!(
+            body_text("ja", NEEDS_INPUT, "deck"),
+            "deck · 入力を求めました"
+        );
+        assert_eq!(body_text("de", TURN_DONE, ""), "eine Runde ist beendet");
+        assert_eq!(
+            body_text("system", BELL, ""),
+            "a program rang the terminal bell"
+        );
+        for locale in ["en", "zh-Hans", "ja", "ko", "es", "de"] {
+            let all: std::collections::HashSet<_> = [NEEDS_INPUT, TURN_DONE, DELIVERY_WAIT, BELL]
+                .iter()
+                .map(|state| body_text(locale, state, ""))
+                .collect();
+            assert_eq!(all.len(), 4, "{locale}: four distinct phrases");
+        }
         assert_eq!(STATUS_WORDS.len(), 5);
     }
 

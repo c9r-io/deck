@@ -202,16 +202,39 @@ private func reminderCurrent(_ id: String) -> Bool {
     reminderLock.lock(); defer { reminderLock.unlock() }
     return reminderDesired.contains(id)
 }
+/// A reminder's fixed words per UI language: body phrase, open action, snooze
+/// action. The category id keeps the original `zh` / `en` names so requests
+/// already pending still match.
+private let reminderWords: [String: (category: String, body: String, open: String, snooze: String)] = [
+    "en": ("deck-reminder-en", "Return to this card", "Open card", "Remind in 1 hour"),
+    "zh-Hans": ("deck-reminder-zh", "回到此卡片", "打开卡片", "推迟1小时"),
+    "ja": ("deck-reminder-ja", "このカードに戻る", "カードを開く", "1時間後に再通知"),
+    "ko": ("deck-reminder-ko", "이 카드로 돌아가기", "카드 열기", "1시간 후 다시 알림"),
+    "es": ("deck-reminder-es", "Volver a esta tarjeta", "Abrir tarjeta", "Recordar en 1 hora"),
+    "de": ("deck-reminder-de", "Zu dieser Karte zurückkehren", "Karte öffnen", "In 1 Stunde erinnern"),
+]
+/// Rust sends the webview's resolved language; `system` arrives only before
+/// the webview has reported one, and then follows the first preferred language.
+private func reminderLocale(_ locale: String) -> String {
+    if reminderWords[locale] != nil { return locale }
+    for tag in Locale.preferredLanguages {
+        if tag.hasPrefix("zh-Hans") || tag == "zh" || tag.hasPrefix("zh-CN") || tag.hasPrefix("zh-SG") { return "zh-Hans" }
+        let base = String(tag.prefix(while: { $0 != "-" }))
+        if base != "zh", reminderWords[base] != nil { return base }
+    }
+    return "en"
+}
 @_cdecl("deck_reminder_init")
 public func deckReminderInit(_ action: @escaping DeckReminderAction, _ result: @escaping DeckReminderResult) {
     guard deckNotifyBundled() else { return }
     reminderAction = action; reminderResult = result
-    func category(_ chinese: Bool) -> UNNotificationCategory {
-        let open = UNNotificationAction(identifier: "reminder-open", title: chinese ? "打开卡片" : "Open card", options: [.foreground])
-        let snooze = UNNotificationAction(identifier: "reminder-snooze", title: chinese ? "推迟1小时" : "Remind in 1 hour", options: [])
-        return UNNotificationCategory(identifier: chinese ? "deck-reminder-zh" : "deck-reminder-en", actions: [open, snooze], intentIdentifiers: [], options: [])
+    let categories = reminderWords.values.map { words in
+        UNNotificationCategory(identifier: words.category, actions: [
+            UNNotificationAction(identifier: "reminder-open", title: words.open, options: [.foreground]),
+            UNNotificationAction(identifier: "reminder-snooze", title: words.snooze, options: []),
+        ], intentIdentifiers: [], options: [])
     }
-    UNUserNotificationCenter.current().setNotificationCategories([category(false), category(true)])
+    UNUserNotificationCenter.current().setNotificationCategories(Set(categories))
     NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { _ in
         "".withCString { reminderResult?($0, 3) }
     }
@@ -254,10 +277,9 @@ public func deckReminderProject(_ raw: UnsafePointer<CChar>) {
             content.title = row["title"] as? String ?? "Deck"
             let project = row["project"] as? String ?? ""
             let locale = row["locale"] as? String ?? "system"
-            let chinese = locale == "zh-Hans" || locale == "system" && Locale.preferredLanguages.first?.hasPrefix("zh") == true
-            let phrase = chinese ? "回到此卡片" : "Return to this card"
-            content.body = project.isEmpty ? phrase : "\(project) — \(phrase)"
-            content.categoryIdentifier = chinese ? "deck-reminder-zh" : "deck-reminder-en"
+            let words = reminderWords[reminderLocale(locale)] ?? reminderWords["en"]!
+            content.body = project.isEmpty ? words.body : "\(project) — \(words.body)"
+            content.categoryIdentifier = words.category
             if row["sound"] as? Bool == true { content.sound = .default }
             var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
             var components = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: Date(timeIntervalSince1970: dueAt / 1000))

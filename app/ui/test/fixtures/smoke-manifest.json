@@ -322,6 +322,18 @@
         "pi-unsupported": {}
       }
     },
+    "locale-layout": {
+      "terminal": "done",
+      "checks": {
+        "ll-m-window": {"metric": true},
+        "ll-en": {"a": 1},
+        "ll-zh": {"a": 1},
+        "ll-ja": {"a": 1},
+        "ll-ko": {"a": 1},
+        "ll-es": {"a": 1},
+        "ll-de": {"a": 1}
+      }
+    },
     "pi-layout": {
       "terminal": "done",
       "checks": {

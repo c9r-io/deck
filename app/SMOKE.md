@@ -972,6 +972,20 @@ python3 scripts/pi-live-verify.py --runtime standalone --standalone <unpacked of
       Claude or Codex beside the Pi (that mix is laid out from scripted
       answers in `pi-layout`).
 
+### Every UI language (WKWebView mode `locale-layout`)
+
+`locale-layout` switches the page through the six dictionaries (display
+only; settings are never written) and shows the Board with three empty
+shell cards and every Settings section at the window's own size. Each
+`ll-<lang>` checkpoint passes when no translated element is empty, the page
+never scrolls sideways and the Settings box stays inside the window; its
+`b` counts text that overflows its box without an ellipsis (8 in every
+language on 2026-10-27, the same elements in English, so not a translation
+defect). Snapshots `ll-<lang>-board` and `ll-<lang>-settings-<section>` in
+`<data dir>/evidence/` outline those elements in red. Run it like any
+presentation mode (a debug carrier, an isolated data dir and socket, a
+visible window); it starts no agent and sends nothing.
+
 ### What Pi's rows look like (WKWebView mode `pi-layout`)
 
 `pi-layout` is presentation only. The production modules paint the real

@@ -3434,6 +3434,13 @@ export async function verifyPiLayout() {
   return runPiLayoutSmoke();
 }
 
+// Every UI language on the Board and in each Settings section, with
+// overflowing text outlined in the snapshots (locale-layout-smoke.mjs).
+export async function verifyLocaleLayout() {
+  const { runLocaleLayoutSmoke } = await import('./locale-layout-smoke.mjs');
+  return runLocaleLayoutSmoke();
+}
+
 // The shell service restart with "Reopen Agent sessions" through the real
 // dialog, with real Claude Code clients in the cards, under a home the
 // operator gave this carrier: observation off and on, bypass reapplied, a

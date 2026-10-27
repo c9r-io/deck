@@ -85,7 +85,7 @@
     "font_scale_max": 1.6,
     "themes": ["deck-dark", "light", "system", "high-contrast"],
     "accents": ["teal", "blue", "purple", "orange"],
-    "locales": ["system", "en", "zh-Hans"],
+    "locales": ["system", "en", "zh-Hans", "ja", "ko", "es", "de"],
     "update_channels": ["stable", "nightly"],
     "shortcut_max_len": 64
   },

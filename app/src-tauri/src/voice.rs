@@ -26,7 +26,7 @@ use std::ffi::{CStr, CString};
 use std::sync::{Mutex, OnceLock};
 
 pub(crate) const SUPPORTED_LANGUAGES: &[&str] = &[
-    "zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR", "de-DE", "fr-FR", "es-ES",
+    "zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR", "de-DE", "fr-FR", "es-ES", "it-IT", "pt-BR",
 ];
 
 #[derive(Clone, Default, Serialize)]

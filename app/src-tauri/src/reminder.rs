@@ -538,7 +538,7 @@ pub(crate) fn reconcile() {
             .and_then(|p| p.get("name"))
             .cloned()
             .unwrap_or_default();
-        projection.push(serde_json::json!({"identifier":request,"title":card.get("title"),"project":project,"dueAt":reminder.due_at,"due":reminder.due || reminder.due_at <= now,"sound":crate::notify::reminder_sound(),"locale":crate::documents::locale_setting()}));
+        projection.push(serde_json::json!({"identifier":request,"title":card.get("title"),"project":project,"dueAt":reminder.due_at,"due":reminder.due || reminder.due_at <= now,"sound":crate::notify::reminder_sound(),"locale":crate::documents::native_locale()}));
     }
     *results = current;
     drop(results);

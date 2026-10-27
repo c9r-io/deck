@@ -46,7 +46,9 @@ schedule, quiet wait or rate limit, and never sends Enter. Voice text is never
 evaluated by a Deck shell command.
 
 **Settings → Terminal & sessions → Voice input** chooses the available
-recognition languages and the default. **Follow system language** selects
+recognition languages (ten: 中文（简体）, 中文（繁體）, English, 日本語, 한국어,
+Deutsch, Français, Español, Italiano, Português (Brasil); each is one the
+on-device `SpeechTranscriber` supports) and the default. **Follow system language** selects
 among the chosen languages; it does not detect the spoken language. The
 default in force when a recording starts is its language for that recording.
 Changing preferences never requests microphone permission or downloads
