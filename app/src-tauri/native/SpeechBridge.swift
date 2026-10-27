@@ -7,6 +7,11 @@
 // or userInfo. Disabled system Dictation has actionable setup guidance.
 // Nested Tasks own a fresh weak capture, including on older Swift compilers:
 // never transfer the enclosing callback's mutable weak storage across actors.
+// The audio engine lives on its own serial queue (`AudioPort`): opening the
+// input device and starting the engine take 100-200 ms of blocking work that
+// would otherwise freeze the window on the main thread; a release queued after
+// a start always runs after it. The time from start to recording and the worst
+// main-thread stall in between cross the bridge as integers only (`stall-N`).
 import Foundation
 import AppKit
 @preconcurrency import AVFoundation
@@ -35,17 +40,87 @@ func deckSpeechErrorCode(_ error: Error) -> String {
 @available(macOS 12.0, *)
 @MainActor private var current: Capture?
 
+/// The one owner of the AVAudioEngine. Every engine call runs on `queue`, never
+/// on the main thread; `tapInstalled` is touched only there.
+private final class AudioPort: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "io.c9r.deck.speech.audio", qos: .userInitiated)
+    let engine = AVAudioEngine()
+    private var tapInstalled = false
+
+    /// Opens the input device ahead of need, so it overlaps the recognizer checks.
+    func warm() { queue.async { _ = self.engine.inputNode } }
+
+    func inputFormat() async -> AVAudioFormat {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: self.engine.inputNode.outputFormat(forBus: 0)) }
+        }
+    }
+
+    func start(_ format: AVAudioFormat, handler: @escaping AVAudioNodeTapBlock) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                self.engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: format, block: handler)
+                self.tapInstalled = true
+                self.engine.prepare()
+                do { try self.engine.start(); continuation.resume() } catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
+    /// Stops the microphone; `then` runs on the main queue once it is off.
+    func release(then: (@Sendable () -> Void)? = nil) {
+        queue.async {
+            self.engine.stop()
+            if self.tapInstalled { self.engine.inputNode.removeTap(onBus: 0); self.tapInstalled = false }
+            if let then { DispatchQueue.main.async(execute: then) }
+        }
+    }
+}
+
+/// The worst main-thread stall while a capture prepares: a 10 ms main-queue
+/// tick that arrives late was blocked for the difference. Main queue only.
+private final class MainStall: @unchecked Sendable {
+    private static let interval: UInt64 = 10_000_000
+    private var timer: DispatchSourceTimer?
+    private var last: UInt64 = 0
+    private var worst: UInt64 = 0
+
+    func begin() {
+        last = DispatchTime.now().uptimeNanoseconds
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + .milliseconds(10), repeating: .milliseconds(10), leeway: .milliseconds(1))
+        timer.setEventHandler { [weak self] in self?.tick() }
+        timer.resume()
+        self.timer = timer
+    }
+
+    private func tick() {
+        let now = DispatchTime.now().uptimeNanoseconds
+        if now > last + Self.interval { worst = max(worst, now - last - Self.interval) }
+        last = now
+    }
+
+    /// Ends the watch; the stall in milliseconds, the current one included.
+    func end() -> UInt64 {
+        guard let timer else { return worst / 1_000_000 }
+        tick()
+        timer.cancel()
+        self.timer = nil
+        return worst / 1_000_000
+    }
+}
+
 @available(macOS 12.0, *)
 @MainActor private final class Capture {
     let id: UInt64
     let callback: DeckSpeechCallback
-    let engine = AVAudioEngine()
+    let audio = AudioPort()
+    let stall = MainStall()
     var task: Task<Void, Never>?
     var results: Task<Void, Never>?
     var deadline: Task<Void, Never>?
     var stopRecognition: (() -> Void)?
     var cancelRecognition: (() -> Void)?
-    var tapInstalled = false
     var observers: [NSObjectProtocol] = []
     var ended = false
     var stopping = false
@@ -76,15 +151,12 @@ func deckSpeechErrorCode(_ error: Error) -> String {
         state.withCString { s in committed.withCString { t in preview.withCString { p in code.withCString { c in callback(id, s, t, p, c) } } } }
     }
 
-    func releaseMic() {
-        engine.stop()
-        if tapInstalled { engine.inputNode.removeTap(onBus: 0); tapInstalled = false }
-    }
 
     func finish(_ state: String, _ code: String = "") {
         guard active else { return }
         ended = true
-        releaseMic()
+        _ = stall.end()
+        audio.release()
         deadline?.cancel()
         task?.cancel()
         results?.cancel()
@@ -101,7 +173,6 @@ func deckSpeechErrorCode(_ error: Error) -> String {
         // Stopping while permission/model preparation is pending cancels it.
         guard let stopRecognition else { finish("ready"); return }
         stopping = true
-        releaseMic()
         publish("stopping")
         deadline?.cancel()
         deadline = Task { [weak self] in
@@ -109,16 +180,24 @@ func deckSpeechErrorCode(_ error: Error) -> String {
             guard !Task.isCancelled else { return }
             self?.finish("error", "finalize-timeout")
         }
-        stopRecognition()
+        // The recognizer hears the end of input only after the last buffer.
+        audio.release { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.active else { return }
+                stopRecognition()
+            }
+        }
     }
 
     func run(locale: String) {
         publish("preparing")
+        stall.begin()
         task = Task { [weak self] in
             guard let self else { return }
             let allowed = await AVCaptureDevice.requestAccess(for: .audio)
             guard self.active else { return }
             guard allowed else { self.finish("error", "microphone-denied"); return }
+            self.audio.warm()
             do {
                 #if compiler(>=6.2)
                 if #available(macOS 26.0, *), SpeechTranscriber.isAvailable,
@@ -138,19 +217,19 @@ func deckSpeechErrorCode(_ error: Error) -> String {
         }
     }
 
-    func beginAudio(_ format: AVAudioFormat, handler: @escaping AVAudioNodeTapBlock) throws {
-        guard active else { return }
+    func beginAudio(_ format: AVAudioFormat, handler: @escaping AVAudioNodeTapBlock) async throws {
+        // A stop during preparation never opens the microphone afterwards.
+        guard active, !stopping else { return }
         guard format.sampleRate > 0, format.channelCount > 0 else {
             finish("error", "microphone-unavailable"); return
         }
-        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: format, block: handler)
-        tapInstalled = true
-        engine.prepare()
-        try engine.start()
-        observers.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+        try await audio.start(format, handler: handler)
+        // An end or stop while the engine started queued its release behind it.
+        guard active, !stopping else { return }
+        observers.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: audio.engine, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in self?.finish("error", "microphone-unavailable") }
         })
-        publish("recording")
+        publish("recording", "stall-\(stall.end())")
         deadline = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 300_000_000_000)
             guard !Task.isCancelled else { return }
@@ -190,7 +269,9 @@ func deckSpeechErrorCode(_ error: Error) -> String {
         }
         cancelRecognition = { recognition.cancel() }
         stopRecognition = { request.endAudio() }
-        try beginAudio(engine.inputNode.outputFormat(forBus: 0)) { buffer, _ in request.append(buffer) }
+        let inputFormat = await audio.inputFormat()
+        guard active else { return }
+        try await beginAudio(inputFormat) { buffer, _ in request.append(buffer) }
     }
 
     #if compiler(>=6.2)
@@ -206,7 +287,8 @@ func deckSpeechErrorCode(_ error: Error) -> String {
         }
         guard active else { return }
         let analyzer = SpeechAnalyzer(modules: [transcriber])
-        let inputFormat = engine.inputNode.outputFormat(forBus: 0)
+        let inputFormat = await audio.inputFormat()
+        guard active else { await analyzer.cancelAndFinishNow(); return }
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
               let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]),
               let converter = AVAudioConverter(from: inputFormat, to: format) else {
@@ -241,7 +323,7 @@ func deckSpeechErrorCode(_ error: Error) -> String {
         }
         try await analyzer.start(inputSequence: stream)
         guard active else { await analyzer.cancelAndFinishNow(); return }
-        try beginAudio(inputFormat) { [weak self] buffer, _ in
+        try await beginAudio(inputFormat) { [weak self] buffer, _ in
             // Conversion produces an owned buffer; never retain the tap's reused input.
             let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * format.sampleRate / inputFormat.sampleRate)) + 32
             guard let converted = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return }

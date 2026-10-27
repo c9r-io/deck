@@ -65,7 +65,17 @@ a recording survives an app restart.
   `fastResults` reporting option was tried and rejected: it finalized sooner
   but typed noticeably worse text. Apple manages language assets; the first
   recording may download a model. `app.log` records which engine ran as
-  `[voice] engine=modern` or `engine=legacy`, nothing else about a recording.
+  `[voice] engine=modern` or `engine=legacy`, and two start timings, numbers
+  only: `[voice] recording after=Nms main-stall=Nms` (from `voice_start` to the
+  microphone being on, and the worst main-thread stall meanwhile) and
+  `[ui] voice-start a=N b=N` (from the click to the red button, of which
+  binding the pane). Nothing else about a recording is logged.
+- Starting is kept off the window's main thread: the audio engine opens the
+  input device and starts on its own serial queue (measured 2026-10-27 on a
+  MacBook Air, built-in microphone: the worst main-thread stall during a start
+  fell from 43–84 ms to 1–4 ms). While preparing, the webview polls the
+  snapshot every 30 ms (for at most 2 s, then every 200 ms), and the button
+  fades grey until the microphone is on; it turns red only when recording.
 - Otherwise, macOS 12+ uses `SFSpeechRecognizer` only when
   `supportsOnDeviceRecognition` is true, with `requiresOnDeviceRecognition`
   explicitly set. Its text is confirmed only at the end. Unsupported

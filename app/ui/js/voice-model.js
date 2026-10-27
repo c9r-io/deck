@@ -11,7 +11,11 @@
 // native replies and revoke prepared-but-unsent slices. Each delivery keeps
 // its original bound target through preparation, IPC and cleanup; a late
 // completion may never change the next recording. A setup failure opens its
-// System Settings pane once.
+// System Settings pane once. While the native side prepares, the snapshot is
+// polled every 30 ms for at most 2 s, so the button turns red as soon as the
+// microphone is on; recording polls every 200 ms. The first recording
+// snapshot reports two durations (click → recording, of which binding) to
+// `deps.timing`, numbers only.
 import { defaultVoiceLanguage, normalizeVoicePreferences } from './voice-preferences-model.js';
 
 export const voiceBusy = phase => ['binding', 'preparing', 'downloading', 'recording', 'stopping'].includes(phase);
@@ -21,6 +25,7 @@ const ERROR_CODES = new Set(['microphone-denied', 'speech-denied', 'dictation-di
   'delivery-busy', 'delivery-unknown', 'text-invalid', 'multiline-unsupported', 'target-not-visible']);
 const TRANSIENT = new Set(['target-changed', 'delivery-busy']);
 const RETRY_LIMIT = 10;
+const POLL_MS = 200, PREPARE_POLL_MS = 30, PREPARE_FAST_MS = 2000;
 export function voiceError(error) {
   const text = String(error || '');
   return ERROR_CODES.has(text) ? text : 'operation-failed';
@@ -47,11 +52,12 @@ export function voiceSlice(committed, typed, final) {
 
 export function createVoiceInput(deps) {
   const { invoke } = deps;
-  const schedule = deps.schedule || (fn => setTimeout(fn, 200));
+  const schedule = deps.schedule || ((fn, ms) => setTimeout(fn, ms));
+  const now = deps.now || (() => Date.now());
   const unschedule = deps.unschedule || clearTimeout;
   let preferences = normalizeVoicePreferences(deps.preferences);
   const s = { phase: 'idle', session: null, target: null, recordingId: null, startedAt: 0, error: '', notice: '', typed: 0, preview: '' };
-  let epoch = 0, timer = null, seen = '', retries = 0;
+  let epoch = 0, timer = null, seen = '', retries = 0, clickedAt = 0, bindMs = 0;
   let pendingStart = Promise.resolve(), pendingCancel = Promise.resolve();
   const changed = () => deps.changed?.(s);
   const report = (kind, code) => deps.report?.(kind, code);
@@ -103,7 +109,10 @@ export function createVoiceInput(deps) {
     if (result.status === 'downloading' && s.phase !== 'downloading') report('notice', 'downloading');
     // A stop already shown never regresses to a capture phase on a stale snapshot.
     if (voiceRecording(result.status) && s.phase !== 'stopping') s.phase = result.status;
-    if (result.status === 'recording' && !s.startedAt) s.startedAt = Date.now();
+    if (result.status === 'recording' && !s.startedAt) {
+      s.startedAt = now();
+      deps.timing?.(s.startedAt - clickedAt, bindMs);
+    }
     const final = result.status === 'ready' || result.status === 'error';
     seen = result.text;
     const slice = voiceSlice(result.text, s.typed, final);
@@ -116,7 +125,8 @@ export function createVoiceInput(deps) {
       if (result.status === 'error') await fail(voiceError(result.code)); else rest();
       return;
     }
-    timer = schedule(() => poll(revision, id));
+    const fast = result.status === 'preparing' && now() - clickedAt < PREPARE_FAST_MS;
+    timer = schedule(() => poll(revision, id), fast ? PREPARE_POLL_MS : POLL_MS);
     changed();
   }
 
@@ -126,6 +136,7 @@ export function createVoiceInput(deps) {
       if (epoch !== revision) return;
       const binding = await invoke('voice_bind', { name: target.session });
       if (epoch !== revision) return;
+      bindMs = now() - clickedAt;
       s.target = { ...target, ...binding }; s.phase = 'preparing'; changed();
       const id = await invoke('voice_start', { targetId: s.target.id, locale: defaultVoiceLanguage(preferences, deps.language) });
       if (epoch !== revision) { await cancelNative(id); return; }
@@ -140,6 +151,7 @@ export function createVoiceInput(deps) {
     if (!target || voiceBusy(s.phase)) return Promise.resolve();
     const revision = ++epoch;
     clearPoll();
+    clickedAt = now(); bindMs = 0;
     Object.assign(s, { session: target.session, target: null, recordingId: null, startedAt: 0, error: '', notice: '', typed: 0, phase: 'binding' });
     seen = ''; retries = 0; changed();
     pendingStart = startOwned(target, revision);

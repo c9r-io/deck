@@ -334,3 +334,22 @@ test('closed codes and phase guards are deterministic', () => {
   assert.equal(voiceRecording('downloading'), true); assert.equal(voiceBusy('idle'), false);
   assert.equal(voiceSettingsTarget('dictation-disabled'), 'dictation'); assert.equal(voiceSettingsTarget('text-limit'), null);
 });
+
+test('preparation polls fast for a bounded while, recording polls slowly, and the start is timed once', async () => {
+  let clock = 1000;
+  const delays = [], timings = [];
+  const f = fixture({ deps: {
+    now: () => clock, timing: (total, bind) => timings.push([total, bind]),
+    schedule(fn, ms) { delays.push(ms); f.scheduled.push(fn); return fn; },
+  }, voice_bind: () => { clock += 4; return { id: 1, process: 'zsh' }; } });
+  f.setSnapshot({ id: 2, status: 'preparing', text: '', preview: '' });
+  await f.model.start(target);
+  assert.deepEqual(delays, [30], 'preparation is polled quickly');
+  clock += 2500; await f.tick();
+  assert.deepEqual(delays, [30, 200], 'a long preparation (a permission prompt) falls back to the slow poll');
+  clock += 100; f.setSnapshot({ id: 2, status: 'recording', text: '', preview: '' }); await f.tick();
+  assert.deepEqual(delays, [30, 200, 200]);
+  assert.deepEqual(timings, [[2604, 4]], 'click → recording, of which binding');
+  await f.tick(); assert.equal(timings.length, 1, 'timed once per recording');
+  await f.model.cancel();
+});

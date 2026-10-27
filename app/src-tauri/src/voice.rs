@@ -12,6 +12,9 @@
 //! concurrent sends into one session.
 //! Delivery holds shared session activity from its first probe through paste
 //! and cleanup, so an intentional server restart cannot overlap any slice.
+//! The first `recording` of a capture logs how long it took after
+//! `voice_start` and the worst main-thread stall the bridge saw meanwhile
+//! (`stall-N`, integers only); nothing else about a recording is logged.
 use crate::context::RawProbe;
 use crate::error::{DeckError, ErrorKind};
 use crate::prompt_delivery::{self, LiteralOutcome, LiteralRequest};
@@ -55,6 +58,8 @@ struct Voice {
     serial: u64,
     snapshot: Snapshot,
     targets: HashMap<String, Target>,
+    /// When the current capture was asked to start; taken by its first `recording`.
+    started: Option<std::time::Instant>,
 }
 static VOICE: OnceLock<Mutex<Voice>> = OnceLock::new();
 fn voice() -> &'static Mutex<Voice> {
@@ -113,6 +118,7 @@ fn accept_snapshot(
     if v.snapshot.id != id || !v.snapshot.busy() {
         return;
     }
+    let was = v.snapshot.status.clone();
     unsafe {
         let status = CStr::from_ptr(status).to_string_lossy().into_owned();
         // A stop is acknowledged here before the native side reaches it; a
@@ -133,6 +139,24 @@ fn accept_snapshot(
             .take(4_096)
             .collect();
         v.snapshot.code = CStr::from_ptr(code).to_string_lossy().into_owned();
+    }
+    // The bridge's start timing: an integer, logged once, never a snapshot code.
+    if let Some(stall) = v.snapshot.code.strip_prefix("stall-") {
+        let stall = stall.parse::<u64>().ok();
+        if let (Some(stall), Some(started)) = (stall, v.started.take()) {
+            if matches!(was.as_str(), "preparing" | "downloading") {
+                crate::applog::applog(&format!(
+                    "[voice] recording after={}ms main-stall={stall}ms{}",
+                    started.elapsed().as_millis(),
+                    if was == "downloading" {
+                        " downloaded"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+        }
+        v.snapshot.code.clear();
     }
     // While preparing, the code names the recognizer that will run: a closed
     // word for app.log so "typed only at stop" can be told apart from a slow
@@ -252,6 +276,7 @@ fn start_with(
         status: "preparing".into(),
         ..Snapshot::default()
     };
+    v.started = Some(std::time::Instant::now());
     speech.start(id, locale);
     #[cfg(not(target_os = "macos"))]
     {

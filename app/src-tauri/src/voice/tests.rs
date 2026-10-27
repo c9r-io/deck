@@ -106,6 +106,29 @@ fn preview_snapshot(
     );
 }
 #[test]
+fn start_timing_is_taken_once_and_never_reaches_the_snapshot() {
+    let state = Mutex::new(Voice::default());
+    let io = FakeTransport::default();
+    let speech = FakeSpeech::default();
+    let target = binding(&state, &io);
+    let id = start_with(&state, target, "zh-CN", &speech).unwrap();
+    assert!(state.lock_or_recover().started.is_some());
+    snapshot(&state, id, "recording", "", "stall-12");
+    let recording = snapshot_with(&state, id).unwrap();
+    assert_eq!(recording.status, "recording");
+    assert!(
+        recording.code.is_empty(),
+        "the timing is a log line, not a code"
+    );
+    assert!(
+        state.lock_or_recover().started.is_none(),
+        "logged once per capture"
+    );
+    // A malformed timing word is dropped like a well-formed one.
+    snapshot(&state, id, "recording", "", "stall-x");
+    assert!(snapshot_with(&state, id).unwrap().code.is_empty());
+}
+#[test]
 fn recording_lifecycle_accepts_current_callbacks_and_cannot_revive_cancelled_capture() {
     let state = Mutex::new(Voice::default());
     let io = FakeTransport::default();

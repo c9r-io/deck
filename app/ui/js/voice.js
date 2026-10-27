@@ -35,6 +35,7 @@ export function initVoice(deps) {
   };
   const controller = createVoiceInput({ invoke: inv, changed: render, language: navigator.language, preferences: ctx.settings.voice,
     prepareTarget: deps.prepareTarget, afterDelivery: deps.afterDelivery,
+    timing: (total, bind) => uev('voice-start', null, total, bind),
     report: (kind, code) => deps.toast(t(`voice.${kind}.${code}`)) });
   window.addEventListener('deck-voice-preferences-changed', () => controller.configure(ctx.settings.voice));
   // The button never takes focus from the terminal: speech and keys go to one input.

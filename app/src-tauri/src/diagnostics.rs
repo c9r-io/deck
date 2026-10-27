@@ -1071,6 +1071,9 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
         ]),
     ),
     ("ime-summary", DetailPolicy::None),
+    // a = ms from the microphone click to the first recording snapshot,
+    // b = ms of that spent binding the pane (ui/js/voice-model.js)
+    ("voice-start", DetailPolicy::None),
     (
         "terminal-copy",
         DetailPolicy::Closed(&[
