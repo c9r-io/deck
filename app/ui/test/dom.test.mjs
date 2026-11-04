@@ -1578,7 +1578,7 @@ test('an open preset editor always has a way out that keeps nothing, and Escape 
   el('pdf-yes').fire('click');
   assert.deepEqual(await promise, { dir: '~/work/api', cmd: 'codex' });
   assert.equal(toasts.children.length, 0);
-  // typed into but not a preset: refused with what a preset needs, in the dialog (a toast sits beneath it),
+  // typed into but not a preset: refused with what a preset needs, under the field and not as a toast,
   // the first wrong field focused, the draft kept
   const note = el('pdf-preset-invalid');
   promise = open([]);

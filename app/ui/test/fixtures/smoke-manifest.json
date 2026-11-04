@@ -198,6 +198,7 @@
         "ux-m-defaults": {"metric": true},
         "ux-reminder-bytes": {},
         "ux-templates": {},
+        "ux-toast-layer": {},
         "ux-exception": {"failureOnly": true}
       }
     },

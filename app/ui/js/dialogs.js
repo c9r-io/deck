@@ -145,10 +145,10 @@ export function createBoardExit({ mutateBoard, hold, exited }) {
    user's: Done, Save and Enter close it as Cancel does, so it never blocks
    saving the defaults. Any other edit that is not a valid preset is
    refused: what a preset needs is said under its first wrong field, which
-   takes the focus (in the dialog, not a toast: toasts sit beneath every
-   modal). When the editor closes the focus goes to that preset's row (or
-   Add preset), and the box itself takes a click on a control WebKit does
-   not focus, so the keyboard stays inside the dialog. */
+   takes the focus, until the next try (a toast would be gone before the
+   field is fixed). When the editor closes the focus goes to that preset's
+   row (or Add preset), and the box itself takes a click on a control
+   WebKit does not focus, so the keyboard stays inside the dialog. */
 /* how long a save waits for a preset approval's digest before saying it
    could not be checked (the hash is local; this bounds a broken one) */
 const PRESET_CHECK_MS = 5000;
@@ -217,7 +217,7 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
       $('pdf-preset-add').disabled = draftPresets.length >= 50;
     };
     /* what keeps an edit from being a preset, said under its first wrong
-       field inside the dialog: a toast would sit beneath the dialog */
+       field until the next try or the editor closes */
     const invalidNote = field => {
       const note = $('pdf-preset-invalid');
       note.hidden = !field; note.textContent = field ? t('presets.invalid') : '';

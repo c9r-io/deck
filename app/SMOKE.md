@@ -1754,6 +1754,17 @@ block Save; one typed into but incomplete is refused with the card title
 focused and what a preset needs said right under it, inside the visible
 box. Its `a` records where WebKit put the focus after that checkbox click
 (1 the dialog box, 2 the checkbox, 3 elsewhere in the dialog).
+`ux-auto-layout` checks eight cases (both languages; 100% and 160%; every
+trigger at 160%) against the drawer's inside edge, its scrollbar excluded.
+Its `b` says what failed: bits 3i, 3i+1 and 3i+2 of case i are the drawer
+scrolling sideways, a row past the edge and the first-step hint's text; a
+failing case snapshots its outermost offenders outlined in red
+(`ux-auto-overflow-<i>`), and the 160% trigger rows are snapshotted as
+`ux-auto-trigger-<i>`.
+`ux-toast-layer` raises a toast over the project defaults dialog, the
+template manager and Settings: a hit test at its centre must find the toast
+(pointer events lent to it for that test only), it takes no click, and it
+stays clear of the 460 px dialog; `b` bits 1, 2, 4 name the modal that hid it.
 Snapshots land in `<data dir>/evidence/`; `ux-m-*` are measurements.
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-ux.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-ux-UNIQUE DECK_SMOKE_WKWEBVIEW=ux-layers app/run.sh`,

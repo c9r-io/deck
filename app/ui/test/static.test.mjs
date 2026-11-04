@@ -738,12 +738,37 @@ test('a phone task preset editor is framed with its own way out, and the dialog 
   const editor = html.slice(html.indexOf('<div id="pdf-preset-editor"'), html.indexOf('<div class="cfm-actions">', html.indexOf('<div id="pdf-preset-editor"')));
   assert.match(editor, /<div class="set-actions"><button class="btn" type="button" id="pdf-preset-delete"[^>]*>[^<]*<\/button><button class="btn" type="button" id="pdf-preset-cancel" data-i18n="common\.cancel">[^<]*<\/button><button class="btn" type="button" id="pdf-preset-done"/);
   assert.match(css, /^#pdf-preset-editor \{[^}]*border: 1px dashed var\(--accent-dim\)/m, 'framed like a rule editor');
-  /* a refusal is said inside the dialog, under the field (a toast sits beneath every modal) */
+  /* a refusal is said in the editor, under the wrong field */
   assert.match(editor, /<p class="opt-state warn" id="pdf-preset-invalid" role="status" hidden><\/p>/);
   /* WebKit focuses neither a clicked button nor a clicked checkbox: the box
      takes that focus, so Escape still reaches the dialog's key handler */
   assert.match(html, /<div id="pdf-box" tabindex="-1">/);
   assert.match(css, /^#pdf-box:focus \{ outline: none; \}$/m);
+});
+
+test('toasts stack above every modal and below menus, take no click, and stay clear of a small dialog', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const rule = selector => css.match(new RegExp(`^${selector} \\{([^}]*)\\}`, 'm'))?.[1] || '';
+  const z = selector => Number(/z-index: (\d+)/.exec(rule(selector))?.[1]);
+  /* the bug: toasts were at 60, so one raised inside Settings, the template
+     manager or a dialog was dimmed behind it and half covered by the box */
+  const overlays = [...css.matchAll(/^([^{}\n]+) \{[^}]*?position: fixed; inset: 0; z-index: (\d+)/gm)];
+  assert.ok(overlays.length >= 6, 'the full-window overlays are found');
+  for (const [, selector, level] of overlays) assert.ok(z('#toasts') > Number(level), selector);
+  assert.ok(z('#toasts') > z('#cfm\\.cfm-over-dialog'));
+  assert.ok(z('#toasts') < z('#tpl-pop') && z('#toasts') < z('#dd-menu'), 'never over a menu in use');
+  assert.match(rule('#toasts'), /pointer-events: none;/);
+  /* 100vw − 18 − w ≥ 50vw + 230 + 8: clear of a centred 460 px dialog at 1280 px */
+  assert.match(rule('#toasts'), /max-width: min\(440px, calc\(50vw - 256px\)\);/);
+  assert.match(rule('\\.toast'), /overflow-wrap: anywhere;/);
+});
+
+test('a choice row in the automation editor wraps instead of running past the drawer', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  /* the cause: `flex: none` and unbreakable buttons left the four triggers one
+     line wider than the 420 px drawer at the largest font size (ux-auto-layout) */
+  assert.match(css, /^\.seg button \{[^}]*white-space: nowrap;/m);
+  assert.match(css, /^#auto-editor \.seg \{ flex: 0 1 auto; flex-wrap: wrap; min-width: 0; max-width: 100%; \}$/m);
 });
 
 test('the capture-name row is really hidden when the editor marks it hidden', () => {

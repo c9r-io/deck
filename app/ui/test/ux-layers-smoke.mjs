@@ -22,9 +22,10 @@ export async function runUxLayersSmoke() {
   const { closeAutomations, openAutomations } = await import('../js/automation.js');
   const { refreshQueue, renderQueueUI, toggleQueuePanel } = await import('../js/scheduler.js');
   const { listStartCalls } = await import('../js/scheduler-model.js');
-  const { cfmDone, confirmDialog, projectDefaultsDialog, reminderDialog } = await import('../js/dialogs.js');
+  const { cfmDone, confirmDialog, projectDefaultsDialog, reminderDialog, toast } = await import('../js/dialogs.js');
   const { presetApproved, withPresetApproval } = await import('../js/connector-model.js');
   const { openTemplates } = await import('../js/templates.js');
+  const { openSettings } = await import('../js/settings.js');
   const { getLocale, setLocale, t } = await import('../js/i18n.js');
   const { applyFontScale, getFontScale } = await import('../js/font-scale.js');
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -174,21 +175,41 @@ export async function runUxLayersSmoke() {
       const top = drawer.scrollTop; await pause(200);
       return byPointer && byKey && fields() === before && writes === at && !$('auto-editor').hidden && drawer.scrollTop === top;
     }));
-    /* both languages, the default and the largest font size */
+    /* both languages, the default and the largest font size, every trigger
+       at the largest. `b` says what failed: bits 3i, 3i+1, 3i+2 of case i
+       are the drawer scrolling sideways, an element past its edge, the
+       first-step hint's text. A failing case also snapshots its outermost
+       offenders outlined (`ux-auto-overflow-<i>`). */
+    let layoutBits = 0;
     await report('ux-auto-layout', await attempt(async () => {
-      let ok = true;
-      for (const [language, size, value] of [['zh-Hans', 1.6, 'slack'], ['en', 1, 'slack'], ['en', 1.6, 'channel'], ['en', 1, 'clock']]) {
+      const cases = [['zh-Hans', 1.6, 'slack'], ['en', 1, 'slack'], ['en', 1.6, 'channel'], ['en', 1, 'clock'],
+        ['zh-Hans', 1.6, 'clock'], ['zh-Hans', 1.6, 'agent'], ['en', 1.6, 'clock'], ['en', 1.6, 'agent']];
+      for (const [i, [language, size, value]] of cases.entries()) {
         setLocale(language); applyFontScale(size); await trigger(value); await pause(200);
-        const edge = drawer.getBoundingClientRect().right + 1;
-        ok = ok && drawer.scrollWidth <= drawer.clientWidth + 1
-          && [...drawer.querySelectorAll('.opt-note, .q-review-option, .auto-section, .set-row')].filter(shown).every(el => el.getBoundingClientRect().right <= edge)
-          && $('auto-first-send-hint').textContent === t('automation.firstSend.hint');
-        $(value === 'channel' ? 'auto-channel-first-send' : 'auto-first-send').scrollIntoView({ block: 'center' }); await pause(150);
-        await snapshot(`ux-auto-${value}-${language === 'en' ? 'en' : 'zh'}-${size === 1 ? '100' : '160'}`);
+        /* the inside of the drawer: its border and its scrollbar are not room */
+        const edge = drawer.getBoundingClientRect().left + drawer.clientLeft + drawer.clientWidth + 1;
+        const past = el => shown(el) && el.getBoundingClientRect().right > edge;
+        if (drawer.scrollWidth > drawer.clientWidth + 1) layoutBits |= 1 << (3 * i);
+        if ([...drawer.querySelectorAll('.opt-note, .q-review-option, .auto-section, .set-row')].some(past)) layoutBits |= 1 << (3 * i + 1);
+        if ($('auto-first-send-hint').textContent !== t('automation.firstSend.hint')) layoutBits |= 1 << (3 * i + 2);
+        if (layoutBits >> (3 * i) & 7) {
+          const outermost = [...drawer.querySelectorAll('*')].filter(el => past(el) && !past(el.parentElement));
+          outermost.forEach(el => { el.style.outline = '2px solid red'; });
+          outermost[0]?.scrollIntoView({ block: 'center' }); await pause(150);
+          await snapshot(`ux-auto-overflow-${i}`);
+          outermost.forEach(el => { el.style.outline = ''; });
+        }
+        if (i < 4) {
+          $(value === 'channel' ? 'auto-channel-first-send' : 'auto-first-send').scrollIntoView({ block: 'center' }); await pause(150);
+          await snapshot(`ux-auto-${value}-${language === 'en' ? 'en' : 'zh'}-${size === 1 ? '100' : '160'}`);
+        } else {
+          $('auto-trigger').scrollIntoView({ block: 'center' }); await pause(150);
+          await snapshot(`ux-auto-trigger-${i}`);
+        }
       }
       setLocale('zh-Hans'); applyFontScale(1);
-      return ok;
-    }));
+      return layoutBits === 0;
+    }), 1, layoutBits);
     closeAutomations();
 
     /* ---------- lists: one list, several lists, stability ---------- */
@@ -626,6 +647,49 @@ export async function runUxLayersSmoke() {
       const opened = details.open && shown(body());
       $('tpl-done').click();
       return closed && opened;
+    }), 1, trace);
+
+    /* ---------- a toast raised inside a modal is read, not hidden ----------
+       Over the project defaults dialog, the template manager and Settings:
+       the toast is what a hit test finds at its centre (pointer events lent
+       to it for the test only), it never takes a click, and it stays clear
+       of the 460 px dialog at this window size. */
+    await report('ux-toast-layer', await attempt(async () => {
+      trace = 0;
+      const raise = async () => { toast(t('presets.invalid')); await pause(300); return $('toasts').lastElementChild; };
+      const onTop = el => {
+        el.style.pointerEvents = 'auto';
+        const r = el.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        el.style.pointerEvents = '';
+        return el.contains(hit);
+      };
+      const apart = (a, b) => a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+      const done = openProjectDefaults(project.id);
+      await until(() => $('pdf').style.display === 'flex');
+      let note = await raise();
+      const dialog = !!note && onTop(note) && getComputedStyle(note).pointerEvents === 'none'
+        && apart(note.getBoundingClientRect(), $('pdf-box').getBoundingClientRect());
+      trace |= dialog ? 0 : 1;
+      await snapshot('ux-toast-dialog-zh');
+      $('pdf-no').click(); await done;
+      openTemplates(null);
+      await until(() => shown($('tpl-form')));
+      note = await raise();
+      const manager = !!note && onTop(note);
+      trace |= manager ? 0 : 2;
+      await snapshot('ux-toast-templates-zh');
+      $('tpl-done').click();
+      await pause(2800);   // the earlier toasts leave: Settings gets one, as it usually would
+      await openSettings();
+      try {
+        await until(() => $('settings-modal').style.display === 'flex' && shown($('set-close')));
+        note = await raise();
+        const settings = !!note && onTop(note);
+        trace |= settings ? 0 : 4;
+        await snapshot('ux-toast-settings-zh');
+        trace += 100;
+        return dialog && manager && settings;
+      } finally { $('set-close').click(); }
     }), 1, trace);
   } catch (_) {
     await snapshot('ux-layers-exception');
