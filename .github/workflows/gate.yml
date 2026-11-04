@@ -241,6 +241,15 @@ jobs:
       - name: The tests left nothing in their TMPDIR
         run: scripts/check-test-tmpdir "$RUNNER_TEMP/deck-tests"
 
+      # tmux keeps a server's socket in /tmp/tmux-<uid> whatever TMPDIR
+      # says, and kill-server leaves the file behind, so each test server
+      # removes its own (16 a run piled up there until 2026-11-04). Nothing
+      # else on the runner starts tmux.
+      - name: The tests left no tmux socket
+        run: |
+          dir="/tmp/tmux-$(id -u)"
+          if [ -d "$dir" ]; then scripts/check-test-tmpdir "$dir"; fi
+
       # binaries/ is ONE directory for every build context
       # (app/src-tauri/build/shared_output.rs). The tests above ran the
       # sidecars placed there: they must be the coverage run's own

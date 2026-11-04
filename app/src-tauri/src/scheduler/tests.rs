@@ -3858,12 +3858,81 @@ impl ModalServer {
             Err(DeckError::new(crate::error::ErrorKind::Tmux, "tmux failed"))
         }
     }
+
+    /// This server's socket file: asked while the server is alive, else
+    /// where tmux puts `-L <name>` (`$TMUX_TMPDIR` or /tmp, then
+    /// tmux-<uid>). Some callers start the server without `run`, so the
+    /// path is read at the end rather than captured on first use.
+    fn socket_path(&self) -> std::path::PathBuf {
+        if let Ok(asked) = self.run(&["display-message", "-p", "#{socket_path}"]) {
+            if !asked.trim().is_empty() {
+                return std::path::PathBuf::from(asked.trim());
+            }
+        }
+        std::env::var_os("TMUX_TMPDIR")
+            .filter(|dir| !dir.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join(format!("tmux-{}", unsafe { libc::getuid() }))
+            .join(&self.0)
+    }
 }
 
 impl Drop for ModalServer {
+    /// kill-server leaves the socket file behind (16 per full test run
+    /// piled up in /tmp/tmux-<uid> until 2026-11-04): remove exactly this
+    /// server's, as the other test servers do.
     fn drop(&mut self) {
+        let socket = self.socket_path();
         let _ = self.run(&["kill-server"]);
+        if socket.file_name().and_then(|name| name.to_str()) == Some(self.0.as_str())
+            && std::fs::symlink_metadata(&socket).is_ok_and(|metadata| {
+                std::os::unix::fs::FileTypeExt::is_socket(&metadata.file_type())
+            })
+        {
+            let _ = std::fs::remove_file(socket);
+        }
     }
+}
+
+/// A test server leaves no socket file once it is dropped, whether it was
+/// started through `run` or around it, and a server that never started
+/// removes nothing.
+#[test]
+fn a_dropped_test_server_takes_its_socket_file_with_it() {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmux = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("binaries/tmux-aarch64-apple-darwin");
+    let label = |kind: &str| {
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("deck-test-socket-{kind}-{}-{seq}", std::process::id())
+    };
+    // started through `run`
+    let server = ModalServer(label("run"), tmux.clone());
+    server
+        .run(&["new-session", "-d", "-s", "s", "sleep 30"])
+        .unwrap();
+    let socket = server.socket_path();
+    assert!(socket.exists(), "the server made its socket");
+    drop(server);
+    assert!(!socket.exists(), "and it went with the server");
+    // started around `run`, the way `automation_run` does it
+    let server = ModalServer(label("around"), tmux.clone());
+    let started = std::process::Command::new(&server.1)
+        .args(["-f", "/dev/null", "-L", &server.0])
+        .args(["start-server", ";", "set-option", "-g", "exit-empty", "off"])
+        .status()
+        .unwrap();
+    assert!(started.success());
+    let socket = server.socket_path();
+    assert!(socket.exists());
+    drop(server);
+    assert!(!socket.exists());
+    // never started: its default place holds nothing to remove
+    let server = ModalServer(label("never"), tmux);
+    let socket = server.socket_path();
+    drop(server);
+    assert!(!socket.exists());
 }
 
 /// Run one automatic send of a due row configured for `argv0` into a session

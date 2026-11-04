@@ -351,7 +351,9 @@ output heuristic).
 - Tests leave nothing behind: a Rust unit test takes its files from
   `test_dir::TestDir` (removed when it drops), a Python test registers
   `addCleanup`. The gate runs both suites in an empty `TMPDIR` and
-  `scripts/check-test-tmpdir` fails on any leftover.
+  `scripts/check-test-tmpdir` fails on any leftover. A test tmux server
+  removes its own socket file (tmux keeps it in `/tmp/tmux-<uid>` whatever
+  `TMPDIR` says); the gate checks that directory too.
 - Mirrored frontend/backend constants are one list,
   `ui/test/fixtures/limits.json`.
 - The vendored xterm carries exactly ONE pinned upstream change

@@ -1,13 +1,20 @@
 # 当前验证索引
 
-更新：2026-11-04（Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-11-04（测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
-## 本轮 Slack 补漏轮询的失败计数
+## 本轮 测试遗留的 tmux socket
+
+问题：每跑一次完整的 Rust 测试，`scheduler/tests.rs` 的 `ModalServer`（`deck-test-modal-*` 4 个、`deck-smoke-empty-*` 12 个）在 `/private/tmp/tmux-<uid>` 留下 16 个 socket 文件：tmux 不看 TMPDIR，kill-server 也不删 socket，门禁只查 TMPDIR。
+内容：`ModalServer` 在 drop 时先问出自己的 socket 路径（问不到就用 tmux 的默认位置），关服务后只删名字相符的那个 socket 文件，和其他测试服务一致；新增回归测试（经由 `run` 启动、绕过 `run` 启动、从未启动三种）。
+`gate.yml` 新增一步：测试后 `/tmp/tmux-$(id -u)` 必须为空（`scripts/check-workflows` 通过）；CLAUDE.md 的“测试不留东西”一条写明 socket 目录。
+门禁（本机）：scheduler 199 项通过，之后 socket 目录只剩正式的 `deck`；先前两次全量运行留下的 32 个文件已按确切文件名删除。
+
+## 上一轮 Slack 补漏轮询的失败计数
 
 问题（工作 Mac 的 app.log，10-21 至 11-04）：157 条 `[inbound] poll FAILED (parse) ×1`，10-27 一段 42 分钟内 39 条。失败计数由所有来源共用，时钟和 Agent 来源每轮都成功、把它清零，
 所以永远是 ×1，看不出失败是持续的还是间歇的，也不知道是哪个来源；`slack_api.rs` 把读响应体时的断开也记成 `parse`。同一时段实时通道照常开出任务，没有看到漏单。
