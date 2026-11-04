@@ -274,7 +274,7 @@
               <div class="q-add">
                 <button class="btn" id="q-tpl" title="Templates — start this list from one" data-i18n-title="queue.templatesTitle">📋</button>
                 <textarea id="q-text" rows="1" placeholder="first line of the new list — ⌘↵ to add" data-i18n-placeholder="queue.placeholder" autocomplete="off" spellcheck="false"></textarea>
-                <button class="btn primary" id="q-add-btn" data-i18n="common.add">Add</button>
+                <button class="btn primary" id="q-add-btn" data-i18n="common.add" data-submit-key>Add</button>
               </div>
             </div>
             <div class="q-hint q-risk" id="q-shell-risk" role="note" data-i18n="queue.shellRisk" hidden>This card has no launch command: if a shell is in the foreground when you add a list, its prompts may be interpreted by that shell.</div>
@@ -284,7 +284,7 @@
         <section id="buffer-panel" class="session-tool" role="dialog" aria-modal="false" hidden aria-labelledby="buffer-title">
           <div class="buffer-head"><div class="buffer-head-main"><strong id="buffer-title" data-i18n="buffer.title">Card scratchpad</strong><span id="buffer-note-count"></span><b id="buffer-collecting" hidden data-i18n="buffer.collecting">Collecting</b><button class="btn" id="buffer-stop" hidden data-i18n="buffer.stop">Stop collecting</button><button class="btn icon-btn" id="buffer-close" type="button" data-i18n-title="common.close" data-i18n-aria-label="common.close" title="Close" aria-label="Close">✕</button></div><span data-i18n="buffer.hint">Notes stay with this card and are never sent automatically.</span></div>
           <div id="buffer-list"><div id="buffer-empty" data-i18n="buffer.empty">No notes yet.</div></div>
-          <div class="buffer-add"><textarea id="buffer-new" rows="2" maxlength="32768" data-i18n-placeholder="buffer.placeholder" placeholder="Add a note…"></textarea><div class="buffer-actions"><button class="btn" id="buffer-add" data-i18n="common.add">Add</button><button class="btn primary" id="buffer-queue" disabled></button></div></div>
+          <div class="buffer-add"><textarea id="buffer-new" rows="2" maxlength="32768" spellcheck="false" data-i18n-placeholder="buffer.placeholder" placeholder="Add a note…"></textarea><div class="buffer-actions"><button class="btn" id="buffer-add" data-i18n="common.add" data-submit-key>Add</button><button class="btn primary" id="buffer-queue" disabled></button></div></div>
         </section>
         <section id="translation-panel" class="session-tool" role="region" hidden aria-labelledby="translation-title">
           <div class="translation-head">
@@ -571,7 +571,7 @@
           <div id="tpl-steps"></div>
           <div class="tpl-add">
             <textarea id="tpl-step-text" rows="1" autocomplete="off" spellcheck="false" data-i18n-placeholder="templates.stepPlaceholder" placeholder="add a step"></textarea>
-            <button class="btn" id="tpl-step-add" data-i18n="common.add">Add</button>
+            <button class="btn" id="tpl-step-add" data-i18n="common.add" data-submit-key>Add</button>
           </div>
           <div class="set-sep"></div>
           <div class="set-row"><label data-i18n="templates.followUps">Follow-ups</label></div>
@@ -579,7 +579,7 @@
           <div id="tpl-follows"></div>
           <div class="tpl-add">
             <textarea id="tpl-follow-text" rows="1" autocomplete="off" spellcheck="false" data-i18n-placeholder="templates.followUpPlaceholderText" placeholder="add a follow-up"></textarea>
-            <button class="btn" id="tpl-follow-add" data-i18n="common.add">Add</button>
+            <button class="btn" id="tpl-follow-add" data-i18n="common.add" data-submit-key>Add</button>
           </div>
           <details class="set-details tpl-wide">
             <summary data-i18n="templates.placeholders.title">Slack message placeholders</summary>
@@ -682,7 +682,7 @@
       <div class="set-row"><label for="pdf-preset-title" data-i18n="presets.cardTitle">Card title</label><input id="pdf-preset-title" maxlength="120"></div>
       <div class="set-row"><label for="pdf-preset-dir" data-i18n="automation.dir">Directory</label><input id="pdf-preset-dir"></div>
       <div class="set-row"><label for="pdf-preset-cmd" data-i18n="automation.cmd">Command</label><input id="pdf-preset-cmd" maxlength="200" placeholder="codex"></div>
-      <div class="set-row"><label for="pdf-preset-steps" data-i18n="presets.steps">Initial steps</label><textarea id="pdf-preset-steps" rows="4"></textarea></div>
+      <div class="set-row"><label for="pdf-preset-steps" data-i18n="presets.steps">Initial steps</label><textarea id="pdf-preset-steps" rows="3" spellcheck="false"></textarea></div>
       <div class="set-hint" data-i18n="presets.hint">One step per line, up to 20. Commands are fixed on this Mac and must launch Codex or Claude.</div>
       <h4 class="auto-section" data-i18n="presets.section.later">Later steps</h4>
       <label class="q-review-option"><input type="checkbox" id="pdf-preset-auto-send" aria-describedby="pdf-preset-auto-send-hint"><span data-i18n="automation.autoSend.option">Automatically continue approved follow-up steps</span></label>

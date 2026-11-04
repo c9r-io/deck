@@ -21,7 +21,7 @@ body {
   cursor: default;
 }
 button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
-button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+button:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
   outline: 2px solid var(--focus); outline-offset: 1px;
 }
 /* body is user-select:none; WebKit refuses keyboard input in a textarea/input
@@ -36,17 +36,30 @@ input {
   border-radius: 6px; padding: 7px 10px; width: 100%;
 }
 input::placeholder { color: var(--faint); }
-/* Prompts and template steps are multi-line values edited in place. The field
-   is grown to its content by script; this max-height is the ceiling that
-   turns an over-long one into a scroller instead of a page-tall box. */
-textarea.inline-multiline, .q-add textarea, .tpl-add textarea {
+/* Every textarea (xterm's hidden helper aside) looks like an input and is
+   sized to its content by the engine (`field-sizing`): at least its `rows`
+   lines, at most 40% of the window, then it scrolls. No resize grip —
+   nothing has to be dragged open. On an engine without `field-sizing`,
+   dialogs.js `autoGrowField` does the same from script. A context may set
+   `--ta-pad-y` (the vertical padding the minimum counts) and its font size. */
+textarea:not(.xterm-helper-textarea) {
   font: inherit; font-family: var(--sans); color: var(--text);
   background: var(--bg); border: 1px solid var(--border);
-  border-radius: 6px; padding: 7px 10px; width: 100%;
-  resize: none; line-height: 1.5; max-height: 12.3077rem; overflow-y: auto;
+  border-radius: 6px; padding: var(--ta-pad-y, 7px) 10px; width: 100%;
+  line-height: 1.5; resize: none; field-sizing: content;
+  min-height: calc(var(--ta-rows, 1) * 1lh + 2 * var(--ta-pad-y, 7px) + 2px);
+  max-height: 40vh; overflow-y: auto;
 }
-textarea.inline-multiline::placeholder, .q-add textarea::placeholder,
-.tpl-add textarea::placeholder { color: var(--faint); }
+textarea:not(.xterm-helper-textarea)::placeholder { color: var(--faint); }
+textarea[rows="2"] { --ta-rows: 2; }
+textarea[rows="3"] { --ta-rows: 3; }
+textarea[rows="4"] { --ta-rows: 4; }
+/* a button a textarea's ⌘↵ also presses says so, whatever the field holds */
+.btn[data-submit-key]::after { content: '⌘↵'; margin-left: 6px; font-size: 0.769231rem; opacity: .65; }
+/* the keys of a multi-line edit in place, and a scratchpad note's unsaved edit */
+.edit-keys, .buffer-unsaved { display: block; margin-top: 4px; color: var(--faint); font-size: 0.769231rem; line-height: 1.4; }
+.buffer-unsaved { color: var(--wait); }
+.buffer-unsaved[hidden] { display: none; }
 
 #app { display: flex; height: 100%; }
 
@@ -558,7 +571,7 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .q-retry:hover, .q-skip:hover, .q-wait:hover, .q-now:hover { color: var(--text); background: var(--hover); }
 .q-del:hover { color: var(--danger); background: var(--hover); }
 .q-add { display: flex; gap: 6px; align-items: flex-end; }
-.q-add textarea { flex: 1; min-width: 0; font-size: 0.961538rem; padding: 6px 10px; }
+.q-add textarea { flex: 1; min-width: 0; font-size: 0.961538rem; --ta-pad-y: 6px; }
 .q-add select, .q-add input[type=time] {
   font-size: 0.923077rem; color: var(--muted); background: var(--raised);
   border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
@@ -631,7 +644,7 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .q-new-title { color: var(--text); font-weight: 500; }
 /* a list's footer: the next row, its quiet time, Add */
 .qg-add { display: flex; gap: 6px; align-items: flex-end; flex-wrap: wrap; padding: 6px 10px 8px 12px; border-top: 1px solid var(--row-divider); }
-.qg-add textarea { flex: 1; min-width: 160px; font-size: 0.923077rem; padding: 5px 9px; }
+.qg-add textarea { flex: 1; min-width: 160px; font-size: 0.923077rem; --ta-pad-y: 5px; }
 .qg-quiet { display: inline-flex; gap: 4px; align-items: center; font-size: 0.884615rem; color: var(--muted); }
 .qg-quiet .lbl { white-space: nowrap; }
 .qg-quiet select, .qg-quiet input[type=number] {
@@ -776,7 +789,6 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .buffer-row { display: flex; gap: 7px; align-items: flex-start; padding: 7px 8px; border: 1px solid var(--border-soft); border-radius: 7px; background: var(--bg); }
 .buffer-row > input[type="checkbox"] { width: auto; flex: none; margin-top: 3px; }
 .buffer-body { flex: 1; min-width: 0; }
-.buffer-body textarea, .buffer-add textarea { width: 100%; box-sizing: border-box; resize: vertical; }
 .buffer-meta { color: var(--faint); font-size: 0.769231rem; margin-bottom: 4px; }
 .buffer-links { display: flex; flex-wrap: wrap; gap: 8px; font-size: 0.769231rem; }
 .buffer-links a { color: var(--accent); overflow-wrap: anywhere; }
@@ -787,7 +799,7 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .buffer-del { flex: none; padding: 2px 5px; color: var(--faint); }
 .buffer-del:hover { color: var(--danger); }
 .buffer-add { flex: none; display: flex; flex-direction: column; gap: 7px; padding: 10px 12px; border-top: 1px solid var(--border-soft); }
-.buffer-add textarea { min-width: 0; max-height: 22vh; }
+.buffer-add textarea { min-width: 0; max-height: 22vh; }   /* the notes above stay in view */
 .buffer-actions { display: flex; justify-content: flex-end; gap: 7px; }
 #buffer-empty { color: var(--faint); padding: 12px 2px; }
 .card .q-chip {
@@ -1043,7 +1055,7 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 /* Slack's upgrade stays in Settings; the editable manifest is local draft only. */
 .slack-setup { padding: 16px; border: 1px solid var(--border-soft); border-radius: var(--radius); }
 .slack-setup h4 { margin: 16px 0 8px; }
-.slack-setup textarea { width: 100%; margin: 8px 0; padding: 8px; font: 0.85rem var(--mono); resize: vertical; }
+.slack-setup textarea { margin: 8px 0; --ta-pad-y: 8px; font: 0.85rem/1.5 var(--mono); }
 .slack-setup [role="status"] { line-height: 1.5; margin-bottom: 12px; }
 #set-log-size { font-family: var(--mono); font-size: 0.884615rem; color: var(--muted); overflow-wrap: anywhere; }
 .set-log-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }

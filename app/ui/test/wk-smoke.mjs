@@ -2314,10 +2314,16 @@ async function bufferSmoke(main, project, column) {
     && drawerRect.right <= boardRect.right + 1 && drawerRect.height > boardRect.height * 0.8);
   $('buffer-new').value = 'board-only note'; $('buffer-add').click();
   const added = await waitFor(() => provider.get(stopped.id)?.buffer?.entries?.length === 1);
+  /* a note's edit is kept by ⌘↵ alone: a click away (change) saves nothing */
   const field = document.querySelector('#buffer-list textarea');
-  field.value = 'edited board-only note'; field.dispatchEvent(new Event('change', { bubbles: true }));
+  field.value = 'edited board-only note'; field.dispatchEvent(new Event('input', { bubbles: true }));
+  field.dispatchEvent(new Event('change', { bubbles: true }));
+  await pause(300);
+  const notOnBlur = provider.get(stopped.id)?.buffer?.entries?.[0]?.text === 'board-only note';
+  field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }));
   const edited = await waitFor(() => provider.get(stopped.id)?.buffer?.entries?.[0]?.text === 'edited board-only note');
-  await report('buffer-board-stopped', openedOnBoard && added && edited, added ? 1 : 0, edited ? 1 : 0);
+  await report('buffer-board-stopped', openedOnBoard && added && edited && notOnBlur, added ? 1 : 0,
+    (edited ? 1 : 0) | (notOnBlur ? 2 : 0));
   document.querySelector('.buffer-row input[type=checkbox]').click();
   await openBuffer(main.id);
   const isolated = $('buffer-queue').disabled && !document.querySelector('.buffer-row input[type=checkbox]')?.checked;

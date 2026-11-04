@@ -1805,6 +1805,21 @@ backend reads the card's Signal pane (no Claude title) and refuses with
 stored the scene is skipped (`a` 2): a smoke never sends pane text anywhere.
 `b` bits: 1 entry missing or misplaced, 2 no sentence, 4 a rename field
 opened, 8 the pane was empty.
+`ux-textareas-*` (four checks) hold every textarea to one contract. `look`:
+the template add fields, the lists' new-list and add-a-step fields, the
+scratchpad's new note and a note, and a phone task preset's steps each have
+the theme input's font, colours, border and 6px radius, padding, no resize
+grip, spellcheck off and the input's focus ring after a native click, and
+the preset steps are as wide as the command input (`a` the fields measured,
+`b` the failing ones). `grow`: six lines show whole with nothing to scroll,
+thirty lines stop at 40% of the window and scroll, a short note shows one
+line and a long one grows. `input`: `say "hi" -- it's` typed with AppKit
+keys into the scratchpad stays as typed (no smart quotes or dashes).
+`drafts`: the new note survives closing and reopening the panel; a note's
+edit survives a click away and a re-render, marked unsaved, and is saved by
+⌘↵ alone; a template step's edit and a queued row's edit are not saved by a
+click away and stay open (the row's through a re-render). Snapshots
+`ux-textareas-*`.
 Snapshots land in `<data dir>/evidence/`; `ux-m-*` are measurements.
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-ux.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-ux-UNIQUE DECK_SMOKE_WKWEBVIEW=ux-layers app/run.sh`,

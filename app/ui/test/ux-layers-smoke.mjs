@@ -17,7 +17,7 @@
 // failing scene never hides the next; snapshots land in <data dir>/evidence/.
 export async function runUxLayersSmoke() {
   const { $, ctx, inv, state } = await import('../js/state.js');
-  const { openProjectDefaults, provider, pollNow, render } = await import('../js/board.js');
+  const { openProjectDefaults, provider, pollNow, render, renderBufferUI } = await import('../js/board.js');
   const { openSession } = await import('../js/layout.js');
   const { closeAutomations, openAutomations } = await import('../js/automation.js');
   const { refreshQueue, renderQueueUI, toggleQueuePanel } = await import('../js/scheduler.js');
@@ -761,6 +761,197 @@ export async function runUxLayersSmoke() {
       await snapshot('ux-title-refused-zh');
       return answered && placed && !editing && said(t('error.titleNoSource'));
     }), trace === -1 ? 2 : 1, Math.max(trace, 0));
+
+    /* ---------- textareas: one look, sized to their text, saved only on purpose ----------
+       Every textarea surface beside an input of the theme: the same font,
+       colours, border and radius, the input's focus ring, no resize grip,
+       spellcheck off; grown to six lines with nothing hidden, capped at 40%
+       of the window; typed natively (AppKit keys, so macOS substitutions
+       would apply) and left as typed; and a click away saves nothing while
+       a re-render or closing the panel keeps what was typed. `b` of each
+       check is a bitmask of the surfaces that failed (look/grow) or of the
+       steps (input/drafts). */
+    const KEYS = { a: 0, s: 1, d: 2, h: 4, e: 14, r: 15, y: 16, t: 17, o: 31, i: 34, p: 35, l: 37, k: 40, n: 45, m: 46,
+      "'": 39, '-': 27, ' ': 49 };
+    const typeKeys = async text => {
+      for (const ch of text) {
+        const base = ch === '"' ? "'" : ch.toLowerCase();
+        await inv('smoke_native_input', { input: { kind: 'key', text: ch, keyCode: KEYS[base], modifiers: ch === '"' ? ['shift'] : [] } });
+      }
+      await pause(200);
+    };
+    const commitKey = () => inv('smoke_native_input', { input: { kind: 'key', text: '\r', keyCode: 36, modifiers: ['command'] } });
+    await inv('smoke_native_input', { input: { kind: 'roman' } }).catch(() => {});
+    await provider.saveTemplate(project.id, 'textareas', ['First step', 'Second step']);
+    await openSession(card.id); await pause(200);
+    const tomorrow2 = Math.floor(Date.now() / 1000) + 86400;
+    await inv('queue_add', { args: { session: card.session, cardId: card.id, dir: card.dir, cmd: card.cmd, text: 'Edit me', mode: 'at', at: tomorrow2 } });
+    const longNote = Array.from({ length: 30 }, (_, n) => `note line ${n + 1}`).join('\n');
+    await provider.setBuffer(card.id, provider.get(card.id).buffer?.revision || 0,
+      { revision: (provider.get(card.id).buffer?.revision || 0) + 1, collecting: false,
+        entries: [{ id: 'Nta1', kind: 'manual', text: 'a short note', revision: 1, createdAt: Date.now(), updatedAt: Date.now(), copies: [] },
+          { id: 'Nta2', kind: 'manual', text: longNote, revision: 1, createdAt: Date.now(), updatedAt: Date.now(), copies: [] }] });
+    let reference = null; let ringReference = null;
+    const surfaces = {};
+    const openSurfaces = {
+      templates: async () => {
+        openTemplates(null); await until(() => shown($('tpl-form')));
+        [...document.querySelectorAll('#tpl-items .tpl-item')].find(b => b.textContent.includes('textareas'))?.click();
+        await pause(200);
+        if (!reference) {
+          const s = getComputedStyle($('tpl-name'));
+          reference = { family: s.fontFamily, color: s.color, bg: s.backgroundColor, border: s.borderTopColor };
+          await press($('tpl-name'));
+          const f = getComputedStyle($('tpl-name'));
+          ringReference = `${f.outlineStyle} ${f.outlineWidth} ${f.outlineColor}`;
+        }
+        surfaces['tpl-add'] = $('tpl-step-text');
+        surfaces['tpl-follow'] = $('tpl-follow-text');
+      },
+      lists: async () => {
+        toggleQueuePanel(true); await refreshQueue(); await pause(300);
+        surfaces['q-text'] = $('q-text');
+        surfaces['q-footer'] = $('queue-list').querySelector('.qg-add textarea');
+      },
+      scratchpad: async () => {
+        if ($('buffer-panel').hidden) $('buffer-btn').click();
+        await pause(300); renderBufferUI(); await pause(100);
+        surfaces['buffer-new'] = $('buffer-new');
+        surfaces['buffer-note'] = $('buffer-list').querySelector('.buffer-body textarea');
+        surfaces['buffer-long'] = [...$('buffer-list').querySelectorAll('.buffer-body textarea')].find(f => f.value.startsWith('note line 1'));
+      },
+    };
+    const lookOf = async (name, field) => {
+      if (!field) return false;
+      field.scrollIntoView({ block: 'center' }); await pause(120);
+      const s = getComputedStyle(field);
+      await press(field);
+      const f = getComputedStyle(field);
+      const ring = `${f.outlineStyle} ${f.outlineWidth} ${f.outlineColor}`;
+      return s.fontFamily === reference.family && s.color === reference.color && s.backgroundColor === reference.bg
+        && s.borderTopColor === reference.border && s.borderTopLeftRadius === '6px' && parseFloat(s.paddingLeft) > 0
+        && s.resize === 'none' && field.spellcheck === false && ring === ringReference;
+    };
+    let lookBits = 0; let measured = 0;
+    await report('ux-textareas-look', await attempt(async () => {
+      trace = 0;
+      await openSurfaces.templates();
+      const names = ['tpl-add', 'tpl-follow', 'q-text', 'q-footer', 'buffer-new', 'buffer-note', 'preset-steps'];
+      const check = async (n, field) => { measured++; if (!(await lookOf(n, field))) lookBits |= 1 << names.indexOf(n); };
+      await check('tpl-add', surfaces['tpl-add']);
+      await check('tpl-follow', surfaces['tpl-follow']);
+      $('tpl-done').click(); await pause(200);
+      await openSurfaces.lists();
+      await check('q-text', surfaces['q-text']);
+      await check('q-footer', surfaces['q-footer']);
+      await snapshot('ux-textareas-lists-zh');
+      toggleQueuePanel(false);
+      await openSurfaces.scratchpad();
+      await check('buffer-new', surfaces['buffer-new']);
+      await check('buffer-note', surfaces['buffer-note']);
+      await snapshot('ux-textareas-scratchpad-zh');
+      $('buffer-close').click(); await pause(150);
+      const column = project.columns[0].id;
+      const done = projectDefaultsDialog({ projectId: project.id, name: project.name, dir: '/tmp', cmd: 'claude', recent: [],
+        presets: [{ id: 'Rta', name: 'Textareas', columnId: column, title: 'T', dir: '/tmp', cmd: 'claude', steps: ['inspect', 'fix'] }], columns: project.columns });
+      await until(() => $('pdf').style.display === 'flex'); await pause(300);
+      document.querySelectorAll('#pdf-presets button')[0].click(); await pause(300);
+      await check('preset-steps', $('pdf-preset-steps'));
+      const widthOk = Math.abs($('pdf-preset-steps').getBoundingClientRect().width - $('pdf-preset-cmd').getBoundingClientRect().width) <= 2;
+      if (!widthOk) lookBits |= 1 << 7;
+      await snapshot('ux-textareas-preset-zh');
+      $('pdf-no').click(); await done;
+      return lookBits === 0;
+    }), measured || 1, lookBits);
+
+    let growBits = 0;
+    await report('ux-textareas-grow', await attempt(async () => {
+      const six = Array.from({ length: 6 }, (_, n) => `line ${n + 1}`).join('\n');
+      const grows = async (field, bit) => {
+        if (!field) { growBits |= bit; return; }
+        field.value = six; field.dispatchEvent(new Event('input', { bubbles: true })); await pause(120);
+        const lh = parseFloat(getComputedStyle(field).lineHeight);
+        if (!(field.clientHeight >= 6 * lh && field.scrollHeight - field.clientHeight <= 1)) growBits |= bit;
+        field.value = longNote; field.dispatchEvent(new Event('input', { bubbles: true })); await pause(120);
+        if (!(field.getBoundingClientRect().height <= innerHeight * 0.4 + 2 && field.scrollHeight > field.clientHeight)) growBits |= bit << 8;
+        field.value = ''; field.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      await openSurfaces.templates();
+      await grows($('tpl-step-text'), 1);
+      $('tpl-done').click(); await pause(200);
+      await openSurfaces.lists();
+      await grows($('q-text'), 2);
+      toggleQueuePanel(false);
+      await openSurfaces.scratchpad();
+      await grows($('buffer-new'), 4);
+      const note = surfaces['buffer-long'];
+      if (!(note && note.scrollHeight > note.clientHeight && note.getBoundingClientRect().height > 8 * parseFloat(getComputedStyle(note).lineHeight))) growBits |= 8;
+      const short = surfaces['buffer-note'];
+      if (!(short && short.scrollHeight - short.clientHeight <= 1)) growBits |= 16;
+      $('buffer-close').click(); await pause(150);
+      return growBits === 0;
+    }), 1, growBits);
+
+    let inputBits = 0;
+    await report('ux-textareas-input', await attempt(async () => {
+      await openSurfaces.scratchpad();
+      const field = $('buffer-new');
+      field.value = ''; await press(field);
+      await typeKeys('say "hi" -- it\'s');
+      if (field.value !== 'say "hi" -- it\'s') inputBits |= 1;
+      field.value = '';
+      $('buffer-close').click(); await pause(150);
+      return inputBits === 0;
+    }), 1, inputBits);
+
+    let draftBits = 0;
+    await report('ux-textareas-drafts', await attempt(async () => {
+      // the scratchpad's new note survives closing the panel
+      await openSurfaces.scratchpad();
+      $('buffer-new').value = 'a draft I typed';
+      $('buffer-close').click(); await pause(150);
+      $('buffer-btn').click(); await pause(300);
+      if ($('buffer-new').value !== 'a draft I typed') draftBits |= 1;
+      $('buffer-new').value = '';
+      // a note's edit: a click away keeps it, marked; ⌘↵ saves it
+      renderBufferUI(); await pause(100);
+      let note = $('buffer-list').querySelector('.buffer-body textarea');
+      await press(note);
+      note.value = 'a short note, edited'; note.dispatchEvent(new Event('input', { bubbles: true }));
+      await press($('buffer-new')); renderBufferUI(); await pause(150);
+      note = $('buffer-list').querySelector('.buffer-body textarea');
+      const kept = note.value === 'a short note, edited' && !note.parentElement.querySelector('.buffer-unsaved').hidden
+        && provider.get(card.id).buffer.entries.find(e => e.id === 'Nta1').text === 'a short note';
+      if (!kept) draftBits |= 2;
+      await press(note); await commitKey(); await pause(400);
+      if (provider.get(card.id).buffer.entries.find(e => e.id === 'Nta1').text !== 'a short note, edited') draftBits |= 4;
+      $('buffer-close').click(); await pause(150);
+      // a template step: a click away saves nothing, the editor stays
+      await openSurfaces.templates();
+      $('tpl-steps').querySelector('.tpl-step .one').click(); await pause(250);
+      const editor = $('tpl-steps').querySelector('textarea');
+      editor.value = 'First step, changed'; editor.dispatchEvent(new Event('input', { bubbles: true }));
+      await press($('tpl-name')); await pause(200);
+      const saved = (provider.project(project.id).templates || []).find(tp => tp.name === 'textareas')?.steps[0];
+      const stays = $('tpl-steps').querySelector('textarea')?.value === 'First step, changed';
+      if (!(saved === 'First step' && stays)) draftBits |= 8;
+      $('tpl-steps').querySelector('textarea')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await pause(150); $('tpl-done').click(); await pause(200);
+      // a queued row: a click away saves nothing, and a re-render reopens it as typed
+      await openSurfaces.lists();
+      const rowText = [...$('queue-list').querySelectorAll('.q-text')].find(el => el.textContent === 'Edit me');
+      rowText?.click(); await pause(200);
+      let rowEditor = $('queue-list').querySelector('textarea.inline-multiline');
+      if (rowEditor) { rowEditor.value = 'Edit me, changed'; rowEditor.dispatchEvent(new Event('input', { bubbles: true })); }
+      await press($('q-text')); renderQueueUI(); await pause(200);
+      rowEditor = $('queue-list').querySelector('textarea.inline-multiline');
+      const item = (await inv('queue_list')).items.find(i => i.session === card.session && i.text.startsWith('Edit me'));
+      if (!(rowEditor?.value === 'Edit me, changed' && item?.text === 'Edit me')) draftBits |= 16;
+      rowEditor?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await pause(150);
+      toggleQueuePanel(false);
+      return draftBits === 0;
+    }), 1, draftBits);
   } catch (_) {
     await snapshot('ux-layers-exception');
     await report('ux-exception', false);

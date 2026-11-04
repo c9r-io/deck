@@ -2008,3 +2008,64 @@ test('an MCP client row grants and withdraws the automation delegation as its ow
   assert.equal(fakeDocument.getElementById('cfm').style.display, 'none');
   assert.ok(calls.some(([cmd, args]) => cmd === 'mcp_client_automations' && args.allowed === false));
 });
+
+/* A multi-line edit in place (a queued prompt): a click away saves nothing
+   and the editor stays; what is typed reaches `onDraft` so a re-render can
+   reopen it; ⌘↵ commits once, Escape restores; a reopened edit may leave
+   the focus alone. */
+test('a multi-line inline edit is kept open by blur and committed only by ⌘↵', async () => {
+  const { t } = await import('../js/i18n.js');
+  const host = new FakeElement();
+  const commits = []; const drafts = [];
+  inlineRename(host, 'old prompt', value => { commits.push(value); }, { multiline: true, onDraft: text => drafts.push(text) });
+  const [field, keys] = host.children;
+  assert.equal(field.tagName, 'TEXTAREA');
+  assert.equal(keys.textContent, t('common.editKeys'), 'the keys are named under the field');
+  field.value = 'new prompt\nsecond line';
+  field.fire('input');
+  field.fire('blur');
+  await tick();
+  assert.deepEqual(commits, [], 'a click away saves nothing');
+  assert.equal(host.children[0], field, 'and the editor stays');
+  assert.deepEqual(drafts, ['new prompt\nsecond line']);
+  field.fire('keydown', { key: 'Enter' });
+  assert.deepEqual(commits, [], 'a bare Enter is a newline');
+  field.fire('keydown', { key: 'Enter', metaKey: true, isComposing: true, keyCode: 229 });
+  assert.deepEqual(commits, [], 'an IME Enter never commits');
+  field.fire('keydown', { key: 'Enter', metaKey: true });
+  await tick();
+  assert.deepEqual(commits, ['new prompt\nsecond line']);
+  assert.equal(host.textContent, 'new prompt\nsecond line');
+
+  const cancelled = new FakeElement(); const answers = [];
+  fakeDocument.activeElement = null;
+  inlineRename(cancelled, 'old', value => { answers.push(value); }, { multiline: true, initial: 'a draft', focus: false });
+  assert.equal(cancelled.children[0].value, 'a draft', 'a reopened edit shows its draft');
+  assert.equal(fakeDocument.activeElement, null, 'and leaves the focus where it was');
+  cancelled.children[0].fire('keydown', { key: 'Escape' });
+  await tick();
+  assert.deepEqual(answers, [null]);
+  assert.equal(cancelled.textContent, 'old', 'Escape restores');
+});
+
+/* Without `field-sizing` (node has no CSS.supports, like an older WebKit),
+   the field grows from script: border included, the scroller kept still. */
+test('the script fallback sizes a textarea with its border and keeps the scroller in place', async () => {
+  const { autoGrowField } = await import('../js/dialogs.js');
+  const scroller = { scrollHeight: 900, clientHeight: 300, scrollTop: 420, parentElement: null };
+  const style = {};
+  const field = {
+    parentElement: { scrollHeight: 40, clientHeight: 40, parentElement: scroller },
+    scrollHeight: 88, offsetHeight: 40, clientHeight: 38,
+    style: new Proxy(style, { set(target, key, value) {
+      target[key] = value;
+      if (key === 'height' && value === 'auto') scroller.scrollTop = 0;   // what a collapsing field does
+      return true;
+    } }),
+  };
+  autoGrowField(field);
+  assert.equal(style.height, '90px', 'content plus the 2px of border');
+  assert.equal(scroller.scrollTop, 420, 'the panel around it does not jump');
+  assert.doesNotThrow(() => autoGrowField(null));
+  assert.doesNotThrow(() => autoGrowField({ style: {} }));
+});

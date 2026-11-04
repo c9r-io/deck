@@ -33,7 +33,10 @@
 // footer (`drafts`) live here because the panel is rebuilt from scratch on
 // every poll; both are pruned against the live queue on each render. Editing
 // edits the WHOLE prompt: a collapsed row opens first and the same click
-// continues into the editor, where Enter types a newline and ⌘↵ commits.
+// continues into the editor, where Enter types a newline, ⌘↵ commits and
+// Escape cancels. A click away saves nothing: the edit stays open, and what
+// it holds (`rowDrafts`) reopens it after a re-render or when the panel is
+// shown again, until it is committed, cancelled or its row is gone.
 //
 // What an item READS as (its time, meta line, context label, a row's quiet
 // hint) and which backend calls start a list live DOM-free in
@@ -101,6 +104,7 @@ export const sessionQueue = session => ctx.queueCache.items.filter(i => i.sessio
    on every poll, so neither can live in the DOM; both are pruned against
    the live queue on each render so removed lists do not leak keys. */
 const expandedRows = new Set();
+const rowDrafts = new Map();   // row key → an open edit's text
 const drafts = new Map();   // list key → { text, quiet }
 
 export function setQueueChip(chip, card) {
@@ -280,7 +284,27 @@ function rowEl(r, g, rows, k, card) {
   const txt = row.querySelector('.q-text');
   txt.textContent = expanded ? r.text : first;
   txt.title = t('common.edit');
+  const edit = (initial, focus) => {
+    /* the row must stop clipping while it holds a growing editor — a
+       single-line prompt is edited in an unopened row */
+    row.classList.add('editing');
+    rowDrafts.set(r.key, initial);
+    inlineRename(txt, r.text, v => {
+      rowDrafts.delete(r.key);
+      row.classList.remove('editing');
+      if (v && v !== r.text) {
+        if (i) {
+          inv('queue_update', { id: i.id, text: v }).catch(() => toast(t('error.operation', { operation: t('common.edit') })));
+        } else {
+          withSteps(r.rule, r.rule.steps.map((s, n) => (n === r.step ? v : s)), t('common.edit'));
+        }
+      } else {
+        setTimeout(renderQueueUI, 0);
+      }
+    }, { multiline: true, initial, focus, onDraft: text => rowDrafts.set(r.key, text) });
+  };
   txt.onclick = () => {
+    if (txt.querySelector('textarea')) return;   // already editing: a click on its key hint
     /* edit the WHOLE prompt, so open the row first: a collapsed row shows
        one line and the editor is about to show all of them. The re-render
        replaces this node, so the click continues on the new one — one
@@ -292,22 +316,10 @@ function rowEl(r, g, rows, k, card) {
       if (fresh) fresh.click();
       return;
     }
-    /* the row must stop clipping while it holds a growing editor — a
-       single-line prompt is edited in an unopened row */
-    row.classList.add('editing');
-    inlineRename(txt, r.text, v => {
-      row.classList.remove('editing');
-      if (v && v !== r.text) {
-        if (i) {
-          inv('queue_update', { id: i.id, text: v }).catch(() => toast(t('error.operation', { operation: t('common.edit') })));
-        } else {
-          withSteps(r.rule, r.rule.steps.map((s, n) => (n === r.step ? v : s)), t('common.edit'));
-        }
-      } else {
-        setTimeout(renderQueueUI, 0);   // after blur, so the guard won't skip
-      }
-    }, { multiline: true });
+    edit(r.text, true);
   };
+  /* an edit left open (a click away saves nothing) comes back as it was */
+  if (rowDrafts.has(r.key)) edit(rowDrafts.get(r.key), false);
   const del = row.querySelector('.q-del');
   del.title = t('queue.removePrompt');
   del.onclick = async () => {
@@ -399,6 +411,7 @@ function listFooter(g, card) {
   const quiet = listRepeats(g) ? null : quietControl(draft.quiet);
   const add = document.createElement('button');
   add.className = 'btn';
+  add.dataset.submitKey = '';   // ⌘↵ in the field presses it (style.css shows the key)
   add.textContent = t('common.add');
   const remember = () => drafts.set(key, { text: field.value, quiet: quiet ? quiet.value() : draft.quiet });
   field.addEventListener('input', () => { autoGrowField(field); remember(); });
@@ -513,6 +526,9 @@ export function renderQueueUI() {
       (i.steps || []).forEach((_, n) => live.add(`${i.id}#${n}`));
     }
     for (const key of expandedRows) if (!live.has(key)) expandedRows.delete(key);
+    /* an open edit belongs to its row on whichever card: kept while that row lives */
+    const anyLive = new Set(ctx.queueCache.items.flatMap(i => [i.id, ...(i.steps || []).map((_, n) => `${i.id}#${n}`)]));
+    for (const key of rowDrafts.keys()) if (!anyLive.has(key)) rowDrafts.delete(key);
     const liveLists = new Set(lists.map(listKey));
     for (const key of drafts.keys()) if (!liveLists.has(key)) drafts.delete(key);
     if (ctx.queueOpen) {

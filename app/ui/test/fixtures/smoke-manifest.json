@@ -198,6 +198,10 @@
         "ux-m-defaults": {"metric": true},
         "ux-reminder-bytes": {},
         "ux-templates": {},
+        "ux-textareas-look": {},
+        "ux-textareas-grow": {},
+        "ux-textareas-input": {},
+        "ux-textareas-drafts": {},
         "ux-toast-layer": {},
         "ux-title-draft": {},
         "ux-exception": {"failureOnly": true}

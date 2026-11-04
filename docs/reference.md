@@ -64,6 +64,15 @@ does. Just before closing, Deck polls once more: a card whose agent started a
 new turn meanwhile stays open. A card with a reminder or kept scratchpad
 content is never closed in a batch; close it from its own card. Turn ended
 means the interaction stopped, not that the task succeeded.
+**Text fields that hold several lines** (prompts, template steps, scratchpad
+notes, preset steps) grow with their text and scroll only past 40% of the
+window; nothing needs dragging open. Enter types a newline and ⌘↵ adds or
+saves; a button that ⌘↵ also presses shows the key. A click elsewhere saves
+nothing: an edit stays open with what you typed, as does a scratchpad note
+not yet added (per card, until Deck quits), and Escape undoes an edit. Leaving
+a template step with an unsaved edit asks first. These fields keep what you
+type as typed: macOS smart quotes and dashes are off in them.
+
 A template may also hold up to three **follow-ups**: replies you often send
 after that kind of task. A card an automation opens from the template keeps
 them, and shows them as buttons under its terminal and on its Needs

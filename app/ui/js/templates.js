@@ -22,8 +22,11 @@
 // submit early). The step list stays one row per step — the row shows the
 // first line plus a `⏎N` badge, and exactly ONE row at a time opens in place
 // into the full editor, so a 20-step template is still scannable. Enter
-// inside that editor types a newline; ⌘↵ commits, Escape restores, blur
-// commits. A template's follow-ups (`followUps`, at most FOLLOWUPS_MAX) are
+// inside that editor types a newline; ⌘↵ commits and Escape restores. A
+// click away saves nothing: the editor stays open with what was typed,
+// through any re-render (`openDraft`), and an action that would take an
+// unsaved edit away (another row, a move, closing the manager) asks first
+// (`leaveOpenEdit`). A template's follow-ups (`followUps`, at most FOLLOWUPS_MAX) are
 // edited the same way, in their own list under the steps: fixed replies a
 // run freezes onto the card it opens (follow-up-model.js), refused when they
 // hold a `{{msg.*}}` placeholder, since nothing ever fills one. A follow-up
@@ -50,6 +53,8 @@ let projectId = null;
 let selected = null;      // name of the template being edited
 let nameShown = null;     // whose name the editor field currently holds
 let openItem = null;      // {list, index}: the one row opened into the full editor
+let openDraft = null;     // {key, text}: what that editor holds that is not saved
+let focusOpened = false;  // the next editor built was just opened: it takes the focus
 let unsubscribe = null;
 let opener = null;        // element (or resolver) that opened the manager; focus returns there
 // Rules already told, while this manager is open, that a step edit took
@@ -73,6 +78,7 @@ export function openTemplates(from = null) {
   selected = list.length ? list[0].name : null;
   nameShown = null;
   openItem = null;
+  openDraft = null;
   $('tpl-search').value = '';
   $('tpl-modal').style.display = 'flex';
   /* while open, follow the board: another transaction (or a project delete)
@@ -91,7 +97,12 @@ export function openTemplates(from = null) {
 }
 
 export function closeTemplates() {
+  if (openItem && openDraft) {
+    leaveOpenEdit().then(ok => { if (ok) closeTemplates(); });
+    return;
+  }
   openItem = null;
+  openDraft = null;
   $('tpl-modal').style.display = 'none';
   if (unsubscribe) { unsubscribe(); unsubscribe = null; }
   const target = typeof opener === 'function' ? opener() : opener;
@@ -115,6 +126,19 @@ async function persist(name, steps) {
   // after the save, and outside its failure handling: a notice that cannot
   // be made must never read as a save that failed
   await tellVoidedApprovals(name, before, steps);
+  return true;
+}
+
+/* Whether an action may take the open editor away: yes when it holds
+   nothing unsaved, or once the user agreed to discard that edit. A click
+   away never saves it; this is what asks before it would be lost. */
+async function leaveOpenEdit() {
+  if (!openItem || !openDraft) return true;
+  if (!(await confirmDialog(t('templates.discardEdit')))) {
+    $(LISTS[openItem.list].container).querySelector('textarea')?.focus();
+    return false;
+  }
+  openDraft = null;
   return true;
 }
 
@@ -178,8 +202,11 @@ function collapsedStep(list, step, index) {
   one.className = 'one';
   one.textContent = first;
   one.title = t('common.edit');
-  one.onclick = () => {
+  one.onclick = async () => {
+    if (!(await leaveOpenEdit())) return;
     openItem = { list, index };
+    openDraft = null;
+    focusOpened = true;
     renderTemplates();
   };
   body.appendChild(one);
@@ -204,12 +231,18 @@ function openStepEditor(list, tpl, step, index) {
   field.className = 'inline-multiline';
   field.rows = 1;
   field.spellcheck = false;
-  field.value = step;
+  /* the row, not the template's name: a rename while editing keeps the
+     draft, and every switch of template clears it */
+  const draftKey = `${list}:${index}`;
+  field.value = openDraft?.key === draftKey ? openDraft.text : step;
+  const remember = () => {
+    openDraft = field.value === step ? null : { key: draftKey, text: field.value };
+  };
 
   const hint = document.createElement('div');
   hint.className = 'row-hint';
   const keys = document.createElement('span');
-  keys.textContent = t('templates.editKeys');
+  keys.textContent = t('common.editKeys');
   const size = document.createElement('span');
   const showSize = () => {
     const { extra } = promptSummary(field.value);
@@ -225,18 +258,20 @@ function openStepEditor(list, tpl, step, index) {
   let done = false;
   const finish = async commit => {
     if (done) return;
+    const text = commit ? normalizeTemplateStep(field.value) : '';
+    /* refused text stays in the editor to be put right, never thrown away */
+    const refused = text && text !== step && LISTS[list].refuse?.(text);
+    if (refused) { toast(t(refused)); return; }
     done = true;
     openItem = null;
-    const text = commit ? normalizeTemplateStep(field.value) : '';
+    openDraft = null;
     if (!text || text === step) { renderTemplates(); return; }
-    const refused = LISTS[list].refuse?.(text);
-    if (refused) { toast(t(refused)); renderTemplates(); return; }
     const next = LISTS[list].items(tpl).slice();
     next[index] = text;
     await LISTS[list].save(tpl, next);
     renderTemplates();
   };
-  field.addEventListener('input', () => { autoGrowField(field); showSize(); });
+  field.addEventListener('input', () => { autoGrowField(field); showSize(); remember(); });
   field.addEventListener('keydown', event => {
     event.stopPropagation();
     if (event.key === 'Enter') {
@@ -249,13 +284,17 @@ function openStepEditor(list, tpl, step, index) {
       finish(false);
     }
   });
-  field.addEventListener('blur', () => finish(true));
 
   body.append(field, hint);
-  /* size and focus once the row is in the document, so scrollHeight is real */
+  /* size once the row is in the document, so scrollHeight is real; only an
+     editor just opened takes the focus — one rebuilt by a re-render (a
+     search, a save elsewhere) leaves it where the user put it */
+  const focus = focusOpened;
+  focusOpened = false;
   queueMicrotask(() => {
     if (!field.isConnected) return;
     autoGrowField(field);
+    if (!focus) return;
     field.focus();
     field.setSelectionRange(field.value.length, field.value.length);
   });
@@ -291,11 +330,13 @@ function stepRow(list, tpl, step, index) {
   const move = async delta => {
     const next = moveTemplateStep(items(tpl), index, delta);
     if (next === items(tpl)) return;
+    if (!(await leaveOpenEdit())) return;
     openItem = null;
     await save(tpl, next);
     renderTemplates();
   };
   const remove = act('✕', t(LISTS[list].remove), false, async () => {
+    if (!(await leaveOpenEdit())) return;
     openItem = null;
     await save(tpl, items(tpl).filter((_, i) => i !== index));
     renderTemplates();
@@ -321,6 +362,7 @@ export function renderTemplates() {
   if (!all.some(tp => tp.name === selected)) {
     selected = all.length ? all[0].name : null;
     openItem = null;
+    openDraft = null;
   }
   const query = $('tpl-search').value.trim().toLocaleLowerCase();
   const shown = all.filter(tp => !query || tp.name.toLocaleLowerCase().includes(query));
@@ -338,9 +380,10 @@ export function renderTemplates() {
     count.className = 'c';
     count.textContent = formatNumber(tp.steps.length);
     row.append(name, count);
-    row.onclick = () => {
+    row.onclick = async () => {
+      if (tp.name !== selected && !(await leaveOpenEdit())) return;
       selected = tp.name;
-      openItem = null;
+      if (openDraft === null) openItem = null;
       renderTemplates();
       $('tpl-name').focus();
     };
@@ -392,7 +435,7 @@ async function addStep(list = 'steps') {
   }
   const refused = spec.refuse?.(text);
   if (refused) { toast(t(refused)); field.focus(); return; }
-  openItem = null;
+  /* an append moves no row: an editor open above stays open, as typed */
   if (await spec.save(tpl, [...items, text])) {
     field.value = '';
     autoGrowField(field);
@@ -468,10 +511,12 @@ export function initTemplates(deps) {
       toast(t('templates.maxTemplates', { max: formatNumber(TEMPLATES_MAX) }));
       return;
     }
+    if (!(await leaveOpenEdit())) return;
     const name = nextTemplateName(t('templates.newName'), all);
     if (!(await persist(name, []))) return;
     selected = name;
     openItem = null;
+    openDraft = null;
     $('tpl-search').value = '';
     renderTemplates();
     $('tpl-name').focus();

@@ -736,6 +736,11 @@ export const provider = {
 let bufferTargetId = null;
 let bufferUiEpoch = 0;
 const bufferSelected = new Set();
+/* What is typed and not yet kept, in memory only: a new note per card, and a
+   note's edit per card and note. A text field saves nothing when it loses
+   the focus — closing the panel, another card or a re-render keeps it. */
+const newNoteDrafts = new Map();   // card id → the new-note box's text
+const noteDrafts = new Map();      // `${card id}/${note id}` → an unsaved edit
 const activeBufferCard = () => bufferTargetId ? provider.get(bufferTargetId) : null;
 const bufferStillShows = (cardId, epoch) => bufferTargetId === cardId
   && epoch === bufferUiEpoch && !$('buffer-panel').hidden;
@@ -749,6 +754,7 @@ function syncBufferCount() {
 export function closeBuffer() {
   bufferUiEpoch++;
   $('buffer-panel').hidden = true;
+  keepNewNoteDraft();
   bufferTargetId = null;
   bufferSelected.clear();
   $('buffer-new').value = '';
@@ -757,11 +763,18 @@ export function closeBuffer() {
   releaseSessionTool('buffer');
 }
 
+function keepNewNoteDraft() {
+  if (!bufferTargetId) return;
+  const text = $('buffer-new').value;
+  if (text) newNoteDrafts.set(bufferTargetId, text); else newNoteDrafts.delete(bufferTargetId);
+}
+
 function changeBufferTarget(cardId) {
   if (bufferTargetId !== cardId) {
     bufferUiEpoch++;
     bufferSelected.clear();
-    $('buffer-new').value = '';
+    keepNewNoteDraft();
+    $('buffer-new').value = newNoteDrafts.get(cardId) || '';
   }
   bufferTargetId = cardId;
   const host = state.view === 'session' ? $('session-workspace') : state.view === 'attention' ? $('attention-view') : $('board-view');
@@ -795,6 +808,10 @@ export function renderBufferUI() {
   const buffer = card.buffer || emptyBuffer();
   const entryIds = new Set(buffer.entries.map(entry => entry.id));
   for (const id of bufferSelected) if (!entryIds.has(id)) bufferSelected.delete(id);
+  for (const key of noteDrafts.keys()) {
+    const [cardId, entryId] = key.split('/');
+    if (cardId === card.id && !entryIds.has(entryId)) noteDrafts.delete(key);
+  }
   $('buffer-collecting').hidden = !buffer.collecting;
   $('buffer-stop').hidden = !buffer.collecting || !card.channelRun;
   const list = $('buffer-list'); list.replaceChildren($('buffer-empty'));
@@ -809,14 +826,41 @@ export function renderBufferUI() {
       ? [entry.source?.type, entry.source?.channel, entry.source?.at ? formatDateTime(entry.source.at < 1e12 ? entry.source.at * 1000 : entry.source.at) : null].filter(Boolean).join(' · ')
       : t('buffer.manual');
     meta.textContent = `${source} · ${t('buffer.revision', { revision: formatNumber(entry.revision) })}`;
-    const field = document.createElement('textarea'); field.value = entry.text; field.rows = 2; field.maxLength = 32768;
+    /* a note shows all of itself (style.css sizes the field); an edit is
+       kept by ⌘↵ alone, Escape undoes it, and until then it stays here,
+       marked, through a click away or a re-render */
+    const draftKey = `${card.id}/${entry.id}`;
+    const field = document.createElement('textarea'); field.rows = 1; field.maxLength = 32768; field.spellcheck = false;
+    field.value = noteDrafts.get(draftKey) ?? entry.text;
     field.setAttribute('aria-label', t('buffer.edit'));
-    if (entry.kind === 'external') field.readOnly = true;
-    field.onchange = entry.kind === 'external' ? null : async () => {
-      const result = editEntry(buffer, entry.id, field.value, Date.now());
-      if (result.error) { toast(t(bufferLimitKey(result.error))); field.value = entry.text; return; }
-      if (await persistBuffer(card, buffer.revision || 0, result.buffer) && bufferStillShows(card.id, uiEpoch)) renderBufferUI();
+    const unsaved = document.createElement('span'); unsaved.className = 'buffer-unsaved';
+    unsaved.textContent = t('buffer.unsavedEdit');
+    const markUnsaved = () => {
+      if (field.value === entry.text) noteDrafts.delete(draftKey); else noteDrafts.set(draftKey, field.value);
+      unsaved.hidden = !noteDrafts.has(draftKey);
     };
+    markUnsaved();
+    if (entry.kind === 'external') { field.readOnly = true; unsaved.hidden = true; }
+    else {
+      field.addEventListener('input', markUnsaved);
+      field.addEventListener('keydown', async event => {
+        if (event.isComposing || event.keyCode === 229) return;
+        if (event.key === 'Escape' && noteDrafts.has(draftKey)) {
+          event.preventDefault(); event.stopPropagation();   // undo the edit; the panel stays
+          field.value = entry.text; markUnsaved();
+          return;
+        }
+        if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
+        event.preventDefault();
+        if (!noteDrafts.has(draftKey)) return;
+        const result = editEntry(buffer, entry.id, field.value, Date.now());
+        if (result.error) { toast(t(bufferLimitKey(result.error))); return; }
+        if (await persistBuffer(card, buffer.revision || 0, result.buffer)) {
+          noteDrafts.delete(draftKey);
+          if (bufferStillShows(card.id, uiEpoch)) { field.blur(); renderBufferUI(); }
+        }
+      });
+    }
     const links = document.createElement('div'); links.className = 'buffer-links';
     for (const href of (entry.source?.links || []).filter(value => /^https?:\/\//.test(value))) {
       // the WKWebView never navigates or opens a window itself: every click
@@ -839,7 +883,7 @@ export function renderBufferUI() {
         renderBufferUI();
       }
     };
-    body.append(meta, field, links, copies); row.append(check, body, del); list.appendChild(row);
+    body.append(meta, field, unsaved, links, copies); row.append(check, body, del); list.appendChild(row);
   }
   $('buffer-empty').hidden = buffer.entries.length > 0;
   $('buffer-note-count').textContent = t('buffer.noteCount', { count: formatNumber(buffer.entries.length) });
@@ -960,12 +1004,19 @@ export function initBuffer() {
     const result = addManual(card.buffer || emptyBuffer(), { id: genId('N'), text, now: Date.now() });
     if (result.error) { toast(t(bufferLimitKey(result.error))); return; }
     if (await persistBuffer(card, card.buffer?.revision || 0, result.buffer)) {
+      if (newNoteDrafts.get(target) === submitted) newNoteDrafts.delete(target);
       if (bufferStillShows(target, uiEpoch)) {
         if (field.value === submitted) field.value = '';
         renderBufferUI();
       }
     }
   };
+  /* a note can be many lines: Enter types one, ⌘↵ adds it */
+  $('buffer-new').addEventListener('keydown', event => {
+    if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229 || !(event.metaKey || event.ctrlKey)) return;
+    event.preventDefault();
+    $('buffer-add').click();
+  });
   $('buffer-queue').onclick = queueSelectedBufferEntries;
   $('buffer-stop').onclick = async () => {
     const card = activeBufferCard();

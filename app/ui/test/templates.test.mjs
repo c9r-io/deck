@@ -80,7 +80,8 @@ globalThis.requestAnimationFrame = fn => setTimeout(fn, 0);
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false, addEventListener() {}, matchMedia: null };
 
 const { cfmDone } = await import('../js/dialogs.js');
-const { openTemplates, closeTemplates, initTemplates } = await import('../js/templates.js');
+const { openTemplates, closeTemplates, initTemplates, renderTemplates } = await import('../js/templates.js');
+const { t } = await import('../js/i18n.js');
 const { provider } = await import('../js/board.js');
 initTemplates({ provider });
 const { ctx, state, store } = await import('../js/state.js');
@@ -376,5 +377,76 @@ test('follow-ups are added, edited, reordered and removed like steps, without a 
   }
   assert.equal('followUps' in savedTemplates()[0], false, 'an empty list leaves no field');
   assert.deepEqual(savedTemplates()[0].steps, ['look at {{msg.text}}']);
+  closeTemplates();
+});
+
+/* A click away saves nothing: the editor stays open with what was typed,
+   through a re-render, and only ⌘↵ writes it. */
+test('a click away saves no step edit, and the draft survives a re-render', async () => {
+  seed([{ name: 'morning', steps: ['read the notes', 'plan the work'] }]);
+  const editor = await openEditor(0);
+  editor.value = 'read the notes twice';
+  editor.fire('input');
+  editor.fire('blur');
+  await settle();
+  assert.equal(writes.length, 0, 'blur writes nothing');
+  renderTemplates();
+  assert.equal(stepBody(0).children[0].tagName, 'TEXTAREA', 'the editor is still open');
+  assert.equal(stepBody(0).children[0].value, 'read the notes twice', 'with what was typed');
+  stepBody(0).children[0].fire('keydown', { key: 'Enter', metaKey: true });
+  await settle();
+  assert.deepEqual(savedTemplates()[0].steps, ['read the notes twice', 'plan the work']);
+  closeTemplates();
+});
+
+test('an unsaved edit is asked about before another row or closing takes it away', async () => {
+  seed([{ name: 'morning', steps: ['read the notes', 'plan the work'] }]);
+  const editor = await openEditor(0);
+  editor.value = 'changed'; editor.fire('input');
+  stepBody(1).children[0].fire('click');
+  await tick();
+  assert.equal($('cfm-msg').textContent, t('templates.discardEdit'));
+  cfmDone(false); await settle();
+  assert.equal(stepBody(0).children[0].value, 'changed', 'declined: the edit stays as typed');
+  assert.notEqual(stepBody(1).children[0].tagName, 'TEXTAREA');
+  stepBody(1).children[0].fire('click'); await tick();
+  cfmDone(true); await settle();
+  assert.equal(stepBody(1).children[0].tagName, 'TEXTAREA', 'agreed: the other row opens');
+  assert.equal(collapsedText(0), 'read the notes', 'and the discarded edit is gone');
+  assert.equal(writes.length, 0);
+  // an untouched editor goes without a question
+  stepBody(0).children[0].fire('click'); await settle();
+  assert.equal(stepBody(0).children[0].tagName, 'TEXTAREA');
+  // closing with an unsaved edit asks, and declining keeps the manager open
+  stepBody(0).children[0].value = 'other'; stepBody(0).children[0].fire('input');
+  closeTemplates(); await tick();
+  cfmDone(false); await settle();
+  assert.equal($('tpl-modal').style.display, 'flex');
+  assert.equal(stepBody(0).children[0].value, 'other');
+  closeTemplates(); await tick();
+  cfmDone(true); await settle();
+  assert.equal($('tpl-modal').style.display, 'none');
+  assert.equal(writes.length, 0, 'nothing was ever written');
+});
+
+test('a refused follow-up edit stays in its editor, and an append leaves an open editor as typed', async () => {
+  seed([{ name: 'triage', steps: ['look'], followUps: ['Commit.'] }]);
+  followBody(0).children[0].fire('click'); await tick();
+  const editor = followBody(0).children[0];
+  editor.value = 'Reply to {{msg.from}}'; editor.fire('input');
+  editor.fire('keydown', { key: 'Enter', metaKey: true });
+  await settle();
+  assert.equal(writes.length, 0);
+  assert.equal(followBody(0).children[0].tagName, 'TEXTAREA', 'the refused text is not thrown away');
+  assert.equal(followBody(0).children[0].value, 'Reply to {{msg.from}}');
+  // a step appended meanwhile moves no row: the follow-up editor stays as typed
+  $('tpl-step-text').value = 'then plan';
+  $('tpl-step-add').fire('click');
+  await settle();
+  assert.deepEqual(savedTemplates()[0].steps, ['look', 'then plan']);
+  assert.equal(followBody(0).children[0].value, 'Reply to {{msg.from}}');
+  followBody(0).children[0].fire('keydown', { key: 'Escape' });
+  await settle();
+  assert.deepEqual(savedTemplates()[0].followUps, ['Commit.']);
   closeTemplates();
 });

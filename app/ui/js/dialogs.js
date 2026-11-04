@@ -429,24 +429,36 @@ export function toast(msg) {
 }
 
 /* ---------- inline rename helper ----------
-   A textarea that shows all of its content instead of one scrolling line.
-   The ceiling is CSS (`max-height` on the field), so an over-tall height set
-   here is simply clamped and the field scrolls — no computed style is read,
-   and a host without layout (the DOM-contract tests) is left alone. */
+   A textarea shows all of its content instead of one scrolling line. The
+   engine does it (`field-sizing: content`, style.css) wherever it can; this
+   is the same from script for an engine that cannot, and a no-op otherwise.
+   The ceiling is CSS (`max-height`), so an over-tall height is clamped and
+   the field scrolls. The height counts the border (the box is border-box),
+   and the scroller around the field keeps its place while the field is
+   measured. A host without layout (the DOM-contract tests) is left alone. */
+const ENGINE_SIZES_FIELDS = typeof globalThis.CSS?.supports === 'function'
+  && globalThis.CSS.supports('field-sizing', 'content');
 export function autoGrowField(field) {
-  if (!field || !field.style) return;
+  if (ENGINE_SIZES_FIELDS || !field || !field.style || typeof field.scrollHeight !== 'number') return;
+  let scroller = field.parentElement;
+  while (scroller && !(scroller.scrollHeight > scroller.clientHeight)) scroller = scroller.parentElement;
+  const kept = scroller ? scroller.scrollTop : 0;
   field.style.height = 'auto';
-  if (typeof field.scrollHeight === 'number') field.style.height = field.scrollHeight + 'px';
+  field.style.height = `${field.scrollHeight + field.offsetHeight - field.clientHeight}px`;
+  if (scroller) scroller.scrollTop = kept;
 }
 
 /* One-shot edit lifecycle for a value shown in place. `multiline` swaps the
-   input for a growing textarea: a queued prompt or a template step can be
-   many lines, so Enter there TYPES a newline and ⌘↵/⌃↵ is what commits.
-   Escape restores, blur commits, and an IME's Enter never submits.
-   `initial` prefills the field with a draft instead of the current value
-   (Draft title): Enter takes it, Escape restores the current value, and a
-   draft nobody touched is not a decision, so a click away drops it. */
-export function inlineRename(host, current, onDone, { allowEmpty = false, multiline = false, initial = current } = {}) {
+   input for a growing textarea: a queued prompt can be many lines, so Enter
+   there TYPES a newline and ⌘↵/⌃↵ is what commits; Escape restores, and an
+   IME's Enter never submits. A multi-line edit is never saved by a click
+   away: blur leaves it open, and `onDraft` hears every change so a caller
+   that re-renders can open it again where it was (scheduler.js). A
+   one-line edit commits on blur, as before. `initial` prefills the field
+   with a draft instead of the current value (Draft title, or a multi-line
+   edit reopened): Enter takes it, Escape restores the current value, and a
+   one-line draft nobody touched is not a decision, so a click away drops it. */
+export function inlineRename(host, current, onDone, { allowEmpty = false, multiline = false, initial = current, onDraft = null, focus = true } = {}) {
   const button = host.tagName === 'BUTTON' ? host : null;
   if (button) {
     host = document.createElement('span'); host.className = button.className;
@@ -460,10 +472,18 @@ export function inlineRename(host, current, onDone, { allowEmpty = false, multil
     field.rows = 1;
     field.spellcheck = false;
   }
-  host.replaceChildren(field);
+  if (multiline) {
+    const keys = document.createElement('span');
+    keys.className = 'edit-keys';
+    keys.textContent = t('common.editKeys');
+    host.replaceChildren(field, keys);
+  } else host.replaceChildren(field);
   if (multiline) autoGrowField(field);
-  field.focus();
-  field.select();
+  /* an edit reopened by a re-render leaves the focus where the user put it */
+  if (focus) {
+    field.focus();
+    field.select();
+  }
   let done = false;
   const finish = commit => {
     if (done) return;
@@ -494,8 +514,11 @@ export function inlineRename(host, current, onDone, { allowEmpty = false, multil
       finish(false);
     }
   });
-  if (multiline) field.addEventListener('input', () => autoGrowField(field));
-  field.addEventListener('blur', () => finish(!(drafted && field.value === initial)));
+  if (multiline) {
+    field.addEventListener('input', () => { autoGrowField(field); if (onDraft) onDraft(field.value); });
+  } else {
+    field.addEventListener('blur', () => finish(!(drafted && field.value === initial)));
+  }
   field.addEventListener('click', e => e.stopPropagation());
   field.addEventListener('dblclick', e => e.stopPropagation());
 }
@@ -525,6 +548,13 @@ export function promptDialog(msg, initial = '') {
 /* DOM wiring, run once at boot (app.js) so the module can be imported
    without a document. */
 export function initDialogs() {
+  /* an engine without `field-sizing` grows every textarea from script */
+  if (!ENGINE_SIZES_FIELDS) {
+    document.addEventListener('input', event => {
+      const field = event.target;
+      if (field?.tagName === 'TEXTAREA' && !field.classList?.contains('xterm-helper-textarea')) autoGrowField(field);
+    }, true);
+  }
   $('cfm-yes').onclick = () => cfmDone(true);
   $('cfm-no').onclick = () => cfmDone(false);
 
