@@ -6,7 +6,7 @@
 //!
 //! Privacy: the hook's stdin payload (prompt text, notification message,
 //! tool input) never leaves this process and is never logged or stored.
-//! Exactly ONE field may be read from it — the source's interaction id
+//! ONE field may be read from it — the source's interaction id
 //! (`identity_field`: Codex `turn_id`, Claude Code `prompt_id`, a TOP-LEVEL
 //! key only, proven at runtime to be the source's own per-interaction id) —
 //! and it is forwarded only as a validated lowercase UUID
@@ -15,10 +15,19 @@
 //! id and the message falls back to v1. The payload buffer is dropped right
 //! after that one read. Every field that leaves this process is
 //! charset-validated below, so the emitted JSON needs no escaping and cannot
-//! carry content.
+//! carry content — with ONE exception, written into the hook by deck only
+//! while the user's turn-summary switch is on: a Claude Code `turn-done`
+//! hook run with `--reply` also reads the TOP-LEVEL string
+//! `last_assistant_message` (Claude's final message of the turn, documented
+//! for the Stop hook) and forwards its head and tail (`bounded_reply`) as
+//! the JSON-escaped `reply` of a v3 line. Without the flag, for any other
+//! source or word, or when the value is not a string or its key repeats,
+//! nothing of it is read or sent.
 //!
 //! Wire: v1 `{v:1, source, state, socket, server_pid, pane}`; v2 adds
-//! `interaction` (a source id, never synthesized). deck accepts both.
+//! `interaction` (a source id, never synthesized); v3 adds `reply` (with or
+//! without `interaction`). deck accepts all three; it takes `reply` off
+//! before its own parser sees the line (`turn_summary::split`).
 //!
 //! Identity: the pane id in the message is a claim; deck proves it by asking
 //! the kernel which process connected and walking that process's parents to
@@ -35,6 +44,21 @@ use serde::de::{Deserializer, IgnoredAny, MapAccess, Visitor};
 /// The largest hook payload the helper will inspect; beyond it no id is
 /// read (the rest is still drained so the agent never sees EPIPE).
 const MAX_PAYLOAD: usize = 1 << 20;
+
+/// The argument deck adds to Claude Code's Stop hook while turn summaries
+/// are on; it is honoured for `claude-code turn-done` only.
+const REPLY_FLAG: &str = "--reply";
+/// The one payload field the flag allows: Claude's final message.
+const REPLY_FIELD: &str = "last_assistant_message";
+/// The most of that message forwarded, in bytes: its head and its tail
+/// (what was done tends to come first, a question last).
+const REPLY_HEAD: usize = 2_000;
+const REPLY_TAIL: usize = 4_000;
+/// What joins the head and the tail of a reply that was cut.
+const REPLY_CUT: &str = "\n…\n";
+/// deck reads a first line of at most 8 KiB: a line with a reply stays
+/// under this, the reply cut further when its escaping makes it longer.
+const MAX_WIRE_LINE: usize = 8_000;
 
 /// The one payload field each source may contribute: its own interaction
 /// id, proven at runtime (Codex 0.157.0 `turn_id`: shared by start,
@@ -57,30 +81,51 @@ fn uuid_ok(s: &str) -> bool {
         })
 }
 
+/// What one pass over a payload keeps: the id field's string value and,
+/// only when asked for, the reply field's.
+#[derive(Debug, Default, PartialEq)]
+struct Fields {
+    id: Option<String>,
+    reply: Option<String>,
+}
+
 /// Reads a JSON document whose top level is an object, keeping only the
-/// string value of `field`; every other value is skipped (and still
-/// validated) by serde's `IgnoredAny`. A second `field` key is an error,
-/// never first- or last-wins.
-struct TopLevel(&'static str);
+/// string value of `id` and, when given, of `reply`; every other value is
+/// skipped (and still validated) by serde's `IgnoredAny`. A second key of
+/// either is an error, never first- or last-wins; a non-string id is an
+/// error too, while a reply that is not a string is simply not kept.
+struct TopLevel {
+    id: &'static str,
+    reply: Option<&'static str>,
+}
 
 impl<'de> Visitor<'de> for TopLevel {
-    type Value = Option<String>;
+    type Value = Fields;
 
     fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str("a JSON object")
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        let mut found: Option<String> = None;
-        let mut seen = false;
+        let mut found = Fields::default();
+        let (mut seen_id, mut seen_reply) = (false, false);
         while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
-            if key == self.0 {
-                if seen {
+            if key == self.id {
+                if seen_id {
                     return Err(serde::de::Error::custom("duplicate identity key"));
                 }
-                seen = true;
+                seen_id = true;
                 // a non-string value is a type error, i.e. no id
-                found = Some(map.next_value::<String>()?);
+                found.id = Some(map.next_value::<String>()?);
+            } else if Some(key.as_ref()) == self.reply {
+                if seen_reply {
+                    return Err(serde::de::Error::custom("duplicate reply key"));
+                }
+                seen_reply = true;
+                found.reply = match map.next_value::<serde_json::Value>()? {
+                    serde_json::Value::String(text) => Some(text),
+                    _ => None,
+                };
             } else {
                 map.next_value::<IgnoredAny>()?;
             }
@@ -113,16 +158,56 @@ fn read_payload(mut input: impl Read) -> Vec<u8> {
 
 /// The source's interaction id from a hook payload, or None. See the module
 /// header: allowlisted top-level field, validated UUID, nothing else.
+#[cfg(test)]
 fn interaction_from(source: &str, payload: &[u8]) -> Option<String> {
-    let field = identity_field(source)?;
+    fields_from(source, payload, false).id
+}
+
+/// The id and, with `reply` (the `--reply` flag on Claude Code's
+/// `turn-done`), the final message, from ONE pass over the payload. Any
+/// failure of the pass yields neither.
+fn fields_from(source: &str, payload: &[u8], reply: bool) -> Fields {
+    let Some(field) = identity_field(source) else {
+        return Fields::default();
+    };
     if payload.len() > MAX_PAYLOAD {
-        return None;
+        return Fields::default();
     }
-    let text = std::str::from_utf8(payload).ok()?;
+    let Ok(text) = std::str::from_utf8(payload) else {
+        return Fields::default();
+    };
     let mut de = serde_json::Deserializer::from_str(text);
-    let id = (&mut de).deserialize_map(TopLevel(field)).ok()??;
-    de.end().ok()?; // trailing garbage: malformed
-    uuid_ok(&id).then_some(id)
+    let visitor = TopLevel {
+        id: field,
+        reply: reply.then_some(REPLY_FIELD),
+    };
+    let Ok(found) = (&mut de).deserialize_map(visitor) else {
+        return Fields::default();
+    };
+    if de.end().is_err() {
+        return Fields::default(); // trailing garbage: malformed
+    }
+    Fields {
+        id: found.id.filter(|id| uuid_ok(id)),
+        reply: found.reply.filter(|text| !text.trim().is_empty()),
+    }
+}
+
+/// `text`, or its first `head` and last `tail` bytes (each cut at a
+/// character boundary) joined by `REPLY_CUT` when it is longer.
+fn bounded_reply(text: &str, head: usize, tail: usize) -> String {
+    if text.len() <= head + tail {
+        return text.to_string();
+    }
+    let mut end = head;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut start = text.len() - tail;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("{}{REPLY_CUT}{}", &text[..end], &text[start..])
 }
 
 /// `[a-z0-9-]{1,32}` — the alphabet for source/state words. The closed SET of
@@ -197,6 +282,32 @@ fn build_message(
     })
 }
 
+/// The v3 line: `build_message`'s line with `reply` (JSON-escaped by
+/// serde_json, the only escaped field) added, cut further until the line
+/// fits `MAX_WIRE_LINE`; the plain line when no cut of the reply fits.
+fn build_reply_message(
+    source: &str,
+    state: &str,
+    tmux: &str,
+    pane: &str,
+    interaction: Option<&str>,
+    reply: &str,
+) -> Option<String> {
+    let plain = build_message(source, state, tmux, pane, interaction)?;
+    let base = plain.strip_suffix("}\n")?;
+    let base = base
+        .strip_prefix("{\"v\":2,")
+        .or_else(|| base.strip_prefix("{\"v\":1,"))?;
+    for (head, tail) in [(REPLY_HEAD, REPLY_TAIL), (1_000, 2_000), (500, 1_000)] {
+        let escaped = serde_json::to_string(&bounded_reply(reply, head, tail)).ok()?;
+        let line = format!("{{\"v\":3,{base},\"reply\":{escaped}}}\n");
+        if line.len() <= MAX_WIRE_LINE {
+            return Some(line);
+        }
+    }
+    Some(plain)
+}
+
 fn main() {
     // The ONE allowlisted id is read from this buffer below; it is dropped
     // right after.
@@ -206,12 +317,22 @@ fn main() {
     let (Some(source), Some(state)) = (args.get(1), args.get(2)) else {
         return;
     };
-    let interaction = interaction_from(source, &payload);
+    // the reply only where deck's switch put the flag, and only on
+    // Claude Code's turn-done
+    let wants_reply = args.get(3).map(String::as_str) == Some(REPLY_FLAG)
+        && source == "claude-code"
+        && state == "turn-done";
+    let fields = fields_from(source, &payload, wants_reply);
     drop(payload);
     let (Ok(tmux), Ok(pane)) = (std::env::var("TMUX"), std::env::var("TMUX_PANE")) else {
         return; // not inside tmux — the agent runs outside deck; do nothing
     };
-    let Some(message) = build_message(source, state, &tmux, &pane, interaction.as_deref()) else {
+    let interaction = fields.id.as_deref();
+    let message = match fields.reply.as_deref() {
+        Some(reply) => build_reply_message(source, state, &tmux, &pane, interaction, reply),
+        None => build_message(source, state, &tmux, &pane, interaction),
+    };
+    let Some(message) = message else {
         return;
     };
     let Some(home) = std::env::var_os("HOME") else {
@@ -387,6 +508,140 @@ mod tests {
 
     const ID: &str = "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000";
     const OTHER: &str = "0199aaaa-bbbb-7ccc-8ddd-eeeeffff9999";
+
+    /// The reply is read only when asked for, only as a top-level string,
+    /// never twice, and never at the cost of the id's own rules.
+    #[test]
+    fn the_reply_is_one_top_level_string_and_only_when_asked() {
+        let payload = format!(
+            r#"{{"prompt_id":"{ID}","last_assistant_message":"Fixed it.\nCommit?","message":"SENTINEL"}}"#
+        );
+        let asked = fields_from("claude-code", payload.as_bytes(), true);
+        assert_eq!(asked.id.as_deref(), Some(ID));
+        assert_eq!(asked.reply.as_deref(), Some("Fixed it.\nCommit?"));
+        // not asked: the same payload yields the id alone
+        assert_eq!(
+            fields_from("claude-code", payload.as_bytes(), false),
+            Fields {
+                id: Some(ID.into()),
+                reply: None
+            }
+        );
+        // a reply that is not a string, or only space, is not kept; the id is
+        for other in [
+            r#"null"#,
+            r#"42"#,
+            r#"{"text":"x"}"#,
+            r#"["x"]"#,
+            r#""  \n ""#,
+        ] {
+            let payload = format!(r#"{{"prompt_id":"{ID}","last_assistant_message":{other}}}"#);
+            let found = fields_from("claude-code", payload.as_bytes(), true);
+            assert_eq!(
+                found,
+                Fields {
+                    id: Some(ID.into()),
+                    reply: None
+                },
+                "{other}"
+            );
+        }
+        // a repeated reply key fails the whole pass, as a repeated id does
+        let twice = format!(
+            r#"{{"prompt_id":"{ID}","last_assistant_message":"a","last_assistant_message":"b"}}"#
+        );
+        assert_eq!(
+            fields_from("claude-code", twice.as_bytes(), true),
+            Fields::default()
+        );
+        // nested, it is somebody else's field
+        let nested = format!(r#"{{"prompt_id":"{ID}","x":{{"last_assistant_message":"a"}}}}"#);
+        assert_eq!(
+            fields_from("claude-code", nested.as_bytes(), true).reply,
+            None
+        );
+        // without an id the reply still travels (a v3 line without interaction)
+        let alone = r#"{"last_assistant_message":"Done."}"#;
+        assert_eq!(
+            fields_from("claude-code", alone.as_bytes(), true),
+            Fields {
+                id: None,
+                reply: Some("Done.".into())
+            }
+        );
+    }
+
+    #[test]
+    fn a_long_reply_keeps_its_head_and_tail_on_character_boundaries() {
+        assert_eq!(bounded_reply("short", 2, 3), "short");
+        let text = format!(
+            "{}{}{}",
+            "头".repeat(1_000),
+            "x".repeat(20_000),
+            "尾".repeat(2_000)
+        );
+        let cut = bounded_reply(&text, REPLY_HEAD, REPLY_TAIL);
+        assert!(cut.len() <= REPLY_HEAD + REPLY_TAIL + REPLY_CUT.len());
+        assert!(cut.starts_with('头') && cut.ends_with('尾'));
+        assert!(cut.contains(REPLY_CUT));
+        // 3-byte characters: the cut never lands inside one
+        let cut = bounded_reply(&"字".repeat(5_000), 1_000, 1_000);
+        assert!(cut
+            .split(REPLY_CUT)
+            .all(|part| part.chars().all(|c| c == '字')));
+    }
+
+    #[test]
+    fn a_reply_line_is_escaped_json_that_fits_deck_or_is_not_sent() {
+        let line = build_reply_message(
+            "claude-code",
+            "turn-done",
+            "/t/deck,9,0",
+            "%1",
+            Some(ID),
+            "已修好 \"login\"\n要提交吗？\t\u{1}",
+        )
+        .unwrap();
+        assert_eq!(
+            line,
+            format!("{{\"v\":3,\"source\":\"claude-code\",\"state\":\"turn-done\",\"socket\":\"deck\",\"server_pid\":9,\"pane\":\"%1\",\"interaction\":\"{ID}\",\"reply\":\"已修好 \\\"login\\\"\\n要提交吗？\\t\\u0001\"}}\n")
+        );
+        let parsed: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(parsed["reply"], "已修好 \"login\"\n要提交吗？\t\u{1}");
+        // without an id: v3 all the same, and no interaction
+        let line = build_reply_message("claude-code", "turn-done", "/t/deck,9,0", "%1", None, "ok")
+            .unwrap();
+        assert!(line.starts_with("{\"v\":3,") && !line.contains("interaction"));
+        // a long reply is cut to fit the line deck reads
+        let line = build_reply_message(
+            "claude-code",
+            "turn-done",
+            "/t/deck,9,0",
+            "%1",
+            Some(ID),
+            &"a".repeat(50_000),
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert!(line.len() <= MAX_WIRE_LINE);
+        assert!(parsed["reply"].as_str().unwrap().contains(REPLY_CUT));
+        // escaping that cannot fit even the smallest cut: the plain line
+        let line = build_reply_message(
+            "claude-code",
+            "turn-done",
+            "/t/deck,9,0",
+            "%1",
+            Some(ID),
+            &"\u{1}".repeat(6_000),
+        )
+        .unwrap();
+        assert!(line.starts_with("{\"v\":2,") && !line.contains("reply"));
+        // nothing for an invalid pane, as the plain line
+        assert!(
+            build_reply_message("claude-code", "turn-done", "/t/deck,9,0", "nope", None, "x")
+                .is_none()
+        );
+    }
 
     fn codex(payload: &str) -> Option<String> {
         interaction_from("codex", payload.as_bytes())

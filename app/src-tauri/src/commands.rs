@@ -573,6 +573,10 @@ pub(crate) struct SessInfo {
     /// the backend's authoritative "this turn-done episode was viewed" —
     /// every attention surface converges to it (FR-SI-05)
     episode_viewed: bool,
+    /// one line about what Claude said when that episode's turn ended
+    /// (`turn_summary`, opt-in); gone with the episode. Presentation only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
     /// retirement evidence for the automation finish rule, paired with
     /// `agent` ("no agent state and a shell in front"): the foreground of
     /// that SAME Signal target pane, and ONLY for a single-pane session
@@ -1044,6 +1048,9 @@ pub(crate) fn poll_observing_bells(
                 pi_session: pane.and(evidence.get(&name)).and_then(|e| e.pi_session),
                 episode: pane.and(agents.get(&name)).map(|o| o.episode),
                 episode_viewed: pane.and(agents.get(&name)).is_some_and(|o| o.viewed),
+                summary: pane
+                    .and(agents.get(&name))
+                    .and_then(|o| crate::turn_summary::for_episode(&name, o.episode)),
                 finish_fg: pane.and_then(|_| finish.remove(&name)),
                 bell: rung.contains_key(&name),
                 name,

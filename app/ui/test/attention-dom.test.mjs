@@ -87,3 +87,31 @@ test('a held delivery never paints the attention badge', () => {
   assert.equal(ctx.attention.waiting(card), 'ambiguous');
   assert.deepEqual([el.hidden, el.textContent], [true, '']);
 });
+
+test('a turn summary follows its turn ending on the status line and in the title, and goes with it', () => {
+  setLocale('en');
+  const card = { id: 'sum', session: 'sum-session', title: 'Summary' };
+  ctx.attention = createAttentionTracker();
+  const label = new FakeElement(), help = new FakeElement('button');
+  const row = { querySelector: selector => selector === '.card-status-text' ? label : help, title: '' };
+  const poll = (rest, at) => ctx.attention.record([card], [{ name: card.session, alive: true, idle_secs: 1, ...rest }], new Set(), at);
+  poll({ agent: 'turn-done', episode: 41, summary: '  Fixed the login test; asks whether to commit  ' }, 1);
+  assert.equal(ctx.attention.get(card).summary, 'Fixed the login test; asks whether to commit');
+  paintCardSignalStatus(row, card);
+  assert.equal(label.textContent, `${t('attention.doneUnread')} · Fixed the login test; asks whether to commit`);
+  assert.ok(row.title.endsWith('\nFixed the login test; asks whether to commit'), 'the whole line is in the title');
+  // a stale snapshot keeps it and says so
+  ctx.attention.fail();
+  assert.equal(attentionStatusText(card), `${t('attention.doneUnread')} · Fixed the login test; asks whether to commit · ${t('attention.old')}`);
+  // the next turn has no summary: nothing old is shown
+  poll({ agent: 'working', episode: 42 }, 2);
+  assert.equal(ctx.attention.get(card).summary, null);
+  assert.equal(attentionStatusText(card), t('attention.working'));
+  // a summary without an episode is never taken, and blank text is none
+  poll({ summary: 'stray' }, 3);
+  assert.equal(ctx.attention.get(card).summary, null);
+  poll({ agent: 'turn-done', episode: 43, summary: '   ' }, 4);
+  assert.equal(ctx.attention.get(card).summary, null);
+  poll({ agent: 'turn-done', episode: 44, summary: 'x'.repeat(500) }, 5);
+  assert.equal(ctx.attention.get(card).summary.length, 200, 'bounded on the page too');
+});

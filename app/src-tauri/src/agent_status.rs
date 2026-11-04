@@ -13,6 +13,11 @@
 //! Design rules (mirror the scheduler's context philosophy):
 //! - The state is a CLOSED enum. Prompt text, notification messages and hook
 //!   payloads never enter this module — the helper already discarded them.
+//!   One exception passes THROUGH it: while the user's turn-summary switch
+//!   is on, a Claude Code `turn-done` line (wire v3) carries Claude's final
+//!   message; `dispatch` takes it off with `turn_summary::split` before the
+//!   parser sees the line and hands it, unread and unstored, to
+//!   `turn_summary::offer` only when `ingest_accepted` accepted the event.
 //! - Identity (FR-SI-03). An observation is stored per pane generation
 //!   (`PaneKey`: tmux server pid + pane id) and bound to the pane's session
 //!   id, pane process and FOREGROUND GENERATION — the tty foreground
@@ -1180,6 +1185,26 @@ use crate::agent_origin::{terminal_continuous, ORIGIN_HOPS};
 // Re-exported: existing callers and tests name the origin through this module.
 pub(crate) use crate::agent_origin::Origin;
 
+/// `ingest_accepted` without what it accepted: the form the tests use.
+#[cfg(test)]
+pub(crate) fn ingest(
+    line: &str,
+    origin: &Origin,
+    listing: impl FnOnce() -> Option<Vec<PaneRow>>,
+) -> Result<(), &'static str> {
+    ingest_accepted(line, origin, listing).map(|_| ())
+}
+
+/// What `ingest_accepted` accepted, for `dispatch` to hand a turn ending's
+/// final message on (`turn_summary`): the observation's session, episode,
+/// word and source class.
+pub(crate) struct Accepted {
+    pub(crate) session: String,
+    pub(crate) episode: EpisodeId,
+    pub(crate) state: &'static str,
+    pub(crate) class: SignalClass,
+}
+
 /// Validate one wire line and commit it to the store. Admission, in order:
 /// a kernel peer (`no-peer`), a pane of this server generation
 /// (`no-such-pane`), the pane's own process in the peer's ancestry
@@ -1199,12 +1224,13 @@ pub(crate) use crate::agent_origin::Origin;
 /// that is its session's Signal target reaches the notification layer;
 /// any other pane's event waits in the store until that pane becomes the
 /// target (`reconcile` projects it then). `listing` is injected so tests
-/// run the full path without a live tmux server.
-pub(crate) fn ingest(
+/// run the full path without a live tmux server. What it accepted comes
+/// back (`Accepted`) for `ingest_line`.
+pub(crate) fn ingest_accepted(
     line: &str,
     origin: &Origin,
     listing: impl FnOnce() -> Option<Vec<PaneRow>>,
-) -> Result<(), &'static str> {
+) -> Result<Accepted, &'static str> {
     let event = parse_event(line)?;
     let chain = origin
         .peer
@@ -1339,7 +1365,12 @@ pub(crate) fn ingest(
     if targeted {
         crate::notify::observe(&row.session_name, observation);
     }
-    Ok(())
+    Ok(Accepted {
+        session: row.session_name.clone(),
+        episode: observation.episode,
+        state: event.state,
+        class,
+    })
 }
 
 // ---------- Pi observer ingress ------------------------------------------------
@@ -2153,8 +2184,25 @@ fn dispatch(
     drop(stream);
     // categorized, content-free, and bounded — a hostile local writer
     // must not be able to grow app.log without limit
-    let result = ingest(&line, &origin, || crate::tmux::list_panes().ok());
+    let result = ingest_line(&line, &origin, || crate::tmux::list_panes().ok());
     note(drops, result.err());
+}
+
+/// One Signal line as `dispatch` takes it. While the turn-summary switch is
+/// on, a Claude turn ending's final message rides on a v3 line: it comes
+/// off first (`turn_summary::split`), so the parser sees the ordinary line,
+/// and it is handed on only for an event `ingest_accepted` accepted.
+fn ingest_line(
+    line: &str,
+    origin: &Origin,
+    listing: impl FnOnce() -> Option<Vec<PaneRow>>,
+) -> Result<(), &'static str> {
+    let (line, reply) = crate::turn_summary::split(line);
+    let accepted = ingest_accepted(&line, origin, listing)?;
+    if let Some(reply) = reply {
+        crate::turn_summary::offer(&accepted, reply);
+    }
+    Ok(())
 }
 
 /// The production first-line read and the dispatcher's step, one after the
@@ -2661,6 +2709,72 @@ mod tests {
             crate::admission::interactive_agent("claude"),
             Some("claude")
         );
+    }
+
+    /// A v3 turn ending: its final message reaches the card's summary only
+    /// when the event is accepted, only for Claude Code's turn-done, and the
+    /// rest of the line is the ordinary one.
+    #[test]
+    fn a_turn_endings_message_reaches_its_card_only_through_an_accepted_event() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        let _kept = crate::turn_summary::TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let rows = [row("deck-card-sum1", "$1", "%3", 300, true, "claude")];
+        let good = with_helper(world(&[pane(300, 7, 310, 2000)]), 320, 310);
+        let origin = |peer| Origin {
+            peer,
+            table: good.clone(),
+        };
+        let v3 = |state: &str, reply: &str| {
+            let base = event_line(state, "%3").replacen("\"v\":1", "\"v\":3", 1);
+            format!(
+                "{},\"reply\":{}}}",
+                &base[..base.len() - 1],
+                serde_json::to_string(reply).unwrap()
+            )
+        };
+        let summary = || {
+            projections(&rows)
+                .get("deck-card-sum1")
+                .and_then(|o| crate::turn_summary::for_episode("deck-card-sum1", o.episode))
+        };
+        // refused (no kernel peer): nothing is ingested and nothing is kept
+        assert_eq!(
+            ingest_line(&v3("turn-done", "SENTINEL"), &origin(None), || Some(
+                rows.to_vec()
+            )),
+            Err("no-peer")
+        );
+        assert_eq!(summary(), None);
+        // a working word with a reply is ingested, its text is not kept
+        assert_eq!(
+            ingest_line(&v3("working", "SENTINEL"), &origin(Some(320)), || Some(
+                rows.to_vec()
+            )),
+            Ok(())
+        );
+        assert_eq!(projections(&rows)["deck-card-sum1"].state, "working");
+        assert_eq!(summary(), None);
+        // the accepted turn ending: a short message is its own summary
+        assert_eq!(
+            ingest_line(
+                &v3("turn-done", "Fixed the login test. Commit?"),
+                &origin(Some(320)),
+                || Some(rows.to_vec())
+            ),
+            Ok(())
+        );
+        assert_eq!(projections(&rows)["deck-card-sum1"].state, "turn-done");
+        assert_eq!(summary().as_deref(), Some("Fixed the login test. Commit?"));
+        // the next turn hides it at once
+        assert_eq!(
+            ingest_line(&event_line("working", "%3"), &origin(Some(320)), || Some(
+                rows.to_vec()
+            )),
+            Ok(())
+        );
+        assert_eq!(summary(), None);
+        reset_for_tests();
     }
 
     #[test]

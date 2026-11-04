@@ -79,6 +79,9 @@ export function attentionStatusText(card) {
   else if (gap) text = t(gap === 'unknown' ? 'signal.codex.unknown' : 'signal.codex.unavailable');
   else text = t(snapshot.idle == null ? 'attention.noSignal'
     : snapshot.idle >= QUIET_SECS ? 'attention.quiet' : 'attention.recent');
+  /* the turn summary (opt-in) follows its turn ending's status; the backend
+     sends one only with that episode */
+  if (snapshot.summary) text = `${text} · ${snapshot.summary}`;
   return snapshot.stale ? `${text} · ${t('attention.old')}` : text;
 }
 
@@ -101,7 +104,8 @@ export async function showSignalDiagnostics(card, opener = null) {
 export function paintCardSignalStatus(el, card) {
   if (!el) return;
   el.querySelector('.card-status-text').textContent = attentionStatusText(card);
-  el.title = sourceText(card);
+  /* the status line is cut with an ellipsis: the whole summary is here */
+  el.title = [sourceText(card), ctx.attention.get(card)?.summary].filter(Boolean).join('\n');
   const help = el.querySelector('.card-signal-help');
   help.hidden = !codexCoverageGap(ctx.attention.get(card)) && !piCoverage(ctx.attention.get(card));
   help.textContent = t('signal.details');

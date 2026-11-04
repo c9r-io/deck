@@ -167,6 +167,11 @@ export function createAttentionTracker() {
           piSignal: info.alive && PI_COVERAGE.includes(info.pi_signal) ? info.pi_signal : null,
           piSession: info.alive && PI_SESSION.includes(info.pi_session) ? info.pi_session : null,
           idle: info.idle_secs ?? null, observedAt: now, stale: false, episode, episodeViewed,
+          /* one line about what Claude said when this episode's turn ended
+             (turn_summary.rs, opt-in): the backend sends it only for the
+             current episode, so a new turn drops it */
+          summary: episode != null && typeof info.summary === 'string' && info.summary.trim()
+            ? info.summary.trim().slice(0, 200) : null,
           bell: info.alive && !agent && info.bell === true,
           seen: episode != null
             ? !!(episodeViewed || visible.has(card.id) || (old?.episode === episode && old.seen))

@@ -140,9 +140,23 @@ the Mac. Any other card's pane end (at most 8,000 bytes) goes once to the
 provider whose key is stored, Anthropic first: `claude-opus-5-5` at low effort
 through the Messages API (API version 2026-10-21, default refusal
 fallbacks), or the newest of a short list of OpenAI models the account
-offers through the Responses API. `model_api::draft_title` is the one path
-that sends content; the Settings hint says so. Another feature that sends
-content brings its own consent and data boundary rather than widen this one.
+offers through the Responses API. The Settings hint says what it sends and
+where.
+
+The second use sits behind its own switch in the same panel: Summarize turn
+endings (`turn_summary.rs`). The switch is Claude Code's Stop hook itself:
+while it is on, deck's Stop hook runs the status helper with `--reply`, and
+the helper forwards Claude's final message of the turn (its head and tail,
+at most about 6 KB) on a v3 line. Deck takes it off before its status parser
+sees the line, keeps it only for a turn ending it accepted, and shows a
+one-line message as it is; a longer one goes once to the stored provider
+for one line. The line appears on the card's status row and in Needs
+attention, never in a notification, and goes with the next turn. Turning
+the switch on needs the Claude Code status hooks and a release install;
+its state is read back from the hooks file. `model_api::complete` (through
+`draft_title` and `summarize_turn`) is the only path that sends content.
+Another feature that sends content brings its own consent and data boundary
+rather than widen this one.
 
 ## Adding a first-party extension
 

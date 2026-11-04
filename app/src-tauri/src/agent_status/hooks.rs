@@ -16,6 +16,12 @@
 //! per-source observations.
 //! Helpers stay in the bundle, and only the unreferenced legacy copy is retired.
 //!
+//! Claude Code's install has a second spec table, `CLAUDE_HOOKS_WITH_REPLY`:
+//! the same hooks with `--reply` on the Stop hook, the user's turn-summary
+//! switch (`turn_summary_set`, `turn_summary.rs`). Which table is current is
+//! read from the file (`current_specs`): boot migration and re-enabling the
+//! status hooks keep the switch as found, and uninstall takes both out.
+//!
 //! The adapter declarations describe installation and proof class; they grant
 //! no Signal, pane ownership, input readiness or authority. Live admission,
 //! observations and socket dispatch remain in the parent module. Pi owns its
@@ -95,7 +101,9 @@ impl Family {
     }
 }
 
-/// One deck hook: (event, optional matcher, state word).
+/// One deck hook: (event, optional matcher, the helper's words after the
+/// source — its state word, and for Claude Code's Stop while turn summaries
+/// are on, `--reply`). `hook_value` splits them into the hook's arguments.
 type HookSpec = (&'static str, Option<&'static str>, &'static str);
 
 /// Claude Code: `Notification` matches ONLY `permission_prompt` — a question
@@ -111,6 +119,20 @@ const CLAUDE_HOOKS: &[HookSpec] = &[
     ("UserPromptSubmit", None, "working"),
     ("Notification", Some("permission_prompt"), "needs-input"),
     ("Stop", None, "turn-done"),
+];
+
+/// The flag the Stop hook carries while turn summaries are on: with it the
+/// helper also forwards Claude's final message (`turn_summary.rs`).
+const REPLY_FLAG: &str = "--reply";
+
+/// `CLAUDE_HOOKS` while the user's turn-summary switch is on: the same
+/// hooks, the Stop hook with `--reply`. Which table is current is read from
+/// the file (`current_specs`), so the switch has no second store and boot
+/// migration keeps whichever the user chose.
+const CLAUDE_HOOKS_WITH_REPLY: &[HookSpec] = &[
+    ("UserPromptSubmit", None, "working"),
+    ("Notification", Some("permission_prompt"), "needs-input"),
+    ("Stop", None, "turn-done --reply"),
 ];
 
 /// Codex lifecycle hooks (hooks.json; several hooks per event may coexist,
@@ -172,12 +194,13 @@ fn lifecycle_style(style: HookStyle) -> HookStyle {
 
 /// One deck hook object in the agent's document shape.
 fn hook_value(style: HookStyle, helper: &str, source: &str, state: &str) -> serde_json::Value {
+    let args: Vec<&str> = std::iter::once(source).chain(state.split(' ')).collect();
     match style {
         HookStyle::Exec => serde_json::json!({
-            "type": "command", "command": helper, "args": [source, state], "timeout": 10
+            "type": "command", "command": helper, "args": args, "timeout": 10
         }),
         HookStyle::ExecBrief => serde_json::json!({
-            "type": "command", "command": helper, "args": [source, state], "timeout": 1
+            "type": "command", "command": helper, "args": args, "timeout": 1
         }),
         HookStyle::ShellAsync => serde_json::json!({
             "type": "command", "command": format!("\"{helper}\" {source} {state}"),
@@ -1125,6 +1148,8 @@ pub(crate) enum SignalClass {
 /// style, where its hooks document lives, and the Lifecycle family's hooks.
 pub(crate) struct HookInstall {
     hooks: &'static [HookSpec],
+    /// The same hooks while turn summaries are on (Claude Code only).
+    reply_hooks: Option<&'static [HookSpec]>,
     style: HookStyle,
     config_path: fn() -> Option<PathBuf>,
     never_ran: &'static str,
@@ -1156,6 +1181,38 @@ pub(crate) struct AgentAdapter {
     pub(crate) reentry: Option<&'static crate::agent_reentry::ReentryCapability>,
 }
 
+/// Whether deck's Stop hook in this document carries `--reply`: the
+/// turn-summary switch, read from the file it lives in.
+fn replies_on(root: &serde_json::Value) -> bool {
+    root.get("hooks")
+        .and_then(|hooks| hooks.get("Stop"))
+        .and_then(|list| list.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(entry_hooks)
+        .filter(|hook| hook_is_ours(Family::Signal, hook))
+        .any(|hook| {
+            let in_args = hook
+                .get("args")
+                .and_then(|args| args.as_array())
+                .is_some_and(|args| args.iter().any(|arg| arg.as_str() == Some(REPLY_FLAG)));
+            let in_command = hook
+                .get("command")
+                .and_then(|command| command.as_str())
+                .is_some_and(|command| command.split(' ').any(|word| word == REPLY_FLAG));
+            in_args || in_command
+        })
+}
+
+/// The spec table this document's install is meant to match: the reply
+/// variant while its Stop hook carries `--reply`, else the plain one.
+fn current_specs(install: &HookInstall, root: &serde_json::Value) -> &'static [HookSpec] {
+    match install.reply_hooks {
+        Some(reply_hooks) if replies_on(root) => reply_hooks,
+        _ => install.hooks,
+    }
+}
+
 impl AgentAdapter {
     /// The hook-based installation, when this agent has one.
     fn hook_install(&self) -> Option<&HookInstall> {
@@ -1171,6 +1228,7 @@ pub(crate) const CLAUDE_CODE: AgentAdapter = AgentAdapter {
     class: SignalClass::Claude,
     install: Install::Hooks(HookInstall {
         hooks: CLAUDE_HOOKS,
+        reply_hooks: Some(CLAUDE_HOOKS_WITH_REPLY),
         style: HookStyle::Exec,
         config_path: claude_settings_path,
         never_ran: "Claude Code has never run on this Mac — nothing to configure",
@@ -1184,6 +1242,7 @@ pub(crate) const CODEX: AgentAdapter = AgentAdapter {
     class: SignalClass::Codex,
     install: Install::Hooks(HookInstall {
         hooks: CODEX_HOOKS,
+        reply_hooks: None,
         style: HookStyle::ShellAsync,
         config_path: codex_hooks_path,
         never_ran: "Codex has never run on this Mac — nothing to configure",
@@ -1207,18 +1266,15 @@ fn migrate_hook_adapter_on_boot(adapter: &AgentAdapter, helper: &str) -> bool {
         return false;
     };
     let mut legacy_referenced = false;
-    let (specs, source, style, never_ran) = (
-        install.hooks,
-        adapter.source,
-        install.style,
-        install.never_ran,
-    );
+    let (source, style, never_ran) = (adapter.source, install.style, install.never_ran);
     let Some(path) = (install.config_path)() else {
         return false;
     };
     let Ok(value) = read_settings_value(&path) else {
         return false;
     };
+    // the turn-summary switch is part of the install: kept as found
+    let specs = current_specs(install, &value);
     // The Lifecycle family is migrated only where the user already
     // enabled it: a user with the status hooks alone is never enrolled.
     // A missing lifecycle helper leaves those entries exactly as they are.
@@ -1469,14 +1525,13 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
             return crate::agent_pi::config::set(crate::agent_pi::Capability::Signal, enable)
         }
     };
-    let (specs, source, style, never_ran) = (
-        install.hooks,
-        adapter.source,
-        install.style,
-        install.never_ran,
-    );
+    let (source, style, never_ran) = (adapter.source, install.style, install.never_ran);
     let path =
         (install.config_path)().ok_or(DeckError::new(ErrorKind::Other, "no home directory"))?;
+    // re-enabling over an existing install keeps its turn-summary switch
+    let specs = read_settings_value(&path)
+        .map(|value| current_specs(install, &value))
+        .unwrap_or(install.hooks);
     let result = if enable {
         installed_helper_path().and_then(|helper| {
             let edit = HookEdit::Install {
@@ -1503,6 +1558,72 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
         )),
     }
     result
+}
+
+/// The turn-summary switch as Settings shows it: whether Claude Code's
+/// status hooks are on (the switch needs them) and whether their Stop hook
+/// carries `--reply`. Read from the hooks file; nothing else stores it.
+#[derive(serde::Serialize)]
+pub(crate) struct TurnSummaryStatus {
+    hooks: bool,
+    on: bool,
+}
+
+#[tauri::command]
+pub(crate) fn turn_summary_status() -> TurnSummaryStatus {
+    let install = CLAUDE_CODE.hook_install();
+    let value = install
+        .and_then(|install| (install.config_path)())
+        .and_then(|path| read_settings_value(&path).ok());
+    let hooks = value
+        .as_ref()
+        .zip(install)
+        .is_some_and(|(value, install)| hooks_installed(value, install.hooks));
+    TurnSummaryStatus {
+        hooks,
+        on: hooks && value.as_ref().is_some_and(replies_on),
+    }
+}
+
+/// The user's explicit turn-summary switch: rewrites ONLY deck's Claude
+/// Code status hooks, with or without `--reply` on the Stop hook. It needs
+/// those hooks on and a release install, as every hook edit does; the
+/// user's own hooks and every other byte stay. Refusals are closed words:
+/// `unreadable`, `hooks-off`, `release-only`, `write`.
+#[tauri::command]
+pub(crate) fn turn_summary_set(enable: bool) -> Result<(), DeckError> {
+    let refused = |code: &'static str| {
+        applog(&format!(
+            "[agent-hooks] turn summaries {} refused ({code})",
+            if enable { "on" } else { "off" }
+        ));
+        DeckError::new(ErrorKind::Other, code)
+    };
+    let install = CLAUDE_CODE
+        .hook_install()
+        .ok_or_else(|| refused("unreadable"))?;
+    let path = (install.config_path)().ok_or_else(|| refused("unreadable"))?;
+    let value = read_settings_value(&path).map_err(|_| refused("unreadable"))?;
+    if !hooks_installed(&value, install.hooks) {
+        return Err(refused("hooks-off"));
+    }
+    let specs = match (enable, install.reply_hooks) {
+        (true, Some(reply_hooks)) => reply_hooks,
+        _ => install.hooks,
+    };
+    let helper = installed_helper_path().map_err(|_| refused("release-only"))?;
+    let edit = HookEdit::Install {
+        specs,
+        source: CLAUDE_CODE.source,
+        style: install.style,
+        helper: &helper,
+    };
+    hooks_set(&path, edit, install.never_ran).map_err(|_| refused("write"))?;
+    applog(&format!(
+        "[agent-hooks] turn summaries {}",
+        if enable { "on" } else { "off" }
+    ));
+    Ok(())
 }
 
 /// The user's explicit opt-in to one agent's session re-entry observation

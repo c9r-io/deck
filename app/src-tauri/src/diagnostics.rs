@@ -351,6 +351,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "ti-composition-boundary",
     "ti-exception",
     "signal-completed",
+    "signal-summary",
     "signal-closed",
     "signal-cleanup",
     "signal-exception",

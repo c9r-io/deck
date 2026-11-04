@@ -8,7 +8,7 @@ import { fakeDocument, ids } from './fixtures/dom-fixture.mjs';
 
 globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
-const { CONTRIBUTION, MODEL_API_PROVIDERS, modelApiError, modelApiLine } = await import('../js/extension-model-api.js');
+const { CONTRIBUTION, MODEL_API_PROVIDERS, modelApiError, modelApiLine, turnSummaryError, turnSummaryLine } = await import('../js/extension-model-api.js');
 const { t } = await import('../js/i18n.js');
 
 const $ = id => fakeDocument.getElementById(id);
@@ -19,6 +19,7 @@ const formatDateTime = ms => `T${ms / 1000}`;
    earlier test's listeners cannot answer for this one */
 function harness() {
   for (const id of MODEL_API_PROVIDERS) for (const suffix of ['', '-check', '-clear', '-state']) ids.delete(`set-model-${id}${suffix}`);
+  for (const id of ['set-model-summary', 'set-model-summary-state']) ids.delete(id);
   const calls = []; const toasts = []; const answers = {};
   let confirm = true;
   const inv = async (name, args) => {
@@ -132,4 +133,52 @@ test('an older status read never paints over a newer one', async () => {
   pending[0](status({ saved: false, check: null }));
   await first;
   assert.equal($('set-model-openai-state').textContent, t('settings.modelApiSaved'));
+});
+
+test('the turn-summary line says what the switch needs, its state, and that it is unknown', () => {
+  const env = { t };
+  assert.equal(turnSummaryLine(null, true, false, env), t('settings.readFailed'));
+  assert.equal(turnSummaryLine({ hooks: false, on: false }, true, false, env), t('settings.turnSummaryNeedsHooks'));
+  assert.equal(turnSummaryLine({ hooks: true, on: false }, true, false, env), t('settings.turnSummaryOff'));
+  assert.equal(turnSummaryLine({ hooks: true, on: true }, true, false, env), t('settings.turnSummaryOn'));
+  assert.equal(turnSummaryLine({ hooks: true, on: true }, false, false, env), t('settings.turnSummaryNoKey'), 'no key: one-line messages only');
+  assert.equal(turnSummaryLine({ hooks: true, on: true }, true, true, env), t('settings.turnSummaryChanging'));
+  assert.equal(turnSummaryError('hooks-off'), 'settings.turnSummaryNeedsHooks');
+  assert.equal(turnSummaryError('release-only'), 'error.turnSummaryRelease');
+  for (const code of ['write', 'unreadable', 'Error: x']) assert.equal(turnSummaryError(code), 'error.turnSummaryFailed');
+});
+
+test('the switch is read from the hooks, turned by the backend, and offered only with the hooks on', async () => {
+  const { controller, calls, toasts, answers } = harness();
+  answers.model_api_status = status({ saved: false, check: null }, { saved: true, check: null });
+  answers.turn_summary_status = { hooks: true, on: false };
+  await controller.refresh();
+  const box = $('set-model-summary');
+  assert.equal(box.checked, false);
+  assert.equal(box.disabled, false);
+  assert.equal($('set-model-summary-state').textContent, t('settings.turnSummaryOff'));
+  // on: one call, then the state read back from the file
+  answers.turn_summary_set = () => { answers.turn_summary_status = { hooks: true, on: true }; };
+  box.checked = true; box.fire('change');
+  await tick(); await tick(); await tick();
+  assert.deepEqual(calls.filter(call => call.name === 'turn_summary_set').map(call => call.args), [{ enable: true }]);
+  assert.equal(toasts.at(-1), t('settings.turnSummaryEnabled'));
+  assert.equal(box.checked, true);
+  assert.equal($('set-model-summary-state').textContent, t('settings.turnSummaryOn'));
+  // a refusal says why, and the box shows the file's state again
+  answers.turn_summary_set = () => Promise.reject('release-only');
+  box.checked = false; box.fire('change');
+  await tick(); await tick(); await tick();
+  assert.equal(toasts.at(-1), t('error.turnSummaryRelease'));
+  assert.equal(box.checked, true, 'still on: the file says so');
+  // without the hooks, turning on is not offered
+  answers.turn_summary_status = { hooks: false, on: false };
+  await controller.refresh();
+  assert.equal(box.disabled, true);
+  assert.equal($('set-model-summary-state').textContent, t('settings.turnSummaryNeedsHooks'));
+  // an unreadable file: unknown, nothing to act on
+  answers.turn_summary_status = () => { throw new Error('ipc'); };
+  await controller.refresh();
+  assert.equal(box.disabled, true);
+  assert.equal($('set-model-summary-state').textContent, t('settings.readFailed'));
 });

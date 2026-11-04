@@ -19,6 +19,10 @@
 //! payload whose `prompt_id` is this interaction's id (the first prompt,
 //! then the resumed one), plus decoy text fields and a fake id inside the
 //! prompt; only the real id may reach deck (`v=2` in its app.log).
+//! The resumed turn's ending is reported the way Claude Code's Stop hook
+//! runs while turn summaries are on (`--reply`, a v3 line): its
+//! `last_assistant_message` is the fixed `RESUMED_REPLY`, one short line,
+//! so deck shows it as the card's summary without a model.
 //!
 //! Content-free: the delivered prompt is read and discarded, the sentinels
 //! (`STARTED`, `COMPLETED`, `fixture.pid`, `child.pid`, 0600) hold nothing but
@@ -41,6 +45,9 @@ const BACKGROUND: Duration = Duration::from_secs(12);
 const LINGER: Duration = Duration::from_secs(3);
 /// Bounded waits: a fixture never outlives a broken smoke by long.
 const PROMPT_WAIT: Duration = Duration::from_secs(120);
+/// The resumed turn's final message (fixed fixture text, no content): the
+/// smoke reads it back as the card's turn summary.
+const RESUMED_REPLY: &str = "signal fixture: the resumed work finished";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -99,7 +106,7 @@ fn main() {
     // the agent resumes on its own once its background work is done
     report(helper, "working", &resumed);
     std::thread::sleep(Duration::from_millis(500));
-    report(helper, "turn-done", &resumed);
+    report_with(helper, "turn-done", &resumed, Some(RESUMED_REPLY));
     std::thread::sleep(LINGER);
     let _ = write!(out, "\x1b[?2004l");
     let _ = out.flush();
@@ -189,11 +196,24 @@ fn interaction_id(n: u32) -> String {
 /// stdin. Only `prompt_id` may leave the helper; the decoy text fields and
 /// a fake id inside the prompt must not (fixed fixture text, no content).
 fn report(helper: &str, word: &str, interaction: &str) {
+    report_with(helper, word, interaction, None);
+}
+
+/// `report`, as the Stop hook runs with `--reply` when `reply` is given:
+/// the payload then carries it as `last_assistant_message`.
+fn report_with(helper: &str, word: &str, interaction: &str, reply: Option<&str>) {
+    let last = reply.map_or(String::new(), |text| {
+        format!(r#","last_assistant_message":"{text}""#)
+    });
     let payload = format!(
-        r#"{{"hook_event_name":"fixture","session_id":"00000000-0000-4000-8000-000000000000","prompt":"fixture prompt \"prompt_id\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\"","cwd":"/nonexistent/fixture","prompt_id":"{interaction}"}}"#
+        r#"{{"hook_event_name":"fixture","session_id":"00000000-0000-4000-8000-000000000000","prompt":"fixture prompt \"prompt_id\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\"","cwd":"/nonexistent/fixture","prompt_id":"{interaction}"{last}}}"#
     );
+    let mut args = vec!["claude-code", word];
+    if reply.is_some() {
+        args.push("--reply");
+    }
     let Ok(mut child) = Command::new(helper)
-        .args(["claude-code", word])
+        .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

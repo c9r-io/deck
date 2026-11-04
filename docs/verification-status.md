@@ -1,13 +1,25 @@
 # 当前验证索引
 
-更新：2026-11-04（起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-11-05（轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
-## 本轮 起草卡片标题（模型 API 的第一个用途）
+## 本轮 轮次摘要（模型 API 的第二个用途）
+
+内容：设置 › 集成 › 模型 API 新增开关「轮次结束时写摘要」（默认关）。开关就是 Claude Code 的 Stop hook：打开时 Deck 把自己的 Stop hook 改成带 `--reply`（`turn_summary_set`，需要状态 hooks 已开、发布安装），状态从 hooks 文件读回（`current_specs`），启动迁移和重新启用都保持原样；
+状态辅助程序随之读取 Stop 输入里的顶层字符串 `last_assistant_message`，取开头 2000 字节和结尾 4000 字节，JSON 转义后放进 v3 行（整行不超过 8000 字节）。Deck 在解析前用 `turn_summary::split` 摘掉回复，剩下的就是原来的 v1/v2 行，`agent_status` 仍不存内容；
+只有 `ingest_accepted` 接受的 Claude Code「本轮结束」才交给 `turn_summary::offer`：一行、不超过 80 字的回复直接作为摘要，不发送；更长的在后台交给存了 key 的服务商（`model_api::summarize_turn`，最多 2 个并发、16 个排队，多了丢弃），没有 key 就不发送。
+摘要只在内存里，按（session, episode）最多保留 64 条，下一轮开始即不再显示；显示在卡片状态行（悬停看全文）和「待关注」的原因列，系统通知不变。Claude Code 状态 hooks 的说明补上这一例外；开关提示写明已在运行的 Claude Code 可能要重启才生效（6 种语言）。
+门禁（本机）：status-helper 单元 11 项、命令行 7 项（只有 `claude-code turn-done --reply` 带回复，payload 其余内容带不出去，截断与转义）；`turn_summary` 4 项、`agent_status` 端到端 1 项（被拒绝的事件、working 词、下一轮都不留摘要）、hooks 开关 1 项、`model_api` 8 项；
+`scripts/ui-tests` 924 项（`attention-model.js`、`extension-model-api.js` 行覆盖 100%）；`signal_census`、`log_privacy`、`edr_quiet`、`external_admission` 通过；CI 形式 clippy 0 告警；全量 `cargo test --workspace` 1625 项通过、0 失败（隔离 HOME、空 TMPDIR，`check-test-tmpdir` 为空，tmux socket 目录只剩正式的 `deck`）。
+原生（2026-11-05，Mac mini，本仓库 debug 载体）：`signal-finish` **PASS** 9/9，新检查点 `signal-summary`：夹具恢复后那一轮经真实状态辅助程序以 `--reply` 上报，卡片摘要正是夹具那句固定的一行；app.log 只有 `[summary] kept as written` 和 `v=2` 行，没有回复原文，也没有 payload 里的诱饵文字。
+同一载体 `settings` **PASS** 12/12、`locale-layout` **PASS** 8/8、`ux-layers` **PASS** 28/28；文案定稿后重编，再跑 `settings` **PASS** 12/12、`locale-layout` **PASS** 8/8（六种语言下设置框无溢出、无空翻译）。
+UNRUN：真实 Claude Code 的 Stop 输入（字段名依官方文档，没有在真机上抓取）；用有效 key 为长回复写摘要；在发布安装上打开开关（改写 `~/.claude/settings.json`）；发布载体。
+
+## 上一轮 起草卡片标题（模型 API 的第一个用途）
 
 内容：卡片右键菜单「起草标题」（紧跟「重命名卡片」）。点一下，后端 `card_title.rs` 找到卡片的 Signal 目标窗格（`signal_targets`），若其当前前台进程这一代有已接受的 Claude 交互（`generation_evidence`），
 草稿就是 Claude Code 自己给会话起的标题（终端标题，tmux `#{pane_title}`，去掉前面的状态符号；tmux 默认的主机名不算标题），不调模型、内容不出本机；

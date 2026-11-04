@@ -88,6 +88,14 @@ export async function runSignalFinishSmoke() {
     const completed = await waitFor(async () => (await fixture()).completed, 20_000, 300);
     await report('signal-completed', completed && !!provider.get(card.id));
 
+    /* the resumed turn ends the way Claude Code's Stop hook does with turn
+       summaries on (`--reply`): its one-line final message comes through
+       the real helper and backend as the card's summary, during the
+       fixture's linger, and nothing of the payload's decoys with it */
+    const resumedReply = 'signal fixture: the resumed work finished';
+    const summarized = await waitFor(async () => { await pollNow(); return ctx.attention.get(card)?.summary === resumedReply; }, 8000, 250);
+    await report('signal-summary', summarized && ctx.attention.get(card)?.agent === 'turn-done');
+
     /* the fixture resumes, ends its turn and exits: only now, with the
        program gone from the foreground, does the existing close path run */
     const closed = await waitFor(async () => { await pollNow(); return !provider.get(card.id); }, 30_000, 500);

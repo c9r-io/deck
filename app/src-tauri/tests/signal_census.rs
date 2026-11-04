@@ -130,10 +130,12 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     ("agent_status.rs", "", "\"turn-done\"", 1, Producer),
     ("agent_status.rs", "", "\"needs-input\"", 1, Producer),
     ("agent_status.rs", "", "\"working\"", 1, Producer),
-    // The same hook specs, now owned by the configuration module.
+    // The same hook specs, now owned by the configuration module; Claude's
+    // turn-summary variant (Stop with `--reply`) repeats `working` and
+    // `needs-input` (its Stop is spelled `turn-done --reply`).
     ("agent_status/hooks.rs", "", "\"turn-done\"", 3, Producer),
-    ("agent_status/hooks.rs", "", "\"needs-input\"", 2, Producer),
-    ("agent_status/hooks.rs", "", "\"working\"", 2, Producer),
+    ("agent_status/hooks.rs", "", "\"needs-input\"", 3, Producer),
+    ("agent_status/hooks.rs", "", "\"working\"", 3, Producer),
     // FR-SI-04: the interaction tracker admits words per source interaction
     // (refuses late/ended/mismatched ones); it grants nothing
     ("agent_status.rs", "admit", "NEEDS_INPUT", 4, Producer),
@@ -141,7 +143,13 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // ingest forwards a word to the desktop attention loop only from the
     // session's Signal target pane; `renotify` re-projects (reconcile on
     // target changes, ingest when a Codex generation turns ambiguous)
-    ("agent_status.rs", "ingest", "notify::observe(", 1, Producer),
+    (
+        "agent_status.rs",
+        "ingest_accepted",
+        "notify::observe(",
+        1,
+        Producer,
+    ),
     (
         "agent_status.rs",
         "renotify",
@@ -222,6 +230,9 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         1,
         Presentation,
     ),
+    // A turn summary is written only for a Claude Code turn ending that
+    // agent_status accepted; it is a line on the card and nothing else.
+    ("turn_summary.rs", "decide", "TURN_DONE", 1, Presentation),
     // "Draft title" reads Claude Code's own session title only for a pane
     // whose current generation proved a Claude interaction; it picks where a
     // draft comes from and grants nothing.

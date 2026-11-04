@@ -193,6 +193,7 @@ fn duplicate_config_path() -> Option<std::path::PathBuf> {
 
 const DUPLICATE_INSTALL: HookInstall = HookInstall {
     hooks: &[],
+    reply_hooks: None,
     style: HookStyle::Exec,
     config_path: duplicate_config_path,
     never_ran: "unused",
@@ -1767,4 +1768,90 @@ fn lifecycle_hook_writer_steps() {
                 case.file_name().unwrap_or_default().to_string_lossy()
             );
     }
+}
+
+/// The turn-summary switch is the Stop hook's `--reply`: written as one more
+/// argument, read back from the file, kept by the current-spec choice, and
+/// taken out with the rest of deck's hooks.
+#[test]
+fn the_turn_summary_switch_is_one_argument_of_deck_s_own_stop_hook() {
+    let helper = "/Applications/deck.app/Contents/MacOS/deck-status-helper";
+    let install = CLAUDE_CODE.hook_install().unwrap();
+    assert_eq!(
+        hook_value(HookStyle::Exec, helper, "claude-code", "turn-done --reply")["args"],
+        serde_json::json!(["claude-code", "turn-done", "--reply"])
+    );
+    assert_eq!(
+        hook_value(HookStyle::ShellAsync, helper, "codex", "turn-done")["command"],
+        serde_json::json!(format!("\"{helper}\" codex turn-done"))
+    );
+    let edit = |specs| HookEdit::Install {
+        specs,
+        source: CLAUDE_CODE.source,
+        style: HookStyle::Exec,
+        helper,
+    };
+    let (plain_edit, reply_edit) = (edit(CLAUDE_HOOKS), edit(CLAUDE_HOOKS_WITH_REPLY));
+    // a user's own Stop hook beside deck's, with a flag of the same spelling
+    let user = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/mine --reply"}]}]},"theme":"dark"}"#;
+    let plain = hooks_file_edited(Some(user), plain_edit).unwrap().unwrap();
+    let plain_value: serde_json::Value = serde_json::from_str(&plain).unwrap();
+    assert!(
+        !replies_on(&plain_value),
+        "a user's flag is not deck's switch"
+    );
+    assert_eq!(current_specs(install, &plain_value), CLAUDE_HOOKS);
+    // switching on rewrites deck's Stop hook only
+    let on = hooks_file_edited(Some(&plain), reply_edit)
+        .unwrap()
+        .unwrap();
+    let on_value: serde_json::Value = serde_json::from_str(&on).unwrap();
+    assert!(replies_on(&on_value));
+    assert_eq!(current_specs(install, &on_value), CLAUDE_HOOKS_WITH_REPLY);
+    assert!(hooks_are_current(
+        &on_value,
+        CLAUDE_HOOKS_WITH_REPLY,
+        "claude-code",
+        HookStyle::Exec,
+        helper
+    ));
+    assert!(!hooks_are_current(
+        &on_value,
+        CLAUDE_HOOKS,
+        "claude-code",
+        HookStyle::Exec,
+        helper
+    ));
+    assert_eq!(on_value["theme"], "dark");
+    assert!(
+        on.contains("/usr/local/bin/mine --reply"),
+        "the user's hook stays"
+    );
+    assert_eq!(
+        on_value["hooks"]["UserPromptSubmit"], plain_value["hooks"]["UserPromptSubmit"],
+        "the other hooks are untouched"
+    );
+    // boot migration's choice keeps it: the current specs already match
+    assert!(
+        hooks_file_edited(Some(&on), edit(current_specs(install, &on_value)))
+            .unwrap()
+            .is_none()
+    );
+    // switching off is the plain install again; uninstall takes both forms out
+    let off = hooks_file_edited(Some(&on), plain_edit).unwrap().unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&off).unwrap(),
+        plain_value
+    );
+    let removed = hooks_file_edited(Some(&on), HookEdit::Uninstall)
+        .unwrap()
+        .unwrap();
+    let removed: serde_json::Value = serde_json::from_str(&removed).unwrap();
+    assert!(!replies_on(&removed));
+    assert_eq!(
+        removed["hooks"]["Stop"][0]["hooks"][0]["command"],
+        "/usr/local/bin/mine --reply"
+    );
+    // Codex has no reply variant
+    assert!(CODEX.hook_install().unwrap().reply_hooks.is_none());
 }

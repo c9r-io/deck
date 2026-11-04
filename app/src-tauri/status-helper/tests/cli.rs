@@ -173,6 +173,57 @@ fn one_line_reaches_the_owning_decks_socket_and_the_helper_waits_for_the_close()
     assert_silent_success(&finish(child, Duration::from_secs(3)));
 }
 
+/// The turn-summary switch: only `claude-code turn-done --reply` sends
+/// Claude's final message, and nothing else of the payload goes with it.
+#[test]
+fn only_the_flagged_claude_stop_sends_the_final_message() {
+    let home = Private::new();
+    let socket = home.0.join("status.sock");
+    let listener = home.listen(&socket);
+    let payload = format!(
+        r#"{{"prompt_id":"{ID}","last_assistant_message":"Fixed the \"login\" test.\nCommit now?","message":"SENTINEL","transcript_path":"/Users/x/SENTINEL.jsonl"}}"#
+    );
+    let environment = [
+        ("TMUX", TMUX),
+        ("TMUX_PANE", "%7"),
+        ("DECK_STATUS_SOCK", socket.to_str().unwrap()),
+    ];
+    let line_for = |args: &[&str]| {
+        let child = run(helper(&home, args, &environment), &payload);
+        let mut stream = accept(&listener, Duration::from_secs(3)).expect("the helper connects");
+        let line = read_line(&mut stream);
+        drop(stream);
+        assert_silent_success(&finish(child, Duration::from_secs(3)));
+        line
+    };
+    let line = line_for(&["claude-code", "turn-done", "--reply"]);
+    assert_eq!(
+        line,
+        format!("{{\"v\":3,\"source\":\"claude-code\",\"state\":\"turn-done\",\"socket\":\"deck-dev\",\"server_pid\":4242,\"pane\":\"%7\",\"interaction\":\"{ID}\",\"reply\":\"Fixed the \\\"login\\\" test.\\nCommit now?\"}}\n")
+    );
+    assert!(
+        !line.contains("SENTINEL"),
+        "only the final message rides along"
+    );
+    // without the flag, for another word or another source: the id alone
+    for args in [
+        &["claude-code", "turn-done"][..],
+        &["claude-code", "needs-input", "--reply"][..],
+        &["claude-code", "turn-done", "--other"][..],
+    ] {
+        let line = line_for(args);
+        assert!(
+            line.starts_with("{\"v\":2,") && !line.contains("reply") && !line.contains("Fixed"),
+            "{args:?}: {line}"
+        );
+    }
+    let line = line_for(&["codex", "turn-done", "--reply"]);
+    assert!(
+        line.starts_with("{\"v\":1,") && !line.contains("Fixed"),
+        "{line}"
+    );
+}
+
 #[test]
 fn a_payload_without_a_usable_id_falls_back_to_the_first_wire_version() {
     let home = Private::new();

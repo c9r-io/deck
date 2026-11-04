@@ -111,20 +111,10 @@ fn without_status_mark(title: &str) -> &str {
     }
 }
 
-/// A draft as the rename field gets it: the first non-empty line, without
-/// control characters, wrapping quotes or markdown marks, spaces collapsed,
-/// cut to `MAX_TITLE_CHARS`; None when nothing is left.
+/// A draft as the rename field gets it: one clean line, at most
+/// `MAX_TITLE_CHARS` (`model_api::one_line`).
 fn clean(text: &str) -> Option<String> {
-    let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
-    let line: String = line
-        .chars()
-        .map(|c| if c.is_whitespace() { ' ' } else { c })
-        .filter(|c| !c.is_control())
-        .collect();
-    let line = line.trim_matches(|c: char| c.is_whitespace() || "\"'`*#「」『』“”‘’".contains(c));
-    let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    let cut: String = line.chars().take(MAX_TITLE_CHARS).collect();
-    (!cut.is_empty()).then_some(cut)
+    crate::model_api::one_line(text, MAX_TITLE_CHARS)
 }
 
 /// The end of a capture, at most `MAX_TEXT_BYTES` on a character

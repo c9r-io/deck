@@ -396,7 +396,12 @@ reports through the bundle's real `deck-status-helper`: prompt delivered →
 command runs. The run must stay on the Board for ten polls (every one reading
 `turn-done`, queue drained) until the command writes `COMPLETED`; the fixture
 then resumes (`working`, `turn-done`), exits, and only then does the existing
-finish path close the card and the run (outcome `closed`). Both fixture
+finish path close the card and the run (outcome `closed`). The resumed
+`turn-done` is reported as Claude Code's Stop hook runs with turn summaries
+on (`--reply`, a v3 line carrying the fixed one-line
+`last_assistant_message`): `signal-summary` needs that line, and nothing of
+the payload's decoys, as the card's summary while the fixture lingers (the
+short path: no model, nothing sent). Both fixture
 processes and the session must be gone. Every fixture hook pipes a Claude
 Code-shaped payload into the real helper (FR-SI-04): the isolated app.log
 must show four `[agent-status] … v=2` lines (two interactions) and none of

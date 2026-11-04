@@ -72,6 +72,7 @@ mod tmux;
 mod tmux_clients;
 mod tmux_lifecycle;
 mod tunnel_helper;
+mod turn_summary;
 mod updater;
 mod voice;
 
@@ -548,6 +549,8 @@ fn main() {
             drops::save_dropped_file,
             agent_status::agent_hooks_status,
             agent_status::agent_hooks_set,
+            agent_status::turn_summary_status,
+            agent_status::turn_summary_set,
             agent_pi::config::agent_pi_lifecycle_set,
             agent_status::agent_lifecycle_hooks_set,
             tmux_lifecycle::agent_reentry_preview,
