@@ -1536,6 +1536,98 @@ test('project defaults creates a bounded desktop task preset in the same Board d
     title: 'Remote fix', dir: '~/work', cmd: 'codex', steps: ['inspect', 'fix'] });
 });
 
+test('an open preset editor always has a way out that keeps nothing, and Escape closes it before the dialog', async () => {
+  const { t } = await import('../js/i18n.js');
+  const el = id => fakeDocument.getElementById(id);
+  const existing = { id: 'R1', name: 'Fix issue', columnId: 'C1', title: 'Remote fix', dir: '~/work', cmd: 'claude', steps: ['inspect'] };
+  const open = presets => projectDefaultsDialog({ name: 'Atlas', dir: '~/work', cmd: 'codex', recent: [],
+    presets, columns: [{ id: 'C1', name: 'Working' }] });
+  const editor = el('pdf-preset-editor'); const dlg = el('pdf'); const toasts = el('toasts');
+  const row = () => el('pdf-presets').children[0];
+  // a new preset: Cancel closes it with what was typed, adds nothing, and the focus stays in the dialog
+  let promise = open([]);
+  el('pdf-preset-add').fire('click');
+  assert.equal(editor.hidden, false);
+  assert.equal(el('pdf-preset-delete').hidden, true, 'a new preset has nothing to delete');
+  el('pdf-preset-name').value = 'Half typed';
+  el('pdf-preset-cancel').fire('click');
+  assert.equal(editor.hidden, true);
+  assert.equal(el('pdf-presets').children.length, 0);
+  assert.equal(fakeDocument.activeElement, el('pdf-preset-add'));
+  assert.equal(dlg.style.display, 'flex', 'only the editor closed');
+  // Escape: the editor first, the dialog on the next press; an input method's Escape is its own
+  el('pdf-preset-add').fire('click');
+  for (const composing of [{ isComposing: true }, { keyCode: 229 }]) {
+    assert.equal(dlg.fire('keydown', { key: 'Escape', ...composing }).prevented, 0);
+    assert.equal(editor.hidden, false);
+  }
+  assert.equal(dlg.fire('keydown', { key: 'Escape' }).prevented, 1);
+  assert.equal(editor.hidden, true);
+  assert.equal(dlg.style.display, 'flex');
+  dlg.fire('keydown', { key: 'Escape' });
+  assert.equal(await promise, null);
+  // a new preset left as it opened never blocks the defaults: Done and Save close it, saying nothing
+  promise = open([]);
+  toasts.replaceChildren();
+  el('pdf-preset-add').fire('click');
+  el('pdf-preset-done').fire('click');
+  assert.equal(editor.hidden, true);
+  assert.equal(el('pdf-presets').children.length, 0);
+  el('pdf-dir').value = '~/work/api';
+  el('pdf-preset-add').fire('click');
+  el('pdf-yes').fire('click');
+  assert.deepEqual(await promise, { dir: '~/work/api', cmd: 'codex' });
+  assert.equal(toasts.children.length, 0);
+  // typed into but not a preset: refused with what a preset needs, in the dialog (a toast sits beneath it),
+  // the first wrong field focused, the draft kept
+  const note = el('pdf-preset-invalid');
+  promise = open([]);
+  el('pdf-preset-add').fire('click');
+  assert.equal(note.hidden, true);
+  el('pdf-preset-name').value = 'Fix issue';
+  el('pdf-preset-done').fire('click'); await tick();
+  assert.equal(editor.hidden, false);
+  assert.equal(note.hidden, false);
+  assert.equal(note.textContent, t('presets.invalid'));
+  assert.equal(toasts.children.length, 0, 'not a toast');
+  assert.equal(fakeDocument.activeElement, el('pdf-preset-title'), 'the card title is what is missing');
+  el('pdf-preset-title').value = 'Remote fix'; el('pdf-preset-cmd').value = 'bash';
+  el('pdf-yes').fire('click'); await tick();
+  assert.equal(dlg.style.display, 'flex', 'Save keeps what the user typed instead of dropping it');
+  assert.equal(fakeDocument.activeElement, el('pdf-preset-cmd'));
+  assert.equal(el('pdf-preset-name').value, 'Fix issue');
+  el('pdf-preset-cancel').fire('click');
+  assert.equal(note.hidden, true, 'the note leaves with the edit');
+  assert.equal(note.textContent, '');
+  el('pdf-yes').fire('click');
+  assert.deepEqual(await promise, { dir: '~/work', cmd: 'codex' });
+  // an existing preset: its row is marked while open, Cancel keeps it as it was and gives the row the focus
+  promise = open([existing]);
+  row().fire('click');
+  assert.equal(row()['aria-current'], 'true');
+  assert.equal(el('pdf-preset-delete').hidden, false);
+  el('pdf-preset-steps').value = 'inspect\nsomething else'; el('pdf-preset-steps').oninput();
+  el('pdf-preset-cancel').fire('click');
+  assert.equal(editor.hidden, true);
+  assert.equal(row()['aria-current'], 'false');
+  assert.equal(fakeDocument.activeElement, row());
+  // Done keeps an edit and returns to its row; Delete goes to Add preset
+  row().fire('click');
+  el('pdf-preset-title').value = 'Renamed card';
+  el('pdf-preset-done').fire('click'); await tick();
+  assert.equal(editor.hidden, true);
+  assert.equal(fakeDocument.activeElement, row());
+  el('pdf-yes').fire('click');
+  assert.deepEqual((await promise).presets, [{ ...existing, title: 'Renamed card' }], 'the cancelled edit saved nothing');
+  promise = open([existing]);
+  row().fire('click');
+  el('pdf-preset-delete').fire('click');
+  assert.equal(el('pdf-presets').children.length, 0);
+  assert.equal(fakeDocument.activeElement, el('pdf-preset-add'));
+  el('pdf-yes').fire('click');
+  assert.deepEqual((await promise).presets, []);
+});
+
 test('a preset\'s first-send box is ticked only through the confirmation and is saved as an explicit true', async () => {
   const el = id => fakeDocument.getElementById(id);
   const existing = { id: 'R1', name: 'Fix issue', columnId: 'C1', title: 'Remote fix', dir: '~/work', cmd: 'claude', steps: ['inspect'] };

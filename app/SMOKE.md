@@ -1746,6 +1746,14 @@ the digest and the Board save are production.
 held back, or made to fail): a save asked for one preset's edit never takes
 over the preset opened while it waited, and a new approval that cannot be
 computed says so in the edit and is saved by the same save once it can.
+`ux-preset-close` drives a preset editor's ways out with native clicks and
+keys through the Board's own entry: Cancel closes a new preset and keeps the
+dialog open; after a native click on the editor's checkbox, one Escape closes
+the editor and the next the dialog; a new preset left as it opened does not
+block Save; one typed into but incomplete is refused with the card title
+focused and what a preset needs said right under it, inside the visible
+box. Its `a` records where WebKit put the focus after that checkbox click
+(1 the dialog box, 2 the checkbox, 3 elsewhere in the dialog).
 Snapshots land in `<data dir>/evidence/`; `ux-m-*` are measurements.
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-ux.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-ux-UNIQUE DECK_SMOKE_WKWEBVIEW=ux-layers app/run.sh`,

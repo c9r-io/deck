@@ -1239,7 +1239,7 @@ const dictionary = {
   'presets.autoSend.hint': '开启后，用这个预设从手机创建的任务，其后续步骤会在 agent 安全就绪后自动继续。你批准的是这个预设当前的目录、命令和每一步；修改任何一项需重新勾选。手机直接发来的消息和便签不在批准之内，始终等待「手动立即发送」。',
   'presets.firstSend.hint': '默认：从手机创建的任务先启动 Agent，然后等你在这台 Mac 上交互一次。开启后，Deck 经短暂兼容等待直接发送第一步。等待不是就绪证明：Trust、Update、登录、权限等启动对话框可能收到这段文字和回车。后续步骤保持原有检查。仅支持 Claude，或带 --no-daemon 的 Codex。',
   'presets.firstSend.confirm': '为这个预设开启自动首步输入？你一次性接受启动输入风险：Trust、Update、登录、Permission 或其他对话框可能接收文字和回车。经过短暂兼容等待后，用这个预设从手机创建的任务无需手动确认首步。真实阻塞条件仍然有效。只在你接受这一风险时开启。',
-  'presets.invalid': '请填写有效的分组、目录、codex 或 claude 命令，以及最多 20 条有界步骤。',
+  'presets.invalid': '预设需要名称、栏目、卡片标题、目录，以及 codex 或 claude 命令；初始步骤最多 20 条，每条不超过 2000 UTF-8 字节。',
   'automation.help': '运行规则',
   'automation.help.channel': '频道监控在首次匹配时创建 session，之后只把消息收集到那张卡片。',
   'automation.help.busy': '时钟规则在上一张卡片仍在看板上时，会跳过新的时刻。',

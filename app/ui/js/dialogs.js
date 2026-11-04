@@ -11,7 +11,7 @@ import { localCandidates, localParts, noteValid, REMINDER_NOTE_BYTES, shortcutTi
 import { $, ctx, genId, inv } from './state.js';
 import { inlineRenameValue, isComposingKeyEvent } from './pure.js';
 import { formatDateTime, t } from './i18n.js';
-import { normalizeTaskPreset, normalizeTaskPresets, presetApproved, withPresetApproval } from './connector-model.js';
+import { normalizeTaskPreset, normalizeTaskPresets, presetApproved, taskPresetProblem, withPresetApproval } from './connector-model.js';
 import { firstSendNeedsConfirm, firstSendSupported } from './automation-model.js';
 
 /* ---------- confirm dialog (window.confirm is a silent no-op in WKWebView) ---------- */
@@ -136,7 +136,19 @@ export function createBoardExit({ mutateBoard, hold, exited }) {
    The project's default directory and launch command, edited together.
    Resolves { dir, cmd } (trimmed; blank = no default) on Save / Enter, null
    on Cancel / Escape / a click outside. `recent` are command chips that only
-   FILL the command field — nothing in this dialog runs anything. */
+   FILL the command field — nothing in this dialog runs anything.
+   A phone task preset is edited in a framed editor under the list, with its
+   own way out: Done keeps the edit in the dialog's draft, Cancel drops it,
+   Delete drops the preset, and Escape closes that editor first (as Cancel)
+   and the dialog only on the next press; an input method's own Escape is
+   left to it. A new preset still exactly as it opened holds nothing of the
+   user's: Done, Save and Enter close it as Cancel does, so it never blocks
+   saving the defaults. Any other edit that is not a valid preset is
+   refused: what a preset needs is said under its first wrong field, which
+   takes the focus (in the dialog, not a toast: toasts sit beneath every
+   modal). When the editor closes the focus goes to that preset's row (or
+   Add preset), and the box itself takes a click on a control WebKit does
+   not focus, so the keyboard stays inside the dialog. */
 /* how long a save waits for a preset approval's digest before saying it
    could not be checked (the hash is local; this bounds a broken one) */
 const PRESET_CHECK_MS = 5000;
@@ -157,19 +169,32 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
     }
     chips.hidden = !recent.length;
     let draftPresets = normalizeTaskPresets(presets, columns);
-    /* ONE edit of one preset, from opening it to Done, Delete, another
-       preset or the dialog closing. Three facts stay apart in it: `stored`
-       (the approval the preset came with, carried on unchanged only while
-       it still matches what is saved), `withdrawn` (a covered field was
-       edited, so the stored approval is not carried) and `decision` (the
-       user's own tick or untick, bound to the covered text it was made
-       for). The box is how they are shown, never what a save reads. */
+    /* ONE edit of one preset, from opening it to Done, Cancel, Delete,
+       Escape, another preset or the dialog closing. Three facts stay apart
+       in it: `stored` (the approval the preset came with, carried on
+       unchanged only while it still matches what is saved), `withdrawn` (a
+       covered field was edited, so the stored approval is not carried) and
+       `decision` (the user's own tick or untick, bound to the covered text
+       it was made for). The box is how they are shown, never what a save
+       reads. `fresh` marks a new preset and `pristine` is how it opened. */
     let edit = null; let closed = false;
     const editor = $('pdf-preset-editor');
+    const editorFields = id => ({ id, name: $('pdf-preset-name').value,
+      columnId: $('pdf-preset-column').value, title: $('pdf-preset-title').value,
+      dir: $('pdf-preset-dir').value, cmd: $('pdf-preset-cmd').value,
+      steps: $('pdf-preset-steps').value.split('\n'),
+      firstSend: $('pdf-preset-first-send').checked });
+    /* an edit as it stands: the fields and the user's answer about them */
+    const snapshot = current => JSON.stringify([editorFields(current.id), current.decision, current.withdrawn]);
+    const untouched = current => current.fresh && snapshot(current) === current.pristine;
+    const markCurrent = () => {
+      for (const row of $('pdf-presets').children) row.setAttribute('aria-current', String(!!edit && row.dataset.preset === edit.id));
+    };
     const renderPresets = () => {
       const list = $('pdf-presets'); list.replaceChildren();
       for (const preset of draftPresets) {
         const button = document.createElement('button'); button.type = 'button'; button.className = 'btn preset-item';
+        button.dataset.preset = preset.id;
         const name = document.createElement('span'); name.className = 'preset-name'; name.textContent = preset.name;
         /* what the preset amounts to, not its switches: a stored approval
            counts only for this version of it, and a direct first step only
@@ -188,7 +213,25 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
         button.append(name, summary);
         button.onclick = () => openPreset(preset); list.appendChild(button);
       }
+      markCurrent();
       $('pdf-preset-add').disabled = draftPresets.length >= 50;
+    };
+    /* what keeps an edit from being a preset, said under its first wrong
+       field inside the dialog: a toast would sit beneath the dialog */
+    const invalidNote = field => {
+      const note = $('pdf-preset-invalid');
+      note.hidden = !field; note.textContent = field ? t('presets.invalid') : '';
+      const row = field && $(field).closest('.set-row');
+      if (row) row.after(note);
+    };
+    /* The editor closes, whichever way it does, only here: the edit ends (a
+       check or a save still under way for it belongs to nothing), and the
+       focus goes to that preset's row, or to Add preset when the list has
+       none, so it stays inside the dialog. */
+    const closePreset = id => {
+      edit = null; editor.hidden = true; invalidNote(null); renderPresets();
+      const row = id && [...$('pdf-presets').children].find(item => item.dataset.preset === id);
+      (row || $('pdf-preset-add')).focus();
     };
     /* ticked on a command the override cannot reach: say so, as a rule's
        facts do; the choice is kept and applies once the command fits */
@@ -217,7 +260,8 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
       promise.then(value => { clearTimeout(timer); resolve(value); }, () => { clearTimeout(timer); resolve(undefined); });
     });
     const openPreset = preset => {
-      const opened = edit = { id: preset?.id || genId('R'), stored: preset?.autoSend?.digest || '', withdrawn: false, decision: null, commit: null };
+      const opened = edit = { id: preset?.id || genId('R'), fresh: !preset, pristine: '',
+        stored: preset?.autoSend?.digest || '', withdrawn: false, decision: null, commit: null };
       $('pdf-preset-name').value = preset?.name || '';
       $('pdf-preset-title').value = preset?.title || '';
       $('pdf-preset-dir').value = preset?.dir || dirInput.value.trim();
@@ -242,6 +286,7 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
       for (const column of columns) { const option = document.createElement('option'); option.value = column.id; option.textContent = column.name; target.appendChild(option); }
       target.value = preset?.columnId || columns[0]?.id || '';
       $('pdf-preset-delete').hidden = !preset;
+      opened.pristine = snapshot(opened); markCurrent(); invalidNote(null);
       editor.hidden = false; $('pdf-preset-name').focus();
     };
     /* the approval covers the directory, the command and every step: an
@@ -294,40 +339,45 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
        taking the edit that is open by then. A commit that did not save is
        forgotten, so the same edit can be saved again.
        A commit owns nothing while it waits: the edit it started from must
-       still be the open one, with the same fields and the same answer. */
+       still be the open one, with the same fields and the same answer.
+       A new preset left as it opened has nothing to commit: it closes. */
     const commitPreset = () => {
       const current = edit;
       if (!current) return Promise.resolve(true);
+      if (!current.commit && untouched(current)) { closePreset(null); return Promise.resolve(true); }
       const forget = () => { current.commit = null; };
       return current.commit ||= commitEdit(current).then(saved => { if (!saved) forget(); return saved; },
         error => { forget(); throw error; });
     };
+    /* the editor's fields in the order it shows them */
+    const PRESET_FIELDS = { name: 'pdf-preset-name', column: 'pdf-preset-column', title: 'pdf-preset-title',
+      dir: 'pdf-preset-dir', cmd: 'pdf-preset-cmd', steps: 'pdf-preset-steps' };
     const commitEdit = async current => {
       for (;;) {
         if (edit !== current) return false;
-        const fields = () => ({ id: current.id, name: $('pdf-preset-name').value,
-          columnId: $('pdf-preset-column').value, title: $('pdf-preset-title').value,
-          dir: $('pdf-preset-dir').value, cmd: $('pdf-preset-cmd').value,
-          steps: $('pdf-preset-steps').value.split('\n'),
-          firstSend: $('pdf-preset-first-send').checked });
-        const before = JSON.stringify([fields(), current.decision, current.withdrawn]);
-        const plain = normalizeTaskPreset(fields(), columns);
-        if (!plain) { toast(t('presets.invalid')); return false; }
+        const before = snapshot(current);
+        const plain = normalizeTaskPreset(editorFields(current.id), columns);
+        if (!plain) {
+          const field = PRESET_FIELDS[taskPresetProblem(editorFields(current.id), columns)] || 'pdf-preset-name';
+          invalidNote(field); $(field).focus();
+          return false;
+        }
         const approval = await approvalFor(current, plain);
         if (edit !== current) return false;
         if (approval === undefined) return false;
-        if (JSON.stringify([fields(), current.decision, current.withdrawn]) !== before) continue;
+        if (snapshot(current) !== before) continue;
         draftPresets = [...draftPresets.filter(value => value.id !== current.id), approval ? { ...plain, autoSend: approval } : plain];
-        edit = null; editor.hidden = true; renderPresets(); return true;
+        closePreset(current.id); return true;
       }
     };
     $('pdf-preset-add').onclick = () => openPreset(null);
     $('pdf-preset-done').onclick = commitPreset;
+    $('pdf-preset-cancel').onclick = () => { if (edit) closePreset(edit.id); };
     $('pdf-preset-delete').onclick = () => {
       if (!edit) return;
-      const id = edit.id; edit = null;
+      const id = edit.id;
       draftPresets = draftPresets.filter(value => value.id !== id);
-      editor.hidden = true; renderPresets();
+      closePreset(null);
     };
     renderPresets(); editor.hidden = true;
     const read = async () => await commitPreset() ? ({ dir: dirInput.value.trim(), cmd: cmdInput.value.trim(),
@@ -343,7 +393,12 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
     $('pdf-yes').onclick = async () => { const value = await read(); if (value) done(value); };
     $('pdf-no').onclick = () => done(null);
     $('pdf').onkeydown = e => {
-      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); return; }
+      if (e.key === 'Escape') {
+        if (isComposingKeyEvent(e)) return;   // the input method's own Escape
+        e.preventDefault(); e.stopPropagation();
+        if (edit) closePreset(edit.id); else done(null);
+        return;
+      }
       if (e.key === 'Enter' && e.target && e.target.tagName === 'INPUT') {
         if (isComposingKeyEvent(e)) return;
         e.preventDefault(); e.stopPropagation();

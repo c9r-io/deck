@@ -1358,6 +1358,18 @@ ul.help-list.opt-note { margin: 0 0 8px 22px; font-size: 0.846154rem; }
 #pdf-box h4.auto-section { margin: 14px 0 6px; }
 .preset-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; margin-bottom: 6px; text-align: left; height: auto; white-space: normal; }
 .preset-item .preset-summary { font-size: 0.846154rem; color: var(--muted); }
+/* A preset's editor is framed like a rule's (#auto-editor): its Delete /
+   Cancel / Done read as the preset's, the row below as the dialog's. The
+   preset being edited is marked in the list, Delete stands apart from the
+   two that keep the preset, and the box takes a click on a control WebKit
+   does not focus (dialogs.js) without drawing a ring. What a refused edit
+   needs is said under its wrong field, in line with the inputs. */
+#pdf-preset-editor { margin: 10px 0 14px; padding: 10px 12px; border: 1px dashed var(--accent-dim); border-radius: 8px; }
+#pdf-preset-editor > h4.auto-section:first-child { margin-top: 0; border-top: 0; padding-top: 0; }
+#pdf-preset-invalid { margin: 0 0 8px 118px; font-size: 0.884615rem; line-height: 1.5; }
+#pdf-preset-delete { margin-right: auto; }
+.preset-item[aria-current="true"] { border-color: var(--accent-dim); background: var(--sel); }
+#pdf-box:focus { outline: none; }
 .q-send-plan { padding: 8px 12px; border-top: 1px solid var(--border-soft); background: var(--panel); font-size: 0.923077rem; }
 .q-send-plan p { margin: 6px 0; line-height: 1.5; }
 .q-session-facts { padding: 0 2px 8px; font-size: 0.923077rem; }

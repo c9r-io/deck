@@ -522,6 +522,74 @@ export async function runUxLayersSmoke() {
       }
     }), 1, trace);
 
+    /* ---------- a preset editor's ways out, by native input ----------
+       Every press is an AppKit click or key handed to Deck's window, through
+       the Board's own entry. `a` says where WebKit put the focus after a
+       click on the editor's checkbox (1 the dialog box, 2 the checkbox, 3
+       elsewhere in the dialog, 4 outside it): the Escape that follows must
+       reach the dialog wherever that is. */
+    let presetFocus = 9;
+    await report('ux-preset-close', await attempt(async () => {
+      const escape = () => inv('smoke_native_input', { input: { kind: 'key', keyCode: 53, text: '\u001b' } });
+      const editorOpen = () => !$('pdf-preset-editor').hidden;
+      const note = $('pdf-preset-invalid');
+      const noPresets = () => (provider.project(project.id).presets || []).length === 0;
+      const openDefaults = async () => {
+        const done = openProjectDefaults(project.id);
+        await until(() => $('pdf').style.display === 'flex');
+        return [done];   // boxed: an async function would wait for the dialog itself
+      };
+      try {
+        trace = 13;
+        await provider.setProjectDefaults(project.id, { ...defaultsBefore, presets: [] });
+        // a new preset: Cancel closes it with what was typed, the dialog stays, Add preset has the focus
+        let [done] = await openDefaults();
+        await press($('pdf-preset-add')); await until(editorOpen);
+        const opened = document.activeElement === $('pdf-preset-name') && shown($('pdf-preset-cancel')) && !shown($('pdf-preset-delete'));
+        $('pdf-preset-done').scrollIntoView({ block: 'center' }); await pause(150);
+        await snapshot('ux-preset-new-zh');
+        type($('pdf-preset-name'), 'Half typed');
+        await press($('pdf-preset-cancel'));
+        const cancelled = !editorOpen() && $('pdf').style.display === 'flex' && document.activeElement === $('pdf-preset-add')
+          && document.querySelectorAll('#pdf-presets button').length === 0;
+        trace = 14;
+        // after a click on a control WebKit may not focus, Escape closes the editor, and then the dialog
+        await press($('pdf-preset-add')); await until(editorOpen);
+        await press($('pdf-preset-auto-send'));
+        const focused = document.activeElement;
+        presetFocus = focused === $('pdf-box') ? 1 : focused === $('pdf-preset-auto-send') ? 2 : $('pdf').contains(focused) ? 3 : 4;
+        await escape(); await pause(250);
+        const layered = !editorOpen() && $('pdf').style.display === 'flex';
+        await escape(); await closed(done);
+        const dismissed = $('pdf').style.display === 'none' && noPresets();
+        trace = 15;
+        // a new preset left as it opened never blocks Save: the defaults save and nothing is added
+        [done] = await openDefaults();
+        await press($('pdf-preset-add')); await until(editorOpen);
+        await press($('pdf-yes')); await closed(done);
+        const quiet = $('pdf').style.display === 'none' && noPresets();
+        trace = 16;
+        // typed into but not a preset: Done refuses, says what a preset needs right under the card title,
+        // inside the visible box, and focuses that field
+        [done] = await openDefaults();
+        await press($('pdf-preset-add')); await until(editorOpen);
+        type($('pdf-preset-name'), 'Half typed');
+        await press($('pdf-preset-done')); await pause(200);
+        const box = $('pdf-box').getBoundingClientRect(); const said = note.getBoundingClientRect();
+        const refused = editorOpen() && document.activeElement === $('pdf-preset-title') && shown(note)
+          && note.textContent === t('presets.invalid') && note.previousElementSibling === $('pdf-preset-title').closest('.set-row')
+          && said.top >= box.top && said.bottom <= box.bottom;
+        await snapshot('ux-preset-invalid-zh');
+        await press($('pdf-preset-cancel'));
+        await press($('pdf-no')); await closed(done);
+        const kept = noPresets() && note.hidden;
+        trace = [opened, cancelled, layered, dismissed, quiet, refused, kept].reduce((bits, ok, i) => bits | (ok ? 0 : 1 << i), 0) + 100;
+        return opened && cancelled && layered && dismissed && quiet && refused && kept;
+      } finally {
+        await provider.setProjectDefaults(project.id, { ...defaultsBefore, presets: [] }).catch(() => {});
+      }
+    }), presetFocus, trace);
+
     /* ---------- reminder: the note limit is bytes, and is feedback ---------- */
     await report('ux-reminder-bytes', await attempt(async () => {
       const done = reminderDialog(null);

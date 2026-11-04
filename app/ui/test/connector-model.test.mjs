@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { connectorAuthorityClaim, presetApproved, presetGrantDigest, presetGrantManifest, withPresetApproval,
-  connectorBufferOperationId, connectorFirstSendClaim, connectorId, connectorRunPlan, newlyPairedDevice, normalizeTaskPreset, normalizeTaskPresets, unfinishedConnectorPlans } from '../js/connector-model.js';
+  connectorBufferOperationId, connectorFirstSendClaim, connectorId, connectorRunPlan, newlyPairedDevice, normalizeTaskPreset, normalizeTaskPresets,
+  taskPresetProblem, unfinishedConnectorPlans } from '../js/connector-model.js';
 
 test('a pairing is identified as the one new active device', () => {
   const before = [{ id: 'D1', revoked: false }, { id: 'D2', revoked: true }];
@@ -24,6 +25,30 @@ test('task presets retain only bounded desktop-owned Codex or Claude launch plan
   assert.equal(normalizeTaskPreset({ ...preset, cmd: '/opt/bin/claude' }, columns), null);
   assert.equal(normalizeTaskPreset({ ...preset, columnId: 'missing' }, columns), null);
   assert.deepEqual(normalizeTaskPresets([preset, preset], columns), [preset]);
+});
+
+test('a refused preset names its first wrong field in the editor\'s order, from the same rules', () => {
+  assert.equal(taskPresetProblem(preset, columns), null);
+  // what a new preset opens with: nothing typed yet, so the name comes first
+  assert.equal(taskPresetProblem({ id: 'R1', name: '', columnId: 'C1', title: '', dir: '~/work', cmd: 'codex', steps: [] }, columns), 'name');
+  const wrong = [
+    [{ name: '  ' }, 'name'], [{ name: 'n'.repeat(121) }, 'name'],
+    [{ columnId: 'missing' }, 'column'],
+    [{ title: '' }, 'title'], [{ title: 't'.repeat(121) }, 'title'],
+    [{ dir: '' }, 'dir'], [{ dir: '~/a\nb' }, 'dir'], [{ dir: '/' + '模'.repeat(342) }, 'dir'],
+    [{ cmd: 'bash' }, 'cmd'], [{ cmd: 'codex;zsh' }, 'cmd'], [{ cmd: '' }, 'cmd'],
+    [{ steps: Array(21).fill('s') }, 'steps'], [{ steps: ['a'.repeat(2001)] }, 'steps'],
+    [{ id: 'not an id' }, 'id'],
+    [{ name: '', title: '', cmd: 'bash' }, 'name'], [{ title: '', cmd: 'bash' }, 'title'], [{ dir: '', steps: Array(21).fill('s') }, 'dir'],
+  ];
+  for (const [fields, field] of wrong) {
+    const raw = { ...preset, ...fields };
+    assert.equal(taskPresetProblem(raw, columns), field, JSON.stringify(fields).slice(0, 80));
+    assert.equal(normalizeTaskPreset(raw, columns), null, 'a named problem is a refused preset');
+  }
+  assert.equal(taskPresetProblem(null, columns), 'id');
+  assert.equal(taskPresetProblem({ ...preset, cmd: 'codex --full-auto', steps: ['  ', 'inspect '] }, columns), null,
+    'trimmed as the preset itself is');
 });
 
 test('connector card and step identities are deterministic from the opaque journal handle', async () => {

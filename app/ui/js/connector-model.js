@@ -46,23 +46,39 @@ export async function withPresetApproval(projectId, preset, approved) {
 /* whether the preset's stored approval is for this version of it */
 export const presetApproved = async (projectId, preset) => !!preset?.autoSend?.digest
   && preset.autoSend.digest === await presetGrantDigest(projectId, preset);
+const presetFields = raw => ({
+  id: String(raw.id || ''), name: String(raw.name || '').trim(),
+  columnId: String(raw.columnId || ''), title: String(raw.title || '').trim(),
+  dir: String(raw.dir || '').trim(), cmd: String(raw.cmd || '').trim(),
+  steps: (Array.isArray(raw.steps) ? raw.steps : []).map(String).map(value => value.trim()).filter(Boolean),
+  ...(raw.firstSend === true ? { firstSend: true } : {}),
+  ...(SHA256_RE.test(raw.autoSend?.digest || '') ? { autoSend: { digest: raw.autoSend.digest } } : {}),
+});
+/* the first rule a trimmed preset breaks, in the order the editor shows its
+   fields, or null: one list of rules for both readers below */
+const presetProblem = (preset, columns) => {
+  if (!LOCAL_ID_RE.test(preset.id)) return 'id';
+  if (!preset.name || [...preset.name].length > 120) return 'name';
+  if (!columns.some(column => column.id === preset.columnId)) return 'column';
+  if (!preset.title || [...preset.title].length > 120) return 'title';
+  if (!preset.dir || utf8(preset.dir) > 1024 || /[\r\n\0]/.test(preset.dir)) return 'dir';
+  if (!channelAgentCommand(preset.cmd) || utf8(preset.cmd) > 200 || /[\r\n\0]/.test(preset.cmd)) return 'cmd';
+  if (preset.steps.length > 20 || preset.steps.some(step => utf8(step) > 2000)) return 'steps';
+  return null;
+};
+
 export function normalizeTaskPreset(raw, columns = []) {
   if (!raw || typeof raw !== 'object') return null;
-  const preset = {
-    id: String(raw.id || ''), name: String(raw.name || '').trim(),
-    columnId: String(raw.columnId || ''), title: String(raw.title || '').trim(),
-    dir: String(raw.dir || '').trim(), cmd: String(raw.cmd || '').trim(),
-    steps: (Array.isArray(raw.steps) ? raw.steps : []).map(String).map(value => value.trim()).filter(Boolean),
-    ...(raw.firstSend === true ? { firstSend: true } : {}),
-    ...(SHA256_RE.test(raw.autoSend?.digest || '') ? { autoSend: { digest: raw.autoSend.digest } } : {}),
-  };
-  if (!LOCAL_ID_RE.test(preset.id) || !preset.name || [...preset.name].length > 120
-    || !preset.title || [...preset.title].length > 120 || !preset.dir || utf8(preset.dir) > 1024
-    || /[\r\n\0]/.test(preset.dir) || !channelAgentCommand(preset.cmd)
-    || utf8(preset.cmd) > 200 || /[\r\n\0]/.test(preset.cmd)
-    || !columns.some(column => column.id === preset.columnId) || preset.steps.length > 20
-    || preset.steps.some(step => utf8(step) > 2000)) return null;
-  return preset;
+  const preset = presetFields(raw);
+  return presetProblem(preset, columns) ? null : preset;
+}
+
+/* why `raw` is not a preset — 'id', 'name', 'column', 'title', 'dir',
+   'cmd' or 'steps', the first in the editor's order — or null when it is
+   one: the project defaults dialog focuses that field */
+export function taskPresetProblem(raw, columns = []) {
+  if (!raw || typeof raw !== 'object') return 'id';
+  return presetProblem(presetFields(raw), columns);
 }
 
 export function normalizeTaskPresets(values, columns = []) {

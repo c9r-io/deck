@@ -730,6 +730,22 @@ test('a hidden control inside the project defaults dialog is not put back on scr
   assert.match(dialogs, /\$\('pdf-preset-delete'\)\.hidden = !preset;/);
 });
 
+test('a phone task preset editor is framed with its own way out, and the dialog keeps the keyboard', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  /* the bug: a new preset's editor had only Done (refused while empty) and a
+     hidden Delete, so nothing but closing the whole dialog got out of it */
+  const editor = html.slice(html.indexOf('<div id="pdf-preset-editor"'), html.indexOf('<div class="cfm-actions">', html.indexOf('<div id="pdf-preset-editor"')));
+  assert.match(editor, /<div class="set-actions"><button class="btn" type="button" id="pdf-preset-delete"[^>]*>[^<]*<\/button><button class="btn" type="button" id="pdf-preset-cancel" data-i18n="common\.cancel">[^<]*<\/button><button class="btn" type="button" id="pdf-preset-done"/);
+  assert.match(css, /^#pdf-preset-editor \{[^}]*border: 1px dashed var\(--accent-dim\)/m, 'framed like a rule editor');
+  /* a refusal is said inside the dialog, under the field (a toast sits beneath every modal) */
+  assert.match(editor, /<p class="opt-state warn" id="pdf-preset-invalid" role="status" hidden><\/p>/);
+  /* WebKit focuses neither a clicked button nor a clicked checkbox: the box
+     takes that focus, so Escape still reaches the dialog's key handler */
+  assert.match(html, /<div id="pdf-box" tabindex="-1">/);
+  assert.match(css, /^#pdf-box:focus \{ outline: none; \}$/m);
+});
+
 test('the capture-name row is really hidden when the editor marks it hidden', () => {
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
   assert.match(css, /^\.set-row \{[^}]*display: flex/m, 'the cause: its class sets a display');

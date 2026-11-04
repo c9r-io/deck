@@ -139,6 +139,16 @@ test('Board mirrors: plan steps, and the preset bounds the frontend counts in th
   assert.ok(!presetKept({ steps: ['模'.repeat(Math.floor(b.preset_step_max_bytes / 3) + 1)] }), 'a step is counted in bytes here too');
 });
 
+test('what the preset editor says a preset needs names the same step bounds, in every language', () => {
+  const b = limits.board;
+  for (const [locale, dict] of Object.entries(dictionaries)) {
+    for (const bound of [b.preset_steps_max, b.preset_step_max_bytes]) {
+      assert.ok(dict['presets.invalid'].includes(String(bound)), `${locale}: presets.invalid names ${bound}`);
+    }
+    assert.ok(dict['presets.hint'].includes(String(b.preset_steps_max)), `${locale}: presets.hint`);
+  }
+});
+
 test('editor mirrors: a template name, a preset name and a preset title are counted in characters', () => {
   const names = limits.inbound.template_name_max_chars;
   for (const unit of ['a', '模', '😀']) {
