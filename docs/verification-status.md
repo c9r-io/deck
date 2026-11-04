@@ -30,12 +30,12 @@
 - toast：原 z-index 60，低于所有模态框（70–73），设置、模板、项目默认值里弹出的 toast 被压暗且被挡住。改为 74（高于所有模态框，低于弹出层 80 与下拉菜单 90），`pointer-events: none`，
   宽度上限 `min(440px, calc(50vw - 256px))`，1280 px 最小窗口下不与居中的 460 px 对话框重叠；提醒对话框（15000）仍在其上，它打开期间不弹 toast。新增 `ux-toast-layer`（项目默认值、模板、设置三处命中测试）。
   预设校验仍用字段下方提示（toast 2.6 秒即消失，改字段时已看不到）。
-  剩余代价：窗口接近 1280×800 时，两行的 toast 会盖住设置右下角「完成」按钮的下半部分，两条叠起的 toast 会盖住模板管理器的「完成」，持续约 2.6 秒，点击可穿透（`ux-toast-settings-zh`、`ux-toast-templates-zh` 截图）；内高约 800 px（单条）／910 px（两条）以上不重叠。
+  随后（同日，第三次）：弹窗打开时 toast 改在右上角（以 `aria-modal` 判断有弹窗），不再盖住设置／模板右下角的「完成」；`ux-toast-layer` 改为检查每条 toast 不压到弹窗内任何控件（设置里叠两条），无弹窗时仍在右下角。
 
 门禁（本机，修复后）：`scripts/ui-tests` 911 项通过并满足覆盖阈值，TMPDIR 无残留；JS 语法 197 模块、`check.mjs` 82 模块通过；`diagnostics::tests::smoke*` 通过（隔离 HOME）。
 原生（2026-11-04，Mac mini，同上环境，修复后的 debug 载体）：`ux-layers` 整次 **PASS** 27/27（含 `ux-auto-layout` 8 种情况、`ux-toast-layer`、`ux-preset-close` 与其余预设场景）；机器自身 `~/.deck` 与已安装 Deck 前后一致。
 UNRUN：发布载体；真实输入法组字中按 Esc（只有单元测试）；`cargo llvm-cov` 全量。
-另见（未改）：160% 下规则编辑器标签列固定 76 px，「Automation id」等较长标签被输入框遮挡。
+规则编辑器标签列改为随字号缩放（默认仍 76 px），过长的词在列内断字（德语「Automatisie-rungs-ID」），自动化 id 输入框不再被挤到标签下方；`ux-auto-layout` 增至 12 种情况（加德语、西班牙语）并新增两项条件（标签文字超出自身宽度、输入框被挤到标签下方）。原生（2026-11-04，Mac mini，修复后的 debug 载体）：`ux-layers` **PASS** 27/27。
 
 ## 上一轮 中断的 Agent 会话恢复（shell 服务丢失后）
 

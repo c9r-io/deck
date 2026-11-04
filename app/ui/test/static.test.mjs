@@ -761,6 +761,15 @@ test('toasts stack above every modal and below menus, take no click, and stay cl
   /* 100vw − 18 − w ≥ 50vw + 230 + 8: clear of a centred 460 px dialog at 1280 px */
   assert.match(rule('#toasts'), /max-width: min\(440px, calc\(50vw - 256px\)\);/);
   assert.match(rule('\\.toast'), /overflow-wrap: anywhere;/);
+  /* the second cost: at the bottom right a toast covered Done in Settings and
+     the template manager near 1280×800; while a dialog is open the stack sits
+     at the top right, and "a dialog" is read from aria-modal */
+  assert.match(css, /^#toasts\.over-dialog \{ top: 18px; bottom: auto; \}$/m);
+  const dialogs = readFileSync(new URL('../js/dialogs.js', import.meta.url), 'utf8');
+  assert.match(dialogs, /querySelectorAll\('\[aria-modal="true"\]'\)\]\.some\(el => el\.getClientRects\(\)\.length > 0\)/);
+  assert.match(dialogs, /\$\('toasts'\)\.classList\.toggle\('over-dialog', dialogOpen\(\)\);/);
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  for (const id of ['settings-box', 'tpl-box']) assert.match(html, new RegExp(`<div id="${id}"[^>]*aria-modal="true"`), id);
 });
 
 test('a choice row in the automation editor wraps instead of running past the drawer', () => {
@@ -769,6 +778,12 @@ test('a choice row in the automation editor wraps instead of running past the dr
      line wider than the 420 px drawer at the largest font size (ux-auto-layout) */
   assert.match(css, /^\.seg button \{[^}]*white-space: nowrap;/m);
   assert.match(css, /^#auto-editor \.seg \{ flex: 0 1 auto; flex-wrap: wrap; min-width: 0; max-width: 100%; \}$/m);
+  /* the label column grows with the font, and a long word breaks inside it
+     ("Automation id" ran under its input at 160 %; "Automatisierungs-ID"
+     does not fit at any size) */
+  assert.match(css, /^#auto-editor \.set-row label \{ width: 5\.846154rem; overflow-wrap: anywhere; -webkit-hyphens: auto; hyphens: auto; \}$/m);
+  assert.match(css, /^#auto-editor \.auto-editor-hint \{ margin: 0 0 8px calc\(5\.846154rem \+ 10px\); \}$/m);
+  assert.match(css, /^#auto-editor #auto-badge \{ flex: 1 1 0; max-width: 14em; font-family: var\(--mono\); \}$/m, 'beside its label at any size');
 });
 
 test('the capture-name row is really hidden when the editor marks it hidden', () => {

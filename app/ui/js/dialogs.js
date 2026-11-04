@@ -411,11 +411,19 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
   });
 }
 
-/* ---------- toasts ---------- */
+/* ---------- toasts ----------
+   Bottom right, or top right while a dialog is open: Settings and the
+   template manager end near the bottom of a small window with Done at the
+   right, and the top right is the empty end of every dialog's title row.
+   A dialog is anything marked aria-modal that is on screen; the place is
+   chosen when a toast is raised, for the whole stack. */
+const dialogOpen = () => typeof document.querySelectorAll === 'function'
+  && [...document.querySelectorAll('[aria-modal="true"]')].some(el => el.getClientRects().length > 0);
 export function toast(msg) {
   const el = document.createElement('div');
   el.className = 'toast';
   el.textContent = msg;
+  $('toasts').classList.toggle('over-dialog', dialogOpen());
   $('toasts').appendChild(el);
   setTimeout(() => el.remove(), 2600);
 }

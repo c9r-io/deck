@@ -176,24 +176,35 @@ export async function runUxLayersSmoke() {
       return byPointer && byKey && fields() === before && writes === at && !$('auto-editor').hidden && drawer.scrollTop === top;
     }));
     /* both languages, the default and the largest font size, every trigger
-       at the largest. `b` says what failed: bits 3i, 3i+1, 3i+2 of case i
-       are the drawer scrolling sideways, an element past its edge, the
-       first-step hint's text. A failing case also snapshots its outermost
-       offenders outlined (`ux-auto-overflow-<i>`). */
-    let layoutBits = 0;
+       at the largest, and German and Spanish where single words are longest.
+       Conditions: 0 the drawer scrolls sideways, 1 an element past its edge,
+       2 the first-step hint's text, 3 a label's text wider than its own box
+       (it then runs under its input), 4 a text field pushed below its
+       label. `b` = the failing cases' bits + 4096 × the failing conditions'
+       bits. A failing case snapshots its outermost offenders outlined
+       (`ux-auto-overflow-<i>`). */
+    let layoutCases = 0; let layoutWhat = 0;
     await report('ux-auto-layout', await attempt(async () => {
       const cases = [['zh-Hans', 1.6, 'slack'], ['en', 1, 'slack'], ['en', 1.6, 'channel'], ['en', 1, 'clock'],
-        ['zh-Hans', 1.6, 'clock'], ['zh-Hans', 1.6, 'agent'], ['en', 1.6, 'clock'], ['en', 1.6, 'agent']];
+        ['zh-Hans', 1.6, 'clock'], ['zh-Hans', 1.6, 'agent'], ['en', 1.6, 'clock'], ['en', 1.6, 'agent'],
+        ['de', 1, 'agent'], ['de', 1.6, 'agent'], ['de', 1.6, 'channel'], ['es', 1.6, 'channel']];
       for (const [i, [language, size, value]] of cases.entries()) {
         setLocale(language); applyFontScale(size); await trigger(value); await pause(200);
         /* the inside of the drawer: its border and its scrollbar are not room */
         const edge = drawer.getBoundingClientRect().left + drawer.clientLeft + drawer.clientWidth + 1;
         const past = el => shown(el) && el.getBoundingClientRect().right > edge;
-        if (drawer.scrollWidth > drawer.clientWidth + 1) layoutBits |= 1 << (3 * i);
-        if ([...drawer.querySelectorAll('.opt-note, .q-review-option, .auto-section, .set-row')].some(past)) layoutBits |= 1 << (3 * i + 1);
-        if ($('auto-first-send-hint').textContent !== t('automation.firstSend.hint')) layoutBits |= 1 << (3 * i + 2);
-        if (layoutBits >> (3 * i) & 7) {
-          const outermost = [...drawer.querySelectorAll('*')].filter(el => past(el) && !past(el.parentElement));
+        const crammed = el => shown(el) && el.scrollWidth > el.clientWidth + 1;
+        const labels = [...drawer.querySelectorAll('#auto-editor .set-row > label')];
+        /* a label followed directly by a text field: the field starts beside it */
+        const pushed = labels.filter(label => shown(label) && label.nextElementSibling?.matches('input:not([type=checkbox])')
+          && shown(label.nextElementSibling) && label.nextElementSibling.getBoundingClientRect().top >= label.getBoundingClientRect().bottom);
+        const failed = [drawer.scrollWidth > drawer.clientWidth + 1,
+          [...drawer.querySelectorAll('.opt-note, .q-review-option, .auto-section, .set-row')].some(past),
+          $('auto-first-send-hint').textContent !== t('automation.firstSend.hint'),
+          labels.some(crammed), pushed.length > 0];
+        failed.forEach((bad, c) => { if (bad) { layoutCases |= 1 << i; layoutWhat |= 1 << c; } });
+        if (failed.some(Boolean)) {
+          const outermost = [...drawer.querySelectorAll('*')].filter(el => past(el) && !past(el.parentElement)).concat(labels.filter(crammed), pushed.map(label => label.nextElementSibling));
           outermost.forEach(el => { el.style.outline = '2px solid red'; });
           outermost[0]?.scrollIntoView({ block: 'center' }); await pause(150);
           await snapshot(`ux-auto-overflow-${i}`);
@@ -208,8 +219,8 @@ export async function runUxLayersSmoke() {
         }
       }
       setLocale('zh-Hans'); applyFontScale(1);
-      return layoutBits === 0;
-    }), 1, layoutBits);
+      return layoutCases === 0;
+    }), 1, layoutCases + 4096 * layoutWhat);
     closeAutomations();
 
     /* ---------- lists: one list, several lists, stability ---------- */
@@ -652,8 +663,12 @@ export async function runUxLayersSmoke() {
     /* ---------- a toast raised inside a modal is read, not hidden ----------
        Over the project defaults dialog, the template manager and Settings:
        the toast is what a hit test finds at its centre (pointer events lent
-       to it for the test only), it never takes a click, and it stays clear
-       of the 460 px dialog at this window size. */
+       to it for the test only), it never takes a click, and every toast on
+       screen is clear of every control of the dialog (two stacked ones in
+       Settings, whose Done they used to cover). With no dialog open the
+       stack stays at the bottom. `b` bits 1, 2, 4, 8 name what failed; in
+       Settings 16, 32, 64 say the second toast was missing, not on top, or
+       covering a control (then snapshotted outlined with the stack hidden). */
     await report('ux-toast-layer', await attempt(async () => {
       trace = 0;
       const raise = async () => { toast(t('presets.invalid')); await pause(300); return $('toasts').lastElementChild; };
@@ -664,6 +679,11 @@ export async function runUxLayersSmoke() {
         return el.contains(hit);
       };
       const apart = (a, b) => a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+      /* the controls of a dialog that any toast on screen covers (a region
+         that only scrolls, like #set-content with tabindex 0, is not one) */
+      const covered = box => [...box.querySelectorAll('button, input, select, textarea, summary, a[href], [role="button"], [role="switch"], [role="tab"]')].filter(shown)
+        .filter(control => [...$('toasts').children].some(note => !apart(note.getBoundingClientRect(), control.getBoundingClientRect())));
+      const clearOf = box => covered(box).length === 0;
       const done = openProjectDefaults(project.id);
       await until(() => $('pdf').style.display === 'flex');
       let note = await raise();
@@ -675,21 +695,32 @@ export async function runUxLayersSmoke() {
       openTemplates(null);
       await until(() => shown($('tpl-form')));
       note = await raise();
-      const manager = !!note && onTop(note);
+      const manager = !!note && onTop(note) && clearOf($('tpl-box'));
       trace |= manager ? 0 : 2;
       await snapshot('ux-toast-templates-zh');
       $('tpl-done').click();
-      await pause(2800);   // the earlier toasts leave: Settings gets one, as it usually would
+      await pause(2800);   // the earlier toasts leave
       await openSettings();
+      let settings = false;
       try {
         await until(() => $('settings-modal').style.display === 'flex' && shown($('set-close')));
-        note = await raise();
-        const settings = !!note && onTop(note);
-        trace |= settings ? 0 : 4;
+        await raise(); note = await raise();
+        const two = $('toasts').children.length >= 2; const above = onTop(note); const hits = covered($('settings-box'));
+        settings = two && above && hits.length === 0;
+        trace |= (settings ? 0 : 4) | (two ? 0 : 16) | (above ? 0 : 32) | (hits.length ? 64 : 0);
         await snapshot('ux-toast-settings-zh');
-        trace += 100;
-        return dialog && manager && settings;
+        if (hits.length) {   // what the stack covers, shown with the stack hidden
+          $('toasts').style.visibility = 'hidden'; hits.forEach(el => { el.style.outline = '2px solid red'; });
+          await pause(100); await snapshot('ux-toast-settings-covered');
+          hits.forEach(el => { el.style.outline = ''; }); $('toasts').style.visibility = '';
+        }
       } finally { $('set-close').click(); }
+      await pause(2800);
+      note = await raise();
+      const board = !!note && !$('toasts').classList.contains('over-dialog') && note.getBoundingClientRect().top > innerHeight / 2;
+      trace |= board ? 0 : 8;
+      trace += 100;
+      return dialog && manager && settings && board;
     }), 1, trace);
   } catch (_) {
     await snapshot('ux-layers-exception');

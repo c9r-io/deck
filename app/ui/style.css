@@ -1073,7 +1073,11 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 #set-connector-qr { display:block; width:220px; height:220px; margin:12px auto; background:var(--bg); }
 #auto-editor { padding: 10px 12px; border: 1px dashed var(--accent-dim); border-radius: 8px; background: var(--bg); }
 #auto-editor .set-row { flex-wrap: wrap; }
-#auto-editor .set-row label { width: 76px; }
+/* the label column is 76 px at the default size and grows with the font
+   (it stayed 76 px at 160 %, and "Automation id" ran under its input); a
+   word longer than the column (German, Spanish) is hyphenated, or broken
+   as a last resort, inside it */
+#auto-editor .set-row label { width: 5.846154rem; overflow-wrap: anywhere; -webkit-hyphens: auto; hyphens: auto; }
 #auto-editor .q-days { flex: none; }
 /* text fields fill their row; a tick box keeps its own size (stretched by
    this rule it was squeezed to nothing beside a label that wraps) */
@@ -1083,8 +1087,10 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 #auto-editor #auto-dom { flex: none; width: 7em; font-family: var(--mono); }
 #auto-editor input[type=date] { flex: none; width: auto; }
 #auto-editor .auto-every-word { color: var(--muted); flex: none; }
-#auto-editor #auto-badge { flex: 0 1 14em; font-family: var(--mono); }
-#auto-editor .auto-editor-hint { margin: 0 0 8px 86px; }
+/* no larger than 14em, and never wider than the room beside its label: a
+   fixed 14em basis pushed it under the label once the column grew */
+#auto-editor #auto-badge { flex: 1 1 0; max-width: 14em; font-family: var(--mono); }
+#auto-editor .auto-editor-hint { margin: 0 0 8px calc(5.846154rem + 10px); }
 #auto-editor .dd { flex: 1; min-width: 0; }
 #auto-editor .dd[data-for=auto-unit], #auto-editor .dd[data-for=auto-dom] { flex: none; }
 /* a choice row keeps one line while it fits and otherwise wraps its
@@ -1217,12 +1223,16 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
    dialog is read instead of dimmed behind it, and below the popovers and
    menus (80, 90) a user may be working in. They never take a click, and
    their width keeps them clear of a centred 460 px dialog down to the
-   1280 px minimum (100vw − 18 − w ≥ 50vw + 230 + 8). The reminder sheet
-   (15000) stays above them; it raises none while open. */
+   1280 px minimum (100vw − 18 − w ≥ 50vw + 230 + 8). While a dialog is
+   open they sit at the top right instead (dialogs.js `toast`): Settings
+   and the template manager reach the bottom of a small window with Done
+   at the right. The reminder sheet (15000) stays above them; it raises
+   none while open. */
 #toasts {
   position: fixed; bottom: 18px; right: 18px; z-index: 74; display: flex; flex-direction: column; gap: 8px;
   pointer-events: none; max-width: min(440px, calc(50vw - 256px));
 }
+#toasts.over-dialog { top: 18px; bottom: auto; }
 .toast {
   background: var(--raised); border: 1px solid var(--border);
   border-left: 3px solid var(--accent);

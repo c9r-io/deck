@@ -29,7 +29,7 @@ const documentSurface = new Surface();
 documentSurface.hidden = false;
 documentSurface.hasFocus = () => true;
 documentSurface.createElement = () => { const el = new Surface(); el.className = ''; return el; };
-documentSurface.getElementById = () => ({ appendChild() {} });
+documentSurface.getElementById = () => ({ appendChild() {}, classList: { toggle() {} } });   // #toasts places its stack
 globalThis.document = documentSurface;
 const windowSurface = new Surface();
 const logs = [], calls = [];
