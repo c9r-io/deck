@@ -1276,7 +1276,7 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
    cards keep their durable sidebar navigation. */
 #attention-count { margin-left: auto; font-size: .846154rem; }
 #attention-view { position: relative; flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
-#attention-view[hidden], .attention-notice[hidden], .attention-column-empty[hidden] { display: none; }
+#attention-view[hidden], .attention-notice[hidden], .attention-column-empty[hidden], .attention-batch[hidden], .attention-pick[hidden] { display: none; }
 .attention-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 20px 8px; flex-wrap: wrap; }
 .attention-head h1 { font-size: 1.384615rem; }
 .attention-hint { color: var(--muted); padding: 0 20px 8px; line-height: 1.5; }
@@ -1286,11 +1286,20 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 .attention-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .attention-filters .btn { font-size: .923077rem; }
 .attention-filters .active { color: var(--accent); border-color: var(--accent-dim); background: var(--sel); }
+/* batch close, in "Turn ended" only: select all on the left, the one
+   action on the right; it wraps rather than run past a narrow window */
+.attention-batch { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin-top: 10px; }
+.attention-batch .attention-close-picked { margin-left: auto; }
+.attention-batch .attention-close-picked[aria-disabled="true"] { opacity: .5; cursor: default; }
+/* the tick stays at the cell's left and a long title wraps beside it,
+   never under it */
+.attention-card-name .attention-pick { flex: none; margin: 0 8px 0 0; }
 #attention-list { overflow: auto; min-height: 120px; flex: 1; padding: 0 20px 20px; }
 .attention-section { font-size: 1rem; font-weight: 600; color: var(--muted); margin: 18px 12px 6px; }
 .attention-row, .attention-labels { display: grid; grid-template-columns: minmax(130px,1.3fr) minmax(120px,1fr) minmax(125px,1fr) minmax(120px,1fr) auto; gap: 14px; align-items: center; padding: 16px 12px; border-bottom: 1px solid var(--border); line-height: 1.55; }
 .attention-row > span { min-width: 0; overflow-wrap: anywhere; }
-.attention-card-name { font-weight: 600; }
+.attention-card-name { font-weight: 600; display: flex; align-items: center; }
+.attention-card-title { min-width: 0; }
 .attention-card-name .card-pin { margin-left: 6px; }
 .attention-origin, .attention-viewed { color: var(--muted); font-size: .923077rem; }
 .attention-reason[data-status="attention"] { color: var(--attn); }

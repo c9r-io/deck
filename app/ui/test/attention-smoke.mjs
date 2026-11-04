@@ -494,7 +494,7 @@ export async function runAttentionSmoke() {
     const newSessionMenu = withDefaults => [
       t('menu.newSessionNow'),
       ...(withDefaults ? [t('menu.newShellOnly')] : []),
-      '◷ ' + t('menu.autoClock'), '◇ ' + t('menu.autoSlack'), '▤ ' + t('menu.autoChannel'),
+      '◷ ' + t('menu.autoClock'), '◇ ' + t('menu.autoSlack'), '▤ ' + t('menu.autoChannel'), '◆ ' + t('menu.autoAgent'),
       '⚑ ' + t('menu.projectDefaults'), '↻ ' + t('menu.automations'), '◈ ' + t('menu.templates'),
     ];
     const sameLabels = (buttons, labels) => JSON.stringify(buttons.map(menuLabel)) === JSON.stringify(labels);
@@ -728,6 +728,133 @@ export async function runAttentionSmoke() {
     const savedAfter = boardData().projects.find(p => p.id === atlas.id);
     await report('defaults-persistence', saved.dir === '~/work/atlas' && saved.cmd === 'claude'
       && !('dir' in savedAfter) && !('cmd' in savedAfter) && JSON.stringify(boardData()) === base);
+    // Batch close (Needs attention › Turn ended). Four dedicated live shells
+    // whose synthetic status says a turn ended, one with a kept scratchpad.
+    // Nothing is ticked on arrival and ticks exist only in this filter; ONE
+    // confirmation closes the ticked cards through the real close (their
+    // shells end on the isolated socket); a card that starts a new turn while
+    // the question is open stays, the scratchpad card is never closed here,
+    // and declining closes nothing. The fixture cards are never closed.
+    stage = 7;
+    const { cfmDone } = await import('../js/dialogs.js');
+    const { addManual, emptyBuffer } = await import('../js/buffer-model.js');
+    const waitFor = async (ok, ms = 4000) => {
+      for (const end = Date.now() + ms; Date.now() < end; await pause(20)) if (ok()) return true;
+      return ok();
+    };
+    const nativeAlive = async card => (await nativeInvoke('poll_sessions', { names: [card.session], tailFor: [], checkpointShells: false }))[0]?.alive === true;
+    const batch = {};
+    for (const [key, title, buffer] of [['a', 'Batch A'], ['b', 'Batch B'], ['c', 'Batch C'],
+      ['kept', 'Batch kept', addManual(emptyBuffer(), { id: 'batch-note', text: 'note', now: Date.now() }).buffer]]) {
+      const made = await provider.create({ projectId: atlas.id, columnId: atlas.columns[1].id, title, cmd: '', dir: '/tmp', ...(buffer ? { buffer } : {}) });
+      await nativeInvoke('start_session', { name: made.session, dir: '/tmp', cmd: '', restoreShell: false });
+      statuses.set(made.session, { name: made.session, alive: true, agent: 'turn-done', idle_secs: 3, fg: 'fixture-agent', mem_mb: 24 });
+      batch[key] = provider.get(made.id);
+    }
+    await reset(); showAttention(); await pollNow();
+    const tools = $('attention-tools');
+    const bar = tools.querySelector('.attention-batch');
+    const closeBtn = bar.querySelector('.attention-close-picked');
+    const rowOfCard = card => $('attention-list').querySelector(`.attention-row[data-sid="${card.id}"]`);
+    const pickOf = card => rowOfCard(card)?.querySelector('.attention-pick');
+    const pendingPicksHidden = [...$('attention-list').querySelectorAll('.attention-pick')].every(pick => pick.hidden) && bar.hidden;
+    tools.querySelector('[data-filter="ended"]').click(); await pause(30);
+    const endedCount = ctx.attention.counts(store.cards).ended;
+    const endedRows = [...$('attention-list').querySelectorAll('.attention-row')];
+    let offerBits = 0;
+    if (!pendingPicksHidden) offerBits |= 1;
+    if (bar.hidden || endedRows.length !== endedCount || endedCount < 4) offerBits |= 2;
+    if (!Object.values(batch).every(card => !!pickOf(card))) offerBits |= 4;
+    if (!endedRows.every(row => { const pick = row.querySelector('.attention-pick'); return !!pick && !pick.hidden && !pick.checked; })) offerBits |= 8;
+    if (closeBtn.getAttribute('aria-disabled') !== 'true' || $('attention-pick-all').checked) offerBits |= 16;
+    // the row's ticks never open the card; the open button is the only way in
+    const viewBefore = state.view, tickAttaches = attaches;
+    pickOf(batch.a).click(); pickOf(batch.b).click(); pickOf(batch.kept).click(); await pause(30);
+    if (state.view !== viewBefore || attaches !== tickAttaches) offerBits |= 32;
+    if (closeBtn.getAttribute('aria-disabled') !== 'false' || closeBtn.textContent !== t('attention.closePicked', { count: '3' })
+      || !$('attention-pick-all').indeterminate) offerBits |= 64;
+    // all, then none; leaving the filter forgets every tick, so coming back
+    // starts from nothing ticked again
+    $('attention-pick-all').click(); await pause(30);
+    const allTicked = endedRows.every(row => row.querySelector('.attention-pick').checked);
+    $('attention-pick-all').click(); await pause(30);
+    const noneTicked = endedRows.every(row => !row.querySelector('.attention-pick').checked) && closeBtn.getAttribute('aria-disabled') === 'true';
+    if (!allTicked || !noneTicked) offerBits |= 128;
+    tools.querySelector('[data-filter="pending"]').click(); await pause(30);
+    const leftHidden = bar.hidden && [...$('attention-list').querySelectorAll('.attention-pick')].every(pick => pick.hidden);
+    tools.querySelector('[data-filter="ended"]').click(); await pause(30);
+    if (!leftHidden || [...$('attention-list').querySelectorAll('.attention-pick')].some(pick => pick.checked)) offerBits |= 256;
+    await report('attention-batch-offer', offerBits === 0, endedCount, offerBits);
+    // Layout at the real window, six languages at both font scales: the tick
+    // sits in the card cell before the title, every filter and the bar's
+    // button stay inside the tools, nothing scrolls sideways.
+    pickOf(batch.c).click(); await pause(30);   // so the button carries a count
+    const { LOCALES } = await import('../js/i18n.js');
+    let layoutBits = 0, layoutFails = 0, firstLayoutFail = 0, combo = 0;
+    for (const locale of LOCALES) for (const scale of [1, 1.6]) {
+      combo++;
+      const bitsBefore = layoutBits; layoutBits = 0;
+      setLocale(locale); applyFontScale(scale); render(); await pause(25);
+      const nameRect = rowOfCard(batch.c).querySelector('.attention-card-name').getBoundingClientRect();
+      const titleRect = rowOfCard(batch.c).querySelector('.attention-card-title').getBoundingClientRect();
+      const pickRect = pickOf(batch.c).getBoundingClientRect();
+      const toolsRect = tools.getBoundingClientRect(), barRect = bar.getBoundingClientRect(), btnRect = closeBtn.getBoundingClientRect();
+      if (!(pickRect.width > 0 && pickRect.left >= nameRect.left - 0.5 && pickRect.right <= titleRect.left + 0.5)) layoutBits |= 1;
+      if (Math.abs((pickRect.top + pickRect.bottom) / 2 - (titleRect.top + titleRect.bottom) / 2) > 6 * scale) layoutBits |= 2;
+      if (!(btnRect.width > 0 && btnRect.right <= barRect.right + 0.5 && barRect.right <= toolsRect.right + 0.5)) layoutBits |= 4;
+      if ([...tools.querySelectorAll('.attention-filters button')].some(el => el.getBoundingClientRect().right > toolsRect.right + 1)) layoutBits |= 8;
+      if ($('attention-list').scrollWidth > $('attention-list').clientWidth + 1 || tools.scrollWidth > tools.clientWidth + 1) layoutBits |= 16;
+      if (!closeBtn.textContent.includes('1') || !bar.querySelector('.attention-pick-all-label').textContent) layoutBits |= 32;
+      if (layoutBits) { layoutFails++; firstLayoutFail ||= combo; }
+      layoutBits |= bitsBefore;
+    }
+    applyFontScale(1); setLocale('zh-Hans'); render(); await pause(25);
+    pickOf(batch.c).click(); await pause(30);
+    // a failure reports how many of the 12 combinations failed, its bits and
+    // the first failing one (locale index × 2 + scale, from 1) above them
+    await report('attention-batch-layout', layoutBits === 0, layoutFails || 1, layoutBits | firstLayoutFail << 8);
+    // Tick A, B and the scratchpad card; while the one question is open, B
+    // starts a new turn. A closes for real, B stays, the scratchpad card stays.
+    pickOf(batch.a).click(); pickOf(batch.b).click(); pickOf(batch.kept).click(); await pause(30);
+    closeBtn.click();
+    let closeBits = 0;
+    if (!(await waitFor(() => $('cfm').style.display === 'flex'))) closeBits |= 1;
+    if ($('cfm-msg').textContent !== t('attention.closePickedConfirm', { count: '2', live: t('attention.closePickedLive') })) closeBits |= 2;
+    statuses.get(batch.b.session).agent = 'working';
+    let lastToast = null;
+    cfmDone(true);
+    if (!(await waitFor(() => !provider.get(batch.a.id) && closeBtn.getAttribute('aria-disabled') !== 'true'
+      && !!(lastToast = $('toasts').lastElementChild)))) closeBits |= 4;
+    const expectedToast = [t('attention.closedPicked', { count: '1' }), t('attention.closedKept', { count: '1' }),
+      t('attention.closedMoved', { count: '1' })].join(' ');
+    if (lastToast?.textContent !== expectedToast) closeBits |= 8;
+    if (await nativeAlive(batch.a)) closeBits |= 16;
+    if (!provider.get(batch.b.id) || !(await nativeAlive(batch.b)) || rowOfCard(batch.b)) closeBits |= 32;
+    if (!provider.get(batch.kept.id) || !(await nativeAlive(batch.kept)) || !pickOf(batch.kept)?.checked) closeBits |= 64;
+    if (!provider.get(batch.c.id) || !(await nativeAlive(batch.c)) || pickOf(batch.c)?.checked) closeBits |= 128;
+    if (closeBtn.textContent !== t('attention.closePicked', { count: '1' })) closeBits |= 256;
+    if (samples.size !== [...samples.values()].filter(({ card }) => !!provider.get(card.id)).length) closeBits |= 512;
+    await report('attention-batch-close', closeBits === 0, 1, closeBits);
+    // Declining the question closes nothing; the scratchpad card alone asks nothing.
+    pickOf(batch.c).click(); await pause(30);
+    closeBtn.click();
+    let declineBits = 0;
+    if (!(await waitFor(() => $('cfm').style.display === 'flex'))) declineBits |= 1;
+    if ($('cfm-msg').textContent !== t('attention.closePickedConfirm', { count: '1', live: t('attention.closePickedLive') })) declineBits |= 2;
+    const toastBefore = $('toasts').lastElementChild;
+    cfmDone(false);
+    await waitFor(() => closeBtn.getAttribute('aria-disabled') === 'false', 1000);
+    if (!provider.get(batch.c.id) || !(await nativeAlive(batch.c))) declineBits |= 4;
+    if ($('toasts').lastElementChild && $('toasts').lastElementChild !== toastBefore) declineBits |= 8;
+    pickOf(batch.c).click(); await pause(30);
+    closeBtn.click(); await pause(60);
+    if ($('cfm').style.display === 'flex') { declineBits |= 16; cfmDone(false); }
+    if ($('toasts').lastElementChild?.textContent !== t('attention.closeKeptAll') || !provider.get(batch.kept.id)) declineBits |= 32;
+    await report('attention-batch-decline', declineBits === 0, 1, declineBits);
+    for (const card of Object.values(batch)) {
+      if (provider.get(card.id)) await provider.close(card.id);
+      statuses.delete(card.session);
+    }
     await reset(); showAttention(); await pollNow();
     // Buttons in a test-only strip select real implemented views for screenshots.
     const strip = document.createElement('div');

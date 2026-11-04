@@ -47,7 +47,7 @@ test('Codex coverage is diagnostic only and follows live session snapshots', () 
 
 test('12-card fixture: manual follow-up joins pending without changing live categories or placement', () => {
   const tracker = trackerOf();
-  assert.deepEqual(tracker.counts(cards), { all: 12, pending: 5, input: 2, waiting: 0, done: 2, followed: 2, unavailable: 3, stopped: 1, unknown: 0 });
+  assert.deepEqual(tracker.counts(cards), { all: 12, pending: 5, input: 2, waiting: 0, done: 2, ended: 4, followed: 2, unavailable: 3, stopped: 1, unknown: 0 });
   assert.equal(tracker.counts(cards.filter(c => c.projectId === 'Atlas')).pending, 1);
   assert.equal(tracker.category(cards[0]), 'input', 'viewed input remains pending');
   assert.equal(tracker.category(cards[2]), 'other', 'viewed turn ended is not unread');
@@ -123,7 +123,7 @@ test('session replacement, removed cards, new tracker and changed input episode 
   fresh.record(cards, infos);
   assert.equal(fresh.category(cards[2]), 'done', 'no promise of persistent read state after restart');
   fresh.record([], []);
-  assert.deepEqual(fresh.counts([]), { all: 0, pending: 0, input: 0, waiting: 0, done: 0, followed: 0, unavailable: 0, stopped: 0, unknown: 0 });
+  assert.deepEqual(fresh.counts([]), { all: 0, pending: 0, input: 0, waiting: 0, done: 0, ended: 0, followed: 0, unavailable: 0, stopped: 0, unknown: 0 });
   assert.equal(fresh.freshness([]).kind, 'fresh');
 });
 
@@ -443,4 +443,36 @@ test('channel permission waits use native stages and transient verification stay
   assert.equal(deliveryWaits(items, [{ item: 'channel-head', stage: 'channel-unverified' }]).size, 0);
   assert.equal(deliveryWaits(items, [{ item: 'channel-head', stage: 'channel-unverified', lasting: true }]).get('channel-session'), 'channel-unverified');
   assert.equal(deliveryWaits(items, [{ item: 'channel-head', stage: 'channel-stopped' }]).get('channel-session'), 'channel-stopped');
+});
+
+test('"Turn ended" offers every live card whose turn ended, read or not, and never a stale one', () => {
+  const tracker = createAttentionTracker();
+  const mk = id => ({ id, session: `s-${id}`, projectId: 'Atlas', columnId: 'Working' });
+  const [unread, read, quiet, working, input, stopped] = ['unread', 'read', 'quiet', 'working', 'input', 'stopped'].map(mk);
+  quiet.quietDone = true;
+  const all = [unread, read, quiet, working, input, stopped];
+  tracker.record(all, [
+    { name: 's-unread', alive: true, agent: 'turn-done', episode: 1, idle_secs: 3 },
+    { name: 's-read', alive: true, agent: 'turn-done', episode: 2, episode_viewed: true, idle_secs: 3 },
+    { name: 's-quiet', alive: true, agent: 'turn-done', episode: 3, idle_secs: 3 },
+    { name: 's-working', alive: true, agent: 'working', episode: 4, idle_secs: 3 },
+    { name: 's-input', alive: true, agent: 'needs-input', episode: 5, idle_secs: 3 },
+    { name: 's-stopped', alive: false },
+  ], new Set(), 100);
+  assert.deepEqual(all.filter(card => tracker.ended(card)).map(card => card.id), ['unread', 'read', 'quiet']);
+  assert.deepEqual(all.filter(card => tracker.matches(card, 'ended')).map(card => card.id), ['unread', 'read', 'quiet']);
+  // "Turn ended, unread" stays what it was: the unread, non-quiet one alone
+  assert.deepEqual(all.filter(card => tracker.matches(card, 'done')).map(card => card.id), ['unread']);
+  const counts = tracker.counts(all);
+  assert.equal(counts.ended, 3);
+  assert.equal(counts.done, 1);
+  assert.equal(counts.pending, 2, 'offering a card for batch close adds nothing to Needs attention');
+  // a stale snapshot cannot say the turn is still over
+  tracker.fail();
+  assert.deepEqual(all.filter(card => tracker.ended(card)), []);
+  assert.equal(tracker.counts(all).ended, 0);
+  // rows of the filter keep Board order, without pending's sections
+  tracker.record(all, [{ name: 's-read', alive: true, agent: 'turn-done', episode: 2, idle_secs: 3 }], new Set(), 200);
+  const rows = attentionRows([{ id: 'Atlas', name: 'Atlas', columns: [{ id: 'Working', name: 'Working' }] }], all, tracker, 'ended');
+  assert.deepEqual(rows.map(row => row.card.id), ['read']);
 });

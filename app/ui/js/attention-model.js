@@ -68,7 +68,7 @@ import { PI_COVERAGE, PI_SESSION } from './pi-model.js';
 //   bell rang — not that anything ended, succeeded or needs input.
 import { CARD_QUIET_SECS, effectiveCardStatus, itemDead } from './pure.js';
 
-export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'waiting', 'done', 'followed', 'unavailable', 'stopped', 'reminder', 'reminders']);
+export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'waiting', 'done', 'ended', 'followed', 'unavailable', 'stopped', 'reminder', 'reminders']);
 export const ATTENTION_SECTION_LABELS = Object.freeze({
   /* The pending list's sections, in row order, each with its heading. Every
      kind `attentionRows` returns under 'pending' has one; a bell is a row
@@ -132,15 +132,24 @@ export function createAttentionTracker() {
     if (!value.agent) return 'unavailable';
     return 'other';
   };
+  /* "Turn ended", the list batch close works from: a current observation
+     of a live card whose agent ended its turn, viewed or not, quiet or
+     not. A stale snapshot is never offered — it cannot say the turn is
+     still over. Presentation only: offering a card closes nothing. */
+  const ended = card => {
+    const value = get(card);
+    return !!value && value.alive && !value.stale && value.agent === 'turn-done';
+  };
   const matches = (card, filter) => {
     const kind = category(card);
     return filter === 'all' || (filter === 'reminder' ? reminderDue(card) : filter === 'reminders' ? !!card.reminder : false) || (filter === 'followed' ? card.pinned === true
       : filter === 'pending' ? kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card) || !!waiting(card) || rang(card)
       : filter === 'waiting' ? !!waiting(card)
+      : filter === 'ended' ? ended(card)
       : filter === 'unavailable' ? kind === 'unavailable' || kind === 'unknown' : kind === filter);
   };
   return {
-    get, category, matches, waiting, rang,
+    get, category, matches, waiting, rang, ended,
     deliveries(items, plans) { waits = deliveryWaits(items || [], plans || []); },
     record(cards, infos, visible, now) {
       visible = visible || new Set();
@@ -206,10 +215,11 @@ export function createAttentionTracker() {
       };
     },
     counts(cards) {
-      const counts = { all: cards.length, pending: 0, input: 0, waiting: 0, done: 0, followed: 0, unavailable: 0, stopped: 0, unknown: 0 };
+      const counts = { all: cards.length, pending: 0, input: 0, waiting: 0, done: 0, ended: 0, followed: 0, unavailable: 0, stopped: 0, unknown: 0 };
       for (const card of cards) {
         const kind = category(card);
         if (kind in counts) counts[kind]++;
+        if (ended(card)) counts.ended++;
         if (card.pinned === true) counts.followed++;
         if (waiting(card)) counts.waiting++;
         if (kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card) || waiting(card) || rang(card)) counts.pending++;

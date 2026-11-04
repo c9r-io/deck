@@ -483,12 +483,14 @@ const JS: &[(&str, &str, &str, usize, Class)] = &[
         Presentation,
     ),
     ("board.js", "pollSessionsNow", ".agent", 1, Presentation),
-    // runtime snapshots, categories, counts, badge
+    // runtime snapshots, categories, counts, badge; and `ended`, the "Turn
+    // ended" list batch close offers from (it closes nothing: the closer is
+    // a JS sink below and reads no agent state)
     (
         "attention-model.js",
         "createAttentionTracker",
         ".agent",
-        3,
+        4,
         Attention,
     ),
     (
@@ -502,7 +504,7 @@ const JS: &[(&str, &str, &str, usize, Class)] = &[
         "attention-model.js",
         "createAttentionTracker",
         "'turn-done'",
-        1,
+        2,
         Attention,
     ),
     ("attention-model.js", "record", ".agent", 3, Attention),
@@ -604,6 +606,9 @@ const POLL_EXEMPTION: (&str, &str) = ("board.js", "pollSessionsNow");
 /// Attention scope reaching one would be a side effect in disguise.
 const JS_SINKS: &[&str] = &[
     "provider.close(",
+    // batch close (Needs attention › Turn ended): the list offers, the
+    // closer closes; a list function must never call it
+    "closeSelectedCards(",
     "closePaneBySid(",
     "runRetirement.observe(",
     "exitRetirement.observe(",

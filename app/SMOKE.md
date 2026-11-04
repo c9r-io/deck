@@ -576,7 +576,20 @@ leaving the project byte-identical; and a new shell whose poll turns dead
 retiring its card and pane through the real close (the harness's synthetic
 poll only knows the fixture cards, so a card you create by hand in the
 left-over instance is NOT polled — press the strip's 真实轮询 first to hand
-the page back to the real backend before testing exits). A debug-only strip
+the page back to the real backend before testing exits). The same run also
+carries the batch-close gate (`attention-batch-*`, four checks) on four
+dedicated live shells whose synthetic status says a turn ended, one with a
+kept scratchpad: the Turn ended filter lists every such card with nothing
+ticked, ticks exist only in that filter and leaving it forgets them, a tick
+never opens a card, Select all / none, the tick placed before the title and
+the bar and every filter inside the tools in all six languages at both font
+scales; ONE confirmation whose count
+leaves out the scratchpad card, then a card that started a new turn while the
+question was open staying, the ticked card closing through the real close
+(its shell gone from the isolated socket), the scratchpad and unticked cards
+untouched, the toast naming all three outcomes; declining closes nothing, and
+a selection of protected cards only asks for one-by-one closing. The fixture
+cards are never closed. A debug-only strip
 leaves Board / Empty project / Needs attention / Update failed available for
 screenshots; the strip and fixture never ship in release bundles. Also inspect at the
 minimum supported window size, 1280×800: controls must remain reachable and long names

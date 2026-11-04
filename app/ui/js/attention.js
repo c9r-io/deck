@@ -43,19 +43,36 @@
 //   card carries the same return point onto its Board and focuses the card's
 //   native open button. Locating from any other view carries no return point.
 //   Returning (`showAttention(true)`) restores the captured view and row.
+// - Batch close lives in the "Turn ended" filter only (`tracker.ended`: a
+//   current observation of a live card whose agent ended its turn, viewed
+//   or not). Its rows carry tick boxes and the tools a "select all" box and
+//   "Close selected (N)". Nothing is ever ticked for the user, and leaving
+//   the filter or a card leaving the list drops its tick. Closing hands the
+//   ticked ids to Board's `closeSelectedCards` (one confirmation, the same
+//   close step as a card's ✕, cards with a reminder or a scratchpad left
+//   alone) together with `offered`, which re-reads after one fresh poll
+//   whether a card is still in the list: a card that started a new turn
+//   during the confirmation stays. The list reads agent state and closes
+//   nothing; the closer closes and reads none (tests/signal_census.rs).
 // - A leaf of the import graph: the Board and layout actions it calls
 //   (`pollNow`, `provider`, `render`, `switchProject`, `leaveSessionView`,
-//   `closeBuffer`, `openSession`) arrive through `initAttention(deps)` from app.js, so
-//   board.js and layout.js may import this module without a cycle.
+//   `closeBuffer`, `openSession`, `closeSelectedCards`) arrive through
+//   `initAttention(deps)` from app.js, so board.js and layout.js may import
+//   this module without a cycle.
 import { $, ctx, QUIET_SECS, state, store } from './state.js';
 import { ATTENTION_BADGE_LABELS, ATTENTION_FILTERS, ATTENTION_SECTION_LABELS, attentionBadge, attentionRows, codexCoverageGap } from './attention-model.js';
 import { piCoverage, piDetailKeys, piStatusKey } from './pi-model.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
 import { choiceDialog } from './dialogs.js';
 
-let pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings;
+let pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards;
 
 let pointerHeld = false;
+/* batch close: the ids the user ticked in "Turn ended", the rows last
+   shown, and whether a close is under way */
+const picked = new Set();
+let lastRows = [];
+let batchBusy = false;
 let deferredRender = false;
 let navigation = 0;
 
@@ -158,7 +175,19 @@ function fillTools(container, cards) {
     notice.append(retry);
     const filters = node('div', 'attention-filters');
     filters.setAttribute('role', 'group');
-    container.append(summary, notice, filters);
+    const batch = node('div', 'attention-batch');
+    batch.hidden = true;
+    const all = node('input'); all.type = 'checkbox'; all.id = 'attention-pick-all';
+    all.onchange = () => {
+      picked.clear();
+      if (all.checked) for (const row of lastRows) picked.add(row.card.id);
+      refreshAttention();
+    };
+    const allLabel = node('label', 'attention-pick-all-label'); allLabel.htmlFor = 'attention-pick-all';
+    const close = node('button', 'btn attention-close-picked'); close.type = 'button';
+    close.onclick = () => closePicked();
+    batch.append(all, allLabel, close);
+    container.append(summary, notice, filters, batch);
   }
   const tracker = ctx.attention;
   const counts = tracker.counts(cards);
@@ -261,7 +290,12 @@ function updateRows() {
         try { await provider.togglePinned(card.id); }
         finally { pin.removeAttribute('aria-disabled'); refreshAttention(); }
       };
-      el.querySelector('.attention-card-name').append(node('span', 'attention-card-title'), pin);
+      const pick = node('input', 'attention-pick'); pick.type = 'checkbox';
+      pick.onchange = () => {
+        if (pick.checked) picked.add(card.id); else picked.delete(card.id);
+        paintBatch();
+      };
+      el.querySelector('.attention-card-name').append(pick, node('span', 'attention-card-title'), pin);
       const open = node('button', 'btn attention-open'); open.type = 'button';
       open.onclick = () => openAttentionCard(card.id);
       el.append(open);
@@ -270,6 +304,10 @@ function updateRows() {
     const snapshot = ctx.attention.get(card);
     const locate = !snapshot || snapshot.stale || !snapshot.alive;
     row.querySelector('.attention-card-title').textContent = card.title;
+    const pick = row.querySelector('.attention-pick');
+    pick.hidden = ctx.attentionFilter !== 'ended';
+    pick.checked = picked.has(card.id);
+    pick.setAttribute('aria-label', t('attention.pickCard', { name: card.title }));
     const pin = row.querySelector('.card-pin');
     const pinLabel = t(card.pinned === true ? 'card.unmarkImportant' : 'card.markImportant');
     pin.textContent = card.pinned === true ? '★' : '☆';
@@ -292,6 +330,8 @@ function updateRows() {
       : ctx.attentionFilter === 'pending' ? 'attention.emptyPending' : 'attention.emptyFilter');
   }
   for (const el of [...list.children]) if (!keys.has(el.dataset.key)) el.remove();
+  lastRows = rows;
+  paintBatch();
   /* insertBefore of a connected row removes it first, and removal blurs the
      focused button inside it: put focus back where the reader left it */
   if (focusedHere && focus.isConnected) {
@@ -300,6 +340,53 @@ function updateRows() {
     $('attention-tools').querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });
   }
   list.scrollTop = scroll;
+}
+
+/* The batch tools of "Turn ended": shown only there; a tick of a card no
+   longer listed goes, and so does every tick once the filter changes. */
+function paintBatch() {
+  const batch = $('attention-tools').querySelector('.attention-batch');
+  if (!batch) return;
+  const on = ctx.attentionFilter === 'ended';
+  batch.hidden = !on;
+  if (!on) { picked.clear(); return; }
+  const listed = new Set(lastRows.map(row => row.card.id));
+  for (const id of [...picked]) if (!listed.has(id)) picked.delete(id);
+  for (const row of $('attention-list').querySelectorAll('.attention-row')) {
+    const pick = row.querySelector('.attention-pick');
+    if (pick) pick.checked = picked.has(row.dataset.sid);
+  }
+  const all = batch.querySelector('#attention-pick-all');
+  all.checked = listed.size > 0 && picked.size === listed.size;
+  all.indeterminate = picked.size > 0 && picked.size < listed.size;
+  all.disabled = !listed.size;
+  batch.querySelector('.attention-pick-all-label').textContent = t('attention.pickAll');
+  const close = batch.querySelector('.attention-close-picked');
+  close.textContent = t('attention.closePicked', { count: formatNumber(picked.size) });
+  /* aria-disabled, as the star does: WebKit moves focus off a control that
+     becomes disabled while it has it */
+  close.setAttribute('aria-disabled', String(!picked.size || batchBusy));
+}
+
+/* Close the ticked cards through Board's closer; `offered` is the list's
+   own question, asked again after one fresh poll once the user confirmed. */
+async function closePicked() {
+  if (batchBusy || !picked.size) return;
+  batchBusy = true; paintBatch();
+  let fresh = null;
+  const offered = async id => {
+    fresh ??= pollNow();
+    await fresh;
+    const card = provider.get(id);
+    return !!card && ctx.attention.ended(card);
+  };
+  try {
+    const closed = await closeSelectedCards([...picked], offered);
+    for (const id of closed) picked.delete(id);
+  } finally {
+    batchBusy = false;
+    render();   // the Board's tabs and counts too, not only this list
+  }
 }
 
 export function refreshAttention() {
@@ -377,7 +464,7 @@ export async function openFromNotification(session) {
 }
 
 export function initAttention(deps) {
-  ({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings } = deps);
+  ({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards } = deps);
   $('attention-btn').onclick = () => showAttention();
   $('attention-back').onclick = () => switchProject(state.projectId);
   document.addEventListener('pointerdown', event => {

@@ -446,6 +446,10 @@
       "checks": {
         "attention-attach-fail": {},
         "attention-attach-pending": {},
+        "attention-batch-close": {},
+        "attention-batch-decline": {},
+        "attention-batch-layout": {},
+        "attention-batch-offer": {},
         "attention-board": {},
         "attention-navigation": { "a": 18, "b": 0 },
         "attention-exit-before-reply": {},

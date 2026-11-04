@@ -57,6 +57,13 @@ promised to survive restarts. Manual follow-up stars do survive restarts and
 remain until explicitly removed, regardless of viewing, status or group changes.
 The Followed filter includes every starred card; the main list deduplicates
 overlapping reasons and puts manual-only follow-up after input and unread groups.
+The **Turn ended** filter lists every live card whose agent last reported the
+end of a turn, read or not, each with a tick box; nothing is ticked for you.
+**Close selected** asks once and closes the ticked cards the way each card's ✕
+does. Just before closing, Deck polls once more: a card whose agent started a
+new turn meanwhile stays open. A card with a reminder or kept scratchpad
+content is never closed in a batch; close it from its own card. Turn ended
+means the interaction stopped, not that the task succeeded.
 With **Notify me when away** on (off by default), a macOS notification is
 posted when a card enters needs-input or an unread turn ending while the deck
 window is not focused, carrying only the card title, the project name and one

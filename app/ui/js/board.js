@@ -1646,17 +1646,59 @@ export async function closeSession(sid, needConfirm = false) {
         name: s.title, live: live ? t('session.closeLive') : '',
         count: formatNumber(s.buffer?.entries?.length || 0),
       })))) return;
-  ctx.destructiveCards.add(sid);
+  if (!(await closeConfirmed(s, { reminderClaim: reminder }))) return;
+  toast(t('session.closed', { name: s.title }));
+  render();
+}
+
+/* The one close step after whatever confirmation the caller asked for: the
+   Board's close transaction, then the card's scratchpad and pane. True when
+   the card is gone. */
+async function closeConfirmed(s, options = {}) {
+  ctx.destructiveCards.add(s.id);
   try {
-    const result = await provider.close(sid, { detail: true, reminderClaim: reminder });
-    if (!result.ok || !result.applied) return;
-    if (bufferTargetId === sid) closeBuffer();
-    closePaneBySid(sid, { detach: false });
-    toast(t('session.closed', { name: s.title }));
-    render();
+    const result = await provider.close(s.id, { detail: true, ...options });
+    if (!result.ok || !result.applied) return false;
+    if (bufferTargetId === s.id) closeBuffer();
+    closePaneBySid(s.id, { detach: false });
+    return true;
   } finally {
-    ctx.destructiveCards.delete(sid);
+    ctx.destructiveCards.delete(s.id);
   }
+}
+
+/* Batch close (Needs attention › Turn ended): the cards the user ticked,
+   after ONE confirmation, each through `closeConfirmed` like a card's ✕.
+   It reads no agent state: `stillOffered(id)` (the list's own question,
+   possibly async) is asked after the confirmation, so a card that started a new turn
+   meanwhile stays. A card with a reminder or a kept scratchpad is not
+   closed here — each has its own question in `closeSession`. Returns the
+   ids it closed; the caller repaints (the list owns its view). */
+export async function closeSelectedCards(ids, stillOffered = () => true) {
+  const cards = ids.map(id => provider.get(id)).filter(Boolean);
+  const asksFirst = card => !!reminderClaim(card) || retainedBuffer(card) || ctx.destructiveCards.has(card.id);
+  const closable = cards.filter(card => !asksFirst(card));
+  const kept = cards.length - closable.length;
+  if (!closable.length) {
+    if (kept) toast(t('attention.closeKeptAll'));
+    return [];
+  }
+  const live = closable.some(card => card.status !== 'stopped');
+  if (!(await confirmDialog(t('attention.closePickedConfirm', {
+    count: formatNumber(closable.length), live: live ? t('attention.closePickedLive') : '',
+  })))) return [];
+  const closed = [];
+  let moved = 0;
+  for (const card of closable) {
+    if (!(await stillOffered(card.id))) { moved++; continue; }
+    if (await closeConfirmed(card)) closed.push(card.id);
+  }
+  toast([
+    t('attention.closedPicked', { count: formatNumber(closed.length) }),
+    kept ? t('attention.closedKept', { count: formatNumber(kept) }) : '',
+    moved ? t('attention.closedMoved', { count: formatNumber(moved) }) : '',
+  ].filter(Boolean).join(' '));
+  return closed;
 }
 
 /* ---------- terminal (xterm + PTY bridge, split panes) ----------
