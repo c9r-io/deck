@@ -71,6 +71,43 @@ test('inline rename Escape cancels, blur commits, and IME Enter waits for compos
   assert.equal(persisted, 2);
 });
 
+test('a drafted rename starts from the draft: Enter takes it, Escape and an untouched blur keep the title', async () => {
+  const results = [];
+  const open = () => {
+    const host = new FakeElement();
+    inlineRename(host, 'old title', value => { results.push(value); }, { initial: '修复登录流程' });
+    return { host, input: host.children[0] };
+  };
+  // the field starts from the draft, not from the current title
+  let { host, input } = open();
+  assert.equal(input.value, '修复登录流程');
+  input.fire('keydown', { key: 'Enter' });
+  assert.equal(host.textContent, '修复登录流程');
+  assert.equal(results.at(-1), '修复登录流程', 'Enter takes the untouched draft');
+  // Escape: the current title stays and nothing is saved
+  ({ host, input } = open());
+  input.fire('keydown', { key: 'Escape' });
+  assert.equal(host.textContent, 'old title');
+  assert.equal(results.at(-1), null);
+  // a click away from an untouched draft is not a decision
+  ({ host, input } = open());
+  input.fire('blur');
+  assert.equal(host.textContent, 'old title');
+  assert.equal(results.at(-1), null);
+  // an edited draft is the user's text: a click away saves it, as a rename does
+  ({ host, input } = open());
+  input.value = '修复登录流程（第二轮）';
+  input.fire('blur');
+  assert.equal(host.textContent, '修复登录流程（第二轮）');
+  assert.equal(results.at(-1), '修复登录流程（第二轮）');
+  // without a draft nothing changes: blur still commits an edit
+  const plain = new FakeElement();
+  inlineRename(plain, 'old', value => { results.push(value); });
+  assert.equal(plain.children[0].value, 'old');
+  plain.children[0].fire('blur');
+  assert.equal(results.at(-1), null, 'unchanged value, nothing to save');
+});
+
 test('prompt dialog does not submit Chinese IME preedit on Enter', async () => {
   const pending = promptDialog('说明', '');
   const input = fakeDocument.getElementById('ppd-input');

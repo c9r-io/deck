@@ -1771,6 +1771,13 @@ with no dialog open the stack stays at the bottom. `b` bits 1, 2, 4, 8 name
 the place that failed; in Settings 16, 32 and 64 say whether the second
 toast was missing, not on top or covering a control (snapshotted outlined,
 with the stack hidden, as `ux-toast-settings-covered`).
+`ux-title-draft` opens the menu of the lists' empty-command shell card: Draft
+title must sit right after Rename, and with no model key stored the real
+backend reads the card's Signal pane (no Claude title) and refuses with
+`no-source`, whose sentence is shown while no rename field opens. With a key
+stored the scene is skipped (`a` 2): a smoke never sends pane text anywhere.
+`b` bits: 1 entry missing or misplaced, 2 no sentence, 4 a rename field
+opened, 8 the pane was empty.
 Snapshots land in `<data dir>/evidence/`; `ux-m-*` are measurements.
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-ux.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-ux-UNIQUE DECK_SMOKE_WKWEBVIEW=ux-layers app/run.sh`,

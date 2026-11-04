@@ -442,15 +442,19 @@ export function autoGrowField(field) {
 /* One-shot edit lifecycle for a value shown in place. `multiline` swaps the
    input for a growing textarea: a queued prompt or a template step can be
    many lines, so Enter there TYPES a newline and ⌘↵/⌃↵ is what commits.
-   Escape restores, blur commits, and an IME's Enter never submits. */
-export function inlineRename(host, current, onDone, { allowEmpty = false, multiline = false } = {}) {
+   Escape restores, blur commits, and an IME's Enter never submits.
+   `initial` prefills the field with a draft instead of the current value
+   (Draft title): Enter takes it, Escape restores the current value, and a
+   draft nobody touched is not a decision, so a click away drops it. */
+export function inlineRename(host, current, onDone, { allowEmpty = false, multiline = false, initial = current } = {}) {
   const button = host.tagName === 'BUTTON' ? host : null;
   if (button) {
     host = document.createElement('span'); host.className = button.className;
     button.replaceWith(host);
   }
   const field = document.createElement(multiline ? 'textarea' : 'input');
-  field.value = current;
+  field.value = initial;
+  const drafted = initial !== current;
   if (multiline) {
     field.className = 'inline-multiline';
     field.rows = 1;
@@ -491,7 +495,7 @@ export function inlineRename(host, current, onDone, { allowEmpty = false, multil
     }
   });
   if (multiline) field.addEventListener('input', () => autoGrowField(field));
-  field.addEventListener('blur', () => finish(true));
+  field.addEventListener('blur', () => finish(!(drafted && field.value === initial)));
   field.addEventListener('click', e => e.stopPropagation());
   field.addEventListener('dblclick', e => e.stopPropagation());
 }

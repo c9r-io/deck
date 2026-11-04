@@ -286,6 +286,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "ux-reminder-bytes",
     "ux-templates",
     "ux-toast-layer",
+    "ux-title-draft",
     "ux-exception",
     "reminder-real-due",
     "reminder-phase-ready",

@@ -1,6 +1,7 @@
 // Model APIs Settings contribution: an OpenAI and an Anthropic API key, kept
-// in the macOS Keychain by model_api.rs. Nothing uses them yet: saving or
-// checking a key only asks that provider for its model list. A key goes to
+// in the macOS Keychain by model_api.rs. They draft card titles
+// (card_title.rs, on the user's click); saving or checking a key only asks
+// that provider for its model list. A key goes to
 // the backend once and never comes back; the page shows whether one is
 // stored and the last check of it in this run, or that this is unknown.
 // One action per provider at a time; a newer status read wins.
@@ -10,7 +11,7 @@ export const MODEL_API_PROVIDERS = Object.freeze(['openai', 'anthropic']);
 
 const PANEL = `<div class="set-group" id="set-item-model-api" data-setting-id="model-api" tabindex="-1" role="group" aria-labelledby="set-item-model-api-title">
 <h3 class="set-group-title" id="set-item-model-api-title" data-i18n="settings.modelApi">Model APIs</h3>
-<div class="set-hint" data-i18n="settings.modelApiHint">API keys for OpenAI and Anthropic, kept in the macOS Keychain for features to come. Deck does nothing with them yet: saving or checking a key only asks that provider for its list of models.</div>
+<div class="set-hint" data-i18n="settings.modelApiHint">API keys for OpenAI and Anthropic, kept in the macOS Keychain. They draft card titles: for a card that is not running Claude Code, “Draft title” sends the end of that card’s terminal to the provider stored here (Anthropic first). Saving or checking a key only asks that provider for its list of models.</div>
 <div class="set-row"><label for="set-model-openai" data-i18n="settings.modelApiOpenAi">OpenAI API key</label><input type="password" id="set-model-openai" autocomplete="off" spellcheck="false" placeholder="sk-…"><button class="btn" type="button" id="set-model-openai-check" data-i18n="settings.modelApiCheck">Check</button><button class="btn" type="button" id="set-model-openai-clear" data-i18n="common.clear">Clear</button></div>
 <div class="set-hint" id="set-model-openai-state" role="status" aria-live="polite"></div>
 <div class="set-row"><label for="set-model-anthropic" data-i18n="settings.modelApiAnthropic">Anthropic API key</label><input type="password" id="set-model-anthropic" autocomplete="off" spellcheck="false" placeholder="sk-ant-…"><button class="btn" type="button" id="set-model-anthropic-check" data-i18n="settings.modelApiCheck">Check</button><button class="btn" type="button" id="set-model-anthropic-clear" data-i18n="common.clear">Clear</button></div>

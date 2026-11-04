@@ -127,13 +127,22 @@ section: an OpenAI and an Anthropic API key. Its backend is the core module
 `model_api.rs`, as voice preferences' is `voice.rs`; there is no new kind,
 typed table or persisted setting. Each key has its own closed Keychain slot
 (`openai-api-key`, `anthropic-api-key`), is proven by that provider's model
-list before it is stored, and never returns to the webview. Nothing in Deck
-uses the keys yet: the only network calls are the model-list requests a save
-or a Check asks for, nothing runs at startup or in the background, and no
-prompt, pane text or file leaves the Mac through this module. Failures are
-closed words, and the last check of each stored key is kept in memory only.
-A feature that sends content to a model will bring its own consent and data
-boundary rather than widen this one.
+list before it is stored, and never returns to the webview. Nothing runs at
+startup or in the background, failures are closed words, and the last check
+of each stored key is kept in memory only.
+
+One feature uses the keys: Draft title in a card's menu (`card_title.rs`,
+`title-draft.js`). On the user's click it drafts a title into the card's
+rename field and renames nothing itself. A card whose current foreground
+generation proved a Claude Code interaction gets the title Claude Code gave
+its session (its terminal title, read from tmux): no model, nothing leaves
+the Mac. Any other card's pane end (at most 8,000 bytes) goes once to the
+provider whose key is stored, Anthropic first: `claude-opus-5-5` at low effort
+through the Messages API (API version 2026-10-21, default refusal
+fallbacks), or the newest of a short list of OpenAI models the account
+offers through the Responses API. `model_api::draft_title` is the one path
+that sends content; the Settings hint says so. Another feature that sends
+content brings its own consent and data boundary rather than widen this one.
 
 ## Adding a first-party extension
 

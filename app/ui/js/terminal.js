@@ -36,6 +36,7 @@ import { linkMenuItems } from './terminal-links-model.js';
 import { writeClipboard } from './terminal-clipboard.js';
 import { createResumeCache, resumeCommands, resumeTarget } from './resume-model.js';
 import { retainedBuffer } from './buffer-model.js';
+import { createTitleDrafter } from './title-draft.js';
 
 /* ---------- context menus ---------- */
 /* The one dismissal for the shared #ctx element. Every menu that installs a
@@ -55,7 +56,9 @@ export function placeCtx(e) {
   ctx.style.top = Math.min(e.clientY, innerHeight - ctx.offsetHeight - 8) + 'px';
 }
 
-export function renameCardInline(sid, preferredHost = null) {
+/* `initial` (Draft title) prefills the field with a draft; the card is
+   renamed only when the user takes it. */
+export function renameCardInline(sid, preferredHost = null, initial = undefined) {
   const s = provider.get(sid);
   if (!s) return;
   const host = (preferredHost && preferredHost.isConnected ? preferredHost : null)
@@ -66,7 +69,14 @@ export function renameCardInline(sid, preferredHost = null) {
   inlineRename(host, s.title, async v => {
     if (v && v !== s.title) await provider.rename(sid, v);
     else render();
-  });
+  }, initial === undefined ? {} : { initial });
+}
+
+const titleDrafter = createTitleDrafter({ inv, toast, t });
+/* Draft title (card menu): a draft from the card's own agent or the stored
+   model, into the rename field; see title-draft.js and card_title.rs. */
+export function draftCardTitle(sid, preferredHost = null) {
+  return titleDrafter(provider.get(sid), title => renameCardInline(sid, preferredHost, title));
 }
 
 export function editDescInline(sid) {
@@ -94,8 +104,9 @@ export function showSessionCtx(e, sid) {
     ? e.currentTarget.querySelector('.name, .card-title') : null;
   const ctx = $('ctx');
   ctx.onkeydown = null;
-  ctx.innerHTML = '<button data-a="rename"></button><button data-a="desc"></button><button data-a="buffer"></button><button data-a="reminder"></button><button data-a="quiet"></button><button data-a="here"></button><hr><button data-a="close" class="danger"></button>';
+  ctx.innerHTML = '<button data-a="rename"></button><button data-a="draft"></button><button data-a="desc"></button><button data-a="buffer"></button><button data-a="reminder"></button><button data-a="quiet"></button><button data-a="here"></button><hr><button data-a="close" class="danger"></button>';
   ctx.querySelector('[data-a="rename"]').textContent = t('menu.renameCard');
+  ctx.querySelector('[data-a="draft"]').textContent = t('menu.draftTitle');
   ctx.querySelector('[data-a="desc"]').textContent = t(s.desc ? 'menu.editDescription' : 'menu.addDescription');
   ctx.querySelector('[data-a="reminder"]').textContent = t('reminder.set');
   ctx.querySelector('[data-a="quiet"]').textContent = t(s.quietDone === true ? 'menu.loudDone' : 'menu.quietDone');
@@ -106,6 +117,7 @@ export function showSessionCtx(e, sid) {
     const a = ev.target.dataset && ev.target.dataset.a;
     ctx.style.display = 'none';
     if (a === 'rename') renameCardInline(sid, renameHost);
+    if (a === 'draft') draftCardTitle(sid, renameHost);
     if (a === 'desc') editDescInline(sid);
     if (a === 'reminder') editReminder(sid);
     if (a === 'quiet') provider.toggleQuietDone(sid);

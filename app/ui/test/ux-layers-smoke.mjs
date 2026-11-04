@@ -722,6 +722,38 @@ export async function runUxLayersSmoke() {
       trace += 100;
       return dialog && manager && settings && board;
     }), 1, trace);
+
+    /* ---------- Draft title: the card menu entry and its refusal ----------
+       The empty-command shell card of the lists scenes, on a Mac with no
+       model key: the entry sits right after Rename, the real backend reads
+       the card's Signal pane (no Claude title, no key) and refuses with
+       `no-source`, the user reads why, and no rename field opens. If a key
+       IS stored the scene is skipped (a = 2): a smoke never sends a pane's
+       text anywhere. `b` bits: 1 the entry is missing or misplaced, 2 the
+       sentence never came, 4 a rename field opened, 8 the pane was empty. */
+    await report('ux-title-draft', await attempt(async () => {
+      trace = 0;
+      const keys = await inv('model_api_status');
+      if (keys?.openai?.saved || keys?.anthropic?.saved) { trace = -1; return true; }
+      const { showSessionCtx } = await import('../js/terminal.js');
+      await pollNow(); render();
+      showSessionCtx({ preventDefault() {}, stopPropagation() {}, currentTarget: null, clientX: 350, clientY: 200 }, card.id);
+      const items = [...$('ctx').querySelectorAll('button')];
+      const entry = items[1];
+      const placed = items[0]?.dataset.a === 'rename' && entry?.dataset.a === 'draft' && entry.textContent === t('menu.draftTitle');
+      trace |= placed ? 0 : 1;
+      await snapshot('ux-title-menu-zh');
+      entry?.click();
+      const said = text => [...$('toasts').children].some(el => el.textContent === text);
+      let answered = true;
+      try { await until(() => said(t('error.titleNoSource')) || said(t('error.titleEmpty')), 10000); } catch (_) { answered = false; }
+      trace |= said(t('error.titleNoSource')) ? 0 : 2;
+      trace |= said(t('error.titleEmpty')) ? 8 : 0;
+      const editing = !!document.querySelector('.card input, .side-item input, .sess-title input');
+      trace |= editing ? 4 : 0;
+      await snapshot('ux-title-refused-zh');
+      return answered && placed && !editing && said(t('error.titleNoSource'));
+    }), trace === -1 ? 2 : 1, Math.max(trace, 0));
   } catch (_) {
     await snapshot('ux-layers-exception');
     await report('ux-exception', false);

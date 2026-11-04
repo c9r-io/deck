@@ -222,6 +222,16 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         1,
         Presentation,
     ),
+    // "Draft title" reads Claude Code's own session title only for a pane
+    // whose current generation proved a Claude interaction; it picks where a
+    // draft comes from and grants nothing.
+    (
+        "card_title.rs",
+        "claude_now",
+        "generation_evidence(",
+        1,
+        Presentation,
+    ),
     (
         "scheduler/select.rs",
         "observe_with",

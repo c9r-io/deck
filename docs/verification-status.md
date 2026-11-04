@@ -1,13 +1,25 @@
 # 当前验证索引
 
-更新：2026-11-04（测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-11-04（起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
-## 本轮 测试遗留的 tmux socket
+## 本轮 起草卡片标题（模型 API 的第一个用途）
+
+内容：卡片右键菜单「起草标题」（紧跟「重命名卡片」）。点一下，后端 `card_title.rs` 找到卡片的 Signal 目标窗格（`signal_targets`），若其当前前台进程这一代有已接受的 Claude 交互（`generation_evidence`），
+草稿就是 Claude Code 自己给会话起的标题（终端标题，tmux `#{pane_title}`，去掉前面的状态符号；tmux 默认的主机名不算标题），不调模型、内容不出本机；
+否则把该窗格末尾最多 8000 字节交给存了 key 的服务商（`model_api::draft_title`，Anthropic 优先：Messages API、`claude-opus-5-5` 低 effort、API 版本 2026-10-21、默认拒答兜底；
+否则 OpenAI：Responses API，按 `gpt-6-luna`→`gpt-5.6-luna`→`gpt-5.4-mini`→`gpt-5-mini` 取账号模型列表里第一个有的）。草稿只预填改名框：回车采用，Esc 恢复原标题，没动过的草稿失焦即丢弃，改过的照常保存。
+拒绝都是封闭词（session、empty、no-source 与 model_api 的词），日志只记来源或词。模型 API 的 Anthropic 版本头随之从 2023-06-01 升到 2026-10-21（模型列表行为不变）。设置提示、6 种语言文案、`signal_census`（Presentation）登记。
+门禁（本机）：`card_title` 6 项（含真实 tmux 上的标题与截屏读取）、`model_api` 7 项（假服务器上两家的请求形状、拒答、模型缺失、按 key 选服务商）；`scripts/ui-tests` 921 项通过，`title-draft.js` 行覆盖 100%；
+JS 语法 201 模块、`check.mjs` 84 模块；CI 形式 clippy 0 告警；`signal_census`、`log_privacy`、`edr_quiet`、`external_admission`、`diagnostics` 通过。
+原生（2026-11-04，Mac mini，本仓库 debug 载体）：`ux-layers` **PASS** 28/28，新场景 `ux-title-draft`：菜单项位置与文案、真实后端对普通 shell 卡片答 `no-source`、提示可见、改名框未打开（截图 `ux-title-menu-zh`、`ux-title-refused-zh`）；`locale-layout` **PASS** 8/8；`settings` **PASS** 12/12。
+UNRUN：真实 Claude Code 卡片上的起草（只有隔离 tmux 上的单元测试）；用有效 key 的模型起草（手头没有 key）；发布载体。
+
+## 上一轮 测试遗留的 tmux socket
 
 问题：每跑一次完整的 Rust 测试，`scheduler/tests.rs` 的 `ModalServer`（`deck-test-modal-*` 4 个、`deck-smoke-empty-*` 12 个）在 `/private/tmp/tmux-<uid>` 留下 16 个 socket 文件：tmux 不看 TMPDIR，kill-server 也不删 socket，门禁只查 TMPDIR。
 内容：`ModalServer` 在 drop 时先问出自己的 socket 路径（问不到就用 tmux 的默认位置），关服务后只删名字相符的那个 socket 文件，和其他测试服务一致；新增回归测试（经由 `run` 启动、绕过 `run` 启动、从未启动三种）。

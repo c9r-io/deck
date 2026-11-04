@@ -12,6 +12,7 @@ mod agent_reentry;
 mod agent_status;
 mod applog;
 mod bell;
+mod card_title;
 mod commands;
 mod connector;
 mod context;
@@ -563,6 +564,7 @@ fn main() {
             model_api::model_api_status,
             model_api::model_api_set_key,
             model_api::model_api_check,
+            card_title::card_title_draft,
             inbound::inbound_check_now,
             inbound::inbound_setup,
             inbound_channel::channel_pending,
