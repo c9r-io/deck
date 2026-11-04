@@ -23,12 +23,19 @@
 //!   the message once, off the status dispatcher (at most `WORKERS` calls
 //!   at a time and `QUEUE` waiting; more are dropped); without a key
 //!   nothing is sent and no summary appears.
-//! - Summaries live in memory only, keyed by (session, episode), at most
-//!   `KEEP`; a card shows one only while its observation is still that
-//!   episode (`for_episode`, read by the poll), so a new turn hides the old
-//!   one at once. Nothing is written, logged (app.log gets closed words),
-//!   notified, or read by attention, a hold or any side effect:
-//!   Presentation only (`tests/signal_census.rs`).
+//! - A card with follow-ups (the fixed replies its run froze,
+//!   `documents::card_follow_ups`): with a key stored, that same one call
+//!   carries them and the answer also names the one that fits
+//!   (`parse_pick`), so a short message is sent too, for the pick alone.
+//!   The pick (a number in range and a one-line reason) only marks a
+//!   button: nothing queues, sends, holds or notifies on it, and text from
+//!   outside can sway which button is marked, never what a click queues.
+//! - Notes (the summary and the pick) live in memory only, keyed by
+//!   (session, episode), at most `KEEP`; a card shows one only while its
+//!   observation is still that episode (`for_episode`, read by the poll),
+//!   so a new turn hides the old one at once. Nothing is written, logged
+//!   (app.log gets closed words), notified, or read by attention, a hold or
+//!   any side effect: Presentation only (`tests/signal_census.rs`).
 
 use crate::agent_status::{Accepted, EpisodeId, SignalClass};
 use crate::applog::applog;
@@ -44,6 +51,8 @@ const MAX_REPLY_BYTES: usize = 6_100;
 const SHORT_CHARS: usize = 80;
 /// A summary is cut to this many characters.
 const MAX_SUMMARY_CHARS: usize = 120;
+/// The reason given for a picked follow-up is cut to this many.
+const MAX_REASON_CHARS: usize = 80;
 /// Summaries kept, oldest dropped first.
 const KEEP: usize = 64;
 /// Model calls at a time, and turn endings waiting for one.
@@ -106,24 +115,38 @@ fn decide(accepted: &Accepted, reply: &str, has_key: bool) -> Decision {
 }
 
 /// The final message of a turn `agent_status` accepted (`dispatch`): kept
-/// as it is when short, else summarized off this thread.
+/// as it is when short, else summarized off this thread. When the card has
+/// follow-ups (`documents::card_follow_ups`) the same one call also asks
+/// which of them fits, so a short message is sent too, for that alone.
 pub(crate) fn offer(accepted: &Accepted, reply: String) {
-    match decide(accepted, &reply, crate::model_api::has_key()) {
+    let has_key = crate::model_api::has_key();
+    let decision = decide(accepted, &reply, has_key);
+    let follow_ups = if has_key && decision != Decision::Skip {
+        crate::documents::card_follow_ups(&accepted.session)
+    } else {
+        Vec::new()
+    };
+    let summarize = match decision {
         Decision::Keep(line) => {
             keep(&accepted.session, accepted.episode, line);
             applog("[summary] kept as written");
+            false
         }
-        Decision::Ask => {
-            let job = Job {
-                session: accepted.session.clone(),
-                episode: accepted.episode,
-                reply,
-            };
-            if sender().try_send(job).is_err() {
-                applog("[summary] dropped (busy)");
-            }
-        }
-        Decision::Skip => {}
+        Decision::Ask => true,
+        Decision::Skip => return,
+    };
+    if !summarize && follow_ups.is_empty() {
+        return;
+    }
+    let job = Job {
+        session: accepted.session.clone(),
+        episode: accepted.episode,
+        reply,
+        follow_ups,
+        summarize,
+    };
+    if sender().try_send(job).is_err() {
+        applog("[summary] dropped (busy)");
     }
 }
 
@@ -132,6 +155,10 @@ struct Job {
     session: String,
     episode: EpisodeId,
     reply: String,
+    /// the card's follow-ups, to pick from; empty asks for a summary alone
+    follow_ups: Vec<String>,
+    /// whether the summary comes from the model (a short message is its own)
+    summarize: bool,
 }
 
 /// The queue to the `WORKERS` threads, started on first use.
@@ -155,25 +182,85 @@ fn sender() -> &'static mpsc::SyncSender<Job> {
     })
 }
 
-/// One model call for one job; its line is kept, a failure says its word.
-fn summarize(job: Job, model: fn(&str) -> Result<(String, &'static str), &'static str>) {
-    match model(&job.reply) {
-        Ok((reply, provider)) => match crate::model_api::one_line(&reply, MAX_SUMMARY_CHARS) {
+/// The model call `summarize` makes: the message, the follow-ups to pick
+/// from (none asks for a summary alone); the raw reply and its provider.
+type Model = fn(&str, &[String]) -> Result<(String, &'static str), &'static str>;
+
+/// One model call for one job; what it answered is kept, a failure says
+/// its word.
+fn summarize(job: Job, model: Model) {
+    let (reply, provider) = match model(&job.reply, &job.follow_ups) {
+        Ok(answer) => answer,
+        Err(code) => return applog(&format!("[summary] failed ({code})")),
+    };
+    if job.follow_ups.is_empty() {
+        return match crate::model_api::one_line(&reply, MAX_SUMMARY_CHARS) {
             Some(line) => {
                 keep(&job.session, job.episode, line);
                 applog(&format!("[summary] written ({provider})"));
             }
             None => applog("[summary] failed (response)"),
-        },
-        Err(code) => applog(&format!("[summary] failed ({code})")),
+        };
+    }
+    let Some(answer) = parse_pick(&reply, job.follow_ups.len()) else {
+        return applog("[summary] failed (response)");
+    };
+    if job.summarize {
+        if let Some(line) = answer.summary {
+            keep(&job.session, job.episode, line);
+        }
+    }
+    match answer.pick {
+        Some(pick) => {
+            keep_pick(&job.session, job.episode, pick);
+            applog(&format!("[summary] picked ({provider})"));
+        }
+        None => applog(&format!("[summary] no pick ({provider})")),
     }
 }
 
-/// One kept summary.
+/// The model's answer when the card has follow-ups: one JSON object with
+/// `summary`, `choice` (a follow-up's number from 1, or null) and `reason`
+/// (`model_api::FOLLOW_UP_INSTRUCTIONS`), read as a `Note`. `None` when it
+/// is not that object; a choice outside `1..=count` is no pick.
+fn parse_pick(reply: &str, count: usize) -> Option<Note> {
+    let start = reply.find('{')?;
+    let end = reply.rfind('}')?;
+    let Ok(Value::Object(answer)) = serde_json::from_str::<Value>(reply.get(start..=end)?) else {
+        return None;
+    };
+    let summary = answer
+        .get("summary")
+        .and_then(Value::as_str)
+        .and_then(|text| crate::model_api::one_line(text, MAX_SUMMARY_CHARS));
+    let pick = answer
+        .get("choice")
+        .and_then(Value::as_u64)
+        .filter(|choice| (1..=count as u64).contains(choice))
+        .map(|choice| {
+            let reason = answer
+                .get("reason")
+                .and_then(Value::as_str)
+                .and_then(|text| crate::model_api::one_line(text, MAX_REASON_CHARS))
+                .unwrap_or_default();
+            (choice as u8, reason)
+        });
+    Some(Note { summary, pick })
+}
+
+/// One turn ending's note: its summary and, for a card with follow-ups,
+/// the model's pick (a follow-up's number from 1, and why).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Note {
+    pub(crate) summary: Option<String>,
+    pub(crate) pick: Option<(u8, String)>,
+}
+
+/// One kept note.
 struct Kept {
     session: String,
     episode: EpisodeId,
-    text: String,
+    note: Note,
 }
 
 static KEPT: Mutex<VecDeque<Kept>> = Mutex::new(VecDeque::new());
@@ -182,26 +269,41 @@ static KEPT: Mutex<VecDeque<Kept>> = Mutex::new(VecDeque::new());
 #[cfg(test)]
 pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-fn keep(session: &str, episode: EpisodeId, text: String) {
+/// Change the note of `session`'s turn ending `episode`, made the newest.
+fn update(session: &str, episode: EpisodeId, change: impl FnOnce(&mut Note)) {
     let mut kept = KEPT.lock_or_recover();
-    kept.retain(|entry| !(entry.session == session && entry.episode == episode));
+    let mut note = kept
+        .iter()
+        .position(|entry| entry.session == session && entry.episode == episode)
+        .and_then(|at| kept.remove(at))
+        .map(|entry| entry.note)
+        .unwrap_or_default();
+    change(&mut note);
     kept.push_back(Kept {
         session: session.to_string(),
         episode,
-        text,
+        note,
     });
     while kept.len() > KEEP {
         kept.pop_front();
     }
 }
 
-/// The summary of `session`'s turn ending `episode`, if one was written.
-pub(crate) fn for_episode(session: &str, episode: EpisodeId) -> Option<String> {
+fn keep(session: &str, episode: EpisodeId, text: String) {
+    update(session, episode, |note| note.summary = Some(text));
+}
+
+fn keep_pick(session: &str, episode: EpisodeId, pick: (u8, String)) {
+    update(session, episode, |note| note.pick = Some(pick));
+}
+
+/// The note of `session`'s turn ending `episode`, if one was written.
+pub(crate) fn for_episode(session: &str, episode: EpisodeId) -> Option<Note> {
     KEPT.lock_or_recover()
         .iter()
         .rev()
         .find(|entry| entry.session == session && entry.episode == episode)
-        .map(|entry| entry.text.clone())
+        .map(|entry| entry.note.clone())
 }
 
 #[cfg(test)]
@@ -291,6 +393,10 @@ mod tests {
         );
     }
 
+    fn summary_of(session: &str, episode: EpisodeId) -> Option<String> {
+        for_episode(session, episode).and_then(|note| note.summary)
+    }
+
     #[test]
     fn a_summary_belongs_to_its_episode_and_the_table_is_bounded() {
         let _serial = TEST_LOCK.lock_or_recover();
@@ -298,7 +404,7 @@ mod tests {
         keep("deck-a", 7, "first".into());
         keep("deck-a", 7, "again".into());
         assert_eq!(
-            for_episode("deck-a", 7).as_deref(),
+            summary_of("deck-a", 7).as_deref(),
             Some("again"),
             "one per episode"
         );
@@ -324,18 +430,118 @@ mod tests {
             session: "deck-a".into(),
             episode,
             reply: "long message".into(),
+            follow_ups: Vec::new(),
+            summarize: true,
         };
-        summarize(job(1), |_| {
+        summarize(job(1), |_, _| {
             Ok(("\"已修好登录测试，问是否提交\"\nextra".into(), "anthropic"))
         });
         assert_eq!(
-            for_episode("deck-a", 1).as_deref(),
+            summary_of("deck-a", 1).as_deref(),
             Some("已修好登录测试，问是否提交")
         );
-        summarize(job(2), |_| Err("busy"));
-        summarize(job(3), |_| Ok(("  \n".into(), "openai")));
+        summarize(job(2), |_, _| Err("busy"));
+        summarize(job(3), |_, _| Ok(("  \n".into(), "openai")));
         assert_eq!(for_episode("deck-a", 2), None);
         assert_eq!(for_episode("deck-a", 3), None);
+        KEPT.lock_or_recover().clear();
+    }
+
+    #[test]
+    fn the_pick_is_one_of_the_follow_ups_and_anything_else_is_no_pick() {
+        // a fenced answer whose reason holds an escaped line break (a
+        // test-module line never starts at column 0: source_scan)
+        let answer = |choice: &str| {
+            [
+                "```json".to_string(),
+                format!(
+                    r#"{{"summary":"Fixed the test; asks to commit","choice":{choice},"reason":"It asks\nwhether to commit"}}"#
+                ),
+                "```".to_string(),
+            ]
+            .join("\n")
+        };
+        // fenced or not; a reason is one line, as a summary is (its first)
+        assert_eq!(
+            parse_pick(&answer("2"), 3),
+            Some(Note {
+                summary: Some("Fixed the test; asks to commit".into()),
+                pick: Some((2, "It asks".into()))
+            })
+        );
+        for none in ["null", "0", "4", "-1", "1.5", "\"2\""] {
+            assert_eq!(
+                parse_pick(&answer(none), 3).map(|note| note.pick),
+                Some(None),
+                "{none}"
+            );
+        }
+        // a reason that is missing or blank is an empty one, never a refusal
+        assert_eq!(
+            parse_pick(r#"{"summary":"s","choice":1}"#, 1),
+            Some(Note {
+                summary: Some("s".into()),
+                pick: Some((1, String::new()))
+            })
+        );
+        for bad in ["plain words", "{not json}", "[1, 2]", ""] {
+            assert_eq!(parse_pick(bad, 3), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn with_follow_ups_the_one_answer_keeps_a_pick_beside_the_summary_it_was_asked_for() {
+        let _serial = TEST_LOCK.lock_or_recover();
+        KEPT.lock_or_recover().clear();
+        let job = |episode, summarize| Job {
+            session: "deck-f".into(),
+            episode,
+            reply: "Fixed it. Commit?".into(),
+            follow_ups: vec!["Commit and push.".into(), "Stop here.".into()],
+            summarize,
+        };
+        const ANSWER: &str = r#"{"summary":"Model line","choice":1,"reason":"asks to commit"}"#;
+        // asked for both: both are kept
+        summarize(job(1, true), |text, follow_ups| {
+            assert_eq!(text, "Fixed it. Commit?");
+            assert_eq!(follow_ups.len(), 2, "the follow-ups go with the message");
+            Ok((ANSWER.into(), "anthropic"))
+        });
+        assert_eq!(
+            for_episode("deck-f", 1),
+            Some(Note {
+                summary: Some("Model line".into()),
+                pick: Some((1, "asks to commit".into()))
+            })
+        );
+        // a short message was its own summary: the answer adds the pick only
+        keep("deck-f", 2, "Fixed it. Commit?".into());
+        summarize(job(2, false), |_, _| Ok((ANSWER.into(), "openai")));
+        assert_eq!(
+            for_episode("deck-f", 2),
+            Some(Note {
+                summary: Some("Fixed it. Commit?".into()),
+                pick: Some((1, "asks to commit".into()))
+            })
+        );
+        // no fitting follow-up, an answer that is not the object, a failure
+        summarize(job(3, true), |_, _| {
+            Ok((
+                r#"{"summary":"Only a line","choice":null,"reason":""}"#.into(),
+                "openai",
+            ))
+        });
+        assert_eq!(
+            for_episode("deck-f", 3),
+            Some(Note {
+                summary: Some("Only a line".into()),
+                pick: None
+            })
+        );
+        summarize(job(4, true), |_, _| Ok(("Just a line".into(), "openai")));
+        summarize(job(5, true), |_, _| Err("busy"));
+        assert_eq!(for_episode("deck-f", 4), None);
+        assert_eq!(for_episode("deck-f", 5), None);
         KEPT.lock_or_recover().clear();
     }
 }

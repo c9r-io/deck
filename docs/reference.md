@@ -64,6 +64,15 @@ does. Just before closing, Deck polls once more: a card whose agent started a
 new turn meanwhile stays open. A card with a reminder or kept scratchpad
 content is never closed in a batch; close it from its own card. Turn ended
 means the interaction stopped, not that the task succeeded.
+A template may also hold up to three **follow-ups**: replies you often send
+after that kind of task. A card an automation opens from the template keeps
+them, and shows them as buttons under its terminal and on its Needs
+attention row. A click queues that text for the card, as the scratchpad's
+queue does, and Deck looks at the queue at once; every queue check still
+applies (an input request holds it, and so on). Nothing is sent without a
+click. With turn summaries on, the model may mark the follow-up that fits
+the turn's final message and say why; the mark is a hint only. A follow-up
+is sent exactly as written, so Slack placeholders are refused in it.
 With **Notify me when away** on (off by default), a macOS notification is
 posted when a card enters needs-input or an unread turn ending while the deck
 window is not focused, carrying only the card title, the project name and one

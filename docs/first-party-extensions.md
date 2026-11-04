@@ -150,7 +150,11 @@ the helper forwards Claude's final message of the turn (its head and tail,
 at most about 6 KB) on a v3 line. Deck takes it off before its status parser
 sees the line, keeps it only for a turn ending it accepted, and shows a
 one-line message as it is; a longer one goes once to the stored provider
-for one line. The line appears on the card's status row and in Needs
+for one line. On a card whose run froze follow-ups (fixed replies the user
+wrote on the template, `follow-up-model.js`), that same one request also
+carries those texts and asks which one fits, so a short message is sent
+too, for that pick alone; the pick only marks a button, and the Settings
+hint says so. The line appears on the card's status row and in Needs
 attention, never in a notification, and goes with the next turn. Turning
 the switch on needs the Claude Code status hooks and a release install;
 its state is read back from the hooks file. `model_api::complete` (through

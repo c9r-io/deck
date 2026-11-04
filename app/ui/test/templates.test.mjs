@@ -315,3 +315,66 @@ test('a step edit that voids an automation approval is announced once, by rule',
     assert.ok(sentence.includes('{rules}'), `${locale}: names the rules`);
   }
 });
+
+/* Follow-ups: the same list gestures as steps, in their own list; a
+   placeholder is refused (nothing ever fills one), at most three, and an
+   empty list leaves no field behind. */
+const followRows = () => $('tpl-follows').children.filter(child => child.children.length >= 5);
+const followBody = index => followRows()[index].children[1];
+
+test('follow-ups are added, edited, reordered and removed like steps, without a placeholder', async () => {
+  seed([{ name: 'triage', steps: ['look at {{msg.text}}'] }]);
+  $('tpl-follow-text').value = '  Commit and push.  ';
+  $('tpl-follow-add').fire('click');
+  await settle();
+  assert.deepEqual(savedTemplates()[0].followUps, ['Commit and push.']);
+  assert.deepEqual(savedTemplates()[0].steps, ['look at {{msg.text}}'], 'the steps are untouched');
+  assert.equal($('tpl-follow-text').value, '', 'the field is cleared once saved');
+
+  $('tpl-follow-text').value = 'Quote {{ msg.text }} back';
+  $('tpl-follow-text').fire('keydown', { key: 'Enter', metaKey: true });
+  await settle();
+  assert.equal(writes.length, 1, 'a placeholder is refused before any write');
+  assert.equal(document.activeElement, $('tpl-follow-text'));
+
+  for (const text of ['Stop here.', 'Run the tests.']) {
+    $('tpl-follow-text').value = text;
+    $('tpl-follow-add').fire('click');
+    await settle();
+  }
+  assert.deepEqual(savedTemplates()[0].followUps, ['Commit and push.', 'Stop here.', 'Run the tests.']);
+  assert.equal($('tpl-follow-text').disabled, true, 'three is the most');
+  assert.equal($('tpl-follow-add').disabled, true);
+  const before = writes.length;
+  $('tpl-follow-text').value = 'a fourth';
+  await (async () => { $('tpl-follow-add').onclick(); })();
+  await settle();
+  assert.equal(writes.length, before, 'a fourth is never written');
+
+  // edit in place: a placeholder is refused there too
+  followBody(1).children[0].fire('click');
+  await tick();
+  const editor = followBody(1).children[0];
+  assert.equal(editor.tagName, 'TEXTAREA');
+  editor.value = 'Reply to {{msg.from}}';
+  editor.fire('keydown', { key: 'Enter', metaKey: true });
+  await settle();
+  assert.equal(writes.length, before, 'nothing written');
+  followBody(1).children[0].fire('click');
+  await tick();
+  followBody(1).children[0].value = 'Stop here and wait.';
+  followBody(1).children[0].fire('keydown', { key: 'Enter', metaKey: true });
+  await settle();
+  assert.deepEqual(savedTemplates()[0].followUps, ['Commit and push.', 'Stop here and wait.', 'Run the tests.']);
+
+  followRows()[0].children[3].fire('click');   // ↓ move later
+  await settle();
+  assert.deepEqual(savedTemplates()[0].followUps, ['Stop here and wait.', 'Commit and push.', 'Run the tests.']);
+  for (let i = 0; i < 3; i++) {
+    followRows()[0].children[4].fire('click');   // ✕ remove
+    await settle();
+  }
+  assert.equal('followUps' in savedTemplates()[0], false, 'an empty list leaves no field');
+  assert.deepEqual(savedTemplates()[0].steps, ['look at {{msg.text}}']);
+  closeTemplates();
+});

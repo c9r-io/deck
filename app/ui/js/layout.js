@@ -26,6 +26,9 @@
 // follow the real start and not the idempotent re-attach. The fresh-shell
 // flag is set AFTER focusPane (which resets suggestion state on a focus
 // change): a new empty shell offers its recent-command chips.
+// A pane of a card with follow-ups carries their bar under its terminal from
+// the moment it is created (follow-up-bar.js): the frozen list never changes,
+// so the bar never resizes the terminal later.
 // This module composes terminal-clipboard.js and terminal-links.js with pane
 // selection, diagnostics and context-menu callbacks; those adapters own copy
 // routing and link gestures. Pane teardown disposes their link listeners.
@@ -54,7 +57,7 @@
 import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { choiceDialog, confirmDialog, inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
-import { syncReminderButton, markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
+import { syncReminderButton, markSessionSeen, panes, pollNow, provider, queueFollowUp, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, openLinkDefault, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
 import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, MAX_DROP_BYTES, mcpErrorKey, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCellAt, terminalSelectionWheelRoute, terminalWheelLines } from './pure.js';
 import { closeSessionTools } from './session-tools.js';
@@ -71,6 +74,7 @@ import { refreshInputSource } from './input-source.js';
 import { appendInputCleanup, createTerminalDataHandler } from './terminal-input.js';
 import { wireImeProbe } from './terminal-ime-probe.js';
 import { keepLocalTerminalMouse } from './terminal-mouse.js';
+import { paintFollowUps } from './follow-up-bar.js';
 import { createTerminalFind } from './terminal-find.js';
 
 const mcpUiGate = createMcpSessionUiGate();
@@ -222,8 +226,12 @@ export function createPane(card) {
   el.className = 'spane';
   el.innerHTML = `
     <div class="spane-head"><span class="dot ${card.status}"></span><span class="name"></span><span class="hspace"></span><button class="px">✕</button></div>
-    <div class="spane-body"></div>`;
+    <div class="spane-body"></div>
+    <div class="spane-follow follow-bar" hidden></div>`;
   el.querySelector('.name').textContent = card.title;
+  /* a card's follow-ups are frozen with its run, so the bar is there (or
+     not) from the start and never resizes the terminal later */
+  paintPaneFollowUps(el, card);
   el.querySelector('.dot').title = dotTitle(card.status);
   el.querySelector('.px').title = t('session.closePane');
   const body = el.querySelector('.spane-body');
@@ -749,9 +757,15 @@ export function renderLayout() {
 }
 
 /* keep pane mini-headers in sync with polling / renames */
+function paintPaneFollowUps(el, card) {
+  const bar = el.querySelector('.spane-follow');
+  if (bar) paintFollowUps(bar, card, index => queueFollowUp(card.id, index));
+}
+
 export function updatePaneChrome(card) {
   const p = card && panes.get(card.session);
   if (!p) return;
+  paintPaneFollowUps(p.el, card);
   const dot = p.el.querySelector('.spane-head .dot');
   if (dot) { dot.className = 'dot ' + card.status; dot.title = dotTitle(card.status); }
   const name = p.el.querySelector('.spane-head .name');

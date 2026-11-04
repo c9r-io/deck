@@ -8,6 +8,7 @@ export async function runAttentionSmoke() {
   const { mutateBoard, boardData } = await import('../js/persistence.js');
   const { openSession, backToBoard, addSplit, leaveSessionView } = await import('../js/layout.js');
   const { showAttention, openAttentionCard, refreshAttention } = await import('../js/attention.js');
+  const { refreshQueue } = await import('../js/scheduler.js');
   const { createAttentionTracker } = await import('../js/attention-model.js');
   const { setLocale, t } = await import('../js/i18n.js');
   const { applyFontScale } = await import('../js/font-scale.js');
@@ -855,6 +856,74 @@ export async function runAttentionSmoke() {
       if (provider.get(card.id)) await provider.close(card.id);
       statuses.delete(card.session);
     }
+    await reset(); showAttention(); await pollNow();
+    // Preset follow-ups (follow-up-model.js). A card whose frozen plan
+    // carries two follow-ups, on a dedicated live shell: the pane carries
+    // their bar from its creation, the model's pick (synthetic poll fields)
+    // marks one without resizing the terminal, the Needs attention row
+    // carries the same buttons, and a click queues the text through the real
+    // owner command, wakes the real scheduler and is sent into the isolated
+    // shell well inside one 20 s tick. No model is called.
+    stage = 8;
+    const followText = 'echo deck-follow-up-ok';
+    const made = await provider.create({ projectId: atlas.id, columnId: atlas.columns[1].id, title: 'Follow-up run',
+      cmd: '', dir: '/tmp', inboundPlan: { operationId: 'B-follow-plan', reviewEach: false, initialSteps: [],
+        initialQueued: true, followUps: [followText, 'Stop here.'] } });
+    await nativeInvoke('start_session', { name: made.session, dir: '/tmp', cmd: '', restoreShell: false });
+    statuses.set(made.session, { name: made.session, alive: true, agent: null, idle_secs: 3, fg: 'zsh', mem_mb: 24 });
+    await reset();
+    await openSession(made.id); await pollNow();
+    await waitFor(() => panes.get(made.session)?.attached === true, 6000);
+    let pane = panes.get(made.session);
+    let followBar = pane?.el.querySelector('.spane-follow');
+    const followButtons = () => [...(followBar?.querySelectorAll('.follow-btn') || [])];
+    let barBits = 0;
+    if (!followBar || followBar.hidden) barBits |= 1;
+    if (followButtons().map(b => b.textContent).join('|') !== `${followText}|Stop here.`) barBits |= 2;
+    const bodyRect = pane?.el.querySelector('.spane-body').getBoundingClientRect();
+    const barRect = followBar?.getBoundingClientRect();
+    if (!(barRect && bodyRect && barRect.top >= bodyRect.bottom - 0.5 && barRect.bottom <= pane.el.getBoundingClientRect().bottom + 0.5)) barBits |= 4;
+    const rowsBefore = pane?.term.rows, barHeight = barRect?.height;
+    // the model's pick arrives with a turn ending: one button marked, a reason, no resize
+    Object.assign(statuses.get(made.session), { agent: 'turn-done', episode: 41, follow_choice: 1, follow_reason: 'it asks to run the check' });
+    await pollNow(); await pause(200);
+    if (!followButtons()[0]?.classList.contains('suggested') || followButtons()[1]?.classList.contains('suggested')) barBits |= 8;
+    if (followBar?.querySelector('.follow-reason')?.textContent !== t('followUps.reason', { reason: 'it asks to run the check' })) barBits |= 16;
+    if (pane?.term.rows !== rowsBefore || Math.abs(followBar.getBoundingClientRect().height - barHeight) > 0.5) barBits |= 32;
+    // the Needs attention row offers the same two, inside the list (the
+    // ending was viewed in the open pane, so it is listed under Turn ended)
+    ctx.attentionFilter = 'ended';
+    showAttention(); await pollNow();
+    const followRow = $('attention-list').querySelector(`.attention-row[data-sid="${made.id}"] .attention-follow`);
+    const rowButtons = [...(followRow?.querySelectorAll('.follow-btn') || [])];
+    if (!followRow || followRow.hidden || rowButtons.length !== 2 || !rowButtons[0].classList.contains('suggested')) barBits |= 64;
+    if (rowButtons.some(b => b.getBoundingClientRect().right > $('attention-list').getBoundingClientRect().right + 1)) barBits |= 128;
+    await report('attention-follow-bar', barBits === 0, 1, barBits);
+    // the click: queued through the owner command, the scheduler woken, sent into the shell
+    await openSession(made.id);
+    await waitFor(() => panes.get(made.session)?.attached === true, 6000);
+    pane = panes.get(made.session);
+    followBar = pane?.el.querySelector('.spane-follow');
+    let sendBits = 0;
+    const clickedAt = Date.now();
+    followButtons()[0].click();
+    if (!(await waitFor(() => followButtons()[0]?.textContent.startsWith('✓ ') || !ctx.queueCache.items.some(i => i.session === made.session) && clickedAt < Date.now() - 50, 4000))) sendBits |= 1;
+    const outputLine = () => {
+      const buffer = pane.term.buffer.active;
+      for (let i = 0; i < buffer.length; i++) if (buffer.getLine(i)?.translateToString(true).trim() === 'deck-follow-up-ok') return true;
+      return false;
+    };
+    if (!(await waitFor(outputLine, 15000))) sendBits |= 2;
+    const sentSecs = Math.round((Date.now() - clickedAt) / 1000);
+    if (sentSecs > 12) sendBits |= 4;   // a woken scheduler, not the next 20 s tick
+    await refreshQueue();
+    if (ctx.queueCache.items.some(i => i.session === made.session)) sendBits |= 8;
+    await pollNow(); await pause(100);
+    if (followButtons()[0]?.textContent.startsWith('✓ ')) sendBits |= 16;
+    await report('attention-follow-send', sendBits === 0, 1, sendBits | sentSecs << 8);
+    backToBoard();
+    if (provider.get(made.id)) await provider.close(made.id);
+    statuses.delete(made.session);
     await reset(); showAttention(); await pollNow();
     // Buttons in a test-only strip select real implemented views for screenshots.
     const strip = document.createElement('div');

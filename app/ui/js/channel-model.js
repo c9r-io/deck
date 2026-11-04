@@ -16,7 +16,7 @@
 // legal for legacy plans but cannot receive first-step permission.
 // Applied scratchpad evidence is checked before collecting/expiry, so an
 // ACK retry cannot promote a later event to a new run.
-import { fillInboundTemplate, inboundTitle, LOCAL_ID_RE, normalizeTemplateStep } from './pure.js';
+import { fillInboundTemplate, inboundTitle, LOCAL_ID_RE, normalizeTemplateStep, templateFollowUps } from './pure.js';
 
 const CHANNEL_ID = /^[CG][A-Z0-9_-]{0,63}$/;
 const USER_ID = /^[UW][A-Z0-9_-]{0,63}$/;
@@ -210,6 +210,7 @@ export function channelTemplatePlan(item, project, nowSecs) {
   return {
     title: inboundTitle(item.body) || item.channelId,
     texts, template: template.name, at: nowSecs,
+    followUps: templateFollowUps(template),
     ...(item.firstSendGrant ? { firstSend: { inboxId: item.id,
       grantId: item.firstSendGrant.id, grantDigest: item.firstSendGrant.digest,
       skeleton } } : {}),

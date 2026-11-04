@@ -577,6 +577,13 @@ pub(crate) struct SessInfo {
     /// (`turn_summary`, opt-in); gone with the episode. Presentation only.
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
+    /// for a card with follow-ups: which one (from 1) the model would pick
+    /// for that same turn ending, and why (`turn_summary`). It marks a
+    /// button, nothing more: no hold, no send and no attention reads it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    follow_choice: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    follow_reason: Option<String>,
     /// retirement evidence for the automation finish rule, paired with
     /// `agent` ("no agent state and a shell in front"): the foreground of
     /// that SAME Signal target pane, and ONLY for a single-pane session
@@ -1032,6 +1039,10 @@ pub(crate) fn poll_observing_bells(
         .zip(verdicts)
         .map(|(name, verdict)| {
             let pane = panes.get(&name);
+            let note = pane
+                .and(agents.get(&name))
+                .and_then(|o| crate::turn_summary::for_episode(&name, o.episode));
+            let (summary, pick) = note.map_or((None, None), |note| (note.summary, note.pick));
             SessInfo {
                 alive: pane.is_some(),
                 exited_normally: verdict == crate::shell_exit::Verdict::ExitedNormally,
@@ -1048,9 +1059,11 @@ pub(crate) fn poll_observing_bells(
                 pi_session: pane.and(evidence.get(&name)).and_then(|e| e.pi_session),
                 episode: pane.and(agents.get(&name)).map(|o| o.episode),
                 episode_viewed: pane.and(agents.get(&name)).is_some_and(|o| o.viewed),
-                summary: pane
-                    .and(agents.get(&name))
-                    .and_then(|o| crate::turn_summary::for_episode(&name, o.episode)),
+                summary,
+                follow_choice: pick.as_ref().map(|(choice, _)| *choice),
+                follow_reason: pick
+                    .map(|(_, reason)| reason)
+                    .filter(|reason| !reason.is_empty()),
                 finish_fg: pane.and_then(|_| finish.remove(&name)),
                 bell: rung.contains_key(&name),
                 name,

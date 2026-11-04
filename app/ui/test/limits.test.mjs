@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import {
   AGENT_STATES, ANCHOR_YEAR_MAX, ANCHOR_YEAR_MIN, CHAIN_QUIET_SECS, CONTEXT_STATUS_KEYS, INBOUND_BADGE_RE, ITEM_MAX_ATTEMPTS,
   LOCAL_ID_RE, MAX_DROP_BYTES, MAX_QUIET_SECS, MCP_ERROR_KEYS, MIN_QUIET_SECS,
-  TEMPLATE_STEPS_MAX, templateNameProblem,
+  FOLLOWUPS_MAX, TEMPLATE_STEP_MAX, TEMPLATE_STEPS_MAX, templateNameProblem,
 } from '../js/pure.js';
 import {
   ACCENTS, AUTO_SEND_CLASSES, AUTO_SEND_MAX_STEPS, DEFAULT_GRACE_MIN, FINISH_MODES, FONT_SCALE_MAX, FONT_SCALE_MIN, INBOUND_CMD_MAX,
@@ -120,9 +120,13 @@ const presetKept = fields => !!normalizeTaskPreset(
 
 test('Board mirrors: plan steps, and the preset bounds the frontend counts in the same unit', () => {
   const b = limits.board;
-  assert.deepEqual(Object.keys(b), ['plan_steps_max', 'plan_template_name_max_bytes', 'preset_name_max_bytes',
+  assert.deepEqual(Object.keys(b), ['plan_steps_max', 'plan_template_name_max_bytes', 'plan_follow_ups_max',
+    'plan_follow_up_max_bytes', 'preset_name_max_bytes',
     'preset_title_max_bytes', 'preset_dir_max_bytes', 'preset_cmd_max_bytes', 'preset_steps_max', 'preset_step_max_bytes']);
   assert.equal(TEMPLATE_STEPS_MAX, b.plan_steps_max, 'a template never has more steps than a plan may freeze');
+  assert.equal(FOLLOWUPS_MAX, b.plan_follow_ups_max, 'a template never has more follow-ups than a plan may freeze');
+  assert.ok(TEMPLATE_STEP_MAX * 4 <= b.plan_follow_up_max_bytes,
+    'a follow-up the editor keeps (characters, at most four bytes each) is never refused by its byte bound');
   const dir = bytes => '/' + 'a'.repeat(bytes - 1);
   assert.ok(presetKept({ dir: dir(b.preset_dir_max_bytes) }));
   assert.ok(!presetKept({ dir: dir(b.preset_dir_max_bytes + 1) }));

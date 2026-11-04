@@ -367,6 +367,8 @@ fn board_bounds_match_the_fixture_and_count_bytes() {
     let fixture = [
         ("plan_steps_max", PLAN_STEPS_MAX),
         ("plan_template_name_max_bytes", PLAN_TEMPLATE_NAME_MAX_BYTES),
+        ("plan_follow_ups_max", PLAN_FOLLOW_UPS_MAX),
+        ("plan_follow_up_max_bytes", PLAN_FOLLOW_UP_MAX_BYTES),
         ("preset_name_max_bytes", PRESET_NAME_MAX_BYTES),
         ("preset_title_max_bytes", PRESET_TITLE_MAX_BYTES),
         ("preset_dir_max_bytes", PRESET_DIR_MAX_BYTES),

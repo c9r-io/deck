@@ -613,7 +613,10 @@ fn only_a_load_a_save_and_the_users_exit_commit_a_board() {
 /// only while it is the user's current version, never a recovered one.
 /// `board_preset_choices` is the third, for the sweep and the fence that take
 /// a preset's choice back: it also sees a recovered Board, which holds no
-/// choice because `commit_board` withdraws them. The reminder module keeps its own copy to
+/// choice because `commit_board` withdraws them. `card_follow_ups` is the
+/// fourth, for presentation only: the follow-ups a card's run froze, which
+/// `turn_summary` offers the model to pick one to mark; it grants nothing,
+/// so a recovered Board answers too. The reminder module keeps its own copy to
 /// project from (a wake or a tick projects without a commit) and offers it to
 /// nobody. The door reaches the projection through one observer, registered
 /// by the reminder module itself when its bridge starts; a second registrant,
@@ -646,14 +649,18 @@ fn the_board_door_owns_the_committed_board_and_tells_one_observer() {
         [
             "board_authority",
             "board_preset_choices",
+            "card_follow_ups",
             "commit_board",
             "committed_board"
         ],
-        "the door's committed-Board copy has one writer and three readers: `committed_board` \
+        "the door's committed-Board copy has one writer and four readers: `committed_board` \
          for the door's own persistence decisions, `board_authority`, which answers only for a \
-         current Board, for a reader that grants something on what the Board says, and \
-         `board_preset_choices` for the readers that take a preset's choice back"
+         current Board, for a reader that grants something on what the Board says, \
+         `board_preset_choices` for the readers that take a preset's choice back, and \
+         `card_follow_ups`, presentation only, for the follow-ups a turn summary may mark"
     );
+    // the presentation reader has one caller, and it grants nothing
+    assert_eq!(callers_of("card_follow_ups("), ["turn_summary.rs offer"]);
     // who may read which: an admission grants only on the current Board, and
     // the one reader of a recovered Board's (empty) choices is the source the
     // sweep and the fence share

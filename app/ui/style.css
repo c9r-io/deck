@@ -820,6 +820,25 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 }
 .qb-chip:hover { color: var(--accent); border-color: var(--accent-dim); background: var(--sel); }
 
+/* ---------- follow-up buttons (follow-up-bar.js) ----------
+   One line that never grows, whatever it shows: in a card's pane under its
+   terminal (present from the pane's creation, so the terminal is never
+   resized by a suggestion or a queued mark) and under its Needs attention
+   row. Long texts are cut with an ellipsis; the tooltip holds them whole. */
+.follow-bar { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.follow-bar[hidden], .follow-bar .follow-reason[hidden] { display: none; }
+.follow-bar .follow-label { flex: none; font-size: 0.769231rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.follow-bar .follow-list { display: flex; gap: 6px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
+.follow-bar .follow-btn {
+  flex: 0 1 auto; min-width: 0; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 0.846154rem; padding: 3px 10px; border-radius: 12px;
+}
+.follow-bar .follow-btn.suggested { color: var(--accent); border-color: var(--accent); background: var(--sel); }
+.follow-bar .follow-btn[aria-disabled="true"] { opacity: .55; cursor: default; }
+.follow-bar .follow-reason { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 0.846154rem; }
+.spane-follow { flex: none; padding: 6px 16px; background: var(--quickbar-bg); border-top: 1px solid var(--border-soft); }
+.attention-row .attention-follow { grid-column: 1 / -1; }
+
 /* ---------- confirm dialog (window.confirm is a no-op in WKWebView) ---------- */
 #cfm {
   position: fixed; inset: 0; z-index: 70; display: none;

@@ -54,9 +54,12 @@
 //   whether a card is still in the list: a card that started a new turn
 //   during the confirmation stays. The list reads agent state and closes
 //   nothing; the closer closes and reads none (tests/signal_census.rs).
+// - A card with follow-ups (follow-up-model.js) carries their buttons on a
+//   line under its row; a click is Board's `queueFollowUp`, the same as in
+//   the card's pane. Painting them reads no agent word.
 // - A leaf of the import graph: the Board and layout actions it calls
 //   (`pollNow`, `provider`, `render`, `switchProject`, `leaveSessionView`,
-//   `closeBuffer`, `openSession`, `closeSelectedCards`) arrive through
+//   `closeBuffer`, `openSession`, `closeSelectedCards`, `queueFollowUp`) arrive through
 //   `initAttention(deps)` from app.js, so board.js and layout.js may import
 //   this module without a cycle.
 import { $, ctx, QUIET_SECS, state, store } from './state.js';
@@ -64,8 +67,9 @@ import { ATTENTION_BADGE_LABELS, ATTENTION_FILTERS, ATTENTION_SECTION_LABELS, at
 import { piCoverage, piDetailKeys, piStatusKey } from './pi-model.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
 import { choiceDialog } from './dialogs.js';
+import { paintFollowUps } from './follow-up-bar.js';
 
-let pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards;
+let pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp;
 
 let pointerHeld = false;
 /* batch close: the ids the user ticked in "Turn ended", the rows last
@@ -299,6 +303,10 @@ function updateRows() {
       const open = node('button', 'btn attention-open'); open.type = 'button';
       open.onclick = () => openAttentionCard(card.id);
       el.append(open);
+      /* the card's follow-ups, on a line of their own under the row */
+      const follow = node('div', 'attention-follow follow-bar');
+      follow.hidden = true;
+      el.append(follow);
       return el;
     });
     const snapshot = ctx.attention.get(card);
@@ -319,6 +327,7 @@ function updateRows() {
     row.querySelector('.attention-reason').textContent = (card.pinned === true ? `${t('attention.filter.followed')} · ` : '') + attentionStatusText(card) + (ctx.attention.waiting(card) ? ' · ' + t(`attention.waiting.${ctx.attention.waiting(card)}`) : '') + (ctx.attention.rang(card) ? ' · ' + t('attention.bell') : '') + (card.reminder ? ' · ' + t(card.reminder.due || card.reminder.dueAt <= Date.now() ? 'reminder.due' : 'reminder.pending') : '');
     row.querySelector('.attention-reason').dataset.status = snapshot?.status || 'unknown';
     row.querySelector('.attention-viewed').textContent = sourceText(card);
+    paintFollowUps(row.querySelector('.attention-follow'), card, index => queueFollowUp(card.id, index));
     row.querySelector('.attention-open').textContent = t(locate ? 'attention.locate' : 'attention.open');
     row.querySelector('.attention-open').setAttribute('aria-label', t(locate ? 'attention.locateNamed' : 'attention.openNamed', { name: card.title, project: project.name }));
   }
@@ -464,7 +473,7 @@ export async function openFromNotification(session) {
 }
 
 export function initAttention(deps) {
-  ({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards } = deps);
+  ({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp } = deps);
   $('attention-btn').onclick = () => showAttention();
   $('attention-back').onclick = () => switchProject(state.projectId);
   document.addEventListener('pointerdown', event => {

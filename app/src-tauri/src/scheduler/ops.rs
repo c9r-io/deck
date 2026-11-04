@@ -249,6 +249,12 @@ pub(crate) struct QueueAddArgs {
     /// Omitted when false so older operation fingerprints stay identical.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) external_text: bool,
+    /// Owner `queue_add` only: the user asked for this row now (a follow-up
+    /// button), so the scheduler looks at once instead of at its next tick.
+    /// That pass is an ordinary tick: every hold still applies. Omitted when
+    /// false so older operation fingerprints stay identical.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) wake: bool,
     /// Set only by `channel_queue_add*`, never by a caller: the row entered
     /// on the external-message path (`QueueItem.external`).
     #[serde(skip)]
@@ -690,7 +696,12 @@ pub(crate) fn queue_add(
     app: AppHandle,
     args: QueueAddArgs,
 ) -> Result<(), DeckError> {
-    queue_add_core(state, app, args, None, false)
+    let wake = args.wake;
+    queue_add_core(state, app, args, None, false)?;
+    if wake {
+        wake_scheduler();
+    }
+    Ok(())
 }
 
 fn queue_add_core(

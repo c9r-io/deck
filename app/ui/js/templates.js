@@ -23,7 +23,12 @@
 // first line plus a `⏎N` badge, and exactly ONE row at a time opens in place
 // into the full editor, so a 20-step template is still scannable. Enter
 // inside that editor types a newline; ⌘↵ commits, Escape restores, blur
-// commits. The name bound is the one `settings-model` already enforces on an
+// commits. A template's follow-ups (`followUps`, at most FOLLOWUPS_MAX) are
+// edited the same way, in their own list under the steps: fixed replies a
+// run freezes onto the card it opens (follow-up-model.js), refused when they
+// hold a `{{msg.*}}` placeholder, since nothing ever fills one. A follow-up
+// edit takes no approval away: an approval covers the steps alone.
+// The name bound is the one `settings-model` already enforces on an
 // inbound rule, and both lists are bounded. Inbound rules name a template by
 // NAME: renaming or deleting one that a rule uses is confirmed with the count
 // of affected rules — deck warns, and never rewrites the user's rules for them.
@@ -33,8 +38,8 @@
 import { $, ctx, state } from './state.js';
 import { autoGrowField, confirmDialog, toast } from './dialogs.js';
 import {
-  TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEP_MAX, TEMPLATE_STEPS_MAX,
-  inboundRulesUsingTemplate, moveTemplateStep, nextTemplateName, normalizeTemplateStep,
+  FOLLOWUPS_MAX, TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEP_MAX, TEMPLATE_STEPS_MAX,
+  followUpProblem, inboundRulesUsingTemplate, moveTemplateStep, nextTemplateName, normalizeTemplateStep,
   promptSummary, templateNameProblem,
 } from './pure.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
@@ -44,7 +49,7 @@ let provider = null;      // the Board, from initTemplates
 let projectId = null;
 let selected = null;      // name of the template being edited
 let nameShown = null;     // whose name the editor field currently holds
-let openStep = null;      // index of the one step opened into the full editor
+let openItem = null;      // {list, index}: the one row opened into the full editor
 let unsubscribe = null;
 let opener = null;        // element (or resolver) that opened the manager; focus returns there
 // Rules already told, while this manager is open, that a step edit took
@@ -67,7 +72,7 @@ export function openTemplates(from = null) {
   const list = templates();
   selected = list.length ? list[0].name : null;
   nameShown = null;
-  openStep = null;
+  openItem = null;
   $('tpl-search').value = '';
   $('tpl-modal').style.display = 'flex';
   /* while open, follow the board: another transaction (or a project delete)
@@ -86,7 +91,7 @@ export function openTemplates(from = null) {
 }
 
 export function closeTemplates() {
-  openStep = null;
+  openItem = null;
   $('tpl-modal').style.display = 'none';
   if (unsubscribe) { unsubscribe(); unsubscribe = null; }
   const target = typeof opener === 'function' ? opener() : opener;
@@ -113,6 +118,37 @@ async function persist(name, steps) {
   return true;
 }
 
+/* The follow-ups are saved like the steps, one transaction per action;
+   no approval covers them, so nothing is said about one. */
+async function persistFollowUps(name, followUps) {
+  try {
+    await provider.saveTemplateFollowUps(projectId, name, followUps);
+  } catch (_) {
+    toast(t('error.templateSave'));
+    renderTemplates();
+    return false;
+  }
+  return true;
+}
+
+/* The two lists a template edits the same way: its steps (queued by a run)
+   and its follow-ups (buttons on the run's card). */
+const LISTS = {
+  steps: {
+    items: tpl => tpl.steps,
+    save: (tpl, next) => persist(tpl.name, next),
+    max: TEMPLATE_STEPS_MAX, full: 'templates.maxSteps', remove: 'templates.removeStep',
+    container: 'tpl-steps', field: 'tpl-step-text', add: 'tpl-step-add', empty: 'templates.noSteps',
+  },
+  followUps: {
+    items: tpl => (Array.isArray(tpl.followUps) ? tpl.followUps : []),
+    save: (tpl, next) => persistFollowUps(tpl.name, next),
+    max: FOLLOWUPS_MAX, full: 'templates.maxFollowUps', remove: 'templates.removeFollowUp',
+    container: 'tpl-follows', field: 'tpl-follow-text', add: 'tpl-follow-add', empty: null,
+    refuse: text => followUpProblem(text) === 'placeholder' && 'templates.followUpPlaceholder',
+  },
+};
+
 /* An approval covers the template's steps by hash, so any step edit takes it
    away (automation-model.js `approvalsVoidedBy`). Say so when it happens and
    name the rules: until now the user met it at the next run, stopped at its
@@ -133,7 +169,7 @@ async function tellVoidedApprovals(name, before, after) {
 /* The collapsed row: the step's first line, plus how many more there are.
    Clicking it is what opens the full editor — the same gesture that edits a
    single-line step today. */
-function collapsedStep(step, index) {
+function collapsedStep(list, step, index) {
   const body = document.createElement('div');
   body.className = 'body';
   const { first, extra } = promptSummary(step);
@@ -143,7 +179,7 @@ function collapsedStep(step, index) {
   one.textContent = first;
   one.title = t('common.edit');
   one.onclick = () => {
-    openStep = index;
+    openItem = { list, index };
     renderTemplates();
   };
   body.appendChild(one);
@@ -160,7 +196,7 @@ function collapsedStep(step, index) {
 /* The opened row: one editor, committed once. A failed write leaves the
    template as it is on disk (`persist` re-renders from the committed board),
    so the editor never shows a change the user was told failed. */
-function openStepEditor(tpl, step, index) {
+function openStepEditor(list, tpl, step, index) {
   const body = document.createElement('div');
   body.className = 'body editing';
 
@@ -190,12 +226,14 @@ function openStepEditor(tpl, step, index) {
   const finish = async commit => {
     if (done) return;
     done = true;
-    openStep = null;
+    openItem = null;
     const text = commit ? normalizeTemplateStep(field.value) : '';
     if (!text || text === step) { renderTemplates(); return; }
-    const next = tpl.steps.slice();
+    const refused = LISTS[list].refuse?.(text);
+    if (refused) { toast(t(refused)); renderTemplates(); return; }
+    const next = LISTS[list].items(tpl).slice();
     next[index] = text;
-    await persist(tpl.name, next);
+    await LISTS[list].save(tpl, next);
     renderTemplates();
   };
   field.addEventListener('input', () => { autoGrowField(field); showSize(); });
@@ -224,8 +262,9 @@ function openStepEditor(tpl, step, index) {
   return body;
 }
 
-function stepRow(tpl, step, index) {
-  const editing = openStep === index;
+function stepRow(list, tpl, step, index) {
+  const editing = openItem?.list === list && openItem.index === index;
+  const { items, save } = LISTS[list];
   const row = document.createElement('div');
   row.className = 'tpl-step' + (editing ? ' open' : '');
 
@@ -234,8 +273,8 @@ function stepRow(tpl, step, index) {
   idx.textContent = formatNumber(index + 1);
 
   const body = editing
-    ? openStepEditor(tpl, step, index)
-    : collapsedStep(step, index);
+    ? openStepEditor(list, tpl, step, index)
+    : collapsedStep(list, step, index);
 
   const act = (label, title, disabled, run) => {
     const button = document.createElement('button');
@@ -250,15 +289,15 @@ function stepRow(tpl, step, index) {
   /* any change to the ORDER or LENGTH of the list invalidates the open
      index, so reordering and removing close the editor first */
   const move = async delta => {
-    const next = moveTemplateStep(tpl.steps, index, delta);
-    if (next === tpl.steps) return;
-    openStep = null;
-    await persist(tpl.name, next);
+    const next = moveTemplateStep(items(tpl), index, delta);
+    if (next === items(tpl)) return;
+    openItem = null;
+    await save(tpl, next);
     renderTemplates();
   };
-  const remove = act('✕', t('templates.removeStep'), false, async () => {
-    openStep = null;
-    await persist(tpl.name, tpl.steps.filter((_, i) => i !== index));
+  const remove = act('✕', t(LISTS[list].remove), false, async () => {
+    openItem = null;
+    await save(tpl, items(tpl).filter((_, i) => i !== index));
     renderTemplates();
   });
   remove.classList.add('del');
@@ -266,7 +305,7 @@ function stepRow(tpl, step, index) {
   row.append(
     idx, body,
     act('↑', t('templates.moveUp'), index === 0, () => move(-1)),
-    act('↓', t('templates.moveDown'), index === tpl.steps.length - 1, () => move(1)),
+    act('↓', t('templates.moveDown'), index === items(tpl).length - 1, () => move(1)),
     remove,
   );
   return row;
@@ -281,7 +320,7 @@ export function renderTemplates() {
   const all = templates();
   if (!all.some(tp => tp.name === selected)) {
     selected = all.length ? all[0].name : null;
-    openStep = null;
+    openItem = null;
   }
   const query = $('tpl-search').value.trim().toLocaleLowerCase();
   const shown = all.filter(tp => !query || tp.name.toLocaleLowerCase().includes(query));
@@ -301,7 +340,7 @@ export function renderTemplates() {
     row.append(name, count);
     row.onclick = () => {
       selected = tp.name;
-      openStep = null;
+      openItem = null;
       renderTemplates();
       $('tpl-name').focus();
     };
@@ -322,36 +361,44 @@ export function renderTemplates() {
     $('tpl-name').value = tpl.name;
   }
   nameShown = tpl.name;
-  const steps = $('tpl-steps');
-  steps.replaceChildren();
-  if (!tpl.steps.length) {
-    const blank = document.createElement('p');
-    blank.className = 'set-hint tpl-wide';
-    blank.textContent = t('templates.noSteps');
-    steps.appendChild(blank);
+  for (const [list, spec] of Object.entries(LISTS)) {
+    const rows = $(spec.container);
+    rows.replaceChildren();
+    const items = spec.items(tpl);
+    if (!items.length && spec.empty) {
+      const blank = document.createElement('p');
+      blank.className = 'set-hint tpl-wide';
+      blank.textContent = t(spec.empty);
+      rows.appendChild(blank);
+    }
+    items.forEach((text, index) => rows.appendChild(stepRow(list, tpl, text, index)));
+    const full = items.length >= spec.max;
+    $(spec.field).disabled = full;
+    $(spec.add).disabled = full;
   }
-  tpl.steps.forEach((step, index) => steps.appendChild(stepRow(tpl, step, index)));
-  const full = tpl.steps.length >= TEMPLATE_STEPS_MAX;
-  $('tpl-step-text').disabled = full;
-  $('tpl-step-add').disabled = full;
 }
 
-async function addStep() {
+async function addStep(list = 'steps') {
   const tpl = current();
   if (!tpl) return;
-  const text = normalizeTemplateStep($('tpl-step-text').value);
-  if (!text) { $('tpl-step-text').focus(); return; }
-  if (tpl.steps.length >= TEMPLATE_STEPS_MAX) {
-    toast(t('templates.maxSteps', { max: formatNumber(TEMPLATE_STEPS_MAX) }));
+  const spec = LISTS[list];
+  const field = $(spec.field);
+  const text = normalizeTemplateStep(field.value);
+  if (!text) { field.focus(); return; }
+  const items = spec.items(tpl);
+  if (items.length >= spec.max) {
+    toast(t(spec.full, { max: formatNumber(spec.max) }));
     return;
   }
-  openStep = null;
-  if (await persist(tpl.name, [...tpl.steps, text])) {
-    $('tpl-step-text').value = '';
-    autoGrowField($('tpl-step-text'));
+  const refused = spec.refuse?.(text);
+  if (refused) { toast(t(refused)); field.focus(); return; }
+  openItem = null;
+  if (await spec.save(tpl, [...items, text])) {
+    field.value = '';
+    autoGrowField(field);
   }
   renderTemplates();
-  $('tpl-step-text').focus();
+  field.focus();
 }
 
 async function commitName() {
@@ -402,18 +449,18 @@ export function initTemplates(deps) {
 
   $('tpl-name').addEventListener('change', () => commitName());
 
-  $('tpl-step-add').onclick = () => addStep();
-
-  $('tpl-step-text').addEventListener('input', () => autoGrowField($('tpl-step-text')));
-
-  $('tpl-step-text').addEventListener('keydown', event => {
-    if (event.key !== 'Enter') return;
-    if (event.isComposing || event.keyCode === 229) return;   // IME commit, not submit
-    /* a step can be many lines, so Enter types one; ⌘↵ is what adds */
-    if (!(event.metaKey || event.ctrlKey)) return;
-    event.preventDefault();
-    addStep();
-  });
+  for (const [list, spec] of Object.entries(LISTS)) {
+    $(spec.add).onclick = () => addStep(list);
+    $(spec.field).addEventListener('input', () => autoGrowField($(spec.field)));
+    $(spec.field).addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
+      if (event.isComposing || event.keyCode === 229) return;   // IME commit, not submit
+      /* a step can be many lines, so Enter types one; ⌘↵ is what adds */
+      if (!(event.metaKey || event.ctrlKey)) return;
+      event.preventDefault();
+      addStep(list);
+    });
+  }
 
   $('tpl-new').onclick = async () => {
     const all = templates();
@@ -424,7 +471,7 @@ export function initTemplates(deps) {
     const name = nextTemplateName(t('templates.newName'), all);
     if (!(await persist(name, []))) return;
     selected = name;
-    openStep = null;
+    openItem = null;
     $('tpl-search').value = '';
     renderTemplates();
     $('tpl-name').focus();

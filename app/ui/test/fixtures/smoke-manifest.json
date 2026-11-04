@@ -451,6 +451,8 @@
         "attention-batch-layout": {},
         "attention-batch-offer": {},
         "attention-board": {},
+        "attention-follow-bar": {},
+        "attention-follow-send": {},
         "attention-navigation": { "a": 18, "b": 0 },
         "attention-exit-before-reply": {},
         "attention-exit-generation": {},

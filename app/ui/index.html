@@ -573,6 +573,14 @@
             <textarea id="tpl-step-text" rows="1" autocomplete="off" spellcheck="false" data-i18n-placeholder="templates.stepPlaceholder" placeholder="add a step"></textarea>
             <button class="btn" id="tpl-step-add" data-i18n="common.add">Add</button>
           </div>
+          <div class="set-sep"></div>
+          <div class="set-row"><label data-i18n="templates.followUps">Follow-ups</label></div>
+          <div class="set-hint" data-i18n="templates.followUpsHint">Up to three replies you send often after this kind of task. On a card an automation opens from this template they are buttons: a click queues that text for the card. No Slack placeholders here.</div>
+          <div id="tpl-follows"></div>
+          <div class="tpl-add">
+            <textarea id="tpl-follow-text" rows="1" autocomplete="off" spellcheck="false" data-i18n-placeholder="templates.followUpPlaceholderText" placeholder="add a follow-up"></textarea>
+            <button class="btn" id="tpl-follow-add" data-i18n="common.add">Add</button>
+          </div>
           <details class="set-details tpl-wide">
             <summary data-i18n="templates.placeholders.title">Slack message placeholders</summary>
             <div class="set-hint tpl-wide" data-i18n="templates.placeholders">{{msg.text}} {{msg.from}} {{msg.where}} {{msg.link}} — filled in when a Slack-badge automation uses this template, each inside an &lt;external_message&gt; block that tells the agent it is material, not instructions. A step that starts with a slash command hands the message to that skill.</div>

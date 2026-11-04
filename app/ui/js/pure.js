@@ -950,6 +950,9 @@ export function planInbound(item, { cards, projects, home }) {
     },
     steps,
     template: template.name,
+    /* the template's own fixed replies, frozen with the run: a later edit
+       of the template never changes a card already opened */
+    followUps: templateFollowUps(template),
   };
 }
 
@@ -1136,6 +1139,29 @@ export function normalizeTemplateStep(text) {
     .replace(/^\s+/, '')
     .replace(/\s+$/, '');
   return Array.from(body).slice(0, TEMPLATE_STEP_MAX).join('');
+}
+
+/* A template's follow-ups (`followUps`, at most FOLLOWUPS_MAX): fixed
+   replies the user wrote, offered as buttons on a card an automation opened
+   from the template (follow-up-model.js). Each is a prompt like a step, but
+   never filled: a `{{msg.*}}` placeholder is refused here and dropped when a
+   run freezes them, so what a click queues is always the owner's own text. */
+export const FOLLOWUPS_MAX = 3;
+const MSG_PLACEHOLDER = /\{\{\s*msg\./;
+
+/* null when `text` can be a follow-up; else 'empty' or 'placeholder' */
+export function followUpProblem(text) {
+  const clean = normalizeTemplateStep(text);
+  if (!clean) return 'empty';
+  return MSG_PLACEHOLDER.test(clean) ? 'placeholder' : null;
+}
+
+/* What a run opened from `template` freezes: its follow-ups as they would
+   be saved now, without an empty or placeholder one, at most FOLLOWUPS_MAX. */
+export function templateFollowUps(template) {
+  const list = Array.isArray(template?.followUps) ? template.followUps : [];
+  return list.filter(value => typeof value === 'string' && !followUpProblem(value))
+    .map(normalizeTemplateStep).slice(0, FOLLOWUPS_MAX);
 }
 
 /* Every surface that shows a queued prompt on ONE row shows the first line

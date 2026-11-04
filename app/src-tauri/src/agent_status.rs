@@ -2737,6 +2737,7 @@ mod tests {
             projections(&rows)
                 .get("deck-card-sum1")
                 .and_then(|o| crate::turn_summary::for_episode("deck-card-sum1", o.episode))
+                .and_then(|note| note.summary)
         };
         // refused (no kernel peer): nothing is ingested and nothing is kept
         assert_eq!(

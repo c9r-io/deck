@@ -656,8 +656,15 @@ export async function runUxLayersSmoke() {
       trace |= details.open ? 2 : 0; trace |= shown(body()) ? 4 : 0;
       await snapshot('ux-templates-open-zh');
       const opened = details.open && shown(body());
+      /* the follow-ups list sits under the steps, its field and Add inside the panel */
+      const panel = $('tpl-content').getBoundingClientRect();
+      const inside = el => { const r = el.getBoundingClientRect(); return shown(el) && r.left >= panel.left - 0.5 && r.right <= panel.right + 0.5; };
+      const follows = inside($('tpl-follow-text')) && inside($('tpl-follow-add'))
+        && $('tpl-follows').getBoundingClientRect().top >= $('tpl-steps').getBoundingClientRect().bottom - 0.5
+        && $('tpl-content').scrollWidth <= $('tpl-content').clientWidth + 1;
+      trace |= follows ? 8 : 0;
       $('tpl-done').click();
-      return closed && opened;
+      return closed && opened && follows;
     }), 1, trace);
 
     /* ---------- a toast raised inside a modal is read, not hidden ----------

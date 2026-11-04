@@ -67,7 +67,8 @@
 import { $, columnHint, ctx, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { reminderRequestId, reminderAction, reminderClaim, reminderDay, reminderDue, reminderShort, rememberRetirement, retirementBlocked, retirementKey, sameReminder } from './reminder-model.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
-import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
+import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, promptSummary, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
+import { cardFollowUps, followUpSuggestion } from './follow-up-model.js';
 import { channelAgentCommand } from './channel-model.js';
 import { claimSessionTool, registerSessionTool, releaseSessionTool } from './session-tools.js';
 import { confirmDangerDialog, reminderDialog, confirmDialog, inlineRename, projectDefaultsDialog, toast } from './dialogs.js';
@@ -701,6 +702,17 @@ export const provider = {
     });
     emit('projects');
   },
+  /* a template's follow-ups (pure.js `templateFollowUps`); an empty list
+     leaves no field, so the template reads as it did before them */
+  async saveTemplateFollowUps(pid, name, followUps) {
+    await mutateBoard(draft => {
+      const p = draft.projects.find(x => x.id === pid);
+      const template = p && (p.templates || []).find(x => x.name === name);
+      if (!template) throw new Error('template no longer exists');
+      if (followUps.length) template.followUps = followUps; else delete template.followUps;
+    });
+    emit('projects');
+  },
   async renameTemplate(pid, oldName, name) {
     await mutateBoard(draft => {
       const p = draft.projects.find(x => x.id === pid);
@@ -884,6 +896,34 @@ export async function queueBufferEntries(sid, requests) {
 
 export const queueBufferEntry = (sid, entryId, operationId) =>
   queueBufferEntries(sid, [{ entryId, operationId }]);
+
+/* A follow-up the user clicked (follow-up-model.js): the owner's own text,
+   frozen on the card when its run opened, queued for that card like a
+   scratchpad entry and the scheduler woken so it need not wait for its next
+   tick. Its holds decide when it is sent (an input request, the first
+   interaction, a quiet pane); this reads no agent state. A stopped card
+   queues nothing: the scheduler would start a fresh session for it. */
+export async function queueFollowUp(cardId, index) {
+  const card = provider.get(cardId);
+  const texts = card ? cardFollowUps(card) : [];
+  const text = texts[index];
+  if (!text) return false;
+  if (card.status === 'stopped') { toast(t('followUps.stopped')); return false; }
+  /* whether the model's pick was taken, for app.log: closed words only */
+  const suggestion = followUpSuggestion(ctx.attention.get(card), texts.length);
+  try {
+    await inv('queue_add', { args: { session: card.session, cardId: card.id, dir: card.dir, cmd: card.cmd,
+      text, mode: 'at', at: Math.floor(Date.now() / 1000), wake: true } });
+  } catch (_) {
+    toast(t('followUps.queueFailed'));
+    return false;
+  }
+  uev('follow-up', !suggestion ? 'queued' : suggestion.index === index ? 'queued-suggested' : 'queued-other');
+  toast(t('followUps.queued', { text: promptSummary(text).first }));
+  await refreshQueue();
+  panes.forEach(p => updatePaneChrome(provider.get(p.sid)));
+  return true;
+}
 
 async function queueSelectedBufferEntries() {
   const sid = bufferTargetId;
@@ -1149,6 +1189,8 @@ async function pollSessionsNow() {
     },
   });
   if (tabsKey() !== previousTabs) renderTabs();
+  /* a follow-up bar's suggestion and queued marks follow this poll */
+  panes.forEach(p => updatePaneChrome(provider.get(p.sid)));
   refreshAttention();
   syncNotify();
   return true;

@@ -1,11 +1,20 @@
 # 当前验证索引
 
-更新：2026-11-05（成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-11-05（预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
+
+## 本轮 预设后续（模板上的固定回复，模型预选）
+
+内容：模板新增「后续」（`followUps`，最多 3 条，编辑方式同步骤；含 `{{msg.*}}` 占位符的拒绝保存，后续按原文发送）。Slack 徽章、定时、Agent、频道规则开卡时把模板的后续冻结进卡片计划（`inboundPlan` / `channelRun`，pure.js `templateFollowUps`），之后改模板不影响已开的卡；看板校验每张卡最多 3 条、非空、不超过 8000 字节、无占位符（`documents.rs`，常量进 `limits.json`）。旧版本 Deck 保存看板时原样保留这两个字段，无需新的存储版本。
+显示：卡片窗格终端下方一条按钮（窗格创建时就在，之后不改变终端尺寸），待关注那一行下方同一组按钮；已在这张卡队列里的显示 ✓ 且不可再点，停止的卡不可点。点击 = `board.js` `queueFollowUp`：普通 owner `queue_add`（`at` 行，和便签排队发送同一条路）带 `wake`，调度器立即扫描一次；所有既有拦截照常（Claude 等确认时不发、首次交互检查、Codex 信任、Pi）。这个函数不读 agent 状态，不点不发。
+模型预选：摘要开关打开且存了 key 时，带后续的卡片在同一次调用里附上后续文字（每条压成一行、最多 300 字），回复是 JSON（摘要、建议第几条或 null、理由）；短回复的卡片也因此会发送一次（只为挑选）。建议只标亮按钮并显示一句理由，随轮次失效；外部内容最多影响标哪一个。app.log 只记 `follow-up queued / queued-suggested / queued-other` 和 `[summary] picked / no pick`，不含文字。设置里摘要开关的说明已按此改写（6 种语言）。
+门禁（本机）：`follow-up.test.mjs` 6 项（模板与冻结、卡片读取、建议、按钮条各状态、点击参数与日志词与失败）、`templates.test.mjs` 新增 1 项（添加、拒绝占位符、上限、编辑、排序、删除、空列表不留字段）、限值镜像两侧；`scripts/ui-tests` 934 项（`follow-up-model.js` 100%、`follow-up-bar.js` 行 100%）；Rust：`turn_summary` 挑选解析与按轮次保存、`model_api` 带后续的请求格式、看板校验与按会话读取；`signal_census`（`queueFollowUp(` 进 JS 副作用出口）、`external_admission`（新调用点登记为 owner 文字，并钉住“只排卡片冻结的后续”“只从模板冻结”）、`session_architecture`（已提交看板的第四个读取者 `card_follow_ups` 登记为只供显示、唯一调用者 `turn_summary.rs offer`）通过；CI 形式 clippy 0 告警；CI 形式 `cargo llvm-cov --workspace --all-targets --all-features`（单线程，隔离 HOME、空 TMPDIR）1629 项通过、0 失败，行覆盖 85.87%、函数 84.00%，`check-test-tmpdir` 为空，tmux socket 目录只剩正式的 `deck`。
+原生（2026-11-05，Mac mini，本仓库 debug 载体）：`attention` **PASS** 57/57，新检查点 `attention-follow-bar`（窗格按钮条、合成的模型建议标亮且终端行数与按钮条高度不变、待关注行同一组按钮不越界）、`attention-follow-send`（点击后经真实 owner 命令排队、立即唤醒的调度器约 1 秒内把文字发进隔离 shell，之后队列为空、✓ 消失；app.log 记 `follow-up queued-suggested`，无文字）；`ux-layers` **PASS** 28/28（模板管理器的后续一栏在内容区内、不横向溢出）。最终代码重编后四个模式再跑一次：`attention` **PASS** 57/57、`ux-layers` **PASS** 28/28、`settings` **PASS** 12/12、`locale-layout` **PASS** 8/8（摘要开关说明加长后，六种语言下设置框无溢出）。
+UNRUN：真实 Claude Code 的轮次结束与真实模型的挑选（本轮用合成状态和假服务器）；带后续的真实 Slack 徽章运行；发布载体。
 
 ## 本轮 成批关闭（待关注 › 本轮已结束）
 

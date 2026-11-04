@@ -1130,6 +1130,9 @@ const FRONTEND_SITES: &[FrontendSite] = &[
         1,
         "external ? 'channel_queue_add' : 'queue_add'",
     ),
+    // A follow-up button: the owner's own fixed reply, frozen from the
+    // template when the run opened the card, queued on the user's click.
+    ("board.js", "queueFollowUp", "queue_add", 1, ""),
     // The ⏱ panel and saved templates: the user's own rows.
     ("scheduler.js", "appendRows", "queue_add", 1, ""),
     ("scheduler.js", "withSteps", "queue_update", 1, ""),
@@ -1169,6 +1172,25 @@ const FRONTEND_ADMISSION: &[(&str, &str, &str)] = &[
         "if ((await grantState(rule, template)) !== 'valid') return null;",
     ),
     ("board.js", "queueChannelPlan", "channelAgentCommand("),
+    // A follow-up's text is owner text by construction: the click queues
+    // only what the card froze, and a run freezes only its template's
+    // follow-ups (never the event's text; `templateFollowUps` drops any
+    // with a message placeholder, and the Board refuses one).
+    (
+        "board.js",
+        "queueFollowUp",
+        "const texts = card ? cardFollowUps(card) : [];",
+    ),
+    (
+        "pure.js",
+        "planInbound",
+        "followUps: templateFollowUps(template),",
+    ),
+    (
+        "channel-model.js",
+        "channelTemplatePlan",
+        "followUps: templateFollowUps(template),",
+    ),
     // The owner commands are an allowlist of ONE origin: a clock run's rows
     // are the rule owner's own template. Every other origin is external by
     // default, so a source added later, or a card whose origin is missing

@@ -181,6 +181,11 @@ export function createAttentionTracker() {
              current episode, so a new turn drops it */
           summary: episode != null && typeof info.summary === 'string' && info.summary.trim()
             ? info.summary.trim().slice(0, 200) : null,
+          /* and, for a card with follow-ups, which one the model would pick
+             (1-based) and why: it marks a button, nothing more */
+          followChoice: episode != null && Number.isInteger(info.follow_choice) ? info.follow_choice : null,
+          followReason: episode != null && typeof info.follow_reason === 'string' && info.follow_reason.trim()
+            ? info.follow_reason.trim().slice(0, 120) : null,
           bell: info.alive && !agent && info.bell === true,
           seen: episode != null
             ? !!(episodeViewed || visible.has(card.id) || (old?.episode === episode && old.seen))

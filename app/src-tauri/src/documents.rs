@@ -328,6 +328,25 @@ pub(crate) const PLAN_STEPS_MAX: usize = 20;
 /// first (`storage.rs`). `limits.json` lists the pairs under `unit_gaps`,
 /// and both halves of the mirror hold their side to that list.
 pub(crate) const PLAN_TEMPLATE_NAME_MAX_BYTES: usize = 120;
+/// The follow-ups a frozen run carries (`followUps`, pure.js `FOLLOWUPS_MAX`)
+/// and the bytes of one. The editor bounds a follow-up at 2,000 CHARACTERS
+/// (`TEMPLATE_STEP_MAX`), at most four bytes each, so nothing it saves is
+/// refused here: this bound and that one are no unit gap.
+pub(crate) const PLAN_FOLLOW_UPS_MAX: usize = 3;
+pub(crate) const PLAN_FOLLOW_UP_MAX_BYTES: usize = 8_000;
+
+/// A frozen run's follow-ups (`follow-up-model.js`): the owner's own fixed
+/// replies, which nothing ever fills, so none holds a `{{msg.` placeholder.
+fn valid_follow_ups(list: &[String]) -> bool {
+    list.len() <= PLAN_FOLLOW_UPS_MAX
+        && list.iter().all(|text| {
+            !text.trim().is_empty()
+                && text.len() <= PLAN_FOLLOW_UP_MAX_BYTES
+                && !text
+                    .match_indices("{{")
+                    .any(|(at, _)| text[at + 2..].trim_start().starts_with("msg."))
+        })
+}
 /// A channel collection run waits at most a week of idleness.
 pub(crate) const CHANNEL_MAX_IDLE_MINUTES: u32 = 7 * 24 * 60;
 pub(crate) const FONT_SCALE_MIN: f64 = 0.5;
@@ -432,6 +451,8 @@ struct ChannelRun {
     first_send: Option<ChannelRunFirstSend>,
     #[serde(default)]
     first_send_uncertain: bool,
+    #[serde(default)]
+    follow_ups: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -531,6 +552,8 @@ struct InboundPlan {
     review_each: bool,
     initial_steps: Vec<ChannelStep>,
     initial_queued: bool,
+    #[serde(default)]
+    follow_ups: Vec<String>,
 }
 
 fn validate_inbound_plan(card_id: &str, plan: &InboundPlan) -> Result<(), DeckError> {
@@ -548,7 +571,8 @@ fn validate_inbound_plan(card_id: &str, plan: &InboundPlan) -> Result<(), DeckEr
                 && step.tpl.len() <= PLAN_TEMPLATE_NAME_MAX_BYTES
                 && step.tpl_idx == index + 1
                 && step.tpl_total == plan.initial_steps.len()
-        });
+        })
+        && valid_follow_ups(&plan.follow_ups);
     let _ = (plan.review_each, plan.initial_queued);
     if valid {
         Ok(())
@@ -633,7 +657,8 @@ fn validate_channel_run(
                 && step.tpl.len() <= PLAN_TEMPLATE_NAME_MAX_BYTES
                 && step.tpl_idx == index + 1
                 && step.tpl_total == run.initial_steps.len()
-        });
+        })
+        && valid_follow_ups(&run.follow_ups);
     let _ = (
         run.initial_queued,
         run.first_send_uncertain,
@@ -1227,6 +1252,37 @@ pub(crate) fn board_authority() -> Option<serde_json::Value> {
         Some((board, BoardStanding::Current)) => Some(board.clone()),
         _ => None,
     }
+}
+
+/// The follow-ups frozen on the card whose session is `session`
+/// (`follow-up-model.js`), from the committed Board, for `turn_summary.rs`
+/// to offer the model beside the turn's final message. Text the owner
+/// saved, read for presentation only: a recovered Board answers too, and
+/// nothing here grants or sends anything.
+pub(crate) fn card_follow_ups(session: &str) -> Vec<String> {
+    let committed = COMMITTED_BOARD.lock_or_recover();
+    let Some((board, _)) = committed.as_ref() else {
+        return Vec::new();
+    };
+    board["cards"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|card| card["session"].as_str() == Some(session))
+        .and_then(|card| {
+            card["inboundPlan"]["followUps"]
+                .as_array()
+                .or_else(|| card["channelRun"]["followUps"].as_array())
+        })
+        .map(|list| {
+            list.iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|text| !text.is_empty())
+                .take(PLAN_FOLLOW_UPS_MAX)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// What the committed Board's task presets allow NOW, for the sweep and the
@@ -3554,6 +3610,11 @@ mod tests {
                 "tpl":"triage","tplIdx":1,"tplTotal":1}]
         });
         assert!(serde_json::from_value::<BoardDoc>(value.clone()).is_ok());
+        let mut follow = value.clone();
+        follow["cards"][0]["channelRun"]["followUps"] = serde_json::json!(["Reply in the thread."]);
+        assert!(serde_json::from_value::<BoardDoc>(follow.clone()).is_ok());
+        follow["cards"][0]["channelRun"]["followUps"] = serde_json::json!(["Quote {{msg.text}}"]);
+        assert!(serde_json::from_value::<BoardDoc>(follow).is_err());
         value["cards"][0]["buffer"]["collecting"] = serde_json::json!(false);
         assert!(serde_json::from_value::<BoardDoc>(value).is_err());
     }
@@ -3583,9 +3644,64 @@ mod tests {
                 "tpl":"triage","tplIdx":1,"tplTotal":1}]
         });
         assert!(serde_json::from_value::<BoardDoc>(value.clone()).is_ok());
+        // follow-ups: at most three non-empty texts of bounded bytes, none
+        // holding a message placeholder (nothing ever fills one)
+        let follow = |list: serde_json::Value| {
+            let mut with = value.clone();
+            with["cards"][0]["inboundPlan"]["followUps"] = list;
+            serde_json::from_value::<BoardDoc>(with).is_ok()
+        };
+        assert!(follow(serde_json::json!([
+            "Commit and push.",
+            "Stop",
+            "模".repeat(PLAN_FOLLOW_UP_MAX_BYTES / 3)
+        ])));
+        assert!(follow(serde_json::json!([])));
+        assert!(follow(serde_json::json!([
+            "a {{ literal }} brace",
+            "msg.text alone"
+        ])));
+        for refused in [
+            serde_json::json!(["a", "b", "c", "d"]),
+            serde_json::json!([""]),
+            serde_json::json!(["  \n "]),
+            serde_json::json!(["x".repeat(PLAN_FOLLOW_UP_MAX_BYTES + 1)]),
+            serde_json::json!(["Reply to {{msg.from}}"]),
+            serde_json::json!(["Reply to {{ msg.unknown }}"]),
+            serde_json::json!([1]),
+            serde_json::json!("Commit"),
+        ] {
+            assert!(!follow(refused.clone()), "{refused}");
+        }
         value["cards"][0]["inboundPlan"]["initialSteps"][0]["text"] =
             serde_json::json!("x".repeat(BUFFER_MAX_ENTRY_BYTES + 1));
         assert!(serde_json::from_value::<BoardDoc>(value).is_err());
+    }
+
+    /// A card's frozen follow-ups, by its session, from the committed Board
+    /// (`turn_summary.rs` offers them to the model): either kind of run, a
+    /// recovered Board too, nothing for any other session.
+    #[test]
+    fn card_follow_ups_are_read_from_the_committed_board_by_session() {
+        let _held = test_door::hold();
+        let _fence = board_fence();
+        assert_eq!(
+            card_follow_ups("deck-a"),
+            Vec::<String>::new(),
+            "no Board yet"
+        );
+        let board = serde_json::json!({ "projects": [], "cards": [
+            { "id": "A", "session": "deck-a", "inboundPlan": { "followUps": ["Commit and push.", "Stop"] } },
+            { "id": "B", "session": "deck-b", "channelRun": { "followUps": ["Reply in the thread."] } },
+            { "id": "C", "session": "deck-c", "inboundPlan": { "initialQueued": true } },
+        ] });
+        for standing in [BoardStanding::Current, BoardStanding::Recovered] {
+            *COMMITTED_BOARD.lock_or_recover() = Some((board.clone(), standing));
+            assert_eq!(card_follow_ups("deck-a"), ["Commit and push.", "Stop"]);
+            assert_eq!(card_follow_ups("deck-b"), ["Reply in the thread."]);
+            assert!(card_follow_ups("deck-c").is_empty());
+            assert!(card_follow_ups("deck-z").is_empty());
+        }
     }
 
     /// Project defaults (04) are optional strings: a board without them is

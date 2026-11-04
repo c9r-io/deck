@@ -14,7 +14,9 @@
 //! # Contract
 //! Scheduled prompts: Rust-side scheduler thread (NOT webview timers — App Nap
 //! freezes those), 20s tick that sleeps on a condition so `wake_scheduler()`
-//! (called when an inbound card's prompts are queued) starts a scan at once,
+//! (called when an inbound card's prompts are queued, and by an owner
+//! `queue_add` asked to `wake`: a follow-up click) starts a scan at once — an
+//! ordinary tick, every hold applies —
 //! queue persisted at `~/.deck/queue.json` and loaded at boot. Every item persists its card id, optional full tmux
 //! server/session/window/pane/pid binding, optional sanitized executable
 //! basename, revision and a closed last-context result (never terminal text,

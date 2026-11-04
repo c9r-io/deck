@@ -589,7 +589,16 @@ question was open staying, the ticked card closing through the real close
 (its shell gone from the isolated socket), the scratchpad and unticked cards
 untouched, the toast naming all three outcomes; declining closes nothing, and
 a selection of protected cards only asks for one-by-one closing. The fixture
-cards are never closed. A debug-only strip
+cards are never closed. It also carries the follow-up gate
+(`attention-follow-*`, two checks) on a dedicated live shell whose card's
+frozen plan holds two follow-ups: the pane shows their bar under its
+terminal from the start, the model's pick (synthetic poll fields, no model
+called) marks one button with its reason without changing the terminal's
+rows or the bar's height, the Needs attention row carries the same buttons
+inside the list; a click queues the text through the real owner command,
+wakes the real scheduler and the text is sent into the isolated shell well
+inside one 20 s tick, after which the queue is empty and the queued mark
+gone. A debug-only strip
 leaves Board / Empty project / Needs attention / Update failed available for
 screenshots; the strip and fixture never ship in release bundles. Also inspect at the
 minimum supported window size, 1280×800: controls must remain reachable and long names

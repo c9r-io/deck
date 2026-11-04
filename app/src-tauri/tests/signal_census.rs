@@ -609,6 +609,9 @@ const JS_SINKS: &[&str] = &[
     // batch close (Needs attention › Turn ended): the list offers, the
     // closer closes; a list function must never call it
     "closeSelectedCards(",
+    // a follow-up button queues the owner's frozen text for its card; what
+    // paints the buttons (and the model's pick) must never queue one itself
+    "queueFollowUp(",
     "closePaneBySid(",
     "runRetirement.observe(",
     "exitRetirement.observe(",

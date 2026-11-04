@@ -467,6 +467,8 @@ const SMOKE_CHECKS: &[&str] = &[
     "attention-batch-layout",
     "attention-batch-close",
     "attention-batch-decline",
+    "attention-follow-bar",
+    "attention-follow-send",
     "attention-navigation",
     "attention-card-badge",
     "attention-codex-coverage",
@@ -1050,6 +1052,12 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     ("settings-load-fail", DetailPolicy::None),
     ("settings-save-fail", DetailPolicy::None),
     ("inbound", DetailPolicy::Closed(INBOUND_OUTCOMES)),
+    // a follow-up button queued its text: whether the model had picked one
+    // and whether it was this one; never which text
+    (
+        "follow-up",
+        DetailPolicy::Closed(&["queued", "queued-suggested", "queued-other"]),
+    ),
     ("poll-fail", DetailPolicy::None),
     ("poll-recovered", DetailPolicy::None),
     ("separator", DetailPolicy::Closed(&["no-marker", "fail"])),

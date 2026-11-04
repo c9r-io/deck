@@ -37,6 +37,10 @@
 // `firstSend: {rule}` into the plan; the head row alone claims it with the
 // event key, and the backend re-checks the claim against settings and its
 // own copy of the event. Clock runs use owner admission with their native slot.
+// A badge, clock, Agent or channel run also freezes its template's
+// follow-ups (`followUps`: the owner's own fixed replies, never filled) into
+// its plan. Nothing queues them here: each is a button until the user
+// clicks it (follow-up-model.js).
 // A channel event that cannot be placed (its frozen target is gone or
 // blocked, the scratchpad is full, the card could not be created) is never
 // acknowledged: it stays in the inbox, every drain tries it again, and
@@ -155,7 +159,8 @@ async function handleChannel(item) {
     lastCollectedAt: Math.floor(Date.now() / 1000), idleMinutes: item.target.idleMinutes, collecting: true,
     initialSteps, initialQueued: false,
     target: { projectId: project.id, dir: expandHome(item.target.dir, ctx.HOME), cmd: item.target.cmd },
-    ...(plan.firstSend ? { firstSend: plan.firstSend } : {}) };
+    ...(plan.firstSend ? { firstSend: plan.firstSend } : {}),
+    ...(plan.followUps.length ? { followUps: plan.followUps } : {}) };
   try {
     ({ card } = await provider.createStarted({ id, projectId: project.id, columnId: column.id,
       title: plan.title, dir: expandHome(item.target.dir, ctx.HOME), cmd: item.target.cmd,
@@ -284,6 +289,7 @@ async function handleInbound(item) {
       operationId, reviewEach: item.rule.reviewEach === true, initialSteps, initialQueued: false,
       ...(authority ? { authority } : {}),
       ...(firstSend ? { firstSend } : {}),
+      ...(plan.followUps.length ? { followUps: plan.followUps } : {}),
     } });
   } catch (e) {
     toast(t('inbound.createFailed', { badge }));
