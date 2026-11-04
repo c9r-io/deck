@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.12 — 2026-11-04 (Nightly)
+
+- Four more interface languages: Japanese, Korean, Spanish and German
+  (Settings → General & appearance → Language), and voice input in Italian
+  and Brazilian Portuguese. "System" now follows the first macOS preferred
+  language Deck has: a Mac whose list puts English before Simplified
+  Chinese now shows English (choose 简体中文 to keep it). The new languages
+  are machine translations. An older Deck refuses a settings file that
+  names one of the new languages; switch the language back before
+  reinstalling an older build.
+- Voice input starts sooner: the microphone opens off the main thread (the
+  window no longer stalls 43–84 ms; 1–4 ms measured on a MacBook Air), and
+  the button turns red only once recording has started.
+- Phone task presets (Project defaults): the preset editor has Cancel,
+  Escape closes the editor before the dialog, a new preset left empty no
+  longer blocks Save, and a preset that is not complete says what it needs
+  under the field that lacks it.
+- Messages raised inside Settings, Templates and Project defaults are no
+  longer hidden behind the dialog.
+- At large font sizes the automation editor's trigger switch wraps instead
+  of pushing the drawer sideways.
+
 ## 0.8.11 — 2026-10-25 (Nightly)
 
 - Recover interrupted Claude sessions: when the Mac freezes, loses power
