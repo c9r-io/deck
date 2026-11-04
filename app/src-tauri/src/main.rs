@@ -38,6 +38,7 @@ mod limits_mirror;
 mod links;
 mod mcp;
 mod mcp_fs;
+mod model_api;
 mod notify;
 mod procinfo;
 mod prompt_delivery;
@@ -559,6 +560,9 @@ fn main() {
             inbound::inbound_run_ended,
             inbound::inbound_runs,
             inbound::inbound_set_secret,
+            model_api::model_api_status,
+            model_api::model_api_set_key,
+            model_api::model_api_check,
             inbound::inbound_check_now,
             inbound::inbound_setup,
             inbound_channel::channel_pending,

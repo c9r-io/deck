@@ -19,7 +19,7 @@ separate contracts, without a common execution interface:
 | `agent` | `agent_status::AgentAdapter` | Claude Code, Codex, Pi |
 | `translation` | `intelligence::provider::TranslationProviderEntry` | Bergamot |
 | `access` | `extensions::AccessIntegration` | Phone Connector, MCP |
-| `settings` | None; UI contribution only | Voice preferences |
+| `settings` | None; UI contribution only | Voice preferences, Model APIs |
 
 `scripts/extension_catalog.py` reads only these source manifests, sorts by
 explicit unique order and generates two checked-in, reviewable files:
@@ -119,6 +119,21 @@ Behavioral invariants are as important as markup:
 The shared Rust frontend census and JS syntax gate scan recursively, so moving a
 module into a subdirectory cannot silently remove it from their checks. Generated
 sources remain inside the existing source/coverage boundaries.
+
+## Model APIs
+
+`extension-model-api.js` is a `settings` contribution in the Integrations
+section: an OpenAI and an Anthropic API key. Its backend is the core module
+`model_api.rs`, as voice preferences' is `voice.rs`; there is no new kind,
+typed table or persisted setting. Each key has its own closed Keychain slot
+(`openai-api-key`, `anthropic-api-key`), is proven by that provider's model
+list before it is stored, and never returns to the webview. Nothing in Deck
+uses the keys yet: the only network calls are the model-list requests a save
+or a Check asks for, nothing runs at startup or in the background, and no
+prompt, pane text or file leaves the Mac through this module. Failures are
+closed words, and the last check of each stored key is kept in memory only.
+A feature that sends content to a model will bring its own consent and data
+boundary rather than widen this one.
 
 ## Adding a first-party extension
 

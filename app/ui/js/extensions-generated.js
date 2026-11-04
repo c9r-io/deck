@@ -4,10 +4,11 @@ import { CONTRIBUTION as entry0 } from './extension-claude-code.js';
 import { CONTRIBUTION as entry1 } from './extension-codex.js';
 import { CONTRIBUTION as entry2 } from './extension-pi.js';
 import { CONTRIBUTION as entry3 } from './extension-slack.js';
-import { CONTRIBUTION as entry4 } from './extension-bergamot.js';
-import { CONTRIBUTION as entry5 } from './extension-connector.js';
-import { CONTRIBUTION as entry6 } from './extension-mcp.js';
-import { CONTRIBUTION as entry7 } from './extension-voice.js';
+import { CONTRIBUTION as entry4 } from './extension-model-api.js';
+import { CONTRIBUTION as entry5 } from './extension-bergamot.js';
+import { CONTRIBUTION as entry6 } from './extension-connector.js';
+import { CONTRIBUTION as entry7 } from './extension-mcp.js';
+import { CONTRIBUTION as entry8 } from './extension-voice.js';
 
 export const EXTENSION_CONTRIBUTIONS = Object.freeze([
   entry0,
@@ -18,6 +19,7 @@ export const EXTENSION_CONTRIBUTIONS = Object.freeze([
   entry5,
   entry6,
   entry7,
+  entry8,
 ]);
 
 // Identity parity is checked before Settings mounts anything.
@@ -26,6 +28,7 @@ export const EXTENSION_IDENTITIES = Object.freeze([
   Object.freeze({"id": "codex", "kind": "agent"}),
   Object.freeze({"id": "pi", "kind": "agent"}),
   Object.freeze({"id": "slack", "kind": "service"}),
+  Object.freeze({"id": "model-api", "kind": "settings"}),
   Object.freeze({"id": "bergamot", "kind": "translation"}),
   Object.freeze({"id": "connector", "kind": "access"}),
   Object.freeze({"id": "mcp", "kind": "access"}),

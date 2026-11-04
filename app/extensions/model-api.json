@@ -1,0 +1,7 @@
+{
+  "id": "model-api",
+  "kind": "settings",
+  "ui": "extension-model-api.js",
+  "order": 45,
+  "selected": false
+}

@@ -136,7 +136,7 @@ test('a section title and a setting name narrow together; a named setting beats 
     { section: 'remote', items: ['mcp'] },
   ]);
   assert.deepEqual(search('terminal voice'), [{ section: 'terminal', items: ['voice'] }]);
-  assert.deepEqual(search('集成'), [{ section: 'integrations', items: ['slack-reactions'] }]);
+  assert.deepEqual(search('集成'), [{ section: 'integrations', items: ['slack-reactions', 'model-api'] }]);
 });
 
 test('an unknown query has no results', () => {

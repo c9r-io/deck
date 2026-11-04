@@ -1,13 +1,24 @@
 # 当前验证索引
 
-更新：2026-11-04（手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-11-04（模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
-## 本轮 手机任务预设编辑器的退出路径；自动化抽屉 160% 溢出；toast 层级
+## 本轮 模型 API 密钥（第一方扩展）
+
+内容：设置「集成」新增「模型 API」面板（`extension-model-api.js`，扩展 `model-api`，kind `settings`）：OpenAI、Anthropic 各一个 API key，只存 macOS 钥匙串（`keychain.rs` 两个新槽位，按前缀检查形状）。
+保存前先用该 key 请求服务商的模型列表（`model_api.rs`：OpenAI `GET /v1/models` 带 Bearer；Anthropic `GET /v1/models` 带 `x-api-key` 与 `anthropic-version: 2023-06-01`），通过才存；「检查」再请求一次。
+结果只用封闭词（auth / permission / busy / network / response / keychain），日志不含 key，也不含服务商返回的原文；key 交给后端一次，不再回到页面。目前没有任何功能使用这些 key。
+
+门禁（本机）：`cargo test --workspace` 1602 项通过、0 失败（隔离 HOME、空 TMPDIR，无残留）；CI 形式 clippy 0 告警；`cargo fmt --check`；`scripts/ui-tests` 916 项通过，`extension-model-api.js` 行覆盖 100%；
+JS 语法 199 模块、`check.mjs` 83 模块通过；扩展目录检查通过。真实端点：两家对无效 key 都返回 401（curl，请求头与代码相同）。
+原生（2026-11-04，Mac mini，本仓库 debug 载体）：`settings` **PASS** 12/12；`locale-layout` **PASS** 8/8（六种语言下设置框无溢出、无空翻译；截图只拍到集成页顶部，新面板在 Slack 之下，没有入镜）；`ux-layers` **PASS** 27/27。
+UNRUN：用有效 key 保存与检查（手头没有可用的 key）；在原生输入框里实际输入、保存、清除；发布载体。
+
+## 上一轮 手机任务预设编辑器的退出路径；自动化抽屉 160% 溢出；toast 层级
 
 基线 `df716d8`。问题：新建预设的编辑器只有「完成」（名称、卡片标题为空时被拒）和对新预设隐藏的「删除」，打开后关不掉；
 外层「保存」先提交编辑器，同样被拒，只能取消整个对话框；拒绝提示没提名称与卡片标题，而且 toast 在所有模态框之下（z-index 60 < 72），被对话框挡住大半。

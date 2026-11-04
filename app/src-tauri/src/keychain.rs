@@ -1,6 +1,7 @@
 // keychain.rs — the only credential store deck has.
 //
-// Inbound sources (Slack today) need long-lived API tokens. They never enter
+// Inbound sources (Slack today) need long-lived API tokens, and the Model APIs
+// contribution keeps an OpenAI and an Anthropic key (`model_api.rs`). They never enter
 // `~/.deck`: every token lives as a generic password in the user's login
 // Keychain under one service name, keyed by a CLOSED account name, so the
 // item is readable only by this user and only after macOS's own access
@@ -31,7 +32,8 @@ const MAX_LEN: usize = 512;
 /// again after every rebuild of an unsigned development binary), so the
 /// pollers read each slot once per process instead of every 30 seconds.
 /// Presence checks never touch the data at all (`has`).
-static CACHE: Mutex<[Option<String>; 6]> = Mutex::new([None, None, None, None, None, None]);
+static CACHE: Mutex<[Option<String>; 8]> =
+    Mutex::new([None, None, None, None, None, None, None, None]);
 
 /// Closed set of credential slots. Adding a source means adding its slots
 /// here — never accept an account name from the webview.
@@ -44,6 +46,8 @@ pub(crate) enum Slot {
     SlackChannelBotToken,
     SlackChannelAppToken,
     ConnectorIdentity,
+    OpenAiApiKey,
+    AnthropicApiKey,
 }
 
 impl Slot {
@@ -55,6 +59,8 @@ impl Slot {
             "slack-channel-bot-token" => Some(Slot::SlackChannelBotToken),
             "slack-channel-app-token" => Some(Slot::SlackChannelAppToken),
             "connector-identity" => Some(Slot::ConnectorIdentity),
+            "openai-api-key" => Some(Slot::OpenAiApiKey),
+            "anthropic-api-key" => Some(Slot::AnthropicApiKey),
             _ => None,
         }
     }
@@ -66,6 +72,8 @@ impl Slot {
             Slot::SlackChannelBotToken => "slack-channel-bot-token",
             Slot::SlackChannelAppToken => "slack-channel-app-token",
             Slot::ConnectorIdentity => "connector-identity",
+            Slot::OpenAiApiKey => "openai-api-key",
+            Slot::AnthropicApiKey => "anthropic-api-key",
         }
     }
     /// The shape a stored value must have. Mistyped tokens are refused at
@@ -88,6 +96,9 @@ impl Slot {
                 Slot::SlackChannelBotToken => value.starts_with("xoxb-"),
                 Slot::SlackChannelAppToken => value.starts_with("xapp-"),
                 Slot::ConnectorIdentity => value.starts_with("v1_"),
+                // an Anthropic key pasted into the OpenAI row is refused here
+                Slot::OpenAiApiKey => value.starts_with("sk-") && !value.starts_with("sk-ant-"),
+                Slot::AnthropicApiKey => value.starts_with("sk-ant-"),
             }
     }
 }
@@ -104,6 +115,8 @@ fn cache_slot(slot: Slot) -> usize {
         Slot::SlackChannelBotToken => 3,
         Slot::SlackChannelAppToken => 4,
         Slot::ConnectorIdentity => 5,
+        Slot::OpenAiApiKey => 6,
+        Slot::AnthropicApiKey => 7,
     }
 }
 
@@ -283,6 +296,11 @@ mod tests {
             Slot::parse("connector-identity"),
             Some(Slot::ConnectorIdentity)
         );
+        assert_eq!(Slot::parse("openai-api-key"), Some(Slot::OpenAiApiKey));
+        assert_eq!(
+            Slot::parse("anthropic-api-key"),
+            Some(Slot::AnthropicApiKey)
+        );
         assert_eq!(Slot::parse("anything"), None);
         assert_eq!(Slot::parse(""), None);
     }
@@ -300,6 +318,13 @@ mod tests {
         assert!(Slot::SlackChannelAppToken.accepts("xapp-1-A0-2-deadbeef"));
         assert!(Slot::ConnectorIdentity.accepts("v1_eyJrZXkiOiJhYmMifQ"));
         assert!(!Slot::ConnectorIdentity.accepts("xapp-1-A0-2-deadbeef"));
+        assert!(Slot::OpenAiApiKey.accepts("sk-proj-Ab3_cD-9"));
+        assert!(Slot::OpenAiApiKey.accepts("sk-svcacct-x1"));
+        assert!(!Slot::OpenAiApiKey.accepts("sk-ant-api03-x1"));
+        assert!(!Slot::OpenAiApiKey.accepts("xoxb-1-abc"));
+        assert!(Slot::AnthropicApiKey.accepts("sk-ant-api03-Ab3_cD-9"));
+        assert!(!Slot::AnthropicApiKey.accepts("sk-proj-Ab3"));
+        assert!(!Slot::AnthropicApiKey.accepts("sk-ant-has space"));
         assert!(!Slot::SlackUserToken.accepts("xoxp-has space"));
         assert!(!Slot::SlackUserToken.accepts("xoxp-\n"));
         let long = format!("xoxp-{}", "a".repeat(MAX_LEN));
