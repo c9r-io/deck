@@ -10,6 +10,7 @@ export async function runVoiceSmoke() {
   const { setLocale, t } = await import('../js/i18n.js');
   const { activateTheme } = await import('../js/theme.js');
   const { openSettings, selectSettingsSection, persistVoicePreferences } = await import('../js/settings.js');
+  const { VOICE_LANGUAGES } = await import('../js/voice-preferences-model.js');
   let failed = false, stage = 0;
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   const report = async (name, ok) => {
@@ -72,7 +73,9 @@ export async function runVoiceSmoke() {
     const saved = JSON.parse((await inv('load_settings')).data);
     await report('voice-preferences-single', saved.voice.languages.join(',') === 'en-US' && saved.voice.defaultLanguage === 'en-US');
     const choices = [...$('set-voice-languages').querySelectorAll('input')];
-    await report('voice-preferences-last', choices.length === 8
+    /* one box per language Deck offers, counted from the model (a fixed 8
+       went stale when it-IT and pt-BR were added) */
+    await report('voice-preferences-last', choices.length === VOICE_LANGUAGES.length
       && choices.filter(input => input.checked).length === 1
       && choices.find(input => input.checked).disabled && $('set-voice-default').options.length === 2);
     await persistVoicePreferences({ languages: ['zh-CN', 'en-US', 'ja-JP'], defaultLanguage: 'system' });
