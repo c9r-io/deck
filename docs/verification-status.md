@@ -1,13 +1,22 @@
 # 当前验证索引
 
-更新：2026-11-04（模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-11-04（Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
-## 本轮 模型 API 密钥（第一方扩展）
+## 本轮 Slack 补漏轮询的失败计数
+
+问题（工作 Mac 的 app.log，10-21 至 11-04）：157 条 `[inbound] poll FAILED (parse) ×1`，10-27 一段 42 分钟内 39 条。失败计数由所有来源共用，时钟和 Agent 来源每轮都成功、把它清零，
+所以永远是 ×1，看不出失败是持续的还是间歇的，也不知道是哪个来源；`slack_api.rs` 把读响应体时的断开也记成 `parse`。同一时段实时通道照常开出任务，没有看到漏单。
+内容：`inbound.rs` 按来源计数（`PollFailures`），日志写明来源（`poll FAILED (slack: parse) ×n`），前 20 次每次都记、之后每 120 次记一次，恢复时记一行 `poll recovered (slack) after n failure(s)`；
+`slack_api.rs` 先读完响应体再解析，读到一半断开记为 `network`／`timeout`，完整到达但不是 JSON 才是 `parse`；`model_api.rs` 同样拆开（断开为 `network`，完整但不对为 `response`）。
+门禁（本机）：受影响模块的测试 45 项与 `log_privacy`、`edr_quiet`、`signal_census` 通过（隔离 HOME、空 TMPDIR）；CI 形式 clippy 0 告警；`cargo fmt --check`。两个"响应读到一半断开"的新测试在旧代码上会失败。
+随后全量 `cargo test --workspace` 1604 项通过、0 失败（隔离 HOME、空 TMPDIR，`check-test-tmpdir` 为空）。UNRUN：`cargo llvm-cov`；真实网络下的断开（只有本地假服务器）；原生（需要在跑 Slack 或时钟规则的环境）。
+
+## 上一轮 模型 API 密钥（第一方扩展）
 
 内容：设置「集成」新增「模型 API」面板（`extension-model-api.js`，扩展 `model-api`，kind `settings`）：OpenAI、Anthropic 各一个 API key，只存 macOS 钥匙串（`keychain.rs` 两个新槽位，按前缀检查形状）。
 保存前先用该 key 请求服务商的模型列表（`model_api.rs`：OpenAI `GET /v1/models` 带 Bearer；Anthropic `GET /v1/models` 带 `x-api-key` 与 `anthropic-version: 2023-06-01`），通过才存；「检查」再请求一次。

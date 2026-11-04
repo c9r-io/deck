@@ -15,8 +15,10 @@
 //! - A save proves the candidate first and stores it only when the provider
 //!   accepted it, as Slack's tokens are (`slack.rs`); an empty value removes
 //!   the key. Errors are closed words: `provider`, `shape`, `missing`,
-//!   `auth` (401), `permission` (403), `busy` (429, 5xx), `network`,
-//!   `response`, `keychain`, `worker`; never the provider's own text.
+//!   `auth` (401), `permission` (403), `busy` (429, 5xx), `network` (not
+//!   delivered, or the answer cut off mid-way), `response` (an answer that
+//!   arrived whole but is not a model list), `keychain`, `worker`; never
+//!   the provider's own text.
 //! - The last check of each provider is kept in memory only (outcome and
 //!   time) and describes the stored key: a candidate that failed to save
 //!   leaves it as it was. Status reads only whether a key exists, which
@@ -138,7 +140,9 @@ fn verify(provider: Provider, key: &str) -> Result<(), &'static str> {
             429 | 500..=599 => return Err("busy"),
             _ => return Err("response"),
         }
-        let body = response.json::<Value>().await.map_err(|_| "response")?;
+        // a body cut off mid-way is the network's failure, not the provider's
+        let bytes = response.bytes().await.map_err(|_| "network")?;
+        let body = serde_json::from_slice::<Value>(&bytes).map_err(|_| "response")?;
         if body.get("data").is_some_and(Value::is_array) {
             Ok(())
         } else {
@@ -254,9 +258,15 @@ mod tests {
 
     /// Serves one request with `status` and `body`; returns what was asked.
     fn serve(status: &str, body: &str, f: impl FnOnce()) -> String {
+        serve_raw(&format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()), f)
+    }
+
+    /// Answers one request with exactly `response`, then closes; returns
+    /// what was asked.
+    fn serve_raw(response: &str, f: impl FnOnce()) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         *TEST_BASE.lock_or_recover() = Some(format!("http://{}/", listener.local_addr().unwrap()));
-        let (status, body) = (status.to_string(), body.to_string());
+        let response = response.to_string();
         let worker = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             stream
@@ -264,7 +274,7 @@ mod tests {
                 .unwrap();
             let mut raw = [0; 8192];
             let read = stream.read(&mut raw).unwrap();
-            write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            stream.write_all(response.as_bytes()).unwrap();
             String::from_utf8_lossy(&raw[..read]).to_lowercase()
         });
         f();
@@ -323,6 +333,10 @@ mod tests {
                 );
             });
         }
+        // the answer stops 10 bytes into a body announced as 300: the network
+        serve_raw("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 300\r\nConnection: close\r\n\r\n{\"data\":[", || {
+            assert_eq!(verify(Provider::OpenAi, "sk-test"), Err("network"));
+        });
         // nothing listens there: the request cannot be delivered
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()

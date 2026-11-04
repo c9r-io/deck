@@ -105,7 +105,13 @@ pub(crate) fn call_response(
                 Some(raw) => Some(parse_scopes(raw.as_bytes())?),
                 None => None,
             };
-            let body = resp.json::<Value>().await.map_err(|_| "parse")?;
+            // a body cut off mid-way is the network's failure, not a
+            // malformed answer: only a body that arrived whole can be "parse"
+            let bytes =
+                resp.bytes()
+                    .await
+                    .map_err(|e| if e.is_timeout() { "timeout" } else { "network" })?;
+            let body = serde_json::from_slice::<Value>(&bytes).map_err(|_| "parse")?;
             Ok::<_, &'static str>((body, scopes))
         })?;
     if body.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -240,11 +246,18 @@ mod tests {
         body: &str,
         f: impl FnOnce() -> Result<Value, &'static str>,
     ) -> Result<Value, &'static str> {
+        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nx-oauth-scopes: {scopes}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        fake_raw(&response, f)
+    }
+    /// Answers one request with exactly `response`, then closes.
+    fn fake_raw(
+        response: &str,
+        f: impl FnOnce() -> Result<Value, &'static str>,
+    ) -> Result<Value, &'static str> {
         let _serial = TEST_API_LOCK.lock_or_recover();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/", listener.local_addr().unwrap());
-        let scopes = scopes.to_string();
-        let body = body.to_string();
+        let response = response.to_string();
         let worker = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             stream
@@ -252,13 +265,27 @@ mod tests {
                 .unwrap();
             let mut raw = [0; 4096];
             let _ = stream.read(&mut raw).unwrap();
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nx-oauth-scopes: {scopes}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            stream.write_all(response.as_bytes()).unwrap();
         });
         *TEST_API.lock_or_recover() = Some(base);
         let result = f();
         *TEST_API.lock_or_recover() = None;
         worker.join().unwrap();
         result
+    }
+    #[test]
+    fn a_body_cut_off_midway_is_the_network_and_only_a_whole_bad_body_is_parse() {
+        // the connection closes 20 bytes into a body announced as 200
+        let cut = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 200\r\nConnection: close\r\n\r\n{\"ok\":true,\"team_id\"";
+        assert_eq!(
+            fake_raw(cut, || call("auth.test", "t", &[])),
+            Err("network")
+        );
+        let whole = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 15\r\nConnection: close\r\n\r\n<html>busy</ht>";
+        assert_eq!(
+            fake_raw(whole, || call("auth.test", "t", &[])),
+            Err("parse")
+        );
     }
     #[test]
     fn installed_scope_header_gates_user_and_bot() {

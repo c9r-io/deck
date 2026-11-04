@@ -68,6 +68,10 @@
 //! pending work independently of badges and token readiness, and retries the
 //! narrow post-settings-commit channel-grant activation. Both signals are
 //! content-free; neither changes trigger matching or its legacy ledger.
+//! A failed poll is counted per source (`PollFailures`), so one source's
+//! success never hides another's streak: app.log gets `[inbound] poll
+//! FAILED (<source>: <code>) ×n` for the first 20 in a row and every 120th
+//! after, and one `[inbound] poll recovered (<source>) after n failure(s)`.
 //!
 //! The CLOCK source (`inbound_clock.rs`, "自动化") is a source whose events
 //! are local-time slots: a `clock` rule carries a `schedule` (a minute of the
@@ -1404,6 +1408,35 @@ pub(crate) fn inbound_check_now() {
 
 /* ---------- the poller ---------- */
 
+/// One source's run of failed polls. Each source keeps its own: the clock
+/// and the Agent inbox succeed on every tick, and a counter they reset read
+/// "×1" all through 39 Slack search failures in 42 minutes (2026-10-27),
+/// so nobody could tell a persistent failure from an intermittent one.
+#[derive(Default)]
+struct PollFailures(u32);
+
+impl PollFailures {
+    /// The app.log line one poll adds, if any: the first 20 failures in a
+    /// row and every 120th after, then one line when the source next
+    /// succeeds. `source` is a source id, `code` a closed word.
+    fn note(&mut self, source: &str, outcome: Result<(), &str>) -> Option<String> {
+        match outcome {
+            Ok(()) => {
+                let ended = std::mem::take(&mut self.0);
+                (ended > 0).then(|| {
+                    format!("[inbound] poll recovered ({source}) after {ended} failure(s)")
+                })
+            }
+            Err(code) => {
+                self.0 = self.0.saturating_add(1);
+                let count = self.0;
+                (count <= 20 || count.is_multiple_of(120))
+                    .then(|| format!("[inbound] poll FAILED ({source}: {code}) ×{count}"))
+            }
+        }
+    }
+}
+
 fn wait_for_tick(d: Duration) {
     let (flag, cv) = wake();
     let mut f = flag.lock_or_recover();
@@ -1425,32 +1458,29 @@ pub(crate) fn spawn_inbound(app: AppHandle) {
         let mut sources = crate::extensions::service_sources();
         sources.push(Box::new(crate::inbound_clock::Clock::default()));
         sources.push(Box::new(crate::inbound_agent::AgentSource::default()));
-        let mut failures = 0u32;
+        let mut failures: Vec<PollFailures> =
+            sources.iter().map(|_| PollFailures::default()).collect();
         wait_for_tick(Duration::from_secs(5));
         loop {
             if crate::documents::recover_channel_grant_activations() {
                 let _ = app.emit("channel-authority-changed", ());
             }
             let cfg = read_config();
-            for src in sources.iter_mut() {
+            for (src, failures) in sources.iter_mut().zip(failures.iter_mut()) {
                 let badges = cfg.badges(src.id());
                 let wanted = src.enabled(&cfg) && !badges.is_empty();
                 src.set_live(&app, wanted, &badges);
                 if wanted {
-                    match src.poll(&cfg, &badges) {
-                        Ok(events) => {
-                            failures = 0;
-                            let live = src.polled_events_are_live();
-                            offer(&app, &cfg, events, live);
-                            if !live {
-                                note_baselined(src.id(), &badges);
-                            }
-                        }
-                        Err(code) => {
-                            failures = failures.saturating_add(1);
-                            if failures <= 20 || failures.is_multiple_of(120) {
-                                applog(&format!("[inbound] poll FAILED ({code}) ×{failures}"));
-                            }
+                    let polled = src.poll(&cfg, &badges);
+                    let outcome = polled.as_ref().map(|_| ()).map_err(|code| *code);
+                    if let Some(line) = failures.note(src.id(), outcome) {
+                        applog(&line);
+                    }
+                    if let Ok(events) = polled {
+                        let live = src.polled_events_are_live();
+                        offer(&app, &cfg, events, live);
+                        if !live {
+                            note_baselined(src.id(), &badges);
                         }
                     }
                 }
@@ -1493,6 +1523,47 @@ mod tests {
 
     /// Serializes the tests that redirect `TEST_DOC_PATH` or replace `RT`.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /* ---- poll failures are counted per source ---- */
+
+    #[test]
+    fn a_source_s_failures_are_its_own_and_its_recovery_says_how_many() {
+        let (mut slack, mut clock) = (PollFailures::default(), PollFailures::default());
+        assert_eq!(
+            slack.note("slack", Ok(())),
+            None,
+            "a success after none is silent"
+        );
+        // another source succeeding between two failures does not reset the count
+        assert_eq!(
+            slack.note("slack", Err("parse")).as_deref(),
+            Some("[inbound] poll FAILED (slack: parse) ×1")
+        );
+        assert_eq!(clock.note("clock", Ok(())), None);
+        assert_eq!(
+            slack.note("slack", Err("timeout")).as_deref(),
+            Some("[inbound] poll FAILED (slack: timeout) ×2")
+        );
+        assert_eq!(
+            slack.note("slack", Ok(())).as_deref(),
+            Some("[inbound] poll recovered (slack) after 2 failure(s)")
+        );
+        assert_eq!(
+            slack.note("slack", Ok(())),
+            None,
+            "one recovery line per run"
+        );
+        // a long run: every failure up to 20, then every 120th
+        let logged: Vec<u32> = (1..=360)
+            .filter(|_| slack.note("slack", Err("network")).is_some())
+            .collect();
+        assert_eq!(logged.len(), 20 + 3);
+        assert_eq!(&logged[18..], &[19, 20, 120, 240, 360]);
+        assert_eq!(
+            slack.note("slack", Ok(())).as_deref(),
+            Some("[inbound] poll recovered (slack) after 360 failure(s)")
+        );
+    }
 
     /* ---- the dispatcher reaches a service only through the static tables ---- */
 
