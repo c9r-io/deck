@@ -493,9 +493,10 @@ export async function runPiLayoutSmoke() {
       serverPid: Number(observed.serverPid) || 1, serverStartedAt: Number(observed.serverStartedAt) || 1, impactToken: 'pilay' };
     const entry = (card, kind, extra = {}) => ({ cardId: card.id, session: card.session, kind, reason: null, launchProfile: null, source: null, ...planted, ...extra });
     const PI = { reason: 'client-identity-unverifiable', source: 'pi' };
+    // a candidate is selectable only with the lifecycle observation behind it (`observed`, since 22c31f2)
     const candidates = [
-      entry(cards.claude, 'candidate', { launchProfile: 'bypass', source: 'claude-code' }),
-      entry(cards.claudeTwo, 'candidate', { launchProfile: 'ordinary', source: 'claude-code' }),
+      entry(cards.claude, 'candidate', { launchProfile: 'bypass', source: 'claude-code', observed: true }),
+      entry(cards.claudeTwo, 'candidate', { launchProfile: 'ordinary', source: 'claude-code', observed: true }),
     ];
     const others = [
       entry(cards.piLong, 'unsupported', PI), entry(cards.piZh, 'unsupported', PI),
@@ -630,10 +631,11 @@ export async function runPiLayoutSmoke() {
       capture(section());
       if (size !== 0.5) await snapshot(`pilay-review-setup-${tag(language, size)}`);
     });
-    // a preview that cannot be read leaves the plain restart: nothing half-painted, the way out reachable
+    // a preview that cannot be read says so (f743874): Deck cannot tell yet, nothing to choose, the way out reachable
     await eachReview(null, null, async (language, size) => {
       const parts = [
-        section().hidden && all(section(), '*').length === 0,
+        !section().hidden && all(section(), '.reentry-summary')[0]?.textContent === t('reentry.summary.unknown')
+          && all(section(), 'input, button').length === 0 && noOverflowX(section()) && insideX(rect(section()), rect($('tmux-lifecycle-box'))),
         inside(rect($('tmux-lifecycle-box')), view()),
         shown(opening()) && noOverflowX(opening()),
         [$('tmux-later'), $('tmux-restart')].every(button => shown(button) && reachable(button)),
@@ -650,7 +652,7 @@ export async function runPiLayoutSmoke() {
 
     // 4d. the result: what was reopened and what could not be confirmed; no Pi is among it
     stage = 10;
-    const result = (card, outcome, extra = {}) => ({ cardId: card.id, session: card.session, outcome, reason: null, warnings: [],
+    const result = (card, outcome, extra = {}) => ({ cardId: card.id, session: card.session, source: 'claude-code', outcome, reason: null, warnings: [],
       shell: true, clientObserved: true, settled: true, ...planted, ...extra });
     scripted.operation = { requestId: UUID, state: 'complete', serverReplaced: true, ...planted, entries: [
       result(cards.claude, 'confirmed', { warnings: ['bypass-reauthorized'] }),
@@ -672,11 +674,14 @@ export async function runPiLayoutSmoke() {
         shown($('tmux-done')) && inside(rect($('tmux-done')), frame) && reachable($('tmux-done')),
         // only what was asked for is spoken of: the two Claude cards, and no Pi
         !/\bPi\b/.test(shownResult().textContent) && !shownResult().textContent.includes(cards.piZh.title),
-        // one way to its card per row, inside the row and reachable; nothing that would do the restart again
-        all(shownResult(), 'input, a').length === 0 && all(shownResult(), 'button').length === 2
-          && resultRows().every(row => {
-            const open = row.querySelector('button');
-            return !!open && open.textContent === t('reentry.result.open') && insideX(rect(open), rect(row)) && reachable(open);
+        // one way to its card per row, and the resume insert on the entry to check alone (22c31f2), each inside
+        // its row and reachable; nothing that would do the restart again
+        all(shownResult(), 'input, a').length === 0 && all(shownResult(), 'button').length === 3
+          && resultRows().every((row, index) => {
+            const actions = all(row, 'button');
+            const words = index === 1 ? ['reentry.result.open', 'reentry.result.insertResume'] : ['reentry.result.open'];
+            return actions.length === words.length && actions.every((button, at) => button.textContent === t(words[at])
+              && insideX(rect(button), rect(row)) && reachable(button));
           }),
       ];
       resultAll += 1;

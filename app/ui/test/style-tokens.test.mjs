@@ -105,3 +105,10 @@ test('every width that holds text follows the font size', () => {
   // no fixed width that only the large font size used to need
   assert.doesNotMatch(css, /^html\.font-scale-large (?:\.set-sidebar|#settings-box|#tpl-box) \{/m);
 });
+
+test('the rule drawer keeps its scrollbar at all times', () => {
+  // WebKit can leave stretched rows laid out under a bar that appears later;
+  // the next click re-wrapped the rule editor's trigger row under the pointer
+  // (approval-press-box, 2026-11-05). scrollbar-gutter: stable did not stop it.
+  assert.match(css, /^#auto-drawer \{[^}]*overflow-y: scroll;/m);
+});

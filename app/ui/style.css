@@ -17,7 +17,11 @@
    chips) is calc(N * var(--u)), N px at 100 %, so it grows with the text
    and space inside it; px stays only for an offset from the window or the
    box (`calc(100vw - 40px)`), a size under 40px and a picture (the pairing
-   QR code). */
+   QR code). A scrolling panel whose rows wrap close to its width (the rule
+   drawer) keeps its scrollbar at all times (overflow-y: scroll; the track is
+   clear when nothing scrolls): WebKit can leave stretched rows laid out
+   under a bar that appears later, and the next click re-wraps them under the
+   pointer. scrollbar-gutter: stable, which WebKit accepts, did not stop it. */
 
 :root {
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -1130,7 +1134,7 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
   position: absolute; top: 0; right: 0; bottom: 0; width: calc(420 * var(--u)); max-width: 100%; z-index: 30;
   display: flex; flex-direction: column; gap: var(--sp-8); padding: var(--sp-12) var(--sp-16);
   background: var(--panel); border-left: 1px solid var(--border);
-  box-shadow: -14px 0 40px var(--shadow-menu); overflow-y: auto;
+  box-shadow: -14px 0 40px var(--shadow-menu); overflow-y: scroll;
 }
 #auto-drawer[hidden] { display: none; }
 .auto-head { display: flex; align-items: center; gap: var(--sp-8); }

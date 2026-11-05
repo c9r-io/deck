@@ -137,6 +137,11 @@ if ! deck_bundle_postcheck "$REPO_ROOT" "$PWD" "$APP"; then
 fi
 
 if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
+  # A carrier's shells run the user's own shell config. Once oh-my-zsh's update
+  # check is due (every 13 days) a new shell stops at "Would you like to
+  # update? [Y/n]" and takes the first byte a check types into it; with this
+  # it neither asks, checks the network nor writes anything (both `open` calls
+  # below pass it). Other shells ignore it.
   DECK_SMOKE_TMUX_SOCKET=${DECK_SMOKE_TMUX_SOCKET:-deck-smoke-$$}
   if [ -n "${DECK_SMOKE_WKWEBVIEW:-}" ]; then
     SMOKE_MODE=$DECK_SMOKE_WKWEBVIEW
@@ -162,14 +167,14 @@ if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
       chmod 600 "$DECK_SMOKE_DATA_DIR/home/.zprofile"
       OPEN_BACKGROUND=-g
     fi
-    open $OPEN_BACKGROUND -n "$APP" --args \
+    open $OPEN_BACKGROUND -n "$APP" --env DISABLE_AUTO_UPDATE=true --args \
       --smoke-data-dir "$DECK_SMOKE_DATA_DIR" \
       --smoke-tmux-socket "$DECK_SMOKE_TMUX_SOCKET" \
       --smoke-wkwebview "$SMOKE_MODE" \
       "$@"
     echo "when the run has finished, judge it: $REPO_ROOT/scripts/smoke-verdict $DECK_SMOKE_DATA_DIR $SMOKE_MODE"
   else
-    open -n "$APP" --args \
+    open -n "$APP" --env DISABLE_AUTO_UPDATE=true --args \
       --smoke-data-dir "$DECK_SMOKE_DATA_DIR" \
       --smoke-tmux-socket "$DECK_SMOKE_TMUX_SOCKET" \
       "$@"

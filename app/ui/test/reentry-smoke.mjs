@@ -79,7 +79,8 @@ export async function runReentrySmoke() {
   const NATIVE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32,}|48211|\/Users\/|\.jsonl|tok-reentry/i;
 
   const TOKEN = 'tok-reentry-2';
-  const candidate = (cardId, session, launchProfile) => ({ cardId, session, kind: 'candidate', reason: null, launchProfile, observed: true, ...planted });
+  // a candidate and a result name their Agent (`source`, since 22c31f2); every one here is Claude Code
+  const candidate = (cardId, session, launchProfile) => ({ cardId, session, kind: 'candidate', reason: null, launchProfile, source: 'claude-code', observed: true, ...planted });
   const previews = [
     { token: 'tok-reentry-1', lifecycleObservation: true, ...planted, entries: [
       { cardId: 'RS1', session: 'deck-shell-s1', kind: 'shell', reason: null, launchProfile: null, ...planted },
@@ -94,7 +95,7 @@ export async function runReentrySmoke() {
     ] },
   ];
   const resultEntry = (cardId, session, outcome, extra = {}) => ({
-    cardId, session, outcome, reason: null, warnings: [], shell: true, clientObserved: false, settled: true, ...planted, ...extra,
+    cardId, session, source: 'claude-code', outcome, reason: null, warnings: [], shell: true, clientObserved: false, settled: true, ...planted, ...extra,
   });
   const operation = (state, last) => ({
     requestId: UUID, state, serverReplaced: true, ...planted, entries: [
@@ -329,7 +330,8 @@ export async function runReentrySmoke() {
     const tones = () => resultRows().map(row => row.className.replace('reentry-result-row', '').trim()).join(',');
     const head = index => resultRows()[index].querySelector('.reentry-result-head .reentry-choice-text').textContent;
     const hints = index => all(resultRows()[index], '.reentry-hint').map(node => node.textContent);
-    const line = (card, key) => t('reentry.result.line', { card, result: t(key) });
+    const AGENT = { agent: 'Claude' };
+    const line = (card, key) => t('reentry.result.line', { card, result: t(key, AGENT) });
     /* what a confirmed Policy B entry says, word for word; and what no other row may speak of */
     const CONFIRMED_B = {
       en: ['deck-atlas-a1 — Claude session re-entry confirmed. The bypass flag was sent as authorized.',
@@ -343,9 +345,9 @@ export async function runReentrySmoke() {
       && confirmedB('en') && othersSilent()
       && $('tmux-lifecycle-title').textContent === t('reentry.result.restarted')
       && head(0) === line('deck-atlas-a1', 'reentry.result.confirmed')
-      && hints(0).join('|') === t('reentry.warning.bypass-reauthorized')
+      && hints(0).join('|') === t('reentry.warning.bypass-reauthorized', AGENT)
       && head(1) === line('deck-borealis-b1', 'reentry.result.startedUnconfirmed')
-      && hints(1).join('|') === t('reentry.reason.context-changed')
+      && hints(1).join('|') === t('reentry.reason.context-changed', AGENT)
       && head(2) === line(t('reentry.unknownCard'), 'reentry.result.reopening') && hints(2).length === 0
       && new Set(resultRows().map(row => row.querySelector('.reentry-mark').textContent)).size === 3
       && section().hidden;
@@ -370,8 +372,8 @@ export async function runReentrySmoke() {
     const settledRows = tones() === 'ok,warn,warn'
       && confirmedB('en') && othersSilent()
       && head(2) === line(t('reentry.unknownCard'), 'reentry.result.startedUnconfirmed')
-      && hints(2).join('|') === t('reentry.reason.context-unverified')
-      && hints(1).join('|') === t('reentry.reason.context-changed')
+      && hints(2).join('|') === t('reentry.reason.context-unverified', AGENT)
+      && hints(1).join('|') === t('reentry.reason.context-changed', AGENT)
       && all(result(), '.reentry-hint').every(node => node.textContent !== t('reentry.result.check'))
       && saidOnce(result(), t('reentry.note.context')) === 0;
     quiet += closedOnly() ? 2 : 0;

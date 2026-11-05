@@ -175,6 +175,11 @@ Before narrowing each pane to 32 columns the smoke types a short prompt
 pane, zsh's redraw when the pane is widened again erases the last hint line
 (a known limitation recorded in `resume.rs`), which made the run depend on
 the operator's own prompt. The shell and its rc files are still the user's.
+`app/run.sh` starts every smoke carrier with `DISABLE_AUTO_UPDATE=true`:
+once oh-my-zsh's update check is due (every 13 days) a new shell stops at
+its `[Y/n]` prompt and takes the first byte a check types into it, which
+failed `voice-type-separator` on 2026-11-05. A launcher of its own must
+pass the same (`open --env`).
 
 Voice input integration has a separate isolated scenario:
 `DECK_SMOKE_DATA_DIR=/tmp/deck-voice-unique DECK_SMOKE_TMUX_SOCKET=deck-smoke-voice-unique DECK_SMOKE_WKWEBVIEW=voice app/run.sh`.

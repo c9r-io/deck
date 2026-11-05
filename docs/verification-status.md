@@ -1,11 +1,21 @@
 # 当前验证索引
 
-更新：2026-11-05（装文字的宽度随字号缩放；间距与字号统一；终端单击交给要了鼠标的程序；多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-11-05（四个改动前就失败的原生 smoke；装文字的宽度随字号缩放；间距与字号统一；终端单击交给要了鼠标的程序；多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
+
+## 本轮 四个改动前就失败的原生 smoke（voice、reentry、pi-layout、approval）
+
+起因：上一轮报告里 `reentry`、`approval`、`voice`、`pi-layout` 在改动前（8ce72f9）就失败、未处理。用户：继续。四个原因各不相同，其中一个是产品问题。
+voice（`voice-type-separator`）：测试机环境。Mac mini 的 oh-my-zsh 上次检查更新在 10-23（`LAST_EPOCH=20749`），2026-11-05 09:00（JST）满 13 天，从此每个新 zsh 先停在「[oh-my-zsh] Would you like to update? [Y/n]」，吃掉送进来的第一个字节（当天 smoke 截图里的窗格可见）；11-04 同一检查通过。修正：`app/run.sh` 两处 smoke 启动都带 `--env DISABLE_AUTO_UPDATE=true`（oh-my-zsh 不检查更新：不提示、不联网、不写文件；别的 shell 忽略它），本轮 mini 运行器同样；未改动 mini 的 HOME。
+reentry（`reentry-preview`、`-result`、`-settled`）与 pi-layout（异常、`pilay-review-failure`、`pilay-review-result`）：两个 smoke 模拟的后端数据落后于 10-18 的两次提交，单元测试当时已更新，这两个原生 smoke 自那以后没跑过。22c31f2（Codex 重新进入）起预览和结果条目用 `source` 指名 Agent（文案由「Agent · …」变为「Claude · …」，多句带 `{agent}`），候选要有 `observed: true` 才能勾选，待确认的条目多一个「插入恢复命令」按钮；f743874 起读不到预览时显示「Deck cannot tell yet…」而不是隐藏。修正：reentry 的候选与结果条目加 `source: 'claude-code'`，期望文案带 `{ agent: 'Claude' }`；pi-layout 的候选加 `observed: true`、结果条目加 `source`，读不到预览与结果按钮的期望改为现行约定。先用单元测试的 DOM 框架按 smoke 的数据渲染，确认了差异与修正。
+approval（`approval-press-box`、`-press-label`）：产品问题。原生点击自动化规则编辑器里「自动继续」的勾选框或它的文字都不生效（空格键可以）。临时插桩五轮（已删除）：按下落在勾选框上，抬起和 click 落在外层；按下前编辑器比抽屉内容区宽 10px（抽屉 `scrollWidth` 多 10，伸在滚动条下），按下触发的重新布局按正确宽度排版，「触发」一排（10-20 加入第 4 项「Agent 交来」后刚好贴着宽度）换成两行，下面整体下移 25px，抬起时指针已不在勾选框上。即 WebKit 在竖向滚动条出现后没有重新布局拉伸的子元素；真实用户第一次点编辑器也会遇到。修复：`#auto-drawer` 改为 `overflow-y: scroll`，滚动条始终在（没有可滚内容时轨道透明），内容宽度不再变化；样式表头部写明这条规则，`style-tokens.test.mjs` 钉住。先试的 `scrollbar-gutter: stable` 没有用：这个 WebKit 认得它（`CSS.supports` 为真，临时探针），approval 仍失败。试过在 `ux-spacing` 加「滚动面板内容不得比面板宽」的通用检查，去掉修复后跑 `ux-layers` 没有报出（它打开抽屉的流程不出现这种过时布局），不能作为防回归，已撤回；防回归是 approval 的两项原生点击（修复前当天 6 次运行全部失败）。
+门禁（本机）：`scripts/ui-tests` 948 项（style-tokens 新增 1 项）；`check.mjs`、JS 语法；读取 `run.sh` 的 Python 测试（`test_sidecar_provenance`、`test_edr_runtime`）64 项通过，`check-test-tmpdir` 为空。Rust 代码未改，Rust 测试读取的 UI 文件（`wk-smoke.mjs`、`smoke-manifest.json`）本轮也未改，未重跑 llvm-cov。
+原生（2026-11-05，Mac mini，本仓库 debug 载体）：最终代码：`approval` **PASS** 12/12（`approval-press-box`、`approval-press-label` 都为 a=1），`ux-layers` **PASS** 37/37（`ux-auto-layout`；`ux-spacing` 40 个画面 0 发现），`run` **PASS** 96/96（`automation` 63/63、`automation-editor` 255/255）。同一套 smoke 文件、抽屉还是 `scrollbar-gutter` 写法时：`voice` **PASS** 18/18，`reentry` **PASS** 15/15，`pi-layout` **PASS** 16/16（这三个模式不经过自动化抽屉）。修复前：approval 当天 6 次运行（含 5 轮插桩）两项全部失败。
+UNRUN：`reminder`（需专用的三次启动载体）；发布载体。
 
 ## 本轮 装文字的宽度随字号缩放（侧栏、设置框、对话框、抽屉、菜单、标签列）
 
