@@ -1833,6 +1833,17 @@ click is answered `local` and nothing is typed. Each stand-in reads exactly
 one click, so the click that completes it arriving whole proves the gesture
 before it sent no byte. `b` is the number of click answers seen. Snapshots
 `ux-terminal-click-*`.
+`ux-spacing` (spacing-check.mjs) opens the board and its menus, the session
+view with its lists and scratchpad, Needs attention, the template manager,
+project defaults, the rule editor, the reminder and confirm dialogs and every
+Settings section, at 100% and 160% (40 surfaces, `a`), and measures the
+pieces of each layer in the real window: no two controls or bordered boxes
+closer than 4px side by side or stacked, no control within 3px of its box's
+inner edge, and a settings group, list group, rule editor or scratchpad note
+keeps top and bottom space within 6px of each other. Repeated siblings and
+the parts of a segmented control, split button or menu are designed joins.
+`b` counts findings; each surface with any is snapshotted outlined
+(`ux-spacing-<surface>-<size>`) and as a table (`…-table`).
 Snapshots land in `<data dir>/evidence/`; `ux-m-*` are measurements.
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-ux.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-ux-UNIQUE DECK_SMOKE_WKWEBVIEW=ux-layers app/run.sh`,

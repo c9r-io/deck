@@ -208,6 +208,7 @@
         "ux-terminal-click-drag": {},
         "ux-terminal-click-link": {},
         "ux-terminal-click-shell": {},
+        "ux-spacing": {},
         "ux-exception": {"failureOnly": true}
       }
     },

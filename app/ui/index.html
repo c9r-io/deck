@@ -187,7 +187,7 @@
           <p class="q-hint" id="auto-finish-hint" data-i18n="automation.finish.closeHint" hidden>An interactive agent does not exit by itself: its card stays, and this rule’s next slot is skipped. To let a run end on its own, make the template’s last step exit the program.</p>
           <p class="q-hint" id="auto-finish-keep-hint" data-i18n="automation.finish.keepHint" hidden>While the kept card is on the Board, this rule’s next slot is skipped; closing that card resumes it.</p>
           <p class="q-hint" id="auto-channel-verify" role="status" hidden></p>
-          <div class="set-actions" style="gap:8px">
+          <div class="set-actions" style="gap:var(--sp-8)">
             <button class="btn" id="auto-cancel" data-i18n="common.cancel">Cancel</button>
             <button class="btn primary" id="auto-save" data-i18n="common.save">Save</button>
           </div>
@@ -450,8 +450,7 @@
               </span>
               <button class="btn" id="set-tmux-restart" style="margin-left:auto" data-i18n="tmux.restart">Restart service</button>
             </div>
-            <div class="set-hint tmux-diag" id="set-tmux-details">
-            </div>
+            <div class="set-hint tmux-diag" id="set-tmux-details"></div>
           </div>
         </section>
         <section class="set-panel" id="set-panel-agents" aria-labelledby="set-heading-agents" hidden>
@@ -529,8 +528,7 @@
               </span>
               <button class="btn" id="set-check" style="margin-left:auto" data-i18n="settings.checkUpdates">Check for updates</button>
             </div>
-            <div class="set-hint" id="set-upd-status">
-            </div>
+            <div class="set-hint" id="set-upd-status"></div>
           </div>
         </section>
         <p id="set-no-results" role="status" data-i18n="settings.noResults" hidden>No matching settings.</p>

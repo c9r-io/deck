@@ -295,6 +295,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "ux-terminal-click-drag",
     "ux-terminal-click-link",
     "ux-terminal-click-shell",
+    "ux-spacing",
     "ux-exception",
     "reminder-real-due",
     "reminder-phase-ready",

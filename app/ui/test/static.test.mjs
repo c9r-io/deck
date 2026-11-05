@@ -280,7 +280,7 @@ test('the minimum supported window is 1280×800 points, enforced by the window c
 
 test('long localized panels stay bounded and scrollable in the window', () => {
   const html = read('app/ui/style.css');
-  assert.match(html, /#settings-modal, #tpl-modal \{[^}]*align-items: center;[^}]*padding: 20px;/);
+  assert.match(html, /#settings-modal, #tpl-modal \{[^}]*align-items: center;[^}]*padding: var\(--sp-20\);/);
   assert.match(html, /#settings-box, #tpl-box \{[^}]*width: 940px;[^}]*max-height: 100%;[^}]*overflow: hidden;/,
     'settings frame stays inside the viewport');
   assert.match(html, /#tpl-box \{ width: \d+px; height: \d+px; \}/,
@@ -341,7 +341,7 @@ test('retired features do not return', () => {
   assert.match(board, /const tailFor = \[\];/, 'the Board poll never requests pane captures');
   // the description line is reserved so a card keeps its height with or without one
   assert.match(read('app/ui/js/board-card.js'), /<div class="card-desc"><\/div>`;/);
-  assert.match(read('app/ui/style.css'), /\.card-desc \{[\s\S]*?min-height: 1\.23846rem;/);
+  assert.match(read('app/ui/style.css'), /\.card-desc \{[\s\S]*?font-size: var\(--fs-12\); line-height: 1\.4;[\s\S]*?min-height: calc\(var\(--fs-12\) \* 1\.4\);/);
   assert.match(layout, /if \(created && !restored\)[^\n]*clear_history/,
     'restored tmux history must survive the fresh-shell cleanup');
 });
@@ -781,8 +781,9 @@ test('a choice row in the automation editor wraps instead of running past the dr
   /* the label column grows with the font, and a long word breaks inside it
      ("Automation id" ran under its input at 160 %; "Automatisierungs-ID"
      does not fit at any size) */
-  assert.match(css, /^#auto-editor \.set-row label \{ width: 5\.846154rem; overflow-wrap: anywhere; -webkit-hyphens: auto; hyphens: auto; \}$/m);
-  assert.match(css, /^#auto-editor \.auto-editor-hint \{ margin: 0 0 8px calc\(5\.846154rem \+ 10px\); \}$/m);
+  assert.match(css, /^#auto-editor \{ --label-w: 5\.846154rem;/m);
+  assert.match(css, /^#auto-editor \.set-row label \{ width: var\(--label-w\); overflow-wrap: anywhere; -webkit-hyphens: auto; hyphens: auto; \}$/m);
+  assert.match(css, /^#auto-editor \.auto-editor-hint \{ margin: 0 0 var\(--sp-8\) calc\(var\(--label-w\) \+ var\(--sp-10\)\); \}$/m);
   assert.match(css, /^#auto-editor #auto-badge \{ flex: 1 1 0; max-width: 14em; font-family: var\(--mono\); \}$/m, 'beside its label at any size');
 });
 

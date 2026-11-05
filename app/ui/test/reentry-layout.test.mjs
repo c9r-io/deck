@@ -352,7 +352,7 @@ test('a choice in the dialog is a checkbox or a radio: its own rule takes it out
     .map(found => [found[1].replace(/\/\*[\s\S]*?\*\//g, '').trim().replace(/\s+/g, ' '), found[2].trim().replace(/\s+/g, ' ')]);
   const of = selector => rules.filter(([name]) => name === selector).map(([, declarations]) => declarations);
   // the general rule, as it is for every other field: an input is as wide as its row unless its own rule says otherwise
-  assert.deepEqual(of('input'), ['font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; width: 100%;']);
+  assert.deepEqual(of('input'), ['font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: var(--sp-8) var(--sp-10); width: 100%;']);
   // the dialog's choices say otherwise, in one rule of their own
   assert.deepEqual(of('.reentry-choice input'), ['flex: none; width: auto; margin: 0; align-self: center;']);
   // every input the dialog makes is such a choice: the one `input` it creates is the first child of a .reentry-choice label
@@ -364,7 +364,7 @@ test('a choice in the dialog is a checkbox or a radio: its own rule takes it out
   // that names the section or its parts clips or hides anything sideways: content that did not fit would still
   // be measured as not fitting. The two lists scroll downwards inside themselves, as before.
   assert.ok(carrier.includes("const section = () => $('tmux-reentry');"));
-  assert.deepEqual(of('#tmux-reentry'), ['margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-soft); font-size: 0.923077rem;']);
+  assert.deepEqual(of('#tmux-reentry'), ['margin-top: var(--sp-12); padding-top: var(--sp-12); border-top: 1px solid var(--border-soft); font-size: var(--fs-12);']);
   const own = rules.filter(([name]) => /reentry/.test(name));
   assert.ok(own.length >= 25, 'the rules of the section were found');
   const clips = own.filter(([, declarations]) => /overflow(?!-wrap)|clip|contain\b|text-overflow/.test(declarations)).map(([name, declarations]) => `${name}: ${declarations.match(/overflow[a-z-]*: *[^;]+/)?.[0]}`);

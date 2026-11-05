@@ -1089,6 +1089,21 @@ export async function runUxLayersSmoke() {
       return clickWords.join() === 'local' && !visibleRows().join('\n').includes('[<');
     }), 1, clickWords.length);
     window.removeEventListener('deck-terminal-click', heard);
+
+    /* ---------- spacing: nothing in the main surfaces sits closer than 4px ----------
+       spacing-check.mjs opens the board and its menus, the session view and
+       its panels, Needs attention, the dialogs and every Settings section at
+       the default and the largest font size (40 surfaces). `a` the surfaces
+       measured, `b` the findings; a surface with findings is snapshotted
+       outlined and as a table (`ux-spacing-*`). */
+    const { runSpacingCheck } = await import('./spacing-check.mjs');
+    let spacing = { findings: ['not run'], measured: 0 };
+    await report('ux-spacing', await attempt(async () => {
+      spacing = await runSpacingCheck({ $, state, render, openSession, toggleQueuePanel, refreshQueue, renderBufferUI,
+        openTemplates, openSettings, openAutomations, closeAutomations, projectDefaultsDialog, reminderDialog, confirmDialog,
+        cfmDone, applyFontScale, pause, snapshot, card, project });
+      return spacing.findings.length === 0 && spacing.measured >= 40;
+    }), spacing.measured, spacing.findings.length);
   } catch (_) {
     await snapshot('ux-layers-exception');
     await report('ux-exception', false);
