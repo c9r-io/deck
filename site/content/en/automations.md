@@ -24,7 +24,7 @@ An automation references a template and sends it on each new run. Try a run that
 
 1. Choose new on a clock from **New session ▾**, or create a clock rule in Automations.
 2. Set its name, destination group, working directory, launch command and template.
-3. Choose every day, selected weekdays or days of the month, and a local time.
+3. Choose days, weekdays or days of the month, and a local time. You can repeat every 1–12 days, weeks or months. For **every 2 weeks**, set the counting-from date and selected weekdays, then check the next three slots shown before saving. Skipped or missed slots do not shift this calendar rhythm.
 4. Choose the grace period for missed slots and whether to keep or close the card afterwards.
 5. Save and check the next slot and recent run history.
 
@@ -45,17 +45,23 @@ Open the Slack connection under **Settings → Integrations → Slack**:
 
 Validated tokens are kept in macOS Keychain. The App token is optional. Without it, deck searches about every 30 seconds and Slack's index may lag by about a minute. With it, live events are used while search remains as catch-up.
 
-Templates can use `{{msg.text}}`, `{{msg.from}}`, `{{msg.where}}` and `{{msg.link}}` for the message text, author, location and link. deck does not automatically reply to Slack.
+Templates can use `{{msg.text}}`, `{{msg.from}}`, `{{msg.where}}` and `{{msg.link}}` for the message text, author, location and link. New expansions wrap each value as external material and escape angle brackets, so a message cannot close its wrapper. This reduces one prompt-injection risk; it does not make the content safe or change the Agent’s permissions. Already queued text is unchanged. Deck does not automatically reply to Slack.
 
 Only your own reactions trigger work. Reactions already present when the rule is added are not replayed. The same reaction on the same message creates a card only once; an emoji name can belong to only one rule across projects. Slack rules have no pause: delete the rule to stop future triggers. Existing cards remain.
 
-For messages posted in a selected channel by allowed users or bots, enable **channel monitoring in the same Deck Slack app**. Update and reinstall an existing app, paste its new bot token, then add the bot to each monitored public or private channel. Its first match can create a card and queue a saved template; later matches add scratchpad notes without sending them to the agent. Channel text remains untrusted even when its sender is allowed. [Compare optional integrations →](/guide/integrations/#slack-reactions-and-channel-monitoring)
+For messages posted in a selected channel by allowed users or bots, enable **channel monitoring in the same Deck Slack app**. Update and reinstall an existing app, paste its new bot token, then add the bot to each monitored public or private channel. Channel monitoring requires the App token and has no search fallback. Its first match can create a card and queue a saved template; later matches add scratchpad notes without sending them to the agent. Channel text remains untrusted even when its sender is allowed. [Compare optional integrations →](/guide/integrations/#slack-reactions-and-channel-monitoring)
+
+## Accept an Agent handover
+
+An **Agent handover** rule lets an MCP client hand one item to your saved automation. First create the rule with its directory, supported Claude/Codex command and template. Separately delegate automations to that client in **Settings → Remote access**; permission to create a managed terminal alone is not this delegation. The client uses `deck_automation_list` and `deck_automation_trigger` with the rule ID and current revision. A changed rule is refused, so the client must read it again.
+
+The rule supplies the work to start; the handed-over text, sender, place and link are external template material. Review the rule's follow-up approval and separate first-input choice just as for a Slack rule. Withdrawing the client’s delegation also withdraws those permissions from unsent steps; duplicate request IDs do not create a second run. None of this proves Agent readiness or task success. [MCP delegation details](https://github.com/c9r-io/deck/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/docs/mcp.md).
 
 ## First input and follow-up permission
 
-For a newly started Claude Code or Codex, the first template row normally waits for **one real agent interaction**, observed through the matching Agent status integration, or your **Send now** after checking the terminal. A startup trust, update, sign-in or hook-review dialog may still own Enter. A saved rule, quiet output or a turn-ending report does not prove readiness.
+For a newly started Claude Code or Codex, or after Deck restarts and loses interaction evidence, the first template row normally waits for **one real agent interaction**, observed through the matching Agent status integration, or your **Send now** after checking the terminal. A startup trust, update, sign-in or hook-review dialog may still own Enter. A saved rule, quiet output or a turn-ending report does not prove readiness.
 
-Clock and Slack badge rules offer a separate, off-by-default **Send the first step to a newly started agent without waiting for readiness** choice. Its confirmation accepts that startup-input risk for the first step of future runs. It supports Claude and Codex with literal `--no-daemon`; a short compatibility wait is not evidence that the agent is ready. Input or permission requests, inspection and target checks still apply. Turning it off withdraws the exception from waiting first steps; it does not stop work that can proceed with real interaction evidence.
+Clock, Slack badge and Agent handover rules offer a separate, off-by-default **Send the first step to a newly started agent without waiting for readiness** choice. Its confirmation accepts that startup-input risk for the first step of future runs. It supports Claude and Codex with literal `--no-daemon`; a short compatibility wait is not evidence that the agent is ready. Input or permission requests, inspection and target checks still apply. Turning it off withdraws the exception from waiting first steps; it does not stop work that can proceed with real interaction evidence.
 
 A Slack reaction expresses the run and first-step intent; it does not approve every later message. Follow-up steps normally wait for **Send now**. **Automatically continue approved follow-up steps** approves a specific version of the rule and template; rows containing `{{msg.*}}` also need the separate external-content acknowledgment. Changes to covered content or targets, or withdrawing approval, stop unsent steps relying on that approval. Frozen queued text is not rewritten. Approval never answers an Agent's permission prompt or completes inspection. Clock follow-ups contain your own text and do not need a Slack content grant.
 

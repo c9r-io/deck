@@ -198,7 +198,7 @@ test('both languages publish all guide topics, overview, metadata and version-sc
       assert.ok(html.includes(`<html lang="${locale ? 'zh-Hans' : 'en'}">`));
       assert.equal([...html.matchAll(/<h1\b/g)].length, 1);
       assert.match(html, /aria-current="page"/);
-      assert.match(html, /deck 0\.7\.26/);
+      assert.match(html, /deck 0\.8\.11/);
       assert.ok(html.includes(`<summary>${locale ? '集成' : 'Integrations'}</summary>`));
       assert.ok(html.includes(`/blob/${config.guideRef}/README.md`));
       assert.ok(html.includes(`rel="canonical" href="${config.siteUrl}/${route}"`));
@@ -218,7 +218,7 @@ test('both languages describe current voice and integration behavior', async () 
   const chinese = await readFile(path.join(dist, 'zh/guide/input-and-settings/index.html'), 'utf8');
   for (const html of [english, chinese]) {
     assert.doesNotMatch(html, /An empty draft starts recording|仅插入把文字放进终端/);
-    assert.match(html, /0\.7\.26/);
+    assert.match(html, /0\.8\.11/);
   }
   assert.match(english, /never sends Enter for voice input/);
   assert.match(chinese, /语音输入不会替你按回车/);
@@ -230,10 +230,10 @@ test('both languages describe current voice and integration behavior', async () 
 });
 
 test('public guide facts and release references match the audited Stable', async () => {
-  assert.equal(config.guideVersion, '0.7.26');
-  assert.equal(config.guideRef, 'dcc3c064404e9eb4d392cb6228ae0b9f2cf14054');
-  assert.equal(config.releaseLabel, 'Stable 0.7.26');
-  assert.equal(config.releaseLabelZh, '稳定版 0.7.26');
+  assert.equal(config.guideVersion, '0.8.11');
+  assert.equal(config.guideRef, '7f14b9b1e42a2f72230b421078b3a93cd8a02963');
+  assert.equal(config.releaseLabel, 'Stable 0.8.11');
+  assert.equal(config.releaseLabelZh, '稳定版 0.8.11');
   for (const route of routes) {
     const html = await readFile(path.join(dist, route), 'utf8');
     // The shared Secure Tunnel source states its historical minimum of 0.7.8;
@@ -285,6 +285,29 @@ test('both languages distinguish first-send risk, follow-up authority and attent
     assert.match(settings, locale ? /八类/ : /eight searchable categories/);
     assert.match(settings, locale ? /数据与隐私/ : /Data &amp; privacy/);
     assert.match(settings, locale ? /本地翻译/ : /Local Translation/);
+  }
+});
+
+test('Stable recovery and expanded access retain explicit limits in both languages', async () => {
+  for (const locale of ['', 'zh/']) {
+    const sessions = await readFile(path.join(dist, `${locale}guide/sessions/index.html`), 'utf8');
+    const prompts = await readFile(path.join(dist, `${locale}guide/prompts/index.html`), 'utf8');
+    const automations = await readFile(path.join(dist, `${locale}guide/automations/index.html`), 'utf8');
+    const integrations = await readFile(path.join(dist, `${locale}guide/integrations/index.html`), 'utf8');
+    const privacy = await readFile(path.join(dist, `${locale}privacy/index.html`), 'utf8');
+    assert.match(sessions, /CLAUDE_CONFIG_DIR/);
+    assert.match(sessions, locale ? /不会再次提示或自动重试/ : /not offered or retried again/);
+    assert.match(sessions, locale ? /重入后，受影响的列表仍保持暂停/ : /Affected lists stay paused even after re-entry/);
+    assert.match(sessions, locale ? /完成重启前，Deck 不会新建 session/ : /Deck creates no new session until the service is restarted/);
+    assert.match(prompts, locale ? /交互依据需重新建立/ : /Deck restart clear interaction evidence/);
+    assert.match(automations, locale ? /每 2 周/ : /every 2 weeks/);
+    assert.match(automations, /1–12/);
+    assert.match(automations, /deck_automation_trigger/);
+    assert.match(integrations, locale ? /信任此设备/ : /Trust this device/);
+    assert.match(integrations, locale ? /前台程序匹配不代表已经就绪/ : /foreground recognition is not readiness proof/);
+    assert.match(privacy, /agent-recovery\.json/);
+    assert.match(privacy, /agent-inbox\.json/);
+    assert.match(privacy, locale ? /始终不能向 shell 输入/ : /never permits shell input/);
   }
 });
 

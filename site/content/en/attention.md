@@ -18,6 +18,8 @@ Hooks report fixed status words, pane identifiers and opaque interaction IDs, no
 
 For Codex, installed hooks still need review and trust in `/hooks`. For a new interactive session, `codex --no-daemon` is an optional compatibility path that gives up shared-server continuity. Deck rejects events it cannot reliably attribute to the terminal. **Agent status not connected** means no reliable observation is available; **Agent status unavailable** means Deck has established an attribution gap. **Why?** explains the situation. Neither label invents an input request or counts as urgent attention. Input-request hooks do not cover every question or MCP elicitation.
 
+**Pi work status** is a separate, off-by-default option in the same settings category. It reports work starting and an interaction settling, never an input request. A running Pi needs a new start or `/reload` to load the observer. Deck cannot reliably observe Pi input readiness: recognized Pi sessions receive no automatic prompts and are not automatically re-entered. Check their terminals yourself.
+
 ## Be told while you are away
 
 In **Settings → Agents & notifications**, turn on **Notify me when away**. It is off by default. When Deck is not in front, the switch allows notifications for reported input requests and unread turn endings. Those two signals need the matching Agent integration.
