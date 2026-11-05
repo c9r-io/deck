@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.16 — 2026-11-06 (Nightly)
+
+- A shell-service restart no longer fails because an Agent is slow to
+  exit. Before, Deck waited two seconds for every Agent together and,
+  when one was still running, called the whole restart failed — after the
+  others had already exited, so none of them was re-entered. Now the wait
+  is ten seconds; an Agent still running then ends with the shell service,
+  as the confirmation says every session does, and its card says so. The
+  Agents that exited are re-entered. Before typing the resume command Deck
+  checks that the old client is gone, so one session never gets two.
+- Claude Code sessions opened with `claude --resume` (the session list),
+  `-r` or `claude -c` / `--continue` are re-entered too. Before, only
+  `--resume <id>` was, and the others showed "cannot confirm".
+
 ## 0.8.15 — 2026-11-05 (Nightly)
 
 - Deck reads the whole process list again. Since 0.5.12 it read only
