@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.14 — 2026-11-05 (Nightly)
+
+- A plain click now reaches a terminal program that asked for the mouse,
+  as the wheel already did, so Claude Code's full-screen "Jump to bottom"
+  and its other clickable spots work in a card. Dragging to select,
+  double-click word selection, a click with a modifier key, a click on a
+  link and the click that clears a selection or focuses a pane stay
+  Deck's. A program that did not ask for the mouse gets no click.
+- One spacing and type scale for the whole interface: every margin, gap
+  and font size is one of a few steps, so the same distance looks the same
+  everywhere. A few spots that sat too close are spaced: the + beside the
+  tabs, a list group's icon buttons, and Settings groups with more room
+  below than above.
+- At larger font sizes (Settings → General & appearance) every box that
+  holds text grows with it: the sidebar, Settings, the template manager,
+  dialogs, drawers, menus and label columns, up to the window. In a
+  1280-point window at 160% the board scrolls sooner and the Needs
+  attention columns wrap. At 140% and above, a hint under a field whose
+  label sits above it starts at the left edge.
+- The automation rule editor's first click lands where it was aimed.
+  Before, the editor could be laid out under the drawer's scrollbar, and
+  that first click re-wrapped the trigger row under the pointer.
+
 ## 0.8.13 — 2026-11-05 (Nightly)
 
 - Model APIs (Settings → Integrations): one OpenAI and one Anthropic API
