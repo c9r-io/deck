@@ -391,9 +391,10 @@ impl Lease {
 
     /// The instant this lease's phase is over, when the phase has one. An
     /// exit lease has none of its own: its client reports only while it is
-    /// alive, the entry goes on only once that generation is gone
-    /// (`Plan::seal_exits`), and the restart asks its own deadline after the
-    /// seal, before anything is replaced.
+    /// alive, it is sealed when the restart's one exit wait is over
+    /// (`Plan::seal_exits`), the entry launches only once that generation is
+    /// proven gone (`Plan::launch`), and the restart asks its own deadline
+    /// after the seal, before anything is replaced.
     fn closes(&self) -> Option<Instant> {
         match &self.phase {
             Phase::Exit { .. } => None,

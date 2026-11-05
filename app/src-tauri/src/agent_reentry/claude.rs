@@ -197,21 +197,27 @@ const PRODUCT: ProductIdentity = ProductIdentity {
 const BYPASS: &str = "--dangerously-skip-permissions";
 const RESUME: &str = "--resume";
 
-/// The launch shapes a direct native client is supported in. Anything else —
-/// a wrapper, an unknown flag, a positional prompt, `--continue`,
+/// The launch shapes a direct native client is supported in: the bypass flag
+/// or an ordinary permission mode, a model, directories, and the ways a user
+/// opens a session again — `--resume`/`-r` with one exact id or alone (the
+/// native picker) and `--continue`/`-c`. Which session the client opened
+/// does not matter: re-entry resumes the one its final receipt names.
+/// Anything else — a wrapper, an unknown flag, a positional prompt, a
+/// picker's search words, `--fork-session`,
 /// `--allow-dangerously-skip-permissions`, `--permission-mode
 /// bypassPermissions`, another config root, a provider or credential
 /// override — classifies as unsupported and is never re-entered
 /// automatically.
 const GRAMMAR: LaunchGrammar = LaunchGrammar {
     bypass: BYPASS,
-    resume: RESUME,
+    resume: &[RESUME, "-r"],
     resume_value: native_id_ok,
-    resume_optional: false,
+    resume_optional: true,
     required: &[],
     mode: "--permission-mode",
     ordinary_modes: &["default", "plan", "acceptEdits"],
     dropped: &["--model"],
+    switches: &["--continue", "-c"],
     directories: "--add-dir",
     refused_env: &["CLAUDE_CONFIG_DIR"],
     refused_env_prefixes: &["ANTHROPIC_", "CLAUDE_CODE_USE_", "AWS_BEARER_TOKEN_"],

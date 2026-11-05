@@ -257,11 +257,13 @@ fn views_carry_closed_codes_and_no_native_identity() {
     assert_eq!(approval.policy, Policy::Ordinary);
 }
 
-/// A final receipt is not a process exit. With the receipt recorded and one
-/// old exact client generation still alive, nothing is sealed and the whole
-/// restart is refused before the pause and the kill.
+/// The seal refuses nothing for the whole restart: the exit keys were sent,
+/// and a refusal would only lose every client that did exit. A receipt keeps
+/// its entry whatever its client does (its launch proves the old generation
+/// gone); without one, a client still running is that card's exit timeout and
+/// one that is gone is that card's unconfirmed final session.
 #[test]
-fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
+fn the_seal_refuses_nothing_and_says_per_card_why_an_entry_stops() {
     let _lock = TEST_LOCK.lock_or_recover();
     reset_for_tests();
     let me = std::process::id();
@@ -307,19 +309,27 @@ fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
             server_replaced: false,
             entries: Vec::new(),
         })),
-        // the first entry's client is this live process; the second names a
-        // generation of the same pid that does not exist
-        entries: vec![entry("alive", birth), entry("gone", (birth.0 + 1, birth.1))],
+        // "alive" and "stuck" name this live process; "gone" and "left" a
+        // generation of the same pid that does not exist. Only the first two
+        // of each reported their final session.
+        entries: vec![
+            entry("alive", birth),
+            entry("gone", (birth.0 + 1, birth.1)),
+            entry("stuck", birth),
+            entry("left", (birth.0 + 1, birth.1)),
+        ],
         reread: Vec::new(),
         settled: Vec::new(),
         tag: "agent-reentry",
     };
     lifecycle::begin("deck-smoke-seal", Path::new("/nonexistent/helper"));
-    for (index, id) in [(0, ID_A), (1, ID_B)] {
+    for index in 0..4 {
         lifecycle::arm(
             index,
             lifecycle::Lease::exit(2, "%0", (3, (1, 1)), (me, birth), own.clone()),
         );
+    }
+    for (index, id) in [(0, ID_A), (1, ID_B)] {
         lifecycle::record_for_tests(
             index,
             lifecycle::Fact {
@@ -329,14 +339,29 @@ fn a_final_receipt_seals_only_when_the_old_client_generation_is_gone() {
             },
         );
     }
-    // one old client generation is still alive: the whole restart stops
-    // here, before the pause and before any kill, with the existing failure
-    let error = bare_env(&[("alive", "alive"), ("gone", "gone")], |env| {
-        plan.seal_exits(env)
-    })
-    .unwrap_err();
-    assert_eq!(error.message(), "tmux-restart-agent-timeout");
-    assert!(plan.entries.iter().all(|entry| entry.final_id.is_none()));
+    bare_env(
+        &[
+            ("alive", "alive"),
+            ("gone", "gone"),
+            ("stuck", "stuck"),
+            ("left", "left"),
+        ],
+        |env| plan.seal_exits(env),
+    );
+    let sealed: Vec<(Option<&str>, Option<Reason>)> = plan
+        .entries
+        .iter()
+        .map(|entry| (entry.final_id.as_deref(), entry.view.reason))
+        .collect();
+    assert_eq!(
+        sealed,
+        [
+            (Some(ID_A), None),
+            (Some(ID_B), None),
+            (None, Some(Reason::ExitTimeout)),
+            (None, Some(Reason::FinalSessionUnconfirmed)),
+        ]
+    );
     // sealed: a later event has no lease to land on
     assert!(!lifecycle::armed());
     drop(plan);
@@ -427,8 +452,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
     bare_env(
         &[("one", "one"), ("two", "two"), ("three", "three")],
         |env| plan.seal_exits(env),
-    )
-    .expect("every old client is gone");
+    );
     for same in [0, 1] {
         assert_eq!(plan.entries[same].final_id, None);
         assert_eq!(
@@ -1621,10 +1645,11 @@ fn a_restart_succeeds_while_one_entry_is_skipped_for_a_missing_exit_receipt() {
 }
 
 /// The client reported its final session but did not go away. A receipt is
-/// not a process exit: the restart keeps its existing failure before any
-/// kill, and nothing is launched.
+/// not a process exit, and the end of the exit wait is not a refusal: the
+/// restart goes on, the lingering client ends with the old server, and its
+/// entry launches once that generation is proven gone.
 #[test]
-fn a_reported_exit_with_a_live_client_is_the_existing_timeout_and_kills_nothing() {
+fn a_lingering_client_ends_with_the_server_and_is_reentered_once_it_is_gone() {
     let world = World::new();
     world.card(
         "a",
@@ -1633,23 +1658,65 @@ fn a_reported_exit_with_a_live_client_is_the_existing_timeout_and_kills_nothing(
     );
     let (token, _) = world.preview();
     let approval = world.approval(&token, &["a"], Policy::Ordinary);
-    let old = world.server_pid();
-    let error = world.restart("req-linger", &approval).unwrap_err();
-    // the shared exit budget ends it; on a heavily loaded machine the
-    // preparation budget may end it first — both are the existing pre-kill
-    // failures and neither replaces the server
-    assert!(
-        ["tmux-restart-agent-timeout", "tmux-restart-timeout"].contains(&error.message()),
-        "{}",
-        error.message()
+    let lingering = world.foreground_pid("a");
+    let birth = crate::procinfo::process_start(lingering).expect("the client runs");
+    let (old, new, result) = world
+        .restart("req-linger", &approval)
+        .expect("the wait that ended refused nothing");
+    assert_ne!(old, new, "the server was replaced");
+    let result = result.unwrap();
+    assert!(result.server_replaced);
+    assert_eq!(entry(&result, "a").outcome, Outcome::Confirmed);
+    assert_eq!(world.pasted(), [line(&world, "", ID_A)]);
+    assert_eq!(
+        crate::procinfo::generation_liveness(lingering, birth),
+        crate::procinfo::Liveness::Gone
     );
-    assert_eq!(world.server_pid(), old, "the server was not replaced");
-    assert!(world.pasted().is_empty());
-    let result = known("req-linger").expect("the operation is still readable");
-    assert!(!result.server_replaced);
-    assert_eq!(result.state, OperationState::Complete);
-    assert_eq!(entry(&result, "a").outcome, Outcome::NotAttempted);
-    assert_eq!(world.launches().len(), 1);
+}
+
+/// The safety the old refusal stood for: never a second client in one
+/// session. A client that reported its exit and then outlives the server (it
+/// ignores the hang-up) is still its exact generation at the launch, so its
+/// card is refused there and nothing is typed for it; the restart itself is
+/// done and the other card is re-entered.
+#[test]
+fn a_client_that_outlives_the_server_is_never_joined_by_a_second_one() {
+    let world = World::new();
+    world.card(
+        "a",
+        &format!("session={ID_A}\nexit=outlive"),
+        Some("{agent}"),
+    );
+    world.card("b", &format!("session={ID_B}"), Some("{agent}"));
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["a", "b"], Policy::Ordinary);
+    let outliving = world.foreground_pid("a");
+    let birth = crate::procinfo::process_start(outliving).expect("the client runs");
+    // whatever the test does, the stand-in that ignores the hang-up ends
+    struct Reap(u32);
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            // SAFETY: kill(2) on the stand-in's own pid, read above.
+            unsafe { libc::kill(self.0 as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+    let _reap = Reap(outliving);
+    let (old, new, result) = world
+        .restart("req-outlive", &approval)
+        .expect("the wait that ended refused nothing");
+    assert_ne!(old, new, "the server was replaced");
+    let result = result.unwrap();
+    let refused = entry(&result, "a");
+    assert_eq!(refused.outcome, Outcome::NotAttempted);
+    assert_eq!(refused.reason, Some(Reason::IdentityUnavailable));
+    assert!(!refused.shell, "no shell was created for it");
+    assert_eq!(entry(&result, "b").outcome, Outcome::Confirmed);
+    assert_eq!(world.pasted(), [line(&world, "", ID_B)]);
+    assert_eq!(
+        crate::procinfo::generation_liveness(outliving, birth),
+        crate::procinfo::Liveness::Alive,
+        "the old client is the one that outlived the server"
+    );
 }
 
 /// The queue pause is persisted before the kill; when it fails nothing is
@@ -2752,11 +2819,13 @@ fn a_removed_unavailable_or_foreign_home_in_the_tmux_environment_is_not_the_base
     }
 }
 
-/// The shell is back in the foreground but the old exact client is still
-/// alive (it stopped itself). That is not an exit: the restart fails before
-/// the pause and the kill with the existing failure, and nothing launches.
+/// The shell is back in the foreground while the old exact client is still
+/// alive (it stopped itself). That is not an exit, and not a refusal either:
+/// the restart goes on, the stopped client ends with the old server (its
+/// orphaned process group is hung up), and both entries launch once their
+/// old generations are proven gone.
 #[test]
-fn a_live_old_client_behind_a_foreground_shell_aborts_the_restart_before_any_kill() {
+fn a_stopped_old_client_ends_with_the_server_and_is_reentered_once_it_is_gone() {
     let world = World::new();
     world.card(
         "a",
@@ -2766,9 +2835,10 @@ fn a_live_old_client_behind_a_foreground_shell_aborts_the_restart_before_any_kil
     world.card("b", &format!("session={ID_B}"), Some("{agent}"));
     let (token, _) = world.preview();
     let approval = world.approval(&token, &["a", "b"], Policy::Ordinary);
-    let old = world.server_pid();
+    let stopped = world.foreground_pid("a");
+    let birth = crate::procinfo::process_start(stopped).expect("the client runs");
     let paused = std::cell::Cell::new(0);
-    let error = world
+    let (old, new, result) = world
         .restart_with(
             "req-suspended",
             Some(&approval),
@@ -2779,27 +2849,23 @@ fn a_live_old_client_behind_a_foreground_shell_aborts_the_restart_before_any_kil
             },
             &|_, _, _| {},
         )
-        .unwrap_err();
-    assert_eq!(error.message(), "tmux-restart-agent-timeout");
+        .expect("a stopped client refuses nothing");
+    assert_ne!(old, new, "the server was replaced");
+    assert_eq!(paused.get(), 1, "the queues were paused once");
+    let result = result.unwrap();
+    assert!(result.server_replaced);
+    for card in ["a", "b"] {
+        assert_eq!(entry(&result, card).outcome, Outcome::Confirmed, "{card}");
+    }
+    let mut pasted = world.pasted();
+    pasted.sort();
+    let mut expected = vec![line(&world, "", ID_A), line(&world, "", ID_B)];
+    expected.sort();
+    assert_eq!(pasted, expected);
     assert_eq!(
-        paused.get(),
-        0,
-        "the queues were not paused for a refused restart"
+        crate::procinfo::generation_liveness(stopped, birth),
+        crate::procinfo::Liveness::Gone
     );
-    assert_eq!(world.server_pid(), old, "no replacement");
-    assert!(!world
-        .calls
-        .borrow()
-        .iter()
-        .any(|(args, _)| args[0] == "kill-server" || args[0] == "start-server"));
-    assert!(world.pasted().is_empty());
-    assert_eq!(world.launches().len(), 2, "only the two original starts");
-    let result = known("req-suspended").unwrap();
-    assert!(!result.server_replaced);
-    assert!(result
-        .entries
-        .iter()
-        .all(|entry| entry.outcome == Outcome::NotAttempted && entry.settled));
 }
 
 /// The card is deleted after the freeze: no shell is created for it and

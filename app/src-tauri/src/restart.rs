@@ -1,12 +1,21 @@
 //! Bounded, content-free coordination for an intentional shell-service restart.
 //! Exit keys are guarded by the observed tmux generation and foreground name.
-//! A timeout before kill-server aborts: elapsed time never proves a saved resume.
+//! The exit wait is bounded and refuses nothing: every agent gets its keys
+//! first, then all share ONE wait (`EXIT_BUDGET`). An agent still running
+//! when it ends is ended with the server like any other foreground program —
+//! the user confirmed that every session ends — and is never taken for
+//! exited: elapsed time never proves a saved resume, so re-entry skips it
+//! (no final receipt, or its old generation still alive at the launch). A
+//! refusal there would only lose the agents that DID exit: on 2026-11-06
+//! nine of eleven exited inside two seconds, two were late, and the old
+//! refusal threw away every re-entry.
 //! Order: what may refuse the restart for the shells' sake (their snapshots)
 //! runs BEFORE the first exit key; after it only identity and safety checks
-//! may still refuse (a pane lost or added, another server, the re-entry
-//! seal, the queue pause, the deadline). The exited agents' resume hints are
-//! read best effort and an exited agent's pane may change foreground
-//! (`tmux::unchanged_after_exit`): refusing there would only lose the agents.
+//! may still refuse (a pane lost or added, another server, the queue pause,
+//! the deadline). The exited agents' screens are read best effort under a
+//! share of their own (`EXITED_READ_BUDGET`) and an exited agent's pane may
+//! change foreground (`tmux::unchanged_after_exit`): refusing there would
+//! only lose the agents.
 //! The lifecycle supplies the pane reader so a verified, reachable empty
 //! server can be checked without treating tmux's missing pane target as loss,
 //! and the key sender of the same server handle.
@@ -26,9 +35,21 @@ use crate::error::{DeckError, ErrorKind, RestartFailure};
 use crate::session_runtime::{check_deadline, Deadline};
 use crate::tmux::{same_pane, unchanged_rows, PaneRow};
 
-pub(crate) const PREPARE_BUDGET: Duration = Duration::from_secs(3);
-pub(crate) const TOTAL_BUDGET: Duration = Duration::from_secs(8);
-const EXIT_BUDGET: Duration = Duration::from_secs(2);
+/// Everything before the replacement: the shells' snapshots, the one exit
+/// wait, the exited agents' screens, the seal and the queue pause.
+pub(crate) const PREPARE_BUDGET: Duration = Duration::from_secs(20);
+/// The prepare budget plus the replacement's own five seconds.
+pub(crate) const TOTAL_BUDGET: Duration = Duration::from_secs(25);
+/// The one wait every agent shares after its keys. Many clients exiting at
+/// once each run their exit hooks, which Deck answers one at a time; two
+/// seconds were not enough for eleven.
+const EXIT_BUDGET: Duration = Duration::from_secs(10);
+/// Reading the exited agents' screens for the restored shells: best effort,
+/// and over before the prepare budget is.
+const EXITED_READ_BUDGET: Duration = Duration::from_secs(3);
+/// What must be left after the exit wait: the screens, the seal, the queue
+/// pause.
+const AFTER_EXIT: Duration = Duration::from_secs(5);
 
 fn error(code: &str) -> DeckError {
     DeckError::new(ErrorKind::Tmux, code)
@@ -82,18 +103,21 @@ fn exit_keys(row: &PaneRow) -> Vec<String> {
         "display-message -p deck-restart-target-changed".into()]
 }
 
+/// Send every agent its keys, then wait for all of them together until
+/// `budget` ends. Answers the panes whose agent is STILL running then: the
+/// wait is over, not the restart (module header). Only a pane that was lost
+/// or retargeted, or the caller's own deadline, refuses.
 fn exit_agents(
     mut targets: Vec<(PaneRow, Agent)>,
     budget: Duration,
     list: &dyn Fn() -> Result<Vec<PaneRow>, DeckError>,
     send: &dyn Fn(&[String]) -> Result<String, DeckError>,
     progress: &dyn Fn(&str, usize, usize),
-) -> Result<(), DeckError> {
+) -> Result<Vec<PaneRow>, DeckError> {
     let started = Instant::now();
     let total = targets.len();
     progress("exiting", 0, total);
     let exit_end = Instant::now() + budget;
-    let _exit_deadline = Deadline::until(exit_end);
     for (row, _) in &targets {
         let out = send(&exit_keys(row))?;
         if out.contains("deck-restart-target-changed") {
@@ -106,15 +130,7 @@ fn exit_agents(
         ));
     }
     let mut second_sent = false;
-    while !targets.is_empty() {
-        if Instant::now() >= exit_end {
-            applog(&format!(
-                "[tmux-restart] exit-timeout remaining={} elapsed_ms={}",
-                targets.len(),
-                started.elapsed().as_millis()
-            ));
-            return Err(DeckError::restart(RestartFailure::AgentTimeout));
-        }
+    loop {
         check_deadline()?;
         let current = list()?;
         for (row, _) in &targets {
@@ -129,15 +145,24 @@ fn exit_agents(
         });
         progress("exiting", total - targets.len(), total);
         if targets.is_empty() {
-            break;
+            applog(&format!(
+                "[tmux-restart] agents-exited count={total} elapsed_ms={}",
+                started.elapsed().as_millis()
+            ));
+            return Ok(Vec::new());
         }
         if Instant::now() >= exit_end {
             applog(&format!(
-                "[tmux-restart] exit-timeout remaining={} elapsed_ms={}",
+                "[tmux-restart] exit-timeout remaining={} sessions={} elapsed_ms={}",
                 targets.len(),
+                targets
+                    .iter()
+                    .map(|(row, _)| session_tag(&row.session_name))
+                    .collect::<Vec<_>>()
+                    .join(","),
                 started.elapsed().as_millis()
             ));
-            return Err(DeckError::restart(RestartFailure::AgentTimeout));
+            return Ok(targets.into_iter().map(|(row, _)| row).collect());
         }
         if !second_sent && started.elapsed() >= Duration::from_millis(100) {
             for (row, kind) in &targets {
@@ -149,11 +174,6 @@ fn exit_agents(
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    applog(&format!(
-        "[tmux-restart] agents-exited count={total} elapsed_ms={}",
-        started.elapsed().as_millis()
-    ));
-    Ok(())
 }
 
 /// All agents receive their first key before polling starts; every agent uses
@@ -248,7 +268,16 @@ pub(crate) fn prepare(
     } else {
         None
     };
-    exit_agents(targets, EXIT_BUDGET, list, send, progress)?;
+    // The one wait and everything after it must fit in what is left of the
+    // preparation: refused here, before the first key, a restart loses
+    // nothing; past the keys a deadline would lose every agent that exited.
+    if total > 0
+        && crate::session_runtime::deadline_remaining()
+            .is_some_and(|left| left < EXIT_BUDGET + AFTER_EXIT)
+    {
+        return Err(DeckError::restart(RestartFailure::Deadline));
+    }
+    let still_running = exit_agents(targets, EXIT_BUDGET, list, send, progress)?;
     if total > 0 && !save_shells {
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -261,18 +290,23 @@ pub(crate) fn prepare(
     {
         return Err(DeckError::restart(RestartFailure::ImpactChanged));
     }
-    // After the exit only the resume hints are read, best effort: a pane
-    // that cannot be read is skipped, never a refusal (`shell_state`).
+    // After the exit only the screens are read, best effort and under their
+    // own share: a pane that cannot be read in it is skipped, never a
+    // refusal (`shell_state`). The exited agents come first; a pane whose
+    // agent still runs is skipped there and loses its older snapshot.
     if let Some(epoch) = epoch.filter(|_| total > 0) {
-        let exited: Vec<PaneRow> = final_rows
+        let (mut panes, running): (Vec<PaneRow>, Vec<PaneRow>) = final_rows
             .iter()
             .filter(|now| exiting.iter().any(|agent| same_pane(agent, now)))
             .cloned()
-            .collect();
-        crate::shell_state::checkpoint_exited_agents(&exited, &final_rows, epoch, list, send);
+            .partition(|now| !still_running.iter().any(|row| same_pane(row, now)));
+        panes.extend(running);
+        let _share = Deadline::until(Instant::now() + EXITED_READ_BUDGET);
+        crate::shell_state::checkpoint_exited_agents(&panes, &final_rows, epoch, list, send);
     }
     applog(&format!(
-        "[tmux-restart] prepared agents={total} restore_enabled={save_shells} elapsed_ms={}",
+        "[tmux-restart] prepared agents={total} still_running={} restore_enabled={save_shells} elapsed_ms={}",
+        still_running.len(),
         started.elapsed().as_millis()
     ));
     check_deadline()?;
@@ -301,7 +335,6 @@ mod tests {
     fn failure_reason_reads_the_closed_restart_failure() {
         use crate::error::RestartFailure::*;
         for (failure, message, reason) in [
-            (AgentTimeout, "tmux-restart-agent-timeout", "agent-timeout"),
             (
                 SnapshotFailed,
                 "tmux-restart-snapshot-failed",
@@ -470,37 +503,67 @@ mod tests {
             .all(|r| crate::context::shell_process(Some(&r.command))));
     }
 
+    /// The wait ends, not the restart: agents that did not exit by the end
+    /// of the ONE shared wait are handed back as still running, their panes
+    /// untouched, and nothing is refused (2026-11-06: a refusal here threw
+    /// away the re-entry of every agent that had exited).
     #[test]
-    fn all_stalled_agents_share_one_timeout_and_their_panes_survive() {
+    fn all_stalled_agents_share_one_wait_and_are_handed_back_still_running() {
         let server = Server::new();
         for name in ["one", "two", "three"] {
             server.fixture(name, 99);
         }
-        let targets = server
-            .rows()
-            .unwrap()
-            .into_iter()
-            .map(|r| (r, Agent::Codex))
-            .collect();
+        let before = server.rows().unwrap();
+        let targets = before.iter().cloned().map(|r| (r, Agent::Codex)).collect();
         // One budget for all three: a per-agent budget would take at least
         // three of them, so the bound below discriminates while leaving room
         // for coverage instrumentation and a loaded machine.
         let budget = Duration::from_millis(400);
         let start = Instant::now();
-        let err = exit_agents(
+        let running = exit_agents(
             targets,
             budget,
             &|| server.rows(),
             &|args| server.run(&args.iter().map(String::as_str).collect::<Vec<_>>()),
             &|_, _, _| {},
         )
-        .unwrap_err();
-        assert_eq!(err.message(), "tmux-restart-agent-timeout");
+        .expect("a wait that ends refuses nothing");
+        assert!(start.elapsed() >= budget, "the whole wait was given");
         assert!(
             start.elapsed() < budget * 5 / 2,
             "budget is shared, not per agent"
         );
+        assert_eq!(running.len(), 3);
+        for row in &before {
+            assert!(running.iter().any(|still| same_pane(still, row)));
+        }
         assert_eq!(server.rows().unwrap().len(), 3);
+    }
+
+    /// Only the agents still running are handed back: the ones that left
+    /// are not, whatever the others do.
+    #[test]
+    fn a_wait_that_ends_hands_back_only_the_agents_still_running() {
+        let server = Server::new();
+        // a Codex agent gets one key: one leaves on it, one waits for more
+        server.fixture("quits", 1);
+        server.fixture("stays", 99);
+        let rows = server.rows().unwrap();
+        let targets = rows.iter().cloned().map(|r| (r, Agent::Codex)).collect();
+        let running = exit_agents(
+            targets,
+            Duration::from_secs(2),
+            &|| server.rows(),
+            &|args| server.run(&args.iter().map(String::as_str).collect::<Vec<_>>()),
+            &|_, _, _| {},
+        )
+        .expect("a wait that ends refuses nothing");
+        let stays = rows
+            .iter()
+            .find(|r| r.session_name.contains("stays"))
+            .unwrap();
+        assert_eq!(running.len(), 1);
+        assert!(same_pane(&running[0], stays));
     }
 
     fn unique(name: &str) -> String {

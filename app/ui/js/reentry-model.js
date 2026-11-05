@@ -503,7 +503,7 @@ export function projectResult({ replaced, result, requested = [], pollEnded = fa
 const REFUSED_BEFORE_START = new Set([
   'managed-review-changed', 'managed-status-unavailable', 'managed-reminder-protected', 'managed-close-rejected',
   'managed-close-ambiguous', 'tmux-restart-mcp-managed-sessions', 'tmux-server-impact-changed',
-  'tmux-restart-agent-timeout', 'tmux-restart-snapshot-failed', 'tmux-restart-busy', 'reentry-preview-expired',
+  'tmux-restart-snapshot-failed', 'tmux-restart-busy', 'reentry-preview-expired',
 ]);
 
 /** Whether a rejected restart that asked for re-entry may have an operation

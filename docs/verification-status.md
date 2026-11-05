@@ -1,11 +1,38 @@
 # 当前验证索引
 
-更新：2026-11-05（进程表只装下最新的约四分之一进程：重入只认出 2 个 Claude 会话；四个改动前就失败的原生 smoke；装文字的宽度随字号缩放；间距与字号统一；终端单击交给要了鼠标的程序；多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-11-06（升级重启失败：两个 Agent 退出慢让整次重启失败，已退出的 Claude 也没有重入；Claude 以选择列表或 `-c` 启动时认不出）；2026-11-05（进程表只装下最新的约四分之一进程：重入只认出 2 个 Claude 会话；四个改动前就失败的原生 smoke；装文字的宽度随字号缩放；间距与字号统一；终端单击交给要了鼠标的程序；多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
+
+## 本轮 升级重启失败：两个 Agent 退出慢，整次重启失败，已退出的 Claude 也没有重入
+
+起因：用户工作 Mac 升级到 0.8.15（2026-11-06 00:51 JST）。重启前预览 `sessions=15 candidates=8 reasons=identity-unavailable:3`，另有 4 个普通 shell。第一次点击：给 11 个 Agent 发了退出键，2 秒后 `exit-timeout remaining=2`，整次重启以 `agent-timeout` 失败（`complete replaced=false entries=8 confirmed=0`）。这时另外 9 个 Claude 已经退出，重入计划随失败作废。之后的预览 0 个候选。第二次点击 59 ms 内 `impact-changed`：失败后 Claude 还在陆续退出，窗格前台变了。第三次点击重启成功，但已经没有 Claude 可重入，卡片里只剩 shell，屏幕恢复的是 Claude 退出后的样子。
+根因：
+- 退出等待只有 2 秒，而且等待结束时只要还有一个 Agent 在运行，整次重启就失败。可这时退出键已经发出，已退出的 Agent 回不来。`restart.rs` 自己的注释写着「Agent 退出后再拒绝只会丢掉 Agent」，这个超时正好违背这一条；重入收尾 `seal_exits` 也规定旧客户端还活着就让整次重启失败。
+- 11 个 Claude 同时退出时，每个的退出 hook 都要等 Deck 应答：helper 一直开着连接，直到 Deck 关掉（最多 2 秒），而 Deck 用一个线程逐个处理这些连接。这可能是排在后面的退出更慢的原因（推断，未测量）。
+- 3 个 identity-unavailable：Claude 的启动写法只认 `--resume <id>`。日志里 0.8.14 重启后 2 到 4 分钟有两次 `[agent-recovery] not-recorded reason=recovery-not-supported`（同一套写法检查），即两个卡片用不带 id 的 `claude --resume`（选择列表）或 `claude -c` 启动。第三个的原因日志里没有：预览只记原因代码。
+- 那个对两次 Ctrl+D 都没反应、第三次点击时才退出的会话，原因日志里看不出。更新前被跟踪的会话最后状态都是 turn-done（空闲）。
+
+修复：
+- 退出等待 10 秒（`EXIT_BUDGET`），准备阶段 20 秒，整体 25 秒。等待结束不再拒绝重启：仍在运行的 Agent 随服务一起结束（确认框本来就说所有 session 都会结束），它的卡片显示 `exit-timeout`（「未在等待时间内退出，已随 Shell 服务一起结束；未自动启动」）；已退出的照常重入。删除 `RestartFailure::AgentTimeout` 和前端的整次失败文案。日志 `exit-timeout` 行带上仍在运行的会话标签，`prepared` 行带 `still_running=`。
+- 发第一个退出键之前确认剩余时间够完成等待和之后的步骤（`session_runtime::deadline_remaining`），不够就在发键之前拒绝，那时什么都还没丢。读取已退出 Agent 屏幕有自己的 3 秒期限，超时只跳过截屏，不再触发后面的准备期限检查。
+- `seal_exits` 不再让整次重启失败：有退出回执的照常往下走；没有回执且仍在运行，记 `exit-timeout`；没有回执且已结束，记 `final-session-unconfirmed`。「旧客户端已结束」的证明移到 `launch`：服务替换之后、建 shell 之前用 `generation_liveness` 证明已结束（原来只是读到它还活着才拒绝）。扛过服务停止的旧客户端不会再被启动一个客户端进同一会话。
+- Claude 的启动写法增加：不带 id 的 `--resume`/`-r`（选择列表）、`-r <id>`、`--continue`/`-c`。重入用的是退出回执里的会话 id，与当初用哪种方式挑会话无关。崩溃恢复的记录用同一套写法，这类会话现在也会被记录。选择列表的搜索词和 `--fork-session` 仍不支持；Codex 的写法不变。
+- 预览判 identity-unavailable 时，日志多记一行 `[agent-reentry] unidentified <会话标签> check=<shell|foreground|gone|not-product|cwd|not-direct|launch-unread|launch-shape>`，下次能分清是启动写法、包装程序还是目录不在了。卡片上的文案不变。
+
+防回归：
+- restart：所有 Agent 卡住时只等一次、交回仍在运行的窗格、不拒绝；有一个退出时只交回仍在运行的那个。
+- 重入收尾：四种情况各有结果（有回执且活着或已结束，照常；无回执且活着，`exit-timeout`；无回执且已结束，`final-session-unconfirmed`）。
+- 端到端（真实 tmux 加假 Agent）：上报退出后不走的客户端随服务结束，然后被重入；把自己停住的客户端同样。新增忽略 SIGHUP、扛过服务停止的客户端：它的卡片被拒绝，没有输入任何命令，另一张卡照常重入。去掉 `launch` 里的检查时这一项失败（同一会话里又启动了一个客户端，`Confirmed`），已验证。
+- procinfo 写法测试：选择列表、`-r`、`--continue`/`-c` 支持；搜索词、两次 resume、`--continue=1`、`--fork-session` 不支持；Codex 的 `-c`（配置覆盖）、`--continue`、`-r` 仍不支持。
+- 前端：`exit-timeout` 在已重启的结果里显示新句子（中英文断言）。
+
+门禁（本机）：fmt；CI 形式 clippy 0 告警；`cargo test --workspace --all-targets --all-features --locked`（隔离 HOME、空 TMPDIR）1640 项通过、0 失败（14 项按设计忽略）；`scripts/ui-tests` 949 项；`check.mjs`、JS 语法 206 个模块。TMPDIR 为空，tmux socket 目录只剩正式的 `deck`。未跑 llvm-cov 形式。
+原生（只读，本机，临时探针测试，已删除）：本机 Deck 的 tmux 里有 6 个真实 Claude 进程，其中 2 个以 `claude --dangerously-skip-permissions --resume` 启动。旧写法把这 2 个判为 Unsupported（预览即 identity-unavailable），新写法判 Bypass；6 个都通过 `standing_client`（Anthropic 签名的 Claude Code 代码、启动写法、工作目录）。
+UNRUN：真实升级重启（下一次升级进 0.8.16：看工作 Mac 预览的候选数和 `unidentified … check=` 行、有没有 `exit-timeout`、`complete replaced=true` 的 confirmed 数）；很多 Claude 同时退出的耗时；对 Ctrl+D 没反应的原因；发布载体。
 
 ## 本轮 重入只认出 2 个 Claude 会话：进程表只装下最新的约四分之一进程
 

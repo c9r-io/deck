@@ -234,7 +234,7 @@ test('two confirmed and one unconfirmed after a replacement is "restarted", neve
 });
 
 test('a replacement that did not happen is titled so, with the exited agents said separately', () => {
-  const outcome = restartOutcome({ server: { serverPid: 1 }, replaced: false, reentry: complete([entry('A', 'not-attempted', { reason: 'exit-timeout', shell: false })], false) });
+  const outcome = restartOutcome({ server: { serverPid: 1 }, replaced: false, reentry: complete([entry('A', 'not-attempted', { shell: false })], false) });
   assert.equal(outcome.replaced, false);
   const view = projectResult({ replaced: false, result: outcome.result, requested: ['A'] });
   setLocale('en');
@@ -247,6 +247,16 @@ test('a replacement that did not happen is titled so, with the exited agents sai
   assert.equal(restartOutcome({ server: {}, reentry: complete([]) }).replaced, true);
   assert.equal(restartOutcome({ server: {}, replaced: 'yes', reentry: null }).replaced, false);
   assert.equal(restartOutcome(null).server, null);
+});
+
+test('an Agent still running when the exit wait ended is said to have ended with the service, on a restart that happened', () => {
+  setLocale('en');
+  const view = projectResult({ replaced: true, result: reentryResult(complete([entry('A', 'not-attempted', { reason: 'exit-timeout', shell: false })])) });
+  assert.equal(say(view.title), say(projectResult({ replaced: true, result: reentryResult(complete([])) }).title));
+  assert.deepEqual(view.rows[0].details.map(say), ['Claude did not exit in time and ended with the Shell service. Claude was not automatically started.']);
+  setLocale('zh-Hans');
+  assert.deepEqual(view.rows[0].details.map(say), ['Claude 未在等待时间内退出，已随 Shell 服务一起结束；未自动启动 Claude。']);
+  setLocale('en');
 });
 
 test('an unverified launch profile and the bypass that was not reapplied are one line', () => {
@@ -377,7 +387,7 @@ test('a lost response is looked up read-only and the restart is never invoked ag
   assert.equal(responseLost('tmux-restart-timeout', true), true);
   assert.equal(responseLost('some transport error', true), true);
   assert.equal(responseLost('tmux-restart-timeout', false), false, 'a shell-only restart has no operation to read');
-  for (const refusal of ['tmux-server-impact-changed', 'reentry-preview-expired', 'tmux-restart-agent-timeout', 'tmux-restart-busy', 'managed-close-ambiguous']) {
+  for (const refusal of ['tmux-server-impact-changed', 'reentry-preview-expired', 'tmux-restart-busy', 'managed-close-ambiguous']) {
     assert.equal(responseLost(refusal, true), false, refusal);
   }
 

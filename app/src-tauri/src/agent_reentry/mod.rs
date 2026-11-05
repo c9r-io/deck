@@ -62,13 +62,20 @@
 //!   (`ImpactChanged`) when a card, pane, server, foreground generation,
 //!   executable or working directory is not the one previewed; it never
 //!   rebinds an approval to a new target. Exit leases are armed before the
-//!   first exit key. `seal_exits` needs BOTH the applicable final receipt
-//!   (`SessionEnd`, `prompt-input-exit`) and the old client generation gone;
-//!   neither stands in for the other, and they fail differently: an old
-//!   exact generation that is still alive, or whose exit cannot be proven,
-//!   fails the WHOLE restart before the pause and the kill (`AgentTimeout`);
-//!   a client that is gone without a valid final receipt skips that card
-//!   alone. `reopen` runs only after the server replacement was read back.
+//!   first exit key. An entry launches only with BOTH the applicable final
+//!   receipt (`SessionEnd`, `prompt-input-exit`) and its old client
+//!   generation proven gone; neither stands in for the other. `seal_exits`
+//!   takes the receipts and refuses nothing for the whole restart: by then
+//!   the exit keys were sent, and a refusal would only lose every client
+//!   that did exit (2026-11-06: two late clients threw away eight
+//!   re-entries). A client still running at the seal, with no receipt, is
+//!   that card's `ExitTimeout` — it ends with the server, as the user was
+//!   told every session does; one gone without a valid receipt is that
+//!   card's `FinalSessionUnconfirmed`. A receipt from a client that has not
+//!   gone yet keeps its entry, and `launch` asks again, after the
+//!   replacement and before the shell: an old generation that is not proven
+//!   gone then is that card's refusal, never a second client in one
+//!   session. `reopen` runs only after the server replacement was read back.
 //! - **Card scope through the side effect.** The card ↔ session binding is
 //!   read from the Board this process committed last, as authority
 //!   (`documents::board_authority`: the user's current version; a Board
@@ -381,6 +388,10 @@ pub(crate) enum Reason {
     IdentityUnavailable,
     ExecutableUnavailable,
     FinalSessionUnconfirmed,
+    /// The old client was still running when the restart's one exit wait
+    /// ended, with no final receipt: it ended with the server. Not a
+    /// statement about its session.
+    ExitTimeout,
     LaunchRefused,
     LaunchUnconfirmed,
     UserActionRequired,
@@ -405,6 +416,7 @@ impl Reason {
             Reason::IdentityUnavailable => "identity-unavailable",
             Reason::ExecutableUnavailable => "executable-unavailable",
             Reason::FinalSessionUnconfirmed => "final-session-unconfirmed",
+            Reason::ExitTimeout => "exit-timeout",
             Reason::LaunchRefused => "launch-refused",
             Reason::LaunchUnconfirmed => "launch-unconfirmed",
             Reason::UserActionRequired => "user-action-required",
@@ -745,6 +757,23 @@ fn unavailable(why: Unavailable) -> Reason {
     }
 }
 
+/// A pane whose client could not be identified, with the closed name of the
+/// check that ended the question. The name goes to the log only (the card
+/// is told `IdentityUnavailable`, as before): which check it was is what a
+/// log needs to tell a launch shape from a wrapper or a lost directory.
+fn unidentified(row: &PaneRow, check: &'static str, source: Option<&'static str>) -> Inspected {
+    applog(&format!(
+        "[agent-reentry] unidentified {} check={check}",
+        session_tag(&row.session_name)
+    ));
+    match source {
+        Some(source) => {
+            Inspected::refused_as(Kind::Unsupported, Reason::IdentityUnavailable, source)
+        }
+        None => Inspected::refused(Kind::Unsupported, Reason::IdentityUnavailable),
+    }
+}
+
 /// What one pane of a one-pane session is, for re-entry. The foreground is
 /// read from the kernel; a saved command plays no part. `known` holds the
 /// executable references this same operation already validated: a client
@@ -756,11 +785,11 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
     }
     let table = crate::procinfo::processes();
     let Some(shell) = table.get(&row.pane_pid) else {
-        return Inspected::refused(Kind::Unsupported, Reason::IdentityUnavailable);
+        return unidentified(row, "shell", None);
     };
     let shell_birth = (shell.start_seconds, shell.start_micros);
     let Some(foreground) = crate::agent_status::foreground_generation(&table, row.pane_pid) else {
-        return Inspected::refused(Kind::Unsupported, Reason::IdentityUnavailable);
+        return unidentified(row, "foreground", None);
     };
     if foreground.pid() == row.pane_pid {
         return Inspected {
@@ -801,9 +830,7 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
             known,
         );
         match read {
-            ClientRead::Gone => {
-                return Inspected::refused(Kind::Unsupported, Reason::IdentityUnavailable)
-            }
+            ClientRead::Gone => return unidentified(row, "gone", None),
             // Nothing is known about what it runs: the question was not
             // answered, or not inside this phase. That is a check that did
             // not finish — not a shell, not an unsupported program and not a
@@ -819,15 +846,14 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
             // reports later. The name only chooses the words; it was not
             // what refused it.
             ClientRead::NotProduct { named: true, why } => {
-                return Inspected::refused_as(
-                    Kind::Unsupported,
-                    match why {
-                        NotProduct::Other => Reason::IdentityUnavailable,
-                        NotProduct::Diverged => Reason::ExecutableUnavailable,
-                        NotProduct::Unreadable => Reason::CheckIncomplete,
-                    },
-                    capability.source,
-                )
+                let reason = match why {
+                    NotProduct::Other => {
+                        return unidentified(row, "not-product", Some(capability.source))
+                    }
+                    NotProduct::Diverged => Reason::ExecutableUnavailable,
+                    NotProduct::Unreadable => Reason::CheckIncomplete,
+                };
+                return Inspected::refused_as(Kind::Unsupported, reason, capability.source);
             }
             ClientRead::Product(qualified) => {
                 found = Some((capability, qualified));
@@ -861,23 +887,19 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
         .get(&foreground.pid())
         .is_some_and(|client| client.ppid == row.pane_pid);
     let Some(cwd) = qualified.cwd.filter(DirRef::is_dir) else {
-        return Inspected::refused_as(
-            Kind::Unsupported,
-            Reason::IdentityUnavailable,
-            capability.source,
-        );
+        return unidentified(row, "cwd", Some(capability.source));
     };
-    if !direct
-        || !matches!(
-            qualified.profile,
-            LaunchProfile::Bypass | LaunchProfile::Ordinary
-        )
-    {
-        return Inspected::refused_as(
-            Kind::Unsupported,
-            Reason::IdentityUnavailable,
-            capability.source,
-        );
+    if !direct {
+        return unidentified(row, "not-direct", Some(capability.source));
+    }
+    match qualified.profile {
+        LaunchProfile::Bypass | LaunchProfile::Ordinary => {}
+        LaunchProfile::Unknown => {
+            return unidentified(row, "launch-unread", Some(capability.source))
+        }
+        LaunchProfile::Unsupported => {
+            return unidentified(row, "launch-shape", Some(capability.source))
+        }
     }
     Inspected {
         kind: Kind::Candidate,
@@ -1848,17 +1870,19 @@ impl Plan {
         })
     }
 
-    /// After every agent returned to its shell.
+    /// After the restart's one exit wait, whether or not every agent left.
     ///
-    /// An old exact client generation that is still alive — or whose exit
-    /// cannot be proven — fails the WHOLE restart here, before the queue
-    /// pause and before any kill: a shell in the foreground is not the
-    /// client's exit, and replacing the server under a live client is not
-    /// this feature's to decide. It keeps the existing `AgentTimeout`
-    /// contract and budget; nothing is waited for longer and nothing is
-    /// killed. With the generation gone, an entry keeps going only with its
-    /// applicable final receipt; without one that card alone is skipped.
-    pub(crate) fn seal_exits(&mut self, env: &Env) -> Result<(), DeckError> {
+    /// Refuses nothing for the whole restart: the exit keys were sent, and
+    /// a refusal here would only lose every client that did exit (module
+    /// header). A shell in the foreground is still not the client's exit:
+    /// each entry keeps going only with its applicable final receipt, and
+    /// `launch` proves its old generation gone before anything is typed.
+    /// Without a receipt, a client still running is that card's
+    /// `ExitTimeout` — it ends with the server, as every foreground
+    /// program does — and one gone or unreadable is that card's
+    /// `FinalSessionUnconfirmed`. Nothing is waited for and nothing is
+    /// killed here.
+    pub(crate) fn seal_exits(&mut self, env: &Env) {
         use crate::procinfo::Liveness;
         let liveness: Vec<Liveness> = self
             .entries
@@ -1871,10 +1895,6 @@ impl Plan {
                 liveness.iter().filter(|s| **s == Liveness::Alive).count(),
                 liveness.iter().filter(|s| **s == Liveness::Unknown).count()
             ));
-            for index in 0..self.entries.len() {
-                lifecycle::seal(index);
-            }
-            return Err(DeckError::restart(RestartFailure::AgentTimeout));
         }
         for (index, entry) in self.entries.iter_mut().enumerate() {
             let facts = lifecycle::seal(index);
@@ -1894,7 +1914,11 @@ impl Plan {
                 .unwrap_or_default();
             entry.final_id = (capability.receipts.final_session)(&facts, &printed_now);
             if entry.final_id.is_none() {
-                entry.view.reason = Some(Reason::FinalSessionUnconfirmed);
+                entry.view.reason = Some(if liveness[index] == Liveness::Alive {
+                    Reason::ExitTimeout
+                } else {
+                    Reason::FinalSessionUnconfirmed
+                });
             } else if !entry.client.cwd.is_dir() {
                 entry.final_id = None;
                 entry.view.reason = Some(Reason::UserActionRequired);
@@ -1925,7 +1949,6 @@ impl Plan {
             self.entries.len()
         ));
         self.publish();
-        Ok(())
     }
 
     /// The server replacement was read back. From here on nothing in this
@@ -2236,7 +2259,12 @@ impl Plan {
             entry.view.shell = before.iter().any(|row| row.session_name == session);
             return refuse(entry, Outcome::NotAttempted, Reason::LaunchRefused);
         }
-        if crate::procinfo::process_start(entry.client.pid) == Some(entry.client.birth) {
+        // The old client generation proven gone, now that the server it ran
+        // under was replaced: one that outlived it, or whose exit cannot be
+        // read, would be a second client in the same session.
+        if crate::procinfo::generation_liveness(entry.client.pid, entry.client.birth)
+            != crate::procinfo::Liveness::Gone
+        {
             return refuse(entry, Outcome::NotAttempted, Reason::IdentityUnavailable);
         }
         let created = (env.create_shell)(&session, entry.client.cwd.path(), restore_shells);

@@ -807,7 +807,8 @@ pub(crate) struct LaunchGrammar {
     pub(crate) bypass: &'static str,
     /// `<flag> <id>` / `<flag>=<id>`: an exact-id resume; the id must have
     /// this shape and is dropped (it never stands in for a final session id).
-    pub(crate) resume: &'static str,
+    /// Every spelling of the one resume word (a long flag and its short one).
+    pub(crate) resume: &'static [&'static str],
     pub(crate) resume_value: fn(&str) -> bool,
     /// The resume word may stand alone (a native picker): still a supported
     /// launch, with no id.
@@ -820,6 +821,10 @@ pub(crate) struct LaunchGrammar {
     pub(crate) ordinary_modes: &'static [&'static str],
     /// Flags taking exactly one value that are recognized and dropped.
     pub(crate) dropped: &'static [&'static str],
+    /// Flags without a value that are recognized and dropped: they choose
+    /// which session the client opened, which the final receipt names
+    /// anyway (`--continue`).
+    pub(crate) switches: &'static [&'static str],
     /// A flag taking one or more directories; seeing it sets one boolean.
     pub(crate) directories: &'static str,
     /// Environment names, and name prefixes, whose PRESENCE makes the
@@ -919,7 +924,7 @@ fn reduce_launch(
         };
         if flag == grammar.bypass && inline.is_none() {
             bypass = true;
-        } else if flag == grammar.resume {
+        } else if grammar.resume.contains(&flag) {
             if resumed {
                 return unsupported;
             }
@@ -949,6 +954,8 @@ fn reduce_launch(
             if value(&mut rest).is_none() {
                 return unsupported;
             }
+        } else if grammar.switches.contains(&flag) && inline.is_none() {
+            // recognized, dropped, and takes no value
         } else if flag == grammar.directories {
             if value(&mut rest).is_none() {
                 return unsupported;
@@ -2374,13 +2381,14 @@ mod tests {
 
     const GRAMMAR: LaunchGrammar = LaunchGrammar {
         bypass: "--dangerously-skip-permissions",
-        resume: "--resume",
+        resume: &["--resume", "-r"],
         resume_value: id_shape,
-        resume_optional: false,
+        resume_optional: true,
         required: &[],
         mode: "--permission-mode",
         ordinary_modes: &["default", "plan", "acceptEdits"],
         dropped: &["--model"],
+        switches: &["--continue", "-c"],
         directories: "--add-dir",
         refused_env: &["CLAUDE_CONFIG_DIR"],
         refused_env_prefixes: &["ANTHROPIC_"],
@@ -2416,6 +2424,20 @@ mod tests {
             (Bypass, false)
         );
         assert_eq!(reduced(&[&format!("--resume={UUID}")]), (Ordinary, false));
+        // how a user picks a session again: the picker, the short word, the
+        // most recent one. Which session it opened, the final receipt names.
+        assert_eq!(reduced(&["--resume"]), (Ordinary, false));
+        assert_eq!(reduced(&["-r"]), (Ordinary, false));
+        assert_eq!(reduced(&["-r", UUID]), (Ordinary, false));
+        assert_eq!(
+            reduced(&["--dangerously-skip-permissions", "--resume"]),
+            (Bypass, false)
+        );
+        assert_eq!(reduced(&["--continue"]), (Ordinary, false));
+        assert_eq!(
+            reduced(&["-c", "--dangerously-skip-permissions"]),
+            (Bypass, false)
+        );
         // recognized and dropped: a model, and directories as one boolean
         assert_eq!(reduced(&["--model", "opus"]), (Ordinary, false));
         assert_eq!(
@@ -2432,11 +2454,12 @@ mod tests {
                 "--permission-mode",
                 "plan",
             ],
-            vec!["--resume"],
+            // a picker's search words are not an id
             vec!["--resume", "latest"],
+            vec!["-r", "latest"],
             vec!["--resume", UUID, "--resume", UUID],
-            vec!["--continue"],
-            vec!["-c"],
+            vec!["--resume", UUID, "-r", UUID],
+            vec!["--continue=1"],
             vec!["--fork-session"],
             vec!["--settings", "/x.json"],
             vec!["--model"],
@@ -2460,12 +2483,13 @@ mod tests {
         use LaunchProfile::*;
         const CODEX_LIKE: LaunchGrammar = LaunchGrammar {
             bypass: "--yolo",
-            resume: "resume",
+            resume: &["resume"],
             resume_optional: true,
             required: &["--no-daemon"],
             mode: "--sandbox",
             ordinary_modes: &["workspace-write", "read-only"],
             dropped: &["--model", "-m"],
+            switches: &[],
             directories: "--add-dir",
             ..GRAMMAR
         };
@@ -2514,6 +2538,11 @@ mod tests {
             vec!["--no-daemon", "--dangerously-bypass-hook-trust"],
             vec!["--no-daemon", "fix the bug"],
             vec!["--no-daemon", "exec", "hi"],
+            // another adapter's words mean nothing here: `-c` is a config
+            // override to this client, not a session choice
+            vec!["--no-daemon", "-c", "model=x"],
+            vec!["--no-daemon", "--continue"],
+            vec!["--no-daemon", "-r", UUID],
         ] {
             assert_eq!(
                 reduced(&unsupported),

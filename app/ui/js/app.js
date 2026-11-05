@@ -423,7 +423,6 @@ async function restartTmuxServer() {
         'tmux-restart-mcp-managed-sessions': 'tmux.managedStillBlocked',
         'tmux-server-impact-changed': 'tmux.impactChanged',
         'reentry-preview-expired': 'tmux.impactChanged',
-        'tmux-restart-agent-timeout': 'tmux.agentTimeout',
         'tmux-restart-snapshot-failed': 'tmux.snapshotFailed',
         'tmux-restart-busy': 'tmux.restartBusy',
         'tmux-restart-timeout': 'tmux.restartTimeout',

@@ -533,14 +533,19 @@ an addition to the transaction above, never a change of it:
    frozen again under it. The previewed reference is reused only for that
    exact file state; each client is bound to it again.
 3. **Exit**: the frozen panes take the existing graceful-exit path and its
-   shared two seconds, including a client that runs under its release's
-   file name. An entry continues only with BOTH its final receipt
+   ONE shared wait (ten seconds), including a client that runs under its
+   release's file name. An entry launches only with BOTH its final receipt
    (`SessionEnd`, `prompt-input-exit`, attributed by the kernel to that exact
    client while it still executes the frozen executable) and its old client
-   generation gone. A missing receipt skips that
-   card. A client that does not exit — including one that gave the terminal
-   back to its shell but is still alive, or whose exit cannot be proven — is
-   the existing `AgentTimeout` for the whole restart: no pause, no kill.
+   generation proven gone, which its launch asks after the replacement. The
+   end of the wait refuses nothing: the exit keys were sent, and a refusal
+   would only lose every client that did exit (2026-11-06: two late clients
+   of eleven threw away eight re-entries). A client still running then, with
+   no receipt, ends with the server like any other foreground program and
+   its card says so (`exit-timeout`); a missing receipt otherwise skips that
+   card (`final-session-unconfirmed`). A client that reported its exit but
+   outlives the server is refused at its launch: never a second client in
+   one session.
 4. **Replacement**: unchanged, including the durable queue pause before the
    kill and the content-free intent. Its read-back settles "the shell service
    restarted" and nothing later rewrites that.

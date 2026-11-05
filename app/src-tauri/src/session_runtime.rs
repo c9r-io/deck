@@ -51,6 +51,12 @@ pub(crate) fn check_deadline() -> Result<(), DeckError> {
 pub(crate) fn deadline_active() -> bool {
     DEADLINE.with(|deadline| deadline.get().is_some())
 }
+/// What is left of this thread's deadline scope; `None` without one.
+pub(crate) fn deadline_remaining() -> Option<Duration> {
+    DEADLINE
+        .with(Cell::get)
+        .map(|end| end.saturating_duration_since(Instant::now()))
+}
 /// A deadline no test reaches: for tests of code that asks for a deadline
 /// owner and whose subject is not the deadline.
 #[cfg(test)]

@@ -111,12 +111,14 @@ instance — is where you look first, and restarting the program is your call.
 The one exception is a card whose first start never delivered its command.
 
 A confirmed service restart first asks recognized native Claude Code/Codex
-foreground processes to exit, sharing a two-second exit window across all
+foreground processes to exit, sharing ONE ten-second exit window across all
 panes. With terminal output recovery enabled, Deck waits for stable shell
-output and saves the bounded tails before killing the server. Exit/capture
-failure aborts before the kill; a partial exit is possible and is not undone.
-Preparation has a three-second budget and the backend returns a result within
-eight seconds. A stalled filesystem worker retains the restart locks until it
+output and saves the bounded tails before the first exit key; a snapshot
+failure aborts there, before anything exited. The end of the exit window
+refuses nothing: an agent still running then ends with the server like any
+other foreground program and is not re-entered, while the agents that did
+exit are. Preparation has a twenty-second budget and the backend returns a
+result within twenty-five seconds. A stalled filesystem worker retains the restart locks until it
 returns, and its expired deadline prevents a later kill. Pending prompts for
 reviewed sessions are durably paused before replacement and stay paused until
 the user resumes them. Other foreground programs retain the ordinary restart

@@ -94,13 +94,14 @@ const LOWER: [&str; 4] = [
 /// never re-entered automatically.
 const GRAMMAR: LaunchGrammar = LaunchGrammar {
     bypass: BYPASS,
-    resume: RESUME,
+    resume: &[RESUME],
     resume_value: claude::native_id_ok,
     resume_optional: true,
     required: &[EMBEDDED],
     mode: "--sandbox",
     ordinary_modes: &["workspace-write", "read-only"],
     dropped: &["--model", "-m"],
+    switches: &[],
     directories: "--add-dir",
     refused_env: &["CODEX_HOME"],
     refused_env_prefixes: &["OPENAI_"],
@@ -284,7 +285,7 @@ mod tests {
         assert_eq!(GRAMMAR.required, [EMBEDDED]);
         assert_eq!(
             (GRAMMAR.resume_optional, GRAMMAR.bypass, GRAMMAR.resume),
-            (true, "--yolo", "resume")
+            (true, "--yolo", &["resume"][..])
         );
         assert_eq!(
             (

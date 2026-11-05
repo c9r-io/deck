@@ -783,10 +783,13 @@ a carrier pass.
 - [ ] Successful exit returns to shell, stable resume hints are saved, and
       opening retained cards starts only a shell. With recovery disabled,
       the modal discloses that Deck will not save exit hints.
-- [ ] A slow/refused exit or failed snapshot aborts before kill-server. Some
-      agents may already have exited. The service PID remains unchanged.
-- [ ] All agents share a 2s exit budget; preparation has 3s and the backend
-      response has 8s. After 300ms the modal shows phase/progress. A blocked
+- [ ] A failed snapshot aborts before the first exit key and kill-server;
+      the service PID remains unchanged. A slow exit does not abort: an
+      agent still running when the shared exit wait ends ends with the
+      server (`exit-timeout remaining=N sessions=…`), its card says
+      `exit-timeout`, and the agents that exited are re-entered.
+- [ ] All agents share a 10s exit budget; preparation has 20s and the backend
+      response has 25s. After 300ms the modal shows phase/progress. A blocked
       filesystem may retain the backend locks after the timeout response;
       when it returns it must not proceed to a late kill.
 - [ ] Queued prompts for affected sessions remain paused after replacement

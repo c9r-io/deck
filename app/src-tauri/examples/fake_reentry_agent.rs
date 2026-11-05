@@ -73,6 +73,9 @@ mod sys {
     pub const TCSANOW: c_int = 0;
     pub const POLLIN: c_short = 0x0001;
     pub const SIGSTOP: c_int = 17;
+    pub const SIGHUP: c_int = 1;
+    /// `SIG_IGN` as `signal(3)` takes it.
+    pub const SIG_IGN: usize = 1;
 
     /// `struct termios`: four flag words, twenty control characters, two speeds.
     #[repr(C)]
@@ -105,6 +108,7 @@ mod sys {
         pub fn tcsetattr(fd: c_int, actions: c_int, termios: *const Termios) -> c_int;
         pub fn cfmakeraw(termios: *mut Termios);
         pub fn raise(signal: c_int) -> c_int;
+        pub fn signal(signal: c_int, handler: usize) -> usize;
         pub fn poll(fds: *mut PollFd, count: c_uint, timeout: c_int) -> c_int;
     }
 }
@@ -582,6 +586,16 @@ fn main() {
             restore();
             // SAFETY: stops this process; nothing else is touched.
             unsafe { sys::raise(sys::SIGSTOP) };
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+        // reports its final session and outlives the server: the hang-up that
+        // ends every other client when the server goes is ignored
+        "outlive" => {
+            hook("session-end", &session, "prompt_input_exit");
+            // SAFETY: ignores SIGHUP for this process only.
+            unsafe { sys::signal(sys::SIGHUP, sys::SIG_IGN) };
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }

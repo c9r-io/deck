@@ -140,7 +140,6 @@ impl ErrorKind {
 /// with delivery) was refused; each has one stable message and one log reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RestartFailure {
-    AgentTimeout,
     SnapshotFailed,
     Deadline,
     DeliveryBusy,
@@ -152,7 +151,6 @@ impl RestartFailure {
     /// The message the caller (toast) and tests see, unchanged from before.
     pub(crate) fn message(self) -> &'static str {
         match self {
-            RestartFailure::AgentTimeout => "tmux-restart-agent-timeout",
             RestartFailure::SnapshotFailed => "tmux-restart-snapshot-failed",
             RestartFailure::Deadline => "tmux-restart-timeout",
             RestartFailure::DeliveryBusy => "tmux-restart-busy",
@@ -164,7 +162,6 @@ impl RestartFailure {
     /// The closed reason `[tmux-restart] finish result=` logs.
     pub(crate) fn log_reason(self) -> &'static str {
         match self {
-            RestartFailure::AgentTimeout => "agent-timeout",
             RestartFailure::SnapshotFailed => "snapshot-failed",
             RestartFailure::Deadline => "deadline",
             RestartFailure::DeliveryBusy => "delivery-busy",

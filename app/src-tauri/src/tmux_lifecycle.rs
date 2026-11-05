@@ -1804,7 +1804,7 @@ pub(crate) async fn restart_tmux_server(
     // Tauri's synchronous command handler would block the webview event loop
     // during exit hooks. All IO, deadlines and guards belong to this worker.
     let started = std::time::Instant::now();
-    // The basic restart keeps its eight seconds. Approved re-entry adds one
+    // The basic restart keeps its own budget. Approved re-entry adds one
     // shared post share AFTER the replacement and the confirmation's own
     // share after that; the worker bounds each phase itself, so this outer
     // limit only bounds the IPC wait. A check that cannot be interrupted and
@@ -1826,7 +1826,11 @@ pub(crate) async fn restart_tmux_server(
                     }),
                 );
             };
-            applog("[tmux-restart] begin prepare_budget_ms=3000 total_budget_ms=8000");
+            applog(&format!(
+                "[tmux-restart] begin prepare_budget_ms={} total_budget_ms={}",
+                crate::restart::PREPARE_BUDGET.as_millis(),
+                crate::restart::TOTAL_BUDGET.as_millis()
+            ));
             let pty_state = app.state::<crate::pty::PtyState>();
             let queues = app.state::<crate::scheduler::Queues>();
             let server = deck_server();
@@ -2127,10 +2131,11 @@ fn restart_transaction_on(
     // Foreground changes caused by graceful exit are expected. Refresh the
     // content-free intent so crash recovery compares the post-exit identity.
     let post_exit = prepare_restart_with(server, snapshot, restore_shells, &frozen, progress)?;
-    // Every agent is back at its shell: seal each approved entry's final
-    // session (its exit receipt AND its old client generation gone).
+    // The exit wait is over: seal each approved entry's final session (its
+    // exit receipt; its old client generation is proven gone at its launch).
+    // Nothing here refuses the restart: the exit keys were sent.
     if let (Some(plan), Some((env, _, _))) = (plan.as_mut(), reentry) {
-        plan.seal_exits(env)?;
+        plan.seal_exits(env);
     }
     pause()?;
     crate::session_runtime::check_deadline()?;
