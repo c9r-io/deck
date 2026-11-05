@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.15 — 2026-11-05 (Nightly)
+
+- Deck reads the whole process list again. Since 0.5.12 it read only
+  about the newest quarter of it, so on a Mac with many processes the
+  shells and Claude Code sessions of older cards were invisible to Deck.
+  A shell-service restart after an update then re-entered only the
+  Claude Code sessions started most recently and sent the others no exit
+  request; older Claude Code cards lost their turn-ended and needs-input
+  status and notifications; and a list could not send to them. The
+  restart after updating to this version already runs with the fix.
+
 ## 0.8.14 — 2026-11-05 (Nightly)
 
 - A plain click now reaches a terminal program that asked for the mouse,
