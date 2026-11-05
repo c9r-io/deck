@@ -50,7 +50,10 @@
 // late completion never refocuses a pane or borrows a newer attachment.
 // tmux mouse negotiation is enabled for applications. The outer client's
 // mouse-only mode requests are consumed with xterm's public parser so pointer
-// selection remains local; wheel ownership is decided from live pane state.
+// selection remains local; wheel ownership is decided from live pane state,
+// and so is a plain click Deck does not use itself (selection.js offers it,
+// terminal-mouse.js forwards it). Only the focused pane of a focused window
+// offers clicks: the press that focuses a pane is Deck's.
 // The workspace's right-hand tool slot (session-tools.js) closes at the START
 // of leaveSessionView, before any pane is disposed, so nothing refocuses a
 // dying terminal; focusing another pane in the same layout is not a leave.
@@ -73,7 +76,7 @@ import { createMcpSessionUiGate, resetMcpSessionControls } from './mcp-session-u
 import { refreshInputSource } from './input-source.js';
 import { appendInputCleanup, createTerminalDataHandler } from './terminal-input.js';
 import { wireImeProbe } from './terminal-ime-probe.js';
-import { keepLocalTerminalMouse } from './terminal-mouse.js';
+import { forwardTerminalClick, keepLocalTerminalMouse } from './terminal-mouse.js';
 import { paintFollowUps } from './follow-up-bar.js';
 import { createTerminalFind } from './terminal-find.js';
 
@@ -274,6 +277,13 @@ export function createPane(card) {
     if (!current) return;
     current.scrolled = active;
     updatePaneChrome(current);
+  }, {
+    armed: () => ctx.attachedName === pane.session && document.hasFocus(),
+    forward: (cell, grid) => forwardTerminalClick({
+      pane, cell, grid, invoke: inv, log: uev, debugLog: duev,
+      announce: outcome => window.dispatchEvent(new CustomEvent('deck-terminal-click',
+        { detail: { session: pane.session, outcome } })),
+    }),
   });
 
   term.onWriteParsed(() => {

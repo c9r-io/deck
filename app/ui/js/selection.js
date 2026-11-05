@@ -5,6 +5,16 @@
 // At pointerup the tmux-owned range is frozen into an immutable token-bound backend snapshot and a
 // public-geometry overlay; later wheel movement changes only the viewport.
 //
+// A plain single click that Deck does not use itself is also offered to the
+// pane's program at pointerup (`clicks.forward`, terminal-mouse.js; the
+// backend sends it only to a program that asked for button reports): a
+// trusted primary press and release in one cell inside the grid, no modifier
+// at either end, compatibility detail 1, not on a link, and armed at the
+// press — the focused pane of a focused window (`clicks.armed`), with no Deck
+// or xterm selection for the press to end. Drags, multi-clicks, the press
+// that ends a selection and the press that focuses a pane stay Deck's. xterm
+// still sees the click as before; nothing is replayed to it.
+//
 // # Contract
 // Terminal gesture and selection authority is explicit. A sub-threshold
 // physical gesture stays on xterm's trusted mouse/link path; no synthetic
@@ -149,7 +159,17 @@ function terminalCell(pane, clientX, clientY) {
   });
 }
 
-function terminalSelectionController(pane, onModeChange) {
+/* terminalCell clamps a point onto the grid; a click is only offered from
+   inside it, never from the pane's padding. */
+function insideGrid(pane, clientX, clientY) {
+  const rect = pane.body.querySelector('.xterm-screen')?.getBoundingClientRect();
+  return !!rect && rect.width > 0 && rect.height > 0
+    && clientX >= rect.left && clientX < rect.right && clientY >= rect.top && clientY < rect.bottom;
+}
+
+const noModifier = event => !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+
+function terminalSelectionController(pane, onModeChange, clicks = null) {
   const model = createTerminalSelectionModel();
   const tracePane = nextPaneTrace++;
   let lastSelectionToken = 0;
@@ -490,6 +510,10 @@ function terminalSelectionController(pane, onModeChange) {
   const pointerDown = event => {
     if (disposed || event.button !== 0) return;
     if (!terminalCell(pane, event.clientX, event.clientY)) return;
+    // Read before this press revokes anything (see the header).
+    const offer = !!clicks && event.isTrusted && noModifier(event)
+      && !selected && !gesture?.promoted && !pane.term.hasSelection?.()
+      && insideGrid(pane, event.clientX, event.clientY) && clicks.armed();
     const traceId = nextGestureTrace;
     nextGestureTrace = nextGestureTrace === 0xffffffff ? 1 : nextGestureTrace + 1;
     pendingRevokerGestureId = traceId;
@@ -535,6 +559,7 @@ function terminalSelectionController(pane, onModeChange) {
       startX: event.clientX, startY: event.clientY,
       x: event.clientX, y: event.clientY,
       promoted: false, native: event.detail === 2 || event.detail === 3, nativeDragged: false,
+      offer,
     };
     forensics.begin({ id: traceId, cell: terminalCell(pane, event.clientX, event.clientY),
       detail: event.detail, native: gesture.native });
@@ -583,6 +608,15 @@ function terminalSelectionController(pane, onModeChange) {
     }
   };
 
+  /* A press armed at pointerdown that ended as a plain single click in its
+     own cell, still without a modifier and not on a link (header). */
+  const offerClick = (ended, event) => {
+    if (!ended.offer || ended.native || ended.nativeDragged || pressDetail !== 1) return;
+    if (!noModifier(event) || !insideGrid(pane, ended.x, ended.y) || pane.linkUnder?.(event)) return;
+    const cell = terminalCell(pane, ended.x, ended.y);
+    if (cell) clicks.forward({ row: cell.row, col: cell.col }, { cols: pane.term.cols, rows: pane.term.rows });
+  };
+
   const pointerEnd = event => {
     if (!gesture || (event.pointerId != null && event.pointerId !== gesture.pointerId)) return;
     lastPointerUpAt = Date.now();
@@ -610,6 +644,7 @@ function terminalSelectionController(pane, onModeChange) {
     if (!ended.promoted) {
       if (ended.nativeDragged) suppressLinkUntil = Date.now() + 250;
       ownerTrace.trustedClick = ended.nativeDragged ? 0 : 1;
+      offerClick(ended, event);
       return;
     }
 
@@ -1044,8 +1079,10 @@ function terminalSelectionController(pane, onModeChange) {
   return api;
 }
 
-export function wireTerminalSelection(pane, onModeChange) {
-  const controller = terminalSelectionController(pane, onModeChange);
+/* `clicks` ({ armed(), forward(cell, grid) }) lets the view owner offer plain
+   clicks to the pane's program; without it no click leaves the page. */
+export function wireTerminalSelection(pane, onModeChange, clicks = null) {
+  const controller = terminalSelectionController(pane, onModeChange, clicks);
   pane.selection = controller;
   return controller;
 }

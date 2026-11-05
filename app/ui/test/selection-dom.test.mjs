@@ -62,7 +62,7 @@ const { createTerminalCopy } = await import('../js/terminal-clipboard.js');
 let harness = null;
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture(engine = null) {
+function fixture(engine = null, clicks = null) {
   logs.length = 0; calls.length = 0;
   anchorCell = null; activeCell = null;
   const body = new Surface(), screen = new Surface();
@@ -81,7 +81,7 @@ function fixture(engine = null) {
     onData(fn) { if (engine) return engine.onData(fn); this.dataListeners.push(fn); return { dispose() {} }; },
   };
   const pane = { body, term, session: 'private-test', syncSize: async () => true };
-  wireTerminalSelection(pane, () => {});
+  wireTerminalSelection(pane, () => {}, clicks);
   const copy = createTerminalCopy({ selection: pane.selection, term,
     copySelection: () => pane.selection.copy(), elsewhere: () => ({ count: 0, ageMs: -1 }),
     write: async text => { calls.push({ name: 'clipboard', text }); },
@@ -275,4 +275,57 @@ test('composition revokes once with an explicit entry and silent empty repeats',
     assert.deepEqual([entries[0].a, entries[0].b], [0, 0]);
     assert.equal(logs.filter(x => x.detail === 'cancel-input').length, 1);
   } finally { f.dispose(); }
+});
+
+/* A plain click Deck does not use itself is offered to the pane's program
+   (the backend then sends it only to a program that asked for the mouse). */
+function clickFixture(armed = true) {
+  const offered = [];
+  const f = fixture(null, { armed: () => armed, forward: (cell, grid) => offered.push({ cell, grid }) });
+  const up = (id, x = 15, more = {}) => documentSurface.fire('pointerup', { pointerId: id, clientX: x, ...more });
+  return { ...f, offered, up };
+}
+
+test('a plain single click is offered once with its cell and the grid it was placed on', async () => {
+  const f = clickFixture();
+  try {
+    f.down(31, 15); f.up(31); await f.settle();
+    assert.deepEqual(f.offered, [{ cell: { row: 1, col: 1 }, grid: { cols: 10, rows: 10 } }]);
+    // xterm keeps the click: nothing became a Deck selection
+    assert.equal(f.pane.selection.hasSelection(), false);
+  } finally { f.dispose(); }
+});
+
+test('drags, multi-clicks, modifiers, links, the grid edge and unarmed panes offer nothing', async () => {
+  const f = clickFixture();
+  try {
+    f.down(32, 15); f.up(32, 45); await f.settle();          // a drag: Deck's selection
+    assert.equal(f.pane.selection.hasSelection(), true);
+    f.down(33, 15); f.up(33); await f.settle();               // ends that selection
+    assert.equal(f.pane.selection.hasSelection(), false);
+    assert.equal(f.offered.length, 0, 'the press that ends a selection is Deck\'s');
+    f.down(34, 15, 2); f.up(34); await f.settle();            // the second press of a double-click
+    f.term.select('word');
+    f.down(35, 15); f.up(35); await f.settle();               // ends xterm's own selection
+    f.term.clearSelection();
+    f.body.fire('pointerdown', { pointerId: 36, clientX: 15, metaKey: true });
+    f.body.fire('mousedown', { pointerId: 36, clientX: 15, metaKey: true });
+    f.up(36); await f.settle();                               // Command at the press
+    f.down(37, 15); f.up(37, 15, { shiftKey: true }); await f.settle(); // Shift at the release
+    f.body.fire('pointerdown', { pointerId: 38, clientX: 15, isTrusted: false });
+    f.body.fire('mousedown', { pointerId: 38, clientX: 15, isTrusted: false });
+    f.up(38); await f.settle();                               // not a physical press
+    f.down(39, 150); f.up(39, 150); await f.settle();         // the pane's padding, off the grid
+    f.pane.linkUnder = () => true;
+    f.down(40, 15); f.up(40); await f.settle();               // a link's click
+    assert.equal(f.offered.length, 0);
+    f.pane.linkUnder = () => false;
+    f.down(41, 15); f.up(41); await f.settle();
+    assert.equal(f.offered.length, 1, 'an ordinary click after all of them still goes');
+  } finally { f.dispose(); }
+  const quiet = clickFixture(false);
+  try {
+    quiet.down(42, 15); quiet.up(42); await quiet.settle();
+    assert.equal(quiet.offered.length, 0, 'the press that focuses the pane or window is Deck\'s');
+  } finally { quiet.dispose(); }
 });

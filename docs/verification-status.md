@@ -1,11 +1,19 @@
 # 当前验证索引
 
-更新：2026-11-05（多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-11-05（终端单击交给要了鼠标的程序；多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
+
+## 本轮 终端单击交给要了鼠标的程序（Claude Code 全屏的「Jump to bottom」）
+
+起因：用户反馈 Claude Code 全屏界面滚动后出现的「Jump to bottom (click)」在 Deck 里点不动，普通终端可以。诊断：对用户正式 `deck` tmux 只读 `list-panes`，所有 Claude Code 窗格（进程名为版本号 2.1.312–2.1.317）都在备用屏并开着全事件鼠标跟踪（1003）+ SGR（1006），Codex 窗格同样；`terminal-mouse.js` `keepLocalTerminalMouse` 吞掉外层全部鼠标模式请求（57bfe68，2026-09-27，为保住本地拖选），xterm 从不上报点击；只有滚轮经后端 `scroll_session` 用 `send-keys -H` 转发，点击没有任何路径。
+内容：单击按滚轮的方式转发。前端（`selection.js`）在按下时判定是否可交出：真实按下、无修饰键、在网格内、没有要清除的 Deck 或 xterm 选区、是聚焦窗口里的当前窗格；松开时仍是原格子的单击（compat detail 1）、松开时无修饰键、不在链接上（`terminal-links.js` `linkUnder`），才交给 `terminal-mouse.js` `forwardTerminalClick`。后端 `click_session` 先读面板状态：程序没要鼠标或在 copy-mode → `local`；前端网格与面板尺寸不符或格子越界 → `stale`（丢弃，不夹到别的格子）；MCP 持有输入 → `refused`；否则 `terminal_scroll::click_args` 在 tmux 内发送前再查一次，按协商编码（SGR / UTF-8 / X10）发一次按下和一次松开，X10 超过 222 列、UTF-8 超过 2014 列不发。结果只有封闭词，app.log 记 `terminal-click sent/stale/refused/failed`（`local` 只在 --debug-logging）。拖选、双击选词、带修饰键、链接、清除选区和切换焦点的那一下仍归 Deck；按住拖动和悬停不传给程序。
+门禁（本机）：`selection-dom.test.mjs` 新增 2 项（单击带格子与网格提交一次；拖动、多击、修饰键、非真实事件、网格外、链接、清除选区、未聚焦都不提交）、`terminal-mouse.test.mjs` 新增 1 项（结果词、日志级别、网格未确认时不发）；`scripts/ui-tests` 942 项；Rust：`terminal_scroll` 帧与可编码范围、`terminal` 判定与解析；`tmux_contract` 新增 3 项真实 tmux（SGR 单击逐字节、UTF-8 与 X10 精确且超界不发、copy-mode 与鼠标关闭时同一条命令不发且之后的单击完整送达）；`external_admission`（新输入点 `click_command`，MCP 闸门在 `click_args` 之前）、`ipc_contract`、`edr_quiet`、`log_privacy`、诊断普查通过；CI 形式 clippy 0 告警；CI 形式 `cargo llvm-cov --workspace --all-targets --all-features`（单线程，隔离 HOME、空 TMPDIR）1635 项通过、0 失败，行覆盖 85.87%、函数 84.03%，`check-test-tmpdir` 为空，tmux socket 目录只剩正式的 `deck`。
+原生（2026-11-05，Mac mini，本仓库 debug 载体）：`ux-layers` **PASS** 36/36。窗格里运行开启 1003+1006 并按字节读回的替身程序，手势都是 AppKit 原生事件：`ux-terminal-click`（单击送达 `ESC[<0;31;24M` + `ESC[<0;31;24m`，即该格的一次按下与松开，回答 `sent`）、`ux-terminal-click-drag`（在文字上拖动成为 Deck 的选区、不产生任何回答，替身随后完整收到下一次单击）、`ux-terminal-click-link`（路径格子上 `linkUnder` 为真、单击不产生回答，下一次单击完整送达）、`ux-terminal-click-shell`（普通 shell 上回答 `local`，屏上没有任何鼠标字节）。前两次运行暴露的是冒烟场景自身的问题，已改：在空行上拖动是空选区（`empty-range`→`cancel-empty`，按设计撤销）；未读完的替身会吞掉下一项的输入（现由每项结束时补齐字节）。注入的 AppKit 按下在链接上被链接层判为 `drag`，所以链接菜单这里不弹；真实点击会弹（本机正式 app.log：251 次按下 241 次菜单），菜单不作为本项判定。
+UNRUN：真实 Claude Code 全屏界面里的点击（替身程序只证明字节送达）；发布载体。
 
 ## 本轮 多行文本框统一（外观、按内容增高、失焦不保存）
 

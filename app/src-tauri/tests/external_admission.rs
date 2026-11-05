@@ -851,6 +851,15 @@ const TERMINAL_INPUT: &[(&str, &str, &str, usize, Input)] = &[
         1,
         Input::Owner,
     ),
+    // Local physical click: the same, one press and its release at a cell
+    // the encoding can name; click_session applies the MCP input fence.
+    (
+        "terminal_scroll.rs",
+        "click_command",
+        "send-keys",
+        1,
+        Input::Owner,
+    ),
     (
         "prompt_delivery.rs",
         "transfer",
@@ -923,6 +932,14 @@ fn every_terminal_input_site_is_reviewed() {
     assert!(
         scroll.find("guard_terminal_input(&name)?").unwrap()
             < scroll.find("negotiated_args(").unwrap()
+    );
+    let click = body("terminal_scroll.rs", "click_command");
+    assert!(click.contains("-H {}"));
+    assert!(click.contains("format!(\"{byte:02x}\")"));
+    assert!(click.contains("click_encodable("));
+    let offer = body("terminal.rs", "click_session");
+    assert!(
+        offer.find("guard_terminal_input(&name)").unwrap() < offer.find("click_args(").unwrap()
     );
     // The re-entry launch: its text is rebuilt from closed fields, it needs
     // the restart's exclusive guard as a witness, it runs after the entry's

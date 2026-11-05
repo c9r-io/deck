@@ -1719,8 +1719,11 @@ fn negotiated_sgr_wheel_reaches_the_live_application_byte_for_byte() {
         "sh -c 'printf \"\\033[?1000h\\033[?1006hREADY\\r\\n\"; stty raw -echo; dd bs=1 count=10 2>/dev/null | od -An -tx1; stty sane; sleep 30'",
     );
     assert_eq!(s.fmt("#{mouse_standard_flag}:#{mouse_sgr_flag}"), "1:1");
-    let args =
-        terminal_scroll::negotiated_args("t", -1, terminal_scroll::WheelCell { column: 4, row: 7 });
+    let args = terminal_scroll::negotiated_args(
+        "t",
+        -1,
+        terminal_scroll::PointerCell { column: 4, row: 7 },
+    );
     let result = s
         .run_owned(&args)
         .unwrap_or_else(|error| panic!("negotiated SGR wheel: {error}; args={args:?}"));
@@ -1738,7 +1741,7 @@ fn negotiated_sgr_wheel_reaches_the_live_application_byte_for_byte() {
     down.run_owned(&terminal_scroll::negotiated_args(
         "t",
         2,
-        terminal_scroll::WheelCell { column: 4, row: 7 },
+        terminal_scroll::PointerCell { column: 4, row: 7 },
     ))
     .expect("two SGR wheel-down frames");
     wait_until("two SGR wheel-down frames", || {
@@ -1765,7 +1768,7 @@ fn negotiated_legacy_mouse_encodings_are_exact_and_bounded() {
     let utf8_args = terminal_scroll::negotiated_args(
         "t",
         -1,
-        terminal_scroll::WheelCell {
+        terminal_scroll::PointerCell {
             column: 300,
             row: 7,
         },
@@ -1796,7 +1799,7 @@ fn negotiated_legacy_mouse_encodings_are_exact_and_bounded() {
     x10.run_owned(&terminal_scroll::negotiated_args(
         "t",
         -1,
-        terminal_scroll::WheelCell {
+        terminal_scroll::PointerCell {
             column: 399,
             row: 229,
         },
@@ -1818,8 +1821,11 @@ fn negotiated_wheel_rechecks_copy_mode_and_mouse_state_at_dispatch() {
         8,
         "sh -c 'i=0; while test $i -lt 30; do printf \"row-%02d\\r\\n\" $i; i=$((i+1)); done; printf \"\\033[?1000h\\033[?1006hREADY\\r\\n\"; stty raw -echo; dd bs=1 count=10 2>/dev/null | od -An -tx1; stty sane; sleep 30'",
     );
-    let args =
-        terminal_scroll::negotiated_args("t", -2, terminal_scroll::WheelCell { column: 3, row: 4 });
+    let args = terminal_scroll::negotiated_args(
+        "t",
+        -2,
+        terminal_scroll::PointerCell { column: 3, row: 4 },
+    );
 
     s.run(&["copy-mode", "-e", "-t", "t"]);
     let copy = s.run_owned(&args).expect("copy-mode owns the wheel");
@@ -1836,6 +1842,125 @@ fn negotiated_wheel_rechecks_copy_mode_and_mouse_state_at_dispatch() {
     assert!(fallback.trim().starts_with("1\t"));
     assert_eq!(s.scroll_position(), 2);
     assert!(!compact_screen(&s.run(&["capture-pane", "-p", "-t", "t"])).contains("1b5b3c"));
+}
+
+/// A plain click reaches an application that asked for button reports as
+/// one left press and its release at the cell, byte for byte, in the modes
+/// Claude Code's full-screen view asks for (any-event tracking, SGR). The
+/// list ends with the state the route was decided on.
+#[test]
+fn negotiated_sgr_click_reaches_the_live_application_byte_for_byte() {
+    let s = Server::fixture(
+        "click-sgr",
+        40,
+        8,
+        "sh -c 'printf \"\\033[?1003h\\033[?1006hREADY\\r\\n\"; stty raw -echo; dd bs=1 count=18 2>/dev/null | od -An -tx1; stty sane; sleep 30'",
+    );
+    assert_eq!(s.fmt("#{mouse_any_flag}:#{mouse_sgr_flag}"), "1:1");
+    let cell = terminal_scroll::PointerCell { column: 4, row: 7 };
+    let args = terminal_scroll::click_args("t", cell);
+    let report = s
+        .run_owned(&args)
+        .unwrap_or_else(|error| panic!("SGR click: {error}; args={args:?}"));
+    assert_eq!(report.trim_end(), "0\t1\t1\t0\t40\t8");
+    wait_until("the SGR press and release", || {
+        compact_screen(&s.run(&["capture-pane", "-p", "-t", "t"]))
+            .contains("1b5b3c303b353b384d1b5b3c303b353b386d")
+    });
+}
+
+/// The legacy encodings carry the press as button 0 and the release as
+/// button 3. UTF-8 names cells past 222; X10 cannot, so such a click is sent
+/// nowhere instead of being clamped onto column 222. Each fixture reads
+/// exactly one click, so a stray report would show up as the wrong bytes.
+#[test]
+fn negotiated_legacy_clicks_are_exact_and_never_clamped() {
+    let utf8 = Server::fixture(
+        "click-utf8",
+        400,
+        12,
+        "sh -c 'printf \"\\033[?1000h\\033[?1006hREADY\\r\\n\"; stty raw -echo; dd bs=1 count=14 2>/dev/null | od -An -tx1; stty sane; sleep 30'",
+    );
+    utf8.write_pane("\x1b[?1006l\x1b[?1005h");
+    wait_until("mouse encoding to change before the click", || {
+        utf8.fmt("#{mouse_utf8_flag}:#{mouse_sgr_flag}") == "1:0"
+    });
+    let far = terminal_scroll::PointerCell {
+        column: 300,
+        row: 7,
+    };
+    let report = utf8
+        .run_owned(&terminal_scroll::click_args("t", far))
+        .expect("UTF-8 click");
+    assert_eq!(report.trim_end(), "0\t1\t0\t1\t400\t12");
+    wait_until("the UTF-8 press and release", || {
+        compact_screen(&utf8.run(&["capture-pane", "-p", "-t", "t"]))
+            .contains("1b5b4d20c58d281b5b4d23c58d28")
+    });
+
+    let x10 = Server::fixture(
+        "click-x10",
+        400,
+        12,
+        "sh -c 'printf \"\\033[?1000hREADY\\r\\n\"; stty raw -echo; dd bs=1 count=12 2>/dev/null | od -An -tx1; stty sane; sleep 30'",
+    );
+    assert_eq!(
+        x10.fmt("#{mouse_standard_flag}:#{mouse_utf8_flag}:#{mouse_sgr_flag}"),
+        "1:0:0"
+    );
+    assert!(!terminal_scroll::click_encodable(false, false, far));
+    let report = x10
+        .run_owned(&terminal_scroll::click_args("t", far))
+        .expect("an X10 click past 222");
+    assert_eq!(report.trim_end(), "0\t1\t0\t0\t400\t12");
+    x10.run_owned(&terminal_scroll::click_args(
+        "t",
+        terminal_scroll::PointerCell { column: 4, row: 7 },
+    ))
+    .expect("an X10 click in range");
+    wait_until("only the in-range X10 press and release", || {
+        compact_screen(&x10.run(&["capture-pane", "-p", "-t", "t"]))
+            .contains("1b5b4d2025281b5b4d232528")
+    });
+}
+
+/// Building a click route is not authority to deliver it later. A pane in
+/// copy-mode, or an application that stopped reporting the mouse, takes
+/// nothing from the same list; once it asks again, the next click arrives
+/// whole, which proves the two before it sent no byte.
+#[test]
+fn negotiated_click_rechecks_copy_mode_and_mouse_state_at_dispatch() {
+    let s = Server::fixture(
+        "click-stale",
+        40,
+        8,
+        "sh -c 'printf \"\\033[?1003h\\033[?1006hREADY\\r\\n\"; stty raw -echo; dd bs=1 count=18 2>/dev/null | od -An -tx1; stty sane; sleep 30'",
+    );
+    let args = terminal_scroll::click_args("t", terminal_scroll::PointerCell { column: 3, row: 4 });
+
+    s.run(&["copy-mode", "-t", "t"]);
+    assert_eq!(s.fmt("#{pane_in_mode}"), "1");
+    let copy = s.run_owned(&args).expect("copy-mode takes no click");
+    assert!(copy.starts_with("1\t1\t"), "{copy:?}");
+    s.run(&["send-keys", "-t", "t", "-X", "cancel"]);
+
+    s.write_pane("\x1b[?1003l\x1b[?1006l");
+    wait_until("mouse reporting to turn off", || {
+        s.fmt("#{mouse_any_flag}:#{mouse_sgr_flag}") == "0:0"
+    });
+    let off = s.run_owned(&args).expect("a program without mouse reports");
+    assert!(off.starts_with("0\t0\t0\t"), "{off:?}");
+
+    s.write_pane("\x1b[?1003h\x1b[?1006h");
+    wait_until("mouse reporting to come back", || {
+        s.fmt("#{mouse_any_flag}:#{mouse_sgr_flag}") == "1:1"
+    });
+    let live = s.run_owned(&args).expect("the click it asked for");
+    assert!(live.starts_with("0\t1\t1\t"), "{live:?}");
+    wait_until("exactly the last click", || {
+        compact_screen(&s.run(&["capture-pane", "-p", "-t", "t"]))
+            .contains("1b5b3c303b343b354d1b5b3c303b343b356d")
+    });
 }
 
 /// Scheduled prompts and pty_write inject via `send-keys -l`: the text must

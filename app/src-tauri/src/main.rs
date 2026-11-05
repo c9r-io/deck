@@ -494,6 +494,7 @@ fn main() {
             commands::start_session,
             commands::kill_session,
             terminal::scroll_session,
+            terminal::click_session,
             terminal::scroll_bottom,
             terminal::terminal_search,
             terminal::clear_history,

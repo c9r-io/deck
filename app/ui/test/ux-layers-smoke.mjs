@@ -952,6 +952,143 @@ export async function runUxLayersSmoke() {
       toggleQueuePanel(false);
       return draftBits === 0;
     }), 1, draftBits);
+
+    /* ---------- terminal clicks: a plain click reaches a program that asked for the mouse ----------
+       The shell card's pane runs a stand-in for Claude Code's full-screen
+       view: it turns on any-event tracking with SGR (1003+1006, the modes
+       Claude Code asks for) and prints in hex exactly the next N bytes it
+       receives. Clicks and the drag are AppKit events handed to this window.
+       Every check reads what the program received: a click arrives as one
+       press and its release at its cell; a drag stays Deck's selection; a
+       click on a path opens Deck's link menu; on the plain shell a click is
+       answered `local`. Each stand-in reads exactly one click, so the click
+       that completes it arriving whole proves the gesture before it sent no
+       byte. Each check uses its own column, and only the visible rows are
+       read, so no earlier output can satisfy a later check. */
+    const { panes } = await import('../js/board.js');
+    const { strToB64 } = await import('../js/terminal-bytes.js');
+    const { cancelTerminalSelection } = await import('../js/selection.js');
+    const clickWords = [];
+    const heard = event => { if (event.detail?.session === card.session) clickWords.push(event.detail.outcome); };
+    window.addEventListener('deck-terminal-click', heard);
+    let clickPane = null;
+    const visibleRows = () => {
+      const term = clickPane.term, buffer = term.buffer.active, rows = [];
+      for (let i = buffer.baseY; i < buffer.baseY + term.rows; i++) rows.push(buffer.getLine(i)?.translateToString(true) || '');
+      return rows;
+    };
+    const sgrClick = (col, row) => {
+      const frame = end => [...`\x1b[<0;${col + 1};${row + 1}${end}`].map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+      return frame('M') + frame('m');
+    };
+    const received = hex => visibleRows().join('').replace(/\s+/g, '').includes(hex);
+    const typeLine = text => inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: strToB64(`${text}\r`) });
+    const lineRow = text => visibleRows().findIndex(line => line.trim() === text);
+    // A stand-in that reads exactly `count` bytes; `extra` prints before its marker,
+    // so seeing the marker means the extra lines are on screen too.
+    let running = null;
+    const standIn = async (marker, count, extra = '') => {
+      running = { marker, count };
+      await typeLine(`clear; ${extra}printf '\\033[?1003h\\033[?1006h%s\\r\\n' ${marker}''-READY; stty raw -echo; dd bs=1 count=${count} 2>/dev/null | od -An -tx1; stty sane; printf '\\033[?1003l\\033[?1006l'; echo ${marker}''-DONE`);
+      await until(() => lineRow(`${marker}-READY`) >= 0, 10000);
+    };
+    const finished = marker => until(() => lineRow(`${marker}-DONE`) >= 0, 10000);
+    /* A check that failed midway must not hand its waiting stand-in to the
+       next one: filler bytes complete its read, and Ctrl-U clears whatever
+       of them reached the shell's line. */
+    const release = async () => {
+      const left = running; running = null;
+      if (!left || lineRow(`${left.marker}-DONE`) >= 0) return;
+      await inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: strToB64('x'.repeat(left.count)) });
+      try { await finished(left.marker); } catch (_) { /* reported by the check itself */ }
+      await inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: strToB64('\u0015') });
+    };
+    const at = (col, row) => {
+      const rect = clickPane.body.querySelector('.xterm-screen').getBoundingClientRect();
+      return { x: rect.left + (col + 0.5) * rect.width / clickPane.term.cols, y: rect.top + (row + 0.5) * rect.height / clickPane.term.rows };
+    };
+    const nativeAt = (kind, col, row) => inv('smoke_native_input', { input: { kind, ...at(col, row), viewport: innerHeight } });
+    const click = async (col, row) => { await nativeAt('down', col, row); await nativeAt('up', col, row); };
+    await report('ux-terminal-click', await attempt(async () => {
+      try {
+        await openSession(card.id); await pause(200);
+        await inv('smoke_native_input', { input: { kind: 'activate' } });
+        await until(async () => (await inv('smoke_native_input', { input: { kind: 'state' } }) & 3) === 3, 10000);
+        clickPane = panes.get(card.session);
+        clickPane.fit.fit();
+        await until(async () => {
+          await clickPane.syncSize().catch(() => {});
+          const metrics = await inv('terminal_metrics', { name: card.session });
+          return metrics.pane_cols === clickPane.term.cols && metrics.pane_rows === clickPane.term.rows;
+        }, 8000);
+        const row = clickPane.term.rows - 2;
+        await standIn('CLICKA', sgrClick(30, row).length / 2);
+        clickWords.length = 0;
+        await click(30, row);
+        await until(() => received(sgrClick(30, row)), 8000);
+        await finished('CLICKA');
+        await snapshot('ux-terminal-click-sent');
+        return clickWords.join() === 'sent';
+      } finally { await release(); }
+    }), 1, clickWords.length);
+    await report('ux-terminal-click-drag', await attempt(async () => {
+      try {
+        const row = clickPane.term.rows - 2;
+        await standIn('CLICKB', sgrClick(31, row).length / 2);
+        clickWords.length = 0;
+        // across the marker's text: a drag over empty cells is an empty range
+        const textRow = lineRow('CLICKB-READY');
+        await nativeAt('down', 1, textRow); await nativeAt('drag', 9, textRow); await nativeAt('up', 9, textRow);
+        await until(() => clickPane.selection.hasSelection() && clickPane.selection.isFrozen(), 8000);
+        await snapshot('ux-terminal-click-drag');
+        const quiet = clickWords.length === 0;
+        await cancelTerminalSelection(clickPane);
+        await inv('scroll_bottom', { name: card.session });
+        await until(async () => !(await inv('scroll_session', { name: card.session, lines: 0 })).active, 5000);
+        await click(31, row);
+        await until(() => received(sgrClick(31, row)), 8000);
+        await finished('CLICKB');
+        return quiet && clickWords.join() === 'sent';
+      } finally { await release(); }
+    }), 1, clickWords.length);
+    /* The press on a path is the link's: Deck finds its link under the cell,
+       the click offers nothing, and the stand-in's next click arriving whole
+       proves no byte left. Whether the link's menu opens belongs to the link
+       smokes: here an injected AppKit press on a link is classified as a drag
+       (real presses open it: 241 menus of 251 presses in a production log),
+       so it is reported in `b` (+10), never required. */
+    let menuOpened = false;
+    await report('ux-terminal-click-link', await attempt(async () => {
+      try {
+        const row = clickPane.term.rows - 2; const path = '/tmp/deck-click-probe.txt'; const menu = $('ctx');
+        await standIn('CLICKC', sgrClick(32, row).length / 2, `printf '%s\\r\\n' ${path}; `);
+        const pathRow = lineRow(path);
+        if (pathRow < 0) return false;
+        const onLink = clickPane.linkUnder?.({ clientX: at(2, pathRow).x, clientY: at(2, pathRow).y }) === true;
+        clickWords.length = 0;
+        await click(2, pathRow);
+        await pause(800);
+        menuOpened = menu.style.display === 'block';
+        const quiet = clickWords.length === 0;
+        await snapshot('ux-terminal-click-link');
+        menu.style.display = 'none';
+        await click(32, row);
+        await until(() => received(sgrClick(32, row)), 8000);
+        await finished('CLICKC');
+        return onLink && quiet && clickWords.join() === 'sent';
+      } finally { $('ctx').style.display = 'none'; await release(); }
+    }), 1, clickWords.length + (menuOpened ? 10 : 0));
+    await report('ux-terminal-click-shell', await attempt(async () => {
+      clickWords.length = 0;
+      await typeLine('clear');
+      await pause(300);
+      await click(33, clickPane.term.rows - 2);
+      await until(() => clickWords.length === 1, 5000);
+      await typeLine("echo SHELL''-CLEAN");
+      await until(() => lineRow('SHELL-CLEAN') >= 0, 5000);
+      return clickWords.join() === 'local' && !visibleRows().join('\n').includes('[<');
+    }), 1, clickWords.length);
+    window.removeEventListener('deck-terminal-click', heard);
   } catch (_) {
     await snapshot('ux-layers-exception');
     await report('ux-exception', false);

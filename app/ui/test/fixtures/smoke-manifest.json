@@ -204,6 +204,10 @@
         "ux-textareas-drafts": {},
         "ux-toast-layer": {},
         "ux-title-draft": {},
+        "ux-terminal-click": {},
+        "ux-terminal-click-drag": {},
+        "ux-terminal-click-link": {},
+        "ux-terminal-click-shell": {},
         "ux-exception": {"failureOnly": true}
       }
     },

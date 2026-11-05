@@ -1,9 +1,15 @@
-//! Pure tmux command-list construction for frame-paced terminal scrolling.
+//! Pure tmux command-list construction for frame-paced terminal scrolling
+//! and the forwarded click.
 //!
 //! Ordinary wheel input is negotiated at the pane at dispatch time: copy-mode
 //! keeps viewport ownership, a live mouse-reporting application receives its
-//! negotiated protocol, and every other pane uses Deck's history path. Mouse
-//! frames are fixed hexadecimal argv, never literal user-controlled strings.
+//! negotiated protocol, and every other pane uses Deck's history path. A plain
+//! click (`click_args`) is negotiated the same way with no history branch: an
+//! application outside copy-mode that asked for button reports receives one
+//! left press and its release at the clicked cell, and every other pane
+//! receives nothing. A cell a legacy encoding cannot name is never sent
+//! clamped to another cell. Mouse frames are fixed hexadecimal argv, never
+//! literal user-controlled strings.
 
 pub(crate) const CURSOR_ROW_OPTION: &str = "@deck-scroll-cursor-row";
 
@@ -25,15 +31,17 @@ pub(crate) fn cursor_following_args(target: &str, lines: i32) -> Vec<String> {
     build_args(target, lines, true)
 }
 
-/// A pointer cell supplied by the frontend, clamped against the pane geometry
-/// read while terminal's resize/selection operation lock is held.
+/// A zero-based pointer cell supplied by the frontend. The wheel clamps it
+/// against the pane geometry read while terminal's resize/selection
+/// operation lock is held; a click on a cell outside that geometry is
+/// refused instead (`terminal::click_session`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct WheelCell {
+pub(crate) struct PointerCell {
     pub(crate) column: u32,
     pub(crate) row: u32,
 }
 
-impl WheelCell {
+impl PointerCell {
     pub(crate) fn clamped(column: u32, row: u32, pane_width: u32, pane_height: u32) -> Self {
         Self {
             column: column.min(pane_width.saturating_sub(1)),
@@ -48,7 +56,7 @@ impl WheelCell {
 /// before the bytes are sent; if the pane no longer reports mouse tracking,
 /// that execution takes the history branch. An application that exits without
 /// resetting its modes leaves the same terminal state as any other client.
-pub(crate) fn negotiated_args(target: &str, lines: i32, cell: WheelCell) -> Vec<String> {
+pub(crate) fn negotiated_args(target: &str, lines: i32, cell: PointerCell) -> Vec<String> {
     if lines == 0 {
         return build_args(target, lines, true);
     }
@@ -75,6 +83,74 @@ pub(crate) fn negotiated_args(target: &str, lines: i32, cell: WheelCell) -> Vec<
         target.into(),
         scroll_report(),
     ]
+}
+
+/// The pane state a click is decided on, read before the route and printed
+/// again at the end of `click_args`: copy-mode, whether the application
+/// asked for button reports, its two encoding flags, and the pane size.
+pub(crate) const CLICK_PROBE: &str = "#{pane_in_mode}\t#{||:#{mouse_any_flag},#{mouse_button_flag},#{mouse_standard_flag}}\t#{mouse_sgr_flag}\t#{mouse_utf8_flag}\t#{pane_width}\t#{pane_height}";
+
+/// The route condition: "1" for an application outside copy-mode that asked
+/// for button reports, else "0".
+const CLICK_ROUTE: &str =
+    "#{?pane_in_mode,0,#{||:#{mouse_any_flag},#{mouse_button_flag},#{mouse_standard_flag}}}";
+
+/// Whether the negotiated encoding can name `cell`: SGR any cell, UTF-8
+/// cells up to 2014, X10 cells up to 222 (one byte of `cell + 33`).
+pub(crate) fn click_encodable(sgr: bool, utf8: bool, cell: PointerCell) -> bool {
+    let limit = if sgr {
+        u32::MAX
+    } else if utf8 {
+        2014
+    } else {
+        222
+    };
+    cell.column <= limit && cell.row <= limit
+}
+
+/// Route one plain click atomically inside tmux. The condition is evaluated
+/// by the server immediately before the bytes are sent, as the wheel's is: a
+/// pane in copy-mode, an application that no longer reports the mouse, or an
+/// encoding that cannot name the cell takes nothing. The list ends with
+/// `CLICK_PROBE`; nothing else runs inside one list, so the caller reads the
+/// state the route was decided on.
+pub(crate) fn click_args(target: &str, cell: PointerCell) -> Vec<String> {
+    let sgr = click_command(target, cell, MouseEncoding::Sgr);
+    let utf8 = click_command(target, cell, MouseEncoding::Utf8);
+    let x10 = click_command(target, cell, MouseEncoding::X10);
+    let legacy = nested_if(target, "#{mouse_utf8_flag}", &utf8, &x10);
+    let negotiated = nested_if(target, "#{mouse_sgr_flag}", &sgr, &legacy);
+    vec![
+        "if-shell".into(),
+        "-F".into(),
+        "-t".into(),
+        target.into(),
+        CLICK_ROUTE.into(),
+        negotiated,
+        ";".into(),
+        "display-message".into(),
+        "-p".into(),
+        "-t".into(),
+        target.into(),
+        CLICK_PROBE.into(),
+    ]
+}
+
+/// One left press and its release at `cell`, or no command when the
+/// encoding cannot name the cell.
+fn click_command(target: &str, cell: PointerCell, encoding: MouseEncoding) -> String {
+    let (sgr, utf8) = match encoding {
+        MouseEncoding::Sgr => (true, false),
+        MouseEncoding::Utf8 => (false, true),
+        MouseEncoding::X10 => (false, false),
+    };
+    if !click_encodable(sgr, utf8, cell) {
+        return String::new();
+    }
+    let mut frame = mouse_frame(0, false, cell, encoding);
+    frame.extend(mouse_frame(0, true, cell, encoding));
+    let hex: Vec<String> = frame.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("send-keys -t {target} -H {}", hex.join(" "))
 }
 
 #[derive(Clone, Copy)]
@@ -129,18 +205,36 @@ fn scroll_report() -> String {
     )
 }
 
-fn mouse_command(target: &str, lines: i32, cell: WheelCell, encoding: MouseEncoding) -> String {
+fn mouse_command(target: &str, lines: i32, cell: PointerCell, encoding: MouseEncoding) -> String {
     let button = if lines < 0 { 64 } else { 65 };
     let count = lines.unsigned_abs().clamp(1, 60);
-    let frame = match encoding {
+    let frame = mouse_frame(button, false, cell, encoding);
+    let hex: Vec<String> = frame
+        .iter()
+        .cycle()
+        .take(frame.len() * count as usize)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("send-keys -t {target} -H {}", hex.join(" "))
+}
+
+/// One mouse report at `cell` in an encoding. `button` is the protocol's
+/// button number (0 the left button, 64/65 the wheel). A release keeps the
+/// button in SGR (`m`); the legacy encodings cannot name it and send 3. The
+/// legacy coordinates are clamped to what one report can carry, which only
+/// the wheel relies on (`click_encodable` keeps clicks inside it).
+fn mouse_frame(button: u8, release: bool, cell: PointerCell, encoding: MouseEncoding) -> Vec<u8> {
+    let legacy_button = 32 + if release { 3 } else { button };
+    match encoding {
         MouseEncoding::Sgr => format!(
-            "\x1b[<{button};{};{}M",
+            "\x1b[<{button};{};{}{}",
             cell.column.saturating_add(1),
-            cell.row.saturating_add(1)
+            cell.row.saturating_add(1),
+            if release { 'm' } else { 'M' }
         )
         .into_bytes(),
         MouseEncoding::Utf8 => {
-            let mut bytes = vec![0x1b, b'[', b'M', button + 32];
+            let mut bytes = vec![0x1b, b'[', b'M', legacy_button];
             push_utf8_codepoint(&mut bytes, cell.column.min(2014).saturating_add(33));
             push_utf8_codepoint(&mut bytes, cell.row.min(2014).saturating_add(33));
             bytes
@@ -149,18 +243,11 @@ fn mouse_command(target: &str, lines: i32, cell: WheelCell, encoding: MouseEncod
             0x1b,
             b'[',
             b'M',
-            button + 32,
+            legacy_button,
             cell.column.min(222) as u8 + 33,
             cell.row.min(222) as u8 + 33,
         ],
-    };
-    let hex: Vec<String> = frame
-        .iter()
-        .cycle()
-        .take(frame.len() * count as usize)
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    format!("send-keys -t {target} -H {}", hex.join(" "))
+    }
 }
 
 fn push_utf8_codepoint(bytes: &mut Vec<u8>, value: u32) {
@@ -293,7 +380,10 @@ fn push_cursor_follow(args: &mut Vec<String>, target: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{args, cursor_following_args, negotiated_args, WheelCell, CURSOR_ROW_OPTION};
+    use super::{
+        args, click_args, click_encodable, cursor_following_args, negotiated_args, PointerCell,
+        CLICK_PROBE, CURSOR_ROW_OPTION,
+    };
 
     #[test]
     fn scroll_is_one_bounded_tmux_command_list() {
@@ -339,7 +429,7 @@ mod tests {
 
     #[test]
     fn negotiated_wheel_is_bounded_hex_and_keeps_history_fallbacks() {
-        let args = negotiated_args("=deck-card:", -999, WheelCell { column: 4, row: 7 });
+        let args = negotiated_args("=deck-card:", -999, PointerCell { column: 4, row: 7 });
         let joined = args.join(" ");
         assert!(joined.contains("#{pane_in_mode}"));
         assert!(joined.contains("#{mouse_any_flag}"));
@@ -352,14 +442,105 @@ mod tests {
         assert!(joined.matches("1b 5b 4d 60 25 28").count() >= 60);
         assert!(joined.contains("scroll-up"));
 
-        let idle = negotiated_args("=deck-card:", 0, WheelCell { column: 0, row: 0 });
+        let idle = negotiated_args("=deck-card:", 0, PointerCell { column: 0, row: 0 });
         assert!(!idle.join(" ").contains("send-keys -H"));
         assert_eq!(
-            WheelCell::clamped(u32::MAX, u32::MAX, 80, 24),
-            WheelCell {
+            PointerCell::clamped(u32::MAX, u32::MAX, 80, 24),
+            PointerCell {
                 column: 79,
                 row: 23
             }
         );
+    }
+
+    #[test]
+    fn a_click_is_one_press_and_its_release_in_each_encoding() {
+        let args = click_args("=deck-card:", PointerCell { column: 4, row: 7 });
+        assert_eq!(args[0], "if-shell");
+        assert_eq!(args[1], "-F");
+        assert!(args[4].contains("#{?pane_in_mode,0,"));
+        assert!(args[4].contains("#{mouse_any_flag}"));
+        assert_eq!(args.iter().filter(|arg| arg.as_str() == ";").count(), 1);
+        assert_eq!(args.last().map(String::as_str), Some(CLICK_PROBE));
+        let joined = args.join(" ");
+        // SGR: `ESC[<0;5;8M` then `ESC[<0;5;8m`, once each
+        assert_eq!(
+            joined
+                .matches("1b 5b 3c 30 3b 35 3b 38 4d 1b 5b 3c 30 3b 35 3b 38 6d")
+                .count(),
+            1
+        );
+        // UTF-8 and X10: press button 0 (0x20), release button 3 (0x23)
+        assert_eq!(
+            joined
+                .matches("1b 5b 4d 20 25 28 1b 5b 4d 23 25 28")
+                .count(),
+            2
+        );
+        assert!(!joined.contains("send-keys -l"));
+        assert!(!joined.contains("scroll"));
+        assert!(!joined.contains("copy-mode"));
+
+        // Past 222 X10 has no byte for the cell: that branch sends nothing,
+        // UTF-8 still names it, and SGR names any cell.
+        let wide = click_args(
+            "=deck-card:",
+            PointerCell {
+                column: 300,
+                row: 7,
+            },
+        )
+        .join(" ");
+        assert!(wide.contains("1b 5b 4d 20 c5 8d 28 1b 5b 4d 23 c5 8d 28"));
+        assert_eq!(wide.matches("send-keys").count(), 2);
+        assert!(click_encodable(
+            true,
+            false,
+            PointerCell {
+                column: 5000,
+                row: 5000
+            }
+        ));
+        assert!(click_encodable(
+            false,
+            true,
+            PointerCell {
+                column: 2014,
+                row: 0
+            }
+        ));
+        assert!(!click_encodable(
+            false,
+            true,
+            PointerCell {
+                column: 2015,
+                row: 0
+            }
+        ));
+        assert!(click_encodable(
+            false,
+            false,
+            PointerCell {
+                column: 222,
+                row: 222
+            }
+        ));
+        assert!(!click_encodable(
+            false,
+            false,
+            PointerCell {
+                column: 0,
+                row: 223
+            }
+        ));
+        let far = click_args(
+            "=deck-card:",
+            PointerCell {
+                column: 3000,
+                row: 7,
+            },
+        )
+        .join(" ");
+        assert_eq!(far.matches("send-keys").count(), 1, "SGR alone can name it");
     }
 }

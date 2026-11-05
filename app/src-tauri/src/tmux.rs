@@ -45,8 +45,9 @@
 //! `external` would still base64 every selection snapshot through the PTY
 //! into the webview for nothing.
 //! Mouse negotiation stays enabled for pane applications. Deck keeps local
-//! pointer selection in xterm and routes wheel events using the pane's current
-//! mouse protocol; the outer tmux client's mouse mode is not ownership evidence.
+//! pointer selection in xterm and routes wheel events and plain clicks using
+//! the pane's current mouse protocol (`terminal_scroll.rs`); the outer tmux
+//! client's mouse mode is not ownership evidence.
 
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;

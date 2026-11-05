@@ -1820,6 +1820,19 @@ edit survives a click away and a re-render, marked unsaved, and is saved by
 ⌘↵ alone; a template step's edit and a queued row's edit are not saved by a
 click away and stay open (the row's through a re-render). Snapshots
 `ux-textareas-*`.
+`ux-terminal-click*` (four checks) run a stand-in for Claude Code's
+full-screen view in that card's pane: it turns on any-event mouse tracking
+with SGR (1003+1006) and prints in hex exactly the next click's bytes. The
+gestures are AppKit events. `ux-terminal-click`: a click arrives as one
+press and its release at its cell, answered `sent`. `-drag`: a drag becomes
+Deck's selection and offers nothing. `-link`: Deck finds its link under a
+printed path and a click there offers nothing (whether the menu opens is the
+link smokes' concern: an injected AppKit press on a link is classified as a
+drag here, so `b` adds 10 when it opened). `-shell`: on the plain shell a
+click is answered `local` and nothing is typed. Each stand-in reads exactly
+one click, so the click that completes it arriving whole proves the gesture
+before it sent no byte. `b` is the number of click answers seen. Snapshots
+`ux-terminal-click-*`.
 Snapshots land in `<data dir>/evidence/`; `ux-m-*` are measurements.
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-ux.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-ux-UNIQUE DECK_SMOKE_WKWEBVIEW=ux-layers app/run.sh`,

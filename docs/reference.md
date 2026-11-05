@@ -128,7 +128,11 @@ Only ⌘C writes the macOS clipboard: a program running in a pane cannot set
 or read it through the terminal (OSC 52 is off at deck's tmux server).
 Drag directly over terminal cells; holding at either vertical
 edge continuously extends the same selection through tmux history, including
-reverse shrinking across screens. A path can open in the editor, reveal in
+reverse shrinking across screens. A plain click goes to a program that asked for the
+mouse, as the wheel does (Claude Code's full-screen "Jump to bottom", vim with
+the mouse on): a shell gets no bytes, and a click on a link, a double-click,
+a modified click, the click that clears a selection or focuses another pane
+stays Deck's. Press-and-hold drags and hover are not passed on. A path can open in the editor, reveal in
 Finder, open its parent in the configured editor, or start a new session in
 that parent directory.
 

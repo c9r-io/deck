@@ -291,6 +291,10 @@ const SMOKE_CHECKS: &[&str] = &[
     "ux-textareas-drafts",
     "ux-toast-layer",
     "ux-title-draft",
+    "ux-terminal-click",
+    "ux-terminal-click-drag",
+    "ux-terminal-click-link",
+    "ux-terminal-click-shell",
     "ux-exception",
     "reminder-real-due",
     "reminder-phase-ready",
@@ -1119,6 +1123,12 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     ),
     ("terminal-selection", DetailPolicy::Closed(SELECTION_EVENTS)),
     ("terminal-link", DetailPolicy::Closed(LINK_EVENTS)),
+    // What a click offered to the pane's program did (terminal-mouse.js,
+    // terminal.rs `click_session`); `local` is logged with --debug-logging.
+    (
+        "terminal-click",
+        DetailPolicy::Closed(&["sent", "local", "stale", "refused", "failed"]),
+    ),
     (
         "clipboard-write",
         DetailPolicy::Closed(&["pbcopy-failed", "web-failed", "web-unavailable"]),
@@ -1590,6 +1600,16 @@ mod tests {
                 for label in ["selection-missing", "snapshot-failed"] {
                     assert!(text.contains(label), "copy failure code {label} vanished");
                     pairs.push((file.clone(), "terminal-copy".into(), label.into()));
+                }
+            }
+            // A click's outcome is one closed word the forwarder logs.
+            if file == "terminal-mouse.js" {
+                for label in ["sent", "local", "stale", "refused", "failed"] {
+                    assert!(
+                        text.contains(&format!("'{label}'")),
+                        "click outcome {label} vanished"
+                    );
+                    pairs.push((file.clone(), "terminal-click".into(), label.into()));
                 }
             }
         }

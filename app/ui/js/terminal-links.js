@@ -113,6 +113,11 @@ export function wireTerminalLinks(pane, { openLink, logEvent }) {
   };
   // An observational range query must not mutate the live hover ownership.
   pane.linkProvider = { provideLinks: (lineNo, cb) => cb(scan(lineNo)) };
+  /* A click here belongs to a link: Deck's own range (the same synchronous
+     lookup a press makes) or a hovered link of xterm's OSC 8 provider. The
+     click forwarder (selection.js) leaves it to the link. */
+  pane.linkUnder = e => !!host.querySelector('.xterm-screen')?.classList.contains('xterm-cursor-pointer')
+    || !!at(cellAt(e));
   const registered = term.registerLinkProvider(provider);
   host.addEventListener('mousedown', down, true);
   document.addEventListener('mousemove', move, true);

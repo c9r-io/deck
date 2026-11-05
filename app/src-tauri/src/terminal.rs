@@ -16,6 +16,15 @@
 //! tmux conditional rechecks live flags so an exited app is not sent a frame
 //! selected from stale probe state.
 //!
+//! A plain click (`click_session`) is the frontend's offer of a physical
+//! single click that Deck itself did not use (selection.js decides which).
+//! It reaches the pane only as the wheel's frames do: an application outside
+//! copy-mode that asked for button reports gets one press and its release in
+//! its encoding, through the same MCP fence; any other pane gets nothing. A
+//! cell is never clamped: a frontend grid that is not the pane's size is
+//! refused (`stale`), since the click could land on another cell. The answer
+//! is one closed word, read from the state tmux decided the route on.
+//!
 //! A drag keeps tmux selection-FREE: tmux repaints the whole selected region
 //! after every motion repetition, so re-placing the copy cursor from
 //! `top-line` on each pointer move cost ~19 KB of PTY traffic per move on a
@@ -114,7 +123,7 @@ pub(crate) fn scroll_session(
                     crate::terminal_scroll::negotiated_args(
                         &t,
                         lines,
-                        crate::terminal_scroll::WheelCell::clamped(column, row, width, height),
+                        crate::terminal_scroll::PointerCell::clamped(column, row, width, height),
                     )
                 } else {
                     crate::terminal_scroll::cursor_following_args(&t, lines)
@@ -153,6 +162,133 @@ fn parse_wheel_probe(raw: &str) -> Result<(bool, bool, u32, u32), DeckError> {
 
 fn wheel_probe_requires_input_fence(in_mode: bool, mouse_active: bool) -> bool {
     mouse_active && !in_mode
+}
+
+/// What one offered click did. `sent`: the pane's program received a press
+/// and its release at the cell. `local`: nothing was sent (the program takes
+/// no mouse reports, the pane is in copy-mode, or the encoding cannot name
+/// the cell). `stale`: the frontend's grid is not the pane's size. `refused`:
+/// MCP holds this terminal's input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum TerminalClickOutcome {
+    Sent,
+    Local,
+    Stale,
+    Refused,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TerminalClickResult {
+    outcome: TerminalClickOutcome,
+}
+
+/// The pane state a click is decided on (`terminal_scroll::CLICK_PROBE`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ClickProbe {
+    in_mode: bool,
+    mouse: bool,
+    sgr: bool,
+    utf8: bool,
+    width: u32,
+    height: u32,
+}
+
+impl ClickProbe {
+    /// The program takes a click at `cell`: outside copy-mode, asking for
+    /// button reports, in an encoding that can name the cell.
+    fn takes(self, cell: crate::terminal_scroll::PointerCell) -> bool {
+        !self.in_mode
+            && self.mouse
+            && crate::terminal_scroll::click_encodable(self.sgr, self.utf8, cell)
+    }
+}
+
+fn parse_click_probe(raw: &str) -> Result<ClickProbe, DeckError> {
+    let invalid = || DeckError::new(ErrorKind::Other, "click-probe-invalid");
+    let fields: Vec<&str> = raw.trim_end().split('\t').collect();
+    let [in_mode, mouse, sgr, utf8, width, height] = fields[..] else {
+        return Err(invalid());
+    };
+    let size = |value: &str| value.parse::<u32>().ok().filter(|value| *value > 0);
+    Ok(ClickProbe {
+        in_mode: in_mode == "1",
+        mouse: mouse == "1",
+        sgr: sgr == "1",
+        utf8: utf8 == "1",
+        width: size(width).ok_or_else(invalid)?,
+        height: size(height).ok_or_else(invalid)?,
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ClickPlan {
+    Local,
+    Stale,
+    Send,
+}
+
+/// Decided before any byte is sent. A pane whose program takes no click is
+/// `Local` whatever the grid says; a program that does take one gets it
+/// only on the cell the frontend placed against the pane's own size.
+fn click_plan(
+    probe: ClickProbe,
+    grid: (u32, u32),
+    cell: crate::terminal_scroll::PointerCell,
+) -> ClickPlan {
+    if probe.in_mode || !probe.mouse {
+        return ClickPlan::Local;
+    }
+    if grid != (probe.width, probe.height) || cell.column >= probe.width || cell.row >= probe.height
+    {
+        return ClickPlan::Stale;
+    }
+    if probe.takes(cell) {
+        ClickPlan::Send
+    } else {
+        ClickPlan::Local
+    }
+}
+
+/// Offer one physical click to the pane's program (see the header). `column`
+/// and `row` are zero-based, placed against the frontend grid `cols` × `rows`.
+#[tauri::command]
+pub(crate) fn click_session(
+    name: String,
+    column: u32,
+    row: u32,
+    cols: u32,
+    rows: u32,
+) -> Result<TerminalClickResult, DeckError> {
+    let _operation = terminal_selection_operation_lock().lock_or_recover();
+    validate_session_name(&name)?;
+    let t = pane_target(&name);
+    let probe = parse_click_probe(&tmux_owned(&[
+        "display-message".into(),
+        "-p".into(),
+        "-t".into(),
+        t.clone(),
+        crate::terminal_scroll::CLICK_PROBE.into(),
+    ])?)?;
+    let cell = crate::terminal_scroll::PointerCell { column, row };
+    let outcome = match click_plan(probe, (cols, rows), cell) {
+        ClickPlan::Local => TerminalClickOutcome::Local,
+        ClickPlan::Stale => TerminalClickOutcome::Stale,
+        // A click into the program is terminal input: the same MCP ownership
+        // fence as keyboard, paste and the wheel, failing closed.
+        ClickPlan::Send if crate::mcp::guard_terminal_input(&name).is_err() => {
+            TerminalClickOutcome::Refused
+        }
+        ClickPlan::Send => {
+            let after = tmux_owned(&crate::terminal_scroll::click_args(&t, cell))?;
+            if parse_click_probe(&after)?.takes(cell) {
+                TerminalClickOutcome::Sent
+            } else {
+                TerminalClickOutcome::Local
+            }
+        }
+    };
+    Ok(TerminalClickResult { outcome })
 }
 
 /// Leave copy-mode and return to the live view (typing, the scrollback
@@ -1372,6 +1508,79 @@ mod tests {
                 "scroll-geometry-invalid"
             );
         }
+    }
+
+    #[test]
+    fn a_click_goes_only_to_a_mouse_program_on_the_frontend_grid() {
+        use crate::terminal_scroll::PointerCell;
+        let probe = parse_click_probe("0\t1\t1\t0\t80\t24\n").unwrap();
+        assert_eq!(
+            probe,
+            ClickProbe {
+                in_mode: false,
+                mouse: true,
+                sgr: true,
+                utf8: false,
+                width: 80,
+                height: 24
+            }
+        );
+        for invalid in [
+            "",
+            "0\t1\t1\t0\t80",
+            "0\t1\t1\t0\t0\t24",
+            "0\t1\t1\t0\t80\tx",
+        ] {
+            assert_eq!(
+                parse_click_probe(invalid).unwrap_err(),
+                "click-probe-invalid"
+            );
+        }
+        let cell = PointerCell { column: 4, row: 7 };
+        assert_eq!(click_plan(probe, (80, 24), cell), ClickPlan::Send);
+        // nothing to send: no mouse program, or Deck's history view
+        let shell = ClickProbe {
+            mouse: false,
+            ..probe
+        };
+        assert_eq!(click_plan(shell, (79, 24), cell), ClickPlan::Local);
+        let history = ClickProbe {
+            in_mode: true,
+            ..probe
+        };
+        assert_eq!(click_plan(history, (80, 24), cell), ClickPlan::Local);
+        // a grid that is not the pane's is never clamped onto it
+        assert_eq!(click_plan(probe, (79, 24), cell), ClickPlan::Stale);
+        assert_eq!(click_plan(probe, (80, 23), cell), ClickPlan::Stale);
+        let outside = PointerCell { column: 80, row: 7 };
+        assert_eq!(click_plan(probe, (80, 24), outside), ClickPlan::Stale);
+        // X10 cannot name a cell past 222; SGR and UTF-8 can
+        let wide = ClickProbe {
+            width: 400,
+            ..probe
+        };
+        let far = PointerCell {
+            column: 300,
+            row: 7,
+        };
+        assert_eq!(click_plan(wide, (400, 24), far), ClickPlan::Send);
+        let utf8 = ClickProbe {
+            sgr: false,
+            utf8: true,
+            ..wide
+        };
+        assert_eq!(click_plan(utf8, (400, 24), far), ClickPlan::Send);
+        let x10 = ClickProbe { sgr: false, ..wide };
+        assert_eq!(click_plan(x10, (400, 24), far), ClickPlan::Local);
+        assert!(x10.takes(cell));
+        assert!(!x10.takes(far));
+        assert_eq!(
+            serde_json::to_string(&TerminalClickResult {
+                outcome: TerminalClickOutcome::Refused
+            })
+            .unwrap(),
+            r#"{"outcome":"refused"}"#
+        );
     }
 
     #[test]
