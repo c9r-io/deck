@@ -8,7 +8,10 @@
 //! parent, physical footprint, controlling tty, foreground process group and
 //! argv[0]. No command lines, environments or paths beyond argv[0]'s
 //! basename ever leave this module: `orphans_running` compares a full
-//! command line here and hands back only pids.
+//! command line here and hands back only pids. Every scan is of the
+//! kernel's WHOLE process list (`list_pids`): a list cut short loses the
+//! oldest processes first, and those are the pane shells and agents that
+//! have run longest.
 //!
 //! One narrow, approved exception serves the re-entry transaction
 //! (`agent_reentry`): `qualify_client` and `shell_facts` read ONE exact
@@ -120,26 +123,44 @@ pub(crate) fn process_start(_pid: u32) -> Option<(u64, u32)> {
     None
 }
 
+/// Every pid the kernel lists. `proc_listallpids` answers a COUNT of pids,
+/// not bytes. The kernel writes the newest process first and stops when the
+/// buffer is full, so a short buffer silently drops the OLDEST processes —
+/// the long-lived pane shells and agents every lookup here is for.
 #[cfg(target_os = "macos")]
 fn list_pids() -> Vec<libc::pid_t> {
-    use std::ffi::c_void;
-    use std::ptr::null_mut;
-    // SAFETY: a null buffer asks libproc for the byte count only.
-    let bytes = unsafe { libc::proc_listallpids(null_mut::<c_void>(), 0) };
-    if bytes <= 0 {
-        return Vec::new();
+    read_pids(|buffer| {
+        let capacity =
+            libc::c_int::try_from(std::mem::size_of_val(buffer)).unwrap_or(libc::c_int::MAX);
+        // SAFETY: `capacity` is the byte size of `buffer`, which libproc
+        // fills with at most that many bytes of pids.
+        unsafe { libc::proc_listallpids(buffer.as_mut_ptr().cast(), capacity) }
+    })
+}
+
+/// The pid space is 99,999 wide: no list is longer.
+#[cfg(target_os = "macos")]
+const PID_SLOTS_MAX: usize = 1 << 17;
+
+/// Read a pid list through `list` (`proc_listallpids` semantics: writes at
+/// most `buffer.len()` pids, newest first, and answers how many it wrote, or
+/// a negative number). A buffer the answer filled may have been cut, so it
+/// is read again twice as large.
+#[cfg(target_os = "macos")]
+fn read_pids(mut list: impl FnMut(&mut [libc::pid_t]) -> libc::c_int) -> Vec<libc::pid_t> {
+    let mut slots = 4096;
+    loop {
+        let mut pids = vec![0 as libc::pid_t; slots];
+        let Ok(filled) = usize::try_from(list(&mut pids)) else {
+            return Vec::new();
+        };
+        if filled < slots || slots >= PID_SLOTS_MAX {
+            pids.truncate(filled);
+            pids.retain(|pid| *pid > 0);
+            return pids;
+        }
+        slots = (slots * 2).min(PID_SLOTS_MAX);
     }
-    let mut pids = vec![0 as libc::pid_t; bytes as usize / std::mem::size_of::<libc::pid_t>() + 64];
-    let capacity = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
-    // SAFETY: the buffer is sized from the count above plus slack, and the
-    // byte capacity passed matches the allocation.
-    let filled = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast::<c_void>(), capacity) };
-    if filled <= 0 {
-        return Vec::new();
-    }
-    pids.truncate(filled as usize);
-    pids.retain(|pid| *pid > 0);
-    pids
 }
 
 #[cfg(target_os = "macos")]
@@ -2191,6 +2212,61 @@ mod tests {
         assert_eq!(super::ancestry_in(&table, me, 1), vec![me]);
         assert!(super::ancestry_in(&table, 0, 32).is_empty());
         assert!(super::ancestry_in(&table, u32::MAX - 1, 32).is_empty());
+    }
+
+    /// launchd is the oldest live process, so the kernel writes its pid
+    /// LAST: a list cut short loses it first. (Its facts are not readable
+    /// by this user, so it is the listing that is asked, not the table.)
+    #[test]
+    fn the_kernel_list_reaches_the_oldest_process() {
+        let pids = super::list_pids();
+        assert!(
+            pids.contains(&1),
+            "launchd missing from {} pids",
+            pids.len()
+        );
+        let me = libc::pid_t::try_from(std::process::id()).expect("a pid");
+        assert!(pids.contains(&me));
+    }
+
+    /// A stand-in for `proc_listallpids` over `all` (newest first): writes
+    /// what fits and answers how many it wrote.
+    fn kernel(all: &[libc::pid_t], reads: &mut usize, buffer: &mut [libc::pid_t]) -> libc::c_int {
+        *reads += 1;
+        let n = all.len().min(buffer.len());
+        buffer[..n].copy_from_slice(&all[..n]);
+        libc::c_int::try_from(n).expect("small")
+    }
+
+    #[test]
+    fn a_full_buffer_is_read_again_until_the_oldest_pid_fits() {
+        let all: Vec<libc::pid_t> = (0..=10_000).rev().collect();
+        let mut reads = 0;
+        let pids = super::read_pids(|buffer| kernel(&all, &mut reads, buffer));
+        assert_eq!(pids.len(), 10_000, "every pid but the kernel's own 0");
+        assert_eq!(pids.first(), Some(&10_000));
+        assert_eq!(pids.last(), Some(&1));
+        assert_eq!(reads, 3, "4096 and 8192 were full; 16384 was not");
+
+        let few: Vec<libc::pid_t> = (1..=300).rev().collect();
+        let mut reads = 0;
+        assert_eq!(super::read_pids(|b| kernel(&few, &mut reads, b)), few);
+        assert_eq!(reads, 1);
+    }
+
+    #[test]
+    fn a_failed_or_endless_answer_ends_the_read() {
+        assert!(super::read_pids(|_| -1).is_empty());
+        assert!(super::read_pids(|_| 0).is_empty());
+        // an answer that fills every buffer stops at the size of the pid space
+        let mut reads = 0;
+        let pids = super::read_pids(|buffer| {
+            reads += 1;
+            buffer.fill(7);
+            libc::c_int::try_from(buffer.len()).expect("small")
+        });
+        assert_eq!(pids.len(), super::PID_SLOTS_MAX);
+        assert_eq!(reads, 6);
     }
 
     /// A process without a controlling terminal (any user agent daemon)
