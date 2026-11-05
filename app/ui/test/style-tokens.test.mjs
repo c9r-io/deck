@@ -54,6 +54,18 @@ test('a text block aligned with labelled controls is indented by its form\'s lab
   for (const form of ['#pdf-box', '#tpl-form', '#mcp-auth-box', '#auto-editor']) {
     assert.match(css, new RegExp(`^${form} \\{ --label-w: `, 'm'), form);
   }
+  // at 140 % and up labels sit above their controls, so each indented block
+  // starts at the left edge there too; only the rule editor keeps its label
+  // column at every size
+  const clean = selector => selector.trim().replace(/\s+/g, ' ');
+  const indented = [...body.matchAll(/([^{}]+)\{[^{}]*margin(?:-left)?:[^;{}]*calc\(var\(--label-w\) \+ var\(--sp-10\)\)/g)]
+    .map(found => clean(found[1]));
+  const flush = [...body.matchAll(/([^{}]+)\{ margin-left: 0; \}/g)]
+    .flatMap(found => found[1].split(',').map(clean))
+    .filter(selector => selector.startsWith('html.font-scale-large '))
+    .map(selector => selector.slice('html.font-scale-large '.length));
+  assert.deepEqual(indented.filter(selector => !selector.startsWith('#auto-editor ') && !flush.includes(selector)), []);
+  assert.match(css, /^#auto-editor \.set-row label \{ width: var\(--label-w\);/m);
 });
 
 test('inline styles in index.html and the modules use the scales too', () => {
@@ -71,4 +83,25 @@ test('inline styles in index.html and the modules use the scales too', () => {
     if (/style\.(?:margin|padding|gap|fontSize)\w*\s*=/.test(source) && file !== 'font-scale.js') offenders.push(file);
   }
   assert.deepEqual(offenders, []);
+});
+
+test('every width that holds text follows the font size', () => {
+  // N px at 100 % is calc(N * var(--u)); px stays for an offset from the
+  // window or the box, a size under 40px, and the pairing QR code
+  const offenders = [];
+  for (const rule of body.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selector = rule[1].trim().replace(/\s+/g, ' ');
+    if (selector === '#set-connector-qr') continue;
+    for (const found of rule[2].matchAll(/(?<![-\w])((?:min-|max-)?width|flex(?:-basis)?|grid-template-columns|grid-auto-columns|--[a-z-]*(?:width|-w))\s*:\s*([^;]+)/g)) {
+      const raw = [...found[2].matchAll(/(^|[\s(,])(\d+)px\b/g)].filter(px => Number(px[2]) >= 40
+        && !/(?:vw|vh|%)\s*-\s*$/.test(found[2].slice(0, px.index + px[1].length)));
+      if (raw.length) offenders.push(`${selector}: ${found[1]}: ${found[2].trim()}`);
+    }
+  }
+  assert.deepEqual(offenders, []);
+  // the tool drawer's base is the number layout.js multiplies by the font scale
+  assert.match(css, /--session-tool-base: 440; --session-tool-width: calc\(var\(--session-tool-base\) \* var\(--u\)\);/);
+  assert.match(read('../js/layout.js'), /getPropertyValue\('--session-tool-base'\)\) \|\| 440;\n  const drawer = base \* getFontScale\(\);/);
+  // no fixed width that only the large font size used to need
+  assert.doesNotMatch(css, /^html\.font-scale-large (?:\.set-sidebar|#settings-box|#tpl-box) \{/m);
 });

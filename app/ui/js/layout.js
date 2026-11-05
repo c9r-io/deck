@@ -697,11 +697,13 @@ export function wireTerminalInput(pane, term, host) {
 /* ----- layout rendering & pane lifecycle ----- */
 function updateToolOverlay() {
   const workspace = $('session-workspace');
-  // A docked tool needs its drawer (--session-tool-width, style.css) plus a
-  // useful terminal at the current font scale; below that every session tool
-  // floats over the panes. The class changes only presentation; the terminal
-  // ResizeObserver fits every pane when its actual width changes.
-  const drawer = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--session-tool-width')) || 440;
+  // A docked tool needs its drawer (--session-tool-width, style.css: the base
+  // width at 100 % times the font scale) plus a useful terminal at the
+  // current font scale; below that every session tool floats over the panes.
+  // The class changes only presentation; the terminal ResizeObserver fits
+  // every pane when its actual width changes.
+  const base = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--session-tool-base')) || 440;
+  const drawer = base * getFontScale();
   workspace.classList.toggle('tool-overlay', workspace.clientWidth < drawer + 480 * getFontScale());
 }
 

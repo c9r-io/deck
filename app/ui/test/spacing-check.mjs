@@ -9,7 +9,8 @@
 // Designed joins are not findings: repeated siblings (same parent, tag and
 // first class: menu items, list rows, tabs) and the parts of a segmented
 // control, a split button or a menu. Rects are clipped by scrolling
-// ancestors; content behind a closed <details> is skipped (WebKit keeps it
+// ancestors, and a control partly scrolled out of view is not held to its
+// box's edge; content behind a closed <details> is skipped (WebKit keeps it
 // in layout); floating layers (fixed position, dialogs, menus, drawers) are
 // compared only within themselves. A surface with findings is snapshotted
 // outlined (`ux-spacing-<surface>-<size>`) and as a table (`…-table`).
@@ -124,6 +125,10 @@ export async function runSpacingCheck(h) {
     }
     for (const C of items) {
       if (!C.el.matches(CONTROL)) continue;
+      // a control partly scrolled out of its box meets the box's edge by clipping
+      const whole = C.el.getBoundingClientRect();
+      if (Math.abs(whole.top - C.r.top) > 1 || Math.abs(whole.bottom - C.r.bottom) > 1
+          || Math.abs(whole.left - C.r.left) > 1 || Math.abs(whole.right - C.r.right) > 1) continue;
       let box = C.el.parentElement;
       while (box && box !== document.body && !bordered(box)) box = box.parentElement;
       if (!box || box === document.body || joinedBox(box)) continue;
@@ -194,7 +199,7 @@ export async function runSpacingCheck(h) {
       projectDefaultsDialog({ projectId: project.id, name: project.name, dir: '/tmp', cmd: 'claude', recent: [],
         presets: project.presets || [], columns: project.columns });
     }, () => $('pdf-no')?.click()],
-    ['automations', async () => { backToBoard(); await openAutomations(); }, () => closeAutomations()],
+    ['automations', async () => { backToBoard(); await openAutomations(); $('auto-drawer').scrollTop = 0; }, () => closeAutomations()],
     ['reminder', async () => { backToBoard(); reminderDialog(null); }, () => document.querySelector('.reminder-overlay .cfm-actions .btn')?.click()],
     ['confirm', async () => { confirmDialog('Close this session? The shell and everything running in it stop.'); }, () => cfmDone(false)],
   ];

@@ -1838,8 +1838,8 @@ view with its lists and scratchpad, Needs attention, the template manager,
 project defaults, the rule editor, the reminder and confirm dialogs and every
 Settings section, at 100% and 160% (40 surfaces, `a`), and measures the
 pieces of each layer in the real window: no two controls or bordered boxes
-closer than 4px side by side or stacked, no control within 3px of its box's
-inner edge, and a settings group, list group, rule editor or scratchpad note
+closer than 4px side by side or stacked, no control wholly in view within
+3px of its box's inner edge, and a settings group, list group, rule editor or scratchpad note
 keeps top and bottom space within 6px of each other. Repeated siblings and
 the parts of a segmented control, split button or menu are designed joins.
 `b` counts findings; each surface with any is snapshotted outlined

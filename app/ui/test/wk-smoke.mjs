@@ -326,6 +326,24 @@ async function themeSmoke(card) {
   await report('font-layout', fontLayoutMask === 127, fontLayoutMask, 127);
   $('set-close').click();
   await setFontScale(scaleBeforeShortcut);
+  await settleTerminalGrids();
+}
+
+/* The sidebar's width follows the font size and animates, so after a font
+   size change the terminals refit once more when the transition ends (plus
+   the 80 ms resize debounce). A later stage that drags or types must start
+   from that final grid, agreed by xterm and the tmux pane. */
+async function settleTerminalGrids() {
+  await waitFor(() => !$('sidebar').getAnimations().length, 3000);
+  await pause(160);
+  for (const pane of panes.values()) {
+    pane.fit.fit();
+    await waitFor(async () => {
+      await pane.syncSize().catch(() => {});
+      const metrics = await inv('terminal_metrics', { name: pane.session });
+      return metrics.pane_cols === pane.term.cols && metrics.pane_rows === pane.term.rows;
+    }, 5000);
+  }
 }
 
 /* Sidebar collapse control under a long Nightly identity. Geometry, not class
