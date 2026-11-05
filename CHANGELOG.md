@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.8.13 — 2026-11-05 (Nightly)
+
+- Model APIs (Settings → Integrations): one OpenAI and one Anthropic API
+  key, kept in the macOS Keychain. A key is stored only after its provider
+  accepts it; Check asks again and Clear removes it. Only Draft title and
+  turn summaries use them, and app.log never holds a key or any text sent.
+- Draft title, in the card menu after Rename, fills the rename field with a
+  proposed title: Enter takes it, Escape keeps the old one, and Deck never
+  renames a card by itself. On a Claude Code card the draft is the title
+  Claude Code gave its session, and nothing leaves the Mac; on any other
+  card the end of its terminal (at most 8,000 bytes) goes once to the
+  provider whose key is stored.
+- Turn summaries (Settings → Integrations → Model APIs, off by default):
+  when Claude Code ends a turn, the card's status line and its Needs
+  attention row show one line about what Claude said. A final message of
+  one line and at most 80 characters is shown as written; a longer one goes
+  once to the stored provider, as does any final message on a card with
+  follow-ups (below). The switch adds `--reply` to Deck's Claude Code Stop
+  hook, so a Claude Code that is already running may need a restart to
+  pick it up. Notifications stay free of content.
+- Batch close: Needs attention has a Turn ended filter with tick boxes,
+  Select all and Close selected. Deck asks once, then closes each ticked
+  card as its close button would; a card that started a new turn in the
+  meantime, has a reminder or holds scratchpad content stays open.
+- Preset follow-ups: a template can hold up to three replies you often send
+  after that kind of task. The cards its runs open (Slack badge, clock,
+  Agent or channel) show them as buttons under the terminal and on their
+  Needs attention row. A click puts the reply on the card's list, which
+  sends it as soon as the list's usual checks allow; nothing is sent
+  without a click. With turn summaries on, the follow-ups go to the model
+  with the turn's final message, and it may mark the one that fits.
+- Multi-line fields (scratchpad notes, list steps, template steps and
+  follow-ups, phone task preset steps) look like the other inputs and grow
+  with their text up to 40% of the window, so they no longer need dragging
+  open. ⌘↵ adds or saves. Clicking away no longer saves a multi-line edit:
+  it stays open until you save it. An unsaved list step or scratchpad edit
+  survives closing its panel, the template manager asks before discarding
+  one, and a new scratchpad note is kept per card until Deck quits. macOS
+  no longer turns quotes and `--` in prompts into curly quotes and dashes.
+- While a dialog is open, messages appear at the top right, clear of its
+  buttons, and the automation rule editor's labels grow with the font size.
+- app.log names the source of a failed poll and counts failures per
+  source, with one line when it recovers; a Slack answer cut off mid-way is
+  logged as a network failure rather than a parse failure.
+
 ## 0.8.12 — 2026-11-04 (Nightly)
 
 - Four more interface languages: Japanese, Korean, Spanish and German
