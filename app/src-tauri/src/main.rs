@@ -57,6 +57,7 @@ mod shell_state;
 mod signal_trace;
 mod slack;
 mod slack_api;
+mod slack_mentions;
 mod slack_transport;
 mod smoke_faults;
 mod smoke_native;
@@ -564,6 +565,10 @@ fn main() {
             inbound::inbound_ack,
             inbound::inbound_run_ended,
             inbound::inbound_runs,
+            slack_mentions::slack_mentions,
+            slack_mentions::slack_mention_route,
+            slack_mentions::slack_mention_dismiss,
+            slack_mentions::slack_mentions_refresh,
             inbound::inbound_set_secret,
             model_api::model_api_status,
             model_api::model_api_set_key,

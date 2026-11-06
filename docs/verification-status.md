@@ -1,11 +1,29 @@
 # 当前验证索引
 
-更新：2026-11-06（升级重启失败：两个 Agent 退出慢让整次重启失败，已退出的 Claude 也没有重入；Claude 以选择列表或 `-c` 启动时认不出）；2026-11-05（进程表只装下最新的约四分之一进程：重入只认出 2 个 Claude 会话；四个改动前就失败的原生 smoke；装文字的宽度随字号缩放；间距与字号统一；终端单击交给要了鼠标的程序；多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-11-06（Slack 提及一览：@你 的消息在 Deck 里列出，手动路由到 Slack 表情规则；升级重启失败：两个 Agent 退出慢让整次重启失败，已退出的 Claude 也没有重入；Claude 以选择列表或 `-c` 启动时认不出）；2026-11-05（进程表只装下最新的约四分之一进程：重入只认出 2 个 Claude 会话；四个改动前就失败的原生 smoke；装文字的宽度随字号缩放；间距与字号统一；终端单击交给要了鼠标的程序；多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
+
+## 本轮 Slack 提及一览：在 Deck 里决定处理哪条 @你，Slack 上保持静默
+
+起因：用户工作日在 Slack 上给 @自己 的消息加表情来触发自动化；非工作日想在 Slack 上不留痕迹，但仍自己判断要处理哪条。
+设计（用户确认）：只算明确的 `<@我>`（不含 @here、@channel、用户组）；已用有规则的表情处理过的隐藏；一直收集；侧边栏独立入口「Slack 提及 N」，只显示数字，不通知、不进 Dock 角标；Agent 是否回复 Slack 由模板决定。
+实现：
+- 收集：Slack 服务的每轮 `tick`（`extensions::ServiceIntegration::tick`，新增），最多每 60 秒一次 `search.messages` `<@ME> after:<30 天>`；打开列表时要求刷新（最短间隔 10 秒）。原文必须含 `<@ME>` 或 `<@ME|…>`，作者不是自己。`search:read` 原本就在用户权限里，Slack App 不用改。
+- 存储：搜索结果只在内存。用户忽略的写进 `inbound.json` 的 `dismissed`（只有 `(slack, channel/ts)` 和时间，与 `seen` 同样 45 天、上限 5000）；路由过的就是普通的 `seen`。
+- 路由：`slack_mention_route` 用同一个构造函数（`badge_event`）生成所选表情规则的事件，交给 `inbound::offer`（live）。之后建卡、模板、审批、首条发送、收尾都走原来的表情路径，授权仍是 `TriggerClass::SlackBadge`（用户确认：对这一条消息的点击等同于加表情）。按 `(source, key, badge)` 去重，之后在 Slack 加同一表情不会再开卡；忽略不挡之后的表情。
+- 前端：`slack-mentions.js`（视图，叶子模块）、`slack-mentions-model.js`（路由选项、计数、状态句）；6 种语言 19 个字符串；新的界面事件 `mentions`（routed / route-refused / dismissed）和监听目标 `slack-mentions-changed`。
+
+验证：
+- 搜索写法（原生，只读，本机 Keychain 里的沙盒工作区 user token；用户发了两条 @自己 的消息）：`<@ID>` 搜到频道顶层消息、帖子里的回复和发给自己的私信，共 3 条；新消息约 1 分钟后才能搜到；返回结果里没有表情列表（只有 `no_reactions`）。
+- Rust：过滤（明确提及、带标签写法、自己发的、@here、用户组）；查询形状（假 Web API）；路由得到的事件与在 Slack 加同一表情的事件逐字节相同；只能选 Slack 表情规则；同一提及只能路由一次，待处理时就从列表消失；忽略记录持久化、只存标识、过期和上限、不挡之后的表情；失败保留上次列表并说明原因。
+- 前端：入口显隐和计数；进入视图先离开会话视图并要求刷新；路由和忽略各只调用一次后端，不碰队列和看板；拒绝时说明原因、保留该行；全部忽略要确认；没有可选规则、检查失败、Slack 未连接都有提示。
+
+门禁（本机）：fmt；CI 形式 clippy 0 告警；`cargo test --workspace --all-targets --all-features --locked`（隔离 HOME、空 TMPDIR）1651 项通过、0 失败（14 项按设计忽略）；`scripts/ui-tests` 952 项，新模块覆盖率 100% 行；`check.mjs`、JS 语法 209 个模块；扩展目录 current。TMPDIR 为空，tmux socket 目录只剩正式的 `deck`。未跑 llvm-cov 形式。
+UNRUN：真实窗口（WKWebView smoke 未加模式）；真实工作区里路由一条提及并建卡；工作 Mac；发布载体。
 
 ## 本轮 升级重启失败：两个 Agent 退出慢，整次重启失败，已退出的 Claude 也没有重入
 
@@ -32,7 +50,8 @@
 
 门禁（本机）：fmt；CI 形式 clippy 0 告警；`cargo test --workspace --all-targets --all-features --locked`（隔离 HOME、空 TMPDIR）1640 项通过、0 失败（14 项按设计忽略）；`scripts/ui-tests` 949 项；`check.mjs`、JS 语法 206 个模块。TMPDIR 为空，tmux socket 目录只剩正式的 `deck`。未跑 llvm-cov 形式。
 原生（只读，本机，临时探针测试，已删除）：本机 Deck 的 tmux 里有 6 个真实 Claude 进程，其中 2 个以 `claude --dangerously-skip-permissions --resume` 启动。旧写法把这 2 个判为 Unsupported（预览即 identity-unavailable），新写法判 Bypass；6 个都通过 `standing_client`（Anthropic 签名的 Claude Code 代码、启动写法、工作目录）。
-UNRUN：真实升级重启（下一次升级进 0.8.16：看工作 Mac 预览的候选数和 `unidentified … check=` 行、有没有 `exit-timeout`、`complete replaced=true` 的 confirmed 数）；很多 Claude 同时退出的耗时；对 Ctrl+D 没反应的原因；发布载体。
+观测（2026-11-06 12:14 JST，工作 Mac 升级进 0.8.16，SSH 只读日志）：预览 10 个会话 9 个候选，1 行 `unidentified … check=launch-shape`；10 秒时 `exit-timeout remaining=1`，正是那个认不出写法的会话；`sealed final=9 of=9`；重启 23.5 秒 `finish result=ok`；`complete replaced=true entries=9 confirmed=9`。那个会话的启动写法未知（会话已结束；工作 Mac 不做实验）。
+UNRUN：很多 Claude 同时退出的耗时；对 Ctrl+D 没反应的原因；发布载体。
 
 ## 本轮 重入只认出 2 个 Claude 会话：进程表只装下最新的约四分之一进程
 

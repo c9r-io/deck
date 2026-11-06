@@ -188,6 +188,7 @@ const LISTEN_TARGETS: &[&str] = &[
     "pty-data",
     "pty-exit",
     "inbound-changed",
+    "slack-mentions-changed",
     "channel-changed",
     "connector-changed",
     "mcp-changed",
@@ -1061,6 +1062,12 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     ("settings-load-fail", DetailPolicy::None),
     ("settings-save-fail", DetailPolicy::None),
     ("inbound", DetailPolicy::Closed(INBOUND_OUTCOMES)),
+    // the Slack mentions view (slack-mentions.js): what the user did with a
+    // mention, never which one
+    (
+        "mentions",
+        DetailPolicy::Closed(&["routed", "route-refused", "dismissed"]),
+    ),
     // a follow-up button queued its text: whether the model had picked one
     // and whether it was this one; never which text
     (

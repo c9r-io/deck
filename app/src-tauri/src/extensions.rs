@@ -91,6 +91,11 @@ pub(crate) struct ServiceIntegration {
     /// Content-free re-announcement of the service's own durable pending
     /// work: the service names the event, the host emits it.
     pub(crate) reannounce: fn(&dyn Fn(&'static str)),
+    /// The service's own work once per dispatcher poll, beside its trigger
+    /// sources (Slack: the mention list). It reads the saved settings it is
+    /// given, never the Board, the queue or a pane, and names the
+    /// content-free event the host emits when what it shows changed.
+    pub(crate) tick: fn(&crate::inbound::Config, &dyn Fn(&'static str)),
 }
 
 /// One compiled local-access service. Registration controls boot composition
@@ -275,6 +280,15 @@ pub(crate) fn wake_services() {
 
 /// One pass over the services with durable pending work of their own; each
 /// names the content-free event the window is sent.
+/// Each unambiguous service's per-poll work, on the dispatcher's poll thread.
+pub(crate) fn tick_services<R: tauri::Runtime>(app: &AppHandle<R>, cfg: &crate::inbound::Config) {
+    for service in unambiguous_services() {
+        (service.tick)(cfg, &|event| {
+            let _ = app.emit(event, ());
+        });
+    }
+}
+
 pub(crate) fn reannounce_services<R: tauri::Runtime>(app: &AppHandle<R>) {
     for service in unambiguous_services() {
         (service.reannounce)(&|event| {
@@ -415,6 +429,7 @@ mod tests {
                 REANNOUNCES.fetch_add(1, Ordering::SeqCst);
                 announce("fake-changed");
             },
+            tick: |_, _| {},
         }
     }
     fn slack_source() -> Vec<Box<dyn Source>> {

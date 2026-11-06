@@ -708,6 +708,13 @@ const TEXT_COMMANDS: &[(&str, &str, Command)] = &[
         Command::NotTerminal,
     ),
     ("diagnostics.rs", "ui_event", Command::NotTerminal),
+    // Slack mention identifiers (`channel/ts`) the user set aside; recorded
+    // in the dispatcher ledger, never text and never typed anywhere.
+    (
+        "slack_mentions.rs",
+        "slack_mention_dismiss",
+        Command::NotTerminal,
+    ),
 ];
 
 /// (file, name, parameter list) of every production `#[tauri::command]`.

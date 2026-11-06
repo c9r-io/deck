@@ -21,6 +21,7 @@
       <span class="label" data-i18n="app.board">Board</span>
     </button>
     <button class="side-home" id="attention-btn" type="button"><span aria-hidden="true">◇</span><span class="label" data-i18n="attention.title">Needs attention</span><span id="attention-count"></span></button>
+    <button class="side-home" id="mentions-btn" type="button" hidden><span aria-hidden="true">@</span><span class="label" data-i18n="mentions.title">Slack mentions</span><span id="mentions-count"></span></button>
     <div class="side-group"><span data-i18n="app.sessions">Sessions</span><span id="side-count"></span></div>
     <div class="side-list" id="side-list"></div>
     <button id="tmux-restart-btn"><span>⚠</span><span class="label" data-i18n="tmux.pendingShort">Shell service restart required</span></button>
@@ -195,6 +196,13 @@
       </aside>
     </div>
 
+    <section id="mentions-view" aria-labelledby="mentions-title" hidden>
+      <div class="attention-head"><h1 id="mentions-title" tabindex="-1" data-i18n="mentions.globalTitle">Slack mentions · Last 30 days</h1><div class="mentions-head-actions"><button class="btn" id="mentions-dismiss-all" type="button" data-i18n="mentions.dismissAll">Dismiss all</button><button class="btn" id="mentions-back" type="button"></button></div></div>
+      <p class="attention-hint" data-i18n="mentions.hint">Messages that @mention you. Deck never reacts, replies or marks anything read in Slack. Routing a message starts that badge's automation, as if you had added the badge.</p>
+      <p class="mentions-status" id="mentions-status"></p>
+      <p class="mentions-no-routes" id="mentions-no-routes" data-i18n="mentions.noRoutes" hidden>No Slack badge automation yet. Add one in a project's Automations drawer to route mentions.</p>
+      <div id="mentions-list" tabindex="-1"></div>
+    </section>
     <section id="attention-view" aria-labelledby="attention-title" hidden>
       <div class="attention-head"><h1 id="attention-title" data-i18n="attention.globalTitle">Needs attention · All projects</h1><button class="btn" id="attention-back" type="button"></button></div>
       <p class="attention-hint" data-i18n="attention.hint">Original groups stay unchanged. Viewed does not mean handled.</p>

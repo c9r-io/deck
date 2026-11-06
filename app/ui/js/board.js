@@ -80,6 +80,7 @@ import { formatShortcut } from './shortcuts.js';
 import { renderAutomations, ruleOf } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
 import { locateAttentionCard, refreshAttention, showAttention } from './attention.js';
+import { paintMentions } from './slack-mentions.js';
 import { cardLabels, dismissKey, labelsKey, seenDismissals } from './notify-model.js';
 import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, retainedBuffer } from './buffer-model.js';
 import { nextCollectedAt } from './channel-model.js';
@@ -1805,6 +1806,7 @@ export function render() {
   $('board-view').style.display = state.view === 'board' ? 'flex' : 'none';
   $('session-view').style.display = state.view === 'session' ? 'flex' : 'none';
   $('attention-view').hidden = state.view !== 'attention';
+  paintMentions();
   renderTabs();
   renderSidebar();
   if (state.view === 'board') renderBoard();

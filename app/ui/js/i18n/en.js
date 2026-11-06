@@ -1472,6 +1472,26 @@ const dictionary = {
   'reentry.result.summaryStarted': '{confirmed} reopened · {started} started · {other} to check',
   'reentry.result.summaryPendingStarted': '{confirmed} reopened · {started} started · {pending} in progress · {other} to check',
   'reentry.result.insertResume': 'Insert resume command',
+
+  "mentions.title": "Slack mentions",
+  "mentions.globalTitle": "Slack mentions · Last 30 days",
+  "mentions.hint": "Messages that @mention you. Deck never reacts, replies or marks anything read in Slack. Routing a message starts that badge's automation, as if you had added the badge.",
+  "mentions.dismissAll": "Dismiss all",
+  "mentions.dismissAllConfirm": "Dismiss all {count} mentions? They leave this list and start nothing.",
+  "mentions.dismiss": "Dismiss",
+  "mentions.open": "Open in Slack",
+  "mentions.openFailed": "Could not open the message in the browser.",
+  "mentions.route": "Route to…",
+  "mentions.routeNamed": "Route the mention from {from}",
+  "mentions.unavailable": "{label} (not available for Slack messages)",
+  "mentions.noRoutes": "No Slack badge automation yet. Add one in a project's Automations drawer to route mentions.",
+  "mentions.empty": "No open mentions.",
+  "mentions.checked": "Last checked {time}",
+  "mentions.checking": "Not checked yet",
+  "mentions.error": "The last check failed ({code}); the list shown is from before.",
+  "mentions.off": "Slack is not connected. Connect it in Settings → Slack.",
+  "mentions.settled": "This mention was already handled.",
+  "mentions.failed": "Could not complete this ({code}).",
 };
 export { dictionary };
 export const en = dictionary;

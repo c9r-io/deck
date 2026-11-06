@@ -22,6 +22,7 @@ import { initAutomation, ruleOf, startOrphanPruning } from './automation.js';
 import { closeDropdownMenu, initDropdowns } from './dropdown.js';
 import { registerSessionPopup } from './session-tools.js';
 import { initAttention, openFromNotification, refreshAttention } from './attention.js';
+import { initMentions, startMentions } from './slack-mentions.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
 import { initVoice } from './voice.js';
@@ -512,6 +513,7 @@ function initModules() {
   initSettings();
   initTerminalChrome();
   initAttention({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp });
+  initMentions({ provider, render, switchProject, leaveSessionView, closeBuffer });
   initLayout();
   initScheduler({ provider, pollNow, refreshAttention, ruleOf });
   initBuffer();
@@ -597,6 +599,7 @@ const offerBoardExit = createBoardExit({
     toastStorageWarnings();
     startReminders();
     startInbound();
+    startMentions();
     startOrphanPruning();
   },
 });
@@ -723,6 +726,7 @@ export async function boot() {
      not load leaves them pending until the way out is taken or deck starts
      again (inbound.js `startInbound`) */
   if (!loadErr) startInbound();
+  if (!loadErr) startMentions();
   drainConnector();
   setTimeout(checkForUpdate, 4000);
   /* runtime cadence comes from a Rust thread (App Nap freezes JS timers) */

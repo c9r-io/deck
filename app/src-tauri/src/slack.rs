@@ -27,6 +27,10 @@
 //!   `settable` names the three the user may store; the two legacy channel
 //!   slots are reported for presence only and cleared by the transport's
 //!   own command.
+//! - The mention list (`slack_mentions.rs`) is this service's per-poll
+//!   `tick`: a search on the same user token, kept in memory. A mention
+//!   the user routes enters the dispatcher as an ordinary badge event, so
+//!   it gets no authority path of its own.
 //! - Disconnecting stops collection. It does not revoke an approved
 //!   delivery or drop durably staged pending work; those follow the
 //!   dispatcher's and the scheduler's contracts unchanged.
@@ -36,7 +40,7 @@ use crate::error::{DeckError, ErrorKind};
 use crate::extensions::ServiceIntegration;
 use crate::inbound::Source;
 use crate::keychain::{self, Slot};
-use crate::{inbound_channel, inbound_slack, slack_api, slack_transport};
+use crate::{inbound_channel, inbound_slack, slack_api, slack_mentions, slack_transport};
 use serde_json::Value;
 
 pub(crate) const INTEGRATION: ServiceIntegration = ServiceIntegration {
@@ -60,6 +64,7 @@ pub(crate) const INTEGRATION: ServiceIntegration = ServiceIntegration {
     store_secret,
     setup_url: slack_api::setup_url,
     reannounce: inbound_channel::reannounce_pending,
+    tick: slack_mentions::tick,
 };
 
 /// The badge source. The channel monitor is not a dispatcher source: it

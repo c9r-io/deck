@@ -1471,6 +1471,26 @@ const dictionary = {
   'reentry.result.summaryStarted': '{confirmed} 个已重新进入 · {started} 个已启动 · {other} 个需查看',
   'reentry.result.summaryPendingStarted': '{confirmed} 个已重新进入 · {started} 个已启动 · {pending} 个进行中 · {other} 个需查看',
   'reentry.result.insertResume': '插入 resume 命令',
+
+  "mentions.title": "Slack 提及",
+  "mentions.globalTitle": "Slack 提及 · 最近 30 天",
+  "mentions.hint": "直接 @你 的消息。Deck 不会在 Slack 上加表情、回复或标记已读。路由一条消息，等同于你给它加了该表情，会启动对应的自动化。",
+  "mentions.dismissAll": "全部忽略",
+  "mentions.dismissAllConfirm": "忽略全部 {count} 条提及？它们会从列表中移除，不会启动任何自动化。",
+  "mentions.dismiss": "忽略",
+  "mentions.open": "在 Slack 打开",
+  "mentions.openFailed": "无法在浏览器中打开这条消息。",
+  "mentions.route": "路由到…",
+  "mentions.routeNamed": "路由 {from} 的提及",
+  "mentions.unavailable": "{label}（不能用于 Slack 消息）",
+  "mentions.noRoutes": "还没有 Slack 表情自动化。请先在项目的自动化抽屉里添加一条，才能路由提及。",
+  "mentions.empty": "没有待处理的提及。",
+  "mentions.checked": "上次检查：{time}",
+  "mentions.checking": "尚未检查",
+  "mentions.error": "上次检查失败（{code}），显示的是之前的列表。",
+  "mentions.off": "Slack 未连接。请在 设置 → Slack 中连接。",
+  "mentions.settled": "这条提及已经处理过了。",
+  "mentions.failed": "未能完成（{code}）。",
 };
 export { dictionary };
 export const zhHans = dictionary;

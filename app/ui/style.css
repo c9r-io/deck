@@ -1437,6 +1437,25 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 .attention-labels { font-size: var(--fs-11); color: var(--muted); padding: var(--sp-8) var(--sp-12); }
 @media (max-width: 1050px) { .attention-labels { display: none; } }
 body.side-collapsed #attention-btn { flex-direction: column; gap: var(--sp-2); }
+/* Slack mentions (slack-mentions.js): the attention view's frame, one
+   message per row, its text clamped to two lines until opened */
+#mentions-count { margin-left: auto; font-size: var(--fs-11); }
+#mentions-btn[hidden], #mentions-view[hidden], .mentions-no-routes[hidden] { display: none; }
+#mentions-view { position: relative; flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+.mentions-head-actions { display: flex; flex-wrap: wrap; gap: var(--sp-8); }
+.mentions-status, .mentions-no-routes { color: var(--muted); font-size: var(--fs-12); padding: 0 var(--sp-20) var(--sp-8); line-height: 1.5; }
+.mentions-no-routes { color: var(--wait); }
+#mentions-list { overflow: auto; min-height: 120px; flex: 1; padding: 0 var(--sp-20) var(--sp-20); }
+.mention-row { display: flex; flex-direction: column; gap: var(--sp-6); padding: var(--sp-12); border-bottom: 1px solid var(--border); }
+.mention-meta { display: flex; flex-wrap: wrap; gap: var(--sp-8); color: var(--muted); font-size: var(--fs-12); }
+.mention-from { color: var(--text); font-weight: 600; }
+.mention-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; border: 0; padding: 0; background: none; color: var(--text); font: inherit; line-height: 1.55; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; cursor: pointer; }
+.mention-text[data-expanded="true"] { display: block; -webkit-line-clamp: none; -webkit-user-select: text; user-select: text; cursor: text; }
+.mention-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-8); }
+.mention-empty { color: var(--muted); padding: var(--sp-32) var(--sp-12); line-height: 1.8; }
+body.side-collapsed #mentions-btn { flex-direction: column; gap: var(--sp-2); }
+body.side-collapsed #mentions-count { margin-left: 0; max-width: 34px; overflow: hidden; font-size: var(--fs-10); }
+
 body.side-collapsed #attention-count { margin-left: 0; max-width: 34px; overflow: hidden; font-size: var(--fs-10); }
 
 /* C v01: local execution evidence and durable human checkpoints. */

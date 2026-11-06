@@ -52,7 +52,9 @@ contribute no polling or credential ownership; duplicated agent identities
 contribute no status reads or migrations. The clock remains dispatcher-owned.
 
 Services retain their existing routes through start/wake/reannounce, source
-contribution, live status and credential ownership. Slack's Socket Mode owner
+contribution, live status and credential ownership. A service may also do its
+own work once per dispatcher poll (`tick`; Slack uses it for the mention list,
+`slack_mentions.rs`), naming the content-free event the host emits. Slack's Socket Mode owner
 is still unique. Translation still constructs its selected provider lazily and
 loads a model only when the coordinator needs it.
 

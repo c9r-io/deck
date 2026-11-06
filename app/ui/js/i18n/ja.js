@@ -1465,6 +1465,26 @@ const dictionary = {
   "reentry.result.summaryStarted": "{confirmed} 件を再開 · {started} 件を起動 · {other} 件は要確認",
   "reentry.result.summaryPendingStarted": "{confirmed} 件を再開 · {started} 件を起動 · {pending} 件を処理中 · {other} 件は要確認",
   "reentry.result.insertResume": "resume コマンドを挿入",
+
+  "mentions.title": "Slack メンション",
+  "mentions.globalTitle": "Slack メンション · 過去 30 日",
+  "mentions.hint": "あなたを @メンションしたメッセージです。Deck は Slack でリアクション・返信・既読化を一切行いません。メッセージをルーティングすると、そのバッジを付けたときと同じ自動化が始まります。",
+  "mentions.dismissAll": "すべて無視",
+  "mentions.dismissAllConfirm": "{count} 件のメンションをすべて無視しますか？一覧から消え、何も開始されません。",
+  "mentions.dismiss": "無視",
+  "mentions.open": "Slack で開く",
+  "mentions.openFailed": "ブラウザーでメッセージを開けませんでした。",
+  "mentions.route": "ルーティング先…",
+  "mentions.routeNamed": "{from} からのメンションをルーティング",
+  "mentions.unavailable": "{label}（Slack メッセージには使えません）",
+  "mentions.noRoutes": "Slack バッジの自動化がまだありません。プロジェクトの自動化ドロワーで追加すると、メンションをルーティングできます。",
+  "mentions.empty": "未処理のメンションはありません。",
+  "mentions.checked": "最終確認：{time}",
+  "mentions.checking": "まだ確認していません",
+  "mentions.error": "前回の確認に失敗しました（{code}）。表示中の一覧はそれ以前のものです。",
+  "mentions.off": "Slack が接続されていません。設定 → Slack で接続してください。",
+  "mentions.settled": "このメンションはすでに処理されています。",
+  "mentions.failed": "完了できませんでした（{code}）。",
 };
 export { dictionary };
 export const ja = dictionary;

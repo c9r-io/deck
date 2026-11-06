@@ -450,7 +450,7 @@ test('every view change leaves the session view first, and the tool slot closes 
       assert.match(lines.slice(Math.max(0, n - 6), n).join('\n'), /leaveSessionView\(/, `${file}:${n + 1}`);
     });
   }
-  assert.deepEqual(sites.sort(), ['app.js', 'attention.js', 'board.js', 'layout.js', 'layout.js']);
+  assert.deepEqual(sites.sort(), ['app.js', 'attention.js', 'board.js', 'layout.js', 'layout.js', 'slack-mentions.js']);
   const layout = read('app/ui/js/layout.js');
   assert.match(layout, /export function leaveSessionView\([^)]*\) \{\n  closeSessionTools\('leave'\);/);
   for (const file of ['board.js', 'translation-lens.js', 'layout.js', 'app.js'])
@@ -540,8 +540,12 @@ test("inbound triggers are pulled only once the webview holds the user's Board",
   // Board's way out, the one other moment the placeholder is replaced
   assert.equal((app.match(/\bstartInbound\b/g) || []).length, 3, 'the import and the two starts');
   assert.match(app, /\n  if \(!loadErr\) startInbound\(\);\n/);
+  // the Slack mentions list routes into the same dispatcher, so it starts at
+  // the same two moments and no other
+  assert.equal((app.match(/\bstartMentions\b/g) || []).length, 3, 'the import and the two starts');
+  assert.match(app, /\n  if \(!loadErr\) startMentions\(\);\n/);
   const exit = app.slice(app.indexOf('const offerBoardExit'), app.indexOf('export async function boot()'));
-  assert.match(exit, /exited: \(\) => \{[^}]*\bstartReminders\(\);\s*startInbound\(\);[^}]*\}/);
+  assert.match(exit, /exited: \(\) => \{[^}]*\bstartReminders\(\);\s*startInbound\(\);\s*startMentions\(\);[^}]*\}/);
   assert.doesNotMatch(app, /drainInbound|drainChannel|initInbound/);
   // the module wires nothing on its own: both listeners and the one timer
   // belong to startInbound, which also runs the first drains

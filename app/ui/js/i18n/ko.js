@@ -1465,6 +1465,26 @@ const dictionary = {
   "reentry.result.summaryStarted": "{confirmed}개 다시 열림 · {started}개 시작됨 · {other}개 확인 필요",
   "reentry.result.summaryPendingStarted": "{confirmed}개 다시 열림 · {started}개 시작됨 · {pending}개 진행 중 · {other}개 확인 필요",
   "reentry.result.insertResume": "resume 명령 삽입",
+
+  "mentions.title": "Slack 멘션",
+  "mentions.globalTitle": "Slack 멘션 · 최근 30일",
+  "mentions.hint": "나를 @멘션한 메시지입니다. Deck은 Slack에서 반응, 답장, 읽음 표시를 전혀 하지 않습니다. 메시지를 라우팅하면 그 배지를 직접 단 것과 같은 자동화가 시작됩니다.",
+  "mentions.dismissAll": "모두 무시",
+  "mentions.dismissAllConfirm": "멘션 {count}개를 모두 무시할까요? 목록에서 사라지고 아무것도 시작되지 않습니다.",
+  "mentions.dismiss": "무시",
+  "mentions.open": "Slack에서 열기",
+  "mentions.openFailed": "브라우저에서 메시지를 열 수 없습니다.",
+  "mentions.route": "라우팅…",
+  "mentions.routeNamed": "{from}의 멘션 라우팅",
+  "mentions.unavailable": "{label} (Slack 메시지에는 사용할 수 없음)",
+  "mentions.noRoutes": "아직 Slack 배지 자동화가 없습니다. 프로젝트의 자동화 서랍에서 추가하면 멘션을 라우팅할 수 있습니다.",
+  "mentions.empty": "처리할 멘션이 없습니다.",
+  "mentions.checked": "마지막 확인: {time}",
+  "mentions.checking": "아직 확인하지 않음",
+  "mentions.error": "마지막 확인에 실패했습니다({code}). 표시된 목록은 그 이전의 것입니다.",
+  "mentions.off": "Slack이 연결되어 있지 않습니다. 설정 → Slack에서 연결하세요.",
+  "mentions.settled": "이 멘션은 이미 처리되었습니다.",
+  "mentions.failed": "완료하지 못했습니다({code}).",
 };
 export { dictionary };
 export const ko = dictionary;

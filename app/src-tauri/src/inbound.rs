@@ -100,6 +100,12 @@
 //! until the program exits or the user closes it.
 //! The ledger's `runs` list (rule, slot, card id, times, closed outcome word;
 //! capped) is the drawer's history — identifiers and times only.
+//! Its `dismissed` list holds the items the user set aside without a trigger
+//! (a Slack mention, `slack_mentions.rs`): `(source, key)` and a time, the
+//! same TTL and cap as `seen`. `open_keys` tells a caller which of its keys
+//! are still open — not seen under any badge, not pending, not dismissed — and
+//! a dismissal never blocks a later badge on the same message (`offer`
+//! checks only the exact `(source, key, badge)`).
 
 // inbound.rs — "自动化": external services (and the clock) ask deck to start a session.
 //
@@ -784,6 +790,10 @@ pub(crate) struct InboundDoc {
     baselined: Vec<String>,
     #[serde(default)]
     runs: Vec<Run>,
+    /// Items the user set aside without a trigger (a Slack mention they
+    /// dismissed): identifiers and time only, the same TTL and cap as `seen`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    dismissed: Vec<Seen>,
 }
 
 impl InboundDoc {
@@ -838,12 +848,32 @@ impl InboundDoc {
         }
     }
     fn prune(&mut self, now: u64) {
-        self.seen
-            .retain(|s| now.saturating_sub(s.at) <= SEEN_TTL_SECS);
-        if self.seen.len() > MAX_SEEN {
-            let drop = self.seen.len() - MAX_SEEN;
-            self.seen.drain(..drop);
+        for list in [&mut self.seen, &mut self.dismissed] {
+            list.retain(|s| now.saturating_sub(s.at) <= SEEN_TTL_SECS);
+            if list.len() > MAX_SEEN {
+                let drop = list.len() - MAX_SEEN;
+                list.drain(..drop);
+            }
         }
+    }
+    /// The item was triggered under any badge, or set aside.
+    fn settled(&self, source: &str, key: &str) -> bool {
+        self.seen
+            .iter()
+            .chain(self.dismissed.iter())
+            .any(|s| s.source == source && s.key == key)
+    }
+    fn dismiss(&mut self, source: &str, key: &str, now: u64) -> bool {
+        if self.settled(source, key) {
+            return false;
+        }
+        self.dismissed.push(Seen {
+            source: source.into(),
+            key: key.into(),
+            badge: String::new(),
+            at: now,
+        });
+        true
     }
 }
 
@@ -1207,6 +1237,49 @@ pub(crate) fn pending_event(key: &str, rule_id: &str) -> Option<Event> {
     })
 }
 
+/// The keys of `keys` that are still open: never triggered under any badge
+/// (seen ledger), not pending right now, and not set aside by the user. A
+/// Slack mention list shows exactly these; everything a badge or a route
+/// already started stays hidden.
+pub(crate) fn open_keys(source: &str, keys: &[String]) -> Vec<String> {
+    with_rt(|rt| {
+        keys.iter()
+            .filter(|k| {
+                !rt.doc.settled(source, k)
+                    && !rt
+                        .pending
+                        .iter()
+                        .any(|p| p.view.event.source == source && &p.view.event.key == *k)
+            })
+            .cloned()
+            .collect()
+    })
+}
+
+/// Set items aside for good (the user dismissed them). Returns how many
+/// were newly recorded; the ledger is saved when any was.
+pub(crate) fn dismiss(source: &str, keys: &[String]) -> usize {
+    with_rt(|rt| {
+        let now = now_secs();
+        let added = keys
+            .iter()
+            .filter(|k| rt.doc.dismiss(source, k, now))
+            .count();
+        if added > 0 {
+            rt.doc.prune(now);
+            persist(rt);
+        }
+        added
+    })
+}
+
+/// Run the poll loop now without waking any service's connection owner.
+pub(crate) fn wake_poll() {
+    let (flag, cv) = wake();
+    *flag.lock_or_recover() = true;
+    cv.notify_all();
+}
+
 /// The native admitted clock event still names the same command and target.
 /// Schedule/template edits leave an already frozen run intact.
 pub(crate) fn clock_policy_pending(key: &str, rule: &Rule) -> bool {
@@ -1508,11 +1581,39 @@ pub(crate) fn spawn_inbound(app: AppHandle) {
             if re_emit {
                 let _ = app.emit("inbound-changed", ());
             }
+            crate::extensions::tick_services(&app, &cfg);
             crate::extensions::reannounce_services(&app);
             let _ = with_rt(|rt| std::mem::replace(&mut rt.poll_wanted, false));
             wait_for_tick(POLL_INTERVAL);
         }
     });
+}
+
+/// Serializes the tests that redirect `TEST_DOC_PATH` or replace `RT`.
+#[cfg(test)]
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+/// Run `f` against a fresh dispatcher runtime whose ledger lives in a
+/// test directory (its path is `f`'s argument), serialized with every
+/// other test that replaces the runtime.
+pub(crate) fn with_fresh_runtime<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
+    let _serial = TEST_LOCK.lock_or_recover();
+    let dir = crate::test_dir::TestDir::new("inbound-runtime");
+    let path = dir.join("inbound.json");
+    *TEST_DOC_PATH.lock_or_recover() = Some(path.clone());
+    *RT.lock_or_recover() = Some(Runtime {
+        doc: InboundDoc::default(),
+        dirty: false,
+        pending: Vec::new(),
+        next_id: 1,
+        poll_wanted: false,
+        statuses: Vec::new(),
+    });
+    let out = f(&path);
+    *RT.lock_or_recover() = None;
+    *TEST_DOC_PATH.lock_or_recover() = None;
+    out
 }
 
 #[cfg(test)]
@@ -1521,8 +1622,71 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    /// Serializes the tests that redirect `TEST_DOC_PATH` or replace `RT`.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    #[test]
+    fn open_keys_hide_every_badge_every_pending_item_and_every_dismissal() {
+        with_fresh_runtime(|path| {
+            let app = tauri::test::mock_app();
+            let cfg = config_from_value(Some(&json!({
+                "sources": {"slack": {"enabled": true}},
+                "rules": [rule("deck")]
+            })));
+            let keys: Vec<String> = ["C/a", "C/b", "C/c", "C/d"].map(String::from).to_vec();
+            with_rt(|rt| {
+                rt.doc.mark("slack", "C/a", "some-other-badge", now_secs());
+            });
+            assert_eq!(
+                offer(app.handle(), &cfg, vec![event("C/b", "deck")], true),
+                1
+            );
+            assert_eq!(dismiss("slack", &["C/c".to_string()]), 1);
+            assert_eq!(
+                dismiss("slack", &["C/c".to_string()]),
+                0,
+                "a dismissal is recorded once"
+            );
+            assert_eq!(open_keys("slack", &keys), vec!["C/d".to_string()]);
+            assert_eq!(open_keys("clock", &keys), keys, "per source");
+            let saved = fs::read_to_string(path).unwrap();
+            assert!(
+                saved.contains("dismissed") && !saved.contains("Please"),
+                "identifiers only"
+            );
+            // a dismissal in Deck never blocks the user's own badge in Slack
+            assert_eq!(
+                offer(app.handle(), &cfg, vec![event("C/c", "deck")], true),
+                1
+            );
+            // and it survives the ledger's reload
+            let reloaded: InboundDoc = serde_json::from_str(
+                &storage::load_typed::<InboundDoc>(path)
+                    .unwrap()
+                    .unwrap()
+                    .payload,
+            )
+            .unwrap();
+            assert!(reloaded.settled("slack", "C/c"));
+            assert!(!reloaded.settled("slack", "C/d"));
+        });
+    }
+
+    #[test]
+    fn dismissals_expire_and_are_capped_like_seen_entries() {
+        let mut d = InboundDoc::default();
+        assert!(d.dismiss("slack", "C/old", 1));
+        assert!(d.dismiss("slack", "C/new", SEEN_TTL_SECS + 10));
+        d.prune(SEEN_TTL_SECS + 10);
+        assert!(!d.settled("slack", "C/old") && d.settled("slack", "C/new"));
+        for i in 0..MAX_SEEN + 5 {
+            d.dismiss("slack", &format!("C/{i}"), SEEN_TTL_SECS + 10);
+        }
+        d.prune(SEEN_TTL_SECS + 10);
+        assert_eq!(d.dismissed.len(), MAX_SEEN);
+        let empty = serde_json::to_string(&InboundDoc::default()).unwrap();
+        assert!(
+            !empty.contains("dismissed"),
+            "an older ledger's bytes are unchanged"
+        );
+    }
 
     /* ---- poll failures are counted per source ---- */
 
@@ -1596,6 +1760,7 @@ mod tests {
         },
         setup_url: String::new,
         reannounce: |_| {},
+        tick: |_, _| {},
     };
 
     /// Source pin only: the poll thread needs a real window handle, so what

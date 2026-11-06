@@ -1465,6 +1465,26 @@ const dictionary = {
   "reentry.result.summaryStarted": "{confirmed} reabiertas · {started} iniciadas · {other} por revisar",
   "reentry.result.summaryPendingStarted": "{confirmed} reabiertas · {started} iniciadas · {pending} en curso · {other} por revisar",
   "reentry.result.insertResume": "Insertar el comando de reanudación",
+
+  "mentions.title": "Menciones de Slack",
+  "mentions.globalTitle": "Menciones de Slack · Últimos 30 días",
+  "mentions.hint": "Mensajes que te @mencionan. Deck nunca reacciona, responde ni marca nada como leído en Slack. Enrutar un mensaje inicia la automatización de esa insignia, como si la hubieras añadido tú.",
+  "mentions.dismissAll": "Descartar todo",
+  "mentions.dismissAllConfirm": "¿Descartar las {count} menciones? Saldrán de esta lista y no iniciarán nada.",
+  "mentions.dismiss": "Descartar",
+  "mentions.open": "Abrir en Slack",
+  "mentions.openFailed": "No se pudo abrir el mensaje en el navegador.",
+  "mentions.route": "Enrutar a…",
+  "mentions.routeNamed": "Enrutar la mención de {from}",
+  "mentions.unavailable": "{label} (no disponible para mensajes de Slack)",
+  "mentions.noRoutes": "Aún no hay ninguna automatización de insignia de Slack. Añade una en el cajón Automatizaciones de un proyecto para enrutar menciones.",
+  "mentions.empty": "No hay menciones pendientes.",
+  "mentions.checked": "Última comprobación: {time}",
+  "mentions.checking": "Aún sin comprobar",
+  "mentions.error": "La última comprobación falló ({code}); la lista mostrada es anterior.",
+  "mentions.off": "Slack no está conectado. Conéctalo en Ajustes → Slack.",
+  "mentions.settled": "Esta mención ya se gestionó.",
+  "mentions.failed": "No se pudo completar ({code}).",
 };
 export { dictionary };
 export const es = dictionary;

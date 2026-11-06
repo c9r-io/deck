@@ -318,6 +318,42 @@ Any card can keep its routine turn endings quiet (the card's context menu,
 whose every iteration ends a turn. Input requests and held deliveries stay
 loud (`docs/notifications.md`).
 
+## Slack mentions
+
+On days you would rather stay quiet in Slack, you can decide from Deck
+instead of adding a badge. While Slack is connected (the user token is
+enough), Deck searches once a minute for the messages of the last 30 days
+that explicitly mention you, `<@you>` written by someone else. `@here`,
+`@channel`, user groups and your name typed as plain text do not count.
+The search uses the `search:read` scope the Deck Slack app already has,
+so the app needs no change.
+
+The sidebar entry **Slack mentions** shows how many are open and opens the
+list: author, conversation, time and two lines of the message (click to
+read all of it), with **Open in Slack**, **Route to…** and **Dismiss**.
+Opening the list asks for a fresh search; Slack's index lags a new message
+by about a minute. There is no notification and no Dock badge.
+
+**Route to…** lists your Slack badge rules. Choosing one starts that rule
+on the message exactly as if you had added its badge in Slack. Deck
+creates the same card and the same template steps. The rule's own choices
+apply unchanged: its approval to continue steps automatically, its
+first-send choice, inspection and the finish mode. Your click on this one
+message counts the way your reaction would, and editing or unticking the
+rule withdraws it the same way. A rule the Slack admission refuses (not an
+Agent command, or a template line that starts with the message) is listed
+but cannot be chosen. Adding the same badge in Slack later starts nothing
+again.
+
+**Dismiss** (or **Dismiss all**) sets mentions aside. They start nothing,
+and a badge you add in Slack later still works. A message you already
+badged with one of your rules leaves the list once Deck has seen the badge.
+A reaction Deck has no rule for is invisible to Deck, so dismiss such a
+message yourself.
+
+Deck never writes to Slack: no reaction, reply or read mark. Whether the
+Agent replies in Slack is up to the rule's template.
+
 ## What deck keeps
 
 
@@ -326,6 +362,9 @@ loud (`docs/notifications.md`).
   id (a badge name for a Slack trigger), slot or message key, card id,
   start/end instants and a closed outcome word (running / closed / skipped
   with its reason). Capped at 200 runs.
+  The Slack mentions you dismissed are kept here too, as message
+  identifiers and times only, for 45 days. The mention list itself lives
+  only in memory and is searched again after a restart.
 - `~/.deck/agent-inbox.json`: the items delegated MCP clients handed over —
   the item text and its three context fields (your own delegated content,
   bounded), the client's public id, the operation id, the rule and the

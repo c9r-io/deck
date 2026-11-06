@@ -8,6 +8,10 @@
 //! stripped by `admission::strip_invisible` before the event exists) and
 //! `{{msg.from}}` names the message's author on both — a user's handle or a
 //! bot's name — never the user who added the badge.
+//! The mention search (`search_mentions`, for `slack_mentions.rs`) is a
+//! third reader on the same token: `<@ME>` over the same window, kept only
+//! when the raw text names the user explicitly and someone else wrote it,
+//! built by the same constructor with no badge until the user routes it.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -138,7 +142,7 @@ fn bound(s: String, max: usize) -> String {
 /// native bounded-step proof and the pasted prompt all carry these bytes.
 /// It hides nothing from the person reading the message; it is not a
 /// prompt-injection defence.
-fn badge_event(
+pub(crate) fn badge_event(
     channel: &str,
     ts: &str,
     badge: &str,
@@ -274,6 +278,70 @@ fn search_badge(token: &str, badge: &str) -> Result<Vec<Event>, &'static str> {
             ],
         )?;
         events.extend(events_from_search(&body, badge));
+        let pages = body
+            .pointer("/messages/pagination/page_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(1) as u32;
+        page += 1;
+        if page > pages || page > SEARCH_MAX_PAGES {
+            break;
+        }
+    }
+    Ok(events)
+}
+
+/// Whether `text` (raw mrkdwn, as Slack stores it) names user `me` by an
+/// explicit user mention: `<@ME>` or `<@ME|label>`. `@here`, `@channel`,
+/// user groups and a plain-text name are not a mention of `me`.
+pub(crate) fn mentions_user(text: &str, me: &str) -> bool {
+    let plain = format!("<@{me}>");
+    let labelled = format!("<@{me}|");
+    !me.is_empty() && (text.contains(&plain) || text.contains(&labelled))
+}
+
+/// The messages one `search.messages` page yields that explicitly mention
+/// `me` and that someone else wrote, as badge-less events built by the ONE
+/// constructor (`badge_event`), so a mention routed later carries the same
+/// canonical bytes as the same message badged in Slack.
+pub(crate) fn mentions_from_search(body: &Value, me: &str) -> Vec<Event> {
+    let Some(matches) = body.pointer("/messages/matches").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mine: Vec<&Value> = matches
+        .iter()
+        .filter(|m| {
+            let text = m.get("text").and_then(Value::as_str).unwrap_or("");
+            mentions_user(text, me) && m.get("user").and_then(Value::as_str) != Some(me)
+        })
+        .collect();
+    let page = serde_json::json!({"messages": {"matches": mine}});
+    events_from_search(&page, "")
+}
+
+/// Every message of the last `LOOKBACK_DAYS` that explicitly mentions `me`,
+/// newest first, bounded by the same page limits as a badge search.
+pub(crate) fn search_mentions(token: &str, me: &str) -> Result<Vec<Event>, &'static str> {
+    let query = format!(
+        "<@{me}> after:{}",
+        after_date(now_secs(), inbound::LOOKBACK_DAYS)
+    );
+    let count = SEARCH_PAGE.to_string();
+    let mut events = Vec::new();
+    let mut page = 1u32;
+    loop {
+        let p = page.to_string();
+        let body = call(
+            "search.messages",
+            token,
+            &[
+                ("query", &query),
+                ("sort", "timestamp"),
+                ("sort_dir", "desc"),
+                ("count", &count),
+                ("page", &p),
+            ],
+        )?;
+        events.extend(mentions_from_search(&body, me));
         let pages = body
             .pointer("/messages/pagination/page_count")
             .and_then(Value::as_u64)
@@ -715,6 +783,67 @@ mod tests {
         assert_eq!(ev[2].where_, "group DM");
         let json = serde_json::to_value(&ev[0]).unwrap();
         assert!(json.get("where").is_some() && json.get("where_").is_none());
+    }
+
+    #[test]
+    fn only_explicit_mentions_of_the_user_by_someone_else_are_mentions() {
+        assert!(mentions_user("hi <@U_ME>", "U_ME"));
+        assert!(mentions_user("hi <@U_ME|me>", "U_ME"));
+        assert!(!mentions_user("hi <@U_ME2>", "U_ME"));
+        assert!(!mentions_user(
+            "<!here> <!channel> <!subteam^S1|devs> @me",
+            "U_ME"
+        ));
+        assert!(!mentions_user("<@U_ME>", ""));
+        let body = json!({"ok": true, "messages": {"matches": [
+            {"ts": "1.5", "text": "<@U_ME> please look", "user": "U2", "username": "bob",
+             "channel": {"id": "C1", "name": "dev"}, "permalink": "https://x/p1"},
+            {"ts": "2.5", "text": "<@U_ME> note to self", "user": "U_ME", "username": "me",
+             "channel": {"id": "D1", "name": "D1ABCDEFGH", "is_im": true}},
+            {"ts": "3.5", "text": "<!here> standup", "user": "U2", "channel": {"id": "C1", "name": "dev"}},
+            {"ts": "4.5", "text": "thanks <@U_ME|me>", "user": "U3", "username": "carol",
+             "channel": {"id": "C2", "name": "ops"}, "permalink": "https://x/p4?thread_ts=4.0"}
+        ]}});
+        let ev = mentions_from_search(&body, "U_ME");
+        let keys: Vec<&str> = ev.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, ["C1/1.5", "C2/4.5"]);
+        assert_eq!(ev[0].badge, "");
+        assert_eq!(
+            ev[0],
+            badge_event(
+                "C1",
+                "1.5",
+                "",
+                "<@U_ME> please look",
+                "bob",
+                "#dev",
+                "https://x/p1"
+            )
+        );
+        assert_eq!(ev[1].text, "thanks @me");
+        assert!(mentions_from_search(&json!({"ok": true}), "U_ME").is_empty());
+    }
+
+    #[test]
+    fn the_mention_search_asks_for_the_user_s_id_over_the_lookback_window() {
+        let page = r#"{"ok":true,"messages":{"matches":[{"ts":"1.5","text":"<@U_ME> hi","user":"U2","username":"bob","channel":{"id":"C1","name":"dev"}}],"pagination":{"page_count":1}}}"#;
+        let (found, requests) =
+            with_responses(vec![(200, page)], || search_mentions("xoxp-t", "U_ME"));
+        let found = found.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert!(request.contains("search.messages"));
+        assert!(
+            request.contains(&format!("query={}", encode("<@U_ME> after:"))),
+            "{request}"
+        );
+        assert!(request.contains("sort=timestamp"));
+        let (failed, _) =
+            with_responses(vec![(429, r#"{"ok":false,"error":"ratelimited"}"#)], || {
+                search_mentions("xoxp-t", "U_ME")
+            });
+        assert!(failed.is_err());
     }
 
     #[test]

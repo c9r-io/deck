@@ -1465,6 +1465,26 @@ const dictionary = {
   "reentry.result.summaryStarted": "{confirmed} erneut geöffnet · {started} gestartet · {other} zu prüfen",
   "reentry.result.summaryPendingStarted": "{confirmed} erneut geöffnet · {started} gestartet · {pending} in Bearbeitung · {other} zu prüfen",
   "reentry.result.insertResume": "Resume-Befehl einfügen",
+
+  "mentions.title": "Slack-Erwähnungen",
+  "mentions.globalTitle": "Slack-Erwähnungen · Letzte 30 Tage",
+  "mentions.hint": "Nachrichten, die dich @erwähnen. Deck reagiert, antwortet oder markiert in Slack nie etwas als gelesen. Eine Nachricht weiterzuleiten startet die Automatisierung dieses Badges, als hättest du das Badge selbst gesetzt.",
+  "mentions.dismissAll": "Alle verwerfen",
+  "mentions.dismissAllConfirm": "Alle {count} Erwähnungen verwerfen? Sie verschwinden aus dieser Liste und starten nichts.",
+  "mentions.dismiss": "Verwerfen",
+  "mentions.open": "In Slack öffnen",
+  "mentions.openFailed": "Die Nachricht konnte nicht im Browser geöffnet werden.",
+  "mentions.route": "Weiterleiten an…",
+  "mentions.routeNamed": "Erwähnung von {from} weiterleiten",
+  "mentions.unavailable": "{label} (für Slack-Nachrichten nicht verfügbar)",
+  "mentions.noRoutes": "Noch keine Slack-Badge-Automatisierung. Lege im Automatisierungen-Bereich eines Projekts eine an, um Erwähnungen weiterzuleiten.",
+  "mentions.empty": "Keine offenen Erwähnungen.",
+  "mentions.checked": "Zuletzt geprüft: {time}",
+  "mentions.checking": "Noch nicht geprüft",
+  "mentions.error": "Die letzte Prüfung ist fehlgeschlagen ({code}); die Liste stammt von davor.",
+  "mentions.off": "Slack ist nicht verbunden. Verbinde es unter Einstellungen → Slack.",
+  "mentions.settled": "Diese Erwähnung wurde bereits bearbeitet.",
+  "mentions.failed": "Konnte nicht abgeschlossen werden ({code}).",
 };
 export { dictionary };
 export const de = dictionary;
