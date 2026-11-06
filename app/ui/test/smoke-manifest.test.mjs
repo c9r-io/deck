@@ -41,6 +41,7 @@ const CARRIERS = {
   'reentry-smoke.mjs': ['reentry'],
   'ux-layers-smoke.mjs': ['ux-layers'],
   'terminal-input-smoke.mjs': ['terminal-input'],
+  'terminal-perf-smoke.mjs': ['terminal-perf'],
   'connector-device-smoke.mjs': ['connector-device'],
 };
 

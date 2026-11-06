@@ -1781,6 +1781,29 @@ agent or session is involved. Snapshots are written to
 `<data dir>/evidence/approval-*.png`; judge with
 `scripts/smoke-verdict <data dir> approval`.
 
+
+### Terminal rendering cadence (WKWebView mode `terminal-perf`)
+
+`terminal-perf` (`ui/test/terminal-perf-smoke.mjs`) measures, in one pane of
+an isolated carrier: the idle frame rate (`perf-display`), a wheel event on
+every display frame for 3 s through the production handler (`perf-wheel`:
+`scroll_session` requests per second × 10 and their p95 ms;
+`perf-wheel-paint`: xterm paints per second × 10 and the longest frame gap),
+`seq 1 200000` (`perf-flood`: ms to its last line painted and the longest
+frame gap; `perf-flood-fps`), and 30 keystrokes echoed by `cat`
+(`perf-echo`: median and p95 ms × 10, each to the paint that showed it).
+Every check is a metric. Give the root a private `home/` (a `.zprofile`
+setting PATH) so the pane does not load the operator's shell setup, keep the
+machine otherwise idle (timings move under a concurrent build), then
+`DECK_SMOKE_DATA_DIR=<root> DECK_SMOKE_TMUX_SOCKET=deck-smoke-perf-UNIQUE
+DECK_SMOKE_WKWEBVIEW=terminal-perf app/run.sh` and
+`scripts/smoke-verdict <root> terminal-perf`.
+Baseline (2026-11-06, this Mac, 60 Hz display, three runs each, 0.8.0 and
+1177ec4 alike): wheel 59.4–59.6 requests/s, p95 8–9 ms (one 15); paints
+56–59/s; longest frame 18–27 ms; flood 268–381 ms, longest frame 24–32 ms;
+echo median 7.0 ms, p95 8–11 ms. Read a new run against these, not against
+a fixed threshold.
+
 ## Information layers (unattended, real WKWebView)
 
 `terminal-input` (`ui/test/terminal-input-smoke.mjs`) checks terminal input

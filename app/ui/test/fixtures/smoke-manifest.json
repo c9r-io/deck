@@ -839,6 +839,18 @@
         "agent-live-exception": { "failureOnly": true }
       }
     },
+    "terminal-perf": {
+      "terminal": "done",
+      "checks": {
+        "perf-display": { "metric": true },
+        "perf-wheel": { "metric": true },
+        "perf-wheel-paint": { "metric": true },
+        "perf-flood": { "metric": true },
+        "perf-flood-fps": { "metric": true },
+        "perf-echo": { "metric": true },
+        "perf-exception": { "failureOnly": true }
+      }
+    },
     "terminal-input": {
       "terminal": "done",
       "checks": {

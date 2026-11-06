@@ -220,6 +220,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("reentry", "m.verifyReentry()"),
     ("ux-layers", "m.verifyUxLayers()"),
     ("terminal-input", "m.verifyTerminalInput()"),
+    ("terminal-perf", "m.verifyTerminalPerf()"),
 ];
 
 fn smoke_entry(mode: &str) -> &'static str {

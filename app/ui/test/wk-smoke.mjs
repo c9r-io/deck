@@ -3371,6 +3371,13 @@ export async function verifyAgentLive() {
 
 // Terminal input ordering and target identity through the real IPC and a
 // real pane (terminal-input-smoke.mjs).
+// Terminal rendering cadence: wheel scroll, a large output flood and
+// keystroke echo, as numbers (terminal-perf-smoke.mjs).
+export async function verifyTerminalPerf() {
+  const { runTerminalPerfSmoke } = await import('./terminal-perf-smoke.mjs');
+  await runTerminalPerfSmoke();
+}
+
 export async function verifyTerminalInput() {
   const { runTerminalInputSmoke } = await import('./terminal-input-smoke.mjs');
   await runTerminalInputSmoke();
