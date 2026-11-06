@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.17 — 2026-11-06 (Nightly)
+
+- Slack mentions: a new sidebar entry lists the messages of the last 30
+  days that explicitly @mention you, so you can decide about them in Deck
+  without touching Slack. The selected mention is shown in full with what
+  you need to judge it: a reply comes with its thread's first message and
+  the replies just before it, any other mention with the messages before
+  it, with names and file names. Route one to a Slack badge automation —
+  it starts exactly as if you had added that badge in Slack — or dismiss
+  it. Deck never reacts, replies or marks anything read in Slack, and the
+  entry shows only a count: no notification, no Dock badge. It uses the
+  Slack user token you already have; nothing to reinstall.
+
 ## 0.8.16 — 2026-11-06 (Nightly)
 
 - A shell-service restart no longer fails because an Agent is slow to
