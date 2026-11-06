@@ -328,13 +328,25 @@ that explicitly mention you, `<@you>` written by someone else. `@here`,
 The search uses the `search:read` scope the Deck Slack app already has,
 so the app needs no change.
 
-The sidebar entry **Slack mentions** shows how many are open and opens the
-list: author, conversation, time and two lines of the message (click to
-read all of it), with **Open in Slack**, **Route to…** and **Dismiss**.
-Opening the list asks for a fresh search; Slack's index lags a new message
-by about a minute. There is no notification and no Dock badge.
+The sidebar entry **Slack mentions** shows how many are open and opens two
+panes. On the left is the list: author, conversation, time and the first
+line of each mention. On the right is the selected mention in full, with
+what it needs to be judged without opening Slack:
 
-**Route to…** lists your Slack badge rules. Choosing one starts that rule
+- for a reply in a thread, the thread's first message and the replies
+  just before it;
+- for any other mention, the last messages before it in the conversation.
+
+People appear by name and attached files by file name. Below the mention are
+**Open in Slack**, **Route to…** and **Dismiss**. ↑/↓ in the list move
+between mentions; after a route or a dismissal the next one is selected.
+The context is read once per mention with the read scopes the Deck Slack app
+already has and is kept only in memory. Opening the list asks for a fresh
+search; Slack's index lags a new message by about a minute. There is no
+notification and no Dock badge.
+
+**Route to…** lists your Slack badge rules, each shown with the emoji
+itself (👀, 🔥, …); a custom workspace emoji keeps its `:name:`. Choosing one starts that rule
 on the message exactly as if you had added its badge in Slack. Deck
 creates the same card and the same template steps. The rule's own choices
 apply unchanged: its approval to continue steps automatically, its
@@ -343,7 +355,8 @@ message counts the way your reaction would, and editing or unticking the
 rule withdraws it the same way. A rule the Slack admission refuses (not an
 Agent command, or a template line that starts with the message) is listed
 but cannot be chosen. Adding the same badge in Slack later starts nothing
-again.
+again. What is routed is the mention itself, as a badge in Slack would carry
+it; the context shown beside it is for you.
 
 **Dismiss** (or **Dismiss all**) sets mentions aside. They start nothing,
 and a badge you add in Slack later still works. A message you already

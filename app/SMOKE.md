@@ -907,6 +907,43 @@ channel the bot is a member of, and someone — or a driver following
 - [ ] Judge each launch with `scripts/smoke-verdict <data dir> <mode>` before
       the next one, then delete the sandbox app (that revokes its tokens).
 
+### Slack mentions against the real service
+
+`mentions-live` is the Slack mentions view in the real window against a
+sandbox workspace: the user token through Settings, two badge rules through
+the editor (one custom badge, one standard emoji), real mentions found by
+Slack's search, their context read, one routed to a card, one dismissed,
+and the user's own message never listed. It needs a sandbox workspace the
+Deck Slack app is installed in, the user token, and a driver able to post as
+someone else there: a Slackbot reminder (`/remind #channel to @you … in 1
+minute`) is a message written by Slackbot that mentions you.
+
+- [ ] Prepare `/private/tmp/deck-mentions-<12 hex>/` (mode 700) with private
+      `home/` (its `.zprofile` pins `PATH` to `bin/` and the system paths),
+      `bin/claude` (a harmless stand-in: it prints a line and reads stdin),
+      `work/`, `translation-fixture/scenario` = `mentions-<12 hex>`, and
+      `params` (mode 600): `{"user": "xoxp-…", "me": "U…", "marker": "<6–16
+      lowercase letters or digits>"}`, hex-encoded, lines of at most 64.
+      Launch with that root as `DECK_SMOKE_DATA_DIR`, a
+      `deck-smoke-mentions-<12 hex>` socket and
+      `DECK_SMOKE_WKWEBVIEW=mentions-live`. The carrier's home is the root's
+      `home/`, so the card's `claude` is the stand-in, never Claude Code.
+- [ ] Remove `params` once `mentions-params` is logged. Each
+      `smoke-check mentions-want a=<n> b=<seconds>` asks for ONE message
+      holding `DECKLIVE-<marker> <n>` that mentions the user: 1 and 2 written
+      by someone else (a Slackbot reminder), 3 by the user.
+- [ ] Expected: the entry appears after the first search; 1 is listed and 3
+      is not; 1's context is read (`mentions-context` a = messages before it,
+      b = 1 for a thread) with names in place of user ids; the route menu
+      shows 👀 for the `eyes` rule and `:decklive:` for the custom one; the
+      route creates one card whose two template steps are queued as external
+      rows and not sent; the same mention is refused `settled`; 2 is
+      dismissed and stays gone after a fresh search; 3 never appears.
+- [ ] After `done`: no reaction on any `DECKLIVE-<marker>` message
+      (`reactions.get` with the same token), then stop the carrier and its
+      tmux server by verified pid and remove the root. Judge with
+      `scripts/smoke-verdict <root> mentions-live`.
+
 ### Claude hook switches on the global settings file
 
 `hooks-live` clicks the two Claude switches of Settings → Agents & notifications

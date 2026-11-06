@@ -1485,6 +1485,12 @@ const dictionary = {
   "mentions.off": "Slack이 연결되어 있지 않습니다. 설정 → Slack에서 연결하세요.",
   "mentions.settled": "이 멘션은 이미 처리되었습니다.",
   "mentions.failed": "완료하지 못했습니다({code}).",
+  "mentions.listLabel": "멘션",
+  "mentions.contextThread": "스레드",
+  "mentions.contextBefore": "이전 대화",
+  "mentions.theMention": "나를 멘션한 메시지",
+  "mentions.contextLoading": "대화를 읽는 중…",
+  "mentions.files": "파일: {names}",
 };
 export { dictionary };
 export const ko = dictionary;

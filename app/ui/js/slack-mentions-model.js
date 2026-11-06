@@ -6,25 +6,31 @@
 //   mentions only, newest first. Nothing here filters, stores or reorders
 //   it; the view paints what it was given.
 // - A route is one of the user's Slack badge rules (`source: 'slack'`), in
-//   badge order. A rule whose project is gone, or whose command or template
+//   badge-name order, its badge shown as the emoji Slack shows (slack-emoji.js)
+//   or, for a custom one, as `:name:`. A rule whose project is gone, or whose command or template
 //   the channel admission refuses (`channelBlockReason`, the same check a
 //   badge item passes in inbound.js), is listed but cannot be chosen, so the
 //   menu says why instead of failing after the click.
+// - Selection: after mentions leave the list, the next one is selected
+//   (`mentionAfter`), so deciding one by one needs no extra click.
 // - The count is the number of open mentions, shown beside the sidebar
 //   entry and nowhere else (no notification, no Dock badge).
 // - Error words from the backend are closed: `settled` has its own sentence,
 //   every other word is named inside the generic one.
 
-/* the routes the menu offers, one per Slack badge rule */
+import { slackEmoji } from './slack-emoji.js';
+
+/* the routes the menu offers, one per Slack badge rule; a standard badge is
+   shown as its emoji (read faster than its name), a custom one as `:name:` */
 export function mentionRoutes(rules, projects, blockReason) {
   return (Array.isArray(rules) ? rules : [])
     .filter(rule => rule?.source === 'slack' && rule.badge)
     .map(rule => {
       const project = (projects || []).find(value => value.id === rule.projectId);
-      const label = `:${rule.badge}: → ${project?.name || '?'} / ${rule.template || '—'}`;
-      return { id: rule.id, label, disabled: !project || !!blockReason(rule, project) };
+      const label = `${slackEmoji(rule.badge) || `:${rule.badge}:`} → ${project?.name || '?'} / ${rule.template || '—'}`;
+      return { id: rule.id, badge: rule.badge, label, disabled: !project || !!blockReason(rule, project) };
     })
-    .sort((a, b) => a.label.localeCompare(b.label));
+    .sort((a, b) => a.badge.localeCompare(b.badge));
 }
 
 /* the open count the sidebar shows; nothing while Slack is off */
@@ -45,9 +51,21 @@ export function mentionErrorKey(message) {
   return String(message) === 'settled' ? 'mentions.settled' : 'mentions.failed';
 }
 
-/* whether two paints show the same rows and routes (a repaint would
-   otherwise close a menu the user has open) */
+/* whether two paints show the same list rows (a repaint would otherwise
+   drop the focus the user has in the list); a row changes when its names
+   arrive with its context */
 export function mentionSignature(view, routes) {
-  return JSON.stringify([mentionCount(view) ? view.items.map(item => item.key) : [],
+  return JSON.stringify([mentionCount(view) ? view.items.map(item => [item.key, item.from, item.text]) : [],
     routes.map(route => [route.id, route.label, route.disabled])]);
+}
+
+/* the mention to select once `keys` left the list: the first one after the
+   first that left, else the last before it, else none */
+export function mentionAfter(items, keys) {
+  const list = Array.isArray(items) ? items : [];
+  const at = list.findIndex(item => keys.includes(item.key));
+  if (at < 0) return list[0]?.key ?? null;
+  const rest = list.filter(item => !keys.includes(item.key));
+  const after = list.slice(at).find(item => !keys.includes(item.key));
+  return (after || rest[rest.length - 1])?.key ?? null;
 }

@@ -1491,6 +1491,12 @@ const dictionary = {
   "mentions.off": "Slack 未连接。请在 设置 → Slack 中连接。",
   "mentions.settled": "这条提及已经处理过了。",
   "mentions.failed": "未能完成（{code}）。",
+  "mentions.listLabel": "提及",
+  "mentions.contextThread": "帖子",
+  "mentions.contextBefore": "之前的对话",
+  "mentions.theMention": "提及你的消息",
+  "mentions.contextLoading": "正在读取对话…",
+  "mentions.files": "文件：{names}",
 };
 export { dictionary };
 export const zhHans = dictionary;

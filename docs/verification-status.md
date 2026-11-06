@@ -15,7 +15,8 @@
 - 收集：Slack 服务的每轮 `tick`（`extensions::ServiceIntegration::tick`，新增），最多每 60 秒一次 `search.messages` `<@ME> after:<30 天>`；打开列表时要求刷新（最短间隔 10 秒）。原文必须含 `<@ME>` 或 `<@ME|…>`，作者不是自己。`search:read` 原本就在用户权限里，Slack App 不用改。
 - 存储：搜索结果只在内存。用户忽略的写进 `inbound.json` 的 `dismissed`（只有 `(slack, channel/ts)` 和时间，与 `seen` 同样 45 天、上限 5000）；路由过的就是普通的 `seen`。
 - 路由：`slack_mention_route` 用同一个构造函数（`badge_event`）生成所选表情规则的事件，交给 `inbound::offer`（live）。之后建卡、模板、审批、首条发送、收尾都走原来的表情路径，授权仍是 `TriggerClass::SlackBadge`（用户确认：对这一条消息的点击等同于加表情）。按 `(source, key, badge)` 去重，之后在 Slack 加同一表情不会再开卡；忽略不挡之后的表情。
-- 前端：`slack-mentions.js`（视图，叶子模块）、`slack-mentions-model.js`（路由选项、计数、状态句）；6 种语言 19 个字符串；新的界面事件 `mentions`（routed / route-refused / dismissed）和监听目标 `slack-mentions-changed`。
+- 前端：`slack-mentions.js`（视图，叶子模块）、`slack-mentions-model.js`（路由选项、计数、状态句、路由后选中下一条）；6 种语言 25 个字符串；新的界面事件 `mentions`（routed / route-refused / dismissed）和监听目标 `slack-mentions-changed`。
+- 第二版（用户看了真实窗口后提出：要看懂请求还得去 Slack，违背减少往返的目标）：两栏，左栏列表，右栏是选中提及的全文加上下文。帖子里的回复带帖子首条和它之前最多 3 条回复，其他提及带对话里之前最多 3 条消息；用户 ID 换成名字，附件列出文件名（`inbound_slack::mention_context`，只读，用已有的读权限，每条只读一次，每轮最多 10 条，只在内存）。路由出去的仍是原消息，和 Slack 表情触发逐字节相同；上下文只给人看。↑/↓ 切换，路由或忽略后自动选中下一条。路由菜单里标准表情显示为 emoji（`slack-emoji.js`，由 `scripts/gen-slack-emoji.py` 从 iamcal/emoji-data e77759c 生成，MIT，1980 个名字）；自定义表情没有 `emoji:read` 权限，仍显示 `:名字:`。
 
 验证：
 - 搜索写法（原生，只读，本机 Keychain 里的沙盒工作区 user token；用户发了两条 @自己 的消息）：`<@ID>` 搜到频道顶层消息、帖子里的回复和发给自己的私信，共 3 条；新消息约 1 分钟后才能搜到；返回结果里没有表情列表（只有 `no_reactions`）。
@@ -23,7 +24,13 @@
 - 前端：入口显隐和计数；进入视图先离开会话视图并要求刷新；路由和忽略各只调用一次后端，不碰队列和看板；拒绝时说明原因、保留该行；全部忽略要确认；没有可选规则、检查失败、Slack 未连接都有提示。
 
 门禁（本机）：fmt；CI 形式 clippy 0 告警；`cargo test --workspace --all-targets --all-features --locked`（隔离 HOME、空 TMPDIR）1651 项通过、0 失败（14 项按设计忽略）；`scripts/ui-tests` 952 项，新模块覆盖率 100% 行；`check.mjs`、JS 语法 209 个模块；扩展目录 current。TMPDIR 为空，tmux socket 目录只剩正式的 `deck`。未跑 llvm-cov 形式。
-UNRUN：真实窗口（WKWebView smoke 未加模式）；真实工作区里路由一条提及并建卡；工作 Mac；发布载体。
+真实环境（本机，隔离载体，沙盒工作区 Orchestrator FR114 Sandbox A，用户授权浏览器自动化）：新增 WK 模式 `mentions-live`（`ui/test/mentions-live-smoke.mjs`，步骤见 `app/SMOKE.md`）。载体用独立数据目录、tmux socket 和 HOME，卡片里的 `claude` 是无害的替身；user token 从设置页粘贴，只存在进程内存；两条表情规则由编辑器保存。驱动通过专用 Brave（独立配置文件，CDP 9334，用户登录一次）发消息：第 1、2 条是 Slackbot 提醒（作者是 Slackbot，原文含 `<@用户>`），第 3 条是用户自己发的 @自己。
+- 第 1–3 轮失败在测试脚本本身：开 Slack 的确认框没点；WKWebView 的 `children` 是 HTMLCollection；`dropdown.js` 把 `<select>` 包了一层。产品代码未改。
+- 第 4 轮（第一版界面）PASS 12/12：列出、自己的不列、路由建卡（2 条外部行，未授权、未发送）、二次路由 `settled`、忽略后刷新仍隐藏；三条消息上 0 个表情（Deck 没写 Slack）。
+- 第 5 轮（两栏加上下文）PASS 13/13：`mentions-context` 读到频道里之前 3 条消息，名字已替换 ID；其余同上；0 个表情。随后用户在真实窗口看了两条很长的 Slackbot 请求（一条中文、前面带两条多行长消息作为上下文；一条长英文单段），确认效果可以。
+- 第 6 轮（加 emoji，多一条 `eyes` 规则）PASS 14/14：`mentions-emoji` 菜单里 `eyes` 显示为 👀、自定义的显示 `:decklive:`；其余同第 5 轮；0 个表情。之后载体、tmux 服务、隔离目录和专用浏览器按核对过的 pid 停止并删除，正式的 `deck` socket 未动；沙盒频道里的测试消息保留。
+门禁（第二版，本机）：fmt；CI 形式 clippy 0 告警；`cargo test --workspace --all-targets --all-features --locked`（隔离 HOME、空 TMPDIR）1654 项通过、0 失败（14 项按设计忽略）；`scripts/ui-tests` 952 项；`check.mjs` 89 个模块、JS 语法 211 个；扩展目录 current。TMPDIR 为空，tmux socket 目录只剩正式的 `deck`。未跑 llvm-cov 形式。
+UNRUN：帖子里的回复由别人提及（沙盒里只有用户一人，Slackbot 提醒不能发进帖子；帖子上下文只由单元测试覆盖）；自定义表情图片；工作 Mac；发布载体。
 
 ## 本轮 升级重启失败：两个 Agent 退出慢，整次重启失败，已退出的 Claude 也没有重入
 

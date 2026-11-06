@@ -3429,6 +3429,15 @@ export async function verifyChannelLive() {
   await runChannelLiveSmoke();
 }
 
+// The Slack mentions view against a real sandbox workspace: the operator's
+// user token through Settings, a badge rule through the editor, real
+// mentions listed, one routed to a card and one dismissed, the user's own
+// message never listed (mentions-live-smoke.mjs).
+export async function verifyMentionsLive() {
+  const { runMentionsLiveSmoke } = await import('./mentions-live-smoke.mjs');
+  await runMentionsLiveSmoke();
+}
+
 export async function verifyChannelLiveReplay() {
   const { runChannelLiveReplaySmoke } = await import('./channel-live-smoke.mjs');
   await runChannelLiveReplaySmoke();

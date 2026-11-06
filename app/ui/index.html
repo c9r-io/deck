@@ -201,7 +201,10 @@
       <p class="attention-hint" data-i18n="mentions.hint">Messages that @mention you. Deck never reacts, replies or marks anything read in Slack. Routing a message starts that badge's automation, as if you had added the badge.</p>
       <p class="mentions-status" id="mentions-status"></p>
       <p class="mentions-no-routes" id="mentions-no-routes" data-i18n="mentions.noRoutes" hidden>No Slack badge automation yet. Add one in a project's Automations drawer to route mentions.</p>
-      <div id="mentions-list" tabindex="-1"></div>
+      <div class="mentions-panes">
+        <div id="mentions-list" role="listbox" tabindex="0" data-i18n-aria-label="mentions.listLabel" aria-label="Mentions"></div>
+        <section id="mentions-detail" aria-live="polite"></section>
+      </div>
     </section>
     <section id="attention-view" aria-labelledby="attention-title" hidden>
       <div class="attention-head"><h1 id="attention-title" data-i18n="attention.globalTitle">Needs attention · All projects</h1><button class="btn" id="attention-back" type="button"></button></div>

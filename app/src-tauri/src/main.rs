@@ -195,6 +195,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("channel-first-send", "m.verifyChannelFirstSend()"),
     ("channel-live", "m.verifyChannelLive()"),
     ("channel-live-replay", "m.verifyChannelLiveReplay()"),
+    ("mentions-live", "m.verifyMentionsLive()"),
     ("hooks-live", "m.verifyHooksLive()"),
     ("pi-live", "m.verifyPiLive()"),
     ("pi-layout", "m.verifyPiLayout()"),

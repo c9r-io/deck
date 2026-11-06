@@ -1485,6 +1485,12 @@ const dictionary = {
   "mentions.off": "Slack ist nicht verbunden. Verbinde es unter Einstellungen → Slack.",
   "mentions.settled": "Diese Erwähnung wurde bereits bearbeitet.",
   "mentions.failed": "Konnte nicht abgeschlossen werden ({code}).",
+  "mentions.listLabel": "Erwähnungen",
+  "mentions.contextThread": "Thread",
+  "mentions.contextBefore": "Vorher im Gespräch",
+  "mentions.theMention": "Die Nachricht, die dich erwähnt",
+  "mentions.contextLoading": "Gespräch wird gelesen …",
+  "mentions.files": "Dateien: {names}",
 };
 export { dictionary };
 export const de = dictionary;

@@ -12,6 +12,10 @@
 //! third reader on the same token: `<@ME>` over the same window, kept only
 //! when the raw text names the user explicitly and someone else wrote it,
 //! built by the same constructor with no badge until the user routes it.
+//! Its reader (`mention_context`) reads the mention's thread
+//! (`conversations.replies`) or the conversation up to it
+//! (`conversations.history`) and resolves names (`users.info`): read-only,
+//! never part of a routed event.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -352,6 +356,216 @@ pub(crate) fn search_mentions(token: &str, me: &str) -> Result<Vec<Event>, &'sta
         }
     }
     Ok(events)
+}
+
+/* ---------- what a mention's reader sees ---------- */
+
+/// How many earlier messages a mention brings along (besides a thread's
+/// first message), and how long each may be.
+pub(crate) const CONTEXT_BEFORE: usize = 3;
+const CONTEXT_TEXT: usize = 4 * 1024;
+const CONTEXT_FILES: usize = 8;
+
+/// One message around a mention, as the reader sees it.
+#[derive(Clone, Debug, Default, serde::Serialize, PartialEq)]
+pub(crate) struct ContextMessage {
+    pub(crate) from: String,
+    pub(crate) text: String,
+    pub(crate) at: u64,
+    pub(crate) files: Vec<String>,
+}
+
+/// What the reader of a mention needs to judge it without opening Slack:
+/// the mention itself with names in place of user ids and its files, and
+/// the messages before it — a thread's first message and the replies just
+/// before, or the conversation's last messages before it.
+#[derive(Clone, Debug, Default, serde::Serialize, PartialEq)]
+pub(crate) struct MentionContext {
+    pub(crate) from: String,
+    pub(crate) thread: bool,
+    pub(crate) before: Vec<ContextMessage>,
+    pub(crate) text: String,
+    pub(crate) files: Vec<String>,
+}
+
+/// `<@ID>` → `<@ID|name>` for every user id `name` knows, so the plain text
+/// reads as names. Labelled mentions are left as written.
+pub(crate) fn with_names(text: &str, name: &mut dyn FnMut(&str) -> String) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<@") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        match after.find('>') {
+            Some(end)
+                if !after[..end].contains('|')
+                    && after[..end].bytes().all(|b| b.is_ascii_alphanumeric()) =>
+            {
+                let id = &after[..end];
+                out.push_str(&format!("<@{id}|{}>", name(id)));
+                rest = &after[end + 1..];
+            }
+            _ => {
+                out.push_str("<@");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn ts_secs(ts: &str) -> u64 {
+    ts.split('.')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}
+
+fn ts_order(ts: &str) -> (u64, u64) {
+    let (a, b) = ts.split_once('.').unwrap_or((ts, "0"));
+    (a.parse().unwrap_or(0), b.parse().unwrap_or(0))
+}
+
+fn file_names(m: &Value) -> Vec<String> {
+    m.get("files")
+        .and_then(Value::as_array)
+        .map(|files| {
+            files
+                .iter()
+                .filter_map(|f| {
+                    f.get("name")
+                        .or_else(|| f.get("title"))
+                        .and_then(Value::as_str)
+                })
+                .take(CONTEXT_FILES)
+                .map(label)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn reader_text(m: &Value, name: &mut dyn FnMut(&str) -> String, max: usize) -> String {
+    let raw = m.get("text").and_then(Value::as_str).unwrap_or("");
+    bound(clip(&with_names(raw, name)), max)
+}
+
+fn reader_from(m: &Value, name: &mut dyn FnMut(&str) -> String) -> String {
+    match author(m) {
+        Author::Name(n) => label(n),
+        Author::User(id) => label(&name(id)),
+        Author::Unknown => "?".to_string(),
+    }
+}
+
+/// The context of the mention at `ts` from the messages of its thread
+/// (`thread`) or of its conversation around it, in any order.
+pub(crate) fn context_from(
+    messages: &[Value],
+    ts: &str,
+    thread: bool,
+    name: &mut dyn FnMut(&str) -> String,
+) -> MentionContext {
+    let mut sorted: Vec<&Value> = messages
+        .iter()
+        .filter(|m| m.get("ts").and_then(Value::as_str).is_some())
+        .collect();
+    sorted.sort_by_key(|m| ts_order(m["ts"].as_str().unwrap_or("")));
+    let own = sorted.iter().find(|m| m["ts"].as_str() == Some(ts));
+    let earlier: Vec<&Value> = sorted
+        .iter()
+        .copied()
+        .filter(|m| ts_order(m["ts"].as_str().unwrap_or("")) < ts_order(ts))
+        .collect();
+    let mut picked: Vec<&Value> = Vec::new();
+    if thread {
+        if let Some(root) = earlier.first() {
+            picked.push(root);
+        }
+        let replies = &earlier[earlier.len().min(1)..];
+        picked.extend(&replies[replies.len().saturating_sub(CONTEXT_BEFORE)..]);
+    } else {
+        picked.extend(&earlier[earlier.len().saturating_sub(CONTEXT_BEFORE)..]);
+    }
+    MentionContext {
+        from: own.map(|m| reader_from(m, name)).unwrap_or_default(),
+        thread,
+        before: picked
+            .iter()
+            .map(|m| ContextMessage {
+                from: reader_from(m, name),
+                text: reader_text(m, name, CONTEXT_TEXT),
+                at: ts_secs(m["ts"].as_str().unwrap_or("")),
+                files: file_names(m),
+            })
+            .collect(),
+        text: own
+            .map(|m| reader_text(m, name, MAX_TEXT))
+            .unwrap_or_default(),
+        files: own.map(|m| file_names(m)).unwrap_or_default(),
+    }
+}
+
+/// The thread a permalink names (`thread_ts=`), when it is not the message itself.
+pub(crate) fn thread_of(link: &str, ts: &str) -> Option<String> {
+    let at = link.find("thread_ts=")? + "thread_ts=".len();
+    let thread: String = link[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    (!thread.is_empty() && thread != ts).then_some(thread)
+}
+
+/// Read a mention's context from Slack: its thread, or the conversation's
+/// messages up to it. Names are resolved through `names` (a cache the
+/// caller keeps). Read-only.
+pub(crate) fn mention_context(
+    token: &str,
+    channel: &str,
+    ts: &str,
+    link: &str,
+    names: &mut HashMap<String, String>,
+) -> Result<MentionContext, &'static str> {
+    let thread = thread_of(link, ts);
+    let body = match &thread {
+        Some(root) => call(
+            "conversations.replies",
+            token,
+            &[
+                ("channel", channel),
+                ("ts", root),
+                ("latest", ts),
+                ("inclusive", "true"),
+                ("limit", "200"),
+            ],
+        )?,
+        None => {
+            let limit = (CONTEXT_BEFORE + 1).to_string();
+            call(
+                "conversations.history",
+                token,
+                &[
+                    ("channel", channel),
+                    ("latest", ts),
+                    ("inclusive", "true"),
+                    ("limit", &limit),
+                ],
+            )?
+        }
+    };
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut cache = Names {
+        users: std::mem::take(names),
+        channels: HashMap::new(),
+    };
+    let mut name = |id: &str| user_name(token, &mut cache, id);
+    let context = context_from(&messages, ts, thread.is_some(), &mut name);
+    *names = cache.users;
+    Ok(context)
 }
 
 /* ---------- live path helpers (need the user token) ---------- */
@@ -844,6 +1058,125 @@ mod tests {
                 search_mentions("xoxp-t", "U_ME")
             });
         assert!(failed.is_err());
+    }
+
+    #[test]
+    fn a_mention_s_reader_gets_its_thread_or_the_messages_before_it_with_names() {
+        let mut name = |id: &str| match id {
+            "UME" => "me".to_string(),
+            "U2" => "bob".to_string(),
+            other => other.to_lowercase(),
+        };
+        let thread = json!([
+            {"ts": "10.0", "user": "U3", "text": "migration fails on staging"},
+            {"ts": "11.0", "user": "U4", "text": "rolled back once"},
+            {"ts": "12.0", "user": "U5", "text": "still broken"},
+            {"ts": "13.0", "user": "U6", "text": "logs attached", "files": [{"name": "a.log"}]},
+            {"ts": "14.0", "user": "U7", "text": "any idea?"},
+            {"ts": "15.0", "user": "U2", "text": "<@UME> can you look?", "files": [{"name": "migration.log"}]},
+            {"ts": "16.0", "user": "U3", "text": "after the mention"}
+        ]);
+        let c = context_from(thread.as_array().unwrap(), "15.0", true, &mut name);
+        assert!(c.thread);
+        let texts: Vec<&str> = c.before.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "migration fails on staging",
+                "still broken",
+                "logs attached",
+                "any idea?"
+            ],
+            "the thread's first message and the replies just before"
+        );
+        assert_eq!(c.before[2].files, ["a.log"]);
+        assert_eq!(c.before[0].from, "u3");
+        assert_eq!(c.before[0].at, 10);
+        assert_eq!(
+            (c.from.as_str(), c.text.as_str()),
+            ("bob", "@me can you look?")
+        );
+        assert_eq!(c.files, ["migration.log"]);
+
+        let channel = json!([
+            {"ts": "5.0", "user": "U3", "text": "one"},
+            {"ts": "3.0", "username": "deploy-bot", "text": "two"},
+            {"ts": "6.0", "user": "U2", "text": "hey <@UME|me>"}
+        ]);
+        let c = context_from(channel.as_array().unwrap(), "6.0", false, &mut name);
+        assert!(!c.thread);
+        let order: Vec<(&str, &str)> = c
+            .before
+            .iter()
+            .map(|m| (m.from.as_str(), m.text.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            [("deploy-bot", "two"), ("u3", "one")],
+            "oldest first"
+        );
+        assert_eq!(c.text, "hey @me", "a labelled mention is left as written");
+        assert_eq!(
+            context_from(&[], "6.0", false, &mut name),
+            MentionContext::default()
+        );
+    }
+
+    #[test]
+    fn names_replace_ids_and_a_permalink_names_its_thread() {
+        let mut name = |id: &str| format!("name-{id}");
+        assert_eq!(
+            with_names("hi <@U1> and <@U2|bo> <@", &mut name),
+            "hi <@U1|name-U1> and <@U2|bo> <@"
+        );
+        assert_eq!(with_names("<@U1 x> <!here>", &mut name), "<@U1 x> <!here>");
+        assert_eq!(
+            thread_of("https://x/p1?thread_ts=10.0&cid=C1", "15.0").as_deref(),
+            Some("10.0")
+        );
+        assert_eq!(
+            thread_of("https://x/p1?thread_ts=15.0&cid=C1", "15.0"),
+            None
+        );
+        assert_eq!(thread_of("https://x/p1", "15.0"), None);
+    }
+
+    #[test]
+    fn a_mention_s_context_is_one_read_of_its_thread_or_conversation() {
+        let replies = r#"{"ok":true,"messages":[{"ts":"10.0","user":"U3","text":"root"},{"ts":"15.0","user":"U2","text":"<@UME> look"}]}"#;
+        let carol = r#"{"ok":true,"user":{"name":"carol"}}"#;
+        let bob = r#"{"ok":true,"user":{"name":"bob"}}"#;
+        let me = r#"{"ok":true,"user":{"name":"me"}}"#;
+        let mut names = HashMap::new();
+        let (c, requests) = with_responses(
+            vec![(200, replies), (200, bob), (200, carol), (200, me)],
+            || {
+                mention_context(
+                    "xoxp-t",
+                    "C1",
+                    "15.0",
+                    "https://x/p?thread_ts=10.0",
+                    &mut names,
+                )
+            },
+        );
+        let c = c.unwrap();
+        assert!(requests[0].contains("conversations.replies") && requests[0].contains("ts=10.0"));
+        assert_eq!(c.before[0].from, "carol");
+        assert_eq!(c.text, "@me look");
+        assert_eq!(names.len(), 3, "names are kept for the next read");
+        let history = r#"{"ok":true,"messages":[{"ts":"15.0","user":"U2","text":"hi"}]}"#;
+        let (c, requests) = with_responses(vec![(200, history)], || {
+            mention_context("xoxp-t", "C1", "15.0", "https://x/p", &mut names)
+        });
+        assert!(
+            requests[0].contains("conversations.history") && requests[0].contains("latest=15.0")
+        );
+        assert_eq!(
+            c.unwrap().from,
+            "bob",
+            "a known name is not asked for again"
+        );
     }
 
     #[test]

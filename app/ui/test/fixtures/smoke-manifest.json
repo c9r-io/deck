@@ -296,6 +296,25 @@
         "live-authority": {"a": 1, "b": 2}
       }
     },
+    "mentions-live": {
+      "terminal": "done",
+      "checks": {
+        "mentions-clean": {},
+        "mentions-params": {"a": 3},
+        "mentions-credentials": {},
+        "mentions-rule": {},
+        "mentions-entry": {},
+        "mentions-want": {"a": [1, 2, 3]},
+        "mentions-listed": {},
+        "mentions-context": {},
+        "mentions-emoji": {"a": 3},
+        "mentions-routed": {"a": 1, "b": 2},
+        "mentions-once": {},
+        "mentions-dismissed": {},
+        "mentions-self": {},
+        "mentions-failed": { "failureOnly": true }
+      }
+    },
     "channel-live-replay": {
       "terminal": "done",
       "checks": {

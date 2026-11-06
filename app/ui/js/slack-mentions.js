@@ -4,17 +4,25 @@
 // # Contract
 // - Backend-owned list. Rows come from `slack_mentions` (slack_mentions.rs):
 //   the open mentions of the last 30 days, newest first, with the state of
-//   the last search. The content-free `slack-mentions-changed` event and
-//   opening the view (which also asks for a fresh search) are the only
-//   pulls; nothing is cached across launches here.
+//   the last search, and for each mention, once read, its context (its
+//   thread's first message and the replies just before it, or the
+//   conversation's messages before it, with names and file names). The
+//   content-free `slack-mentions-changed` event and opening the view (which
+//   also asks for a fresh search) are the only pulls; nothing is cached
+//   across launches here.
+// - Read here, decide here. Two panes: the list on the left (author, where,
+//   when, the first line), the selected mention on the right in full with
+//   its context and its three actions, so the user can judge a request
+//   without opening Slack. ↑/↓ in the list move the selection; after a route
+//   or a dismissal the next mention is selected.
 // - Slack stays silent. Nothing in this view writes to Slack. "Open in
 //   Slack" opens the message's permalink in the browser.
-// - Routing is one choice: the row's menu lists the user's Slack badge rules
+// - Routing is one choice: the menu lists the user's Slack badge rules
 //   (slack-mentions-model.js `mentionRoutes`); choosing one calls
 //   `slack_mention_route`, which hands the message to the dispatcher as that
 //   rule's badge item. The card, its steps and the "created" notice then
-//   come from inbound.js exactly as for a badge added in Slack. The row
-//   leaves the list at once; a refusal says why and leaves it.
+//   come from inbound.js exactly as for a badge added in Slack; the context
+//   shown here is for the reader and is not part of what is routed.
 // - Dismissing sets a mention aside for good (`slack_mention_dismiss`):
 //   it starts nothing and never stops a badge the user adds in Slack later.
 //   "Dismiss all" asks once.
@@ -27,19 +35,22 @@ import { $, ctx, inv, listen, state, store, uev } from './state.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { channelBlockReason } from './channel-model.js';
-import { mentionCount, mentionErrorKey, mentionRoutes, mentionSignature, mentionStatus } from './slack-mentions-model.js';
+import { mentionAfter, mentionCount, mentionErrorKey, mentionRoutes, mentionSignature, mentionStatus } from './slack-mentions-model.js';
 
 let render, switchProject, leaveSessionView, closeBuffer, provider;
 let view = null;
-let signature = '';
+let selected = null;
+let listSignature = '';
+let detailSignature = '';
 let started = null;
-const expanded = new Set();
 
 const DISMISS_MAX = 400;
 const when = at => formatDateTime(new Date(at * 1000),
   { weekday: 'short', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 const routes = () => mentionRoutes(ctx.settings?.inbound?.rules, store.projects, channelBlockReason);
+const items = () => (mentionCount(view) ? view.items : []);
+const current = () => items().find(item => item.key === selected) || null;
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -66,22 +77,46 @@ function routeMenu(item, choices) {
   return select;
 }
 
-function row(item, choices) {
-  const node = el('div', 'mention-row');
+/* one message of the reader pane: who, when, the text as written, its files */
+function message(className, from, at, text, files) {
+  const node = el('div', className);
+  const meta = el('div', 'mention-meta');
+  meta.append(el('span', 'mention-from', from), el('span', 'mention-time', when(at)));
+  node.append(meta, el('p', 'mention-body', text));
+  if (files?.length) node.appendChild(el('p', 'mention-files', t('mentions.files', { names: files.join(', ') })));
+  return node;
+}
+
+function listRow(item) {
+  const node = el('button', 'mention-row');
+  node.type = 'button';
   node.dataset.key = item.key;
+  node.setAttribute('role', 'option');
   const meta = el('div', 'mention-meta');
   meta.append(el('span', 'mention-from', item.from), el('span', 'mention-where', item.where), el('span', 'mention-time', when(item.at)));
-  const text = el('button', 'mention-text', item.text);
-  text.type = 'button';
-  const open = expanded.has(item.key);
-  text.dataset.expanded = String(open);
-  text.setAttribute('aria-expanded', String(open));
-  text.onclick = () => {
-    const next = !expanded.has(item.key);
-    if (next) expanded.add(item.key); else expanded.delete(item.key);
-    text.dataset.expanded = String(next);
-    text.setAttribute('aria-expanded', String(next));
-  };
+  node.append(meta, el('div', 'mention-summary', item.text.split('\n')[0]));
+  node.onclick = () => select(item.key, true);
+  return node;
+}
+
+function paintDetail(choices) {
+  const item = current();
+  const next = JSON.stringify([item, choices.map(route => [route.id, route.label, route.disabled])]);
+  if (next === detailSignature) return;
+  detailSignature = next;
+  const pane = $('mentions-detail');
+  if (!item) { pane.replaceChildren(el('p', 'mention-empty', t(view?.enabled ? 'mentions.empty' : 'mentions.off'))); return; }
+  const head = el('div', 'mention-meta mention-detail-head');
+  head.append(el('span', 'mention-from', item.from), el('span', 'mention-where', item.where), el('span', 'mention-time', when(item.at)));
+  const parts = [head];
+  const context = item.context;
+  if (!context) parts.push(el('p', 'mention-loading', t('mentions.contextLoading')));
+  else if (context.before.length) {
+    parts.push(el('h2', 'mention-section', t(context.thread ? 'mentions.contextThread' : 'mentions.contextBefore')));
+    for (const m of context.before) parts.push(message('mention-context', m.from, m.at, m.text, m.files));
+  }
+  parts.push(el('h2', 'mention-section', t('mentions.theMention')));
+  parts.push(message('mention-message', item.from, item.at, item.text, context?.files));
   const actions = el('div', 'mention-actions');
   const slack = el('button', 'btn mention-open', t('mentions.open'));
   slack.type = 'button';
@@ -91,11 +126,28 @@ function row(item, choices) {
   dismiss.type = 'button';
   dismiss.onclick = () => dismissMentions([item.key]);
   actions.append(slack, routeMenu(item, choices), dismiss);
-  node.append(meta, text, actions);
-  return node;
+  parts.push(actions);
+  pane.replaceChildren(...parts);
+  pane.scrollTop = 0;
 }
 
-/* the sidebar entry and, while the view is shown, the list */
+function paintSelection() {
+  for (const node of $('mentions-list').children) {
+    if (!node.dataset?.key) continue;
+    const on = node.dataset.key === selected;
+    node.setAttribute('aria-selected', String(on));
+    node.dataset.selected = String(on);
+  }
+}
+
+function select(key, focus = false) {
+  selected = key;
+  paintSelection();
+  paintDetail(routes());
+  if (focus) $('mentions-list').focus?.({ preventScroll: true });
+}
+
+/* the sidebar entry and, while the view is shown, both panes */
 export function paintMentions() {
   const count = mentionCount(view);
   const btn = $('mentions-btn');
@@ -112,14 +164,14 @@ export function paintMentions() {
   $('mentions-dismiss-all').disabled = !count;
   const choices = routes();
   $('mentions-no-routes').hidden = !view?.enabled || choices.length > 0;
+  if (!current()) selected = items()[0]?.key || null;
   const next = mentionSignature(view, choices);
-  if (next === signature) return;
-  signature = next;
-  const list = $('mentions-list');
-  const items = count ? view.items : [];
-  for (const key of [...expanded]) if (!items.some(item => item.key === key)) expanded.delete(key);
-  list.replaceChildren(...(items.length ? items.map(item => row(item, choices))
-    : [el('p', 'mention-empty', t(view?.enabled ? 'mentions.empty' : 'mentions.off'))]));
+  if (next !== listSignature) {
+    listSignature = next;
+    $('mentions-list').replaceChildren(...items().map(listRow));
+  }
+  paintSelection();
+  paintDetail(choices);
 }
 
 export async function refreshMentions() {
@@ -127,8 +179,10 @@ export async function refreshMentions() {
   paintMentions();
 }
 
+/* the mentions leave the list; the next one is selected */
 function drop(keys) {
   if (!view?.items) return;
+  if (keys.includes(selected)) selected = mentionAfter(view.items, keys);
   view = { ...view, items: view.items.filter(item => !keys.includes(item.key)) };
   paintMentions();
 }
@@ -153,10 +207,22 @@ async function dismissMentions(keys) {
 }
 
 async function dismissAll() {
-  const keys = (view?.items || []).map(item => item.key);
+  const keys = items().map(item => item.key);
   if (!keys.length) return;
   if (!(await confirmDialog(t('mentions.dismissAllConfirm', { count: formatNumber(keys.length) })))) return;
   await dismissMentions(keys);
+}
+
+function onListKey(event) {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  const list = items();
+  if (!list.length) return;
+  event.preventDefault();
+  const at = list.findIndex(item => item.key === selected);
+  const step = event.key === 'ArrowDown' ? 1 : -1;
+  const next = list[Math.max(0, Math.min(list.length - 1, at + step))];
+  select(next.key);
+  [...$('mentions-list').children].find(node => node.dataset?.key === next.key)?.scrollIntoView?.({ block: 'nearest' });
 }
 
 export function showMentions() {
@@ -164,9 +230,10 @@ export function showMentions() {
   if (state.view === 'session') leaveSessionView();
   state.view = 'mentions';
   state.sessionId = null;
-  signature = '';
+  listSignature = '';
+  detailSignature = '';
   render();
-  $('mentions-title').focus?.({ preventScroll: true });
+  $('mentions-list').focus?.({ preventScroll: true });
   inv('slack_mentions_refresh').catch(() => {});
   refreshMentions();
 }
@@ -176,6 +243,7 @@ export function initMentions(deps) {
   $('mentions-btn').onclick = () => showMentions();
   $('mentions-back').onclick = () => switchProject(state.projectId);
   $('mentions-dismiss-all').onclick = () => dismissAll();
+  $('mentions-list').onkeydown = onListKey;
 }
 
 /* the listener and the first pull; called once the Board is the user's */

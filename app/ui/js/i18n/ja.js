@@ -1485,6 +1485,12 @@ const dictionary = {
   "mentions.off": "Slack が接続されていません。設定 → Slack で接続してください。",
   "mentions.settled": "このメンションはすでに処理されています。",
   "mentions.failed": "完了できませんでした（{code}）。",
+  "mentions.listLabel": "メンション",
+  "mentions.contextThread": "スレッド",
+  "mentions.contextBefore": "それまでの会話",
+  "mentions.theMention": "あなたをメンションしたメッセージ",
+  "mentions.contextLoading": "会話を読み込んでいます…",
+  "mentions.files": "ファイル：{names}",
 };
 export { dictionary };
 export const ja = dictionary;

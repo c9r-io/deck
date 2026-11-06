@@ -25,6 +25,7 @@ const CARRIERS = {
   'clock-live-smoke.mjs': ['clock-live'],
   'channel-first-send-smoke.mjs': ['channel-first-send'],
   'channel-live-smoke.mjs': ['channel-live', 'channel-live-replay'],
+  'mentions-live-smoke.mjs': ['mentions-live'],
   'hooks-live-smoke.mjs': ['hooks-live'],
   'pi-live-smoke.mjs': ['pi-live'],
   'pi-layout-smoke.mjs': ['pi-layout'],

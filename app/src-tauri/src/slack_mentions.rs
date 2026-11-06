@@ -20,6 +20,14 @@
 //!   user acts: a dismissal is a `(slack, channel/ts)` identifier plus time in
 //!   the dispatcher ledger (`inbound.json` `dismissed`, same TTL and cap as
 //!   `seen`); a route is the ordinary seen entry of the badge it fired.
+//! - What the reader sees. Each open mention's context is read once, a few
+//!   per poll (`CONTEXT_PER_TICK`), read-only, with the scopes the user token
+//!   already has (`inbound_slack::mention_context`): a thread reply brings its
+//!   thread's first message and the replies just before it, any other
+//!   mention the conversation's last messages before it, with names in place
+//!   of user ids and file names. It lives in memory beside the list and is
+//!   only for the reader: the routed event stays the badge event, byte for
+//!   byte what a badge in Slack would carry.
 //! - What is listed. A mention is open while the dispatcher has not seen it
 //!   under ANY badge, does not hold it pending, and the user has not
 //!   dismissed it (`inbound::open_keys`). A message the user badged in Slack
@@ -44,6 +52,7 @@
 //!   counts and closed codes only.
 
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter};
 
@@ -51,6 +60,7 @@ use crate::applog::applog;
 use crate::datadir::now_epoch as now_secs;
 use crate::error::{DeckError, ErrorKind};
 use crate::inbound::{self, Config, Event};
+use crate::inbound_slack::MentionContext;
 use crate::keychain::{self, Slot};
 use crate::sync::LockRecover;
 
@@ -64,6 +74,8 @@ const MIN_REFRESH: u64 = 10;
 const KEY_MAX: usize = 128;
 /// Most keys one dismissal names (the "dismiss all" of a full list).
 const DISMISS_MAX: usize = 400;
+/// Most mentions whose context one poll reads from Slack.
+const CONTEXT_PER_TICK: usize = 10;
 
 #[derive(Default)]
 struct State {
@@ -76,6 +88,10 @@ struct State {
     refresh: bool,
     /// The open keys last announced, to tell when the list changed.
     shown: Vec<String>,
+    /// What each listed mention's reader sees, read once per mention.
+    contexts: HashMap<String, MentionContext>,
+    /// User id → name, for the readers' text.
+    names: HashMap<String, String>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -122,9 +138,52 @@ pub(crate) fn tick(cfg: &Config, announce: &dyn Fn(&'static str)) {
             });
         record(found, now);
     }
-    if announce_if_changed() || changed {
+    let read = if enabled { read_contexts() } else { 0 };
+    if announce_if_changed() || changed || read > 0 {
         announce(CHANGED);
     }
+}
+
+/// Read the context of open mentions that have none yet, a few per poll.
+/// A failed read is tried again at a later poll; the list never waits for it.
+fn read_contexts() -> usize {
+    let open = open_now();
+    let wanted: Vec<Event> = with_state(|s| {
+        s.contexts
+            .retain(|key, _| s.items.iter().any(|e| &e.key == key));
+        s.items
+            .iter()
+            .filter(|e| open.contains(&e.key) && !s.contexts.contains_key(&e.key))
+            .take(CONTEXT_PER_TICK)
+            .cloned()
+            .collect()
+    });
+    if wanted.is_empty() {
+        return 0;
+    }
+    let Some(token) = keychain::get(Slot::SlackUserToken) else {
+        return 0;
+    };
+    let mut names = with_state(|s| std::mem::take(&mut s.names));
+    let mut read = Vec::new();
+    for e in &wanted {
+        let Some((channel, ts)) = e.key.split_once('/') else {
+            continue;
+        };
+        match crate::inbound_slack::mention_context(&token, channel, ts, &e.link, &mut names) {
+            Ok(context) => read.push((e.key.clone(), context)),
+            Err(code) => {
+                applog(&format!("[mentions] context FAILED ({code})"));
+                break;
+            }
+        }
+    }
+    let n = read.len();
+    with_state(|s| {
+        s.names = names;
+        s.contexts.extend(read);
+    });
+    n
 }
 
 /// Keep a search's outcome: a failure keeps the last list and says why.
@@ -184,6 +243,8 @@ pub(crate) struct MentionView {
     link: String,
     /// The message's own time, epoch seconds (from its Slack `ts`).
     at: u64,
+    /// What the reader needs to judge it, once read (`None` until then).
+    context: Option<MentionContext>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -203,17 +264,36 @@ fn message_time(key: &str) -> u64 {
         .unwrap_or(0)
 }
 
-fn view(items: &[Event], open: &[String]) -> Vec<MentionView> {
+fn view(
+    items: &[Event],
+    open: &[String],
+    contexts: &HashMap<String, MentionContext>,
+) -> Vec<MentionView> {
     items
         .iter()
         .filter(|e| open.contains(&e.key))
-        .map(|e| MentionView {
-            key: e.key.clone(),
-            text: e.text.clone(),
-            from: e.from.clone(),
-            where_: e.where_.clone(),
-            link: e.link.clone(),
-            at: message_time(&e.key),
+        .map(|e| {
+            let context = contexts.get(&e.key).cloned();
+            // once read, the reader sees names where Slack wrote user ids
+            let from = context
+                .as_ref()
+                .map(|c| c.from.clone())
+                .filter(|f| !f.is_empty())
+                .unwrap_or_else(|| e.from.clone());
+            let text = context
+                .as_ref()
+                .map(|c| c.text.clone())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| e.text.clone());
+            MentionView {
+                key: e.key.clone(),
+                text,
+                from,
+                where_: e.where_.clone(),
+                link: e.link.clone(),
+                at: message_time(&e.key),
+                context,
+            }
         })
         .collect()
 }
@@ -228,7 +308,7 @@ pub(crate) fn slack_mentions() -> MentionsView {
             enabled: s.enabled,
             last_poll: s.last_poll,
             last_error: s.last_error,
-            items: view(&s.items, &open),
+            items: view(&s.items, &open, &s.contexts),
         }
     })
 }
@@ -413,12 +493,28 @@ mod tests {
             mention("C1/1793942517.831339", "<@U1> a"),
         ];
         let open = vec!["C1/1793942517.831339".to_string()];
-        let v = view(&items, &open);
+        let v = view(&items, &open, &HashMap::new());
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].at, 1_793_942_517);
         assert_eq!(
             v[0].text, "@U1 a",
             "the text is the badge event's plain text"
+        );
+        assert_eq!(v[0].context, None, "no context read yet");
+        let mut contexts = HashMap::new();
+        contexts.insert(
+            "C1/1793942517.831339".to_string(),
+            MentionContext {
+                from: "Alice".into(),
+                text: "@Me a".into(),
+                ..Default::default()
+            },
+        );
+        let read = view(&items, &open, &contexts);
+        assert_eq!(
+            (read[0].from.as_str(), read[0].text.as_str()),
+            ("Alice", "@Me a"),
+            "names once read"
         );
         let json = serde_json::to_value(&v[0]).unwrap();
         assert!(json.get("where").is_some() && json.get("where_").is_none());

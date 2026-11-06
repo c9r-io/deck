@@ -1492,6 +1492,12 @@ const dictionary = {
   "mentions.off": "Slack is not connected. Connect it in Settings → Slack.",
   "mentions.settled": "This mention was already handled.",
   "mentions.failed": "Could not complete this ({code}).",
+  "mentions.listLabel": "Mentions",
+  "mentions.contextThread": "Thread",
+  "mentions.contextBefore": "Earlier in the conversation",
+  "mentions.theMention": "The message that mentions you",
+  "mentions.contextLoading": "Reading the conversation…",
+  "mentions.files": "Files: {names}",
 };
 export { dictionary };
 export const en = dictionary;
