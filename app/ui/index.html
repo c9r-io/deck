@@ -197,9 +197,16 @@
     </div>
 
     <section id="mentions-view" aria-labelledby="mentions-title" hidden>
-      <div class="attention-head"><h1 id="mentions-title" tabindex="-1" data-i18n="mentions.globalTitle">Slack mentions · Last 30 days</h1><div class="mentions-head-actions"><button class="btn" id="mentions-dismiss-all" type="button" data-i18n="mentions.dismissAll">Dismiss all</button><button class="btn" id="mentions-back" type="button"></button></div></div>
+      <div class="attention-head"><h1 id="mentions-title" tabindex="-1" data-i18n="mentions.title">Slack mentions</h1><div class="mentions-head-actions"><button class="btn" id="mentions-dismiss-all" type="button" data-i18n="mentions.dismissAll">Dismiss all</button><button class="btn" id="mentions-back" type="button"></button></div></div>
       <p class="attention-hint" data-i18n="mentions.hint">Messages that @mention you. Deck never reacts, replies or marks anything read in Slack. Routing a message starts that badge's automation, as if you had added the badge.</p>
-      <p class="mentions-status" id="mentions-status"></p>
+      <div class="mentions-bar">
+        <div class="seg" id="mentions-range" role="radiogroup" aria-label="Sent within" data-i18n-aria-label="mentions.range">
+          <button type="button" id="mentions-range-1" aria-pressed="true"></button>
+          <button type="button" id="mentions-range-3" aria-pressed="false"></button>
+          <button type="button" id="mentions-range-7" aria-pressed="false"></button>
+        </div>
+        <p class="mentions-status" id="mentions-status"></p>
+      </div>
       <p class="mentions-no-routes" id="mentions-no-routes" data-i18n="mentions.noRoutes" hidden>No Slack badge automation yet. Add one in a project's Automations drawer to route mentions.</p>
       <div class="mentions-panes">
         <div id="mentions-list" role="listbox" tabindex="0" data-i18n-aria-label="mentions.listLabel" aria-label="Mentions"></div>

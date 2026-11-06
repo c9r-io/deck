@@ -1473,7 +1473,10 @@ const dictionary = {
   'reentry.result.insertResume': '插入 resume 命令',
 
   "mentions.title": "Slack 提及",
-  "mentions.globalTitle": "Slack 提及 · 最近 30 天",
+  "mentions.range": "发送时间",
+  "mentions.range1": "24 小时 · {count}",
+  "mentions.range3": "3 天 · {count}",
+  "mentions.range7": "一周 · {count}",
   "mentions.hint": "直接 @你 的消息。Deck 不会在 Slack 上加表情、回复或标记已读。路由一条消息，等同于你给它加了该表情，会启动对应的自动化。",
   "mentions.dismissAll": "全部忽略",
   "mentions.dismissAllConfirm": "忽略全部 {count} 条提及？它们会从列表中移除，不会启动任何自动化。",

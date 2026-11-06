@@ -933,7 +933,9 @@ minute`) is a message written by Slackbot that mentions you.
       holding `DECKLIVE-<marker> <n>` that mentions the user: 1 and 2 written
       by someone else (a Slackbot reminder), 3 by the user.
 - [ ] Expected: the entry appears after the first search; 1 is listed and 3
-      is not; 1's context is read (`mentions-context` a = messages before it,
+      is not; the sidebar counts the 24-hour range and each range button its
+      own count, the week button the backend's whole list (`mentions-range`
+      a = 24 hours, b = a week); 1's context is read (`mentions-context` a = messages before it,
       b = 1 for a thread) with names in place of user ids; the route menu
       shows 👀 for the `eyes` rule and `:decklive:` for the custom one; the
       route creates one card whose two template steps are queued as external

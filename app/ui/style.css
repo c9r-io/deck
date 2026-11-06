@@ -1444,7 +1444,9 @@ body.side-collapsed #attention-btn { flex-direction: column; gap: var(--sp-2); }
 #mentions-btn[hidden], #mentions-view[hidden], .mentions-no-routes[hidden] { display: none; }
 #mentions-view { position: relative; flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .mentions-head-actions { display: flex; flex-wrap: wrap; gap: var(--sp-8); }
+.mentions-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-12); padding: 0 var(--sp-20) var(--sp-8); }
 .mentions-status, .mentions-no-routes { color: var(--muted); font-size: var(--fs-12); padding: 0 var(--sp-20) var(--sp-8); line-height: 1.5; }
+.mentions-bar .mentions-status { padding: 0; }
 .mentions-no-routes { color: var(--wait); }
 .mentions-panes { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: var(--sp-16); padding: 0 var(--sp-20) var(--sp-20); }
 #mentions-list { overflow: auto; min-height: 0; border-right: 1px solid var(--border); padding-right: var(--sp-8); }

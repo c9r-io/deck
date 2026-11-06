@@ -322,13 +322,15 @@ pub(crate) fn mentions_from_search(body: &Value, me: &str) -> Vec<Event> {
     events_from_search(&page, "")
 }
 
-/// Every message of the last `LOOKBACK_DAYS` that explicitly mentions `me`,
+/// How far back mentions are searched and listed: the longest of the list's
+/// three ranges (24 hours, 3 days, a week), so nothing is collected that the
+/// list could never show.
+pub(crate) const MENTION_DAYS: u64 = 7;
+
+/// Every message of the last `MENTION_DAYS` that explicitly mentions `me`,
 /// newest first, bounded by the same page limits as a badge search.
 pub(crate) fn search_mentions(token: &str, me: &str) -> Result<Vec<Event>, &'static str> {
-    let query = format!(
-        "<@{me}> after:{}",
-        after_date(now_secs(), inbound::LOOKBACK_DAYS)
-    );
+    let query = format!("<@{me}> after:{}", after_date(now_secs(), MENTION_DAYS));
     let count = SEARCH_PAGE.to_string();
     let mut events = Vec::new();
     let mut page = 1u32;

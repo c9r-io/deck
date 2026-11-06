@@ -1467,7 +1467,10 @@ const dictionary = {
   "reentry.result.insertResume": "resume コマンドを挿入",
 
   "mentions.title": "Slack メンション",
-  "mentions.globalTitle": "Slack メンション · 過去 30 日",
+  "mentions.range": "送信日時",
+  "mentions.range1": "24 時間 · {count}",
+  "mentions.range3": "3 日 · {count}",
+  "mentions.range7": "1 週間 · {count}",
   "mentions.hint": "あなたを @メンションしたメッセージです。Deck は Slack でリアクション・返信・既読化を一切行いません。メッセージをルーティングすると、そのバッジを付けたときと同じ自動化が始まります。",
   "mentions.dismissAll": "すべて無視",
   "mentions.dismissAllConfirm": "{count} 件のメンションをすべて無視しますか？一覧から消え、何も開始されません。",

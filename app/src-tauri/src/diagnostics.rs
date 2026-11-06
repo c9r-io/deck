@@ -591,6 +591,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "mentions-entry",
     "mentions-want",
     "mentions-listed",
+    "mentions-range",
     "mentions-context",
     "mentions-emoji",
     "mentions-routed",

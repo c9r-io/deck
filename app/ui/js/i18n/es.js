@@ -1467,7 +1467,10 @@ const dictionary = {
   "reentry.result.insertResume": "Insertar el comando de reanudación",
 
   "mentions.title": "Menciones de Slack",
-  "mentions.globalTitle": "Menciones de Slack · Últimos 30 días",
+  "mentions.range": "Enviadas en",
+  "mentions.range1": "24 horas · {count}",
+  "mentions.range3": "3 días · {count}",
+  "mentions.range7": "1 semana · {count}",
   "mentions.hint": "Mensajes que te @mencionan. Deck nunca reacciona, responde ni marca nada como leído en Slack. Enrutar un mensaje inicia la automatización de esa insignia, como si la hubieras añadido tú.",
   "mentions.dismissAll": "Descartar todo",
   "mentions.dismissAllConfirm": "¿Descartar las {count} menciones? Saldrán de esta lista y no iniciarán nada.",

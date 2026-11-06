@@ -1467,7 +1467,10 @@ const dictionary = {
   "reentry.result.insertResume": "Resume-Befehl einfügen",
 
   "mentions.title": "Slack-Erwähnungen",
-  "mentions.globalTitle": "Slack-Erwähnungen · Letzte 30 Tage",
+  "mentions.range": "Gesendet in",
+  "mentions.range1": "24 Stunden · {count}",
+  "mentions.range3": "3 Tage · {count}",
+  "mentions.range7": "1 Woche · {count}",
   "mentions.hint": "Nachrichten, die dich @erwähnen. Deck reagiert, antwortet oder markiert in Slack nie etwas als gelesen. Eine Nachricht weiterzuleiten startet die Automatisierung dieses Badges, als hättest du das Badge selbst gesetzt.",
   "mentions.dismissAll": "Alle verwerfen",
   "mentions.dismissAllConfirm": "Alle {count} Erwähnungen verwerfen? Sie verschwinden aus dieser Liste und starten nichts.",

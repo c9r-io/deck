@@ -1474,7 +1474,10 @@ const dictionary = {
   'reentry.result.insertResume': 'Insert resume command',
 
   "mentions.title": "Slack mentions",
-  "mentions.globalTitle": "Slack mentions · Last 30 days",
+  "mentions.range": "Sent within",
+  "mentions.range1": "24 hours · {count}",
+  "mentions.range3": "3 days · {count}",
+  "mentions.range7": "1 week · {count}",
   "mentions.hint": "Messages that @mention you. Deck never reacts, replies or marks anything read in Slack. Routing a message starts that badge's automation, as if you had added the badge.",
   "mentions.dismissAll": "Dismiss all",
   "mentions.dismissAllConfirm": "Dismiss all {count} mentions? They leave this list and start nothing.",

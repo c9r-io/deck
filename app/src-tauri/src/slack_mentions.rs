@@ -5,8 +5,9 @@
 //! # Contract
 //! - Collection. Once per dispatcher poll (`extensions::tick_services`), at
 //!   most every `SEARCH_EVERY`, the Slack user token searches
-//!   `search.messages` for `<@ME> after:<30 days>` (`inbound_slack::
-//!   search_mentions`; `search:read` is already a granted user scope, so the
+//!   `search.messages` for `<@ME> after:<a week>` (`inbound_slack::
+//!   search_mentions`, `MENTION_DAYS`: the longest range the list offers, so
+//!   nothing is collected that could never be shown; `search:read` is already a granted user scope, so the
 //!   Slack app needs no change). A match counts only when its raw text holds
 //!   `<@ME>` or `<@ME|…>` and someone else wrote it: `@here`, `@channel`, user
 //!   groups and plain-text names are not mentions of the user. It runs
@@ -28,7 +29,9 @@
 //!   of user ids and file names. It lives in memory beside the list and is
 //!   only for the reader: the routed event stays the badge event, byte for
 //!   byte what a badge in Slack would carry.
-//! - What is listed. A mention is open while the dispatcher has not seen it
+//! - What is listed. Mentions sent in the last `MENTION_DAYS` (to the
+//!   second; `after:` is a whole day). The view narrows that to 24 hours or
+//!   3 days (`slack-mentions-model.js`). A mention is open while the dispatcher has not seen it
 //!   under ANY badge, does not hold it pending, and the user has not
 //!   dismissed it (`inbound::open_keys`). A message the user badged in Slack
 //!   therefore disappears once Deck sees that badge; a badge Deck has no rule
@@ -60,7 +63,7 @@ use crate::applog::applog;
 use crate::datadir::now_epoch as now_secs;
 use crate::error::{DeckError, ErrorKind};
 use crate::inbound::{self, Config, Event};
-use crate::inbound_slack::MentionContext;
+use crate::inbound_slack::{self, MentionContext};
 use crate::keychain::{self, Slot};
 use crate::sync::LockRecover;
 
@@ -268,10 +271,11 @@ fn view(
     items: &[Event],
     open: &[String],
     contexts: &HashMap<String, MentionContext>,
+    since: u64,
 ) -> Vec<MentionView> {
     items
         .iter()
-        .filter(|e| open.contains(&e.key))
+        .filter(|e| open.contains(&e.key) && message_time(&e.key) >= since)
         .map(|e| {
             let context = contexts.get(&e.key).cloned();
             // once read, the reader sees names where Slack wrote user ids
@@ -298,7 +302,14 @@ fn view(
         .collect()
 }
 
-/// The open mentions, newest first, with the state of the last search.
+/// The oldest message time listed: `MENTION_DAYS` back. Slack's `after:`
+/// is a whole day, so the search returns a little more than is listed.
+fn list_since(now: u64) -> u64 {
+    now.saturating_sub(inbound_slack::MENTION_DAYS * 86_400)
+}
+
+/// The open mentions of the last `MENTION_DAYS`, newest first, with the
+/// state of the last search.
 #[tauri::command]
 pub(crate) fn slack_mentions() -> MentionsView {
     let open = open_now();
@@ -308,7 +319,7 @@ pub(crate) fn slack_mentions() -> MentionsView {
             enabled: s.enabled,
             last_poll: s.last_poll,
             last_error: s.last_error,
-            items: view(&s.items, &open, &s.contexts),
+            items: view(&s.items, &open, &s.contexts, list_since(now_secs())),
         }
     })
 }
@@ -418,6 +429,11 @@ mod tests {
         crate::inbound_slack::badge_event(channel, ts, "", text, "alice", "#dev", "https://x/p1")
     }
 
+    /// A key for a message sent `ago` seconds before now.
+    fn recent(ago: u64, micros: &str) -> String {
+        format!("C1/{}.{micros}", now_secs() - ago)
+    }
+
     fn cfg(enabled: bool) -> Config {
         inbound::config_from_value(Some(&json!({
             "sources": {"slack": {"enabled": enabled}},
@@ -493,7 +509,7 @@ mod tests {
             mention("C1/1793942517.831339", "<@U1> a"),
         ];
         let open = vec!["C1/1793942517.831339".to_string()];
-        let v = view(&items, &open, &HashMap::new());
+        let v = view(&items, &open, &HashMap::new(), 0);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].at, 1_793_942_517);
         assert_eq!(
@@ -510,7 +526,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let read = view(&items, &open, &contexts);
+        let read = view(&items, &open, &contexts, 0);
         assert_eq!(
             (read[0].from.as_str(), read[0].text.as_str()),
             ("Alice", "@Me a"),
@@ -522,11 +538,29 @@ mod tests {
     }
 
     #[test]
+    fn the_view_lists_only_the_last_week() {
+        let now = 1_793_942_527;
+        let week = inbound_slack::MENTION_DAYS * 86_400;
+        let fresh = format!("C1/{}.000001", now - week);
+        let old = format!("C1/{}.000001", now - week - 1);
+        let items = vec![mention(&fresh, "<@U1> a"), mention(&old, "<@U1> b")];
+        let open = vec![fresh.clone(), old];
+        let v = view(&items, &open, &HashMap::new(), list_since(now));
+        assert_eq!(
+            v.iter().map(|m| m.key.as_str()).collect::<Vec<_>>(),
+            [fresh.as_str()],
+            "what is collected is what can be shown: one week"
+        );
+        assert_eq!(list_since(5), 0);
+    }
+
+    #[test]
     fn a_routed_mention_becomes_the_badge_item_once_and_leaves_the_list() {
         crate::inbound::with_fresh_runtime(|_| {
             let app = tauri::test::mock_app();
-            let a = "C1/1793942517.831339";
-            let b = "C1/1793942527.287979";
+            // the list holds only the last week: the fixtures are minutes old
+            let (a, b) = (recent(20, "831339"), recent(10, "287979"));
+            let (a, b) = (a.as_str(), b.as_str());
             with_state(|s| s.items = vec![mention(b, "<@U1> two"), mention(a, "<@U1> one")]);
             assert_eq!(slack_mentions().items.len(), 2);
             route(app.handle(), a, "r-eyes", &cfg(true)).unwrap();
@@ -573,7 +607,7 @@ mod tests {
     fn a_failed_search_keeps_the_last_list_and_says_why() {
         crate::inbound::with_fresh_runtime(|_| {
             with_state(|s| *s = State::default());
-            record(Ok(vec![mention("C1/1.5", "<@U1> hi")]), 100);
+            record(Ok(vec![mention(&recent(5, "000001"), "<@U1> hi")]), 100);
             record(Err("ratelimited"), 200);
             let v = slack_mentions();
             assert_eq!(v.items.len(), 1);

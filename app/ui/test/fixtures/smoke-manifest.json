@@ -306,6 +306,7 @@
         "mentions-entry": {},
         "mentions-want": {"a": [1, 2, 3]},
         "mentions-listed": {},
+        "mentions-range": {},
         "mentions-context": {},
         "mentions-emoji": {"a": 3},
         "mentions-routed": {"a": 1, "b": 2},

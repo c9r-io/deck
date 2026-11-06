@@ -322,14 +322,19 @@ loud (`docs/notifications.md`).
 
 On days you would rather stay quiet in Slack, you can decide from Deck
 instead of adding a badge. While Slack is connected (the user token is
-enough), Deck searches once a minute for the messages of the last 30 days
+enough), Deck searches once a minute for the messages of the last week
 that explicitly mention you, `<@you>` written by someone else. `@here`,
 `@channel`, user groups and your name typed as plain text do not count.
 The search uses the `search:read` scope the Deck Slack app already has,
 so the app needs no change.
 
 The sidebar entry **Slack mentions** shows how many are open and opens two
-panes. On the left is the list: author, conversation, time and the first
+panes. Above them, **24 hours · 3 days · 1 week** chooses how far back the
+list reaches, for a day, a weekend or a short holiday. Each button shows its
+own count, so a mention outside the chosen range is never hidden without a
+number. The list starts at 24 hours every launch; the choice is not saved.
+The sidebar count and **Dismiss all** follow the chosen range. A mention
+older than a week is not searched; read it in Slack. On the left is the list: author, conversation, time and the first
 line of each mention. On the right is the selected mention in full, with
 what it needs to be judged without opening Slack:
 

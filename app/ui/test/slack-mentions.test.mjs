@@ -8,7 +8,7 @@ import { fakeDocument, ids } from './fixtures/dom-fixture.mjs';
 globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
-const { mentionAfter, mentionCount, mentionErrorKey, mentionRoutes, mentionSignature, mentionStatus } = await import('../js/slack-mentions-model.js');
+const { MENTION_RANGES, mentionAfter, mentionCount, mentionErrorKey, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin } = await import('../js/slack-mentions-model.js');
 const { initMentions, paintMentions, refreshMentions, showMentions, startMentions } = await import('../js/slack-mentions.js');
 const { channelBlockReason } = await import('../js/channel-model.js');
 const { ctx, state, store } = await import('../js/state.js');
@@ -25,9 +25,11 @@ const PROJECTS = [{ id: 'P1', name: 'Proj', columns: [{ id: 'C1' }], templates: 
 const CONTEXT = { from: 'Bob', thread: true, text: '@Me second, please', files: ['migration.log'],
   before: [{ from: 'carol', text: 'staging fails', at: 1793942500, files: [] },
     { from: 'dave', text: 'rolled back', at: 1793942510, files: ['a.log'] }] };
+// the view filters by the clock, so the fixtures are minutes old
+const NOW = Math.floor(Date.now() / 1000);
 const ITEMS = [
-  { key: 'C1/1793942527.287979', text: '@me second\nmore', from: 'bob', where: '#dev', link: 'https://x/p2', at: 1793942527, context: CONTEXT },
-  { key: 'C1/1793942517.831339', text: '@me first', from: 'alice', where: 'DM', link: '', at: 1793942517, context: null },
+  { key: 'C1/1793942527.287979', text: '@me second\nmore', from: 'bob', where: '#dev', link: 'https://x/p2', at: NOW - 60, context: CONTEXT },
+  { key: 'C1/1793942517.831339', text: '@me first', from: 'alice', where: 'DM', link: '', at: NOW - 120, context: null },
 ];
 
 function backend(initial) {
@@ -75,9 +77,9 @@ test('the model lists Slack badge rules only, sorted, and says which cannot be c
   assert.deepEqual(mentionStatus({ enabled: true, lastPoll: 5 }), { key: 'mentions.checked', params: { at: 5 } });
   assert.equal(mentionErrorKey('settled'), 'mentions.settled');
   assert.equal(mentionErrorKey('rule'), 'mentions.failed');
-  assert.notEqual(mentionSignature({ enabled: true, items: ITEMS }, routes), mentionSignature({ enabled: true, items: ITEMS.slice(1) }, routes));
-  assert.notEqual(mentionSignature({ enabled: true, items: ITEMS }, routes),
-    mentionSignature({ enabled: true, items: [{ ...ITEMS[0], from: 'Bob' }, ITEMS[1]] }, routes), 'names arriving repaint the row');
+  assert.notEqual(mentionSignature(ITEMS, routes), mentionSignature(ITEMS.slice(1), routes));
+  assert.notEqual(mentionSignature(ITEMS, routes),
+    mentionSignature([{ ...ITEMS[0], from: 'Bob' }, ITEMS[1]], routes), 'names arriving repaint the row');
   const three = [{ key: 'a' }, { key: 'b' }, { key: 'c' }];
   assert.equal(mentionAfter(three, ['a']), 'b');
   assert.equal(mentionAfter(three, ['b']), 'c');
@@ -85,6 +87,17 @@ test('the model lists Slack badge rules only, sorted, and says which cannot be c
   assert.equal(mentionAfter(three, ['a', 'b', 'c']), null);
   assert.equal(mentionAfter(three, ['x']), 'a');
   assert.equal(mentionAfter(null, ['a']), null);
+});
+
+test('the ranges narrow the list, and each says its own count', () => {
+  const now = 1_000_000;
+  const at = hours => ({ key: `C/${hours}`, at: now - hours * 3600 });
+  const view = { enabled: true, items: [at(1), at(24), at(25), at(72), at(73), at(168)] };
+  assert.deepEqual(MENTION_RANGES, [1, 3, 7], '24 hours first: the default');
+  assert.deepEqual(mentionsWithin(view, 1, now).map(item => item.key), ['C/1', 'C/24'], 'the bounds are inclusive');
+  assert.deepEqual(mentionRanges(view, now), [{ days: 1, count: 2 }, { days: 3, count: 4 }, { days: 7, count: 6 }]);
+  assert.deepEqual(mentionRanges({ enabled: false, items: view.items }, now).map(range => range.count), [0, 0, 0], 'nothing while Slack is off');
+  assert.deepEqual(mentionsWithin(null, 7, now), []);
 });
 
 test('the view shows the open mentions, routes one with one call and dismisses with another', async () => {
@@ -193,6 +206,35 @@ test('the view shows the open mentions, routes one with one call and dismisses w
 
   ids.get('mentions-back').onclick();
   assert.deepEqual(moves.at(-1), ['switch', 'P1']);
+});
+
+test('the range buttons choose how far back the list and its count reach', async () => {
+  setLocale('en');
+  ctx.settings = { inbound: { sources: { slack: { enabled: true } }, rules: RULES } };
+  store.projects = PROJECTS;
+  state.view = 'mentions';
+  const older = { ...ITEMS[1], key: 'C1/older', from: 'erin', at: NOW - 2 * 86400 };
+  const b = backend({ enabled: true, lastPoll: 9, lastError: null, items: [...ITEMS, older] });
+  await refreshMentions();
+  const label = days => ids.get(`mentions-range-${days}`);
+  assert.deepEqual([1, 3, 7].map(days => label(days).textContent), ['24 hours · 2', '3 days · 3', '1 week · 3'],
+    'each range says its count, so the older one is not hidden without a number');
+  assert.equal(label(1)['aria-pressed'], 'true', '24 hours by default');
+  assert.equal(rows().length, 2);
+  assert.equal(ids.get('mentions-count').textContent, '2', 'the sidebar counts the chosen range');
+  label(3).onclick();
+  assert.equal(label(3)['aria-pressed'], 'true');
+  assert.equal(label(1)['aria-pressed'], 'false');
+  assert.equal(rows().length, 3);
+  assert.equal(ids.get('mentions-count').textContent, '3');
+  ids.get('mentions-dismiss-all').onclick();
+  await tick();
+  assert.equal(ids.get('cfm-msg').textContent, t('mentions.dismissAllConfirm', { count: '3' }), 'dismiss all = the mentions shown');
+  ctx.cfmResolve(false);
+  await tick();
+  label(1).onclick();
+  assert.equal(rows().length, 2);
+  assert.equal(b.named('slack_mention_dismiss').length, 0);
 });
 
 test('dismiss all asks once; no route, an error or Slack off are said, not hidden', async () => {

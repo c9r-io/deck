@@ -38,6 +38,7 @@ export async function runMentionsLiveSmoke() {
   const { openSettings, renderInboundSettings, selectSettingsSection } = await import('../js/settings.js');
   const { openAutomations, closeAutomations } = await import('../js/automation.js');
   const { showMentions, refreshMentions } = await import('../js/slack-mentions.js');
+  const { mentionRanges } = await import('../js/slack-mentions-model.js');
   const { t } = await import('../js/i18n.js');
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   const waitFor = async (test, timeout = 8000, every = 250) => {
@@ -154,14 +155,27 @@ export async function runMentionsLiveSmoke() {
     const one = await waitFor(async () => { await pull(); return !!listed(1); }, 360000, 1000);
     const mention = listed(1);
     const row = mention && rowOf(mention.key);
-    const counted = $('mentions-count').textContent === String(lastView.items.length);
+    // the sidebar counts the default range (24 hours), not the whole week
+    const ranges = mentionRanges(lastView, Math.floor(Date.now() / 1000));
+    const counted = $('mentions-count').textContent === String(ranges[0].count);
     if (!await report('mentions-listed', one && !!row && counted && !listed(3), 1, lastView.items.length)) throw new Error('listed');
 
+    // the ranges: each button says its count, the backend lists one week,
+    // and choosing a range repaints the list to it
+    const week = Math.floor(Date.now() / 1000) - 7 * 86400;
+    const labelled = ranges.every(({ days, count }) => $(`mentions-range-${days}`).textContent.endsWith(` ${count}`));
+    $('mentions-range-7').click();
+    const wide = $('mentions-list').children.length === lastView.items.length;
+    $('mentions-range-1').click();
+    const narrow = $('mentions-list').children.length === ranges[0].count && !!rowOf(mention.key);
+    await report('mentions-range', labelled && wide && narrow && ranges[2].count === lastView.items.length
+      && lastView.items.every(item => item.at >= week - 60), ranges[0].count, ranges[2].count);
+
     // the reader pane: its context is read, names stand where Slack wrote ids
-    row.click();
+    rowOf(mention.key).click();
     const read = await waitFor(async () => { lastView = await inv('slack_mentions'); return !!listed(1)?.context; }, 90000, 2000);
     await refreshMentions();
-    row.click();
+    rowOf(mention.key).click();
     const context = listed(1)?.context;
     const pane = $('mentions-detail');
     const shown = !!pane.querySelector('.mention-message') && pane.textContent.includes(`${marker} 1`)

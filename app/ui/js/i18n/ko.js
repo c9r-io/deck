@@ -1467,7 +1467,10 @@ const dictionary = {
   "reentry.result.insertResume": "resume 명령 삽입",
 
   "mentions.title": "Slack 멘션",
-  "mentions.globalTitle": "Slack 멘션 · 최근 30일",
+  "mentions.range": "보낸 시점",
+  "mentions.range1": "24시간 · {count}",
+  "mentions.range3": "3일 · {count}",
+  "mentions.range7": "1주 · {count}",
   "mentions.hint": "나를 @멘션한 메시지입니다. Deck은 Slack에서 반응, 답장, 읽음 표시를 전혀 하지 않습니다. 메시지를 라우팅하면 그 배지를 직접 단 것과 같은 자동화가 시작됩니다.",
   "mentions.dismissAll": "모두 무시",
   "mentions.dismissAllConfirm": "멘션 {count}개를 모두 무시할까요? 목록에서 사라지고 아무것도 시작되지 않습니다.",

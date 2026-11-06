@@ -3,13 +3,16 @@
 //
 // # Contract
 // - Backend-owned list. Rows come from `slack_mentions` (slack_mentions.rs):
-//   the open mentions of the last 30 days, newest first, with the state of
+//   the open mentions of the last week, newest first, with the state of
 //   the last search, and for each mention, once read, its context (its
 //   thread's first message and the replies just before it, or the
 //   conversation's messages before it, with names and file names). The
 //   content-free `slack-mentions-changed` event and opening the view (which
 //   also asks for a fresh search) are the only pulls; nothing is cached
 //   across launches here.
+// - Range. Three buttons above the list choose how far back it reaches
+//   (24 hours, 3 days, a week), each with its count (`mentionRanges`); the
+//   choice starts at 24 hours each launch and is never saved.
 // - Read here, decide here. Two panes: the list on the left (author, where,
 //   when, the first line), the selected mention on the right in full with
 //   its context and its three actions, so the user can judge a request
@@ -25,8 +28,9 @@
 //   shown here is for the reader and is not part of what is routed.
 // - Dismissing sets a mention aside for good (`slack_mention_dismiss`):
 //   it starts nothing and never stops a badge the user adds in Slack later.
-//   "Dismiss all" asks once.
-// - Attention: the open count beside the sidebar entry, nothing else. The
+//   "Dismiss all" dismisses the mentions shown (the chosen range) and asks once.
+// - Attention: the open count of the chosen range beside the sidebar
+//   entry, nothing else. The
 //   entry is hidden while Slack is not connected.
 // - A leaf of the import graph: the view actions it calls (`render`,
 //   `switchProject`, `leaveSessionView`, `closeBuffer`, `provider`) arrive
@@ -35,7 +39,7 @@ import { $, ctx, inv, listen, state, store, uev } from './state.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { channelBlockReason } from './channel-model.js';
-import { mentionAfter, mentionCount, mentionErrorKey, mentionRoutes, mentionSignature, mentionStatus } from './slack-mentions-model.js';
+import { MENTION_RANGES, mentionAfter, mentionErrorKey, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin } from './slack-mentions-model.js';
 
 let render, switchProject, leaveSessionView, closeBuffer, provider;
 let view = null;
@@ -43,13 +47,16 @@ let selected = null;
 let listSignature = '';
 let detailSignature = '';
 let started = null;
+let range = MENTION_RANGES[0];
 
 const DISMISS_MAX = 400;
+const RANGE_LABEL = { 1: 'mentions.range1', 3: 'mentions.range3', 7: 'mentions.range7' };
 const when = at => formatDateTime(new Date(at * 1000),
   { weekday: 'short', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 const routes = () => mentionRoutes(ctx.settings?.inbound?.rules, store.projects, channelBlockReason);
-const items = () => (mentionCount(view) ? view.items : []);
+const nowSecs = () => Math.floor(Date.now() / 1000);
+const items = () => mentionsWithin(view, range, nowSecs());
 const current = () => items().find(item => item.key === selected) || null;
 
 function el(tag, className, text) {
@@ -149,7 +156,7 @@ function select(key, focus = false) {
 
 /* the sidebar entry and, while the view is shown, both panes */
 export function paintMentions() {
-  const count = mentionCount(view);
+  const count = items().length;
   const btn = $('mentions-btn');
   btn.hidden = !view?.enabled;
   btn.classList.toggle('active', state.view === 'mentions');
@@ -158,6 +165,11 @@ export function paintMentions() {
   $('mentions-view').hidden = state.view !== 'mentions';
   if (state.view !== 'mentions') return;
   $('mentions-back').textContent = t('attention.backProject', { name: provider.project(state.projectId)?.name || '' });
+  for (const { days, count: n } of mentionRanges(view, nowSecs())) {
+    const button = $(`mentions-range-${days}`);
+    button.textContent = t(RANGE_LABEL[days], { count: formatNumber(n) });
+    button.setAttribute('aria-pressed', String(days === range));
+  }
   const status = mentionStatus(view);
   $('mentions-status').textContent = t(status.key, status.params.at
     ? { time: formatDateTime(new Date(status.params.at * 1000)) } : status.params);
@@ -165,7 +177,7 @@ export function paintMentions() {
   const choices = routes();
   $('mentions-no-routes').hidden = !view?.enabled || choices.length > 0;
   if (!current()) selected = items()[0]?.key || null;
-  const next = mentionSignature(view, choices);
+  const next = mentionSignature(items(), choices);
   if (next !== listSignature) {
     listSignature = next;
     $('mentions-list').replaceChildren(...items().map(listRow));
@@ -182,7 +194,7 @@ export async function refreshMentions() {
 /* the mentions leave the list; the next one is selected */
 function drop(keys) {
   if (!view?.items) return;
-  if (keys.includes(selected)) selected = mentionAfter(view.items, keys);
+  if (keys.includes(selected)) selected = mentionAfter(items(), keys);
   view = { ...view, items: view.items.filter(item => !keys.includes(item.key)) };
   paintMentions();
 }
@@ -244,6 +256,9 @@ export function initMentions(deps) {
   $('mentions-back').onclick = () => switchProject(state.projectId);
   $('mentions-dismiss-all').onclick = () => dismissAll();
   $('mentions-list').onkeydown = onListKey;
+  for (const days of MENTION_RANGES) {
+    $(`mentions-range-${days}`).onclick = () => { range = days; paintMentions(); };
+  }
 }
 
 /* the listener and the first pull; called once the Board is the user's */
