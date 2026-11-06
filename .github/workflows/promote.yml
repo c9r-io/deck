@@ -80,7 +80,7 @@ jobs:
 
   promote:
     needs: resolve
-    runs-on: macos-14
+    runs-on: macos-15
     environment: production
     concurrency:
       group: stable-release-v${{ needs.resolve.outputs.version }}

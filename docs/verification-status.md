@@ -7,6 +7,12 @@
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
+## 本轮 CI：GitHub 下线 macOS 14 托管 runner
+
+起因：推送 997516b 后的 CI（run 42179976775）里 `macos14-launch` 被取消，注释为 `The configuration 'macos-14-arm64-us-default' is not supported`；重跑一次结果相同。GitHub 已于 2026-11-02 下线 macos-14 镜像（此前 10-05 起有分时段停用），门禁要求每项成功，于是 Nightly、Stable 都无法通过。同一次运行里 checks、rust、release 三项都是绿的。
+处理（用户选择）：启动检查改到 GitHub 现存最老的 macOS 15，任务改名 `oldest-macos-launch`，门禁仍要求它通过；`scripts/test-compat-candidate` 断言 macOS 15。`nightly.yml` 的 publish 和 `promote.yml` 的 promote 原本也跑在 macos-14 上（只做签名校验和上传，与系统版本无关），一并改到 macos-15。
+缺口：应用声明的最低系统（11.0）到 14 之间的版本不再由 CI 启动验证；macOS 14 只剩以前的记录。
+
 ## 本轮 Slack 提及一览：在 Deck 里决定处理哪条 @你，Slack 上保持静默
 
 起因：用户工作日在 Slack 上给 @自己 的消息加表情来触发自动化；非工作日想在 Slack 上不留痕迹，但仍自己判断要处理哪条。

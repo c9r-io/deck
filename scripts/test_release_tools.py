@@ -517,14 +517,14 @@ class ReleaseChannelTests(unittest.TestCase):
     def test_gate_results_pass_only_when_every_job_succeeded_on_one_commit(self) -> None:
         commit = "a" * 40
         job = lambda result="success", sha=commit: {"result": result, "outputs": {"commit": sha}}  # noqa: E731
-        needs = {"checks": job(), "rust": job(), "release": job(), "macos14-launch": job()}
+        needs = {"checks": job(), "rust": job(), "release": job(), "oldest-macos-launch": job()}
         self.assertEqual(rc.assert_gate_results(needs), commit)
         self.assertEqual(rc.assert_gate_results(needs, commit), commit)
         self.assertEqual(rc.assert_gate_results(needs, "main"), commit)
         for name, broken in (
             ("failure", {**needs, "rust": job("failure")}),
             ("cancelled", {**needs, "release": job("cancelled")}),
-            ("skipped", {**needs, "macos14-launch": {"result": "skipped", "outputs": {}}}),
+            ("skipped", {**needs, "oldest-macos-launch": {"result": "skipped", "outputs": {}}}),
             ("no result", {**needs, "checks": {"outputs": {"commit": commit}}}),
             ("no commit", {**needs, "checks": {"result": "success", "outputs": {}}}),
             ("short commit", {**needs, "checks": job(sha=commit[:12])}),
@@ -549,15 +549,15 @@ class ReleaseChannelTests(unittest.TestCase):
     def test_repository_gate_splits_without_dropping_a_check(self) -> None:
         gate = (ROOT / ".github/workflows/gate.yml").read_text()
         jobs = rc.workflow_jobs(gate)
-        self.assertEqual(set(jobs), {"checks", "rust", "release", "macos14-launch", "gate"})
+        self.assertEqual(set(jobs), {"checks", "rust", "release", "oldest-macos-launch", "gate"})
         rc.assert_gate_summary(ROOT / ".github/workflows/gate.yml")
-        self.assertEqual(rc.job_needs(jobs["macos14-launch"]), {"release"})
+        self.assertEqual(rc.job_needs(jobs["oldest-macos-launch"]), {"release"})
         for name in ("checks", "rust", "release"):
             self.assertEqual(rc.job_needs(jobs[name]), set(), f"{name} starts at once")
             self.assertNotRegex(jobs[name], r"(?m)^    if:", f"{name} always runs")
-        for name in ("checks", "rust", "release", "macos14-launch", "gate"):
+        for name in ("checks", "rust", "release", "oldest-macos-launch", "gate"):
             self.assertIn("ref: ${{ inputs.ref }}", jobs[name], f"{name} checks out the gated ref")
-        for name in ("checks", "rust", "release", "macos14-launch"):
+        for name in ("checks", "rust", "release", "oldest-macos-launch"):
             self.assertIn("commit: ${{ steps.commit.outputs.sha }}", jobs[name], name)
             self.assertIn('echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"', jobs[name], name)
         for command, owner in (
@@ -585,7 +585,7 @@ class ReleaseChannelTests(unittest.TestCase):
             ("python3 scripts/check_local_translation_binary.py app/src-tauri/target/release/deck-app", "release"),
             ("scripts/check-edr-binary app/src-tauri/target/release/deck-app", "release"),
             ("scripts/package-compat-candidate", "release"),
-            ("scripts/test-compat-candidate", "macos14-launch"),
+            ("scripts/test-compat-candidate", "oldest-macos-launch"),
         ):
             self.assertEqual([name for name, body in jobs.items() if command in body], [owner], command)
         # the coverage run is what writes the B-admission evidence: it gets

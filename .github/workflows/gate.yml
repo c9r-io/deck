@@ -14,7 +14,9 @@ name: gate
 # - rust: clippy, tests with coverage (the Full Local B-admission probe runs
 #   inside that same test run) and the Full Local parity workload;
 # - release: the release executable checks and the compatibility candidate
-#   that macos14-launch starts on macOS 14.
+#   that oldest-macos-launch starts on the oldest macOS GitHub still hosts
+#   (macOS 15 since the macOS 14 image was retired on 2026-11-02; older
+#   systems the app declares are no longer launched in CI).
 # Every job records the commit it actually checked out; `gate` succeeds only
 # when every job succeeded on that same commit (scripts/release_channels.py
 # `gate-results`), and runs even when one failed or was cancelled.
@@ -338,9 +340,9 @@ jobs:
             { echo '### build.rs stages (release)'; echo '```'; cat "$DECK_BUILD_TIMINGS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-  macos14-launch:
+  oldest-macos-launch:
     needs: release
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: read
     outputs:
@@ -357,7 +359,7 @@ jobs:
         with:
           name: deck-compat-candidate
           path: ${{ runner.temp }}
-      - name: Launch candidate through LaunchServices on macOS 14
+      - name: Launch candidate through LaunchServices on the oldest hosted macOS
         run: scripts/test-compat-candidate "${{ runner.temp }}/deck-compat-candidate.tar.gz"
 
   # The one result callers and branch checks read ("test / gate"). It runs
@@ -365,7 +367,7 @@ jobs:
   # every one of them succeeded on the same checked-out commit: failure,
   # cancelled and skipped all fail it. Nothing is skipped by design.
   gate:
-    needs: [checks, rust, release, macos14-launch]
+    needs: [checks, rust, release, oldest-macos-launch]
     if: always()
     runs-on: ubuntu-latest
     permissions:

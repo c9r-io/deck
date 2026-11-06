@@ -310,7 +310,7 @@ jobs:
 
   publish:
     needs: [resolve, build-sign]
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     env:

@@ -1,9 +1,11 @@
 #!/bin/sh
-# Launch the CI-produced candidate on an older macOS through LaunchServices.
+# Launch the CI-produced candidate through LaunchServices on the oldest macOS
+# GitHub hosts: 15 since the macOS 14 image was retired on 2026-11-02.
 set -eu
 archive=${1:?usage: scripts/test-compat-candidate deck-compat-candidate.tar.gz}
 os_major=$(sw_vers -productVersion | cut -d. -f1)
-test "$os_major" = 14 || { echo "expected macOS 14, got $os_major" >&2; exit 1; }
+expected=15
+test "$os_major" = "$expected" || { echo "expected macOS $expected, got $os_major" >&2; exit 1; }
 test "$(uname -m)" = arm64
 test ! -e "$HOME/.deck" || { echo "runner already has Deck data" >&2; exit 1; }
 work=$(mktemp -d "${RUNNER_TEMP:-/tmp}/deck-compat.XXXXXX")
@@ -40,7 +42,7 @@ app="$work/deck-compat.app"
 codesign --verify --deep --strict "$app"
 tmux_version=$("$app/Contents/MacOS/tmux" -V)
 test "$tmux_version" = 'tmux 3.7c' || {
-  echo "bundled tmux did not load on macOS 14" >&2
+  echo "bundled tmux did not load on macOS $os_major" >&2
   exit 1
 }
 open -n "$app"
@@ -54,7 +56,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   sleep 1
 done
 if [ -z "${pid:-}" ] || ! grep -q '\[ui\] ping-recv' "$HOME/.deck/app.log" 2>/dev/null; then
-  echo "Deck did not reach UI ping readiness on macOS 14" >&2
+  echo "Deck did not reach UI ping readiness on macOS $os_major" >&2
   exit 1
 fi
 python3 - "$HOME/.deck/settings.json" <<'PY'
@@ -63,4 +65,4 @@ path = pathlib.Path(sys.argv[1])
 settings = json.loads(path.read_text()) if path.exists() else {}
 assert settings.get("localIntelligence", {}).get("translation", {}).get("enabled", False) is False
 PY
-echo "macOS 14 LaunchServices candidate ready; bundled tmux=$tmux_version; Local Translation default OFF; pid=$pid"
+echo "macOS $os_major LaunchServices candidate ready; bundled tmux=$tmux_version; Local Translation default OFF; pid=$pid"
