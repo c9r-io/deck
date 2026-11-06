@@ -37,6 +37,7 @@
 - 第 6 轮（加 emoji，多一条 `eyes` 规则）PASS 14/14：`mentions-emoji` 菜单里 `eyes` 显示为 👀、自定义的显示 `:decklive:`；其余同第 5 轮；0 个表情。之后载体、tmux 服务、隔离目录和专用浏览器按核对过的 pid 停止并删除，正式的 `deck` socket 未动；沙盒频道里的测试消息保留。
 门禁（第二版，本机）：fmt；CI 形式 clippy 0 告警；`cargo test --workspace --all-targets --all-features --locked`（隔离 HOME、空 TMPDIR）1654 项通过、0 失败（14 项按设计忽略）；`scripts/ui-tests` 952 项；`check.mjs` 89 个模块、JS 语法 211 个；扩展目录 current。TMPDIR 为空，tmux socket 目录只剩正式的 `deck`。未跑 llvm-cov 形式。
 时间范围（第三版）：列表上方三段 `24 小时 · 3 天 · 一周`，默认 24 小时，每次启动回到 24 小时、不存设置；每个按钮带自己的数字，侧边栏数字和“全部忽略”跟随当前范围。收集范围从 30 天缩到 7 天（`inbound_slack::MENTION_DAYS`），后端只列 7 天内的（`slack_mentions::list_since`）。单元测试覆盖边界和点击切换；WK `mentions-live` 新增检查 `mentions-range`。门禁（本机）：fmt；CI 形式 clippy 0 告警；`cargo test --workspace`（隔离 HOME、空 TMPDIR）1655 项通过；`scripts/ui-tests` 954 项；`check.mjs` 89 个模块；扩展目录 current。测试里的提及时间改为相对当前时间，否则一周后会被窗口过滤。
+- 第 7 轮（时间范围）PASS 15/15：`mentions-range` 24 小时 12 条、一周 12 条（沙盒里的旧测试消息都在当天，真实数据没有区分两档；边界只由单元测试覆盖），点一周再点回 24 小时，列表随之重绘；其余同第 6 轮；三条消息上 0 个表情。载体、tmux 服务、隔离目录和专用浏览器按 pid 停止并删除，正式的 `deck` socket 未动。
 UNRUN：帖子里的回复由别人提及（沙盒里只有用户一人，Slackbot 提醒不能发进帖子；帖子上下文只由单元测试覆盖）；自定义表情图片；工作 Mac；发布载体。
 
 ## 本轮 升级重启失败：两个 Agent 退出慢，整次重启失败，已退出的 Claude 也没有重入
