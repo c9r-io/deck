@@ -155,6 +155,23 @@ pub(super) fn automation_trigger(
             STALE_REQUEST,
         )));
     }
+    // a client that drives its worker cards starts at most so many at once
+    let crowded = runtime
+        .read(|doc| {
+            doc.config
+                .clients
+                .iter()
+                .any(|c| c.id == client_id && c.allow_workers)
+                && super::workers::live_workers(doc, client_id) >= super::workers::MAX_LIVE_WORKERS
+        })
+        .map_err(map_error)?;
+    if crowded {
+        return Err(error_value(
+            "CAPACITY_EXCEEDED",
+            "this client already has 8 worker cards on the Board",
+            "Ask the local Deck user to close finished worker cards, then trigger again with a new request.",
+        ));
+    }
     let config = automation_config().ok_or_else(|| {
         map_error(DeckError::new(
             ErrorKind::ContextChanged,
@@ -275,7 +292,14 @@ pub(crate) fn automation_outcome(
     let Some(runtime) = RUNTIME.get() else {
         return Ok(());
     };
-    outcome_in(runtime, operation_id, state, code, card)
+    outcome_in(runtime, operation_id, state, code, card)?;
+    // the card may have become a worker card: its label shows at once
+    if state == "committed" {
+        if let Some(app) = runtime.app.as_ref() {
+            let _ = app.emit("mcp-workers-changed", ());
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn outcome_in(
@@ -302,6 +326,11 @@ pub(super) fn outcome_in(
             operation.result = Some(result);
         }
         operation.updated_at = now_ms();
+        // the card a driving client started is one of its worker cards
+        if let (Some(card), "committed") = (card, state) {
+            let operation = operation.clone();
+            super::workers::record_worker(doc, &operation, card);
+        }
         Ok(())
     })
 }
@@ -326,16 +355,25 @@ pub(crate) fn automation_delegations() -> Option<HashSet<String>> {
             if !doc.config.enabled {
                 return HashSet::new();
             }
-            doc.config
+            let live =
+                |client: &&Client| client.revoked_at.is_none() && !fenced.contains(&client.id);
+            let automations = doc
+                .config
                 .clients
                 .iter()
-                .filter(|client| {
-                    client.revoked_at.is_none()
-                        && client.allow_automations
-                        && !fenced.contains(&client.id)
-                })
-                .map(|client| client.id.clone())
-                .collect()
+                .filter(live)
+                .filter(|client| client.allow_automations)
+                .map(|client| client.id.clone());
+            // a client that may drive its worker cards, under its own key
+            // (`workers::worker_delegation_key`)
+            let workers = doc
+                .config
+                .clients
+                .iter()
+                .filter(live)
+                .filter(|client| client.allow_workers)
+                .map(|client| super::workers::worker_delegation_key(&client.id));
+            automations.chain(workers).collect()
         })
         .ok()
 }

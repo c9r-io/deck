@@ -319,6 +319,9 @@ fn client_record(root: &Path) -> Client {
         create_sequence: 0,
         allow_automations: false,
         trigger_sequence: 0,
+        allow_workers: false,
+        allow_replies: false,
+        send_sequence: 0,
     }
 }
 
@@ -841,6 +844,9 @@ fn authorization_is_client_project_session_and_control_scoped() {
         create_sequence: 0,
         allow_automations: false,
         trigger_sequence: 0,
+        allow_workers: false,
+        allow_replies: false,
+        send_sequence: 0,
     });
     let disabled = match client(&doc, "client_a") {
         Err(error) => error,
@@ -1492,7 +1498,7 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
     assert!(!status.socket_ready);
     assert_eq!(status.clients.len(), 1);
     assert!(mcp_adapter_path().is_err());
-    assert!(mcp_client_add("".into(), vec![], false, false).is_err());
+    assert!(mcp_client_add("".into(), vec![], false, false, None, None).is_err());
     assert!(mcp_client_add(
         "Bad scope".into(),
         vec![ProjectScopeInput {
@@ -1501,6 +1507,8 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
         }],
         false,
         false,
+        None,
+        None,
     )
     .is_err());
     let added = mcp_client_add(
@@ -1511,6 +1519,8 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
         }],
         true,
         false,
+        None,
+        None,
     )
     .unwrap();
     assert_eq!(added.name, "Client B");
@@ -2103,7 +2113,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
     );
 
     let mut invalid = DiskDoc {
-        version: STATE_VERSION_AUTOMATIONS + 1,
+        version: STATE_VERSION_WORKERS + 1,
         ..DiskDoc::default()
     };
     assert!(validate_doc(&invalid).is_err());
@@ -2135,6 +2145,9 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
         create_sequence: 0,
         allow_automations: false,
         trigger_sequence: 0,
+        allow_workers: false,
+        allow_replies: false,
+        send_sequence: 0,
     });
     assert!(validate_doc(&invalid).is_err());
     std::fs::remove_dir_all(root).unwrap();
@@ -3081,7 +3094,7 @@ fn v3_state_upgrades_stickily_and_future_state_is_refused() {
     // The v3 build accepted exactly version 3; the same rule refuses a
     // future schema here.
     let mut future = saved.clone();
-    future["version"] = json!(STATE_VERSION_AUTOMATIONS + 1);
+    future["version"] = json!(STATE_VERSION_WORKERS + 1);
     std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
     assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
     assert_eq!(
@@ -5624,4 +5637,212 @@ fn accepted_triggers_are_reconciled_against_the_inbox_after_a_restart() {
         ("ambiguous".into(), Some("inbox-lost".into()))
     );
     crate::inbound_agent::redirect_for_tests(None);
+}
+
+/// Worker cards (`workers.rs`): the choice gates every tool, a committed
+/// trigger of a driving client records its card, the view is the client's
+/// own and content-free, a send whose episode moved on is refused before
+/// anything is written, replies need their own choice, and a takeover
+/// shows. The ledger takes the sticky worker version.
+#[test]
+fn worker_cards_are_recorded_listed_refused_and_taken_over() {
+    let (runtime, _runner, root) = fixture("worker-cards", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let call = |tool: &str, args: Value| route(&runtime, request(tool, args));
+    // without the choice: nothing
+    assert_eq!(
+        call("deck_worker_list", json!({}))["error"]["code"],
+        "PERMISSION_DENIED"
+    );
+    // a trigger committed before the choice makes no worker card
+    let trigger = |id: &str| Operation {
+        operation_id: id.into(),
+        kind: TRIGGER_KIND.into(),
+        result: Some(json!({"automationId": "triage", "revision": "r"})),
+        request_id: format!("req_{id}"),
+        ..operation(TRIGGER_KIND, "accepted")
+    };
+    runtime
+        .write(|doc| {
+            doc.operations.push(trigger("op_before"));
+            Ok(())
+        })
+        .unwrap();
+    outcome_in(&runtime, "op_before", "committed", None, Some("S0")).unwrap();
+    assert!(runtime.read(|doc| doc.workers.is_empty()).unwrap());
+    // the choice: written at the sticky worker version, audited
+    client_workers(&runtime, "client_a", true, true).unwrap();
+    let saved: Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+    assert_eq!(saved["version"], STATE_VERSION_WORKERS);
+    assert!(runtime
+        .read(|doc| doc.audit.iter().any(|a| a.kind == "workers-allowed"))
+        .unwrap());
+    runtime
+        .write(|doc| {
+            doc.operations.push(trigger("op_w1"));
+            Ok(())
+        })
+        .unwrap();
+    outcome_in(&runtime, "op_w1", "committed", None, Some("S1")).unwrap();
+    // a rejected trigger makes none either
+    runtime
+        .write(|doc| {
+            doc.operations.push(trigger("op_w2"));
+            Ok(())
+        })
+        .unwrap();
+    outcome_in(&runtime, "op_w2", "rejected", Some("busy"), None).unwrap();
+    let recorded = runtime
+        .read(|doc| {
+            doc.workers
+                .iter()
+                .map(|w| (w.card_id.clone(), w.automation_id.clone()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+    assert_eq!(recorded, [("S1".to_owned(), "triage".to_owned())]);
+    // no Board known: nothing to list (a card is listed only where it is)
+    let listed = call("deck_worker_list", json!({}));
+    assert_eq!(listed["ok"], true, "{listed}");
+    assert_eq!(listed["workers"], json!([]));
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [
+            {"id": "S1", "session": "deck-w1", "title": "Fix A", "cmd": "claude", "dir": "/tmp"},
+            {"id": "S9", "session": "deck-w9", "title": "Not mine", "cmd": "claude", "dir": "/tmp"}
+        ]}),
+        true,
+    );
+    let seen = |episode| {
+        let mut map = HashMap::new();
+        map.insert(
+            "deck-w1".to_owned(),
+            seen_for_tests(Some("turn-done"), episode),
+        );
+        Some(map)
+    };
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(seen(5)));
+    let listed = call("deck_worker_list", json!({}));
+    let workers = listed["workers"].as_array().unwrap();
+    assert_eq!(workers.len(), 1, "{listed}");
+    assert_eq!(workers[0]["cardId"], "S1");
+    assert_eq!(workers[0]["title"], "Fix A");
+    assert_eq!(workers[0]["alive"], true);
+    assert_eq!(
+        workers[0]["agent"],
+        json!({"state": "turn-done", "episode": 5})
+    );
+    assert_eq!(workers[0]["takenOver"], false);
+    assert_eq!(listed["mayReadReplies"], true);
+    assert_eq!(listed["nextSendSequence"], 0);
+    // wait returns at once when the episode is not the one the caller saw
+    let waited = call(
+        "deck_worker_wait",
+        json!({"cards": [{"card_id": "S1", "episode": 4}], "wait_ms": 50}),
+    );
+    assert_eq!(waited["changed"], true, "{waited}");
+    let quiet = call(
+        "deck_worker_wait",
+        json!({"cards": [{"card_id": "S1", "episode": 5}], "wait_ms": 50}),
+    );
+    assert_eq!(quiet["changed"], false, "{quiet}");
+    assert_eq!(
+        call("deck_worker_wait", json!({"cards": [], "wait_ms": 50}))["error"]["code"],
+        "INVALID_ARGUMENTS"
+    );
+    assert_eq!(
+        call(
+            "deck_worker_wait",
+            json!({"cards": [{"card_id": "S1", "episode": 5}], "wait_ms": 6000})
+        )["error"]["code"],
+        "INVALID_ARGUMENTS"
+    );
+    // a send: someone else's card, a moved episode, a stale sequence
+    let send = |card: &str, after: u64, sequence: u64| {
+        call(
+            "deck_worker_send",
+            json!({"request_id": format!("req_s_{card}_{after}_{sequence}"), "send_sequence": sequence,
+                   "card_id": card, "after_episode": after, "text": "run the tests"}),
+        )
+    };
+    assert_eq!(send("S9", 5, 0)["error"]["code"], "WORKER_NOT_FOUND");
+    let moved = send("S1", 4, 0);
+    assert_eq!(moved["error"]["code"], "EPISODE_MOVED", "{moved}");
+    assert_eq!(moved["error"]["currentEpisode"], 5);
+    assert_eq!(send("S1", 5, 3)["error"]["code"], "STALE_REQUEST");
+    // a recovered Board admits no send
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [
+            {"id": "S1", "session": "deck-w1", "title": "Fix A", "cmd": "claude", "dir": "/tmp"}
+        ]}),
+        false,
+    );
+    assert_eq!(send("S1", 5, 0)["error"]["code"], "WORKER_NOT_FOUND");
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [
+            {"id": "S1", "session": "deck-w1", "title": "Fix A", "cmd": "claude", "dir": "/tmp"}
+        ]}),
+        true,
+    );
+    // nothing refused above was written: the sequence is untouched
+    assert_eq!(call("deck_worker_list", json!({}))["nextSendSequence"], 0);
+    // a reply: gone until the Stop hook forwarded one, then the text
+    let reply = |episode| {
+        call(
+            "deck_worker_reply",
+            json!({"card_id": "S1", "episode": episode}),
+        )
+    };
+    assert_eq!(reply(5)["error"]["code"], "REPLY_GONE");
+    crate::turn_summary::remember_reply("deck-w1", 5, "All tests pass.");
+    let read = reply(5);
+    assert_eq!(read["text"], "All tests pass.", "{read}");
+    assert_eq!(read["truncated"], false);
+    crate::turn_summary::remember_reply("deck-w1", 6, "head\n…\ntail");
+    assert_eq!(reply(6)["truncated"], true);
+    // the user takes the card over, and hands it back
+    assert!(worker_set_held(&runtime, "S1", true).unwrap());
+    assert!(
+        !worker_set_held(&runtime, "S1", true).unwrap(),
+        "idempotent"
+    );
+    assert!(
+        !worker_set_held(&runtime, "S9", true).unwrap(),
+        "no worker card"
+    );
+    assert_eq!(
+        call("deck_worker_list", json!({}))["workers"][0]["takenOver"],
+        true
+    );
+    let held = call(
+        "deck_worker_wait",
+        json!({"cards": [{"card_id": "S1", "episode": 5}], "wait_ms": 50}),
+    );
+    assert_eq!(held["changed"], true, "a takeover is a change: {held}");
+    let ui = workers_ui(&runtime).unwrap();
+    assert_eq!(ui.len(), 1);
+    assert!(worker_set_held(&runtime, "S1", false).unwrap());
+    // replies without driving are refused; reading needs its own choice
+    client_workers(&runtime, "client_a", true, false).unwrap();
+    assert_eq!(reply(5)["error"]["code"], "PERMISSION_DENIED");
+    client_workers(&runtime, "client_a", false, true).unwrap();
+    assert!(runtime
+        .read(|doc| !doc.config.clients[0].allow_replies)
+        .unwrap());
+    assert_eq!(
+        call("deck_worker_list", json!({}))["error"]["code"],
+        "PERMISSION_DENIED"
+    );
+    // the ledger keeps its sticky version after the choice is gone
+    let saved: Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+    assert_eq!(saved["version"], STATE_VERSION_WORKERS);
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    drop(root);
+}
+
+/// The scheduler's delegation source names a driving client under its own
+/// key, beside (never instead of) its automation delegation.
+#[test]
+fn a_driving_client_is_delegated_under_its_worker_key() {
+    assert_eq!(worker_delegation_key("client_a"), "worker:client_a");
+    assert_ne!(worker_delegation_key("client_a"), "client_a");
 }

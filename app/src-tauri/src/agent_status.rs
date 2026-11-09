@@ -2202,6 +2202,9 @@ fn ingest_line(
     if let Some(reply) = reply {
         crate::turn_summary::offer(&accepted, reply);
     }
+    // a waiting worker-card orchestrator looks again (`mcp/workers.rs`);
+    // it reads the observation itself, nothing of this event is passed on
+    crate::mcp::note_worker_change();
     Ok(())
 }
 
@@ -3062,6 +3065,7 @@ mod tests {
             authority_unverified: false,
             board_unverified: false,
             channel_unverified: false,
+            human_held: false,
             activity: 0,
             agent: projections(rows).get(session).map(|o| o.state),
             codex: trust(rows, table).get(session).copied(),
@@ -3228,6 +3232,7 @@ mod tests {
             authority_unverified: false,
             board_unverified: false,
             channel_unverified: false,
+            human_held: false,
             activity: 0,
             agent: Some("turn-done"),
             codex,

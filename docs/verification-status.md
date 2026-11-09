@@ -1,11 +1,23 @@
 # 当前验证索引
 
-更新：2026-11-06（Slack 提及一览：@你 的消息在 Deck 里列出，手动路由到 Slack 表情规则；升级重启失败：两个 Agent 退出慢让整次重启失败，已退出的 Claude 也没有重入；Claude 以选择列表或 `-c` 启动时认不出）；2026-11-05（进程表只装下最新的约四分之一进程：重入只认出 2 个 Claude 会话；四个改动前就失败的原生 smoke；装文字的宽度随字号缩放；间距与字号统一；终端单击交给要了鼠标的程序；多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-11-10（工作卡：编排型 Agent 驱动自己开的卡）；2026-11-06（Slack 提及一览：@你 的消息在 Deck 里列出，手动路由到 Slack 表情规则；升级重启失败：两个 Agent 退出慢让整次重启失败，已退出的 Claude 也没有重入；Claude 以选择列表或 `-c` 启动时认不出）；2026-11-05（进程表只装下最新的约四分之一进程：重入只认出 2 个 Claude 会话；四个改动前就失败的原生 smoke；装文字的宽度随字号缩放；间距与字号统一；终端单击交给要了鼠标的程序；多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
+
+## 本轮 工作卡：编排型 Agent 驱动自己开的卡（2026-11-10）
+
+设计：`docs/design/agent-session-tools-20261109.md`（D1–D6 按建议批准，D1 是硬规则放宽，CLAUDE.md 已改）。新增 MCP 工具 `deck_worker_list / wait / reply / send`（共 20 个）；工作卡 = 有「驱动工作卡」授权的客户端经 Agent 触发开出的卡；追加句走后端外部入口 `scheduler::worker_queue_add`，内容类型 `delegated`（queue.json sticky v10），权限只看客户端的 worker 委托键；新增 hold `human`（人在窗格里打字即接管，只能手动交还）；Stop hook 第三形态 `--reply workers`（只给 worker 回复，不做摘要、不调模型）；MCP ledger sticky v8。
+
+真实环境（本机，隔离数据目录与 tmux socket，用户自己 HOME 下已登录的 Claude Code 2.1.319 当 worker，`claude --setting-sources project --permission-mode acceptEdits --settings <fixture hooks>`，Deck 不写用户的任何配置；用户授权使用已有 Claude Code 和 Codex、不重新认证）：
+- 运行 2：WK 模式 `workers` **PASS** 14/14（`scripts/smoke-verdict`）。A 段 `scripts/mcp-worker-e2e.py` **PASS**（20 工具、开卡、三轮回复读取、`EPISODE_MOVED`、`STALE_REQUEST`、重放同一操作、接管时第三句停在 `human` 30 秒未发且未开新回合、交还后送达、撤销后 `PERMISSION_DENIED`）。B 段真实 Codex 0.167.0（`codex exec`，`-c` 临时挂 MCP，`default_tools_approval_mode="approve"`）开两个 worker、各追加一句，两份文件内容正确（`ALPHA`/`BETA` + `CHECKED`），四个回复都读到。
+- 运行 3（安静时间改为 10 秒后的最终构建）：A 段 **PASS**；第二句从接受到回合结束 63 秒（受 60 秒发送间隔），交还后 2 秒内送达（之前 180 秒安静）。
+- 运行 1 的发现：用户级 settings 里已有生产 Deck 的 Stop hook，与注入的 hook 各报一次回合结束，带回复的那条被当作重复丢掉 → 测试改为只读 project 设置。产品里只有 Deck 自己装的一套 hook，不受影响。
+
+门禁（本机）：fmt；CI 形式 clippy 0 告警；CI 形式 `cargo llvm-cov --workspace --all-targets --all-features --locked`（隔离 HOME、空 TMPDIR，串行）1661 项通过、行覆盖 85.5%，无残留；`scripts/ui-tests` 956 项；`check.mjs` 90 个模块；扩展目录 current；脚本单测通过。`cargo audit`：rmcp 3.4.0 有 3 条新公告（10-20 至 11-05 发布，本次未改 Cargo.lock），推送前须处理。
+缺口：Codex / Pi 当 worker 未支持（Codex 共享 daemon 下 Signal 不可用）；release 载体上 `--reply workers` 由 Deck 写入 hook 的路径未实机执行（开发版不写 hook，单元测试覆盖）；语音输入不触发接管；多显示器 / 窗口被遮挡时 WK 页面定时器会被暂停（测试载体问题，非产品）。
 
 ## 本轮 CI：GitHub 下线 macOS 14 托管 runner
 

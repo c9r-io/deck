@@ -1422,6 +1422,18 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 .card-status .card-reminder:hover, .card-status .card-reminder:focus-visible,
 .side-item .card-reminder:hover, .side-item .card-reminder:focus-visible { color: var(--text); border-color: var(--border); }
 .card-status .card-reminder.due, .side-item .card-reminder.due { color: var(--attn); border-color: var(--attn-border); }
+/* a worker card's label (workers.js): who drives it, a button once the
+   user took it over; the same one-line shape as the reminder label */
+.card-status .card-worker {
+  margin: 0 0 0 auto; flex: none; max-width: 60%;
+  font-family: var(--mono); font-size: var(--fs-10); line-height: 1.2;
+  padding: 0 var(--sp-6); border: 1px solid var(--border-soft); border-radius: 4px;
+  color: var(--muted); background: var(--panel);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left;
+}
+.card-status .card-reminder + .card-worker { margin-left: var(--sp-6); }
+.card-status .card-worker.taken { color: var(--attn); border-color: var(--attn-border); cursor: pointer; }
+.card-status .card-worker.taken:hover, .card-status .card-worker.taken:focus-visible { color: var(--text); border-color: var(--border); }
 .card.attention .card-status { color: var(--attn); }
 @media (max-width: 1050px) {
   .attention-row, .attention-labels { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: var(--sp-8) var(--sp-12); }

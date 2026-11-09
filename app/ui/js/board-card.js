@@ -20,6 +20,7 @@ import { t } from './i18n.js';
  * @property {(id: string) => Promise<unknown>} togglePinned
  * @property {(event: MouseEvent, id: string) => unknown} context
  * @property {(card: Object) => HTMLElement} reminderChip
+ * @property {(card: Object) => HTMLElement|null} [workerChip]
  */
 
 /**
@@ -30,7 +31,7 @@ import { t } from './i18n.js';
  * @param {BoardCardActions} actions
  * @returns {HTMLElement}
  */
-export function createBoardCard(s, { open, close, togglePinned, context, reminderChip }) {
+export function createBoardCard(s, { open, close, togglePinned, context, reminderChip, workerChip }) {
   const el = document.createElement('div');
   el.className = 'card' + (s.status === 'waiting' ? ' waiting' : s.status === 'attention' ? ' attention' : '');
   el.dataset.sid = s.id;
@@ -56,6 +57,12 @@ export function createBoardCard(s, { open, close, togglePinned, context, reminde
   if (s.reminder) {
     const reminder = reminderChip(s); reminder.dataset.navFocus = `card:${s.id}:reminder`;
     el.querySelector('.card-status').append(reminder);
+  }
+  /* a worker card (workers.js): who drives it, and the way to hand it back */
+  const worker = workerChip?.(s);
+  if (worker) {
+    worker.dataset.navFocus = `card:${s.id}:worker`;
+    el.querySelector('.card-status').append(worker);
   }
   paintCardAttentionBadge(el.querySelector('.card-attention-badge'), s);
   el.querySelector('.dot').title = dotTitle(s.status);
@@ -100,7 +107,7 @@ export function createBoardCard(s, { open, close, togglePinned, context, reminde
   };
   el.addEventListener('click', e => {
     e.stopPropagation();   // don't toggle the board selection underneath
-    if (e.target.closest('.card-x, .card-pin, .card-signal-help, .card-reminder')) return;
+    if (e.target.closest('.card-x, .card-pin, .card-signal-help, .card-reminder, .card-worker')) return;
     open(s.id);
   });
   el.oncontextmenu = e => context(e, s.id);

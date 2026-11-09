@@ -8,6 +8,13 @@
 //! unreadable file is refused, never replaced by defaults. Toggle state is
 //! derived from the file; no second settings store exists.
 //!
+//! Claude Code's Stop hook has three forms (`ReplyHook`): plain, `--reply`
+//! (the turn-summary switch; worker replies read it too) and `--reply
+//! workers` (the message forwarded for worker replies alone, while some MCP
+//! client may read them and summaries are off; `sync_worker_replies`). The
+//! helper forwards the message the same way for both reply forms; Deck reads
+//! which one the file holds and makes no summary for the worker form.
+//!
 //! Only a stable installed bundle may write global hooks. The explicit debug
 //! re-entry experiment may edit its bound project Lifecycle hooks only.
 //! Migration visits only unambiguous registered adapters and updates an already
@@ -134,6 +141,48 @@ const CLAUDE_HOOKS_WITH_REPLY: &[HookSpec] = &[
     ("Notification", Some("permission_prompt"), "needs-input"),
     ("Stop", None, "turn-done --reply"),
 ];
+
+/// The word after `--reply` that says the message is forwarded for worker
+/// replies alone (`mcp/workers.rs`): no turn summary, no model call. The
+/// helper forwards the message the same way either way.
+const WORKERS_WORD: &str = "workers";
+
+/// `CLAUDE_HOOKS` while some MCP client may read its worker cards' replies
+/// and the turn-summary switch is off: the Stop hook forwards the message
+/// with `--reply workers`.
+const CLAUDE_HOOKS_WITH_WORKER_REPLY: &[HookSpec] = &[
+    ("UserPromptSubmit", None, "working"),
+    ("Notification", Some("permission_prompt"), "needs-input"),
+    ("Stop", None, "turn-done --reply workers"),
+];
+
+/// What deck's Stop hook in a hooks file forwards, read from the file
+/// (`reply_hook`): nothing, the message for turn summaries (which worker
+/// replies also read), or the message for worker replies alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReplyHook {
+    Off,
+    Summaries,
+    Workers,
+}
+
+/// Set while the Claude Code hooks file forwards replies for workers alone
+/// (`ReplyHook::Workers`), so a forwarded message makes no summary. Read
+/// from the file at boot and after every edit of it (`note_reply_hook`).
+static SUMMARIES_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn note_reply_hook(mode: ReplyHook) {
+    SUMMARIES_OFF.store(
+        mode == ReplyHook::Workers,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// Whether a forwarded final message may make a turn summary: false only
+/// while the Stop hook forwards it for worker replies alone.
+pub(crate) fn summaries_wanted() -> bool {
+    !SUMMARIES_OFF.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Codex lifecycle hooks (hooks.json; several hooks per event may coexist,
 /// so this never conflicts with a user's own hooks or `notify` program).
@@ -1150,6 +1199,9 @@ pub(crate) struct HookInstall {
     hooks: &'static [HookSpec],
     /// The same hooks while turn summaries are on (Claude Code only).
     reply_hooks: Option<&'static [HookSpec]>,
+    /// The same hooks while only worker replies are forwarded (Claude Code
+    /// only, `ReplyHook::Workers`).
+    worker_reply_hooks: Option<&'static [HookSpec]>,
     style: HookStyle,
     config_path: fn() -> Option<PathBuf>,
     never_ran: &'static str,
@@ -1204,11 +1256,47 @@ fn replies_on(root: &serde_json::Value) -> bool {
         })
 }
 
+/// What deck's Stop hook in this document forwards.
+fn reply_hook(root: &serde_json::Value) -> ReplyHook {
+    if !replies_on(root) {
+        return ReplyHook::Off;
+    }
+    let workers = root
+        .get("hooks")
+        .and_then(|hooks| hooks.get("Stop"))
+        .and_then(|list| list.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(entry_hooks)
+        .filter(|hook| hook_is_ours(Family::Signal, hook))
+        .any(|hook| {
+            let in_args = hook
+                .get("args")
+                .and_then(|args| args.as_array())
+                .is_some_and(|args| args.iter().any(|arg| arg.as_str() == Some(WORKERS_WORD)));
+            let in_command = hook
+                .get("command")
+                .and_then(|command| command.as_str())
+                .is_some_and(|command| command.split(' ').any(|word| word == WORKERS_WORD));
+            in_args || in_command
+        });
+    if workers {
+        ReplyHook::Workers
+    } else {
+        ReplyHook::Summaries
+    }
+}
+
 /// The spec table this document's install is meant to match: the reply
-/// variant while its Stop hook carries `--reply`, else the plain one.
+/// variant its Stop hook carries, else the plain one.
 fn current_specs(install: &HookInstall, root: &serde_json::Value) -> &'static [HookSpec] {
-    match install.reply_hooks {
-        Some(reply_hooks) if replies_on(root) => reply_hooks,
+    specs_for(install, reply_hook(root))
+}
+
+fn specs_for(install: &HookInstall, mode: ReplyHook) -> &'static [HookSpec] {
+    match (mode, install.reply_hooks, install.worker_reply_hooks) {
+        (ReplyHook::Summaries, Some(reply_hooks), _) => reply_hooks,
+        (ReplyHook::Workers, _, Some(worker_hooks)) => worker_hooks,
         _ => install.hooks,
     }
 }
@@ -1229,6 +1317,7 @@ pub(crate) const CLAUDE_CODE: AgentAdapter = AgentAdapter {
     install: Install::Hooks(HookInstall {
         hooks: CLAUDE_HOOKS,
         reply_hooks: Some(CLAUDE_HOOKS_WITH_REPLY),
+        worker_reply_hooks: Some(CLAUDE_HOOKS_WITH_WORKER_REPLY),
         style: HookStyle::Exec,
         config_path: claude_settings_path,
         never_ran: "Claude Code has never run on this Mac — nothing to configure",
@@ -1243,6 +1332,7 @@ pub(crate) const CODEX: AgentAdapter = AgentAdapter {
     install: Install::Hooks(HookInstall {
         hooks: CODEX_HOOKS,
         reply_hooks: None,
+        worker_reply_hooks: None,
         style: HookStyle::ShellAsync,
         config_path: codex_hooks_path,
         never_ran: "Codex has never run on this Mac — nothing to configure",
@@ -1275,6 +1365,9 @@ fn migrate_hook_adapter_on_boot(adapter: &AgentAdapter, helper: &str) -> bool {
     };
     // the turn-summary switch is part of the install: kept as found
     let specs = current_specs(install, &value);
+    if install.reply_hooks.is_some() {
+        note_reply_hook(reply_hook(&value));
+    }
     // The Lifecycle family is migrated only where the user already
     // enabled it: a user with the status hooks alone is never enrolled.
     // A missing lifecycle helper leaves those entries exactly as they are.
@@ -1546,6 +1639,10 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
         hooks_set(&path, HookEdit::Uninstall, never_ran)
     }
     .map(|_written| ());
+    // a fresh install forwards worker replies when a client may read them
+    if enable && result.is_ok() && source == CLAUDE_CODE.source {
+        sync_worker_replies(crate::mcp::replies_wanted_any());
+    }
     match &result {
         Ok(()) => applog(&format!(
             "[agent-hooks] {agent} {}",
@@ -1579,9 +1676,11 @@ pub(crate) fn turn_summary_status() -> TurnSummaryStatus {
         .as_ref()
         .zip(install)
         .is_some_and(|(value, install)| hooks_installed(value, install.hooks));
+    let mode = value.as_ref().map_or(ReplyHook::Off, reply_hook);
+    note_reply_hook(mode);
     TurnSummaryStatus {
         hooks,
-        on: hooks && value.as_ref().is_some_and(replies_on),
+        on: hooks && mode == ReplyHook::Summaries,
     }
 }
 
@@ -1607,10 +1706,16 @@ pub(crate) fn turn_summary_set(enable: bool) -> Result<(), DeckError> {
     if !hooks_installed(&value, install.hooks) {
         return Err(refused("hooks-off"));
     }
-    let specs = match (enable, install.reply_hooks) {
-        (true, Some(reply_hooks)) => reply_hooks,
-        _ => install.hooks,
+    // off keeps forwarding the message while a client may read worker
+    // replies, for that alone
+    let mode = if enable {
+        ReplyHook::Summaries
+    } else if crate::mcp::replies_wanted_any() {
+        ReplyHook::Workers
+    } else {
+        ReplyHook::Off
     };
+    let specs = specs_for(install, mode);
     let helper = installed_helper_path().map_err(|_| refused("release-only"))?;
     let edit = HookEdit::Install {
         specs,
@@ -1619,11 +1724,64 @@ pub(crate) fn turn_summary_set(enable: bool) -> Result<(), DeckError> {
         helper: &helper,
     };
     hooks_set(&path, edit, install.never_ran).map_err(|_| refused("write"))?;
+    note_reply_hook(mode);
     applog(&format!(
         "[agent-hooks] turn summaries {}",
         if enable { "on" } else { "off" }
     ));
     Ok(())
+}
+
+/// Follow the MCP clients' "read worker replies" choice (`mcp/workers.rs`):
+/// while one may read them and the turn-summary switch is off, deck's
+/// Claude Code Stop hook forwards the final message for that alone
+/// (`--reply workers`); once none may, it stops. Summaries on is left as it
+/// is: it forwards the message already. Like every hook edit it needs
+/// deck's hooks on and a release install; otherwise nothing is written and
+/// worker replies stay unavailable (the tools answer `REPLY_GONE`).
+pub(crate) fn sync_worker_replies(wanted: bool) {
+    let Some(install) = CLAUDE_CODE.hook_install() else {
+        return;
+    };
+    let Some(path) = (install.config_path)() else {
+        return;
+    };
+    let Ok(value) = read_settings_value(&path) else {
+        return;
+    };
+    let mode = reply_hook(&value);
+    note_reply_hook(mode);
+    if !hooks_installed(&value, install.hooks) {
+        return;
+    }
+    let target = match (mode, wanted) {
+        (ReplyHook::Off, true) => ReplyHook::Workers,
+        (ReplyHook::Workers, false) => ReplyHook::Off,
+        _ => return,
+    };
+    let Ok(helper) = installed_helper_path() else {
+        applog("[agent-hooks] worker replies unchanged (release-only)");
+        return;
+    };
+    let edit = HookEdit::Install {
+        specs: specs_for(install, target),
+        source: CLAUDE_CODE.source,
+        style: install.style,
+        helper: &helper,
+    };
+    match hooks_set(&path, edit, install.never_ran) {
+        Ok(_) => {
+            note_reply_hook(target);
+            applog(&format!(
+                "[agent-hooks] worker replies {}",
+                if wanted { "forwarded" } else { "stopped" }
+            ));
+        }
+        Err(e) => applog(&format!(
+            "[agent-hooks] worker replies unchanged ({})",
+            e.code()
+        )),
+    }
 }
 
 /// The user's explicit opt-in to one agent's session re-entry observation

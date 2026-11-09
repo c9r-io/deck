@@ -650,14 +650,16 @@ fn the_board_door_owns_the_committed_board_and_tells_one_observer() {
             "board_authority",
             "board_preset_choices",
             "card_follow_ups",
+            "card_targets",
             "commit_board",
             "committed_board"
         ],
-        "the door's committed-Board copy has one writer and four readers: `committed_board` \
+        "the door's committed-Board copy has one writer and five readers: `committed_board` \
          for the door's own persistence decisions, `board_authority`, which answers only for a \
          current Board, for a reader that grants something on what the Board says, \
          `board_preset_choices` for the readers that take a preset's choice back, and \
-         `card_follow_ups`, presentation only, for the follow-ups a turn summary may mark"
+         `card_follow_ups`, presentation only, for the follow-ups a turn summary may mark, and \
+         `card_targets`, where a worker card's terminal is (current only for a send)"
     );
     // the presentation reader has one caller, and it grants nothing
     assert_eq!(callers_of("card_follow_ups("), ["turn_summary.rs offer"]);

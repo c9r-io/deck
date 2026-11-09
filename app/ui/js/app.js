@@ -23,6 +23,7 @@ import { closeDropdownMenu, initDropdowns } from './dropdown.js';
 import { registerSessionPopup } from './session-tools.js';
 import { initAttention, openFromNotification, refreshAttention } from './attention.js';
 import { initMentions, startMentions } from './slack-mentions.js';
+import { initWorkers, startWorkers } from './workers.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
 import { initVoice } from './voice.js';
@@ -514,6 +515,7 @@ function initModules() {
   initTerminalChrome();
   initAttention({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp });
   initMentions({ provider, render, switchProject, leaveSessionView, closeBuffer });
+  initWorkers({ render });
   initLayout();
   initScheduler({ provider, pollNow, refreshAttention, ruleOf });
   initBuffer();
@@ -600,6 +602,7 @@ const offerBoardExit = createBoardExit({
     startReminders();
     startInbound();
     startMentions();
+    startWorkers();
     startOrphanPruning();
   },
 });
@@ -727,6 +730,7 @@ export async function boot() {
      again (inbound.js `startInbound`) */
   if (!loadErr) startInbound();
   if (!loadErr) startMentions();
+  if (!loadErr) startWorkers();
   drainConnector();
   setTimeout(checkForUpdate, 4000);
   /* runtime cadence comes from a Rust thread (App Nap freezes JS timers) */

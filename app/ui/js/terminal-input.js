@@ -63,6 +63,8 @@ export function createTerminalDataHandler(deps) {
     if (!reply && blocked()) return false;
     const bound = bind(reply);
     if (mirror && !reply) onInput(data);
+    /* the user's own input, typed or inserted (never an automatic reply) */
+    if (!reply) deps.onHuman?.();
     if (!reply && hasSelection()) appendInputCleanup(pane, cancelSelection(terminalInputDiagnostic(typeof data === 'string' ? data : '')));
     if (!reply && scrolled()) appendInputCleanup(pane, goLive());
     if (bound?.wait) appendInputCleanup(pane, bound.wait);

@@ -91,6 +91,15 @@
 //!   is held too. Send-now stays the user's own act, under every existing
 //!   target, foreground and paste guard.
 //!
+//! - Human hold: a row a delegated client wrote for its worker card
+//!   (`delegated_row`, `mcp/workers.rs`) is never selected automatically
+//!   while the user has that card taken over (`Hold::Human`, stage `human`):
+//!   the tick marks the card's session from the MCP ledger (`observe`), and
+//!   the pre-fire re-selection reads the ledger again at that instant
+//!   (`mcp::worker_card_held`), so a takeover after the tick's observation
+//!   holds too. It is not Signal, comes after the agent's own input request
+//!   and before every other hold, and only the user's "Hand back" lifts it.
+//!
 //! Owner rows keep the quiet-only rule (plus the holds above). Manual
 //! send-now (`select_for_request`) is the user acting while looking at the
 //! pane and is not held. A stale `needs-input` (a question dismissed with
@@ -98,7 +107,7 @@
 //! poll reconciliation sees the agent leave the foreground. The hold is a
 //! signal consumer pinned by `tests/signal_census.rs`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::*;
 use crate::agent_status;
@@ -140,6 +149,10 @@ pub(crate) struct Observed {
     /// which that source backs. Nothing else depends on it.
     pub(crate) board_unverified: bool,
     pub(crate) channel_unverified: bool,
+    /// Not Signal: the user took this worker card over by typing into its
+    /// pane and has not handed it back (`mcp/workers.rs`). Holds only the
+    /// rows a delegated client wrote (`Hold::Human`).
+    pub(crate) human_held: bool,
 }
 
 /// The tick could not revalidate approvals: every session's observation
@@ -175,11 +188,33 @@ pub(crate) fn mark_channel_unverified(seen: &mut Observations) {
 pub(crate) type Observations = HashMap<String, Observed>;
 
 pub(crate) fn observe(rows: Vec<PaneRow>) -> Observations {
-    observe_with(
+    let mut seen = observe_with(
         rows,
         crate::agent_status::live_generation,
         crate::agent_status::foreground_name,
-    )
+    );
+    mark_human_held(&mut seen, &crate::mcp::held_worker_sessions());
+    seen
+}
+
+/// The worker cards the user took over: their sessions hold every row a
+/// delegated client wrote for them (`Hold::Human`) until handed back.
+pub(crate) fn mark_human_held(seen: &mut Observations, held: &HashSet<String>) {
+    for (session, observed) in seen.iter_mut() {
+        if held.contains(session) {
+            observed.human_held = true;
+        }
+    }
+}
+
+/// Whether `i` is text a delegated client wrote for its worker card
+/// (`authority.rs` `ContentClass::Delegated`), the one kind of row the
+/// human hold applies to. A row whose delegation was withdrawn lost its
+/// authority and waits as an ordinary external row (`Hold::External`).
+pub(crate) fn delegated_row(i: &QueueItem) -> bool {
+    i.authority
+        .as_ref()
+        .is_some_and(|a| a.class == ContentClass::Delegated)
 }
 
 /// `observe` with the foreground-generation and foreground-name readers
@@ -204,6 +239,7 @@ pub(crate) fn observe_with(
                 authority_unverified: false,
                 board_unverified: false,
                 channel_unverified: false,
+                human_held: false,
             });
     }
     seen
@@ -232,6 +268,9 @@ pub(crate) enum Hold {
     /// the target is a recognized Pi, whose input requests Deck cannot
     /// observe: send-now only (plan stage `pi-input-unverified`)
     PiInputUnverified,
+    /// a delegated client's row for a worker card the user took over and
+    /// has not handed back (plan stage `human`); send-now still works
+    Human,
 }
 
 /// The recognized interactive agent a row is configured for, if any.
@@ -322,6 +361,11 @@ fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool
         return Some(Hold::ChannelUnverified);
     }
     let o = seen?;
+    // the user took this worker card over: what its orchestrator wrote
+    // waits until the user hands the card back, whatever else stands
+    if o.human_held && delegated_row(i) {
+        return Some(Hold::Human);
+    }
     // A recognized Pi: asked before every approval and readiness override,
     // and lifted by none of them, nor by anything its observer reports. Pi
     // gives Deck no way to observe that it waits for input.

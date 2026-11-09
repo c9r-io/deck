@@ -53,6 +53,43 @@ pub(super) struct TriggerArgs {
     pub(super) link: Option<String>,
 }
 
+/// One card and the episode its caller last saw (`deck_worker_wait`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorkerSeen {
+    pub(super) card_id: String,
+    pub(super) episode: u64,
+}
+
+/// `deck_worker_wait`: until one of these cards moves on, or `wait_ms`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorkerWaitArgs {
+    pub(super) cards: Vec<WorkerSeen>,
+    #[serde(default)]
+    pub(super) wait_ms: Option<u64>,
+}
+
+/// `deck_worker_reply`: one card's final message of one turn ending.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorkerReplyArgs {
+    pub(super) card_id: String,
+    pub(super) episode: u64,
+}
+
+/// `deck_worker_send`: one line for one worker card, written after the
+/// card's episode `after_episode`.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorkerSendArgs {
+    pub(super) request_id: String,
+    pub(super) send_sequence: u64,
+    pub(super) card_id: String,
+    pub(super) after_episode: u64,
+    pub(super) text: String,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionArgs {

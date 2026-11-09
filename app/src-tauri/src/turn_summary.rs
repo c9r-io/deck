@@ -30,6 +30,13 @@
 //!   The pick (a number in range and a one-line reason) only marks a
 //!   button: nothing queues, sends, holds or notifies on it, and text from
 //!   outside can sway which button is marked, never what a click queues.
+//! - Worker replies (`mcp/workers.rs`): the final message of a worker
+//!   card's Claude Code turn ending is also kept as it came (head and tail),
+//!   in memory only, at most `KEEP_REPLIES`, while a client that may read
+//!   that card's replies exists (`mcp::replies_wanted_for`), for that client
+//!   alone (`reply_for`). While the Stop hook forwards the message for
+//!   worker replies only (`--reply workers`, `agent_status::summaries_wanted`
+//!   false) nothing else happens to it: no summary, no model call.
 //! - Notes (the summary and the pick) live in memory only, keyed by
 //!   (session, episode), at most `KEEP`; a card shows one only while its
 //!   observation is still that episode (`for_episode`, read by the poll),
@@ -119,6 +126,19 @@ fn decide(accepted: &Accepted, reply: &str, has_key: bool) -> Decision {
 /// follow-ups (`documents::card_follow_ups`) the same one call also asks
 /// which of them fits, so a short message is sent too, for that alone.
 pub(crate) fn offer(accepted: &Accepted, reply: String) {
+    // a worker card's final message, for the orchestrator the user let
+    // read its replies (`mcp/workers.rs`); kept before any summary choice
+    if accepted.state == crate::agent_status::TURN_DONE
+        && accepted.class == SignalClass::Claude
+        && crate::mcp::replies_wanted_for(&accepted.session)
+    {
+        remember_reply(&accepted.session, accepted.episode, &reply);
+    }
+    // the Stop hook forwards the message for worker replies alone: no
+    // summary, no model call (`agent_status/hooks.rs` `ReplyHook::Workers`)
+    if !crate::agent_status::summaries_wanted() {
+        return;
+    }
     let has_key = crate::model_api::has_key();
     let decision = decide(accepted, &reply, has_key);
     let follow_ups = if has_key && decision != Decision::Skip {
@@ -304,6 +324,47 @@ pub(crate) fn for_episode(session: &str, episode: EpisodeId) -> Option<Note> {
         .rev()
         .find(|entry| entry.session == session && entry.episode == episode)
         .map(|entry| entry.note.clone())
+}
+
+/// Worker replies kept, oldest dropped first.
+const KEEP_REPLIES: usize = 32;
+
+/// One worker card's final message of one turn ending, as the helper
+/// forwarded it (head and tail, `REPLY_CUT` between them when cut).
+struct Reply {
+    session: String,
+    episode: EpisodeId,
+    text: String,
+}
+
+static REPLIES: Mutex<VecDeque<Reply>> = Mutex::new(VecDeque::new());
+
+pub(crate) fn remember_reply(session: &str, episode: EpisodeId, text: &str) {
+    let mut replies = REPLIES.lock_or_recover();
+    replies.retain(|r| !(r.session == session && r.episode == episode));
+    replies.push_back(Reply {
+        session: session.to_string(),
+        episode,
+        text: text.to_string(),
+    });
+    while replies.len() > KEEP_REPLIES {
+        replies.pop_front();
+    }
+}
+
+/// The helper's mark between the head and the tail of a cut message
+/// (`status-helper` `REPLY_CUT`).
+pub(crate) const REPLY_CUT: &str = "\n…\n";
+
+/// `session`'s final message of turn ending `episode`, while it is still
+/// kept (memory only: a Deck restart or 32 newer ones drop it).
+pub(crate) fn reply_for(session: &str, episode: EpisodeId) -> Option<String> {
+    REPLIES
+        .lock_or_recover()
+        .iter()
+        .rev()
+        .find(|r| r.session == session && r.episode == episode)
+        .map(|r| r.text.clone())
 }
 
 #[cfg(test)]

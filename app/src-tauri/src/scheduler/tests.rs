@@ -2956,6 +2956,7 @@ fn seen_codex(
             authority_unverified: false,
             board_unverified: false,
             channel_unverified: false,
+            human_held: false,
         },
     )])
 }
@@ -10270,4 +10271,98 @@ fn an_agent_rule_s_first_send_override_rests_on_the_client_s_delegation() {
         Some(false),
         "no MCP runtime in tests: nothing is delegated"
     );
+}
+
+/// A worker card's delegated row (`ContentClass::Delegated`): it stands on
+/// the client's worker delegation alone (beside readable settings), never on
+/// a rule grant or the client's automation delegation; the sweep strips it
+/// once the delegation is gone; and the human hold applies to it, and only
+/// to it, after the agent's own input request.
+#[test]
+fn delegated_rows_stand_on_the_worker_delegation_and_hold_for_the_human() {
+    let delegated = StepAuthority {
+        rule: "triage".into(),
+        grant: String::new(),
+        step: 0,
+        class: ContentClass::Delegated,
+        trigger: TriggerClass::Agent,
+        connector: None,
+        delegation: Some(AgentSource {
+            client: "client_a".into(),
+        }),
+    };
+    let mut row = qi("w1", "chain");
+    row.external = true;
+    row.authority = Some(delegated.clone());
+    let config = crate::inbound::Config {
+        slack_enabled: false,
+        rules: Vec::new(),
+    };
+    let only_automations: HashSet<String> = ["client_a".to_string()].into();
+    let workers: HashSet<String> = [crate::mcp::worker_delegation_key("client_a")].into();
+    let sources = |delegations| first_send::Sources {
+        settings: Some(&config),
+        board: None,
+        delegations,
+    };
+    assert_eq!(fence(&row, sources(Some(&workers))), Fence::Clear);
+    assert_eq!(
+        fence(&row, sources(Some(&only_automations))),
+        Fence::Revoked,
+        "the automation delegation is not the worker delegation"
+    );
+    assert_eq!(fence(&row, sources(None)), Fence::Unverified);
+    assert_eq!(
+        fence(
+            &row,
+            first_send::Sources {
+                settings: None,
+                board: None,
+                delegations: Some(&workers),
+            }
+        ),
+        Fence::Unverified,
+        "unreadable settings prove nothing"
+    );
+    // the sweep strips it once the client may no longer drive the card
+    let mut q = QueueState {
+        items: vec![row.clone()],
+        ..QueueState::default()
+    };
+    assert_eq!(revoke_stale(&mut q, sources(Some(&workers))), 0);
+    assert_eq!(revoke_stale(&mut q, sources(Some(&only_automations))), 1);
+    assert!(q.items[0].authority.is_none());
+    // the human hold: a delegated row of a taken-over card waits, others go
+    let mut held = seen(0);
+    mark_human_held(&mut held, &["s".to_string()].into());
+    assert_eq!(hold_reason(&row, held.get("s")), Some(Hold::Human));
+    assert_eq!(hold_reason(&row, seen(0).get("s")), None);
+    let mut owner = qi("o1", "chain");
+    owner.external = false;
+    assert_eq!(
+        hold_reason(&owner, held.get("s")),
+        None,
+        "only delegated rows"
+    );
+    let mut asking = seen_agent(0, crate::agent_status::NEEDS_INPUT);
+    mark_human_held(&mut asking, &["s".to_string()].into());
+    assert_eq!(
+        hold_reason(&row, asking.get("s")),
+        Some(Hold::NeedsInput),
+        "the agent's own question comes first"
+    );
+    // a withdrawn delegation leaves an ordinary external row
+    let mut stripped = row.clone();
+    stripped.authority = None;
+    assert!(!delegated_row(&stripped));
+    assert_eq!(hold_reason(&stripped, held.get("s")), Some(Hold::External));
+}
+
+/// A rule grant never approves delegated text: the word is not a grant
+/// class, so a claim naming it is refused.
+#[test]
+fn a_grant_class_never_parses_as_delegated() {
+    assert_eq!(ContentClass::Delegated.as_str(), "delegated");
+    let text = serde_json::to_string(&ContentClass::Delegated).unwrap();
+    assert_eq!(text, "\"delegated\"");
 }

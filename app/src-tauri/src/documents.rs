@@ -1254,6 +1254,49 @@ pub(crate) fn board_authority() -> Option<serde_json::Value> {
     }
 }
 
+/// Where a card's terminal is, as the committed Board says, for a worker
+/// card's orchestrator (`mcp/workers.rs`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CardTarget {
+    pub(crate) session: String,
+    pub(crate) title: String,
+    pub(crate) dir: String,
+    pub(crate) cmd: String,
+}
+
+/// Every card of the committed Board by id, `None` while no Board is known
+/// (before the webview's first load). `current_only` refuses a recovered
+/// Board, as an admission must (`board_authority`); a read for
+/// presentation takes either.
+pub(crate) fn card_targets(current_only: bool) -> Option<HashMap<String, CardTarget>> {
+    let committed = COMMITTED_BOARD.lock_or_recover();
+    let (board, standing) = committed.as_ref()?;
+    if current_only && !matches!(standing, BoardStanding::Current) {
+        return None;
+    }
+    Some(
+        board["cards"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|card| {
+                let text = |key: &str| card[key].as_str().unwrap_or_default().to_string();
+                let id = card["id"].as_str()?.to_string();
+                let session = card["session"].as_str()?.to_string();
+                Some((
+                    id,
+                    CardTarget {
+                        session,
+                        title: text("title"),
+                        dir: text("dir"),
+                        cmd: text("cmd"),
+                    },
+                ))
+            })
+            .collect(),
+    )
+}
+
 /// The follow-ups frozen on the card whose session is `session`
 /// (`follow-up-model.js`), from the committed Board, for `turn_summary.rs`
 /// to offer the model beside the turn's final message. Text the owner
@@ -2464,6 +2507,16 @@ mod tests {
 
         pub(crate) fn restart() {
             *COMMITTED_BOARD.lock_or_recover() = None;
+        }
+
+        /// Stand `board` in as the committed Board, current or recovered.
+        pub(crate) fn commit(board: serde_json::Value, current: bool) {
+            let standing = if current {
+                BoardStanding::Current
+            } else {
+                BoardStanding::Recovered
+            };
+            *COMMITTED_BOARD.lock_or_recover() = Some((board, standing));
         }
 
         /// What the webview is handed: the payload, where it came from and the

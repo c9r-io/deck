@@ -86,6 +86,7 @@ import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, e
 import { nextCollectedAt } from './channel-model.js';
 import { connectorAuthorityClaim, connectorFirstSendClaim, normalizeTaskPresets } from './connector-model.js';
 import { createBoardCard } from './board-card.js';
+import { workerChip } from './workers.js';
 import { formatDateTime, onLocaleChange } from './i18n.js';
 export { migrateColumnSemantics } from './board-defaults.js';
 
@@ -251,7 +252,7 @@ export const provider = {
     return result;
   },
 
-  async create({ id = null, projectId, columnId, title, cmd, dir, desc = '', origin, buffer, channelRun, connectorRun, inboundPlan }, opts = {}) {
+  async create({ id = null, projectId, columnId, title, cmd, dir, desc = '', origin, buffer, channelRun, connectorRun, inboundPlan, quietDone }, opts = {}) {
     id ||= genId('S');
     const card = {
       id, projectId, columnId, title, cmd, dir, desc,
@@ -260,6 +261,7 @@ export const provider = {
       launched: initialLaunched(cmd),   // a command is sent once, on the first start
       ...(origin ? { origin } : {}), ...(buffer ? { buffer } : {}), ...(channelRun ? { channelRun } : {}),
       ...(connectorRun ? { connectorRun } : {}), ...(inboundPlan ? { inboundPlan } : {}),
+      ...(quietDone === true ? { quietDone: true } : {}),
       status: 'stopped', mem: null, tail: [],
     };
     if (card.channelRun?.target) card.channelRun.target.session = card.session;
@@ -1723,7 +1725,7 @@ export function cardEl(s) {
   return createBoardCard(s, {
     open: openSession, close: closeSession,
     togglePinned: id => provider.togglePinned(id),
-    context: showSessionCtx, reminderChip,
+    context: showSessionCtx, reminderChip, workerChip,
   });
 }
 

@@ -620,7 +620,7 @@ test('a Board card shows its reminder as a label at the end of the status row', 
   assert.match(card, /paintCardSignalStatus\(el\.querySelector\('\.card-status'\), s\);\s*if \(s\.reminder\) \{\s*const reminder = reminderChip\(s\);/);
   assert.match(card, /el\.querySelector\('\.card-status'\)\.append\(reminder\);/);
   // the card's own click handler skips it, so the label edits the reminder only
-  assert.match(card, /closest\('\.card-x, \.card-pin, \.card-signal-help, \.card-reminder'\)/);
+  assert.match(card, /closest\('\.card-x, \.card-pin, \.card-signal-help, \.card-reminder, \.card-worker'\)/);
   const label = board.slice(board.indexOf('function reminderChip(s, spell = reminderShort)'), board.indexOf('export function cardEl(s)'));
   assert.ok(label.length > 200 && label.length < 900, 'reminderChip stays in Board for the card and sidebar');
   assert.match(label, /chip\.className = 'card-reminder' \+ \(due \? ' due' : ''\);/);

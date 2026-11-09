@@ -61,6 +61,19 @@ pub(super) struct Client {
     /// Triggers this client has had accepted; bound like `create_sequence`.
     #[serde(default)]
     pub(super) trigger_sequence: u64,
+    /// The user's separate choice that this client may drive the worker
+    /// cards its Agent triggers start (`workers.rs`): send them lines and
+    /// read their state. Never implied by `allow_automations`.
+    #[serde(default)]
+    pub(super) allow_workers: bool,
+    /// The user's choice that this client may also read its worker cards'
+    /// final messages (`deck_worker_reply`); only with `allow_workers`.
+    #[serde(default)]
+    pub(super) allow_replies: bool,
+    /// Worker lines this client has had accepted; bound like
+    /// `create_sequence`.
+    #[serde(default)]
+    pub(super) send_sequence: u64,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -200,6 +213,9 @@ pub(super) struct DiskDoc {
     pub(super) execution_grants: Vec<ExecutionGrant>,
     #[serde(default)]
     pub(super) audit: Vec<AuditEvent>,
+    /// The worker cards (`workers.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) workers: Vec<super::workers::Worker>,
 }
 
 impl Default for DiskDoc {
@@ -212,6 +228,7 @@ impl Default for DiskDoc {
             jobs: Vec::new(),
             execution_grants: Vec::new(),
             audit: Vec::new(),
+            workers: Vec::new(),
         }
     }
 }
@@ -579,7 +596,10 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
     let windowed = |kind: &str| {
         matches!(
             kind,
-            "session-create" | "session-close" | super::automation::TRIGGER_KIND
+            "session-create"
+                | "session-close"
+                | super::automation::TRIGGER_KIND
+                | super::workers::WORKER_SEND_KIND
         )
     };
     let bound_live = |operation: &Operation| {
@@ -656,10 +676,18 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
 
 pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
-    let version_valid = if super::automation::uses_automations(doc) {
-        doc.version == STATE_VERSION_AUTOMATIONS
+    let version_valid = if super::workers::uses_workers(doc) {
+        doc.version == STATE_VERSION_WORKERS
+    } else if super::automation::uses_automations(doc) {
+        matches!(
+            doc.version,
+            STATE_VERSION_AUTOMATIONS | STATE_VERSION_WORKERS
+        )
     } else {
-        matches!(doc.version, STATE_VERSION | STATE_VERSION_AUTOMATIONS)
+        matches!(
+            doc.version,
+            STATE_VERSION | STATE_VERSION_AUTOMATIONS | STATE_VERSION_WORKERS
+        )
     };
     let clients_valid = version_valid
         && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)
@@ -805,6 +833,10 @@ impl Runtime {
         // the version older builds refuse, and never goes back
         if super::automation::uses_automations(&candidate) {
             candidate.version = candidate.version.max(STATE_VERSION_AUTOMATIONS);
+        }
+        // and one that holds worker cards or their choices at the next one
+        if super::workers::uses_workers(&candidate) {
+            candidate.version = candidate.version.max(STATE_VERSION_WORKERS);
         }
         save(&self.path, &candidate)?;
         *guard = Ok(candidate);

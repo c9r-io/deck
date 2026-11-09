@@ -134,8 +134,9 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // turn-summary variant (Stop with `--reply`) repeats `working` and
     // `needs-input` (its Stop is spelled `turn-done --reply`).
     ("agent_status/hooks.rs", "", "\"turn-done\"", 3, Producer),
-    ("agent_status/hooks.rs", "", "\"needs-input\"", 3, Producer),
-    ("agent_status/hooks.rs", "", "\"working\"", 3, Producer),
+    // four spec tables: plain, turn summaries, worker replies, and Codex
+    ("agent_status/hooks.rs", "", "\"needs-input\"", 4, Producer),
+    ("agent_status/hooks.rs", "", "\"working\"", 4, Producer),
     // FR-SI-04: the interaction tracker admits words per source interaction
     // (refuses late/ended/mismatched ones); it grants nothing
     ("agent_status.rs", "admit", "NEEDS_INPUT", 4, Producer),
@@ -233,6 +234,26 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // A turn summary is written only for a Claude Code turn ending that
     // agent_status accepted; it is a line on the card and nothing else.
     ("turn_summary.rs", "decide", "TURN_DONE", 1, Presentation),
+    // a worker card's final message is kept for its orchestrator to read
+    // (`deck_worker_reply`): text handed to a reader, never a send
+    ("turn_summary.rs", "offer", "TURN_DONE", 1, Presentation),
+    // a worker card's content-free view for its orchestrator; the same
+    // observation can only REFUSE a send whose episode moved on
+    // (`EPISODE_MOVED`), never release one: every hold still decides
+    (
+        "mcp/workers.rs",
+        "observe_sessions",
+        "agent_status::projections",
+        1,
+        Presentation,
+    ),
+    (
+        "mcp/workers.rs",
+        "observe_sessions",
+        "agent_status::reporting",
+        1,
+        Presentation,
+    ),
     // "Draft title" reads Claude Code's own session title only for a pane
     // whose current generation proved a Claude interaction; it picks where a
     // draft comes from and grants nothing.
@@ -977,6 +998,10 @@ const AUTHORITY_WRITERS: &[(&str, &str, &str, usize)] = &[
         1,
     ),
     ("scheduler/ops.rs", "add_reviewed_rows", ".granted = ", 1),
+    // a worker card's delegated line: its one verdict, the client's
+    // delegation (`ContentClass::Delegated`), and no caller claim
+    ("scheduler/ops.rs", "worker_queue_add", ".granted = ", 1),
+    ("scheduler/ops.rs", "worker_queue_add", "authority: None", 1),
     // removals: an edited text, the revocation sweep, a spawned step
     ("scheduler/ops.rs", "update_text", "authority = ", 1),
     ("scheduler/authority.rs", "revoke_stale", "authority = ", 1),

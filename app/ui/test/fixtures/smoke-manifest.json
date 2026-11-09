@@ -851,6 +851,25 @@
         "perf-exception": { "failureOnly": true }
       }
     },
+    "workers": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "workers-rule": {},
+        "workers-armed": {},
+        "workers-card": {},
+        "workers-first": {},
+        "workers-send": {},
+        "workers-taken": {},
+        "workers-held": {},
+        "workers-handed-back": {},
+        "workers-withdrawn": {},
+        "workers-closed": {},
+        "workers-redelegated": {},
+        "workers-orchestrated": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
     "terminal-input": {
       "terminal": "done",
       "checks": {

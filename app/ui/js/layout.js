@@ -79,6 +79,7 @@ import { wireImeProbe } from './terminal-ime-probe.js';
 import { forwardTerminalClick, keepLocalTerminalMouse } from './terminal-mouse.js';
 import { paintFollowUps } from './follow-up-bar.js';
 import { createTerminalFind } from './terminal-find.js';
+import { noteHumanInput, paintWorkerButton } from './workers.js';
 
 const mcpUiGate = createMcpSessionUiGate();
 
@@ -490,6 +491,8 @@ export function wireTerminalInput(pane, term, host) {
   const input = createTerminalDataHandler({
     pane,
     blocked: () => ctx.voiceDelivering === session,
+    /* typing into a worker card takes it over (workers.js) */
+    onHuman: () => noteHumanInput(session),
     onInput: d => {
       /* the input mirror / completion only tracks the focused pane */
       if (ctx.attachedName === session) {
@@ -1177,6 +1180,7 @@ export function renderSessionView() {
   $('sess-path').textContent = (s.cmd ? '$ ' + s.cmd + '  ·  ' : '') + s.dir;
   $('queue-btn').disabled = s.origin?.source === 'mcp';
   $('voice-btn').disabled = s.origin?.source === 'mcp';
+  paintWorkerButton(s.id);
   const mcp = $('mcp-control-btn');
   const grant = $('mcp-grant-btn');
   const epoch = mcpUiGate.begin();

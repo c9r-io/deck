@@ -3364,6 +3364,11 @@ export async function verifyEmptyStart() {
 
 // The Agent handover trigger end to end: an external delegated MCP client
 // hands an item over, a real Claude Code in the card (agent-live-smoke.mjs).
+export async function verifyWorkers() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke();
+}
+
 export async function verifyAgentLive() {
   const { runAgentLiveSmoke } = await import('./agent-live-smoke.mjs');
   await runAgentLiveSmoke();

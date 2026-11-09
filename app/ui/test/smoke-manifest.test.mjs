@@ -36,6 +36,7 @@ const CARRIERS = {
   'reminder-native-smoke.mjs': ['reminder-native'],
   'authority-smoke.mjs': ['authority-live', 'empty-start'],
   'agent-live-smoke.mjs': ['agent-live'],
+  'workers-smoke.mjs': ['workers'],
   'board-lost-smoke.mjs': ['board-lost'],
   'approval-smoke.mjs': ['approval'],
   'reentry-smoke.mjs': ['reentry'],

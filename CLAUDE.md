@@ -216,7 +216,17 @@ evolution; it makes scope expansion deliberate.
   not expand later-step or tool authority, and `TriggerClass` stays the
   closed list of three (Slack badge, phone task preset, delegated Agent
   client), each tied to its own revocation source; a fourth is a hard-rule
-  change. No Signal word, quiet
+  change. **Worker cards** (approved 2026-11-09, `mcp/workers.rs`): a
+  delegated Agent client the user separately lets drive its worker cards may
+  have text IT wrote sent automatically into the cards ITS OWN Agent
+  triggers started (`ContentClass::Delegated`), never any other card. That
+  text rests on that standing, revocable choice alone (withdrawn under the
+  settings fence); every readiness hold still applies, plus the human hold:
+  the user's own keystroke in such a card holds the client's lines until the
+  user hands it back. The client never answers an Agent's prompt, reads no
+  screen and orchestrates nothing through Deck: it reads content-free state
+  and the final message the Stop hook forwards (a separate choice), and
+  decides itself what to send. No Signal word, quiet
   time or activity ever creates, restores or upgrades authority
   (`tests/signal_census.rs`).
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the
@@ -311,7 +321,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | tmux sidecar and long-lived clients | `tmux.rs`, `tmux_clients.rs` |
 | tmux server lifecycle, restart, verified shell exit, restart recovery | `tmux_lifecycle.rs`, `restart.rs`, `session_runtime.rs`, `shell_exit.rs`, `shell_state.rs` (+ `docs/tmux-server-lifecycle.md`) |
 | PTY attach bridge | `pty.rs` |
-| MCP terminal control and automation delegation | `mcp/` (contract in `mcp/mod.rs`; delegation in `mcp/automation.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/`, `ui/js/mcp.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`) |
+| MCP terminal control, automation delegation and worker cards | `mcp/` (contract in `mcp/mod.rs`; delegation in `mcp/automation.rs`; worker cards in `mcp/workers.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/`, `ui/js/mcp.js`, `ui/js/workers.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`; smoke `workers`) |
 | Controlled Execution calibration (CE1) | `scripts/ce/`, `scripts/ce_parity.py`, `scripts/ce_verdict.py`, `mcp/tests.rs` `ce1_probe_*` (+ `docs/ce-calibration.md`) |
 | Voice input, shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice*.js` (+ `docs/voice-input.md`) |
 | Local translation, pasteboard observation, Lens | `native/BergamotBridge.cpp`, `native/PasteboardBridge.swift`, `vendor/bergamot/`, `intelligence/`, `ui/js/local-intelligence.js`, `translation-lens*.js` (+ `docs/translation-lens.md`) |

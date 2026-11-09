@@ -166,6 +166,30 @@
 //! starts a send on a withdrawn delegation. A ledger holding any of this
 //! is written at `STATE_VERSION_AUTOMATIONS` (sticky).
 //!
+//! Worker cards (`workers.rs`, `docs/mcp.md` "Worker cards"): a client with
+//! the further local choice `allow_workers` may drive the cards its own
+//! Agent triggers start (recorded at the trigger's commit, `record_worker`;
+//! never any other card). `deck_worker_list` / `deck_worker_wait` are
+//! content-free views (alive, the Agent observation's closed word and
+//! episode, the human hold, the queue states of its lines); a wait is
+//! bounded by `MAX_WAIT_MS` and holds no lock. `deck_worker_reply` needs
+//! `allow_replies` too and returns the Claude Code final message the Stop
+//! hook forwarded (memory only, `turn_summary::reply_for`).
+//! `deck_worker_send` is bound to the client's `send_sequence` exactly as a
+//! trigger is to its own, and refuses a line whose `after_episode` is no
+//! longer the card's (`EPISODE_MOVED`): an observation may refuse a send,
+//! never release one. An accepted line becomes one scheduler row through
+//! `scheduler::worker_queue_add` (external admission, content class
+//! `delegated`, authority resting on the client's worker key in
+//! `automation_delegations`); every hold then decides when it goes, the
+//! human hold included. The user takes a card over by typing into its pane
+//! (`worker_set_held`, from the webview) and hands it back by hand only.
+//! Withdrawing `allow_workers`, revoking the client or disabling MCP takes
+//! the key out under `storage::settings_fence`. Capacity: 8 worker cards on
+//! the Board per client (a further trigger is `CAPACITY_EXCEEDED`), 4
+//! unsent lines per card, 30 lines a minute. A ledger holding any of this is
+//! written at `STATE_VERSION_WORKERS` (sticky).
+//!
 //! Layout (one contract, one file per concern; every file starts with
 //! `use super::*` and exposes its items `pub(super)`): `state` holds the disk
 //! document, its records, the runtime and load/validate/compact/save;
@@ -174,7 +198,7 @@
 //! `runner` the pane runner's private control channel; `wire` the request
 //! envelope and argument shapes; `project` list/read/search; `session` the
 //! session-level requests including close; `automation` the automation
-//! delegation above; `jobs` exec, job reads and every
+//! delegation above; `workers` the worker cards; `jobs` exec, job reads and every
 //! job side effect; `control` request routing plus the socket thread; and
 //! `commands` the local Tauri commands and the guards other modules call
 //! (`spawn` registers `guard_server_restart` with `tmux_lifecycle`, which
@@ -218,6 +242,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 mod wire;
+mod workers;
 
 use automation::*;
 pub(crate) use automation::{automation_delegations, automation_outcome};
@@ -231,11 +256,19 @@ use runner::*;
 use session::*;
 use state::*;
 use wire::*;
+use workers::*;
+pub(crate) use workers::{
+    held_worker_sessions, note_worker_change, replies_wanted_any, replies_wanted_for,
+    worker_card_held, worker_client_for_item, worker_delegation_key, WorkerCardView,
+};
 
 const STATE_VERSION: u32 = 6;
 /// The sticky version a ledger takes once it holds automation delegation
 /// (`automation::uses_automations`): a v6 build refuses it untouched.
 const STATE_VERSION_AUTOMATIONS: u32 = 7;
+/// The sticky version a ledger takes once it holds worker cards or the
+/// choices that drive them (`workers::uses_workers`): a v7 build refuses it.
+const STATE_VERSION_WORKERS: u32 = 8;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

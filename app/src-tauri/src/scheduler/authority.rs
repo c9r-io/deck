@@ -109,6 +109,17 @@
 //!   `autoSend`. Legacy rules and rows carry nothing and keep the Stable
 //!   behaviour. The closed words `ContentClass`/`TriggerClass` have no
 //!   catch-all: adding one is a queue.json schema change (see `ItemState`).
+//! - A worker card's delegated line (`ContentClass::Delegated`, trigger
+//!   `Agent`, `mcp/workers.rs`): text an MCP client wrote for a card its own
+//!   Agent trigger started, which no approval on this Mac saw line by line.
+//!   It is admitted only by `ops::worker_queue_add` (never by a claim: no
+//!   grant parses the word), and it stands exactly while the client's worker
+//!   key is in the delegation set (`mcp::worker_delegation_key`) and the
+//!   settings can be read; the sweep and the fence strip it otherwise, and
+//!   it then waits for send-now like any external row. It releases only the
+//!   external-follow-up hold, never a readiness hold, the human hold
+//!   (`Hold::Human`) included. It is a hard-rule widening of the delegated
+//!   Agent client's authority (CLAUDE.md), not a fourth trigger.
 //! - Scope: Slack badge rules and phone task presets. Slack channel
 //!   monitors (no per-message human action), every other Connector row (a
 //!   message or a scratchpad copy sent from the phone: text the phone
@@ -191,6 +202,11 @@ pub(crate) enum ContentClass {
     /// owner text with bounded `{{msg.*}}` placeholders (flattened to one
     /// line each by the webview's `fillInboundTemplate`)
     Bounded,
+    /// text a delegated MCP client wrote for one of its own worker cards
+    /// (`mcp/workers.rs`): never approved by the user line by line; it
+    /// rests on the user's standing choice that this client may drive the
+    /// cards it started, and on nothing else (`standing`)
+    Delegated,
 }
 
 impl ContentClass {
@@ -198,6 +214,7 @@ impl ContentClass {
         match self {
             ContentClass::Fixed => "fixed",
             ContentClass::Bounded => "bounded",
+            ContentClass::Delegated => "delegated",
         }
     }
 
@@ -205,6 +222,8 @@ impl ContentClass {
         match word {
             "fixed" => Some(ContentClass::Fixed),
             "bounded" => Some(ContentClass::Bounded),
+            // never parsed from a grant: a rule approves fixed and bounded
+            // steps only, so a `delegated` class in a grant is refused
             _ => None,
         }
     }
@@ -399,6 +418,8 @@ pub(crate) fn verify_claim(
                 return Err("expansion");
             }
         }
+        // a grant never approves delegated text (`parse` refuses the word)
+        ContentClass::Delegated => return Err("class"),
     }
     let agent = (rule.source == "agent")
         .then(|| {
@@ -719,6 +740,17 @@ pub(crate) fn fence(i: &QueueItem, sources: first_send::Sources<'_>) -> Fence {
 /// could not be read, which proves nothing either way.
 fn standing(sources: first_send::Sources<'_>, authority: &StepAuthority) -> Option<bool> {
     match backing(authority) {
+        first_send::Backing::Settings if authority.class == ContentClass::Delegated => {
+            // a worker card's delegated text: only the client's standing
+            // choice to drive its worker cards backs it (`mcp/workers.rs`),
+            // read beside the settings under the same fence
+            sources.settings?;
+            sources.delegations.map(|delegations| {
+                authority.delegation.as_ref().is_some_and(|source| {
+                    delegations.contains(&crate::mcp::worker_delegation_key(&source.client))
+                })
+            })
+        }
         first_send::Backing::Settings => {
             let granted = sources.settings.map(|c| still_granted(c, authority))?;
             if authority.trigger != TriggerClass::Agent {

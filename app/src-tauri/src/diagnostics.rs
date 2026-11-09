@@ -189,6 +189,7 @@ const LISTEN_TARGETS: &[&str] = &[
     "pty-exit",
     "inbound-changed",
     "slack-mentions-changed",
+    "mcp-workers-changed",
     "channel-changed",
     "connector-changed",
     "mcp-changed",
@@ -367,6 +368,20 @@ const SMOKE_CHECKS: &[&str] = &[
     "perf-flood-fps",
     "perf-echo",
     "perf-exception",
+    "workers-client",
+    "workers-rule",
+    "workers-armed",
+    "workers-card",
+    "workers-first",
+    "workers-send",
+    "workers-taken",
+    "workers-held",
+    "workers-handed-back",
+    "workers-withdrawn",
+    "workers-closed",
+    "workers-redelegated",
+    "workers-orchestrated",
+    "workers-exception",
     "signal-completed",
     "signal-summary",
     "signal-closed",
@@ -1089,6 +1104,11 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     (
         "mentions",
         DetailPolicy::Closed(&["routed", "route-refused", "dismissed"]),
+    ),
+    // worker cards (workers.js): the user took one over, or handed it back
+    (
+        "workers",
+        DetailPolicy::Closed(&["taken-over", "handed-back"]),
     ),
     // a follow-up button queued its text: whether the model had picked one
     // and whether it was this one; never which text

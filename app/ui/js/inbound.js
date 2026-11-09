@@ -285,7 +285,11 @@ async function handleInbound(item) {
   })));
   let card;
   try {
-    card = await provider.create({ ...plan.card, id: cardId, inboundPlan: {
+    /* a worker card (mcp/workers.rs): its routine turn endings are its
+       orchestrator's to read, so the card starts quiet; the user can
+       announce them again from its menu */
+    const worker = item.event?.source === 'agent' && typeof item.worker === 'string';
+    card = await provider.create({ ...plan.card, id: cardId, ...(worker ? { quietDone: true } : {}), inboundPlan: {
       operationId, reviewEach: item.rule.reviewEach === true, initialSteps, initialQueued: false,
       ...(authority ? { authority } : {}),
       ...(firstSend ? { firstSend } : {}),

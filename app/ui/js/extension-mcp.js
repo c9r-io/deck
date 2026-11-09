@@ -60,6 +60,7 @@ export function createMcpSettings(host) {
       const scope = document.createElement('span'); scope.style.color = 'var(--muted)';
       scope.textContent = t('mcp.projectCount', { count: formatNumber(client.projects?.length || 0) })
         + (client.allowAutomations && !client.revoked ? ` · ${t('mcp.automationsOn')}` : '')
+        + (client.allowWorkers && !client.revoked ? ` · ${t(client.allowReplies ? 'mcp.workersOn' : 'mcp.workersNoReplies')}` : '')
         + (client.revoked ? ` · ${t('mcp.revoked')}` : '');
       details.append(label, scope);
       const actions = document.createElement('div'); actions.className = 'mcp-client-actions';
@@ -90,7 +91,24 @@ export function createMcpSettings(host) {
           try { await inv('mcp_client_automations', { clientId: client.id, allowed }); await renderMcpSettings(); }
           catch (_) { toast(t('mcp.actionFailed')); }
         };
-        actions.append(copy, delegate, revoke);
+        /* driving the worker cards its automations start is a further
+           choice (mcp/workers.rs), and sharing their replies one more */
+        const workers = document.createElement('button'); workers.className = 'btn mcp-workers';
+        workers.textContent = t(client.allowWorkers ? 'mcp.workersWithdraw' : 'mcp.workersAllow');
+        workers.onclick = async () => {
+          const drive = !client.allowWorkers;
+          if (drive && !await confirmDangerDialog(t('mcp.workersAllowConfirm', { name: client.name }), t('mcp.workersAllow'))) return;
+          try { await inv('mcp_client_workers', { clientId: client.id, drive, replies: drive }); await renderMcpSettings(); }
+          catch (_) { toast(t('mcp.actionFailed')); }
+        };
+        const replies = document.createElement('button'); replies.className = 'btn mcp-replies';
+        replies.hidden = !client.allowWorkers;
+        replies.textContent = t(client.allowReplies ? 'mcp.repliesWithdraw' : 'mcp.repliesAllow');
+        replies.onclick = async () => {
+          try { await inv('mcp_client_workers', { clientId: client.id, drive: true, replies: !client.allowReplies }); await renderMcpSettings(); }
+          catch (_) { toast(t('mcp.actionFailed')); }
+        };
+        actions.append(copy, delegate, workers, replies, revoke);
       } else {
         const remove = document.createElement('button'); remove.className = 'btn set-danger'; remove.textContent = t('mcp.delete');
         remove.onclick = async () => {
@@ -312,8 +330,10 @@ export function createMcpSettings(host) {
       if (!(await confirmDangerDialog(t('mcp.authorizeConfirm', { name: project.name, root }), t('mcp.add')))) return;
       const allowCreate = await confirmDialog(t('mcp.allowCreateConfirm'));
       const allowAutomations = await confirmDialog(t('mcp.allowAutomationsConfirm'));
+      /* worker cards come from its automations: asked only with them */
+      const allowWorkers = allowAutomations && await confirmDialog(t('mcp.allowWorkersConfirm'));
       try {
-        await inv('mcp_client_add', { name, projects: [{ projectId: project.id, roots: [root] }], allowCreate, allowAutomations });
+        await inv('mcp_client_add', { name, projects: [{ projectId: project.id, roots: [root] }], allowCreate, allowAutomations, allowWorkers, allowReplies: allowWorkers });
         await renderMcpSettings();
       } catch (error) {
         toast(String(error).includes('MCP project no longer exists') ? t('mcp.projectUnavailable') : t('mcp.actionFailed'));

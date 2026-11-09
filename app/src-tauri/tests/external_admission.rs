@@ -577,7 +577,25 @@ fn channel_head_claim_is_closed_and_native_verdict_is_not_deserializable() {
                 "scheduler/ops.rs".to_owned(),
                 "channel_queue_add".to_owned()
             ),
+            // a worker card's delegated line (`mcp/workers.rs`): the external
+            // admission first, its only verdict the delegated authority, no
+            // first-send override and no channel claim
+            ("scheduler/ops.rs".to_owned(), "worker_queue_add".to_owned()),
         ]
+    );
+    let worker = body("scheduler/ops.rs", "worker_queue_add");
+    assert!(
+        worker.find("admit_external(&mut args)?;").unwrap()
+            < worker.find("queue_add_core(").unwrap()
+    );
+    assert!(worker.contains("class: ContentClass::Delegated,"));
+    assert!(worker.contains("quiet_secs: Some(MIN_QUIET_SECS),"));
+    assert!(
+        worker.contains("first_send_granted: None,")
+            && worker.contains("channel_first_send_granted: None,")
+    );
+    assert!(
+        !worker.contains("admit_first_send(") && !worker.contains("channel_first_send::admit(")
     );
     let reviewed = body("scheduler/ops.rs", "channel_queue_add_reviewed_list");
     assert!(

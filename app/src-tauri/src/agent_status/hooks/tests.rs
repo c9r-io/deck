@@ -194,6 +194,7 @@ fn duplicate_config_path() -> Option<std::path::PathBuf> {
 const DUPLICATE_INSTALL: HookInstall = HookInstall {
     hooks: &[],
     reply_hooks: None,
+    worker_reply_hooks: None,
     style: HookStyle::Exec,
     config_path: duplicate_config_path,
     never_ran: "unused",
@@ -1854,4 +1855,74 @@ fn the_turn_summary_switch_is_one_argument_of_deck_s_own_stop_hook() {
     );
     // Codex has no reply variant
     assert!(CODEX.hook_install().unwrap().reply_hooks.is_none());
+}
+
+/// Worker replies (`mcp/workers.rs`) are a third form of deck's Stop hook:
+/// `--reply workers` forwards the message for worker replies alone, so it
+/// is read as no turn summary; the summary switch and the worker form are
+/// told apart from the file, and each install keeps its form.
+#[test]
+fn worker_replies_are_a_third_form_of_the_stop_hook() {
+    let helper = "/Applications/deck.app/Contents/MacOS/deck-status-helper";
+    let install = CLAUDE_CODE.hook_install().unwrap();
+    assert_eq!(
+        hook_value(
+            HookStyle::Exec,
+            helper,
+            "claude-code",
+            "turn-done --reply workers"
+        )["args"],
+        serde_json::json!(["claude-code", "turn-done", "--reply", "workers"])
+    );
+    let edit = |specs| HookEdit::Install {
+        specs,
+        source: CLAUDE_CODE.source,
+        style: HookStyle::Exec,
+        helper,
+    };
+    let plain = hooks_file_edited(None, edit(CLAUDE_HOOKS))
+        .unwrap()
+        .unwrap();
+    let plain: serde_json::Value = serde_json::from_str(&plain).unwrap();
+    assert_eq!(reply_hook(&plain), ReplyHook::Off);
+    let workers = hooks_file_edited(
+        Some(&plain.to_string()),
+        edit(CLAUDE_HOOKS_WITH_WORKER_REPLY),
+    )
+    .unwrap()
+    .unwrap();
+    let workers: serde_json::Value = serde_json::from_str(&workers).unwrap();
+    assert_eq!(reply_hook(&workers), ReplyHook::Workers);
+    assert!(replies_on(&workers), "the helper forwards the message");
+    assert_eq!(
+        current_specs(install, &workers),
+        CLAUDE_HOOKS_WITH_WORKER_REPLY
+    );
+    let summaries = hooks_file_edited(Some(&workers.to_string()), edit(CLAUDE_HOOKS_WITH_REPLY))
+        .unwrap()
+        .unwrap();
+    let summaries: serde_json::Value = serde_json::from_str(&summaries).unwrap();
+    assert_eq!(reply_hook(&summaries), ReplyHook::Summaries);
+    assert_eq!(specs_for(install, ReplyHook::Off), CLAUDE_HOOKS);
+    assert_eq!(
+        specs_for(install, ReplyHook::Summaries),
+        CLAUDE_HOOKS_WITH_REPLY
+    );
+    assert_eq!(
+        specs_for(install, ReplyHook::Workers),
+        CLAUDE_HOOKS_WITH_WORKER_REPLY
+    );
+    // Codex has neither form
+    let codex = CODEX.hook_install().unwrap();
+    assert_eq!(specs_for(codex, ReplyHook::Workers), codex.hooks);
+    // the summary gate follows the form
+    note_reply_hook(ReplyHook::Workers);
+    assert!(!summaries_wanted());
+    note_reply_hook(ReplyHook::Summaries);
+    assert!(summaries_wanted());
+    note_reply_hook(ReplyHook::Off);
+    assert!(
+        summaries_wanted(),
+        "no form: a forwarded message is legacy summary use"
+    );
 }

@@ -390,6 +390,42 @@ stays, and no card is created. Judge with `scripts/smoke-verdict <data>
 agent-live`. The Mac mini runner and the round's evidence live outside the
 repository.
 
+## Worker cards (WKWebView mode `workers`)
+
+`workers` is the worker-card tools end to end in the real window, with the
+Claude Code already signed in under the user's own home (nothing signs in,
+and Deck writes no file of that home: its own hook installer is never
+called). Debug carrier only, on an isolated data dir under `/private/tmp`
+(trusted by Claude Code, so a worker starts without a trust prompt) and a
+unique `deck-smoke-…` socket. Before the launch the operator writes into
+`<data>/translation-fixture/`: `scenario` (`live`), an empty
+`copy_agent.py` (the page finds the fixture directory through it), a
+`work/` directory (the rule's directory and the client's scope root) and
+`worker-hooks.json`, Claude Code settings whose three Signal hooks call the
+carrier's `deck-status-helper` (the Stop hook with `--reply workers`). The
+rule's command is `claude --setting-sources project --permission-mode
+acceptEdits --settings <that file>`: only the workers get those hooks, and
+no user-level hooks (another Deck's, whose duplicate turn ending would be
+dropped together with its forwarded reply).
+
+The page enables Remote access, authorizes one client `orchestrator` with
+the automation delegation and the worker and reply choices, saves the
+one-step template `Task: {{msg.text}}` (a step may not open with the
+message) and an "Agent handover" rule `worker`
+(approval, external-content consent, first step without readiness) and
+reports `workers-armed`. Part A is `scripts/mcp-worker-e2e.py` (same
+adapter, socket and credential arguments as `mcp-agent-e2e.py`, plus
+`--automation worker`): one worker, its reply, `EPISODE_MOVED`,
+`STALE_REQUEST`, a second line and its reply; the page then takes the card
+over through the pane's own input path, sees the client's third line held
+at `human` and undelivered, hands the card back through the card's button,
+sees it delivered, withdraws the worker choice through the client row (the
+client then gets `PERMISSION_DENIED`) and closes the card. Part B: after
+`workers-redelegated` a real orchestrating agent (Codex `exec` or Claude
+Code `-p` with this instance's adapter as its MCP server) starts two workers
+and sends each at least one line (`workers-orchestrated`). Judge with
+`scripts/smoke-verdict <data> workers`.
+
 ## Signal integrity: automation finish (FR-SI-01)
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-signal.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-signal-UNIQUE DECK_SMOKE_WKWEBVIEW=signal-finish app/run.sh`.

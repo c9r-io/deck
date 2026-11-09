@@ -808,6 +808,12 @@ fn send_one_guarded(
         if automatic && pi_target_now(&sel) {
             return Ok(None);
         }
+        // The human hold again, read now and not from the tick: a worker
+        // card the user took over since that observation receives nothing
+        // its orchestrator wrote (`mcp/workers.rs`).
+        if automatic && delegated_row(&sel) && crate::mcp::worker_card_held(&sel.card_id) {
+            return Ok(None);
+        }
         let overridden =
             automatic && relies_on_readiness_override(&sel, request.activity.get(&sel.session));
         // each decision reads the one source that backs it, once

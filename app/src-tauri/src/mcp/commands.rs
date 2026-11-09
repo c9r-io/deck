@@ -27,6 +27,10 @@ pub(crate) struct ClientView {
     pub(super) allow_create: bool,
     /// May trigger the Agent automations (`mcp/automation.rs`).
     pub(super) allow_automations: bool,
+    /// May drive the worker cards its triggers start (`mcp/workers.rs`).
+    pub(super) allow_workers: bool,
+    /// May also read those cards' final messages.
+    pub(super) allow_replies: bool,
     pub(super) projects: Vec<ProjectScope>,
     /// Its adapter was last refused for a control-protocol mismatch
     /// (`control::route`): the integration has to be restarted. Absent from
@@ -58,6 +62,8 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
                 revoked: client.revoked_at.is_some() || emergency.clients.contains(&client.id),
                 allow_create: client.allow_create,
                 allow_automations: client.allow_automations,
+                allow_workers: client.allow_workers,
+                allow_replies: client.allow_replies,
                 projects: client.projects.clone(),
                 adapter_refused: client.revoked_at.is_none()
                     && emergency.refused_adapters.contains(&client.id),
@@ -256,6 +262,8 @@ pub(super) fn disable(runtime: &Runtime) -> Result<(), DeckError> {
         Ok(doc.sessions.clone())
     })?;
     retire_inbox();
+    sync_reply_hook();
+    note_worker_change();
     let mut uncertain = false;
     for session in sessions {
         uncertain |=
@@ -276,7 +284,11 @@ pub(crate) fn mcp_client_add(
     projects: Vec<ProjectScopeInput>,
     allow_create: bool,
     allow_automations: bool,
+    allow_workers: Option<bool>,
+    allow_replies: Option<bool>,
 ) -> Result<ClientView, DeckError> {
+    let allow_workers = allow_workers.unwrap_or(false);
+    let allow_replies = allow_workers && allow_replies.unwrap_or(false);
     if !valid_title(&name) || projects.is_empty() || projects.len() > MAX_PROJECTS_PER_CLIENT {
         return Err(DeckError::new(
             ErrorKind::Invalid,
@@ -311,6 +323,9 @@ pub(crate) fn mcp_client_add(
             create_sequence: 0,
             allow_automations,
             trigger_sequence: 0,
+            allow_workers,
+            allow_replies,
+            send_sequence: 0,
         };
         doc.config.clients.push(client.clone());
         Ok(ClientView {
@@ -320,11 +335,16 @@ pub(crate) fn mcp_client_add(
             revoked: false,
             allow_create: client.allow_create,
             allow_automations: client.allow_automations,
+            allow_workers: client.allow_workers,
+            allow_replies: client.allow_replies,
             projects: client.projects,
         })
     });
     if result.is_err() && runtime.app.is_some() {
         let _ = crate::keychain::clear_mcp_credential(&client_id);
+    }
+    if result.as_ref().is_ok_and(|view| view.allow_replies) {
+        sync_reply_hook();
     }
     result
 }
@@ -442,6 +462,8 @@ pub(super) fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), 
             .collect::<Vec<_>>())
     })?;
     retire_inbox_for(&client_id);
+    sync_reply_hook();
+    note_worker_change();
     let mut uncertain = false;
     for session in sessions {
         uncertain |=
@@ -465,6 +487,49 @@ pub(crate) fn mcp_client_automations(client_id: String, allowed: bool) -> Result
         return Err(DeckError::new(ErrorKind::Invalid, "invalid MCP client id"));
     }
     client_automations(runtime()?, &client_id, allowed)
+}
+
+/// The user's two worker choices for one client (`mcp/workers.rs`): drive
+/// the worker cards it starts, and read their replies (only with driving).
+#[tauri::command(async)]
+pub(crate) fn mcp_client_workers(
+    client_id: String,
+    drive: bool,
+    replies: bool,
+) -> Result<(), DeckError> {
+    if !valid_id(&client_id) {
+        return Err(DeckError::new(ErrorKind::Invalid, "invalid MCP client id"));
+    }
+    client_workers(runtime()?, &client_id, drive, replies)
+}
+
+/// The worker cards as the Board labels them: the client that drives each
+/// and whether the user took it over. Empty while MCP is unavailable.
+#[tauri::command]
+pub(crate) fn mcp_workers_ui() -> Vec<WorkerCardView> {
+    runtime()
+        .ok()
+        .and_then(|runtime| workers_ui(runtime).ok())
+        .unwrap_or_default()
+}
+
+/// The user typed into a worker card's pane: its orchestrator's lines hold
+/// until the user hands it back. `false` when the card is no worker card.
+#[tauri::command]
+pub(crate) fn mcp_worker_take_over(card_id: String) -> Result<bool, DeckError> {
+    if !valid_id(&card_id) {
+        return Err(DeckError::new(ErrorKind::Invalid, "invalid card id"));
+    }
+    worker_set_held(runtime()?, &card_id, true)
+}
+
+/// The user hands a worker card back to its orchestrator.
+#[tauri::command]
+pub(crate) fn mcp_worker_hand_back(card_id: String) -> Result<bool, DeckError> {
+    if !valid_id(&card_id) {
+        return Err(DeckError::new(ErrorKind::Invalid, "invalid card id"));
+    }
+    worker_set_held(runtime()?, &card_id, false)
 }
 
 /// Remove a local authorization display record after revocation has already

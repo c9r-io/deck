@@ -113,6 +113,10 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_session_close` | Use Deck's ordinary close transaction; running jobs require explicit confirmation. |
 | `deck_automation_list` | The Agent automations this client is delegated to trigger: each rule's automation id, name, project and current revision, plus `nextTriggerSequence`. Needs the client's separate **automation delegation**. |
 | `deck_automation_trigger` | Hand one classified item (`text`, optional `from`/`where`/`link`) to one automation by id and revision. Deck creates the rule's card and sends its approved steps; the operation reports `committed` with `cardId` or `rejected` with a closed code (`RULE_CHANGED` with `currentRevision`, `TARGET_MISSING`, `TEMPLATE_MISSING`, `RULE_BLOCKED`, `RULE_MISSING`, `CLIENT_REVOKED`). Not session or execution authority. |
+| `deck_worker_list` | This client's worker cards (the cards its automation triggers created while it may drive them): card id, title, alive, Agent observation `{state, episode}`, `takenOver`, unsent lines and the states of its recent lines, plus `mayReadReplies` and `nextSendSequence`. Content-free. Needs the client's separate **worker** choice. |
+| `deck_worker_wait` | The same views once one of the named cards moves past the episode the caller saw, is taken over or stops; at most 5 s (`wait_ms`), call again after `changed: false`. |
+| `deck_worker_reply` | A worker card's final Claude Code message of one turn ending (its episode), head and tail when long; memory only, the newest 32 (`REPLY_GONE` otherwise). Needs the further **replies** choice. |
+| `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence`. Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over. |
 
 All input schemas reject unknown fields. Side-effecting tools advertise
 `readOnlyHint=false`, `destructiveHint=true`, `idempotentHint=false` and
@@ -262,6 +266,51 @@ binding permanently, and reopening the session gate or approving a later
 execution window does not revive it. These checks run before and after a
 blocking runner read. Execution-grant expiry and revocation are not read-gate
 reasons.
+
+## Worker cards
+
+A client may also be let **drive the worker cards its automations start**
+(the client's row: **Let it drive worker cards**, and **Share replies**;
+also asked after the automation question when a client is authorized). A
+worker card is a card one of its own `deck_automation_trigger` calls
+created while it had that choice; no other card is ever reachable. The
+card is an ordinary card: you can open it, read it and type into it. It is
+labelled "Driven by ‹client›" and its routine turn endings start quiet
+(its orchestrator reads them; the card menu announces them again).
+
+The orchestrator (Claude Code, Codex or any MCP client) decides everything;
+Deck only provides four tools. `deck_worker_list` and `deck_worker_wait`
+show each card's state without content: whether its session is alive, the
+Agent observation's closed word (`working`, `turn-done`, `needs-input`,
+`unavailable`) and episode, whether you took it over, and the delivery
+states of its lines. `turn-done` is a turn boundary, not proof the work is
+finished. `deck_worker_reply` returns the final message Claude Code's Stop
+hook forwarded for one turn ending (needs **Share replies**; it is kept in
+memory only). `deck_worker_send` queues one line: Deck refuses it when the
+card's episode is no longer the one the line was written after, and
+otherwise types it only when the ordinary readiness holds allow, never
+while the agent is asking you something (after 10 s of quiet in the pane,
+and at least a minute after the card's previous line). The orchestrator can never answer
+an Agent's permission or trust prompt.
+
+**Taking over.** Typing into a worker card yourself (a key, a paste, a
+dropped file) takes it over: the orchestrator's lines for that card wait
+(queue stage "you took this card over") until you click **Taken over ·
+Hand back** on the card or in its header. Nothing hands it back on a
+timer; your other worker cards go on.
+
+**Stopping.** Stopping the worker choice, revoking the client or turning
+MCP off takes the orchestrator's unsent lines off automatic delivery at
+once (they stay in each card's list for Send now); already open cards stay.
+At most 8 worker cards per client may be on the Board, 4 unsent lines per
+card, 30 lines a minute.
+
+Only Claude Code works as a worker today: Codex's shared-daemon Signal is
+unavailable, so its lines would hold, and Pi's input requests cannot be
+seen. Worker replies need Deck's Claude Code status hooks (Settings →
+Agents); with turn summaries off the Stop hook then carries `--reply
+workers`, which forwards the message for worker replies alone and never
+makes a summary or a model call.
 
 ## Execution, output, and lifecycle
 

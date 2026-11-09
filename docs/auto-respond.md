@@ -287,7 +287,9 @@ Deck's part is the one it already has for a badge: the rule names the
 column, directory, command and template, Deck creates a fresh card with
 the template filled from the item (`{{msg.text}}`, `{{msg.from}}`,
 `{{msg.where}}`, `{{msg.link}}`), and the rule's own choices decide how
-the steps are sent. The client never types into a session, and no
+the steps are sent. The client never types into a session (unless you
+also let it drive the worker cards its triggers start: `docs/mcp.md`
+"Worker cards"), and no
 execution window, control lease or managed session is involved; the
 delegation is its own revocable choice, never implied by letting a client
 create shell cards.

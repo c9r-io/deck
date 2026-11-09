@@ -35,6 +35,9 @@ fn client() -> Client {
         create_sequence: 0,
         allow_automations: false,
         trigger_sequence: 0,
+        allow_workers: false,
+        allow_replies: false,
+        send_sequence: 0,
     }
 }
 

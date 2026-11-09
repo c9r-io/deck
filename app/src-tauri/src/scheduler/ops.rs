@@ -775,6 +775,130 @@ pub(crate) fn channel_queue_add(
     result
 }
 
+/// One line a delegated MCP client wrote for one of its worker cards
+/// (`mcp/workers.rs`), already checked there: the client may drive the
+/// cards it started, the card is one of them, and its target is the
+/// committed Board's.
+pub(crate) struct WorkerSend<'a> {
+    pub(crate) client: &'a str,
+    pub(crate) automation: &'a str,
+    pub(crate) operation: &'a str,
+    pub(crate) card: &'a str,
+    pub(crate) session: &'a str,
+    pub(crate) dir: &'a str,
+    pub(crate) cmd: &'a str,
+    pub(crate) text: &'a str,
+}
+
+/// The backend's one enqueue path, for a worker card's delegated line: the
+/// same external admission as every other non-owner text (the card's
+/// command must launch an interactive agent), then a follow-up row whose
+/// content authority is the client's delegation (`ContentClass::Delegated`,
+/// swept and fenced like every approval, `authority.rs`). Every hold still
+/// applies, the human hold included. A refused delegation never reaches
+/// here; a later withdrawal strips the row's authority, and the row then
+/// waits for send-now like any external row.
+pub(crate) fn worker_queue_add(
+    state: State<'_, Queues>,
+    app: AppHandle,
+    send: WorkerSend<'_>,
+) -> Result<(), DeckError> {
+    let mut args = QueueAddArgs {
+        session: send.session.into(),
+        card_id: send.card.into(),
+        operation_id: Some(send.operation.into()),
+        dir: send.dir.into(),
+        cmd: send.cmd.into(),
+        text: send.text.into(),
+        mode: "chain".into(),
+        at: None,
+        // the client wrote this line after the card's turn boundary, so the
+        // chain's three-minute quiet only delays it; the shortest quiet left
+        // keeps a paste out of output still arriving. Quiet is no readiness
+        // evidence either way: every hold below still decides.
+        quiet_secs: Some(MIN_QUIET_SECS),
+        review_each: false,
+        every: None,
+        not_before: None,
+        win_from: None,
+        win_to: None,
+        until_n: None,
+        until_at: None,
+        steps: None,
+        tpl: None,
+        tpl_idx: None,
+        tpl_total: None,
+        group: None,
+        external_text: false,
+        wake: true,
+        channel_path: false,
+        authority: None,
+        granted: Vec::new(),
+        first_send: None,
+        first_send_granted: None,
+        channel_first_send: None,
+        channel_first_send_granted: None,
+    };
+    admit_external(&mut args)?;
+    validate_add(&args)?;
+    args.granted = vec![Some(StepAuthority {
+        rule: send.automation.into(),
+        grant: String::new(),
+        step: 0,
+        class: ContentClass::Delegated,
+        trigger: TriggerClass::Agent,
+        connector: None,
+        delegation: Some(AgentSource {
+            client: send.client.into(),
+        }),
+    })];
+    let result = queue_add_core(state, app, args, None, false);
+    match &result {
+        Ok(()) => wake_scheduler(),
+        Err(error) => {
+            applog(&format!("[queue] worker add failed ({})", error.code()));
+        }
+    }
+    result
+}
+
+/// What a worker card's orchestrator may read about its own lines: for
+/// each operation id, the queue's operation state (`queued`, `delivered`,
+/// `canceled`, `uncertain`), and how many of its rows on the card are still
+/// unsent. Ids and closed words only, never text.
+pub(crate) fn worker_rows(
+    queue: &Mutex<QueueState>,
+    card: &str,
+    client: &str,
+    operations: &[String],
+) -> (usize, Vec<(String, &'static str)>) {
+    let q = queue.lock_or_recover();
+    let unsent = q
+        .items
+        .iter()
+        .filter(|i| {
+            i.card_id == card
+                && matches!(i.state, ItemState::Pending | ItemState::Failed)
+                && i.operation_id
+                    .as_ref()
+                    .is_some_and(|id| operations.contains(id))
+                && i.authority
+                    .as_ref()
+                    .is_none_or(|a| a.delegation.as_ref().is_some_and(|d| d.client == client))
+        })
+        .count();
+    let states = operations
+        .iter()
+        .filter_map(|id| {
+            q.operations
+                .iter()
+                .find(|op| &op.id == id)
+                .map(|op| (id.clone(), op.state.as_str()))
+        })
+        .collect();
+    (unsent, states)
+}
+
 pub(crate) fn operation_replay(
     queue: &Mutex<QueueState>,
     args: &QueueAddArgs,

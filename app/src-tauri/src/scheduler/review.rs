@@ -32,7 +32,7 @@
 //!   ambiguous, firing, failed, paused, retry, previous, iteration, gap,
 //!   time, agent, external, codex-signal, first-send, authority-unverified,
 //!   quiet, context, channel-stopped, channel-unverified, pi-input-unverified,
-//!   unknown) with its observation time and whether the row carries content
+//!   human, unknown) with its observation time and whether the row carries content
 //!   authority, so the webview never derives readiness from hook state.
 //! - `delivery_waits` is the same projection read for attention: per session,
 //!   the row whose stage means "a person has to act and nothing else will"
@@ -497,6 +497,7 @@ pub(crate) fn plan_item(
             Hold::ChannelPermission => "channel-stopped",
             Hold::ChannelUnverified => "channel-unverified",
             Hold::PiInputUnverified => "pi-input-unverified",
+            Hold::Human => "human",
         }
     } else if i.mode == "chain" && quiet_remaining.is_some_and(|s| s > 0) {
         "quiet"

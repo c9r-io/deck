@@ -899,6 +899,12 @@ pub(crate) struct PendingView {
     /// `inbound_pending`, never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) blocked: Option<String>,
+    /// For an Agent item whose client may drive the cards it starts: that
+    /// client's name, so the card is made a quiet worker card labelled with
+    /// it (`mcp/workers.rs`). Presentation only; computed at each
+    /// `inbound_pending`, never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) worker: Option<String>,
 }
 
 struct Pending {
@@ -1032,6 +1038,7 @@ pub(crate) fn offer<R: tauri::Runtime>(
                     event: ev,
                     rule: rule.clone(),
                     blocked: None,
+                    worker: None,
                 },
                 emitted_at: Instant::now(),
             });
@@ -1188,6 +1195,7 @@ pub(crate) fn inbound_pending() -> Vec<PendingView> {
                 if frozen.is_none() || now.is_none() || frozen != now {
                     v.blocked = Some("rule-changed".into());
                 }
+                v.worker = crate::mcp::worker_client_for_item(&v.event.key);
             }
             v
         })

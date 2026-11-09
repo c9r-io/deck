@@ -45,8 +45,9 @@ const BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
 /// Deck may legitimately take longer than one runner round trip: a request
 /// can wait for the delivery lock behind an in-flight job dispatch.
 const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const MUTATING: [&str; 7] = [
+const MUTATING: [&str; 8] = [
     "deck_automation_trigger",
+    "deck_worker_send",
     "deck_session_create",
     "deck_session_control",
     "deck_exec",
@@ -123,6 +124,55 @@ struct TriggerInput {
     /// A link back to the source item (one line, at most 1 KiB).
     #[serde(default)]
     link: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkerSeenInput {
+    /// A worker card id from deck_worker_list.
+    card_id: String,
+    /// The card's agent episode you last saw (`agent.episode`).
+    episode: u64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkerWaitInput {
+    /// The worker cards to watch, each with the episode you last saw.
+    cards: Vec<WorkerSeenInput>,
+    /// How long to wait at most, in milliseconds (default 1000, at most
+    /// 5000). Call again after `changed: false`.
+    #[serde(default)]
+    wait_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkerReplyInput {
+    /// A worker card id from deck_worker_list.
+    card_id: String,
+    /// The turn ending's episode (`agent.episode` while `agent.state` is
+    /// `turn-done`).
+    episode: u64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkerSendInput {
+    /// Stable idempotency key for this line; persist it before the first
+    /// attempt and reuse it on every retry of the same line.
+    request_id: String,
+    /// This client's current send sequence (`nextSendSequence` from
+    /// deck_worker_list or deck_worker_wait). Deck accepts a line only at the
+    /// current value.
+    send_sequence: u64,
+    /// A worker card id from deck_worker_list.
+    card_id: String,
+    /// The card's agent episode this line was written after; Deck refuses
+    /// the line (EPISODE_MOVED) when the card has moved on since.
+    after_episode: u64,
+    /// The line to type into the card's agent (at most 16 KiB).
+    text: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -396,11 +446,31 @@ impl DeckServer {
             tool::<Empty>(
                 "deck_automation_list",
                 "List the Deck automations this client is delegated to trigger: each Agent rule's id, name, project and current revision, plus nextTriggerSequence. Requires the local automation delegation for this client.",
-                ro,
+                ro.clone(),
             ),
             tool::<TriggerInput>(
                 "deck_automation_trigger",
-                "Hand one classified item to one Deck automation by id and revision. Deck creates a card and runs the rule's own approved steps; this is a side effect with an operation to poll (deck_operation_get: committed with cardId, or rejected with a code). Not session or execution authority.",
+                "Hand one classified item to one Deck automation by id and revision. Deck creates a card and runs the rule's own approved steps; this is a side effect with an operation to poll (deck_operation_get: committed with cardId, or rejected with a code). Not session or execution authority. When the local user also lets this client drive worker cards, the card it creates is one of them (deck_worker_list).",
+                mutating.clone(),
+            ),
+            tool::<Empty>(
+                "deck_worker_list",
+                "List this client's worker cards: the cards its automation triggers created that the local user lets it drive. Each has cardId, title, alive, agent {state: working | turn-done | needs-input | unavailable, episode}, takenOver (the user typed into it; your lines wait until they hand it back), unsent and the states of your recent lines. Content-free. Also mayReadReplies and nextSendSequence.",
+                ro.clone(),
+            ),
+            tool::<WorkerWaitInput>(
+                "deck_worker_wait",
+                "Wait (at most 5 s) until one of the named worker cards moves past the episode you saw, is taken over or stops; returns changed and the same views as deck_worker_list. Call again after changed: false. turn-done is a turn boundary, not proof the work is finished.",
+                ro.clone(),
+            ),
+            tool::<WorkerReplyInput>(
+                "deck_worker_reply",
+                "Read a worker card's final message of one Claude Code turn ending (agent.state turn-done, its episode): head and tail when long (truncated). Kept in memory only, the newest 32; REPLY_GONE otherwise. Needs the local user's separate permission to read replies. Prefer asking workers to write large results to files.",
+                ro,
+            ),
+            tool::<WorkerSendInput>(
+                "deck_worker_send",
+                "Queue one line for one of your worker cards, written after the episode you name (refused with EPISODE_MOVED if the card moved on). Deck types it into the card's agent only when its own readiness checks allow: never while the agent asks the user something (needs-input) or while the user has taken the card over. Returns an operation; its delivery shows in deck_worker_list sends. You can never answer the agent's permission prompts.",
                 mutating,
             ),
         ];
@@ -587,6 +657,26 @@ impl DeckServer {
                     return invalid_arguments(issue);
                 }
                 self.invoke::<TriggerInput>("deck_automation_trigger", arguments)
+                    .await
+            }
+            "deck_worker_list" => self.invoke::<Empty>("deck_worker_list", arguments).await,
+            "deck_worker_wait" => {
+                self.invoke::<WorkerWaitInput>("deck_worker_wait", arguments)
+                    .await
+            }
+            "deck_worker_reply" => {
+                self.invoke::<WorkerReplyInput>("deck_worker_reply", arguments)
+                    .await
+            }
+            "deck_worker_send" => {
+                if let Err(issue) = validate_sequence(
+                    &arguments,
+                    "send_sequence",
+                    "non-negative integer (nextSendSequence from deck_worker_list or deck_worker_wait)",
+                ) {
+                    return invalid_arguments(issue);
+                }
+                self.invoke::<WorkerSendInput>("deck_worker_send", arguments)
                     .await
             }
             _ => CallToolResult::structured_error(json!({

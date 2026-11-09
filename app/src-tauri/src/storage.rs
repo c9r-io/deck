@@ -112,8 +112,9 @@ use std::sync::Mutex;
 // constraints; v8 protects a clock schedule's interval and anchor date; v9
 // protects an Agent trigger rule (settings.json) and the queue origins it
 // admits (a row's or a delivery's authority or override with the agent
-// trigger word). Ordinary documents keep v1; upgrades are sticky.
-pub const SCHEMA_VERSION: u64 = 9;
+// trigger word); v10 protects a worker card's delegated queue rows (queue
+// only). Ordinary documents keep v1; upgrades are sticky.
+pub const SCHEMA_VERSION: u64 = 10;
 
 // An Agent rule is a source word a v8 reader rejects wholesale (its settings
 // validation refuses the unknown source, which would quarantine the file),
@@ -129,6 +130,22 @@ fn uses_agent_trigger(v: &serde_json::Value) -> bool {
                 || o.values().any(uses_agent_trigger)
         }
         serde_json::Value::Array(a) => a.iter().any(uses_agent_trigger),
+        _ => false,
+    }
+}
+
+// v10: a worker card's delegated row (`mcp/workers.rs`): text an MCP
+// client wrote, sent on the client's standing delegation. A v9 reader
+// decodes the closed `delegated` content class as damage; refuse the file
+// untouched instead.
+fn uses_worker_send(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(o) => {
+            o.get("authority")
+                .is_some_and(|a| a["class"] == "delegated")
+                || o.values().any(uses_worker_send)
+        }
+        serde_json::Value::Array(a) => a.iter().any(uses_worker_send),
         _ => false,
     }
 }
@@ -807,9 +824,9 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let feature_version = if matches!(name.as_ref(), "queue.json" | "settings.json")
-        && uses_agent_trigger(&data)
-    {
+    let feature_version = if name == "queue.json" && uses_worker_send(&data) {
+        10
+    } else if matches!(name.as_ref(), "queue.json" | "settings.json") && uses_agent_trigger(&data) {
         9
     } else if name == "settings.json" && uses_schedule_interval(&data) {
         8
@@ -2368,6 +2385,33 @@ mod agent_trigger_version_tests {
     use crate::test_dir::TestDir;
 
     /// An Agent trigger rule and the queue origins it admits take sticky
+    /// v10 on queue.json for a worker card's delegated row, sticky; a v9
+    /// reader refuses it; an ordinary Agent row stays at v9.
+    #[test]
+    fn worker_rows_upgrade_the_queue_to_sticky_v10() {
+        let dir = TestDir::new("worker-row-version");
+        let row = |class: &str| serde_json::json!({"items":[{"id":"q1","authority":{"rule":"triage","grant":"","step":0,"class":class,"trigger":"agent","delegation":{"client":"client_a"}}}]});
+        let p = dir.join("queue.json");
+        save_typed::<serde_json::Value>(&p, &row("fixed").to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], 9);
+        save_typed::<serde_json::Value>(&p, &row("delegated").to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], 10);
+        assert!(
+            envelope_payload_for(&raw, 9).is_err(),
+            "a v9 reader refuses it"
+        );
+        save_typed::<serde_json::Value>(&p, &serde_json::json!({"items":[]}).to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], 10, "sticky");
+        // only the queue carries such rows
+        let p = dir.join("settings.json");
+        save_typed::<serde_json::Value>(&p, &row("delegated").to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert!(raw["schema_version"].as_u64().unwrap() < 10);
+    }
+
     /// v9 on settings.json and queue.json only; deck.json keeps its own
     /// version (its reader admits the rows without authority and holds).
     #[test]
