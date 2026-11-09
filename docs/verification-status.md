@@ -16,7 +16,7 @@
 - 运行 3（安静时间改为 10 秒后的最终构建）：A 段 **PASS**；第二句从接受到回合结束 63 秒（受 60 秒发送间隔），交还后 2 秒内送达（之前 180 秒安静）。
 - 运行 1 的发现：用户级 settings 里已有生产 Deck 的 Stop hook，与注入的 hook 各报一次回合结束，带回复的那条被当作重复丢掉 → 测试改为只读 project 设置。产品里只有 Deck 自己装的一套 hook，不受影响。
 
-门禁（本机）：fmt；CI 形式 clippy 0 告警；CI 形式 `cargo llvm-cov --workspace --all-targets --all-features --locked`（隔离 HOME、空 TMPDIR，串行）1661 项通过、行覆盖 85.5%，无残留；`scripts/ui-tests` 956 项；`check.mjs` 90 个模块；扩展目录 current；脚本单测通过。`cargo audit`：rmcp 3.4.0 有 3 条新公告（10-20 至 11-05 发布，本次未改 Cargo.lock），推送前须处理。
+门禁（本机）：fmt；CI 形式 clippy 0 告警；CI 形式 `cargo llvm-cov --workspace --all-targets --all-features --locked`（隔离 HOME、空 TMPDIR，串行）1661 项通过、行覆盖 85.5%，无残留；`scripts/ui-tests` 956 项；`check.mjs` 90 个模块；扩展目录 current；脚本单测通过。`cargo audit`：rmcp 3.4.0 的 3 条公告（RUSTSEC-2026-0457/0461/0462，OAuth 客户端与 Streamable HTTP，deck-mcp 未启用这些 feature）由下一个提交升级 rmcp 3.9.0、tokio 1.53.3（RUSTSEC-2026-0386）处理，审计 0 漏洞。
 缺口：Codex / Pi 当 worker 未支持（Codex 共享 daemon 下 Signal 不可用）；release 载体上 `--reply workers` 由 Deck 写入 hook 的路径未实机执行（开发版不写 hook，单元测试覆盖）；语音输入不触发接管；多显示器 / 窗口被遮挡时 WK 页面定时器会被暂停（测试载体问题，非产品）。
 
 ## 本轮 CI：GitHub 下线 macOS 14 托管 runner
