@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.18 — 2026-11-10 (Nightly)
+
+- Worker cards: an agent you authorize under Settings → Remote access can
+  now drive the Claude Code cards its own automations start. Let one
+  Claude Code or Codex split a job across several workers and you still
+  see every worker as an ordinary card: open it, read it, type into it.
+  The orchestrating agent reads each card's state and the final message of
+  each turn, and sends the next line; Deck sends it only when the card's
+  agent is ready, never while it is asking you something, and the agent
+  can never answer a permission prompt. Typing into a worker card yourself
+  takes it over: the orchestrator's lines wait until you click "Hand back".
+  Worker cards are labelled "Driven by …" and keep their routine turn
+  endings quiet. Two separate choices on the client's row: drive worker
+  cards, and share their replies; stopping either takes effect at once.
+  Codex and Pi cannot be workers yet.
+- Slack mentions: the list now reaches back 24 hours, 3 days or a week
+  (24 hours at every launch), each choice with its own count; Deck keeps
+  the last week only.
+- Security: the MCP SDK (rmcp 3.9.0) and tokio (1.53.3) are updated for
+  four RustSec advisories. Deck's MCP adapter did not build the affected
+  OAuth and HTTP transport code.
+
 ## 0.8.17 — 2026-11-06 (Nightly)
 
 - Slack mentions: a new sidebar entry lists the messages of the last 30
