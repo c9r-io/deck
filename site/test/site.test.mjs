@@ -364,6 +364,50 @@ test('parallel-session scenario keeps coverage, outcome and restart limits expli
   assert.match(chinese, /状态变化不会自动移动卡片/);
 });
 
+test('daily code review is paired, discoverable, indexed and uses the unchanged versioned stylesheet', async () => {
+  const sitemap = await readFile(path.join(dist, 'sitemap.xml'), 'utf8');
+  const redirects = await readFile(path.join(dist, '_redirects'), 'utf8');
+  const cssVersion = createHash('sha256').update(await readFile(path.join(dist, 'assets/site.css'))).digest('hex').slice(0, 12);
+  for (const locale of ['', 'zh/']) {
+    const route = `/${locale}scenarios/daily-code-review/`;
+    const other = `/${locale ? '' : 'zh/'}scenarios/daily-code-review/`;
+    const html = await readFile(path.join(dist, `${locale}scenarios/daily-code-review/index.html`), 'utf8');
+    assert.equal([...html.matchAll(/<h1\b/g)].length, 1);
+    assert.ok(html.includes(`<html lang="${locale ? 'zh-Hans' : 'en'}">`));
+    assert.ok(html.includes(`rel="canonical" href="${config.siteUrl}${route}"`));
+    assert.ok(html.includes(`class="language-link" href="${other}"`));
+    assert.ok(html.includes(`hreflang="${locale ? 'en' : 'zh-Hans'}" href="${config.siteUrl}${other}"`));
+    assert.ok(html.includes(`property="og:image" content="${config.siteUrl}/assets/og.png"`));
+    assert.ok(html.includes(`href="/assets/site.css?v=${cssVersion}"`));
+    assert.match(html, /7f14b9b1e42a2f72230b421078b3a93cd8a02963/);
+    assert.match(html, /Deck 0\.8\.11/);
+    for (const page of [`${locale}index.html`, `${locale}guide/index.html`]) {
+      assert.ok((await readFile(path.join(dist, page), 'utf8')).includes(`href="${route}"`));
+    }
+    assert.ok(sitemap.includes(`<loc>${config.siteUrl}${route}</loc>`));
+    assert.ok(redirects.includes(`${route.slice(0, -1)} ${route} 301`));
+  }
+});
+
+test('daily review separates scheduling, first input and human verification in both languages', async () => {
+  for (const [locale, file] of [['', 'en.js'], ['zh/', 'zh-Hans.js']]) {
+    const html = await readFile(path.join(dist, `${locale}scenarios/daily-code-review/index.html`), 'utf8');
+    const dictionary = await pinnedDictionary(file);
+    for (const key of ['menu.autoClock', 'automation.firstSend.option', 'automation.finish', 'automation.finish.keep']) {
+      assert.ok(html.includes(dictionary[key]), `${locale || 'en/'} lacks pinned ${key}`);
+    }
+    assert.match(html, /codex --no-daemon/);
+    assert.match(html, /\/hooks/);
+    assert.match(html, locale ? /保持.*新启动的 Agent 也直接发送第一步.*关闭/ : /Leave.*Send the first step.*off/);
+    assert.match(html, locale ? /下个时段就会跳过，不会排队/ : /next slot is skipped, not queued/);
+    assert.match(html, locale ? /不会重放已跳过的时段/ : /does not replay the skipped run/);
+    assert.match(html, locale ? /不是沙箱，也不是权限保证/ : /not a sandbox or a permission guarantee/);
+    assert.match(html, locale ? /Deck 不判断任务成功/ : /Deck does not judge task success/);
+    assert.match(html, locale ? /关闭卡片会结束其中的 session 和程序/ : /Closing a card ends its session and running programs/);
+    assert.match(html, locale ? /结果还没核实/ : /result unverified/);
+  }
+});
+
 test('ChatGPT Secure Tunnel pages render both canonical repo guides with paired navigation', async () => {
   const source = await readFile(path.join(root, '..', 'docs', 'secure-tunnel.md'), 'utf8');
   const chineseSource = await readFile(path.join(root, '..', 'docs', 'secure-tunnel.zh.md'), 'utf8');

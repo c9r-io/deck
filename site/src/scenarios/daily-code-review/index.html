@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Start a daily code review with Deck clock automations — deck</title>
+  <meta name="description" content="Set up a weekday, read-only code review in a fixed local project, inspect the first input, verify the findings and close the run deliberately.">
+  <meta name="theme-color" content="#0d1117">
+  <link rel="canonical" href="{{SITE_URL}}/scenarios/daily-code-review/">
+  <link rel="alternate" hreflang="en" href="{{SITE_URL}}/scenarios/daily-code-review/">
+  <link rel="alternate" hreflang="zh-Hans" href="{{SITE_URL}}/zh/scenarios/daily-code-review/">
+  <link rel="alternate" hreflang="x-default" href="{{SITE_URL}}/scenarios/daily-code-review/">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/assets/icon-180.png">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="deck">
+  <meta property="og:title" content="Start a daily code review with Deck clock automations">
+  <meta property="og:description" content="Set up a weekday, read-only code review in a fixed local project, inspect the first input, verify the findings and close the run deliberately.">
+  <meta property="og:url" content="{{SITE_URL}}/scenarios/daily-code-review/">
+  <meta property="og:image" content="{{SITE_URL}}/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="deck wordmark beside a local session board with status signals for work across projects">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="{{SITE_URL}}/assets/og.png">
+  <link rel="stylesheet" href="/assets/site.css?v=880f34f06c24">
+</head>
+<body class="site">
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="topbar wrap"><nav class="pillnav" aria-label="Main navigation"><a class="logo" href="/"><span class="logo-mark" aria-hidden="true"><i class="c-run"></i><i class="c-quiet"></i><i class="c-done"></i><i class="c-stop"></i></span>deck</a><a class="push" href="/guide/">Guide</a><a class="opt" href="{{GITHUB_URL}}">GitHub</a><a class="language-link" href="/zh/scenarios/daily-code-review/" lang="zh-Hans">中文</a><a class="btn btn-primary" href="{{DOWNLOAD_URL}}">Download</a></nav></div>
+<main id="main">
+<header class="opener under-nav"><div class="wrap opener-in"><p class="crumb"><a href="/guide/">Practical guide · Daily code review</a></p><div class="opener-head"><h1>Start a daily code review with Deck clock automations</h1><p class="opener-lede">Give a small code review a regular place in your workday. Start with one local repository and a one-step template, keep the result available to read, and decide when the session can end.</p></div></div></header>
+<div class="wrap gshell">
+<aside class="gside"><details open><summary>Practical guide</summary><nav aria-label="Related guides"><a href="/scenarios/daily-code-review/" aria-current="page">Daily code review</a><a href="/guide/automations/">Clock rules and templates</a><a href="/guide/prompts/">Input and inspection</a><a href="/guide/sessions/">Closing and recovery</a><a href="/scenarios/parallel-sessions/">Parallel sessions</a></nav></details></aside>
+<article class="garticle">
+<p>Checked against <strong>Deck 0.8.11 Stable</strong> on 9 November 2026. The project name and schedule below are examples. Use a repository you are allowed to inspect and an Agent CLI you already have installed.</p>
+
+<h2 id="prepare">1. Start with one small, read-only review</h2>
+<p>Choose one project and a fixed local repository directory. The example is a weekday review of uncommitted changes and the latest three local commits. It produces a short list of findings for you to verify; it does not fix code, run tests or fetch new commits.</p>
+<p>First open an ordinary Deck session in that directory. Check the directory and branch, start your installed <code>claude</code> or <code>codex --no-daemon</code>, and deal with sign-in, trust and permission choices yourself. Use the CLI's own permission controls for the access you intend. Deck does not install a CLI, provide its account or restrict its tools. The CLI may contact its model provider and incur its usual charges.</p>
+<p>If you want reported input requests and turn endings, enable the matching integration in <strong>Settings → Agents &amp; notifications</strong>. Codex hooks also need review and trust in <code>/hooks</code>; <code>--no-daemon</code> uses a separate embedded session instead of shared-server continuity. Missing reports do not prove readiness. <a href="/guide/attention/">Check the signal limits.</a></p>
+
+<h2 id="template">2. Save a one-step review template</h2>
+<p>In the selected project, open <strong>Templates…</strong> from the <strong>New session ▾</strong> menu, choose <strong>New template</strong>, and name it “Daily code review”. Put the following example into <strong>one step</strong>; a step can contain several lines. Keep this first trial to one prompt, with no repair or exit step.</p>
+<blockquote><p>Review this local repository without changing it. First report the current directory, branch and working-tree status. Read the uncommitted diff and the latest three local commits, then inspect the related code. Do not fetch, install dependencies, run tests, edit files, commit or push.<br><br>Return at most three concrete risks. For each, cite the file and line or commit, explain the evidence, and say what still needs human verification. Separate observed facts from hypotheses. If there is no relevant change or you cannot inspect something, say so. Do not claim that tests passed or that the code is safe.</p></blockquote>
+<p><strong>This prompt is not a sandbox or a permission guarantee.</strong> It describes the intended task; the Agent still acts through its own tools and permissions. Read the proposed actions and any permission requests before accepting them. Adjust the review scope to your repository before saving.</p>
+
+<h2 id="schedule">3. Create the weekday clock rule</h2>
+<ol>
+  <li>From <strong>New session ▾</strong>, choose <strong>New on a clock…</strong>. Give the rule a recognizable name, such as “Morning code review”.</li>
+  <li>Set <strong>Directory</strong> to the same repository, <strong>Command</strong> to the CLI you checked, and <strong>Group</strong> to where you want the new cards. Select your “Daily code review” template.</li>
+  <li>Repeat every <strong>1 week</strong>, select Monday through Friday, and choose a local time such as <strong>09:30</strong>. These are weekdays, not a holiday calendar. Check the next three local times displayed before saving.</li>
+  <li>For <strong>If missed</strong>, keep the default <strong>still start within 15 min</strong>. Under <strong>After the program exits</strong>, choose <strong>keep it</strong> so you can return to the result.</li>
+  <li>Leave <strong>Send the first step to a newly started agent without waiting for readiness</strong> off. Save, then check the rule's next time in <strong>Automations…</strong>.</li>
+</ol>
+<p>For a first trial while you are present, use a time a few minutes ahead on a selected weekday. After reviewing that trial, edit the same rule to your morning time. Saving or resuming a rule does not replay a slot earlier that day.</p>
+<p>Keep the Mac awake and Deck running at the chosen time. Deck is not a remote scheduler that runs while your Mac is unavailable. If it resumes within the allowed grace period, a missed slot can still start; outside that window it is recorded as skipped. <a href="/guide/automations/#start-work-on-a-clock">See the scheduling reference.</a></p>
+
+<h2 id="first-run">4. Check the first card before sending</h2>
+<p>At the slot, find the new card and open its terminal and <strong>⏱</strong> list. A card being created means the session started; it does not mean the review prompt was delivered.</p>
+<p>With the default first-input choice, a fresh Claude or Codex session waits for a real interaction observed through its status integration, or your <strong>Send now</strong> after checking the target. Finish startup dialogs, check the directory and foreground program, then send the reviewed step once. Without the matching integration, automatic first input keeps waiting. Quiet output and elapsed time do not establish readiness.</p>
+<p>If delivery is uncertain, inspect the terminal before retrying; a retry may duplicate the prompt. If the Agent requests input or permission, read and answer its actual question. <a href="/guide/prompts/#when-a-list-does-not-continue">Use the list's waiting reason to decide the next action.</a></p>
+<details><summary>Optional later: accept automatic first input</summary><p>Once you understand the startup behavior, you can explicitly enable <strong>Send the first step to a newly started agent without waiting for readiness</strong> for this rule. It supports Claude, or Codex with literal <code>--no-daemon</code>. Its short compatibility wait is not readiness proof: a trust, update, sign-in or other startup dialog may receive the text and Enter. The choice covers only the first step; input requests, target checks and configured inspection checkpoints still apply. It does not approve Agent tools, prove the review is safe or verify its outcome. Leave it off if you do not accept that startup-input risk.</p></details>
+
+<h2 id="review">5. Read, verify, then deliberately close</h2>
+<p>When the Agent reports a turn ending, read the terminal. Check each finding against the cited code and decide which claims need a separate test or investigation. “No findings” is a report to assess, not evidence that the repository is correct. <strong>Deck does not judge task success.</strong> A turn ending does not prove the Agent or its background work has stopped.</p>
+<p>Keep any useful summary in your own review record before closing. Keeping a card lets you return to the current session; it is not a guarantee of a durable transcript or process recovery across a machine restart. If you enabled human inspection on its list, complete that checkpoint too; merely viewing the terminal does not complete it.</p>
+<p><strong>While the previous run's card remains on the Board, the same rule's next slot is skipped, not queued.</strong> This applies even after you have read the result or the Agent has stopped. Moving the card to another group or closing only its pane does not release the slot. Closing it later does not replay the skipped run.</p>
+<p>Once you have read the result and confirmed that the session can end, close the run's card. <strong>Closing a card ends its session and running programs.</strong> Review any scratchpad or reminder confirmation. Then check the rule's next time. If you need to retain the live session, keep it and accept that this rule will skip while the card remains; pause the rule when you want to stop future starts.</p>
+
+<h2 id="diagnose">If today's review is missing</h2>
+<div class="table-scroll" tabindex="0" role="region" aria-label="Review stages and next actions"><table>
+<thead><tr><th scope="col">What happened</th><th scope="col">What to check</th></tr></thead>
+<tbody>
+<tr><td>No new card</td><td>Check the rule's recent runs and next time: was it paused, missed beyond its grace period, or skipped because its previous card is still open? Check that its group, directory and template still exist. There is no queued backlog to release by closing an old card.</td></tr>
+<tr><td>Card exists; prompt is waiting</td><td>Open the terminal and ⏱ list. Resolve the displayed input, inspection or target condition; confirm startup readiness yourself before using Send now. Do not create a second rule as a workaround.</td></tr>
+<tr><td>A turn ended; result unverified</td><td>Read the findings and verify the evidence. A sent prompt or turn-ending signal is not a passed review. Close the card only when you intend to end that session.</td></tr>
+</tbody></table></div>
+<p>After the first run, the routine is small: check the next slot, review the new card, record what you verified, and close the session deliberately. For several reviews or other work in parallel, <a href="/scenarios/parallel-sessions/">use the attention workflow to decide what to open next</a>.</p>
+
+<p class="gsource">Stable source references: <a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/src-tauri/src/inbound.rs">clock slots and skipped runs</a> · <a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/ui/js/pure.js">one card per rule</a> · <a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/src-tauri/src/scheduler/first_send.rs">first-input limits</a></p>
+</article>
+<aside class="gout"><nav aria-label="On this page"><p>On this page</p><a href="#prepare">Choose a small review</a><a href="#template">Save one prompt</a><a href="#schedule">Set the weekday rule</a><a href="#first-run">Inspect the first input</a><a href="#review">Read and close</a><a href="#diagnose">Find the missing step</a></nav></aside>
+</div>
+</main>
+<footer class="foot2"><div class="wrap"><a class="logo" href="/"><span class="logo-mark" aria-hidden="true"><i class="c-run"></i><i class="c-quiet"></i><i class="c-done"></i><i class="c-stop"></i></span>deck</a><span>Attention across local terminal work.</span><span class="links"><a href="/guide/">Guide</a><a href="{{GITHUB_URL}}">GitHub</a><a href="/privacy/">Privacy</a><a href="{{FEEDBACK_URL}}">Feedback</a><a href="{{LICENSE_URL}}">MIT</a></span></div></footer>
+</body>
+</html>

@@ -15,6 +15,7 @@ deck has no cloud service, cloud account or remote server hosting your tasks. Sh
 | Your question | Where to go |
 | --- | --- |
 | Several terminals are open. Which one should I check? | [A practical workflow for parallel sessions](/scenarios/parallel-sessions/) |
+| How do I start a weekday code review and return to its findings? | [Set up a daily code review](/scenarios/daily-code-review/) |
 | What needs me now? | [Decide what needs attention](/guide/attention/) |
 | Can I arrange the next prompts in advance? | [Arrange follow-up input](/guide/prompts/) |
 | Why has the next row not been sent? | [Read delivery and inspection states](/guide/prompts/#when-a-list-does-not-continue) |

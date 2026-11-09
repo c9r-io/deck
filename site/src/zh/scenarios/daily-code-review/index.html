@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>让每日检查按时开始：用 Deck 建立可回看的代码巡检 — deck</title>
+  <meta name="description" content="从一次只读检查开始，在固定项目目录建立工作日时钟规则，检查首条输入，核实巡检结果，再有意识地关闭运行卡片。">
+  <meta name="theme-color" content="#0d1117">
+  <link rel="canonical" href="{{SITE_URL}}/zh/scenarios/daily-code-review/">
+  <link rel="alternate" hreflang="en" href="{{SITE_URL}}/scenarios/daily-code-review/">
+  <link rel="alternate" hreflang="zh-Hans" href="{{SITE_URL}}/zh/scenarios/daily-code-review/">
+  <link rel="alternate" hreflang="x-default" href="{{SITE_URL}}/scenarios/daily-code-review/">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/assets/icon-180.png">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="deck">
+  <meta property="og:title" content="让每日检查按时开始：用 Deck 建立可回看的代码巡检">
+  <meta property="og:description" content="从一次只读检查开始，在固定项目目录建立工作日时钟规则，检查首条输入，核实巡检结果，再有意识地关闭运行卡片。">
+  <meta property="og:url" content="{{SITE_URL}}/zh/scenarios/daily-code-review/">
+  <meta property="og:image" content="{{SITE_URL}}/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="deck 字标与本地会话看板，展示跨项目工作的状态信号">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="{{SITE_URL}}/assets/og.png">
+  <link rel="stylesheet" href="/assets/site.css?v=880f34f06c24">
+</head>
+<body class="site">
+<a class="skip-link" href="#main">跳到正文</a>
+<div class="topbar wrap"><nav class="pillnav" aria-label="主导航"><a class="logo" href="/zh/"><span class="logo-mark" aria-hidden="true"><i class="c-run"></i><i class="c-quiet"></i><i class="c-done"></i><i class="c-stop"></i></span>deck</a><a class="push" href="/zh/guide/">使用指南</a><a class="opt" href="{{GITHUB_URL}}">GitHub</a><a class="language-link" href="/scenarios/daily-code-review/" lang="en">EN</a><a class="btn btn-primary" href="{{DOWNLOAD_URL}}">下载</a></nav></div>
+<main id="main">
+<header class="opener under-nav"><div class="wrap opener-in"><p class="crumb"><a href="/zh/guide/">场景指南 · 每日代码巡检</a></p><div class="opener-head"><h1>让每日检查按时开始：用 Deck 建立可回看的代码巡检</h1><p class="opener-lede">把小范围代码检查安排进工作日：选定一个本地仓库，保存一条巡检 prompt，让结果留在卡片里等你回看，再决定何时结束这次 session。</p></div></div></header>
+<div class="wrap gshell">
+<aside class="gside"><details open><summary>场景指南</summary><nav aria-label="相关指南"><a href="/zh/scenarios/daily-code-review/" aria-current="page">每日代码巡检</a><a href="/zh/guide/automations/">时钟规则与模板</a><a href="/zh/guide/prompts/">输入与人工检查</a><a href="/zh/guide/sessions/">关闭与恢复</a><a href="/zh/scenarios/parallel-sessions/">多个会话同时运行</a></nav></details></aside>
+<article class="garticle">
+<p>按 <strong>Deck 0.8.11 稳定版</strong>核对，核对日期为 2026 年 11 月 9 日。下文的项目名和时间都是示例，请使用你有权查看的仓库，以及已经安装的 Agent CLI。</p>
+
+<h2 id="prepare">1. 先确定一次小范围的只读检查</h2>
+<p>每天开始工作时，你想先看看本地改动有没有值得注意的问题。先只选一个项目，把目录固定到它的本地仓库：检查未提交的差异和最近三次本地提交，得到一份待你核实的短报告。这次不修代码、不运行测试，也不拉取新提交。</p>
+<p>先在这个目录打开一个普通 Deck session，确认目录和分支，启动你已经安装的 <code>claude</code> 或 <code>codex --no-daemon</code>，自行处理登录、信任与权限选择。允许哪些工具操作，要在 CLI 自己的权限设置里决定。Deck 不负责安装 CLI、提供账号，也不会限制它的工具权限；CLI 仍可能连接模型服务，并产生原有服务的费用。</p>
+<p>如果希望看到输入请求和本轮结束报告，在<strong>设置 → Agent 与通知</strong>启用相应集成。Codex 的 hook 还需在 <code>/hooks</code> 中审查并信任；<code>--no-daemon</code> 使用独立的嵌入式会话，不沿用共享服务的连续性。没有收到报告，不代表已经准备好输入。<a href="/zh/guide/attention/">先了解状态信号的范围。</a></p>
+
+<h2 id="template">2. 把巡检要求存成一个步骤</h2>
+<p>在选中的项目里，从<strong>新建 session ▾</strong>菜单打开<strong>模板…</strong>，新建一个名为“每日代码巡检”的模板。把下面的示例放进<strong>同一个步骤</strong>；一个步骤可以包含多行。这次先只用一条 prompt，不追加修复或退出程序的步骤。</p>
+<blockquote><p>只读检查当前本地仓库，不做修改。先报告当前目录、分支和工作区状态，再阅读未提交的差异、最近三次本地提交，以及相关代码。不拉取代码、不安装依赖、不运行测试、不编辑文件、不提交、不推送。<br><br>最多列出三个具体风险。每项给出文件与行号或提交编号、判断依据，以及仍需人工验证的部分。把观察到的事实与推测分开。没有相关改动或有内容无法检查时，请明确说明；不要声称测试已通过，也不要保证代码安全。</p></blockquote>
+<p><strong>这段提示词不是沙箱，也不是权限保证。</strong> 它只是描述这次工作的意图，Agent 仍按自己的工具和权限执行。接受操作或权限请求前，需要阅读其具体内容；保存前也请按你的仓库调整检查范围。</p>
+
+<h2 id="schedule">3. 设置工作日时钟规则</h2>
+<ol>
+<li>从<strong>新建 session ▾</strong>选择<strong>按时钟定时新建…</strong>，起一个容易辨认的名称，例如“晨间代码巡检”。</li>
+<li><strong>目录</strong>选择刚才确认的仓库，<strong>命令</strong>填入试过的 CLI，<strong>栏目</strong>选择新卡片要出现的位置，<strong>模板</strong>选择“每日代码巡检”。</li>
+<li>间隔设为<strong>每 1 周</strong>，勾选周一到周五，时间例如本机时区的 <strong>09:30</strong>。这是星期选择，不会自动排除节假日。保存前核对接下来三次的时间。</li>
+<li><strong>错过时</strong>先保留默认的 <strong>15 分钟内仍启动</strong>；<strong>程序退出后</strong>选择<strong>保留</strong>，方便回来阅读结果。</li>
+<li>保持<strong>新启动的 Agent 也直接发送第一步</strong>关闭。保存后，在<strong>已有自动化…</strong>里检查下次运行时间。</li>
+</ol>
+<p>第一次试跑时，可以在已勾选的工作日，把时间设为几分钟后，自己留在电脑前。核对试跑结果后，再编辑同一条规则，改回早晨的时间。保存或恢复规则，不会因此补跑当天已经过去的时段。</p>
+<p>到点时需要 Mac 醒着，Deck 保持运行；它不是电脑离线后仍在远端运行的调度服务。如果恢复运行时还在允许的补跑窗口内，该时段仍可能启动；超过窗口则记为跳过。<a href="/zh/guide/automations/#按时钟开始工作">具体规则见时钟自动化指南。</a></p>
+
+<h2 id="first-run">4. 第一张卡片出现后，先看终端</h2>
+<p>到点后找到新卡片，打开终端和 <strong>⏱</strong> 列表。卡片出现说明 session 已启动，不代表巡检文字已经发给 Agent。</p>
+<p>保留默认首条输入设置时，新启动的 Claude 或 Codex 会等待状态集成观察到一次真实交互，或者等你核对目标后选择<strong>手动立即发送</strong>。先处理启动对话框，检查目录和前台程序，再发送这一步，避免重复输入。没有相应集成时，自动首条输入会一直等待；终端安静、等了一会儿，都不是已就绪的证据。</p>
+<p>如果显示无法确认是否已发送，先到终端检查，再决定是否重试，重试可能造成重复。如果 Agent 请求输入或权限，应阅读并回答它实际提出的问题。<a href="/zh/guide/prompts/#没有继续时怎么办">根据列表显示的等待原因处理。</a></p>
+<details><summary>可选：以后允许直接发送首条输入</summary><p>理解实际启动过程后，可以为这条规则明确开启<strong>新启动的 Agent 也直接发送第一步</strong>。它支持 Claude，以及命令中明确带 <code>--no-daemon</code> 的 Codex。短暂兼容等待不证明 Agent 已就绪：信任、更新、登录等启动对话框可能收到文字和回车。这个选择只涵盖第一步，输入请求、目标检查和已配置的人工检查点仍然生效；它不批准 Agent 工具、不保证巡检安全，也不验证结果。如果不接受这项启动输入风险，就继续保持关闭。</p></details>
+
+<h2 id="review">5. 读完并核实结果，再决定关闭</h2>
+<p>Agent 报告本轮结束后，去终端阅读结果。逐项对照引用的代码，决定哪些判断还需要单独测试或排查。“没有发现问题”也需要你评估，不能当作仓库正确的证明。<strong>Deck 不判断任务成功。</strong> 本轮结束也不说明 Agent 或其后台工作已经停止。</p>
+<p>关闭前，把需要保留的摘要记到你自己的巡检记录里。保留卡片方便回看当前 session，但不保证跨机器重启保留完整会话记录或恢复进程。如果另外启用了列表的人工检查，也要完成对应检查点；只是打开终端看一眼，不会完成检查点。</p>
+<p><strong>只要上次运行的卡片还在看板上，同一规则的下个时段就会跳过，不会排队。</strong> 即使已经读过报告，或 Agent 已经停止，也一样。把卡片移到另一个栏目、只关闭终端窗格，都不能让出这次运行的位置；事后关闭旧卡片，也不会重放已跳过的时段。</p>
+<p>确认结果已读完、这个 session 可以结束后，再关闭运行卡片。<strong>关闭卡片会结束其中的 session 和程序。</strong> 若有暂存区或提醒事项，先看清关闭确认，再检查规则的下次运行时间。如果仍需要保留这个现场，就保留卡片，并接受这条规则暂时跳过后续时段；不想再启动时，可以暂停规则。</p>
+
+<h2 id="diagnose">今天没有拿到巡检结果，先分清哪一步</h2>
+<div class="table-scroll" tabindex="0" role="region" aria-label="巡检阶段与处理方法"><table>
+<thead><tr><th scope="col">看到的情况</th><th scope="col">下一步</th></tr></thead>
+<tbody>
+<tr><td>没有新卡片</td><td>查看规则的最近运行和下次时间：是否暂停、错过补跑窗口，或者上次卡片仍在？再检查栏目、目录和模板是否存在。关闭旧卡片不会释放一串排队的历史任务，因为这些时段已经跳过。</td></tr>
+<tr><td>卡片已创建，prompt 在等待</td><td>查看终端和 ⏱ 列表，处理显示的输入、人工检查或目标问题；确认启动状态后，再手动立即发送。不要通过再建一条规则绕过等待。</td></tr>
+<tr><td>一轮交互结束，结果还没核实</td><td>阅读报告并核对证据。已发送或本轮结束，不等于巡检通过；只有打算结束这个 session 时，才关闭卡片。</td></tr>
+</tbody></table></div>
+<p>第一次试跑之后，每天需要做的是：确认下一次时间，阅读新卡片，记下已经核实的结果，再有意识地结束 session。如果还有其他巡检或终端工作同时进行，可以用<a href="/zh/scenarios/parallel-sessions/">多会话关注方法</a>决定先看哪张卡片。</p>
+
+<p class="gsource">稳定版源码依据: <a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/src-tauri/src/inbound.rs">时钟时段与跳过规则</a> · <a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/ui/js/pure.js">同规则保留一张运行卡片</a> · <a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/src-tauri/src/scheduler/first_send.rs">首条输入边界</a></p>
+</article>
+<aside class="gout"><nav aria-label="本页内容"><p>本页内容</p><a href="#prepare">确定检查范围</a><a href="#template">保存巡检模板</a><a href="#schedule">设置工作日规则</a><a href="#first-run">检查首次输入</a><a href="#review">核实结果后关闭</a><a href="#diagnose">定位未完成的阶段</a></nav></aside>
+</div>
+</main>
+<footer class="foot2"><div class="wrap"><a class="logo" href="/zh/"><span class="logo-mark" aria-hidden="true"><i class="c-run"></i><i class="c-quiet"></i><i class="c-done"></i><i class="c-stop"></i></span>deck</a><span>跨任务关注，本地终端照常运行。</span><span class="links"><a href="/zh/guide/">使用指南</a><a href="{{GITHUB_URL}}">GitHub</a><a href="/zh/privacy/">隐私</a><a href="{{FEEDBACK_URL}}">反馈</a><a href="{{LICENSE_URL}}">MIT</a></span></div></footer>
+</body>
+</html>

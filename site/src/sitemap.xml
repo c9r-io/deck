@@ -6,4 +6,6 @@
   <url><loc>{{SITE_URL}}/zh/privacy/</loc><xhtml:link rel="alternate" hreflang="en" href="{{SITE_URL}}/privacy/"/><xhtml:link rel="alternate" hreflang="zh-Hans" href="{{SITE_URL}}/zh/privacy/"/></url>
   <url><loc>{{SITE_URL}}/scenarios/parallel-sessions/</loc><xhtml:link rel="alternate" hreflang="en" href="{{SITE_URL}}/scenarios/parallel-sessions/"/><xhtml:link rel="alternate" hreflang="zh-Hans" href="{{SITE_URL}}/zh/scenarios/parallel-sessions/"/></url>
   <url><loc>{{SITE_URL}}/zh/scenarios/parallel-sessions/</loc><xhtml:link rel="alternate" hreflang="en" href="{{SITE_URL}}/scenarios/parallel-sessions/"/><xhtml:link rel="alternate" hreflang="zh-Hans" href="{{SITE_URL}}/zh/scenarios/parallel-sessions/"/></url>
+  <url><loc>{{SITE_URL}}/scenarios/daily-code-review/</loc><xhtml:link rel="alternate" hreflang="en" href="{{SITE_URL}}/scenarios/daily-code-review/"/><xhtml:link rel="alternate" hreflang="zh-Hans" href="{{SITE_URL}}/zh/scenarios/daily-code-review/"/></url>
+  <url><loc>{{SITE_URL}}/zh/scenarios/daily-code-review/</loc><xhtml:link rel="alternate" hreflang="en" href="{{SITE_URL}}/scenarios/daily-code-review/"/><xhtml:link rel="alternate" hreflang="zh-Hans" href="{{SITE_URL}}/zh/scenarios/daily-code-review/"/></url>
 </urlset>
