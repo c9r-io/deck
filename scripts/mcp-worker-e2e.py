@@ -42,6 +42,8 @@ def parse():
     p.add_argument("--tag", default=str(int(time.time())), help="unique suffix of request ids and tokens")
     p.add_argument("--card", help="continue with this worker card (its first line already sent) instead of starting one")
     p.add_argument("--first-token", help="with --card: the token the card's first line asked for")
+    p.add_argument("--no-replies", action="store_true",
+                   help="the worker's agent forwards no final message (Codex): each reply must be REPLY_GONE")
     return p.parse_args()
 
 
@@ -93,6 +95,8 @@ def main():
 
     def reply_has(card, episode, token):
         ok, out = call("deck_worker_reply", {"card_id": card, "episode": episode})
+        if args.no_replies:
+            return (not ok) and code(out) == "REPLY_GONE", out
         return ok and token in out.get("text", ""), out
 
     sequence = 0

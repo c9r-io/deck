@@ -72,14 +72,20 @@ export async function runWorkersSmoke() {
   let first = null;
   try {
     if (store.cards.length) throw new Error('nonempty isolated board');
-    if ((await inv('smoke_native_scenario').catch(() => '')) !== 'live') throw new Error('scenario');
+    /* `live`: Claude Code workers (parts A and B); `codex`: one Codex
+       `--no-daemon` worker through part A only (no reply is forwarded for
+       Codex, and part B is not run: `done` then reports b=2) */
+    const scenario = await inv('smoke_native_scenario').catch(() => '');
+    if (!['live', 'codex'].includes(scenario)) throw new Error('scenario');
+    const codex = scenario === 'codex';
     const marker = await inv('smoke_native_fixture');
     const fixture = marker.slice(0, marker.lastIndexOf('/'));
     const work = fixture + '/work';
     /* only the fixture's hooks: the user's own settings may carry another
        Deck's hooks, whose second turn ending would be dropped as a duplicate
        and take the forwarded reply with it */
-    const cmd = `claude --setting-sources project --permission-mode acceptEdits --settings ${fixture}/worker-hooks.json`;
+    const cmd = codex ? 'codex --no-daemon'
+      : `claude --setting-sources project --permission-mode acceptEdits --settings ${fixture}/worker-hooks.json`;
     const project = provider.projects()[0];
     const column = project.columns[0];
 
@@ -181,6 +187,7 @@ export async function runWorkersSmoke() {
     await pause(60_000);
     const closed = await provider.close(first.id);
     await report('workers-closed', closed === true);
+    if (codex) { await report('done', !failed, 1, 2); return; }
 
     /* B. granted again (the row's button and its confirmation), for a real
        orchestrating agent: two workers, at least one line each */

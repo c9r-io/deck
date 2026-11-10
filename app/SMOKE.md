@@ -426,6 +426,14 @@ Code `-p` with this instance's adapter as its MCP server) starts two workers
 and sends each at least one line (`workers-orchestrated`). Judge with
 `scripts/smoke-verdict <data> workers`.
 
+Scenario `codex` (write `codex` into `scenario`; no hooks file needed, the
+user's own Deck Codex hooks report to the instance through the pane's
+`DECK_STATUS_SOCK`): the worker command is `codex --no-daemon`, part A only,
+run the client with `--no-replies` (Codex forwards no final message, so each
+reply is `REPLY_GONE`); the page reports `done` with b=2 after
+`workers-closed`, and the verdict is read from the checkpoints, not from
+`smoke-verdict` (part B's checks are absent).
+
 ## Signal integrity: automation finish (FR-SI-01)
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-signal.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-signal-UNIQUE DECK_SMOKE_WKWEBVIEW=signal-finish app/run.sh`.
