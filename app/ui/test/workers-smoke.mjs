@@ -59,16 +59,31 @@ export async function runWorkersSmoke() {
     const mine = (q.items || []).filter(item => item.session === session);
     const plans = (q.plans || []).filter(plan => mine.some(item => item.id === plan.item));
     const delivered = (q.deliveries || []).filter(d => d.session === session);
-    const delegated = delivered.filter(d => d.authority?.class === 'delegated');
+    /* the client's later lines: a worker type's first line is delegated
+       text too, but it is the run's head (`at`), not a line written after a
+       turn boundary */
+    const delegated = delivered.filter(d => d.authority?.class === 'delegated' && d.mode === 'chain');
     return { q, mine, plan: item => plans.find(plan => plan.item === item.id), delivered, delegated };
   };
-  const clientRowButton = async (name, selector) => {
+
+  /* a worker card: one an Agent trigger made (`live`, `codex`) or one
+     `deck_worker_start` made from a worker type (`types`) */
+  const workerCards = () => store.cards.filter(value => (value.origin?.source === 'agent' && value.origin.badge === AUTOMATION)
+    || value.origin?.source === 'worker');
+  /* one choice changed through the client row's Permissions… dialog and
+     its Save, as the person does it (extension-mcp.js) */
+  const setPermission = async (clientName, checkbox, on) => {
     await openSettings({ section: 'remote' });
     await renderMcpSettings();
-    const row = [...document.querySelectorAll('.mcp-client-row')].find(value => value.textContent.includes(name));
-    return row?.querySelector(selector) || null;
+    const row = [...document.querySelectorAll('.mcp-client-row')].find(value => value.textContent.includes(clientName));
+    const open = row?.querySelector('button.mcp-permissions');
+    if (!open || open.textContent !== t('mcp.permissions')) throw new Error('permissions button');
+    open.click();
+    if (!(await until(() => $('mcp-auth').style.display === 'flex', 3000, 50))) throw new Error('permissions dialog');
+    if ($(checkbox).checked !== on) $(checkbox).click();
+    $('mcp-auth-yes').click();
+    await until(() => $('mcp-auth').style.display === 'none', 3000, 50);
   };
-  const workerCards = () => store.cards.filter(value => value.origin?.source === 'agent' && value.origin.badge === AUTOMATION);
   let first = null;
   try {
     if (store.cards.length) throw new Error('nonempty isolated board');
@@ -76,8 +91,12 @@ export async function runWorkersSmoke() {
        `--no-daemon` worker through part A only (no reply is forwarded for
        Codex, and part B is not run: `done` then reports b=2) */
     const scenario = await inv('smoke_native_scenario').catch(() => '');
-    if (!['live', 'codex'].includes(scenario)) throw new Error('scenario');
+    if (!['live', 'codex', 'types'].includes(scenario)) throw new Error('scenario');
     const codex = scenario === 'codex';
+    /* `types`: no template and no rule; the client carries one Claude worker
+       type and the first-send choice, and the scripted client starts the
+       worker with deck_worker_start (part A only, `done` b=3) */
+    const types = scenario === 'types';
     const marker = await inv('smoke_native_fixture');
     const fixture = marker.slice(0, marker.lastIndexOf('/'));
     const work = fixture + '/work';
@@ -92,7 +111,8 @@ export async function runWorkersSmoke() {
     /* 1. Remote access on; one client that may start and drive workers */
     await inv('mcp_enable');
     const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
-      allowCreate: false, allowAutomations: true, allowWorkers: true, allowReplies: true });
+      permissions: { allowCreate: false, allowAutomations: !types, allowWorkers: true, allowReplies: true,
+        workerTypes: types ? [{ name: 'claude', cmd, columnId: column.id, description: 'Write code' }] : [], workerFirstSend: types } });
     const listed = await until(async () => {
       const status = await inv('mcp_status');
       return status.enabled && status.socketReady
@@ -100,7 +120,9 @@ export async function runWorkersSmoke() {
     }, 15_000, 250);
     await report('workers-client', !!listed && client.allowWorkers === true && client.allowReplies === true);
 
-    /* 2. the one-step template and the rule, through the editor */
+    /* 2. the one-step template and the rule, through the editor (a worker
+       type needs neither) */
+    if (!types) {
     await provider.saveTemplate(project.id, TEMPLATE, ['Task: {{msg.text}}']);
     await openAutomations({ trigger: 'agent' });
     $('auto-badge').value = AUTOMATION;
@@ -121,6 +143,9 @@ export async function runWorkersSmoke() {
     const ruleOk = !!rule && rule.cmd === cmd && rule.dir === work && rule.autoSend?.external === true
       && rule.firstSendWithoutReadiness === true;
     if (!(await report('workers-rule', ruleOk))) throw new Error('rule');
+    } else {
+      await report('workers-rule', client.workerTypes?.[0]?.cmd === cmd && client.workerFirstSend === true, 1, 3);
+    }
     await report('workers-armed', true);
 
     /* A1. the scripted client's worker: a quiet card, labelled as driven */
@@ -173,11 +198,9 @@ export async function runWorkersSmoke() {
     }, 300_000, 2000);
     await report('workers-handed-back', !!back && !workerOf(first.id)?.takenOver);
 
-    /* A6. the worker choice withdrawn through the client row's button */
+    /* A6. the worker choice withdrawn through the client row's dialog */
     await pause(60_000);
-    const stop = await clientRowButton('orchestrator', 'button.mcp-workers');
-    if (!stop || stop.textContent !== t('mcp.workersWithdraw')) throw new Error('withdraw button');
-    stop.click();
+    await setPermission('orchestrator', 'mcp-perm-workers', false);
     const withdrawn = await until(async () => {
       const status = await inv('mcp_status');
       return status.clients.some(value => value.id === client.id && !value.allowWorkers && !value.allowReplies) ? status : null;
@@ -188,14 +211,12 @@ export async function runWorkersSmoke() {
     const closed = await provider.close(first.id);
     await report('workers-closed', closed === true);
     if (codex) { await report('done', !failed, 1, 2); return; }
+    if (types) { await report('done', !failed, 1, 3); return; }
 
-    /* B. granted again (the row's button and its confirmation), for a real
-       orchestrating agent: two workers, at least one line each */
-    const allow = await clientRowButton('orchestrator', 'button.mcp-workers');
-    if (!allow || allow.textContent !== t('mcp.workersAllow')) throw new Error('allow button');
-    allow.click();
-    if (!(await until(() => $('cfm').style.display === 'flex', 3000, 50))) throw new Error('missing worker confirmation');
-    $('cfm-yes').click();
+    /* B. granted again through the same dialog (turning it on brings back
+       one Claude type and shared replies), for a real orchestrating agent:
+       two workers, at least one line each */
+    await setPermission('orchestrator', 'mcp-perm-workers', true);
     const again = await until(async () => {
       const status = await inv('mcp_status');
       return status.clients.some(value => value.id === client.id && value.allowWorkers && value.allowReplies) ? status : null;

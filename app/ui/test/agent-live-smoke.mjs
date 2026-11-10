@@ -17,10 +17,10 @@
 // (`deck_automation_list` → `deck_automation_trigger` over the production
 // control socket), which is the only way a card appears here. The page
 // watches that card and its three external rows, the deliveries, withdraws
-// the delegation through the client row's own button, checks that the sweep
+// the delegation through the client row's Permissions… dialog, checks that the sweep
 // took the approval and the override off every unsent row and that nothing
 // more is delivered, closes the card and delegates the client again through
-// the same button (its confirmation), so the operator can replay the request
+// the same dialog, so the operator can replay the request
 // against a closed card under a standing delegation. No hook word and no
 // event is synthesized: the Signal comes from the real client in the pane.
 //
@@ -77,6 +77,20 @@ export async function runAgentLiveSmoke() {
     const sent = id => (q.deliveries || []).some(delivery => delivery.item === id);
     return { q, mine, plan: item => plans.find(plan => plan.item === item.id), sent };
   };
+  /* one choice changed through the client row's Permissions… dialog and
+     its Save, as the person does it (extension-mcp.js) */
+  const setPermission = async (clientName, checkbox, on) => {
+    await openSettings({ section: 'remote' });
+    await renderMcpSettings();
+    const row = [...document.querySelectorAll('.mcp-client-row')].find(value => value.textContent.includes(clientName));
+    const open = row?.querySelector('button.mcp-permissions');
+    if (!open || open.textContent !== t('mcp.permissions')) throw new Error('permissions button');
+    open.click();
+    if (!(await until(() => $('mcp-auth').style.display === 'flex', 3000, 50))) throw new Error('permissions dialog');
+    if ($(checkbox).checked !== on) $(checkbox).click();
+    $('mcp-auth-yes').click();
+    await until(() => $('mcp-auth').style.display === 'none', 3000, 50);
+  };
   let card = null;
   try {
     if (store.cards.length) throw new Error('nonempty isolated board');
@@ -92,7 +106,7 @@ export async function runAgentLiveSmoke() {
     /* 1. Remote access on, one client with the automation delegation */
     await inv('mcp_enable');
     const client = await inv('mcp_client_add', { name: 'patrol', projects: [{ projectId: project.id, roots: [work] }],
-      allowCreate: false, allowAutomations: true });
+      permissions: { allowCreate: false, allowAutomations: true, allowWorkers: false, allowReplies: false, workerTypes: [], workerFirstSend: false } });
     const listed = await until(async () => {
       const status = await inv('mcp_status');
       return status.enabled && status.socketReady
@@ -168,13 +182,8 @@ export async function runAgentLiveSmoke() {
       await report('agent-live-chain', !state.sent(second.id) && state.mine.some(item => item.id === second.id), 1, tag);
     }
 
-    /* 7. the withdrawal through the client row's own button */
-    await openSettings({ section: 'remote' });
-    await renderMcpSettings();
-    const row = [...document.querySelectorAll('.mcp-client-row')].find(value => value.textContent.includes('patrol'));
-    const button = row?.querySelector('button.mcp-automations');
-    if (!button || button.textContent !== t('mcp.automationsWithdraw')) throw new Error('withdraw button');
-    button.click();
+    /* 7. the withdrawal through the client row's Permissions… dialog */
+    await setPermission('patrol', 'mcp-perm-automations', false);
     const withdrawn = await until(async () => {
       const status = await inv('mcp_status');
       return status.clients.some(value => value.id === client.id && value.allowAutomations === false) ? status : null;
@@ -203,16 +212,9 @@ export async function runAgentLiveSmoke() {
     const closed = await provider.close(card.id);
     await report('agent-live-closed', closed === true && !store.cards.some(value => value.id === card.id), 1, tag);
 
-    /* 10. delegated again through the same button (its own confirmation),
-       so the operator's replay meets a standing delegation and a closed card */
-    await openSettings({ section: 'remote' });
-    await renderMcpSettings();
-    const again = [...document.querySelectorAll('.mcp-client-row')].find(value => value.textContent.includes('patrol'))
-      ?.querySelector('button.mcp-automations');
-    if (!again || again.textContent !== t('mcp.automationsAllow')) throw new Error('delegate button');
-    again.click();
-    if (!(await until(() => $('cfm').style.display === 'flex', 3000, 50))) throw new Error('missing delegation confirmation');
-    $('cfm-yes').click();
+    /* 10. delegated again through the same dialog, so the operator's replay
+       meets a standing delegation and a closed card */
+    await setPermission('patrol', 'mcp-perm-automations', true);
     const redelegated = await until(async () => {
       const status = await inv('mcp_status');
       return status.clients.some(value => value.id === client.id && value.allowAutomations === true) ? status : null;

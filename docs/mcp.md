@@ -116,6 +116,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_worker_list` | This client's worker cards (the cards its automation triggers created while it may drive them): card id, title, alive, Agent observation `{state, episode}`, `takenOver`, unsent lines and the states of its recent lines, plus `mayReadReplies` and `nextSendSequence`. Content-free. Needs the client's separate **worker** choice. |
 | `deck_worker_wait` | The same views once one of the named cards moves past the episode the caller saw, is taken over or stops; at most 5 s (`wait_ms`), call again after `changed: false`. |
 | `deck_worker_reply` | A worker card's final Claude Code message of one turn ending (its episode), head and tail when long; memory only, the newest 32 (`REPLY_GONE` otherwise). Needs the further **replies** choice. |
+| `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in a directory inside its authorized directory, with its first line. An operation to poll (`committed` with `cardId`); at most 8 worker cards per client. |
 | `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence`. Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over. |
 
 All input schemas reject unknown fields. Side-effecting tools advertise
@@ -269,11 +270,17 @@ reasons.
 
 ## Worker cards
 
-A client may also be let **drive the worker cards its automations start**
-(the client's row: **Let it drive worker cards**, and **Share replies**;
-also asked after the automation question when a client is authorized). A
-worker card is a card one of its own `deck_automation_trigger` calls
-created while it had that choice; no other card is ever reachable. The
+Every choice of a client is in one dialog: **Authorize MCP client…** for a
+new one, **Permissions…** on its row afterwards (changes take effect at
+once). **Drive worker cards** lets it start and drive worker cards; below
+it you list the **worker types** it may start — a name, your command, the
+column and one line saying what the type is good at, which the
+orchestrator reads to choose (one Claude type is filled in; a Codex type
+must use `codex --no-daemon`). **Send a new worker card's first line
+without waiting for readiness** and **Share replies** are further choices
+there. A worker card is a card it started with `deck_worker_start`, or one
+its own `deck_automation_trigger` call created while it could drive worker
+cards; no other card is ever reachable. The
 card is an ordinary card: you can open it, read it and type into it. It is
 labelled "Driven by ‹client›" and its routine turn endings start quiet
 (its orchestrator reads them; the card menu announces them again).
@@ -305,9 +312,10 @@ once (they stay in each card's list for Send now); already open cards stay.
 At most 8 worker cards per client may be on the Board, 4 unsent lines per
 card, 30 lines a minute.
 
-Only Claude Code works as a worker today: Codex's shared-daemon Signal is
-unavailable, so its lines would hold, and Pi's input requests cannot be
-seen. Worker replies need Deck's Claude Code status hooks (Settings →
+Claude Code and Codex (`codex --no-daemon` only; its shared-daemon Signal
+cannot be trusted, so a daemon Codex's lines would hold) can be workers; a
+Codex worker forwards no final message, so ask it to write results to
+files. Pi's input requests cannot be seen, so Pi cannot be a worker. Worker replies need Deck's Claude Code status hooks (Settings →
 Agents); with turn summaries off the Stop hook then carries `--reply
 workers`, which forwards the message for worker replies alone and never
 makes a summary or a model call.

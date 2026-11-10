@@ -373,7 +373,16 @@ pub(crate) fn automation_delegations() -> Option<HashSet<String>> {
                 .filter(live)
                 .filter(|client| client.allow_workers)
                 .map(|client| super::workers::worker_delegation_key(&client.id));
-            automations.chain(workers).collect()
+            // and one whose worker cards' first lines may skip the
+            // first-interaction gate (`workers::worker_first_send_key`)
+            let first_sends = doc
+                .config
+                .clients
+                .iter()
+                .filter(live)
+                .filter(|client| client.allow_workers && client.worker_first_send)
+                .map(|client| super::workers::worker_first_send_key(&client.id));
+            automations.chain(workers).chain(first_sends).collect()
         })
         .ok()
 }
@@ -425,51 +434,6 @@ pub(super) fn reconcile_inbox(runtime: &Runtime) {
             "[mcp] {committed} automation trigger(s) reconciled"
         ));
     }
-}
-
-/// Withdraw or restore one client's automation delegation. Withdrawing is
-/// ordered against the scheduler's firing-intent transaction by the
-/// settings fence: a row that relies on this client's delegation re-reads
-/// it inside that transaction, so once this returns no automatic send can
-/// still begin on the old delegation.
-pub(super) fn client_automations(
-    runtime: &Runtime,
-    client_id: &str,
-    allowed: bool,
-) -> Result<(), DeckError> {
-    let _fence = crate::storage::settings_fence();
-    let _delivery = runtime.delivery.lock_or_recover();
-    runtime.write(|doc| {
-        let client = doc
-            .config
-            .clients
-            .iter_mut()
-            .find(|client| client.id == client_id && client.revoked_at.is_none())
-            .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP client not found"))?;
-        client.allow_automations = allowed;
-        if !allowed {
-            doc.reject_pending(
-                |operation| operation.client_id == client_id && operation.kind == TRIGGER_KIND,
-                "client-revoked",
-            );
-        }
-        audit(
-            doc,
-            if allowed {
-                "automations-allowed"
-            } else {
-                "automations-withdrawn"
-            },
-            AuditLink {
-                principal_id: Some(client_id),
-                ..Default::default()
-            },
-        )
-    })?;
-    if !allowed {
-        retire_inbox_for(client_id);
-    }
-    Ok(())
 }
 
 /// The inbox side of a withdrawal: the client's unhandled items will not be

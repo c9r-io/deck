@@ -64,6 +64,42 @@ async function createSession(pending) {
   }
 }
 
+/* a worker card a driving client asked for (`deck_worker_start`,
+   mcp/workers.rs): an ordinary card in the type's column, its command the
+   user's own for that type, started like any card; native queues its first
+   line once this is committed. Quiet routine turn endings, as every worker
+   card's. */
+async function startWorker(pending) {
+  const plan = pending.result || {};
+  const existing = provider.get(plan.cardId);
+  if (existing) {
+    await finish(pending.operationId, 'committed', null, existing.session);
+    return;
+  }
+  const project = provider.project(plan.projectId);
+  const column = project?.columns?.find(value => value.id === plan.columnId) || project?.columns?.[0];
+  if (!project || !column) {
+    await finish(pending.operationId, 'rejected', 'project-missing');
+    return;
+  }
+  try {
+    const { card } = await provider.createStarted({
+      id: plan.cardId,
+      projectId: project.id,
+      columnId: column.id,
+      title: plan.title,
+      cmd: plan.cmd,
+      dir: plan.dir,
+      origin: { source: 'worker', key: pending.operationId, badge: plan.type },
+      quietDone: true,
+    }, { requireCreated: true });
+    await finish(pending.operationId, 'committed', null, card.session);
+  } catch (error) {
+    await finish(pending.operationId, error?.effectAttempted ? 'ambiguous' : 'rejected',
+      error?.stage === 'orphan' ? 'orphan-session' : 'create-failed');
+  }
+}
+
 export function closeOutcome(result) {
   if (result.ok) return { state: 'committed', code: null };
   if (result.stage === 'reminder-protected') return { state: 'rejected', code: 'reminder-protected' };
@@ -91,6 +127,7 @@ async function handle(item) {
   try {
     if (pending.kind === 'session-create') return await createSession(pending);
     if (pending.kind === 'session-close') return await closeSession(pending);
+    if (pending.kind === 'worker-start') return await startWorker(pending);
     await finish(pending.operationId, 'rejected', 'unsupported-operation');
   } catch (_) {
     await finish(pending.operationId, 'ambiguous', 'board-transaction-unknown');

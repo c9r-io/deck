@@ -42,6 +42,7 @@ def parse():
     p.add_argument("--tag", default=str(int(time.time())), help="unique suffix of request ids and tokens")
     p.add_argument("--card", help="continue with this worker card (its first line already sent) instead of starting one")
     p.add_argument("--first-token", help="with --card: the token the card's first line asked for")
+    p.add_argument("--start-type", help="start the worker with deck_worker_start of this worker type instead of the automation")
     p.add_argument("--no-replies", action="store_true",
                    help="the worker's agent forwards no final message (Codex): each reply must be REPLY_GONE")
     return p.parse_args()
@@ -76,9 +77,9 @@ def main():
         return next((w for w in out.get("workers", []) if w.get("cardId") == card), None), out
 
     def wait_for(card, test, seconds, seen_episode):
-        """deck_worker_wait in rounds of 5 s until `test(view)` holds."""
+        """deck_worker_wait in rounds of 5 s until `test(view)` holds; the
+        view only when it does (a timeout is no view, never the last one)."""
         deadline = time.time() + seconds
-        view = None
         while time.time() < deadline:
             ok, out = call("deck_worker_wait", {"cards": [{"card_id": card, "episode": seen_episode}], "wait_ms": 5000})
             if not ok:
@@ -88,7 +89,7 @@ def main():
                 return view, out
             if view:
                 seen_episode = view["agent"]["episode"]
-        return view, None
+        return None, None
 
     def turn_done_after(card, episode, seconds):
         return wait_for(card, lambda v: v["agent"]["state"] == "turn-done" and v["agent"]["episode"] != episode, seconds, episode)
@@ -119,12 +120,23 @@ def main():
         sequence = out.get("nextSendSequence", 0)
 
         # one worker through the automation (or the one a previous run started)
-        ok, listed = call("deck_automation_list")
-        auto = next((a for a in listed.get("automations", []) if a.get("id") == args.automation), None)
-        step("automation-listed", ok and auto is not None)
+        if not args.start_type:
+            ok, listed = call("deck_automation_list")
+            auto = next((a for a in listed.get("automations", []) if a.get("id") == args.automation), None)
+            step("automation-listed", ok and auto is not None)
+        else:
+            ok, out = call("deck_worker_list")
+            types = [t.get("type") for t in out.get("workerTypes", [])]
+            step("worker-types-listed", ok and args.start_type in types, types=",".join(types))
         token1 = args.first_token or f"WORKER-{tag}-ONE"
         if args.card:
             trig = None
+        elif args.start_type:
+            ok, trig = call("deck_worker_start", {
+                "request_id": f"wstart_{tag}", "send_sequence": sequence, "type": args.start_type,
+                "text": f"Reply with exactly: {token1}. Do not use tools.", "title": f"worker {tag}"})
+            step("worker-start-accepted", ok and trig.get("kind") == "worker-start" and "text" not in (trig.get("result") or {}))
+            sequence += 1
         else:
           ok, trig = call("deck_automation_trigger", {
             "request_id": f"wtrig_{tag}", "trigger_sequence": listed.get("nextTriggerSequence", 0),

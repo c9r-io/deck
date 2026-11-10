@@ -434,6 +434,14 @@ reply is `REPLY_GONE`); the page reports `done` with b=2 after
 `workers-closed`, and the verdict is read from the checkpoints, not from
 `smoke-verdict` (part B's checks are absent).
 
+Scenario `types` (write `types`; the fixture hooks file as for `live`): no
+template and no rule. The client is authorized with one Claude worker type
+(the same restricted `claude` command) and the first-send choice, and the
+client runs with `--start-type claude`, so the worker is started with
+`deck_worker_start`; part A only, `done` b=3. Keep the screen unlocked and
+the window in front: a locked screen or a covered window freezes the page's
+timers (its takeover and hand-back steps then never come).
+
 ## Signal integrity: automation finish (FR-SI-01)
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-signal.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-signal-UNIQUE DECK_SMOKE_WKWEBVIEW=signal-finish app/run.sh`.

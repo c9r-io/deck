@@ -6,8 +6,20 @@
 //!
 //! The contract lives in `mcp/mod.rs` ("Worker cards"). In short:
 //! - A worker card is recorded when an Agent trigger of a client with
-//!   `allow_workers` commits its card (`record_worker`); nothing else makes
+//!   `allow_workers` commits its card, or when the webview commits a
+//!   `deck_worker_start` Board intent (`record_worker`); nothing else makes
 //!   one, and a client sees only its own.
+//! - Worker types (`WorkerType`): the user's list, per client, of the kinds
+//!   of worker card it may start — a name, the user's own command (`claude`
+//!   or `codex --no-daemon` with simple arguments, `validate_worker_types`),
+//!   a column and a description the orchestrator reads. `deck_worker_start`
+//!   names a type (never a command) and a directory inside the client's
+//!   authorized root, and journals a `worker-start` intent with the first
+//!   line; the webview creates and starts the card (`mcp.js`), and the
+//!   commit queues that line as the run's head row (`settle_start`), which
+//!   then leaves the ledger. Its first-send override rests on the client's
+//!   `worker_first_send` choice alone (`worker_first_send_key`,
+//!   `scheduler/first_send.rs`).
 //! - Reading is content-free (`deck_worker_list`, `deck_worker_wait`: the
 //!   card, whether its session is alive, the Agent observation's closed word
 //!   and episode, the human hold, its lines' queue states) except
@@ -68,12 +80,17 @@ pub(crate) fn worker_delegation_key(client: &str) -> String {
 /// Whether the ledger holds anything a v7 reader would misread.
 pub(super) fn uses_workers(doc: &DiskDoc) -> bool {
     !doc.workers.is_empty()
+        || doc.config.clients.iter().any(|c| {
+            c.allow_workers
+                || c.allow_replies
+                || c.send_sequence > 0
+                || c.worker_first_send
+                || !c.worker_types.is_empty()
+        })
         || doc
-            .config
-            .clients
+            .operations
             .iter()
-            .any(|c| c.allow_workers || c.allow_replies || c.send_sequence > 0)
-        || doc.operations.iter().any(|o| o.kind == WORKER_SEND_KIND)
+            .any(|o| matches!(o.kind.as_str(), WORKER_SEND_KIND | WORKER_START_KIND))
 }
 
 /* ---------- change notification (for wait) ---------- */
@@ -340,7 +357,7 @@ fn sends_of(doc: &DiskDoc, client: &str, card: &str) -> Vec<String> {
         .iter()
         .filter(|o| {
             o.client_id == client
-                && o.kind == WORKER_SEND_KIND
+                && matches!(o.kind.as_str(), WORKER_SEND_KIND | WORKER_START_KIND)
                 && o.result
                     .as_ref()
                     .and_then(|r| r.get("cardId"))
@@ -426,7 +443,9 @@ fn driving<'a>(doc: &'a DiskDoc, client_id: &str) -> Result<&'a Client, DeckErro
     Ok(client)
 }
 
-fn snapshot(runtime: &Runtime, client_id: &str) -> Result<(Vec<WorkerRow>, u64, bool), Value> {
+type Snapshot = (Vec<WorkerRow>, u64, bool, Vec<Value>);
+
+fn snapshot(runtime: &Runtime, client_id: &str) -> Result<Snapshot, Value> {
     runtime
         .read(|doc| {
             driving(doc, client_id).map(|client| {
@@ -434,6 +453,7 @@ fn snapshot(runtime: &Runtime, client_id: &str) -> Result<(Vec<WorkerRow>, u64, 
                     rows_of(doc, client_id),
                     client.send_sequence,
                     client.allow_replies,
+                    types_view(client),
                 )
             })
         })
@@ -447,13 +467,14 @@ pub(super) fn worker_list(
     arguments: Value,
 ) -> Result<Value, Value> {
     parse::<Empty>(arguments)?;
-    let (rows, next, replies) = snapshot(runtime, client_id)?;
+    let (rows, next, replies, types) = snapshot(runtime, client_id)?;
     let seen = observe_sessions();
     Ok(json!({
         "ok": true,
         "workers": rows.iter().map(|row| view(runtime, client_id, row, seen.as_ref())).collect::<Vec<_>>(),
         "observed": seen.is_some(),
         "mayReadReplies": replies,
+        "workerTypes": types,
         "nextSendSequence": next,
     }))
 }
@@ -475,7 +496,7 @@ pub(super) fn worker_wait(
     let deadline = Instant::now() + Duration::from_millis(wait);
     loop {
         let mark = change_count();
-        let (rows, next, replies) = snapshot(runtime, client_id)?;
+        let (rows, next, replies, types) = snapshot(runtime, client_id)?;
         let seen = observe_sessions();
         let views: Vec<Value> = rows
             .iter()
@@ -494,13 +515,14 @@ pub(super) fn worker_wait(
         });
         if changed || Instant::now() >= deadline {
             return Ok(json!({
-                "ok": true,
-                "changed": changed,
-                "workers": views,
-                "observed": seen.is_some(),
-                "mayReadReplies": replies,
-                "nextSendSequence": next,
-            }));
+                    "ok": true,
+                    "changed": changed,
+                    "workers": views,
+                    "observed": seen.is_some(),
+                    "mayReadReplies": replies,
+            "workerTypes": types,
+                    "nextSendSequence": next,
+                }));
         }
         wait_change(mark, deadline);
         // at most five listings a second, however busy the other agents are
@@ -731,6 +753,7 @@ pub(super) fn worker_send(
             cmd: &target.cmd,
             text: &args.text,
         },
+        None,
     );
     let settled = runtime
         .write(|doc| {
@@ -763,51 +786,6 @@ pub(super) fn worker_send(
 }
 
 /* ---------- local commands ---------- */
-
-/// The user's two choices for one client: drive the worker cards it starts,
-/// and read their replies. Withdrawing either is ordered against the
-/// scheduler's firing intent by the settings fence (`client_automations`).
-pub(super) fn client_workers(
-    runtime: &Runtime,
-    client_id: &str,
-    drive: bool,
-    replies: bool,
-) -> Result<(), DeckError> {
-    {
-        let _fence = crate::storage::settings_fence();
-        let _delivery = runtime.delivery.lock_or_recover();
-        runtime.write(|doc| {
-            let client = doc
-                .config
-                .clients
-                .iter_mut()
-                .find(|client| client.id == client_id && client.revoked_at.is_none())
-                .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP client not found"))?;
-            let before = (client.allow_workers, client.allow_replies);
-            client.allow_workers = drive;
-            client.allow_replies = drive && replies;
-            let after = (client.allow_workers, client.allow_replies);
-            if before == after {
-                return Ok(());
-            }
-            audit(
-                doc,
-                if drive {
-                    "workers-allowed"
-                } else {
-                    "workers-withdrawn"
-                },
-                AuditLink {
-                    principal_id: Some(client_id),
-                    ..Default::default()
-                },
-            )
-        })?;
-    }
-    sync_reply_hook();
-    note_worker_change();
-    Ok(())
-}
 
 /// Bring the Stop hook in line with whether any client may read replies.
 pub(super) fn sync_reply_hook() {
@@ -885,4 +863,380 @@ pub(super) fn worker_set_held(
         }
     }
     Ok(changed)
+}
+
+/* ---------- worker types and deck_worker_start ---------- */
+
+pub(super) const WORKER_START_KIND: &str = "worker-start";
+/// Worker types one client may have.
+pub(super) const MAX_WORKER_TYPES: usize = 8;
+const MAX_TYPE_DESCRIPTION_CHARS: usize = 200;
+const MAX_WORKER_TITLE_CHARS: usize = 80;
+/// The prefix of a worker type's first-send override (`ReadinessOverride.rule`):
+/// it rests on the client's worker first-send choice, never on a rule.
+pub(crate) const WORKER_TYPE_RULE_PREFIX: &str = "worker-type:";
+
+/// One kind of worker card the user offers a client: the command its cards
+/// start, the column they open in, and a line the orchestrator reads to
+/// choose between types. The client only ever names a type; it never writes
+/// a command.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WorkerType {
+    pub(crate) name: String,
+    pub(crate) cmd: String,
+    pub(crate) column_id: String,
+    #[serde(default)]
+    pub(crate) description: String,
+}
+
+/// The closed reasons a worker type list is refused (stable `mcp-*` codes the
+/// webview maps to one sentence each).
+pub(super) const TYPE_NAME_INVALID: &str = "mcp-worker-type-name";
+pub(super) const TYPE_COMMAND_INVALID: &str = "mcp-worker-type-command";
+pub(super) const TYPE_CODEX_DAEMON: &str = "mcp-worker-type-codex-daemon";
+pub(super) const TYPE_LIST_INVALID: &str = "mcp-worker-type-list";
+
+fn valid_type_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_'))
+}
+
+/// A worker type list as the user saved it: at most `MAX_WORKER_TYPES`,
+/// unique names, each command one the external admission accepts (an
+/// interactive `claude` or `codex` with simple arguments), a Codex command
+/// only with `--no-daemon` (its shared-daemon Signal cannot be trusted, so its
+/// lines would never go out), a short one-line description.
+pub(super) fn validate_worker_types(types: &[WorkerType]) -> Result<(), DeckError> {
+    let invalid = |code: &str| DeckError::new(ErrorKind::Invalid, code);
+    if types.len() > MAX_WORKER_TYPES {
+        return Err(invalid(TYPE_LIST_INVALID));
+    }
+    let mut names = HashSet::new();
+    for worker_type in types {
+        if !valid_type_name(&worker_type.name) || !names.insert(worker_type.name.as_str()) {
+            return Err(invalid(TYPE_NAME_INVALID));
+        }
+        let agent = crate::admission::channel_agent_command(&worker_type.cmd)
+            .ok_or_else(|| invalid(TYPE_COMMAND_INVALID))?;
+        if agent == "codex" && !worker_type.cmd.split(' ').any(|word| word == "--no-daemon") {
+            return Err(invalid(TYPE_CODEX_DAEMON));
+        }
+        if !valid_id(&worker_type.column_id)
+            || worker_type.description.chars().count() > MAX_TYPE_DESCRIPTION_CHARS
+            || worker_type.description.chars().any(char::is_control)
+        {
+            return Err(invalid(TYPE_LIST_INVALID));
+        }
+    }
+    Ok(())
+}
+
+/// The key a client's worker first-send choice takes in
+/// `automation_delegations`: a worker card's first line may go to its freshly
+/// started agent without interaction evidence while it is there.
+pub(crate) fn worker_first_send_key(client: &str) -> String {
+    format!("worker-first:{client}")
+}
+
+fn types_view(client: &Client) -> Vec<Value> {
+    client
+        .worker_types
+        .iter()
+        .map(|t| json!({"type": t.name, "description": t.description}))
+        .collect()
+}
+
+pub(super) fn worker_start(
+    runtime: &Runtime,
+    client_id: &str,
+    arguments: Value,
+) -> Result<Value, Value> {
+    let args: WorkerStartArgs = parse(arguments)?;
+    if !valid_id(&args.request_id)
+        || args.text.trim().is_empty()
+        || args.text.len() > MAX_SEND_BYTES
+        || args
+            .title
+            .as_ref()
+            .is_some_and(|t| t.trim().is_empty() || t.chars().count() > MAX_WORKER_TITLE_CHARS)
+    {
+        return Err(error_value(
+            "INVALID_ARGUMENTS",
+            "request id, text or title is out of shape or bounds",
+            "Send a first line of at most 16 KiB, an optional title of at most 80 characters, and a fresh request id.",
+        ));
+    }
+    let hash = request_hash("deck_worker_start", &args);
+    let replay = runtime
+        .read(|doc| {
+            driving(doc, client_id)?;
+            Ok(existing_operation(doc, client_id, &args.request_id, &hash)?.cloned())
+        })
+        .map_err(map_error)?
+        .map_err(map_error)?;
+    if let Some(operation) = replay {
+        return Ok(operation_view(&operation));
+    }
+    let operation = runtime
+        .write(|doc| -> Result<Result<Operation, Value>, DeckError> {
+            if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
+                return Ok(Ok(existing.clone()));
+            }
+            let client = driving(doc, client_id)?.clone();
+            if args.send_sequence != client.send_sequence {
+                return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
+            }
+            let Some(worker_type) = (match args.r#type.as_deref() {
+                Some(name) => client.worker_types.iter().find(|t| t.name == name),
+                None => client.worker_types.first(),
+            }) else {
+                return Ok(Err(json!({"ok": false, "error": {
+                    "code": "WORKER_TYPE_NOT_FOUND",
+                    "message": "this client has no worker type of that name",
+                    "nextAction": "Use one of the types deck_worker_list lists (workerTypes), or ask the local Deck user to add one.",
+                    "workerTypes": types_view(&client)
+                }})));
+            };
+            let Some(project) = client.projects.first() else {
+                return Err(DeckError::new(ErrorKind::Perm, "client has no project"));
+            };
+            let dir = match args.dir.as_deref() {
+                Some(dir) => canonical_scope(dir, &project.roots)?,
+                None => {
+                    let root = project
+                        .roots
+                        .first()
+                        .ok_or_else(|| DeckError::new(ErrorKind::Perm, "client has no root"))?;
+                    canonical_scope(root, &project.roots)?
+                }
+            };
+            let pending_starts = doc
+                .operations
+                .iter()
+                .filter(|o| {
+                    o.client_id == client_id
+                        && o.kind == WORKER_START_KIND
+                        && matches!(o.state.as_str(), "accepted" | "executing")
+                })
+                .count();
+            if live_workers(doc, client_id) + pending_starts >= MAX_LIVE_WORKERS {
+                return Ok(Err(capacity(
+                    "this client already has 8 worker cards on the Board",
+                )));
+            }
+            reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
+            let title = args
+                .title
+                .clone()
+                .unwrap_or_else(|| format!("{} worker", worker_type.name));
+            let operation = Operation {
+                operation_id: random_id("op_", 16)?,
+                client_id: client_id.into(),
+                request_id: args.request_id.clone(),
+                request_hash: hash.clone(),
+                kind: WORKER_START_KIND.into(),
+                state: "accepted".into(),
+                code: None,
+                result: Some(json!({
+                    "cardId": random_id("W", 16)?,
+                    "projectId": project.project_id,
+                    "columnId": worker_type.column_id,
+                    "cmd": worker_type.cmd,
+                    "dir": dir,
+                    "title": title,
+                    "type": worker_type.name,
+                    // the first line waits here until the card exists, then
+                    // leaves the ledger for the queue (`settle_start`)
+                    "text": args.text,
+                })),
+                accepted_at: now_ms(),
+                updated_at: now_ms(),
+                admission_hash: None,
+                session_id: None,
+                control_epoch: None,
+                control_sequence: None,
+            };
+            if let Some(client) = doc.config.clients.iter_mut().find(|c| c.id == client_id) {
+                client.send_sequence = client.send_sequence.saturating_add(1);
+            }
+            doc.operations.push(operation.clone());
+            Ok(Ok(operation))
+        })
+        .map_err(map_error)??;
+    emit_changed(runtime);
+    let mut view = operation_view(&operation);
+    // the first line is the client's own text: not echoed back
+    if let Some(result) = view.get_mut("result").and_then(Value::as_object_mut) {
+        result.remove("text");
+    }
+    Ok(view)
+}
+
+/// A worker-start operation the webview committed: the card is a worker card
+/// of the client, and the first line goes to the queue as the card's head row
+/// (with the first-send override when the client's choice allows it). Called
+/// by `commands::complete` after the commit write, outside the ledger locks.
+pub(super) fn settle_start(runtime: &Runtime, operation_id: &str, session: &str) {
+    let Ok(Some((client, card, kind_name, cmd, dir, text))) = runtime.read(|doc| {
+        doc.operations
+            .iter()
+            .find(|o| o.operation_id == operation_id && o.kind == WORKER_START_KIND)
+            .and_then(|o| {
+                let r = o.result.as_ref()?;
+                let get = |k: &str| r.get(k).and_then(Value::as_str).map(str::to_owned);
+                Some((
+                    o.client_id.clone(),
+                    get("cardId")?,
+                    get("type")?,
+                    get("cmd")?,
+                    get("dir")?,
+                    get("text")?,
+                ))
+            })
+    }) else {
+        return;
+    };
+    let first_send = runtime
+        .read(|doc| {
+            doc.config
+                .clients
+                .iter()
+                .any(|c| c.id == client && c.allow_workers && c.worker_first_send)
+        })
+        .unwrap_or(false);
+    let queued = match (queues(runtime), runtime.app.clone()) {
+        (Some(queue), Some(app)) => crate::scheduler::worker_queue_add(
+            queue,
+            app,
+            crate::scheduler::WorkerSend {
+                client: &client,
+                automation: &format!("{WORKER_TYPE_RULE_PREFIX}{kind_name}"),
+                operation: operation_id,
+                card: &card,
+                session,
+                dir: &dir,
+                cmd: &cmd,
+                text: &text,
+            },
+            Some(first_send),
+        ),
+        _ => Err(DeckError::new(
+            ErrorKind::ContextChanged,
+            "queue unavailable",
+        )),
+    };
+    let _ = runtime.write(|doc| {
+        if let Some(o) = doc
+            .operations
+            .iter_mut()
+            .find(|o| o.operation_id == operation_id)
+        {
+            if let Some(result) = o.result.as_mut().and_then(Value::as_object_mut) {
+                result.remove("text");
+                result.insert(
+                    "firstLine".into(),
+                    json!(if queued.is_ok() { "queued" } else { "refused" }),
+                );
+            }
+            o.updated_at = now_ms();
+        }
+        Ok(())
+    });
+    note_worker_change();
+}
+
+/// Save every choice of one client at once (`commands::mcp_client_permissions`).
+/// Under the settings fence and the delivery lock, so a withdrawal is ordered
+/// against the scheduler's firing intent exactly as `client_automations` is:
+/// once this returns, no automatic send starts on a withdrawn choice.
+/// Dependencies are enforced here, not only in the dialog: replies, worker
+/// types' first-send choice need driving; driving keeps its types.
+pub(super) fn client_permissions(
+    runtime: &Runtime,
+    client_id: &str,
+    permissions: super::commands::PermissionsInput,
+) -> Result<(), DeckError> {
+    validate_worker_types(&permissions.worker_types)?;
+    let withdrew_automations;
+    {
+        let _fence = crate::storage::settings_fence();
+        let _delivery = runtime.delivery.lock_or_recover();
+        withdrew_automations = runtime.write(|doc| {
+            let client = doc
+                .config
+                .clients
+                .iter_mut()
+                .find(|client| client.id == client_id && client.revoked_at.is_none())
+                .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP client not found"))?;
+            let before = (
+                client.allow_create,
+                client.allow_automations,
+                client.allow_workers,
+                client.allow_replies,
+                client.worker_first_send,
+                client.worker_types.clone(),
+            );
+            client.allow_create = permissions.allow_create;
+            client.allow_automations = permissions.allow_automations;
+            client.allow_workers = permissions.allow_workers;
+            client.allow_replies = permissions.allow_workers && permissions.allow_replies;
+            client.worker_first_send = permissions.allow_workers && permissions.worker_first_send;
+            client.worker_types = permissions.worker_types.clone();
+            let after = (
+                client.allow_create,
+                client.allow_automations,
+                client.allow_workers,
+                client.allow_replies,
+                client.worker_first_send,
+                client.worker_types.clone(),
+            );
+            if before == after {
+                return Ok(false);
+            }
+            let withdrew_automations = before.1 && !after.1;
+            let withdrew_create = before.0 && !after.0;
+            let withdrew_workers = before.2 && !after.2;
+            if withdrew_automations {
+                doc.reject_pending(
+                    |operation| operation.client_id == client_id && operation.kind == TRIGGER_KIND,
+                    "client-revoked",
+                );
+            }
+            if withdrew_create {
+                doc.reject_pending(
+                    |operation| {
+                        operation.client_id == client_id && operation.kind == "session-create"
+                    },
+                    "client-revoked",
+                );
+            }
+            if withdrew_workers {
+                doc.reject_pending(
+                    |operation| {
+                        operation.client_id == client_id && operation.kind == WORKER_START_KIND
+                    },
+                    "client-revoked",
+                );
+            }
+            audit(
+                doc,
+                "permissions-changed",
+                AuditLink {
+                    principal_id: Some(client_id),
+                    ..Default::default()
+                },
+            )?;
+            Ok(withdrew_automations)
+        })?;
+    }
+    if withdrew_automations {
+        retire_inbox_for(client_id);
+    }
+    sync_reply_hook();
+    note_worker_change();
+    Ok(())
 }

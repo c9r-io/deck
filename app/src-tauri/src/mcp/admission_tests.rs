@@ -38,6 +38,8 @@ fn client() -> Client {
         allow_workers: false,
         allow_replies: false,
         send_sequence: 0,
+        worker_types: Vec::new(),
+        worker_first_send: false,
     }
 }
 

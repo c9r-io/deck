@@ -226,7 +226,11 @@ evolution; it makes scope expansion deliberate.
   user hands it back. The client never answers an Agent's prompt, reads no
   screen and orchestrates nothing through Deck: it reads content-free state
   and the final message the Stop hook forwards (a separate choice), and
-  decides itself what to send. No Signal word, quiet
+  decides itself what to send. It may also start worker cards
+  (`deck_worker_start`) of the worker types the user lists for it — the
+  user's own commands, Codex only with `--no-daemon` — never a command it
+  writes; their first line skips the first-interaction gate only under the
+  client's own first-send choice. No Signal word, quiet
   time or activity ever creates, restores or upgrades authority
   (`tests/signal_census.rs`).
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the

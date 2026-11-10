@@ -74,6 +74,16 @@ pub(super) struct Client {
     /// `create_sequence`.
     #[serde(default)]
     pub(super) send_sequence: u64,
+    /// The kinds of worker card this client may start with
+    /// `deck_worker_start` (`workers.rs` `WorkerType`); the user's own
+    /// commands, never the client's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) worker_types: Vec<super::workers::WorkerType>,
+    /// The user's choice that a worker card's first line may go to its freshly
+    /// started agent without interaction evidence (the startup-dialog risk
+    /// the Agent rules' own first-send choice also accepts).
+    #[serde(default)]
+    pub(super) worker_first_send: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -600,6 +610,7 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
                 | "session-close"
                 | super::automation::TRIGGER_KIND
                 | super::workers::WORKER_SEND_KIND
+                | super::workers::WORKER_START_KIND
         )
     };
     let bound_live = |operation: &Operation| {

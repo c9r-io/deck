@@ -38,6 +38,12 @@
 //! Every other Connector command, MCP, manual lists and later steps never
 //! obtain it.
 //!
+//! A worker card's first line (`deck_worker_start`, `mcp/workers.rs`) is the
+//! one override no rule backs: its `rule` is `worker-type:<name>`, admitted
+//! only by `ops::worker_queue_add`, and it stands exactly while the client's
+//! worker first-send key is in the delegation set and the settings can be
+//! read (`standing`).
+//!
 //! Two sources, never mixed: a Slack or clock override is backed by
 //! settings.json, a phone task override by the Board (`Backing`). Each row
 //! is admitted, swept and fenced against its own source alone, and each
@@ -623,6 +629,18 @@ fn preset_still_allows(tasks: &PhoneTasks, i: &QueueItem, o: &ReadinessOverride)
 fn standing(sources: Sources<'_>, i: &QueueItem) -> Option<bool> {
     let o = i.readiness_override.as_ref()?;
     match o.trigger.backing() {
+        // a worker card's first line (`mcp/workers.rs`): no rule backs it,
+        // only the client's worker first-send choice, read beside the
+        // settings under the same fence
+        Backing::Settings if o.rule.starts_with(crate::mcp::WORKER_TYPE_RULE_PREFIX) => {
+            sources.settings?;
+            sources.delegations.map(|delegations| {
+                o.trigger == FirstSendOrigin::Agent
+                    && o.delegation.as_ref().is_some_and(|source| {
+                        delegations.contains(&crate::mcp::worker_first_send_key(&source.client))
+                    })
+            })
+        }
         Backing::Settings => {
             let allowed = sources.settings.map(|c| rule_still_allows(c, i, o))?;
             if o.trigger != FirstSendOrigin::Agent {

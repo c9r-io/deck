@@ -19,6 +19,7 @@
     "deck_worker_list",
     "deck_worker_reply",
     "deck_worker_send",
+    "deck_worker_start",
     "deck_worker_wait"
   ],
   "mutating": [
@@ -29,7 +30,8 @@
     "deck_session_close",
     "deck_session_control",
     "deck_session_create",
-    "deck_worker_send"
+    "deck_worker_send",
+    "deck_worker_start"
   ],
   "human_fenced": [
     "deck_exec",

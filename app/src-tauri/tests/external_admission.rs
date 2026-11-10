@@ -589,7 +589,7 @@ fn channel_head_claim_is_closed_and_native_verdict_is_not_deserializable() {
             < worker.find("queue_add_core(").unwrap()
     );
     assert!(worker.contains("class: ContentClass::Delegated,"));
-    assert!(worker.contains("quiet_secs: Some(MIN_QUIET_SECS),"));
+    assert!(worker.contains("quiet_secs: first.is_none().then_some(MIN_QUIET_SECS),"));
     assert!(
         worker.contains("first_send_granted: None,")
             && worker.contains("channel_first_send_granted: None,")

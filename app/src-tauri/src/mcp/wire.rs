@@ -78,6 +78,22 @@ pub(super) struct WorkerReplyArgs {
     pub(super) episode: u64,
 }
 
+/// `deck_worker_start`: one worker card of one of the client's worker types,
+/// with its first line.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorkerStartArgs {
+    pub(super) request_id: String,
+    pub(super) send_sequence: u64,
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub(super) r#type: Option<String>,
+    pub(super) text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) title: Option<String>,
+}
+
 /// `deck_worker_send`: one line for one worker card, written after the
 /// card's episode `after_episode`.
 #[derive(Deserialize, Serialize)]

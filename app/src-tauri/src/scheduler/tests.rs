@@ -10366,3 +10366,85 @@ fn a_grant_class_never_parses_as_delegated() {
     let text = serde_json::to_string(&ContentClass::Delegated).unwrap();
     assert_eq!(text, "\"delegated\"");
 }
+
+/// A worker card's first line (`deck_worker_start`): its first-send
+/// override rests on the client's worker first-send key alone (never a
+/// rule), beside readable settings; the sweep strips it once the choice is
+/// gone, and without it the first-interaction gate holds the head row.
+#[test]
+fn a_worker_types_first_line_override_rests_on_the_clients_choice() {
+    let mut head = qi("w0", "at");
+    head.at = Some(0);
+    head.external = true;
+    head.authority = Some(StepAuthority {
+        rule: format!("{}claude", crate::mcp::WORKER_TYPE_RULE_PREFIX),
+        grant: String::new(),
+        step: 0,
+        class: ContentClass::Delegated,
+        trigger: TriggerClass::Agent,
+        connector: None,
+        delegation: Some(AgentSource {
+            client: "client_a".into(),
+        }),
+    });
+    head.readiness_override = Some(ReadinessOverride {
+        rule: format!("{}claude", crate::mcp::WORKER_TYPE_RULE_PREFIX),
+        trigger: first_send::FirstSendOrigin::Agent,
+        clock_target: None,
+        connector: None,
+        delegation: Some(AgentSource {
+            client: "client_a".into(),
+        }),
+    });
+    let config = crate::inbound::Config {
+        slack_enabled: false,
+        rules: Vec::new(),
+    };
+    let with_first: HashSet<String> = [
+        crate::mcp::worker_delegation_key("client_a"),
+        crate::mcp::worker_first_send_key("client_a"),
+    ]
+    .into();
+    let without_first: HashSet<String> = [crate::mcp::worker_delegation_key("client_a")].into();
+    let sources = |d| first_send::Sources {
+        settings: Some(&config),
+        board: None,
+        delegations: d,
+    };
+    assert_eq!(
+        first_send::fence(&head, sources(Some(&with_first))),
+        Fence::Clear
+    );
+    assert_eq!(
+        first_send::fence(&head, sources(Some(&without_first))),
+        Fence::Revoked
+    );
+    assert_eq!(first_send::fence(&head, sources(None)), Fence::Unverified);
+    // a fresh Claude generation: the override lifts the first-interaction gate
+    let fresh = HashMap::from([(
+        "s".to_string(),
+        Observed {
+            activity: 0,
+            ..Observed::default()
+        },
+    )]);
+    assert_eq!(hold_reason(&head, fresh.get("s")), None);
+    assert!(relies_on_readiness_override(&head, fresh.get("s")));
+    let mut q = QueueState {
+        items: vec![head.clone()],
+        ..QueueState::default()
+    };
+    assert_eq!(
+        first_send::revoke_stale(&mut q, sources(Some(&with_first))),
+        0
+    );
+    assert_eq!(
+        first_send::revoke_stale(&mut q, sources(Some(&without_first))),
+        1
+    );
+    assert!(q.items[0].readiness_override.is_none());
+    assert_eq!(
+        hold_reason(&q.items[0], fresh.get("s")),
+        Some(Hold::FirstInteraction)
+    );
+}

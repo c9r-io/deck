@@ -45,9 +45,10 @@ const BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
 /// Deck may legitimately take longer than one runner round trip: a request
 /// can wait for the delivery lock behind an in-flight job dispatch.
 const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const MUTATING: [&str; 8] = [
+const MUTATING: [&str; 9] = [
     "deck_automation_trigger",
     "deck_worker_send",
+    "deck_worker_start",
     "deck_session_create",
     "deck_session_control",
     "deck_exec",
@@ -154,6 +155,30 @@ struct WorkerReplyInput {
     /// The turn ending's episode (`agent.episode` while `agent.state` is
     /// `turn-done`).
     episode: u64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkerStartInput {
+    /// Stable idempotency key for this start; persist it before the first
+    /// attempt and reuse it on every retry.
+    request_id: String,
+    /// This client's current send sequence (`nextSendSequence` from
+    /// deck_worker_list); a start and a line share it.
+    send_sequence: u64,
+    /// A worker type from deck_worker_list `workerTypes` (its `type`); the
+    /// first one when omitted. Choose by the type's description.
+    #[serde(default, rename = "type")]
+    r#type: Option<String>,
+    /// The worker's first line: its task (at most 16 KiB).
+    text: String,
+    /// An absolute directory inside this client's authorized directory; the
+    /// authorized directory itself when omitted.
+    #[serde(default)]
+    dir: Option<String>,
+    /// The card's title (at most 80 characters).
+    #[serde(default)]
+    title: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -468,6 +493,11 @@ impl DeckServer {
                 "Read a worker card's final message of one Claude Code turn ending (agent.state turn-done, its episode): head and tail when long (truncated). Kept in memory only, the newest 32; REPLY_GONE otherwise. Needs the local user's separate permission to read replies. Prefer asking workers to write large results to files.",
                 ro,
             ),
+            tool::<WorkerStartInput>(
+                "deck_worker_start",
+                "Start one worker card of one of the worker types the local user offers this client (deck_worker_list workerTypes: each type's description says what it is good at, e.g. writing code or generating images). Deck opens the card with the user's own command for that type and types `text` as its first line when the agent is ready. Returns an operation to poll (deck_operation_get: committed with cardId); the card then appears in deck_worker_list. At most 8 worker cards on the Board. A Codex worker forwards no final message: ask it to write results to files.",
+                mutating.clone(),
+            ),
             tool::<WorkerSendInput>(
                 "deck_worker_send",
                 "Queue one line for one of your worker cards, written after the episode you name (refused with EPISODE_MOVED if the card moved on). Deck types it into the card's agent only when its own readiness checks allow: never while the agent asks the user something (needs-input) or while the user has taken the card over. Returns an operation; its delivery shows in deck_worker_list sends. You can never answer the agent's permission prompts.",
@@ -666,6 +696,17 @@ impl DeckServer {
             }
             "deck_worker_reply" => {
                 self.invoke::<WorkerReplyInput>("deck_worker_reply", arguments)
+                    .await
+            }
+            "deck_worker_start" => {
+                if let Err(issue) = validate_sequence(
+                    &arguments,
+                    "send_sequence",
+                    "non-negative integer (nextSendSequence from deck_worker_list)",
+                ) {
+                    return invalid_arguments(issue);
+                }
+                self.invoke::<WorkerStartInput>("deck_worker_start", arguments)
                     .await
             }
             "deck_worker_send" => {

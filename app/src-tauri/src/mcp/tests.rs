@@ -322,6 +322,8 @@ fn client_record(root: &Path) -> Client {
         allow_workers: false,
         allow_replies: false,
         send_sequence: 0,
+        worker_types: Vec::new(),
+        worker_first_send: false,
     }
 }
 
@@ -847,6 +849,8 @@ fn authorization_is_client_project_session_and_control_scoped() {
         allow_workers: false,
         allow_replies: false,
         send_sequence: 0,
+        worker_types: Vec::new(),
+        worker_first_send: false,
     });
     let disabled = match client(&doc, "client_a") {
         Err(error) => error,
@@ -1498,17 +1502,14 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
     assert!(!status.socket_ready);
     assert_eq!(status.clients.len(), 1);
     assert!(mcp_adapter_path().is_err());
-    assert!(mcp_client_add("".into(), vec![], false, false, None, None).is_err());
+    assert!(mcp_client_add("".into(), vec![], no_permissions(false)).is_err());
     assert!(mcp_client_add(
         "Bad scope".into(),
         vec![ProjectScopeInput {
             project_id: "bad id".into(),
             roots: vec![root.display().to_string()],
         }],
-        false,
-        false,
-        None,
-        None,
+        no_permissions(false),
     )
     .is_err());
     let added = mcp_client_add(
@@ -1517,10 +1518,7 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
             project_id: "P2".into(),
             roots: vec![root.display().to_string()],
         }],
-        true,
-        false,
-        None,
-        None,
+        no_permissions(true),
     )
     .unwrap();
     assert_eq!(added.name, "Client B");
@@ -2148,6 +2146,8 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
         allow_workers: false,
         allow_replies: false,
         send_sequence: 0,
+        worker_types: Vec::new(),
+        worker_first_send: false,
     });
     assert!(validate_doc(&invalid).is_err());
     std::fs::remove_dir_all(root).unwrap();
@@ -5508,7 +5508,7 @@ fn automation_delegation_lists_triggers_replays_and_withdraws() {
     );
     let second = trigger("req_2", 1, "triage", &revision, "another");
     let second_id = second["operationId"].as_str().unwrap().to_owned();
-    client_automations(&runtime, "client_a", false).unwrap();
+    set_permissions(&runtime, false, false, false);
     assert_eq!(
         call("deck_operation_get", json!({"operation_id": &second_id}))["state"],
         "rejected"
@@ -5525,7 +5525,7 @@ fn automation_delegation_lists_triggers_replays_and_withdraws() {
         "PERMISSION_DENIED"
     );
     // restored: new runs again, the retired item stays retired
-    client_automations(&runtime, "client_a", true).unwrap();
+    set_permissions(&runtime, true, false, false);
     assert_eq!(call("deck_automation_list", json!({}))["ok"], true);
     assert_eq!(
         crate::inbound_agent::entry_state(&second_id).map(|(state, _)| state),
@@ -5671,11 +5671,11 @@ fn worker_cards_are_recorded_listed_refused_and_taken_over() {
     outcome_in(&runtime, "op_before", "committed", None, Some("S0")).unwrap();
     assert!(runtime.read(|doc| doc.workers.is_empty()).unwrap());
     // the choice: written at the sticky worker version, audited
-    client_workers(&runtime, "client_a", true, true).unwrap();
+    set_permissions(&runtime, false, true, true);
     let saved: Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
     assert_eq!(saved["version"], STATE_VERSION_WORKERS);
     assert!(runtime
-        .read(|doc| doc.audit.iter().any(|a| a.kind == "workers-allowed"))
+        .read(|doc| doc.audit.iter().any(|a| a.kind == "permissions-changed"))
         .unwrap());
     runtime
         .write(|doc| {
@@ -5822,9 +5822,9 @@ fn worker_cards_are_recorded_listed_refused_and_taken_over() {
     assert_eq!(ui.len(), 1);
     assert!(worker_set_held(&runtime, "S1", false).unwrap());
     // replies without driving are refused; reading needs its own choice
-    client_workers(&runtime, "client_a", true, false).unwrap();
+    set_permissions(&runtime, false, true, false);
     assert_eq!(reply(5)["error"]["code"], "PERMISSION_DENIED");
-    client_workers(&runtime, "client_a", false, true).unwrap();
+    set_permissions(&runtime, false, false, true);
     assert!(runtime
         .read(|doc| !doc.config.clients[0].allow_replies)
         .unwrap());
@@ -5845,4 +5845,212 @@ fn worker_cards_are_recorded_listed_refused_and_taken_over() {
 fn a_driving_client_is_delegated_under_its_worker_key() {
     assert_eq!(worker_delegation_key("client_a"), "worker:client_a");
     assert_ne!(worker_delegation_key("client_a"), "client_a");
+}
+
+/// The Settings dialog's one save, for client_a: automations, driving and
+/// replies as given, everything else off.
+fn set_permissions(runtime: &Runtime, automations: bool, workers: bool, replies: bool) {
+    client_permissions(
+        runtime,
+        "client_a",
+        super::commands::PermissionsInput {
+            allow_create: false,
+            allow_automations: automations,
+            allow_workers: workers,
+            allow_replies: replies,
+            worker_types: Vec::new(),
+            worker_first_send: false,
+        },
+    )
+    .unwrap();
+}
+
+/// Worker types (`workers.rs`): the user's commands only, Codex only with
+/// --no-daemon, bounded; `deck_worker_start` names a type, stays inside the
+/// authorized directory, journals a Board intent the webview commits, and
+/// the commit makes the card a worker card whose first line leaves the
+/// ledger. Withdrawing the choice rejects starts still pending.
+#[test]
+fn worker_types_start_worker_cards_through_a_board_intent() {
+    let claude = |name: &str, cmd: &str| WorkerType {
+        name: name.into(),
+        cmd: cmd.into(),
+        column_id: "C1".into(),
+        description: "Write code".into(),
+    };
+    assert!(validate_worker_types(&[claude("claude", "claude --permission-mode auto")]).is_ok());
+    let refused = |types: &[WorkerType]| {
+        validate_worker_types(types)
+            .unwrap_err()
+            .message()
+            .to_string()
+    };
+    assert_eq!(refused(&[claude("Claude", "claude")]), TYPE_NAME_INVALID);
+    assert_eq!(
+        refused(&[claude("a", "claude"), claude("a", "claude")]),
+        TYPE_NAME_INVALID
+    );
+    assert_eq!(refused(&[claude("a", "bash")]), TYPE_COMMAND_INVALID);
+    assert_eq!(refused(&[claude("a", "claude; rm")]), TYPE_COMMAND_INVALID);
+    assert_eq!(refused(&[claude("codex", "codex")]), TYPE_CODEX_DAEMON);
+    assert!(validate_worker_types(&[claude("codex", "codex --no-daemon")]).is_ok());
+    let nine: Vec<_> = (0..9).map(|i| claude(&format!("t{i}"), "claude")).collect();
+    assert_eq!(refused(&nine), TYPE_LIST_INVALID);
+
+    let (runtime, _runner, root) = fixture("worker-types", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let call = |tool: &str, args: Value| route(&runtime, request(tool, args));
+    let start = |request: &str, sequence: u64, extra: Value| {
+        let mut args =
+            json!({"request_id": request, "send_sequence": sequence, "text": "fix the bug"});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        call("deck_worker_start", args)
+    };
+    assert_eq!(
+        start("req_s0", 0, json!({}))["error"]["code"],
+        "PERMISSION_DENIED"
+    );
+    let permissions =
+        |types: Vec<WorkerType>, first: bool, workers: bool| super::commands::PermissionsInput {
+            allow_create: false,
+            allow_automations: false,
+            allow_workers: workers,
+            allow_replies: false,
+            worker_types: types,
+            worker_first_send: first,
+        };
+    assert!(client_permissions(
+        &runtime,
+        "client_a",
+        permissions(vec![claude("codex", "codex")], true, true)
+    )
+    .is_err());
+    client_permissions(
+        &runtime,
+        "client_a",
+        permissions(
+            vec![
+                claude("claude", "claude"),
+                claude("codex", "codex --no-daemon"),
+            ],
+            true,
+            true,
+        ),
+    )
+    .unwrap();
+    // the first-send choice joins the delegation set under its own key
+    assert!(runtime
+        .read(|doc| doc.config.clients[0].worker_first_send
+            && doc.config.clients[0].worker_types.len() == 2)
+        .unwrap());
+    let listed = call("deck_worker_list", json!({}));
+    assert_eq!(
+        listed["workerTypes"],
+        json!([{"type": "claude", "description": "Write code"}, {"type": "codex", "description": "Write code"}])
+    );
+    assert_eq!(
+        start("req_s1", 0, json!({"type": "gemini"}))["error"]["code"],
+        "WORKER_TYPE_NOT_FOUND"
+    );
+    assert_eq!(
+        start("req_s2", 0, json!({"dir": "/"}))["error"]["code"],
+        "PERMISSION_DENIED"
+    );
+    assert_eq!(
+        start("req_s3", 5, json!({}))["error"]["code"],
+        "STALE_REQUEST"
+    );
+    let accepted = start("req_s4", 0, json!({"type": "codex", "title": "Draw icons"}));
+    assert_eq!(accepted["kind"], WORKER_START_KIND, "{accepted}");
+    assert_eq!(accepted["state"], "accepted");
+    assert!(
+        accepted["result"].get("text").is_none(),
+        "the first line is not echoed"
+    );
+    assert_eq!(accepted["result"]["cmd"], "codex --no-daemon");
+    assert_eq!(accepted["result"]["title"], "Draw icons");
+    let op = accepted["operationId"].as_str().unwrap().to_owned();
+    let card = accepted["result"]["cardId"].as_str().unwrap().to_owned();
+    // a replay is the same operation; the sequence moved once
+    assert_eq!(
+        start("req_s4", 0, json!({"type": "codex", "title": "Draw icons"}))["operationId"],
+        op
+    );
+    assert_eq!(call("deck_worker_list", json!({}))["nextSendSequence"], 1);
+    // the webview's Board transaction: pending, claimed, committed
+    let pending = runtime
+        .read(|doc| {
+            doc.operations
+                .iter()
+                .any(|o| o.operation_id == op && o.state == "accepted")
+        })
+        .unwrap();
+    assert!(pending);
+    let claimed = claim(&runtime, &op).unwrap();
+    assert_eq!(claimed.kind, WORKER_START_KIND);
+    assert_eq!(
+        claimed.result["text"], "fix the bug",
+        "the webview reads the plan, native keeps the text"
+    );
+    complete(
+        &runtime,
+        op.clone(),
+        "committed".into(),
+        None,
+        Some("deck-w-codex".into()),
+    )
+    .unwrap();
+    let recorded = runtime
+        .read(|doc| {
+            doc.workers
+                .iter()
+                .find(|w| w.card_id == card)
+                .map(|w| w.automation_id.clone())
+        })
+        .unwrap();
+    assert_eq!(recorded.as_deref(), Some("codex"));
+    // no queue in this test: the first line is refused, and it leaves the ledger either way
+    let settled = runtime
+        .read(|doc| {
+            doc.operations
+                .iter()
+                .find(|o| o.operation_id == op)
+                .and_then(|o| o.result.clone())
+        })
+        .unwrap()
+        .unwrap();
+    assert!(settled.get("text").is_none());
+    assert_eq!(settled["firstLine"], "refused");
+    // withdrawing the choice rejects a start still pending
+    let other = start("req_s5", 1, json!({}));
+    let other_op = other["operationId"].as_str().unwrap().to_owned();
+    client_permissions(&runtime, "client_a", permissions(Vec::new(), false, false)).unwrap();
+    let state = runtime
+        .read(|doc| {
+            doc.operations
+                .iter()
+                .find(|o| o.operation_id == other_op)
+                .map(|o| o.state.clone())
+        })
+        .unwrap();
+    assert_eq!(state.as_deref(), Some("rejected"));
+    assert!(runtime
+        .read(|doc| !doc.config.clients[0].worker_first_send
+            && doc.config.clients[0].worker_types.is_empty())
+        .unwrap());
+    drop(root);
+}
+
+/// A new client's choices: sessions as given, everything else off.
+fn no_permissions(allow_create: bool) -> super::commands::PermissionsInput {
+    super::commands::PermissionsInput {
+        allow_create,
+        allow_automations: false,
+        allow_workers: false,
+        allow_replies: false,
+        worker_types: Vec::new(),
+        worker_first_send: false,
+    }
 }

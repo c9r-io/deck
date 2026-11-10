@@ -798,10 +798,16 @@ pub(crate) struct WorkerSend<'a> {
 /// applies, the human hold included. A refused delegation never reaches
 /// here; a later withdrawal strips the row's authority, and the row then
 /// waits for send-now like any external row.
+///
+/// `first` is `Some` for a worker card's first line (`deck_worker_start`):
+/// the run's head row, `at` now, carrying the first-send override when the
+/// client's worker first-send choice allows it (`Some(true)`; the override
+/// rests on that choice alone, `first_send.rs`). `None` is a later line.
 pub(crate) fn worker_queue_add(
     state: State<'_, Queues>,
     app: AppHandle,
     send: WorkerSend<'_>,
+    first: Option<bool>,
 ) -> Result<(), DeckError> {
     let mut args = QueueAddArgs {
         session: send.session.into(),
@@ -810,13 +816,13 @@ pub(crate) fn worker_queue_add(
         dir: send.dir.into(),
         cmd: send.cmd.into(),
         text: send.text.into(),
-        mode: "chain".into(),
-        at: None,
-        // the client wrote this line after the card's turn boundary, so the
-        // chain's three-minute quiet only delays it; the shortest quiet left
-        // keeps a paste out of output still arriving. Quiet is no readiness
-        // evidence either way: every hold below still decides.
-        quiet_secs: Some(MIN_QUIET_SECS),
+        mode: if first.is_some() { "at" } else { "chain" }.into(),
+        at: first.map(|_| now_epoch()),
+        // a later line: the client wrote it after the card's turn boundary,
+        // so the chain's three-minute quiet only delays it; the shortest
+        // quiet left keeps a paste out of output still arriving. Quiet is no
+        // readiness evidence either way: every hold below still decides.
+        quiet_secs: first.is_none().then_some(MIN_QUIET_SECS),
         review_each: false,
         every: None,
         not_before: None,
@@ -841,6 +847,15 @@ pub(crate) fn worker_queue_add(
     };
     admit_external(&mut args)?;
     validate_add(&args)?;
+    args.first_send_granted = (first == Some(true)).then(|| ReadinessOverride {
+        rule: send.automation.into(),
+        trigger: first_send::FirstSendOrigin::Agent,
+        clock_target: None,
+        connector: None,
+        delegation: Some(AgentSource {
+            client: send.client.into(),
+        }),
+    });
     args.granted = vec![Some(StepAuthority {
         rule: send.automation.into(),
         grant: String::new(),

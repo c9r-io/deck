@@ -31,6 +31,10 @@ pub(crate) struct ClientView {
     pub(super) allow_workers: bool,
     /// May also read those cards' final messages.
     pub(super) allow_replies: bool,
+    /// The kinds of worker card it may start, and whether their first line
+    /// may skip the first-interaction gate.
+    pub(super) worker_types: Vec<WorkerType>,
+    pub(super) worker_first_send: bool,
     pub(super) projects: Vec<ProjectScope>,
     /// Its adapter was last refused for a control-protocol mismatch
     /// (`control::route`): the integration has to be restarted. Absent from
@@ -64,6 +68,8 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
                 allow_automations: client.allow_automations,
                 allow_workers: client.allow_workers,
                 allow_replies: client.allow_replies,
+                worker_types: client.worker_types.clone(),
+                worker_first_send: client.worker_first_send,
                 projects: client.projects.clone(),
                 adapter_refused: client.revoked_at.is_none()
                     && emergency.refused_adapters.contains(&client.id),
@@ -282,13 +288,19 @@ pub(super) fn disable(runtime: &Runtime) -> Result<(), DeckError> {
 pub(crate) fn mcp_client_add(
     name: String,
     projects: Vec<ProjectScopeInput>,
-    allow_create: bool,
-    allow_automations: bool,
-    allow_workers: Option<bool>,
-    allow_replies: Option<bool>,
+    permissions: PermissionsInput,
 ) -> Result<ClientView, DeckError> {
-    let allow_workers = allow_workers.unwrap_or(false);
-    let allow_replies = allow_workers && allow_replies.unwrap_or(false);
+    let PermissionsInput {
+        allow_create,
+        allow_automations,
+        allow_workers,
+        allow_replies,
+        worker_types,
+        worker_first_send,
+    } = permissions;
+    let allow_replies = allow_workers && allow_replies;
+    let worker_first_send = allow_workers && worker_first_send;
+    validate_worker_types(&worker_types)?;
     if !valid_title(&name) || projects.is_empty() || projects.len() > MAX_PROJECTS_PER_CLIENT {
         return Err(DeckError::new(
             ErrorKind::Invalid,
@@ -326,6 +338,8 @@ pub(crate) fn mcp_client_add(
             allow_workers,
             allow_replies,
             send_sequence: 0,
+            worker_types,
+            worker_first_send,
         };
         doc.config.clients.push(client.clone());
         Ok(ClientView {
@@ -337,6 +351,8 @@ pub(crate) fn mcp_client_add(
             allow_automations: client.allow_automations,
             allow_workers: client.allow_workers,
             allow_replies: client.allow_replies,
+            worker_types: client.worker_types,
+            worker_first_send: client.worker_first_send,
             projects: client.projects,
         })
     });
@@ -479,28 +495,31 @@ pub(super) fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), 
     Ok(())
 }
 
-/// Withdraw (or restore) one client's automation delegation without
-/// revoking the client (`mcp/automation.rs`).
-#[tauri::command(async)]
-pub(crate) fn mcp_client_automations(client_id: String, allowed: bool) -> Result<(), DeckError> {
-    if !valid_id(&client_id) {
-        return Err(DeckError::new(ErrorKind::Invalid, "invalid MCP client id"));
-    }
-    client_automations(runtime()?, &client_id, allowed)
+/// Every choice the Settings authorization dialog shows for one client,
+/// saved at once (`mcp/workers.rs` `client_permissions`): create sessions,
+/// trigger automations, drive worker cards, share their replies, the worker
+/// types and the first-send choice. A choice a parent no longer allows is
+/// off; withdrawing any of them takes effect at once.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PermissionsInput {
+    pub(super) allow_create: bool,
+    pub(super) allow_automations: bool,
+    pub(super) allow_workers: bool,
+    pub(super) allow_replies: bool,
+    pub(super) worker_types: Vec<WorkerType>,
+    pub(super) worker_first_send: bool,
 }
 
-/// The user's two worker choices for one client (`mcp/workers.rs`): drive
-/// the worker cards it starts, and read their replies (only with driving).
 #[tauri::command(async)]
-pub(crate) fn mcp_client_workers(
+pub(crate) fn mcp_client_permissions(
     client_id: String,
-    drive: bool,
-    replies: bool,
+    permissions: PermissionsInput,
 ) -> Result<(), DeckError> {
     if !valid_id(&client_id) {
         return Err(DeckError::new(ErrorKind::Invalid, "invalid MCP client id"));
     }
-    client_workers(runtime()?, &client_id, drive, replies)
+    client_permissions(runtime()?, &client_id, permissions)
 }
 
 /// The worker cards as the Board labels them: the client that drives each
@@ -821,7 +840,10 @@ pub(crate) fn mcp_pending() -> Result<Vec<PendingView>, DeckError> {
                 .iter()
                 .filter(|operation| {
                     operation.state == "accepted"
-                        && matches!(operation.kind.as_str(), "session-create" | "session-close")
+                        && matches!(
+                            operation.kind.as_str(),
+                            "session-create" | "session-close" | WORKER_START_KIND
+                        )
                 })
                 .filter_map(|operation| {
                     operation.result.clone().map(|result| PendingView {
@@ -1180,7 +1202,7 @@ pub(super) fn complete(
         match (operation.state.as_str(), state.as_str()) {
             ("executing", _) => {}
             ("admitted", "committed" | "ambiguous") if operation.kind == "session-close" => {}
-            (recorded, requested) if recorded == requested => return Ok(None),
+            (recorded, requested) if recorded == requested => return Ok(Err(String::new())),
             _ => {
                 return Err(DeckError::new(
                     ErrorKind::ContextChanged,
@@ -1259,15 +1281,43 @@ pub(super) fn complete(
                 }
             }
         }
+        // a worker card the webview started for a driving client
+        // (`workers.rs`): one of its worker cards from now on
+        if operation.kind == WORKER_START_KIND && state == "committed" {
+            if let Some(card) = operation
+                .result
+                .as_ref()
+                .and_then(|value| value.get("cardId"))
+                .and_then(Value::as_str)
+            {
+                let mut record = operation.clone();
+                if let Some(result) = record.result.as_mut() {
+                    result["automationId"] = result["type"].clone();
+                }
+                record_worker(doc, &record, card);
+            }
+        }
         let saved = &mut doc.operations[index];
-        saved.state = state;
+        saved.state = state.clone();
         saved.code = code;
         saved.updated_at = now_ms();
         compact(doc, Some(&runtime.service_instance));
-        Ok(created_session)
+        Ok(created_session.map(Ok).unwrap_or(Err(operation.kind)))
     })?;
-    if let Some(session) = switch_to_human {
-        let _ = send_runner_control(runtime, &session, "human");
+    match switch_to_human {
+        Ok(session) => {
+            let _ = send_runner_control(runtime, &session, "human");
+        }
+        // the card exists: its first line goes to the queue
+        Err(kind) if kind == WORKER_START_KIND && state == "committed" => {
+            if let Some(session) = tmux_session.as_deref() {
+                settle_start(runtime, &operation_id, session);
+            }
+            if let Some(app) = runtime.app.as_ref() {
+                let _ = app.emit("mcp-workers-changed", ());
+            }
+        }
+        Err(_) => {}
     }
     Ok(())
 }

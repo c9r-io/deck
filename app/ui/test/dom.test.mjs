@@ -149,6 +149,7 @@ test('MCP authorization requires an explicit project and shows its directory', a
   assert.deepEqual(await pending, {
     name: 'ChatGPT', root: '/Users/test/explicit',
     project: { id: 'P2', name: 'No directory', dir: '' },
+    permissions: { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, workerTypes: [] },
   });
   assert.equal(modal.style.display, 'none');
   assert.equal(name.oninput, null);
@@ -1974,39 +1975,75 @@ test('a pairing is announced by name and time and hides the spent QR code', asyn
   assert.equal(fakeDocument.getElementById('set-connector-devices').children.length, 2);
 });
 
-test('an MCP client row grants and withdraws the automation delegation as its own choice', async () => {
+test('an MCP client row opens its permissions in the one dialog and saves them at once', async () => {
   const calls = [];
-  let allowed = false;
+  let saved = { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, workerTypes: [] };
+  store.projects = [{ id: 'P1', name: 'Deck', dir: '/w', columns: [{ id: 'C1', name: 'Doing' }, { id: 'C2', name: 'Done' }] }];
   window.__TAURI__ = { core: { invoke: async (cmd, args) => {
     calls.push([cmd, args]);
     if (cmd === 'mcp_status') return { enabled: true, outputRetentionMs: 86_400_000,
-      clients: [{ id: 'client_live', name: 'Patrol', revoked: false, allowCreate: false, allowAutomations: allowed, projects: [] }] };
+      clients: [{ id: 'client_live', name: 'Patrol', revoked: false, ...saved, projects: [{ projectId: 'P1', roots: ['/w'] }] }] };
     if (cmd === 'tunnel_helper_status') return new Promise(() => {});
-    if (cmd === 'mcp_client_automations') { allowed = args.allowed; return; }
+    if (cmd === 'mcp_client_permissions') { saved = args.permissions; return; }
     throw new Error(`unexpected ${cmd}`);
   } } };
   await renderMcpSettings();
   let row = fakeDocument.getElementById('set-mcp-clients').children[0];
-  assert.ok(!row.children[0].children[1].textContent.includes('automations delegated'));
-  let button = row.children[1].children.find(b => String(b.className).includes('mcp-automations'));
-  assert.equal(button.textContent, 'Delegate automations');
-  // granting asks once; the row then says so and offers to stop
-  button.fire('click');
-  await tick();
-  assert.equal(fakeDocument.getElementById('cfm').style.display, 'flex');
-  assert.match(fakeDocument.getElementById('cfm-msg').textContent, /Delegate Patrol to trigger your Agent automations/);
-  cfmDone(true);
+  const buttons = row.children[1].children.map(b => String(b.className));
+  assert.ok(!buttons.some(c => c.includes('mcp-automations') || c.includes('mcp-workers')), 'no per-choice buttons on the row');
+  const open = () => row.children[1].children.find(b => String(b.className).includes('mcp-permissions'));
+  assert.equal(open().textContent, 'Permissions…');
+  open().fire('click');
+  const modal = fakeDocument.getElementById('mcp-auth');
+  assert.equal(modal.style.display, 'flex');
+  assert.equal(fakeDocument.getElementById('mcp-auth-title').textContent, 'What Patrol may do');
+  assert.equal(fakeDocument.getElementById('mcp-auth-name').disabled, true, 'identity is fixed when editing');
+  assert.equal(fakeDocument.getElementById('mcp-perm-worker-box').hidden, true);
+  // turning on worker cards brings one Claude type in the first column and shared replies
+  const workers = fakeDocument.getElementById('mcp-perm-workers');
+  workers.checked = true; workers.fire('change');
+  assert.equal(fakeDocument.getElementById('mcp-perm-worker-box').hidden, false);
+  assert.equal(fakeDocument.getElementById('mcp-perm-types').children.length, 1);
+  assert.equal(fakeDocument.getElementById('mcp-perm-replies').checked, true);
+  const automations = fakeDocument.getElementById('mcp-perm-automations');
+  automations.checked = true; automations.fire('change');
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
   await tick(); await tick();
-  assert.ok(calls.some(([cmd, args]) => cmd === 'mcp_client_automations' && args.clientId === 'client_live' && args.allowed === true));
+  const call = calls.find(([cmd]) => cmd === 'mcp_client_permissions');
+  assert.equal(call[1].clientId, 'client_live');
+  assert.deepEqual(call[1].permissions, { allowCreate: false, allowAutomations: true, allowWorkers: true, allowReplies: true, workerFirstSend: false,
+    workerTypes: [{ name: 'claude', cmd: 'claude', columnId: 'C1', description: 'Write code, edit files, run tests' }] });
   row = fakeDocument.getElementById('set-mcp-clients').children[0];
-  assert.ok(row.children[0].children[1].textContent.includes('automations delegated'));
-  button = row.children[1].children.find(b => String(b.className).includes('mcp-automations'));
-  assert.equal(button.textContent, 'Stop automations');
-  // withdrawing never asks
-  button.fire('click');
+  assert.match(row.children[0].children[1].textContent, /automations delegated · drives its worker cards/);
+  // a Codex type without --no-daemon is refused in the dialog, nothing is saved
+  calls.length = 0;
+  open().fire('click');
+  fakeDocument.getElementById('mcp-perm-type-add').fire('click');
+  const types = fakeDocument.getElementById('mcp-perm-types').children;
+  assert.equal(types.length, 2);
+  const [name, cmd] = types[1].children;
+  name.value = 'codex'; name.fire('input');
+  cmd.value = 'codex'; cmd.fire('input');
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
+  await tick();
+  assert.equal(modal.style.display, 'flex');
+  assert.match(fakeDocument.getElementById('mcp-perm-error').textContent, /needs --no-daemon/);
+  assert.ok(!calls.some(([c]) => c === 'mcp_client_permissions'));
+  cmd.value = 'codex --no-daemon'; cmd.fire('input');
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
   await tick(); await tick();
-  assert.equal(fakeDocument.getElementById('cfm').style.display, 'none');
-  assert.ok(calls.some(([cmd, args]) => cmd === 'mcp_client_automations' && args.allowed === false));
+  const second = calls.find(([c]) => c === 'mcp_client_permissions');
+  assert.deepEqual(second[1].permissions.workerTypes.map(t => t.cmd), ['claude', 'codex --no-daemon']);
+  // turning worker cards off sends its children off too
+  calls.length = 0;
+  open().fire('click');
+  workers.checked = false; workers.fire('change');
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
+  await tick(); await tick();
+  const third = calls.find(([c]) => c === 'mcp_client_permissions')[1].permissions;
+  assert.equal(third.allowWorkers, false);
+  assert.equal(third.allowReplies, false);
+  assert.deepEqual(third.workerTypes, []);
 });
 
 /* A multi-line edit in place (a queued prompt): a click away saves nothing

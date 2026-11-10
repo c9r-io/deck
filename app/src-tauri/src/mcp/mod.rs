@@ -182,7 +182,13 @@
 //! `scheduler::worker_queue_add` (external admission, content class
 //! `delegated`, authority resting on the client's worker key in
 //! `automation_delegations`); every hold then decides when it goes, the
-//! human hold included. The user takes a card over by typing into its pane
+//! human hold included. `deck_worker_start` opens a card of one of the
+//! client's worker types (the user's commands; Codex only with
+//! `--no-daemon`) through a `worker-start` Board intent the webview commits;
+//! its first line is the run's head row, sent without interaction evidence
+//! only while the client's worker first-send choice stands. Every choice of a
+//! client is saved at once (`mcp_client_permissions`, under the settings
+//! fence). The user takes a card over by typing into its pane
 //! (`worker_set_held`, from the webview) and hands it back by hand only.
 //! Withdrawing `allow_workers`, revoking the client or disabling MCP takes
 //! the key out under `storage::settings_fence`. Capacity: 8 worker cards on
@@ -259,7 +265,8 @@ use wire::*;
 use workers::*;
 pub(crate) use workers::{
     held_worker_sessions, note_worker_change, replies_wanted_any, replies_wanted_for,
-    worker_card_held, worker_client_for_item, worker_delegation_key, WorkerCardView,
+    worker_card_held, worker_client_for_item, worker_delegation_key, worker_first_send_key,
+    WorkerCardView, WorkerType, WORKER_TYPE_RULE_PREFIX,
 };
 
 const STATE_VERSION: u32 = 6;
