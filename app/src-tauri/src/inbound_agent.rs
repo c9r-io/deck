@@ -493,6 +493,26 @@ pub(crate) fn stage(s: Submission, now: u64) -> Result<(String, Staged), DeckErr
     })
 }
 
+/// The acceptance of `(client, request_id)` failed after its entry was
+/// staged under `operation_id`: the entry is removed while it is still only
+/// staged (a committed or handled one is left as it is). Best effort.
+pub(crate) fn unstage(client: &str, request_id: &str, operation_id: &str) {
+    let _ = with_store(|store| {
+        let Some(index) = store.doc.entries.iter().position(|e| {
+            e.client == client
+                && e.request_id == request_id
+                && e.id == operation_id
+                && e.state == EntryState::Staged
+        }) else {
+            return Ok(());
+        };
+        store.mutate(|doc| {
+            doc.entries.remove(index);
+            Ok(())
+        })
+    });
+}
+
 /// The operation for `(client, request_id)` is on disk under `operation_id`:
 /// the entry may be offered. Idempotent; a handled entry stays handled.
 pub(crate) fn commit(client: &str, request_id: &str, operation_id: &str) -> Result<(), DeckError> {
@@ -890,6 +910,34 @@ mod tests {
         handled("op_3", "skipped", None, Some("rule-changed"), 5001).unwrap();
         assert!(mention_handoffs(5001).iter().all(|h| h.mention != "C1/2.5"));
         stage(other("req_4", "op_4"), 5002).unwrap();
+        redirect_for_tests(None);
+    }
+
+    /// An acceptance that failed after staging takes its entry back: the
+    /// mention it held is free at once, and a committed entry is never
+    /// removed that way.
+    #[test]
+    fn a_failed_acceptance_unstages_its_entry() {
+        let _serial = STORE_TESTS.lock_or_recover();
+        let dir = TestDir::new("agent-inbox-unstage");
+        redirect_for_tests(Some(dir.join("agent-inbox.json")));
+        let with = |request: &str, op: &str| Submission {
+            mention: Some("C1/3.5".into()),
+            ..submission("client_a", request, op, "hello")
+        };
+        stage(with("req_1", "op_1"), 1000).unwrap();
+        unstage("client_a", "req_1", "op_other");
+        assert_eq!(
+            mention_handoffs(1000).len(),
+            1,
+            "another operation's id: kept"
+        );
+        unstage("client_a", "req_1", "op_1");
+        assert!(mention_handoffs(1000).is_empty(), "the mention is free");
+        stage(with("req_2", "op_2"), 1001).unwrap();
+        commit("client_a", "req_2", "op_2").unwrap();
+        unstage("client_a", "req_2", "op_2");
+        assert_eq!(mention_handoffs(1001).len(), 1, "a committed entry stays");
         redirect_for_tests(None);
     }
 

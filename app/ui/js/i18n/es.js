@@ -1306,6 +1306,7 @@ const dictionary = {
   "proposals.stale.template": "La plantilla del borrador ya no existe. Recházalo o pide otro borrador.",
   "proposals.stale.blocked": "Un paso empieza con un marcador de mensaje, que Deck rechaza. Recházalo.",
   "proposals.saveFailed": "No se pudo guardar el borrador. No se cambió nada.",
+  "proposals.gone": "Ese borrador ya no espera tu aprobación: el agente lo retiró o ya no puede redactar. No se guardó nada.",
   "proposals.decideFailed": "Guardado, pero no se pudo avisar al cliente.",
   "proposals.rejected": "Borrador de {name} rechazado",
   "proposals.approved": "Aprobado y guardado",

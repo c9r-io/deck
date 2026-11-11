@@ -1306,6 +1306,7 @@ const dictionary = {
   "proposals.stale.template": "초안의 템플릿이 없습니다. 거부하거나 다시 작성하게 하세요.",
   "proposals.stale.blocked": "메시지 자리표시자로 시작하는 단계가 있어 Deck이 거부합니다. 거부하세요.",
   "proposals.saveFailed": "초안을 저장하지 못했습니다. 아무것도 바뀌지 않았습니다.",
+  "proposals.gone": "이 초안은 더 이상 승인을 기다리지 않습니다. Agent가 철회했거나 더 이상 초안을 만들 수 없습니다. 아무것도 저장하지 않았습니다.",
   "proposals.decideFailed": "저장했지만 클라이언트에 알리지 못했습니다.",
   "proposals.rejected": "{name}의 초안을 거부함",
   "proposals.approved": "승인하고 저장함",

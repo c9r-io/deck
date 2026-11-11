@@ -28,7 +28,8 @@
 //   shown here is for the reader and is not part of what is routed.
 // - Dismissing sets a mention aside for good (`slack_mention_dismiss`):
 //   it starts nothing and never stops a badge the user adds in Slack later.
-//   "Dismiss all" dismisses the mentions shown (the chosen range) and asks once.
+//   "Dismiss all" dismisses the mentions shown (the chosen range, the
+//   "Taken care of" fold only while it is open) and asks once.
 // - Handed over: mentions an MCP client handed to one of its Agent rules
 //   are listed apart above the panes, with the client's and the rule's names
 //   (`handedRows`; client names from `mcp_status`; the orchestrator card's
@@ -232,7 +233,7 @@ export function paintMentions() {
   const status = mentionStatus(view);
   $('mentions-status').textContent = t(status.key, status.params.at
     ? { time: formatDateTime(new Date(status.params.at * 1000)) } : status.params);
-  $('mentions-dismiss-all').disabled = !within().length;
+  $('mentions-dismiss-all').disabled = !items().length;
   const choices = routes();
   $('mentions-no-routes').hidden = !view?.enabled || choices.length > 0;
   if (!current()) selected = items()[0]?.key || null;
@@ -307,8 +308,10 @@ async function dismissMentions(keys) {
   drop(keys);
 }
 
+/* the rows shown: the ones folded under "Taken care of" stay unless the
+   fold is open */
 async function dismissAll() {
-  const keys = within().map(item => item.key);
+  const keys = items().map(item => item.key);
   if (!keys.length) return;
   if (!(await confirmDialog(t('mentions.dismissAllConfirm', { count: formatNumber(keys.length) })))) return;
   await dismissMentions(keys);

@@ -3434,7 +3434,7 @@ export async function verifyReentryShapes() {
     ['shape-bypass', 'claude --dangerously-skip-permissions'],
     ['shape-auto', 'claude --permission-mode auto'],
     ['shape-effort', 'claude --effort high'],
-    ['shape-setting-sources', 'claude --setting-sources project'],
+    ['shape-setting-sources', 'claude --setting-sources user,project'],
     ['shape-settings', "claude --settings {}"],
   ];
   const project = provider.projects()[0];

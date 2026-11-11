@@ -666,6 +666,14 @@ pub(crate) fn mcp_client_delete(client_id: String) -> Result<(), DeckError> {
             .position(|client| client.id == client_id && client.revoked_at.is_some())
             .ok_or_else(|| DeckError::new(ErrorKind::Missing, "revoked MCP client not found"))?;
         doc.config.clients.remove(index);
+        // what only this client's presence keeps goes with it: its drafts,
+        // its worker records and its marks on Slack mentions (bounded per
+        // client, so a deleted client's must not pile up: the ledger caps
+        // the drafts of all clients together). The security record —
+        // sessions, operations, jobs, grants, audit — keeps its ids.
+        doc.proposals.retain(|p| p.client_id != client_id);
+        doc.workers.retain(|w| w.client_id != client_id);
+        doc.mention_marks.retain(|m| m.client_id != client_id);
         audit(
             doc,
             "client-deleted",

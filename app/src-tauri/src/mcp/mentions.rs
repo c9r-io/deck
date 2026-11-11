@@ -35,7 +35,7 @@
 //!   takes the caller's mark off. A mark belongs to the client and the
 //!   orchestrator card it came from (`origin.rs`): another orchestrator
 //!   sees it in the list (so two do not take the same mention) and cannot
-//!   change it (`MENTION_MARKED`). Marks are presentation only: the mention
+//!   change it while that card is on the Board (`MENTION_MARKED`). Marks are presentation only: the mention
 //!   stays listed, the user's view groups `handling` and `no-action` apart
 //!   and leaves them out of its count (a `handling` whose card closed comes
 //!   back), the user can clear any mark, and a mark never stops a route, a
@@ -484,9 +484,15 @@ pub(super) fn mention_mark(
             let live = live_marks(doc);
             let since = now_ms().saturating_sub(MARK_TTL_MS);
             doc.mention_marks.retain(|m| m.at >= since);
-            let theirs = live
-                .get(&args.mention_key)
-                .filter(|m| m.client_id != client_id || m.orchestrator != orchestrator);
+            // another orchestrator's mark stands while its card does: a mark
+            // whose orchestrator card left the Board blocks nobody
+            let theirs = live.get(&args.mention_key).filter(|m| {
+                let gone = m
+                    .orchestrator
+                    .as_deref()
+                    .is_some_and(|card| targets.as_ref().is_some_and(|t| !t.contains_key(card)));
+                (m.client_id != client_id || m.orchestrator != orchestrator) && !gone
+            });
             if let Some(other) = theirs {
                 return Ok(Err(json!({"ok": false, "error": {
                     "code": "MENTION_MARKED",

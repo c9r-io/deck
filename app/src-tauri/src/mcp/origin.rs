@@ -40,6 +40,10 @@
 //!   * trigger and send sequences are kept per orchestrator card
 //!     (`Client.lanes`), so two orchestrators of one client do not refuse
 //!     each other's calls; a caller without a card keeps the client's own.
+//!     A lane of a card still on the Board is never dropped (its sequence
+//!     would start again at 0): past `MAX_LANES` only lanes of cards that
+//!     left the Board make room, else the call is `CAPACITY_EXCEEDED`
+//!     (`lane_room`).
 //! - A ledger holding any of it is written at `STATE_VERSION_ORCHESTRATORS`
 //!   (sticky).
 
@@ -248,16 +252,35 @@ pub(super) fn send_sequence(client: &Client, orchestrator: Option<&str>) -> u64 
     }
 }
 
+/// Whether a call from `orchestrator` may take a sequence: its card already
+/// has a lane, there is room for one, or a lane of a card that left the
+/// Board can make room. A lane of a card still on the Board is never
+/// dropped: its sequence would start again at 0 and a retired request of
+/// it could be accepted again. Asked before acceptance (`CAPACITY_EXCEEDED`).
+pub(super) fn lane_room(client: &Client, orchestrator: Option<&str>) -> bool {
+    let Some(card) = orchestrator else {
+        return true;
+    };
+    client.lanes.contains_key(card)
+        || client.lanes.len() < MAX_LANES
+        || crate::documents::card_targets(false)
+            .is_some_and(|cards| client.lanes.keys().any(|id| !cards.contains_key(id)))
+}
+
+/// The refusal of a call whose card finds no lane (`lane_room`).
+pub(super) fn no_lane() -> Value {
+    error_value(
+        "CAPACITY_EXCEEDED",
+        "this client already keeps sequences for 32 orchestrator cards on the Board",
+        "Ask the local Deck user to close orchestrator cards that are done, then call again with a new request.",
+    )
+}
+
 fn lane<'a>(client: &'a mut Client, card: &str) -> &'a mut Lane {
     if !client.lanes.contains_key(card) && client.lanes.len() >= MAX_LANES {
+        // only cards that left the Board make room (`lane_room` was asked)
         if let Some(cards) = crate::documents::card_targets(false) {
             client.lanes.retain(|id, _| cards.contains_key(id));
-        }
-        while client.lanes.len() >= MAX_LANES {
-            let Some(first) = client.lanes.keys().next().cloned() else {
-                break;
-            };
-            client.lanes.remove(&first);
         }
     }
     client.lanes.entry(card.to_owned()).or_default()
@@ -428,14 +451,35 @@ mod tests {
         assert_eq!(send_sequence(&client, Some("B")), 1);
         assert_eq!(trigger_sequence(&client, None), 6);
         assert_eq!(send_sequence(&client, None), 2);
-        for i in 0..(MAX_LANES * 2) {
+        // fill the lanes: A, B and 30 more cards
+        for i in 0..(MAX_LANES - 2) {
             bump_trigger(&mut client, Some(&format!("card{i:03}")));
         }
-        assert!(client.lanes.len() <= MAX_LANES);
-        assert_eq!(
-            trigger_sequence(&client, Some("card063")),
-            1,
-            "the newest kept"
-        );
+        assert_eq!(client.lanes.len(), MAX_LANES);
+        assert!(lane_room(&client, Some("A")), "a card with a lane");
+        assert!(lane_room(&client, None), "a caller from no card");
+        // no Board known: no lane may be dropped, so a new card has no room
+        let _board = crate::documents::test_door::hold();
+        assert!(!lane_room(&client, Some("new")));
+        // every card on the Board: still none
+        let cards = |ids: Vec<String>| {
+            let cards: Vec<Value> = ids
+                .into_iter()
+                .map(|id| json!({"id": id, "session": format!("deck-{id}"), "title": "", "cmd": "", "dir": "/tmp"}))
+                .collect();
+            crate::documents::test_door::commit(json!({"projects": [], "cards": cards}), true);
+        };
+        let mut all: Vec<String> = client.lanes.keys().cloned().collect();
+        cards(all.clone());
+        assert!(!lane_room(&client, Some("new")));
+        // card B left the Board: its lane alone makes room, A keeps its own
+        all.retain(|id| id != "B");
+        cards(all);
+        assert!(lane_room(&client, Some("new")));
+        bump_trigger(&mut client, Some("new"));
+        assert!(!client.lanes.contains_key("B"));
+        assert_eq!(trigger_sequence(&client, Some("A")), 1, "never reset");
+        assert_eq!(trigger_sequence(&client, Some("new")), 1);
+        assert_eq!(client.lanes.len(), MAX_LANES);
     }
 }

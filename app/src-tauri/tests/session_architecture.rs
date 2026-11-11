@@ -616,7 +616,9 @@ fn only_a_load_a_save_and_the_users_exit_commit_a_board() {
 /// choice because `commit_board` withdraws them. `card_follow_ups` is the
 /// fourth, for presentation only: the follow-ups a card's run froze, which
 /// `turn_summary` offers the model to pick one to mark; it grants nothing,
-/// so a recovered Board answers too. The reminder module keeps its own copy to
+/// so a recovered Board answers too. `card_targets` and `project_dirs` answer
+/// an MCP client's worker cards and project scope; `project_dirs` names only
+/// a current Board's projects. The reminder module keeps its own copy to
 /// project from (a wake or a tick projects without a commit) and offers it to
 /// nobody. The door reaches the projection through one observer, registered
 /// by the reminder module itself when its bridge starts; a second registrant,
@@ -652,14 +654,16 @@ fn the_board_door_owns_the_committed_board_and_tells_one_observer() {
             "card_follow_ups",
             "card_targets",
             "commit_board",
-            "committed_board"
+            "committed_board",
+            "project_dirs"
         ],
-        "the door's committed-Board copy has one writer and five readers: `committed_board` \
+        "the door's committed-Board copy has one writer and six readers: `committed_board` \
          for the door's own persistence decisions, `board_authority`, which answers only for a \
          current Board, for a reader that grants something on what the Board says, \
          `board_preset_choices` for the readers that take a preset's choice back, and \
          `card_follow_ups`, presentation only, for the follow-ups a turn summary may mark, and \
-         `card_targets`, where a worker card's terminal is (current only for a send)"
+         `card_targets`, where a worker card's terminal is (current only for a send), and \
+         `project_dirs`, the current Board's projects for an MCP client's project scope"
     );
     // the presentation reader has one caller, and it grants nothing
     assert_eq!(callers_of("card_follow_ups("), ["turn_summary.rs offer"]);

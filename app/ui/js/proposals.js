@@ -244,6 +244,14 @@ async function act(kind) {
       try { go = await confirmDialog(t('proposals.confirmReplace', { name: p.template.name })); }
       finally { $('cfm').classList.remove('cfm-over-dialog'); }
       if (!go) return;
+      /* the question took time: the client may have withdrawn the draft, or
+         lost the choice to draft, meanwhile. Read the list again and write
+         nothing for a draft that no longer waits. */
+      await refreshProposals();
+      if (shown?.id !== p.id || !pendingNow().some(x => x.id === p.id)) {
+        toast(t('proposals.gone'));
+        return;
+      }
     }
     const edited = kind === 'edit';
     let ruleId;

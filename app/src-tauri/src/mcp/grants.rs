@@ -78,8 +78,10 @@ pub(super) const NO_PROJECT_DIRECTORY: &str =
 
 /// The one project scope a client reaches `project_id` through: its own
 /// list, or, for a client of all projects, that project's default
-/// directory on the current Board, canonicalized now (the same checks an
-/// authorization root passes, too-broad roots refused).
+/// directory on the current Board (read now), canonicalized with the
+/// checks an authorization root passes (too-broad roots refused) — a
+/// directory's canonical form reused for `ROOT_REUSE`, since this runs
+/// inside the ledger lock and once per directory of a search.
 pub(super) fn scoped_project(client: &Client, project_id: &str) -> Result<ProjectScope, DeckError> {
     if client.all_projects {
         return board_scope(project_id);
@@ -122,6 +124,38 @@ pub(super) fn reach(client: &Client) -> HashSet<String> {
         .iter()
         .map(|p| p.project_id.clone())
         .collect()
+}
+
+/// The projects the ledger itself says a client holds something in: its
+/// managed sessions, its execution grants and its pending operations. A
+/// scope change reads these besides the reach, so what leaves the scope is
+/// withdrawn even while no current Board names the projects (a client of
+/// all projects reaches none then) or after a project left the Board.
+pub(super) fn held_projects(doc: &DiskDoc, client_id: &str) -> HashSet<String> {
+    let sessions = doc
+        .sessions
+        .iter()
+        .filter(|s| s.owner_client_id == client_id)
+        .map(|s| s.project_id.clone());
+    let grants = doc
+        .execution_grants
+        .iter()
+        .filter(|g| g.client_id == client_id && g.revoked_at.is_none())
+        .map(|g| g.project_id.clone());
+    let pending = doc
+        .operations
+        .iter()
+        .filter(|o| {
+            o.client_id == client_id && matches!(o.state.as_str(), "accepted" | "executing")
+        })
+        .filter_map(|o| {
+            o.result
+                .as_ref()?
+                .get("projectId")?
+                .as_str()
+                .map(str::to_owned)
+        });
+    sessions.chain(grants).chain(pending).collect()
 }
 
 /// A project left a client's reach (`client_permissions`): everything it
@@ -206,20 +240,39 @@ fn board_projects() -> Vec<(String, String)> {
     if let Some(forced) = BOARD_PROJECTS_FOR_TESTS.with(|cell| cell.borrow().clone()) {
         return forced;
     }
-    let Some(board) = crate::documents::board_authority() else {
-        return Vec::new();
-    };
-    board["projects"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|p| {
-            Some((
-                p["id"].as_str()?.to_owned(),
-                p["dir"].as_str().unwrap_or_default().to_owned(),
-            ))
-        })
-        .collect()
+    crate::documents::project_dirs().unwrap_or_default()
+}
+
+/// How long one directory's canonical form is reused: a scope check runs
+/// inside the ledger lock and, in a search, once per directory walked, so
+/// the disk is asked at most this often per directory (keyed by the
+/// directory as the Board names it: a changed default directory is a new
+/// key, read at once).
+const ROOT_REUSE: std::time::Duration = std::time::Duration::from_secs(2);
+const ROOT_CACHE_MAX: usize = 256;
+
+type RootCache = HashMap<String, (Option<String>, Instant)>;
+
+fn root_cache() -> &'static Mutex<RootCache> {
+    static ROOTS: OnceLock<Mutex<RootCache>> = OnceLock::new();
+    ROOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The canonical authorization root of a project's default directory, or
+/// `None` when it cannot be one (missing, unreadable, too broad).
+fn canonical_default_dir(dir: &str) -> Option<String> {
+    if let Some((root, at)) = root_cache().lock_or_recover().get(dir) {
+        if at.elapsed() < ROOT_REUSE {
+            return root.clone();
+        }
+    }
+    let root = super::commands::canonical_project_root(&crate::tmux::expand_tilde(dir)).ok();
+    let mut cache = root_cache().lock_or_recover();
+    if cache.len() >= ROOT_CACHE_MAX {
+        cache.clear();
+    }
+    cache.insert(dir.to_owned(), (root.clone(), Instant::now()));
+    root
 }
 
 #[cfg(test)]
@@ -237,13 +290,12 @@ fn board_scope(project_id: &str) -> Result<ProjectScope, DeckError> {
     if dir.trim().is_empty() {
         return Err(DeckError::new(ErrorKind::Perm, NO_PROJECT_DIRECTORY));
     }
-    let root = super::commands::canonical_project_root(&crate::tmux::expand_tilde(dir.trim()))
-        .map_err(|_| {
-            DeckError::new(
-                ErrorKind::Perm,
-                "project default directory cannot be authorized (missing, unreadable or too broad)",
-            )
-        })?;
+    let root = canonical_default_dir(dir.trim()).ok_or_else(|| {
+        DeckError::new(
+            ErrorKind::Perm,
+            "project default directory cannot be authorized (missing, unreadable or too broad)",
+        )
+    })?;
     Ok(ProjectScope {
         project_id: project_id.to_owned(),
         roots: vec![root],

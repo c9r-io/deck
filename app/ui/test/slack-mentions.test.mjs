@@ -368,7 +368,22 @@ test('the view folds what orchestrators took care of below, shows each mark and 
   const line = detail().find(node => String(node.className).startsWith('mention-mark-line'));
   assert.equal(line.children[0].textContent, t('mentions.markHandlingCard', { by: 'Orch A', card: 'Fix' }));
   assert.equal(line.children[1].textContent, 'on it');
-  line.children[2].fire('click');
+  // "Dismiss all" takes the rows shown: with the fold closed, not the
+  // mention an orchestrator is on
+  fold.fire('click');
+  ctx.cfmResolve = null;
+  ids.get('mentions-dismiss-all').fire('click');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const { cfmDone } = await import('../js/dialogs.js');
+  cfmDone(true);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(b.named('slack_mention_dismiss').at(-1)[1].keys, [ITEMS[1].key]);
+  b.set({ enabled: true, lastPoll: 9, lastError: null, items: ITEMS, handed: [], marks });
+  await refreshMentions();
+  ids.get('mentions-list').children.find(node => node.className === 'mention-fold').fire('click');
+  rows()[1].fire('click');
+  const line2 = detail().find(node => String(node.className).startsWith('mention-mark-line'));
+  line2.children[2].fire('click');
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(b.named('slack_mention_clear_mark'), [['slack_mention_clear_mark', { key: ITEMS[0].key }]]);
   // a mark that arrives on the mention already shown repaints the reader

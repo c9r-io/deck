@@ -1306,6 +1306,7 @@ const dictionary = {
   "proposals.stale.template": "下書きのテンプレートがありません。却下するか、下書きし直してもらってください。",
   "proposals.stale.blocked": "メッセージのプレースホルダーで始まるステップがあり、Deck は受け付けません。却下してください。",
   "proposals.saveFailed": "下書きを保存できませんでした。何も変更されていません。",
+  "proposals.gone": "この下書きはもう承認待ちではありません。Agent が取り下げたか、下書きできなくなりました。何も保存していません。",
   "proposals.decideFailed": "保存しましたが、クライアントに伝えられませんでした。",
   "proposals.rejected": "{name} の下書きを却下しました",
   "proposals.approved": "承認して保存しました",

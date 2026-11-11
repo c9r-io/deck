@@ -1306,6 +1306,7 @@ const dictionary = {
   "proposals.stale.template": "Die Vorlage des Entwurfs gibt es nicht mehr. Lehnen Sie ihn ab oder bitten Sie um einen neuen.",
   "proposals.stale.blocked": "Ein Schritt beginnt mit einem Nachrichtenplatzhalter, den Deck ablehnt. Lehnen Sie ihn ab.",
   "proposals.saveFailed": "Der Entwurf konnte nicht gespeichert werden. Nichts wurde geändert.",
+  "proposals.gone": "Dieser Entwurf wartet nicht mehr auf Sie: Der Agent hat ihn zurückgezogen oder darf nicht mehr entwerfen. Nichts wurde gespeichert.",
   "proposals.decideFailed": "Gespeichert, aber der Client konnte nicht benachrichtigt werden.",
   "proposals.rejected": "Entwurf von {name} abgelehnt",
   "proposals.approved": "Genehmigt und gespeichert",

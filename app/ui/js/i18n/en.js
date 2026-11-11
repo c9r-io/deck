@@ -1313,6 +1313,7 @@ const dictionary = {
   "proposals.stale.template": "The template the draft names is gone. Reject it, or ask for a new draft.",
   "proposals.stale.blocked": "A step begins with a message placeholder, which Deck refuses. Reject it.",
   "proposals.saveFailed": "Could not save the draft. Nothing was changed.",
+  "proposals.gone": "That draft no longer waits for you: the agent withdrew it or can no longer draft. Nothing was saved.",
   "proposals.decideFailed": "Saved, but the client could not be told.",
   "proposals.rejected": "Rejected the draft from {name}",
   "proposals.approved": "Approved and saved",

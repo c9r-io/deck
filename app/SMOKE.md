@@ -560,7 +560,7 @@ the same carrier as `orchestrators` (debug only, isolated data dir under
 signed-in Claude Code. The page starts seven plain-shell cards, each typed
 one command (`claude`; `--permission-mode acceptEdits`;
 `--dangerously-skip-permissions`; `--permission-mode auto`; `--effort
-high`; `--setting-sources project`; `--settings {}`), waits 25 s and asks
+high`; `--setting-sources user,project`; `--settings {}`), waits 25 s and asks
 for ONE preview (read-only: nothing restarts, nothing is typed into a
 client). Every card must be a candidate (`shape-*` a=1; -2 is the old
 `launch-shape` refusal). Judge with `scripts/smoke-verdict <data>

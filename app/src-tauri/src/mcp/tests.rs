@@ -1682,8 +1682,47 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
         root.display().to_string()
     )
     .is_err());
+    // what only the client's presence keeps: a draft, a worker record and
+    // a mark — deleting the client takes them with it
+    runtime
+        .write(|doc| {
+            doc.proposals.push(
+                serde_json::from_value(json!({
+                    "id": "prop_gone", "clientId": added.id, "requestId": "req_gone",
+                    "requestHash": "a".repeat(64), "contentHash": "b".repeat(64),
+                    "projectId": "P1", "template": {"name": "t", "steps": ["a"]},
+                    "createdAt": 1, "status": "rejected"
+                }))
+                .unwrap(),
+            );
+            doc.workers.push(Worker {
+                card_id: "W_gone".into(),
+                client_id: added.id.clone(),
+                operation_id: "op_gone".into(),
+                automation_id: "claude".into(),
+                created_at: 1,
+                held: false,
+                orchestrator: None,
+            });
+            doc.mention_marks.push(MentionMark {
+                key: "C1/1.000001".into(),
+                client_id: added.id.clone(),
+                orchestrator: None,
+                mark: "for-you".into(),
+                card_id: None,
+                note: String::new(),
+                at: now_ms(),
+            });
+            Ok(())
+        })
+        .unwrap();
     mcp_client_revoke(added.id.clone()).unwrap();
     mcp_client_delete(added.id.clone()).unwrap();
+    assert!(runtime
+        .read(|doc| doc.proposals.iter().all(|p| p.client_id != added.id)
+            && doc.workers.iter().all(|w| w.client_id != added.id)
+            && doc.mention_marks.iter().all(|m| m.client_id != added.id))
+        .unwrap());
     assert!(mcp_status()
         .unwrap()
         .clients
@@ -6902,6 +6941,9 @@ fn a_client_reaches_listed_or_all_projects_through_their_own_directories() {
             Ok(())
         })
         .unwrap();
+    // no current Board names the projects at that moment: what the ledger
+    // says the client holds in P1 still leaves with P1
+    super::grants::BOARD_PROJECTS_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(Vec::new()));
     client_permissions(
         &runtime,
         "client_a",
@@ -6978,15 +7020,44 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
         })
         .unwrap();
     crate::documents::test_door::commit(json!({"projects": [], "cards": cards}), true);
-    let room = |orchestrator: Option<&str>, pending: usize| {
+    let room = |orchestrator: Option<&str>| {
         runtime
-            .read(|doc| room_for_worker(doc, "client_a", orchestrator, pending).is_ok())
+            .read(|doc| room_for_worker(doc, "client_a", orchestrator).is_ok())
             .unwrap()
     };
-    assert!(!room(Some("OA"), 0), "OA is full");
-    assert!(room(Some("OB"), 0), "another orchestrator card has room");
-    assert!(room(None, 0));
-    assert!(!room(Some("OB"), 8), "OB with its own pending starts");
+    assert!(!room(Some("OA")), "OA is full");
+    assert!(room(Some("OB")), "another orchestrator card has room");
+    assert!(room(None));
+    // eight starts and handovers of OB accepted, no card yet: OB is full,
+    // and nobody else's room is taken by them
+    runtime
+        .write(|doc| {
+            for i in 0..8 {
+                doc.operations.push(Operation {
+                    operation_id: format!("op_pending_{i}"),
+                    request_id: format!("req_pending_{i}"),
+                    kind: if i % 2 == 0 {
+                        WORKER_START_KIND
+                    } else {
+                        TRIGGER_KIND
+                    }
+                    .into(),
+                    result: Some(json!({"orchestratorCardId": "OB"})),
+                    ..operation(TRIGGER_KIND, "accepted")
+                });
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert!(!room(Some("OB")), "OB with its own pending starts");
+    assert!(room(Some("OC")));
+    runtime
+        .write(|doc| {
+            doc.operations
+                .retain(|o| !o.operation_id.starts_with("op_pending_"));
+            Ok(())
+        })
+        .unwrap();
     // 24 more on three other orchestrator cards: the client bound
     runtime
         .write(|doc| {
@@ -7007,8 +7078,8 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
         })
         .unwrap();
     crate::documents::test_door::commit(json!({"projects": [], "cards": cards}), true);
-    assert!(!room(Some("OB"), 0), "32 on the Board: the client is full");
-    assert!(!room(None, 0));
+    assert!(!room(Some("OB")), "32 on the Board: the client is full");
+    assert!(!room(None));
     drop(root);
 }
 
@@ -7138,6 +7209,15 @@ fn orchestrators_mark_mentions_for_the_user_and_never_dismiss_them() {
         board(false);
         let ui = serde_json::to_value(marks_ui(&runtime)).unwrap();
         assert_eq!(ui[&b]["cardClosed"], true, "the card left the Board");
+        // Orch A's card left the Board too: its mark blocks nobody, B may
+        // mark the mention now
+        crate::documents::test_door::commit(
+            json!({"projects": [], "cards": [
+                {"id": "OB", "session": "deck-ob", "title": "Orch B", "cmd": "", "dir": "/tmp"}
+            ]}),
+            true,
+        );
+        assert_eq!(mark("OB", &b, json!({"mark": "handling"}))["ok"], true);
         // the user clears it; B may mark it now
         assert!(clear_mark(&runtime, &b).unwrap());
         assert!(!clear_mark(&runtime, &b).unwrap(), "idempotent");

@@ -1254,6 +1254,29 @@ pub(crate) fn board_authority() -> Option<serde_json::Value> {
     }
 }
 
+/// The current Board's projects and their default directories (`""` for
+/// none), without copying the rest of the Board; `None` while no current
+/// Board is known (a recovered one names none).
+pub(crate) fn project_dirs() -> Option<Vec<(String, String)>> {
+    let committed = COMMITTED_BOARD.lock_or_recover();
+    let Some((board, BoardStanding::Current)) = committed.as_ref() else {
+        return None;
+    };
+    Some(
+        board["projects"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| {
+                Some((
+                    p["id"].as_str()?.to_owned(),
+                    p["dir"].as_str().unwrap_or_default().to_owned(),
+                ))
+            })
+            .collect(),
+    )
+}
+
 /// Where a card's terminal is, as the committed Board says, for a worker
 /// card's orchestrator (`mcp/workers.rs`).
 #[derive(Clone, Debug, PartialEq, Eq)]

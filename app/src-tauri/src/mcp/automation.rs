@@ -201,14 +201,20 @@ pub(super) fn trigger_item(
     }
     // Pre-checks under the read lock; the authoritative sequence check is
     // in the write below.
-    let stale = runtime
+    let (stale, room) = runtime
         .read(|doc| {
             delegated(doc, client_id).map(|client| {
-                super::origin::trigger_sequence(client, orchestrator) != trigger_sequence
+                (
+                    super::origin::trigger_sequence(client, orchestrator) != trigger_sequence,
+                    super::origin::lane_room(client, orchestrator),
+                )
             })
         })
         .map_err(map_error)?
         .map_err(map_error)?;
+    if !room {
+        return Err(super::origin::no_lane());
+    }
     if stale {
         return Err(map_error(DeckError::new(
             ErrorKind::ContextChanged,
@@ -224,7 +230,7 @@ pub(super) fn trigger_item(
                 .iter()
                 .any(|c| c.id == client_id && c.allow_workers)
             {
-                super::workers::room_for_worker(doc, client_id, orchestrator, 0).err()
+                super::workers::room_for_worker(doc, client_id, orchestrator).err()
             } else {
                 None
             }
@@ -266,7 +272,7 @@ pub(super) fn trigger_item(
     let item = item()?;
     let minted = random_id("op_", 16).map_err(map_error)?;
     let now = crate::datadir::now_epoch();
-    let (operation_id, _) = crate::inbound_agent::stage(
+    let (operation_id, staged) = crate::inbound_agent::stage(
         crate::inbound_agent::Submission {
             client: client_id.into(),
             request_id: request_id.to_string(),
@@ -283,58 +289,67 @@ pub(super) fn trigger_item(
         now,
     )
     .map_err(map_error)?;
-    let operation = runtime
-        .write(|doc| {
-            delegated(doc, client_id)?;
-            if let Some(existing) = existing_operation(doc, client_id, request_id, hash)? {
-                return Ok(existing.clone());
+    let operation = runtime.write(|doc| {
+        delegated(doc, client_id)?;
+        if let Some(existing) = existing_operation(doc, client_id, request_id, hash)? {
+            return Ok(existing.clone());
+        }
+        if trigger_sequence
+            != super::origin::trigger_sequence(delegated(doc, client_id)?, orchestrator)
+        {
+            return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
+        }
+        reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
+        let operation = Operation {
+            operation_id: operation_id.clone(),
+            client_id: client_id.into(),
+            request_id: request_id.to_string(),
+            request_hash: hash.to_string(),
+            kind: TRIGGER_KIND.into(),
+            state: "accepted".into(),
+            code: None,
+            result: Some({
+                let mut result = json!({
+                    "automationId": automation_id,
+                    "revision": revision,
+                });
+                if let Some(origin) = origin {
+                    result["origin"] = json!(origin);
+                }
+                if let Some(card) = orchestrator {
+                    result[super::origin::RESULT_KEY] = json!(card);
+                }
+                result
+            }),
+            accepted_at: now_ms(),
+            updated_at: now_ms(),
+            admission_hash: None,
+            session_id: None,
+            control_epoch: None,
+            control_sequence: None,
+        };
+        if let Some(client) = doc
+            .config
+            .clients
+            .iter_mut()
+            .find(|client| client.id == client_id)
+        {
+            super::origin::bump_trigger(client, orchestrator);
+        }
+        doc.operations.push(operation.clone());
+        Ok(operation)
+    });
+    // nothing was accepted: the entry this call staged goes again, so it
+    // holds no mention and takes no inbox slot
+    let operation = match operation {
+        Ok(operation) => operation,
+        Err(error) => {
+            if staged == crate::inbound_agent::Staged::New {
+                crate::inbound_agent::unstage(client_id, request_id, &operation_id);
             }
-            if trigger_sequence
-                != super::origin::trigger_sequence(delegated(doc, client_id)?, orchestrator)
-            {
-                return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
-            }
-            reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
-            let operation = Operation {
-                operation_id: operation_id.clone(),
-                client_id: client_id.into(),
-                request_id: request_id.to_string(),
-                request_hash: hash.to_string(),
-                kind: TRIGGER_KIND.into(),
-                state: "accepted".into(),
-                code: None,
-                result: Some({
-                    let mut result = json!({
-                        "automationId": automation_id,
-                        "revision": revision,
-                    });
-                    if let Some(origin) = origin {
-                        result["origin"] = json!(origin);
-                    }
-                    if let Some(card) = orchestrator {
-                        result[super::origin::RESULT_KEY] = json!(card);
-                    }
-                    result
-                }),
-                accepted_at: now_ms(),
-                updated_at: now_ms(),
-                admission_hash: None,
-                session_id: None,
-                control_epoch: None,
-                control_sequence: None,
-            };
-            if let Some(client) = doc
-                .config
-                .clients
-                .iter_mut()
-                .find(|client| client.id == client_id)
-            {
-                super::origin::bump_trigger(client, orchestrator);
-            }
-            doc.operations.push(operation.clone());
-            Ok(operation)
-        })
-        .map_err(map_error)?;
+            return Err(map_error(error));
+        }
+    };
     crate::inbound_agent::commit(client_id, request_id, &operation.operation_id)
         .map_err(map_error)?;
     crate::inbound::inbound_check_now();

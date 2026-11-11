@@ -1312,6 +1312,7 @@ const dictionary = {
   "proposals.stale.template": "草稿使用的模板已不存在。请拒绝，或让它重新起草。",
   "proposals.stale.blocked": "有步骤以消息占位符开头，Deck 不接受。请拒绝。",
   "proposals.saveFailed": "草稿没有保存，什么都没有改。",
+  "proposals.gone": "这份草稿已不再等你审批：Agent 撤回了它，或已不能再起草。没有保存任何内容。",
   "proposals.decideFailed": "已保存，但没能通知客户端。",
   "proposals.rejected": "已拒绝 {name} 的草稿",
   "proposals.approved": "已批准并保存",

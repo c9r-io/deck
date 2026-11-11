@@ -213,7 +213,13 @@ const RESUME: &str = "--resume";
 /// `--fork-session`, `--allow-dangerously-skip-permissions`,
 /// `--permission-mode bypassPermissions`, another config root, a provider
 /// or credential override — classifies as unsupported and is never
-/// re-entered automatically; the preview names a flag of `named`.
+/// re-entered automatically; the preview names a flag of `named`. So does
+/// a value the request could not type as one word (empty, a control
+/// character), and setting sources that leave out the user's (where Deck's
+/// lifecycle hooks are) with no `--settings` of the launch's own: no
+/// receipt could arrive. What a carried settings file or JSON holds is the
+/// user's own and is NOT read: it may change the client's mode or hooks,
+/// and a re-entry is still only "entered", never a permission verified.
 const GRAMMAR: LaunchGrammar = LaunchGrammar {
     bypass: BYPASS,
     resume: &[RESUME, "-r"],
@@ -225,6 +231,10 @@ const GRAMMAR: LaunchGrammar = LaunchGrammar {
     dropped: &[],
     carried: &["--model", "--effort", "--settings", "--setting-sources"],
     carry_mode: true,
+    // Deck's lifecycle hooks are in the user's settings
+    // (`agent_status/hooks.rs`): a launch whose setting sources leave them
+    // out and that brings no settings of its own is never offered
+    sources: Some(("--setting-sources", "user", "--settings")),
     named: &[
         "--allow-dangerously-skip-permissions",
         "--fork-session",
@@ -493,6 +503,28 @@ mod tests {
             Some("--permission-mode")
         );
         assert_eq!(refused(&["--settings"]), Some("--settings"), "no value");
+        assert_eq!(refused(&["--model="]), Some("--model"), "an empty value");
+        assert_eq!(
+            refused(&["--settings", "{\n}"]),
+            Some("--settings"),
+            "a value the request cannot type as one word"
+        );
+        // setting sources without the user's, where Deck's hooks are, and
+        // no settings of the launch's own: no receipt could ever arrive
+        assert_eq!(
+            refused(&["--setting-sources", "project"]),
+            Some("--setting-sources")
+        );
+        assert_eq!(refused(&["--setting-sources", "user,project"]), None);
+        assert_eq!(
+            refused(&[
+                "--setting-sources",
+                "project",
+                "--settings",
+                "/w/hooks.json"
+            ]),
+            None
+        );
         assert_eq!(
             refused(&[
                 "--dangerously-skip-permissions",

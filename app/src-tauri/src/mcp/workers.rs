@@ -178,16 +178,31 @@ pub(super) fn record_worker(doc: &mut DiskDoc, operation: &Operation, card: &str
     });
 }
 
-/// Whether `client` may start one more worker card from `orchestrator`
-/// with `pending` starts not yet on the Board: at most `MAX_LIVE_WORKERS`
-/// for that orchestrator card (or for its callers from no card) and
-/// `MAX_CLIENT_WORKERS` in all.
+/// Whether `client` may start one more worker card from `orchestrator`:
+/// at most `MAX_LIVE_WORKERS` for that orchestrator card (or for its
+/// callers from no card) and `MAX_CLIENT_WORKERS` in all, counting the
+/// worker cards on the Board and the starts and handovers accepted that
+/// have no card yet — each for the orchestrator card it came from.
 pub(super) fn room_for_worker(
     doc: &DiskDoc,
     client: &str,
     orchestrator: Option<&str>,
-    pending: usize,
 ) -> Result<(), Value> {
+    let waiting: Vec<Option<String>> = doc
+        .operations
+        .iter()
+        .filter(|o| {
+            o.client_id == client
+                && matches!(o.kind.as_str(), WORKER_START_KIND | TRIGGER_KIND)
+                && matches!(o.state.as_str(), "accepted" | "executing")
+        })
+        .map(super::origin::of_operation)
+        .collect();
+    let pending_own = waiting
+        .iter()
+        .filter(|card| card.as_deref() == orchestrator)
+        .count();
+    let pending = waiting.len();
     let cards = crate::documents::card_targets(false);
     let live: Vec<&Worker> = doc
         .workers
@@ -206,7 +221,7 @@ pub(super) fn room_for_worker(
             "Ask the local Deck user to close finished worker cards, then start again with a new request.",
         )
     };
-    if own + pending >= MAX_LIVE_WORKERS {
+    if own + pending_own >= MAX_LIVE_WORKERS {
         return Err(full(
             "this orchestrator already has 8 worker cards on the Board",
         ));
@@ -709,6 +724,9 @@ pub(super) fn worker_send(
     let (worker, stale) = runtime
         .read(|doc| -> Result<Result<(Worker, bool), Value>, DeckError> {
             let client = driving(doc, client_id)?;
+            if !super::origin::lane_room(client, orchestrator) {
+                return Ok(Err(super::origin::no_lane()));
+            }
             let stale = super::origin::send_sequence(client, orchestrator) != args.send_sequence;
             Ok(own_card(doc, client_id, orchestrator, &args.card_id).map(|w| (w, stale)))
         })
@@ -1094,6 +1112,9 @@ pub(super) fn worker_start(
                 return Ok(Ok(existing.clone()));
             }
             let client = driving(doc, client_id)?.clone();
+            if !super::origin::lane_room(&client, orchestrator) {
+                return Ok(Err(super::origin::no_lane()));
+            }
             if args.send_sequence != super::origin::send_sequence(&client, orchestrator) {
                 return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
             }
@@ -1119,16 +1140,7 @@ pub(super) fn worker_start(
                     canonical_scope(root, &project.roots)?
                 }
             };
-            let pending_starts = doc
-                .operations
-                .iter()
-                .filter(|o| {
-                    o.client_id == client_id
-                        && o.kind == WORKER_START_KIND
-                        && matches!(o.state.as_str(), "accepted" | "executing")
-                })
-                .count();
-            if let Err(full) = room_for_worker(doc, client_id, orchestrator, pending_starts) {
+            if let Err(full) = room_for_worker(doc, client_id, orchestrator) {
                 return Ok(Err(full));
             }
             reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
@@ -1301,6 +1313,7 @@ pub(super) fn client_permissions(
         let _fence = crate::storage::settings_fence();
         let _delivery = runtime.delivery.lock_or_recover();
         withdrew_automations = runtime.write(|doc| {
+            let held = held_projects(doc, client_id);
             let client = doc
                 .config
                 .clients
@@ -1318,15 +1331,22 @@ pub(super) fn client_permissions(
                 client.allow_mentions,
                 client.rule_column,
             );
-            let reach_before = reach(client);
+            // what it reached, and what the ledger says it holds anywhere
+            let mut reach_before = reach(client);
+            reach_before.extend(held);
             let scope_before = (client.all_projects, scope_key(&client.projects));
             if let Some((all, scopes)) = &scope {
                 client.all_projects = *all;
                 client.projects = scopes.clone();
             }
             let scope_changed = scope_before != (client.all_projects, scope_key(&client.projects));
-            let removed: HashSet<String> =
-                reach_before.difference(&reach(client)).cloned().collect();
+            // a client of all projects keeps every project: nothing leaves
+            // only a scope change withdraws anything
+            let removed: HashSet<String> = if client.all_projects || scope.is_none() {
+                HashSet::new()
+            } else {
+                reach_before.difference(&reach(client)).cloned().collect()
+            };
             client.allow_create = permissions.allow_create;
             client.allow_automations = permissions.allow_automations;
             client.allow_workers = permissions.allow_workers;

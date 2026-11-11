@@ -827,6 +827,12 @@ pub(crate) struct LaunchGrammar {
     pub(crate) carried: &'static [&'static str],
     /// The permission-mode flag and its ordinary value are carried too.
     pub(crate) carry_mode: bool,
+    /// A carried flag that chooses which settings the client loads, the
+    /// source Deck's own lifecycle hooks are installed in, and the carried
+    /// flag that may bring hooks back: a launch that leaves that source out
+    /// without the other flag reports no lifecycle receipt, so it is
+    /// refused (named by the first flag) rather than offered and lost.
+    pub(crate) sources: Option<(&'static str, &'static str, &'static str)>,
     /// Flags this adapter knows and does not support, named in the preview
     /// when one refuses a launch (any other word is said as `other-flag` or
     /// `positional`: a launch's words never reach the view or the log).
@@ -1013,7 +1019,11 @@ pub(crate) fn reduce_launch_full(
             }
             mode = true;
         } else if let Some(name) = grammar.carried.iter().find(|name| **name == flag) {
-            let Some(chosen) = value(&mut rest) else {
+            // a value the request could not type again as one word is
+            // refused here, not found out after the shell was made
+            let Some(chosen) =
+                value(&mut rest).filter(|v| !v.is_empty() && !v.chars().any(char::is_control))
+            else {
                 return refuse(name);
             };
             carried.push((*name).to_string());
@@ -1041,6 +1051,20 @@ pub(crate) fn reduce_launch_full(
     }
     if bypass && mode {
         return refuse(grammar.mode);
+    }
+    if let Some((flag, needed, rescue)) = grammar.sources {
+        let value_of = |name: &str| {
+            carried
+                .chunks(2)
+                .find(|pair| pair[0] == name)
+                .map(|pair| pair[1].clone())
+        };
+        if let Some(sources) = value_of(flag) {
+            let leaves_out = !sources.split(',').any(|source| source.trim() == needed);
+            if leaves_out && value_of(rescue).is_none() {
+                return refuse(flag);
+            }
+        }
     }
     if let Some(at) = required_seen.iter().position(|seen| !seen) {
         return refuse(grammar.required[at]);
@@ -2482,6 +2506,7 @@ mod tests {
         dropped: &["--model"],
         carried: &[],
         carry_mode: false,
+        sources: None,
         named: &[],
         switches: &["--continue", "-c"],
         directories: "--add-dir",

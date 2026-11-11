@@ -103,6 +103,7 @@ const GRAMMAR: LaunchGrammar = LaunchGrammar {
     dropped: &["--model", "-m"],
     carried: &[],
     carry_mode: false,
+    sources: None,
     named: &[],
     switches: &[],
     directories: "--add-dir",
