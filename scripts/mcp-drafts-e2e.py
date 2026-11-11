@@ -14,8 +14,9 @@ proposal, an identical second submission is DUPLICATE_PROPOSAL), and the
 page approves it: deck_automation_list then lists the rule. A change to that
 rule is submitted and the page saves it for editing (`edited`); a third
 draft is rejected (`rejected`); a fourth waits while the page withdraws the
-draft choice: it becomes `withdrawn` and deck_config_describe answers
-PERMISSION_DENIED.
+draft choice: it becomes `withdrawn`, deck_config_describe answers
+PERMISSION_DENIED, and once the page grants the choice again the fourth
+still reads `withdrawn`.
 
 Prints closed facts only (codes, ids, statuses, counts, seconds). Exit 0
 when every expectation held, 1 otherwise, 2 for usage.
@@ -162,8 +163,11 @@ def main():
             if not ok and code(out) == "PERMISSION_DENIED":
                 denied = out
                 break
-            time.sleep(3)
+            time.sleep(1)
         step("withdrawn-denied", denied is not None)
+        # once the page grants the choice again the fourth reads withdrawn
+        done, last = status_until(waiting, "withdrawn", 120)
+        step("withdrawn-status", done, status=last)
     except Exception as error:  # a failed step is reported, never hidden
         step("exception", False, kind=type(error).__name__, text=str(error)[:160])
     finally:

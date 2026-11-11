@@ -162,6 +162,9 @@ export async function runWorkersSmoke({ drafting = false } = {}) {
     $('set-close').click();
     const gone = await until(async () => { await refreshProposals(); return p4 && !pendingNow().some(value => value.id === p4.id) ? true : null; }, 15_000, 500);
     await report('drafts-withdrawn', !!gone && !template('Later'));
+    /* the choice stays off long enough for the client to see its
+       PERMISSION_DENIED (it polls every second) before it is granted again */
+    await pause(15_000);
 
     /* 5. granted again for a real agent: its own draft, approved as shown */
     await setPermission('orchestrator', 'mcp-perm-drafts', true);
