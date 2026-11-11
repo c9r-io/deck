@@ -1181,6 +1181,7 @@ pub(super) fn client_permissions(
                 client.worker_first_send,
                 client.worker_types.clone(),
                 client.allow_drafts,
+                client.allow_mentions,
             );
             client.allow_create = permissions.allow_create;
             client.allow_automations = permissions.allow_automations;
@@ -1189,6 +1190,7 @@ pub(super) fn client_permissions(
             client.worker_first_send = permissions.allow_workers && permissions.worker_first_send;
             client.worker_types = permissions.worker_types.clone();
             client.allow_drafts = permissions.allow_drafts;
+            client.allow_mentions = permissions.allow_mentions;
             let after = (
                 client.allow_create,
                 client.allow_automations,
@@ -1197,6 +1199,7 @@ pub(super) fn client_permissions(
                 client.worker_first_send,
                 client.worker_types.clone(),
                 client.allow_drafts,
+                client.allow_mentions,
             );
             if before == after {
                 return Ok(false);

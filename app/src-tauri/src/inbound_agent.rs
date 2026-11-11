@@ -40,6 +40,14 @@
 //!   disabled (`reject_all`), retires its unhandled entries as `skipped:
 //!   client-revoked`; MCP has rejected their operations in the same
 //!   transaction. Both happen before any card exists.
+//! - A Slack mention handed over (`mcp/mentions.rs`) is an ordinary entry
+//!   whose fields Deck filled from the mention, plus the mention's
+//!   `channel/ts` key (`mention`, an identifier, optional so older entries
+//!   read unchanged). An entry holds its mention while committed, while
+//!   staged for less than `STAGED_HOLD_SECS` (an acceptance that failed after
+//!   staging hides nothing for long), and once handled into a card; a
+//!   skipped entry gives it back to the user's list. `stage` refuses a
+//!   second entry for a held mention (`MENTION_TAKEN`) under the inbox lock.
 //! - Capacity: at most `MAX_ENTRIES` unhandled entries and `MAX_LEDGER` in
 //!   all; a full inbox refuses the stage (`CAPACITY_EXCEEDED` to the client)
 //!   and nothing is written. The horizon (`HORIZON_SECS`) prunes handled
@@ -129,6 +137,10 @@ pub(crate) struct Entry {
     pub(crate) state: EntryState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) handled: Option<Handled>,
+    /// The Slack mention this item was handed over from
+    /// (`deck_mention_handoff`): its `channel/ts` key, an identifier only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) mention: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -160,6 +172,58 @@ pub(crate) struct Submission {
     pub(crate) from: String,
     pub(crate) where_: String,
     pub(crate) link: String,
+    /// The Slack mention handed over, when the item is one.
+    pub(crate) mention: Option<String>,
+}
+
+/// The message of the refusal `stage` gives a mention that another item
+/// already holds (`mcp::map_error` → `MENTION_SETTLED`).
+pub(crate) const MENTION_TAKEN: &str = "mention-taken";
+/// How long a staged entry (its operation not yet on disk) holds its
+/// mention: long enough to cover the acceptance, short enough that an
+/// acceptance that failed after staging hides nothing for long.
+const STAGED_HOLD_SECS: u64 = 60;
+
+/// Whether `e` holds its mention now: committed, staged moments ago, or
+/// handled into a card. A skipped item gives the mention back to the list.
+fn holds_mention(e: &Entry, now: u64) -> bool {
+    match e.state {
+        EntryState::Committed => true,
+        EntryState::Staged => now.saturating_sub(e.staged_at) < STAGED_HOLD_SECS,
+        EntryState::Handled => e.handled.as_ref().is_some_and(|h| h.outcome == "done"),
+    }
+}
+
+/// One mention an item holds, for the mention list: who it went to, which
+/// rule, and the card once there is one.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MentionHandoff {
+    pub(crate) mention: String,
+    pub(crate) client: String,
+    pub(crate) rule: String,
+    pub(crate) card: Option<String>,
+}
+
+/// Every mention an item holds now. Empty when the inbox cannot be read
+/// (the list then shows the mention, never hides it on a guess).
+pub(crate) fn mention_handoffs(now: u64) -> Vec<MentionHandoff> {
+    with_store(|store| {
+        Ok(store
+            .doc
+            .entries
+            .iter()
+            .filter(|e| holds_mention(e, now))
+            .filter_map(|e| {
+                Some(MentionHandoff {
+                    mention: e.mention.clone()?,
+                    client: e.client.clone(),
+                    rule: e.rule.clone(),
+                    card: e.handled.as_ref().and_then(|h| h.card.clone()),
+                })
+            })
+            .collect())
+    })
+    .unwrap_or_default()
 }
 
 /// The outcome of `stage`: a fresh entry, or the entry an earlier attempt of
@@ -196,6 +260,12 @@ fn valid_entry(e: &Entry) -> bool {
         && [&e.from, &e.where_, &e.link]
             .iter()
             .all(|f| f.len() <= MAX_FIELD_BYTES && one_line(f))
+        && e.mention.as_ref().is_none_or(|m| {
+            !m.is_empty()
+                && m.len() <= 128
+                && m.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'/' || b == b'.')
+        })
         && e.staged_at > 0
         && match (e.state, &e.handled) {
             (EntryState::Handled, Some(h)) => {
@@ -365,6 +435,7 @@ pub(crate) fn stage(s: Submission, now: u64) -> Result<(String, Staged), DeckErr
         staged_at: now,
         state: EntryState::Staged,
         handled: None,
+        mention: s.mention,
     };
     if !valid_entry(&entry) {
         return Err(DeckError::new(
@@ -403,6 +474,17 @@ pub(crate) fn stage(s: Submission, now: u64) -> Result<(String, Staged), DeckErr
                     ErrorKind::RequestConflict,
                     "operation id is already staged",
                 ));
+            }
+            // one mention, one item: a second handoff of it is refused here,
+            // under the inbox lock, whoever asked
+            if let Some(mention) = &entry.mention {
+                if doc
+                    .entries
+                    .iter()
+                    .any(|e| e.mention.as_ref() == Some(mention) && holds_mention(e, now))
+                {
+                    return Err(DeckError::new(ErrorKind::RequestConflict, MENTION_TAKEN));
+                }
             }
             doc.entries.push(entry);
             Ok(())
@@ -621,6 +703,14 @@ pub(crate) fn entry_state(key: &str) -> Option<(EntryState, Option<String>)> {
     .flatten()
 }
 
+/// One entry as stored (tests only).
+#[cfg(test)]
+pub(crate) fn entry_for_tests(key: &str) -> Option<Entry> {
+    with_store(|store| Ok(store.doc.entries.iter().find(|e| e.id == key).cloned()))
+        .ok()
+        .flatten()
+}
+
 pub(crate) fn revision_in(rule: &Rule, board: &Value) -> Option<String> {
     use crate::scheduler::authority::{grant_digest, has_placeholder, normalize_template_step};
     let project = board["projects"]
@@ -763,7 +853,44 @@ mod tests {
             from: "alice".into(),
             where_: "#ops".into(),
             link: "https://example.test/x".into(),
+            mention: None,
         }
+    }
+
+    /// One mention, one item: a second handover of it is refused at the
+    /// stage, a staged one holds it only briefly, a skipped one gives it back.
+    #[test]
+    fn a_mention_is_held_by_one_item_at_a_time() {
+        let _serial = STORE_TESTS.lock_or_recover();
+        let dir = TestDir::new("agent-inbox-mention");
+        redirect_for_tests(Some(dir.join("agent-inbox.json")));
+        let with = |request: &str, op: &str| Submission {
+            mention: Some("C1/1.5".into()),
+            ..submission("client_a", request, op, "hello")
+        };
+        stage(with("req_1", "op_1"), 1000).unwrap();
+        assert_eq!(mention_handoffs(1000).len(), 1, "staged moments ago: held");
+        let taken = stage(with("req_2", "op_2"), 1001).unwrap_err();
+        assert_eq!(taken.message(), MENTION_TAKEN);
+        assert!(
+            mention_handoffs(1000 + STAGED_HOLD_SECS).is_empty(),
+            "an acceptance that never committed stops holding it"
+        );
+        commit("client_a", "req_1", "op_1").unwrap();
+        assert_eq!(mention_handoffs(5000)[0].client, "client_a");
+        handled("op_1", "done", Some("card_1"), None, 5000).unwrap();
+        assert_eq!(mention_handoffs(5000)[0].card.as_deref(), Some("card_1"));
+        // another item, its handover skipped: the mention is free again
+        let other = |request: &str, op: &str| Submission {
+            mention: Some("C1/2.5".into()),
+            ..submission("client_a", request, op, "hello")
+        };
+        stage(other("req_3", "op_3"), 5000).unwrap();
+        commit("client_a", "req_3", "op_3").unwrap();
+        handled("op_3", "skipped", None, Some("rule-changed"), 5001).unwrap();
+        assert!(mention_handoffs(5001).iter().all(|h| h.mention != "C1/2.5"));
+        stage(other("req_4", "op_4"), 5002).unwrap();
+        redirect_for_tests(None);
     }
 
     fn config_with_rule() -> Config {

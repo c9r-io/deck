@@ -8,7 +8,7 @@ import { fakeDocument, ids } from './fixtures/dom-fixture.mjs';
 globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
-const { MENTION_RANGES, mentionAfter, mentionCount, mentionErrorKey, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin } = await import('../js/slack-mentions-model.js');
+const { MENTION_RANGES, handedRows, mentionAfter, mentionCount, mentionErrorKey, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin } = await import('../js/slack-mentions-model.js');
 const { initMentions, paintMentions, refreshMentions, showMentions, startMentions } = await import('../js/slack-mentions.js');
 const { channelBlockReason } = await import('../js/channel-model.js');
 const { ctx, state, store } = await import('../js/state.js');
@@ -44,6 +44,7 @@ function backend(initial) {
       if (cmd === 'slack_mentions') return structuredClone(current);
       if (refuse && cmd === refuse.cmd) throw refuse.word;
       if (cmd === 'slack_mention_dismiss') return args.keys.length;
+      if (cmd === 'mcp_status') return { clients: [{ id: 'client_a', name: 'orchestrator' }] };
       return null;
     } },
   };
@@ -279,5 +280,45 @@ test('dismiss all asks once; no route, an error or Slack off are said, not hidde
   window.__TAURI__.core.invoke = async () => { throw new Error('gone'); };
   await refreshMentions();
   assert.equal(ids.get('mentions-btn').hidden, true, 'a failed pull keeps what was shown');
+  state.view = 'board';
+});
+
+test('mentions an agent took are shown apart, with where each went', () => {
+  const now = 1_800_000_000;
+  const view = { enabled: true, items: [], handed: [
+    { key: 'C1/1.1', text: 'fix the build\nplease', from: 'bob', where: '#ci', at: now - 60, client: 'client_a', rule: 'triage', card: null },
+    { key: 'C1/2.2', text: 'old one', from: 'eve', where: '#ci', at: now - 5 * 86400, client: 'client_x', rule: 'gone', card: 'c1' },
+  ] };
+  const clients = [{ id: 'client_a', name: 'orchestrator' }];
+  const rules = [{ source: 'agent', badge: 'triage', name: 'Triage' }, { source: 'slack', badge: 'gone', name: 'not an agent rule' }];
+  assert.deepEqual(handedRows(view, 1, now, clients, rules), [
+    { key: 'C1/1.1', from: 'bob', where: '#ci', at: now - 60, line: 'fix the build', client: 'orchestrator', rule: 'Triage' },
+  ], 'within the range, with names');
+  const week = handedRows(view, 7, now, clients, rules);
+  assert.equal(week.length, 2);
+  assert.deepEqual([week[1].client, week[1].rule], ['client_x', 'gone'], 'ids when the names are unknown');
+  assert.deepEqual(handedRows({ ...view, enabled: false }, 7, now, clients, rules), []);
+  assert.deepEqual(handedRows({ enabled: true, items: [] }, 7, now, clients, rules), []);
+});
+
+test('the view lists what an agent took above the panes, with names', async () => {
+  setLocale('en');
+  ctx.settings = { inbound: { sources: { slack: { enabled: true } }, rules: [...RULES,
+    { id: 'G1', source: 'agent', badge: 'triage', name: 'Triage', projectId: 'P1', columnId: 'C1', cmd: 'claude', template: 'triage' }] } };
+  store.projects = PROJECTS;
+  state.view = 'mentions';
+  const handed = { ...ITEMS[0], key: 'C1/handed', text: 'fix CI\nnow', client: 'client_a', rule: 'triage', card: null };
+  const b = backend({ enabled: true, lastPoll: 9, lastError: null, items: [ITEMS[1]], handed: [handed] });
+  await refreshMentions();
+  assert.equal(ids.get('mentions-handed').hidden, false);
+  assert.equal(ids.get('mentions-handed-title').textContent, t('mentions.handedTitle', { count: '1' }));
+  const row = ids.get('mentions-handed-list').children[0];
+  assert.deepEqual(row.children.map(child => child.textContent).slice(-2), ['fix CI', t('mentions.handedTo', { client: 'orchestrator', rule: 'Triage' })]);
+  assert.equal(rows().length, 1, 'not in the open list');
+  assert.equal(b.named('mcp_status').length, 1, 'client names pulled only when something was handed');
+  b.set({ enabled: true, lastPoll: 9, lastError: null, items: [ITEMS[1]], handed: [] });
+  await refreshMentions();
+  assert.equal(ids.get('mentions-handed').hidden, true);
+  assert.equal(b.named('mcp_status').length, 1);
   state.view = 'board';
 });

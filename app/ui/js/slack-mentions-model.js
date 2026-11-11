@@ -21,6 +21,10 @@
 // - The count is the number of open mentions in the chosen range, shown
 //   beside the sidebar entry and nowhere else (no notification, no Dock
 //   badge).
+// - Handed over: a mention an MCP client handed to one of its Agent rules
+//   (`deck_mention_handoff`) leaves the list and is shown apart, within the
+//   chosen range, with the client's and the rule's names (`handedRows`), so
+//   nothing an agent took leaves without the user seeing where it went.
 // - Error words from the backend are closed: `settled` has its own sentence,
 //   every other word is named inside the generic one.
 
@@ -65,6 +69,25 @@ export function mentionStatus(view) {
   if (view.lastError) return { key: 'mentions.error', params: { code: view.lastError } };
   if (!view.lastPoll) return { key: 'mentions.checking', params: {} };
   return { key: 'mentions.checked', params: { at: view.lastPoll } };
+}
+
+/* the handed-over mentions within `days` of `now`, newest first, each with
+   the names of the client that took it and the rule it went to (the id when
+   the name is unknown) */
+export function handedRows(view, days, now, clients, rules) {
+  if (!view?.enabled || !Array.isArray(view.handed)) return [];
+  const since = now - days * 86400;
+  return view.handed
+    .filter(item => item.at >= since)
+    .map(item => ({
+      key: item.key,
+      from: item.from,
+      where: item.where,
+      at: item.at,
+      line: String(item.text || '').split('\n')[0],
+      client: (clients || []).find(c => c.id === item.client)?.name || item.client,
+      rule: (rules || []).find(r => r?.source === 'agent' && r.badge === item.rule)?.name || item.rule,
+    }));
 }
 
 /* the sentence for a refused route or dismissal */

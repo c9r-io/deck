@@ -41,6 +41,7 @@ fn client() -> Client {
         worker_types: Vec::new(),
         worker_first_send: false,
         allow_drafts: false,
+        allow_mentions: false,
     }
 }
 

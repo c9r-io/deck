@@ -35,6 +35,13 @@ pub(super) fn map_error(error: DeckError) -> Value {
             "Read deck_automation_list and use one of the listed ids.",
         );
     }
+    if error.message() == crate::inbound_agent::MENTION_TAKEN {
+        return error_value(
+            "MENTION_SETTLED",
+            "that mention was already handed over",
+            "Read deck_mentions_list again; a mention is handed over once.",
+        );
+    }
     if error.message() == AUTOMATION_UNAVAILABLE {
         return error_value(
             "AUTOMATION_UNAVAILABLE",

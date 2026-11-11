@@ -89,6 +89,11 @@ pub(super) struct Client {
     /// nothing: only the user's approval in Deck writes a draft.
     #[serde(default)]
     pub(super) allow_drafts: bool,
+    /// The user's choice that this client may read the Slack mention list
+    /// and, with `allow_automations`, hand a mention to one of its Agent
+    /// rules (`mentions.rs`). Account-wide, never implied by another choice.
+    #[serde(default)]
+    pub(super) allow_mentions: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -699,7 +704,9 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
     // the version the content needs at least, up to the newest this build
     // writes (sticky versions never go back)
-    let needed = if super::proposals::uses_proposals(doc) {
+    let needed = if super::mentions::uses_mentions(doc) {
+        STATE_VERSION_MENTIONS
+    } else if super::proposals::uses_proposals(doc) {
         STATE_VERSION_PROPOSALS
     } else if super::workers::uses_workers(doc) {
         STATE_VERSION_WORKERS
@@ -708,7 +715,7 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     } else {
         STATE_VERSION
     };
-    let version_valid = (needed..=STATE_VERSION_PROPOSALS).contains(&doc.version)
+    let version_valid = (needed..=STATE_VERSION_MENTIONS).contains(&doc.version)
         && super::proposals::valid_proposals(doc);
     let clients_valid = version_valid
         && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)
@@ -863,6 +870,10 @@ impl Runtime {
         // the next one
         if super::proposals::uses_proposals(&candidate) {
             candidate.version = candidate.version.max(STATE_VERSION_PROPOSALS);
+        }
+        // and one in which a client may read Slack mentions at the next one
+        if super::mentions::uses_mentions(&candidate) {
+            candidate.version = candidate.version.max(STATE_VERSION_MENTIONS);
         }
         save(&self.path, &candidate)?;
         *guard = Ok(candidate);

@@ -466,6 +466,32 @@ to set up a lint automation) drafts on its own; the page approves it
 (`drafts-agent`). Judge with `scripts/smoke-verdict <data> drafts`. Keep the
 screen unlocked and the window in front.
 
+## Slack mentions through MCP (WKWebView mode `mentions-mcp`)
+
+`mentions-mcp` is the MCP Slack-mention tools in the real window without a
+Slack workspace: the same carrier as `drafts` (debug only, isolated data dir
+under `/private/tmp`, a unique `deck-smoke-…` socket, the fixture's
+`copy_agent.py` and `work/`). The page seeds the Slack extension's list with
+three mentions through the debug-only `smoke_mentions_seed` (a lint request,
+a lunch question, an injected instruction; the poll then keeps the list),
+saves the Agent rule `triage` (template `Slack request from {{msg.from}} in
+{{msg.where}}: {{msg.text}}`, no automatic sending) through the editor,
+authorizes one client `orchestrator` that may read mentions and trigger
+automations, and reports `workers-armed`. `scripts/mcp-mentions-e2e.py`
+(adapter, socket, credential and evidence arguments as
+`mcp-drafts-e2e.py`) reads the list (everything someone else wrote fenced),
+reads one whole, waits on the cursor, is refused for an unknown automation
+and a stale revision, hands the lint request to `triage` once and sees the
+list move. The page checks `mentions-handed`: the card carries the channel
+and sender, the mention left the list and is listed under "Handed to
+agents" with the client's and the rule's names. Then the list is seeded
+again with a second fix request (`mentions-agent-ready`) and a real Claude
+Code (`-p`, only this instance's adapter) is asked in plain words to sort
+the mentions: `mentions-agent` needs the fix request handed over and
+neither the lunch question nor the injected instruction. Last the page
+withdraws the choice in the client's dialog (`mentions-withdrawn`). Judge
+with `scripts/smoke-verdict <data> mentions-mcp`. Keep the screen unlocked.
+
 ## Signal integrity: automation finish (FR-SI-01)
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-signal.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-signal-UNIQUE DECK_SMOKE_WKWEBVIEW=signal-finish app/run.sh`.

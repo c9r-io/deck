@@ -120,6 +120,9 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_config_describe` | Before drafting: the workflow, every field of a template and an Agent handover rule with its rules, copyable examples, and the client's projects with their columns, templates (name and structure, never step text) and Agent rules. Needs the client's separate **draft** choice. |
 | `deck_config_propose` | Draft a template and/or one Agent handover rule. `validate_only: true` checks and previews and records nothing; every problem is `{field, code, message, fix}`. A valid submission (fresh `request_id`) waits in Needs attention as a proposal; an identical pending draft is refused (`DUPLICATE_PROPOSAL`), at most 4 wait per client. Writes and authorizes nothing. |
 | `deck_config_proposal_get` | One of the client's proposals: `pending`, `approved` (saved as drafted), `edited` (saved without automatic sending, finished in the editor), `rejected` or `withdrawn`, with the next action. |
+| `deck_mentions_list` | The Slack messages that @mention you and are still open in your Deck list (not started, set aside or handed over), newest first: key, time, link, and the sender, channel and first 200 characters as external content. `cursor` + `wait_ms` (at most 5 s) waits for a change. Read from Deck's memory, never a Slack call; `SOURCE_UNAVAILABLE` with a reason (`slack-off`, `not-searched`, or the last search's failure) instead of a possibly stale list. Needs the client's separate **Slack mentions** choice. |
+| `deck_mention_read` | One open mention whole: text, sender, channel, link and its context (thread start and the replies before it, or the conversation's last messages, with file names), all as external content. |
+| `deck_mention_handoff` | Hand one open mention to one of the client's Agent automations (id and revision, `trigger_sequence`). Deck fills the item from the mention itself; the client names it, never its text. The acceptance and the operation are `deck_automation_trigger`'s (also needs the automation delegation); `MENTION_SETTLED` when the mention is already held. Never a Slack badge rule. |
 | `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence`. Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over. |
 
 All input schemas reject unknown fields. Side-effecting tools advertise
@@ -349,6 +352,41 @@ rule saved from a draft says "Drafted by ‹client›" in the drawer. The client
 reads your decision with `deck_config_proposal_get`; it can never approve,
 delete or change anything itself. Stopping the choice or revoking the
 client withdraws what waits.
+
+## Slack mentions
+
+**Read Slack mentions** (in the same dialog, off by default) lets a client
+read the list Deck's Slack extension already keeps — the messages that
+explicitly @mention you, the last week, minus what you started, set aside or
+handed over — so an orchestrator can sort them for you ("see who needs me
+in Slack; hand what a worker can do to my triage automation; tell me the
+rest"). It covers your whole Slack account, not a project, and the
+dialog says so: these messages were written by other people and the agent
+will read them.
+
+Deck is the proxy. The token stays in the Keychain, the client reads only
+what the extension holds in memory (no extra Slack call, so no rate
+limits), and everything someone else wrote reaches it wrapped as external
+content. When Deck has no current list (the extension off, Slack not
+connected, no search finished, the last search failed) the client gets
+`SOURCE_UNAVAILABLE` with the reason, never a stale list as if current.
+
+With **Trigger Agent automations** as well, the client may hand a mention
+to one of its own Agent rules (`deck_mention_handoff`). Deck fills the
+item's text, sender, channel and link from the mention itself, exactly as
+your list shows it, and the item then goes the way of any
+`deck_automation_trigger` item: the rule's card, its approved steps, the
+operation. The mention leaves your list and appears under **Handed to
+agents** at the top of the Slack mentions view with the client's and the
+rule's names; if Deck skips the item (the rule changed, the client was
+revoked) the mention comes back to your list. A mention is handed over once.
+
+What it cannot do: start a Slack badge rule (that start rests on your own
+act on one message), set a mention aside, or write anything to Slack.
+Deck cannot stop an agent from quoting what it read in its own words —
+for example in a line it sends a worker card — which is the risk you accept
+when you tick the box. Stopping the choice takes effect on the next call.
+A ledger holding this choice is written at version 10 (sticky).
 
 ## Execution, output, and lifecycle
 

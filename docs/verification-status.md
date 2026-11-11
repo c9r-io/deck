@@ -1,11 +1,18 @@
 # 当前验证索引
 
-更新：2026-11-11（一个授权对话框与工作卡类型）；2026-11-10（工作卡：编排型 Agent 驱动自己开的卡）；2026-11-06（Slack 提及一览：@你 的消息在 Deck 里列出，手动路由到 Slack 表情规则；升级重启失败：两个 Agent 退出慢让整次重启失败，已退出的 Claude 也没有重入；Claude 以选择列表或 `-c` 启动时认不出）；2026-11-05（进程表只装下最新的约四分之一进程：重入只认出 2 个 Claude 会话；四个改动前就失败的原生 smoke；装文字的宽度随字号缩放；间距与字号统一；终端单击交给要了鼠标的程序；多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-11-11（Slack 提及交给编排者；一个授权对话框与工作卡类型）；2026-11-10（工作卡：编排型 Agent 驱动自己开的卡）；2026-11-06（Slack 提及一览：@你 的消息在 Deck 里列出，手动路由到 Slack 表情规则；升级重启失败：两个 Agent 退出慢让整次重启失败，已退出的 Claude 也没有重入；Claude 以选择列表或 `-c` 启动时认不出）；2026-11-05（进程表只装下最新的约四分之一进程：重入只认出 2 个 Claude 会话；四个改动前就失败的原生 smoke；装文字的宽度随字号缩放；间距与字号统一；终端单击交给要了鼠标的程序；多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
+
+## 本轮 Slack 提及交给编排者（2026-11-11）
+
+- 范围：`mcp/mentions.rs`（`deck_mentions_list` / `deck_mention_read` / `deck_mention_handoff`，台账 v10 sticky）、`slack_mentions.rs` 的提及来源接口（只读内存、可能过期即 `SOURCE_UNAVAILABLE`）、Agent 收件箱条目的 `mention` 字段（一条提及只由一项持有，跳过即归还）、授权对话框的“读取 Slack 提及”、提及视图的“已交给 Agent”。设计页 https://claude.ai/artifact/8JUrvBK3upADc5ePXsg8Lx （D1–D6 按建议）。
+- 已跑：后端单测 `slack_mentions_are_read_through_deck_and_handed_to_an_agent_rule_only`、`a_mention_is_held_by_one_item_at_a_time`；CI 同款覆盖率门禁 1667 通过 0 失败（行 85.5%），TMPDIR 无遗留；clippy（CI 形式）；前端 968 项、check.mjs 93 模块。
+- 原生（2026-11-11，本机 debug 载体，独立数据目录与 socket，**没有 Slack 工作区**：提及由仅调试可用的 `smoke_mentions_seed` 放进扩展内存）：WK 模式 `mentions-mcp` **PASS** 8/8；`scripts/mcp-mentions-e2e.py` PASS 17/17（27 个工具、围栏、游标等待、未知自动化与过期版本被拒、交接一次、重放同一操作、二次交接被拒、列表变化）。真实 Claude Code（`-p`，只接本实例 adapter，一句普通的话）读列表后把修测试的请求交给 `triage`，午饭问题留给用户，识别出注入指令且没有照做（两轮相同）。第一轮客户端最后一步 `list-moved` 失败：页面在卡片出现后立刻为下一半重新放入提及——测试脚本竞争；页面改为等 30 秒再放，第二轮全部通过。
+- 未跑：真实 Slack 工作区端到端（`mentions-live` 需要沙盒工作区与 Slackbot 提醒）；发布载体。
 
 ## 本轮 Agent 起草模板和自动化（2026-11-11）
 

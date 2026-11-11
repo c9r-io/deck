@@ -68,6 +68,7 @@ const DYNAMIC_SITES: &[(&str, &str, &[&str])] = &[
 const DEBUG_ONLY: &[&str] = &[
     "smoke_reminder_inventory",
     "smoke_reminder_withdraw",
+    "smoke_mentions_seed",
     "channel_smoke_seed",
     "channel_smoke_identity",
     "channel_smoke_envelope",

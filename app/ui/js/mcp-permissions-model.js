@@ -32,6 +32,7 @@ export function initialPermissions(client) {
     allowReplies: client?.allowReplies === true,
     workerFirstSend: client?.workerFirstSend === true,
     allowDrafts: client?.allowDrafts === true,
+    allowMentions: client?.allowMentions === true,
     workerTypes: Array.isArray(client?.workerTypes) ? client.workerTypes.map(t => ({ ...t })) : [],
   };
 }
@@ -51,6 +52,7 @@ export function permissionsPayload(p) {
     allowReplies: workers && p.allowReplies === true,
     workerFirstSend: workers && p.workerFirstSend === true,
     allowDrafts: p.allowDrafts === true,
+    allowMentions: p.allowMentions === true,
     workerTypes: workers ? p.workerTypes.map(t => ({
       name: String(t.name || '').trim(),
       cmd: String(t.cmd || '').trim().replace(/\s+/g, ' '),
@@ -101,5 +103,6 @@ export function permissionSummary(client) {
   if (client.allowAutomations) keys.push('mcp.automationsOn');
   if (client.allowWorkers) keys.push(client.allowReplies ? 'mcp.workersOn' : 'mcp.workersNoReplies');
   if (client.allowDrafts) keys.push('mcp.summaryDrafts');
+  if (client.allowMentions) keys.push('mcp.summaryMentions');
   return keys;
 }

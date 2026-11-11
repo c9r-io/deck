@@ -209,6 +209,21 @@
 //! the client withdraws what waits. A ledger holding a proposal or the
 //! choice is written at `STATE_VERSION_PROPOSALS` (sticky).
 //!
+//! Slack mentions (`mentions.rs`, `docs/mcp.md` "Slack mentions"): a client
+//! with the separate local choice `allow_mentions` (account-wide) reads the
+//! open mentions the Slack extension already keeps in memory
+//! (`deck_mentions_list`, a fenced 200-character preview, a cursor and a
+//! wait of at most 5 s; `deck_mention_read`, the whole text and context,
+//! fenced) — Deck makes no Slack call for it and never hands out a list
+//! that may be stale (`SOURCE_UNAVAILABLE`). With `allow_automations` too it
+//! may hand ONE open mention to one of its Agent rules
+//! (`deck_mention_handoff`): the acceptance of `deck_automation_trigger`,
+//! the item filled in by Deck from the mention itself, the mention leaving
+//! the user's list as handed to this client and rule (a skipped item gives
+//! it back). Never a Slack badge rule, never a dismissal, nothing written to
+//! Slack. A ledger holding the choice is written at
+//! `STATE_VERSION_MENTIONS` (sticky).
+//!
 //! Layout (one contract, one file per concern; every file starts with
 //! `use super::*` and exposes its items `pub(super)`): `state` holds the disk
 //! document, its records, the runtime and load/validate/compact/save;
@@ -254,6 +269,7 @@ mod commands;
 mod control;
 mod grants;
 mod jobs;
+mod mentions;
 mod operations;
 mod project;
 mod proposals;
@@ -271,6 +287,7 @@ pub(crate) use commands::*;
 pub(crate) use control::*;
 use grants::*;
 use jobs::*;
+use mentions::*;
 use operations::*;
 use project::*;
 use proposals::*;
@@ -295,6 +312,9 @@ const STATE_VERSION_WORKERS: u32 = 8;
 /// The sticky version a ledger takes once it holds a drafted proposal or
 /// the draft choice (`proposals::uses_proposals`): a v8 build refuses it.
 const STATE_VERSION_PROPOSALS: u32 = 9;
+/// The sticky version a ledger takes once a client may read Slack mentions
+/// (`mentions::uses_mentions`): a v9 build refuses it.
+const STATE_VERSION_MENTIONS: u32 = 10;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

@@ -223,6 +223,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("terminal-perf", "m.verifyTerminalPerf()"),
     ("workers", "m.verifyWorkers()"),
     ("drafts", "m.verifyDrafts()"),
+    ("mentions-mcp", "m.verifyMentionsMcp()"),
 ];
 
 fn smoke_entry(mode: &str) -> &'static str {
@@ -573,6 +574,7 @@ fn main() {
             slack_mentions::slack_mention_route,
             slack_mentions::slack_mention_dismiss,
             slack_mentions::slack_mentions_refresh,
+            slack_mentions::smoke_mentions_seed,
             inbound::inbound_set_secret,
             model_api::model_api_status,
             model_api::model_api_set_key,

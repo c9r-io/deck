@@ -3376,6 +3376,13 @@ export async function verifyDrafts() {
   await runWorkersSmoke({ drafting: true });
 }
 
+// Slack mentions read and handed over through Deck by a scripted client,
+// then a real agent, on a seeded list (workers-smoke.mjs).
+export async function verifyMentionsMcp() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ mentioning: true });
+}
+
 export async function verifyAgentLive() {
   const { runAgentLiveSmoke } = await import('./agent-live-smoke.mjs');
   await runAgentLiveSmoke();

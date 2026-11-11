@@ -29,6 +29,10 @@
 // - Dismissing sets a mention aside for good (`slack_mention_dismiss`):
 //   it starts nothing and never stops a badge the user adds in Slack later.
 //   "Dismiss all" dismisses the mentions shown (the chosen range) and asks once.
+// - Handed over: mentions an MCP client handed to one of its Agent rules
+//   are listed apart above the panes, with the client's and the rule's names
+//   (`handedRows`; client names from `mcp_status`). They are not actionable
+//   here: the card the rule started is on the Board.
 // - Attention: the open count of the chosen range beside the sidebar
 //   entry, nothing else. The
 //   entry is hidden while Slack is not connected.
@@ -39,7 +43,7 @@ import { $, ctx, inv, listen, state, store, uev } from './state.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { channelBlockReason } from './channel-model.js';
-import { MENTION_RANGES, mentionAfter, mentionErrorKey, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin } from './slack-mentions-model.js';
+import { MENTION_RANGES, handedRows, mentionAfter, mentionErrorKey, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin } from './slack-mentions-model.js';
 
 let render, switchProject, leaveSessionView, closeBuffer, provider;
 let view = null;
@@ -48,6 +52,8 @@ let listSignature = '';
 let detailSignature = '';
 let started = null;
 let range = MENTION_RANGES[0];
+let clients = [];
+let handedSignature = '';
 
 const DISMISS_MAX = 400;
 const RANGE_LABEL = { 1: 'mentions.range1', 3: 'mentions.range3', 7: 'mentions.range7' };
@@ -184,10 +190,32 @@ export function paintMentions() {
   }
   paintSelection();
   paintDetail(choices);
+  paintHanded();
+}
+
+/* where the mentions an MCP client took went */
+function paintHanded() {
+  const rows = handedRows(view, range, nowSecs(), clients, ctx.settings?.inbound?.rules);
+  const box = $('mentions-handed');
+  box.hidden = !rows.length;
+  $('mentions-handed-title').textContent = t('mentions.handedTitle', { count: formatNumber(rows.length) });
+  const next = JSON.stringify(rows);
+  if (next === handedSignature) return;
+  handedSignature = next;
+  $('mentions-handed-list').replaceChildren(...rows.map(row => {
+    const node = el('div', 'mention-handed');
+    node.append(el('span', 'mention-from', row.from), el('span', 'mention-where', row.where),
+      el('span', 'mention-time', when(row.at)), el('span', 'mention-summary', row.line),
+      el('span', 'mention-handed-to', t('mentions.handedTo', { client: row.client, rule: row.rule })));
+    return node;
+  }));
 }
 
 export async function refreshMentions() {
   try { view = await inv('slack_mentions'); } catch (_) { return; }
+  if (view?.handed?.length) {
+    clients = await inv('mcp_status').then(status => status?.clients || []).catch(() => clients);
+  }
   paintMentions();
 }
 

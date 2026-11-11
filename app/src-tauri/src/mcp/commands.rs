@@ -37,6 +37,8 @@ pub(crate) struct ClientView {
     pub(super) worker_first_send: bool,
     /// May draft templates and Agent rules for the user to approve.
     pub(super) allow_drafts: bool,
+    /// May read the Slack mention list (and hand mentions to its rules).
+    pub(super) allow_mentions: bool,
     pub(super) projects: Vec<ProjectScope>,
     /// Its adapter was last refused for a control-protocol mismatch
     /// (`control::route`): the integration has to be restarted. Absent from
@@ -73,6 +75,7 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
                 worker_types: client.worker_types.clone(),
                 worker_first_send: client.worker_first_send,
                 allow_drafts: client.allow_drafts,
+                allow_mentions: client.allow_mentions,
                 projects: client.projects.clone(),
                 adapter_refused: client.revoked_at.is_none()
                     && emergency.refused_adapters.contains(&client.id),
@@ -301,6 +304,7 @@ pub(crate) fn mcp_client_add(
         worker_types,
         worker_first_send,
         allow_drafts,
+        allow_mentions,
     } = permissions;
     let allow_replies = allow_workers && allow_replies;
     let worker_first_send = allow_workers && worker_first_send;
@@ -345,6 +349,7 @@ pub(crate) fn mcp_client_add(
             worker_types,
             worker_first_send,
             allow_drafts,
+            allow_mentions,
         };
         doc.config.clients.push(client.clone());
         Ok(ClientView {
@@ -359,6 +364,7 @@ pub(crate) fn mcp_client_add(
             worker_types: client.worker_types,
             worker_first_send: client.worker_first_send,
             allow_drafts: client.allow_drafts,
+            allow_mentions: client.allow_mentions,
             projects: client.projects,
         })
     });
@@ -520,6 +526,9 @@ pub(crate) struct PermissionsInput {
     /// May draft templates and Agent rules (`proposals.rs`); absent = off.
     #[serde(default)]
     pub(super) allow_drafts: bool,
+    /// May read Slack mentions (`mentions.rs`); absent = off.
+    #[serde(default)]
+    pub(super) allow_mentions: bool,
 }
 
 #[tauri::command(async)]

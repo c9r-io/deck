@@ -98,7 +98,7 @@ pub(super) fn automation_list(
     }))
 }
 
-fn sha_hex(s: &str) -> bool {
+pub(super) fn sha_hex(s: &str) -> bool {
     s.len() == 64
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -128,24 +128,74 @@ pub(super) fn automation_trigger(
         ));
     }
     let hash = request_hash("deck_automation_trigger", &args);
+    let item = || {
+        Ok(Item {
+            text: args.text.clone(),
+            from: args.from.clone().unwrap_or_default(),
+            where_: args.where_.clone().unwrap_or_default(),
+            link: args.link.clone().unwrap_or_default(),
+            mention: None,
+        })
+    };
+    trigger_item(
+        runtime,
+        client_id,
+        &args.request_id,
+        &hash,
+        &args.automation_id,
+        &args.expected_revision,
+        args.trigger_sequence,
+        item,
+        None,
+    )
+}
+
+/// One item for an Agent rule: the client's own text
+/// (`deck_automation_trigger`), or a Slack mention Deck fills in
+/// (`mentions.rs`).
+pub(super) struct Item {
+    pub(super) text: String,
+    pub(super) from: String,
+    pub(super) where_: String,
+    pub(super) link: String,
+    pub(super) mention: Option<String>,
+}
+
+/// The acceptance shared by every handover: a replay returns the recorded
+/// operation; otherwise the client's sequence, capacity, the rule and its
+/// revision are checked, `item` is resolved (its refusal is the caller's),
+/// the inbox entry is staged, the operation written, the entry committed.
+/// `origin` is a closed word kept on the operation (`slack-mention`).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn trigger_item(
+    runtime: &Runtime,
+    client_id: &str,
+    request_id: &str,
+    hash: &str,
+    automation_id: &str,
+    expected_revision: &str,
+    trigger_sequence: u64,
+    item: impl FnOnce() -> Result<Item, Value>,
+    origin: Option<&str>,
+) -> Result<Value, Value> {
     // A replay returns the recorded operation; its inbox entry is committed
     // on the way in case the crash was between the two writes.
     let replay = runtime
         .read(|doc| {
             delegated(doc, client_id)?;
-            Ok(existing_operation(doc, client_id, &args.request_id, &hash)?.cloned())
+            Ok(existing_operation(doc, client_id, request_id, hash)?.cloned())
         })
         .map_err(map_error)?
         .map_err(map_error)?;
     if let Some(operation) = replay {
-        settle_committed(client_id, &args.request_id, &operation.operation_id);
+        settle_committed(client_id, request_id, &operation.operation_id);
         return Ok(operation_view(&operation));
     }
     // Pre-checks under the read lock; the authoritative sequence check is
     // in the write below.
     let stale = runtime
         .read(|doc| {
-            delegated(doc, client_id).map(|client| client.trigger_sequence != args.trigger_sequence)
+            delegated(doc, client_id).map(|client| client.trigger_sequence != trigger_sequence)
         })
         .map_err(map_error)?
         .map_err(map_error)?;
@@ -183,7 +233,7 @@ pub(super) fn automation_trigger(
         .iter()
         .find(|rule| {
             rule.source == crate::inbound_agent::SOURCE
-                && rule.badge == args.automation_id
+                && rule.badge == automation_id
                 && rule.enabled
                 && crate::admission::channel_agent_command(&rule.cmd).is_some()
         })
@@ -194,7 +244,7 @@ pub(super) fn automation_trigger(
             AUTOMATION_UNAVAILABLE,
         ))
     })?;
-    if revision != args.expected_revision {
+    if revision != expected_revision {
         return Err(json!({"ok": false, "error": {
             "code": "RULE_CHANGED",
             "message": "the automation's rule or template is not the revision this request expected; nothing was accepted",
@@ -202,20 +252,22 @@ pub(super) fn automation_trigger(
             "currentRevision": revision
         }}));
     }
+    let item = item()?;
     let minted = random_id("op_", 16).map_err(map_error)?;
     let now = crate::datadir::now_epoch();
     let (operation_id, _) = crate::inbound_agent::stage(
         crate::inbound_agent::Submission {
             client: client_id.into(),
-            request_id: args.request_id.clone(),
-            request_hash: hash.clone(),
+            request_id: request_id.to_string(),
+            request_hash: hash.to_string(),
             operation_id: minted,
-            rule: args.automation_id.clone(),
+            rule: automation_id.to_string(),
             revision: revision.clone(),
-            text: args.text.clone(),
-            from: args.from.clone().unwrap_or_default(),
-            where_: args.where_.clone().unwrap_or_default(),
-            link: args.link.clone().unwrap_or_default(),
+            text: item.text,
+            from: item.from,
+            where_: item.where_,
+            link: item.link,
+            mention: item.mention,
         },
         now,
     )
@@ -223,25 +275,31 @@ pub(super) fn automation_trigger(
     let operation = runtime
         .write(|doc| {
             delegated(doc, client_id)?;
-            if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
+            if let Some(existing) = existing_operation(doc, client_id, request_id, hash)? {
                 return Ok(existing.clone());
             }
-            if args.trigger_sequence != delegated(doc, client_id)?.trigger_sequence {
+            if trigger_sequence != delegated(doc, client_id)?.trigger_sequence {
                 return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
             }
             reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
             let operation = Operation {
                 operation_id: operation_id.clone(),
                 client_id: client_id.into(),
-                request_id: args.request_id.clone(),
-                request_hash: hash.clone(),
+                request_id: request_id.to_string(),
+                request_hash: hash.to_string(),
                 kind: TRIGGER_KIND.into(),
                 state: "accepted".into(),
                 code: None,
-                result: Some(json!({
-                    "automationId": args.automation_id,
-                    "revision": revision,
-                })),
+                result: Some({
+                    let mut result = json!({
+                        "automationId": automation_id,
+                        "revision": revision,
+                    });
+                    if let Some(origin) = origin {
+                        result["origin"] = json!(origin);
+                    }
+                    result
+                }),
                 accepted_at: now_ms(),
                 updated_at: now_ms(),
                 admission_hash: None,
@@ -261,7 +319,7 @@ pub(super) fn automation_trigger(
             Ok(operation)
         })
         .map_err(map_error)?;
-    crate::inbound_agent::commit(client_id, &args.request_id, &operation.operation_id)
+    crate::inbound_agent::commit(client_id, request_id, &operation.operation_id)
         .map_err(map_error)?;
     crate::inbound::inbound_check_now();
     Ok(operation_view(&operation))

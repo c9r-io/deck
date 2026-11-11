@@ -2922,6 +2922,7 @@ mod tests {
                 from: "alice".into(),
                 where_: "#ops".into(),
                 link: String::new(),
+                mention: None,
             },
             1,
         )

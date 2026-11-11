@@ -884,6 +884,19 @@
         "workers-exception": { "failureOnly": true }
       }
     },
+    "mentions-mcp": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "mentions-seeded": {},
+        "workers-armed": {},
+        "mentions-handed": {},
+        "mentions-agent-ready": {},
+        "mentions-agent": {},
+        "mentions-withdrawn": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
     "terminal-input": {
       "terminal": "done",
       "checks": {

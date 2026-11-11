@@ -33,7 +33,8 @@
 //!   second; `after:` is a whole day). The view narrows that to 24 hours or
 //!   3 days (`slack-mentions-model.js`). A mention is open while the dispatcher has not seen it
 //!   under ANY badge, does not hold it pending, and the user has not
-//!   dismissed it (`inbound::open_keys`). A message the user badged in Slack
+//!   dismissed it (`inbound::open_keys`), and no MCP client handed it to an
+//!   Agent rule (below). A message the user badged in Slack
 //!   therefore disappears once Deck sees that badge; a badge Deck has no rule
 //!   for is unknown to Deck and leaves the message listed.
 //! - Routing. `slack_mention_route` hands ONE open mention to the dispatcher
@@ -46,6 +47,18 @@
 //!   the card, the queue and the ack. The ledger's `(source, key, badge)`
 //!   dedupe means a later reaction with the same badge in Slack starts
 //!   nothing again. Only rules with `source: "slack"` can be chosen.
+//! - The MCP reader (`mcp/mentions.rs`). A delegated client with its own
+//!   choice reads this same list through `source_list`/`source_mention`:
+//!   memory only, never a Slack call, and refused with a closed word
+//!   (`slack-off`, `not-searched`, the last search's failure) whenever the
+//!   list may be stale. Its cursor (`source_cursor`) moves when a mention
+//!   arrives or leaves or its context is read. It may hand ONE open mention
+//!   to one of its Agent rules: the agent-inbox entry carries the mention's
+//!   key (`inbound_agent::MentionHandoff`), so the mention leaves this list
+//!   and is listed apart as `handed` (client id, rule, card); a skipped item
+//!   gives it back. A route checks the same openness (`is_open`); a route
+//!   and a handoff of one message in the same instant are not serialized
+//!   with each other (the inbox serializes handoffs, the ledger routes).
 //! - Silence. Deck never writes to Slack: no reaction, no reply, no read mark.
 //!   What the started Agent does is the template's business.
 //! - Attention. The list is a count beside its sidebar entry and nothing
@@ -95,6 +108,9 @@ struct State {
     contexts: HashMap<String, MentionContext>,
     /// User id → name, for the readers' text.
     names: HashMap<String, String>,
+    /// A debug smoke seeded the list (`smoke_mentions_seed`): the poll
+    /// neither searches nor clears it.
+    seeded: bool,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -117,6 +133,12 @@ fn due(state: &State, now: u64) -> bool {
 
 /// The dispatcher poll's Slack work (`ServiceIntegration::tick`).
 pub(crate) fn tick(cfg: &Config, announce: &dyn Fn(&'static str)) {
+    if with_state(|s| s.seeded) {
+        if announce_if_changed() {
+            announce(CHANGED);
+        }
+        return;
+    }
     let enabled = cfg.slack_enabled && keychain::has(Slot::SlackUserToken);
     let now = now_secs();
     let (search, changed) = with_state(|s| {
@@ -215,10 +237,24 @@ fn record(found: Result<Vec<Event>, &'static str>, now: u64) {
     }
 }
 
-/// The keys open now, in list order.
+/// The keys open now, in list order: the dispatcher's open keys less the
+/// mentions an MCP client handed to one of its Agent rules.
 fn open_now() -> Vec<String> {
     let keys: Vec<String> = with_state(|s| s.items.iter().map(|e| e.key.clone()).collect());
+    let handed = crate::inbound_agent::mention_handoffs(now_secs());
     inbound::open_keys(SOURCE, &keys)
+        .into_iter()
+        .filter(|k| !handed.iter().any(|h| &h.mention == k))
+        .collect()
+}
+
+/// Whether mention `key` is still open (listed, untouched by the user, a
+/// badge or a handoff).
+fn is_open(key: &str) -> bool {
+    !inbound::open_keys(SOURCE, &[key.to_string()]).is_empty()
+        && !crate::inbound_agent::mention_handoffs(now_secs())
+            .iter()
+            .any(|h| h.mention == key)
 }
 
 /// Whether the open list differs from the one last announced.
@@ -238,16 +274,29 @@ fn announce_if_changed() -> bool {
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MentionView {
-    key: String,
-    text: String,
-    from: String,
+    pub(crate) key: String,
+    pub(crate) text: String,
+    pub(crate) from: String,
     #[serde(rename = "where")]
-    where_: String,
-    link: String,
+    pub(crate) where_: String,
+    pub(crate) link: String,
     /// The message's own time, epoch seconds (from its Slack `ts`).
-    at: u64,
+    pub(crate) at: u64,
     /// What the reader needs to judge it, once read (`None` until then).
-    context: Option<MentionContext>,
+    pub(crate) context: Option<MentionContext>,
+}
+
+/// A listed mention an MCP client handed to one of its Agent rules: the
+/// user sees what went where (the client's public id and the rule's
+/// automation id; the webview shows their names).
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HandedView {
+    #[serde(flatten)]
+    mention: MentionView,
+    client: String,
+    rule: String,
+    card: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -257,6 +306,7 @@ pub(crate) struct MentionsView {
     last_poll: Option<u64>,
     last_error: Option<&'static str>,
     items: Vec<MentionView>,
+    handed: Vec<HandedView>,
 }
 
 fn message_time(key: &str) -> u64 {
@@ -313,15 +363,83 @@ fn list_since(now: u64) -> u64 {
 #[tauri::command]
 pub(crate) fn slack_mentions() -> MentionsView {
     let open = open_now();
+    let now = now_secs();
+    let handoffs = crate::inbound_agent::mention_handoffs(now);
     with_state(|s| {
         s.shown = open.clone();
+        let handed_keys: Vec<String> = handoffs.iter().map(|h| h.mention.clone()).collect();
+        let handed = view(&s.items, &handed_keys, &s.contexts, list_since(now))
+            .into_iter()
+            .filter_map(|mention| {
+                let h = handoffs.iter().find(|h| h.mention == mention.key)?;
+                Some(HandedView {
+                    mention,
+                    client: h.client.clone(),
+                    rule: h.rule.clone(),
+                    card: h.card.clone(),
+                })
+            })
+            .collect();
         MentionsView {
             enabled: s.enabled,
             last_poll: s.last_poll,
             last_error: s.last_error,
-            items: view(&s.items, &open, &s.contexts, list_since(now_secs())),
+            items: view(&s.items, &open, &s.contexts, list_since(now)),
+            handed,
         }
     })
+}
+
+/* ---------- the mention source MCP reads (`mcp/mentions.rs`) ---------- */
+
+/// What MCP may read: the open mentions of the last `MENTION_DAYS`, newest
+/// first, exactly as the user's list shows them, or a closed word saying why
+/// there is no current list: `slack-off` (the Slack source is off or has no
+/// user token), `not-searched` (no search has finished yet), or the last
+/// search's own failure code (a list that may be stale is never handed out
+/// as current). Memory only: no Slack call is made for a reader.
+pub(crate) fn source_list() -> Result<Vec<MentionView>, &'static str> {
+    let open = open_now();
+    with_state(|s| {
+        if !s.enabled {
+            return Err("slack-off");
+        }
+        if s.last_poll.is_none() {
+            return Err("not-searched");
+        }
+        if let Some(code) = s.last_error {
+            return Err(code);
+        }
+        Ok(view(&s.items, &open, &s.contexts, list_since(now_secs())))
+    })
+}
+
+/// One open mention, or why not: a `source_list` word, or `not-found` (not
+/// listed, or no longer open).
+pub(crate) fn source_mention(key: &str) -> Result<MentionView, &'static str> {
+    if !key_shape(key) {
+        return Err("not-found");
+    }
+    source_list()?
+        .into_iter()
+        .find(|m| m.key == key)
+        .ok_or("not-found")
+}
+
+/// A short digest of what is listed, for a reader's cursor: it moves when a
+/// mention arrives or leaves, or when a mention's context has been read.
+pub(crate) fn source_cursor(items: &[MentionView]) -> String {
+    let mut bytes = Vec::new();
+    for m in items {
+        bytes.extend(m.key.as_bytes());
+        bytes.push(if m.context.is_some() { 1 } else { 0 });
+    }
+    crate::ledger::sha(&bytes)[..16].to_string()
+}
+
+/// A mention left the list through MCP: the webview pulls the list again.
+pub(crate) fn note_handed<R: tauri::Runtime>(app: &AppHandle<R>) {
+    let _ = app.emit(CHANGED, ());
 }
 
 /// Search again soon (the list was opened). Never sooner than `MIN_REFRESH`
@@ -390,7 +508,7 @@ fn route<R: tauri::Runtime>(
         return Err(refuse("shape"));
     }
     let event = with_state(|s| route_event(&s.items, cfg, key, rule)).map_err(refuse)?;
-    if inbound::open_keys(SOURCE, &[key.to_string()]).is_empty() {
+    if !is_open(key) {
         return Err(refuse("settled"));
     }
     if inbound::offer(app, cfg, vec![event], true) == 0 {
@@ -417,6 +535,88 @@ fn dismiss(keys: &[String]) -> Result<usize, DeckError> {
     let added = inbound::dismiss(SOURCE, keys);
     applog(&format!("[mentions] dismissed {added}"));
     Ok(added)
+}
+
+/// One mention a debug smoke seeds (`smoke_mentions_seed`).
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SeedMention {
+    key: String,
+    text: String,
+    from: String,
+    #[serde(rename = "where")]
+    where_: String,
+    link: String,
+}
+
+/// Debug smoke only (`smoke_faults::enabled`, the isolated carrier): the
+/// list as if a search had found `items` just now, each with its context
+/// read (the sender's name, no earlier messages), so the view and the MCP
+/// reader run without a Slack workspace. From then on the poll keeps it.
+#[tauri::command]
+pub(crate) fn smoke_mentions_seed(
+    app: AppHandle,
+    items: Vec<SeedMention>,
+) -> Result<usize, DeckError> {
+    if !crate::smoke_faults::enabled() {
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "smoke seam is unavailable",
+        ));
+    }
+    if items.len() > 20
+        || !items
+            .iter()
+            .all(|m| key_shape(&m.key) && m.key.contains('/'))
+    {
+        return Err(DeckError::new(ErrorKind::Invalid, "shape"));
+    }
+    let n = items.len();
+    with_state(|s| {
+        s.contexts.clear();
+        s.items = items
+            .iter()
+            .map(|m| {
+                let (channel, ts) = m.key.split_once('/').unwrap_or_default();
+                s.contexts.insert(
+                    m.key.clone(),
+                    MentionContext {
+                        from: m.from.clone(),
+                        text: m.text.clone(),
+                        ..Default::default()
+                    },
+                );
+                inbound_slack::badge_event(channel, ts, "", &m.text, &m.from, &m.where_, &m.link)
+            })
+            .collect();
+        s.enabled = true;
+        s.seeded = true;
+        s.last_poll = Some(now_secs());
+        s.last_error = None;
+    });
+    let _ = app.emit(CHANGED, ());
+    Ok(n)
+}
+
+/// A test's list in place of a search: `items` as found now, their
+/// contexts, and the last search's failure (`enabled: false` = source off).
+#[cfg(test)]
+pub(crate) fn load_for_tests(
+    enabled: bool,
+    items: Vec<Event>,
+    contexts: Vec<(String, MentionContext)>,
+    last_error: Option<&'static str>,
+) {
+    with_state(|s| {
+        *s = State {
+            enabled,
+            items,
+            contexts: contexts.into_iter().collect(),
+            last_poll: Some(now_secs()),
+            last_error,
+            ..State::default()
+        }
+    });
 }
 
 #[cfg(test)]
