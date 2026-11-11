@@ -12,14 +12,19 @@ const PANEL_HTML = `
       <div id="set-mcp-clients"></div>
     </div>`;
 
-import { defaultWorkerType, initialPermissions, permissionsPayload, permissionSummary, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
+import { defaultWorkerType, initialPermissions, initialScope, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
 
 const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" aria-labelledby="mcp-auth-title">
   <div id="mcp-auth-box">
     <h2 id="mcp-auth-title" data-i18n="mcp.authorizeTitle">Authorize MCP client</h2>
     <div class="set-row"><label for="mcp-auth-name" data-i18n="mcp.clientName">Name this MCP client</label><input type="text" id="mcp-auth-name" maxlength="120" autocomplete="off" spellcheck="false"></div>
-    <div class="set-row"><label for="mcp-auth-project" data-i18n="mcp.project">Project</label><div class="mcp-auth-field"><select id="mcp-auth-project" aria-describedby="mcp-auth-project-error"></select><p class="mcp-field-error" id="mcp-auth-project-error" role="alert" hidden></p></div></div>
-    <div class="set-row"><label for="mcp-auth-root" data-i18n="mcp.directory">Authorized directory</label><div class="mcp-auth-field"><input type="text" id="mcp-auth-root" autocomplete="off" spellcheck="false" aria-describedby="mcp-auth-root-error" data-i18n-placeholder="mcp.directoryPlaceholder" placeholder="/path/to/project"><p class="mcp-field-error" id="mcp-auth-root-error" role="alert" hidden></p></div></div>
+    <label class="mcp-perm"><input type="checkbox" id="mcp-auth-all"> <span data-i18n="mcp.allProjects">All projects, including new ones</span></label>
+    <p class="set-hint mcp-perm-hint" id="mcp-auth-all-hint" data-i18n="mcp.allProjectsHint">Each project through its own default directory, read when it is used; a project without one is not worked in.</p>
+    <div class="set-row" id="mcp-auth-project-row"><label for="mcp-auth-project" data-i18n="mcp.project">Project</label><div class="mcp-auth-field"><select id="mcp-auth-project" aria-describedby="mcp-auth-project-error"></select><p class="mcp-field-error" id="mcp-auth-project-error" role="alert" hidden></p></div></div>
+    <div class="set-row" id="mcp-auth-root-row"><label for="mcp-auth-root" data-i18n="mcp.directory">Authorized directory</label><div class="mcp-auth-field"><input type="text" id="mcp-auth-root" autocomplete="off" spellcheck="false" aria-describedby="mcp-auth-root-error" data-i18n-placeholder="mcp.directoryPlaceholder" placeholder="/path/to/project"><p class="mcp-field-error" id="mcp-auth-root-error" role="alert" hidden></p></div></div>
+    <div id="mcp-auth-more"></div>
+    <div class="set-actions" id="mcp-auth-add-row"><button class="btn" id="mcp-auth-add-project" type="button" data-i18n="mcp.addProject">Add another project</button></div>
+    <p class="mcp-field-error" id="mcp-auth-more-error" role="alert" hidden></p>
     <p class="set-hint" id="mcp-auth-hint" data-i18n="mcp.authorizeHint">Choose the project and directory explicitly. A configured project directory is filled in but remains editable. Its canonical path will be shown again before Deck creates the authorization.</p>
     <div class="mcp-perms" id="mcp-auth-perms">
       <h3 class="mcp-perms-title" data-i18n="mcp.permsTitle">What it may do</h3>
@@ -89,7 +94,7 @@ export function createMcpSettings(host) {
       const label = document.createElement('span');
       label.textContent = client.name;
       const scope = document.createElement('span'); scope.style.color = 'var(--muted)';
-      scope.textContent = [t('mcp.projectCount', { count: formatNumber(client.projects?.length || 0) }),
+      scope.textContent = [client.allProjects ? t('mcp.allProjectsShort') : t('mcp.projectCount', { count: formatNumber(client.projects?.length || 0) }),
         ...permissionSummary(client).map(key => t(key)),
         ...(client.revoked ? [t('mcp.revoked')] : [])].join(' · ');
       details.append(label, scope);
@@ -116,9 +121,13 @@ export function createMcpSettings(host) {
         permissions.textContent = t('mcp.permissions');
         permissions.onclick = async () => {
           const project = store.projects.find(value => value.id === client.projects?.[0]?.projectId) || null;
-          const chosen = await mcpAuthorizationDialog(store.projects, { client, project });
+          const chosen = await mcpAuthorizationDialog(store.projects, { client, project,
+            previewRoot: root => inv('mcp_scope_preview', { root }) });
           if (!chosen) return;
-          try { await inv('mcp_client_permissions', { clientId: client.id, permissions: chosen.permissions }); await renderMcpSettings(); }
+          try {
+            await inv('mcp_client_permissions', { clientId: client.id, permissions: { ...chosen.permissions, ...scopePayload(chosen) } });
+            await renderMcpSettings();
+          }
           catch (error) { toast(t(workerTypeErrorKey(error) || 'mcp.actionFailed')); }
         };
         actions.append(copy, permissions, revoke);
@@ -279,7 +288,49 @@ export function createMcpSettings(host) {
       /* the permissions: state kept here, painted into the checkboxes and
          the worker type rows */
       const perms = initialPermissions(editing);
-      const columns = () => (editing ? options.project : selected())?.columns || [];
+      /* the scope: all projects, or the first row (the project select and
+         directory above) plus any further rows (mcp-permissions-model.js) */
+      const all = $('mcp-auth-all');
+      const more = $('mcp-auth-more');
+      const moreError = $('mcp-auth-more-error');
+      let moreRows = [];
+      const initial = initialScope(editing);
+      const addRow = (projectId = '', dir = '') => {
+        const row = document.createElement('div'); row.className = 'set-row mcp-scope-row';
+        const pick = document.createElement('select'); pick.className = 'mcp-scope-project';
+        pick.setAttribute('aria-label', t('mcp.project'));
+        const none = document.createElement('option'); none.value = ''; none.textContent = t('mcp.chooseProject');
+        pick.appendChild(none);
+        for (const project of available) {
+          const option = document.createElement('option');
+          option.value = project.id; option.textContent = project.name;
+          pick.appendChild(option);
+        }
+        pick.value = projectId;
+        const input = document.createElement('input'); input.type = 'text'; input.className = 'mcp-scope-root';
+        input.autocomplete = 'off'; input.spellcheck = false; input.value = dir;
+        input.setAttribute('aria-label', t('mcp.directory'));
+        const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'btn mcp-scope-remove';
+        remove.textContent = '✕'; remove.title = t('mcp.removeProject'); remove.setAttribute('aria-label', t('mcp.removeProject'));
+        const entry = { row, select: pick, input };
+        pick.onchange = () => {
+          generation++; showError(moreError, null, '');
+          const project = available.find(value => value.id === pick.value);
+          input.value = typeof project?.dir === 'string' ? project.dir.trim() : '';
+        };
+        input.oninput = () => { generation++; showError(moreError, null, ''); };
+        remove.onclick = () => { moreRows = moreRows.filter(value => value !== entry); row.remove(); generation++; };
+        row.append(pick, input, remove);
+        more.appendChild(row);
+        moreRows.push(entry);
+        return entry;
+      };
+      const paintScope = () => {
+        for (const id of ['mcp-auth-project-row', 'mcp-auth-root-row', 'mcp-auth-more', 'mcp-auth-add-row']) $(id).hidden = all.checked;
+      };
+      const scopeNow = () => ({ all: all.checked, rows: [{ projectId: select.value, root: root.value.trim() },
+        ...moreRows.map(entry => ({ projectId: entry.select.value, root: entry.input.value.trim() }))] });
+      const columns = () => (selected() || options.project || available[0])?.columns || [];
       const paintTypes = () => {
         const list = $('mcp-perm-types'); list.replaceChildren();
         perms.workerTypes.forEach((type, index) => {
@@ -353,28 +404,37 @@ export function createMcpSettings(host) {
         $('mcp-perm-types').lastElementChild?.querySelector?.('.mcp-type-name')?.focus?.();
       };
       /* identity: fixed when editing */
+      more.replaceChildren(); moreRows = [];
+      all.checked = initial.all;
+      all.onchange = () => { generation++; showError(moreError, null, ''); paintScope(); };
+      $('mcp-auth-add-project').onclick = () => { addRow().select.focus(); };
       if (editing) {
         $('mcp-auth-title').textContent = t('mcp.permissionsTitle', { name: editing.name });
         name.value = editing.name;
-        select.value = options.project?.id || '';
-        root.value = editing.projects?.[0]?.roots?.[0] || '';
+        select.value = initial.rows[0]?.projectId || '';
+        if (!selected()) select.value = '';
+        root.value = initial.rows[0]?.root || '';
+        for (const row of initial.rows.slice(1)) addRow(row.projectId, row.root);
         save.textContent = t('common.save');
       } else {
         $('mcp-auth-title').textContent = t('mcp.authorizeTitle');
         name.value = 'ChatGPT'; select.value = ''; root.value = '';
         save.textContent = t('mcp.authorize');
       }
-      for (const field of [name, select, root]) field.disabled = !!editing;
+      /* the name is fixed once authorized; the scope can change */
+      name.disabled = !!editing;
       $('mcp-auth-hint').hidden = !!editing;
       save.disabled = false;
-      showError(permError, null, ''); showError(projectError, select, ''); showError(rootError, root, '');
+      showError(permError, null, ''); showError(projectError, select, ''); showError(rootError, root, ''); showError(moreError, null, '');
+      paintScope();
       paintPerms();
       const done = value => {
         if (closed) return;
         closed = true; generation++;
         modal.style.display = 'none'; modal.onkeydown = null;
         name.oninput = null; root.oninput = null; select.onchange = null; mcpAuthDone = null;
-        for (const field of [name, select, root]) field.disabled = false;
+        all.onchange = null;
+        name.disabled = false;
         resolve(value);
       };
       mcpAuthDone = done;
@@ -390,9 +450,18 @@ export function createMcpSettings(host) {
         if (pending || closed) return;
         const problem = workerTypesProblem(perms);
         if (problem) { showError(permError, null, t(problem)); return; }
-        if (editing) { done({ permissions: permissionsPayload(perms) }); return; }
-        const project = selected();
         const clientName = name.value.trim();
+        const identity = editing ? {} : { name: clientName };
+        /* an edit that leaves the scope as it was sends none (no directory
+           is checked again) */
+        if (editing && JSON.stringify(scopeNow()) === JSON.stringify(initial)) {
+          done({ permissions: permissionsPayload(perms), allProjects: initial.all, scopes: null }); return;
+        }
+        if (all.checked) {
+          if (!clientName) { name.focus(); return; }
+          done({ ...identity, allProjects: true, scopes: [], permissions: permissionsPayload(perms) }); return;
+        }
+        const project = selected();
         const authorizationRoot = root.value.trim();
         if (!project) {
           showError(projectError, select, t('mcp.projectRequired')); select.focus(); return;
@@ -401,11 +470,22 @@ export function createMcpSettings(host) {
           showError(rootError, root, t('mcp.rootRequired')); root.focus(); return;
         }
         if (!clientName) { name.focus(); return; }
+        const extras = moreRows.map(entry => ({ entry, project: available.find(value => value.id === entry.select.value) || null,
+          root: entry.input.value.trim() }));
+        const missing = extras.find(extra => !extra.project || !extra.root);
+        if (missing) {
+          const field = missing.project ? missing.entry.input : missing.entry.select;
+          showError(moreError, field, t(missing.project ? 'mcp.rootRequired' : 'mcp.projectRequired')); field.focus(); return;
+        }
+        const ids = [project.id, ...extras.map(extra => extra.project.id)];
+        if (new Set(ids).size !== ids.length) { showError(moreError, null, t('mcp.projectDuplicate')); return; }
         const requestGeneration = generation;
         pending = true; save.disabled = true;
         let preview;
-        try { preview = await previewRoot(authorizationRoot); }
-        catch (_) { preview = { ok: false, error: 'unavailable' }; }
+        let previews;
+        const ask = async value => { try { return await previewRoot(value); } catch (_) { return { ok: false, error: 'unavailable' }; } };
+        preview = await ask(authorizationRoot);
+        previews = await Promise.all(extras.map(extra => ask(extra.root)));
         pending = false;
         if (closed || requestGeneration !== generation) { save.disabled = false; return; }
         save.disabled = false;
@@ -423,7 +503,20 @@ export function createMcpSettings(host) {
           showError(rootError, root, t('mcp.rootResolved', { root: preview.root }));
           root.focus(); return;
         }
-        done({ name: clientName, project, root: preview.root, permissions: permissionsPayload(perms) });
+        for (let i = 0; i < extras.length; i++) {
+          const answer = previews[i]; const { entry } = extras[i];
+          if (!answer?.ok || !answer.root) {
+            const key = ({ not_found: 'mcp.rootNotFound', not_directory: 'mcp.rootNotDirectory', not_accessible: 'mcp.rootNotAccessible', too_broad: 'mcp.rootTooBroad' })[answer?.error] || 'mcp.rootUnavailable';
+            showError(moreError, entry.input, t(key)); entry.input.focus(); return;
+          }
+          if (answer.root !== extras[i].root) {
+            entry.input.value = answer.root;
+            showError(moreError, entry.input, t('mcp.rootResolved', { root: answer.root })); entry.input.focus(); return;
+          }
+        }
+        done({ ...identity, allProjects: false,
+          scopes: [{ project, root: preview.root }, ...extras.map((extra, i) => ({ project: extra.project, root: previews[i].root }))],
+          permissions: permissionsPayload(perms) });
       };
       $('mcp-auth-no').onclick = () => done(null);
       modal.onkeydown = event => {
@@ -449,10 +542,13 @@ export function createMcpSettings(host) {
         projectExists: projectId => store.projects.some(project => project.id === projectId),
       });
       if (!authorization) return;
-      const { name, project, root, permissions } = authorization;
-      if (!store.projects.some(candidate => candidate.id === project.id)) { toast(t('mcp.projectUnavailable')); return; }
+      const { name, scopes, allProjects, permissions } = authorization;
+      if (!allProjects && scopes.some(scope => !store.projects.some(candidate => candidate.id === scope.project.id))) {
+        toast(t('mcp.projectUnavailable')); return;
+      }
+      const { projects, ...scope } = scopePayload(authorization);
       try {
-        await inv('mcp_client_add', { name, projects: [{ projectId: project.id, roots: [root] }], permissions });
+        await inv('mcp_client_add', { name, projects: projects || [], permissions: { ...permissions, ...scope } });
         await renderMcpSettings();
       } catch (error) {
         toast(String(error).includes('MCP project no longer exists') ? t('mcp.projectUnavailable')

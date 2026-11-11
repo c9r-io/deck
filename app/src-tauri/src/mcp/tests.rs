@@ -327,6 +327,7 @@ fn client_record(root: &Path) -> Client {
         allow_drafts: false,
         allow_mentions: false,
         rule_column: false,
+        all_projects: false,
         lanes: Default::default(),
     }
 }
@@ -858,6 +859,7 @@ fn authorization_is_client_project_session_and_control_scoped() {
         allow_drafts: false,
         allow_mentions: false,
         rule_column: false,
+        all_projects: false,
         lanes: Default::default(),
     });
     let disabled = match client(&doc, "client_a") {
@@ -2121,7 +2123,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
     );
 
     let mut invalid = DiskDoc {
-        version: STATE_VERSION_ORCHESTRATORS + 1,
+        version: STATE_VERSION_ALL_PROJECTS + 1,
         ..DiskDoc::default()
     };
     assert!(validate_doc(&invalid).is_err());
@@ -2161,6 +2163,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
         allow_drafts: false,
         allow_mentions: false,
         rule_column: false,
+        all_projects: false,
         lanes: Default::default(),
     });
     assert!(validate_doc(&invalid).is_err());
@@ -3108,7 +3111,7 @@ fn v3_state_upgrades_stickily_and_future_state_is_refused() {
     // The v3 build accepted exactly version 3; the same rule refuses a
     // future schema here.
     let mut future = saved.clone();
-    future["version"] = json!(STATE_VERSION_ORCHESTRATORS + 1);
+    future["version"] = json!(STATE_VERSION_ALL_PROJECTS + 1);
     std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
     assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
     assert_eq!(
@@ -5882,6 +5885,8 @@ fn set_permissions(runtime: &Runtime, automations: bool, workers: bool, replies:
             allow_drafts: false,
             allow_mentions: false,
             rule_column: false,
+            all_projects: false,
+            projects: None,
         },
     )
     .unwrap();
@@ -5945,6 +5950,8 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
             allow_drafts: false,
             allow_mentions: false,
             rule_column: false,
+            all_projects: false,
+            projects: None,
         };
     assert!(client_permissions(
         &runtime,
@@ -6080,6 +6087,8 @@ fn no_permissions(allow_create: bool) -> super::commands::PermissionsInput {
         allow_drafts: false,
         allow_mentions: false,
         rule_column: false,
+        all_projects: false,
+        projects: None,
     }
 }
 
@@ -6588,6 +6597,8 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
         description: "Write code".into(),
     };
     let permissions = |rule_column: bool| super::commands::PermissionsInput {
+        all_projects: false,
+        projects: None,
         allow_create: false,
         allow_automations: true,
         allow_workers: true,
@@ -6625,19 +6636,15 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
     let b = start(Some("OB"), "req_b1");
     assert_eq!(b["state"], "accepted", "B's own sequence: {b}");
     assert_eq!(b["result"]["columnId"], "CB");
-    // another project: the type's column
+    // an orchestrator card in a project the client does not reach starts
+    // nothing elsewhere
     let x = start(Some("OX"), "req_x1");
-    assert_eq!(x["result"]["columnId"], "C1", "{x}");
+    assert_eq!(x["error"]["code"], "PERMISSION_DENIED", "{x}");
     // a caller from no card keeps the client's sequence, untouched by A and B
     let none = start(None, "req_n1");
     assert_eq!(none["result"]["columnId"], "C1", "{none}");
     assert!(none["result"]["orchestratorCardId"].is_null());
-    for (view, session) in [
-        (&a, "deck-wa"),
-        (&b, "deck-wb"),
-        (&x, "deck-wx"),
-        (&none, "deck-wn"),
-    ] {
+    for (view, session) in [(&a, "deck-wa"), (&b, "deck-wb"), (&none, "deck-wn")] {
         let op = view["operationId"].as_str().unwrap().to_owned();
         claim(&runtime, &op).unwrap();
         complete(&runtime, op, "committed".into(), None, Some(session.into())).unwrap();
@@ -6776,5 +6783,231 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
     );
     let saved: Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
     assert_eq!(saved["version"], STATE_VERSION_ORCHESTRATORS, "sticky");
+    drop(root);
+}
+
+/// Project scope (`grants.rs`): a client of all projects reaches every
+/// project of the Board through its own default directory (one without a
+/// directory is seen, never worked in; a too-broad one is refused), written
+/// at the sticky all-projects version; a scope edited to a list withdraws
+/// everything in a project that left it (its grants end, its managed
+/// sessions go to the user, its pending starts are rejected, its worker
+/// cards are the user's); a worker opens in the orchestrator card's
+/// project, else the one named, else the first.
+#[test]
+fn a_client_reaches_listed_or_all_projects_through_their_own_directories() {
+    let (runtime, _runner, root) = fixture("all-projects", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let dir = |name: &str| {
+        let path = root.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::canonicalize(&path).unwrap().display().to_string()
+    };
+    let (d1, d2) = (dir("one"), dir("two"));
+    super::grants::BOARD_PROJECTS_FOR_TESTS.with(|cell| {
+        *cell.borrow_mut() = Some(vec![
+            ("P1".into(), d1.clone()),
+            ("P2".into(), d2.clone()),
+            ("P3".into(), String::new()),
+            ("P4".into(), "/".into()),
+        ])
+    });
+    let call = |tool: &str, args: Value| route(&runtime, request(tool, args));
+    let claude = WorkerType {
+        name: "claude".into(),
+        cmd: "claude".into(),
+        column_id: "C1".into(),
+        description: "Write code".into(),
+    };
+    let permissions =
+        |all: bool, projects: Option<Vec<(&str, &str)>>| super::commands::PermissionsInput {
+            allow_workers: true,
+            worker_types: vec![claude.clone()],
+            all_projects: all,
+            projects: projects.map(|list| {
+                list.into_iter()
+                    .map(|(id, root)| super::commands::ProjectScopeInput {
+                        project_id: id.into(),
+                        roots: vec![root.into()],
+                    })
+                    .collect()
+            }),
+            ..Default::default()
+        };
+    client_permissions(&runtime, "client_a", permissions(true, None)).unwrap();
+    let caps = call("deck_capabilities", json!({}));
+    assert_eq!(caps["allProjects"], true, "{caps}");
+    assert_eq!(
+        caps["authorizedWorkspaces"],
+        json!([{"projectId": "P1", "roots": [d1]}, {"projectId": "P2", "roots": [d2]}]),
+        "a project without a directory, or a too-broad one, is not reached"
+    );
+    assert_eq!(caps["projectsWithoutDirectory"], json!(["P3"]));
+    let scope = |project: &str| {
+        runtime
+            .read(|doc| scoped_project(&doc.config.clients[0], project))
+            .unwrap()
+    };
+    assert_eq!(scope("P2").unwrap().roots, vec![d2.clone()]);
+    assert_eq!(
+        scope("P3")
+            .err()
+            .map(|e| e.message().to_string())
+            .as_deref(),
+        Some(NO_PROJECT_DIRECTORY)
+    );
+    assert!(scope("P4").is_err());
+    assert!(scope("P9").is_err());
+    let saved: Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+    assert_eq!(saved["version"], STATE_VERSION_ALL_PROJECTS, "sticky");
+    // a worker opens in the orchestrator card's project
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [
+            {"id": "OA", "session": "deck-oa", "title": "Orch A", "cmd": "", "dir": "/tmp", "projectId": "P2", "columnId": "CA"},
+            {"id": "W1", "session": "deck-w1", "title": "w", "cmd": "claude", "dir": "/tmp", "projectId": "P1", "columnId": "C1"}
+        ]}),
+        true,
+    );
+    let start = |card: Option<&str>, request: &str, sequence: u64, project: Option<&str>| {
+        let _as = super::origin::enter_as(card);
+        let mut args = json!({"request_id": request, "send_sequence": sequence, "text": "go"});
+        if let Some(project) = project {
+            args["project_id"] = json!(project);
+        }
+        call("deck_worker_start", args)
+    };
+    let beside = start(Some("OA"), "req_p1", 0, None);
+    assert_eq!(beside["result"]["projectId"], "P2", "{beside}");
+    assert_eq!(beside["result"]["dir"], d2);
+    let named = start(None, "req_p2", 0, Some("P1"));
+    assert_eq!(named["result"]["projectId"], "P1", "{named}");
+    assert_eq!(
+        start(None, "req_p3", 1, Some("P3"))["error"]["code"],
+        "PERMISSION_DENIED"
+    );
+    // a list of projects: P1 leaves, and everything of it is withdrawn
+    runtime
+        .write(|doc| {
+            let session = doc.sessions[0].clone();
+            doc.execution_grants.push(execution_grant(&session));
+            doc.workers.push(Worker {
+                card_id: "W1".into(),
+                client_id: "client_a".into(),
+                operation_id: "op_w1".into(),
+                automation_id: "claude".into(),
+                created_at: 1,
+                held: false,
+                orchestrator: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+    client_permissions(
+        &runtime,
+        "client_a",
+        permissions(false, Some(vec![("P2", &d2)])),
+    )
+    .unwrap();
+    let (session, grant, pending, worker) = runtime
+        .read(|doc| {
+            (
+                doc.sessions[0].human_lock,
+                doc.execution_grants[0].revoked_at.is_some(),
+                doc.operations
+                    .iter()
+                    .find(|o| o.request_id == "req_p2")
+                    .map(|o| o.state.clone()),
+                doc.workers
+                    .iter()
+                    .find(|w| w.card_id == "W1")
+                    .map(|w| w.held),
+            )
+        })
+        .unwrap();
+    assert!(session, "the managed session in P1 is the user's");
+    assert!(grant, "its execution grant ended");
+    assert_eq!(
+        pending.as_deref(),
+        Some("rejected"),
+        "the start pending in P1"
+    );
+    assert_eq!(worker, Some(true), "the worker card in P1 is the user's");
+    let caps = call("deck_capabilities", json!({}));
+    assert_eq!(caps["allProjects"], false);
+    assert_eq!(
+        caps["authorizedWorkspaces"],
+        json!([{"projectId": "P2", "roots": [d2]}])
+    );
+    // the beside start in P2 stays pending
+    let kept = runtime
+        .read(|doc| {
+            doc.operations
+                .iter()
+                .find(|o| o.request_id == "req_p1")
+                .map(|o| o.state.clone())
+        })
+        .unwrap();
+    assert_eq!(kept.as_deref(), Some("accepted"));
+    super::grants::BOARD_PROJECTS_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    drop(root);
+}
+
+/// Worker capacity: 8 per orchestrator card (callers from no card count
+/// together), 32 per client.
+#[test]
+fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
+    let (runtime, _runner, root) = fixture("worker-room", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let mut cards: Vec<Value> = Vec::new();
+    runtime
+        .write(|doc| {
+            for i in 0..8 {
+                let id = format!("WA{i}");
+                cards.push(json!({"id": id, "session": format!("deck-wa{i}"), "title": "w", "cmd": "claude", "dir": "/tmp"}));
+                doc.workers.push(Worker {
+                    card_id: id,
+                    client_id: "client_a".into(),
+                    operation_id: format!("op_{i}"),
+                    automation_id: "claude".into(),
+                    created_at: 1,
+                    held: false,
+                    orchestrator: Some("OA".into()),
+                });
+            }
+            Ok(())
+        })
+        .unwrap();
+    crate::documents::test_door::commit(json!({"projects": [], "cards": cards}), true);
+    let room = |orchestrator: Option<&str>, pending: usize| {
+        runtime
+            .read(|doc| room_for_worker(doc, "client_a", orchestrator, pending).is_ok())
+            .unwrap()
+    };
+    assert!(!room(Some("OA"), 0), "OA is full");
+    assert!(room(Some("OB"), 0), "another orchestrator card has room");
+    assert!(room(None, 0));
+    assert!(!room(Some("OB"), 8), "OB with its own pending starts");
+    // 24 more on three other orchestrator cards: the client bound
+    runtime
+        .write(|doc| {
+            for i in 0..24 {
+                let id = format!("WX{i}");
+                cards.push(json!({"id": id, "session": format!("deck-wx{i}"), "title": "w", "cmd": "claude", "dir": "/tmp"}));
+                doc.workers.push(Worker {
+                    card_id: id,
+                    client_id: "client_a".into(),
+                    operation_id: format!("op_x{i}"),
+                    automation_id: "claude".into(),
+                    created_at: 1,
+                    held: false,
+                    orchestrator: Some(format!("O{}", i / 8)),
+                });
+            }
+            Ok(())
+        })
+        .unwrap();
+    crate::documents::test_door::commit(json!({"projects": [], "cards": cards}), true);
+    assert!(!room(Some("OB"), 0), "32 on the Board: the client is full");
+    assert!(!room(None, 0));
     drop(root);
 }

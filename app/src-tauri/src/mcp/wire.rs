@@ -92,6 +92,10 @@ pub(super) struct WorkerStartArgs {
     pub(super) dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) title: Option<String>,
+    /// The project the card opens in; default the orchestrator card's,
+    /// else the client's first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) project_id: Option<String>,
 }
 
 /// `deck_worker_send`: one line for one worker card, written after the

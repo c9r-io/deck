@@ -27,7 +27,7 @@
 //      sends each at least one line. The page counts them.
 // No hook word and no event is synthesized: the Signal comes from the real
 // Claude Code in each card.
-export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false } = {}) {
+export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false } = {}) {
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider, panes } = await import('../js/board.js');
   const { openSession, backToBoard } = await import('../js/layout.js');
@@ -379,6 +379,82 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     await report('orchestrators-live', !!live && liveBeside, live ? live.length : 0);
     await report('done', !failed, 1, 6);
   };
+  /* `projects`: ONE client reaching ALL projects (mcp/grants.rs). The page
+     makes two projects with default directories (work/a, work/b; the
+     operator created them), authorizes one client of all projects that may
+     drive workers (one Claude type) and opens a plain-shell card "Orch A"
+     in A and "Orch B" in B (`projects-armed`). The operator types
+     scripts/mcp-projects-e2e.py into both panes: each sees every project
+     with a directory, the first project (no directory) listed apart, is
+     refused a start there, and starts one worker. The page sees each in its
+     orchestrator's project and column, with that project's directory
+     (`projects-placed`), then narrows the scope to A through the client's
+     Permissions… dialog: B's worker is the user's (`projects-narrowed`).
+     The script's second phase in "Orch B" is refused a start. */
+  const projectsRun = async ({ work, cmd }) => {
+    const made = {};
+    for (const [key, name] of [['a', 'Proj A'], ['b', 'Proj B']]) {
+      const created = await provider.createProject(name);
+      await provider.setProjectDefaults(created.id, { dir: `${work}/${key}`, cmd: '' });
+      made[key] = provider.project(created.id);
+    }
+    await inv('mcp_enable');
+    const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [],
+      permissions: { allowCreate: false, allowAutomations: false, allowWorkers: true, allowReplies: false,
+        workerTypes: [{ name: 'claude', cmd, columnId: made.a.columns[0].id, description: 'Write code' }], workerFirstSend: false,
+        allowDrafts: false, allowMentions: false, ruleColumn: false, allProjects: true } });
+    const listed = await until(async () => {
+      const status = await inv('mcp_status');
+      return status.enabled && status.socketReady && status.clients.some(value => value.id === client.id && value.allProjects) ? status : null;
+    }, 15_000, 250);
+    await report('workers-client', !!listed);
+    const open = async (key, name) => (await provider.createStarted({ projectId: made[key].id, columnId: made[key].columns[1].id,
+      title: name, dir: `${work}/${key}`, cmd: '' }, { requireCreated: true })).card;
+    const orch = { a: await open('a', 'Orch A'), b: await open('b', 'Orch B') };
+    await report('projects-armed', !!orch.a?.session && !!orch.b?.session);
+
+    const typed = () => store.cards.filter(card => card.origin?.source === 'worker');
+    const placed = await until(async () => {
+      await refreshWorkers();
+      const cards = typed();
+      return cards.length >= 2 && cards.every(card => workerOf(card.id)?.orchestratorCardId) ? cards : null;
+    }, 600_000, 2000);
+    const right = (placed || []).every(card => {
+      const owner = store.cards.find(value => value.id === workerOf(card.id).orchestratorCardId);
+      const key = owner?.id === orch.a.id ? 'a' : 'b';
+      return owner && card.projectId === owner.projectId && card.columnId === owner.columnId
+        && card.dir.endsWith(`/work/${key}`);
+    });
+    await report('projects-placed', !!placed && right && new Set((placed || []).map(card => card.projectId)).size === 2,
+      placed ? placed.length : 0);
+
+    /* narrowed to A through the dialog, as the person does it */
+    await openSettings({ section: 'remote' });
+    await renderMcpSettings();
+    const row = [...document.querySelectorAll('.mcp-client-row')].find(value => value.textContent.includes('orchestrator'));
+    row.querySelector('button.mcp-permissions').click();
+    if (!(await until(() => $('mcp-auth').style.display === 'flex', 3000, 50))) throw new Error('permissions dialog');
+    $('mcp-auth-all').click();
+    $('mcp-auth-project').value = made.a.id; $('mcp-auth-project').dispatchEvent(new Event('change'));
+    for (let i = 0; i < 3 && $('mcp-auth').style.display === 'flex'; i++) {
+      $('mcp-auth-yes').click();
+      await until(() => $('mcp-auth').style.display === 'none' || null, 3000, 100);
+    }
+    $('set-close').click();
+    const narrowed = await until(async () => {
+      const status = await inv('mcp_status');
+      const mine = status.clients.find(value => value.id === client.id);
+      return mine && !mine.allProjects && mine.projects.length === 1 && mine.projects[0].projectId === made.a.id ? mine : null;
+    }, 10_000, 250);
+    const ui = await inv('mcp_workers_ui');
+    const bWorker = (placed || []).find(card => card.projectId === made.b.id);
+    const aWorker = (placed || []).find(card => card.projectId === made.a.id);
+    await report('projects-narrowed', !!narrowed
+      && ui.find(value => value.cardId === bWorker?.id)?.takenOver === true
+      && ui.find(value => value.cardId === aWorker?.id)?.takenOver === false);
+    await pause(60_000);
+    await report('done', !failed, 1, 7);
+  };
   let first = null;
   try {
     if (store.cards.length) throw new Error('nonempty isolated board');
@@ -386,8 +462,8 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
        `--no-daemon` worker through part A only (no reply is forwarded for
        Codex, and part B is not run: `done` then reports b=2) */
     const scenario = drafting ? 'drafts' : mentioning ? 'mentions' : orchestrating ? 'orchestrators'
-      : await inv('smoke_native_scenario').catch(() => '');
-    if (!['live', 'codex', 'types', 'drafts', 'mentions', 'orchestrators'].includes(scenario)) throw new Error('scenario');
+      : projecting ? 'projects' : await inv('smoke_native_scenario').catch(() => '');
+    if (!['live', 'codex', 'types', 'drafts', 'mentions', 'orchestrators', 'projects'].includes(scenario)) throw new Error('scenario');
     const codex = scenario === 'codex';
     /* `types`: no template and no rule; the client carries one Claude worker
        type and the first-send choice, and the scripted client starts the
@@ -405,6 +481,10 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     const column = project.columns[0];
     if (scenario === 'drafts') { await drafts({ project, column, work }); return; }
     if (scenario === 'mentions') { await mentionsRun({ project, column, work }); return; }
+    if (scenario === 'projects') {
+      await projectsRun({ work, cmd: 'claude --setting-sources project' });
+      return;
+    }
     if (scenario === 'orchestrators') {
       await orchestratorsRun({ project, work, cmd: 'claude --setting-sources project' });
       return;

@@ -47,9 +47,13 @@
 use super::*;
 
 pub(super) const WORKER_SEND_KIND: &str = "worker-send";
-/// Worker cards one client may have on the Board at once; a trigger beyond
-/// it is refused (`CAPACITY_EXCEEDED`).
+/// Worker cards one orchestrator card (or the client's callers from no
+/// card, together) may have on the Board at once; a start beyond it is
+/// refused (`CAPACITY_EXCEEDED`).
 pub(super) const MAX_LIVE_WORKERS: usize = 8;
+/// Worker cards one client may have on the Board at once, all its
+/// orchestrator cards together.
+pub(super) const MAX_CLIENT_WORKERS: usize = 32;
 /// Worker records kept in all (closed cards are pruned first).
 const MAX_WORKER_RECORDS: usize = 256;
 /// Unsent delegated lines one card may hold.
@@ -174,15 +178,43 @@ pub(super) fn record_worker(doc: &mut DiskDoc, operation: &Operation, card: &str
     });
 }
 
-/// How many of `client`'s worker cards are on the Board now (all of its
-/// records while no Board is known).
-pub(super) fn live_workers(doc: &DiskDoc, client: &str) -> usize {
+/// Whether `client` may start one more worker card from `orchestrator`
+/// with `pending` starts not yet on the Board: at most `MAX_LIVE_WORKERS`
+/// for that orchestrator card (or for its callers from no card) and
+/// `MAX_CLIENT_WORKERS` in all.
+pub(super) fn room_for_worker(
+    doc: &DiskDoc,
+    client: &str,
+    orchestrator: Option<&str>,
+    pending: usize,
+) -> Result<(), Value> {
     let cards = crate::documents::card_targets(false);
-    doc.workers
+    let live: Vec<&Worker> = doc
+        .workers
         .iter()
         .filter(|w| w.client_id == client)
         .filter(|w| cards.as_ref().is_none_or(|c| c.contains_key(&w.card_id)))
-        .count()
+        .collect();
+    let own = live
+        .iter()
+        .filter(|w| w.orchestrator.as_deref() == orchestrator)
+        .count();
+    let full = |message: &str| {
+        error_value(
+            "CAPACITY_EXCEEDED",
+            message,
+            "Ask the local Deck user to close finished worker cards, then start again with a new request.",
+        )
+    };
+    if own + pending >= MAX_LIVE_WORKERS {
+        return Err(full(
+            "this orchestrator already has 8 worker cards on the Board",
+        ));
+    }
+    if live.len() + pending >= MAX_CLIENT_WORKERS {
+        return Err(full("this client already has 32 worker cards on the Board"));
+    }
+    Ok(())
 }
 
 /* ---------- facts other modules read ---------- */
@@ -1023,6 +1055,29 @@ pub(super) fn worker_start(
     let hash = request_hash("deck_worker_start", &args);
     let orchestrator = super::origin::orchestrator();
     let orchestrator = orchestrator.as_deref();
+    // the project: the one named, else the orchestrator card's, else (from
+    // no card) the client's first (resolved before the write: a client of all projects
+    // reads the project's directory from disk)
+    let card_project = orchestrator.and_then(|card| {
+        crate::documents::card_targets(false)?
+            .get(card)
+            .map(|t| t.project_id.clone())
+    });
+    let scope = runtime
+        .read(|doc| -> Result<ProjectScope, DeckError> {
+            let client = driving(doc, client_id)?;
+            // an orchestrator card in a project out of reach starts nothing
+            // elsewhere unless it names a project it reaches
+            match (args.project_id.as_deref(), card_project.as_deref()) {
+                (Some(id), _) | (None, Some(id)) => scoped_project(client, id),
+                (None, None) => client_scopes(client)
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| DeckError::new(ErrorKind::Perm, "client has no project")),
+            }
+        })
+        .map_err(map_error)?
+        .map_err(map_error)?;
     let replay = runtime
         .read(|doc| {
             driving(doc, client_id)?;
@@ -1053,9 +1108,7 @@ pub(super) fn worker_start(
                     "workerTypes": types_view(&client)
                 }})));
             };
-            let Some(project) = client.projects.first() else {
-                return Err(DeckError::new(ErrorKind::Perm, "client has no project"));
-            };
+            let project = &scope;
             let dir = match args.dir.as_deref() {
                 Some(dir) => canonical_scope(dir, &project.roots)?,
                 None => {
@@ -1075,10 +1128,8 @@ pub(super) fn worker_start(
                         && matches!(o.state.as_str(), "accepted" | "executing")
                 })
                 .count();
-            if live_workers(doc, client_id) + pending_starts >= MAX_LIVE_WORKERS {
-                return Ok(Err(capacity(
-                    "this client already has 8 worker cards on the Board",
-                )));
+            if let Err(full) = room_for_worker(doc, client_id, orchestrator, pending_starts) {
+                return Ok(Err(full));
             }
             reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
             let title = args
@@ -1203,6 +1254,14 @@ pub(super) fn settle_start(runtime: &Runtime, operation_id: &str, session: &str)
     note_worker_change();
 }
 
+/// A project list as compared for a change: ids and roots.
+fn scope_key(projects: &[ProjectScope]) -> Vec<(String, Vec<String>)> {
+    projects
+        .iter()
+        .map(|p| (p.project_id.clone(), p.roots.clone()))
+        .collect()
+}
+
 /// Save every choice of one client at once (`commands::mcp_client_permissions`).
 /// Under the settings fence and the delivery lock, so a withdrawal is ordered
 /// against the scheduler's firing intent exactly as `client_automations` is:
@@ -1215,8 +1274,29 @@ pub(super) fn client_permissions(
     permissions: super::commands::PermissionsInput,
 ) -> Result<(), DeckError> {
     validate_worker_types(&permissions.worker_types)?;
+    // a new scope, checked before any lock: all projects, or a list of one
+    // to 64 existing projects with canonical roots
+    let scope: Option<(bool, Vec<ProjectScope>)> = if permissions.all_projects {
+        Some((true, Vec::new()))
+    } else if let Some(list) = permissions.projects.clone() {
+        if list.is_empty() || list.len() > MAX_PROJECTS_PER_CLIENT {
+            return Err(DeckError::new(
+                ErrorKind::Invalid,
+                "invalid MCP client scope",
+            ));
+        }
+        let scopes = super::commands::validate_new_client_scopes(
+            list,
+            runtime.app.is_some(),
+            crate::documents::board_project_exists,
+        )?;
+        Some((false, scopes))
+    } else {
+        None
+    };
     let withdrew_automations;
     let mut withdrew_drafts = false;
+    let mut fenced = Vec::new();
     {
         let _fence = crate::storage::settings_fence();
         let _delivery = runtime.delivery.lock_or_recover();
@@ -1238,6 +1318,15 @@ pub(super) fn client_permissions(
                 client.allow_mentions,
                 client.rule_column,
             );
+            let reach_before = reach(client);
+            let scope_before = (client.all_projects, scope_key(&client.projects));
+            if let Some((all, scopes)) = &scope {
+                client.all_projects = *all;
+                client.projects = scopes.clone();
+            }
+            let scope_changed = scope_before != (client.all_projects, scope_key(&client.projects));
+            let removed: HashSet<String> =
+                reach_before.difference(&reach(client)).cloned().collect();
             client.allow_create = permissions.allow_create;
             client.allow_automations = permissions.allow_automations;
             client.allow_workers = permissions.allow_workers;
@@ -1258,9 +1347,10 @@ pub(super) fn client_permissions(
                 client.allow_mentions,
                 client.rule_column,
             );
-            if before == after {
+            if before == after && !scope_changed {
                 return Ok(false);
             }
+            fenced = withdraw_projects(doc, client_id, &removed);
             let withdrew_automations = before.1 && !after.1;
             let withdrew_create = before.0 && !after.0;
             let withdrew_workers = before.2 && !after.2;
@@ -1302,6 +1392,10 @@ pub(super) fn client_permissions(
     }
     if withdrew_automations {
         retire_inbox_for(client_id);
+    }
+    // the managed sessions of a project that left the scope go to the user
+    for session in fenced {
+        let _ = runner_control_result(send_runner_control(runtime, &session, "human"));
     }
     if withdrew_drafts {
         super::proposals::note_withdrawn(runtime);

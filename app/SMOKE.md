@@ -527,6 +527,25 @@ bundle is built): on 2026-11-11 a pane of a freshly built smoke bundle
 reading the checkout on its external volume blocked in `open()` for good
 (most likely an unanswered privacy prompt), and the scripts never started.
 
+## One client, all projects (WKWebView mode `projects`)
+
+`projects` is one MCP client reaching every project (`mcp/grants.rs`):
+the same carrier as `orchestrators`; before the launch also create
+`<data>/translation-fixture/work/a` and `work/b`. The page creates the
+projects "Proj A" and "Proj B" with those default directories (the
+isolated Board's first project has none), authorizes one client of all
+projects that may drive workers (one Claude type), opens a plain-shell card
+"Orch A" in A and "Orch B" in B and reports `projects-armed`. The operator
+types copies of `scripts/mcp-projects-e2e.py --phase first` into both
+panes: each sees A and B reached, the first project listed as without a
+directory and refused, and starts one worker, which opens in its own
+project and directory. The page checks `projects-placed`, then narrows the
+client to A through its Permissions… dialog (`projects-narrowed`: B's
+worker is the user's, A's is not). `--phase after` in "Orch B": A alone is
+reached, a start from B's card is refused, B's worker reads as taken over.
+Judge with `scripts/smoke-verdict <data> projects` and the scripts' PASS
+lines. Keep the screen unlocked.
+
 ## Signal integrity: automation finish (FR-SI-01)
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-signal.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-signal-UNIQUE DECK_SMOKE_WKWEBVIEW=signal-finish app/run.sh`.

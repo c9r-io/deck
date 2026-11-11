@@ -3388,6 +3388,11 @@ export async function verifyOrchestrators() {
   await runWorkersSmoke({ orchestrating: true });
 }
 
+export async function verifyProjects() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ projecting: true });
+}
+
 export async function verifyAgentLive() {
   const { runAgentLiveSmoke } = await import('./agent-live-smoke.mjs');
   await runAgentLiveSmoke();

@@ -22,6 +22,9 @@
 //!   restarted or resumed in the same card is the same orchestrator.
 //! - What it changes, all within one client's own authority (it grants
 //!   nothing, a Signal may refuse and never release):
+//!   * a worker card it starts with `deck_worker_start` opens in the
+//!     orchestrator card's project (refused when the client does not reach
+//!     it and no reachable project is named);
 //!   * a worker card it starts (`deck_worker_start`, an Agent handover,
 //!     a Slack mention handover) opens in the orchestrator card's column
 //!     at that moment, when both are in one project and the client follows

@@ -49,6 +49,12 @@ pub(super) struct Client {
     pub(super) revoked_at: Option<u64>,
     pub(super) allow_create: bool,
     pub(super) projects: Vec<ProjectScope>,
+    /// The user's choice that this client reaches every project of the
+    /// Board, those made later too, each through its own default directory
+    /// read at each call (`grants::scoped_project`); `projects` is then
+    /// empty. A project without one is seen, never worked in.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) all_projects: bool,
     /// Creates this client has had accepted. A create must name the current
     /// value, so a create whose record was retired can never be accepted again.
     #[serde(default)]
@@ -712,7 +718,9 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
     // the version the content needs at least, up to the newest this build
     // writes (sticky versions never go back)
-    let needed = if super::origin::uses_orchestrators(doc) {
+    let needed = if super::grants::uses_all_projects(doc) {
+        STATE_VERSION_ALL_PROJECTS
+    } else if super::origin::uses_orchestrators(doc) {
         STATE_VERSION_ORCHESTRATORS
     } else if super::mentions::uses_mentions(doc) {
         STATE_VERSION_MENTIONS
@@ -725,7 +733,7 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     } else {
         STATE_VERSION
     };
-    let version_valid = (needed..=STATE_VERSION_ORCHESTRATORS).contains(&doc.version)
+    let version_valid = (needed..=STATE_VERSION_ALL_PROJECTS).contains(&doc.version)
         && super::proposals::valid_proposals(doc);
     let clients_valid = version_valid
         && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)
@@ -740,6 +748,7 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
                         && client.credential_version == 0
                         && client.credential_hash.is_empty()))
                 && client.projects.len() <= MAX_PROJECTS_PER_CLIENT
+                && !(client.all_projects && !client.projects.is_empty())
                 && client.projects.iter().all(|project| {
                     valid_id(&project.project_id)
                         && project.roots.len() <= MAX_ROOTS_PER_PROJECT
@@ -888,6 +897,10 @@ impl Runtime {
         // and one that groups worker cards by orchestrator card at the next
         if super::origin::uses_orchestrators(&candidate) {
             candidate.version = candidate.version.max(STATE_VERSION_ORCHESTRATORS);
+        }
+        // and one with a client of all projects at the next
+        if super::grants::uses_all_projects(&candidate) {
+            candidate.version = candidate.version.max(STATE_VERSION_ALL_PROJECTS);
         }
         save(&self.path, &candidate)?;
         *guard = Ok(candidate);

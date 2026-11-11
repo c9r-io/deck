@@ -27,6 +27,19 @@ item or background service is created.
    Confirm the canonical directory returned by the backend, then separately
    decide whether the integration may create managed sessions. Deck never
    inherits the Board's current project or falls back to the home directory.
+   **Add another project** gives the same client more projects, each with
+   its own directory (each project once). **All projects, including new
+   ones** reaches every project of the Board, those you create later too,
+   each through its own default directory, read and checked (canonical,
+   existing, not too broad) every time it is used; `deck_capabilities`
+   lists the reachable ones in `authorizedWorkspaces` and the ones without
+   a default directory in `projectsWithoutDirectory` (Deck never guesses a
+   directory: such a project is not worked in). The scope can be changed
+   later in the client's **Permissions…**; a project that leaves it takes
+   everything the client had there with it, as revocation does: its
+   execution windows there end, its managed sessions there are handed to
+   you, its pending starts there are rejected and its worker cards there
+   are yours. Permissions stay the client's, for every project it reaches.
 4. Copy the local client configuration. The copied `client_id` is a public
    display identifier; its bearer credential remains in the login Keychain and
    never appears in argv. A newly created session still cannot execute. Open
@@ -315,7 +328,7 @@ timer; your other worker cards go on.
 **Stopping.** Stopping the worker choice, revoking the client or turning
 MCP off takes the orchestrator's unsent lines off automatic delivery at
 once (they stay in each card's list for Send now); already open cards stay.
-At most 8 worker cards per client may be on the Board, 4 unsent lines per
+At most 8 worker cards per orchestrator card and 32 per client may be on the Board, 4 unsent lines per
 card, 30 lines a minute.
 
 Claude Code and Codex (`codex --no-daemon` only; its shared-daemon Signal
@@ -345,6 +358,12 @@ cannot claim another card. That card is the call's **orchestrator card**:
   not list them, and a send to one is `WORKER_NOT_FOUND`. Worker cards that
   belong to no orchestrator card (started before this, or by an agent
   outside Deck) stay listed for every orchestrator of the client.
+- A worker card opens in the project `deck_worker_start` names
+  (`project_id`), else in the orchestrator card's project (refused when the
+  client does not reach it), else, for a caller from no card, in the
+  client's first. At most 8 worker cards per
+  orchestrator card are on the Board (callers from no card count
+  together), 32 per client.
 - Trigger and send sequences (`nextTriggerSequence`, `nextSendSequence`)
   are kept per orchestrator card, so two orchestrators never get each
   other's `STALE_REQUEST`.

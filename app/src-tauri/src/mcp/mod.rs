@@ -7,6 +7,16 @@
 //! Authorization roots are canonicalized directories before the UI confirms
 //! them; they scope session creation and structured reads, never an approved
 //! job's cwd, which is any existing directory (`grants::full_local_cwd`).
+//! A client reaches a list of one to 64 projects, each with its roots, or,
+//! with the user's choice `all_projects`, every project of the current
+//! Board, those made later too, each through its own default directory
+//! read and canonicalized at each use (`grants::scoped_project`; one
+//! without a directory is seen, never worked in; a recovered Board grants
+//! nothing). The scope is edited with the other choices
+//! (`mcp_client_permissions`); a project that leaves it takes everything
+//! the client had there with it (`grants::withdraw_projects`). A ledger
+//! holding a client of all projects is written at
+//! `STATE_VERSION_ALL_PROJECTS` (sticky).
 //! Jobs run under `host-terminal-env-v1` (`ENVIRONMENT_PROFILE`): the Deck
 //! session environment minus Deck's control-plane coordinates, applied by
 //! the runner; a grant stored under a legacy profile loads as history and
@@ -192,7 +202,8 @@
 //! (`worker_set_held`, from the webview) and hands it back by hand only.
 //! Withdrawing `allow_workers`, revoking the client or disabling MCP takes
 //! the key out under `storage::settings_fence`. Capacity: 8 worker cards on
-//! the Board per client (a further trigger is `CAPACITY_EXCEEDED`), 4
+//! the Board per orchestrator card (callers from no card together), 32 per
+//! client (a further start is `CAPACITY_EXCEEDED`), 4
 //! unsent lines per card, 30 lines a minute. A ledger holding any of this is
 //! written at `STATE_VERSION_WORKERS` (sticky).
 //!
@@ -337,6 +348,9 @@ const STATE_VERSION_MENTIONS: u32 = 10;
 /// The sticky version a ledger takes once it groups worker cards by
 /// orchestrator card (`origin::uses_orchestrators`): a v10 build refuses it.
 const STATE_VERSION_ORCHESTRATORS: u32 = 11;
+/// The sticky version a ledger takes once a client reaches all projects
+/// (`grants::uses_all_projects`): a v11 build refuses it.
+const STATE_VERSION_ALL_PROJECTS: u32 = 12;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

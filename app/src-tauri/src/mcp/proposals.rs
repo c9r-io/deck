@@ -354,8 +354,7 @@ pub(super) fn config_describe(
     let (Some(board), Some(config)) = (board(), super::automation::automation_config()) else {
         return Err(unavailable());
     };
-    let projects: Vec<Value> = client
-        .projects
+    let projects: Vec<Value> = client_scopes(&client)
         .iter()
         .filter_map(|scope| {
             let project = board_project(&board, &scope.project_id)?;
@@ -432,17 +431,22 @@ fn check(
     board: &Value,
     config: &crate::inbound::Config,
 ) -> Result<Checked, Value> {
-    let scope = client
-        .projects
-        .iter()
-        .find(|p| p.project_id == args.project_id)
-        .ok_or_else(|| {
+    let scope = scoped_project(client, &args.project_id).map_err(|error| {
+        if error.message() == NO_PROJECT_DIRECTORY {
+            error_value(
+                "PERMISSION_DENIED",
+                NO_PROJECT_DIRECTORY,
+                "Tell the local Deck user; Deck works in a project only through its default directory.",
+            )
+        } else {
             error_value(
                 "PERMISSION_DENIED",
                 "this client is not authorized for that project",
                 "Use a project_id that deck_config_describe lists.",
             )
-        })?;
+        }
+    })?;
+    let scope = &scope;
     let project = board_project(board, &args.project_id).ok_or_else(|| {
         error_value(
             "PROJECT_MISSING",

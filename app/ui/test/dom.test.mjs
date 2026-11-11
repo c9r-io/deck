@@ -147,12 +147,58 @@ test('MCP authorization requires an explicit project and shows its directory', a
   assert.equal(proceed.disabled, false);
   proceed.fire('click');
   assert.deepEqual(await pending, {
-    name: 'ChatGPT', root: '/Users/test/explicit',
-    project: { id: 'P2', name: 'No directory', dir: '' },
+    name: 'ChatGPT', allProjects: false,
+    scopes: [{ project: { id: 'P2', name: 'No directory', dir: '' }, root: '/Users/test/explicit' }],
     permissions: { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, allowDrafts: false, allowMentions: false, ruleColumn: false, workerTypes: [] },
   });
   assert.equal(modal.style.display, 'none');
   assert.equal(name.oninput, null);
+});
+
+test('MCP authorization reaches several projects, refuses one twice, or all of them', async () => {
+  const projects = [{ id: 'P1', name: 'Deck', dir: '/one' }, { id: 'P2', name: 'Site', dir: '/two' }];
+  let pending = mcpAuthorizationDialog(projects);
+  const project = fakeDocument.getElementById('mcp-auth-project');
+  project.value = 'P1'; project.fire('change');
+  fakeDocument.getElementById('mcp-auth-add-project').fire('click');
+  const row = fakeDocument.getElementById('mcp-auth-more').children[0];
+  const [pick, dir] = row.children;
+  pick.value = 'P1'; pick.fire('change');
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
+  await tick();
+  assert.equal(fakeDocument.getElementById('mcp-auth-more-error').hidden, false, 'the same project twice');
+  pick.value = 'P2'; pick.fire('change');
+  assert.equal(dir.value, '/two', 'the project directory fills the row');
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
+  const two = await pending;
+  assert.deepEqual(two.scopes.map(s => [s.project.id, s.root]), [['P1', '/one'], ['P2', '/two']]);
+  assert.equal(two.allProjects, false);
+  // all projects: no project or directory is asked for
+  pending = mcpAuthorizationDialog(projects);
+  const all = fakeDocument.getElementById('mcp-auth-all');
+  all.checked = true; all.fire('change');
+  assert.equal(fakeDocument.getElementById('mcp-auth-project-row').hidden, true);
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
+  const every = await pending;
+  assert.equal(every.allProjects, true);
+  assert.deepEqual(every.scopes, []);
+});
+
+test('editing a client keeps its scope unless it changed', async () => {
+  const projects = [{ id: 'P1', name: 'Deck', dir: '/one' }, { id: 'P2', name: 'Site', dir: '/two' }];
+  const client = { id: 'c1', name: 'orchestrator', projects: [{ projectId: 'P1', roots: ['/one'] }] };
+  let pending = mcpAuthorizationDialog(projects, { client, project: projects[0] });
+  assert.equal(fakeDocument.getElementById('mcp-auth-project').value, 'P1');
+  assert.equal(fakeDocument.getElementById('mcp-auth-project').disabled, false, 'the scope can change');
+  assert.equal(fakeDocument.getElementById('mcp-auth-name').disabled, true, 'the name cannot');
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
+  const kept = await pending;
+  assert.equal(kept.scopes, null, 'unchanged: no scope is sent');
+  pending = mcpAuthorizationDialog(projects, { client, project: projects[0] });
+  const all = fakeDocument.getElementById('mcp-auth-all');
+  all.checked = true; all.fire('change');
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
+  assert.equal((await pending).allProjects, true);
 });
 
 test('MCP authorization keeps inputs and maps path failures to the root field', async () => {
@@ -2012,7 +2058,7 @@ test('an MCP client row opens its permissions in the one dialog and saves them a
   const call = calls.find(([cmd]) => cmd === 'mcp_client_permissions');
   assert.equal(call[1].clientId, 'client_live');
   assert.deepEqual(call[1].permissions, { allowCreate: false, allowAutomations: true, allowWorkers: true, allowReplies: true, workerFirstSend: false, allowDrafts: false, allowMentions: false, ruleColumn: false,
-    workerTypes: [{ name: 'claude', cmd: 'claude', columnId: 'C1', description: 'Write code, edit files, run tests' }] });
+    workerTypes: [{ name: 'claude', cmd: 'claude', columnId: 'C1', description: 'Write code, edit files, run tests' }], allProjects: false });
   row = fakeDocument.getElementById('set-mcp-clients').children[0];
   assert.match(row.children[0].children[1].textContent, /automations delegated · drives its worker cards/);
   // a Codex type without --no-daemon is refused in the dialog, nothing is saved

@@ -71,15 +71,183 @@ pub(super) fn client<'a>(doc: &'a DiskDoc, client_id: &str) -> Result<&'a Client
         .ok_or_else(|| DeckError::new(ErrorKind::Perm, "MCP client is not authorized"))
 }
 
-pub(super) fn scoped_project<'a>(
-    client: &'a Client,
-    project_id: &str,
-) -> Result<&'a ProjectScope, DeckError> {
+/// The message a project in reach but without a default directory is
+/// refused with (`all_projects`): Deck never guesses a directory.
+pub(super) const NO_PROJECT_DIRECTORY: &str =
+    "project has no default directory; ask the local Deck user to set one";
+
+/// The one project scope a client reaches `project_id` through: its own
+/// list, or, for a client of all projects, that project's default
+/// directory on the current Board, canonicalized now (the same checks an
+/// authorization root passes, too-broad roots refused).
+pub(super) fn scoped_project(client: &Client, project_id: &str) -> Result<ProjectScope, DeckError> {
+    if client.all_projects {
+        return board_scope(project_id);
+    }
     client
         .projects
         .iter()
         .find(|project| project.project_id == project_id)
+        .cloned()
         .ok_or_else(|| DeckError::new(ErrorKind::Perm, "project is not authorized"))
+}
+
+/// Every project scope a client reaches now; for a client of all projects,
+/// the current Board's projects whose default directory passes (the ones
+/// without one are `projects_without_directory`).
+pub(super) fn client_scopes(client: &Client) -> Vec<ProjectScope> {
+    if !client.all_projects {
+        return client.projects.clone();
+    }
+    board_projects()
+        .into_iter()
+        .filter_map(|(id, _)| board_scope(&id).ok())
+        .collect()
+}
+
+/// Whether the ledger holds a client of all projects (a v11 reader would
+/// see it as a client of none).
+pub(super) fn uses_all_projects(doc: &DiskDoc) -> bool {
+    doc.config.clients.iter().any(|c| c.all_projects)
+}
+
+/// The ids of the projects a client reaches: its own list, or every
+/// project of the current Board.
+pub(super) fn reach(client: &Client) -> HashSet<String> {
+    if client.all_projects {
+        return board_projects().into_iter().map(|(id, _)| id).collect();
+    }
+    client
+        .projects
+        .iter()
+        .map(|p| p.project_id.clone())
+        .collect()
+}
+
+/// A project left a client's reach (`client_permissions`): everything it
+/// had there is withdrawn, as revocation withdraws everything: its
+/// execution grants there end, its managed sessions there are fenced to
+/// the user (returned, for the runner hand-over after the write) and lose
+/// their output, its accepted starts there are rejected, and its worker
+/// cards there are the user's.
+pub(super) fn withdraw_projects(
+    doc: &mut DiskDoc,
+    client_id: &str,
+    removed: &HashSet<String>,
+) -> Vec<ManagedSession> {
+    if removed.is_empty() {
+        return Vec::new();
+    }
+    for grant in doc.execution_grants.iter_mut().filter(|grant| {
+        grant.client_id == client_id
+            && grant.revoked_at.is_none()
+            && removed.contains(&grant.project_id)
+    }) {
+        grant.revoked_at = Some(now_ms());
+        grant.revocation_version = grant.grant_version;
+    }
+    let mut fenced = Vec::new();
+    for session in doc
+        .sessions
+        .iter_mut()
+        .filter(|s| s.owner_client_id == client_id && removed.contains(&s.project_id))
+    {
+        session.fence(FenceMode::Human);
+        fenced.push(session.clone());
+    }
+    let ids: HashSet<String> = fenced.iter().map(|s| s.session_id.clone()).collect();
+    doc.close_output(|job| job.client_id == client_id && ids.contains(&job.session_id));
+    doc.reject_pending(
+        |operation| {
+            operation.client_id == client_id
+                && matches!(
+                    operation.kind.as_str(),
+                    "session-create" | super::workers::WORKER_START_KIND
+                )
+                && operation
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("projectId"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|p| removed.contains(p))
+        },
+        "scope-removed",
+    );
+    if let Some(cards) = crate::documents::card_targets(false) {
+        for worker in doc.workers.iter_mut().filter(|w| {
+            w.client_id == client_id
+                && cards
+                    .get(&w.card_id)
+                    .is_some_and(|t| removed.contains(&t.project_id))
+        }) {
+            worker.held = true;
+        }
+    }
+    fenced
+}
+
+/// For a client of all projects: the current Board's projects it can see
+/// but not work in, for want of a default directory.
+pub(super) fn projects_without_directory(client: &Client) -> Vec<String> {
+    if !client.all_projects {
+        return Vec::new();
+    }
+    board_projects()
+        .into_iter()
+        .filter(|(_, dir)| dir.trim().is_empty())
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// The current Board's projects and their default directories; empty while
+/// no current Board is known (a recovered Board grants nothing).
+fn board_projects() -> Vec<(String, String)> {
+    #[cfg(test)]
+    if let Some(forced) = BOARD_PROJECTS_FOR_TESTS.with(|cell| cell.borrow().clone()) {
+        return forced;
+    }
+    let Some(board) = crate::documents::board_authority() else {
+        return Vec::new();
+    };
+    board["projects"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            Some((
+                p["id"].as_str()?.to_owned(),
+                p["dir"].as_str().unwrap_or_default().to_owned(),
+            ))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's Board projects (id, default directory) in place of the Board.
+    pub(super) static BOARD_PROJECTS_FOR_TESTS: std::cell::RefCell<Option<Vec<(String, String)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn board_scope(project_id: &str) -> Result<ProjectScope, DeckError> {
+    let (_, dir) = board_projects()
+        .into_iter()
+        .find(|(id, _)| id == project_id)
+        .ok_or_else(|| DeckError::new(ErrorKind::Perm, "project is not authorized"))?;
+    if dir.trim().is_empty() {
+        return Err(DeckError::new(ErrorKind::Perm, NO_PROJECT_DIRECTORY));
+    }
+    let root = super::commands::canonical_project_root(&crate::tmux::expand_tilde(dir.trim()))
+        .map_err(|_| {
+            DeckError::new(
+                ErrorKind::Perm,
+                "project default directory cannot be authorized (missing, unreadable or too broad)",
+            )
+        })?;
+    Ok(ProjectScope {
+        project_id: project_id.to_owned(),
+        roots: vec![root],
+    })
 }
 
 pub(super) fn authorized_session<'a>(

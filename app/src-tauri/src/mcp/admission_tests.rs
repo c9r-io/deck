@@ -43,6 +43,7 @@ fn client() -> Client {
         allow_drafts: false,
         allow_mentions: false,
         rule_column: false,
+        all_projects: false,
         lanes: Default::default(),
     }
 }

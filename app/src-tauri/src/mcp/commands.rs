@@ -42,6 +42,8 @@ pub(crate) struct ClientView {
     /// Its orchestrator cards' worker cards open in their type's or rule's
     /// column, not beside the orchestrator card (`origin.rs`).
     pub(super) rule_column: bool,
+    /// Reaches every project through its default directory.
+    pub(super) all_projects: bool,
     pub(super) projects: Vec<ProjectScope>,
     /// Its adapter was last refused for a control-protocol mismatch
     /// (`control::route`): the integration has to be restarted. Absent from
@@ -80,6 +82,7 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
                 allow_drafts: client.allow_drafts,
                 allow_mentions: client.allow_mentions,
                 rule_column: client.rule_column,
+                all_projects: client.all_projects,
                 projects: client.projects.clone(),
                 adapter_refused: client.revoked_at.is_none()
                     && emergency.refused_adapters.contains(&client.id),
@@ -140,7 +143,7 @@ pub(crate) fn mcp_adapter_path() -> Result<String, DeckError> {
         .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP adapter is not bundled"))
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ProjectScopeInput {
     pub(super) project_id: String,
@@ -310,11 +313,18 @@ pub(crate) fn mcp_client_add(
         allow_drafts,
         allow_mentions,
         rule_column,
+        all_projects,
+        projects: _,
     } = permissions;
     let allow_replies = allow_workers && allow_replies;
     let worker_first_send = allow_workers && worker_first_send;
     validate_worker_types(&worker_types)?;
-    if !valid_title(&name) || projects.is_empty() || projects.len() > MAX_PROJECTS_PER_CLIENT {
+    // a client of all projects names none; any other names one to 64
+    let projects = if all_projects { Vec::new() } else { projects };
+    if !valid_title(&name)
+        || (!all_projects && projects.is_empty())
+        || projects.len() > MAX_PROJECTS_PER_CLIENT
+    {
         return Err(DeckError::new(
             ErrorKind::Invalid,
             "invalid MCP client scope",
@@ -345,6 +355,7 @@ pub(crate) fn mcp_client_add(
             revoked_at: None,
             allow_create,
             projects: scopes,
+            all_projects,
             create_sequence: 0,
             allow_automations,
             trigger_sequence: 0,
@@ -373,6 +384,7 @@ pub(crate) fn mcp_client_add(
             allow_drafts: client.allow_drafts,
             allow_mentions: client.allow_mentions,
             rule_column: client.rule_column,
+            all_projects: client.all_projects,
             projects: client.projects,
         })
     });
@@ -522,7 +534,7 @@ pub(super) fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), 
 /// trigger automations, drive worker cards, share their replies, the worker
 /// types and the first-send choice. A choice a parent no longer allows is
 /// off; withdrawing any of them takes effect at once.
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PermissionsInput {
     pub(super) allow_create: bool,
@@ -541,6 +553,14 @@ pub(crate) struct PermissionsInput {
     /// orchestrator card (`origin.rs`); absent = beside it.
     #[serde(default)]
     pub(super) rule_column: bool,
+    /// Every project of the Board, those made later too, each through its
+    /// own default directory (`grants::scoped_project`).
+    #[serde(default)]
+    pub(super) all_projects: bool,
+    /// When editing: the projects it reaches from now on (with
+    /// `all_projects` off). Absent, and `all_projects` off, keeps its scope.
+    #[serde(default)]
+    pub(super) projects: Option<Vec<ProjectScopeInput>>,
 }
 
 #[tauri::command(async)]

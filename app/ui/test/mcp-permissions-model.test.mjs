@@ -3,7 +3,7 @@
 // that mirror the backend's, and the row's summary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_WORKER_TYPES, defaultWorkerType, initialPermissions, permissionSummary, permissionsPayload, workerTypeErrorKey, workerTypesProblem } from '../js/mcp-permissions-model.js';
+import { MAX_WORKER_TYPES, defaultWorkerType, initialPermissions, initialScope, permissionSummary, permissionsPayload, scopePayload, workerTypeErrorKey, workerTypesProblem } from '../js/mcp-permissions-model.js';
 
 const claude = { name: 'claude', cmd: 'claude --permission-mode auto', columnId: 'C1', description: 'Write code' };
 
@@ -70,4 +70,14 @@ test('the type’s-column choice round-trips; absent means beside the orchestrat
   assert.equal(initialPermissions({ ruleColumn: true }).ruleColumn, true);
   assert.equal(initialPermissions({}).ruleColumn, false);
   assert.equal(permissionsPayload({ ruleColumn: true, workerTypes: [] }).ruleColumn, true);
+});
+
+test('a scope round-trips: all projects, a list, or nothing when kept', () => {
+  assert.deepEqual(initialScope(null), { all: false, rows: [{ projectId: '', root: '' }] });
+  assert.deepEqual(initialScope({ allProjects: true, projects: [] }).all, true);
+  assert.deepEqual(initialScope({ projects: [{ projectId: 'P1', roots: ['/a', '/b'] }] }).rows, [{ projectId: 'P1', root: '/a' }]);
+  assert.deepEqual(scopePayload({ allProjects: true, scopes: [] }), { allProjects: true });
+  assert.deepEqual(scopePayload({ allProjects: false, scopes: null }), { allProjects: false });
+  assert.deepEqual(scopePayload({ allProjects: false, scopes: [{ project: { id: 'P1' }, root: '/a' }] }),
+    { allProjects: false, projects: [{ projectId: 'P1', roots: ['/a'] }] });
 });

@@ -897,6 +897,16 @@
         "workers-exception": { "failureOnly": true }
       }
     },
+    "projects": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "projects-armed": {},
+        "projects-placed": {},
+        "projects-narrowed": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
     "orchestrators": {
       "terminal": "done",
       "checks": {

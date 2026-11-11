@@ -108,3 +108,19 @@ export function permissionSummary(client) {
   if (client.allowMentions) keys.push('mcp.summaryMentions');
   return keys;
 }
+
+/* a client's project scope as the dialog starts: all projects, or its rows
+   (project id and its first directory); a new client starts with one empty
+   row */
+export function initialScope(client) {
+  const rows = (client?.projects || []).map(p => ({ projectId: String(p.projectId || ''), root: String(p.roots?.[0] || '') }));
+  return { all: client?.allProjects === true, rows: rows.length ? rows : [{ projectId: '', root: '' }] };
+}
+
+/* the scope as the backend takes it beside the permissions: all projects,
+   a list of projects, or (an edit that kept it) nothing */
+export function scopePayload({ allProjects, scopes }) {
+  if (allProjects === true) return { allProjects: true };
+  if (!Array.isArray(scopes)) return { allProjects: false };
+  return { allProjects: false, projects: scopes.map(s => ({ projectId: s.project.id, roots: [s.root] })) };
+}

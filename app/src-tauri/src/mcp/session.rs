@@ -70,7 +70,11 @@ pub(super) fn capabilities(
                 "interactiveInput": true,
                 "structuredProjectRead": true,
                 "reliableJobExitTracking": true,
-                "authorizedWorkspaces": client.projects,
+                "authorizedWorkspaces": client_scopes(client),
+                // every project of the Board, those made later too, each
+                // through its default directory (`grants::scoped_project`)
+                "allProjects": client.all_projects,
+                "projectsWithoutDirectory": projects_without_directory(client),
                 "mayCreateSession": client.allow_create,
                 "nextCreateSequence": client.create_sequence,
                 "mayTriggerAutomations": client.allow_automations,

@@ -218,19 +218,20 @@ pub(super) fn trigger_item(
     // a client that drives its worker cards starts at most so many at once
     let crowded = runtime
         .read(|doc| {
-            doc.config
+            if doc
+                .config
                 .clients
                 .iter()
                 .any(|c| c.id == client_id && c.allow_workers)
-                && super::workers::live_workers(doc, client_id) >= super::workers::MAX_LIVE_WORKERS
+            {
+                super::workers::room_for_worker(doc, client_id, orchestrator, 0).err()
+            } else {
+                None
+            }
         })
         .map_err(map_error)?;
-    if crowded {
-        return Err(error_value(
-            "CAPACITY_EXCEEDED",
-            "this client already has 8 worker cards on the Board",
-            "Ask the local Deck user to close finished worker cards, then trigger again with a new request.",
-        ));
+    if let Some(full) = crowded {
+        return Err(full);
     }
     let config = automation_config().ok_or_else(|| {
         map_error(DeckError::new(
