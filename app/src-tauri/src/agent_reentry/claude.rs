@@ -8,10 +8,11 @@
 //! pane, PTY, queue, Board or authority handle; it never decides that an
 //! entry may launch and never chooses the bypass override — the core hands
 //! it that decision (`agent_reentry::decide`) and gets argument words back.
-//! A request is rebuilt from structured fields only: `--resume <exact id>`,
-//! preceded by the bypass flag when the core says so. No model, directory,
-//! prompt, `--continue`, `--fork-session`, permission-mode or environment
-//! word can be produced, and no observed argv is ever replayed.
+//! This module produces only `--resume <exact id>`, preceded by the bypass
+//! flag when the core says so. The core puts in front of them the closed
+//! carried options of `GRAMMAR.carried`, read from the old client's launch
+//! image; no directory, prompt, `--continue`, `--fork-session` or
+//! environment word can be produced, and no other observed argv is replayed.
 //!
 //! # Compatibility: an identity and a narrow contract, not a list of releases
 //! Nothing here names a release. A client is admitted by FIVE separate
@@ -275,8 +276,8 @@ pub(crate) fn native_id_ok(id: &str) -> bool {
 }
 
 /// The argument words of an exact-id request, in the one order this build
-/// produces: the override, when the core granted it, before `--resume`.
-/// (What ran natively in that order is the module header's record.) A
+/// produces: the override, when the core granted it, before `--resume`;
+/// the core puts the carried options in front of both. (What ran natively in that order is the module header's record.) A
 /// `Lower` grant is the bare request: a Claude resume without the override
 /// does not keep bypass, so nothing is added to lower it. `None` for
 /// anything that is not a native session id.

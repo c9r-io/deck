@@ -266,7 +266,8 @@
 //! envelope and argument shapes; `project` list/read/search; `session` the
 //! session-level requests including close; `automation` the automation
 //! delegation above; `workers` the worker cards; `origin` the orchestrator
-//! card of a call; `proposals` the drafted
+//! card of a call; `mentions` the Slack mentions reader and its marks;
+//! `proposals` the drafted
 //! configuration; `jobs` exec, job reads and every
 //! job side effect; `control` request routing plus the socket thread; and
 //! `commands` the local Tauri commands and the guards other modules call

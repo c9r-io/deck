@@ -216,37 +216,23 @@ evolution; it makes scope expansion deliberate.
   not expand later-step or tool authority, and `TriggerClass` stays the
   closed list of three (Slack badge, phone task preset, delegated Agent
   client), each tied to its own revocation source; a fourth is a hard-rule
-  change. **Worker cards** (approved 2026-11-09, `mcp/workers.rs`): a
-  delegated Agent client the user separately lets drive its worker cards may
-  have text IT wrote sent automatically into the cards ITS OWN Agent
-  triggers started (`ContentClass::Delegated`), never any other card. That
-  text rests on that standing, revocable choice alone (withdrawn under the
-  settings fence); every readiness hold still applies, plus the human hold:
-  the user's own keystroke in such a card holds the client's lines until the
-  user hands it back. The client never answers an Agent's prompt, reads no
-  screen and orchestrates nothing through Deck: it reads content-free state
-  and the final message the Stop hook forwards (a separate choice), and
-  decides itself what to send. It may also start worker cards
-  (`deck_worker_start`) of the worker types the user lists for it — the
-  user's own commands, Codex only with `--no-daemon` — never a command it
-  writes; their first line skips the first-interaction gate only under the
-  client's own first-send choice. A client the user separately lets draft
-  may PROPOSE a template and an Agent handover rule (`mcp/proposals.rs`);
-  a proposal writes and authorizes nothing — only the user's click in
-  Needs attention saves it, signing its approval as the editor's tick does,
-  and the client can never approve. A client the user separately lets
-  read Slack mentions reads the extension's in-memory list through Deck
-  (`mcp/mentions.rs`; fenced, no Slack call, no token) and may hand ONE
-  open mention to one of ITS Agent rules — Deck fills the item from the
-  mention, the user's list shows where it went — or MARK one for the user
-  (handling, for-you, no-action: presentation only, the mention stays
-  listed and the user clears any mark), never to a Slack badge rule, never
-  a dismissal, nothing written to Slack. Several agents may
-  share one client, each in its own card: Deck reads the calling card from
-  the kernel (`mcp/origin.rs`, the Signal origin check, never a claim);
-  a worker card it starts opens in that card's column at creation (never
-  moved after) and only it drives it — grouping inside the client's own
-  authority, granting nothing. No Signal word, quiet
+  change. **A delegated MCP client's further choices** are each separate and
+  revocable under the settings fence; their mechanics live in `mcp/mod.rs`
+  and the modules it names. **Worker cards** (approved 2026-11-09): text
+  the client wrote goes automatically only into the cards its own triggers
+  or `deck_worker_start` started (`ContentClass::Delegated`), under every
+  readiness hold plus the human hold (the user's keystroke holds it until
+  handed back); it starts only the worker types the user listed (Codex only
+  with `--no-daemon`), never a command it writes, and never answers an
+  Agent's prompt or reads a screen. **Drafts**: a proposal writes and
+  authorizes nothing; only the user's click in Needs attention saves it.
+  **Slack mentions**: read through Deck only (no Slack call, no token); one
+  open mention may go to one of the client's own Agent rules, never a Slack
+  badge rule, and a mark is presentation only. **Orchestrator cards**: Deck
+  reads the calling card from the kernel (`mcp/origin.rs`), never a claim;
+  it groups the client's own worker cards (placement at creation only,
+  beside the calling card unless the user chose each type's or rule's
+  column) and grants nothing. No Signal word, quiet
   time or activity ever creates, restores or upgrades authority
   (`tests/signal_census.rs`).
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the
@@ -294,9 +280,9 @@ evolution; it makes scope expansion deliberate.
   snapshots and audit semantics require sticky v7. A clock schedule that
   repeats every N > 1 units from an anchor date upgrades settings.json to
   sticky v8. An Agent trigger rule (settings.json) and the queue origins it
-  admits (queue.json) upgrade to sticky v9, and an MCP ledger holding an
-  automation delegation or a trigger record is written at its own sticky
-  v7. Channel inbox v2 protects
+  admits (queue.json) upgrade to sticky v9, and the MCP ledger takes its own
+  sticky versions, one per delegated capability: v7 for an automation
+  delegation or a trigger record, up to v13 (`mcp/mod.rs` `STATE_VERSION_*`). Channel inbox v2 protects
   native staged grant references; v1 entries gain no new permission. A
   settings backup is handed to the webview without channel grants. Native
   template edits retire affected grants before the Board write, under
@@ -341,7 +327,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | tmux sidecar and long-lived clients | `tmux.rs`, `tmux_clients.rs` |
 | tmux server lifecycle, restart, verified shell exit, restart recovery | `tmux_lifecycle.rs`, `restart.rs`, `session_runtime.rs`, `shell_exit.rs`, `shell_state.rs` (+ `docs/tmux-server-lifecycle.md`) |
 | PTY attach bridge | `pty.rs` |
-| MCP terminal control, automation delegation, worker cards, orchestrator cards, drafted configuration and Slack mentions | `mcp/` (contract in `mcp/mod.rs`; delegation in `mcp/automation.rs`; worker cards in `mcp/workers.rs`; orchestrator cards in `mcp/origin.rs`; drafts in `mcp/proposals.rs`; Slack mentions in `mcp/mentions.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/`, `ui/js/mcp.js`, `ui/js/workers.js`, `ui/js/proposals.js`, `proposals-model.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`; smoke `workers`, `orchestrators`, `projects`) |
+| MCP terminal control, automation delegation, worker cards, orchestrator cards, drafted configuration and Slack mentions | `mcp/` (contract in `mcp/mod.rs`; delegation in `mcp/automation.rs`; worker cards in `mcp/workers.rs`; orchestrator cards in `mcp/origin.rs`; drafts in `mcp/proposals.rs`; Slack mentions in `mcp/mentions.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/`, `ui/js/mcp.js`, `ui/js/workers.js`, `ui/js/proposals.js`, `proposals-model.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`; smoke `agent-live`, `workers`, `drafts`, `mentions-mcp`, `orchestrators`, `projects`) |
 | Controlled Execution calibration (CE1) | `scripts/ce/`, `scripts/ce_parity.py`, `scripts/ce_verdict.py`, `mcp/tests.rs` `ce1_probe_*` (+ `docs/ce-calibration.md`) |
 | Voice input, shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice*.js` (+ `docs/voice-input.md`) |
 | Local translation, pasteboard observation, Lens | `native/BergamotBridge.cpp`, `native/PasteboardBridge.swift`, `vendor/bergamot/`, `intelligence/`, `ui/js/local-intelligence.js`, `translation-lens*.js` (+ `docs/translation-lens.md`) |
@@ -352,7 +338,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Lists (the ⏱ panel), delivery state machine | `scheduler/`, `context.rs`, `ui/js/scheduler.js`, `queue-review.js` (+ `docs/scheduler-context-safety.md`) |
 | Automation authority and first-send overrides | `scheduler/authority.rs`, `first_send.rs`, `channel_first_send.rs`, `inbound_channel.rs`, `ui/js/automation-model.js`, `connector-model.js`, `channel-model.js` (+ `docs/channel-monitor.md`) |
 | Automations: inbound sources, drawer, templates, Keychain | `inbound.rs`, `inbound_slack.rs`, `inbound_clock.rs`, `inbound_agent.rs` (the Agent handover inbox), `keychain.rs`, `ui/js/inbound.js`, `automation.js`, `templates.js` (+ `docs/auto-respond.md`) |
-| Slack mentions: the messages that @mention the user, read with their context and routed by hand to a Slack badge rule (the badge path unchanged) or handed by a permitted MCP client to its own Agent rule (`mcp/mentions.rs`); Deck stays silent in Slack | `slack_mentions.rs` (contract), `inbound_slack.rs` (`search_mentions`, `mention_context`), `ui/js/slack-mentions.js`, `slack-mentions-model.js`, `slack-emoji.js` (generated by `scripts/gen-slack-emoji.py`) (+ `docs/auto-respond.md`; smoke `mentions-live`) |
+| Slack mentions: the messages that @mention the user, read with their context and routed by hand to a Slack badge rule (the badge path unchanged) or handed by a permitted MCP client to its own Agent rule or marked by it for the user (`mcp/mentions.rs`); Deck stays silent in Slack | `slack_mentions.rs` (contract), `inbound_slack.rs` (`search_mentions`, `mention_context`), `ui/js/slack-mentions.js`, `slack-mentions-model.js`, `slack-emoji.js` (generated by `scripts/gen-slack-emoji.py`) (+ `docs/auto-respond.md`; smoke `mentions-live`) |
 | External admission policy | `admission.rs` (pinned by `tests/external_admission.rs`) |
 | Needs-attention view, away notifications, Dock badge | `ui/js/attention.js`, `attention-model.js`, `notify.rs`, `native/NotificationBridge.swift`, `ui/js/notify-model.js` (+ `docs/notifications.md`) |
 | Card Reminders | `reminder.rs`, `ui/js/reminder-model.js` (+ `docs/card-reminders.md`) |

@@ -1,4 +1,7 @@
-//! Client, project-scope and execution-grant authorization checks over the loaded document.
+//! Client, project-scope and execution-grant authorization checks over the loaded document:
+//! a client's separate choices (`permitted`), its project scope
+//! (`scoped_project`, the all-projects resolution, `withdraw_projects`) and
+//! its execution grants.
 //!
 //! Split out of the one-file `mcp.rs` on 2026-09-23; the contract stays in
 //! `mcp/mod.rs`.

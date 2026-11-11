@@ -564,7 +564,10 @@ an addition to the transaction above, never a change of it:
    result: not attempted, refused before launch, known not launched, or
    unconfirmed. Nothing is retried.
 
-Policy A adds nothing to `--resume <id>`. Policy B is that restart's explicit
+Policy A adds to `--resume <id>` only the client's own carried launch
+options read from its launch image (Claude: ordinary permission mode, model,
+effort, settings, setting sources; never the bypass), and for a Codex bypass
+launch the words that ask for the ordinary profile (`agent_reentry/mod.rs`). Policy B is that restart's explicit
 reauthorization: the bypass flag is added only for ticked cards whose client
 was shown as a bypass launch and is read as one again at freeze. It applies
 again even if the user lowered permissions while the session ran — the dialog

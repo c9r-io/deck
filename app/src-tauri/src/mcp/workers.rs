@@ -1,6 +1,6 @@
 //! Worker cards: the cards a delegated client started through its Agent
-//! automations, which the user also let it drive. The four tools it uses
-//! (list, wait, reply, send), the ledger records that say which cards are
+//! automations or `deck_worker_start`, which the user also let it drive. The
+//! five tools it uses (start, list, wait, reply, send), the ledger records that say which cards are
 //! its own and which ones the user took over, and the facts the scheduler,
 //! the reply store and the webview read.
 //!
@@ -13,8 +13,8 @@
 //!   of worker card it may start — a name, the user's own command (`claude`
 //!   or `codex --no-daemon` with simple arguments, `validate_worker_types`),
 //!   a column and a description the orchestrator reads. `deck_worker_start`
-//!   names a type (never a command) and a directory inside the client's
-//!   authorized root, and journals a `worker-start` intent with the first
+//!   names a type (never a command), a project in the client's scope and
+//!   optionally a directory inside that project's, and journals a `worker-start` intent with the first
 //!   line; the webview creates and starts the card (`mcp.js`), and the
 //!   commit queues that line as the run's head row (`settle_start`), which
 //!   then leaves the ledger. Its first-send override rests on the client's
@@ -31,8 +31,8 @@
 //!   holds, when the card's episode is not the one the client named
 //!   (`EPISODE_MOVED`): Signal may refuse a send, never release one. Every
 //!   scheduler hold still decides when it goes out.
-//! - The user takes a card over by typing into its pane (`worker_hold`,
-//!   from the webview) and only hands it back by hand (`worker_release`).
+//! - The user takes a card over by typing into its pane and hands it back
+//!   only by hand, both through `worker_set_held` from the webview.
 //!   While held, the card's delegated lines hold at `human`.
 //! - Within one client, a worker started from an orchestrator card
 //!   (`origin.rs`) is that card's: only calls from it (and from no card) see

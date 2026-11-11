@@ -380,10 +380,10 @@ operation to `committed` with its `cardId`, replays the same request id
 then checks the card and its three external rows, the first delivery (under
 the escape hatch in `live`; held at `first-send` in `rehearsal`), the second
 after the real turn boundary and the chain quiet (`live`), withdraws the
-delegation through the client row's "Stop automations" button, checks that
+delegation through the client row's Permissions… dialog, checks that
 the sweep took the approval and the override off every unsent row and that
 nothing more is delivered, closes the card and delegates the client again
-through the same button and its confirmation. After `done`, replay the
+through the same dialog. After `done`, replay the
 request against the closed card (`--replay-only` with the recorded sequence
 and operation id): the same committed operation comes back, the sequence
 stays, and no card is created. Judge with `scripts/smoke-verdict <data>

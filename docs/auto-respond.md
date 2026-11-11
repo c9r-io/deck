@@ -276,8 +276,9 @@ way).
 ## The Agent handover trigger
 
 The third source is an **Agent**: an MCP client you delegated under
-**Settings → Remote access** (the client row's **Delegate automations**,
-or the question asked when the client is authorized) names one of your
+**Settings → Remote access** (the **Trigger your Agent automations**
+choice, in the dialog that authorizes the client or later under its row's
+**Permissions…**) names one of your
 Agent rules by its **automation id** and hands over one classified item —
 text plus who it came from, where it lives and a link. A typical client is
 a patrol skill in a Claude Code card that checks Slack, Notion, ClickUp and

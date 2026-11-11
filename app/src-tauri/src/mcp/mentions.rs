@@ -1,5 +1,6 @@
 //! Slack mentions for a delegated client: read the user's Slack mention list
-//! through Deck and hand one mention to one of the client's Agent rules.
+//! through Deck, hand one mention to one of the client's Agent rules, and
+//! mark one for the user (presentation only).
 //!
 //! The contract lives in `mcp/mod.rs` ("Slack mentions") and
 //! `docs/mcp.md`. In short:

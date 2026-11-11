@@ -48,9 +48,8 @@ item or background service is created.
    the client may run any program as your logged-in user, including interpreters
    and shells. It is not a sandbox.
    Control-lease Request/Renew never creates or extends this window.
-5. **Automation delegation** is a separate question, asked after the
-   session one and answerable later from the client's row (**Delegate
-   automations** / **Stop automations**). With it the client may list your
+5. **Trigger your Agent automations** is a separate choice in the same
+   dialog, changeable later under the client row's **Permissions…**. With it the client may list your
    Agent automations and hand over items to them (`docs/auto-respond.md`,
    "The Agent handover trigger"); the rules' own sending choices still
    apply, and withdrawing the delegation stops the steps those items have
@@ -126,10 +125,10 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_session_close` | Use Deck's ordinary close transaction; running jobs require explicit confirmation. |
 | `deck_automation_list` | The Agent automations this client is delegated to trigger: each rule's automation id, name, project and current revision, plus `nextTriggerSequence`. Needs the client's separate **automation delegation**. |
 | `deck_automation_trigger` | Hand one classified item (`text`, optional `from`/`where`/`link`) to one automation by id and revision. Deck creates the rule's card and sends its approved steps; the operation reports `committed` with `cardId` or `rejected` with a closed code (`RULE_CHANGED` with `currentRevision`, `TARGET_MISSING`, `TEMPLATE_MISSING`, `RULE_BLOCKED`, `RULE_MISSING`, `CLIENT_REVOKED`). Not session or execution authority. |
-| `deck_worker_list` | This client's worker cards (the cards its automation triggers created while it may drive them): card id, title, alive, Agent observation `{state, episode}`, `takenOver`, unsent lines and the states of its recent lines, plus `mayReadReplies` and `nextSendSequence`. Content-free. Needs the client's separate **worker** choice. |
+| `deck_worker_list` | This client's worker cards (the cards its automation triggers created, and those `deck_worker_start` started, while it may drive them): card id, title, alive, Agent observation `{state, episode}`, `takenOver`, unsent lines and the states of its recent lines, plus `mayReadReplies` and `nextSendSequence`. Content-free. Needs the client's separate **worker** choice. |
 | `deck_worker_wait` | The same views once one of the named cards moves past the episode the caller saw, is taken over or stops; at most 5 s (`wait_ms`), call again after `changed: false`. |
 | `deck_worker_reply` | A worker card's final Claude Code message of one turn ending (its episode), head and tail when long; memory only, the newest 32 (`REPLY_GONE` otherwise). Needs the further **replies** choice. |
-| `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in a directory inside its authorized directory, with its first line. An operation to poll (`committed` with `cardId`); at most 8 worker cards per client. |
+| `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in the project named by `project_id` (default: the orchestrator card's, else the client's first), optionally in `dir` inside that project's directory, with its first line. An operation to poll (`committed` with `cardId`); at most 8 worker cards per orchestrator card on the Board (callers from no card together), 32 per client. |
 | `deck_config_describe` | Before drafting: the workflow, every field of a template and an Agent handover rule with its rules, copyable examples, and the client's projects with their columns, templates (name and structure, never step text) and Agent rules. Needs the client's separate **draft** choice. |
 | `deck_config_propose` | Draft a template and/or one Agent handover rule. `validate_only: true` checks and previews and records nothing; every problem is `{field, code, message, fix}`. A valid submission (fresh `request_id`) waits in Needs attention as a proposal; an identical pending draft is refused (`DUPLICATE_PROPOSAL`), at most 4 wait per client. Writes and authorizes nothing. |
 | `deck_config_proposal_get` | One of the client's proposals: `pending`, `approved` (saved as drafted), `edited` (saved without automatic sending, finished in the editor), `rejected` or `withdrawn`, with the next action. |
@@ -306,7 +305,8 @@ labelled "Driven by ‹client›" (or by its orchestrator card, below) and its r
 (its orchestrator reads them; the card menu announces them again).
 
 The orchestrator (Claude Code, Codex or any MCP client) decides everything;
-Deck only provides four tools. `deck_worker_list` and `deck_worker_wait`
+Deck only provides five tools. `deck_worker_start` starts a card of a
+type you listed; `deck_worker_list` and `deck_worker_wait`
 show each card's state without content: whether its session is alive, the
 Agent observation's closed word (`working`, `turn-done`, `needs-input`,
 `unavailable`) and episode, whether you took it over, and the delivery
@@ -540,7 +540,10 @@ server is refused while such a runner lives. State schema v6 is distinct
 from Deck control protocol v5 and from the MCP standard version negotiated by
 the SDK. A ledger that holds an automation delegation, a trigger sequence
 or a trigger record is written at sticky v7, which a v6 build refuses
-untouched (MCP off for that run, everything else unaffected). v3/v4/v5 state upgrades in place to v6: control/create sequences are
+untouched (MCP off for that run, everything else unaffected). Each later
+capability raises it once more, sticky: worker cards v8, drafts v9, Slack
+mentions v10, orchestrator cards v11, all projects v12, mention marks v13
+(`mcp/mod.rs` `STATE_VERSION_*`). v3/v4/v5 state upgrades in place to v6: control/create sequences are
 added at 0; legacy `allowShell` fields are accepted but ignored and omitted on
 a later save (sticky: an older build refuses the new state untouched). Clients, grants,
 sessions and history are kept; nothing is re-paired. v1/v2 state migrates disabled: old clients are retained only as

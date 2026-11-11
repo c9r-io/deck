@@ -133,6 +133,7 @@
 //!      checks alone; what it confirms, it confirms from the sealed set.
 //! - **Policy.** A (`Ordinary`, the default): every approved entry is
 //!   `<frozen executable> <its carried launch options> --resume <exact id>`
+//!   (Claude's shape; each adapter's own exact-id words, see above)
 //!   and nothing else — no bypass, and no mode the launch did not have. The
 //!   carried options are the adapter's closed list read from the old
 //!   client's own launch image (`procinfo::Reduced::carried`: for Claude its
