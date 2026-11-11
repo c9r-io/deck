@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.22 — 2026-11-12 (Nightly)
+
+- Worker cards come back after an update: a card started with its own
+  launch options (permission mode including auto, model, effort,
+  settings, setting sources) is re-entered with those options, and a
+  re-entry of many cards no longer runs out of time after the eighth.
+  A launch Deck cannot re-enter says which option stops it.
+- Fixed: a proposal the orchestrator withdrew while you confirmed
+  replacing a template of the same name is no longer saved.
+- Fixed: narrowing a client from all projects to a list takes back what
+  it held in the projects that left, even before the Board was read.
+- Fixed: deleting an MCP client also removes its drafts, worker records
+  and mention marks.
+- Fixed: a mention handover that failed no longer holds the mention for
+  a minute; a closed orchestrator card's marks no longer block others.
+- Fixed: "Dismiss all" in Slack mentions dismisses only the rows shown.
+- Fixed: opening a client's Permissions… no longer changes a worker
+  type's column to the shown project's first.
+- Re-entry refuses a Claude launch that leaves out user settings (where
+  Deck's hooks live) without its own --settings, instead of failing at
+  restart.
+
 ## 0.8.21 — 2026-11-11 (Nightly)
 
 - Slack mentions for orchestrators: a new choice, "Read Slack mentions",
