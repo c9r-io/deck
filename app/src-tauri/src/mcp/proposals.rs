@@ -166,17 +166,6 @@ pub(super) fn valid_proposals(doc: &DiskDoc) -> bool {
         })
 }
 
-fn drafting<'a>(doc: &'a DiskDoc, client_id: &str) -> Result<&'a Client, DeckError> {
-    let client = client(doc, client_id)?;
-    if !client.allow_drafts {
-        return Err(DeckError::new(
-            ErrorKind::Perm,
-            "client may not draft configuration",
-        ));
-    }
-    Ok(client)
-}
-
 /// The committed Board (`None` while it cannot answer).
 fn board() -> Option<Value> {
     crate::documents::board_authority()
@@ -340,7 +329,7 @@ pub(super) fn config_describe(
     parse::<Empty>(arguments)?;
     let (client, pending) = runtime
         .read(|doc| {
-            let client = drafting(doc, client_id)?.clone();
+            let client = permitted(doc, client_id, Choice::Drafts)?.clone();
             let pending: Vec<Value> = doc
                 .proposals
                 .iter()
@@ -875,7 +864,7 @@ pub(super) fn config_propose(
         ));
     }
     let client = runtime
-        .read(|doc| drafting(doc, client_id).cloned())
+        .read(|doc| permitted(doc, client_id, Choice::Drafts).cloned())
         .map_err(map_error)?
         .map_err(map_error)?;
     let (Some(board), Some(config)) = (board(), super::automation::automation_config()) else {
@@ -920,7 +909,7 @@ pub(super) fn config_propose(
     .as_bytes());
     let recorded = runtime
         .write(|doc| -> Result<Result<(Proposal, bool), Value>, DeckError> {
-            drafting(doc, client_id)?;
+            permitted(doc, client_id, Choice::Drafts)?;
             if let Some(existing) = doc
                 .proposals
                 .iter()
@@ -1043,7 +1032,7 @@ pub(super) fn proposal_get(
     let args: ProposalGetArgs = parse(arguments)?;
     runtime
         .read(|doc| {
-            drafting(doc, client_id)?;
+            permitted(doc, client_id, Choice::Drafts)?;
             Ok(doc
                 .proposals
                 .iter()

@@ -78,7 +78,7 @@ pub(super) fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
                 }
             }
             if doc.jobs.len() >= MAX_JOBS {
-                return Err(DeckError::new(ErrorKind::DiskFull, "MCP operation capacity reached"));
+                return Err(operation_capacity());
             }
             let claim = ControlClaim { generation: &args.expected_generation, epoch: Some(args.control_epoch), holder_id: Some(&args.holder_id) };
             let grant = admit_exec(runtime, doc, client_id, &session, &claim, ExecStage::Accept).map_err(AdmissionReason::error)?.clone();
@@ -89,7 +89,7 @@ pub(super) fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
             let operation_id = random_id("op_", 16)?;
             let job_id = random_id("job_", 16)?;
             let binding = JobBinding { job_id: job_id.clone(), client_id: client_id.into(), session_id: session.session_id.clone(), session_generation: session.generation.clone(), request_hash: hash.clone(), operation_id: operation_id.clone(), grant_id: grant.grant_id.clone(), grant_version: grant.grant_version, allow_output: grant.allow_output };
-            let operation = Operation { operation_id, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "exec".into(), state: "accepted".into(), code: None, result: Some(json!({"jobId":job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"executionGrantId":grant.grant_id,"executionGrantVersion":grant.grant_version,"policyVersion":POLICY_VERSION,"environmentProfile":ENVIRONMENT_PROFILE,"launch":launch_metadata.clone(),"cwd":cwd})), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None, session_id: Some(session.session_id.clone()), control_epoch: Some(args.control_epoch), control_sequence: None };
+            let operation = Operation { result: Some(json!({"jobId":job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"executionGrantId":grant.grant_id,"executionGrantVersion":grant.grant_version,"policyVersion":POLICY_VERSION,"environmentProfile":ENVIRONMENT_PROFILE,"launch":launch_metadata.clone(),"cwd":cwd})), session_id: Some(session.session_id.clone()), control_epoch: Some(args.control_epoch), ..Operation::new(operation_id, client_id, args.request_id.clone(), hash.clone(), "exec", "accepted") };
             doc.jobs.push(binding.clone());
             doc.operations.push(operation.clone());
             audit(doc, "exec-intent", AuditLink { principal_id: Some(client_id), session_id: Some(&session.session_id), operation_id: Some(&operation.operation_id), job_id: Some(&binding.job_id), grant_id: Some(&grant.grant_id), reason_code: None })?;
@@ -509,25 +509,21 @@ pub(super) fn job_side_effect(
                 ));
             }
             let operation = Operation {
-                operation_id: random_id("op_", 16)?,
-                client_id: client_id.into(),
-                request_id,
-                request_hash: hash,
-                kind: if input.is_some() {
-                    "job-input"
-                } else {
-                    "job-interrupt"
-                }
-                .into(),
-                state: "accepted".into(),
-                code: None,
                 result: Some(json!({"jobId":job_id,"sessionId":session.session_id})),
-                accepted_at: now_ms(),
-                updated_at: now_ms(),
-                admission_hash: None,
                 session_id: Some(session.session_id.clone()),
                 control_epoch: Some(epoch),
-                control_sequence: None,
+                ..Operation::new(
+                    random_id("op_", 16)?,
+                    client_id,
+                    request_id,
+                    hash,
+                    if input.is_some() {
+                        "job-input"
+                    } else {
+                        "job-interrupt"
+                    },
+                    "accepted",
+                )
             };
             doc.operations.push(operation.clone());
             Ok((operation, Some((binding, session, grant))))

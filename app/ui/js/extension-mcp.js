@@ -12,7 +12,7 @@ const PANEL_HTML = `
       <div id="set-mcp-clients"></div>
     </div>`;
 
-import { defaultWorkerType, initialPermissions, initialScope, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
+import { defaultWorkerType, previewErrorKey, scopeProblem, typeColumnChoice, initialPermissions, initialScope, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
 
 const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" aria-labelledby="mcp-auth-title">
   <div id="mcp-auth-box">
@@ -348,12 +348,13 @@ export function createMcpSettings(host) {
           cmd.oninput = () => { type.cmd = cmd.value; showError(permError, null, ''); };
           const column = document.createElement('select'); column.className = 'mcp-type-column';
           column.setAttribute('aria-label', t('mcp.typeColumn'));
-          for (const value of columns()) {
+          const choice = typeColumnChoice(columns(), available, type.columnId);
+          for (const value of choice.options) {
             const option = document.createElement('option');
             option.value = value.id; option.textContent = value.name;
             column.appendChild(option);
           }
-          if (!columns().some(value => value.id === type.columnId)) type.columnId = columns()[0]?.id || '';
+          type.columnId = choice.value;
           column.value = type.columnId;
           column.onchange = () => { type.columnId = column.value; };
           const description = field('mcp-type-desc', 'mcp.typeDescription', type.description);
@@ -463,22 +464,21 @@ export function createMcpSettings(host) {
         }
         const project = selected();
         const authorizationRoot = root.value.trim();
-        if (!project) {
-          showError(projectError, select, t('mcp.projectRequired')); select.focus(); return;
-        }
-        if (!authorizationRoot) {
-          showError(rootError, root, t('mcp.rootRequired')); root.focus(); return;
-        }
-        if (!clientName) { name.focus(); return; }
         const extras = moreRows.map(entry => ({ entry, project: available.find(value => value.id === entry.select.value) || null,
           root: entry.input.value.trim() }));
-        const missing = extras.find(extra => !extra.project || !extra.root);
-        if (missing) {
-          const field = missing.project ? missing.entry.input : missing.entry.select;
-          showError(moreError, field, t(missing.project ? 'mcp.rootRequired' : 'mcp.projectRequired')); field.focus(); return;
+        const scopeIssue = scopeProblem([{ known: !!project, projectId: project?.id, root: authorizationRoot },
+          ...extras.map(extra => ({ known: !!extra.project, projectId: extra.project?.id, root: extra.root }))]);
+        /* the first row's own fields first, then the name, then the rest */
+        if (scopeIssue?.index === 0) {
+          const [error, field] = scopeIssue.field === 'project' ? [projectError, select] : [rootError, root];
+          showError(error, field, t(scopeIssue.key)); field.focus(); return;
         }
-        const ids = [project.id, ...extras.map(extra => extra.project.id)];
-        if (new Set(ids).size !== ids.length) { showError(moreError, null, t('mcp.projectDuplicate')); return; }
+        if (!clientName) { name.focus(); return; }
+        if (scopeIssue) {
+          const entry = scopeIssue.index === null ? null : extras[scopeIssue.index - 1].entry;
+          const field = entry && (scopeIssue.field === 'project' ? entry.select : entry.input);
+          showError(moreError, field, t(scopeIssue.key)); field?.focus(); return;
+        }
         const requestGeneration = generation;
         pending = true; save.disabled = true;
         let preview;
@@ -493,8 +493,7 @@ export function createMcpSettings(host) {
           showError(projectError, select, t('mcp.projectUnavailable')); select.focus(); return;
         }
         if (!preview?.ok || !preview.root) {
-          const key = ({ not_found: 'mcp.rootNotFound', not_directory: 'mcp.rootNotDirectory', not_accessible: 'mcp.rootNotAccessible', too_broad: 'mcp.rootTooBroad' })[preview?.error] || 'mcp.rootUnavailable';
-          showError(rootError, root, t(key)); root.focus(); return;
+          showError(rootError, root, t(previewErrorKey(preview?.error))); root.focus(); return;
         }
         /* the path Deck will authorize is the one shown: a resolved link or
            a relative spelling is put in the field to be confirmed */
@@ -506,8 +505,7 @@ export function createMcpSettings(host) {
         for (let i = 0; i < extras.length; i++) {
           const answer = previews[i]; const { entry } = extras[i];
           if (!answer?.ok || !answer.root) {
-            const key = ({ not_found: 'mcp.rootNotFound', not_directory: 'mcp.rootNotDirectory', not_accessible: 'mcp.rootNotAccessible', too_broad: 'mcp.rootTooBroad' })[answer?.error] || 'mcp.rootUnavailable';
-            showError(moreError, entry.input, t(key)); entry.input.focus(); return;
+            showError(moreError, entry.input, t(previewErrorKey(answer?.error))); entry.input.focus(); return;
           }
           if (answer.root !== extras[i].root) {
             entry.input.value = answer.root;

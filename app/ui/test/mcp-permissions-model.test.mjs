@@ -3,7 +3,7 @@
 // that mirror the backend's, and the row's summary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_WORKER_TYPES, defaultWorkerType, initialPermissions, initialScope, permissionSummary, permissionsPayload, scopePayload, workerTypeErrorKey, workerTypesProblem } from '../js/mcp-permissions-model.js';
+import { MAX_WORKER_TYPES, defaultWorkerType, initialPermissions, initialScope, permissionSummary, permissionsPayload, scopePayload, previewErrorKey, scopeProblem, typeColumnChoice, workerTypeErrorKey, workerTypesProblem } from '../js/mcp-permissions-model.js';
 
 const claude = { name: 'claude', cmd: 'claude --permission-mode auto', columnId: 'C1', description: 'Write code' };
 
@@ -80,4 +80,36 @@ test('a scope round-trips: all projects, a list, or nothing when kept', () => {
   assert.deepEqual(scopePayload({ allProjects: false, scopes: null }), { allProjects: false });
   assert.deepEqual(scopePayload({ allProjects: false, scopes: [{ project: { id: 'P1' }, root: '/a' }] }),
     { allProjects: false, projects: [{ projectId: 'P1', roots: ['/a'] }] });
+});
+
+test('a type keeps its column when the shown project lacks it', () => {
+  const projects = [
+    { id: 'p1', name: 'One', columns: [{ id: 'a', name: 'Todo' }] },
+    { id: 'p2', name: 'Two', columns: [{ id: 'b', name: 'Doing' }] },
+  ];
+  const kept = typeColumnChoice(projects[0].columns, projects, 'b');
+  assert.equal(kept.value, 'b');
+  assert.deepEqual(kept.options.map(o => o.name), ['Todo', 'Two › Doing']);
+  assert.equal(typeColumnChoice(projects[0].columns, projects, 'a').value, 'a');
+  // a column no project has any more, or none, becomes the first shown one
+  assert.equal(typeColumnChoice(projects[0].columns, projects, 'gone').value, 'a');
+  assert.equal(typeColumnChoice(projects[0].columns, projects, '').value, 'a');
+  assert.equal(typeColumnChoice([], projects, '').value, '');
+});
+
+test('scope rows are checked in order before any directory', () => {
+  assert.equal(scopeProblem([{ known: true, projectId: 'p1', root: '/a' }]), null);
+  assert.deepEqual(scopeProblem([{ known: false, root: '/a' }]), { index: 0, field: 'project', key: 'mcp.projectRequired' });
+  assert.deepEqual(scopeProblem([{ known: true, projectId: 'p1', root: '' }]), { index: 0, field: 'root', key: 'mcp.rootRequired' });
+  assert.deepEqual(scopeProblem([{ known: true, projectId: 'p1', root: '/a' }, { known: true, projectId: 'p2', root: '' }]),
+    { index: 1, field: 'root', key: 'mcp.rootRequired' });
+  assert.deepEqual(scopeProblem([{ known: true, projectId: 'p1', root: '/a' }, { known: true, projectId: 'p1', root: '/b' }]),
+    { index: null, field: null, key: 'mcp.projectDuplicate' });
+});
+
+test('a preview refusal names its own message', () => {
+  assert.equal(previewErrorKey('too_broad'), 'mcp.rootTooBroad');
+  assert.equal(previewErrorKey('not_found'), 'mcp.rootNotFound');
+  assert.equal(previewErrorKey('unavailable'), 'mcp.rootUnavailable');
+  assert.equal(previewErrorKey(undefined), 'mcp.rootUnavailable');
 });

@@ -497,17 +497,6 @@ fn view(
     })
 }
 
-fn driving<'a>(doc: &'a DiskDoc, client_id: &str) -> Result<&'a Client, DeckError> {
-    let client = client(doc, client_id)?;
-    if !client.allow_workers {
-        return Err(DeckError::new(
-            ErrorKind::Perm,
-            "client may not drive worker cards",
-        ));
-    }
-    Ok(client)
-}
-
 type Snapshot = (Vec<WorkerRow>, u64, bool, Vec<Value>);
 
 fn snapshot(runtime: &Runtime, client_id: &str) -> Result<Snapshot, Value> {
@@ -515,7 +504,7 @@ fn snapshot(runtime: &Runtime, client_id: &str) -> Result<Snapshot, Value> {
     let orchestrator = orchestrator.as_deref();
     runtime
         .read(|doc| {
-            driving(doc, client_id).map(|client| {
+            permitted(doc, client_id, Choice::Workers).map(|client| {
                 (
                     rows_of(doc, client_id, orchestrator),
                     super::origin::send_sequence(client, orchestrator),
@@ -631,7 +620,7 @@ pub(super) fn worker_reply(
     let orchestrator = super::origin::orchestrator();
     let worker = runtime
         .read(|doc| -> Result<Result<Worker, Value>, DeckError> {
-            let client = driving(doc, client_id)?;
+            let client = permitted(doc, client_id, Choice::Workers)?;
             if !client.allow_replies {
                 return Err(DeckError::new(
                     ErrorKind::Perm,
@@ -711,19 +700,13 @@ pub(super) fn worker_send(
     let hash = request_hash("deck_worker_send", &args);
     let orchestrator = super::origin::orchestrator();
     let orchestrator = orchestrator.as_deref();
-    let replay = runtime
-        .read(|doc| {
-            driving(doc, client_id)?;
-            Ok(existing_operation(doc, client_id, &args.request_id, &hash)?.cloned())
-        })
-        .map_err(map_error)?
-        .map_err(map_error)?;
+    let replay = replay_of(runtime, client_id, Choice::Workers, &args.request_id, &hash)?;
     if let Some(operation) = replay {
         return Ok(operation_view(&operation));
     }
     let (worker, stale) = runtime
         .read(|doc| -> Result<Result<(Worker, bool), Value>, DeckError> {
-            let client = driving(doc, client_id)?;
+            let client = permitted(doc, client_id, Choice::Workers)?;
             if !super::origin::lane_room(client, orchestrator) {
                 return Ok(Err(super::origin::no_lane()));
             }
@@ -787,7 +770,7 @@ pub(super) fn worker_send(
     let minted = random_id("op_", 16).map_err(map_error)?;
     let operation = runtime
         .write(|doc| {
-            let client = driving(doc, client_id)?;
+            let client = permitted(doc, client_id, Choice::Workers)?;
             if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
                 return Ok(existing.clone());
             }
@@ -796,20 +779,15 @@ pub(super) fn worker_send(
             }
             reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
             let operation = Operation {
-                operation_id: minted.clone(),
-                client_id: client_id.into(),
-                request_id: args.request_id.clone(),
-                request_hash: hash.clone(),
-                kind: WORKER_SEND_KIND.into(),
-                state: "accepted".into(),
-                code: None,
                 result: Some(json!({"cardId": worker.card_id, "afterEpisode": args.after_episode})),
-                accepted_at: now_ms(),
-                updated_at: now_ms(),
-                admission_hash: None,
-                session_id: None,
-                control_epoch: None,
-                control_sequence: None,
+                ..Operation::new(
+                    minted.clone(),
+                    client_id,
+                    args.request_id.clone(),
+                    hash.clone(),
+                    WORKER_SEND_KIND,
+                    "accepted",
+                )
             };
             if let Some(client) = doc.config.clients.iter_mut().find(|c| c.id == client_id) {
                 super::origin::bump_send(client, orchestrator);
@@ -1083,7 +1061,7 @@ pub(super) fn worker_start(
     });
     let scope = runtime
         .read(|doc| -> Result<ProjectScope, DeckError> {
-            let client = driving(doc, client_id)?;
+            let client = permitted(doc, client_id, Choice::Workers)?;
             // an orchestrator card in a project out of reach starts nothing
             // elsewhere unless it names a project it reaches
             match (args.project_id.as_deref(), card_project.as_deref()) {
@@ -1096,13 +1074,7 @@ pub(super) fn worker_start(
         })
         .map_err(map_error)?
         .map_err(map_error)?;
-    let replay = runtime
-        .read(|doc| {
-            driving(doc, client_id)?;
-            Ok(existing_operation(doc, client_id, &args.request_id, &hash)?.cloned())
-        })
-        .map_err(map_error)?
-        .map_err(map_error)?;
+    let replay = replay_of(runtime, client_id, Choice::Workers, &args.request_id, &hash)?;
     if let Some(operation) = replay {
         return Ok(operation_view(&operation));
     }
@@ -1111,7 +1083,7 @@ pub(super) fn worker_start(
             if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
                 return Ok(Ok(existing.clone()));
             }
-            let client = driving(doc, client_id)?.clone();
+            let client = permitted(doc, client_id, Choice::Workers)?.clone();
             if !super::origin::lane_room(&client, orchestrator) {
                 return Ok(Err(super::origin::no_lane()));
             }
@@ -1148,15 +1120,7 @@ pub(super) fn worker_start(
                 .title
                 .clone()
                 .unwrap_or_else(|| format!("{} worker", worker_type.name));
-            let operation = Operation {
-                operation_id: random_id("op_", 16)?,
-                client_id: client_id.into(),
-                request_id: args.request_id.clone(),
-                request_hash: hash.clone(),
-                kind: WORKER_START_KIND.into(),
-                state: "accepted".into(),
-                code: None,
-                result: Some(json!({
+            let operation = Operation { result: Some(json!({
                     "cardId": random_id("W", 16)?,
                     "projectId": project.project_id,
                     "columnId": super::origin::beside(&client, orchestrator, &project.project_id)
@@ -1169,14 +1133,7 @@ pub(super) fn worker_start(
                     // leaves the ledger for the queue (`settle_start`)
                     "text": args.text,
                     "orchestratorCardId": orchestrator,
-                })),
-                accepted_at: now_ms(),
-                updated_at: now_ms(),
-                admission_hash: None,
-                session_id: None,
-                control_epoch: None,
-                control_sequence: None,
-            };
+                })), ..Operation::new(random_id("op_", 16)?, client_id, args.request_id.clone(), hash.clone(), WORKER_START_KIND, "accepted") };
             if let Some(client) = doc.config.clients.iter_mut().find(|c| c.id == client_id) {
                 super::origin::bump_send(client, orchestrator);
             }
@@ -1274,6 +1231,64 @@ fn scope_key(projects: &[ProjectScope]) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
+/// A client's choices as one value, compared before and after a save.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Choices {
+    create: bool,
+    automations: bool,
+    workers: bool,
+    replies: bool,
+    worker_first_send: bool,
+    worker_types: Vec<WorkerType>,
+    drafts: bool,
+    mentions: bool,
+    rule_column: bool,
+}
+
+impl Choices {
+    fn of(client: &Client) -> Self {
+        Choices {
+            create: client.allow_create,
+            automations: client.allow_automations,
+            workers: client.allow_workers,
+            replies: client.allow_replies,
+            worker_first_send: client.worker_first_send,
+            worker_types: client.worker_types.clone(),
+            drafts: client.allow_drafts,
+            mentions: client.allow_mentions,
+            rule_column: client.rule_column,
+        }
+    }
+
+    /// What the dialog asked for, with its dependencies enforced: replies
+    /// and the first-send choice need driving.
+    fn from_input(input: &super::commands::PermissionsInput) -> Self {
+        Choices {
+            create: input.allow_create,
+            automations: input.allow_automations,
+            workers: input.allow_workers,
+            replies: input.allow_workers && input.allow_replies,
+            worker_first_send: input.allow_workers && input.worker_first_send,
+            worker_types: input.worker_types.clone(),
+            drafts: input.allow_drafts,
+            mentions: input.allow_mentions,
+            rule_column: input.rule_column,
+        }
+    }
+
+    fn apply(self, client: &mut Client) {
+        client.allow_create = self.create;
+        client.allow_automations = self.automations;
+        client.allow_workers = self.workers;
+        client.allow_replies = self.replies;
+        client.worker_first_send = self.worker_first_send;
+        client.worker_types = self.worker_types;
+        client.allow_drafts = self.drafts;
+        client.allow_mentions = self.mentions;
+        client.rule_column = self.rule_column;
+    }
+}
+
 /// Save every choice of one client at once (`commands::mcp_client_permissions`).
 /// Under the settings fence and the delivery lock, so a withdrawal is ordered
 /// against the scheduler's firing intent exactly as `client_automations` is:
@@ -1320,17 +1335,7 @@ pub(super) fn client_permissions(
                 .iter_mut()
                 .find(|client| client.id == client_id && client.revoked_at.is_none())
                 .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP client not found"))?;
-            let before = (
-                client.allow_create,
-                client.allow_automations,
-                client.allow_workers,
-                client.allow_replies,
-                client.worker_first_send,
-                client.worker_types.clone(),
-                client.allow_drafts,
-                client.allow_mentions,
-                client.rule_column,
-            );
+            let before = Choices::of(client);
             // what it reached, and what the ledger says it holds anywhere
             let mut reach_before = reach(client);
             reach_before.extend(held);
@@ -1347,33 +1352,15 @@ pub(super) fn client_permissions(
             } else {
                 reach_before.difference(&reach(client)).cloned().collect()
             };
-            client.allow_create = permissions.allow_create;
-            client.allow_automations = permissions.allow_automations;
-            client.allow_workers = permissions.allow_workers;
-            client.allow_replies = permissions.allow_workers && permissions.allow_replies;
-            client.worker_first_send = permissions.allow_workers && permissions.worker_first_send;
-            client.worker_types = permissions.worker_types.clone();
-            client.allow_drafts = permissions.allow_drafts;
-            client.allow_mentions = permissions.allow_mentions;
-            client.rule_column = permissions.rule_column;
-            let after = (
-                client.allow_create,
-                client.allow_automations,
-                client.allow_workers,
-                client.allow_replies,
-                client.worker_first_send,
-                client.worker_types.clone(),
-                client.allow_drafts,
-                client.allow_mentions,
-                client.rule_column,
-            );
+            Choices::from_input(&permissions).apply(client);
+            let after = Choices::of(client);
             if before == after && !scope_changed {
                 return Ok(false);
             }
             fenced = withdraw_projects(doc, client_id, &removed);
-            let withdrew_automations = before.1 && !after.1;
-            let withdrew_create = before.0 && !after.0;
-            let withdrew_workers = before.2 && !after.2;
+            let withdrew_automations = before.automations && !after.automations;
+            let withdrew_create = before.create && !after.create;
+            let withdrew_workers = before.workers && !after.workers;
             if withdrew_automations {
                 doc.reject_pending(
                     |operation| operation.client_id == client_id && operation.kind == TRIGGER_KIND,
@@ -1389,10 +1376,11 @@ pub(super) fn client_permissions(
                 );
             }
             // withdrawing the mention choice takes the client's marks off
-            if before.7 && !after.7 {
+            if before.mentions && !after.mentions {
                 doc.mention_marks.retain(|mark| mark.client_id != client_id);
             }
-            if before.6 && !after.6 && super::proposals::withdraw_pending(doc, client_id) {
+            if before.drafts && !after.drafts && super::proposals::withdraw_pending(doc, client_id)
+            {
                 withdrew_drafts = true;
             }
             if withdrew_workers {

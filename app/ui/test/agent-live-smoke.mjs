@@ -38,13 +38,12 @@
 //               trigger, the card, the hold, the withdrawal and the close are
 //               exercised, the deliveries are not (reported with a=2).
 export async function runAgentLiveSmoke() {
+  const { openPermissions, pause, setPermission, until } = await import('./smoke-mcp-helpers.mjs');
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider } = await import('../js/board.js');
   const { openAutomations, closeAutomations } = await import('../js/automation.js');
-  const { openSettings, renderMcpSettings } = await import('../js/settings.js');
   const { t } = await import('../js/i18n.js');
   let failed = false;
-  const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   const report = async (name, ok, a = 1, b = 0) => {
     if (!ok) failed = true;
     await inv('ui_event', { code: 'smoke-check', detail: name, a: ok ? a : -Math.max(1, a), b });
@@ -52,16 +51,6 @@ export async function runAgentLiveSmoke() {
   };
   /* a bounded wait whose every poll is a real read of the state judged;
      the carrier window is in front, so its timers are not napped */
-  const until = async (test, ms, step = 1000) => {
-    const deadline = Date.now() + ms;
-    for (;;) {
-      let value = null;
-      try { value = await test(); } catch (_) { value = null; }
-      if (value) return value;
-      if (Date.now() >= deadline) return null;
-      await pause(step);
-    }
-  };
   const AUTOMATION = 'patrol-mention';
   const TEMPLATE = 'agent-live';
   const STEPS = [
@@ -76,20 +65,6 @@ export async function runAgentLiveSmoke() {
     const plans = (q.plans || []).filter(plan => mine.some(item => item.id === plan.item));
     const sent = id => (q.deliveries || []).some(delivery => delivery.item === id);
     return { q, mine, plan: item => plans.find(plan => plan.item === item.id), sent };
-  };
-  /* one choice changed through the client row's Permissions… dialog and
-     its Save, as the person does it (extension-mcp.js) */
-  const setPermission = async (clientName, checkbox, on) => {
-    await openSettings({ section: 'remote' });
-    await renderMcpSettings();
-    const row = [...document.querySelectorAll('.mcp-client-row')].find(value => value.textContent.includes(clientName));
-    const open = row?.querySelector('button.mcp-permissions');
-    if (!open || open.textContent !== t('mcp.permissions')) throw new Error('permissions button');
-    open.click();
-    if (!(await until(() => $('mcp-auth').style.display === 'flex', 3000, 50))) throw new Error('permissions dialog');
-    if ($(checkbox).checked !== on) $(checkbox).click();
-    $('mcp-auth-yes').click();
-    await until(() => $('mcp-auth').style.display === 'none', 3000, 50);
   };
   let card = null;
   try {

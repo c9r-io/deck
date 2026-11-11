@@ -175,6 +175,37 @@ pub(super) struct Operation {
     pub(super) control_sequence: Option<u64>,
 }
 
+impl Operation {
+    /// A record accepted now, with no result, session or control binding;
+    /// a caller sets those it has with struct-update syntax.
+    pub(super) fn new(
+        operation_id: impl Into<String>,
+        client_id: impl Into<String>,
+        request_id: impl Into<String>,
+        request_hash: impl Into<String>,
+        kind: impl Into<String>,
+        state: impl Into<String>,
+    ) -> Self {
+        let now = now_ms();
+        Operation {
+            operation_id: operation_id.into(),
+            client_id: client_id.into(),
+            request_id: request_id.into(),
+            request_hash: request_hash.into(),
+            kind: kind.into(),
+            state: state.into(),
+            code: None,
+            result: None,
+            accepted_at: now,
+            updated_at: now,
+            admission_hash: None,
+            session_id: None,
+            control_epoch: None,
+            control_sequence: None,
+        }
+    }
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct JobBinding {
@@ -718,11 +749,12 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
         )
 }
 
-pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
-    let mut client_ids = HashSet::new();
-    // the version the content needs at least, up to the newest this build
-    // writes (sticky versions never go back)
-    let needed = if !doc.mention_marks.is_empty() {
+/// The lowest version a ledger with this content may carry: each choice
+/// or record a newer build added needs the version older builds refuse.
+/// Validation requires at least it; a write raises to it and never lowers
+/// (sticky). The versions rise in this order (`mod.rs`).
+fn needed_version(doc: &DiskDoc) -> u32 {
+    if !doc.mention_marks.is_empty() {
         STATE_VERSION_MARKS
     } else if super::grants::uses_all_projects(doc) {
         STATE_VERSION_ALL_PROJECTS
@@ -738,7 +770,12 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
         STATE_VERSION_AUTOMATIONS
     } else {
         STATE_VERSION
-    };
+    }
+}
+
+pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
+    let mut client_ids = HashSet::new();
+    let needed = needed_version(doc);
     let version_valid = (needed..=STATE_VERSION_MARKS).contains(&doc.version)
         && super::proposals::valid_proposals(doc);
     let clients_valid = version_valid
@@ -882,36 +919,8 @@ impl Runtime {
         )
         .map_err(|_| DeckError::new(ErrorKind::Other, "MCP state clone failed"))?;
         let result = mutate(&mut candidate)?;
-        // sticky: a ledger that holds automation delegation is written at
-        // the version older builds refuse, and never goes back
-        if super::automation::uses_automations(&candidate) {
-            candidate.version = candidate.version.max(STATE_VERSION_AUTOMATIONS);
-        }
-        // and one that holds worker cards or their choices at the next one
-        if super::workers::uses_workers(&candidate) {
-            candidate.version = candidate.version.max(STATE_VERSION_WORKERS);
-        }
-        // and one that holds drafted configuration or the draft choice at
-        // the next one
-        if super::proposals::uses_proposals(&candidate) {
-            candidate.version = candidate.version.max(STATE_VERSION_PROPOSALS);
-        }
-        // and one in which a client may read Slack mentions at the next one
-        if super::mentions::uses_mentions(&candidate) {
-            candidate.version = candidate.version.max(STATE_VERSION_MENTIONS);
-        }
-        // and one that groups worker cards by orchestrator card at the next
-        if super::origin::uses_orchestrators(&candidate) {
-            candidate.version = candidate.version.max(STATE_VERSION_ORCHESTRATORS);
-        }
-        // and one with a client of all projects at the next
-        if super::grants::uses_all_projects(&candidate) {
-            candidate.version = candidate.version.max(STATE_VERSION_ALL_PROJECTS);
-        }
-        // and one with marks on Slack mentions at the next
-        if !candidate.mention_marks.is_empty() {
-            candidate.version = candidate.version.max(STATE_VERSION_MARKS);
-        }
+        // sticky: the version the content needs, never lower than before
+        candidate.version = candidate.version.max(needed_version(&candidate));
         save(&self.path, &candidate)?;
         *guard = Ok(candidate);
         Ok(result)

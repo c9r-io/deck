@@ -15,6 +15,11 @@
 //   simple arguments, `--no-daemon` for Codex, a column, a one-line
 //   description. The backend decides; these checks only say what is wrong
 //   before a round trip.
+// - Painting never moves a type's column (`typeColumnChoice`): a column of
+//   another project stays chosen, named with its project; only a column no
+//   project has any more falls back to the shown project's first.
+// - The scope rows are checked here before any directory is (`scopeProblem`),
+//   and a directory preview's refusal names its message (`previewErrorKey`).
 // - The default list offers one Claude type in the project's first column,
 //   so driving worker cards needs no further configuration.
 
@@ -41,6 +46,25 @@ export function initialPermissions(client) {
 /* the type a newly enabled worker choice starts with */
 export function defaultWorkerType(columns, description) {
   return { name: 'claude', cmd: 'claude', columnId: columns?.[0]?.id || '', description };
+}
+
+/* the column choices of a type's row: the shown project's columns, plus
+   the type's own column when it belongs to another project (kept, named
+   "project › column"); a column no project has any more, or none, becomes
+   the first shown one. Painting never moves a type's column on its own. */
+export function typeColumnChoice(columns, projects, columnId) {
+  const options = (columns || []).map(c => ({ id: c.id, name: c.name }));
+  if (columnId && !options.some(o => o.id === columnId)) {
+    for (const project of projects || []) {
+      const column = (project.columns || []).find(c => c.id === columnId);
+      if (column) {
+        options.push({ id: column.id, name: `${project.name} › ${column.name}` });
+        return { options, value: columnId };
+      }
+    }
+  }
+  if (options.some(o => o.id === columnId)) return { options, value: columnId };
+  return { options, value: options[0]?.id || '' };
 }
 
 /* the choices as the backend takes them: children of an unchecked parent off */
@@ -123,4 +147,24 @@ export function scopePayload({ allProjects, scopes }) {
   if (allProjects === true) return { allProjects: true };
   if (!Array.isArray(scopes)) return { allProjects: false };
   return { allProjects: false, projects: scopes.map(s => ({ projectId: s.project.id, roots: [s.root] })) };
+}
+
+/* the first thing wrong with the scope rows before any directory is
+   checked, or null: a row without a known project, a row without a
+   directory, then a project named twice. `index` is the row (null for a
+   duplicate), `field` the input to focus. */
+export function scopeProblem(rows) {
+  for (const [index, row] of rows.entries()) {
+    if (!row.known) return { index, field: 'project', key: 'mcp.projectRequired' };
+    if (!row.root) return { index, field: 'root', key: 'mcp.rootRequired' };
+  }
+  const ids = rows.map(row => row.projectId);
+  if (new Set(ids).size !== ids.length) return { index: null, field: null, key: 'mcp.projectDuplicate' };
+  return null;
+}
+
+/* a directory preview's refusal word as an i18n key */
+export function previewErrorKey(error) {
+  return ({ not_found: 'mcp.rootNotFound', not_directory: 'mcp.rootNotDirectory', not_accessible: 'mcp.rootNotAccessible',
+    too_broad: 'mcp.rootTooBroad' })[error] || 'mcp.rootUnavailable';
 }

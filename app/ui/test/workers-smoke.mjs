@@ -28,29 +28,18 @@
 // No hook word and no event is synthesized: the Signal comes from the real
 // Claude Code in each card.
 export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false } = {}) {
+  const { openPermissions, pause, setPermission, until } = await import('./smoke-mcp-helpers.mjs');
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider, panes } = await import('../js/board.js');
   const { openSession, backToBoard } = await import('../js/layout.js');
   const { openAutomations, closeAutomations } = await import('../js/automation.js');
-  const { openSettings, renderMcpSettings } = await import('../js/settings.js');
   const { refreshWorkers, workerOf } = await import('../js/workers.js');
   const { t } = await import('../js/i18n.js');
   let failed = false;
-  const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   const report = async (name, ok, a = 1, b = 0) => {
     if (!ok) failed = true;
     await inv('ui_event', { code: 'smoke-check', detail: name, a: ok ? a : -Math.max(1, a), b });
     return ok;
-  };
-  const until = async (test, ms, step = 1000) => {
-    const deadline = Date.now() + ms;
-    for (;;) {
-      let value = null;
-      try { value = await test(); } catch (_) { value = null; }
-      if (value) return value;
-      if (Date.now() >= deadline) return null;
-      await pause(step);
-    }
   };
   const AUTOMATION = 'worker';
   const TEMPLATE = 'worker';
@@ -70,20 +59,6 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
      `deck_worker_start` made from a worker type (`types`) */
   const workerCards = () => store.cards.filter(value => (value.origin?.source === 'agent' && value.origin.badge === AUTOMATION)
     || value.origin?.source === 'worker');
-  /* one choice changed through the client row's Permissions… dialog and
-     its Save, as the person does it (extension-mcp.js) */
-  const setPermission = async (clientName, checkbox, on) => {
-    await openSettings({ section: 'remote' });
-    await renderMcpSettings();
-    const row = [...document.querySelectorAll('.mcp-client-row')].find(value => value.textContent.includes(clientName));
-    const open = row?.querySelector('button.mcp-permissions');
-    if (!open || open.textContent !== t('mcp.permissions')) throw new Error('permissions button');
-    open.click();
-    if (!(await until(() => $('mcp-auth').style.display === 'flex', 3000, 50))) throw new Error('permissions dialog');
-    if ($(checkbox).checked !== on) $(checkbox).click();
-    $('mcp-auth-yes').click();
-    await until(() => $('mcp-auth').style.display === 'none', 3000, 50);
-  };
   /* `drafts`: a client that may draft (and trigger automations); the
      scripted client (scripts/mcp-drafts-e2e.py) drafts four times and the
      page answers each through the Needs attention row and the review
@@ -454,11 +429,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
       placed ? placed.length : 0);
 
     /* narrowed to A through the dialog, as the person does it */
-    await openSettings({ section: 'remote' });
-    await renderMcpSettings();
-    const row = [...document.querySelectorAll('.mcp-client-row')].find(value => value.textContent.includes('orchestrator'));
-    row.querySelector('button.mcp-permissions').click();
-    if (!(await until(() => $('mcp-auth').style.display === 'flex', 3000, 50))) throw new Error('permissions dialog');
+    await openPermissions('orchestrator');
     $('mcp-auth-all').click();
     $('mcp-auth-project').value = made.a.id; $('mcp-auth-project').dispatchEvent(new Event('change'));
     for (let i = 0; i < 3 && $('mcp-auth').style.display === 'flex'; i++) {

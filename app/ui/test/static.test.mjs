@@ -718,7 +718,7 @@ test('the project defaults dialog scrolls inside itself and its confirmation ope
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
   const z = selector => Number(css.match(new RegExp(`${selector} \\{[^}]*z-index: (\\d+)`))?.[1]);
   assert.match(css, /#pdf-box \{ max-height: calc\(84vh - 20px\); overflow-y: auto; \}/);
-  assert.ok(z('#cfm\\.cfm-over-dialog') > z('#chd, #pdf, #mcp-auth'), 'the confirmation is not hidden behind the dialog');
+  assert.ok(z('#cfm\\.cfm-over-dialog') > z('#chd, #pdf, #mcp-auth, #prop'), 'the confirmation is not hidden behind the dialog');
 });
 
 test('a hidden control inside the project defaults dialog is not put back on screen by its own display rule', () => {

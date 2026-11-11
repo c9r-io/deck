@@ -71,6 +71,51 @@ pub(super) fn client<'a>(doc: &'a DiskDoc, client_id: &str) -> Result<&'a Client
         .ok_or_else(|| DeckError::new(ErrorKind::Perm, "MCP client is not authorized"))
 }
 
+/// One of a client's separate choices, each refused with its own message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Choice {
+    Create,
+    Automations,
+    Workers,
+    Drafts,
+    Mentions,
+}
+
+impl Choice {
+    fn granted(self, client: &Client) -> bool {
+        match self {
+            Choice::Create => client.allow_create,
+            Choice::Automations => client.allow_automations,
+            Choice::Workers => client.allow_workers,
+            Choice::Drafts => client.allow_drafts,
+            Choice::Mentions => client.allow_mentions,
+        }
+    }
+
+    fn refusal(self) -> &'static str {
+        match self {
+            Choice::Create => "client may not create sessions",
+            Choice::Automations => "client may not trigger automations",
+            Choice::Workers => "client may not drive worker cards",
+            Choice::Drafts => "client may not draft configuration",
+            Choice::Mentions => "client may not read Slack mentions",
+        }
+    }
+}
+
+/// The authorized client, refused unless it holds `choice`.
+pub(super) fn permitted<'a>(
+    doc: &'a DiskDoc,
+    client_id: &str,
+    choice: Choice,
+) -> Result<&'a Client, DeckError> {
+    let client = client(doc, client_id)?;
+    if !choice.granted(client) {
+        return Err(DeckError::new(ErrorKind::Perm, choice.refusal()));
+    }
+    Ok(client)
+}
+
 /// The message a project in reach but without a default directory is
 /// refused with (`all_projects`): Deck never guesses a directory.
 pub(super) const NO_PROJECT_DIRECTORY: &str =

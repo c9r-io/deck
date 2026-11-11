@@ -47,17 +47,6 @@ fn automations_now(config: &crate::inbound::Config) -> Vec<Value> {
         .collect()
 }
 
-fn delegated<'a>(doc: &'a DiskDoc, client_id: &str) -> Result<&'a Client, DeckError> {
-    let client = client(doc, client_id)?;
-    if !client.allow_automations {
-        return Err(DeckError::new(
-            ErrorKind::Perm,
-            "client may not trigger automations",
-        ));
-    }
-    Ok(client)
-}
-
 /// The current settings, the one source of the rules (`None`: unreadable).
 pub(super) fn automation_config() -> Option<crate::inbound::Config> {
     #[cfg(test)]
@@ -83,7 +72,7 @@ pub(super) fn automation_list(
     let orchestrator = super::origin::orchestrator();
     let next = runtime
         .read(|doc| {
-            delegated(doc, client_id)
+            permitted(doc, client_id, Choice::Automations)
                 .map(|client| super::origin::trigger_sequence(client, orchestrator.as_deref()))
         })
         .map_err(map_error)?
@@ -188,13 +177,7 @@ pub(super) fn trigger_item(
     let orchestrator = orchestrator.as_deref();
     // A replay returns the recorded operation; its inbox entry is committed
     // on the way in case the crash was between the two writes.
-    let replay = runtime
-        .read(|doc| {
-            delegated(doc, client_id)?;
-            Ok(existing_operation(doc, client_id, request_id, hash)?.cloned())
-        })
-        .map_err(map_error)?
-        .map_err(map_error)?;
+    let replay = replay_of(runtime, client_id, Choice::Automations, request_id, hash)?;
     if let Some(operation) = replay {
         settle_committed(client_id, request_id, &operation.operation_id);
         return Ok(operation_view(&operation));
@@ -203,7 +186,7 @@ pub(super) fn trigger_item(
     // in the write below.
     let (stale, room) = runtime
         .read(|doc| {
-            delegated(doc, client_id).map(|client| {
+            permitted(doc, client_id, Choice::Automations).map(|client| {
                 (
                     super::origin::trigger_sequence(client, orchestrator) != trigger_sequence,
                     super::origin::lane_room(client, orchestrator),
@@ -290,24 +273,20 @@ pub(super) fn trigger_item(
     )
     .map_err(map_error)?;
     let operation = runtime.write(|doc| {
-        delegated(doc, client_id)?;
+        permitted(doc, client_id, Choice::Automations)?;
         if let Some(existing) = existing_operation(doc, client_id, request_id, hash)? {
             return Ok(existing.clone());
         }
         if trigger_sequence
-            != super::origin::trigger_sequence(delegated(doc, client_id)?, orchestrator)
+            != super::origin::trigger_sequence(
+                permitted(doc, client_id, Choice::Automations)?,
+                orchestrator,
+            )
         {
             return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
         }
         reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
         let operation = Operation {
-            operation_id: operation_id.clone(),
-            client_id: client_id.into(),
-            request_id: request_id.to_string(),
-            request_hash: hash.to_string(),
-            kind: TRIGGER_KIND.into(),
-            state: "accepted".into(),
-            code: None,
             result: Some({
                 let mut result = json!({
                     "automationId": automation_id,
@@ -321,12 +300,14 @@ pub(super) fn trigger_item(
                 }
                 result
             }),
-            accepted_at: now_ms(),
-            updated_at: now_ms(),
-            admission_hash: None,
-            session_id: None,
-            control_epoch: None,
-            control_sequence: None,
+            ..Operation::new(
+                operation_id.clone(),
+                client_id,
+                request_id.to_string(),
+                hash.to_string(),
+                TRIGGER_KIND,
+                "accepted",
+            )
         };
         if let Some(client) = doc
             .config

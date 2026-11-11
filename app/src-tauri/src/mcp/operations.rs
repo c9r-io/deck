@@ -206,10 +206,12 @@ pub(super) fn reserve_operation(
             return Ok(());
         }
     }
-    Err(DeckError::new(
-        ErrorKind::DiskFull,
-        "MCP operation capacity reached",
-    ))
+    Err(operation_capacity())
+}
+
+/// The ledger's operation table is full (`reserve_operation`).
+pub(super) fn operation_capacity() -> DeckError {
+    DeckError::new(ErrorKind::DiskFull, "MCP operation capacity reached")
 }
 
 /// The tools whose admissions reach `emergency_denial` with a session a
@@ -294,6 +296,25 @@ pub(super) fn emergency_fence_error(
         ));
     }
     None
+}
+
+/// A request this client already made: its recorded operation, read with
+/// the client still holding `choice`. Every handover and worker request
+/// answers a replay with it before any other check.
+pub(super) fn replay_of(
+    runtime: &Runtime,
+    client_id: &str,
+    choice: Choice,
+    request_id: &str,
+    hash: &str,
+) -> Result<Option<Operation>, Value> {
+    runtime
+        .read(|doc| {
+            permitted(doc, client_id, choice)?;
+            Ok(existing_operation(doc, client_id, request_id, hash)?.cloned())
+        })
+        .map_err(map_error)?
+        .map_err(map_error)
 }
 
 pub(super) fn existing_operation<'a>(

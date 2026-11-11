@@ -171,10 +171,7 @@ pub(super) fn session_create(
             }
             reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
             if doc.sessions.len() >= MAX_SESSIONS {
-                return Err(DeckError::new(
-                    ErrorKind::DiskFull,
-                    "MCP operation capacity reached",
-                ));
+                return Err(operation_capacity());
             }
             // Accepted creates reserve a future managed-session slot.
             let reserved = doc
@@ -191,13 +188,7 @@ pub(super) fn session_create(
                     "MCP managed-session capacity reached",
                 ));
             }
-            let client = client(doc, client_id)?;
-            if !client.allow_create {
-                return Err(DeckError::new(
-                    ErrorKind::Perm,
-                    "client may not create sessions",
-                ));
-            }
+            let client = permitted(doc, client_id, Choice::Create)?;
             let project = scoped_project(client, &args.project_id)?;
             let cwd = canonical_scope(&args.cwd, &project.roots)?;
             let operation_id = random_id("op_", 16)?;
@@ -218,20 +209,16 @@ pub(super) fn session_create(
                 "runnerSocket": socket
             });
             let operation = Operation {
-                operation_id,
-                client_id: client_id.into(),
-                request_id: args.request_id.clone(),
-                request_hash: hash,
-                kind: "session-create".into(),
-                state: "accepted".into(),
-                code: None,
                 result: Some(result),
-                accepted_at: now_ms(),
-                updated_at: now_ms(),
-                admission_hash: None,
                 session_id: Some(session_id),
-                control_epoch: None,
-                control_sequence: None,
+                ..Operation::new(
+                    operation_id,
+                    client_id,
+                    args.request_id.clone(),
+                    hash,
+                    "session-create",
+                    "accepted",
+                )
             };
             if let Some(client) = doc
                 .config
@@ -525,7 +512,7 @@ pub(super) fn session_control(
             // supersedes (older control records, and an advanced epoch's
             // records), and the control pool is never taken by ordinary work.
             reserve_operation(runtime, doc, client_id, Slot::Control)?;
-            let operation = Operation { operation_id: random_id("op_", 16)?, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "session-control".into(), state: "committed".into(), code: None, result: Some(result), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None, session_id: Some(session.session_id.clone()), control_epoch: Some(session.control_epoch), control_sequence: Some(session.control_sequence) };
+            let operation = Operation { result: Some(result), session_id: Some(session.session_id.clone()), control_epoch: Some(session.control_epoch), control_sequence: Some(session.control_sequence), ..Operation::new(random_id("op_", 16)?, client_id, args.request_id.clone(), hash.clone(), "session-control", "committed") };
             doc.operations.push(operation.clone());
             audit(doc, "control-changed", AuditLink { principal_id: Some(client_id), session_id: Some(&session.session_id), operation_id: Some(&operation.operation_id), ..Default::default() })?;
             Ok((operation, Some(session), false))
@@ -631,7 +618,7 @@ pub(super) fn session_close(
         check_control(&current, client_id, &args.expected_generation, args.control_epoch, &args.holder_id)?;
         let managed = doc.sessions.iter_mut().find(|item| item.session_id == session.session_id).ok_or_else(|| DeckError::new(ErrorKind::Missing, "session not found"))?;
         managed.closing = true;
-        let operation = Operation { operation_id:random_id("op_", 16)?, client_id:client_id.into(), request_id:args.request_id.clone(), request_hash:hash.clone(), kind:"session-close".into(), state:"accepted".into(), code:None, result:Some(json!({"sessionId":session.session_id,"cardId":session.card_id,"sessionGeneration":session.generation,"controlEpoch":session.control_epoch,"holderId":args.holder_id,"confirmRunning":args.confirm_running})), accepted_at:now_ms(), updated_at:now_ms(), admission_hash:None, session_id: Some(session.session_id.clone()), control_epoch: Some(args.control_epoch), control_sequence: None };
+        let operation = Operation { result: Some(json!({"sessionId":session.session_id,"cardId":session.card_id,"sessionGeneration":session.generation,"controlEpoch":session.control_epoch,"holderId":args.holder_id,"confirmRunning":args.confirm_running})), session_id: Some(session.session_id.clone()), control_epoch: Some(args.control_epoch), ..Operation::new(random_id("op_", 16)?, client_id, args.request_id.clone(), hash.clone(), "session-close", "accepted") };
         doc.operations.push(operation.clone());
         Ok(operation)
     }).map_err(map_error)?;

@@ -126,17 +126,6 @@ pub(super) fn uses_mentions(doc: &DiskDoc) -> bool {
     doc.config.clients.iter().any(|c| c.allow_mentions)
 }
 
-fn reader<'a>(doc: &'a DiskDoc, client_id: &str) -> Result<&'a Client, DeckError> {
-    let client = client(doc, client_id)?;
-    if !client.allow_mentions {
-        return Err(DeckError::new(
-            ErrorKind::Perm,
-            "client may not read Slack mentions",
-        ));
-    }
-    Ok(client)
-}
-
 fn key_shape(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= 128
@@ -260,7 +249,7 @@ pub(super) fn mentions_list(
     loop {
         let (may_hand_off, next, marks) = runtime
             .read(|doc| {
-                reader(doc, client_id).map(|client| {
+                permitted(doc, client_id, Choice::Mentions).map(|client| {
                     (
                         client.allow_automations,
                         super::origin::trigger_sequence(client, orchestrator.as_deref()),
@@ -307,7 +296,7 @@ pub(super) fn mention_read(
     let args: MentionReadArgs = parse(arguments)?;
     let orchestrator = super::origin::orchestrator();
     let marks = runtime
-        .read(|doc| reader(doc, client_id).map(|_| live_marks(doc)))
+        .read(|doc| permitted(doc, client_id, Choice::Mentions).map(|_| live_marks(doc)))
         .map_err(map_error)?
         .map_err(map_error)?;
     if !key_shape(&args.mention_key) {
@@ -338,7 +327,7 @@ pub(super) fn mention_handoff(
         ));
     }
     runtime
-        .read(|doc| reader(doc, client_id).map(|_| ()))
+        .read(|doc| permitted(doc, client_id, Choice::Mentions).map(|_| ()))
         .map_err(map_error)?
         .map_err(map_error)?;
     let hash = request_hash("deck_mention_handoff", &args);
@@ -458,7 +447,7 @@ pub(super) fn mention_mark(
     };
     let orchestrator = super::origin::orchestrator();
     runtime
-        .read(|doc| reader(doc, client_id).map(|_| ()))
+        .read(|doc| permitted(doc, client_id, Choice::Mentions).map(|_| ()))
         .map_err(map_error)?
         .map_err(map_error)?;
     // only an open mention takes a mark
@@ -466,7 +455,7 @@ pub(super) fn mention_mark(
     let targets = crate::documents::card_targets(false);
     let outcome = runtime
         .write(|doc| -> Result<Result<Value, Value>, DeckError> {
-            reader(doc, client_id)?;
+            permitted(doc, client_id, Choice::Mentions)?;
             if let Some(card) = args.card_id.as_deref() {
                 let own = doc.workers.iter().any(|w| {
                     w.card_id == card

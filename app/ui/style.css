@@ -742,13 +742,14 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
   box-shadow: 0 16px 48px var(--shadow-modal);
 }
 #ppd-msg { font-size: var(--fs-13); line-height: 1.5; margin-bottom: var(--sp-10); }
-/* choice dialog + project defaults (04): the prompt dialog's frame */
-#chd, #pdf, #mcp-auth {
+/* choice dialog + project defaults (04), MCP client, drafted proposal:
+   the prompt dialog's frame */
+#chd, #pdf, #mcp-auth, #prop {
   position: fixed; inset: 0; z-index: 72; display: none;
   background: var(--modal-overlay);
   align-items: flex-start; justify-content: center;
 }
-#chd-box, #pdf-box, #mcp-auth-box {
+#chd-box, #pdf-box, #mcp-auth-box, #prop-box {
   margin-top: 16vh; width: calc(460 * var(--u)); max-width: calc(100vw - 40px);
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 12px; padding: var(--sp-20);
@@ -778,18 +779,7 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 #mcp-auth-box .mcp-field-error { color: var(--danger); font-size: var(--fs-11); line-height: 1.35; margin: var(--sp-6) 0 0; }
 #mcp-auth-box .mcp-field-error[hidden] { display: none; }
 /* a drafted proposal (proposals.js): every step in full, the rule's fields,
-   what changes; the dialog scrolls inside itself */
-#prop {
-  position: fixed; inset: 0; z-index: 72; display: none;
-  background: var(--modal-overlay);
-  align-items: flex-start; justify-content: center;
-}
-#prop-box {
-  max-width: calc(100vw - 40px);
-  background: var(--panel); border: 1px solid var(--border);
-  border-radius: 12px; padding: var(--sp-20);
-  box-shadow: 0 16px 48px var(--shadow-modal);
-}
+   what changes; the dialog scrolls inside itself (its frame above) */
 #prop-box { width: calc(640 * var(--u)); max-height: calc(84vh - 20px); overflow-y: auto; margin-top: 8vh; }
 #prop [hidden] { display: none; }
 #prop-box h2 { margin: 0 0 var(--sp-8); font-size: var(--fs-14); font-weight: 600; overflow-wrap: anywhere; }
