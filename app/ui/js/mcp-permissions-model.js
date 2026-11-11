@@ -33,6 +33,7 @@ export function initialPermissions(client) {
     workerFirstSend: client?.workerFirstSend === true,
     allowDrafts: client?.allowDrafts === true,
     allowMentions: client?.allowMentions === true,
+    ruleColumn: client?.ruleColumn === true,
     workerTypes: Array.isArray(client?.workerTypes) ? client.workerTypes.map(t => ({ ...t })) : [],
   };
 }
@@ -53,6 +54,7 @@ export function permissionsPayload(p) {
     workerFirstSend: workers && p.workerFirstSend === true,
     allowDrafts: p.allowDrafts === true,
     allowMentions: p.allowMentions === true,
+    ruleColumn: p.ruleColumn === true,
     workerTypes: workers ? p.workerTypes.map(t => ({
       name: String(t.name || '').trim(),
       cmd: String(t.cmd || '').trim().replace(/\s+/g, ' '),

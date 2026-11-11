@@ -239,7 +239,12 @@ evolution; it makes scope expansion deliberate.
   (`mcp/mentions.rs`; fenced, no Slack call, no token) and may hand ONE
   open mention to one of ITS Agent rules — Deck fills the item from the
   mention, the user's list shows where it went — never to a Slack badge
-  rule, never a dismissal, nothing written to Slack. No Signal word, quiet
+  rule, never a dismissal, nothing written to Slack. Several agents may
+  share one client, each in its own card: Deck reads the calling card from
+  the kernel (`mcp/origin.rs`, the Signal origin check, never a claim);
+  a worker card it starts opens in that card's column at creation (never
+  moved after) and only it drives it — grouping inside the client's own
+  authority, granting nothing. No Signal word, quiet
   time or activity ever creates, restores or upgrades authority
   (`tests/signal_census.rs`).
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the
@@ -334,7 +339,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | tmux sidecar and long-lived clients | `tmux.rs`, `tmux_clients.rs` |
 | tmux server lifecycle, restart, verified shell exit, restart recovery | `tmux_lifecycle.rs`, `restart.rs`, `session_runtime.rs`, `shell_exit.rs`, `shell_state.rs` (+ `docs/tmux-server-lifecycle.md`) |
 | PTY attach bridge | `pty.rs` |
-| MCP terminal control, automation delegation, worker cards, drafted configuration and Slack mentions | `mcp/` (contract in `mcp/mod.rs`; delegation in `mcp/automation.rs`; worker cards in `mcp/workers.rs`; drafts in `mcp/proposals.rs`; Slack mentions in `mcp/mentions.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/`, `ui/js/mcp.js`, `ui/js/workers.js`, `ui/js/proposals.js`, `proposals-model.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`; smoke `workers`) |
+| MCP terminal control, automation delegation, worker cards, orchestrator cards, drafted configuration and Slack mentions | `mcp/` (contract in `mcp/mod.rs`; delegation in `mcp/automation.rs`; worker cards in `mcp/workers.rs`; orchestrator cards in `mcp/origin.rs`; drafts in `mcp/proposals.rs`; Slack mentions in `mcp/mentions.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/`, `ui/js/mcp.js`, `ui/js/workers.js`, `ui/js/proposals.js`, `proposals-model.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`; smoke `workers`, `orchestrators`) |
 | Controlled Execution calibration (CE1) | `scripts/ce/`, `scripts/ce_parity.py`, `scripts/ce_verdict.py`, `mcp/tests.rs` `ce1_probe_*` (+ `docs/ce-calibration.md`) |
 | Voice input, shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice*.js` (+ `docs/voice-input.md`) |
 | Local translation, pasteboard observation, Lens | `native/BergamotBridge.cpp`, `native/PasteboardBridge.swift`, `vendor/bergamot/`, `intelligence/`, `ui/js/local-intelligence.js`, `translation-lens*.js` (+ `docs/translation-lens.md`) |

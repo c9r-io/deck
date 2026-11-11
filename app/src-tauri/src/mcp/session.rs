@@ -11,6 +11,8 @@ pub(super) fn capabilities(
     arguments: Value,
 ) -> Result<Value, Value> {
     parse::<Empty>(arguments)?;
+    let orchestrator = super::origin::orchestrator();
+    let card = super::origin::card_view(orchestrator.as_deref());
     runtime
         .read(|doc| {
             let client = doc
@@ -72,9 +74,12 @@ pub(super) fn capabilities(
                 "mayCreateSession": client.allow_create,
                 "nextCreateSequence": client.create_sequence,
                 "mayTriggerAutomations": client.allow_automations,
-                "nextTriggerSequence": client.trigger_sequence,
+                "nextTriggerSequence": super::origin::trigger_sequence(client, orchestrator.as_deref()),
                 "mayDraftConfig": client.allow_drafts,
-                "mayReadMentions": client.allow_mentions
+                "mayReadMentions": client.allow_mentions,
+                // the Deck card this call comes from, as the kernel says
+                // (`origin.rs`); its worker cards are grouped under it
+                "orchestratorCard": card
             }))
         })
         .map_err(map_error)?

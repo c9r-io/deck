@@ -6,9 +6,13 @@
 //   worker cards, the name of the client that drives each, and whether the
 //   user took it over. Pulled at start and on the content-free
 //   `mcp-workers-changed` event; nothing is stored here across launches.
-// - Labels only: a worker card says "Driven by ‹client›" on the Board and in
-//   the session header; once taken over it offers "Hand back", the one way
-//   back (no timer hands a card back).
+// - Labels only: a worker card says "Driven by ‹orchestrator card›" (the
+//   card its client's call came from, mcp/origin.rs; else the client's name)
+//   on the Board and in the session header; once taken over it offers "Hand
+//   back", the one way back (no timer hands a card back). A worker whose
+//   orchestrator card left the Board is the user's (the backend holds its
+//   lines the same way): it says so and offers the same "Hand back", which
+//   gives it to all of the client's orchestrators.
 // - Taking over: the user's own input into a worker card's pane (typing,
 //   paste, a dropped file — never xterm's automatic replies, which
 //   terminal-input.js tells apart) tells the backend once
@@ -64,15 +68,29 @@ export async function handBack(cardId) {
   await refreshWorkers();
 }
 
+/* who drives a worker card, as its label says it: the orchestrator card while
+   on the Board, else the client; `orphaned` once that card is gone */
+export function workerLabel(worker, cards) {
+  const owner = worker.orchestratorCardId
+    ? cards.find(c => c.id === worker.orchestratorCardId) : null;
+  const orphaned = Boolean(worker.orchestratorCardId) && !owner;
+  const name = (owner && owner.title) || worker.clientName;
+  const takenOver = worker.takenOver || orphaned;
+  const key = orphaned ? 'workers.orphaned' : takenOver ? 'workers.takenOver' : 'workers.driven';
+  const title = orphaned ? 'workers.orphanedTitle' : takenOver ? 'workers.takenOverTitle' : 'workers.drivenTitle';
+  return { takenOver, orphaned, text: t(key, { name }), title: t(title, { name, client: worker.clientName }) };
+}
+
 /* a card's label: plain while driven, a button once taken over */
 export function workerChip(s) {
   const worker = workerOf(s.id);
   if (!worker) return null;
-  const chip = document.createElement(worker.takenOver ? 'button' : 'span');
-  chip.className = 'card-worker' + (worker.takenOver ? ' taken' : '');
-  chip.textContent = t(worker.takenOver ? 'workers.takenOver' : 'workers.driven', { name: worker.clientName });
-  chip.title = t(worker.takenOver ? 'workers.takenOverTitle' : 'workers.drivenTitle', { name: worker.clientName });
-  if (worker.takenOver) {
+  const label = workerLabel(worker, store.cards);
+  const chip = document.createElement(label.takenOver ? 'button' : 'span');
+  chip.className = 'card-worker' + (label.takenOver ? ' taken' : '');
+  chip.textContent = label.text;
+  chip.title = label.title;
+  if (label.takenOver) {
     chip.type = 'button';
     chip.onclick = e => { e.stopPropagation(); handBack(s.id); };
   }
@@ -86,10 +104,14 @@ export function paintWorkerButton(cardId) {
   const worker = workerOf(cardId);
   btn.hidden = !worker;
   if (!worker) return;
-  btn.textContent = t(worker.takenOver ? 'workers.takenOver' : 'workers.driven', { name: worker.clientName });
-  btn.title = t(worker.takenOver ? 'workers.takenOverTitle' : 'workers.drivenTitle', { name: worker.clientName });
-  btn.disabled = !worker.takenOver;
-  btn.onclick = () => { if (workerOf(cardId)?.takenOver) handBack(cardId); };
+  const label = workerLabel(worker, store.cards);
+  btn.textContent = label.text;
+  btn.title = label.title;
+  btn.disabled = !label.takenOver;
+  btn.onclick = () => {
+    const now = workerOf(cardId);
+    if (now && workerLabel(now, store.cards).takenOver) handBack(cardId);
+  };
 }
 
 export function initWorkers(deps) {

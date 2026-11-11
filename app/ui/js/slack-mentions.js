@@ -31,7 +31,9 @@
 //   "Dismiss all" dismisses the mentions shown (the chosen range) and asks once.
 // - Handed over: mentions an MCP client handed to one of its Agent rules
 //   are listed apart above the panes, with the client's and the rule's names
-//   (`handedRows`; client names from `mcp_status`). They are not actionable
+//   (`handedRows`; client names from `mcp_status`; the orchestrator card's
+//   title instead while the card it handed over from is on the Board,
+//   `workers.js`). They are not actionable
 //   here: the card the rule started is on the Board.
 // - Attention: the open count of the chosen range beside the sidebar
 //   entry, nothing else. The
@@ -43,6 +45,7 @@ import { $, ctx, inv, listen, state, store, uev } from './state.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { channelBlockReason } from './channel-model.js';
+import { workerOf } from './workers.js';
 import { MENTION_RANGES, handedRows, mentionAfter, mentionErrorKey, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin } from './slack-mentions-model.js';
 
 let render, switchProject, leaveSessionView, closeBuffer, provider;
@@ -195,7 +198,11 @@ export function paintMentions() {
 
 /* where the mentions an MCP client took went */
 function paintHanded() {
-  const rows = handedRows(view, range, nowSecs(), clients, ctx.settings?.inbound?.rules);
+  const ownerOf = card => {
+    const owner = card && workerOf(card)?.orchestratorCardId;
+    return (owner && store.cards.find(c => c.id === owner)?.title) || '';
+  };
+  const rows = handedRows(view, range, nowSecs(), clients, ctx.settings?.inbound?.rules, ownerOf);
   const box = $('mentions-handed');
   box.hidden = !rows.length;
   $('mentions-handed-title').textContent = t('mentions.handedTitle', { count: formatNumber(rows.length) });

@@ -74,3 +74,29 @@ test('a worker list that cannot be read changes nothing', async () => {
   await refreshWorkers();
   assert.deepEqual(workerOf('S1'), before);
 });
+
+test('a worker card is labelled with its orchestrator card, and is the user’s once that card is gone', async () => {
+  setLocale('en');
+  const { workerLabel } = await import('../js/workers.js');
+  const worker = { cardId: 'W1', clientName: 'Orchestrator', takenOver: false, orchestratorCardId: 'OA' };
+  const cards = [{ id: 'OA', title: 'Orch A' }, { id: 'W1', title: 'Fix' }];
+  const driven = workerLabel(worker, cards);
+  assert.equal(driven.takenOver, false);
+  assert.equal(driven.text, t('workers.driven', { name: 'Orch A' }));
+  // no orchestrator card recorded: the client's name, as before
+  assert.equal(workerLabel({ ...worker, orchestratorCardId: undefined }, cards).text, t('workers.driven', { name: 'Orchestrator' }));
+  // the orchestrator card closed: held, and it says so
+  const gone = workerLabel(worker, [{ id: 'W1', title: 'Fix' }]);
+  assert.equal(gone.takenOver, true);
+  assert.equal(gone.orphaned, true);
+  assert.equal(gone.text, t('workers.orphaned', { name: 'Orchestrator' }));
+  assert.equal(gone.title, t('workers.orphanedTitle', { name: 'Orchestrator', client: 'Orchestrator' }));
+  // and the chip offers the hand-back button
+  initWorkers({ render: () => {} });
+  backend([worker]);
+  await refreshWorkers();
+  store.cards = [{ id: 'W1', session: 'deck-w', title: 'Fix' }];
+  const chip = workerChip({ id: 'W1' });
+  assert.equal(chip.className, 'card-worker taken');
+  assert.equal(typeof chip.onclick, 'function');
+});

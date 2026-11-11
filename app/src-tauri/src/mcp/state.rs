@@ -94,6 +94,14 @@ pub(super) struct Client {
     /// rules (`mentions.rs`). Account-wide, never implied by another choice.
     #[serde(default)]
     pub(super) allow_mentions: bool,
+    /// The user's choice that a worker card this client's orchestrator
+    /// card starts opens in its type's or rule's column, not beside the
+    /// orchestrator card (`origin.rs`; off, the default, follows it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) rule_column: bool,
+    /// Trigger and send sequences per orchestrator card (`origin.rs`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(super) lanes: super::origin::Lanes,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -704,7 +712,9 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
     // the version the content needs at least, up to the newest this build
     // writes (sticky versions never go back)
-    let needed = if super::mentions::uses_mentions(doc) {
+    let needed = if super::origin::uses_orchestrators(doc) {
+        STATE_VERSION_ORCHESTRATORS
+    } else if super::mentions::uses_mentions(doc) {
         STATE_VERSION_MENTIONS
     } else if super::proposals::uses_proposals(doc) {
         STATE_VERSION_PROPOSALS
@@ -715,7 +725,7 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     } else {
         STATE_VERSION
     };
-    let version_valid = (needed..=STATE_VERSION_MENTIONS).contains(&doc.version)
+    let version_valid = (needed..=STATE_VERSION_ORCHESTRATORS).contains(&doc.version)
         && super::proposals::valid_proposals(doc);
     let clients_valid = version_valid
         && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)
@@ -874,6 +884,10 @@ impl Runtime {
         // and one in which a client may read Slack mentions at the next one
         if super::mentions::uses_mentions(&candidate) {
             candidate.version = candidate.version.max(STATE_VERSION_MENTIONS);
+        }
+        // and one that groups worker cards by orchestrator card at the next
+        if super::origin::uses_orchestrators(&candidate) {
+            candidate.version = candidate.version.max(STATE_VERSION_ORCHESTRATORS);
         }
         save(&self.path, &candidate)?;
         *guard = Ok(candidate);

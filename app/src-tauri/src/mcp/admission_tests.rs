@@ -42,6 +42,8 @@ fn client() -> Client {
         worker_first_send: false,
         allow_drafts: false,
         allow_mentions: false,
+        rule_column: false,
+        lanes: Default::default(),
     }
 }
 

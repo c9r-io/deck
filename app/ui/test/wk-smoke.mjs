@@ -3383,6 +3383,11 @@ export async function verifyMentionsMcp() {
   await runWorkersSmoke({ mentioning: true });
 }
 
+export async function verifyOrchestrators() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ orchestrating: true });
+}
+
 export async function verifyAgentLive() {
   const { runAgentLiveSmoke } = await import('./agent-live-smoke.mjs');
   await runAgentLiveSmoke();

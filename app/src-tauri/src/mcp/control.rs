@@ -362,6 +362,9 @@ pub(super) fn handle_connection(runtime: Arc<Runtime>, mut stream: UnixStream) {
     {
         return;
     }
+    // the caller's orchestrator card is read from the kernel while the
+    // adapter waits for this answer, and only when a tool asks (`origin.rs`)
+    let _caller = super::origin::enter(crate::procinfo::peer_pid(&stream));
     let response = match read_request_line(&mut stream) {
         Some(line) => serde_json::from_slice::<WireRequest>(&line)
             .map(|request| route(&runtime, request))

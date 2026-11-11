@@ -80,8 +80,12 @@ pub(super) fn automation_list(
     arguments: Value,
 ) -> Result<Value, Value> {
     parse::<Empty>(arguments)?;
+    let orchestrator = super::origin::orchestrator();
     let next = runtime
-        .read(|doc| delegated(doc, client_id).map(|client| client.trigger_sequence))
+        .read(|doc| {
+            delegated(doc, client_id)
+                .map(|client| super::origin::trigger_sequence(client, orchestrator.as_deref()))
+        })
         .map_err(map_error)?
         .map_err(map_error)?;
     let config = automation_config().ok_or_else(|| {
@@ -178,6 +182,10 @@ pub(super) fn trigger_item(
     item: impl FnOnce() -> Result<Item, Value>,
     origin: Option<&str>,
 ) -> Result<Value, Value> {
+    // the caller's orchestrator card: its own sequence, and its worker card
+    // opens beside it (`origin.rs`)
+    let orchestrator = super::origin::orchestrator();
+    let orchestrator = orchestrator.as_deref();
     // A replay returns the recorded operation; its inbox entry is committed
     // on the way in case the crash was between the two writes.
     let replay = runtime
@@ -195,7 +203,9 @@ pub(super) fn trigger_item(
     // in the write below.
     let stale = runtime
         .read(|doc| {
-            delegated(doc, client_id).map(|client| client.trigger_sequence != trigger_sequence)
+            delegated(doc, client_id).map(|client| {
+                super::origin::trigger_sequence(client, orchestrator) != trigger_sequence
+            })
         })
         .map_err(map_error)?
         .map_err(map_error)?;
@@ -278,7 +288,9 @@ pub(super) fn trigger_item(
             if let Some(existing) = existing_operation(doc, client_id, request_id, hash)? {
                 return Ok(existing.clone());
             }
-            if trigger_sequence != delegated(doc, client_id)?.trigger_sequence {
+            if trigger_sequence
+                != super::origin::trigger_sequence(delegated(doc, client_id)?, orchestrator)
+            {
                 return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
             }
             reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
@@ -298,6 +310,9 @@ pub(super) fn trigger_item(
                     if let Some(origin) = origin {
                         result["origin"] = json!(origin);
                     }
+                    if let Some(card) = orchestrator {
+                        result[super::origin::RESULT_KEY] = json!(card);
+                    }
                     result
                 }),
                 accepted_at: now_ms(),
@@ -313,7 +328,7 @@ pub(super) fn trigger_item(
                 .iter_mut()
                 .find(|client| client.id == client_id)
             {
-                client.trigger_sequence = client.trigger_sequence.saturating_add(1);
+                super::origin::bump_trigger(client, orchestrator);
             }
             doc.operations.push(operation.clone());
             Ok(operation)

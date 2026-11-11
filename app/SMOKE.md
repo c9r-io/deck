@@ -492,6 +492,41 @@ neither the lunch question nor the injected instruction. Last the page
 withdraws the choice in the client's dialog (`mentions-withdrawn`). Judge
 with `scripts/smoke-verdict <data> mentions-mcp`. Keep the screen unlocked.
 
+## Orchestrator cards (WKWebView mode `orchestrators`)
+
+`orchestrators` is several orchestrators on ONE MCP client, each in its
+own Deck card (`mcp/origin.rs`): the same carrier as `drafts` (debug only,
+isolated data dir under `/private/tmp`, a unique `deck-smoke-…` socket, the
+fixture's `copy_agent.py` and `work/`). The workers are the user's signed-in
+Claude Code (`claude --setting-sources project`), started and left idle.
+The page adds the columns "Orch A", "Orch B" and "Orch C", authorizes one
+client `orchestrator` that may trigger automations and drive workers (one
+Claude type in the first column, workers beside their orchestrator), saves
+the Agent rule `worker` in the first column, opens two plain-shell cards
+"Orch A" and "Orch B" in their columns and reports `orchestrators-armed`.
+The operator then types `scripts/mcp-orchestrators-e2e.py --phase first`
+(adapter, socket, credential and evidence arguments as the other MCP
+scripts, one shared `--tag`) into BOTH cards' panes at once (`tmux -L
+<socket> send-keys`): each learns its card from `deck_capabilities`,
+starts a worker of the type and hands one item to `worker` on its own
+sequence 0, lists only its own two, is refused a send into the other's and
+queues one line on its typed worker. The page checks `orchestrators-placed`
+(four cards, each in its orchestrator card's column and labelled with it),
+`orchestrators-sent`, closes "Orch B" (`orchestrators-orphaned`: its two
+workers say "Orchestrator closed · Hand back" and are held) and hands one
+back through its button (`orchestrators-handed-back`: unowned). Then
+`--phase after` in "Orch A" only: A lists its two and exactly one of B's.
+After `orchestrators-live-ready` (a third card "Orch C") a real Claude Code
+(`-p`, only this instance's adapter, started by a wrapper script in the
+pane) runs in "Orch A" and in "Orch C", each asked in plain words to start
+one worker: `orchestrators-live` needs one new worker per card, beside it.
+Judge with `scripts/smoke-verdict <data> orchestrators` and the scripts'
+own PASS lines. Keep the screen unlocked. Type COPIES into the panes (the
+two scripts and the debug `deck-mcp`, copied under the run root once the
+bundle is built): on 2026-11-11 a pane of a freshly built smoke bundle
+reading the checkout on its external volume blocked in `open()` for good
+(most likely an unanswered privacy prompt), and the scripts never started.
+
 ## Signal integrity: automation finish (FR-SI-01)
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-signal.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-signal-UNIQUE DECK_SMOKE_WKWEBVIEW=signal-finish app/run.sh`.

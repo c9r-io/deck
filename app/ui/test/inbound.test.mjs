@@ -253,3 +253,10 @@ test('an Agent handover rule survives settings normalization with its approval a
   assert.equal(rules[0].firstSendWithoutReadiness, true);
   assert.equal('schedule' in rules[1], false);
 });
+
+test('an item an orchestrator card handed over opens beside it when the backend names a column of the project', () => {
+  const agent = { id: 9, event: { ...event, source: 'agent', key: 'op_1', badge: 'triage' }, rule: { ...rule, source: 'agent', badge: 'triage' } };
+  assert.equal(planInbound({ ...agent, column: 'C2' }, { cards: [], projects, home: '/' }).card.columnId, 'C2');
+  assert.equal(planInbound({ ...agent, column: 'C9' }, { cards: [], projects, home: '/' }).card.columnId, 'C1', 'not a column of the project: the rule’s');
+  assert.equal(planInbound(agent, { cards: [], projects, home: '/' }).card.columnId, 'C1');
+});

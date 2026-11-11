@@ -1262,6 +1262,10 @@ pub(crate) struct CardTarget {
     pub(crate) title: String,
     pub(crate) dir: String,
     pub(crate) cmd: String,
+    /// Where the card sits now: a worker card an orchestrator card starts
+    /// opens beside it (`mcp/origin.rs`). Placement at creation only.
+    pub(crate) project_id: String,
+    pub(crate) column_id: String,
 }
 
 /// Every card of the committed Board by id, `None` while no Board is known
@@ -1290,6 +1294,8 @@ pub(crate) fn card_targets(current_only: bool) -> Option<HashMap<String, CardTar
                         title: text("title"),
                         dir: text("dir"),
                         cmd: text("cmd"),
+                        project_id: text("projectId"),
+                        column_id: text("columnId"),
                     },
                 ))
             })

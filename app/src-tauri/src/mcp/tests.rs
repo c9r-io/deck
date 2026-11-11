@@ -326,6 +326,8 @@ fn client_record(root: &Path) -> Client {
         worker_first_send: false,
         allow_drafts: false,
         allow_mentions: false,
+        rule_column: false,
+        lanes: Default::default(),
     }
 }
 
@@ -855,6 +857,8 @@ fn authorization_is_client_project_session_and_control_scoped() {
         worker_first_send: false,
         allow_drafts: false,
         allow_mentions: false,
+        rule_column: false,
+        lanes: Default::default(),
     });
     let disabled = match client(&doc, "client_a") {
         Err(error) => error,
@@ -2117,7 +2121,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
     );
 
     let mut invalid = DiskDoc {
-        version: STATE_VERSION_MENTIONS + 1,
+        version: STATE_VERSION_ORCHESTRATORS + 1,
         ..DiskDoc::default()
     };
     assert!(validate_doc(&invalid).is_err());
@@ -2156,6 +2160,8 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
         worker_first_send: false,
         allow_drafts: false,
         allow_mentions: false,
+        rule_column: false,
+        lanes: Default::default(),
     });
     assert!(validate_doc(&invalid).is_err());
     std::fs::remove_dir_all(root).unwrap();
@@ -3102,7 +3108,7 @@ fn v3_state_upgrades_stickily_and_future_state_is_refused() {
     // The v3 build accepted exactly version 3; the same rule refuses a
     // future schema here.
     let mut future = saved.clone();
-    future["version"] = json!(STATE_VERSION_MENTIONS + 1);
+    future["version"] = json!(STATE_VERSION_ORCHESTRATORS + 1);
     std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
     assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
     assert_eq!(
@@ -5875,6 +5881,7 @@ fn set_permissions(runtime: &Runtime, automations: bool, workers: bool, replies:
             worker_first_send: false,
             allow_drafts: false,
             allow_mentions: false,
+            rule_column: false,
         },
     )
     .unwrap();
@@ -5937,6 +5944,7 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
             worker_first_send: first,
             allow_drafts: false,
             allow_mentions: false,
+            rule_column: false,
         };
     assert!(client_permissions(
         &runtime,
@@ -6071,6 +6079,7 @@ fn no_permissions(allow_create: bool) -> super::commands::PermissionsInput {
         worker_first_send: false,
         allow_drafts: false,
         allow_mentions: false,
+        rule_column: false,
     }
 }
 
@@ -6558,4 +6567,214 @@ fn slack_mentions_are_read_through_deck_and_handed_to_an_agent_rule_only() {
         crate::inbound_agent::redirect_for_tests(None);
         crate::slack_mentions::load_for_tests(false, Vec::new(), Vec::new(), None);
     });
+}
+
+/// Orchestrator cards (`origin.rs`): two orchestrator cards of ONE client
+/// each start a worker beside themselves on their own sequence, each sees
+/// and drives only its own, a caller from no card sees both, the user's
+/// "type's column" choice keeps the type's column, a worker whose
+/// orchestrator card left the Board is the user's until handed back (then
+/// unowned, seen by every orchestrator), and the ledger takes the sticky
+/// orchestrator version.
+#[test]
+fn orchestrator_cards_group_their_workers_within_one_client() {
+    let (runtime, _runner, root) = fixture("orchestrators", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let call = |tool: &str, args: Value| route(&runtime, request(tool, args));
+    let claude = WorkerType {
+        name: "claude".into(),
+        cmd: "claude".into(),
+        column_id: "C1".into(),
+        description: "Write code".into(),
+    };
+    let permissions = |rule_column: bool| super::commands::PermissionsInput {
+        allow_create: false,
+        allow_automations: true,
+        allow_workers: true,
+        allow_replies: false,
+        worker_types: vec![claude.clone()],
+        worker_first_send: false,
+        allow_drafts: false,
+        allow_mentions: false,
+        rule_column,
+    };
+    client_permissions(&runtime, "client_a", permissions(false)).unwrap();
+    let orchestrators = json!([
+        {"id": "OA", "session": "deck-oa", "title": "Orch A", "cmd": "", "dir": "/tmp", "projectId": "P1", "columnId": "CA"},
+        {"id": "OB", "session": "deck-ob", "title": "Orch B", "cmd": "", "dir": "/tmp", "projectId": "P1", "columnId": "CB"},
+        {"id": "OX", "session": "deck-ox", "title": "Elsewhere", "cmd": "", "dir": "/tmp", "projectId": "P2", "columnId": "CX"}
+    ]);
+    let board = |extra: Value| {
+        let mut cards = orchestrators.as_array().unwrap().clone();
+        cards.extend(extra.as_array().unwrap().iter().cloned());
+        crate::documents::test_door::commit(json!({"projects": [], "cards": cards}), true);
+    };
+    board(json!([]));
+    // each orchestrator card starts one worker on its own sequence 0
+    let start = |card: Option<&str>, request: &str| {
+        let _as = super::origin::enter_as(card);
+        call(
+            "deck_worker_start",
+            json!({"request_id": request, "send_sequence": 0, "text": "fix it"}),
+        )
+    };
+    let a = start(Some("OA"), "req_a1");
+    assert_eq!(a["state"], "accepted", "{a}");
+    assert_eq!(a["result"]["columnId"], "CA", "beside its orchestrator");
+    assert_eq!(a["result"]["orchestratorCardId"], "OA");
+    let b = start(Some("OB"), "req_b1");
+    assert_eq!(b["state"], "accepted", "B's own sequence: {b}");
+    assert_eq!(b["result"]["columnId"], "CB");
+    // another project: the type's column
+    let x = start(Some("OX"), "req_x1");
+    assert_eq!(x["result"]["columnId"], "C1", "{x}");
+    // a caller from no card keeps the client's sequence, untouched by A and B
+    let none = start(None, "req_n1");
+    assert_eq!(none["result"]["columnId"], "C1", "{none}");
+    assert!(none["result"]["orchestratorCardId"].is_null());
+    for (view, session) in [
+        (&a, "deck-wa"),
+        (&b, "deck-wb"),
+        (&x, "deck-wx"),
+        (&none, "deck-wn"),
+    ] {
+        let op = view["operationId"].as_str().unwrap().to_owned();
+        claim(&runtime, &op).unwrap();
+        complete(&runtime, op, "committed".into(), None, Some(session.into())).unwrap();
+    }
+    let card = |view: &Value| view["result"]["cardId"].as_str().unwrap().to_owned();
+    let (wa, wb, wn) = (card(&a), card(&b), card(&none));
+    let worker = |id: &str, session: &str| json!({"id": id, "session": session, "title": session, "cmd": "claude", "dir": "/tmp", "projectId": "P1", "columnId": "C1"});
+    board(json!([
+        worker(&wa, "deck-wa"),
+        worker(&wb, "deck-wb"),
+        worker(&wn, "deck-wn")
+    ]));
+    let listed = |card: Option<&str>| {
+        let _as = super::origin::enter_as(card);
+        let out = call("deck_worker_list", json!({}));
+        let mut ids: Vec<String> = out["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["cardId"].as_str().unwrap().to_owned())
+            .collect();
+        ids.sort();
+        (ids, out["nextSendSequence"].clone())
+    };
+    let sorted = |mut v: Vec<String>| {
+        v.sort();
+        v
+    };
+    // its own and the unowned one; never the other orchestrator's
+    assert_eq!(listed(Some("OA")).0, sorted(vec![wa.clone(), wn.clone()]));
+    assert_eq!(listed(Some("OB")).0, sorted(vec![wb.clone(), wn.clone()]));
+    assert_eq!(
+        listed(None).0,
+        sorted(vec![wa.clone(), wb.clone(), wn.clone()])
+    );
+    assert_eq!(listed(Some("OA")).1, 1, "A's lane moved once");
+    assert_eq!(listed(None).1, 1, "the client's own moved once");
+    {
+        let _as = super::origin::enter_as(Some("OA"));
+        let refused = call(
+            "deck_worker_send",
+            json!({"request_id": "req_cross", "send_sequence": 1, "card_id": wb,
+                   "after_episode": 0, "text": "hello"}),
+        );
+        assert_eq!(refused["error"]["code"], "WORKER_NOT_FOUND", "{refused}");
+        let caps = call("deck_capabilities", json!({}));
+        assert_eq!(
+            caps["orchestratorCard"],
+            json!({"cardId": "OA", "title": "Orch A"})
+        );
+    }
+    assert!(call("deck_capabilities", json!({}))["orchestratorCard"].is_null());
+    // an Agent handover from an orchestrator card opens beside it
+    let trigger = Operation {
+        operation_id: "op_t1".into(),
+        kind: TRIGGER_KIND.into(),
+        result: Some(
+            json!({"automationId": "triage", "revision": "r", "orchestratorCardId": "OB"}),
+        ),
+        request_id: "req_t1".into(),
+        ..operation(TRIGGER_KIND, "accepted")
+    };
+    runtime
+        .write(|doc| {
+            doc.operations.push(trigger);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        super::origin::column_for_item_in(&runtime, "op_t1", "P1").as_deref(),
+        Some("CB")
+    );
+    assert_eq!(
+        super::origin::column_for_item_in(&runtime, "op_t1", "P2"),
+        None
+    );
+    outcome_in(&runtime, "op_t1", "committed", None, Some("WT")).unwrap();
+    let owner = runtime
+        .read(|doc| {
+            doc.workers
+                .iter()
+                .find(|w| w.card_id == "WT")
+                .and_then(|w| w.orchestrator.clone())
+        })
+        .unwrap();
+    assert_eq!(owner.as_deref(), Some("OB"));
+    // the type's column, by the user's choice
+    client_permissions(&runtime, "client_a", permissions(true)).unwrap();
+    let kept = {
+        let _as = super::origin::enter_as(Some("OA"));
+        call(
+            "deck_worker_start",
+            json!({"request_id": "req_a2", "send_sequence": 1, "text": "again"}),
+        )
+    };
+    assert_eq!(kept["result"]["columnId"], "C1", "{kept}");
+    client_permissions(&runtime, "client_a", permissions(false)).unwrap();
+    // B's card closes: its worker is the user's, nobody else's
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [
+            orchestrators[0].clone(),
+            worker(&wa, "deck-wa"),
+            worker(&wb, "deck-wb"),
+            worker(&wn, "deck-wn")
+        ]}),
+        true,
+    );
+    let ui = serde_json::to_value(workers_ui(&runtime).unwrap()).unwrap();
+    let row = ui
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["cardId"] == wb.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(row["takenOver"], true, "{row}");
+    assert_eq!(row["orchestratorCardId"], "OB");
+    assert_eq!(listed(Some("OA")).0, sorted(vec![wa.clone(), wn.clone()]));
+    {
+        let _as = super::origin::enter_as(None);
+        let all = call("deck_worker_list", json!({}));
+        let held = all["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["cardId"] == wb.as_str())
+            .unwrap()["takenOver"]
+            .clone();
+        assert_eq!(held, true);
+    }
+    // handed back: unowned, every orchestrator's
+    assert!(worker_set_held(&runtime, &wb, false).unwrap());
+    assert_eq!(
+        listed(Some("OA")).0,
+        sorted(vec![wa.clone(), wb.clone(), wn.clone()])
+    );
+    let saved: Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+    assert_eq!(saved["version"], STATE_VERSION_ORCHESTRATORS, "sticky");
+    drop(root);
 }

@@ -188,11 +188,16 @@ pub(super) fn mentions_list(
         ));
     }
     let deadline = Instant::now() + Duration::from_millis(wait);
+    let orchestrator = super::origin::orchestrator();
     loop {
         let (may_hand_off, next) = runtime
             .read(|doc| {
-                reader(doc, client_id)
-                    .map(|client| (client.allow_automations, client.trigger_sequence))
+                reader(doc, client_id).map(|client| {
+                    (
+                        client.allow_automations,
+                        super::origin::trigger_sequence(client, orchestrator.as_deref()),
+                    )
+                })
             })
             .map_err(map_error)?
             .map_err(map_error)?;

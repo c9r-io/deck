@@ -288,7 +288,7 @@ there. A worker card is a card it started with `deck_worker_start`, or one
 its own `deck_automation_trigger` call created while it could drive worker
 cards; no other card is ever reachable. The
 card is an ordinary card: you can open it, read it and type into it. It is
-labelled "Driven by ‹client›" and its routine turn endings start quiet
+labelled "Driven by ‹client›" (or by its orchestrator card, below) and its routine turn endings start quiet
 (its orchestrator reads them; the card menu announces them again).
 
 The orchestrator (Claude Code, Codex or any MCP client) decides everything;
@@ -325,6 +325,38 @@ files. Pi's input requests cannot be seen, so Pi cannot be a worker. Worker repl
 Agents); with turn summaries off the Stop hook then carries `--reply
 workers`, which forwards the message for worker replies alone and never
 makes a summary or a model call.
+
+## Orchestrator cards
+
+Several orchestrating agents may share one client: run each in its own Deck
+card. Deck reads from the operating system which card each call comes from
+(the adapter's process, its parent chain and the card's terminal, the same
+check it uses for an Agent's status hooks); the agent passes nothing and
+cannot claim another card. That card is the call's **orchestrator card**:
+
+- The worker cards it starts — `deck_worker_start`, an Agent handover, a
+  Slack mention handover — open in the orchestrator card's column at that
+  moment, when both are in one project. Moving the orchestrator card later
+  moves nothing; its next worker opens in the new column. Turn off **Open
+  worker cards beside their orchestrator** in the client's dialog to use
+  each type's or automation's column instead.
+- Its worker cards are labelled "Driven by ‹orchestrator card›", and only
+  it drives them: `deck_worker_list` from another orchestrator card does
+  not list them, and a send to one is `WORKER_NOT_FOUND`. Worker cards that
+  belong to no orchestrator card (started before this, or by an agent
+  outside Deck) stay listed for every orchestrator of the client.
+- Trigger and send sequences (`nextTriggerSequence`, `nextSendSequence`)
+  are kept per orchestrator card, so two orchestrators never get each
+  other's `STALE_REQUEST`.
+- When an orchestrator card is closed, its worker cards become yours: they
+  say "Orchestrator closed · Hand back", their lines wait, and Hand back
+  gives them to every orchestrator of the client.
+
+`deck_capabilities.orchestratorCard` says which card Deck saw
+(`{cardId, title}`, or `null`). An agent outside Deck, a process it
+detached, or a Codex shared daemon has no orchestrator card and is served
+as before: it sees all of the client's worker cards. Permissions stay the
+client's: withdrawing a choice withdraws it for every orchestrator.
 
 ## Drafted configuration
 

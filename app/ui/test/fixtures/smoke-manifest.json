@@ -897,6 +897,21 @@
         "workers-exception": { "failureOnly": true }
       }
     },
+    "orchestrators": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "workers-rule": {},
+        "orchestrators-armed": {},
+        "orchestrators-placed": {},
+        "orchestrators-sent": {},
+        "orchestrators-orphaned": {},
+        "orchestrators-handed-back": {},
+        "orchestrators-live-ready": {},
+        "orchestrators-live": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
     "terminal-input": {
       "terminal": "done",
       "checks": {

@@ -72,9 +72,10 @@ export function mentionStatus(view) {
 }
 
 /* the handed-over mentions within `days` of `now`, newest first, each with
-   the names of the client that took it and the rule it went to (the id when
-   the name is unknown) */
-export function handedRows(view, days, now, clients, rules) {
+   the names of the client that took it (or of the orchestrator card,
+   `ownerOf(workerCard)`) and the rule it went to (the id when the name is
+   unknown) */
+export function handedRows(view, days, now, clients, rules, ownerOf = () => '') {
   if (!view?.enabled || !Array.isArray(view.handed)) return [];
   const since = now - days * 86400;
   return view.handed
@@ -85,7 +86,8 @@ export function handedRows(view, days, now, clients, rules) {
       where: item.where,
       at: item.at,
       line: String(item.text || '').split('\n')[0],
-      client: (clients || []).find(c => c.id === item.client)?.name || item.client,
+      /* the orchestrator card that handed it over, else the client */
+      client: ownerOf(item.card) || (clients || []).find(c => c.id === item.client)?.name || item.client,
       rule: (rules || []).find(r => r?.source === 'agent' && r.badge === item.rule)?.name || item.rule,
     }));
 }

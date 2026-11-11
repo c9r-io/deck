@@ -34,6 +34,11 @@
 //! - The user takes a card over by typing into its pane (`worker_hold`,
 //!   from the webview) and only hands it back by hand (`worker_release`).
 //!   While held, the card's delegated lines hold at `human`.
+//! - Within one client, a worker started from an orchestrator card
+//!   (`origin.rs`) is that card's: only calls from it (and from no card) see
+//!   and drive it, its sequences are that card's lane, and once the card
+//!   left the Board the user holds it (`origin::taken_over`, read wherever
+//!   `held` is) until handing it back makes it unowned.
 //! - Withdrawing `allow_workers`, revoking the client or disabling MCP takes
 //!   the client out of `automation_delegations` under the settings fence the
 //!   scheduler's firing intent also takes: no delegated line starts after
@@ -68,6 +73,10 @@ pub(super) struct Worker {
     pub(super) created_at: u64,
     #[serde(default)]
     pub(super) held: bool,
+    /// The orchestrator card the client's call came from when it started
+    /// this card (`origin.rs`); `None` for an unowned worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) orchestrator: Option<String>,
 }
 
 /// The key a client's worker delegation takes in `automation_delegations`
@@ -161,6 +170,7 @@ pub(super) fn record_worker(doc: &mut DiskDoc, operation: &Operation, card: &str
         automation_id: automation,
         created_at: now_ms(),
         held: false,
+        orchestrator: super::origin::of_operation(operation),
     });
 }
 
@@ -199,17 +209,18 @@ fn with_doc<T>(default: T, read: impl FnOnce(&DiskDoc) -> T) -> T {
 
 /// The sessions of the worker cards the user took over (`Hold::Human`).
 pub(crate) fn held_worker_sessions() -> HashSet<String> {
+    let cards = crate::documents::card_targets(false);
     let held: Vec<String> = with_doc(Vec::new(), |doc| {
         doc.workers
             .iter()
-            .filter(|w| w.held)
+            .filter(|w| super::origin::taken_over(w, cards.as_ref()))
             .map(|w| w.card_id.clone())
             .collect()
     });
     if held.is_empty() {
         return HashSet::new();
     }
-    let Some(cards) = crate::documents::card_targets(false) else {
+    let Some(cards) = cards else {
         return HashSet::new();
     };
     held.iter()
@@ -223,8 +234,13 @@ pub(crate) fn worker_card_held(card: &str) -> bool {
     let Some(runtime) = RUNTIME.get() else {
         return false;
     };
+    let cards = crate::documents::card_targets(false);
     runtime
-        .read(|doc| doc.workers.iter().any(|w| w.card_id == card && w.held))
+        .read(|doc| {
+            doc.workers
+                .iter()
+                .any(|w| w.card_id == card && super::origin::taken_over(w, cards.as_ref()))
+        })
         .unwrap_or(true)
 }
 
@@ -373,20 +389,22 @@ fn sends_of(doc: &DiskDoc, client: &str, card: &str) -> Vec<String> {
 
 struct WorkerRow {
     worker: Worker,
+    taken_over: bool,
     target: Option<crate::documents::CardTarget>,
     sends: Vec<String>,
 }
 
-fn rows_of(doc: &DiskDoc, client: &str) -> Vec<WorkerRow> {
+fn rows_of(doc: &DiskDoc, client: &str, orchestrator: Option<&str>) -> Vec<WorkerRow> {
     let targets = crate::documents::card_targets(false).unwrap_or_default();
     doc.workers
         .iter()
-        .filter(|w| w.client_id == client)
+        .filter(|w| w.client_id == client && super::origin::sees(w, orchestrator))
         .filter_map(|w| {
             let target = targets.get(&w.card_id).cloned();
             target.as_ref()?;
             Some(WorkerRow {
                 worker: w.clone(),
+                taken_over: super::origin::taken_over(w, Some(&targets)),
                 target,
                 sends: sends_of(doc, client, &w.card_id),
             })
@@ -423,7 +441,7 @@ fn view(
         "automationId": row.worker.automation_id,
         "alive": observed.is_some_and(|o| o.alive),
         "agent": agent,
-        "takenOver": row.worker.held,
+        "takenOver": row.taken_over,
         "unsent": unsent,
         "sends": states
             .iter()
@@ -446,12 +464,14 @@ fn driving<'a>(doc: &'a DiskDoc, client_id: &str) -> Result<&'a Client, DeckErro
 type Snapshot = (Vec<WorkerRow>, u64, bool, Vec<Value>);
 
 fn snapshot(runtime: &Runtime, client_id: &str) -> Result<Snapshot, Value> {
+    let orchestrator = super::origin::orchestrator();
+    let orchestrator = orchestrator.as_deref();
     runtime
         .read(|doc| {
             driving(doc, client_id).map(|client| {
                 (
-                    rows_of(doc, client_id),
-                    client.send_sequence,
+                    rows_of(doc, client_id, orchestrator),
+                    super::origin::send_sequence(client, orchestrator),
                     client.allow_replies,
                     types_view(client),
                 )
@@ -532,16 +552,25 @@ pub(super) fn worker_wait(
     }
 }
 
-fn own_card(doc: &DiskDoc, client_id: &str, card: &str) -> Result<Worker, Value> {
+fn own_card(
+    doc: &DiskDoc,
+    client_id: &str,
+    orchestrator: Option<&str>,
+    card: &str,
+) -> Result<Worker, Value> {
     doc.workers
         .iter()
-        .find(|w| w.card_id == card && w.client_id == client_id)
+        .find(|w| {
+            w.card_id == card
+                && w.client_id == client_id
+                && super::origin::sees(w, orchestrator)
+        })
         .cloned()
         .ok_or_else(|| {
             error_value(
                 "WORKER_NOT_FOUND",
-                "that card is not one of this client's worker cards",
-                "Use a cardId from deck_worker_list; only cards this client started through its automations are listed.",
+                "that card is not one of this client's worker cards (or another orchestrator card's)",
+                "Use a cardId from deck_worker_list; only cards this client started through its automations are listed, and only this orchestrator card's own.",
             )
         })
 }
@@ -552,6 +581,7 @@ pub(super) fn worker_reply(
     arguments: Value,
 ) -> Result<Value, Value> {
     let args: WorkerReplyArgs = parse(arguments)?;
+    let orchestrator = super::origin::orchestrator();
     let worker = runtime
         .read(|doc| -> Result<Result<Worker, Value>, DeckError> {
             let client = driving(doc, client_id)?;
@@ -561,7 +591,12 @@ pub(super) fn worker_reply(
                     "client may not read worker replies",
                 ));
             }
-            Ok(own_card(doc, client_id, &args.card_id))
+            Ok(own_card(
+                doc,
+                client_id,
+                orchestrator.as_deref(),
+                &args.card_id,
+            ))
         })
         .map_err(map_error)?
         .map_err(map_error)??;
@@ -627,6 +662,8 @@ pub(super) fn worker_send(
         ));
     }
     let hash = request_hash("deck_worker_send", &args);
+    let orchestrator = super::origin::orchestrator();
+    let orchestrator = orchestrator.as_deref();
     let replay = runtime
         .read(|doc| {
             driving(doc, client_id)?;
@@ -640,8 +677,8 @@ pub(super) fn worker_send(
     let (worker, stale) = runtime
         .read(|doc| -> Result<Result<(Worker, bool), Value>, DeckError> {
             let client = driving(doc, client_id)?;
-            let stale = client.send_sequence != args.send_sequence;
-            Ok(own_card(doc, client_id, &args.card_id).map(|w| (w, stale)))
+            let stale = super::origin::send_sequence(client, orchestrator) != args.send_sequence;
+            Ok(own_card(doc, client_id, orchestrator, &args.card_id).map(|w| (w, stale)))
         })
         .map_err(map_error)?
         .map_err(map_error)??;
@@ -704,7 +741,7 @@ pub(super) fn worker_send(
             if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
                 return Ok(existing.clone());
             }
-            if args.send_sequence != client.send_sequence {
+            if args.send_sequence != super::origin::send_sequence(client, orchestrator) {
                 return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
             }
             reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
@@ -725,7 +762,7 @@ pub(super) fn worker_send(
                 control_sequence: None,
             };
             if let Some(client) = doc.config.clients.iter_mut().find(|c| c.id == client_id) {
-                client.send_sequence = client.send_sequence.saturating_add(1);
+                super::origin::bump_send(client, orchestrator);
             }
             doc.operations.push(operation.clone());
             Ok(operation)
@@ -800,9 +837,14 @@ pub(crate) struct WorkerCardView {
     card_id: String,
     client_name: String,
     taken_over: bool,
+    /// The orchestrator card that started it (`origin.rs`); the webview
+    /// names the card and tells a closed one from the Board it holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    orchestrator_card_id: Option<String>,
 }
 
 pub(super) fn workers_ui(runtime: &Runtime) -> Result<Vec<WorkerCardView>, DeckError> {
+    let targets = crate::documents::card_targets(false);
     runtime.read(|doc| {
         doc.workers
             .iter()
@@ -815,7 +857,8 @@ pub(super) fn workers_ui(runtime: &Runtime) -> Result<Vec<WorkerCardView>, DeckE
                 Some(WorkerCardView {
                     card_id: w.card_id.clone(),
                     client_name: client.name.clone(),
-                    taken_over: w.held,
+                    taken_over: super::origin::taken_over(w, targets.as_ref()),
+                    orchestrator_card_id: w.orchestrator.clone(),
                 })
             })
             .collect()
@@ -830,14 +873,21 @@ pub(super) fn worker_set_held(
     card: &str,
     held: bool,
 ) -> Result<bool, DeckError> {
+    let targets = crate::documents::card_targets(false);
     let changed = runtime.write(|doc| {
         let Some(worker) = doc.workers.iter_mut().find(|w| w.card_id == card) else {
             return Ok(false);
         };
-        if worker.held == held {
+        // a worker whose orchestrator card is gone is the user's: handing it
+        // back makes it unowned, for any of the client's orchestrators
+        let orphaned = super::origin::orphaned(worker, targets.as_ref());
+        if worker.held == held && !(orphaned && !held) {
             return Ok(false);
         }
         worker.held = held;
+        if orphaned && !held {
+            worker.orchestrator = None;
+        }
         let client = worker.client_id.clone();
         audit(
             doc,
@@ -971,6 +1021,8 @@ pub(super) fn worker_start(
         ));
     }
     let hash = request_hash("deck_worker_start", &args);
+    let orchestrator = super::origin::orchestrator();
+    let orchestrator = orchestrator.as_deref();
     let replay = runtime
         .read(|doc| {
             driving(doc, client_id)?;
@@ -987,7 +1039,7 @@ pub(super) fn worker_start(
                 return Ok(Ok(existing.clone()));
             }
             let client = driving(doc, client_id)?.clone();
-            if args.send_sequence != client.send_sequence {
+            if args.send_sequence != super::origin::send_sequence(&client, orchestrator) {
                 return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
             }
             let Some(worker_type) = (match args.r#type.as_deref() {
@@ -1044,7 +1096,8 @@ pub(super) fn worker_start(
                 result: Some(json!({
                     "cardId": random_id("W", 16)?,
                     "projectId": project.project_id,
-                    "columnId": worker_type.column_id,
+                    "columnId": super::origin::beside(&client, orchestrator, &project.project_id)
+                        .unwrap_or_else(|| worker_type.column_id.clone()),
                     "cmd": worker_type.cmd,
                     "dir": dir,
                     "title": title,
@@ -1052,6 +1105,7 @@ pub(super) fn worker_start(
                     // the first line waits here until the card exists, then
                     // leaves the ledger for the queue (`settle_start`)
                     "text": args.text,
+                    "orchestratorCardId": orchestrator,
                 })),
                 accepted_at: now_ms(),
                 updated_at: now_ms(),
@@ -1061,7 +1115,7 @@ pub(super) fn worker_start(
                 control_sequence: None,
             };
             if let Some(client) = doc.config.clients.iter_mut().find(|c| c.id == client_id) {
-                client.send_sequence = client.send_sequence.saturating_add(1);
+                super::origin::bump_send(client, orchestrator);
             }
             doc.operations.push(operation.clone());
             Ok(Ok(operation))
@@ -1182,6 +1236,7 @@ pub(super) fn client_permissions(
                 client.worker_types.clone(),
                 client.allow_drafts,
                 client.allow_mentions,
+                client.rule_column,
             );
             client.allow_create = permissions.allow_create;
             client.allow_automations = permissions.allow_automations;
@@ -1191,6 +1246,7 @@ pub(super) fn client_permissions(
             client.worker_types = permissions.worker_types.clone();
             client.allow_drafts = permissions.allow_drafts;
             client.allow_mentions = permissions.allow_mentions;
+            client.rule_column = permissions.rule_column;
             let after = (
                 client.allow_create,
                 client.allow_automations,
@@ -1200,6 +1256,7 @@ pub(super) fn client_permissions(
                 client.worker_types.clone(),
                 client.allow_drafts,
                 client.allow_mentions,
+                client.rule_column,
             );
             if before == after {
                 return Ok(false);

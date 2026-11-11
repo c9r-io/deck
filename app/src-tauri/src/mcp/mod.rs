@@ -224,6 +224,22 @@
 //! Slack. A ledger holding the choice is written at
 //! `STATE_VERSION_MENTIONS` (sticky).
 //!
+//! Orchestrator cards (`origin.rs`, `docs/mcp.md` "Orchestrator cards"):
+//! several agents may share one client, each in its own Deck card. Deck
+//! reads which card a call comes from out of the kernel (the adapter's peer
+//! pid and one process-table snapshot, checked as an Agent Signal's origin
+//! is, `agent_origin`), never from anything the client says. That card is
+//! the call's orchestrator card: the worker cards it starts open in its
+//! column at that moment (unless the user chose the type's or rule's column,
+//! `Client.rule_column`), are recorded as its own (`Worker.orchestrator`),
+//! and only it and callers from no card see and drive them; the client's
+//! unowned workers stay everyone's. Trigger and send sequences are kept per
+//! orchestrator card (`Client.lanes`). A worker whose orchestrator card left
+//! the Board is the user's (its lines hold at `human`) until handed back,
+//! which makes it unowned. The proof only groups and narrows inside the
+//! client's own authority; it grants nothing and moves no card. A ledger
+//! holding any of it is written at `STATE_VERSION_ORCHESTRATORS` (sticky).
+//!
 //! Layout (one contract, one file per concern; every file starts with
 //! `use super::*` and exposes its items `pub(super)`): `state` holds the disk
 //! document, its records, the runtime and load/validate/compact/save;
@@ -232,7 +248,8 @@
 //! `runner` the pane runner's private control channel; `wire` the request
 //! envelope and argument shapes; `project` list/read/search; `session` the
 //! session-level requests including close; `automation` the automation
-//! delegation above; `workers` the worker cards; `proposals` the drafted
+//! delegation above; `workers` the worker cards; `origin` the orchestrator
+//! card of a call; `proposals` the drafted
 //! configuration; `jobs` exec, job reads and every
 //! job side effect; `control` request routing plus the socket thread; and
 //! `commands` the local Tauri commands and the guards other modules call
@@ -271,6 +288,8 @@ mod grants;
 mod jobs;
 mod mentions;
 mod operations;
+mod origin;
+pub(crate) use origin::column_for_item as worker_column_for_item;
 mod project;
 mod proposals;
 mod runner;
@@ -315,6 +334,9 @@ const STATE_VERSION_PROPOSALS: u32 = 9;
 /// The sticky version a ledger takes once a client may read Slack mentions
 /// (`mentions::uses_mentions`): a v9 build refuses it.
 const STATE_VERSION_MENTIONS: u32 = 10;
+/// The sticky version a ledger takes once it groups worker cards by
+/// orchestrator card (`origin::uses_orchestrators`): a v10 build refuses it.
+const STATE_VERSION_ORCHESTRATORS: u32 = 11;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

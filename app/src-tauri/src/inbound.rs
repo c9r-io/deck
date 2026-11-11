@@ -905,6 +905,12 @@ pub(crate) struct PendingView {
     /// `inbound_pending`, never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) worker: Option<String>,
+    /// For an Agent item an orchestrator card handed over: the column of
+    /// that card, where the item's card opens instead of the rule's
+    /// (`mcp/origin.rs`). Placement at creation only; computed at each
+    /// `inbound_pending`, never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) column: Option<String>,
 }
 
 struct Pending {
@@ -1039,6 +1045,7 @@ pub(crate) fn offer<R: tauri::Runtime>(
                     rule: rule.clone(),
                     blocked: None,
                     worker: None,
+                    column: None,
                 },
                 emitted_at: Instant::now(),
             });
@@ -1196,6 +1203,7 @@ pub(crate) fn inbound_pending() -> Vec<PendingView> {
                     v.blocked = Some("rule-changed".into());
                 }
                 v.worker = crate::mcp::worker_client_for_item(&v.event.key);
+                v.column = crate::mcp::worker_column_for_item(&v.event.key, &v.rule.project_id);
             }
             v
         })

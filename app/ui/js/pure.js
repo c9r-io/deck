@@ -932,6 +932,9 @@ export function planInbound(item, { cards, projects, home }) {
   const project = projects.find(p => p.id === rule.projectId);
   const column = project && project.columns.find(c => c.id === rule.columnId);
   if (!project || !column) return { outcome: 'no-rule-target' };
+  /* an item an orchestrator card handed over opens beside that card
+     (mcp/origin.rs), when the backend names one of this project's columns */
+  const beside = typeof item.column === 'string' ? project.columns.find(c => c.id === item.column) : null;
   const template = (project.templates || []).find(tp => tp.name === rule.template);
   const msg = { text: event.text, from: event.from, where: event.where, link: event.link };
   const steps = template ? template.steps.map(s => fillInboundTemplate(s, msg)).filter(Boolean) : [];
@@ -941,7 +944,7 @@ export function planInbound(item, { cards, projects, home }) {
   return {
     outcome: 'create',
     card: {
-      projectId: project.id, columnId: column.id,
+      projectId: project.id, columnId: (beside || column).id,
       title: clock ? `${name} · ${runDateLabel(Number(event.key))}` : name,
       cmd: rule.cmd || '',
       dir,

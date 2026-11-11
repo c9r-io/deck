@@ -27,7 +27,7 @@
 //      sends each at least one line. The page counts them.
 // No hook word and no event is synthesized: the Signal comes from the real
 // Claude Code in each card.
-export async function runWorkersSmoke({ drafting = false, mentioning = false } = {}) {
+export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false } = {}) {
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider, panes } = await import('../js/board.js');
   const { openSession, backToBoard } = await import('../js/layout.js');
@@ -268,14 +268,126 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false } =
     await report('mentions-withdrawn', !!off);
     await report('done', !failed, 1, 5);
   };
+  /* `orchestrators`: ONE client, several orchestrator cards (mcp/origin.rs).
+     The page adds the columns "Orch A", "Orch B" and "Orch C", authorizes
+     one client that may trigger automations and drive workers (one Claude
+     type in the first column, workers beside their orchestrator), saves an
+     Agent rule `worker` in the first column and opens two plain-shell
+     cards "Orch A" and "Orch B" in their columns (`orchestrators-armed`).
+     The operator types scripts/mcp-orchestrators-e2e.py into both panes:
+     each learns its card from deck_capabilities, starts a worker of the
+     type and hands one item to `worker`, at once; then lists only its own
+     and is refused the other's, and queues one line on its typed worker.
+     The page sees the four cards beside their orchestrators and labelled
+     with them (`orchestrators-placed`), closes "Orch B" (its workers are
+     the user's, `orchestrators-orphaned`) and hands one back through its
+     button (`orchestrators-handed-back`, then unowned). Last, a third card
+     "Orch C" for two real Claude Code orchestrators (`orchestrators-live-
+     ready`): each starts one worker that must open beside it
+     (`orchestrators-live`). */
+  const orchestratorsRun = async ({ project, work, cmd }) => {
+    const columns = {};
+    for (const name of ['Orch A', 'Orch B', 'Orch C']) columns[name] = await provider.addColumn(project.id, name);
+    const typeColumn = project.columns[0];
+    await inv('mcp_enable');
+    const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
+      permissions: { allowCreate: false, allowAutomations: true, allowWorkers: true, allowReplies: false,
+        workerTypes: [{ name: 'claude', cmd, columnId: typeColumn.id, description: 'Write code' }], workerFirstSend: false,
+        allowDrafts: false, allowMentions: false, ruleColumn: false } });
+    const listed = await until(async () => {
+      const status = await inv('mcp_status');
+      return status.enabled && status.socketReady && status.clients.some(value => value.id === client.id && value.allowWorkers && !value.ruleColumn) ? status : null;
+    }, 15_000, 250);
+    await report('workers-client', !!listed);
+    await provider.saveTemplate(project.id, TEMPLATE, ['Task: {{msg.text}}']);
+    await openAutomations({ trigger: 'agent' });
+    $('auto-badge').value = AUTOMATION;
+    $('auto-column').value = typeColumn.id;
+    $('auto-template').value = TEMPLATE; $('auto-template').dispatchEvent(new Event('change'));
+    $('auto-dir').value = work; $('auto-cmd').value = cmd;
+    document.querySelector('#auto-finish [data-v="keep"]').click();
+    $('auto-save').click();
+    const rule = await until(() => ctx.settings.inbound.rules.find(value => value.source === 'agent' && value.badge === AUTOMATION) || null, 10_000, 100);
+    closeAutomations();
+    await report('workers-rule', !!rule && rule.columnId === typeColumn.id);
+    const open = async name => (await provider.createStarted({ projectId: project.id, columnId: columns[name].id,
+      title: name, dir: work, cmd: '' }, { requireCreated: true })).card;
+    const orch = { A: await open('Orch A'), B: await open('Orch B') };
+    await report('orchestrators-armed', !!orch.A?.session && !!orch.B?.session);
+
+    /* the four worker cards, each beside its orchestrator and labelled with it */
+    const owned = async () => {
+      await refreshWorkers();
+      return workerCards().map(card => ({ card, worker: workerOf(card.id) })).filter(value => value.worker);
+    };
+    const placed = await until(async () => {
+      const rows = await owned();
+      return rows.length >= 4 && rows.every(value => value.worker.orchestratorCardId) ? rows : null;
+    }, 600_000, 2000);
+    const beside = (placed || []).every(({ card, worker }) => {
+      const owner = store.cards.find(value => value.id === worker.orchestratorCardId);
+      const chip = document.querySelector(`.card[data-sid="${card.id}"] .card-worker`);
+      return owner && card.columnId === owner.columnId
+        && chip?.textContent === t('workers.driven', { name: owner.title });
+    });
+    const perOwner = id => (placed || []).filter(value => value.worker.orchestratorCardId === id).length;
+    await report('orchestrators-placed', !!placed && beside && perOwner(orch.A.id) === 2 && perOwner(orch.B.id) === 2,
+      perOwner(orch.A.id), perOwner(orch.B.id));
+
+    /* each script's last act: one line queued on its typed worker */
+    const lined = await until(async () => {
+      const rows = (await owned()).filter(value => value.card.origin?.source === 'worker');
+      const states = await Promise.all(rows.map(value => queue(value.card.session)));
+      return states.filter(s => s.mine.some(item => item.authority?.class === 'delegated')).length >= 2 ? rows : null;
+    }, 600_000, 2000);
+    await report('orchestrators-sent', !!lined, lined ? lined.length : 0);
+    await pause(5_000);
+
+    /* "Orch B" closes: its workers are the user's */
+    const closedB = await provider.close(orch.B.id);
+    const orphans = (placed || []).filter(value => value.worker.orchestratorCardId === orch.B.id).map(value => value.card);
+    const orphaned = await until(async () => {
+      await refreshWorkers();
+      const chips = orphans.map(card => document.querySelector(`.card[data-sid="${card.id}"] .card-worker.taken`));
+      return chips.every(chip => chip?.textContent === t('workers.orphaned', { name: 'orchestrator' })) ? chips : null;
+    }, 10_000, 250);
+    const ui = await inv('mcp_workers_ui');
+    await report('orchestrators-orphaned', closedB === true && !!orphaned
+      && orphans.every(card => ui.find(value => value.cardId === card.id)?.takenOver === true), orphans.length);
+
+    /* one handed back through its own button: unowned */
+    orphaned?.[0]?.click();
+    const handed = await until(async () => {
+      const list = await inv('mcp_workers_ui');
+      const row = list.find(value => value.cardId === orphans[0]?.id);
+      return row && !row.orchestratorCardId && !row.takenOver ? row : null;
+    }, 10_000, 250);
+    await report('orchestrators-handed-back', !!handed);
+
+    /* real Claude Code orchestrators in "Orch A" and a new "Orch C" */
+    orch.C = await open('Orch C');
+    const before = new Set(workerCards().map(card => card.id));
+    await report('orchestrators-live-ready', !!orch.C?.session);
+    const live = await until(async () => {
+      const rows = (await owned()).filter(value => !before.has(value.card.id));
+      const a = rows.filter(value => value.worker.orchestratorCardId === orch.A.id);
+      const c = rows.filter(value => value.worker.orchestratorCardId === orch.C.id);
+      return a.length >= 1 && c.length >= 1 ? rows : null;
+    }, 1_500_000, 5000);
+    const liveBeside = (live || []).every(({ card, worker }) =>
+      card.columnId === store.cards.find(value => value.id === worker.orchestratorCardId)?.columnId);
+    await report('orchestrators-live', !!live && liveBeside, live ? live.length : 0);
+    await report('done', !failed, 1, 6);
+  };
   let first = null;
   try {
     if (store.cards.length) throw new Error('nonempty isolated board');
     /* `live`: Claude Code workers (parts A and B); `codex`: one Codex
        `--no-daemon` worker through part A only (no reply is forwarded for
        Codex, and part B is not run: `done` then reports b=2) */
-    const scenario = drafting ? 'drafts' : mentioning ? 'mentions' : await inv('smoke_native_scenario').catch(() => '');
-    if (!['live', 'codex', 'types', 'drafts', 'mentions'].includes(scenario)) throw new Error('scenario');
+    const scenario = drafting ? 'drafts' : mentioning ? 'mentions' : orchestrating ? 'orchestrators'
+      : await inv('smoke_native_scenario').catch(() => '');
+    if (!['live', 'codex', 'types', 'drafts', 'mentions', 'orchestrators'].includes(scenario)) throw new Error('scenario');
     const codex = scenario === 'codex';
     /* `types`: no template and no rule; the client carries one Claude worker
        type and the first-send choice, and the scripted client starts the
@@ -293,6 +405,10 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false } =
     const column = project.columns[0];
     if (scenario === 'drafts') { await drafts({ project, column, work }); return; }
     if (scenario === 'mentions') { await mentionsRun({ project, column, work }); return; }
+    if (scenario === 'orchestrators') {
+      await orchestratorsRun({ project, work, cmd: 'claude --setting-sources project' });
+      return;
+    }
 
     /* 1. Remote access on; one client that may start and drive workers */
     await inv('mcp_enable');

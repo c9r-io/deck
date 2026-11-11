@@ -297,6 +297,8 @@ test('mentions an agent took are shown apart, with where each went', () => {
   const week = handedRows(view, 7, now, clients, rules);
   assert.equal(week.length, 2);
   assert.deepEqual([week[1].client, week[1].rule], ['client_x', 'gone'], 'ids when the names are unknown');
+  const owned = handedRows(view, 7, now, clients, rules, card => (card === 'c1' ? 'Orch A' : ''));
+  assert.deepEqual(owned.map(row => row.client), ['orchestrator', 'Orch A'], 'the orchestrator card that handed it over');
   assert.deepEqual(handedRows({ ...view, enabled: false }, 7, now, clients, rules), []);
   assert.deepEqual(handedRows({ enabled: true, items: [] }, 7, now, clients, rules), []);
 });

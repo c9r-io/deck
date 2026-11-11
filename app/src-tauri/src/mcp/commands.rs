@@ -39,6 +39,9 @@ pub(crate) struct ClientView {
     pub(super) allow_drafts: bool,
     /// May read the Slack mention list (and hand mentions to its rules).
     pub(super) allow_mentions: bool,
+    /// Its orchestrator cards' worker cards open in their type's or rule's
+    /// column, not beside the orchestrator card (`origin.rs`).
+    pub(super) rule_column: bool,
     pub(super) projects: Vec<ProjectScope>,
     /// Its adapter was last refused for a control-protocol mismatch
     /// (`control::route`): the integration has to be restarted. Absent from
@@ -76,6 +79,7 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
                 worker_first_send: client.worker_first_send,
                 allow_drafts: client.allow_drafts,
                 allow_mentions: client.allow_mentions,
+                rule_column: client.rule_column,
                 projects: client.projects.clone(),
                 adapter_refused: client.revoked_at.is_none()
                     && emergency.refused_adapters.contains(&client.id),
@@ -305,6 +309,7 @@ pub(crate) fn mcp_client_add(
         worker_first_send,
         allow_drafts,
         allow_mentions,
+        rule_column,
     } = permissions;
     let allow_replies = allow_workers && allow_replies;
     let worker_first_send = allow_workers && worker_first_send;
@@ -350,6 +355,8 @@ pub(crate) fn mcp_client_add(
             worker_first_send,
             allow_drafts,
             allow_mentions,
+            rule_column,
+            lanes: Default::default(),
         };
         doc.config.clients.push(client.clone());
         Ok(ClientView {
@@ -365,6 +372,7 @@ pub(crate) fn mcp_client_add(
             worker_first_send: client.worker_first_send,
             allow_drafts: client.allow_drafts,
             allow_mentions: client.allow_mentions,
+            rule_column: client.rule_column,
             projects: client.projects,
         })
     });
@@ -529,6 +537,10 @@ pub(crate) struct PermissionsInput {
     /// May read Slack mentions (`mentions.rs`); absent = off.
     #[serde(default)]
     pub(super) allow_mentions: bool,
+    /// Worker cards open in their type's or rule's column, not beside their
+    /// orchestrator card (`origin.rs`); absent = beside it.
+    #[serde(default)]
+    pub(super) rule_column: bool,
 }
 
 #[tauri::command(async)]

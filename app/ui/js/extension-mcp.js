@@ -40,6 +40,10 @@ const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" a
         <label class="mcp-perm"><input type="checkbox" id="mcp-perm-replies"> <span data-i18n="mcp.permReplies">Share replies</span></label>
         <p class="set-hint mcp-perm-hint" data-i18n="mcp.permRepliesHint">Claude Code only.</p>
       </div>
+      <div class="mcp-perm-sub" id="mcp-perm-follow-box">
+        <label class="mcp-perm"><input type="checkbox" id="mcp-perm-follow"> <span data-i18n="mcp.permFollow">Open worker cards beside their orchestrator</span></label>
+        <p class="set-hint mcp-perm-hint" data-i18n="mcp.permFollowHint">When the agent runs in a Deck card, the cards it starts open in that card's column and only it drives them. Off: each type's or automation's column.</p>
+      </div>
       <label class="mcp-perm"><input type="checkbox" id="mcp-perm-drafts"> <span data-i18n="mcp.permDrafts">Draft templates and automations</span></label>
       <p class="set-hint mcp-perm-hint" data-i18n="mcp.permDraftsHint">Drafts wait in Needs attention; nothing works until you approve.</p>
       <label class="mcp-perm"><input type="checkbox" id="mcp-perm-mentions"> <span data-i18n="mcp.permMentions">Read Slack mentions</span></label>
@@ -322,10 +326,13 @@ export function createMcpSettings(host) {
         $('mcp-perm-drafts').checked = perms.allowDrafts;
         $('mcp-perm-mentions').checked = perms.allowMentions;
         $('mcp-perm-worker-box').hidden = !perms.allowWorkers;
+        $('mcp-perm-follow').checked = !perms.ruleColumn;
+        $('mcp-perm-follow-box').hidden = !(perms.allowWorkers || perms.allowAutomations);
         paintTypes();
       };
       $('mcp-perm-create').onchange = () => { perms.allowCreate = $('mcp-perm-create').checked; };
-      $('mcp-perm-automations').onchange = () => { perms.allowAutomations = $('mcp-perm-automations').checked; };
+      $('mcp-perm-automations').onchange = () => { perms.allowAutomations = $('mcp-perm-automations').checked; paintPerms(); };
+      $('mcp-perm-follow').onchange = () => { perms.ruleColumn = !$('mcp-perm-follow').checked; };
       $('mcp-perm-workers').onchange = () => {
         perms.allowWorkers = $('mcp-perm-workers').checked;
         /* turned on: one Claude type and shared replies, ready to use */
