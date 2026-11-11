@@ -254,6 +254,9 @@ pub(super) struct DiskDoc {
     /// (`proposals.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) proposals: Vec<super::proposals::Proposal>,
+    /// The marks orchestrators set on Slack mentions (`mentions.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) mention_marks: Vec<super::mentions::MentionMark>,
 }
 
 impl Default for DiskDoc {
@@ -268,6 +271,7 @@ impl Default for DiskDoc {
             audit: Vec::new(),
             workers: Vec::new(),
             proposals: Vec::new(),
+            mention_marks: Vec::new(),
         }
     }
 }
@@ -718,7 +722,9 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
     // the version the content needs at least, up to the newest this build
     // writes (sticky versions never go back)
-    let needed = if super::grants::uses_all_projects(doc) {
+    let needed = if !doc.mention_marks.is_empty() {
+        STATE_VERSION_MARKS
+    } else if super::grants::uses_all_projects(doc) {
         STATE_VERSION_ALL_PROJECTS
     } else if super::origin::uses_orchestrators(doc) {
         STATE_VERSION_ORCHESTRATORS
@@ -733,7 +739,7 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     } else {
         STATE_VERSION
     };
-    let version_valid = (needed..=STATE_VERSION_ALL_PROJECTS).contains(&doc.version)
+    let version_valid = (needed..=STATE_VERSION_MARKS).contains(&doc.version)
         && super::proposals::valid_proposals(doc);
     let clients_valid = version_valid
         && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)
@@ -901,6 +907,10 @@ impl Runtime {
         // and one with a client of all projects at the next
         if super::grants::uses_all_projects(&candidate) {
             candidate.version = candidate.version.max(STATE_VERSION_ALL_PROJECTS);
+        }
+        // and one with marks on Slack mentions at the next
+        if !candidate.mention_marks.is_empty() {
+            candidate.version = candidate.version.max(STATE_VERSION_MARKS);
         }
         save(&self.path, &candidate)?;
         *guard = Ok(candidate);

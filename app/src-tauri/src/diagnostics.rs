@@ -394,6 +394,9 @@ const SMOKE_CHECKS: &[&str] = &[
     "mentions-agent-ready",
     "mentions-agent",
     "mentions-withdrawn",
+    "mentions-marked",
+    "mentions-cleared",
+    "mentions-agent-marked",
     "orchestrators-armed",
     "orchestrators-placed",
     "orchestrators-sent",
@@ -1125,7 +1128,7 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     // mention, never which one
     (
         "mentions",
-        DetailPolicy::Closed(&["routed", "route-refused", "dismissed"]),
+        DetailPolicy::Closed(&["routed", "route-refused", "dismissed", "mark-cleared"]),
     ),
     // worker cards (workers.js): the user took one over, or handed it back
     (

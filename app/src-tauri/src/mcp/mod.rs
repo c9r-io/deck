@@ -233,7 +233,12 @@
 //! the user's list as handed to this client and rule (a skipped item gives
 //! it back). Never a Slack badge rule, never a dismissal, nothing written to
 //! Slack. A ledger holding the choice is written at
-//! `STATE_VERSION_MENTIONS` (sticky).
+//! `STATE_VERSION_MENTIONS` (sticky). It may also MARK an open mention
+//! (`deck_mention_mark`: handling with its own worker card, for-you or
+//! no-action, a short note): presentation only, the mention stays listed,
+//! the user's view folds the handled ones apart and the user clears any
+//! mark; other orchestrators see a mark and cannot change it. A ledger
+//! holding a mark is written at `STATE_VERSION_MARKS` (sticky).
 //!
 //! Orchestrator cards (`origin.rs`, `docs/mcp.md` "Orchestrator cards"):
 //! several agents may share one client, each in its own Deck card. Deck
@@ -298,9 +303,24 @@ mod control;
 mod grants;
 mod jobs;
 mod mentions;
+pub(crate) use mentions::MarkView;
 mod operations;
 mod origin;
 pub(crate) use origin::column_for_item as worker_column_for_item;
+
+/// The standing marks orchestrators set on Slack mentions, by key, for the
+/// user's list (`mentions.rs`); empty while MCP is unavailable.
+pub(crate) fn mention_marks_ui() -> HashMap<String, mentions::MarkView> {
+    RUNTIME.get().map(|r| marks_ui(r)).unwrap_or_default()
+}
+
+/// The user cleared a Slack mention's mark.
+pub(crate) fn clear_mention_mark(key: &str) -> Result<bool, DeckError> {
+    match RUNTIME.get() {
+        Some(runtime) => clear_mark(runtime, key),
+        None => Ok(false),
+    }
+}
 mod project;
 mod proposals;
 mod runner;
@@ -351,6 +371,9 @@ const STATE_VERSION_ORCHESTRATORS: u32 = 11;
 /// The sticky version a ledger takes once a client reaches all projects
 /// (`grants::uses_all_projects`): a v11 build refuses it.
 const STATE_VERSION_ALL_PROJECTS: u32 = 12;
+/// The sticky version a ledger takes once it holds a mark on a Slack
+/// mention (`mentions::MentionMark`): a v12 build refuses it.
+const STATE_VERSION_MARKS: u32 = 13;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

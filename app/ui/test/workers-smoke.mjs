@@ -244,6 +244,29 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
       && !!handedRow && handedRow.textContent.includes(t('mentions.handedTo', { client: 'orchestrator', rule: 'triage' })),
       keys.length, view.handed.length);
 
+    /* the scripted client marks the two left: lunch for the user, the
+       injected one nothing to do; the view folds the latter apart and
+       counts only lunch */
+    const marked = await until(async () => {
+      await refreshMentions();
+      const v = await inv('slack_mentions');
+      return Object.keys(v.marks || {}).length >= 2 ? v : null;
+    }, 120_000, 1000);
+    const openKeys = () => [...document.querySelectorAll('#mentions-list .mention-row')].map(node => node.dataset.key);
+    await report('mentions-marked', !!marked && marked.marks[lunch.key]?.mark === 'for-you'
+      && marked.marks[inject.key]?.mark === 'no-action' && !!document.querySelector('#mentions-list .mention-fold')
+      && openKeys().includes(lunch.key) && !openKeys().includes(inject.key) && $('mentions-count').textContent === '1',
+      openKeys().length, Object.keys(marked?.marks || {}).length);
+    /* the user clears lunch's mark from the reader */
+    document.querySelector(`#mentions-list .mention-row[data-key="${lunch.key}"]`)?.click();
+    const clearButton = await until(() => document.querySelector('#mentions-detail .mention-clear-mark'), 5000, 100);
+    clearButton?.click();
+    const cleared = await until(async () => {
+      const v = await inv('slack_mentions');
+      return !v.marks?.[lunch.key] && v.marks?.[inject.key] ? v : null;
+    }, 10_000, 250);
+    await report('mentions-cleared', !!cleared);
+
     /* a real agent: the list again, with a second fix request, once the
        scripted client has read the list moving (it does within seconds) */
     await pause(30_000);
@@ -257,6 +280,8 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     await report('mentions-agent', !!second && handedKeys.includes(test.key)
       && !handedKeys.includes(inject.key) && !handedKeys.includes(lunch.key) && triageCards().length === 2,
       handedKeys.length, triageCards().length);
+    /* and it marked what it left: the lunch question */
+    await report('mentions-agent-marked', !!after.marks?.[lunch.key], Object.keys(after.marks || {}).length);
 
     /* withdrawn through the client row's dialog */
     await setPermission('orchestrator', 'mcp-perm-mentions', false);

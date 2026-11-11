@@ -2123,7 +2123,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
     );
 
     let mut invalid = DiskDoc {
-        version: STATE_VERSION_ALL_PROJECTS + 1,
+        version: STATE_VERSION_MARKS + 1,
         ..DiskDoc::default()
     };
     assert!(validate_doc(&invalid).is_err());
@@ -3111,7 +3111,7 @@ fn v3_state_upgrades_stickily_and_future_state_is_refused() {
     // The v3 build accepted exactly version 3; the same rule refuses a
     // future schema here.
     let mut future = saved.clone();
-    future["version"] = json!(STATE_VERSION_ALL_PROJECTS + 1);
+    future["version"] = json!(STATE_VERSION_MARKS + 1);
     std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
     assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
     assert_eq!(
@@ -7010,4 +7010,152 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
     assert!(!room(Some("OB"), 0), "32 on the Board: the client is full");
     assert!(!room(None, 0));
     drop(root);
+}
+
+/// Marks on Slack mentions (`mentions.rs`): an orchestrator marks an open
+/// mention (one of three words, its own worker card, a short note), other
+/// orchestrators see it and cannot change it, the cursor moves with it,
+/// the user's view names who marked it and whether the card closed, the
+/// user clears any mark, and withdrawing the mention choice drops the
+/// client's marks. The ledger takes the sticky marks version.
+#[test]
+fn orchestrators_mark_mentions_for_the_user_and_never_dismiss_them() {
+    crate::inbound::with_fresh_runtime(|_| {
+        let _serial = crate::inbound_agent::STORE_TESTS.lock_or_recover();
+        let (runtime, _runner, root) = fixture("mention-marks", "svc_test");
+        let _board = crate::documents::test_door::hold();
+        let now = crate::datadir::now_epoch();
+        let (a, b) = (
+            format!("C1/{}.000001", now - 60),
+            format!("C1/{}.000002", now - 30),
+        );
+        let event = |key: &str| {
+            let (channel, ts) = key.split_once('/').unwrap();
+            crate::inbound_slack::badge_event(
+                channel,
+                ts,
+                "",
+                "<@U1> look",
+                "U2",
+                "#dev",
+                "https://x/p",
+            )
+        };
+        crate::slack_mentions::load_for_tests(true, vec![event(&b), event(&a)], Vec::new(), None);
+        runtime
+            .write(|doc| {
+                doc.config.clients[0].allow_mentions = true;
+                doc.config.clients[0].allow_workers = true;
+                doc.workers.push(Worker {
+                    card_id: "W1".into(),
+                    client_id: "client_a".into(),
+                    operation_id: "op_w1".into(),
+                    automation_id: "claude".into(),
+                    created_at: 1,
+                    held: false,
+                    orchestrator: Some("OA".into()),
+                });
+                Ok(())
+            })
+            .unwrap();
+        let board = |with_worker: bool| {
+            let mut cards = vec![
+                json!({"id": "OA", "session": "deck-oa", "title": "Orch A", "cmd": "", "dir": "/tmp"}),
+                json!({"id": "OB", "session": "deck-ob", "title": "Orch B", "cmd": "", "dir": "/tmp"}),
+            ];
+            if with_worker {
+                cards.push(json!({"id": "W1", "session": "deck-w1", "title": "Fix lint", "cmd": "claude", "dir": "/tmp"}));
+            }
+            crate::documents::test_door::commit(json!({"projects": [], "cards": cards}), true);
+        };
+        board(true);
+        let call = |card: &str, tool: &str, args: Value| {
+            let _as = super::origin::enter_as(Some(card));
+            route(&runtime, request(tool, args))
+        };
+        let mark = |card: &str, key: &str, args: Value| {
+            let mut all = json!({"mention_key": key});
+            all.as_object_mut()
+                .unwrap()
+                .extend(args.as_object().unwrap().clone());
+            call(card, "deck_mention_mark", all)
+        };
+        let before = call("OA", "deck_mentions_list", json!({}))["cursor"].clone();
+        // shapes refused before anything is written
+        for bad in [
+            json!({"mark": "done"}),
+            json!({"mark": "for-you", "card_id": "W1"}),
+            json!({"mark": "no-action", "note": "x".repeat(201)}),
+        ] {
+            assert_eq!(mark("OA", &b, bad)["error"]["code"], "INVALID_ARGUMENTS");
+        }
+        assert_eq!(
+            mark("OA", "C1/1.000009", json!({"mark": "handling"}))["error"]["code"],
+            "MENTION_NOT_FOUND"
+        );
+        assert_eq!(
+            mark("OB", &b, json!({"mark": "handling", "card_id": "W1"}))["error"]["code"],
+            "WORKER_NOT_FOUND",
+            "another orchestrator's worker card"
+        );
+        // A marks b as handled by its worker card
+        let set = mark(
+            "OA",
+            &b,
+            json!({"mark": "handling", "card_id": "W1", "note": "fixing the lint\njob"}),
+        );
+        assert_eq!(set["ok"], true, "{set}");
+        let listed = call("OA", "deck_mentions_list", json!({}));
+        assert_ne!(listed["cursor"], before, "the cursor moves with a mark");
+        let mine = listed["mentions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["key"] == b.as_str())
+            .unwrap()["mark"]
+            .clone();
+        assert_eq!(mine["mark"], "handling");
+        assert_eq!(mine["mine"], true);
+        assert_eq!(mine["cardId"], "W1");
+        assert!(mine["note"]
+            .as_str()
+            .unwrap()
+            .contains("fixing the lint job"));
+        // B sees it as someone else's and cannot change it
+        let theirs = call("OB", "deck_mention_read", json!({"mention_key": b}));
+        assert_eq!(theirs["mention"]["mark"]["mine"], false, "{theirs}");
+        let refused = mark("OB", &b, json!({"mark": null}));
+        assert_eq!(refused["error"]["code"], "MENTION_MARKED", "{refused}");
+        assert_eq!(mark("OB", &a, json!({"mark": "for-you"}))["ok"], true);
+        let saved: Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+        assert_eq!(saved["version"], STATE_VERSION_MARKS, "sticky");
+        // the user's view: who, which card, whether it closed
+        let ui = serde_json::to_value(marks_ui(&runtime)).unwrap();
+        assert_eq!(ui[&b]["by"], "Orch A");
+        assert_eq!(ui[&b]["cardTitle"], "Fix lint");
+        assert_eq!(ui[&b]["cardClosed"], false);
+        assert_eq!(ui[&a]["mark"], "for-you");
+        board(false);
+        let ui = serde_json::to_value(marks_ui(&runtime)).unwrap();
+        assert_eq!(ui[&b]["cardClosed"], true, "the card left the Board");
+        // the user clears it; B may mark it now
+        assert!(clear_mark(&runtime, &b).unwrap());
+        assert!(!clear_mark(&runtime, &b).unwrap(), "idempotent");
+        assert_eq!(mark("OB", &b, json!({"mark": "no-action"}))["ok"], true);
+        // the mark is presentation only: the mention is still listed
+        let still = call("OB", "deck_mentions_list", json!({}));
+        assert_eq!(still["mentions"].as_array().unwrap().len(), 2);
+        // withdrawing the mention choice drops the client's marks
+        client_permissions(
+            &runtime,
+            "client_a",
+            super::commands::PermissionsInput {
+                allow_workers: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(runtime.read(|doc| doc.mention_marks.is_empty()).unwrap());
+        drop(root);
+    });
 }

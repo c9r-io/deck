@@ -1521,6 +1521,13 @@ body.side-collapsed #attention-btn { flex-direction: column; gap: var(--sp-2); }
 .mention-files, .mention-loading { margin: var(--sp-4) 0 0; color: var(--muted); font-size: var(--fs-12); }
 .mention-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-8); margin-top: var(--sp-16); }
 .mention-empty { color: var(--muted); padding: var(--sp-32) var(--sp-12); line-height: 1.8; }
+/* an orchestrator's mark on a mention (mcp/mentions.rs), and the fold of
+   the ones set apart */
+.mention-mark { color: var(--accent); font-size: var(--fs-12); overflow-wrap: anywhere; }
+.mention-mark-for-you .mention-mark, .mention-row .mention-mark-for-you { color: var(--wait); }
+.mention-mark-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-8); margin-top: var(--sp-12); padding: var(--sp-6) var(--sp-12); border-left: 2px solid var(--accent); }
+.mention-mark-note { color: var(--text); font-size: var(--fs-12); overflow-wrap: anywhere; }
+.mention-fold { width: 100%; padding: var(--sp-8) var(--sp-12); border: 0; border-bottom: 1px solid var(--border); background: none; color: var(--muted); font: inherit; font-size: var(--fs-12); text-align: left; cursor: pointer; }
 /* mentions an MCP client handed to its Agent rules: where each went */
 .mentions-handed { padding: 0 var(--sp-20) var(--sp-8); font-size: var(--fs-12); color: var(--muted); }
 .mentions-handed[hidden] { display: none; }

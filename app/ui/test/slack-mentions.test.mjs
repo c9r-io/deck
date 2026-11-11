@@ -8,7 +8,7 @@ import { fakeDocument, ids } from './fixtures/dom-fixture.mjs';
 globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
-const { MENTION_RANGES, handedRows, mentionAfter, mentionCount, mentionErrorKey, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin } = await import('../js/slack-mentions-model.js');
+const { MENTION_RANGES, handedRows, markLabel, markedApart, mentionAfter, mentionCount, mentionErrorKey, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin, openWithin } = await import('../js/slack-mentions-model.js');
 const { initMentions, paintMentions, refreshMentions, showMentions, startMentions } = await import('../js/slack-mentions.js');
 const { channelBlockReason } = await import('../js/channel-model.js');
 const { ctx, state, store } = await import('../js/state.js');
@@ -322,5 +322,62 @@ test('the view lists what an agent took above the panes, with names', async () =
   await refreshMentions();
   assert.equal(ids.get('mentions-handed').hidden, true);
   assert.equal(b.named('mcp_status').length, 1);
+  state.view = 'board';
+});
+
+test('a mark sets a mention apart only while an orchestrator is on it or found nothing to do', () => {
+  const mark = (m, extra = {}) => ({ mark: m, by: 'Orch A', cardId: null, cardTitle: null, cardClosed: false, note: '', at: 1, ...extra });
+  const view = { enabled: true, items: ITEMS, marks: { [ITEMS[0].key]: mark('handling', { cardId: 'W1', cardTitle: 'Fix' }) } };
+  assert.equal(markedApart(view, ITEMS[0]), true);
+  assert.equal(markedApart(view, ITEMS[1]), false);
+  assert.deepEqual(openWithin(view, 1, NOW).map(i => i.key), [ITEMS[1].key]);
+  assert.equal(mentionRanges(view, NOW)[0].count, 1, 'the count leaves it out');
+  assert.equal(mentionsWithin(view, 1, NOW).length, 2, 'it stays listed');
+  const closed = { ...view, marks: { [ITEMS[0].key]: mark('handling', { cardTitle: null, cardClosed: true }) } };
+  assert.equal(markedApart(closed, ITEMS[0]), false, 'its card closed: the user again');
+  assert.equal(markedApart({ ...view, marks: { [ITEMS[0].key]: mark('for-you') } }, ITEMS[0]), false);
+  assert.equal(markedApart({ ...view, marks: { [ITEMS[0].key]: mark('no-action') } }, ITEMS[0]), true);
+  assert.deepEqual(markLabel(mark('handling', { cardTitle: 'Fix' })), { key: 'mentions.markHandlingCard', params: { by: 'Orch A', card: 'Fix' } });
+  assert.equal(markLabel(mark('handling')).key, 'mentions.markHandling');
+  assert.equal(markLabel(mark('handling', { cardClosed: true })).key, 'mentions.markClosed');
+  assert.equal(markLabel(mark('for-you')).key, 'mentions.markForYou');
+  assert.equal(markLabel(mark('no-action')).key, 'mentions.markNoAction');
+  assert.equal(markLabel(null), null);
+});
+
+test('the view folds what orchestrators took care of below, shows each mark and clears one', async () => {
+  setLocale('en');
+  ctx.settings = { inbound: { sources: { slack: { enabled: true } }, rules: RULES } };
+  store.projects = PROJECTS;
+  state.view = 'mentions';
+  const marks = {
+    [ITEMS[0].key]: { mark: 'handling', by: 'Orch A', cardId: 'W1', cardTitle: 'Fix', cardClosed: false, note: 'on it', at: 1 },
+    [ITEMS[1].key]: { mark: 'for-you', by: 'Orch B', cardId: null, cardTitle: null, cardClosed: false, note: '', at: 1 },
+  };
+  const b = backend({ enabled: true, lastPoll: 9, lastError: null, items: ITEMS, handed: [], marks });
+  await refreshMentions();
+  assert.equal(rows().length, 1, 'only the one that needs the user, until unfolded');
+  assert.equal(ids.get('mentions-count').textContent, '1');
+  assert.equal(rows()[0].dataset.key, ITEMS[1].key);
+  assert.match(rows()[0].children.at(-1).textContent, /Orch B: for you/);
+  const fold = ids.get('mentions-list').children.find(node => node.className === 'mention-fold');
+  assert.equal(fold.textContent, t('mentions.markedShow', { count: '1' }));
+  fold.fire('click');
+  assert.equal(rows().length, 2, 'unfolded');
+  rows()[1].fire('click');
+  const line = detail().find(node => String(node.className).startsWith('mention-mark-line'));
+  assert.equal(line.children[0].textContent, t('mentions.markHandlingCard', { by: 'Orch A', card: 'Fix' }));
+  assert.equal(line.children[1].textContent, 'on it');
+  line.children[2].fire('click');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(b.named('slack_mention_clear_mark'), [['slack_mention_clear_mark', { key: ITEMS[0].key }]]);
+  // a mark that arrives on the mention already shown repaints the reader
+  b.set({ enabled: true, lastPoll: 9, lastError: null, items: ITEMS, handed: [], marks: {} });
+  await refreshMentions();
+  rows()[0].fire('click');
+  assert.equal(detail().some(node => String(node.className).startsWith('mention-mark-line')), false);
+  b.set({ enabled: true, lastPoll: 9, lastError: null, items: ITEMS, handed: [], marks: { [rows()[0].dataset.key]: marks[ITEMS[1].key] } });
+  await refreshMentions();
+  assert.equal(detail().some(node => String(node.className).startsWith('mention-mark-line')), true);
   state.view = 'board';
 });

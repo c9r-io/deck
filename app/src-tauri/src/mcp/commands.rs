@@ -494,6 +494,8 @@ pub(super) fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), 
             |operation| operation.client_id == client_id,
             "client-revoked",
         );
+        // its marks on Slack mentions go with it
+        doc.mention_marks.retain(|mark| mark.client_id != client_id);
         withdraw_pending(doc, &client_id);
         audit(
             doc,

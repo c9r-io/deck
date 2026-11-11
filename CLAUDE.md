@@ -238,8 +238,10 @@ evolution; it makes scope expansion deliberate.
   read Slack mentions reads the extension's in-memory list through Deck
   (`mcp/mentions.rs`; fenced, no Slack call, no token) and may hand ONE
   open mention to one of ITS Agent rules — Deck fills the item from the
-  mention, the user's list shows where it went — never to a Slack badge
-  rule, never a dismissal, nothing written to Slack. Several agents may
+  mention, the user's list shows where it went — or MARK one for the user
+  (handling, for-you, no-action: presentation only, the mention stays
+  listed and the user clears any mark), never to a Slack badge rule, never
+  a dismissal, nothing written to Slack. Several agents may
   share one client, each in its own card: Deck reads the calling card from
   the kernel (`mcp/origin.rs`, the Signal origin check, never a claim);
   a worker card it starts opens in that card's column at creation (never

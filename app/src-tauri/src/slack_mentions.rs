@@ -59,6 +59,11 @@
 //!   gives it back. A route checks the same openness (`is_open`); a route
 //!   and a handoff of one message in the same instant are not serialized
 //!   with each other (the inbox serializes handoffs, the ledger routes).
+//! - Marks. An MCP orchestrator may mark a listed mention (handling, for-you,
+//!   no-action, `mcp/mentions.rs`); the view carries the standing marks by
+//!   key (`MentionsView.marks`, names resolved there) and the user clears
+//!   one with `slack_mention_clear_mark`. A mark changes no openness here:
+//!   it never routes, dismisses or blocks anything.
 //! - Silence. Deck never writes to Slack: no reaction, no reply, no read mark.
 //!   What the started Agent does is the template's business.
 //! - Attention. The list is a count beside its sidebar entry and nothing
@@ -307,6 +312,9 @@ pub(crate) struct MentionsView {
     last_error: Option<&'static str>,
     items: Vec<MentionView>,
     handed: Vec<HandedView>,
+    /// The marks MCP orchestrators set on listed mentions, by key
+    /// (`mcp/mentions.rs`): presentation only.
+    marks: HashMap<String, crate::mcp::MarkView>,
 }
 
 fn message_time(key: &str) -> u64 {
@@ -365,6 +373,7 @@ pub(crate) fn slack_mentions() -> MentionsView {
     let open = open_now();
     let now = now_secs();
     let handoffs = crate::inbound_agent::mention_handoffs(now);
+    let mut marks = crate::mcp::mention_marks_ui();
     with_state(|s| {
         s.shown = open.clone();
         let handed_keys: Vec<String> = handoffs.iter().map(|h| h.mention.clone()).collect();
@@ -380,12 +389,15 @@ pub(crate) fn slack_mentions() -> MentionsView {
                 })
             })
             .collect();
+        let items = view(&s.items, &open, &s.contexts, list_since(now));
+        marks.retain(|key, _| items.iter().any(|m| &m.key == key));
         MentionsView {
             enabled: s.enabled,
             last_poll: s.last_poll,
             last_error: s.last_error,
-            items: view(&s.items, &open, &s.contexts, list_since(now)),
+            items,
             handed,
+            marks,
         }
     })
 }
@@ -435,6 +447,19 @@ pub(crate) fn source_cursor(items: &[MentionView]) -> String {
         bytes.push(if m.context.is_some() { 1 } else { 0 });
     }
     crate::ledger::sha(&bytes)[..16].to_string()
+}
+
+/// The user cleared a mention's mark (`mcp/mentions.rs`), whoever set it.
+#[tauri::command]
+pub(crate) fn slack_mention_clear_mark(app: AppHandle, key: String) -> Result<bool, DeckError> {
+    if !key_shape(&key) {
+        return Err(DeckError::new(ErrorKind::Invalid, "invalid mention key"));
+    }
+    let cleared = crate::mcp::clear_mention_mark(&key)?;
+    if cleared {
+        let _ = app.emit(CHANGED, ());
+    }
+    Ok(cleared)
 }
 
 /// A mention left the list through MCP: the webview pulls the list again.

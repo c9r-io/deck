@@ -1368,6 +1368,10 @@ pub(super) fn client_permissions(
                     "client-revoked",
                 );
             }
+            // withdrawing the mention choice takes the client's marks off
+            if before.7 && !after.7 {
+                doc.mention_marks.retain(|mark| mark.client_id != client_id);
+            }
             if before.6 && !after.6 && super::proposals::withdraw_pending(doc, client_id) {
                 withdrew_drafts = true;
             }

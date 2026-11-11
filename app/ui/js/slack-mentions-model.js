@@ -53,9 +53,38 @@ export function mentionsWithin(view, days, now) {
   return view.items.filter(item => item.at >= since);
 }
 
-/* each range with its own count, for the range buttons */
+/* the mark an MCP orchestrator set on a mention (mcp/mentions.rs), or null */
+export function mentionMark(view, key) {
+  return view?.marks?.[key] || null;
+}
+
+/* whether a mention is set apart as taken care of: an orchestrator is
+   handling it (its card still open) or found nothing to do; `for-you` and a
+   handling whose card closed stay with the ones that need the user */
+export function markedApart(view, item) {
+  const mark = mentionMark(view, item.key);
+  return Boolean(mark) && ((mark.mark === 'handling' && !mark.cardClosed) || mark.mark === 'no-action');
+}
+
+/* the mentions within `days` that need the user: not set apart */
+export function openWithin(view, days, now) {
+  return mentionsWithin(view, days, now).filter(item => !markedApart(view, item));
+}
+
+/* the label of a mark: key + params for t() */
+export function markLabel(mark) {
+  if (!mark) return null;
+  if (mark.mark === 'handling') {
+    return mark.cardClosed ? { key: 'mentions.markClosed', params: { by: mark.by, card: mark.cardTitle || '' } }
+      : mark.cardTitle ? { key: 'mentions.markHandlingCard', params: { by: mark.by, card: mark.cardTitle } }
+        : { key: 'mentions.markHandling', params: { by: mark.by } };
+  }
+  return { key: mark.mark === 'for-you' ? 'mentions.markForYou' : 'mentions.markNoAction', params: { by: mark.by } };
+}
+
+/* each range with the count that needs the user, for the range buttons */
 export function mentionRanges(view, now) {
-  return MENTION_RANGES.map(days => ({ days, count: mentionsWithin(view, days, now).length }));
+  return MENTION_RANGES.map(days => ({ days, count: openWithin(view, days, now).length }));
 }
 
 /* the number of open mentions the backend listed; nothing while Slack is off */

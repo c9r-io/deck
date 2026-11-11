@@ -891,8 +891,11 @@
         "mentions-seeded": {},
         "workers-armed": {},
         "mentions-handed": {},
+        "mentions-marked": {},
+        "mentions-cleared": {},
         "mentions-agent-ready": {},
         "mentions-agent": {},
+        "mentions-agent-marked": {},
         "mentions-withdrawn": {},
         "workers-exception": { "failureOnly": true }
       }

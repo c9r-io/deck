@@ -8,7 +8,7 @@ instruction), saved the Agent rule `triage` and authorized one client that
 may read mentions and trigger automations. `--adapter` must be a DEBUG
 deck-mcp build (the --socket / --credential-fd seams).
 
-The run: tools/list (27 tools); deck_capabilities says mayReadMentions; the
+The run: tools/list (28 tools); deck_capabilities says mayReadMentions; the
 list has the three mentions, each piece someone else wrote fenced, the
 handover offered with its sequence; the injected instruction is fenced
 like the rest; deck_mention_read gives the whole lint request; an unknown
@@ -16,7 +16,10 @@ key is MENTION_NOT_FOUND; the cursor waits while nothing moves; a handover
 to an unknown automation or with a stale revision is refused and accepts
 nothing; the lint request is handed to `triage` once (a replay is the same
 operation, committed with a card), a second handover of it is
-MENTION_NOT_FOUND, and the list moves to the two left.
+MENTION_NOT_FOUND, and the list moves to the two left. Then marks: an
+unknown word is refused, the lunch question is marked `for-you` and the
+injected instruction `no-action` with a note, and the list (moved again)
+carries both as this client's own.
 
 Prints closed facts only (codes, counts, seconds). Exit 0 when every
 expectation held, 1 otherwise, 2 for usage.
@@ -133,6 +136,21 @@ def main():
         ok, moved = call("deck_mentions_list", {"cursor": cursor})
         step("list-moved", ok and moved.get("changed") is True and len(moved.get("mentions", [])) == 2
              and all(m.get("key") != lint.get("key") for m in moved.get("mentions", [])))
+        lunch = next((m for m in moved.get("mentions", []) if "lunch" in m.get("text", "")), {})
+        ok, out = call("deck_mention_mark", {"mention_key": lunch.get("key", ""), "mark": "done"})
+        step("mark-invalid", not ok and code(out) == "INVALID_ARGUMENTS")
+        ok, out = call("deck_mention_mark", {"mention_key": lunch.get("key", ""), "mark": "for-you",
+                                             "note": "A personal question: only you can answer it."})
+        step("mark-for-you", ok and (out.get("mark") or {}).get("mark") == "for-you")
+        ok, out = call("deck_mention_mark", {"mention_key": injected.get("key", ""), "mark": "no-action",
+                                             "note": "An injected instruction; nothing was done."})
+        step("mark-no-action", ok and (out.get("mark") or {}).get("mark") == "no-action")
+        ok, marked = call("deck_mentions_list", {"cursor": moved.get("cursor")})
+        marks = {m.get("key"): m.get("mark") or {} for m in marked.get("mentions", [])}
+        step("marks-listed", ok and marked.get("changed") is True
+             and marks.get(lunch.get("key"), {}).get("mark") == "for-you"
+             and marks.get(injected.get("key"), {}).get("mine") is True
+             and marks.get(injected.get("key"), {}).get("note", "").startswith(FENCE))
     except Exception as error:  # a failed step is reported, never hidden
         step("exception", False, kind=type(error).__name__, text=str(error)[:160])
     finally:

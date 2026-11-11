@@ -135,6 +135,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_config_proposal_get` | One of the client's proposals: `pending`, `approved` (saved as drafted), `edited` (saved without automatic sending, finished in the editor), `rejected` or `withdrawn`, with the next action. |
 | `deck_mentions_list` | The Slack messages that @mention you and are still open in your Deck list (not started, set aside or handed over), newest first: key, time, link, and the sender, channel and first 200 characters as external content. `cursor` + `wait_ms` (at most 5 s) waits for a change. Read from Deck's memory, never a Slack call; `SOURCE_UNAVAILABLE` with a reason (`slack-off`, `not-searched`, or the last search's failure) instead of a possibly stale list. Needs the client's separate **Slack mentions** choice. |
 | `deck_mention_read` | One open mention whole: text, sender, channel, link and its context (thread start and the replies before it, or the conversation's last messages, with file names), all as external content. |
+| `deck_mention_mark` | Mark one open mention for the user: `handling` (optionally with one of the caller's worker cards), `for-you` or `no-action`, with a note of at most 200 characters; `null` takes the caller's mark off. Another orchestrator's mark is `MENTION_MARKED`. Presentation only: the mention stays listed. |
 | `deck_mention_handoff` | Hand one open mention to one of the client's Agent automations (id and revision, `trigger_sequence`). Deck fills the item from the mention itself; the client names it, never its text. The acceptance and the operation are `deck_automation_trigger`'s (also needs the automation delegation); `MENTION_SETTLED` when the mention is already held. Never a Slack badge rule. |
 | `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence`. Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over. |
 
@@ -431,6 +432,20 @@ operation. The mention leaves your list and appears under **Handed to
 agents** at the top of the Slack mentions view with the client's and the
 rule's names; if Deck skips the item (the rule changed, the client was
 revoked) the mention comes back to your list. A mention is handed over once.
+
+The client may also **mark** a mention (`deck_mention_mark`): it is
+handling it (with the worker card doing it), it is for you, or there is
+nothing to do, with one line of note. The mention stays in your list: the
+ones being handled (their card still open) and the ones with nothing to
+do are folded under **Taken care of** below the others and left out of
+the count, each row saying who marked it ("Orch A is on it → Fix lint");
+**for you** and a handling whose card closed stay with the rest. You can
+clear any mark from the reader. Every orchestrator of the client sees the
+marks in `deck_mentions_list`, so two do not take the same mention, and
+only the one that set a mark can change it. Marks are kept for a week,
+dropped when the client is revoked or loses the mention choice, and never
+route, dismiss or badge anything. A ledger holding a mark is written at
+version 13 (sticky).
 
 What it cannot do: start a Slack badge rule (that start rests on your own
 act on one message), set a mention aside, or write anything to Slack.

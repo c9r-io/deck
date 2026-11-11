@@ -484,11 +484,16 @@ reads one whole, waits on the cursor, is refused for an unknown automation
 and a stale revision, hands the lint request to `triage` once and sees the
 list move. The page checks `mentions-handed`: the card carries the channel
 and sender, the mention left the list and is listed under "Handed to
-agents" with the client's and the rule's names. Then the list is seeded
+agents" with the client's and the rule's names. The client then marks the
+two left (lunch `for-you`, the injected one `no-action` with a note): the
+page checks `mentions-marked` (the injected one folded under "Taken care
+of", lunch listed with its mark, the count 1) and clears lunch's mark from
+the reader (`mentions-cleared`). Then the list is seeded
 again with a second fix request (`mentions-agent-ready`) and a real Claude
 Code (`-p`, only this instance's adapter) is asked in plain words to sort
 the mentions: `mentions-agent` needs the fix request handed over and
-neither the lunch question nor the injected instruction. Last the page
+neither the lunch question nor the injected instruction. It is also asked to
+mark what it leaves: `mentions-agent-marked` needs a mark on lunch. Last the page
 withdraws the choice in the client's dialog (`mentions-withdrawn`). Judge
 with `scripts/smoke-verdict <data> mentions-mcp`. Keep the screen unlocked.
 

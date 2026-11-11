@@ -35,8 +35,15 @@
 //   title instead while the card it handed over from is on the Board,
 //   `workers.js`). They are not actionable
 //   here: the card the rule started is on the Board.
-// - Attention: the open count of the chosen range beside the sidebar
-//   entry, nothing else. The
+// - Marks: an MCP orchestrator may mark a listed mention (mcp/mentions.rs):
+//   handling (with its worker card), for-you or no-action, with a note.
+//   Each row and the reader show who marked it and how; handling (card
+//   still open) and no-action are listed apart under a fold below the
+//   others and left out of the counts (`markedApart`); the user clears any
+//   mark from the reader (`slack_mention_clear_mark`). A mark never hides a
+//   mention, never routes or dismisses it.
+// - Attention: the count of the chosen range that needs the user (open,
+//   not set apart by a mark) beside the sidebar entry, nothing else. The
 //   entry is hidden while Slack is not connected.
 // - A leaf of the import graph: the view actions it calls (`render`,
 //   `switchProject`, `leaveSessionView`, `closeBuffer`, `provider`) arrive
@@ -46,7 +53,7 @@ import { formatDateTime, formatNumber, t } from './i18n.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { channelBlockReason } from './channel-model.js';
 import { workerOf } from './workers.js';
-import { MENTION_RANGES, handedRows, mentionAfter, mentionErrorKey, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin } from './slack-mentions-model.js';
+import { MENTION_RANGES, handedRows, markLabel, markedApart, mentionAfter, mentionErrorKey, mentionMark, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin, openWithin } from './slack-mentions-model.js';
 
 let render, switchProject, leaveSessionView, closeBuffer, provider;
 let view = null;
@@ -57,6 +64,8 @@ let started = null;
 let range = MENTION_RANGES[0];
 let clients = [];
 let handedSignature = '';
+/* the fold of the mentions orchestrators took care of; closed each launch */
+let showMarked = false;
 
 const DISMISS_MAX = 400;
 const RANGE_LABEL = { 1: 'mentions.range1', 3: 'mentions.range3', 7: 'mentions.range7' };
@@ -65,7 +74,11 @@ const when = at => formatDateTime(new Date(at * 1000),
 
 const routes = () => mentionRoutes(ctx.settings?.inbound?.rules, store.projects, channelBlockReason);
 const nowSecs = () => Math.floor(Date.now() / 1000);
-const items = () => mentionsWithin(view, range, nowSecs());
+const within = () => mentionsWithin(view, range, nowSecs());
+const apart = () => within().filter(item => markedApart(view, item));
+/* the rows in list order: the ones that need the user, then (unfolded) the
+   ones set apart */
+const items = () => [...openWithin(view, range, nowSecs()), ...(showMarked ? apart() : [])];
 const current = () => items().find(item => item.key === selected) || null;
 
 function el(tag, className, text) {
@@ -111,13 +124,38 @@ function listRow(item) {
   const meta = el('div', 'mention-meta');
   meta.append(el('span', 'mention-from', item.from), el('span', 'mention-where', item.where), el('span', 'mention-time', when(item.at)));
   node.append(meta, el('div', 'mention-summary', item.text.split('\n')[0]));
+  const mark = mentionMark(view, item.key);
+  if (mark) {
+    const label = markLabel(mark);
+    const badge = el('div', `mention-mark mention-mark-${mark.mark}`, t(label.key, label.params));
+    if (mark.note) badge.title = mark.note;
+    node.appendChild(badge);
+  }
   node.onclick = () => select(item.key, true);
   return node;
 }
 
+/* the fold above the mentions set apart */
+function markedFold(count) {
+  const node = el('button', 'mention-fold', t(showMarked ? 'mentions.markedHide' : 'mentions.markedShow', { count: formatNumber(count) }));
+  node.type = 'button';
+  node.setAttribute('aria-expanded', String(showMarked));
+  node.onclick = () => { showMarked = !showMarked; listSignature = ''; paintMentions(); };
+  return node;
+}
+
+async function clearMark(key) {
+  try { await inv('slack_mention_clear_mark', { key }); }
+  catch (_) { toast(t('mentions.failed')); return; }
+  uev('mentions', 'mark-cleared');
+  refreshMentions();
+}
+
 function paintDetail(choices) {
   const item = current();
-  const next = JSON.stringify([item, choices.map(route => [route.id, route.label, route.disabled])]);
+  /* a mark that arrives or leaves repaints the reader too */
+  const next = JSON.stringify([item, item && mentionMark(view, item.key),
+    choices.map(route => [route.id, route.label, route.disabled])]);
   if (next === detailSignature) return;
   detailSignature = next;
   const pane = $('mentions-detail');
@@ -130,6 +168,18 @@ function paintDetail(choices) {
   else if (context.before.length) {
     parts.push(el('h2', 'mention-section', t(context.thread ? 'mentions.contextThread' : 'mentions.contextBefore')));
     for (const m of context.before) parts.push(message('mention-context', m.from, m.at, m.text, m.files));
+  }
+  const mark = mentionMark(view, item.key);
+  if (mark) {
+    const label = markLabel(mark);
+    const line = el('div', `mention-mark-line mention-mark-${mark.mark}`);
+    line.appendChild(el('span', 'mention-mark', t(label.key, label.params)));
+    if (mark.note) line.appendChild(el('span', 'mention-mark-note', mark.note));
+    const clear = el('button', 'btn mention-clear-mark', t('mentions.clearMark'));
+    clear.type = 'button';
+    clear.onclick = () => clearMark(item.key);
+    line.appendChild(clear);
+    parts.push(line);
   }
   parts.push(el('h2', 'mention-section', t('mentions.theMention')));
   parts.push(message('mention-message', item.from, item.at, item.text, context?.files));
@@ -165,7 +215,7 @@ function select(key, focus = false) {
 
 /* the sidebar entry and, while the view is shown, both panes */
 export function paintMentions() {
-  const count = items().length;
+  const count = openWithin(view, range, nowSecs()).length;
   const btn = $('mentions-btn');
   btn.hidden = !view?.enabled;
   btn.classList.toggle('active', state.view === 'mentions');
@@ -182,14 +232,18 @@ export function paintMentions() {
   const status = mentionStatus(view);
   $('mentions-status').textContent = t(status.key, status.params.at
     ? { time: formatDateTime(new Date(status.params.at * 1000)) } : status.params);
-  $('mentions-dismiss-all').disabled = !count;
+  $('mentions-dismiss-all').disabled = !within().length;
   const choices = routes();
   $('mentions-no-routes').hidden = !view?.enabled || choices.length > 0;
   if (!current()) selected = items()[0]?.key || null;
-  const next = mentionSignature(items(), choices);
+  const setApart = apart();
+  const next = JSON.stringify([mentionSignature(items(), choices), showMarked, setApart.length,
+    within().map(item => mentionMark(view, item.key))]);
   if (next !== listSignature) {
     listSignature = next;
-    $('mentions-list').replaceChildren(...items().map(listRow));
+    const open = openWithin(view, range, nowSecs());
+    $('mentions-list').replaceChildren(...open.map(listRow),
+      ...(setApart.length ? [markedFold(setApart.length), ...(showMarked ? setApart.map(listRow) : [])] : []));
   }
   paintSelection();
   paintDetail(choices);
@@ -254,7 +308,7 @@ async function dismissMentions(keys) {
 }
 
 async function dismissAll() {
-  const keys = items().map(item => item.key);
+  const keys = within().map(item => item.key);
   if (!keys.length) return;
   if (!(await confirmDialog(t('mentions.dismissAllConfirm', { count: formatNumber(keys.length) })))) return;
   await dismissMentions(keys);
