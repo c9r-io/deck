@@ -2563,6 +2563,30 @@ export async function verifySettings() {
     await report('settings-mcp-enable', (await inv('mcp_status')).enabled && !$('set-mcp-add').disabled);
     const adding = $('set-mcp-add').onclick();
     const explicitTarget = $('mcp-auth-project').value === '' && $('mcp-auth-root').value === '';
+    /* every choice row reads as one line: a checkbox its own size, then its
+       name beside it (the global `input { width: 100% }` once stretched the
+       checkbox and stacked the name one character per line) */
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const permRows = [...document.querySelectorAll('#mcp-auth-box .mcp-perm')].filter(row => row.offsetParent);
+    let reasons = 0;
+    const badRows = permRows.filter(row => {
+      const box = row.querySelector('input')?.getBoundingClientRect();
+      const name = row.querySelector('span')?.getBoundingClientRect();
+      const bits = (!box || !name ? 1 : 0) | (box && box.width > 40 ? 2 : 0) | (name && name.width < 60 ? 4 : 0)
+        | (box && name && name.left < box.right ? 8 : 0)
+        | (box && name && Math.abs((name.top + name.bottom) / 2 - (box.top + box.bottom) / 2) > 12 ? 16 : 0);
+      reasons |= bits;
+      return bits !== 0;
+    });
+    $('mcp-auth-add-project').click();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const scopeRow = document.querySelector('#mcp-auth-more .mcp-scope-row');
+    const [scopePick, scopeDir, scopeRemove] = scopeRow ? [...scopeRow.children].map(node => node.getBoundingClientRect()) : [];
+    const scopeOk = !!scopeRow && scopePick.width > 80 && scopeDir.width > 160 && scopeRemove.width < 60
+      && Math.abs(scopePick.top - scopeDir.top) < 12;
+    await report('settings-mcp-perm-layout', permRows.length >= 7 && !badRows.length && scopeOk, permRows.length,
+      badRows.length * 100 + reasons + (scopeOk ? 0 : 32));
+    await new Promise(resolve => setTimeout(resolve, 4000));
     $('mcp-auth-no').click();
     await adding;
     await report('settings-mcp-cancel-authorize', explicitTarget && !(await inv('mcp_status')).clients.length);

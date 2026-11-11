@@ -24,7 +24,7 @@ test('the recorded settings run passes with nothing unexpected', () => {
   const result = judge(settingsLog, manifest, 'settings');
   assert.deepEqual(result.failures, []);
   assert.equal(result.ok, true);
-  assert.equal(result.total, 12);
+  assert.equal(result.total, 13);
 });
 
 test('a broken copy fails for each kind of problem', () => {
@@ -84,7 +84,7 @@ test('the command line exits 0 pass, 1 fail, 2 usage', () => {
     writeFileSync(join(dir, 'app.log'), settingsLog);
     const pass = run(dir, 'settings');
     assert.equal(pass.status, 0, pass.stdout + pass.stderr);
-    assert.match(pass.stdout, /^smoke-verdict settings: PASS \(12\/12 expected checkpoints, 12 lines\)/);
+    assert.match(pass.stdout, /^smoke-verdict settings: PASS \(13\/13 expected checkpoints, 13 lines\)/);
     writeFileSync(join(dir, 'app.log'), settingsLog.replace('done a=1', 'done a=-1'));
     const fail = run(dir, 'settings');
     assert.equal(fail.status, 1);

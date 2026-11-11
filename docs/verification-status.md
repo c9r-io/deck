@@ -7,6 +7,11 @@
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
+## 本轮 MCP 权限对话框布局（2026-11-11）
+
+- 问题（用户工作机截图）：授权/权限对话框里每个权限选项的勾选框被全局 `input { width: 100% }` 拉满整行，选项名被挤成一字一行的竖排。`.mcp-perm` 不在 `.set-row` 里，没有拿到 `.set-row input[type=checkbox] { width: auto }`。修复：`.mcp-perm input[type=checkbox] { flex: none; width: auto }`。
+- 原生（本机 debug 载体，独立数据目录）：WK 模式 `settings` 新增 `settings-mcp-perm-layout`（每个可见权限行：勾选框 ≤40px、名称在其右侧同一行且宽于 60px；“再添加一个项目”行的三格宽度正常）。修复前 **FAIL**（7/7 行失败，复现截图问题）；修复后 **PASS** 13/13。截图未取得（本机没有屏幕录制权限）。
+
 ## 本轮编排者标记 Slack 提及（2026-11-11）
 
 - 范围：`mcp/mentions.rs` 的 `deck_mention_mark`（`handling` 可带自己的 worker 卡 / `for-you` / `no-action` / `null`，说明 ≤200 字；标记属于客户端+编排卡，别人的标记是 `MENTION_MARKED`；列表与 `deck_mention_read` 带标记、说明加围栏，游标随标记移动；存于 MCP 台账，最多 400 条、8 天，撤销客户端或收回“读取 Slack 提及”时清掉；台账 v13 sticky），`slack_mentions` 视图的 `marks` 与 `slack_mention_clear_mark`，提及一览的标记显示、“编排者已处理”折叠组（处理中且卡未关、无需处理），侧栏与范围计数只数其余的。

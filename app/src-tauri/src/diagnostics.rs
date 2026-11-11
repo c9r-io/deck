@@ -567,6 +567,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "settings-mcp-cancel-enable",
     "settings-mcp-enable",
     "settings-mcp-cancel-authorize",
+    "settings-mcp-perm-layout",
     "settings-mcp-retention",
     "settings-mcp-disable",
     "button-force-touch",

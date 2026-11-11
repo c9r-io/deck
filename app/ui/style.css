@@ -815,6 +815,10 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .mcp-perms { display: flex; flex-direction: column; gap: var(--sp-4); margin: 0 0 var(--sp-16); }
 .mcp-perms-title { margin: 0 0 var(--sp-6); font-size: var(--fs-12); font-weight: 600; }
 .mcp-perm { display: flex; align-items: center; gap: var(--sp-8); font-size: var(--fs-12); }
+/* the global `input { width: 100% }` would stretch the checkbox across the
+   row and squeeze its name into one character per line */
+.mcp-perm input[type=checkbox] { flex: none; width: auto; margin: 0; }
+.mcp-perm span { min-width: 0; }
 #mcp-auth-box .mcp-perm-hint { margin: 0 0 var(--sp-6) calc(22 * var(--u)); font-size: var(--fs-11); }
 #mcp-auth-box .mcp-perm-danger { color: var(--danger); }
 .mcp-perm-sub { display: flex; flex-direction: column; gap: var(--sp-6); margin: 0 0 var(--sp-6) calc(22 * var(--u)); padding: var(--sp-8) var(--sp-10); border: 1px solid var(--border-soft); border-radius: 8px; }
