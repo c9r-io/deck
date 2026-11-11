@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.8.21 — 2026-11-11 (Nightly)
+
+- Slack mentions for orchestrators: a new choice, "Read Slack mentions",
+  lets an MCP client read your mention list through Deck (no extra Slack
+  call; everything someone else wrote reaches it marked as external
+  content). With "Trigger Agent automations" too, it can hand one mention
+  to one of its Agent rules: the mention leaves your list and shows under
+  "Handed to agents" with where it went. It can also mark a mention for
+  you — on it (with the worker card doing it), for you, or nothing to do,
+  with a short note. Marked mentions stay listed: the ones being handled
+  and the ones with nothing to do fold under "Taken care of" and leave
+  the count, and you can clear any mark. An agent can never dismiss a
+  mention, use a Slack badge rule or write to Slack.
+- Several orchestrators on one client: run each in its own Deck card. Deck
+  tells from the system which card a call comes from; the worker cards an
+  orchestrator starts open beside its card (a client choice can keep the
+  type's or rule's column instead), are labelled with it, and only it
+  drives them. Two orchestrators no longer refuse each other's calls.
+  When an orchestrator card closes, its worker cards become yours until
+  you hand them back.
+- One client for many projects: authorize a client for several projects,
+  each with its own directory, or for all projects including new ones
+  (each through its own default directory; a project without one is not
+  worked in). The scope can be changed later in Permissions…; a project
+  that leaves it takes everything the client had there with it. Up to 8
+  worker cards per orchestrator card and 32 per client.
+- Fixed: in the authorization dialog each permission's checkbox stretched
+  across the row and squeezed its name into one character per line.
+
 ## 0.8.20 — 2026-11-11 (Nightly)
 
 - Agents can draft automations for you: let an MCP client draft (a new
