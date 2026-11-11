@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.19 — 2026-11-11 (Nightly)
+
+- Remote access: authorizing an MCP client is now one dialog. Name,
+  projects and every permission sit on one screen, each choice indented
+  under the one it depends on, and one "Authorize" click finishes it; the
+  confirmations that used to follow one another are gone. The client's row
+  keeps a single "Permissions…" button that opens the same dialog, and a
+  change takes effect as soon as you save.
+- Worker types: when you let a client drive worker cards, you list the
+  kinds of worker it may start: a name, your own command, the column, and
+  one line telling the orchestrator what that worker is good at. One Claude
+  type is filled in by default. A Codex type must run with `--no-daemon`
+  (the dialog says so if it does not). The orchestrating agent can now
+  start a worker card of a listed type itself (`deck_worker_start`), in a
+  project you authorized; it never writes the command. Its first line waits
+  for the agent to be ready unless you tick "send the first line without
+  waiting" for that client.
+
 ## 0.8.18 — 2026-11-10 (Nightly)
 
 - Worker cards: an agent you authorize under Settings → Remote access can
