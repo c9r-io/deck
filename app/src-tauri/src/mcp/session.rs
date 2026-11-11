@@ -72,7 +72,8 @@ pub(super) fn capabilities(
                 "mayCreateSession": client.allow_create,
                 "nextCreateSequence": client.create_sequence,
                 "mayTriggerAutomations": client.allow_automations,
-                "nextTriggerSequence": client.trigger_sequence
+                "nextTriggerSequence": client.trigger_sequence,
+                "mayDraftConfig": client.allow_drafts
             }))
         })
         .map_err(map_error)?

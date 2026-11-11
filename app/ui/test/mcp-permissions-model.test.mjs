@@ -8,7 +8,7 @@ import { MAX_WORKER_TYPES, defaultWorkerType, initialPermissions, permissionSumm
 const claude = { name: 'claude', cmd: 'claude --permission-mode auto', columnId: 'C1', description: 'Write code' };
 
 test('a new client starts with nothing allowed; an existing one with its own choices', () => {
-  assert.deepEqual(initialPermissions(null), { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, workerTypes: [] });
+  assert.deepEqual(initialPermissions(null), { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, allowDrafts: false, workerTypes: [] });
   const client = { allowCreate: true, allowWorkers: true, allowReplies: true, workerTypes: [claude] };
   const copy = initialPermissions(client);
   assert.equal(copy.allowCreate, true);
@@ -18,7 +18,7 @@ test('a new client starts with nothing allowed; an existing one with its own cho
 
 test('children of an unchecked parent are sent as off', () => {
   const payload = permissionsPayload({ allowWorkers: false, allowReplies: true, workerFirstSend: true, workerTypes: [claude] });
-  assert.deepEqual(payload, { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, workerTypes: [] });
+  assert.deepEqual(payload, { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, allowDrafts: false, workerTypes: [] });
   const on = permissionsPayload({ allowWorkers: true, allowReplies: true, workerFirstSend: true,
     workerTypes: [{ name: ' claude ', cmd: 'claude   --permission-mode  auto', columnId: 'C1', description: ' Write code ' }] });
   assert.deepEqual(on.workerTypes, [claude], 'trimmed, single spaces');
@@ -55,6 +55,10 @@ test('the row says what the client may do, nothing once revoked', () => {
   assert.deepEqual(permissionSummary({ allowCreate: true, allowAutomations: true, allowWorkers: true, allowReplies: false }),
     ['mcp.summaryCreate', 'mcp.automationsOn', 'mcp.workersNoReplies']);
   assert.deepEqual(permissionSummary({ allowWorkers: true, allowReplies: true }), ['mcp.workersOn']);
+  // drafting stands alone: it needs no other choice
+  assert.deepEqual(permissionSummary({ allowDrafts: true }), ['mcp.summaryDrafts']);
+  assert.equal(permissionsPayload({ allowDrafts: true, workerTypes: [] }).allowDrafts, true);
+  assert.equal(initialPermissions({ allowDrafts: true }).allowDrafts, true);
   assert.deepEqual(permissionSummary({ revoked: true, allowCreate: true }), []);
   assert.deepEqual(permissionSummary(null), []);
 });

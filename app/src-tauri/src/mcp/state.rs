@@ -84,6 +84,11 @@ pub(super) struct Client {
     /// the Agent rules' own first-send choice also accepts).
     #[serde(default)]
     pub(super) worker_first_send: bool,
+    /// The user's choice that this client may draft templates and Agent
+    /// rules for the user to approve (`proposals.rs`). Drafting grants
+    /// nothing: only the user's approval in Deck writes a draft.
+    #[serde(default)]
+    pub(super) allow_drafts: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -226,6 +231,10 @@ pub(super) struct DiskDoc {
     /// The worker cards (`workers.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) workers: Vec<super::workers::Worker>,
+    /// Drafted configuration waiting for, or decided by, the user
+    /// (`proposals.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) proposals: Vec<super::proposals::Proposal>,
 }
 
 impl Default for DiskDoc {
@@ -239,6 +248,7 @@ impl Default for DiskDoc {
             execution_grants: Vec::new(),
             audit: Vec::new(),
             workers: Vec::new(),
+            proposals: Vec::new(),
         }
     }
 }
@@ -687,19 +697,19 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
 
 pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
-    let version_valid = if super::workers::uses_workers(doc) {
-        doc.version == STATE_VERSION_WORKERS
+    // the version the content needs at least, up to the newest this build
+    // writes (sticky versions never go back)
+    let needed = if super::proposals::uses_proposals(doc) {
+        STATE_VERSION_PROPOSALS
+    } else if super::workers::uses_workers(doc) {
+        STATE_VERSION_WORKERS
     } else if super::automation::uses_automations(doc) {
-        matches!(
-            doc.version,
-            STATE_VERSION_AUTOMATIONS | STATE_VERSION_WORKERS
-        )
+        STATE_VERSION_AUTOMATIONS
     } else {
-        matches!(
-            doc.version,
-            STATE_VERSION | STATE_VERSION_AUTOMATIONS | STATE_VERSION_WORKERS
-        )
+        STATE_VERSION
     };
+    let version_valid = (needed..=STATE_VERSION_PROPOSALS).contains(&doc.version)
+        && super::proposals::valid_proposals(doc);
     let clients_valid = version_valid
         && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)
             .contains(&doc.config.output_retention_ms)
@@ -848,6 +858,11 @@ impl Runtime {
         // and one that holds worker cards or their choices at the next one
         if super::workers::uses_workers(&candidate) {
             candidate.version = candidate.version.max(STATE_VERSION_WORKERS);
+        }
+        // and one that holds drafted configuration or the draft choice at
+        // the next one
+        if super::proposals::uses_proposals(&candidate) {
+            candidate.version = candidate.version.max(STATE_VERSION_PROPOSALS);
         }
         save(&self.path, &candidate)?;
         *guard = Ok(candidate);

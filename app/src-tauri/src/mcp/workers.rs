@@ -1162,6 +1162,7 @@ pub(super) fn client_permissions(
 ) -> Result<(), DeckError> {
     validate_worker_types(&permissions.worker_types)?;
     let withdrew_automations;
+    let mut withdrew_drafts = false;
     {
         let _fence = crate::storage::settings_fence();
         let _delivery = runtime.delivery.lock_or_recover();
@@ -1179,6 +1180,7 @@ pub(super) fn client_permissions(
                 client.allow_replies,
                 client.worker_first_send,
                 client.worker_types.clone(),
+                client.allow_drafts,
             );
             client.allow_create = permissions.allow_create;
             client.allow_automations = permissions.allow_automations;
@@ -1186,6 +1188,7 @@ pub(super) fn client_permissions(
             client.allow_replies = permissions.allow_workers && permissions.allow_replies;
             client.worker_first_send = permissions.allow_workers && permissions.worker_first_send;
             client.worker_types = permissions.worker_types.clone();
+            client.allow_drafts = permissions.allow_drafts;
             let after = (
                 client.allow_create,
                 client.allow_automations,
@@ -1193,6 +1196,7 @@ pub(super) fn client_permissions(
                 client.allow_replies,
                 client.worker_first_send,
                 client.worker_types.clone(),
+                client.allow_drafts,
             );
             if before == after {
                 return Ok(false);
@@ -1213,6 +1217,9 @@ pub(super) fn client_permissions(
                     },
                     "client-revoked",
                 );
+            }
+            if before.6 && !after.6 && super::proposals::withdraw_pending(doc, client_id) {
+                withdrew_drafts = true;
             }
             if withdrew_workers {
                 doc.reject_pending(
@@ -1235,6 +1242,9 @@ pub(super) fn client_permissions(
     }
     if withdrew_automations {
         retire_inbox_for(client_id);
+    }
+    if withdrew_drafts {
+        super::proposals::note_withdrawn(runtime);
     }
     sync_reply_hook();
     note_worker_change();

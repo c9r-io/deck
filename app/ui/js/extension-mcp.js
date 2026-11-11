@@ -40,6 +40,8 @@ const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" a
         <label class="mcp-perm"><input type="checkbox" id="mcp-perm-replies"> <span data-i18n="mcp.permReplies">Share replies</span></label>
         <p class="set-hint mcp-perm-hint" data-i18n="mcp.permRepliesHint">Claude Code only.</p>
       </div>
+      <label class="mcp-perm"><input type="checkbox" id="mcp-perm-drafts"> <span data-i18n="mcp.permDrafts">Draft templates and automations</span></label>
+      <p class="set-hint mcp-perm-hint" data-i18n="mcp.permDraftsHint">Drafts wait in Needs attention; nothing works until you approve.</p>
       <p class="mcp-field-error" id="mcp-perm-error" role="alert" hidden></p>
     </div>
     <div class="cfm-actions">
@@ -315,6 +317,7 @@ export function createMcpSettings(host) {
         $('mcp-perm-workers').checked = perms.allowWorkers;
         $('mcp-perm-first-send').checked = perms.workerFirstSend;
         $('mcp-perm-replies').checked = perms.allowReplies;
+        $('mcp-perm-drafts').checked = perms.allowDrafts;
         $('mcp-perm-worker-box').hidden = !perms.allowWorkers;
         paintTypes();
       };
@@ -332,6 +335,7 @@ export function createMcpSettings(host) {
       };
       $('mcp-perm-first-send').onchange = () => { perms.workerFirstSend = $('mcp-perm-first-send').checked; };
       $('mcp-perm-replies').onchange = () => { perms.allowReplies = $('mcp-perm-replies').checked; };
+      $('mcp-perm-drafts').onchange = () => { perms.allowDrafts = $('mcp-perm-drafts').checked; };
       $('mcp-perm-type-add').onclick = () => {
         perms.workerTypes.push({ name: '', cmd: '', columnId: columns()[0]?.id || '', description: '' });
         paintTypes();

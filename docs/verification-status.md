@@ -7,6 +7,12 @@
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
+## 本轮 Agent 起草模板和自动化（2026-11-11）
+
+- 范围：`mcp/proposals.rs`（`deck_config_describe` / `deck_config_propose` / `deck_config_proposal_get`，台账 v9 sticky）、授权对话框的“起草模板和自动化”、“待关注”里的起草条目与审阅对话框（`proposals.js`、`proposals-model.js`）、规则抽屉的“起草者”标注。
+- 已跑：后端单测（`drafted_configuration_is_checked_recorded_and_decided_by_the_user`、`revoking_a_drafting_client_withdraws_its_drafts`）；mcp 测试并行 4/4（同时修好了共享 agent inbox 的既有测试竞争：撤销/停用类测试加 `STORE_TESTS` 锁）；CI 同款覆盖率门禁 1407 通过，唯一失败为外部准入普查对 `proposals.rs` 草稿字段的误报，已加带标注的审阅条目，单独重跑通过；clippy、`cargo audit`（0 漏洞，9 允许警告）；前端 966 项、check.mjs 93 模块、扩展目录 current。
+- 未跑：WK 模式 `drafts`（脚本 `scripts/mcp-drafts-e2e.py` 与真实 Claude Code 起草一步）——屏幕锁定，页面计时器会冻结；覆盖率门禁在加审阅条目后没有整轮重跑，由推送 CI 判定。
+
 ## 本轮 一个授权对话框与工作卡类型（2026-11-11）
 
 设计：`docs/design/agent-self-config-20261111.html`（D1–D7，第一部分）。授权 MCP 客户端改为一个对话框：所有权限、依赖缩进、工作卡类型列表（名字、命令、栏、给编排者看的说明；默认一行 Claude；Codex 类型必须带 `--no-daemon`）、首句直接发送、共享回复；行上只剩"权限…"，打开同一个对话框（`mcp_client_permissions`，settings fence 下一次保存）。新工具 `deck_worker_start`（共 21 个）：按类型开卡，经 `worker-start` Board 意图由前端建卡并启动，提交后首句作为开头行排队；首句的首发例外只依据客户端的首发选项（`worker-first:` 键）。原"委托自动化/驱动工作卡/共享回复"三个行按钮与连续确认框去掉。

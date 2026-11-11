@@ -293,9 +293,20 @@ enum Entry {
     VerbatimGate,
     /// Crash-safe migration: fills a MISSING expected process only.
     Migration,
+    /// A field of the same name on a record that never becomes a queue row:
+    /// a drafted rule's request that the user also approve handed-over text
+    /// (`mcp/proposals.rs`), cleared without `auto_continue`.
+    NotQueue,
 }
 
 const ADMISSION_SITES: &[(&str, &str, &str, usize, Entry)] = &[
+    (
+        "mcp/proposals.rs",
+        "check_rule",
+        ".external = ",
+        1,
+        Entry::NotQueue,
+    ),
     (
         "scheduler/ops.rs",
         "add_item",

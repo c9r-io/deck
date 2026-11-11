@@ -190,6 +190,7 @@ const LISTEN_TARGETS: &[&str] = &[
     "inbound-changed",
     "slack-mentions-changed",
     "mcp-workers-changed",
+    "mcp-proposals-changed",
     "channel-changed",
     "connector-changed",
     "mcp-changed",
@@ -382,6 +383,12 @@ const SMOKE_CHECKS: &[&str] = &[
     "workers-redelegated",
     "workers-orchestrated",
     "workers-exception",
+    "drafts-approved",
+    "drafts-edited",
+    "drafts-rejected",
+    "drafts-withdrawn",
+    "drafts-regranted",
+    "drafts-agent",
     "signal-completed",
     "signal-summary",
     "signal-closed",
@@ -1109,6 +1116,12 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     (
         "workers",
         DetailPolicy::Closed(&["taken-over", "handed-back"]),
+    ),
+    // drafted configuration (proposals.js): what the user decided, never
+    // what was drafted
+    (
+        "proposals",
+        DetailPolicy::Closed(&["approved", "edited", "rejected"]),
     ),
     // a follow-up button queued its text: whether the model had picked one
     // and whether it was this one; never which text

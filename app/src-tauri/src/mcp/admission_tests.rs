@@ -40,6 +40,7 @@ fn client() -> Client {
         send_sequence: 0,
         worker_types: Vec::new(),
         worker_first_send: false,
+        allow_drafts: false,
     }
 }
 

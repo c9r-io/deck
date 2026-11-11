@@ -154,6 +154,7 @@ import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN } from './settings-model.js';
 import { openTemplates } from './templates.js';
 import { awaitChannelIdentity, CHANNEL_IDLE_DEFAULT, channelBlockReason, channelFirstSendNeedsUpdate, channelFirstSendRecipe, normalizeChannelRule } from './channel-model.js';
+import { drafter } from './proposals.js';
 
 /* the Board, layout and terminal actions this drawer calls, handed in by
    `initAutomation(deps)` so board.js and terminal.js may import this module
@@ -279,6 +280,9 @@ function ruleEl(rule) {
   const kv = el.querySelector('.ar-kv');
   const rows = ruleFacts(rule, { columnName: column ? column.name : null, home: ctx.HOME, slackConnected: slackConnected(),
     approval: approvalOf(rule) });
+  /* drafted by an MCP client and approved by the user (proposals.js) */
+  const drafted = rule.source === 'agent' ? drafter(rule.id) : null;
+  if (drafted) rows.push(['proposals.draftedBy', drafted]);
   for (const [key, value] of rows) {
     const k = document.createElement('span'); k.textContent = t(key);
     const v = document.createElement('b'); v.textContent = value; v.title = value;

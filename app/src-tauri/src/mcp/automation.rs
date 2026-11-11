@@ -59,7 +59,7 @@ fn delegated<'a>(doc: &'a DiskDoc, client_id: &str) -> Result<&'a Client, DeckEr
 }
 
 /// The current settings, the one source of the rules (`None`: unreadable).
-fn automation_config() -> Option<crate::inbound::Config> {
+pub(super) fn automation_config() -> Option<crate::inbound::Config> {
     #[cfg(test)]
     if let Some(forced) = CONFIG_FOR_TESTS.with(|cell| cell.borrow().clone()) {
         return forced;

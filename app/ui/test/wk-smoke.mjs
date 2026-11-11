@@ -3369,6 +3369,13 @@ export async function verifyWorkers() {
   await runWorkersSmoke();
 }
 
+// Drafted configuration end to end: a scripted client's drafts answered
+// through Needs attention, then a real agent's own (workers-smoke.mjs).
+export async function verifyDrafts() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ drafting: true });
+}
+
 export async function verifyAgentLive() {
   const { runAgentLiveSmoke } = await import('./agent-live-smoke.mjs');
   await runAgentLiveSmoke();

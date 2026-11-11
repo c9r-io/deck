@@ -147,7 +147,7 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
     input.flush().unwrap();
     let listed = read_response(&mut output, 2);
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 21);
+    assert_eq!(tools.len(), 24);
     let listed_names = tools
         .iter()
         .map(|tool| tool["name"].as_str().unwrap().to_owned())

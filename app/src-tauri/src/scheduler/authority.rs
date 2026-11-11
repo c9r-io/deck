@@ -602,7 +602,7 @@ pub(crate) const INBOUND_PLACEHOLDERS: &[&str] = &["text", "from", "where", "lin
 
 /// The placeholder at the start of `s` (`{{ msg.<name> }}`): its name and
 /// byte length.
-fn placeholder_at(s: &str) -> Option<(&str, usize)> {
+pub(crate) fn placeholder_at(s: &str) -> Option<(&str, usize)> {
     let rest = s.strip_prefix("{{")?;
     let body = rest.trim_start_matches(js_space);
     let body = body.strip_prefix("msg.")?;

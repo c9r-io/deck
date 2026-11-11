@@ -117,6 +117,9 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_worker_wait` | The same views once one of the named cards moves past the episode the caller saw, is taken over or stops; at most 5 s (`wait_ms`), call again after `changed: false`. |
 | `deck_worker_reply` | A worker card's final Claude Code message of one turn ending (its episode), head and tail when long; memory only, the newest 32 (`REPLY_GONE` otherwise). Needs the further **replies** choice. |
 | `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in a directory inside its authorized directory, with its first line. An operation to poll (`committed` with `cardId`); at most 8 worker cards per client. |
+| `deck_config_describe` | Before drafting: the workflow, every field of a template and an Agent handover rule with its rules, copyable examples, and the client's projects with their columns, templates (name and structure, never step text) and Agent rules. Needs the client's separate **draft** choice. |
+| `deck_config_propose` | Draft a template and/or one Agent handover rule. `validate_only: true` checks and previews and records nothing; every problem is `{field, code, message, fix}`. A valid submission (fresh `request_id`) waits in Needs attention as a proposal; an identical pending draft is refused (`DUPLICATE_PROPOSAL`), at most 4 wait per client. Writes and authorizes nothing. |
+| `deck_config_proposal_get` | One of the client's proposals: `pending`, `approved` (saved as drafted), `edited` (saved without automatic sending, finished in the editor), `rejected` or `withdrawn`, with the next action. |
 | `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence`. Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over. |
 
 All input schemas reject unknown fields. Side-effecting tools advertise
@@ -319,6 +322,33 @@ files. Pi's input requests cannot be seen, so Pi cannot be a worker. Worker repl
 Agents); with turn summaries off the Stop hook then carries `--reply
 workers`, which forwards the message for worker replies alone and never
 makes a summary or a model call.
+
+## Drafted configuration
+
+**Draft templates and automations** (in the same dialog) lets a client
+draft a prompt template and an Agent handover rule for you — "set up an
+automation that reviews pull requests in three steps". It drafts only:
+templates and Agent rules (the ones `deck_automation_trigger` names), never
+Slack badge, clock or channel rules or any other setting. Deck checks a
+draft when it is made (the command is `claude` or `codex --no-daemon` with
+simple flags, the directory is inside the authorized one, the template it
+names exists or is drafted with it, no step begins with a `{{msg.*}}`
+placeholder) and tells the client each problem with its fix, so what
+reaches you can be saved.
+
+A draft appears under **Needs attention** → **Drafted configuration**.
+**Review…** shows every step in full, the rule's fields, what changes
+against your current template or rule, and what the draft asks for:
+sending later steps automatically after each turn (with or without the
+handed-over text) and sending the first step to a new agent at once.
+**Approve** saves it exactly as shown — your click is the approval, as a
+tick in the automations editor is. **Save and edit** saves it without
+automatic sending or the first-send choice and opens the editor, where you
+tick those yourself. **Reject** saves nothing. **Later** keeps it waiting. A
+rule saved from a draft says "Drafted by ‹client›" in the drawer. The client
+reads your decision with `deck_config_proposal_get`; it can never approve,
+delete or change anything itself. Stopping the choice or revoking the
+client withdraws what waits.
 
 ## Execution, output, and lifecycle
 

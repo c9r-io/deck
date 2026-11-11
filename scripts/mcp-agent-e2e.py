@@ -7,7 +7,7 @@ Deck must already be open in the `agent-live` WKWebView mode and past
 adapter refuses the --socket / --credential-fd seams. The credential is
 handed to the adapter on an inherited descriptor, never on its argv.
 
-Default run: initialize, tools/list (21 tools), deck_capabilities,
+Default run: initialize, tools/list (24 tools), deck_capabilities,
 deck_automation_list, a wrong revision (RULE_CHANGED with the current one),
 a wrong sequence (STALE_REQUEST), the real trigger, the operation polled to
 `committed` with its cardId, the same request replayed (same operation), the
@@ -28,7 +28,7 @@ import sys
 import time
 
 PROTOCOL = "2025-06-18"
-TOOLS = 21
+TOOLS = 24
 
 
 def parse():

@@ -324,6 +324,7 @@ fn client_record(root: &Path) -> Client {
         send_sequence: 0,
         worker_types: Vec::new(),
         worker_first_send: false,
+        allow_drafts: false,
     }
 }
 
@@ -851,6 +852,7 @@ fn authorization_is_client_project_session_and_control_scoped() {
         send_sequence: 0,
         worker_types: Vec::new(),
         worker_first_send: false,
+        allow_drafts: false,
     });
     let disabled = match client(&doc, "client_a") {
         Err(error) => error,
@@ -1467,6 +1469,8 @@ fn a_real_pane_listing_tells_a_runner_pane_from_any_other() {
 
 #[test]
 fn command_surface_exercises_local_authorization_and_board_reconciliation() {
+    // revocation and disable retire agent inbox items: the shared store
+    let _serial = crate::inbound_agent::STORE_TESTS.lock_or_recover();
     let root = test_root("commands");
     let runner = FakeRunner::start(&root, "g_a");
     let mut doc = DiskDoc::default();
@@ -2111,7 +2115,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
     );
 
     let mut invalid = DiskDoc {
-        version: STATE_VERSION_WORKERS + 1,
+        version: STATE_VERSION_PROPOSALS + 1,
         ..DiskDoc::default()
     };
     assert!(validate_doc(&invalid).is_err());
@@ -2148,6 +2152,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
         send_sequence: 0,
         worker_types: Vec::new(),
         worker_first_send: false,
+        allow_drafts: false,
     });
     assert!(validate_doc(&invalid).is_err());
     std::fs::remove_dir_all(root).unwrap();
@@ -3094,7 +3099,7 @@ fn v3_state_upgrades_stickily_and_future_state_is_refused() {
     // The v3 build accepted exactly version 3; the same rule refuses a
     // future schema here.
     let mut future = saved.clone();
-    future["version"] = json!(STATE_VERSION_WORKERS + 1);
+    future["version"] = json!(STATE_VERSION_PROPOSALS + 1);
     std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
     assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
     assert_eq!(
@@ -3295,6 +3300,8 @@ fn f1_stdin_past_route_delivers_no_bytes_after_a_pending_execution_revoke() {
 
 #[test]
 fn f1_close_admission_rechecks_takeover_revocation_and_disable() {
+    // revocation and disable retire agent inbox items: the shared store
+    let _serial = crate::inbound_agent::STORE_TESTS.lock_or_recover();
     for fence in ["takeover", "client-revoke", "disable"] {
         let (runtime, runner, root) = fixture(&format!("f1-close-{fence}"), "svc_test");
         let operation_id = close_plan(&runtime);
@@ -4743,6 +4750,8 @@ fn assert_authority_fenced(runtime: &Runtime, code: &str) {
 
 #[test]
 fn disable_and_client_revocation_reject_pending_intents_and_close_output() {
+    // revocation and disable retire agent inbox items: the shared store
+    let _serial = crate::inbound_agent::STORE_TESTS.lock_or_recover();
     let (runtime, runner, root) = fixture("disable-pending", "svc_test");
     seed_pending_authority(&runtime);
     disable(&runtime).unwrap();
@@ -5860,6 +5869,7 @@ fn set_permissions(runtime: &Runtime, automations: bool, workers: bool, replies:
             allow_replies: replies,
             worker_types: Vec::new(),
             worker_first_send: false,
+            allow_drafts: false,
         },
     )
     .unwrap();
@@ -5920,6 +5930,7 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
             allow_replies: false,
             worker_types: types,
             worker_first_send: first,
+            allow_drafts: false,
         };
     assert!(client_permissions(
         &runtime,
@@ -6052,5 +6063,262 @@ fn no_permissions(allow_create: bool) -> super::commands::PermissionsInput {
         allow_replies: false,
         worker_types: Vec::new(),
         worker_first_send: false,
+        allow_drafts: false,
     }
+}
+
+/// Drafted configuration (`proposals.rs`): only a client the user lets draft
+/// may describe or propose; a draft is checked against the Board, the
+/// settings and the client's scope with a field and a fix per problem; a
+/// valid one is previewed or recorded once (request id, identical content,
+/// pending bound); the user's decision is recorded once; withdrawing the
+/// choice withdraws what waits; the ledger goes to its sticky version.
+#[test]
+fn drafted_configuration_is_checked_recorded_and_decided_by_the_user() {
+    let (runtime, _runner, root) = fixture("config-proposals", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let root_dir = std::fs::canonicalize(&*root).unwrap().display().to_string();
+    crate::documents::test_door::commit(
+        json!({"projects": [{"id": "P1", "name": "Deck", "columns": [{"id": "C1", "name": "Doing"}],
+            "templates": [{"name": "old", "steps": ["{{msg.text}} please"]}, {"name": "plain", "steps": ["Hello"]}]}]}),
+        true,
+    );
+    let existing: crate::inbound::Rule = serde_json::from_value(json!({
+        "id": "g1", "source": "agent", "badge": "worker", "projectId": "P1", "columnId": "C1",
+        "cmd": "claude", "template": "plain", "name": "Worker"
+    }))
+    .unwrap();
+    CONFIG_FOR_TESTS.with(|cell| {
+        *cell.borrow_mut() = Some(Some(crate::inbound::Config {
+            slack_enabled: false,
+            rules: vec![existing],
+        }))
+    });
+    let call = |tool: &str, args: Value| route(&runtime, request(tool, args));
+    assert_eq!(
+        call("deck_config_describe", json!({}))["error"]["code"],
+        "PERMISSION_DENIED"
+    );
+    let mut permissions = no_permissions(false);
+    permissions.allow_drafts = true;
+    client_permissions(&runtime, "client_a", permissions).unwrap();
+    assert_eq!(
+        runtime.read(|doc| doc.version).unwrap(),
+        STATE_VERSION_PROPOSALS
+    );
+    let described = call("deck_config_describe", json!({}));
+    assert_eq!(described["ok"], true);
+    let project = &described["projects"][0];
+    assert_eq!(project["columns"][0]["id"], "C1");
+    // templates are listed by name and structure, never their text
+    assert_eq!(
+        project["templates"][0],
+        json!({"name": "old", "steps": 1, "classes": ["bounded"], "followUps": 0})
+    );
+    assert_eq!(project["agentRules"][0]["automation_id"], "worker");
+    assert!(described["examples"].as_array().unwrap().len() >= 2);
+
+    // every problem names its field and a fix; nothing is recorded
+    let bad = call(
+        "deck_config_propose",
+        json!({"project_id": "P1", "validate_only": true,
+            "template": {"name": "review", "steps": ["{{msg.text}}", "", "use {{msg.body}}"], "follow_ups": ["reply {{msg.from}}"]},
+            "rule": {"automation_id": "Review", "column_id": "C9", "dir": "/", "cmd": "codex", "template": "review", "auto_continue": true, "finish": "later"}}),
+    );
+    assert_eq!(bad["valid"], false);
+    let codes: Vec<&str> = bad["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["code"].as_str().unwrap())
+        .collect();
+    for code in [
+        "STEP_LEADS_WITH_MESSAGE",
+        "STEP_EMPTY",
+        "PLACEHOLDER_UNKNOWN",
+        "FOLLOW_UPS_INVALID",
+        "AUTOMATION_ID_INVALID",
+        "COLUMN_MISSING",
+        "COMMAND_CODEX_DAEMON",
+        "DIR_OUTSIDE",
+        "EXTERNAL_CONSENT_NEEDED",
+        "FINISH_INVALID",
+    ] {
+        assert!(codes.contains(&code), "{code} missing from {codes:?}");
+    }
+    assert!(bad["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|p| p["field"].is_string() && p["fix"].as_str().is_some_and(|f| !f.is_empty())));
+    // a rule on an existing template that leads with a placeholder is blocked
+    let blocked = call(
+        "deck_config_propose",
+        json!({"project_id": "P1", "validate_only": true,
+            "rule": {"automation_id": "x", "column_id": "C1", "cmd": "claude", "template": "old"}}),
+    );
+    assert_eq!(blocked["problems"][0]["code"], "TEMPLATE_BLOCKED");
+    assert_eq!(
+        call(
+            "deck_config_propose",
+            json!({"project_id": "P9", "validate_only": true, "rule": null})
+        )["error"]["code"],
+        "PERMISSION_DENIED"
+    );
+    let submitted_bad = call(
+        "deck_config_propose",
+        json!({"request_id": "req_bad", "project_id": "P1", "template": {"name": "t", "steps": [""]}}),
+    );
+    assert_eq!(submitted_bad["error"]["code"], "INVALID_DRAFT");
+    assert!(runtime.read(|doc| doc.proposals.is_empty()).unwrap());
+
+    // a valid draft: preview, then one record per request id and content
+    let draft = json!({"project_id": "P1", "note": "for reviews",
+        "template": {"name": "review", "steps": ["Review: {{msg.text}}", "Run the tests."]},
+        "rule": {"automation_id": "review", "name": "Review", "column_id": "C1", "cmd": "claude", "template": "review", "auto_continue": true, "external": true}});
+    let valid = call("deck_config_propose", {
+        let mut d = draft.clone();
+        d["validate_only"] = json!(true);
+        d
+    });
+    assert_eq!(valid["valid"], true, "{valid}");
+    assert_eq!(valid["preview"]["rule"]["dir"], root_dir);
+    assert_eq!(
+        valid["preview"]["template"]["classes"],
+        json!(["bounded", "fixed"])
+    );
+    assert!(runtime.read(|doc| doc.proposals.is_empty()).unwrap());
+    let submit = |request: &str, body: &Value| {
+        let mut d = body.clone();
+        d["request_id"] = json!(request);
+        call("deck_config_propose", d)
+    };
+    let first = submit("req_p1", &draft);
+    let id = first["proposalId"].as_str().unwrap().to_string();
+    assert_eq!(first["status"], "pending");
+    assert_eq!(submit("req_p1", &draft)["proposalId"], id.as_str());
+    let mut other = draft.clone();
+    other["note"] = json!("changed");
+    assert_eq!(
+        submit("req_p1", &other)["error"]["code"],
+        "REQUEST_ID_REUSED"
+    );
+    let duplicate = submit("req_p2", &other);
+    assert_eq!(duplicate["error"]["code"], "DUPLICATE_PROPOSAL");
+    assert_eq!(duplicate["error"]["proposalId"], id.as_str());
+    // a change to the existing rule shows what changes
+    let change = json!({"project_id": "P1", "rule": {"automation_id": "worker", "name": "Worker", "column_id": "C1", "cmd": "claude --permission-mode auto", "template": "plain"}});
+    let changed = submit("req_p3", &change);
+    assert_eq!(changed["preview"]["rule"]["new"], false);
+    // an empty directory (the home directory) becomes the authorized one
+    let fields: Vec<&str> = changed["preview"]["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["field"].as_str().unwrap())
+        .collect();
+    assert_eq!(fields, ["rule.dir", "rule.cmd"]);
+    for i in 0..2 {
+        let mut more = change.clone();
+        more["rule"]["name"] = json!(format!("Worker {i}"));
+        assert_eq!(submit(&format!("req_m{i}"), &more)["status"], "pending");
+    }
+    let mut fifth = change.clone();
+    fifth["rule"]["name"] = json!("Worker 5");
+    assert_eq!(
+        submit("req_m5", &fifth)["error"]["code"],
+        "TOO_MANY_PENDING"
+    );
+
+    // the user's side: the full draft, one decision, read back by the client
+    let listed = proposals_ui(&runtime).unwrap();
+    assert_eq!(listed.len(), 4);
+    assert_eq!(listed[0]["clientName"], "Client A");
+    assert_eq!(listed[0]["template"]["steps"][1], "Run the tests.");
+    assert_eq!(listed[0]["rule"]["autoContinue"], true);
+    assert!(proposal_decide(&runtime, &id, "maybe", None).is_err());
+    proposal_decide(&runtime, &id, "approved", Some("R1".into())).unwrap();
+    assert_eq!(
+        proposal_decide(&runtime, &id, "rejected", None)
+            .unwrap_err()
+            .message(),
+        PROPOSAL_DECIDED
+    );
+    let got = call("deck_config_proposal_get", json!({"proposal_id": id}));
+    assert_eq!(got["status"], "approved");
+    assert_eq!(got["automationId"], "review");
+    assert_eq!(
+        call(
+            "deck_config_proposal_get",
+            json!({"proposal_id": "prop_nope"})
+        )["error"]["code"],
+        "PROPOSAL_NOT_FOUND"
+    );
+
+    // withdrawing the choice withdraws what waits, and refuses the tools
+    client_permissions(&runtime, "client_a", no_permissions(false)).unwrap();
+    let statuses: Vec<String> = runtime
+        .read(|doc| doc.proposals.iter().map(|p| p.status.clone()).collect())
+        .unwrap();
+    assert_eq!(
+        statuses,
+        ["approved", "withdrawn", "withdrawn", "withdrawn"]
+    );
+    assert_eq!(
+        call("deck_config_proposal_get", json!({"proposal_id": id}))["error"]["code"],
+        "PERMISSION_DENIED"
+    );
+    let waiting = listed[1]["id"].as_str().unwrap().to_string();
+    assert!(proposal_decide(&runtime, &waiting, "approved", None).is_err());
+    // sticky: the version stays although the choice is off
+    assert_eq!(
+        runtime.read(|doc| doc.version).unwrap(),
+        STATE_VERSION_PROPOSALS
+    );
+    CONFIG_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// Revoking a client withdraws its pending drafts too, and an older ledger
+/// version is refused once a proposal is in it.
+#[test]
+fn revoking_a_drafting_client_withdraws_its_drafts() {
+    // revocation retires the client's agent inbox items: the shared store
+    let _serial = crate::inbound_agent::STORE_TESTS.lock_or_recover();
+    let (runtime, _runner, root) = fixture("config-proposals-revoke", "svc_test");
+    crate::inbound_agent::redirect_for_tests(Some(root.join("agent-inbox.json")));
+    let _board = crate::documents::test_door::hold();
+    crate::documents::test_door::commit(
+        json!({"projects": [{"id": "P1", "name": "Deck", "columns": [{"id": "C1", "name": "Doing"}], "templates": []}]}),
+        true,
+    );
+    CONFIG_FOR_TESTS.with(|cell| {
+        *cell.borrow_mut() = Some(Some(crate::inbound::Config {
+            slack_enabled: false,
+            rules: vec![],
+        }))
+    });
+    let mut permissions = no_permissions(false);
+    permissions.allow_drafts = true;
+    client_permissions(&runtime, "client_a", permissions).unwrap();
+    let made = route(
+        &runtime,
+        request(
+            "deck_config_propose",
+            json!({"request_id": "req_r", "project_id": "P1", "template": {"name": "t", "steps": ["Do it."]}}),
+        ),
+    );
+    assert_eq!(made["status"], "pending", "{made}");
+    let mut doc: Value =
+        serde_json::from_slice(&std::fs::read(root.join("mcp.json")).unwrap()).unwrap();
+    assert_eq!(doc["version"], STATE_VERSION_PROPOSALS);
+    doc["version"] = json!(STATE_VERSION_WORKERS);
+    let older: DiskDoc = serde_json::from_value(doc).unwrap();
+    assert!(validate_doc(&older).is_err());
+    client_revoke(&runtime, "client_a".into()).ok();
+    assert_eq!(
+        runtime.read(|doc| doc.proposals[0].status.clone()).unwrap(),
+        "withdrawn"
+    );
+    CONFIG_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    crate::inbound_agent::redirect_for_tests(None);
 }

@@ -68,6 +68,7 @@ import { piCoverage, piDetailKeys, piStatusKey } from './pi-model.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
 import { choiceDialog } from './dialogs.js';
 import { paintFollowUps } from './follow-up-bar.js';
+import { draftsCountText, pendingNow, proposalRow } from './proposals.js';
 
 let pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp;
 
@@ -261,6 +262,13 @@ function updateRows() {
     cursor = el.nextElementSibling;
     return el;
   };
+  /* what an MCP client drafted for the user, above the cards (proposals.js) */
+  const drafts = ctx.attentionFilter === 'pending' ? pendingNow() : [];
+  if (drafts.length) {
+    const heading = place('heading-drafts', () => node('h2', 'attention-section'));
+    heading.textContent = t('proposals.section');
+    for (const p of drafts) proposalRow(place(`proposal-${p.id}`, () => proposalRow(null, p)), p);
+  }
   if (rows.length) {
     const labels = place('labels', () => {
       const el = node('div', 'attention-labels');
@@ -331,7 +339,7 @@ function updateRows() {
     row.querySelector('.attention-open').textContent = t(locate ? 'attention.locate' : 'attention.open');
     row.querySelector('.attention-open').setAttribute('aria-label', t(locate ? 'attention.locateNamed' : 'attention.openNamed', { name: card.title, project: project.name }));
   }
-  if (!rows.length) {
+  if (!rows.length && !drafts.length) {
     const empty = place('empty', () => node('p', 'attention-empty'));
     empty.textContent = t(ctx.attentionFilter === 'followed' ? 'attention.emptyFilter'
       : ctx.attention.freshness(store.cards).kind === 'unknown' ? 'attention.unknownHint'
@@ -401,7 +409,8 @@ async function closePicked() {
 export function refreshAttention() {
   const counts = ctx.attention.counts(store.cards);
   const freshness = ctx.attention.freshness(store.cards);
-  $('attention-count').textContent = `${countText('pending', counts, freshness)}${freshness.kind === 'stale' ? ` · ${t('attention.old')}` : ''}`;
+  const drafts = draftsCountText();
+  $('attention-count').textContent = `${countText('pending', counts, freshness)}${freshness.kind === 'stale' ? ` · ${t('attention.old')}` : ''}${drafts ? ` · ${drafts}` : ''}`;
   $('attention-btn').title = t('attention.globalTitle');
   $('attention-btn').classList.toggle('active', state.view === 'attention');
   $('attention-btn').setAttribute('aria-pressed', String(state.view === 'attention'));

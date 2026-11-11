@@ -870,6 +870,20 @@
         "workers-exception": { "failureOnly": true }
       }
     },
+    "drafts": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "workers-armed": {},
+        "drafts-approved": {},
+        "drafts-edited": {},
+        "drafts-rejected": {},
+        "drafts-withdrawn": {},
+        "drafts-regranted": {},
+        "drafts-agent": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
     "terminal-input": {
       "terminal": "done",
       "checks": {

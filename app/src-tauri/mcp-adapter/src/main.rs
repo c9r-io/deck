@@ -45,8 +45,9 @@ const BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
 /// Deck may legitimately take longer than one runner round trip: a request
 /// can wait for the delivery lock behind an in-flight job dispatch.
 const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const MUTATING: [&str; 9] = [
+const MUTATING: [&str; 10] = [
     "deck_automation_trigger",
+    "deck_config_propose",
     "deck_worker_send",
     "deck_worker_start",
     "deck_session_create",
@@ -56,6 +57,17 @@ const MUTATING: [&str; 9] = [
     "deck_job_interrupt",
     "deck_session_close",
 ];
+/// What every client reads at initialization: how to use Deck, and the one
+/// workflow for drafting configuration.
+const INSTRUCTIONS: &str = "Use Deck MCP only for authorized development work. Call deck_capabilities first: it says which of the local user's separate permissions this client holds. Retain operation, session, job, generation, cursor, control epoch, control sequence and create sequence values; never blindly retry ambiguous work.
+Worker cards (when the user lets this client drive them): deck_worker_start opens a card of a worker type the user lists (choose by its description), deck_worker_wait/list follow it, deck_worker_send queues your next line, deck_worker_reply reads a Claude turn's final message. The user may take a card over; never fight it.
+Drafting configuration (mayDraftConfig), when the user asks you to set up an automation or template:
+1. deck_config_describe: read the fields, examples, and the project's columns, templates and Agent rules; reuse what exists.
+2. deck_config_propose with validate_only: true; fix every problem (each names the field and the fix) until valid; check the preview says what the user wants.
+3. Submit it once with a fresh request_id. Tell the user it waits for them under Needs attention in Deck.
+4. Never resubmit an identical draft; you cannot approve it. Poll deck_config_proposal_get seldom.
+5. Once approved, trigger the rule through deck_automation_list / deck_automation_trigger (its own permission).";
+
 /// Deck's own Adapter↔app control protocol (not the MCP standard version).
 const CONTROL_PROTOCOL: u32 = 5;
 const MAX_REQUEST: usize = 256 * 1024;
@@ -179,6 +191,90 @@ struct WorkerStartInput {
     /// The card's title (at most 80 characters).
     #[serde(default)]
     title: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct TemplateDraftInput {
+    /// 1–120 characters; naming an existing template of the project
+    /// proposes new steps for it.
+    name: String,
+    /// 1–20 prompts typed into the card's agent in order, one per turn
+    /// (each at most 2000 characters, multi-line allowed). May hold
+    /// {{msg.text}}, {{msg.from}}, {{msg.where}}, {{msg.link}} (filled from
+    /// deck_automation_trigger), but no step may BEGIN with one.
+    steps: Vec<String>,
+    /// At most 3 fixed replies offered as buttons on the card; no
+    /// placeholders.
+    #[serde(default)]
+    follow_ups: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RuleDraftInput {
+    /// The id deck_automation_trigger will name: lowercase letters, digits,
+    /// _ + - (1–64). An existing Agent rule's id proposes a change to it.
+    automation_id: String,
+    /// Display name (at most 120 characters).
+    #[serde(default)]
+    name: String,
+    /// A column id of the project (deck_config_describe columns).
+    column_id: String,
+    /// The card's working directory, inside your authorized directory; the
+    /// authorized directory itself when empty.
+    #[serde(default)]
+    dir: String,
+    /// `claude` or `codex --no-daemon`, optionally with simple flags.
+    cmd: String,
+    /// The drafted template's name, or one the project already has.
+    template: String,
+    /// `keep` (default) or `close`.
+    #[serde(default)]
+    finish: Option<String>,
+    /// Every step waits for the user's check before it is sent.
+    #[serde(default)]
+    review_each: bool,
+    /// Ask the user to approve sending steps 2..N automatically.
+    #[serde(default)]
+    auto_continue: bool,
+    /// With auto_continue and placeholder steps: also ask to approve steps
+    /// carrying the handed-over text.
+    #[serde(default)]
+    external: bool,
+    /// Ask the user to let step 1 go to the freshly started agent at once.
+    #[serde(default)]
+    first_send: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ProposeInput {
+    /// Stable idempotency key for this submission (not needed with
+    /// validate_only); reuse it on every retry.
+    #[serde(default)]
+    request_id: Option<String>,
+    /// A project id from deck_config_describe.
+    project_id: String,
+    /// One line for the user: why you draft this (at most 300 characters).
+    #[serde(default)]
+    note: Option<String>,
+    /// The template to add or change.
+    #[serde(default)]
+    template: Option<TemplateDraftInput>,
+    /// The Agent handover rule to add or change.
+    #[serde(default)]
+    rule: Option<RuleDraftInput>,
+    /// Only check the draft and preview it; records nothing.
+    #[serde(default)]
+    validate_only: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ProposalGetInput {
+    /// A proposalId deck_config_propose returned.
+    proposal_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -491,12 +587,27 @@ impl DeckServer {
             tool::<WorkerReplyInput>(
                 "deck_worker_reply",
                 "Read a worker card's final message of one Claude Code turn ending (agent.state turn-done, its episode): head and tail when long (truncated). Kept in memory only, the newest 32; REPLY_GONE otherwise. Needs the local user's separate permission to read replies. Prefer asking workers to write large results to files.",
-                ro,
+                ro.clone(),
             ),
             tool::<WorkerStartInput>(
                 "deck_worker_start",
                 "Start one worker card of one of the worker types the local user offers this client (deck_worker_list workerTypes: each type's description says what it is good at, e.g. writing code or generating images). Deck opens the card with the user's own command for that type and types `text` as its first line when the agent is ready. Returns an operation to poll (deck_operation_get: committed with cardId); the card then appears in deck_worker_list. At most 8 worker cards on the Board. A Codex worker forwards no final message: ask it to write results to files.",
                 mutating.clone(),
+            ),
+            tool::<Empty>(
+                "deck_config_describe",
+                "Before drafting any Deck configuration, read this: the workflow, every field of a prompt template and an Agent handover rule with its rules, copyable examples, and your projects' columns, templates (name and structure) and Agent rules. Requires the local user's permission to draft.",
+                ro.clone(),
+            ),
+            tool::<ProposeInput>(
+                "deck_config_propose",
+                "Draft a prompt template and/or an Agent handover rule for the local user to approve. First call with validate_only: true: every problem names its field and how to fix it, and a valid draft returns a preview of what will happen. Then submit once with a fresh request_id: the draft waits in Deck's Needs attention until the user approves, opens it in the editor, or rejects it. You can never approve; nothing works before the user does. Never resubmit an identical draft.",
+                mutating.clone(),
+            ),
+            tool::<ProposalGetInput>(
+                "deck_config_proposal_get",
+                "Read one of your drafted proposals: pending, approved (saved as drafted), edited (saved with changes and without automatic sending), rejected, or withdrawn (your draft permission was withdrawn), with the next action. Poll seldom: the user decides when they come back.",
+                ro.clone(),
             ),
             tool::<WorkerSendInput>(
                 "deck_worker_send",
@@ -690,6 +801,18 @@ impl DeckServer {
                     .await
             }
             "deck_worker_list" => self.invoke::<Empty>("deck_worker_list", arguments).await,
+            "deck_config_describe" => {
+                self.invoke::<Empty>("deck_config_describe", arguments)
+                    .await
+            }
+            "deck_config_propose" => {
+                self.invoke::<ProposeInput>("deck_config_propose", arguments)
+                    .await
+            }
+            "deck_config_proposal_get" => {
+                self.invoke::<ProposalGetInput>("deck_config_proposal_get", arguments)
+                    .await
+            }
             "deck_worker_wait" => {
                 self.invoke::<WorkerWaitInput>("deck_worker_wait", arguments)
                     .await
@@ -881,7 +1004,7 @@ fn validate_control_arguments(arguments: &Value) -> Result<(), ArgumentIssue> {
 impl ServerHandler for DeckServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("Use Deck MCP only for authorized development work. Call deck_capabilities first; retain operation, session, job, generation, cursor, control epoch, control sequence and create sequence values; never blindly retry ambiguous work.")
+            .with_instructions(INSTRUCTIONS)
             .with_server_info(rmcp::model::Implementation::new("deck-mcp", VERSION))
     }
 

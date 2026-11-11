@@ -35,6 +35,8 @@ pub(crate) struct ClientView {
     /// may skip the first-interaction gate.
     pub(super) worker_types: Vec<WorkerType>,
     pub(super) worker_first_send: bool,
+    /// May draft templates and Agent rules for the user to approve.
+    pub(super) allow_drafts: bool,
     pub(super) projects: Vec<ProjectScope>,
     /// Its adapter was last refused for a control-protocol mismatch
     /// (`control::route`): the integration has to be restarted. Absent from
@@ -70,6 +72,7 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
                 allow_replies: client.allow_replies,
                 worker_types: client.worker_types.clone(),
                 worker_first_send: client.worker_first_send,
+                allow_drafts: client.allow_drafts,
                 projects: client.projects.clone(),
                 adapter_refused: client.revoked_at.is_none()
                     && emergency.refused_adapters.contains(&client.id),
@@ -297,6 +300,7 @@ pub(crate) fn mcp_client_add(
         allow_replies,
         worker_types,
         worker_first_send,
+        allow_drafts,
     } = permissions;
     let allow_replies = allow_workers && allow_replies;
     let worker_first_send = allow_workers && worker_first_send;
@@ -340,6 +344,7 @@ pub(crate) fn mcp_client_add(
             send_sequence: 0,
             worker_types,
             worker_first_send,
+            allow_drafts,
         };
         doc.config.clients.push(client.clone());
         Ok(ClientView {
@@ -353,6 +358,7 @@ pub(crate) fn mcp_client_add(
             allow_replies: client.allow_replies,
             worker_types: client.worker_types,
             worker_first_send: client.worker_first_send,
+            allow_drafts: client.allow_drafts,
             projects: client.projects,
         })
     });
@@ -462,6 +468,7 @@ pub(super) fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), 
             |operation| operation.client_id == client_id,
             "client-revoked",
         );
+        withdraw_pending(doc, &client_id);
         audit(
             doc,
             "client-revoked",
@@ -480,6 +487,7 @@ pub(super) fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), 
     retire_inbox_for(&client_id);
     sync_reply_hook();
     note_worker_change();
+    note_withdrawn(runtime);
     let mut uncertain = false;
     for session in sessions {
         uncertain |=
@@ -509,6 +517,9 @@ pub(crate) struct PermissionsInput {
     pub(super) allow_replies: bool,
     pub(super) worker_types: Vec<WorkerType>,
     pub(super) worker_first_send: bool,
+    /// May draft templates and Agent rules (`proposals.rs`); absent = off.
+    #[serde(default)]
+    pub(super) allow_drafts: bool,
 }
 
 #[tauri::command(async)]
@@ -520,6 +531,32 @@ pub(crate) fn mcp_client_permissions(
         return Err(DeckError::new(ErrorKind::Invalid, "invalid MCP client id"));
     }
     client_permissions(runtime()?, &client_id, permissions)
+}
+
+/// Every kept drafted proposal (`proposals.rs`) with its client's name:
+/// Needs attention shows the pending ones. Empty while MCP is unavailable.
+#[tauri::command]
+pub(crate) fn mcp_proposals() -> Vec<Value> {
+    runtime()
+        .ok()
+        .and_then(|runtime| proposals_ui(runtime).ok())
+        .unwrap_or_default()
+}
+
+/// The user decided a pending proposal: `approved` (the webview saved it as
+/// drafted), `edited` (saved without automatic sending, finished in the
+/// editor) or `rejected` (nothing saved). Bookkeeping the client reads,
+/// never authority; refused once the proposal is no longer pending.
+#[tauri::command]
+pub(crate) fn mcp_proposal_decide(
+    proposal_id: String,
+    decision: String,
+    rule_id: Option<String>,
+) -> Result<(), DeckError> {
+    if !valid_id(&proposal_id) {
+        return Err(DeckError::new(ErrorKind::Invalid, "invalid proposal id"));
+    }
+    proposal_decide(runtime()?, &proposal_id, &decision, rule_id)
 }
 
 /// The worker cards as the Board labels them: the client that drives each

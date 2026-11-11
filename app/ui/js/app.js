@@ -14,16 +14,17 @@ import {
 import { closePaneBySid, initLayout, leaveSessionView, openSession } from './layout.js';
 import { initTerminalChrome, insertResumeHint, newDefaultSession } from './terminal.js';
 import { initScheduler, refreshQueue } from './scheduler.js';
-import { initTemplates } from './templates.js';
+import { initTemplates, openTemplates } from './templates.js';
 import { startInbound } from './inbound.js';
 import { drainConnector, initConnector } from './connector.js';
 import { initMcp } from './mcp.js';
-import { initAutomation, ruleOf, startOrphanPruning } from './automation.js';
+import { initAutomation, isOpen as automationsOpen, openAutomations, openEditor as openRuleEditor, renderAutomations, ruleOf, startOrphanPruning } from './automation.js';
 import { closeDropdownMenu, initDropdowns } from './dropdown.js';
 import { registerSessionPopup } from './session-tools.js';
 import { initAttention, openFromNotification, refreshAttention } from './attention.js';
 import { initMentions, startMentions } from './slack-mentions.js';
 import { initWorkers, startWorkers } from './workers.js';
+import { initProposals, startProposals } from './proposals.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
 import { initVoice } from './voice.js';
@@ -516,6 +517,16 @@ function initModules() {
   initAttention({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp });
   initMentions({ provider, render, switchProject, leaveSessionView, closeBuffer });
   initWorkers({ render });
+  initProposals({
+    provider, switchProject,
+    refresh: () => { refreshAttention(); if (automationsOpen()) renderAutomations(); },
+    openRuleEditor: async ruleId => {
+      await openAutomations();
+      const rule = (ctx.settings?.inbound?.rules || []).find(value => value.id === ruleId);
+      if (rule) openRuleEditor(rule);
+    },
+    openTemplates: () => openTemplates(),
+  });
   initLayout();
   initScheduler({ provider, pollNow, refreshAttention, ruleOf });
   initBuffer();
@@ -603,6 +614,7 @@ const offerBoardExit = createBoardExit({
     startInbound();
     startMentions();
     startWorkers();
+    startProposals();
     startOrphanPruning();
   },
 });
@@ -731,6 +743,7 @@ export async function boot() {
   if (!loadErr) startInbound();
   if (!loadErr) startMentions();
   if (!loadErr) startWorkers();
+  if (!loadErr) startProposals();
   drainConnector();
   setTimeout(checkForUpdate, 4000);
   /* runtime cadence comes from a Rust thread (App Nap freezes JS timers) */

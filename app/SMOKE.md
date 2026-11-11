@@ -442,6 +442,30 @@ client runs with `--start-type claude`, so the worker is started with
 the window in front: a locked screen or a covered window freezes the page's
 timers (its takeover and hand-back steps then never come).
 
+## Drafted configuration (WKWebView mode `drafts`)
+
+`drafts` runs the same carrier as `workers` (debug only, isolated data dir
+under `/private/tmp`, a unique `deck-smoke-…` socket, the fixture's
+`copy_agent.py` and `work/`; no hooks file, no worker). The page authorizes
+one client `orchestrator` that may trigger automations and draft, reports
+`workers-armed`, and then answers drafts as the person does, from the
+Needs attention row and the review dialog. `scripts/mcp-drafts-e2e.py`
+(same adapter, socket and credential arguments as `mcp-worker-e2e.py`,
+plus `--work <data>/translation-fixture/work`) drafts four times: a draft
+with problems is refused field by field, a valid one (a three-step
+template and an Agent rule asking for automatic continuation with the
+handed-over text and the first step at once) is approved
+(`drafts-approved`: the steps shown, the template, the rule, its approval
+valid and the "Drafted by" label); a change to that rule is saved and
+opened in the editor (`drafts-edited`: the change listed, no approval, no
+first-send choice); a third is rejected (`drafts-rejected`); the fourth is
+withdrawn when the page turns the draft choice off (`drafts-withdrawn`; the
+client then gets `PERMISSION_DENIED`). After `drafts-regranted` a real agent
+(Claude Code `-p` with only this instance's adapter, asked in plain words
+to set up a lint automation) drafts on its own; the page approves it
+(`drafts-agent`). Judge with `scripts/smoke-verdict <data> drafts`. Keep the
+screen unlocked and the window in front.
+
 ## Signal integrity: automation finish (FR-SI-01)
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-signal.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-signal-UNIQUE DECK_SMOKE_WKWEBVIEW=signal-finish app/run.sh`.

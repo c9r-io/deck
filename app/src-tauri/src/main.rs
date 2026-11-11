@@ -222,6 +222,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("terminal-input", "m.verifyTerminalInput()"),
     ("terminal-perf", "m.verifyTerminalPerf()"),
     ("workers", "m.verifyWorkers()"),
+    ("drafts", "m.verifyDrafts()"),
 ];
 
 fn smoke_entry(mode: &str) -> &'static str {
@@ -619,6 +620,8 @@ fn main() {
             mcp::mcp_client_delete,
             mcp::mcp_client_permissions,
             mcp::mcp_workers_ui,
+            mcp::mcp_proposals,
+            mcp::mcp_proposal_decide,
             mcp::mcp_worker_take_over,
             mcp::mcp_worker_hand_back,
             mcp::mcp_scope_preview,

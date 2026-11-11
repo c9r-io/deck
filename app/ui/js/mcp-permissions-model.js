@@ -4,7 +4,8 @@
 // # Contract
 // - One dialog decides every choice of a client at once (extension-mcp.js):
 //   create sessions, trigger Agent automations, drive worker cards (with
-//   their types, the first-send choice and shared replies). This module
+//   their types, the first-send choice and shared replies), draft templates
+//   and Agent rules for the user to approve (proposals.js). This module
 //   owns the dependencies and the shape the backend takes
 //   (`mcp_client_add`, `mcp_client_permissions`, mcp/workers.rs): a child
 //   choice its parent does not allow is sent as off, so the dialog can never
@@ -30,6 +31,7 @@ export function initialPermissions(client) {
     allowWorkers: client?.allowWorkers === true,
     allowReplies: client?.allowReplies === true,
     workerFirstSend: client?.workerFirstSend === true,
+    allowDrafts: client?.allowDrafts === true,
     workerTypes: Array.isArray(client?.workerTypes) ? client.workerTypes.map(t => ({ ...t })) : [],
   };
 }
@@ -48,6 +50,7 @@ export function permissionsPayload(p) {
     allowWorkers: workers,
     allowReplies: workers && p.allowReplies === true,
     workerFirstSend: workers && p.workerFirstSend === true,
+    allowDrafts: p.allowDrafts === true,
     workerTypes: workers ? p.workerTypes.map(t => ({
       name: String(t.name || '').trim(),
       cmd: String(t.cmd || '').trim().replace(/\s+/g, ' '),
@@ -97,5 +100,6 @@ export function permissionSummary(client) {
   if (client.allowCreate) keys.push('mcp.summaryCreate');
   if (client.allowAutomations) keys.push('mcp.automationsOn');
   if (client.allowWorkers) keys.push(client.allowReplies ? 'mcp.workersOn' : 'mcp.workersNoReplies');
+  if (client.allowDrafts) keys.push('mcp.summaryDrafts');
   return keys;
 }

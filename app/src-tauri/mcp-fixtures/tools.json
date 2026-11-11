@@ -3,6 +3,9 @@
     "deck_automation_list",
     "deck_automation_trigger",
     "deck_capabilities",
+    "deck_config_describe",
+    "deck_config_proposal_get",
+    "deck_config_propose",
     "deck_exec",
     "deck_job_input",
     "deck_job_interrupt",
@@ -24,6 +27,7 @@
   ],
   "mutating": [
     "deck_automation_trigger",
+    "deck_config_propose",
     "deck_exec",
     "deck_job_input",
     "deck_job_interrupt",

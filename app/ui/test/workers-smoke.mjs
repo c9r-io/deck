@@ -27,7 +27,7 @@
 //      sends each at least one line. The page counts them.
 // No hook word and no event is synthesized: the Signal comes from the real
 // Claude Code in each card.
-export async function runWorkersSmoke() {
+export async function runWorkersSmoke({ drafting = false } = {}) {
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider, panes } = await import('../js/board.js');
   const { openSession, backToBoard } = await import('../js/layout.js');
@@ -84,14 +84,108 @@ export async function runWorkersSmoke() {
     $('mcp-auth-yes').click();
     await until(() => $('mcp-auth').style.display === 'none', 3000, 50);
   };
+  /* `drafts`: a client that may draft (and trigger automations); the
+     scripted client (scripts/mcp-drafts-e2e.py) drafts four times and the
+     page answers each through the Needs attention row and the review
+     dialog, as the person does: approve, save and edit, reject, and the
+     fourth is withdrawn with the choice. Then the choice is granted again
+     for a real agent's own draft, which the page approves (`done` b=4). */
+  const drafts = async ({ project, column, work }) => {
+    const { showAttention } = await import('../js/attention.js');
+    const { pendingNow, refreshProposals, drafter } = await import('../js/proposals.js');
+    const { grantState } = await import('../js/automation-model.js');
+    await inv('mcp_enable');
+    const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
+      permissions: { allowCreate: false, allowAutomations: true, allowWorkers: false, allowReplies: false,
+        workerTypes: [], workerFirstSend: false, allowDrafts: true } });
+    const listed = await until(async () => {
+      const status = await inv('mcp_status');
+      return status.enabled && status.socketReady && status.clients.some(value => value.id === client.id && value.allowDrafts) ? status : null;
+    }, 15_000, 250);
+    await report('workers-client', !!listed && client.allowDrafts === true);
+    await report('workers-armed', true);
+    /* the next pending draft, opened from its Needs attention row */
+    const seen = new Set();
+    const review = async ms => {
+      const p = await until(async () => { await refreshProposals(); return pendingNow().find(value => !seen.has(value.id)) || null; }, ms, 1000);
+      if (!p) return null;
+      seen.add(p.id);
+      showAttention();
+      const row = await until(() => document.querySelector(`#attention-list [data-key="proposal-${p.id}"]`), 10_000, 200);
+      if (!row) throw new Error('draft row');
+      row.querySelector('.attention-open').click();
+      if (!(await until(() => $('prop').style.display === 'flex', 3000, 50))) throw new Error('draft dialog');
+      return p;
+    };
+    const rules = () => ctx.settings.inbound.rules.filter(value => value.source === 'agent' && value.badge === 'code-review');
+    const template = name => provider.project(project.id)?.templates?.find(value => value.name === name) || null;
+
+    /* 1. approve: the template and the rule, its approval signed by the click */
+    const p1 = await review(600_000);
+    if (!p1) throw new Error('no first draft');
+    const shownSteps = [...document.querySelectorAll('#prop-body .prop-step-text')].map(el => el.textContent);
+    $('prop-approve').click();
+    const saved = await until(() => rules()[0] || null, 15_000, 200);
+    const tpl = template('Code review');
+    const grant = saved && tpl ? await grantState(saved, tpl) : 'none';
+    await refreshProposals();
+    await openAutomations();
+    const label = [...document.querySelectorAll('.auto-rule')].some(el => el.textContent.includes(t('proposals.draftedBy'))
+      && el.textContent.includes('orchestrator'));
+    closeAutomations();
+    await report('drafts-approved', shownSteps.length === 3 && !!tpl && tpl.steps.length === 3 && tpl.followUps?.length === 1
+      && saved?.cmd === 'claude' && saved.dir === work && saved.columnId === column.id && grant === 'valid'
+      && saved.autoSend?.external === true && saved.firstSendWithoutReadiness === true
+      && drafter(saved.id) === 'orchestrator' && label, shownSteps.length, grant === 'valid' ? 1 : 0);
+
+    /* 2. a change: what changes is shown; save and edit opens the editor */
+    const p2 = await review(600_000);
+    if (!p2) throw new Error('no second draft');
+    const diff = [...document.querySelectorAll('#prop-body .prop-diff li')].map(el => el.textContent);
+    $('prop-edit').click();
+    const editor = await until(() => (!$('auto-editor').hidden && $('auto-badge').value === 'code-review') || null, 15_000, 200);
+    const edited = rules()[0];
+    closeAutomations();
+    await report('drafts-edited', diff.length >= 1 && !!editor && rules().length === 1
+      && edited?.cmd === 'claude --permission-mode acceptEdits' && !edited.autoSend && !edited.firstSendWithoutReadiness, diff.length);
+
+    /* 3. rejected: nothing saved */
+    const p3 = await review(600_000);
+    if (!p3) throw new Error('no third draft');
+    $('prop-reject').click();
+    await pause(2000);
+    await report('drafts-rejected', !template('Scratch') && !pendingNow().some(value => value.id === p3.id));
+
+    /* 4. the fourth waits; withdrawing the choice withdraws it */
+    const p4 = await until(async () => { await refreshProposals(); return pendingNow().find(value => !seen.has(value.id)) || null; }, 600_000, 1000);
+    await setPermission('orchestrator', 'mcp-perm-drafts', false);
+    $('set-close').click();
+    const gone = await until(async () => { await refreshProposals(); return p4 && !pendingNow().some(value => value.id === p4.id) ? true : null; }, 15_000, 500);
+    await report('drafts-withdrawn', !!gone && !template('Later'));
+
+    /* 5. granted again for a real agent: its own draft, approved as shown */
+    await setPermission('orchestrator', 'mcp-perm-drafts', true);
+    $('set-close').click();
+    await report('drafts-regranted', true);
+    const p5 = await review(1_500_000);
+    let agentOk = false;
+    if (p5) {
+      $('prop-approve').click();
+      await pause(3000);
+      await refreshProposals();
+      agentOk = !pendingNow().some(value => value.id === p5.id) && !!p5.template;
+    }
+    await report('drafts-agent', agentOk, p5?.template?.steps?.length || 0, p5?.rule ? 1 : 0);
+    await report('done', !failed, 1, 4);
+  };
   let first = null;
   try {
     if (store.cards.length) throw new Error('nonempty isolated board');
     /* `live`: Claude Code workers (parts A and B); `codex`: one Codex
        `--no-daemon` worker through part A only (no reply is forwarded for
        Codex, and part B is not run: `done` then reports b=2) */
-    const scenario = await inv('smoke_native_scenario').catch(() => '');
-    if (!['live', 'codex', 'types'].includes(scenario)) throw new Error('scenario');
+    const scenario = drafting ? 'drafts' : await inv('smoke_native_scenario').catch(() => '');
+    if (!['live', 'codex', 'types', 'drafts'].includes(scenario)) throw new Error('scenario');
     const codex = scenario === 'codex';
     /* `types`: no template and no rule; the client carries one Claude worker
        type and the first-send choice, and the scripted client starts the
@@ -107,6 +201,7 @@ export async function runWorkersSmoke() {
       : `claude --setting-sources project --permission-mode acceptEdits --settings ${fixture}/worker-hooks.json`;
     const project = provider.projects()[0];
     const column = project.columns[0];
+    if (scenario === 'drafts') { await drafts({ project, column, work }); return; }
 
     /* 1. Remote access on; one client that may start and drive workers */
     await inv('mcp_enable');

@@ -777,6 +777,34 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 #mcp-auth-box .mcp-auth-field input, #mcp-auth-box .mcp-auth-field select { box-sizing: border-box; width: 100%; }
 #mcp-auth-box .mcp-field-error { color: var(--danger); font-size: var(--fs-11); line-height: 1.35; margin: var(--sp-6) 0 0; }
 #mcp-auth-box .mcp-field-error[hidden] { display: none; }
+/* a drafted proposal (proposals.js): every step in full, the rule's fields,
+   what changes; the dialog scrolls inside itself */
+#prop {
+  position: fixed; inset: 0; z-index: 72; display: none;
+  background: var(--modal-overlay);
+  align-items: flex-start; justify-content: center;
+}
+#prop-box {
+  max-width: calc(100vw - 40px);
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: var(--sp-20);
+  box-shadow: 0 16px 48px var(--shadow-modal);
+}
+#prop-box { width: calc(640 * var(--u)); max-height: calc(84vh - 20px); overflow-y: auto; margin-top: 8vh; }
+#prop [hidden] { display: none; }
+#prop-box h2 { margin: 0 0 var(--sp-8); font-size: var(--fs-14); font-weight: 600; overflow-wrap: anywhere; }
+#prop-box h3 { margin: var(--sp-16) 0 var(--sp-8); font-size: var(--fs-12); font-weight: 600; }
+#prop-box .set-hint { margin: var(--sp-8) 0; }
+.prop-steps { margin: 0; padding-left: calc(22 * var(--u)); display: flex; flex-direction: column; gap: var(--sp-6); }
+.prop-step-text { margin: 0; padding: var(--sp-6) var(--sp-8); border: 1px solid var(--border-soft); border-radius: 6px; font-family: var(--mono); font-size: var(--fs-11); white-space: pre-wrap; overflow-wrap: anywhere; }
+.prop-step-changed .prop-step-text, .prop-step-new .prop-step-text { border-color: var(--accent); }
+.prop-badge { display: inline-block; margin-bottom: var(--sp-4); font-size: var(--fs-10); color: var(--accent); }
+.prop-label { margin: var(--sp-10) 0 var(--sp-4); font-size: var(--fs-11); color: var(--muted); }
+.prop-followups, .prop-diff { margin: 0; padding-left: calc(22 * var(--u)); font-size: var(--fs-12); }
+.prop-kv { display: grid; grid-template-columns: calc(150 * var(--u)) minmax(0, 1fr); gap: var(--sp-4) var(--sp-10); margin: 0; font-size: var(--fs-12); }
+.prop-kv dt { color: var(--muted); }
+.prop-kv dd { margin: 0; overflow-wrap: anywhere; }
+#prop-box .prop-risk { color: var(--danger); }
 #mcp-auth-root { flex: 1; min-width: 0; font-family: var(--mono); }
 #mcp-auth-box .set-hint { margin: var(--sp-8) 0 var(--sp-16); }
 /* the one authorization dialog (mcp-permissions-model.js): every choice of

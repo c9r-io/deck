@@ -10,7 +10,7 @@ use super::*;
 /// added there without listing the tool here (and in
 /// `mcp-fixtures/tools.json`) is unreachable; the tests hold this list equal
 /// to the fixture and check that every member routes.
-pub(super) const CONTROL_TOOLS: [&str; 21] = [
+pub(super) const CONTROL_TOOLS: [&str; 24] = [
     "deck_automation_list",
     "deck_automation_trigger",
     "deck_capabilities",
@@ -32,6 +32,9 @@ pub(super) const CONTROL_TOOLS: [&str; 21] = [
     "deck_worker_reply",
     "deck_worker_send",
     "deck_worker_start",
+    "deck_config_describe",
+    "deck_config_propose",
+    "deck_config_proposal_get",
 ];
 
 /// Whether `credential` is the current credential of a client that may use
@@ -196,6 +199,13 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
             "deck_worker_reply" => worker_reply(runtime, &request.client_id, request.arguments),
             "deck_worker_send" => worker_send(runtime, &request.client_id, request.arguments),
             "deck_worker_start" => worker_start(runtime, &request.client_id, request.arguments),
+            "deck_config_describe" => {
+                config_describe(runtime, &request.client_id, request.arguments)
+            }
+            "deck_config_propose" => config_propose(runtime, &request.client_id, request.arguments),
+            "deck_config_proposal_get" => {
+                proposal_get(runtime, &request.client_id, request.arguments)
+            }
             _ => unsupported(),
         }
     };
@@ -211,6 +221,7 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
                 | "deck_automation_trigger"
                 | "deck_worker_send"
                 | "deck_worker_start"
+                | "deck_config_propose"
         ) {
             Some("request-denied")
         } else {

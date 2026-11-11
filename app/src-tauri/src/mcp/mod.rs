@@ -196,6 +196,19 @@
 //! unsent lines per card, 30 lines a minute. A ledger holding any of this is
 //! written at `STATE_VERSION_WORKERS` (sticky).
 //!
+//! Drafted configuration (`proposals.rs`, `docs/mcp.md` "Drafted
+//! configuration"): a client with the separate local choice `allow_drafts`
+//! may describe its projects' templates and Agent rules and PROPOSE a
+//! template and/or one Agent handover rule (validate-only first: every
+//! problem names its field and its fix). A proposal is a draft: it waits in
+//! the ledger, Needs attention shows it, and only the user's click there
+//! writes it through the webview's Board transaction and settings writer,
+//! the click signing the rule's approval exactly as a tick in the editor
+//! does. The client never approves or applies anything; it reads the
+//! decision (`deck_config_proposal_get`). Withdrawing the choice or revoking
+//! the client withdraws what waits. A ledger holding a proposal or the
+//! choice is written at `STATE_VERSION_PROPOSALS` (sticky).
+//!
 //! Layout (one contract, one file per concern; every file starts with
 //! `use super::*` and exposes its items `pub(super)`): `state` holds the disk
 //! document, its records, the runtime and load/validate/compact/save;
@@ -204,7 +217,8 @@
 //! `runner` the pane runner's private control channel; `wire` the request
 //! envelope and argument shapes; `project` list/read/search; `session` the
 //! session-level requests including close; `automation` the automation
-//! delegation above; `workers` the worker cards; `jobs` exec, job reads and every
+//! delegation above; `workers` the worker cards; `proposals` the drafted
+//! configuration; `jobs` exec, job reads and every
 //! job side effect; `control` request routing plus the socket thread; and
 //! `commands` the local Tauri commands and the guards other modules call
 //! (`spawn` registers `guard_server_restart` with `tmux_lifecycle`, which
@@ -242,6 +256,7 @@ mod grants;
 mod jobs;
 mod operations;
 mod project;
+mod proposals;
 mod runner;
 mod session;
 mod state;
@@ -258,6 +273,7 @@ use grants::*;
 use jobs::*;
 use operations::*;
 use project::*;
+use proposals::*;
 use runner::*;
 use session::*;
 use state::*;
@@ -276,6 +292,9 @@ const STATE_VERSION_AUTOMATIONS: u32 = 7;
 /// The sticky version a ledger takes once it holds worker cards or the
 /// choices that drive them (`workers::uses_workers`): a v7 build refuses it.
 const STATE_VERSION_WORKERS: u32 = 8;
+/// The sticky version a ledger takes once it holds a drafted proposal or
+/// the draft choice (`proposals::uses_proposals`): a v8 build refuses it.
+const STATE_VERSION_PROPOSALS: u32 = 9;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
