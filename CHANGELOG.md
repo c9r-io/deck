@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.20 — 2026-11-11 (Nightly)
+
+- Agents can draft automations for you: let an MCP client draft (a new
+  choice in its Permissions… dialog) and ask it to "set up an automation
+  that reviews pull requests in three steps". It drafts the template and
+  the Agent handover rule; Deck checks the draft and tells the agent what to
+  fix, so what reaches you can be saved. The draft waits under Needs
+  attention → Drafted configuration: Review… shows every step in full, the
+  rule's command, directory and column, what changes against your current
+  template or rule, and what it asks for (sending later steps
+  automatically, sending the first step at once). Approve saves it exactly
+  as shown; Save and edit saves it without automatic sending and opens the
+  editor; Reject saves nothing. The agent can never approve anything
+  itself, and a rule saved from a draft says "Drafted by …" in the drawer.
+  Only templates and Agent handover rules can be drafted.
+
 ## 0.8.19 — 2026-11-11 (Nightly)
 
 - Remote access: authorizing an MCP client is now one dialog. Name,
