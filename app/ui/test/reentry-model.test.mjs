@@ -92,7 +92,7 @@ test('the profile comes from the preview alone: nothing saved on a card can enab
   const plan = selectAll(reentryPlan(preview));
   assert.equal(planCounts(plan).bypass, 0);
   assert.equal(withPolicy(plan, POLICY_BYPASS).policy, POLICY_ORDINARY);
-  assert.deepEqual(Object.keys(plan.entries[0]).sort(), ['cardId', 'kind', 'observed', 'profile', 'reason', 'session', 'source']);
+  assert.deepEqual(Object.keys(plan.entries[0]).sort(), ['cardId', 'kind', 'launchRefused', 'observed', 'profile', 'reason', 'session', 'source']);
 });
 
 test('the request holds the selected candidate ids only', () => {
@@ -820,4 +820,20 @@ test('a started Codex entry is counted as started, never as re-entered, and says
   // with an entry still in progress the started count keeps its own place
   const pending = projectResult({ replaced: true, requested: ['X', 'P'], result: reentryResult({ requestId: 'R', state: 'running', serverReplaced: true, entries: [started('X', { settled: true }), entry('P', 'unconfirmed', { settled: false })] }) });
   assert.deepEqual(pending.summary, { key: 'reentry.result.summaryPendingStarted', params: { confirmed: 0, started: 1, pending: 1, other: 0 } });
+});
+
+test('a row whose launch the grammar refused says what refused it, by a closed word only', () => {
+  setLocale('en');
+  const refused = (word, cardId) => ({ cardId, session: `deck-${cardId}`, kind: 'unsupported', reason: 'identity-unavailable', source: 'claude-code', launchRefused: word });
+  const plan = reentryPlan({ token: 'T', lifecycleObservation: true, entries: [
+    refused('--mcp-config', 'A'), refused('other-flag', 'B'), refused('positional', 'C'),
+    refused('environment', 'D'), refused('rm -rf /', 'E'), candidate('F', 'ordinary'),
+  ] });
+  const notes = planView(plan).rows.map(row => say(row.note));
+  assert.equal(notes[0], t('reentry.reason.launch-option', { option: '--mcp-config' }));
+  assert.equal(notes[1], t('reentry.reason.launch-other'));
+  assert.equal(notes[2], t('reentry.reason.launch-positional'));
+  assert.equal(notes[3], t('reentry.reason.launch-environment'));
+  assert.equal(notes[4], t('reentry.reason.identity-unavailable', { agent: 'Claude Code' }), 'anything else is not shown');
+  assert.equal(plan.entries[5].launchRefused, null, 'a candidate carries none');
 });

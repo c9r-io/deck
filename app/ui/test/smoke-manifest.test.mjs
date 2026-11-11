@@ -15,7 +15,7 @@ const manifest = JSON.parse(readFileSync(new URL('./fixtures/smoke-manifest.json
    --smoke-wkwebview mode into wk-smoke.mjs, whose verify* entries hand
    five of them to their own files. */
 const CARRIERS = {
-  'wk-smoke.mjs': ['run', 'settings', 'ambiguous', 'restart', 'buffer', 'buffer-narrow', 'channel', 'channel-fault', 'connector', 'connector-transport', 'selection-events'],
+  'wk-smoke.mjs': ['run', 'settings', 'ambiguous', 'restart', 'buffer', 'buffer-narrow', 'channel', 'channel-fault', 'connector', 'connector-transport', 'selection-events', 'reentry-shapes'],
   'translation-smoke.mjs': ['translation', 'translation-native', 'translation-guard'],
   'attention-smoke.mjs': ['attention'],
   'resume-smoke.mjs': ['resume'],
@@ -59,6 +59,7 @@ const DYNAMIC = [
   ['translation-smoke.mjs', "await report(`tl-n-d07-await-${step}`, ", ["tl-n-d07-await-corrupt", "tl-n-d07-await-missing"]],
   ['translation-smoke.mjs', "await report(`tl-n-d07-${step}`, ", ["tl-n-d07-corrupt", "tl-n-d07-missing"]],
   ['wk-smoke.mjs', 'await report(kind, ', ['channel-network', 'channel-scope']],
+  ['wk-smoke.mjs', 'await report(name, a, index)', ['shape-plain', 'shape-accept-edits', 'shape-bypass', 'shape-auto', 'shape-effort', 'shape-setting-sources', 'shape-settings']],
   ['locale-layout-smoke.mjs', 'await report(`ll-${short}`, ', ['ll-en', 'll-zh', 'll-ja', 'll-ko', 'll-es', 'll-de']],
   ['resume-smoke.mjs', "report('resume-capture-' + i, ", ['resume-capture-0', 'resume-capture-1']],
   ['review-smoke.mjs', "report(seq === 2 ? 'review-second' : 'review-last', ", ['review-second', 'review-last']],

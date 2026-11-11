@@ -821,6 +821,16 @@ pub(crate) struct LaunchGrammar {
     pub(crate) ordinary_modes: &'static [&'static str],
     /// Flags taking exactly one value that are recognized and dropped.
     pub(crate) dropped: &'static [&'static str],
+    /// Flags taking exactly one value that are recognized and CARRIED: the
+    /// re-entry request types each again with the value it was launched
+    /// with (`Reduced::carried`), so the client is opened as it was started.
+    pub(crate) carried: &'static [&'static str],
+    /// The permission-mode flag and its ordinary value are carried too.
+    pub(crate) carry_mode: bool,
+    /// Flags this adapter knows and does not support, named in the preview
+    /// when one refuses a launch (any other word is said as `other-flag` or
+    /// `positional`: a launch's words never reach the view or the log).
+    pub(crate) named: &'static [&'static str],
     /// Flags without a value that are recognized and dropped: they choose
     /// which session the client opened, which the final receipt names
     /// anyway (`--continue`).
@@ -898,14 +908,60 @@ fn environment_supported(env: &[&str], home: &str, grammar: &LaunchGrammar) -> b
 }
 
 /// The closed reduction of one launch image: its profile and whether a
-/// directory flag was present. Pure; every argument is dropped here.
+/// directory flag was present. Pure.
 fn reduce_launch(
     argv: &[&str],
     env: &[&str],
     home: &str,
     grammar: &LaunchGrammar,
 ) -> (LaunchProfile, bool) {
-    let unsupported = (LaunchProfile::Unsupported, false);
+    let reduced = reduce_launch_full(argv, env, home, grammar);
+    (reduced.profile, reduced.additional_dirs)
+}
+
+/// One launch image as re-entry reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Reduced {
+    pub(crate) profile: LaunchProfile,
+    /// A directory flag was present (an observation, not a list).
+    pub(crate) additional_dirs: bool,
+    /// The carried flags and their values, in launch order, as separate
+    /// words (`--flag`, `value`): what the request types again.
+    pub(crate) carried: Vec<String>,
+    /// For `Unsupported`: the closed name of what refused it — a flag of the
+    /// grammar, `other-flag`, `positional` or `environment`.
+    pub(crate) refused: Option<&'static str>,
+}
+
+/// The grammar's own spelling of `flag`, or `other-flag`: a closed word.
+fn named_flag(grammar: &LaunchGrammar, flag: &str) -> &'static str {
+    std::iter::once(grammar.bypass)
+        .chain(std::iter::once(grammar.mode))
+        .chain(std::iter::once(grammar.directories))
+        .chain(grammar.resume.iter().copied())
+        .chain(grammar.carried.iter().copied())
+        .chain(grammar.dropped.iter().copied())
+        .chain(grammar.switches.iter().copied())
+        .chain(grammar.named.iter().copied())
+        .find(|name| *name == flag)
+        .unwrap_or("other-flag")
+}
+
+/// The full reduction: profile, directories, the carried words and, when
+/// refused, what refused it. Pure; only carried values leave it.
+pub(crate) fn reduce_launch_full(
+    argv: &[&str],
+    env: &[&str],
+    home: &str,
+    grammar: &LaunchGrammar,
+) -> Reduced {
+    let refuse = |why: &'static str| Reduced {
+        profile: LaunchProfile::Unsupported,
+        additional_dirs: false,
+        carried: Vec::new(),
+        refused: Some(why),
+    };
+    let mut carried: Vec<String> = Vec::new();
     let (mut bypass, mut mode, mut directories, mut resumed) = (false, false, false, false);
     // a bare resume word still waits for its id, which may follow the
     // flags as a positional word (`resume --flag <id>`)
@@ -926,61 +982,83 @@ fn reduce_launch(
             bypass = true;
         } else if grammar.resume.contains(&flag) {
             if resumed {
-                return unsupported;
+                return refuse(named_flag(grammar, flag));
             }
             // a bare resume word is a picker: supported only where the
             // adapter says so, and the next word must not be its value
             let bare = inline.is_none() && rest.peek().is_none_or(|next| next.starts_with('-'));
             if bare {
                 if !grammar.resume_optional {
-                    return unsupported;
+                    return refuse(named_flag(grammar, flag));
                 }
                 id_pending = true;
             } else if !value(&mut rest).is_some_and(|id| (grammar.resume_value)(id)) {
-                return unsupported;
+                return refuse(named_flag(grammar, flag));
             }
             resumed = true;
         } else if let Some(at) = grammar.required.iter().position(|name| *name == flag) {
             if inline.is_some() || required_seen[at] {
-                return unsupported;
+                return refuse(named_flag(grammar, flag));
             }
             required_seen[at] = true;
         } else if flag == grammar.mode {
-            if mode || !value(&mut rest).is_some_and(|m| grammar.ordinary_modes.contains(&m)) {
-                return unsupported;
+            let Some(chosen) =
+                value(&mut rest).filter(|m| !mode && grammar.ordinary_modes.contains(m))
+            else {
+                return refuse(named_flag(grammar, flag));
+            };
+            if grammar.carry_mode {
+                carried.push(grammar.mode.to_string());
+                carried.push(chosen.to_string());
             }
             mode = true;
+        } else if let Some(name) = grammar.carried.iter().find(|name| **name == flag) {
+            let Some(chosen) = value(&mut rest) else {
+                return refuse(name);
+            };
+            carried.push((*name).to_string());
+            carried.push(chosen.to_string());
         } else if grammar.dropped.contains(&flag) {
             if value(&mut rest).is_none() {
-                return unsupported;
+                return refuse(named_flag(grammar, flag));
             }
         } else if grammar.switches.contains(&flag) && inline.is_none() {
             // recognized, dropped, and takes no value
         } else if flag == grammar.directories {
             if value(&mut rest).is_none() {
-                return unsupported;
+                return refuse(named_flag(grammar, flag));
             }
             while rest.next_if(|next| !next.starts_with('-')).is_some() {}
             directories = true;
         } else if id_pending && inline.is_none() && (grammar.resume_value)(token) {
             // the bare resume word's id, after the flags
             id_pending = false;
+        } else if !token.starts_with('-') {
+            return refuse("positional");
         } else {
-            return unsupported;
+            return refuse(named_flag(grammar, flag));
         }
     }
-    if (bypass && mode)
-        || required_seen.iter().any(|seen| !seen)
-        || !environment_supported(env, home, grammar)
-    {
-        return unsupported;
+    if bypass && mode {
+        return refuse(grammar.mode);
+    }
+    if let Some(at) = required_seen.iter().position(|seen| !seen) {
+        return refuse(grammar.required[at]);
+    }
+    if !environment_supported(env, home, grammar) {
+        return refuse("environment");
     }
     let profile = if bypass {
         LaunchProfile::Bypass
     } else {
         LaunchProfile::Ordinary
     };
-    (profile, directories)
+    Reduced {
+        profile,
+        additional_dirs: directories,
+        carried,
+        refused: None,
+    }
 }
 
 // How many full content reads this thread started (the cost tests), and how
@@ -1414,6 +1492,10 @@ pub(crate) struct ClientQualification {
     pub(crate) profile: LaunchProfile,
     /// A directory flag was present at launch (an observation, not a list).
     pub(crate) additional_dirs: bool,
+    /// The carried launch words (`Reduced::carried`).
+    pub(crate) carried: Vec<String>,
+    /// What refused an `Unsupported` launch (`Reduced::refused`).
+    pub(crate) refused: Option<&'static str>,
     pub(crate) cwd: Option<DirRef>,
 }
 
@@ -1431,6 +1513,9 @@ pub(crate) enum NotProduct {
 
 /// One exact process, asked whether it is the product and how it started.
 #[derive(Debug)]
+// One answer per read, consumed at once: the size of the qualification
+// (its carried launch words) costs nothing worth a box.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ClientRead {
     /// No such process generation (exited, or the pid was reused).
     Gone,
@@ -1515,9 +1600,14 @@ pub(crate) fn qualify_client(
         Binding::Unreadable => Err(Unavailable::Unverified),
         Binding::Other | Binding::Gone => Err(Unavailable::Changed),
     });
-    let (profile, additional_dirs) = match (&parsed, spec.home.to_str()) {
-        (Some((_, argv, env)), Some(home)) => reduce_launch(argv, env, home, spec.grammar),
-        _ => (LaunchProfile::Unknown, false),
+    let reduced = match (&parsed, spec.home.to_str()) {
+        (Some((_, argv, env)), Some(home)) => reduce_launch_full(argv, env, home, spec.grammar),
+        _ => Reduced {
+            profile: LaunchProfile::Unknown,
+            additional_dirs: false,
+            carried: Vec::new(),
+            refused: None,
+        },
     };
     let cwd = working_dir(pid);
     if !alive() || image_path(pid).as_deref() != Some(image.as_path()) {
@@ -1525,8 +1615,10 @@ pub(crate) fn qualify_client(
     }
     ClientRead::Product(ClientQualification {
         executable,
-        profile,
-        additional_dirs,
+        profile: reduced.profile,
+        additional_dirs: reduced.additional_dirs,
+        carried: reduced.carried,
+        refused: reduced.refused,
         cwd,
     })
 }
@@ -2388,6 +2480,9 @@ mod tests {
         mode: "--permission-mode",
         ordinary_modes: &["default", "plan", "acceptEdits"],
         dropped: &["--model"],
+        carried: &[],
+        carry_mode: false,
+        named: &[],
         switches: &["--continue", "-c"],
         directories: "--add-dir",
         refused_env: &["CLAUDE_CONFIG_DIR"],

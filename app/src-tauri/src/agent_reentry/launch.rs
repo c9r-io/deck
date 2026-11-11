@@ -4,8 +4,9 @@
 //! # Contract
 //! - The text is rebuilt from structured fields (`command_line`): the frozen
 //!   absolute executable as one single-quoted shell word, then argument
-//!   words from the adapter's closed set. No environment assignment, no
-//!   prompt, no saved card command, no replayed argv. It travels on stdin
+//!   words from the adapter's closed set, the client's carried launch
+//!   options among them (each value one single-quoted word). No environment
+//!   assignment, no prompt, no saved card command, no other replayed argv. It travels on stdin
 //!   into a private tmux buffer, never in process arguments or logs.
 //! - The launch CONTEXT is a separate question from the input edge. Before
 //!   the request this module establishes a bounded set of facts and no more:
@@ -67,21 +68,29 @@ pub(crate) struct Target<'a> {
 /// is written against (the system's own build of it), for every adapter.
 const LOGIN_SHELL: &str = "zsh";
 
-/// The single command line for `executable` and closed argument `words`:
-/// one line, the path as one single-quoted word. `None` for a path that
-/// cannot be quoted on one line or a word outside `[A-Za-z0-9-]`.
+/// The single command line for `executable` and argument `words`: one
+/// line, the path as one single-quoted word, each word bare when it is all
+/// `[A-Za-z0-9-]` (the adapter's own words) and otherwise one single-quoted
+/// word (a carried launch value: a path, a list, a JSON object). `None` for
+/// a path or a word that cannot be quoted on one line (a control
+/// character), or an empty word.
 pub(crate) fn command_line(executable: &Path, words: &[String]) -> Option<String> {
     let path = executable.to_str().filter(|_| executable.is_absolute())?;
+    let quoted = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
     if path.chars().any(char::is_control) {
         return None;
     }
-    let mut line = format!("'{}'", path.replace('\'', r"'\''"));
+    let mut line = quoted(path);
     for word in words {
-        if word.is_empty() || !word.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        if word.is_empty() || word.chars().any(char::is_control) {
             return None;
         }
         line.push(' ');
-        line.push_str(word);
+        if word.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            line.push_str(word);
+        } else {
+            line.push_str(&quoted(word));
+        }
     }
     Some(line)
 }
@@ -312,10 +321,19 @@ impl prompt_delivery::Transport for EnvTransport<'_> {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         (self.env.tmux_stdin)(&args, input)
     }
+    /// The primitive's settle between the paste and the Enter is an agent
+    /// TUI's (it collapses or renders a paste before it takes a key). The
+    /// target here is the user's login shell at its prompt, whose line
+    /// editor reads the pasted line and the Enter in order: a short settle
+    /// is enough, and the full one, entry after entry, cost a sixteen-card
+    /// restart half of its entries (2026-11-10).
     fn pause(&self, duration: Duration) {
-        std::thread::sleep(duration);
+        std::thread::sleep(duration.min(SHELL_SETTLE));
     }
 }
+
+/// The settle between the paste and the Enter for the login shell.
+const SHELL_SETTLE: Duration = Duration::from_millis(100);
 
 /// The entry's one transport attempt. The caller has consumed the launch
 /// slot; this function is never called twice for an entry.
@@ -448,20 +466,25 @@ mod tests {
                 "{bad:?}"
             );
         }
-        for bad in [
-            "",
-            "a b",
-            "x;y",
-            "$(id)",
-            "KEY=value",
-            "--model=opus",
-            "continue\n",
-            "'quoted'",
-        ] {
+        for bad in ["", "continue\n", "a\tb"] {
             assert!(
                 command_line(exe, &words(&["--resume", bad])).is_none(),
                 "{bad:?}"
             );
+        }
+        // any other word is one single-quoted shell word: a carried launch
+        // value is typed, never interpreted
+        for (word, typed) in [
+            ("a b", "'a b'"),
+            ("x;y", "'x;y'"),
+            ("$(id)", "'$(id)'"),
+            ("KEY=value", "'KEY=value'"),
+            ("/path/to/settings.json", "'/path/to/settings.json'"),
+            ("{\"hooks\":{}}", "'{\"hooks\":{}}'"),
+            ("'quoted'", r"''\''quoted'\'''"),
+        ] {
+            let line = command_line(exe, &words(&["--settings", word])).unwrap();
+            assert!(line.ends_with(&format!(" --settings {typed}")), "{line}");
         }
     }
 }

@@ -1812,9 +1812,12 @@ pub(crate) async fn restart_tmux_server(
     // guard and the plan until it returns — its answer then confirms nothing.
     let limit = started
         + crate::restart::TOTAL_BUDGET
-        + reentry.as_ref().map_or(Duration::ZERO, |_| {
-            crate::agent_reentry::POST_BUDGET + crate::agent_reentry::CONFIRM_SHARE
+        + reentry.as_ref().map_or(Duration::ZERO, |approval| {
+            crate::agent_reentry::post_budget(approval.cards.len())
+                + crate::agent_reentry::CONFIRM_SHARE
         });
+    let post_budget =
+        crate::agent_reentry::post_budget(reentry.as_ref().map_or(0, |a| a.cards.len()));
     tauri::async_runtime::spawn_blocking(move || {
         crate::session_runtime::run_bounded(limit, move || {
             let progress = |phase: &str, completed: usize, total: usize| {
@@ -1850,7 +1853,7 @@ pub(crate) async fn restart_tmux_server(
                         crate::scheduler::pause_for_server_restart(&queues, sessions)
                     },
                     reentry: &|work| with_reentry_env(|env| work(env)).is_some(),
-                    post_budget: crate::agent_reentry::POST_BUDGET,
+                    post_budget,
                 },
                 RestartExpectation {
                     pid: expected_pid,

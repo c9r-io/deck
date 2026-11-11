@@ -180,7 +180,21 @@ function previewEntry(raw, repeated) {
     // a candidate whose adapter's lifecycle observation is on: the only
     // rows that can be ticked (the backend's own flag, per row)
     observed: kind === 'candidate' && raw.observed === true,
+    // what refused the client's launch: a closed word of the backend's
+    // (a flag of the adapter's grammar, or one of three names)
+    launchRefused: kind !== 'candidate' && LAUNCH_REFUSED.test(String(raw.launchRefused || ''))
+      ? raw.launchRefused : null,
   };
+}
+
+const LAUNCH_REFUSED = /^(?:--?[A-Za-z][A-Za-z-]{0,39}|other-flag|positional|environment)$/;
+
+/* the sentence of a row whose launch the grammar refused */
+export function launchRefusedNote(word) {
+  if (word === 'other-flag') return { key: 'reentry.reason.launch-other', params: {} };
+  if (word === 'positional') return { key: 'reentry.reason.launch-positional', params: {} };
+  if (word === 'environment') return { key: 'reentry.reason.launch-environment', params: {} };
+  return { key: 'reentry.reason.launch-option', params: { option: word } };
 }
 
 /** A fresh plan for this preview: nothing selected, ordinary policy. A
@@ -286,6 +300,7 @@ export function planView(plan, { managed = false } = {}) {
     checked: plan.selected.includes(entry.cardId),
     note: entry.kind === 'candidate' ? text(PROFILE_KEYS[entry.profile], { agent: agentOf(entry.source) })
       : entry.kind === 'shell' ? text('reentry.kind.shell')
+        : entry.launchRefused ? text(launchRefusedNote(entry.launchRefused).key, launchRefusedNote(entry.launchRefused).params)
         : text(own(REASON_KEYS, entry.reason) || 'reentry.reason.identity-unavailable', { agent: agentOf(entry.source) }),
   }));
   const bypassOn = counts.bypass > 0;

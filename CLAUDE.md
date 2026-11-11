@@ -448,7 +448,10 @@ Chromium testing of the mock catches none of these; verify in the real app.
   command.** On a confirmed shell-service restart with ticked cards it types
   one request per entry: the frozen executable with its adapter's exact-id
   resume words (Claude `--resume <native session>`; Codex `resume
-  --no-daemon <native session>`), plus the bypass override only under that
+  --no-daemon <native session>`) and the client's own carried launch
+  options read from its launch image (Claude: ordinary permission mode,
+  model, effort, settings, setting sources — never the bypass, never the
+  card's saved command), plus the bypass override only under that
   restart's Policy B, or the words that ask Codex for the ordinary profile
   under Policy A on a bypass launch. One attempt, never retried; a client is
   admitted by verified code identity, never a release list; a confirmed or

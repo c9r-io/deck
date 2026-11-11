@@ -198,16 +198,22 @@ const BYPASS: &str = "--dangerously-skip-permissions";
 const RESUME: &str = "--resume";
 
 /// The launch shapes a direct native client is supported in: the bypass flag
-/// or an ordinary permission mode, a model, directories, and the ways a user
-/// opens a session again — `--resume`/`-r` with one exact id or alone (the
-/// native picker) and `--continue`/`-c`. Which session the client opened
-/// does not matter: re-entry resumes the one its final receipt names.
-/// Anything else — a wrapper, an unknown flag, a positional prompt, a
-/// picker's search words, `--fork-session`,
-/// `--allow-dangerously-skip-permissions`, `--permission-mode
-/// bypassPermissions`, another config root, a provider or credential
-/// override — classifies as unsupported and is never re-entered
-/// automatically.
+/// or an ordinary permission mode (`auto` included: Claude Code's own
+/// automatic approvals, not the bypass), the launch options a worker card's
+/// command carries — a model, an effort, a settings file or JSON, the
+/// setting sources — directories, and the ways a user opens a session
+/// again: `--resume`/`-r` with one exact id or alone (the native picker) and
+/// `--continue`/`-c`. Which session the client opened does not matter:
+/// re-entry resumes the one its final receipt names. The mode and the
+/// launch options are CARRIED: the request types each again with the value
+/// the client was started with, so a worker reopens with its own hooks,
+/// model and settings (2026-11-11: eight worker cards started with such
+/// options were "launch-shape" and not offered). Anything else — a
+/// wrapper, an unknown flag, a positional prompt, a picker's search words,
+/// `--fork-session`, `--allow-dangerously-skip-permissions`,
+/// `--permission-mode bypassPermissions`, another config root, a provider
+/// or credential override — classifies as unsupported and is never
+/// re-entered automatically; the preview names a flag of `named`.
 const GRAMMAR: LaunchGrammar = LaunchGrammar {
     bypass: BYPASS,
     resume: &[RESUME, "-r"],
@@ -215,8 +221,33 @@ const GRAMMAR: LaunchGrammar = LaunchGrammar {
     resume_optional: true,
     required: &[],
     mode: "--permission-mode",
-    ordinary_modes: &["default", "plan", "acceptEdits"],
-    dropped: &["--model"],
+    ordinary_modes: &["default", "plan", "acceptEdits", "auto"],
+    dropped: &[],
+    carried: &["--model", "--effort", "--settings", "--setting-sources"],
+    carry_mode: true,
+    named: &[
+        "--allow-dangerously-skip-permissions",
+        "--fork-session",
+        "--session-id",
+        "--print",
+        "-p",
+        "--mcp-config",
+        "--strict-mcp-config",
+        "--append-system-prompt",
+        "--system-prompt",
+        "--allowedTools",
+        "--allowed-tools",
+        "--disallowedTools",
+        "--disallowed-tools",
+        "--agents",
+        "--agent",
+        "--plugin-dir",
+        "--fallback-model",
+        "--ide",
+        "--chrome",
+        "--debug",
+        "--verbose",
+    ],
     switches: &["--continue", "-c"],
     directories: "--add-dir",
     refused_env: &["CLAUDE_CONFIG_DIR"],
@@ -408,6 +439,70 @@ pub(crate) fn end_reason(word: &str) -> Option<EndReason> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The launch options a worker card's command carries reduce to a
+    /// supported launch and are carried with their values in launch order;
+    /// the mode `auto` is ordinary; what refuses a launch is named by a
+    /// closed word, never by the launch's own text.
+    #[test]
+    fn launch_options_are_carried_and_a_refusal_is_named() {
+        let home = ["HOME=/Users/u", "PATH=/usr/bin"];
+        let reduce = |args: &[&str]| {
+            let mut argv = vec!["claude"];
+            argv.extend_from_slice(args);
+            crate::procinfo::reduce_launch_full(&argv, &home, "/Users/u", &GRAMMAR)
+        };
+        let worker = reduce(&[
+            "--permission-mode",
+            "auto",
+            "--effort=high",
+            "--settings",
+            "/w/hooks.json",
+            "--setting-sources",
+            "project",
+            "--model",
+            "opus",
+        ]);
+        assert_eq!(worker.profile, crate::procinfo::LaunchProfile::Ordinary);
+        assert_eq!(
+            worker.carried,
+            [
+                "--permission-mode",
+                "auto",
+                "--effort",
+                "high",
+                "--settings",
+                "/w/hooks.json",
+                "--setting-sources",
+                "project",
+                "--model",
+                "opus"
+            ]
+        );
+        assert_eq!(worker.refused, None);
+        // the bypass is never carried: Policy B alone types it again
+        let bypass = reduce(&["--dangerously-skip-permissions", "--effort", "low"]);
+        assert_eq!(bypass.profile, crate::procinfo::LaunchProfile::Bypass);
+        assert_eq!(bypass.carried, ["--effort", "low"]);
+        let refused = |args: &[&str]| reduce(args).refused;
+        assert_eq!(refused(&["--mcp-config", "x.json"]), Some("--mcp-config"));
+        assert_eq!(refused(&["--secret-flag"]), Some("other-flag"));
+        assert_eq!(refused(&["fix the bug"]), Some("positional"));
+        assert_eq!(
+            refused(&["--permission-mode", "bypassPermissions"]),
+            Some("--permission-mode")
+        );
+        assert_eq!(refused(&["--settings"]), Some("--settings"), "no value");
+        assert_eq!(
+            refused(&[
+                "--dangerously-skip-permissions",
+                "--permission-mode",
+                "plan"
+            ]),
+            Some("--permission-mode")
+        );
+    }
+
     use super::*;
 
     const ID: &str = "731c5908-251a-4388-b3a3-4719ad442bce";

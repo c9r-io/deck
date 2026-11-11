@@ -3412,6 +3412,50 @@ export async function verifyOrchestrators() {
   await runWorkersSmoke({ orchestrating: true });
 }
 
+/* `reentry-shapes`: which launch commands of a real Claude Code a restart's
+   re-entry preview accepts. Seven plain-shell cards, each typed one command
+   a worker card's Agent rule or worker type might carry, then ONE preview
+   (read-only: nothing restarts). Each must be a candidate (a=1); otherwise
+   a=-2 unidentified (`launch-shape` in app.log), -3 a shell (the client did
+   not start), -4 anything else; b = the card's index. Before 2026-11-11
+   the last four were -2: worker cards with launch options were never
+   offered. */
+export async function verifyReentryShapes() {
+  const { inv } = await import('../js/state.js');
+  const { provider } = await import('../js/board.js');
+  const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const report = (name, a, b = 0) => inv('ui_event', { code: 'smoke-check', detail: name, a, b });
+  let failed = false;
+  const marker = await inv('smoke_native_fixture');
+  const work = marker.slice(0, marker.lastIndexOf('/')) + '/work';
+  const shapes = [
+    ['shape-plain', 'claude'],
+    ['shape-accept-edits', 'claude --permission-mode acceptEdits'],
+    ['shape-bypass', 'claude --dangerously-skip-permissions'],
+    ['shape-auto', 'claude --permission-mode auto'],
+    ['shape-effort', 'claude --effort high'],
+    ['shape-setting-sources', 'claude --setting-sources project'],
+    ['shape-settings', "claude --settings {}"],
+  ];
+  const project = provider.projects()[0];
+  const cards = [];
+  for (const [name, cmd] of shapes) {
+    const { card } = await provider.createStarted({ projectId: project.id, columnId: project.columns[0].id,
+      title: name, dir: work, cmd }, { requireCreated: true });
+    cards.push([name, card]);
+  }
+  await pause(25_000);
+  let preview = null;
+  try { preview = await inv('agent_reentry_preview'); } catch (_) { preview = null; }
+  for (const [index, [name, card]] of cards.entries()) {
+    const row = preview?.entries?.find(entry => entry.cardId === card.id);
+    const a = !row ? 4 : row.kind === 'candidate' ? 1 : row.reason === 'identity-unavailable' ? 2 : row.kind === 'shell' ? 3 : 4;
+    if (a !== 1) failed = true;
+    await report(name, a === 1 ? 1 : -a, index);
+  }
+  await report('done', preview && !failed ? 1 : -1, cards.length);
+}
+
 export async function verifyProjects() {
   const { runWorkersSmoke } = await import('./workers-smoke.mjs');
   await runWorkersSmoke({ projecting: true });

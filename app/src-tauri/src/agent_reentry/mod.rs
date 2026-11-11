@@ -132,8 +132,14 @@
 //!      (`lifecycle::seal_all`). The confirmation's share is time for those
 //!      checks alone; what it confirms, it confirms from the sealed set.
 //! - **Policy.** A (`Ordinary`, the default): every approved entry is
-//!   `<frozen executable> --resume <exact id>` and nothing else — no bypass,
-//!   no `--permission-mode default`. B (`ReapplyBypass`) is THIS restart's
+//!   `<frozen executable> <its carried launch options> --resume <exact id>`
+//!   and nothing else — no bypass, and no mode the launch did not have. The
+//!   carried options are the adapter's closed list read from the old
+//!   client's own launch image (`procinfo::Reduced::carried`: for Claude its
+//!   ordinary permission mode, model, effort, settings and setting sources),
+//!   typed again with their values, each one quoted word, so a worker card
+//!   reopens with its own hooks and settings (2026-11-11). They grant
+//!   nothing the user's own launch did not. B (`ReapplyBypass`) is THIS restart's
 //!   explicit reauthorization: the override is added only for
 //!   selected ∩ previewed-as-bypass ∩ frozen-as-bypass entries of the same
 //!   exact client (`decide`). It is not "preserve the final state": a client
@@ -147,7 +153,9 @@
 //!   exact pid + birth, bounded argv reduction inside procinfo). A saved
 //!   card command, shell history, terminal text, `PATH`, an earlier
 //!   observation or a session id never decides it, and no observed argv is
-//!   replayed.
+//!   replayed beyond the adapter's closed carried options. A refused launch
+//!   names what refused it on its row (`launch_refused`: a flag of the
+//!   grammar, `other-flag`, `positional` or `environment`), never its text.
 //! - **No release is named.** A client is admitted by what its running code
 //!   IS, not by a list: the adapter states the product's code requirement
 //!   (`ReentryCapability::product`), and Security.framework validates it
@@ -568,6 +576,10 @@ pub(crate) struct PreviewEntryView {
     /// named `agent`: that is the Signal word's field in the poll payload.)
     source: Option<&'static str>,
     launch_profile: Option<&'static str>,
+    /// What refused the client's launch, a closed word (a flag of the
+    /// adapter's grammar, `other-flag`, `positional`, `environment`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    launch_refused: Option<&'static str>,
     /// A candidate whose adapter's lifecycle hooks are installed: the only
     /// rows that can be ticked. `false` on every other row.
     observed: bool,
@@ -707,6 +719,9 @@ struct Client {
     executable: ExecutableRef,
     profile: LaunchProfile,
     additional_dirs: bool,
+    /// The launch options the request types again (`procinfo::Reduced::
+    /// carried`): the client reopens as it was started.
+    carried: Vec<String>,
     cwd: DirRef,
     /// The source word of the adapter whose product this client is.
     source: &'static str,
@@ -728,6 +743,9 @@ struct Inspected {
     /// process is named after (the name chooses the words and nothing
     /// else), or the client's own. `None` where no adapter is known.
     source: Option<&'static str>,
+    /// For a launch the grammar refused: the closed word of what refused it
+    /// (`procinfo::Reduced::refused`), shown on the row.
+    launch_refused: Option<&'static str>,
 }
 
 impl Inspected {
@@ -738,6 +756,7 @@ impl Inspected {
             shell_birth: None,
             client: None,
             source: None,
+            launch_refused: None,
         }
     }
 
@@ -798,6 +817,7 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
             shell_birth: Some(shell_birth),
             client: None,
             source: None,
+            launch_refused: None,
         };
     }
     // A Pi whose observer Deck verified for this very foreground generation.
@@ -871,6 +891,7 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
                 shell_birth: Some(shell_birth),
                 client: None,
                 source: None,
+                launch_refused: None,
             }
         } else {
             Inspected::refused(Kind::Unsupported, Reason::UnsupportedAgent)
@@ -898,7 +919,10 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
             return unidentified(row, "launch-unread", Some(capability.source))
         }
         LaunchProfile::Unsupported => {
-            return unidentified(row, "launch-shape", Some(capability.source))
+            return Inspected {
+                launch_refused: qualified.refused,
+                ..unidentified(row, "launch-shape", Some(capability.source))
+            }
         }
     }
     Inspected {
@@ -912,9 +936,11 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
             executable,
             profile: qualified.profile,
             additional_dirs: qualified.additional_dirs,
+            carried: qualified.carried,
             cwd,
             source: capability.source,
         }),
+        launch_refused: None,
     }
 }
 
@@ -1216,6 +1242,7 @@ pub(crate) fn read_preview(env: &Env) -> Result<Previewed, DeckError> {
                     .as_ref()
                     .filter(|_| *kind == Kind::Candidate)
                     .map(|client| profile_word(client.profile)),
+                launch_refused: entry.inspected.launch_refused,
                 observed: *observed,
             })
             .collect(),
@@ -1373,6 +1400,9 @@ struct Entry {
     request: Vec<String>,
     slot: Slot,
     new: Option<PaneRow>,
+    /// The birth of the new shell's process, once its shell was created
+    /// (`open_shell`): the entry then waits for its request (`send`).
+    new_birth: Option<Birth>,
     /// The request was submitted and a receipt is awaited.
     awaiting: bool,
     /// The instant the request was submitted.
@@ -1441,6 +1471,17 @@ pub(crate) struct Plan {
 /// (implementation default, to be validated; not a per-card budget and not
 /// a product promise).
 pub(crate) const POST_BUDGET: Duration = Duration::from_secs(15);
+/// The post share for `entries` approved entries: `POST_BUDGET` for up to
+/// eight, half a second more for each beyond, at most `POST_BUDGET_MAX`.
+/// The shells start side by side (`reopen`), so this is the margin for
+/// many requests and their receipts, not one shell start per entry.
+pub(crate) fn post_budget(entries: usize) -> Duration {
+    let extra =
+        Duration::from_millis(500) * u32::try_from(entries.saturating_sub(8)).unwrap_or(u32::MAX);
+    (POST_BUDGET + extra).min(POST_BUDGET_MAX)
+}
+/// The longest post share any restart takes.
+pub(crate) const POST_BUDGET_MAX: Duration = Duration::from_secs(30);
 /// The confirmation's own share, after the post share: what the checks of
 /// the started clients may take, together, before an entry is settled. It
 /// follows `POST_BUDGET` instead of being cut out of it, so that waiting for
@@ -1631,6 +1672,7 @@ pub(crate) fn freeze(
                 request: Vec::new(),
                 slot: Slot::Armed,
                 new: None,
+                new_birth: None,
                 awaiting: false,
                 sent_at: None,
                 printed_before,
@@ -1780,6 +1822,9 @@ impl Plan {
                             executable: client.executable,
                             profile: LaunchProfile::Ordinary,
                             additional_dirs: false,
+                            // a crash record names no launch options: the
+                            // plain resume
+                            carried: Vec::new(),
                             cwd: client.cwd,
                             source,
                         },
@@ -1788,6 +1833,7 @@ impl Plan {
                         request: Vec::new(),
                         slot: Slot::Armed,
                         new: None,
+                        new_birth: None,
                         awaiting: false,
                         sent_at: None,
                         printed_before: Vec::new(),
@@ -1978,8 +2024,12 @@ impl Plan {
         ));
     }
 
-    /// The post phase: for each sealed entry create its shell, verify it,
-    /// consume the launch slot, send the one request, then wait together
+    /// The post phase: every sealed entry's shell is created first (the
+    /// shells start side by side), then for each, as its input edge is
+    /// ready, the launch slot is consumed and the one request sent (a short
+    /// settle before its Enter: the target is a shell, `launch.rs`); then
+    /// the receipts are waited for together. The share is `post_budget`
+    /// for the number of entries. Then wait together
     /// for the receipts until `end`. `end` is where the receipts end —
     /// nothing is recorded for a launch lease from that instant on — and
     /// the confirmation's own share (`CONFIRM_SHARE`) starts there: it is
@@ -2014,11 +2064,25 @@ impl Plan {
             entry.view.settled = entry.final_id.is_none();
         }
         self.publish();
+        // Two passes. Every entry's shell is created first, so the shells
+        // run their startup files side by side; then each gets its one
+        // request as its own input edge is ready. One after the other, each
+        // entry's ~1.3 s shell start cost the next one's share: of sixteen
+        // entries only eight were launched before the share ended
+        // (2026-11-10, eight `launch-refused`).
         for index in 0..self.entries.len() {
             if self.entries[index].final_id.is_none() {
                 continue;
             }
-            self.launch(env, index, new_server, restore_shells, end, held);
+            self.open_shell(env, index, new_server, restore_shells, end);
+        }
+        self.publish();
+        for index in 0..self.entries.len() {
+            if self.entries[index].new_birth.is_none() || self.entries[index].view.reason.is_some()
+            {
+                continue;
+            }
+            self.send(env, index, end, held);
             self.publish();
             progress("reopening", settled(&self.entries), total);
         }
@@ -2194,15 +2258,16 @@ impl Plan {
         progress("reopening", total, total);
     }
 
-    /// One entry up to and including its single transport attempt.
-    fn launch(
+    /// One entry up to its new shell: every check before the first side
+    /// effect, then the shell. Settles the entry when anything refuses it;
+    /// otherwise the entry waits for `send`.
+    fn open_shell(
         &mut self,
         env: &Env,
         index: usize,
         new_server: u32,
         restore_shells: bool,
         end: Instant,
-        held: &std::sync::RwLockWriteGuard<'static, ()>,
     ) {
         let entry = &mut self.entries[index];
         let refuse =
@@ -2284,6 +2349,25 @@ impl Plan {
         let Some(shell_birth) = crate::procinfo::process_start(row.pane_pid) else {
             return refuse(entry, Outcome::RefusedBeforeLaunch, Reason::LaunchRefused);
         };
+        entry.new_birth = Some(shell_birth);
+    }
+
+    /// One entry from its ready shell up to and including its single
+    /// transport attempt.
+    fn send(
+        &mut self,
+        env: &Env,
+        index: usize,
+        end: Instant,
+        held: &std::sync::RwLockWriteGuard<'static, ()>,
+    ) {
+        let entry = &mut self.entries[index];
+        let refuse =
+            |entry: &mut Entry, outcome, reason| Self::settle(entry, outcome, Some(reason));
+        let (Some(row), Some(shell_birth)) = (entry.new.clone(), entry.new_birth) else {
+            return refuse(entry, Outcome::RefusedBeforeLaunch, Reason::LaunchRefused);
+        };
+        let row = &row;
         let ready_end = end.min(Instant::now() + READY_BUDGET);
         let cwd = entry.client.cwd.clone();
         let target = launch::Target {
@@ -2314,10 +2398,18 @@ impl Plan {
         } else {
             Grant::Plain
         };
+        // the client's carried launch options come first, then the
+        // adapter's own words
         let request = entry
             .final_id
             .as_deref()
-            .and_then(|id| (capability.request)(id, grant));
+            .and_then(|id| (capability.request)(id, grant))
+            .map(|mut request| {
+                let mut words = entry.client.carried.clone();
+                words.append(&mut request.words);
+                request.words = words;
+                request
+            });
         let line = request.as_ref().and_then(|request| {
             launch::command_line(entry.client.executable.path(), &request.words)
         });

@@ -901,6 +901,18 @@
         "workers-exception": { "failureOnly": true }
       }
     },
+    "reentry-shapes": {
+      "terminal": "done",
+      "checks": {
+        "shape-plain": {},
+        "shape-accept-edits": {},
+        "shape-bypass": {},
+        "shape-auto": {},
+        "shape-effort": {},
+        "shape-setting-sources": {},
+        "shape-settings": {}
+      }
+    },
     "projects": {
       "terminal": "done",
       "checks": {

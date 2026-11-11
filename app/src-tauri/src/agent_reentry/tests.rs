@@ -290,6 +290,7 @@ fn the_seal_refuses_nothing_and_says_per_card_why_an_entry_stops() {
             executable: own.clone(),
             profile: Ordinary,
             additional_dirs: false,
+            carried: Vec::new(),
             cwd: DirRef::for_tests(&std::env::temp_dir()),
             source: claude::CAPABILITY.source,
         },
@@ -298,6 +299,7 @@ fn the_seal_refuses_nothing_and_says_per_card_why_an_entry_stops() {
         request: Vec::new(),
         slot: Slot::Armed,
         new: None,
+        new_birth: None,
         awaiting: false,
         sent_at: None,
         printed_before: Vec::new(),
@@ -410,6 +412,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
             executable: own.clone(),
             profile: Bypass,
             additional_dirs: false,
+            carried: Vec::new(),
             cwd: DirRef::for_tests(&std::env::temp_dir()),
             source: claude::CAPABILITY.source,
         },
@@ -418,6 +421,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
         request: Vec::new(),
         slot: Slot::Armed,
         new: None,
+        new_birth: None,
         awaiting: false,
         sent_at: None,
         printed_before: Vec::new(),
@@ -1290,11 +1294,16 @@ fn mixed_three_cards_under_policy_a_are_all_resumed_without_any_override() {
     assert_eq!(pasted.len(), 3, "exactly one transport per entry");
     for (text, id) in pasted.iter().zip([ID_A, ID_B, ID_C]) {
         assert!(text.ends_with(&format!(" --resume {id}")), "{text}");
-        assert!(!text.contains(BYPASS) && !text.contains("permission-mode"));
+        assert!(!text.contains(BYPASS), "{text}");
     }
+    // the plan launch reopens in its own mode (carried); nothing is added
     assert_eq!(
         launched,
-        [ID_A, ID_B, ID_C].map(|id| format!("--resume {id}"))
+        [
+            format!("--resume {ID_A}"),
+            format!("--resume {ID_B}"),
+            format!("--permission-mode plan --resume {ID_C}"),
+        ]
     );
     assert!(result.entries.iter().all(|entry| entry.warnings.is_empty()));
 }
@@ -1308,7 +1317,7 @@ fn mixed_three_cards_under_policy_b_reapply_bypass_only_to_the_bypass_launch() {
         [
             format!("{BYPASS} --resume {ID_A}"),
             format!("--resume {ID_B}"),
-            format!("--resume {ID_C}"),
+            format!("--permission-mode plan --resume {ID_C}"),
         ]
     );
     assert!(pasted[0].contains(BYPASS));
@@ -4075,13 +4084,27 @@ fn policy_b_does_not_upgrade_a_non_bypass_launch() {
             "{card}: nothing was reauthorized"
         );
     }
+    // each reopens in its own launch mode (carried), none upgraded
+    let carried = [
+        "",
+        "--permission-mode plan ",
+        "--permission-mode acceptEdits ",
+    ];
     assert_eq!(
         world.pasted(),
-        [ID_A, ID_B, ID_C].map(|id| format!("{quoted} --resume {id}"))
+        [ID_A, ID_B, ID_C]
+            .iter()
+            .zip(carried)
+            .map(|(id, mode)| format!("{quoted} {mode}--resume {id}"))
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         world.launches()[4..],
-        [ID_A, ID_B, ID_C].map(|id| format!("--resume {id}"))
+        [ID_A, ID_B, ID_C]
+            .iter()
+            .zip(carried)
+            .map(|(id, mode)| format!("{mode}--resume {id}"))
+            .collect::<Vec<_>>()[..]
     );
     assert!(
         !world.has_session("mode"),
@@ -4369,9 +4392,10 @@ fn bypass_launch_profile_is_reauthorized_after_runtime_downgrade() {
 }
 
 /// Policy A over every launch shape that qualifies and every last word
-/// about a permission mode: each request is the executable, `--resume` and
-/// the id. No bypass, no permission mode, no model, nothing of the old
-/// client's own arguments.
+/// about a permission mode: each request is the executable, the launch's
+/// own carried options (its ordinary mode, its model) and `--resume` with
+/// the id. Never the bypass, never a mode the launch did not have, and the
+/// final mode the client ended in plays no part.
 #[test]
 fn policy_a_never_adds_a_permission_override() {
     let world = World::new();
@@ -4411,14 +4435,24 @@ fn policy_a_never_adds_a_permission_override() {
         )
         .expect("restart");
     let result = result.unwrap();
+    let carried = [
+        "",
+        "",
+        "",
+        "",
+        "--permission-mode plan ",
+        "--permission-mode acceptEdits ",
+        "--permission-mode default ",
+        "--model opus ",
+    ];
     let expected: Vec<String> = (0..shapes.len())
-        .map(|n| format!("{quoted} --resume {}", id(n)))
+        .map(|n| format!("{quoted} {}--resume {}", carried[n], id(n)))
         .collect();
     assert_eq!(world.pasted(), expected);
     assert_eq!(
         world.launches()[shapes.len()..],
         (0..shapes.len())
-            .map(|n| format!("--resume {}", id(n)))
+            .map(|n| format!("{}--resume {}", carried[n], id(n)))
             .collect::<Vec<_>>()[..]
     );
     for card in &cards {
@@ -7924,4 +7958,106 @@ fn a_recovery_offers_only_what_it_can_do_and_types_into_no_open_shell() {
     recovery::decline(view.token.as_deref().unwrap(), &store).expect("declined");
     assert_eq!(recovery::load_for_tests(&store).unwrap(), Vec::new());
     assert!(world.pasted().is_empty());
+}
+
+/// A worker card's launch options (2026-11-11: eight worker cards started
+/// with options were `launch-shape` and not offered): the client is a
+/// candidate, and its one request types each option again with its own
+/// value — a path with a space as one quoted word — before `--resume`, so
+/// the new client is started exactly as the old one was. A launch with an
+/// option outside the grammar is refused and the row names that option.
+#[test]
+fn a_worker_launch_reopens_with_its_own_launch_options() {
+    let world = World::new();
+    let quoted = format!("'{}'", release(&world, NEW.0, NEW.1).display());
+    let settings = world.base.join("worker hooks.json");
+    std::fs::write(&settings, "{}").unwrap();
+    let path = settings.display().to_string();
+    let options = format!(
+        "--permission-mode auto --effort high --settings '{path}' --setting-sources project --model opus"
+    );
+    world.card(
+        "worker",
+        &format!("session={ID_A}"),
+        Some(&format!("{quoted} {options}")),
+    );
+    world.card(
+        "odd",
+        &format!("session={ID_B}"),
+        Some(&format!("{quoted} --mcp-config x.json")),
+    );
+    let (token, view) = world.preview();
+    let row = |card: &str| {
+        view["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["cardId"] == format!("card-{card}"))
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(row("worker")["kind"], "candidate", "{view}");
+    assert_eq!(row("odd")["kind"], "unsupported");
+    assert_eq!(row("odd")["launchRefused"], "--mcp-config");
+    let approval = world.approval(&token, &["worker"], Policy::Ordinary);
+    let (_, _, result) = world.restart("req-worker", &approval).expect("restart");
+    let result = result.unwrap();
+    assert_eq!(entry(&result, "worker").outcome, Outcome::Confirmed);
+    assert_eq!(
+        world.pasted(),
+        [format!("{quoted} {options} --resume {ID_A}")]
+    );
+    assert_eq!(
+        world.launches().last().unwrap(),
+        &format!(
+            "--permission-mode auto --effort high --settings {path} --setting-sources project --model opus --resume {ID_A}"
+        )
+    );
+}
+
+/// Many entries whose new shells each take a second to start (2026-11-10:
+/// sixteen entries, one shell start after the other, and the share ended
+/// after eight — eight `launch-refused`). The shells are created first and
+/// start side by side, so ten entries with one-second shells all launch
+/// inside an eight-second share.
+#[test]
+fn slow_shells_start_side_by_side_and_every_entry_launches() {
+    let world = World::new();
+    let quoted = format!("'{}'", release(&world, NEW.0, NEW.1).display());
+    let names: Vec<String> = (0..10).map(|n| format!("slow-{n}")).collect();
+    let id = |n: usize| format!("cdcdcdcd-0000-4000-8000-0000000000{n:02}");
+    for (n, name) in names.iter().enumerate() {
+        world.card(name, &format!("session={}", id(n)), Some(&quoted));
+    }
+    let (token, _) = world.preview();
+    let cards: Vec<&str> = names.iter().map(String::as_str).collect();
+    let approval = world.approval(&token, &cards, Policy::Ordinary);
+    let (_, _, result) = world
+        .restart_with(
+            "req-slow",
+            Some(&approval),
+            Duration::from_secs(8),
+            &|| {
+                // every new shell's startup takes a second
+                std::fs::write(world.base.join(".zshrc"), "sleep 1\n").unwrap();
+                Ok(())
+            },
+            &|_, _, _| {},
+        )
+        .expect("restart");
+    let result = result.unwrap();
+    for name in &names {
+        assert_eq!(entry(&result, name).outcome, Outcome::Confirmed, "{name}");
+    }
+    assert_eq!(world.pasted().len(), names.len());
+}
+
+/// The post share grows with the entries beyond eight, half a second each,
+/// and never past its ceiling.
+#[test]
+fn the_post_share_grows_with_the_entries_and_stops_at_its_ceiling() {
+    assert_eq!(post_budget(0), POST_BUDGET);
+    assert_eq!(post_budget(8), POST_BUDGET);
+    assert_eq!(post_budget(16), POST_BUDGET + Duration::from_secs(4));
+    assert_eq!(post_budget(1000), POST_BUDGET_MAX);
 }

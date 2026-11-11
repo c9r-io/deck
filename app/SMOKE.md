@@ -551,6 +551,23 @@ reached, a start from B's card is refused, B's worker reads as taken over.
 Judge with `scripts/smoke-verdict <data> projects` and the scripts' PASS
 lines. Keep the screen unlocked.
 
+## Re-entry launch shapes (WKWebView mode `reentry-shapes`)
+
+`reentry-shapes` is the restart review's PREVIEW of real Claude Code
+clients started with the launch options a worker card's command carries:
+the same carrier as `orchestrators` (debug only, isolated data dir under
+`/private/tmp`, the fixture's `copy_agent.py` and `work/`), the user's own
+signed-in Claude Code. The page starts seven plain-shell cards, each typed
+one command (`claude`; `--permission-mode acceptEdits`;
+`--dangerously-skip-permissions`; `--permission-mode auto`; `--effort
+high`; `--setting-sources project`; `--settings {}`), waits 25 s and asks
+for ONE preview (read-only: nothing restarts, nothing is typed into a
+client). Every card must be a candidate (`shape-*` a=1; -2 is the old
+`launch-shape` refusal). Judge with `scripts/smoke-verdict <data>
+reentry-shapes`. The restart itself with those options carried is the Rust
+test `a_worker_launch_reopens_with_its_own_launch_options` (real tmux and
+zsh, the fake agent); a real Claude restart is `reentry-live`.
+
 ## Signal integrity: automation finish (FR-SI-01)
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-signal.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-signal-UNIQUE DECK_SMOKE_WKWEBVIEW=signal-finish app/run.sh`.
