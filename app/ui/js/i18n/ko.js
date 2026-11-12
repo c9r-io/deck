@@ -1249,6 +1249,7 @@ const dictionary = {
   "mcp.typeAdd": "워커 유형 추가",
   "mcp.typeRemove": "이 유형 삭제",
   "mcp.typeDefaultDescription": "코드 작성, 파일 편집, 테스트 실행",
+  "mcp.typeDefaultCodexDescription": "Codex로 독립 구현하거나 두 번째 의견 제시",
   "mcp.typeNameInvalid": "유형 이름은 소문자, 숫자, - 또는 _(최대 32자)를 쓰며 중복될 수 없습니다.",
   "mcp.typeCommandInvalid": "유형의 명령은 claude 또는 codex로 시작하고 단순한 인수만 써야 합니다.",
   "mcp.typeCodexDaemon": "Codex 유형에는 --no-daemon이 필요합니다. 없으면 Deck이 Codex의 상태를 신뢰할 수 없어 입력이 전송되지 않습니다.",

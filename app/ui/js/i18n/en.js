@@ -1256,6 +1256,7 @@ const dictionary = {
   'mcp.typeAdd': 'Add worker type',
   'mcp.typeRemove': 'Remove this worker type',
   'mcp.typeDefaultDescription': 'Write code, edit files, run tests',
+  'mcp.typeDefaultCodexDescription': 'Independent implementation or a second opinion with Codex',
   'mcp.typeNameInvalid': 'A worker type’s name uses lowercase letters, digits, - or _ (at most 32), and each name once.',
   'mcp.typeCommandInvalid': 'A worker type’s command starts with claude or codex, with simple arguments only.',
   'mcp.typeCodexDaemon': 'A Codex worker type needs --no-daemon: without it Deck cannot trust Codex’s status, and its lines would never go out.',

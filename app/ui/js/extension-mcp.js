@@ -12,7 +12,7 @@ const PANEL_HTML = `
       <div id="set-mcp-clients"></div>
     </div>`;
 
-import { defaultWorkerType, previewErrorKey, scopeProblem, typeColumnChoice, initialPermissions, initialScope, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
+import { defaultWorkerTypes, previewErrorKey, scopeProblem, typeColumnChoice, initialPermissions, initialScope, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
 
 const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" aria-labelledby="mcp-auth-title">
   <div id="mcp-auth-box">
@@ -387,9 +387,9 @@ export function createMcpSettings(host) {
       $('mcp-perm-follow').onchange = () => { perms.ruleColumn = !$('mcp-perm-follow').checked; };
       $('mcp-perm-workers').onchange = () => {
         perms.allowWorkers = $('mcp-perm-workers').checked;
-        /* turned on: one Claude type and shared replies, ready to use */
+        /* turned on: a Claude and a Codex type and shared replies, ready to use */
         if (perms.allowWorkers && !perms.workerTypes.length) {
-          perms.workerTypes.push(defaultWorkerType(columns(), t('mcp.typeDefaultDescription')));
+          perms.workerTypes.push(...defaultWorkerTypes(columns(), { claude: t('mcp.typeDefaultDescription'), codex: t('mcp.typeDefaultCodexDescription') }));
           perms.allowReplies = true;
         }
         showError(permError, null, '');

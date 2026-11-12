@@ -3,7 +3,7 @@
 // that mirror the backend's, and the row's summary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_WORKER_TYPES, defaultWorkerType, initialPermissions, initialScope, permissionSummary, permissionsPayload, scopePayload, previewErrorKey, scopeProblem, typeColumnChoice, workerTypeErrorKey, workerTypesProblem } from '../js/mcp-permissions-model.js';
+import { MAX_WORKER_TYPES, defaultWorkerTypes, initialPermissions, initialScope, permissionSummary, permissionsPayload, scopePayload, previewErrorKey, scopeProblem, typeColumnChoice, workerTypeErrorKey, workerTypesProblem } from '../js/mcp-permissions-model.js';
 
 const claude = { name: 'claude', cmd: 'claude --permission-mode auto', columnId: 'C1', description: 'Write code' };
 
@@ -42,8 +42,13 @@ test('worker types are checked as the backend checks them', () => {
 });
 
 test('the default type is Claude in the first column; refusals map to one sentence each', () => {
-  assert.deepEqual(defaultWorkerType([{ id: 'C9' }, { id: 'C2' }], 'd'), { name: 'claude', cmd: 'claude', columnId: 'C9', description: 'd' });
-  assert.equal(defaultWorkerType([], 'd').columnId, '');
+  assert.deepEqual(defaultWorkerTypes([{ id: 'C9' }, { id: 'C2' }], { claude: 'a', codex: 'b' }), [
+    { name: 'claude', cmd: 'claude --permission-mode auto', columnId: 'C9', description: 'a' },
+    { name: 'codex', cmd: 'codex --no-daemon --yolo', columnId: 'C9', description: 'b' },
+  ]);
+  assert.equal(defaultWorkerTypes([], {})[0].columnId, '');
+  // the defaults pass the dialog's own checks
+  assert.equal(workerTypesProblem({ allowWorkers: true, workerTypes: defaultWorkerTypes([{ id: 'C1' }], { claude: 'a', codex: 'b' }) }), null);
   assert.equal(workerTypeErrorKey('mcp-worker-type-codex-daemon'), 'mcp.typeCodexDaemon');
   assert.equal(workerTypeErrorKey('mcp-worker-type-name'), 'mcp.typeNameInvalid');
   assert.equal(workerTypeErrorKey('mcp-worker-type-command'), 'mcp.typeCommandInvalid');

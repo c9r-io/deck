@@ -1249,6 +1249,7 @@ const dictionary = {
   "mcp.typeAdd": "Arbeitstyp hinzufügen",
   "mcp.typeRemove": "Diesen Arbeitstyp entfernen",
   "mcp.typeDefaultDescription": "Code schreiben, Dateien bearbeiten, Tests ausführen",
+  "mcp.typeDefaultCodexDescription": "Eigenständige Umsetzung oder eine zweite Meinung mit Codex",
   "mcp.typeNameInvalid": "Der Name eines Arbeitstyps besteht aus Kleinbuchstaben, Ziffern, - oder _ (höchstens 32), jeder Name nur einmal.",
   "mcp.typeCommandInvalid": "Der Befehl eines Arbeitstyps beginnt mit claude oder codex, nur mit einfachen Argumenten.",
   "mcp.typeCodexDaemon": "Ein Codex-Arbeitstyp braucht --no-daemon: ohne kann Deck dem Status von Codex nicht vertrauen, und seine Zeilen würden nie gesendet.",

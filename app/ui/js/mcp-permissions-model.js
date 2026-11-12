@@ -20,8 +20,9 @@
 //   project has any more falls back to the shown project's first.
 // - The scope rows are checked here before any directory is (`scopeProblem`),
 //   and a directory preview's refusal names its message (`previewErrorKey`).
-// - The default list offers one Claude type in the project's first column,
-//   so driving worker cards needs no further configuration.
+// - The default list offers a Claude type (`--permission-mode auto`) and a
+//   Codex type (`--no-daemon --yolo`) in the project's first column, so
+//   driving worker cards needs no further configuration.
 
 export const MAX_WORKER_TYPES = 8;
 const TYPE_NAME = /^[a-z0-9_-]{1,32}$/;
@@ -43,9 +44,15 @@ export function initialPermissions(client) {
   };
 }
 
-/* the type a newly enabled worker choice starts with */
-export function defaultWorkerType(columns, description) {
-  return { name: 'claude', cmd: 'claude', columnId: columns?.[0]?.id || '', description };
+/* the types a newly enabled worker choice starts with: Claude in auto mode
+   and Codex (`--no-daemon`, which Deck's Signal needs) without approvals,
+   both in the project's first column; `descriptions` by type name */
+export function defaultWorkerTypes(columns, descriptions) {
+  const columnId = columns?.[0]?.id || '';
+  return [
+    { name: 'claude', cmd: 'claude --permission-mode auto', columnId, description: descriptions?.claude || '' },
+    { name: 'codex', cmd: 'codex --no-daemon --yolo', columnId, description: descriptions?.codex || '' },
+  ];
 }
 
 /* the column choices of a type's row: the shown project's columns, plus

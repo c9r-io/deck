@@ -294,8 +294,9 @@ new one, **Permissions…** on its row afterwards (changes take effect at
 once). **Drive worker cards** lets it start and drive worker cards; below
 it you list the **worker types** it may start — a name, your command, the
 column and one line saying what the type is good at, which the
-orchestrator reads to choose (one Claude type is filled in; a Codex type
-must use `codex --no-daemon`). **Send a new worker card's first line
+orchestrator reads to choose (two types are filled in: `claude
+--permission-mode auto` and `codex --no-daemon --yolo`; any Codex type
+must use `--no-daemon`). **Send a new worker card's first line
 without waiting for readiness** and **Share replies** are further choices
 there. A worker card is a card it started with `deck_worker_start`, or one
 its own `deck_automation_trigger` call created while it could drive worker
