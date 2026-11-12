@@ -2590,6 +2590,29 @@ export async function verifySettings() {
     $('mcp-auth-no').click();
     await adding;
     await report('settings-mcp-cancel-authorize', explicitTarget && !(await inv('mcp_status')).clients.length);
+    /* a client row: its buttons (Claude Code and Codex setup,
+       Permissions…, Revoke, and Tunnel setup when the helper is installed)
+       each on one line, beside the client's name and
+       never over it; the row is kept as evidence/settings-mcp-client-row.png */
+    const rowClient = await inv('mcp_client_add', { name: 'Orchestrator', projects: [],
+      permissions: { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false,
+        allowDrafts: false, allowMentions: false, ruleColumn: false, workerTypes: [], allProjects: true } });
+    await renderMcpSettings();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const clientRow = document.querySelector('#set-mcp-clients .mcp-client-row');
+    clientRow?.scrollIntoView({ block: 'center' });
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const rowButtons = clientRow ? [...clientRow.querySelectorAll('.mcp-client-actions button')] : [];
+    const rowDetails = clientRow?.querySelector('.mcp-client-details')?.getBoundingClientRect();
+    const oneLine = rowButtons.filter(button => button.getBoundingClientRect().height <= 40);
+    const besideName = !!rowDetails && rowDetails.width > 160
+      && rowButtons.every(button => button.getBoundingClientRect().left >= rowDetails.right - 1);
+    await inv('smoke_native_snapshot', { name: 'settings-mcp-client-row' }).catch(() => -1);
+    await report('settings-mcp-client-row', rowButtons.length >= 4 && oneLine.length === rowButtons.length && besideName,
+      1, rowButtons.length * 10 + (oneLine.length === rowButtons.length ? 0 : 1) + (besideName ? 0 : 2));
+    await inv('mcp_client_revoke', { clientId: rowClient.id });
+    await inv('mcp_client_delete', { clientId: rowClient.id });
+    await renderMcpSettings();
     $('set-mcp-retention').value = '3600000';
     await $('set-mcp-retention').onchange();
     await renderMcpSettings();

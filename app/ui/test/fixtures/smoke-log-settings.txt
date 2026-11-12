@@ -4,6 +4,7 @@
 1792082964 [ui] smoke-check settings-mcp-enable a=1 b=0
 1792082964 [ui] smoke-check settings-mcp-cancel-authorize a=1 b=0
 1792082964 [ui] smoke-check settings-mcp-perm-layout a=7 b=0
+1792082964 [ui] smoke-check settings-mcp-client-row a=1 b=50
 1792082964 [ui] smoke-check settings-mcp-retention a=1 b=0
 1792082964 [ui] smoke-check settings-mcp-disable a=1 b=0
 1792082964 [ui] smoke-check button-force-touch a=153 b=0
