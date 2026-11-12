@@ -1249,7 +1249,7 @@ const dictionary = {
   "mcp.typeAdd": "ワーカー種類を追加",
   "mcp.typeRemove": "この種類を削除",
   "mcp.typeDefaultDescription": "コードを書く、ファイルを編集する、テストを実行する",
-  "mcp.typeDefaultCodexDescription": "Codex で独立して実装する、または別の意見を出す",
+  "mcp.typeDefaultCodexDescription": "Computer use（デスクトップアプリやブラウザの操作）、独立した実装、別の意見",
   "mcp.typeNameInvalid": "種類名は小文字、数字、- または _（32 文字まで）で、重複できません。",
   "mcp.typeCommandInvalid": "種類のコマンドは claude か codex で始め、単純な引数だけにしてください。",
   "mcp.typeCodexDaemon": "Codex の種類には --no-daemon が必要です。ないと Deck は Codex の状態を信頼できず、入力が送られません。",
