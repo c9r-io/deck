@@ -1255,7 +1255,7 @@ const dictionary = {
   'mcp.typeAdd': '添加工作卡片类型',
   'mcp.typeRemove': '删除这个类型',
   'mcp.typeDefaultDescription': '写代码、改文件、跑测试',
-  'mcp.typeDefaultCodexDescription': '擅长 computer use（操作桌面应用和浏览器），也可独立实现或给出第二意见',
+  'mcp.typeDefaultCodexDescription': '擅长 computer use（操作桌面应用和浏览器）和图片生成，也可独立实现或给出第二意见',
   'mcp.typeNameInvalid': '类型名只能用小写字母、数字、- 或 _（最多 32 个），且不能重复。',
   'mcp.typeCommandInvalid': '类型的命令必须以 claude 或 codex 开头，只能带简单参数。',
   'mcp.typeCodexDaemon': 'Codex 类型必须带 --no-daemon：否则 Deck 无法信任 Codex 的状态，它的输入永远不会发出。',

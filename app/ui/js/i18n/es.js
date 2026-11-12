@@ -1249,7 +1249,7 @@ const dictionary = {
   "mcp.typeAdd": "Añadir tipo de trabajo",
   "mcp.typeRemove": "Quitar este tipo de trabajo",
   "mcp.typeDefaultDescription": "Escribir código, editar archivos, ejecutar pruebas",
-  "mcp.typeDefaultCodexDescription": "Computer use (manejar apps de escritorio y navegadores), implementación independiente, una segunda opinión",
+  "mcp.typeDefaultCodexDescription": "Computer use (manejar apps de escritorio y navegadores), generación de imágenes, implementación independiente, una segunda opinión",
   "mcp.typeNameInvalid": "El nombre de un tipo usa minúsculas, dígitos, - o _ (32 como máximo), y cada nombre una sola vez.",
   "mcp.typeCommandInvalid": "El comando de un tipo empieza por claude o codex, solo con argumentos sencillos.",
   "mcp.typeCodexDaemon": "Un tipo de Codex necesita --no-daemon: sin él, Deck no puede fiarse del estado de Codex y sus líneas nunca se enviarían.",

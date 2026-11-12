@@ -2059,7 +2059,7 @@ test('an MCP client row opens its permissions in the one dialog and saves them a
   assert.equal(call[1].clientId, 'client_live');
   assert.deepEqual(call[1].permissions, { allowCreate: false, allowAutomations: true, allowWorkers: true, allowReplies: true, workerFirstSend: false, allowDrafts: false, allowMentions: false, ruleColumn: false,
     workerTypes: [{ name: 'claude', cmd: 'claude --permission-mode auto', columnId: 'C1', description: 'Write code, edit files, run tests' },
-      { name: 'codex', cmd: 'codex --no-daemon --yolo', columnId: 'C1', description: 'Computer use (operating desktop apps and browsers), independent implementation, a second opinion' }], allProjects: false });
+      { name: 'codex', cmd: 'codex --no-daemon --yolo', columnId: 'C1', description: 'Computer use (operating desktop apps and browsers), image generation, independent implementation, a second opinion' }], allProjects: false });
   row = fakeDocument.getElementById('set-mcp-clients').children[0];
   assert.match(row.children[0].children[1].textContent, /automations delegated · drives its worker cards/);
   // a Codex type without --no-daemon is refused in the dialog, nothing is saved
