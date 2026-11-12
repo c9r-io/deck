@@ -3,7 +3,7 @@
 // that mirror the backend's, and the row's summary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_WORKER_TYPES, defaultWorkerTypes, initialPermissions, initialScope, permissionSummary, permissionsPayload, scopePayload, previewErrorKey, scopeProblem, typeColumnChoice, workerTypeErrorKey, workerTypesProblem } from '../js/mcp-permissions-model.js';
+import { MAX_WORKER_TYPES, claudeAddCommand, codexConfig, defaultWorkerTypes, initialPermissions, initialScope, permissionSummary, permissionsPayload, scopePayload, previewErrorKey, scopeProblem, typeColumnChoice, workerTypeErrorKey, workerTypesProblem } from '../js/mcp-permissions-model.js';
 
 const claude = { name: 'claude', cmd: 'claude --permission-mode auto', columnId: 'C1', description: 'Write code' };
 
@@ -117,4 +117,13 @@ test('a preview refusal names its own message', () => {
   assert.equal(previewErrorKey('not_found'), 'mcp.rootNotFound');
   assert.equal(previewErrorKey('unavailable'), 'mcp.rootUnavailable');
   assert.equal(previewErrorKey(undefined), 'mcp.rootUnavailable');
+});
+
+test('the Claude Code command registers Deck for every directory', () => {
+  assert.equal(claudeAddCommand('/Applications/deck.app/Contents/MacOS/deck-mcp', 'client_ab12'),
+    'claude mcp add --scope user deck -- /Applications/deck.app/Contents/MacOS/deck-mcp --client-id client_ab12');
+  assert.equal(claudeAddCommand("/Apps/My Deck's.app/deck-mcp", 'c1'),
+    "claude mcp add --scope user deck -- '/Apps/My Deck'\\''s.app/deck-mcp' --client-id c1");
+  assert.equal(codexConfig('/A/deck-mcp', 'c1'),
+    '[mcp_servers.deck]\ncommand = "/A/deck-mcp"\nargs = ["--client-id", "c1"]\ndefault_tools_approval_mode = "writes"\n');
 });

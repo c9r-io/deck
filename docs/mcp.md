@@ -77,8 +77,8 @@ The bundled `deck-mcp` executable implements STDIO using the official Rust MCP
 SDK. stdout contains MCP protocol messages only; diagnostics use stderr. It
 does not start Deck or tmux when Deck is unavailable.
 
-Example Codex/ChatGPT desktop configuration (replace both placeholders with
-the values copied from Deck):
+Example Codex/ChatGPT desktop configuration (**Copy for Codex** on the client
+row copies it with both values filled in):
 
 ```toml
 [mcp_servers.deck]
@@ -92,6 +92,18 @@ The equivalent supported CLI form is:
 ```sh
 codex mcp add deck -- /Applications/deck.app/Contents/MacOS/deck-mcp --client-id CLIENT_ID_FROM_DECK
 ```
+
+For Claude Code, the client row's **Copy for Claude Code** copies:
+
+```sh
+claude mcp add --scope user deck -- /Applications/deck.app/Contents/MacOS/deck-mcp --client-id CLIENT_ID_FROM_DECK
+```
+
+`--scope user` matters: without it Claude Code registers the server for the
+current directory only, and an orchestrator started anywhere else (another
+project of an all-projects client, a temporary directory) has no Deck tools.
+A server registered earlier without it can be removed in that directory with
+`claude mcp remove deck`.
 
 For a hosted ChatGPT conversation, the private remote route is **Secure MCP
 Tunnel**. See the [complete user guide](secure-tunnel.md) for OpenAI Tunnel and

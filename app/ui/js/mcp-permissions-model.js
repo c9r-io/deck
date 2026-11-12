@@ -18,6 +18,9 @@
 // - Painting never moves a type's column (`typeColumnChoice`): a column of
 //   another project stays chosen, named with its project; only a column no
 //   project has any more falls back to the shown project's first.
+// - The client row copies a ready setup: `claude mcp add --scope user` for
+//   Claude Code (every directory, since an orchestrator may start anywhere)
+//   or Codex's TOML (`claudeAddCommand`, `codexConfig`).
 // - The scope rows are checked here before any directory is (`scopeProblem`),
 //   and a directory preview's refusal names its message (`previewErrorKey`).
 // - The default list offers a Claude type (`--permission-mode auto`) and a
@@ -154,6 +157,24 @@ export function scopePayload({ allProjects, scopes }) {
   if (allProjects === true) return { allProjects: true };
   if (!Array.isArray(scopes)) return { allProjects: false };
   return { allProjects: false, projects: scopes.map(s => ({ projectId: s.project.id, roots: [s.root] })) };
+}
+
+/* one shell word: as is when plain, else single-quoted */
+function shellWord(value) {
+  const text = String(value);
+  return /^[A-Za-z0-9_./:=+,@-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+/* the Claude Code command that registers this client for every directory
+   (`--scope user`): the default scope is the current directory only, and an
+   orchestrator may be started anywhere */
+export function claudeAddCommand(adapterPath, clientId) {
+  return `claude mcp add --scope user deck -- ${shellWord(adapterPath)} --client-id ${shellWord(clientId)}`;
+}
+
+/* the Codex configuration (Codex reads one global file) */
+export function codexConfig(adapterPath, clientId) {
+  return `[mcp_servers.deck]\ncommand = ${JSON.stringify(adapterPath)}\nargs = ["--client-id", ${JSON.stringify(clientId)}]\ndefault_tools_approval_mode = "writes"\n`;
 }
 
 /* the first thing wrong with the scope rows before any directory is

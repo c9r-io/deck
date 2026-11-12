@@ -12,7 +12,7 @@ const PANEL_HTML = `
       <div id="set-mcp-clients"></div>
     </div>`;
 
-import { defaultWorkerTypes, previewErrorKey, scopeProblem, typeColumnChoice, initialPermissions, initialScope, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
+import { claudeAddCommand, codexConfig, defaultWorkerTypes, previewErrorKey, scopeProblem, typeColumnChoice, initialPermissions, initialScope, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
 
 const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" aria-labelledby="mcp-auth-title">
   <div id="mcp-auth-box">
@@ -101,14 +101,18 @@ export function createMcpSettings(host) {
       const actions = document.createElement('div'); actions.className = 'mcp-client-actions';
       row.append(details, actions);
       if (!client.revoked) {
-        const copy = document.createElement('button'); copy.className = 'btn'; copy.textContent = t('mcp.copyConfig');
-        copy.onclick = async () => {
-          try {
-            const command = await inv('mcp_adapter_path');
-            const config = `[mcp_servers.deck]\ncommand = ${JSON.stringify(command)}\nargs = ["--client-id", ${JSON.stringify(client.id)}]\ndefault_tools_approval_mode = "writes"\n`;
-            await inv('write_clipboard', { text: config }); toast(t('mcp.configCopied'));
-          } catch (_) { toast(t('mcp.actionFailed')); }
+        const copyButton = (label, build, done) => {
+          const button = document.createElement('button'); button.className = 'btn'; button.textContent = t(label);
+          button.onclick = async () => {
+            try {
+              const text = build(await inv('mcp_adapter_path'), client.id);
+              await inv('write_clipboard', { text }); toast(t(done));
+            } catch (_) { toast(t('mcp.actionFailed')); }
+          };
+          return button;
         };
+        const copyClaude = copyButton('mcp.copyClaude', claudeAddCommand, 'mcp.claudeCopied');
+        const copy = copyButton('mcp.copyConfig', codexConfig, 'mcp.configCopied');
         const revoke = document.createElement('button'); revoke.className = 'btn'; revoke.textContent = t('mcp.revoke');
         revoke.onclick = async () => {
           if (!await confirmDangerDialog(t('mcp.revokeConfirm', { name: client.name }), t('mcp.revoke'))) return;
@@ -130,7 +134,7 @@ export function createMcpSettings(host) {
           }
           catch (error) { toast(t(workerTypeErrorKey(error) || 'mcp.actionFailed')); }
         };
-        actions.append(copy, permissions, revoke);
+        actions.append(copyClaude, copy, permissions, revoke);
       } else {
         const remove = document.createElement('button'); remove.className = 'btn set-danger'; remove.textContent = t('mcp.delete');
         remove.onclick = async () => {
