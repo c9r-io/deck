@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.23 — 2026-11-13 (Nightly)
+
+- Worker cards start with two types when you turn them on: Claude
+  (`claude --permission-mode auto`) and Codex
+  (`codex --no-daemon --yolo`), each with its own description.
+- The MCP client row has Copy for Claude Code beside Copy for Codex;
+  it copies `claude mcp add --scope user …`, so an orchestrator started
+  from any directory has Deck's tools.
+- Fixed: in Needs attention › Turn ended the tick boxes no longer
+  stretch across the card and squeeze its name into one character per
+  line; every tick box and radio keeps its own size.
+- Fixed: a long recent command no longer runs past the project defaults
+  dialog; the reminder's in-app tick no longer touches its words; a long
+  Needs attention title stops at three lines (full title on hover).
+
 ## 0.8.22 — 2026-11-12 (Nightly)
 
 - Worker cards come back after an update: a card started with its own
