@@ -806,6 +806,12 @@ export async function runAttentionSmoke() {
       if ([...tools.querySelectorAll('.attention-filters button')].some(el => el.getBoundingClientRect().right > toolsRect.right + 1)) layoutBits |= 8;
       if ($('attention-list').scrollWidth > $('attention-list').clientWidth + 1 || tools.scrollWidth > tools.clientWidth + 1) layoutBits |= 16;
       if (!closeBtn.textContent.includes('1') || !bar.querySelector('.attention-pick-all-label').textContent) layoutBits |= 32;
+      // the tick keeps its own size, so the title beside it is never
+      // squeezed into one character per line; the same for select all
+      const em = parseFloat(getComputedStyle(rowOfCard(batch.c).querySelector('.attention-card-name')).fontSize);
+      const allRect = $('attention-pick-all').getBoundingClientRect(), allLabelRect = bar.querySelector('.attention-pick-all-label').getBoundingClientRect();
+      if (pickRect.width > 2.5 * em || allRect.width > 2.5 * em || (batch.c.title.length >= 3 && titleRect.width < 2 * em)
+        || Math.abs((allRect.top + allRect.bottom) / 2 - (allLabelRect.top + allLabelRect.bottom) / 2) > 6 * scale) layoutBits |= 64;
       if (layoutBits) { layoutFails++; firstLayoutFail ||= combo; }
       layoutBits |= bitsBefore;
     }

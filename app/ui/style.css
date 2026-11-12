@@ -78,6 +78,12 @@ input {
   border-radius: 6px; padding: var(--sp-8) var(--sp-10); width: 100%;
 }
 input::placeholder { color: var(--faint); }
+/* a tick box or radio keeps its own size: the field width above, under any
+   flex `flex: none` or grid cell, stretched it across the row and squeezed
+   the text beside it into one character per line (the MCP authorization
+   rows, the Turn ended tick). `:where` keeps this at the bare `input`
+   weight, so any class rule still wins. */
+input:where([type=checkbox], [type=radio]) { width: auto; flex: none; padding: 0; }
 /* Every textarea (xterm's hidden helper aside) looks like an input and is
    sized to its content by the engine (`field-sizing`): at least its `rows`
    lines, at most 40% of the window, then it scrolls. No resize grip —
@@ -805,9 +811,7 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .mcp-perms { display: flex; flex-direction: column; gap: var(--sp-4); margin: 0 0 var(--sp-16); }
 .mcp-perms-title { margin: 0 0 var(--sp-6); font-size: var(--fs-12); font-weight: 600; }
 .mcp-perm { display: flex; align-items: center; gap: var(--sp-8); font-size: var(--fs-12); }
-/* the global `input { width: 100% }` would stretch the checkbox across the
-   row and squeeze its name into one character per line */
-.mcp-perm input[type=checkbox] { flex: none; width: auto; margin: 0; }
+.mcp-perm input[type=checkbox] { margin: 0; }
 .mcp-perm span { min-width: 0; }
 #mcp-auth-box .mcp-perm-hint { margin: 0 0 var(--sp-6) calc(22 * var(--u)); font-size: var(--fs-11); }
 #mcp-auth-box .mcp-perm-danger { color: var(--danger); }
@@ -819,7 +823,9 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 #mcp-perm-type-add { align-self: flex-start; }
 .pdf-chips { display: flex; flex-wrap: wrap; gap: var(--sp-6); margin: 0 0 var(--sp-6) calc(var(--label-w) + var(--sp-10)); }
 .pdf-chips[hidden] { display: none; }
+/* a long recent command wraps inside its chip and never runs past the dialog */
 .pdf-chip {
+  max-width: 100%; overflow-wrap: anywhere; text-align: start;
   font-family: var(--mono); font-size: var(--fs-11); padding: 1px var(--sp-8); border-radius: 10px;
   background: var(--raised); border: 1px solid var(--border); color: var(--muted);
 }
@@ -890,7 +896,7 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 #buffer-stop + #buffer-close { margin-left: 0; }
 #buffer-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: var(--sp-6); padding: var(--sp-10) var(--sp-12); }
 .buffer-row { display: flex; gap: var(--sp-8); align-items: flex-start; padding: var(--sp-8) var(--sp-8); border: 1px solid var(--border-soft); border-radius: 7px; background: var(--bg); }
-.buffer-row > input[type="checkbox"] { width: auto; flex: none; margin-top: var(--sp-4); }
+.buffer-row > input[type="checkbox"] { margin-top: var(--sp-4); }
 .buffer-body { flex: 1; min-width: 0; }
 .buffer-meta { color: var(--faint); font-size: var(--fs-10); margin-bottom: var(--sp-4); }
 .buffer-links { display: flex; flex-wrap: wrap; gap: var(--sp-8); font-size: var(--fs-10); }
@@ -1072,7 +1078,6 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .set-row { display: flex; align-items: center; gap: var(--sp-10); margin-bottom: var(--sp-6); font-size: var(--fs-13); }
 .set-row label { color: var(--muted); width: var(--label-w); flex: none; }
 .set-row select, .set-row .dd { flex: 1; min-width: 0; }
-.set-row input[type=checkbox] { width: auto; flex: none; }
 .font-controls { display: flex; align-items: center; gap: var(--sp-6); margin-left: auto; }
 .font-controls .btn { min-width: 34px; justify-content: center; padding-inline: var(--sp-10); }
 #set-font-value { min-width: calc(46 * var(--u)); text-align: center; font-family: var(--mono); color: var(--muted); }
@@ -1437,7 +1442,9 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 .attention-row, .attention-labels { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto; gap: var(--sp-16); align-items: center; padding: var(--sp-16) var(--sp-12); border-bottom: 1px solid var(--border); line-height: 1.55; }
 .attention-row > span { min-width: 0; overflow-wrap: anywhere; }
 .attention-card-name { font-weight: 600; display: flex; align-items: center; }
-.attention-card-title { min-width: 0; }
+/* a long title keeps to three lines (the whole title is its tooltip), so a
+   row stays a row at the largest font size */
+.attention-card-title { min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .attention-card-name .card-pin { margin-left: var(--sp-6); }
 .attention-origin, .attention-viewed { color: var(--muted); font-size: var(--fs-12); }
 .attention-reason[data-status="attention"] { color: var(--attn); }
@@ -1607,6 +1614,8 @@ ul.help-list.opt-note { margin: 0 0 var(--sp-8) var(--sp-24); font-size: var(--f
 .q-plan-details summary { cursor: pointer; width: fit-content; }
 .q-plan-details summary:hover { color: var(--text); }
 .q-plan-details p { margin: var(--sp-6) 0; line-height: 1.5; }
+/* the in-app-only tick and its words, a gap apart */
+.reminder-overlay label:has(> input[type=checkbox]) { display: flex; align-items: center; gap: var(--sp-6); }
 #reminder-note-feedback { margin: 0; font-size: var(--fs-12); color: var(--muted); }
 #reminder-note-feedback.reminder-note-over { color: var(--wait); }
 

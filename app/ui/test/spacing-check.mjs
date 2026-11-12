@@ -5,7 +5,10 @@
 // side by side or stacked closer than 4px (overlaps included), a control
 // closer than 3px to the inner edge of the bordered box around it, or a
 // box that keeps its own parts (a settings group, a list group, the rule
-// editor, a scratchpad note) with top and bottom space more than 6px apart.
+// editor, a scratchpad note) with top and bottom space more than 6px apart,
+// or text of three or more characters squeezed into a column narrower than
+// two of them (`⫼`, one character per line), a tick or radio touching its
+// own words (`☐`), or a floating layer whose content scrolls sideways (`⇹`).
 // Designed joins are not findings: repeated siblings (same parent, tag and
 // first class: menu items, list rows, tabs) and the parts of a segmented
 // control, a split button or a menu. Rects are clipped by scrolling
@@ -19,6 +22,7 @@ export async function runSpacingCheck(h) {
     openSettings, openAutomations, closeAutomations, projectDefaultsDialog, reminderDialog, confirmDialog,
     cfmDone, applyFontScale, pause, snapshot, card, project } = h;
   const { showAttention } = await import('../js/attention.js');
+  const { showMentions } = await import('../js/slack-mentions.js');
   const { showSessionCtx } = await import('../js/terminal.js');
   const { backToBoard } = await import('../js/layout.js');
   const { closeDropdownMenu } = await import('../js/dropdown.js');
@@ -153,6 +157,40 @@ export async function runSpacingCheck(h) {
       const above = top - B.r.top - parseFloat(s.borderTopWidth), below = B.r.bottom - parseFloat(s.borderBottomWidth) - bottom;
       if (above >= 0 && below >= 0 && Math.abs(above - below) > 6) local.push({ kind: '▤', gap: `${Math.round(above)}/${Math.round(below)}`, a: B, b: B });
     }
+    // crushed text: a run of at least three characters laid out narrower
+    // than two of them and taller than two lines, the one-character-per-
+    // line column a stretched neighbour leaves (a tick box under the global
+    // field width did it twice)
+    for (const el of document.querySelectorAll('body *')) {
+      if (skip(el) || !ownText(el)) continue;
+      const text = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').replace(/\s+/g, '');
+      if ([...text].length < 3) continue;
+      const r = clipped(el, textRect(el));
+      if (!r || !shown(el, r)) continue;
+      const s = getComputedStyle(el), em = parseFloat(s.fontSize), line = parseFloat(s.lineHeight) || em * 1.2;
+      if (r.width < 2 * em && r.height > 2.5 * line) local.push({ kind: '⫼', gap: Math.round(r.width), a: { el, r }, b: { el, r } });
+    }
+    // a tick or radio whose own words follow it with no gap (`☐`)
+    for (const el of document.querySelectorAll('input[type=checkbox], input[type=radio]')) {
+      const words = el.nextSibling;
+      if (skip(el) || !words || words.nodeType !== 3 || !words.textContent.trim()) continue;
+      const r = clipped(el);
+      if (!r || !shown(el, r)) continue;
+      const range = document.createRange(); range.selectNodeContents(words);
+      const w = range.getBoundingClientRect();
+      if (w.width > 0 && Math.abs((w.top + w.bottom) / 2 - (r.top + r.bottom) / 2) < r.height && w.left - r.right < 3) {
+        local.push({ kind: '☐', gap: Math.round(w.left - r.right), a: { el, r }, b: { el, r } });
+      }
+    }
+    // a floating layer (dialog, drawer, menu) that scrolls sideways: its
+    // content is wider than the box and part of it is cut off (`⇹`)
+    for (const el of document.querySelectorAll('body *')) {
+      if (skip(el) || layerOf(el) === document.body || el.scrollWidth <= el.clientWidth + 1) continue;
+      const s = getComputedStyle(el);
+      if (!['auto', 'scroll', 'hidden', 'clip'].includes(s.overflowX) || el.matches('pre, code, textarea, input, select')) continue;
+      const r = clipped(el);
+      if (r && shown(el, r)) local.push({ kind: '⇹', gap: el.scrollWidth - el.clientWidth, a: { el, r }, b: { el, r } });
+    }
     if (!local.length) return;
     findings.push(...local.map(f => `${surface}-${Math.round(scale * 100)} ${f.kind} ${f.gap}px ${name(f.a.el)} ${name(f.b.el)}`));
     const layer = document.createElement('div');
@@ -192,11 +230,16 @@ export async function runSpacingCheck(h) {
     ['scratchpad', async () => { await openSession(card.id); if ($('buffer-panel').hidden) $('buffer-btn').click(); await pause(200); renderBufferUI(); },
       () => { if (!$('buffer-panel').hidden) $('buffer-close')?.click(); }],
     ['attention', async () => { showAttention(); }, () => $('attention-back')?.click()],
+    ['attention-ended', async () => { showAttention(); document.querySelector('#attention-tools [data-filter="ended"]')?.click(); },
+      () => { document.querySelector('#attention-tools [data-filter="pending"]')?.click(); $('attention-back')?.click(); }],
+    ['mentions', async () => { backToBoard(); showMentions(); }, () => backToBoard()],
     ['templates', async () => { backToBoard(); openTemplates(null); await pause(200); document.querySelector('#tpl-items .tpl-item')?.click(); },
       () => $('tpl-done')?.click()],
     ['defaults', async () => {
       backToBoard();
-      projectDefaultsDialog({ projectId: project.id, name: project.name, dir: '/tmp', cmd: 'claude', recent: [],
+      projectDefaultsDialog({ projectId: project.id, name: project.name, dir: '/tmp', cmd: 'claude',
+        // a long recent command, the chip that once ran past the dialog
+        recent: ['claude', '/Applications/Example.app/Contents/MacOS/codex resume --no-daemon --yolo 01a1ca71-c0df-78e0-962d-c370845b80b1'],
         presets: project.presets || [], columns: project.columns });
     }, () => $('pdf-no')?.click()],
     ['automations', async () => { backToBoard(); await openAutomations(); $('auto-drawer').scrollTop = 0; }, () => closeAutomations()],

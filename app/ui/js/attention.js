@@ -320,6 +320,7 @@ function updateRows() {
     const snapshot = ctx.attention.get(card);
     const locate = !snapshot || snapshot.stale || !snapshot.alive;
     row.querySelector('.attention-card-title').textContent = card.title;
+    row.querySelector('.attention-card-title').title = card.title;
     const pick = row.querySelector('.attention-pick');
     pick.hidden = ctx.attentionFilter !== 'ended';
     pick.checked = picked.has(card.id);
