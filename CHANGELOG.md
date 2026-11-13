@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.24 — 2026-11-13 (Nightly)
+
+- Fixed: after Deck restarts (an update included), an orchestrator's line
+  to a worker card no longer waits until you type into the worker. With
+  "Send a new worker card’s first line without waiting for readiness" on,
+  that line goes like a worker's first line; every other hold still
+  applies. A worker reads `unavailable` until its agent's next turn after a
+  restart, and the tool description now says so.
+- Fixed: the split-window picker lists every card not already open,
+  newest first within each status, instead of the first 12.
+
 ## 0.8.23 — 2026-11-13 (Nightly)
 
 - Worker cards start with two types when you turn them on: Claude
