@@ -38,11 +38,17 @@
 //! Every other Connector command, MCP, manual lists and later steps never
 //! obtain it.
 //!
-//! A worker card's first line (`deck_worker_start`, `mcp/workers.rs`) is the
-//! one override no rule backs: its `rule` is `worker-type:<name>`, admitted
-//! only by `ops::worker_queue_add`, and it stands exactly while the client's
-//! worker first-send key is in the delegation set and the settings can be
-//! read (`standing`).
+//! A worker card's lines (`deck_worker_start`'s first, `deck_worker_send`'s
+//! later ones, `mcp/workers.rs`) carry the one override no rule backs: its
+//! `rule` is `worker-type:<…>`, admitted only by `ops::worker_queue_add`,
+//! and it stands exactly while the client's worker first-send key is in the
+//! delegation set and the settings can be read (`standing`). A later line is
+//! the one non-head row that may carry an override: interaction evidence is
+//! never persisted, so after a Deck restart or an Agent re-entry a worker
+//! waiting at its prompt would otherwise hold every line its orchestrator
+//! writes until the user typed into it (which takes the card over). The
+//! user's choice already accepted that a worker's agent may be sent a line
+//! before it showed interaction; the override still lifts nothing else.
 //!
 //! Two sources, never mixed: a Slack or clock override is backed by
 //! settings.json, a phone task override by the Board (`Backing`). Each row
@@ -621,6 +627,15 @@ fn preset_still_allows(tasks: &PhoneTasks, i: &QueueItem, o: &ReadinessOverride)
         tasks.paired.contains(&target.device)
             && preset(&tasks.board, &target.project, &o.rule)
                 .is_some_and(|preset| preset_allows(preset, &i.cmd, &target.dir))
+    })
+}
+
+/// Whether `i` carries a worker card's override (`ops::worker_queue_add`):
+/// the one kind a non-head row may carry.
+pub(crate) fn worker_override(i: &QueueItem) -> bool {
+    i.readiness_override.as_ref().is_some_and(|o| {
+        o.trigger == FirstSendOrigin::Agent
+            && o.rule.starts_with(crate::mcp::WORKER_TYPE_RULE_PREFIX)
     })
 }
 

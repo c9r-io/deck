@@ -19,7 +19,10 @@
 //!   commit queues that line as the run's head row (`settle_start`), which
 //!   then leaves the ledger. Its first-send override rests on the client's
 //!   `worker_first_send` choice alone (`worker_first_send_key`,
-//!   `scheduler/first_send.rs`).
+//!   `scheduler/first_send.rs`); with that choice every later line carries
+//!   it too, which matters only once the card's agent lost its interaction
+//!   evidence (a Deck restart or an Agent re-entry: `agent` then reads
+//!   `unavailable`, episode 0, until the agent's next turn).
 //! - Reading is content-free (`deck_worker_list`, `deck_worker_wait`: the
 //!   card, whether its session is alive, the Agent observation's closed word
 //!   and episode, the human hold, its lines' queue states) except
@@ -818,7 +821,8 @@ pub(super) fn worker_send(
             cmd: &target.cmd,
             text: &args.text,
         },
-        None,
+        false,
+        first_send_allowed(runtime, client_id),
     );
     let settled = runtime
         .write(|doc| {
@@ -1013,6 +1017,19 @@ pub(super) fn validate_worker_types(types: &[WorkerType]) -> Result<(), DeckErro
     Ok(())
 }
 
+/// Whether `client`'s worker first-send choice is on (false when the ledger
+/// cannot be read): the override its worker lines carry.
+fn first_send_allowed(runtime: &Runtime, client: &str) -> bool {
+    runtime
+        .read(|doc| {
+            doc.config
+                .clients
+                .iter()
+                .any(|c| c.id == client && c.allow_workers && c.worker_first_send)
+        })
+        .unwrap_or(false)
+}
+
 /// The key a client's worker first-send choice takes in
 /// `automation_delegations`: a worker card's first line may go to its freshly
 /// started agent without interaction evidence while it is there.
@@ -1174,14 +1191,7 @@ pub(super) fn settle_start(runtime: &Runtime, operation_id: &str, session: &str)
     }) else {
         return;
     };
-    let first_send = runtime
-        .read(|doc| {
-            doc.config
-                .clients
-                .iter()
-                .any(|c| c.id == client && c.allow_workers && c.worker_first_send)
-        })
-        .unwrap_or(false);
+    let first_send = first_send_allowed(runtime, &client);
     let queued = match (queues(runtime), runtime.app.clone()) {
         (Some(queue), Some(app)) => crate::scheduler::worker_queue_add(
             queue,
@@ -1196,7 +1206,8 @@ pub(super) fn settle_start(runtime: &Runtime, operation_id: &str, session: &str)
                 cmd: &cmd,
                 text: &text,
             },
-            Some(first_send),
+            true,
+            first_send,
         ),
         _ => Err(DeckError::new(
             ErrorKind::ContextChanged,

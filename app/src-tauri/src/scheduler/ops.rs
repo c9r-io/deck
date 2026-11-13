@@ -799,15 +799,20 @@ pub(crate) struct WorkerSend<'a> {
 /// here; a later withdrawal strips the row's authority, and the row then
 /// waits for send-now like any external row.
 ///
-/// `first` is `Some` for a worker card's first line (`deck_worker_start`):
-/// the run's head row, `at` now, carrying the first-send override when the
-/// client's worker first-send choice allows it (`Some(true)`; the override
-/// rests on that choice alone, `first_send.rs`). `None` is a later line.
+/// `head` is true for a worker card's first line (`deck_worker_start`):
+/// the run's head row, `at` now. False is a later line (`deck_worker_send`,
+/// `chain`). Either carries the first-send override when the client's
+/// worker first-send choice allows it (`first_send`; the override rests on
+/// that choice alone, `first_send.rs`). On a later line it matters only
+/// while the card's current agent has shown no interaction — after a Deck
+/// restart or an Agent re-entry, which keep no interaction evidence — and,
+/// like on the first, it lifts nothing but the first-interaction hold.
 pub(crate) fn worker_queue_add(
     state: State<'_, Queues>,
     app: AppHandle,
     send: WorkerSend<'_>,
-    first: Option<bool>,
+    head: bool,
+    first_send: bool,
 ) -> Result<(), DeckError> {
     let mut args = QueueAddArgs {
         session: send.session.into(),
@@ -816,13 +821,13 @@ pub(crate) fn worker_queue_add(
         dir: send.dir.into(),
         cmd: send.cmd.into(),
         text: send.text.into(),
-        mode: if first.is_some() { "at" } else { "chain" }.into(),
-        at: first.map(|_| now_epoch()),
+        mode: if head { "at" } else { "chain" }.into(),
+        at: head.then(now_epoch),
         // a later line: the client wrote it after the card's turn boundary,
         // so the chain's three-minute quiet only delays it; the shortest
         // quiet left keeps a paste out of output still arriving. Quiet is no
         // readiness evidence either way: every hold below still decides.
-        quiet_secs: first.is_none().then_some(MIN_QUIET_SECS),
+        quiet_secs: (!head).then_some(MIN_QUIET_SECS),
         review_each: false,
         every: None,
         not_before: None,
@@ -847,8 +852,8 @@ pub(crate) fn worker_queue_add(
     };
     admit_external(&mut args)?;
     validate_add(&args)?;
-    args.first_send_granted = (first == Some(true)).then(|| ReadinessOverride {
-        rule: send.automation.into(),
+    args.first_send_granted = first_send.then(|| ReadinessOverride {
+        rule: worker_override_rule(send.automation),
         trigger: first_send::FirstSendOrigin::Agent,
         clock_target: None,
         connector: None,
@@ -875,6 +880,20 @@ pub(crate) fn worker_queue_add(
         }
     }
     result
+}
+
+/// The override's rule id for a worker card's line: `worker-type:<name>` for
+/// a card `deck_worker_start` made (already its automation id), the same
+/// prefix before the Agent rule's id for a card a trigger made, so the
+/// override always stands on the client's worker first-send choice alone
+/// (`first_send::standing`), never on a rule's own first-send flag.
+pub(super) fn worker_override_rule(automation: &str) -> String {
+    let prefix = crate::mcp::WORKER_TYPE_RULE_PREFIX;
+    if automation.starts_with(prefix) {
+        automation.into()
+    } else {
+        format!("{prefix}{automation}")
+    }
 }
 
 /// What a worker card's orchestrator may read about its own lines: for

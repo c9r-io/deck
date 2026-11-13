@@ -60,7 +60,11 @@
 //!   (`authority_unverified` false), the current Board for a preset
 //!   (`board_unverified` false); otherwise the ordinary gate holds. It is
 //!   not evidence: the generation stays unestablished,
-//!   so every later row is still gated. `relies_on_readiness_override` says
+//!   so every later row is still gated. A worker card's lines are the one
+//!   exception to "head row only": each may carry the client's worker
+//!   first-send override (`ops::worker_queue_add`), so a worker whose agent
+//!   lost its interaction evidence to a Deck restart or a re-entry is not
+//!   left waiting for a line that only the agent's next turn could release. `relies_on_readiness_override` says
 //!   when a send depends on it (the pre-fire fence and the audit).
 //! - A native channel first-send constraint is checked before readiness. Its
 //!   current authorized head also supplies the narrowly scoped startup-risk
@@ -396,9 +400,10 @@ fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool
         .channel_first_send
         .as_ref()
         .is_some_and(|constraint| constraint.authorized);
+    // the head row of a run, or any line of a worker card (`ops::worker_queue_add`)
     let overridden = honor_override
         && (i.readiness_override.is_some() && !source_unverified || channel_override)
-        && i.mode == "at";
+        && (i.mode == "at" || first_send::worker_override(i));
     // Codex: the target's proof or literal `codex` foreground, or a row
     // configured for Codex (a wrapper or `node` foreground) — `Trusted` is
     // its interaction evidence

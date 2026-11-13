@@ -1246,7 +1246,7 @@ const dictionary = {
   'mcp.permWorkers': 'Drive worker cards',
   'mcp.permWorkersHint': 'It may start cards of the worker types below and type lines into them. It can never answer an agent’s permission prompt, and typing into such a card yourself takes it over until you hand it back.',
   'mcp.permFirstSend': 'Send a new worker card’s first line without waiting for readiness',
-  'mcp.permFirstSendHint': 'Otherwise every new worker waits for your Send now. A startup screen (trust, update) can take that first line: use folders the agent already trusts.',
+  'mcp.permFirstSendHint': 'Also the first line after Deck restarts or updates. Otherwise every new worker waits for your Send now. A startup screen (trust, update) can take that first line: use folders the agent already trusts.',
   'mcp.permReplies': 'Share replies',
   'mcp.permRepliesHint': 'It may read each worker turn’s final message. Claude Code only; a Codex worker writes its results to files.',
   'mcp.typeName': 'Type',

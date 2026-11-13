@@ -10448,3 +10448,112 @@ fn a_worker_types_first_line_override_rests_on_the_clients_choice() {
         Some(Hold::FirstInteraction)
     );
 }
+
+/// A worker card's later line (`deck_worker_send`) carries the client's
+/// worker first-send override too: after a Deck restart or an Agent
+/// re-entry the agent has no interaction evidence, and the line must not
+/// wait for a turn only the agent itself could start. It lifts the
+/// first-interaction hold alone; every other hold still holds it, and an
+/// override that is not a worker card's stays head-row only.
+#[test]
+fn a_worker_cards_later_line_is_not_stuck_after_a_restart() {
+    let worker = |rule: &str| {
+        let mut row = qi("w1", "chain");
+        row.quiet_secs = Some(MIN_QUIET_SECS);
+        row.external = true;
+        row.authority = Some(StepAuthority {
+            rule: rule.into(),
+            grant: String::new(),
+            step: 0,
+            class: ContentClass::Delegated,
+            trigger: TriggerClass::Agent,
+            connector: None,
+            delegation: Some(AgentSource {
+                client: "client_a".into(),
+            }),
+        });
+        row.readiness_override = Some(ReadinessOverride {
+            rule: rule.into(),
+            trigger: first_send::FirstSendOrigin::Agent,
+            clock_target: None,
+            connector: None,
+            delegation: Some(AgentSource {
+                client: "client_a".into(),
+            }),
+        });
+        row
+    };
+    // a card deck_worker_start made, and one an Agent trigger made: both
+    // stand on the worker first-send key, never on a rule's own flag
+    let started = worker(&ops::worker_override_rule("worker-type:claude"));
+    assert_eq!(
+        started.readiness_override.as_ref().unwrap().rule,
+        "worker-type:claude"
+    );
+    let triggered = worker(&ops::worker_override_rule("rule_x"));
+    assert_eq!(
+        triggered.readiness_override.as_ref().unwrap().rule,
+        "worker-type:rule_x"
+    );
+    let config = crate::inbound::Config {
+        slack_enabled: false,
+        rules: Vec::new(),
+    };
+    let with_first: HashSet<String> = [
+        crate::mcp::worker_delegation_key("client_a"),
+        crate::mcp::worker_first_send_key("client_a"),
+    ]
+    .into();
+    let sources = first_send::Sources {
+        settings: Some(&config),
+        board: None,
+        delegations: Some(&with_first),
+    };
+    // the agent after a restart: alive, no interaction evidence
+    let restarted = Observed::default();
+    for row in [&started, &triggered] {
+        assert!(first_send::worker_override(row));
+        assert_eq!(first_send::fence(row, sources), Fence::Clear);
+        assert_eq!(hold_reason(row, Some(&restarted)), None);
+        assert!(relies_on_readiness_override(row, Some(&restarted)));
+    }
+    // without the choice the line waits at the first-interaction gate
+    let mut plain = started.clone();
+    plain.readiness_override = None;
+    assert_eq!(
+        hold_reason(&plain, Some(&restarted)),
+        Some(Hold::FirstInteraction)
+    );
+    // every other hold still holds it
+    let asking = Observed {
+        agent: Some("needs-input"),
+        ..Observed::default()
+    };
+    assert!(hold_reason(&started, Some(&asking)).is_some());
+    let codex_unattributed = Observed {
+        codex: Some(crate::agent_status::CodexSignalTrust::Unavailable),
+        ..Observed::default()
+    };
+    assert_eq!(
+        hold_reason(&started, Some(&codex_unattributed)),
+        Some(Hold::CodexUnavailable)
+    );
+    let taken_over = Observed {
+        human_held: true,
+        ..Observed::default()
+    };
+    assert_eq!(hold_reason(&started, Some(&taken_over)), Some(Hold::Human));
+    let unreadable = Observed {
+        authority_unverified: true,
+        ..Observed::default()
+    };
+    assert_ne!(hold_reason(&started, Some(&unreadable)), None);
+    // a rule's own override on a later row is still not honoured
+    let mut ruled = started.clone();
+    ruled.readiness_override.as_mut().unwrap().rule = "rule_x".into();
+    assert!(!first_send::worker_override(&ruled));
+    assert_eq!(
+        hold_reason(&ruled, Some(&restarted)),
+        Some(Hold::FirstInteraction)
+    );
+}

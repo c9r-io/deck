@@ -41,7 +41,7 @@ const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" a
         <div id="mcp-perm-types"></div>
         <button class="btn" id="mcp-perm-type-add" type="button" data-i18n="mcp.typeAdd">Add type</button>
         <label class="mcp-perm"><input type="checkbox" id="mcp-perm-first-send"> <span data-i18n="mcp.permFirstSend">Send the first line without waiting</span></label>
-        <p class="set-hint mcp-perm-hint" data-i18n="mcp.permFirstSendHint">A startup screen may take it.</p>
+        <p class="set-hint mcp-perm-hint" data-i18n="mcp.permFirstSendHint">Also the first line after Deck restarts or updates. A startup screen may take it.</p>
         <label class="mcp-perm"><input type="checkbox" id="mcp-perm-replies"> <span data-i18n="mcp.permReplies">Share replies</span></label>
         <p class="set-hint mcp-perm-hint" data-i18n="mcp.permRepliesHint">Claude Code only.</p>
       </div>

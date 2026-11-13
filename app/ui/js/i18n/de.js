@@ -1239,7 +1239,7 @@ const dictionary = {
   "mcp.permWorkers": "Arbeitskarten steuern",
   "mcp.permWorkersHint": "Es kann Karten der unten stehenden Arbeitstypen öffnen und Zeilen hineinschreiben. Es kann nie die Berechtigungsabfrage eines Agents beantworten, und wenn Sie selbst in eine solche Karte tippen, übernehmen Sie sie, bis Sie sie zurückgeben.",
   "mcp.permFirstSend": "Die erste Zeile einer neuen Arbeitskarte senden, ohne auf Bereitschaft zu warten",
-  "mcp.permFirstSendHint": "Sonst wartet jede neue Arbeitskarte auf Ihr „Jetzt senden“. Ein Startbildschirm (Vertrauen, Update) kann diese erste Zeile abfangen: Verwenden Sie Ordner, denen der Agent bereits vertraut.",
+  "mcp.permFirstSendHint": "Das gilt auch für die erste Zeile nach einem Neustart oder Update von Deck. Sonst wartet jede neue Arbeitskarte auf Ihr „Jetzt senden“. Ein Startbildschirm (Vertrauen, Update) kann diese erste Zeile abfangen: Verwenden Sie Ordner, denen der Agent bereits vertraut.",
   "mcp.permReplies": "Antworten teilen",
   "mcp.permRepliesHint": "Es kann die letzte Nachricht jedes Arbeitsdurchgangs lesen. Nur Claude Code; eine Codex-Arbeitskarte schreibt ihre Ergebnisse in Dateien.",
   "mcp.typeName": "Typ",

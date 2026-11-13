@@ -330,7 +330,16 @@ memory only). `deck_worker_send` queues one line: Deck refuses it when the
 card's episode is no longer the one the line was written after, and
 otherwise types it only when the ordinary readiness holds allow, never
 while the agent is asking you something (after 10 s of quiet in the pane,
-and at least a minute after the card's previous line). The orchestrator can never answer
+and at least a minute after the card's previous line).
+
+After Deck restarts (an update included) a worker reads `alive: true`,
+`agent: unavailable`, episode 0 until its agent's next turn: Deck keeps no
+Agent observation across a restart, and a re-entered agent reports nothing
+while it waits at its prompt. The orchestrator can still send it a line
+after episode 0. With **Send a new worker card’s first line without waiting for readiness** on,
+that line is not held waiting for the agent to show interaction (the same
+risk you accepted for a worker's first line); with it off, it waits until
+you type into the card or send it yourself. The orchestrator can never answer
 an Agent's permission or trust prompt.
 
 **Taking over.** Typing into a worker card yourself (a key, a paste, a

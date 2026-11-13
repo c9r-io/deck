@@ -1245,7 +1245,7 @@ const dictionary = {
   'mcp.permWorkers': '驱动工作卡片',
   'mcp.permWorkersHint': '它可以开出下面这些类型的工作卡片，并往其中输入。它永远不能替你回答 Agent 的权限确认；你自己在这种卡片里打字就会接管它，直到你交还。',
   'mcp.permFirstSend': '新工作卡片的第一句不等就绪直接发送',
-  'mcp.permFirstSendHint': '不勾的话，每张新工作卡片都要等你手动发送。启动界面（信任、更新）可能会吞掉第一句：请使用 Agent 已信任的目录。',
+  'mcp.permFirstSendHint': '重启或更新 Deck 后发给工作卡片的第一句也一样。不勾的话，每张新工作卡片都要等你手动发送。启动界面（信任、更新）可能会吞掉第一句：请使用 Agent 已信任的目录。',
   'mcp.permReplies': '共享回复',
   'mcp.permRepliesHint': '它可以读取工作卡片每个回合的最终回复。仅限 Claude Code；Codex 工作卡片把结果写成文件。',
   'mcp.typeName': '类型',

@@ -1239,7 +1239,7 @@ const dictionary = {
   "mcp.permWorkers": "ワーカーカードを操作する",
   "mcp.permWorkersHint": "下のワーカー種類のカードを開き、入力を送れます。Agent の権限確認には決して答えられません。自分でそのカードに入力すると、返すまで引き継ぎます。",
   "mcp.permFirstSend": "新しいワーカーカードの最初の一文を準備を待たずに送る",
-  "mcp.permFirstSendHint": "オフの場合、新しいワーカーはあなたの「今すぐ送信」を待ちます。起動画面（信頼、更新）が最初の一文を受け取ることがあります。Agent が信頼済みのフォルダを使ってください。",
+  "mcp.permFirstSendHint": "Deck の再起動や更新の後に送る最初の一文も同じです。オフの場合、新しいワーカーはあなたの「今すぐ送信」を待ちます。起動画面（信頼、更新）が最初の一文を受け取ることがあります。Agent が信頼済みのフォルダを使ってください。",
   "mcp.permReplies": "返信を共有",
   "mcp.permRepliesHint": "各ワーカーのターンの最終メッセージを読めます。Claude Code のみ。Codex ワーカーは結果をファイルに書きます。",
   "mcp.typeName": "種類",

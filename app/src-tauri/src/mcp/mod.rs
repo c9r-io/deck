@@ -196,7 +196,11 @@
 //! client's worker types (the user's commands; Codex only with
 //! `--no-daemon`) through a `worker-start` Board intent the webview commits;
 //! its first line is the run's head row, sent without interaction evidence
-//! only while the client's worker first-send choice stands. Every choice of a
+//! only while the client's worker first-send choice stands. That choice also
+//! covers the card's later lines: interaction evidence is never persisted,
+//! so after a Deck restart or an Agent re-entry the worker reads
+//! `unavailable` (episode 0) and a line sent after episode 0 is not held at
+//! the first-interaction gate until the agent's next turn. Every choice of a
 //! client is saved at once (`mcp_client_permissions`, under the settings
 //! fence). The user takes a card over by typing into its pane
 //! (`worker_set_held`, from the webview) and hands it back by hand only.

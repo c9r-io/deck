@@ -640,7 +640,7 @@ impl DeckServer {
             ),
             tool::<Empty>(
                 "deck_worker_list",
-                "List this client's worker cards: the cards its automation triggers created that the local user lets it drive. Each has cardId, title, alive, agent {state: working | turn-done | needs-input | unavailable, episode}, takenOver (the user typed into it; your lines wait until they hand it back), unsent and the states of your recent lines. Content-free. Also mayReadReplies and nextSendSequence.",
+                "List this client's worker cards: the cards its automation triggers created that the local user lets it drive. Each has cardId, title, alive, agent {state: working | turn-done | needs-input | unavailable, episode} (unavailable with alive true: no turn seen since Deck restarted or resumed the agent; you may still send after episode 0), takenOver (the user typed into it; your lines wait until they hand it back), unsent and the states of your recent lines. Content-free. Also mayReadReplies and nextSendSequence.",
                 ro.clone(),
             ),
             tool::<WorkerWaitInput>(

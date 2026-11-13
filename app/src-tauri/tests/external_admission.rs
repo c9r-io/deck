@@ -589,8 +589,9 @@ fn channel_head_claim_is_closed_and_native_verdict_is_not_deserializable() {
                 "channel_queue_add".to_owned()
             ),
             // a worker card's delegated line (`mcp/workers.rs`): the external
-            // admission first, its only verdict the delegated authority, no
-            // first-send override and no channel claim
+            // admission first, its only verdict the delegated authority, a
+            // first-send override only from the client's worker first-send
+            // choice (`first_send.rs`), never a rule's, and no channel claim
             ("scheduler/ops.rs".to_owned(), "worker_queue_add".to_owned()),
         ]
     );
@@ -600,7 +601,7 @@ fn channel_head_claim_is_closed_and_native_verdict_is_not_deserializable() {
             < worker.find("queue_add_core(").unwrap()
     );
     assert!(worker.contains("class: ContentClass::Delegated,"));
-    assert!(worker.contains("quiet_secs: first.is_none().then_some(MIN_QUIET_SECS),"));
+    assert!(worker.contains("quiet_secs: (!head).then_some(MIN_QUIET_SECS),"));
     assert!(
         worker.contains("first_send_granted: None,")
             && worker.contains("channel_first_send_granted: None,")

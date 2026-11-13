@@ -1239,7 +1239,7 @@ const dictionary = {
   "mcp.permWorkers": "워커 카드 조작",
   "mcp.permWorkersHint": "아래 워커 유형의 카드를 열고 입력을 보낼 수 있습니다. Agent의 권한 확인에는 절대 답할 수 없으며, 직접 그런 카드에 입력하면 돌려줄 때까지 넘겨받습니다.",
   "mcp.permFirstSend": "새 워커 카드의 첫 줄을 준비를 기다리지 않고 보내기",
-  "mcp.permFirstSendHint": "끄면 새 워커마다 ‘지금 보내기’를 기다립니다. 시작 화면(신뢰, 업데이트)이 첫 줄을 가져갈 수 있으니 Agent가 이미 신뢰한 폴더를 쓰세요.",
+  "mcp.permFirstSendHint": "Deck을 다시 시작하거나 업데이트한 뒤의 첫 줄도 마찬가지입니다. 끄면 새 워커마다 ‘지금 보내기’를 기다립니다. 시작 화면(신뢰, 업데이트)이 첫 줄을 가져갈 수 있으니 Agent가 이미 신뢰한 폴더를 쓰세요.",
   "mcp.permReplies": "답장 공유",
   "mcp.permRepliesHint": "각 워커 턴의 최종 메시지를 읽을 수 있습니다. Claude Code만 해당하며, Codex 워커는 결과를 파일로 씁니다.",
   "mcp.typeName": "유형",

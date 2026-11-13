@@ -1239,7 +1239,7 @@ const dictionary = {
   "mcp.permWorkers": "Manejar tarjetas de trabajo",
   "mcp.permWorkersHint": "Puede abrir tarjetas de los tipos de trabajo de abajo y escribir líneas en ellas. Nunca puede responder a la solicitud de permiso de un agente, y si escribes tú en una de esas tarjetas, la tomas hasta que la devuelvas.",
   "mcp.permFirstSend": "Enviar la primera línea de una tarjeta de trabajo nueva sin esperar a que esté lista",
-  "mcp.permFirstSendHint": "Si no, cada trabajo nuevo espera a que pulses Enviar ahora. Una pantalla de inicio (confianza, actualización) puede quedarse con esa línea: usa carpetas en las que el agente ya confía.",
+  "mcp.permFirstSendHint": "También la primera línea tras reiniciar o actualizar Deck. Si no, cada trabajo nuevo espera a que pulses Enviar ahora. Una pantalla de inicio (confianza, actualización) puede quedarse con esa línea: usa carpetas en las que el agente ya confía.",
   "mcp.permReplies": "Compartir respuestas",
   "mcp.permRepliesHint": "Puede leer el mensaje final de cada turno de trabajo. Solo Claude Code; un trabajo de Codex escribe sus resultados en archivos.",
   "mcp.typeName": "Tipo",
