@@ -351,6 +351,19 @@ export function createExitRetirementTracker() {
   };
 }
 
+/** The split picker's list: every card not already open in this view, grouped
+ * by status (needs input, then live, then stopped) and newest first inside a
+ * group. The Board only ever appends to or filters `cards`, so a later index
+ * is a newer card. Nothing is cut off: the menu scrolls. */
+export function splitCandidates(cards, openIds) {
+  const rank = { attention: 0, done: 1, running: 1, waiting: 1, stopped: 2 };
+  return (cards || [])
+    .map((card, index) => ({ card, index }))
+    .filter(({ card }) => !openIds.has(card.id))
+    .sort((a, b) => ((rank[a.card.status] ?? 1) - (rank[b.card.status] ?? 1)) || b.index - a.index)
+    .map(({ card }) => card);
+}
+
 /** Return a new array with one id-addressed item inserted immediately before
  * or after another. Invalid/self moves are no-ops, which makes stale drag
  * payloads harmless when another Board transaction completed first. */

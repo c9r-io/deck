@@ -14,7 +14,7 @@ import {
   createExitRetirementTracker, createSerialTransactionQueue, sidebarGroups,
    createTerminalResizeCoordinator, newSessionColumn, createTerminalSelectionModel,
   projectDefaults, newSessionPlan, collapseHome, isNotDirectoryError,
-  reorderById,
+  reorderById, splitCandidates,
     terminalSelectionEdgeLines,
   isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput,
   AGENT_HISTORY_VERTICAL_UP, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute,
@@ -1443,4 +1443,17 @@ test('terminal copy never writes an empty or cancelled snapshot and distinguishe
   assert.deepEqual(writes, [text, '   '], 'preserve exact whitespace and Unicode');
   assert.equal(await copyTerminalText({ read: () => text,
     write: async () => { throw new Error('private clipboard failure'); } }), 'clipboard-write-failed');
+});
+
+test('the split picker lists every unopened card, newest first within a status', () => {
+  const cards = Array.from({ length: 15 }, (_, i) => ({ id: `S${i}`, status: i % 3 === 0 ? 'stopped' : 'running' }));
+  cards.push({ id: 'Snew', status: 'running' }, { id: 'Sask', status: 'attention' });
+  const open = new Set(['S1']);
+  const ids = splitCandidates(cards, open).map(c => c.id);
+  assert.equal(ids.length, 16, 'nothing is cut off and the open pane is left out');
+  assert.ok(!ids.includes('S1'));
+  assert.equal(ids[0], 'Sask', 'needs input comes first');
+  assert.equal(ids[1], 'Snew', 'the newest live card leads its group');
+  assert.deepEqual(ids.slice(-5), ['S12', 'S9', 'S6', 'S3', 'S0'], 'stopped last, newest first');
+  assert.deepEqual(splitCandidates([{ id: 'a' }, { id: 'b' }], new Set()).map(c => c.id), ['b', 'a'], 'a card without status yet still shows');
 });
