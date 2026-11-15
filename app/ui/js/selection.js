@@ -44,9 +44,11 @@
 // then atomically snapshots tmux into a unique buffer, validates
 // the pane token, clears tmux's cursor-bound highlight without moving the
 // viewport, and installs one immutable backend lease (bytes + absolute content
-// coordinates). A plain overlay derived from public `.xterm-screen`, cols and
-// rows renders that lease; selection wheel commands only update viewport
-// status, so endpoints and copy bytes cannot drift. Pointerup positions the
+// coordinates). A drag scrolls the viewport only once the pointer has left
+// the grid above or below (`terminalSelectionEdgeLines`); every row of the
+// grid, the first and last included, is selectable without scrolling. A
+// plain overlay derived from public `.xterm-screen`, cols and rows renders
+// that lease; selection wheel commands only update viewport status, so endpoints and copy bytes cannot drift. Pointerup positions the
 // final cell with edge scrolling disabled. Every pointer coordinate uses a
 // frontend grid confirmed by `pty_resize`; the backend serializes resize reflow
 // with selection operations and rejects stale dimensions instead of clamping.

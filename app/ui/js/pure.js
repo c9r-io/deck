@@ -421,15 +421,22 @@ export function createTerminalResizeCoordinator(send) {
   };
 }
 
-/** Signed rows per selection update for the terminal's edge hot zones. */
+/** Signed rows per selection update once a drag leaves the terminal grid.
+ * The hot zones lie OUTSIDE the grid, above `top` and below `bottom`, as in
+ * Terminal.app and iTerm: a pointer anywhere on the grid, its first and last
+ * rows included, never scrolls. A zone inside the grid (48 px, 0.8.24 and
+ * earlier) covered the top and bottom two or three rows, so a drag meant for
+ * them scrolled into history and selected rows the user never pointed at.
+ * Speed grows with the distance past the edge, reaching `maxLines` at
+ * `hotZone` pixels out. */
 export function terminalSelectionEdgeLines({ pointerY, top, bottom, hotZone = 48, maxLines = 6 }) {
   if (![pointerY, top, bottom, hotZone, maxLines].every(Number.isFinite) || bottom <= top || hotZone <= 0) return 0;
-  if (pointerY < top + hotZone) {
-    const depth = Math.min(1, (top + hotZone - pointerY) / hotZone);
+  if (pointerY < top) {
+    const depth = Math.min(1, (top - pointerY) / hotZone);
     return -Math.max(1, Math.round(maxLines * depth * depth));
   }
-  if (pointerY > bottom - hotZone) {
-    const depth = Math.min(1, (pointerY - (bottom - hotZone)) / hotZone);
+  if (pointerY > bottom) {
+    const depth = Math.min(1, (pointerY - bottom) / hotZone);
     return Math.max(1, Math.round(maxLines * depth * depth));
   }
   return 0;
@@ -595,7 +602,7 @@ export function terminalCellAt({ rect, rows, cols, clientX, clientY }) {
 }
 
 /** Edge-scroll lines for a promoted drag: the hot-zone amount, or 0 when the
- * pointer is not in a hot zone or tmux already sits at that end of history. */
+ * pointer is still over the grid or tmux already sits at that end of history. */
 export function selectionEdgeScrollLines({ pointerY, cell, status }) {
   if (!cell?.rect) return 0;
   const edge = terminalSelectionEdgeLines({ pointerY, top: cell.rect.top, bottom: cell.rect.bottom });

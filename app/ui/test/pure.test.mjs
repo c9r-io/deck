@@ -481,8 +481,8 @@ test('retirement joiners and disposal cannot duplicate success callbacks', async
 
 test('terminal selection model keeps anchor, reverses, clamps boundaries, and rejects stale replies', () => {
   assert.equal(terminalSelectionEdgeLines({ pointerY: 300, top: 0, bottom: 600 }), 0);
-  assert.ok(terminalSelectionEdgeLines({ pointerY: 599, top: 0, bottom: 600 }) > 0);
-  assert.ok(terminalSelectionEdgeLines({ pointerY: 1, top: 0, bottom: 600 }) < 0);
+  assert.ok(terminalSelectionEdgeLines({ pointerY: 601, top: 0, bottom: 600 }) > 0);
+  assert.ok(terminalSelectionEdgeLines({ pointerY: -1, top: 0, bottom: 600 }) < 0);
 
   const model = createTerminalSelectionModel();
   const first = model.begin({ row: 20, col: 4 });
@@ -1152,6 +1152,23 @@ test('edge scrolling stops at the end tmux already reached', () => {
   assert.equal(selectionEdgeScrollLines({ pointerY: 520, cell, status: { at_bottom: true } }), 0);
   assert.equal(selectionEdgeScrollLines({ pointerY: 300, cell, status: null }), 0, 'middle of the screen');
   assert.equal(selectionEdgeScrollLines({ pointerY: 90, cell: null, status: null }), 0);
+});
+
+test('a drag over the first and last rows never scrolls; only leaving the grid does', () => {
+  // A 24-row grid of 17 px rows: the old 48 px inner hot zone covered rows 0–2 and 21–23.
+  const top = 100;
+  const bottom = top + 24 * 17;
+  for (const y of [top, top + 1, top + 8, top + 30, top + 47, bottom - 47, bottom - 8, bottom - 1, bottom]) {
+    assert.equal(terminalSelectionEdgeLines({ pointerY: y, top, bottom }), 0, `y=${y} is on the grid`);
+  }
+  assert.equal(terminalSelectionEdgeLines({ pointerY: top - 1, top, bottom }), -1, 'just above: slowest');
+  assert.equal(terminalSelectionEdgeLines({ pointerY: top - 48, top, bottom }), -6, 'a zone out: fastest');
+  assert.equal(terminalSelectionEdgeLines({ pointerY: top - 400, top, bottom }), -6, 'capped');
+  assert.equal(terminalSelectionEdgeLines({ pointerY: bottom + 1, top, bottom }), 1);
+  assert.equal(terminalSelectionEdgeLines({ pointerY: bottom + 48, top, bottom }), 6);
+  const cell = { rect: { top, bottom } };
+  assert.equal(selectionEdgeScrollLines({ pointerY: top + 2, cell, status: { at_top: false } }), 0);
+  assert.equal(selectionEdgeScrollLines({ pointerY: bottom - 2, cell, status: { at_bottom: false } }), 0);
 });
 
 test('selection status rows, owner label and closed failure codes', () => {

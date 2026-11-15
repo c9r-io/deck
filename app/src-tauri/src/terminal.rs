@@ -732,6 +732,10 @@ struct SelectionProbe {
     /// Placements with an endpoint outside the visible frame, reached by
     /// moving the copy-mode viewport (a cross-screen drag).
     offscreen: u32,
+    /// Updates that scrolled the viewport because the pointer had left the
+    /// grid. They are exempt from `misplaced`, so without this count a drag
+    /// that scrolled when the user did not mean it looks perfect in the log.
+    edge_scrolls: u32,
 }
 
 fn selection_probes() -> &'static Mutex<HashMap<String, SelectionProbe>> {
@@ -777,6 +781,9 @@ fn record_selection_update(
         let probe = probes.entry(name.to_string()).or_default();
         probe.updates = probe.updates.saturating_add(1);
         probe.misplaced = probe.misplaced.saturating_add(u32::from(misplaced));
+        probe.edge_scrolls = probe
+            .edge_scrolls
+            .saturating_add(u32::from(edge_lines != 0));
         probe.drifted = probe.drifted.saturating_add(u32::from(drift > 0));
         probe.worst_drift = probe.worst_drift.max(drift);
         probe.worst_ms = probe.worst_ms.max(ms);
@@ -817,7 +824,7 @@ fn report_selection_probe(name: &str, outcome: &str) {
     }
     crate::applog::applog(&format!(
         "[selection] {} {outcome} updates={} misplaced={} drifted={} worst_drift={} \
-         worst_motions={} worst_ms={} mean_ms={} races={} offscreen={}",
+         worst_motions={} worst_ms={} mean_ms={} races={} offscreen={} edge_scrolls={}",
         crate::applog::session_tag(name),
         probe.updates,
         probe.misplaced,
@@ -828,6 +835,7 @@ fn report_selection_probe(name: &str, outcome: &str) {
         probe.total_ms / probe.updates,
         probe.races,
         probe.offscreen,
+        probe.edge_scrolls,
     ));
 }
 
@@ -2170,6 +2178,10 @@ mod tests {
             .expect("probe recorded");
         assert_eq!(probe.updates, 3);
         assert_eq!(probe.misplaced, 1, "only the still-frame miss counts");
+        assert_eq!(
+            probe.edge_scrolls, 1,
+            "the edge update is counted on its own"
+        );
         assert_eq!(probe.drifted, 1);
         assert_eq!(probe.worst_drift, 3);
         assert_eq!(probe.worst_ms, 21);
