@@ -236,7 +236,7 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     ("turn_summary.rs", "decide", "TURN_DONE", 1, Presentation),
     // a worker card's final message is kept for its orchestrator to read
     // (`deck_worker_reply`): text handed to a reader, never a send
-    ("turn_summary.rs", "offer", "TURN_DONE", 1, Presentation),
+    ("turn_summary.rs", "offer", "TURN_DONE", 2, Presentation),
     // a worker card's content-free view for its orchestrator; the same
     // observation can only REFUSE a send whose episode moved on
     // (`EPISODE_MOVED`), never release one: every hold still decides
@@ -320,7 +320,7 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         "connector/projection.rs",
         "snapshot_in",
         ".agent",
-        2,
+        3,
         NotSignal,
     ),
     (

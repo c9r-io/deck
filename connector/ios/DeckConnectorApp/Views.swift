@@ -236,6 +236,9 @@ struct TaskDetailView: View {
     /// Per-phone reading preferences.
     @AppStorage("deck.output.wrap") private var wrapLines = true
     @AppStorage("deck.output.textStep") private var textStep = 0
+    /// The page last chosen by hand, for every card; empty until the first
+    /// choice, which then means Replies while the Mac keeps them.
+    @AppStorage("deck.detail.page") private var page = ""
     @State private var newNote = ""
     @State private var showingNotes = false
     @State private var addingNote = false
@@ -255,6 +258,15 @@ struct TaskDetailView: View {
     }
 
     private var card: CardSummary? { model.snapshot?.cards.first(where: { $0.id == cardID }) }
+    private func offersReplies(_ card: CardSummary) -> Bool { model.snapshot?.offersReplies(card) == true }
+    /// The page shown: Output where a card has no replies; else the page
+    /// chosen by hand, or before any choice Replies while the Mac's switch is
+    /// on (with it off, the output is what there is to read).
+    private func shownPage(_ card: CardSummary) -> DetailPage {
+        guard offersReplies(card) else { return .output }
+        if let chosen = DetailPage(rawValue: page) { return chosen }
+        return model.snapshot?.replies == "on" ? .replies : .output
+    }
     private var draftMaxLines: CGFloat { dynamicTypeSize.isAccessibilitySize || verticalSizeClass == .compact ? 2 : 5 }
     private var draftEditorHeight: CGFloat {
         let inset: CGFloat = 16
@@ -265,9 +277,13 @@ struct TaskDetailView: View {
         Group {
             if let card {
                 VStack(spacing: 0) {
+                    if offersReplies(card) { pagePicker(card) }
                     statusStrip(card)
                     Divider()
-                    outputArea(card)
+                    switch shownPage(card) {
+                    case .output: outputArea(card)
+                    case .replies: repliesArea(card)
+                    }
                 }
                 .navigationTitle(card.title)
                 .navigationBarTitleDisplayMode(.inline)
@@ -398,6 +414,64 @@ struct TaskDetailView: View {
         }
     }
 
+    @ViewBuilder private func pagePicker(_ card: CardSummary) -> some View {
+        Picker(String(localized: "taskDetail.page.label"), selection: Binding(get: { shownPage(card).rawValue }, set: { page = $0 })) {
+            Text(String(localized: "taskDetail.page.output")).tag(DetailPage.output.rawValue)
+            Group {
+                if let count = card.replyCount, count > 0 {
+                    Text(verbatim: "\(String(localized: "taskDetail.page.replies")) · \(count)")
+                } else {
+                    Text(String(localized: "taskDetail.page.replies"))
+                }
+            }
+            .tag(DetailPage.replies.rawValue)
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+        .background(.bar)
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+        .accessibilityIdentifier("deck.detail.page")
+    }
+
+    @ViewBuilder private func repliesArea(_ card: CardSummary) -> some View {
+        if let value = model.replies[card.id] {
+            if value.replies.isEmpty {
+                repliesNotice(String(localized: "taskDetail.replies.emptyTitle"), String(localized: "taskDetail.replies.emptyBody"), systemImage: "bubble.left")
+            } else {
+                RepliesView(items: ReplyTimeline.merge(replies: value.replies, messages: model.sentMessages[card.id] ?? []),
+                            textStep: textStep) { await refreshCurrentTaskDetails() }
+                    .equatable()
+            }
+        } else if let issue = model.repliesIssue[card.id] {
+            switch issue {
+            case .off:
+                repliesNotice(String(localized: "taskDetail.replies.offTitle"), String(localized: "taskDetail.replies.offBody"), systemImage: "bubble.left.and.exclamationmark.bubble.right")
+            case .unavailable:
+                repliesNotice(String(localized: "taskDetail.replies.unavailable"), nil, systemImage: "exclamationmark.bubble")
+            }
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func repliesNotice(_ title: String, _ body: String?, systemImage: String) -> some View {
+        ScrollView {
+            VStack(spacing: 10) {
+                Image(systemName: systemImage).font(.title2).foregroundStyle(.secondary)
+                Text(title).font(.headline).multilineTextAlignment(.center)
+                if let body { Text(body).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center) }
+            }
+            .padding()
+            .padding(.top, 32)
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("deck.replies.notice")
+        }
+        .refreshable { await refreshCurrentTaskDetails() }
+    }
+
     /// One line of freshness: capture time, staleness or the offline state,
     /// and the refresh control. Every 5 s the open card is read again anyway.
     @ViewBuilder private func statusStrip(_ card: CardSummary) -> some View {
@@ -406,7 +480,12 @@ struct TaskDetailView: View {
                 if case .offline = model.connection {
                     Label("Offline — showing the last available snapshot", systemImage: "wifi.slash").foregroundStyle(.orange)
                 }
-                if let output = model.outputs[card.id] {
+                if shownPage(card) == .replies {
+                    if let newest = model.replies[card.id]?.replies.last {
+                        HStack(spacing: 4) { Text(String(localized: "taskDetail.replies.newest")); Text(replyTime(newest.date)) }
+                            .accessibilityElement(children: .combine).accessibilityIdentifier("deck.replies.newest")
+                    }
+                } else if let output = model.outputs[card.id] {
                     HStack(spacing: 8) {
                         if let date = output.capturedAt.date {
                             HStack(spacing: 4) { Text("Captured"); Text(date.formatted(.dateTime.hour().minute().second())) }
@@ -1045,6 +1124,207 @@ private struct OperationStatusView: View {
         case .notFound: String(localized: "Not delivered. You can retry.")
         case .ambiguous, .expired: String(localized: "Delivery cannot be confirmed. Check this card on your Mac before sending again.")
         default: String(localized: "Confirming delivery…")
+        }
+    }
+}
+
+private enum DetailPage: String { case output, replies }
+
+/// A reply's or message's time: the clock today, the date before that.
+private func replyTime(_ date: Date) -> String {
+    Calendar.current.isDateInToday(date)
+        ? date.formatted(.dateTime.hour().minute())
+        : date.formatted(.dateTime.month().day().hour().minute())
+}
+
+/// A card's Claude Code replies with this phone's messages between them,
+/// newest at the bottom. It opens at the end and follows new replies while
+/// the reader is there (iOS 18 and later), exactly like the output. The
+/// newest reply is open; older long ones show their first lines.
+struct RepliesView: View, Equatable {
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.items == rhs.items && lhs.textStep == rhs.textStep }
+    private static let endID = "replies-end"
+
+    let items: [ReplyTimelineItem]
+    let textStep: Int
+    let refresh: () async -> Void
+
+    @ScaledMetric(relativeTo: .body) private var baseSize = 16.0
+    /// Replies whose open state differs from the default (newest open).
+    @State private var toggled = Set<String>()
+    @State private var atEnd = true
+    @State private var newReply = false
+    @State private var copiedID: String?
+
+    private static var tracksPosition: Bool {
+        if #available(iOS 18.0, *) { return true }
+        return false
+    }
+    private var fontSize: CGFloat {
+        let step = CGFloat(min(max(textStep, TerminalOutputView.textSteps.lowerBound), TerminalOutputView.textSteps.upperBound))
+        return baseSize * (1 + 0.15 * step)
+    }
+    private var newestReplyID: String? {
+        items.last(where: { if case .reply = $0 { true } else { false } })?.id
+    }
+    private var showsJump: Bool { Self.tracksPosition ? !atEnd : newReply }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(String(localized: "taskDetail.replies.bounds"))
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach(items) { item in
+                        switch item {
+                        case let .reply(reply): replyBubble(reply, id: item.id)
+                        case let .message(message): messageBubble(message)
+                        }
+                    }
+                    Color.clear.frame(width: 1, height: 1).id(Self.endID)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .modifier(OpensAtEnd())
+            .modifier(EndTracker { wasAtEnd, nowAtEnd, resized in
+                if resized && wasAtEnd && !nowAtEnd { scrollToEnd(proxy, animated: false) } else { atEnd = nowAtEnd }
+                if nowAtEnd { newReply = false }
+            })
+            .scrollDismissesKeyboard(.interactively)
+            .refreshable { await refresh() }
+            .accessibilityIdentifier("deck.replies.scroll")
+            .overlay(alignment: .bottomTrailing) {
+                if showsJump {
+                    Button { scrollToEnd(proxy, animated: true) } label: {
+                        Label(newReply ? String(localized: "taskDetail.replies.newBelow") : String(localized: "taskDetail.replies.latest"),
+                              systemImage: "arrow.down.to.line")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.small)
+                    .padding(12)
+                    .accessibilityIdentifier("deck.replies.latest")
+                }
+            }
+            .onChange(of: items.last?.id) { _, _ in
+                if Self.tracksPosition && atEnd { scrollToEnd(proxy, animated: false) } else { newReply = true }
+            }
+            .onChange(of: textStep) { _, _ in if Self.tracksPosition && atEnd { scrollToEnd(proxy, animated: false) } }
+        }
+    }
+
+    @ViewBuilder private func replyBubble(_ reply: AgentReply, id: String) -> some View {
+        let open = (id == newestReplyID) != toggled.contains(id)
+        let preview = ReplyText.preview(reply.text)
+        let shown = open || preview == nil ? reply.text : preview!
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(String(localized: "taskDetail.replies.claude")).font(.caption.weight(.semibold))
+                Text(replyTime(reply.date)).font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button {
+                    UIPasteboard.general.string = reply.text
+                    copiedID = id
+                } label: {
+                    Label(copiedID == id ? String(localized: "taskDetail.replies.copied") : String(localized: "taskDetail.replies.copy"),
+                          systemImage: copiedID == id ? "checkmark" : "doc.on.doc")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("deck.replies.copy")
+            }
+            ForEach(Array(ReplyText.blocks(shown, cut: reply.cut && shown.contains(ReplyText.cutMark)).enumerated()), id: \.offset) { _, block in
+                blockView(block)
+            }
+            if preview != nil {
+                Button(open ? String(localized: "taskDetail.replies.collapse") : String(localized: "taskDetail.replies.expand")) {
+                    if toggled.contains(id) { toggled.remove(id) } else { toggled.insert(id) }
+                }
+                .font(.callout)
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("deck.replies.expand")
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(.secondarySystemBackground)))
+        // one container per reply: its texts and buttons stay reachable, and
+        // the identifier names the reply, not each of its pieces
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("deck.replies.reply")
+    }
+
+    @ViewBuilder private func blockView(_ block: ReplyBlock) -> some View {
+        switch block {
+        case let .prose(text):
+            Text(Self.inline(text))
+                .font(.system(size: fontSize))
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        case let .heading(text):
+            Text(Self.inline(text))
+                .font(.system(size: fontSize * 1.1, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        case let .code(text):
+            ScrollView(.horizontal) {
+                Text(text)
+                    .font(.system(size: fontSize * 0.8, design: .monospaced))
+                    .fixedSize()
+                    .textSelection(.enabled)
+                    .padding(8)
+            }
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color(.tertiarySystemBackground)))
+        case .omitted:
+            Label(String(localized: "taskDetail.replies.omitted"), systemImage: "scissors")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .accessibilityIdentifier("deck.replies.omitted")
+        }
+    }
+
+    /// Bold, italic, inline code and links; anything else stays as written.
+    private static func inline(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
+    }
+
+    @ViewBuilder private func messageBubble(_ message: SentMessage) -> some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(String(localized: "taskDetail.replies.you"))
+                Text(replyTime(message.at))
+                if !message.confirmed {
+                    Image(systemName: "clock").accessibilityLabel(String(localized: "taskDetail.replies.pending"))
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            Text(message.text)
+                .font(.system(size: fontSize))
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.15)))
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.leading, 40)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("deck.replies.message")
+    }
+
+    private func scrollToEnd(_ proxy: ScrollViewProxy, animated: Bool) {
+        atEnd = true
+        newReply = false
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation { proxy.scrollTo(Self.endID, anchor: .bottomLeading) }
+            } else {
+                proxy.scrollTo(Self.endID, anchor: .bottomLeading)
+            }
         }
     }
 }

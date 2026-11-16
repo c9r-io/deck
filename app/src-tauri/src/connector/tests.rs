@@ -33,6 +33,7 @@ fn test_runtime(tag: &str) -> (Arc<Runtime>, Held) {
         interface: None,
         scope: SnapshotScope::AgentCards,
         scope_revision: 0,
+        phone_replies: false,
     };
     save(&path, &doc).unwrap();
     let r = Arc::new(Runtime {
@@ -126,6 +127,7 @@ fn global_runtime() -> (GlobalHeld, Arc<Runtime>) {
         interface: None,
         scope: SnapshotScope::AgentCards,
         scope_revision: 0,
+        phone_replies: false,
     };
     save(&runtime.path, &doc).unwrap();
     *runtime.doc.lock_or_recover() = Ok(doc);
@@ -561,6 +563,7 @@ fn restart_listens_only_on_the_recorded_interface() {
         interface: interface.map(str::to_owned),
         scope: SnapshotScope::AgentCards,
         scope_revision: 0,
+        phone_replies: false,
     };
     let at = |interface: &str, netmask: [u8; 4]| LocalAddress {
         ip: lan,
@@ -3447,4 +3450,144 @@ fn trusted_device_reads_shell_output_but_still_never_queues_without_a_saved_comm
     .is_ok());
     doc.devices[0].revoked_at = Some(1);
     assert_eq!(effective_scope(&doc, "D1"), SnapshotScope::BoardMetadata);
+}
+
+/// A replies read's view of the card: its scope per call, whether it has a
+/// saved agent command, whether MCP owns it, and its session per call.
+struct RepliesIo {
+    scopes: Vec<SnapshotScope>,
+    scope_calls: std::cell::Cell<usize>,
+    agent_target: bool,
+    mcp_owned: bool,
+    sessions: Vec<&'static str>,
+    card_calls: std::cell::Cell<usize>,
+}
+impl RepliesIo {
+    fn new(scope: SnapshotScope, agent_target: bool) -> Self {
+        Self {
+            scopes: vec![scope],
+            scope_calls: std::cell::Cell::new(0),
+            agent_target,
+            mcp_owned: false,
+            sessions: vec!["deck-card-0001"],
+            card_calls: std::cell::Cell::new(0),
+        }
+    }
+}
+impl OutputIo for RepliesIo {
+    fn scope(&self) -> Result<SnapshotScope, DeckError> {
+        let n = self.scope_calls.get();
+        self.scope_calls.set(n + 1);
+        Ok(*self.scopes.get(n).or(self.scopes.last()).unwrap())
+    }
+    fn card(&self, id: &str) -> Result<InternalCard, DeckError> {
+        let n = self.card_calls.get();
+        self.card_calls.set(n + 1);
+        Ok(InternalCard {
+            id: id.into(),
+            session: (*self.sessions.get(n).or(self.sessions.last()).unwrap()).into(),
+            agent_target: self.agent_target,
+        })
+    }
+    fn probe(&self, _: &str) -> Result<crate::context::ConnectorProbe, DeckError> {
+        panic!("a replies read never probes the pane")
+    }
+    fn tmux(&self, _: &[String]) -> Result<String, DeckError> {
+        panic!("a replies read never touches tmux")
+    }
+    fn mcp_fence(&self, _: &str) -> Result<(), DeckError> {
+        if self.mcp_owned {
+            Err(DeckError::new(ErrorKind::Perm, "MCP owns terminal control"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn kept_replies(session: &str) -> Vec<crate::turn_summary::PhoneReply> {
+    assert_eq!(session, "deck-card-0001");
+    vec![
+        crate::turn_summary::PhoneReply {
+            at: 10,
+            text: "first".into(),
+            cut: false,
+        },
+        crate::turn_summary::PhoneReply {
+            at: 20,
+            text: "second".into(),
+            cut: true,
+        },
+    ]
+}
+
+#[test]
+fn replies_answer_a_readable_cards_kept_messages_oldest_first() {
+    let io = RepliesIo::new(SnapshotScope::AgentCards, true);
+    let value = replies_with(&io, "c1", || true, kept_replies).unwrap();
+    assert_eq!(value["cardId"], "c1");
+    assert_eq!(value["replies"][0]["text"], "first");
+    assert_eq!(value["replies"][1]["at"], 20);
+    assert_eq!(value["replies"][1]["cut"], true);
+    let again = replies_with(&io, "c1", || true, kept_replies).unwrap();
+    assert_eq!(value["revision"], again["revision"]);
+    // Board access reads a card without a saved agent command too
+    let board = RepliesIo::new(SnapshotScope::BoardAccess, false);
+    assert!(replies_with(&board, "c1", || true, kept_replies).is_ok());
+}
+
+#[test]
+fn replies_are_refused_off_unshared_mcp_owned_or_changed() {
+    let read = |io: &RepliesIo, on: bool| {
+        replies_with(io, "c1", || on, kept_replies)
+            .unwrap_err()
+            .message()
+            .to_string()
+    };
+    let io = RepliesIo::new(SnapshotScope::AgentCards, true);
+    assert_eq!(read(&io, false), "replies-off");
+    let unshared = RepliesIo::new(SnapshotScope::AgentCards, false);
+    assert_eq!(read(&unshared, true), "unsupported-target");
+    let metadata = RepliesIo::new(SnapshotScope::BoardMetadata, false);
+    assert_eq!(read(&metadata, true), "unsupported-target");
+    let mut owned = RepliesIo::new(SnapshotScope::BoardAccess, true);
+    owned.mcp_owned = true;
+    assert_eq!(read(&owned, true), "mcp-controlled");
+    let mut narrowed = RepliesIo::new(SnapshotScope::BoardAccess, false);
+    narrowed.scopes = vec![SnapshotScope::BoardAccess, SnapshotScope::AgentCards];
+    assert_eq!(read(&narrowed, true), "unsupported-target");
+    let mut regranted = RepliesIo::new(SnapshotScope::AgentCards, true);
+    regranted.scopes = vec![SnapshotScope::AgentCards, SnapshotScope::BoardAccess];
+    assert_eq!(read(&regranted, true), "target-changed");
+    let mut moved = RepliesIo::new(SnapshotScope::AgentCards, true);
+    moved.sessions = vec!["deck-card-0001", "deck-card-0002"];
+    assert_eq!(read(&moved, true), "target-changed");
+}
+
+#[test]
+fn a_snapshot_carries_the_switch_and_readable_cards_reply_counts() {
+    let sessions: std::collections::HashMap<String, String> = [
+        ("c1".to_string(), "s1".to_string()),
+        ("c2".to_string(), "s2".to_string()),
+    ]
+    .into();
+    let snapshot = || {
+        json!({"cards":[
+            {"id":"c1","capabilities":{"editNotes":{"allowed":true}}},
+            {"id":"c2","capabilities":{"editNotes":{"allowed":false,"reason":"unsupported-target"}}}
+        ]})
+    };
+    let count = |session: &str| match session {
+        "s1" => (3, Some(30)),
+        _ => (9, Some(90)),
+    };
+    let mut on = snapshot();
+    with_reply_counts(&mut on, &sessions, true, count);
+    assert_eq!(on["replies"], "on");
+    assert_eq!(on["cards"][0]["replyCount"], 3);
+    assert_eq!(on["cards"][0]["replyAt"], 30);
+    assert!(on["cards"][1].get("replyCount").is_none());
+    let mut off = snapshot();
+    with_reply_counts(&mut off, &sessions, false, count);
+    assert_eq!(off["replies"], "off");
+    assert!(off["cards"][0].get("replyCount").is_none());
 }

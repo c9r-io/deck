@@ -45,6 +45,21 @@ holds. The host reads up to 1,000 history lines (64 KiB) with wrapped lines
 joined, so the phone rewraps them at its own width.
 Only network loss retains clearly marked stale content; changed identity or
 permission clears it. Notes open as a panel with a separate durable draft.
+
+A card running Claude Code, or one with kept replies, also offers a Replies
+page (a segmented switch above the status line) when the Mac has the
+reply list: the last message of each Claude Code turn ending, kept in the
+Mac's memory while its "Claude Code replies on the phone" switch is on (up to
+20 per card; a Deck restart clears them), with the messages this phone sent
+to the card placed between them by time (from its own journal; messages
+more than an hour older than the oldest reply, and all but the newest 20,
+are left out). The newest reply is open, older long ones show 12 lines,
+and a reply the Mac cut shows where its middle was left out. Before any
+choice the page opens on Replies while the switch is on, else on Output;
+a page chosen by hand is kept for every card. Replies are not tied to the
+pane's generation: they stay while the card exists and stays readable.
+With the switch off the page says how to turn it on; a host without the
+list shows no switch.
  It does not promise background connectivity. Pairing descriptors remain in memory only. The saved Keychain value binds origin, certificate pin, host ID, device ID, and bearer token with `WhenUnlockedThisDeviceOnly` accessibility. HTTP uses an ephemeral session with cookies, redirects, disk cache, and credential storage disabled. The self-signed leaf must match the pinned DER SHA-256 and also pass hostname and validity evaluation as the sole trust anchor.
 
 Message drafts preserve the target generation that was current when their first character was typed (an empty composer follows the card). A refresh never silently changes that binding; if the desktop target changes, the user must explicitly accept the current generation before sending. Each command's immutable ID and body is atomically persisted before POST. An unknown result is recovered by querying that same ID and is never automatically retried under a new ID. Pending sends are visible and block another send for the card.

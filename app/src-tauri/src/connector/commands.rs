@@ -20,6 +20,11 @@ pub(crate) struct Status {
     pub(super) fingerprint: Option<String>,
     pub(super) reset_required: bool,
     pub(super) scope: SnapshotScope,
+    /// The "Claude Code replies on the phone" switch, and whether deck's
+    /// Claude Code Stop hook forwards the final message now (the switch
+    /// needs the status hooks on; presentation for Settings only).
+    pub(super) phone_replies: bool,
+    pub(super) phone_replies_forwarded: bool,
     /// Board cards whose output the kept scope does not share (None when
     /// the Board cannot be read); presentation for Settings only.
     pub(super) withheld_cards: Option<usize>,
@@ -50,6 +55,7 @@ pub(crate) fn connector_addresses() -> Vec<String> {
 pub(crate) fn connector_status() -> Result<Status, DeckError> {
     let r = rt()?;
     let board = board_value().ok().map(|(_, board)| board);
+    let forwarded = crate::agent_status::claude_reply_forwarded();
     r.read(|d| Status {
         enabled: d.config.enabled,
         running: d.config.enabled
@@ -67,6 +73,8 @@ pub(crate) fn connector_status() -> Result<Status, DeckError> {
             .as_ref()
             .is_some_and(|address| !d.config.address.is_empty() && address != &d.config.address),
         scope: d.config.scope,
+        phone_replies: d.config.phone_replies,
+        phone_replies_forwarded: forwarded,
         withheld_cards: board
             .as_ref()
             .map(|board| withheld_cards(board, d.config.scope)),
@@ -124,6 +132,7 @@ pub(crate) async fn connector_enable(address: String, port: u16) -> Result<Statu
                 interface,
                 scope: d.config.scope,
                 scope_revision: d.config.scope_revision,
+                phone_replies: d.config.phone_replies,
             };
             d.identity_address = Some(identity.address.clone());
             d.identity_fingerprint = Some(identity.fingerprint.clone());
@@ -159,6 +168,29 @@ pub(crate) fn connector_set_scope(scope: SnapshotScope) -> Result<Status, DeckEr
         }
         Ok(())
     })?;
+    connector_status()
+}
+
+/// The user's "Claude Code replies on the phone" switch. Off forgets every
+/// kept reply at once. Either way the Claude Code Stop hook is brought in
+/// line (`agent_status::sync_forwarded_replies`): it forwards the final
+/// message while this, a worker-reply reader or turn summaries want it.
+#[tauri::command]
+pub(crate) fn connector_set_phone_replies(on: bool) -> Result<Status, DeckError> {
+    let r = rt()?;
+    {
+        let _lifecycle = r.lifecycle.lock_or_recover();
+        r.with_doc(|d| {
+            d.config.phone_replies = on;
+            Ok(())
+        })?;
+        crate::turn_summary::set_phone_replies(on);
+    }
+    crate::agent_status::sync_forwarded_replies();
+    crate::applog::applog(&format!(
+        "[connector] phone replies {}",
+        if on { "on" } else { "off" }
+    ));
     connector_status()
 }
 

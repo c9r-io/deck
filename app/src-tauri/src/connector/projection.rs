@@ -117,7 +117,7 @@ pub(super) fn snapshot(app: &AppHandle, device_id: &str) -> Result<Value, DeckEr
     let (revision, b) = board_value()?;
     let (host_id, scope) = rt()?.read(|d| (d.host_id.clone(), effective_scope(d, device_id)))?;
     let queue = app.state::<Queues>();
-    Ok(snapshot_in(
+    let mut value = snapshot_in(
         (&host_id, &host_name()),
         &revision,
         &b,
@@ -125,7 +125,119 @@ pub(super) fn snapshot(app: &AppHandle, device_id: &str) -> Result<Value, DeckEr
         scope,
         precise_connector_probe,
         crate::mcp::guard_terminal_input,
-    ))
+    );
+    let sessions = card_sessions(&b);
+    crate::turn_summary::phone_replies_retain(|session| sessions.values().any(|s| s == session));
+    with_reply_counts(
+        &mut value,
+        &sessions,
+        crate::turn_summary::phone_replies_on(),
+        crate::turn_summary::phone_reply_count,
+    );
+    Ok(value)
+}
+
+/// Each Board card's session, by card id.
+fn card_sessions(b: &Value) -> std::collections::HashMap<String, String> {
+    b.get("cards")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            Some((
+                c.get("id")?.as_str()?.to_string(),
+                c.get("session")?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+/// Mark a snapshot with the phone-replies switch (`"replies"`: `on` or
+/// `off`; an older host sends neither) and, while it is on, each readable
+/// card's count of kept Claude Code replies and when the newest came. A
+/// count is presentation: the route checks access itself.
+pub(super) fn with_reply_counts(
+    snapshot: &mut Value,
+    sessions: &std::collections::HashMap<String, String>,
+    on: bool,
+    count: impl Fn(&str) -> (usize, Option<u64>),
+) {
+    snapshot["replies"] = json!(if on { "on" } else { "off" });
+    if !on {
+        return;
+    }
+    let Some(cards) = snapshot.get_mut("cards").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for card in cards {
+        let readable = card
+            .pointer("/capabilities/editNotes/allowed")
+            .and_then(Value::as_bool)
+            == Some(true);
+        let Some(session) = card
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| sessions.get(id))
+        else {
+            continue;
+        };
+        if !readable {
+            continue;
+        }
+        let (n, at) = count(session);
+        card["replyCount"] = json!(n);
+        if let Some(at) = at {
+            card["replyAt"] = json!(at);
+        }
+    }
+}
+
+/// One card's kept Claude Code replies for one device (`turn_summary.rs`),
+/// oldest first. The same card, scope and MCP checks as an output read,
+/// before and after reading, but no foreground agent is required: these are
+/// the agent's own past messages, not the pane. `replies-off` while the
+/// user's switch is off.
+pub(super) fn replies(device_id: &str, card_id: &str) -> Result<Value, DeckError> {
+    replies_with(
+        &LiveOutput { device_id },
+        card_id,
+        crate::turn_summary::phone_replies_on,
+        crate::turn_summary::phone_replies,
+    )
+}
+
+pub(super) fn replies_with(
+    io: &dyn OutputIo,
+    card_id: &str,
+    on: impl Fn() -> bool,
+    read: impl Fn(&str) -> Vec<crate::turn_summary::PhoneReply>,
+) -> Result<Value, DeckError> {
+    if !on() {
+        return Err(DeckError::new(ErrorKind::Invalid, "replies-off"));
+    }
+    let card = io.card(card_id)?;
+    let scope = io.scope()?;
+    require_card_access(&card, scope)?;
+    let mcp_controlled = |_| DeckError::new(ErrorKind::Perm, "mcp-controlled");
+    io.mcp_fence(&card.session).map_err(mcp_controlled)?;
+    let kept = read(&card.session);
+    let still = io.card(card_id)?;
+    require_card_access(&still, io.scope()?)?;
+    io.mcp_fence(&card.session).map_err(mcp_controlled)?;
+    if !on() || scope != io.scope()? || still.session != card.session {
+        return Err(DeckError::new(ErrorKind::ContextChanged, "target-changed"));
+    }
+    let revision = sha(kept
+        .iter()
+        .map(|r| format!("{}:{}", r.at, r.text.len()))
+        .collect::<Vec<_>>()
+        .join(",")
+        .as_bytes());
+    let replies = kept
+        .iter()
+        .map(|r| json!({"at":r.at,"text":r.text,"cut":r.cut}))
+        .collect::<Vec<_>>();
+    Ok(json!({"cardId":card_id,"revision":revision,"replies":replies}))
 }
 
 /// The phone snapshot of one committed board (`revision` is its hash) and
@@ -204,6 +316,7 @@ pub(super) fn snapshot_in(
                 "order":order,
                 "status":status,
                 "generation":access.then(|| probe_result.as_ref().map(|p|p.generation.clone())).flatten(),
+                "agent":access.then(|| probe_result.as_ref().and_then(|p|p.agent.clone())).flatten(),
                 "canSend":terminal["allowed"] == true && probe_result.as_ref().is_some_and(|p|p.agent.is_some()),
                 "canQueue":agent_target,
                 "capabilities":{

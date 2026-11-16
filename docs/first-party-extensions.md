@@ -164,6 +164,15 @@ its state is read back from the hooks file. `model_api::complete` (through
 Another feature that sends content brings its own consent and data boundary
 rather than widen this one.
 
+The Phone Connector's own switch, Claude Code replies on the phone
+(`connector_set_phone_replies`), reads the same forwarded message but sends
+nothing anywhere: while it is on, the last message of each Claude Code turn
+ending is kept in memory, up to 20 per card, for paired phones that may read
+that card's output (`GET /v1/cards/{id}/replies`). With turn summaries off
+the Stop hook then carries `--reply workers` (forward only, no summary, no
+model call), exactly as for worker replies. A Deck restart or turning the
+switch off forgets every kept reply.
+
 ## Adding a first-party extension
 
 1. Implement the appropriate typed backend descriptor and its narrow behavior.

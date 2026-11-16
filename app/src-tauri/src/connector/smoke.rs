@@ -29,6 +29,7 @@ pub(crate) fn connector_smoke_seed(
             interface: None,
             scope: SnapshotScope::AgentCards,
             scope_revision: 0,
+            phone_replies: false,
         };
         if !doc.devices.iter().any(|device| device.id == "device_smoke") {
             doc.devices.push(Device {
@@ -141,6 +142,7 @@ pub(crate) fn connector_smoke_transport(
                 interface: None,
                 scope: SnapshotScope::AgentCards,
                 scope_revision: 0,
+                phone_replies: false,
             };
             doc.identity_address = Some(identity.address.clone());
             doc.identity_fingerprint = Some(identity.fingerprint.clone());
@@ -158,6 +160,7 @@ pub(crate) fn connector_smoke_transport(
                 interface: None,
                 scope: SnapshotScope::AgentCards,
                 scope_revision: 0,
+                phone_replies: false,
             },
             identity,
             epoch,
@@ -172,6 +175,7 @@ pub(crate) fn connector_smoke_transport(
                 interface: None,
                 scope: SnapshotScope::AgentCards,
                 scope_revision: 0,
+                phone_replies: false,
             };
             Ok(())
         }) {
@@ -187,6 +191,9 @@ pub(crate) fn connector_smoke_transport(
     } else {
         SnapshotScope::AgentCards
     };
+    if std::env::var("DECK_SMOKE_CONNECTOR_REPLIES").as_deref() == Ok("1") {
+        seed_phone_replies(&runtime, &card.session)?;
+    }
     let pairing = connector_pairing()?;
     let agent_dir = crate::datadir::deck_dir().join("agent-work");
     std::fs::create_dir(&agent_dir)
@@ -237,4 +244,35 @@ pub(crate) fn connector_smoke_window(visible: bool, app: AppHandle) -> Result<()
         window.hide()
     }
     .map_err(|_| DeckError::new(ErrorKind::Other, "window state unavailable"))
+}
+
+/// The phone-replies switch on and two kept replies on the fixture card, so
+/// the phone's reply page has something to show: an older long one in
+/// Markdown (shown collapsed) and a newer one the helper cut (open, with
+/// its omitted middle marked). Set directly: a smoke host never edits the
+/// user's Claude Code hooks.
+fn seed_phone_replies(runtime: &Runtime, session: &str) -> Result<(), DeckError> {
+    runtime.with_doc(|doc| {
+        doc.config.phone_replies = true;
+        Ok(())
+    })?;
+    crate::turn_summary::set_phone_replies(true);
+    let steps = (1..=16)
+        .map(|n| format!("- step {n} checked"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let long = format!(
+        "## Result\nFixed **two** tests in `storage`.\n{steps}\n```\ncargo test storage\ntest result: ok\n```\nreplymarkerlong"
+    );
+    crate::turn_summary::smoke_phone_reply(session, 1, &long, 120_000);
+    let head = "head line of the report\n".repeat(84);
+    let head = &head[..2_000];
+    let tail = "tail line of the report\n".repeat(180);
+    let tail = &tail[tail.len() - 3_985..];
+    let cut = format!(
+        "{head}{}{tail}replymarkercut",
+        crate::turn_summary::REPLY_CUT
+    );
+    crate::turn_summary::smoke_phone_reply(session, 2, &cut, 30_000);
+    Ok(())
 }

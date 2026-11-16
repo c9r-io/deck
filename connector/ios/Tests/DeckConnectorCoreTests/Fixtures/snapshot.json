@@ -12,6 +12,7 @@
         "sendMessage": { "allowed": true }
       },
       "columnId": "COL1",
+      "agent": "claude",
       "generation": "gen-a",
       "id": "A",
       "order": 0,
@@ -30,6 +31,7 @@
         "sendMessage": { "allowed": false, "reason": "unsupported-target" }
       },
       "columnId": "COL1",
+      "agent": null,
       "generation": null,
       "id": "B",
       "order": 1,
@@ -48,6 +50,7 @@
         "sendMessage": { "allowed": false, "reason": "unsupported-target" }
       },
       "columnId": "COL1",
+      "agent": null,
       "generation": null,
       "id": "E",
       "order": 2,
@@ -66,6 +69,7 @@
         "sendMessage": { "allowed": false, "reason": "unsupported-target" }
       },
       "columnId": "COL1",
+      "agent": null,
       "generation": null,
       "id": "F",
       "order": 3,
@@ -84,6 +88,7 @@
         "sendMessage": { "allowed": false, "reason": "session-unavailable" }
       },
       "columnId": "COL1",
+      "agent": null,
       "generation": null,
       "id": "C",
       "order": 4,
@@ -102,6 +107,7 @@
         "sendMessage": { "allowed": false, "reason": "target-unavailable" }
       },
       "columnId": "COL1",
+      "agent": null,
       "generation": null,
       "id": "D",
       "order": 5,

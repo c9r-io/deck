@@ -856,9 +856,10 @@ pub(super) fn worker_send(
 
 /* ---------- local commands ---------- */
 
-/// Bring the Stop hook in line with whether any client may read replies.
+/// Bring the Stop hook in line with whether any client may read replies
+/// (or the phone shows them: `agent_status::forwarding_wanted`).
 pub(super) fn sync_reply_hook() {
-    crate::agent_status::sync_worker_replies(replies_wanted_any());
+    crate::agent_status::sync_forwarded_replies();
 }
 
 /// The webview's view of the worker cards: which client drives each and

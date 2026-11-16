@@ -14,6 +14,7 @@ public protocol ConnectorTransport: AnyObject, CommandTransport {
     func snapshot() async throws -> Snapshot
     func output(cardID: String) async throws -> TerminalOutput
     func buffer(cardID: String) async throws -> CardBuffer
+    func replies(cardID: String) async throws -> CardReplies
     func invalidate()
 }
 
@@ -122,6 +123,13 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
         return value
     }
 
+    public func replies(cardID: String) async throws -> CardReplies {
+        let value: CardReplies = try await request(path: "/v1/cards/\(encodePath(cardID))/replies", method: "GET", body: nil, authenticated: true)
+        try WireValidator.validate(value)
+        guard value.cardId == cardID else { throw ConnectorError.invalidResponse }
+        return value
+    }
+
     public func post(command: CommandRequest) async throws -> CommandResult {
         try WireValidator.validate(command)
         let body = try encode(command)
@@ -155,7 +163,7 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
         guard (200..<300).contains(http.statusCode) else {
             let code = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data).error.code) ?? "http-\(http.statusCode)"
             if code == "unsupported-target" { throw ConnectorError.unsupportedTarget }
-            if path.hasPrefix("/v1/cards/"), path.hasSuffix("/output") {
+            if path.hasPrefix("/v1/cards/"), path.hasSuffix("/output") || path.hasSuffix("/replies") {
                 throw ConnectorError.outputResponse(status: http.statusCode, code: code)
             }
             if http.statusCode == 409 || http.statusCode == 412 { throw ConnectorError.conflict(code) }

@@ -10,6 +10,7 @@ final class ConnectorUITests: XCTestCase {
     func testIsolatedStoppedAgentVisibilityAndOutput() throws {
         let app = XCUIApplication()
         app.launchArguments.append("--deck-diagnostic")
+        app.launchArguments += ["-deck.detail.page", "output"]  // the fixture card has seeded replies
         app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         for round in 1...3 {
             app.launch()
@@ -47,6 +48,56 @@ final class ConnectorUITests: XCTestCase {
         }
     }
 
+    /// The fixture card carries two replies the isolated host seeded
+    /// (`DECK_SMOKE_CONNECTOR_REPLIES`): an older long Markdown one and a
+    /// newer one the helper cut. Before any choice the page opens on Replies,
+    /// the newest reply is open with its omitted middle marked, the older one
+    /// expands, and a hand choice of Output sticks across a relaunch.
+    func testIsolatedRepliesPage() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        _ = app.staticTexts["Tasks"].waitForExistence(timeout: 20)
+        let target = app.staticTexts["connector transport"].firstMatch
+        XCTAssertTrue(reveal(target, in: app), "The saved agent card must appear.")
+        target.tap()
+        let page = app.segmentedControls["deck.detail.page"].firstMatch
+        XCTAssertTrue(page.waitForExistence(timeout: 15), "A card with kept replies offers the Replies page.")
+        XCTAssertTrue(page.buttons["Replies · 2"].waitForExistence(timeout: 5), "The Replies segment counts the kept replies.")
+        XCTAssertTrue(page.buttons["Replies · 2"].isSelected, "Before any choice the page opens on Replies while the Mac keeps them.")
+        let replies = app.descendants(matching: .any).matching(identifier: "deck.replies.reply")
+        XCTAssertTrue(replies.firstMatch.waitForExistence(timeout: 15), "The kept replies must load.")
+        XCTAssertEqual(replies.count, 2)
+        let omitted = app.descendants(matching: .any)["deck.replies.omitted"].firstMatch
+        XCTAssertTrue(omitted.waitForExistence(timeout: 5), "The newest reply is open and marks where its middle was not sent.")
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "replymarkercut")).firstMatch.exists,
+                      "The newest reply shows its tail.")
+        let expand = app.buttons.matching(identifier: "deck.replies.expand").matching(NSPredicate(format: "label == %@", "Show all")).firstMatch
+        XCTAssertTrue(reveal(expand, in: app), "The older long reply is collapsed with a way to open it.")
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "replymarkerlong")).firstMatch.exists,
+                       "A collapsed reply hides its later lines.")
+        expand.tap()
+        let longTail = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "replymarkerlong")).firstMatch
+        XCTAssertTrue(longTail.waitForExistence(timeout: 5), "Show all opens the whole reply.")
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Replies page"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        page.buttons["Output"].tap()
+        XCTAssertTrue(app.staticTexts["deck.output.unavailable"].firstMatch.waitForExistence(timeout: 10), "Output shows the card's output state.")
+        app.terminate()
+        app.launch()
+        _ = app.staticTexts["Tasks"].waitForExistence(timeout: 20)
+        XCTAssertTrue(reveal(target, in: app))
+        target.tap()
+        XCTAssertTrue(page.waitForExistence(timeout: 15))
+        XCTAssertTrue(page.buttons["Output"].isSelected, "A page chosen by hand is kept.")
+        page.buttons["Replies · 2"].tap()
+        XCTAssertTrue(replies.firstMatch.waitForExistence(timeout: 10))
+        app.terminate()
+    }
+
     func testIsolatedLiveCodexOutput() throws {
         guard let marker = ProcessInfo.processInfo.environment["DECK_DIAG_EXPECTED_MARKER"],
               marker.hasPrefix("deckprobe") else {
@@ -54,6 +105,7 @@ final class ConnectorUITests: XCTestCase {
         }
         let app = XCUIApplication()
         app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launchArguments += ["-deck.detail.page", "output"]  // the fixture card has seeded replies
         app.launch()
         openCard(named: "connector live codex", in: app)
         let output = app.descendants(matching: .any)["deck.output.text"].firstMatch
@@ -97,6 +149,7 @@ final class ConnectorUITests: XCTestCase {
         }
         let app = XCUIApplication()
         app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launchArguments += ["-deck.detail.page", "output"]  // the fixture card has seeded replies
         app.launch()
         openCard(named: "connector live codex", in: app)
         let draft = app.textViews["deck.message.draft"].firstMatch
@@ -127,6 +180,7 @@ final class ConnectorUITests: XCTestCase {
     func testIsolatedSharedShellIsMetadataOnly() throws {
         let app = XCUIApplication()
         app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launchArguments += ["-deck.detail.page", "output"]  // the fixture card has seeded replies
         app.launch()
         openCard(named: "connector ordinary shell", in: app)
         let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
@@ -152,6 +206,7 @@ final class ConnectorUITests: XCTestCase {
 
         let app = XCUIApplication()
         app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launchArguments += ["-deck.detail.page", "output"]  // the fixture card has seeded replies
         app.launch()
 
         openCard(named: "connector ordinary shell", in: app)
@@ -230,6 +285,7 @@ final class ConnectorUITests: XCTestCase {
     func testIsolatedDraftsSurviveNavigationAndRelaunch() throws {
         let app = XCUIApplication()
         app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launchArguments += ["-deck.detail.page", "output"]  // the fixture card has seeded replies
         app.launch()
         openCard(named: "connector transport", in: app)
         openNotes(in: app)
@@ -285,6 +341,7 @@ final class ConnectorUITests: XCTestCase {
         defer { XCUIDevice.shared.orientation = .portrait }
         let app = XCUIApplication()
         app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launchArguments += ["-deck.detail.page", "output"]  // the fixture card has seeded replies
         app.launch()
         let card = app.staticTexts["connector transport"].firstMatch
         _ = card.waitForExistence(timeout: 15)

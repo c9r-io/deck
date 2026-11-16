@@ -221,9 +221,16 @@ private actor ControlledConnector: ConnectorTransport {
     var reads: [Int: CheckedContinuation<TerminalOutput, Error>] = [:]
     var queries: [Int: CheckedContinuation<CommandResult, Error>] = [:]
     init() throws { board = try Self.snapshotValue(generation: "g1") }
-    static func snapshotValue(generation: String, removed: Bool = false, notes: Bool = false) throws -> Snapshot {
-        let card: [String: Any] = ["id": "C", "projectId": "P", "columnId": "K", "title": "Card", "status": "running", "generation": generation, "canSend": true, "canQueue": notes, "buffer": ["revision": 1, "collecting": false, "entryCount": 0]]
-        return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: ["version": 1, "hostId": "test-host", "revision": generation, "capturedAt": 1, "projects": [], "cards": removed ? [] : [card], "queue": []]))
+    static func snapshotValue(generation: String, removed: Bool = false, notes: Bool = false, replies: String? = nil, replyCount: Int = 0) throws -> Snapshot {
+        var card: [String: Any] = ["id": "C", "projectId": "P", "columnId": "K", "title": "Card", "status": "running", "generation": generation, "canSend": true, "canQueue": notes, "buffer": ["revision": 1, "collecting": false, "entryCount": 0]]
+        var board: [String: Any] = ["version": 1, "hostId": "test-host", "revision": generation, "capturedAt": 1, "projects": [], "queue": []]
+        if let replies {
+            board["replies"] = replies
+            card["agent"] = "claude"
+            if replies == "on" { card["replyCount"] = replyCount; card["replyAt"] = replyCount * 1000 }
+        }
+        board["cards"] = removed ? [] : [card]
+        return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: board))
     }
     static func outputValue(_ text: String, generation: String, cardID: String = "C") throws -> TerminalOutput {
         try JSONDecoder().decode(TerminalOutput.self, from: JSONSerialization.data(withJSONObject: ["cardId": cardID, "generation": generation, "revision": text, "capturedAt": 1, "text": text, "truncated": false]))
@@ -248,6 +255,11 @@ private actor ControlledConnector: ConnectorTransport {
     }
     func buffer(cardID: String) async throws -> CardBuffer {
         try JSONDecoder().decode(CardBuffer.self, from: Data(#"{"revision":1,"collecting":false,"entries":[]}"#.utf8))
+    }
+    var replyCount = 0
+    func replies(cardID: String) async throws -> CardReplies {
+        replyCount += 1
+        return CardReplies(cardId: cardID, revision: WireRevision("r"), replies: [AgentReply(at: 1_000, text: "done", cut: false)])
     }
     func post(command: CommandRequest) async throws -> CommandResult {
         postCount += 1
@@ -289,6 +301,35 @@ extension AppModelTests {
         try await client.finishOutput(1, text: "OLD", generation: "g1")
         await first.value
         XCTAssertEqual(model.outputs["C"]?.text, "NEW")
+        model.setForeground(false)
+    }
+
+    func testRepliesAreReadOnceUntilTheListChangesAndTheSwitchIsHonored() async throws {
+        let client = try ControlledConnector()
+        await client.setBoard(try ControlledConnector.snapshotValue(generation: "g1", notes: true, replies: "on", replyCount: 1))
+        let (model, _) = try await isolatedModel(client)
+        await model.refresh()
+        let card = try XCTUnwrap(model.snapshot?.cards.first)
+        await model.loadDetails(card: card)
+        XCTAssertEqual(model.replies["C"]?.replies.first?.text, "done")
+        await model.loadDetails(card: card)
+        assertCount(await client.replyCount, 1)
+        // a newer generation keeps the replies: they are not the pane's
+        let next = try ControlledConnector.snapshotValue(generation: "g2", notes: true, replies: "on", replyCount: 2)
+        model.applySnapshot(next)
+        XCTAssertNotNil(model.replies["C"])
+        await model.loadDetails(card: next.cards[0])
+        assertCount(await client.replyCount, 2)
+        // switched off on the Mac: the list goes and the page says why
+        let off = try ControlledConnector.snapshotValue(generation: "g2", notes: true, replies: "off")
+        model.applySnapshot(off)
+        await model.loadDetails(card: off.cards[0])
+        XCTAssertNil(model.replies["C"])
+        XCTAssertEqual(model.repliesIssue["C"], .off)
+        // a host without the list offers none
+        let old = try ControlledConnector.snapshotValue(generation: "g2", notes: true)
+        model.applySnapshot(old)
+        XCTAssertNil(model.repliesIssue["C"])
         model.setForeground(false)
     }
 

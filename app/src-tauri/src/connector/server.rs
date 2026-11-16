@@ -15,7 +15,7 @@
 #[cfg(test)]
 use super::SnapshotScope;
 use super::{
-    buffer, note_device_seen, output, snapshot, CommandRequest, Config, Identity, Runtime,
+    buffer, note_device_seen, output, replies, snapshot, CommandRequest, Config, Identity, Runtime,
     CLIENT_UPGRADE_REQUIRED, COMMAND_EXPIRED,
 };
 use http_body_util::{BodyExt, Full, Limited};
@@ -143,6 +143,9 @@ fn mapped_output(error_value: &DeckError) -> Resp {
         }
         "mcp-controlled" if error_value.kind() == ErrorKind::Perm => {
             error(StatusCode::CONFLICT, "mcp-controlled")
+        }
+        "replies-off" if error_value.kind() == ErrorKind::Invalid => {
+            error(StatusCode::CONFLICT, "replies-off")
         }
         "output-read-failed" if error_value.kind() == ErrorKind::Tmux => {
             error(StatusCode::SERVICE_UNAVAILABLE, "output-read-failed")
@@ -492,6 +495,9 @@ async fn handle(
                                 "output" => output(device, &id)
                                     .map(|value| response(StatusCode::OK, value))
                                     .unwrap_or_else(|failure| mapped_output(&failure)),
+                                "replies" => replies(device, &id)
+                                    .map(|value| response(StatusCode::OK, value))
+                                    .unwrap_or_else(|failure| mapped_output(&failure)),
                                 "buffer" => state
                                     .app
                                     .as_ref()
@@ -564,6 +570,7 @@ mod tests {
             interface: None,
             scope: SnapshotScope::AgentCards,
             scope_revision: 0,
+            phone_replies: false,
         };
         let identity = Identity::generate("127.0.0.1").unwrap();
         spawn(runtime.clone(), config, identity, 1, || false).unwrap();
@@ -616,6 +623,7 @@ mod tests {
             interface: None,
             scope: SnapshotScope::AgentCards,
             scope_revision: 0,
+            phone_replies: false,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -661,6 +669,7 @@ mod tests {
             interface: None,
             scope: SnapshotScope::AgentCards,
             scope_revision: 0,
+            phone_replies: false,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -688,6 +697,7 @@ mod tests {
                 interface: None,
                 scope: SnapshotScope::AgentCards,
                 scope_revision: 0,
+                phone_replies: false,
             },
             identity,
             1,
@@ -976,6 +986,7 @@ mod tests {
                 interface: None,
                 scope: SnapshotScope::AgentCards,
                 scope_revision: 0,
+                phone_replies: false,
             },
             Identity::generate("127.0.0.1").unwrap(),
             1,
@@ -998,6 +1009,7 @@ mod tests {
             interface: None,
             scope: SnapshotScope::AgentCards,
             scope_revision: 0,
+            phone_replies: false,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -1023,6 +1035,7 @@ mod tests {
             interface: None,
             scope: SnapshotScope::AgentCards,
             scope_revision: 0,
+            phone_replies: false,
         };
         let port = spawn(runtime.clone(), config, identity, 1, || true).unwrap();
         let mut roots = rustls::RootCertStore::empty();
@@ -1134,6 +1147,7 @@ mod tests {
             interface: None,
             scope: SnapshotScope::AgentCards,
             scope_revision: 0,
+            phone_replies: false,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -1159,6 +1173,7 @@ mod tests {
             interface: None,
             scope: SnapshotScope::AgentCards,
             scope_revision: 0,
+            phone_replies: false,
         };
         let port = spawn(runtime.clone(), config, identity, 1, || true).unwrap();
         let mut roots = rustls::RootCertStore::empty();

@@ -604,6 +604,7 @@ fn main() {
             connector::connector_disable,
             connector::connector_set_scope,
             connector::connector_set_trusted,
+            connector::connector_set_phone_replies,
             connector::connector_pairing,
             connector::connector_revoke,
             connector::connector_reset_identity,

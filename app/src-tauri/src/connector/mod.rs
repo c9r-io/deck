@@ -45,6 +45,12 @@
 //! recognized Codex/Claude foreground regardless of saved launch command.
 //! A phone never sends shell input. Queue admission/control remains saved-command
 //! based in every scope; scope grants no automation/first-send authority.
+//! Claude Code replies (opt-in, `Config::phone_replies`): GET
+//! `/v1/cards/{id}/replies` answers the final messages `turn_summary.rs`
+//! kept for that card's session under the same card, scope and MCP checks as
+//! its output read, without requiring the agent in the foreground (they are
+//! the agent's own past messages, not the pane). Presentation only: nothing
+//! is written, logged with content, notified or used as authority.
 //! Native routes enforce each capability, not the snapshot. Reads reauthorize
 //! device/feature/scope revision before returning; output also rechecks card,
 //! session, foreground generation and MCP control after capture. Process names
@@ -175,6 +181,12 @@ struct Config {
     /// Fences in-flight reads across scope changes, including downgrade/regrant.
     #[serde(default)]
     scope_revision: u64,
+    /// The user's "Claude Code replies on the phone" switch: while on, each
+    /// Claude Code turn ending's final message is kept in memory for the
+    /// phones that may read that card's output (`turn_summary.rs`). An older
+    /// reader drops the field on its next write, which turns it off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    phone_replies: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -528,6 +540,9 @@ pub(crate) fn spawn_connector(app: AppHandle) {
         running_epoch: AtomicU64::new(0),
     });
     let _ = RUNTIME.set(runtime.clone());
+    crate::turn_summary::set_phone_replies(
+        runtime.read(|d| d.config.phone_replies).unwrap_or(false),
+    );
     crate::documents::set_write_claim_guard(board_commit_guard);
     if runtime.read(|d| d.config.enabled).unwrap_or(false) {
         let _ = start_server(runtime);

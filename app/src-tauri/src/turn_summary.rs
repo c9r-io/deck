@@ -37,6 +37,16 @@
 //!   alone (`reply_for`). While the Stop hook forwards the message for
 //!   worker replies only (`--reply workers`, `agent_status::summaries_wanted`
 //!   false) nothing else happens to it: no summary, no model call.
+//! - Phone replies (`connector/projection.rs` `replies`): while the user's
+//!   "Claude Code replies on the phone" switch is on (Settings › Phone
+//!   Connector, `connector_set_phone_replies`), the final message of every
+//!   Claude Code turn ending is also kept as it came, per card session, at
+//!   most `PHONE_PER_SESSION` each and `PHONE_TOTAL` in all, in memory only;
+//!   turning the switch off forgets them all, and the phone snapshot drops
+//!   the sessions no longer on the Board. A paired phone reads them only
+//!   through the same card checks as its output read. The switch alone (no
+//!   summaries) forwards the message with `--reply workers`, so nothing is
+//!   summarized or sent to a model for it.
 //! - Notes (the summary and the pick) live in memory only, keyed by
 //!   (session, episode), at most `KEEP`; a card shows one only while its
 //!   observation is still that episode (`for_episode`, read by the poll),
@@ -133,6 +143,13 @@ pub(crate) fn offer(accepted: &Accepted, reply: String) {
         && crate::mcp::replies_wanted_for(&accepted.session)
     {
         remember_reply(&accepted.session, accepted.episode, &reply);
+    }
+    // a paired phone's reply list (`connector`), when the user turned it on
+    if accepted.state == crate::agent_status::TURN_DONE
+        && accepted.class == SignalClass::Claude
+        && phone_replies_on()
+    {
+        remember_phone_reply(&accepted.session, accepted.episode, &reply, now_ms());
     }
     // the Stop hook forwards the message for worker replies alone: no
     // summary, no model call (`agent_status/hooks.rs` `ReplyHook::Workers`)
@@ -365,6 +382,124 @@ pub(crate) fn reply_for(session: &str, episode: EpisodeId) -> Option<String> {
         .rev()
         .find(|r| r.session == session && r.episode == episode)
         .map(|r| r.text.clone())
+}
+
+/// Phone replies kept for one card session, and in all.
+pub(crate) const PHONE_PER_SESSION: usize = 20;
+const PHONE_TOTAL: usize = 400;
+
+/// The user's "Claude Code replies on the phone" switch, as the Connector
+/// document holds it (`connector::set_phone_replies_state`).
+static PHONE_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// One Claude Code turn ending's final message for a paired phone.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PhoneReply {
+    /// When Deck accepted the turn ending, in milliseconds.
+    pub(crate) at: u64,
+    pub(crate) text: String,
+    /// The helper kept only its head and tail (`REPLY_CUT` between them).
+    pub(crate) cut: bool,
+}
+
+struct PhoneEntry {
+    session: String,
+    episode: EpisodeId,
+    reply: PhoneReply,
+}
+
+static PHONE: Mutex<VecDeque<PhoneEntry>> = Mutex::new(VecDeque::new());
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Follow the switch: off forgets every kept phone reply at once.
+pub(crate) fn set_phone_replies(on: bool) {
+    PHONE_ON.store(on, std::sync::atomic::Ordering::Relaxed);
+    if !on {
+        PHONE.lock_or_recover().clear();
+    }
+}
+
+pub(crate) fn phone_replies_on() -> bool {
+    PHONE_ON.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether `text` is a message the helper cut (`status-helper`
+/// `bounded_reply`): 2,000 bytes of head (less up to 3 for a character
+/// boundary), the mark, then the 4,000-byte tail. A message that was never
+/// cut is at most 6,000 bytes, so it matches only if it holds the mark at
+/// exactly that place and is that long.
+fn helper_cut(text: &str) -> bool {
+    text.len() >= 1_997 + REPLY_CUT.len() + 3_997
+        && (1_997..=2_000).any(|at| text.get(at..at + REPLY_CUT.len()) == Some(REPLY_CUT))
+}
+
+fn remember_phone_reply(session: &str, episode: EpisodeId, text: &str, at: u64) {
+    push_phone(&mut PHONE.lock_or_recover(), session, episode, text, at);
+}
+
+fn push_phone(
+    kept: &mut VecDeque<PhoneEntry>,
+    session: &str,
+    episode: EpisodeId,
+    text: &str,
+    at: u64,
+) {
+    kept.retain(|e| !(e.session == session && e.episode == episode));
+    kept.push_back(PhoneEntry {
+        session: session.to_string(),
+        episode,
+        reply: PhoneReply {
+            at,
+            text: text.to_string(),
+            cut: helper_cut(text),
+        },
+    });
+    let mine = kept.iter().filter(|e| e.session == session).count();
+    if mine > PHONE_PER_SESSION {
+        if let Some(oldest) = kept.iter().position(|e| e.session == session) {
+            kept.remove(oldest);
+        }
+    }
+    while kept.len() > PHONE_TOTAL {
+        kept.pop_front();
+    }
+}
+
+/// Debug smoke only (`connector/smoke.rs`): keep `text` as a turn ending
+/// of `session`, `ago_ms` before now, as if Claude Code had ended it.
+pub(crate) fn smoke_phone_reply(session: &str, episode: EpisodeId, text: &str, ago_ms: u64) {
+    if crate::smoke_faults::enabled() {
+        remember_phone_reply(session, episode, text, now_ms().saturating_sub(ago_ms));
+    }
+}
+
+/// `session`'s kept phone replies, oldest first.
+pub(crate) fn phone_replies(session: &str) -> Vec<PhoneReply> {
+    PHONE
+        .lock_or_recover()
+        .iter()
+        .filter(|e| e.session == session)
+        .map(|e| e.reply.clone())
+        .collect()
+}
+
+/// How many phone replies `session` has and when the newest came.
+pub(crate) fn phone_reply_count(session: &str) -> (usize, Option<u64>) {
+    let kept = PHONE.lock_or_recover();
+    let mut mine = kept.iter().filter(|e| e.session == session);
+    let count = mine.clone().count();
+    (count, mine.next_back().map(|e| e.reply.at))
+}
+
+/// Drop the phone replies of every session `keep` refuses (no longer a
+/// card on the Board).
+pub(crate) fn phone_replies_retain(keep: impl Fn(&str) -> bool) {
+    PHONE.lock_or_recover().retain(|e| keep(&e.session));
 }
 
 #[cfg(test)]
@@ -604,5 +739,50 @@ mod tests {
         assert_eq!(for_episode("deck-f", 4), None);
         assert_eq!(for_episode("deck-f", 5), None);
         KEPT.lock_or_recover().clear();
+    }
+
+    #[test]
+    fn phone_replies_keep_twenty_per_session_and_the_newest() {
+        let mut kept = VecDeque::new();
+        for n in 0..25u64 {
+            push_phone(&mut kept, "deck-a", n, &format!("a{n}"), n);
+        }
+        push_phone(&mut kept, "deck-b", 1, "b1", 100);
+        let a: Vec<_> = kept.iter().filter(|e| e.session == "deck-a").collect();
+        assert_eq!(a.len(), PHONE_PER_SESSION);
+        assert_eq!(a.first().unwrap().reply.text, "a5");
+        assert_eq!(a.last().unwrap().reply.text, "a24");
+        // the same turn ending again replaces its entry, it does not add one
+        push_phone(&mut kept, "deck-b", 1, "b1 again", 101);
+        let b: Vec<_> = kept.iter().filter(|e| e.session == "deck-b").collect();
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].reply.text, "b1 again");
+    }
+
+    #[test]
+    fn phone_replies_stop_at_the_total() {
+        let mut kept = VecDeque::new();
+        for n in 0..(PHONE_TOTAL as u64 + 30) {
+            push_phone(&mut kept, &format!("deck-{}", n % 40), n, "x", n);
+        }
+        assert_eq!(kept.len(), PHONE_TOTAL);
+        assert!(kept.iter().all(|e| e.episode >= 30));
+    }
+
+    #[test]
+    fn a_cut_reply_is_told_from_a_whole_one() {
+        let long = format!("{}{}", "h".repeat(9_000), "t".repeat(9_000));
+        let cut = format!(
+            "{}{REPLY_CUT}{}",
+            &long[..2_000],
+            &long[long.len() - 4_000..]
+        );
+        assert!(helper_cut(&cut));
+        // a multibyte head cut back to a character boundary
+        let wide = format!("{}{REPLY_CUT}{}", "字".repeat(666), "t".repeat(4_000));
+        assert!(helper_cut(&wide));
+        assert!(!helper_cut("short\n…\nreply"));
+        let whole = format!("{}{REPLY_CUT}{}", "h".repeat(2_000), "t".repeat(100));
+        assert!(!helper_cut(&whole));
     }
 }

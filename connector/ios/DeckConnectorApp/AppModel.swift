@@ -40,9 +40,22 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Why a card's reply list has nothing to show from the Mac.
+    enum RepliesIssue: Equatable { case off, unavailable }
+
     @Published var connection: ConnectionState = .loading
     @Published var snapshot: Snapshot?
     @Published var outputs: [String: TerminalOutput] = [:]
+    /// Claude Code replies the Mac keeps per card. Unlike output they are
+    /// not tied to the pane's generation: they stay while the card exists
+    /// and stays readable.
+    @Published var replies: [String: CardReplies] = [:]
+    @Published var repliesIssue: [String: RepliesIssue] = [:]
+    /// Messages this phone sent, per card, from its own journal.
+    @Published var sentMessages: [String: [SentMessage]] = [:]
+    /// The snapshot's (count, newest) each kept reply list answers, so an
+    /// unchanged list is not fetched again on every 5 s refresh.
+    private var repliesFetched: [String: String] = [:]
     @Published var buffers: [String: CardBuffer] = [:]
     @Published var bufferErrors: [String: String] = [:]
     @Published var drafts: [String: MessageDraft] = [:]
@@ -157,6 +170,7 @@ final class AppModel: ObservableObject {
 
     private func clearRemoteContent() {
         outputs = [:]; buffers = [:]; bufferErrors = [:]; outputUnavailable = [:]; staleOutputs = []
+        replies = [:]; repliesIssue = [:]; repliesFetched = [:]
         detailTasks.values.forEach { $0.cancel() }; detailTasks = [:]
         detailSequences = detailSequences.mapValues { $0 &+ 1 }
         loadingDetails = []
@@ -296,6 +310,7 @@ final class AppModel: ObservableObject {
             outputs = [:]
             buffers = [:]
             drafts = [:]
+            sentMessages = [:]
             pendingSends = [:]
             pendingCardCommands = [:]
             hasPendingTaskCreate = false
@@ -367,6 +382,13 @@ final class AppModel: ObservableObject {
                 loadingDetails.remove(old.id)
             }
             if next == nil || next?.canEditNotes == false { buffers.removeValue(forKey: old.id); bufferErrors.removeValue(forKey: old.id) }
+            // a card gone, unreadable or no longer offering replies drops its
+            // list; the switch turned off drops the replies but keeps saying so
+            if next.map(value.offersReplies) != true || next?.canEditNotes == false {
+                replies.removeValue(forKey: old.id); repliesFetched.removeValue(forKey: old.id); repliesIssue.removeValue(forKey: old.id)
+            } else if value.replies != "on" {
+                replies.removeValue(forKey: old.id); repliesFetched.removeValue(forKey: old.id)
+            }
         }
         snapshot = value
     }
@@ -380,12 +402,13 @@ final class AppModel: ObservableObject {
         loadingDetails.insert(card.id)
         let task = Task {
             async let output: Void = self.loadOutput(card: card, client: client, journal: journal, epoch: epoch, sequence: sequence)
+            async let replies: Void = self.loadReplies(card: card, client: client, journal: journal, epoch: epoch, sequence: sequence)
             if card.canEditNotes {
                 async let buffer: Void = self.loadBuffer(card: card, client: client, journal: journal, epoch: epoch, sequence: sequence)
-                _ = await (output, buffer)
+                _ = await (output, buffer, replies)
             } else {
                 if self.acceptsDetail(card: card, client: client, journal: journal, epoch: epoch, sequence: sequence) { self.buffers.removeValue(forKey: card.id) }
-                _ = await output
+                _ = await (output, replies)
             }
         }
         detailTasks[card.id] = task
@@ -420,6 +443,36 @@ final class AppModel: ObservableObject {
             guard acceptsDetail(card: card, client: client, journal: journal, epoch: epoch, sequence: sequence) else { return }
             if error as? ConnectorError == .revoked { clearRemoteContent(); snapshot = nil; connection = .revoked }
             else { receiveOutput(cardID: card.id, result: .failure(error)) }
+        }
+    }
+
+    /// A card's kept Claude Code replies, read when the snapshot says the
+    /// list changed (or none is held yet). `off` comes from the snapshot or
+    /// from the route; network loss keeps the list already shown.
+    private func loadReplies(card: CardSummary, client: any ConnectorTransport, journal: CommandJournal, epoch: UInt64, sequence: UInt64) async {
+        guard let snapshot, snapshot.offersReplies(card) else {
+            replies.removeValue(forKey: card.id); repliesIssue.removeValue(forKey: card.id); repliesFetched.removeValue(forKey: card.id)
+            return
+        }
+        guard snapshot.replies == "on" else {
+            replies.removeValue(forKey: card.id); repliesFetched.removeValue(forKey: card.id); repliesIssue[card.id] = .off
+            return
+        }
+        let key = "\(card.replyCount ?? 0):\(card.replyAt ?? 0)"
+        if repliesFetched[card.id] == key, replies[card.id] != nil { return }
+        do {
+            let value = try await client.replies(cardID: card.id)
+            guard acceptsDetail(card: card, client: client, journal: journal, epoch: epoch, sequence: sequence), value.cardId == card.id else { return }
+            replies[card.id] = value
+            repliesFetched[card.id] = key
+            repliesIssue.removeValue(forKey: card.id)
+        } catch {
+            guard acceptsDetail(card: card, client: client, journal: journal, epoch: epoch, sequence: sequence) else { return }
+            if error as? ConnectorError == .revoked { clearRemoteContent(); self.snapshot = nil; connection = .revoked; return }
+            if Self.isNetworkLoss(error), replies[card.id] != nil { return }
+            replies.removeValue(forKey: card.id); repliesFetched.removeValue(forKey: card.id)
+            if case ConnectorError.outputResponse(_, "replies-off") = error { repliesIssue[card.id] = .off }
+            else { repliesIssue[card.id] = .unavailable }
         }
     }
 
@@ -736,6 +789,7 @@ final class AppModel: ObservableObject {
         let epoch = explicitEpoch ?? bindingEpoch
         let records = await journal.allRecords()
         guard isCurrent(journal: journal, epoch: epoch) else { return }
+        sentMessages = SentMessage.fromJournal(records)
         let unresolved = records.filter {
             $0.request.kind == "send-message" && [.prepared, .unknown, .notFound, .awaitingFinal, .ambiguous, .expired].contains($0.localState)
         }

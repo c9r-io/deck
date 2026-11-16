@@ -16,6 +16,10 @@ public enum ConnectorLimits {
     public static let terminalResultReserveBytes = 1_536
     public static let commandTextUTF8Bytes = 32 * 1024
     public static let draftUTF8Bytes = commandTextUTF8Bytes
+    /// A card's Claude Code replies (host `turn_summary.rs`: 20 per card,
+    /// each at most 2,000 + 4,000 bytes and the cut mark), with headroom.
+    public static let replies = 64
+    public static let replyUTF8Bytes = 8 * 1024
 }
 
 public enum ConnectorError: Error, Equatable, LocalizedError, Sendable {
@@ -130,6 +134,16 @@ public struct Snapshot: Codable, Equatable, Sendable {
     public let projects: [ProjectSummary]
     public let cards: [CardSummary]
     public let queue: [QueueItem]
+    /// The Mac's "Claude Code replies on the phone" switch: `on` or `off`;
+    /// nil from a host that has no reply list.
+    public var replies: String?
+
+    /// Whether a card's detail offers its reply list: the host has one, and
+    /// the card runs Claude Code now or already has replies kept.
+    public func offersReplies(_ card: CardSummary) -> Bool {
+        guard replies == "on" || replies == "off" else { return false }
+        return card.agent == "claude" || (card.replyCount ?? 0) > 0
+    }
 }
 
 public struct ProjectSummary: Codable, Identifiable, Equatable, Sendable {
@@ -172,6 +186,13 @@ public struct CardSummary: Codable, Identifiable, Equatable, Sendable {
     public let buffer: BufferSummary
     public let order: Int?
     public let capabilities: CardCapabilities?
+    /// The recognized agent in the foreground (`claude`, `codex`), when the
+    /// card is readable and runs one. Presentation only.
+    public let agent: String?
+    /// Claude Code replies the Mac keeps for this card, and when the newest
+    /// came (milliseconds), while its reply switch is on.
+    public let replyCount: Int?
+    public let replyAt: Int64?
     // Legacy hosts already project agent-only cards. An advertised capability
     // object is authoritative for presentation; missing/unknown entries deny.
     public var canReadOutput: Bool { capabilities.map { $0.readOutput?.allowed == true } ?? true }
@@ -179,11 +200,12 @@ public struct CardSummary: Codable, Identifiable, Equatable, Sendable {
     public var maySend: Bool { canSend && (capabilities.map { $0.sendMessage?.allowed == true } ?? true) }
     public var mayQueue: Bool { canQueue && (capabilities.map { $0.queue?.allowed == true } ?? true) }
 
-    private enum CodingKeys: String, CodingKey { case id, projectId, columnId, title, status, generation, canSend, canQueue, buffer, order, capabilities }
+    private enum CodingKeys: String, CodingKey { case id, projectId, columnId, title, status, generation, canSend, canQueue, buffer, order, capabilities, agent, replyCount, replyAt }
 
-    public init(id: String, projectId: String, columnId: String, title: String, status: String, generation: String?, canSend: Bool, canQueue: Bool, buffer: BufferSummary, order: Int? = nil, capabilities: CardCapabilities? = nil) {
+    public init(id: String, projectId: String, columnId: String, title: String, status: String, generation: String?, canSend: Bool, canQueue: Bool, buffer: BufferSummary, order: Int? = nil, capabilities: CardCapabilities? = nil, agent: String? = nil, replyCount: Int? = nil, replyAt: Int64? = nil) {
         self.id = id; self.projectId = projectId; self.columnId = columnId; self.title = title; self.status = status
         self.generation = generation; self.canSend = canSend; self.canQueue = canQueue; self.buffer = buffer; self.order = order; self.capabilities = capabilities
+        self.agent = agent; self.replyCount = replyCount; self.replyAt = replyAt
     }
 
     /// The host's card status words are `running`, `stopped` and `unknown`
@@ -204,6 +226,9 @@ public struct CardSummary: Codable, Identifiable, Equatable, Sendable {
         buffer = try values.decode(BufferSummary.self, forKey: .buffer)
         order = try values.decodeIfPresent(Int.self, forKey: .order)
         capabilities = try values.decodeIfPresent(CardCapabilities.self, forKey: .capabilities)
+        agent = try values.decodeIfPresent(String.self, forKey: .agent)
+        replyCount = try values.decodeIfPresent(Int.self, forKey: .replyCount)
+        replyAt = try values.decodeIfPresent(Int64.self, forKey: .replyAt)
     }
 }
 
@@ -223,6 +248,29 @@ public struct TerminalOutput: Codable, Equatable, Sendable {
     public let capturedAt: WireInstant
     public let text: String
     public let truncated: Bool
+}
+
+/// One Claude Code turn ending's final message, as the Mac kept it.
+public struct AgentReply: Codable, Equatable, Sendable {
+    /// When the Mac accepted the turn ending, in milliseconds.
+    public let at: Int64
+    public let text: String
+    /// Only the head and tail were kept, with `ReplyText.cutMark` between.
+    public let cut: Bool
+
+    public init(at: Int64, text: String, cut: Bool) { self.at = at; self.text = text; self.cut = cut }
+    public var date: Date { Date(timeIntervalSince1970: TimeInterval(at) / 1000) }
+}
+
+/// A card's kept replies, oldest first (GET /v1/cards/{id}/replies).
+public struct CardReplies: Codable, Equatable, Sendable {
+    public let cardId: String
+    public let revision: WireRevision
+    public let replies: [AgentReply]
+
+    public init(cardId: String, revision: WireRevision, replies: [AgentReply]) {
+        self.cardId = cardId; self.revision = revision; self.replies = replies
+    }
 }
 
 public struct CardBuffer: Codable, Equatable, Sendable {
@@ -264,6 +312,11 @@ public struct BufferCopy: Codable, Equatable, Sendable {
 public enum WireValidator {
     public static func validate(_ output: TerminalOutput) throws {
         guard output.text.utf8.count <= ConnectorLimits.terminalTextUTF8Bytes else { throw ConnectorError.responseTooLarge }
+    }
+
+    public static func validate(_ value: CardReplies) throws {
+        guard value.replies.count <= ConnectorLimits.replies,
+              value.replies.allSatisfy({ $0.text.utf8.count <= ConnectorLimits.replyUTF8Bytes }) else { throw ConnectorError.responseTooLarge }
     }
 
     public static func validate(_ buffer: CardBuffer) throws {

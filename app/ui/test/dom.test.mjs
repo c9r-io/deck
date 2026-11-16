@@ -1991,6 +1991,34 @@ test('a newly paired phone is offered trust by name, and trust is per device and
   fakeDocument.getElementById('set-connector-pairing').hidden = true;
 });
 
+test('the phone replies switch says whether replies can arrive', async () => {
+  const calls = [];
+  let status = { enabled: true, running: true, address: '192.168.1.20', port: 47631, devices: [], scope: 'agentCards',
+    withheldCards: 0, phoneReplies: false, phoneRepliesForwarded: false };
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'connector_status') return status;
+    if (cmd === 'connector_addresses') return ['192.168.1.20'];
+    if (cmd === 'connector_set_phone_replies') { status = { ...status, phoneReplies: args.on }; return status; }
+    return {};
+  } } };
+  await renderConnectorSettings();
+  const control = fakeDocument.getElementById('set-connector-replies');
+  const state = fakeDocument.getElementById('set-connector-replies-state');
+  assert.equal(control.checked, false);
+  assert.equal(control.disabled, false);
+  assert.equal(state.textContent, 'Off.');
+  control.checked = true;
+  await control.onchange();
+  assert.deepEqual(calls.find(([cmd]) => cmd === 'connector_set_phone_replies')[1], { on: true });
+  assert.equal(control.checked, true);
+  assert.match(state.textContent, /^On, but no replies arrive yet: turn on Claude Code status hooks/,
+    'without the status hooks the switch says why nothing arrives');
+  status = { ...status, phoneRepliesForwarded: true };
+  await renderConnectorSettings();
+  assert.match(state.textContent, /^On: the phone shows Replies/);
+});
+
 test('a pairing is announced by name and time and hides the spent QR code', async () => {
   const phone = { id: 'D1', name: 'Old phone', pairedAt: 1_790_000_000, revoked: false };
   let devices = [phone];

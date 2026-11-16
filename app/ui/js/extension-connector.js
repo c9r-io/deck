@@ -21,6 +21,9 @@ const PANEL_HTML = `
       <div class="set-row"><label for="set-connector-scope" data-i18n="connector.scope">Phone access</label><select id="set-connector-scope" disabled><option value="agentCards" data-i18n="connector.scope.agentCards">Saved Codex/Claude cards</option><option value="boardMetadata" data-i18n="connector.scope.boardMetadata">All card summaries</option><option value="boardAccess" data-i18n="connector.scope.boardAccess">All card output and notes</option></select></div>
       <div class="set-hint" id="set-connector-scope-effect" aria-live="polite"></div>
       <div class="set-hint" id="set-connector-withheld" hidden></div>
+      <div class="set-row"><label for="set-connector-replies" data-i18n="connector.replies">Claude Code replies on the phone</label><input type="checkbox" id="set-connector-replies" disabled></div>
+      <div class="set-hint" data-i18n="connector.repliesHint">When Claude Code ends a turn, Deck keeps its last message in this Mac's memory (up to 20 per card) for paired phones that may read that card's output. Nothing is written to disk or sent anywhere else, and a Deck restart clears it. The switch changes Deck’s own Claude Code status hooks. Claude Code that is already running may need a restart to pick up the change.</div>
+      <div class="set-hint" id="set-connector-replies-state" aria-live="polite"></div>
       <div class="set-actions"><button class="btn" id="set-connector-pair" data-i18n="connector.pair">Pair a device…</button><button class="btn" id="set-connector-reset" data-i18n="connector.reset">Reset and re-pair…</button></div>
       <div id="set-connector-pairing" hidden><img id="set-connector-qr" alt=""><div class="set-hint" id="set-connector-expiry"></div>
         <div id="set-connector-pair-scope" hidden><div class="set-hint" id="set-connector-pair-scope-text"></div></div></div>
@@ -34,6 +37,7 @@ export function createConnectorSettings(host) {
   let connectorDevices = [];
   let connectorScope = 'agentCards';
   let scopeChangePending = false;
+  let repliesBusy = false;
   const scopeRank = Object.freeze({ agentCards: 0, boardMetadata: 1, boardAccess: 2 });
   const knownScope = scope => Object.hasOwn(scopeRank, scope) ? scope : 'agentCards';
   const scopeEffectKeys = Object.freeze({
@@ -133,6 +137,12 @@ export function createConnectorSettings(host) {
     scopeControl.value = connectorScope;
     scopeControl.disabled = !status || scopeChangePending;
     $('set-connector-scope-effect').textContent = t(scopeEffectKeys[connectorScope]);
+    const replies = $('set-connector-replies');
+    replies.checked = !!status?.phoneReplies;
+    replies.disabled = !status || repliesBusy;
+    $('set-connector-replies-state').textContent = !status ? ''
+      : !status.phoneReplies ? t('connector.repliesOff')
+      : status.phoneRepliesForwarded ? t('connector.repliesOn') : t('connector.repliesNeedsHooks');
     const withheld = status?.withheldCards || 0;
     $('set-connector-withheld').hidden = !(withheld > 0);
     $('set-connector-withheld').textContent = withheld > 0 ? t('connector.withheld', { count: formatNumber(withheld) }) : '';
@@ -187,6 +197,15 @@ export function createConnectorSettings(host) {
       if (control.disabled || scopeChangePending) { control.value = connectorScope; return; }
       await changeScope(knownScope(control.value));
     };
+    $('set-connector-replies').onchange = async () => {
+      const control = $('set-connector-replies');
+      if (repliesBusy) return;
+      repliesBusy = true; control.disabled = true;
+      try { await inv('connector_set_phone_replies', { on: control.checked }); }
+      catch (_) { toast(t('connector.actionFailed')); }
+      repliesBusy = false;
+      await renderConnectorSettings();
+    };
     $('set-connector-pair').onclick = async () => {
       try {
         const pairing = await inv('connector_pairing');
@@ -219,8 +238,8 @@ export const CONTRIBUTION = Object.freeze({
   slots: Object.freeze([Object.freeze({ slotId: 'set-extension-remote', html: PANEL_HTML })]),
   settings: Object.freeze([Object.freeze({
     id: 'connector', section: 'remote', order: 0,
-    labelKeys: ['connector.title', 'connector.address', 'connector.scope', 'connector.scope.boardMetadata', 'connector.scope.boardAccess', 'connector.pair'],
-    keywords: ['phone', 'iphone', 'mobile', 'pair', 'pairing', 'qr', 'device', 'remote', '手机', '配对', '设备', '二维码', '远程'],
+    labelKeys: ['connector.title', 'connector.address', 'connector.scope', 'connector.scope.boardMetadata', 'connector.scope.boardAccess', 'connector.replies', 'connector.pair'],
+    keywords: ['phone', 'iphone', 'mobile', 'pair', 'pairing', 'qr', 'device', 'remote', 'reply', 'replies', '手机', '配对', '设备', '二维码', '远程', '回复'],
   })]),
   create: createConnectorSettings,
 });

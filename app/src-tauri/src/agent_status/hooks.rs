@@ -9,11 +9,14 @@
 //! derived from the file; no second settings store exists.
 //!
 //! Claude Code's Stop hook has three forms (`ReplyHook`): plain, `--reply`
-//! (the turn-summary switch; worker replies read it too) and `--reply
-//! workers` (the message forwarded for worker replies alone, while some MCP
-//! client may read them and summaries are off; `sync_worker_replies`). The
-//! helper forwards the message the same way for both reply forms; Deck reads
-//! which one the file holds and makes no summary for the worker form.
+//! (the turn-summary switch; worker and phone replies read it too) and
+//! `--reply workers` (the message forwarded without summaries: while some
+//! MCP client may read worker replies or the user turned on Claude Code
+//! replies on the phone, and summaries are off; `forwarding_wanted`,
+//! `sync_worker_replies`). The word stays `workers` so no hooks file needs
+//! migrating; it means "forward only". The helper forwards the message the
+//! same way for both reply forms; Deck reads which one the file holds and
+//! makes no summary for the forward-only form.
 //!
 //! Only a stable installed bundle may write global hooks. The explicit debug
 //! re-entry experiment may edit its bound project Lifecycle hooks only.
@@ -1641,7 +1644,7 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
     .map(|_written| ());
     // a fresh install forwards worker replies when a client may read them
     if enable && result.is_ok() && source == CLAUDE_CODE.source {
-        sync_worker_replies(crate::mcp::replies_wanted_any());
+        sync_worker_replies(forwarding_wanted());
     }
     match &result {
         Ok(()) => applog(&format!(
@@ -1710,7 +1713,7 @@ pub(crate) fn turn_summary_set(enable: bool) -> Result<(), DeckError> {
     // replies, for that alone
     let mode = if enable {
         ReplyHook::Summaries
-    } else if crate::mcp::replies_wanted_any() {
+    } else if forwarding_wanted() {
         ReplyHook::Workers
     } else {
         ReplyHook::Off
@@ -1730,6 +1733,34 @@ pub(crate) fn turn_summary_set(enable: bool) -> Result<(), DeckError> {
         if enable { "on" } else { "off" }
     ));
     Ok(())
+}
+
+/// Whether deck's Claude Code Stop hook must forward the final message for
+/// something other than turn summaries: some MCP client may read worker
+/// replies (`mcp/workers.rs`), or the user turned on Claude Code replies on
+/// the phone (`turn_summary::phone_replies_on`).
+pub(crate) fn forwarding_wanted() -> bool {
+    crate::mcp::replies_wanted_any() || crate::turn_summary::phone_replies_on()
+}
+
+/// Bring the Stop hook in line with `forwarding_wanted` (a phone-replies
+/// toggle, an MCP client's reply choice).
+pub(crate) fn sync_forwarded_replies() {
+    sync_worker_replies(forwarding_wanted());
+}
+
+/// Whether deck's Claude Code status hooks are on and their Stop hook
+/// forwards the final message in either reply form: what Settings shows
+/// beside the phone-replies switch. Read from the file.
+pub(crate) fn claude_reply_forwarded() -> bool {
+    let Some(install) = CLAUDE_CODE.hook_install() else {
+        return false;
+    };
+    (install.config_path)()
+        .and_then(|path| read_settings_value(&path).ok())
+        .is_some_and(|value| {
+            hooks_installed(&value, install.hooks) && reply_hook(&value) != ReplyHook::Off
+        })
 }
 
 /// Follow the MCP clients' "read worker replies" choice (`mcp/workers.rs`):

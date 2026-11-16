@@ -25,6 +25,7 @@
         }
       },
       "columnId": "COL1",
+      "agent": "codex",
       "generation": "gen-manual",
       "id": "MANUAL",
       "order": 0,
@@ -57,6 +58,7 @@
         }
       },
       "columnId": "COL1",
+      "agent": null,
       "generation": "gen-shell",
       "id": "SHELL",
       "order": 1,

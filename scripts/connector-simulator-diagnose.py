@@ -45,7 +45,7 @@ result = {"environmentReady": False, "isolationVerified": False,
               "liveSavedAgentOutput", "ordinaryShellVisibility", "shellWithForegroundAgent",
               "savedCommandVariants", "stoppedSavedAgentOutput", "agentExitedToShell",
               "foregroundCycle", "appRelaunchCredentialRecovery", "refreshFailureRecovery",
-              "saveFailure", "backupRecovery")}}
+              "saveFailure", "backupRecovery", "repliesPage")}}
 
 
 def save():
@@ -352,6 +352,8 @@ def main():
     open_args = ["open", "-n", str(bundle), "--env", "TMUX_TMPDIR=" + ENV["TMUX_TMPDIR"],
                  "--env", "DECK_SMOKE_CONNECTOR_BOARD_ACCESS=" + ENV.get("DECK_SMOKE_CONNECTOR_BOARD_ACCESS", "0"),
                  "--env", "DECK_SMOKE_CONNECTOR_BOARD_METADATA=" + ENV.get("DECK_SMOKE_CONNECTOR_BOARD_METADATA", "0"),
+                 # the UI suite's fixture card carries seeded Claude Code replies
+                 "--env", "DECK_SMOKE_CONNECTOR_REPLIES=" + ("1" if SUITE == "ui" else "0"),
                  "--args", "--smoke-data-dir", str(DATA),
                  "--smoke-tmux-socket", SOCKET, "--smoke-wkwebview", "connector-transport"]
     for attempt in (1, 2):
@@ -480,6 +482,7 @@ def main():
             "DeckConnectorUITests/ConnectorUITests/testIsolatedLiveCodexOutput",
             "DeckConnectorUITests/ConnectorUITests/testIsolatedDraftsSurviveNavigationAndRelaunch",
             "DeckConnectorUITests/ConnectorUITests/testIsolatedChineseLargeText",
+            "DeckConnectorUITests/ConnectorUITests/testIsolatedRepliesPage",
         ]
         if result["snapshotScope"] == "boardMetadata":
             selected.append("DeckConnectorUITests/ConnectorUITests/testIsolatedSharedShellIsMetadataOnly")
@@ -559,6 +562,9 @@ def main():
             result["cases"]["stoppedSavedAgentOutput"] = "PASS" if stopped == "Passed" else "FAIL"
             result["cases"]["foregroundCycle"] = "PASS" if stopped == "Passed" else "FAIL"
             result["cases"]["appRelaunchCredentialRecovery"] = "PASS" if stopped == "Passed" else "FAIL"
+        replies_page = observed.get("testIsolatedRepliesPage")
+        if replies_page:
+            result["cases"]["repliesPage"] = "PASS" if replies_page == "Passed" else "FAIL"
         if result["snapshotScope"] == "boardAccess":
             result["cases"]["shellWithForegroundAgent"] = "PASS" if observed.get("testIsolatedBoardAccessManualAgentAndShell") == "Passed" else "FAIL"
         if live:
@@ -593,7 +599,7 @@ def main():
     else:
         result["cases"]["ordinaryShellVisibility"] = (
             "PASS" if observed.get("testOptInRealHostPairingBufferCASAndCredentialLifecycle") == "Passed" else "FAIL")
-    selected_cases = ("stoppedSavedAgentOutput", "liveSavedAgentOutput", "agentExitedToShell") if SUITE == "ui" else ("ordinaryShellVisibility",)
+    selected_cases = ("stoppedSavedAgentOutput", "liveSavedAgentOutput", "agentExitedToShell", "repliesPage") if SUITE == "ui" else ("ordinaryShellVisibility",)
     if SUITE == "ui" and result["snapshotScope"] == "boardAccess":
         selected_cases += ("shellWithForegroundAgent",)
     result["requiredTestsExecuted"] = all(result["cases"][name] in ("PASS", "FAIL") for name in selected_cases)
