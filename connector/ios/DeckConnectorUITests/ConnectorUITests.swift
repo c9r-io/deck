@@ -25,10 +25,10 @@ final class ConnectorUITests: XCTestCase {
                           "Round \(round): stopped output area must be reachable in the normal detail layout.")
             XCTAssertEqual(unavailable.label, Self.sessionUnavailableLabel,
                            "Round \(round): missing session must have its own output state.")
-            app.segmentedControls.buttons["Notes"].tap()
+            openNotes(in: app)
             XCTAssertTrue(revealBySwipingDown(app.textViews["deck.note.new"].firstMatch, in: app),
                           "Scratchpad remains available without a readable session.")
-            app.segmentedControls.buttons["Output"].tap()
+            closeNotes(in: app)
             let send = app.buttons["deck.message.send"].firstMatch
             XCTAssertTrue(reveal(send, in: app), "The send control must remain reachable.")
             XCTAssertFalse(send.isEnabled,
@@ -68,6 +68,12 @@ final class ConnectorUITests: XCTestCase {
         }
         XCTAssertTrue(app.buttons["deck.output.refresh"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["deck.output.captured"].firstMatch.exists)
+        // The detail opens at the end of the output: the jump control, shown
+        // only while scrolled away from the end, must not be there.
+        let atEnd = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+                                              object: app.buttons["deck.output.latest"])
+        XCTAssertEqual(XCTWaiter.wait(for: [atEnd], timeout: 5), .completed,
+                       "The output must open scrolled to its end.")
         XCTAssertTrue(output.label.contains(marker),
                       "The pinned host output must contain the isolated Agent's response marker.")
         let captured = app.descendants(matching: .any)["deck.output.captured"].firstMatch
@@ -130,7 +136,7 @@ final class ConnectorUITests: XCTestCase {
                       unavailable.label)
         XCTAssertFalse(app.descendants(matching: .any)["deck.output.text"].exists)
         XCTAssertFalse(app.buttons["deck.message.send"].isEnabled)
-        app.segmentedControls.buttons["Notes"].tap()
+        openNotes(in: app)
         XCTAssertFalse(app.buttons["deck.note.save"].isEnabled)
         app.terminate()
     }
@@ -153,7 +159,7 @@ final class ConnectorUITests: XCTestCase {
         XCTAssertTrue(reveal(shellOutput, in: app), "Board Access must expose the shell card's bounded output snapshot.")
         XCTAssertFalse(app.staticTexts["deck.output.unavailable"].exists)
 
-        app.segmentedControls.buttons["Notes"].tap()
+        openNotes(in: app)
         let shellNote = app.textViews["deck.note.new"].firstMatch
         XCTAssertTrue(revealBySwipingDown(shellNote, in: app), "Board Access must expose the shell card's scratchpad.")
         XCTAssertTrue(shellNote.isEnabled)
@@ -174,7 +180,7 @@ final class ConnectorUITests: XCTestCase {
         shellAttachment.name = "Board Access shell note saved"; shellAttachment.lifetime = .keepAlways; add(shellAttachment)
         guard deleteOnlyNote(noteProbe, in: app) else { return }
 
-        app.segmentedControls.buttons["Output"].tap()
+        closeNotes(in: app)
         let shellDraft = app.textViews["deck.message.draft"].firstMatch
         XCTAssertTrue(reveal(shellDraft, in: app))
         let messageProbe = "board-access-message-probe"
@@ -215,7 +221,7 @@ final class ConnectorUITests: XCTestCase {
         let messageAttachment = XCTAttachment(screenshot: app.screenshot())
         messageAttachment.name = "Board Access manual Agent reply"; messageAttachment.lifetime = .keepAlways; add(messageAttachment)
 
-        app.segmentedControls.buttons["Notes"].tap()
+        openNotes(in: app)
         XCTAssertTrue(app.staticTexts["Queueing requires a Codex or Claude launch configuration saved on the desktop."].waitForExistence(timeout: 10),
                       "The manually started agent must not gain queued delivery without a saved launch configuration.")
         app.terminate()
@@ -226,19 +232,20 @@ final class ConnectorUITests: XCTestCase {
         app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         openCard(named: "connector transport", in: app)
-        selectDetailTab("Notes", in: app)
+        openNotes(in: app)
         let note = app.textViews["deck.note.new"].firstMatch
         XCTAssertTrue(revealBySwipingDown(note, in: app))
         let marker = "local-note-" + UUID().uuidString
         note.tap(); note.typeText(marker)
         app.buttons["deck.keyboard.done"].tap()
+        closeNotes(in: app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         openCard(named: "connector transport", in: app)
-        selectDetailTab("Notes", in: app)
+        openNotes(in: app)
         XCTAssertEqual(note.value as? String, marker)
         app.terminate(); app.launch()
         openCard(named: "connector transport", in: app)
-        selectDetailTab("Notes", in: app)
+        openNotes(in: app)
         XCTAssertTrue(revealBySwipingDown(note, in: app))
         XCTAssertEqual(note.value as? String, marker, "An unsaved note must survive app termination without a desktop write.")
         let saveNew = app.buttons["deck.note.save"]
@@ -262,7 +269,7 @@ final class ConnectorUITests: XCTestCase {
         XCTAssertEqual(editor.value as? String, edited, "Closing an edit must preserve its local draft.")
         app.terminate(); app.launch()
         openCard(named: "connector transport", in: app)
-        selectDetailTab("Notes", in: app)
+        openNotes(in: app)
         try openSavedNoteEditor()
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         XCTAssertEqual(editor.value as? String, edited)
@@ -356,7 +363,7 @@ final class ConnectorUITests: XCTestCase {
         let app = pairedApp()
         app.launch()
         openCard(named: cardTitle, in: app)
-        app.segmentedControls.buttons["Notes"].tap()
+        openNotes(in: app)
         XCTAssertTrue(
             noteText(expectedNote, in: app).waitForExistence(timeout: 15),
             "Expected the paired scratchpad note before process termination."
@@ -365,7 +372,7 @@ final class ConnectorUITests: XCTestCase {
         app.terminate()
         app.launch()
         openCard(named: cardTitle, in: app)
-        app.segmentedControls.buttons["Notes"].tap()
+        openNotes(in: app)
         XCTAssertTrue(
             noteText(expectedNote, in: app).waitForExistence(timeout: 15),
             "Expected the paired scratchpad note after process termination and Keychain restore."
@@ -398,7 +405,7 @@ final class ConnectorUITests: XCTestCase {
         let app = pairedApp()
         app.launch()
         openCard(named: cardTitle, in: app)
-        app.segmentedControls.buttons["Notes"].tap()
+        openNotes(in: app)
         let bufferLoaded = app.buttons["deck.note.queue-selected"]
         XCTAssertTrue(bufferLoaded.waitForExistence(timeout: 15), "Expected the scratchpad buffer to finish loading before checking the marker.")
         XCTAssertFalse(noteText(marker, in: app).exists, "The run marker already exists; investigate it instead of mutating again.")
@@ -446,7 +453,7 @@ final class ConnectorUITests: XCTestCase {
         let app = pairedApp()
         app.launch()
         openCard(named: cardTitle, in: app)
-        app.segmentedControls.buttons["Notes"].tap()
+        openNotes(in: app)
         let bufferLoaded = app.buttons["deck.note.queue-selected"]
         XCTAssertTrue(bufferLoaded.waitForExistence(timeout: 15), "Expected the scratchpad buffer to finish loading before finding the marker.")
         guard editOnlyNote(marker, to: editedMarker, in: app) else { return }
@@ -473,7 +480,7 @@ final class ConnectorUITests: XCTestCase {
         let app = pairedApp()
         app.launch()
         openCard(named: cardTitle, in: app)
-        app.segmentedControls.buttons["Notes"].tap()
+        openNotes(in: app)
         let bufferLoaded = app.buttons["deck.note.queue-selected"]
         XCTAssertTrue(bufferLoaded.waitForExistence(timeout: 15), "Expected the scratchpad buffer to finish loading before finding the marker.")
         guard deleteOnlyNote(marker, in: app) else { return }
@@ -489,13 +496,20 @@ final class ConnectorUITests: XCTestCase {
         return app
     }
 
-    private func selectDetailTab(_ title: String, in app: XCUIApplication) {
-        let tab = app.segmentedControls.buttons[title]
-        XCTAssertTrue(revealBySwipingDown(tab, in: app), "The detail tab must be visible after navigation settles.")
-        tab.tap()
-        let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: tab)
-        XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 5), .completed,
-                       "The requested tab must actually be selected before looking for its lazy List cells.")
+    /// Notes open as a panel from the detail's navigation bar.
+    private func openNotes(in app: XCUIApplication) {
+        let notes = app.buttons["deck.detail.notes"].firstMatch
+        XCTAssertTrue(notes.waitForExistence(timeout: 10) && notes.isHittable, "The notes button must be in the detail's navigation bar.")
+        notes.tap()
+        XCTAssertTrue(app.buttons["deck.notes.close"].waitForExistence(timeout: 5), "The notes panel must open.")
+    }
+
+    private func closeNotes(in app: XCUIApplication) {
+        let close = app.buttons["deck.notes.close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 5), "The notes panel must be open to close it.")
+        close.tap()
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: close)
+        XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 5), .completed, "The notes panel must close.")
     }
 
     private func openCard(named title: String, in app: XCUIApplication) {
@@ -507,15 +521,15 @@ final class ConnectorUITests: XCTestCase {
     }
 
     private func assertLatestOutput(_ expected: String, in app: XCUIApplication) {
+        // The jump control shows only while the output is scrolled away from its end.
         let latest = app.buttons["deck.output.latest"]
-        XCTAssertTrue(reveal(latest, in: app), "Expected the Latest output control on the card detail.")
-        latest.tap()
+        if latest.waitForExistence(timeout: 2) { latest.tap() }
 
         let output = app.descendants(matching: .any)["deck.output.text"]
         XCTAssertTrue(output.waitForExistence(timeout: 10), "Expected the terminal output text.")
         XCTAssertTrue(output.label.contains(expected), "Expected the terminal output accessibility label to contain the requested marker.")
         // AX exposes the complete Text label, but not a substring's clipped on-screen geometry.
-        // Tapping Latest output validates the scroll action without claiming that range is visually provable here.
+        // The detail opens at the end; the jump control is tapped only when shown.
     }
 
     private func noteText(_ text: String, in app: XCUIApplication) -> XCUIElement {
@@ -829,7 +843,8 @@ extension ConnectorUITests {
         let alert = springboard.alerts.firstMatch
         guard alert.waitForExistence(timeout: timeout) else { return nil }
         for title in titles {
-            let button = alert.buttons[title]
+            // newer iOS exposes an alert button twice in the tree; either taps it
+            let button = alert.buttons[title].firstMatch
             if button.exists { button.tap(); return title }
         }
         XCTFail("Unexpected system alert buttons: \(alert.buttons.allElementsBoundByIndex.map(\.label))")
@@ -1150,12 +1165,13 @@ extension ConnectorUITests {
         let draft = app.textViews["deck.message.draft"].firstMatch
         XCTAssertTrue(reveal(draft, in: app)); draft.tap(); draft.typeText(message)
         app.buttons["deck.keyboard.done"].tap()
-        selectDetailTab("便签", in: app)
+        openNotes(in: app)
         let note = app.textViews["deck.note.new"].firstMatch
         XCTAssertTrue(revealBySwipingDown(note, in: app))
         let noteMarker = "DQA-NOTE-DRAFT-\(environment["DECK_DEVICE_NONCE"]!)"
         note.tap(); note.typeText(noteMarker)
         app.buttons["deck.keyboard.done"].tap()
+        closeNotes(in: app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCUIDevice.shared.press(.home)
         app.activate()
@@ -1164,7 +1180,7 @@ extension ConnectorUITests {
         app.terminate(); app.launch()
         openCard(named: title, in: app)
         XCTAssertTrue(reveal(draft, in: app)); XCTAssertEqual(draft.value as? String, message, "A message draft must survive termination.")
-        selectDetailTab("便签", in: app)
+        openNotes(in: app)
         XCTAssertTrue(revealBySwipingDown(note, in: app)); XCTAssertEqual(note.value as? String, noteMarker)
         keepScreenshot("drafts-restored", app)
         let save = app.buttons["deck.note.save"]
@@ -1174,7 +1190,7 @@ extension ConnectorUITests {
         if !saved.waitForExistence(timeout: 15) { checkOriginalNoteOperationOnce(in: app) }
         XCTAssertTrue(saved.waitForExistence(timeout: 15), "The restored note must save once without another edit.")
         guard deleteOnlyNote(noteMarker, in: app) else { return }
-        selectDetailTab("输出", in: app)
+        closeNotes(in: app)
         XCTAssertTrue(replaceAllText(in: draft, expectedOriginal: message, with: ""))
         app.buttons["deck.keyboard.done"].tap()
         deckStep("drafts-done")
@@ -1213,11 +1229,9 @@ extension ConnectorUITests {
         XCTAssertTrue(rotated, "The phone did not rotate; landscape cannot be judged on this device state.")
         guard rotated else { return }
         XCTAssertTrue(outputText(app).waitForExistence(timeout: 20), "Output must be present in landscape.")
-        // On a physical device the coordinate drags in `reveal` do not follow
-        // the rotation; scroll the list itself, boundedly.
+        // The composer sits on the bottom edge in every orientation, so it is
+        // reachable without scrolling.
         let draft = app.textViews["deck.message.draft"].firstMatch
-        let list = app.collectionViews.firstMatch
-        for _ in 0..<30 where !(draft.exists && draft.isHittable) { list.swipeUp() }
         XCTAssertTrue(draft.exists && draft.isHittable, "The composer must be reachable in landscape at accessibility text size.")
         draft.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))

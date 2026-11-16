@@ -331,7 +331,7 @@ pub(super) fn buffer_in_scope(
 
 pub(super) fn bounded_output(text: String, history_size: usize) -> (String, bool) {
     let bytes_truncated = text.len() > MAX_OUTPUT_BYTES;
-    let truncated = history_size > 200 || bytes_truncated;
+    let truncated = history_size > OUTPUT_HISTORY_LINES || bytes_truncated;
     if !bytes_truncated {
         return (text, truncated);
     }
@@ -458,8 +458,9 @@ pub(super) fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, Dec
             "-p".into(),
             "-t".into(),
             before.identity.pane_id.clone(),
+            "-J".into(),
             "-S".into(),
-            "-200".into(),
+            format!("-{OUTPUT_HISTORY_LINES}"),
         ])
         .map_err(|error| output_failure("capture-pane", card_id, request, started, error))?;
     let after = io

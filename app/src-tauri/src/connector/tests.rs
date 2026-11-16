@@ -603,7 +603,14 @@ fn restart_listens_only_on_the_recorded_interface() {
 #[test]
 fn output_bounds_history_and_utf8_tail_independently() {
     let short = "trust line\nlatest marker".to_string();
-    assert_eq!(bounded_output(short.clone(), 201), (short, true));
+    assert_eq!(
+        bounded_output(short.clone(), OUTPUT_HISTORY_LINES),
+        (short.clone(), false)
+    );
+    assert_eq!(
+        bounded_output(short.clone(), OUTPUT_HISTORY_LINES + 1),
+        (short, true)
+    );
 
     let boundary = "a".repeat(MAX_OUTPUT_BYTES);
     assert_eq!(bounded_output(boundary.clone(), 200), (boundary, false));
@@ -1948,6 +1955,13 @@ impl OutputIo for ScriptedOutput {
             }
         }
         assert_eq!(args[3], "%7", "the probed pane is the one read");
+        if args[0] == "capture-pane" {
+            assert_eq!(
+                args[4..],
+                ["-J", "-S", "-1000"],
+                "wrapped lines joined, 1000 history lines"
+            );
+        }
         Ok(if args[0] == "display-message" {
             self.history.into()
         } else {
@@ -2027,12 +2041,14 @@ fn phone_output_succeeds_only_when_target_and_generation_survive_the_capture() {
     assert_eq!(steady.probe_calls.get(), 2, "probed before and after");
     assert_eq!(steady.card_calls.get(), 2, "card re-read after");
 
-    let deep = ScriptedOutput::new("201", &["gen-1"], &["deck-card-0001"]);
+    let deep = ScriptedOutput::new("1001", &["gen-1"], &["deck-card-0001"]);
     assert_eq!(
         output_with(&deep, "C1").unwrap()["truncated"],
         true,
-        "history past the 200-line capture marks the read truncated"
+        "history past the 1000-line capture marks the read truncated"
     );
+    let within = ScriptedOutput::new("1000", &["gen-1"], &["deck-card-0001"]);
+    assert_eq!(output_with(&within, "C1").unwrap()["truncated"], false);
 
     let unreadable = ScriptedOutput::new("many", &["gen-1"], &["deck-card-0001"]);
     let failed = output_with(&unreadable, "C1").unwrap_err();

@@ -31,12 +31,20 @@ before background snapshot/detail reads. Duplicate refreshes coalesce; output re
 current pairing, card, generation and request sequence. Command recovery runs
 independently, using at most eight existing-ID GETs per pass with three bounded
 passes; failed IDs rotate fairly. It never creates an automatic POST retry.
-Output appears first, with capture time, an actual refresh control, a separate
-jump-to-end control and optional line wrapping. The first capture opens at the end; subsequent output does not force scroll.
-At accessibility text sizes and in landscape, the composer scrolls with the
-content instead of covering it.
+A card's detail is its output, filling the screen between the navigation bar
+(title, project and column, a notes button with the note count, and a menu for
+line wrapping and text size) and a composer that is one line high until its
+text needs more (up to five lines; two in landscape and at accessibility
+sizes). One status line shows the capture time, staleness or the offline
+state, and a refresh control. The output opens at its last line (trailing
+blank rows are not shown) and, on iOS 18 and later, follows new output while
+scrolled to the end; scrolled up, it keeps its place and offers a jump back
+that says when new output arrived. On iOS 17 it never moves on its own after
+opening. A note at the top of the output says how much history the snapshot
+holds. The host reads up to 1,000 history lines (64 KiB) with wrapped lines
+joined, so the phone rewraps them at its own width.
 Only network loss retains clearly marked stale content; changed identity or
-permission clears it. Notes are a secondary view with a separate durable draft.
+permission clears it. Notes open as a panel with a separate durable draft.
  It does not promise background connectivity. Pairing descriptors remain in memory only. The saved Keychain value binds origin, certificate pin, host ID, device ID, and bearer token with `WhenUnlockedThisDeviceOnly` accessibility. HTTP uses an ephemeral session with cookies, redirects, disk cache, and credential storage disabled. The self-signed leaf must match the pinned DER SHA-256 and also pass hostname and validity evaluation as the sole trust anchor.
 
 Message drafts preserve the target generation that was current when their first character was typed (an empty composer follows the card). A refresh never silently changes that binding; if the desktop target changes, the user must explicitly accept the current generation before sending. Each command's immutable ID and body is atomically persisted before POST. An unknown result is recovered by querying that same ID and is never automatically retried under a new ID. Pending sends are visible and block another send for the card.

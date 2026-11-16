@@ -1118,6 +1118,31 @@ topology_matrix!(shell_restore_bootstrap_becomes_tmux_history_without_executing_
 /// v0.4.12: resize reflow pushes blank lines into history, so "empty" shells
 /// scrolled into void. deck clears history once after the first attach; the
 /// empty-history guard in scroll_session then makes scrolling a true no-op.
+/// The phone's output read (`connector/projection.rs`): `-J` hands back a
+/// line the pane wrapped at its width as the one line the program printed,
+/// so the phone rewraps it at its own width; without `-J` it is cut into
+/// pane-width pieces.
+#[test]
+fn phone_capture_joins_lines_the_pane_wrapped() {
+    let line: String = (0..70).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+    let s = Server::fixture(
+        "join",
+        20,
+        8,
+        &format!("sh -c 'printf \"%s\\n\" {line}; sleep 30'"),
+    );
+    let joined = s.run(&["capture-pane", "-p", "-t", "t", "-J", "-S", "-1000"]);
+    assert!(
+        joined.lines().any(|l| l == line),
+        "-J returns the printed line whole: {joined:?}"
+    );
+    let plain = s.run(&["capture-pane", "-p", "-t", "t", "-S", "-1000"]);
+    assert!(
+        !plain.lines().any(|l| l == line) && plain.lines().any(|l| l == &line[..20]),
+        "without -J the line is cut at the pane width: {plain:?}"
+    );
+}
+
 #[test]
 fn resize_junk_history_is_clearable_and_stays_zero() {
     let s = Server::new("hist");

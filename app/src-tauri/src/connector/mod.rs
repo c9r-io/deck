@@ -151,6 +151,11 @@ const MAX_RESULT_BYTES: usize = 1024;
 const PAIR_TTL: u64 = 300;
 const MAX_TEXT: usize = 32 * 1024;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+/// History lines one phone output read takes above the visible screen. The
+/// read joins wrapped lines (`capture-pane -J`) so the phone rewraps them at
+/// its own width instead of showing the desktop's 150-column breaks; the
+/// byte bound still applies and keeps the newest tail.
+const OUTPUT_HISTORY_LINES: usize = 1000;
 const MAX_PAIRING_DESCRIPTOR_BYTES: usize = 8 * 1024;
 
 #[derive(Clone, Serialize, Deserialize, Default)]

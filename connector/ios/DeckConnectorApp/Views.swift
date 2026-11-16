@@ -1,5 +1,9 @@
-// Content is primary; notes are an explicit secondary view. Cached terminal
-// output always carries capture time and freshness, never Agent task semantics.
+// Content is primary: a card's detail is its output, filling the screen
+// between the navigation bar and a one-line composer; notes open as a panel
+// from the navigation bar. Cached terminal output always carries capture time
+// and freshness, never Agent task semantics. The output view follows new
+// output only while it is scrolled to the end; scrolled up, it stays put and
+// offers a jump back.
 import DeckConnectorCore
 import SwiftUI
 
@@ -219,13 +223,19 @@ struct TaskDetailView: View {
         case idle, saving, pending, saved, savedWithNewerDraft, failed(String)
     }
 
-    private enum FocusedField: Hashable { case note, message }
+    private enum FocusedField: Hashable { case message }
 
     @EnvironmentObject private var model: AppModel
     let cardID: String
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.verticalSizeClass) private var verticalSizeClass
-    @ScaledMetric(relativeTo: .body) private var composerHeight = 62.0
+    /// One line of the message draft; the editor grows from one to
+    /// `draftMaxLines` lines with its text.
+    @ScaledMetric(relativeTo: .body) private var draftLineHeight = 22.0
+    @State private var draftTextHeight: CGFloat = 0
+    /// Per-phone reading preferences.
+    @AppStorage("deck.output.wrap") private var wrapLines = true
+    @AppStorage("deck.output.textStep") private var textStep = 0
     @State private var newNote = ""
     @State private var showingNotes = false
     @State private var addingNote = false
@@ -245,40 +255,51 @@ struct TaskDetailView: View {
     }
 
     private var card: CardSummary? { model.snapshot?.cards.first(where: { $0.id == cardID }) }
-    private var inlineComposer: Bool { dynamicTypeSize.isAccessibilitySize || verticalSizeClass == .compact }
+    private var draftMaxLines: CGFloat { dynamicTypeSize.isAccessibilitySize || verticalSizeClass == .compact ? 2 : 5 }
+    private var draftEditorHeight: CGFloat {
+        let inset: CGFloat = 16
+        return min(max(draftTextHeight + inset, draftLineHeight + inset), draftLineHeight * draftMaxLines + inset)
+    }
 
     var body: some View {
         Group {
             if let card {
-                List {
-                    Section {
-                        if case .offline = model.connection { Label("Offline — showing the last available snapshot", systemImage: "wifi.slash").font(.caption).foregroundStyle(.orange) }
-                        Picker("Card view", selection: $showingNotes) {
-                            Text("Output").tag(false)
-                            Text("Notes").tag(true)
-                        }.pickerStyle(.segmented).accessibilityIdentifier("deck.detail.tabs")
-                        if let project = model.snapshot?.projects.first(where: { $0.id == card.projectId }) {
-                            Text("\(project.name) · \(project.columns.first(where: { $0.id == card.columnId })?.name ?? card.columnId)")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    if showingNotes { scratchpadSection(card) }
-                    else {
-                        outputSection(card)
-                        if inlineComposer { Section { composerSection(card) } }
-                    }
+                VStack(spacing: 0) {
+                    statusStrip(card)
+                    Divider()
+                    outputArea(card)
                 }
-                .scrollDismissesKeyboard(.interactively)
                 .navigationTitle(card.title)
                 .navigationBarTitleDisplayMode(.inline)
-                .refreshable { await refreshCurrentTaskDetails() }
                 .task(id: cardID) { model.showDetails(cardID); await model.loadDetails(card: card) }
                 .onDisappear { model.showDetails(nil) }
                 .safeAreaInset(edge: .bottom) {
-                    if !showingNotes && !inlineComposer { composerSection(card).padding().background(.bar) }
+                    composerSection(card)
+                        .padding(.horizontal)
+                        .padding(.vertical, verticalSizeClass == .compact ? 4 : 8)
+                        // in a short landscape window the largest sizes would
+                        // leave no room for the output
+                        .dynamicTypeSize(...(verticalSizeClass == .compact ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility5))
+                        .background(.bar)
                 }
-                .sheet(item: $editing) { entry in EditNoteView(cardID: cardID, entryID: entry.id, text: entry.text) { text in await model.bufferEdit(card: card, entry: entry, text: text) } }
+                .sheet(isPresented: $showingNotes) {
+                    NotesSheet { focus in
+                        List { scratchpadSection(card, focus: focus) }
+                            .scrollDismissesKeyboard(.interactively)
+                            .refreshable { await refreshCurrentTaskDetails() }
+                            .sheet(item: $editing) { entry in EditNoteView(cardID: cardID, entryID: entry.id, text: entry.text) { text in await model.bufferEdit(card: card, entry: entry, text: text) } }
+                    }
+                    .environmentObject(model)
+                }
                 .toolbar {
+                    ToolbarItem(placement: .principal) { titleView(card) }
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        Button { showingNotes = true } label: { notesLabel(card) }
+                            .accessibilityLabel(Text("Notes"))
+                            .accessibilityValue(card.buffer.entryCount > 0 ? Text(verbatim: "\(card.buffer.entryCount)") : Text(verbatim: ""))
+                            .accessibilityIdentifier("deck.detail.notes")
+                        readingMenu
+                    }
                     ToolbarItemGroup(placement: .keyboard) {
                         Spacer()
                         Button(String(localized: "taskDetail.keyboard.done")) { focusedField = nil }
@@ -293,6 +314,55 @@ struct TaskDetailView: View {
         .onChange(of: newNote) { _, value in model.traceNote("view-text-changed length=\(value.count)") }
         .onChange(of: addingNote) { _, value in model.traceNote("view-adding-changed value=\(value)") }
         .onChange(of: pendingAdd?.id) { _, _ in reconcileReceipts(model.operationReceipts) }
+    }
+
+    /// The card title over its project and column, capped so the largest
+    /// text sizes do not push the navigation buttons away.
+    @ViewBuilder private func titleView(_ card: CardSummary) -> some View {
+        VStack(spacing: 0) {
+            Text(card.title).font(.headline).lineLimit(1)
+            if let project = model.snapshot?.projects.first(where: { $0.id == card.projectId }) {
+                Text("\(project.name) · \(project.columns.first(where: { $0.id == card.columnId })?.name ?? card.columnId)")
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private func notesLabel(_ card: CardSummary) -> some View {
+        Image(systemName: "note.text")
+            .overlay(alignment: .topTrailing) {
+                if card.buffer.entryCount > 0 {
+                    Text(verbatim: "\(min(card.buffer.entryCount, 99))")
+                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .background(Capsule().fill(Color.accentColor))
+                        .offset(x: 9, y: -7)
+                        .dynamicTypeSize(...DynamicTypeSize.large)
+                }
+            }
+    }
+
+    private var readingMenu: some View {
+        Menu {
+            Toggle(isOn: $wrapLines) { Label("Wrap lines", systemImage: "text.alignleft") }
+                .accessibilityIdentifier("deck.output.wrap")
+            Section(String(localized: "taskDetail.output.textSize")) {
+                Button { textStep = max(TerminalOutputView.textSteps.lowerBound, textStep - 1) } label: {
+                    Label(String(localized: "taskDetail.output.smaller"), systemImage: "textformat.size.smaller")
+                }
+                .disabled(textStep <= TerminalOutputView.textSteps.lowerBound)
+                Button { textStep = min(TerminalOutputView.textSteps.upperBound, textStep + 1) } label: {
+                    Label(String(localized: "taskDetail.output.larger"), systemImage: "textformat.size.larger")
+                }
+                .disabled(textStep >= TerminalOutputView.textSteps.upperBound)
+            }
+        } label: {
+            Label(String(localized: "taskDetail.output.reading"), systemImage: "ellipsis.circle")
+        }
+        .accessibilityIdentifier("deck.detail.more")
     }
 
     private func reconcileReceipts(_ receipts: [String: CommandResult]) {
@@ -328,32 +398,64 @@ struct TaskDetailView: View {
         }
     }
 
-    @ViewBuilder private func outputSection(_ card: CardSummary) -> some View {
-        Section("Current output") {
-            HStack {
-                Button("Refresh output") { Task { await refreshCurrentTaskDetails() } }
-                    .accessibilityIdentifier("deck.output.refresh")
-                    .disabled(model.loadingDetails.contains(card.id))
-                Spacer()
-                if model.loadingDetails.contains(card.id) { ProgressView().accessibilityLabel("Updating output") }
+    /// One line of freshness: capture time, staleness or the offline state,
+    /// and the refresh control. Every 5 s the open card is read again anyway.
+    @ViewBuilder private func statusStrip(_ card: CardSummary) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                if case .offline = model.connection {
+                    Label("Offline — showing the last available snapshot", systemImage: "wifi.slash").foregroundStyle(.orange)
+                }
+                if let output = model.outputs[card.id] {
+                    HStack(spacing: 8) {
+                        if let date = output.capturedAt.date {
+                            HStack(spacing: 4) { Text("Captured"); Text(date.formatted(.dateTime.hour().minute().second())) }
+                                .accessibilityElement(children: .combine).accessibilityIdentifier("deck.output.captured")
+                        }
+                        if model.staleOutputs.contains(card.id) {
+                            Label("Snapshot may be out of date", systemImage: "clock.badge.exclamationmark").foregroundStyle(.orange)
+                        }
+                    }
+                }
             }
-            if let output = model.outputs[card.id] {
-                if let date = output.capturedAt.date {
-                    HStack { Text("Captured"); Text(date.formatted(.dateTime.hour().minute().second())) }
-                        .font(.caption).foregroundStyle(.secondary).accessibilityElement(children: .combine).accessibilityIdentifier("deck.output.captured")
+            Spacer(minLength: 0)
+            if model.loadingDetails.contains(card.id) { ProgressView().controlSize(.small).accessibilityLabel("Updating output") }
+            Button { Task { await refreshCurrentTaskDetails() } } label: {
+                Label("Refresh output", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
+            }
+            .accessibilityIdentifier("deck.output.refresh")
+            .disabled(model.loadingDetails.contains(card.id))
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+    }
+
+    @ViewBuilder private func outputArea(_ card: CardSummary) -> some View {
+        if let output = model.outputs[card.id] {
+            // Equatable: a keystroke in the composer re-renders this view's
+            // parent, and laying out up to 64 KiB of text on every key drops
+            // keys; the output redraws only when what it shows changed.
+            TerminalOutputView(output: output, wrapLines: wrapLines, textStep: textStep) { await refreshCurrentTaskDetails() }
+                .equatable()
+        } else if let unavailable = model.outputUnavailable[card.id] {
+            ScrollView {
+                VStack(spacing: 12) {
+                    Label("Output unavailable: \(outputIssueMessage(unavailable))", systemImage: "terminal.fill")
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("deck.output.unavailable")
+                    if card.canEditNotes { Text("Notes remain available when output cannot be read.").font(.caption).foregroundStyle(.secondary) }
                 }
-                if model.staleOutputs.contains(card.id) {
-                    Label("Snapshot may be out of date", systemImage: "clock.badge.exclamationmark").font(.caption).foregroundStyle(.orange)
-                }
-                TerminalOutputSnapshotView(output: output)
-                if output.truncated { Label("Older output was truncated by the host.", systemImage: "scissors").font(.caption).foregroundStyle(.orange) }
-                Text("This is a bounded terminal snapshot, not complete chat history.").font(.caption).foregroundStyle(.secondary)
-            } else if let unavailable = model.outputUnavailable[card.id] {
-                Label("Output unavailable: \(outputIssueMessage(unavailable))", systemImage: "terminal.fill")
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("deck.output.unavailable")
-                if card.canEditNotes { Text("Notes remain available when output cannot be read.").font(.caption).foregroundStyle(.secondary) }
-            } else { ProgressView() }
+                .padding()
+                .padding(.top, 32)
+                .frame(maxWidth: .infinity)
+            }
+            .refreshable { await refreshCurrentTaskDetails() }
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -369,16 +471,57 @@ struct TaskDetailView: View {
         }
     }
 
+    /// One line high until its text needs more; a notice above it appears
+    /// only when something needs the user (a pending send, a changed target,
+    /// a reason the card cannot take a message, a draft that failed to save).
     @ViewBuilder private func composerSection(_ card: CardSummary) -> some View {
         let generationChanged = composer.expectedGeneration != card.generation
         let pending = model.pendingSends[card.id]
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .bottom) {
+            if let pending {
+                OperationStatusView(record: pending)
+            } else if generationChanged && !composer.text.isEmpty {
+                HStack {
+                    Text(composer.expectedGeneration == nil
+                         ? String(localized: "taskDetail.message.unconfirmedTarget")
+                         : String(localized: "The target changed. Review your draft before sending."))
+                        .font(.caption).foregroundStyle(.orange)
+                        .accessibilityIdentifier("deck.message.targetChanged")
+                    Spacer(minLength: 0)
+                    Button("Use current target") { composer.acceptGeneration(card.generation); model.stageDraft(composer.snapshot) }
+                        .font(.caption)
+                }
+            } else if !card.maySend {
+                Text(sendUnavailableReason(card)).font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(verticalSizeClass == .compact ? 1 : 3)
+            }
+            if let error = draftPersistenceError(card) {
+                HStack {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                    Spacer(minLength: 0)
+                    Button("Retry saving draft") { model.stageDraft(composer.snapshot) }.font(.caption)
+                }
+            }
+            HStack(alignment: .bottom, spacing: 8) {
                 TextEditor(text: Binding(get: { composer.text }, set: { value in composer.edit(value, currentGeneration: card.generation); model.stageDraft(composer.snapshot) }))
-                    .frame(height: composerHeight)
-                    .overlay(alignment: .topLeading) {
-                        if composer.text.isEmpty { Text("Message the agent…").foregroundStyle(.secondary).padding(8).allowsHitTesting(false) }
+                    .frame(height: draftEditorHeight)
+                    .scrollContentBackground(.hidden)
+                    .background(alignment: .topLeading) {
+                        // Measures the draft at the editor's width; the editor's
+                        // height follows it within one to `draftMaxLines` lines.
+                        Text(composer.text.isEmpty ? " " : composer.text)
+                            .padding(.horizontal, 5)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .opacity(0)
+                            .accessibilityHidden(true)
+                            .allowsHitTesting(false)
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { draftTextHeight = $0 }
                     }
+                    .overlay(alignment: .topLeading) {
+                        if composer.text.isEmpty { Text("Message the agent…").foregroundStyle(.secondary).padding(.vertical, 8).padding(.horizontal, 5).allowsHitTesting(false) }
+                    }
+                    .padding(.horizontal, 6)
+                    .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.secondarySystemBackground)))
                     .accessibilityIdentifier("deck.message.draft")
                     .focused($focusedField, equals: .message)
                     .disabled(model.sendingCards.contains(card.id))
@@ -408,38 +551,10 @@ struct TaskDetailView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
                 .accessibilityIdentifier("deck.message.send")
                 .disabled(!card.maySend || composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || generationChanged || pending != nil || model.sendingCards.contains(card.id))
             }
-            if let pending {
-                OperationStatusView(record: pending)
-            } else if generationChanged && !composer.text.isEmpty {
-                Text(composer.expectedGeneration == nil
-                     ? String(localized: "taskDetail.message.unconfirmedTarget")
-                     : String(localized: "The target changed. Review your draft before sending."))
-                    .font(.caption).foregroundStyle(.orange)
-                    .accessibilityIdentifier("deck.message.targetChanged")
-                Button("Use current target") { composer.acceptGeneration(card.generation); model.stageDraft(composer.snapshot) }
-            } else if !card.maySend {
-                Text(sendUnavailableReason(card)).font(.caption).foregroundStyle(.secondary)
-            } else { draftPersistenceStatus(card) }
-            if let error = draftPersistenceError(card) {
-                Text(error).font(.caption).foregroundStyle(.orange)
-                Button("Retry saving draft") { model.stageDraft(composer.snapshot) }
-            }
-        }
-    }
-
-    @ViewBuilder private func draftPersistenceStatus(_ card: CardSummary) -> some View {
-        switch model.draftPersistence[card.id] {
-        case let .saving(version) where version == composer.version:
-            Label(String(localized: "taskDetail.message.saving"), systemImage: "arrow.triangle.2.circlepath")
-                .font(.caption).foregroundStyle(.secondary)
-        case let .saved(version) where version >= composer.version:
-            Label(String(localized: "taskDetail.message.saved"), systemImage: "checkmark.circle")
-                .font(.caption).foregroundStyle(.green)
-        default:
-            EmptyView()
         }
     }
 
@@ -465,7 +580,7 @@ struct TaskDetailView: View {
         // refresh also refreshes the currently visible card; no second read chain.
     }
 
-    @ViewBuilder private func scratchpadSection(_ card: CardSummary) -> some View {
+    @ViewBuilder private func scratchpadSection(_ card: CardSummary, focus: FocusState<Bool>.Binding) -> some View {
         let pending = model.pendingCardCommands[card.id] ?? []
         Section {
             Text("Unsaved edits stay on this iPhone until you save the note.").font(.caption).foregroundStyle(.secondary)
@@ -480,7 +595,7 @@ struct TaskDetailView: View {
                 if pendingAdd == nil && !addingNote { noteSaveState = .idle }
             }))
                 .frame(minHeight: 90)
-                .focused($focusedField, equals: .note)
+                .focused(focus)
                 .accessibilityIdentifier("deck.note.new")
                 .task { if let draft = await model.loadNoteDraft(cardID: cardID), newNote.isEmpty { newNote = draft.text } }
                 .onChange(of: model.noteDrafts[NoteDraft.storageKey(cardID: cardID, entryID: nil)]) { old, new in
@@ -599,39 +714,181 @@ struct TaskDetailView: View {
     }
 }
 
-private struct TerminalOutputSnapshotView: View {
+/// The output, filling its space. It opens at the end and follows new output
+/// while it is scrolled to the end; scrolled up, it keeps its place and
+/// offers a jump back that says whether new output arrived. The note on top
+/// says how much of the history this snapshot holds, where a reader who
+/// scrolled that far needs it. Where the scroll position cannot be read
+/// (iOS 17) it never moves on its own after opening: new output only shows
+/// the jump.
+struct TerminalOutputView: View, Equatable {
+    static let textSteps = -2...4
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.output == rhs.output && lhs.wrapLines == rhs.wrapLines && lhs.textStep == rhs.textStep
+    }
     private static let endID = "terminal-output-end"
+
     let output: TerminalOutput
-    @State private var wrapLines = true
+    let wrapLines: Bool
+    let textStep: Int
+    let refresh: () async -> Void
+
+    @ScaledMetric(relativeTo: .caption) private var baseSize = 12.0
+    /// Whether the visible part reaches the end of the output.
+    @State private var atEnd = true
     @State private var newOutput = false
+
+    private static var tracksPosition: Bool {
+        if #available(iOS 18.0, *) { return true }
+        return false
+    }
+
+    /// The snapshot without the blank rows under an Agent's screen, so its
+    /// end is the last line that says something.
+    private var shownText: String {
+        var text = Substring(output.text)
+        while let last = text.last, last.isWhitespace { text.removeLast() }
+        return text.isEmpty ? String(localized: "No output") : String(text)
+    }
+
+    private var fontSize: CGFloat {
+        let step = CGFloat(min(max(textStep, Self.textSteps.lowerBound), Self.textSteps.upperBound))
+        return baseSize * (1 + 0.15 * step)
+    }
+
+    private var showsJump: Bool { Self.tracksPosition ? !atEnd : newOutput }
 
     var body: some View {
         ScrollViewReader { proxy in
-            VStack(alignment: .leading, spacing: 8) {
-                Button {
-                    withAnimation { proxy.scrollTo(Self.endID, anchor: .bottomLeading) }; newOutput = false
-                } label: {
-                    Label(String(localized: "taskDetail.output.latest"), systemImage: "arrow.down.to.line")
+            ScrollView(wrapLines ? [.vertical] : [.horizontal, .vertical]) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(output.truncated
+                         ? String(localized: "taskDetail.output.boundsTruncated")
+                         : String(localized: "This is a bounded terminal snapshot, not complete chat history."))
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("deck.output.bounds")
+                    Text(shownText)
+                        .font(.system(size: fontSize, design: .monospaced))
+                        .fixedSize(horizontal: !wrapLines, vertical: true)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("deck.output.text")
+                    Color.clear.frame(width: 1, height: 1).id(Self.endID)
                 }
-                .accessibilityIdentifier("deck.output.latest")
-                .buttonStyle(.bordered)
-                Toggle("Wrap lines", isOn: $wrapLines).font(.caption)
-                if newOutput { Text("New output available below").font(.caption).foregroundStyle(.secondary) }
-                ScrollView(wrapLines ? [.vertical] : [.horizontal, .vertical]) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(output.text.isEmpty ? String(localized: "No output") : output.text)
-                            .font(.system(.caption, design: .monospaced))
-                            .fixedSize(horizontal: !wrapLines, vertical: true)
-                            .textSelection(.enabled)
-                            .accessibilityIdentifier("deck.output.text")
-                        Color.clear.frame(width: 1, height: 1).id(Self.endID)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: wrapLines ? .infinity : nil, alignment: .leading)
+            }
+            .modifier(OpensAtEnd())
+            .modifier(EndTracker { wasAtEnd, nowAtEnd, resized in
+                // the keyboard or a rotation took space away from a reader at
+                // the end: bring the end back once, never in reply to our own
+                // scroll (that would chase sub-point layout changes forever)
+                if resized && wasAtEnd && !nowAtEnd { scrollToEnd(proxy, animated: false) } else { atEnd = nowAtEnd }
+                if nowAtEnd { newOutput = false }
+            })
+            .scrollDismissesKeyboard(.interactively)
+            .refreshable { await refresh() }
+            .accessibilityIdentifier("deck.output.scroll")
+            .overlay(alignment: .bottomTrailing) {
+                if showsJump {
+                    Button { scrollToEnd(proxy, animated: true) } label: {
+                        Label(newOutput ? String(localized: "taskDetail.output.newBelow") : String(localized: "taskDetail.output.latest"),
+                              systemImage: "arrow.down.to.line")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.small)
+                    .padding(12)
+                    .accessibilityIdentifier("deck.output.latest")
+                }
+            }
+            .onChange(of: output.revision.value) { _, _ in
+                if Self.tracksPosition && atEnd { scrollToEnd(proxy, animated: false) } else { newOutput = true }
+            }
+            .onChange(of: wrapLines) { _, _ in if Self.tracksPosition && atEnd { scrollToEnd(proxy, animated: false) } }
+            .onChange(of: textStep) { _, _ in if Self.tracksPosition && atEnd { scrollToEnd(proxy, animated: false) } }
+        }
+    }
+
+    private func scrollToEnd(_ proxy: ScrollViewProxy, animated: Bool) {
+        atEnd = true
+        newOutput = false
+        // after this update's layout, so the end is where the new text put it
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation { proxy.scrollTo(Self.endID, anchor: .bottomLeading) }
+            } else {
+                proxy.scrollTo(Self.endID, anchor: .bottomLeading)
+            }
+        }
+    }
+}
+
+/// Opens the output at its end. On iOS 18 and later only the first offset is
+/// anchored, so a reader scrolled up keeps their place when new text arrives.
+private struct OpensAtEnd: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.defaultScrollAnchor(.bottomLeading, for: .initialOffset)
+        } else {
+            content.defaultScrollAnchor(.bottomLeading)
+        }
+    }
+}
+
+/// Reports, from the scroll view's own geometry (iOS 18 and later), whether
+/// its visible part reaches the end of the content, and whether the visible
+/// height just changed. Nothing is reported on iOS 17.
+private struct EndTracker: ViewModifier {
+    private struct Probe: Equatable { var atEnd: Bool; var height: CGFloat }
+    /// How close to the end still counts as being at the end.
+    private static let slack: CGFloat = 24
+    let changed: (_ wasAtEnd: Bool, _ nowAtEnd: Bool, _ resized: Bool) -> Void
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollGeometryChange(for: Probe.self) { geometry in
+                let room = geometry.containerSize.height - geometry.contentInsets.top - geometry.contentInsets.bottom
+                let fits = geometry.contentSize.height <= room + Self.slack
+                let reaches = geometry.visibleRect.maxY >= geometry.contentSize.height - Self.slack
+                // whole points: the keyboard and toolbars move the container
+                // by fractions that are not a change of space
+                return Probe(atEnd: fits || reaches, height: geometry.containerSize.height.rounded())
+            } action: { old, new in
+                changed(old.atEnd, new.atEnd, abs(old.height - new.height) >= 1)
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// The notes panel. It owns the note editor's focus: focus does not cross
+/// into a sheet from the view that presents it.
+private struct NotesSheet<Content: View>: View {
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var noteFocused: Bool
+    @ViewBuilder let content: (FocusState<Bool>.Binding) -> Content
+
+    var body: some View {
+        NavigationStack {
+            content($noteFocused)
+                .navigationTitle(Text("Notes"))
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(String(localized: "taskDetail.keyboard.done")) { dismiss() }
+                            .accessibilityIdentifier("deck.notes.close")
+                    }
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button(String(localized: "taskDetail.keyboard.done")) { noteFocused = false }
+                            .accessibilityIdentifier("deck.keyboard.done")
                     }
                 }
-                .accessibilityIdentifier("deck.output.scroll")
-                .frame(height: 260)
-            }
-            .task { proxy.scrollTo(Self.endID, anchor: .bottomLeading) }
-            .onChange(of: output.revision.value) { _, _ in newOutput = true }
         }
     }
 }
