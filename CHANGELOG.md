@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.25 — 2026-11-16 (Nightly)
+
+- Phone Connector: a new switch, "Claude Code replies on the phone"
+  (Settings › Phone Connector, off by default). While it is on, the last
+  message of each Claude Code turn is kept in this Mac's memory, up to 20
+  per card, for paired phones that may read that card's output. Nothing
+  is written to disk or sent to a model, and a Deck restart clears it.
+  Claude Code that is already running may need a restart to pick it up.
+- Phone Connector: the phone now gets up to 1,000 lines of a card's
+  history (was 200, still at most 64 KiB), with wrapped lines joined so
+  the phone rewraps them at its own width.
+- Fixed: dragging a selection over the top or bottom rows of a terminal
+  selects them; the view scrolls only once the pointer leaves the
+  terminal.
+
+iPhone app (TestFlight 1.0 (6)):
+- A card's output fills the screen. Notes open from a button with the
+  note count, and a menu holds line wrapping and text size. The message
+  box starts one line high and grows as you type.
+- The output opens at its last line and follows new output while you
+  are at the end. Scrolled up, it stays put and offers a jump back to the
+  end.
+- Cards running Claude Code get a Replies page next to Output. It lists
+  Claude's last message of each turn, with the messages you sent from
+  this iPhone in between. Long replies fold, and you can copy any reply.
+  The page needs the new switch on the Mac.
+
 ## 0.8.24 — 2026-11-13 (Nightly)
 
 - Fixed: after Deck restarts (an update included), an orchestrator's line
