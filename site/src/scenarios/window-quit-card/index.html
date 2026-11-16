@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Close the window, quit Deck, or close a card? — deck</title>
+  <meta name="description" content="Try all three on a disposable card and see what keeps running, what stops, and where to check queued prompts.">
+  <meta name="theme-color" content="#0d1117">
+  <link rel="canonical" href="{{SITE_URL}}/scenarios/window-quit-card/">
+  <link rel="alternate" hreflang="en" href="{{SITE_URL}}/scenarios/window-quit-card/">
+  <link rel="alternate" hreflang="zh-Hans" href="{{SITE_URL}}/zh/scenarios/window-quit-card/">
+  <link rel="alternate" hreflang="x-default" href="{{SITE_URL}}/scenarios/window-quit-card/">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/assets/icon-180.png">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="deck">
+  <meta property="og:title" content="Close the window, quit Deck, or close a card?">
+  <meta property="og:description" content="Try all three on a disposable card and see what keeps running, what stops, and where to check queued prompts.">
+  <meta property="og:url" content="{{SITE_URL}}/scenarios/window-quit-card/">
+  <meta property="og:image" content="{{SITE_URL}}/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="deck wordmark beside a local session board with status signals for work across projects">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="{{SITE_URL}}/assets/og.png">
+  <link rel="stylesheet" href="/assets/site.css?v=880f34f06c24">
+</head>
+<body class="site">
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="topbar wrap"><nav class="pillnav" aria-label="Main navigation"><a class="logo" href="/"><span class="logo-mark" aria-hidden="true"><i class="c-run"></i><i class="c-quiet"></i><i class="c-done"></i><i class="c-stop"></i></span>deck</a><a class="push" href="/guide/">Guide</a><a class="opt" href="{{GITHUB_URL}}">GitHub</a><a class="language-link" href="/zh/scenarios/window-quit-card/" lang="zh-Hans">中文</a><a class="btn btn-primary" href="{{DOWNLOAD_URL}}">Download</a></nav></div>
+<main id="main">
+<header class="opener under-nav"><div class="wrap opener-in"><p class="crumb"><a href="/guide/">Practical guide · Leaving a session running</a></p><div class="opener-head"><h1>Close the window, quit Deck, or close a card?</h1><p class="opener-lede">Try all three on a disposable card and see what keeps running, what stops, and where to check queued prompts.</p></div></div></header>
+<div class="wrap gshell">
+<aside class="gside"><details open><summary>Practical guide</summary><nav aria-label="Related guides"><a href="/scenarios/window-quit-card/" aria-current="page">Keep a session running</a><a href="/guide/automations/">Clock rules and templates</a><a href="/guide/prompts/">Input and inspection</a><a href="/guide/sessions/">Closing and recovery</a><a href="/scenarios/parallel-sessions/">Parallel sessions</a></nav></details></aside>
+<article class="garticle">
+<p>Try this with <strong>Deck 0.8.11 Stable</strong> on an awake Mac. You only need a normal shell, not an AI account or a real project. Use an ordinary card with no reminder, scratchpad, scheduled rule, or pending prompt.</p>
+<h2 id="try">1. Start a test card</h2>
+<p>Create a new session. At the shell prompt, paste the command below and press Return. It only prints the time, a process ID (PID), and a step number every five seconds for about two minutes. Note the first PID and step.</p>
+<pre><code>sh -c 'i=1; while [ "$i" -le 24 ]; do printf "%s pid=%s step=%s\n" "$(date +%H:%M:%S)" "$$" "$i"; i=$((i+1)); sleep 5; done'</code></pre>
+<h2 id="hide">2. Hide the window and keep Deck running</h2>
+<p>Use <strong>⌘W</strong> or the red window button. Wait roughly ten seconds, click Deck in the Dock, and reopen the card. Look for the same PID with a higher step. The window was hidden, not the app quit, so Deck can still send queued prompts and start scheduled jobs when their conditions are met.</p>
+<h2 id="quit">3. Quit Deck, then reopen the same version</h2>
+<p>Quitting affects all of Deck: first check that none of your other cards or rules needs Deck to send or start anything during the test. While the loop is still printing, press <strong>⌘Q</strong>. After about ten seconds, reopen the same version of Deck and open the same card. The lines for the interval when Deck was closed should have the same PID and increasing steps. If the loop finished naturally before you could compare, rerun it and retry.</p>
+<p>The terminal program can keep running, but Deck does not send queued prompts or start new automations while it is quit. For a real task, check the terminal output and the card’s <strong>⏱</strong> list separately. A supported Agent prompt may still be waiting for a new interaction after reopening. Read the waiting reason and check the terminal before sending manually. <a href="/guide/prompts/#when-a-list-does-not-continue">What to check when a prompt waits.</a> Sleep or a Mac restart is not part of this test. <a href="/scenarios/daily-code-review/#schedule">See how scheduled runs handle missed time.</a></p>
+<h2 id="close">4. Save any output you need, then close only the test card</h2>
+<p>Check for unsaved work and pending prompts before clicking <strong>×</strong> on the test card in the Board. A plain card can close immediately. It disappears, its terminal session ends and its remaining queued prompts are cancelled. Don’t rely on shell recovery to recover output after closing a card. <a href="/guide/sessions/">See when Deck asks before closing and what recovery can restore.</a></p>
+<p class="gsource">Stable source：<a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/src-tauri/src/main.rs#L400-L411">Window</a> · <a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/src-tauri/src/main.rs#L615-L632">Quit</a> · <a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/src-tauri/src/commands.rs#L481-L490">Close card</a></p>
+</article>
+<aside class="gout"><nav aria-label="On this page"><p>On this page</p><a href="#try">Start a test card</a><a href="#hide">Hide the window</a><a href="#quit">Quit and reopen</a><a href="#close">Close only the test card</a></nav></aside>
+</div>
+</main>
+<footer class="foot2"><div class="wrap"><a class="logo" href="/"><span class="logo-mark" aria-hidden="true"><i class="c-run"></i><i class="c-quiet"></i><i class="c-done"></i><i class="c-stop"></i></span>deck</a><span>Attention across local terminal work.</span><span class="links"><a href="/guide/">Guide</a><a href="{{GITHUB_URL}}">GitHub</a><a href="/privacy/">Privacy</a><a href="{{FEEDBACK_URL}}">Feedback</a><a href="{{LICENSE_URL}}">MIT</a></span></div></footer>
+</body>
+</html>

@@ -1,6 +1,6 @@
 # Reuse templates and automations
 
-Save reusable prompts and create a new session at a scheduled time or from your Slack reaction, reducing the work of remembering and restarting routine tasks.
+To repeat prompts in a session you already have, use its list. To start a new session at a scheduled time or from your Slack reaction, use a project automation with a saved template. Creating its card and delivering the first prompt are separate steps: open the terminal and check the list if the prompt is waiting.
 
 ## Choose the right tool
 
@@ -9,7 +9,8 @@ Save reusable prompts and create a new session at a scheduled time or from your 
 | Continue an existing session later | A list on its card |
 | Send the same prompts periodically into that session | Repeat on the list |
 | Save prompts for reuse | A project template |
-| Create a fresh card, launch a command and send a template each time | A project automation |
+| Start a new session at a scheduled time | A clock automation with a saved template |
+| Start a new session from your Slack reaction | A Slack reaction automation with a saved template |
 | Collect messages from selected Slack channels without automatically sending every message | A channel monitor rule and card scratchpad |
 
 Open **Templates…** or **Automations…** from **New session ▾**. Once a project has rules, the **↻ N automation(s)** chip also opens the manager.
@@ -18,7 +19,7 @@ Open **Templates…** or **Automations…** from **New session ▾**. Once a pro
 
 Create one in **Templates…**, or save an existing list from its **📋** menu in the card's **⏱** panel. Templates belong to a project. Applying one to a card makes a copy, so later edits do not change those existing rows.
 
-An automation references a template and sends it on each new run. Try a run that keeps its card so you can verify the content before choosing automatic closing.
+An automation references a template and queues its steps on each new run; creating the card does not prove that a prompt was sent. If the first step is waiting, inspect the terminal, resolve startup dialogs and check the foreground program before choosing **Send now**. Read the [first-input and follow-up limits](#first-input-and-follow-up-permission) before enabling automatic first input. Try a run that keeps its card so you can verify the content before choosing automatic closing.
 
 ## Start work on a clock
 
@@ -30,7 +31,7 @@ An automation references a template and sends it on each new run. Try a run that
 
 For example, start a session at 09:00 on weekdays, launch your existing CLI and ask it to review recent changes for questions needing human judgment. Each run creates a new session, but a launch command may resume the agent's earlier context. A new card does not guarantee empty context.
 
-**The app must be running to start work.** If deck is closed or the Mac asleep at the scheduled time, the default grace period is 15 minutes; you can choose the rest of the day. Outside that window, the slot is recorded as missed without creating a card. Yesterday's slots never catch up. Rescheduling or resuming a rule starts from that moment.
+**The app must be running to start work.** If deck is closed or the Mac asleep at the scheduled time, the default grace period is 15 minutes; you can choose the rest of the day. If Deck detects an overdue slot later on the same local day, beyond that window, it records it as missed without creating a card. If Deck does not run again until the next local day, yesterday's slots do not catch up and may have no entry in recent runs. Rescheduling or resuming a rule starts from that moment.
 
 A clock rule has one run at a time. If its previous card remains on the Board, the next slot is skipped and recorded. Read the reason in recent runs before assuming a rule is broken.
 

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>关闭窗口、退出 Deck、关闭卡片，有什么区别？ — deck</title>
+  <meta name="description" content="用一张临时卡片试一遍，就能看出终端里的任务是否还在跑，以及去哪里检查待发送的提示词。">
+  <meta name="theme-color" content="#0d1117">
+  <link rel="canonical" href="{{SITE_URL}}/zh/scenarios/window-quit-card/">
+  <link rel="alternate" hreflang="en" href="{{SITE_URL}}/scenarios/window-quit-card/">
+  <link rel="alternate" hreflang="zh-Hans" href="{{SITE_URL}}/zh/scenarios/window-quit-card/">
+  <link rel="alternate" hreflang="x-default" href="{{SITE_URL}}/scenarios/window-quit-card/">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/assets/icon-180.png">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="deck">
+  <meta property="og:title" content="关闭窗口、退出 Deck、关闭卡片，有什么区别？">
+  <meta property="og:description" content="用一张临时卡片试一遍，就能看出终端里的任务是否还在跑，以及去哪里检查待发送的提示词。">
+  <meta property="og:url" content="{{SITE_URL}}/zh/scenarios/window-quit-card/">
+  <meta property="og:image" content="{{SITE_URL}}/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="deck 字标与本地会话看板，展示跨项目工作的状态信号">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="{{SITE_URL}}/assets/og.png">
+  <link rel="stylesheet" href="/assets/site.css?v=880f34f06c24">
+</head>
+<body class="site">
+<a class="skip-link" href="#main">跳到正文</a>
+<div class="topbar wrap"><nav class="pillnav" aria-label="主导航"><a class="logo" href="/zh/"><span class="logo-mark" aria-hidden="true"><i class="c-run"></i><i class="c-quiet"></i><i class="c-done"></i><i class="c-stop"></i></span>deck</a><a class="push" href="/zh/guide/">使用指南</a><a class="opt" href="{{GITHUB_URL}}">GitHub</a><a class="language-link" href="/scenarios/window-quit-card/" lang="en">EN</a><a class="btn btn-primary" href="{{DOWNLOAD_URL}}">下载</a></nav></div>
+<main id="main">
+<header class="opener under-nav"><div class="wrap opener-in"><p class="crumb"><a href="/zh/guide/">场景指南 · 保持会话运行</a></p><div class="opener-head"><h1>关闭窗口、退出 Deck、关闭卡片，有什么区别？</h1><p class="opener-lede">用一张临时卡片试一遍，就能看出终端里的任务是否还在跑，以及去哪里检查待发送的提示词。</p></div></div></header>
+<div class="wrap gshell">
+<aside class="gside"><details open><summary>场景指南</summary><nav aria-label="相关指南"><a href="/zh/scenarios/window-quit-card/" aria-current="page">保持会话运行</a><a href="/zh/guide/automations/">时钟规则与模板</a><a href="/zh/guide/prompts/">输入与人工检查</a><a href="/zh/guide/sessions/">关闭与恢复</a><a href="/zh/scenarios/parallel-sessions/">多个会话同时运行</a></nav></details></aside>
+<article class="garticle">
+<p>请在保持唤醒的 Mac 上，用 <strong>Deck 0.8.11 Stable</strong> 试一遍。不需要 AI 账号或真实项目。新建一张普通卡片，不加提醒、暂存笔记、定时规则或待发提示词。</p>
+<h2 id="try">1. 新建一张测试卡片</h2>
+<p>新建会话，把下面的命令粘贴到终端提示符后并按回车。它每隔 5 秒打印一次时间、进程编号（PID）和序号，约两分钟后结束。先记下第一行的 PID 和序号。</p>
+<pre><code>sh -c 'i=1; while [ "$i" -le 24 ]; do printf "%s pid=%s step=%s\n" "$(date +%H:%M:%S)" "$$" "$i"; i=$((i+1)); sleep 5; done'</code></pre>
+<h2 id="hide">2. 收起窗口，让 Deck 继续运行</h2>
+<p>按 <strong>⌘W</strong> 或点窗口左上角的红色按钮。等约 10 秒，从 Dock 点开 Deck 并回到卡片。你应该能看到 PID 不变、序号继续增加。这只是收起窗口，没有退出应用。满足条件时，Deck 仍可发送已排队的提示词、启动定时任务。</p>
+<h2 id="quit">3. 退出 Deck，再打开同一版本</h2>
+<p>退出会影响整个 Deck。先确认其他卡片或规则不需要 Deck 在这段时间发送提示词或启动任务。趁终端还在打印，按 <strong>⌘Q</strong>。等约 10 秒，再打开同一版本的 Deck，回到同一张卡片。退出期间打印的行应该有相同的 PID 和递增的序号。如果命令已自然结束，重新运行再试一次。</p>
+<p>终端程序可以继续运行，但 Deck 退出期间不会发送待发提示词，也不会启动新的自动化。检查真实任务时，终端输出和卡片的 <strong>⏱</strong> 列表要分开看。重新打开 Deck 后，支持的 Agent 可能还需要一次新的交互，提示词才会继续发送。先读等待原因，再检查终端，不要盲目手动发送。<a href="/zh/guide/prompts/">列表没继续时该查什么。</a> 这个演示不包括 Mac 睡眠或重启。<a href="/zh/scenarios/daily-code-review/#schedule">查看错过定时运行时会怎样处理。</a></p>
+<h2 id="close">4. 保留所需输出，再关闭测试卡片</h2>
+<p>先保存要留下的输出，查看有无未保存的工作和排队提示词，再点看板上这张测试卡片的 <strong>×</strong>。普通卡片可能立即关闭：卡片消失、终端会话结束，剩余待发提示词被取消。关闭卡片后不要指望靠 Shell 恢复找回输出。<a href="/zh/guide/sessions/">查看哪些关闭操作会先确认，以及能够恢复什么。</a></p>
+<p class="gsource">Stable 源码：<a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/src-tauri/src/main.rs#L400-L411">窗口</a> · <a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/src-tauri/src/main.rs#L615-L632">退出</a> · <a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/src-tauri/src/commands.rs#L481-L490">关闭卡片</a></p>
+</article>
+<aside class="gout"><nav aria-label="本页内容"><p>本页内容</p><a href="#try">新建测试卡片</a><a href="#hide">收起窗口</a><a href="#quit">退出再打开</a><a href="#close">只关闭测试卡片</a></nav></aside>
+</div>
+</main>
+<footer class="foot2"><div class="wrap"><a class="logo" href="/zh/"><span class="logo-mark" aria-hidden="true"><i class="c-run"></i><i class="c-quiet"></i><i class="c-done"></i><i class="c-stop"></i></span>deck</a><span>跨任务关注，本地终端照常运行。</span><span class="links"><a href="/zh/guide/">使用指南</a><a href="{{GITHUB_URL}}">GitHub</a><a href="/zh/privacy/">隐私</a><a href="{{FEEDBACK_URL}}">反馈</a><a href="{{LICENSE_URL}}">MIT</a></span></div></footer>
+</body>
+</html>

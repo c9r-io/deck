@@ -520,3 +520,29 @@ test('illustrative Board cards show one pinned status word and identify fictiona
     assert.match(html, locale ? /class="wall-note">看板局部示意，任务均为虚构/ : /class="wall-note">Illustrative Board excerpt with fictional tasks/);
   }
 });
+
+test('window, quit and card walkthrough is paired and reachable with the same demo in each language', async () => {
+  const dirs = ['', 'zh/'];
+  const slug = 'scenarios/window-quit-card/';
+  const sitemap = await readFile(path.join(dist, 'sitemap.xml'), 'utf8');
+  const redirects = await readFile(path.join(dist, '_redirects'), 'utf8');
+  const demos = [];
+  for (const locale of dirs) {
+    const route = `/${locale}${slug}`;
+    const peer = `/${locale ? '' : 'zh/'}${slug}`;
+    const html = await readFile(path.join(dist, locale, slug, 'index.html'), 'utf8');
+    assert.ok(html.includes(`rel="canonical" href="${config.siteUrl}${route}"`));
+    assert.ok(html.includes(`class="language-link" href="${peer}"`));
+    assert.match(html, /⌘W[\s\S]*⌘Q[\s\S]*×/);
+    assert.ok(html.includes(`/blob/${config.guideRef}/app/src-tauri/src/main.rs`));
+    const demo = html.match(/<pre><code>([^<]+)<\/code><\/pre>/)?.[1];
+    assert.match(demo, /pid=%s step=%s/);
+    demos.push(demo);
+    for (const page of ['index.html', 'guide/index.html']) {
+      assert.ok((await readFile(path.join(dist, locale, page), 'utf8')).includes(`href="${route}"`));
+    }
+    assert.ok(sitemap.includes(`<loc>${config.siteUrl}${route}</loc>`));
+    assert.ok(redirects.includes(`${route.slice(0, -1)} ${route} 301`));
+  }
+  assert.equal(demos[0], demos[1]);
+});
