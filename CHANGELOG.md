@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.8.27 — 2026-11-18 (Nightly)
+
+- Pi: fixed — Deck accepted Pi 1.1.x only, so every Pi since 1.2.0 showed
+  "Pi version not supported" and no status. It now accepts Pi 1.x from 1.1
+  (checked against Pi 1.5.2, npm and the standalone build).
+- Pi: a new switch, "Forward Pi's final message" (Settings › Agents &
+  notifications, off by default, needs Pi work status). When a Pi turn ends,
+  its last message is the card's line in Needs attention — a short one as
+  written, a long one summarized only while "Summarize turn endings" is on
+  and a key is stored — and is kept in memory for the card snapshot and
+  phone replies you turned on. A turn you cancelled or that failed forwards
+  nothing. A running Pi follows after a restart or /reload.
+- Pi: "Pi session observation" is gone. It had no visible effect and served
+  a reopening that Pi's builds do not allow. If you had it on, Deck's entry
+  in Pi's settings is corrected at the next start; the final-message switch
+  is never turned on for you.
+- Links in a card whose program is ssh: a clicked path is a path of that
+  machine, and the menu now says "On <host>" and offers Open in editor
+  there (Visual Studio Code with Remote-SSH), Copy path and Copy as
+  host:path. Only for an absolute path, and only for an ssh started as
+  "ssh host"; Deck itself opens no connection. Dropping a file or pasting
+  an image into such a card says that the other side cannot read the path.
+- A link that could not be opened now leaves one line in app.log with its
+  reason and nothing of what was clicked.
+
 ## 0.8.26 — 2026-11-17 (Nightly)
 
 - MCP: a new permission, "Read the card snapshot" (Settings › Remote
