@@ -10,7 +10,7 @@
 //! starts, steers or resumes nothing.
 //!
 //! # Contract
-//! - **What is supported, and what is not.** Pi 1.1.x gives an extension a
+//! - **What is supported, and what is not.** Pi 1.x from 1.1 gives an extension a
 //!   reliable settlement boundary (`agent_settled`, after retries,
 //!   compaction recovery and queued continuations) and no reliable way to
 //!   know that Pi waits for input: its UI prompt notifications carry no
@@ -98,7 +98,8 @@
 //!   because nothing of a version-1 line is proven.
 //! - **Compatibility is not identity.** `piVersion` is Pi's own exported
 //!   version, used only to decide whether this build knows the meaning of
-//!   the events (`PiVersion::supported`: 1.1.x; 1.1.0 is what ran natively).
+//!   the events (`PiVersion::supported`: major version 1 from 1.1; 1.1.0 and 1.5.2 are
+//!   what ran natively).
 //!   It proves nothing about who connected and admits nothing by itself.
 //! - **The hook path stays closed to Pi.** A wire v1 or v2 status line that
 //!   names source `pi` is refused (`agent_status::parse_event`,
@@ -300,7 +301,9 @@ pub(crate) enum PiVersion {
 }
 
 /// `text` as a version: at most 32 bytes of a version's characters, or it is
-/// no version at all. Supported means three numeric parts and `1.1.x`.
+/// no version at all. Supported means three numeric parts, major version 1
+/// and a minor version of at least 1: 1.0.x gave these events other meanings,
+/// and what a later major version means by them is not known.
 fn pi_version(text: &str) -> Option<PiVersion> {
     if text.is_empty()
         || text.len() > 32
@@ -315,11 +318,14 @@ fn pi_version(text: &str) -> Option<PiVersion> {
         && parts
             .iter()
             .all(|part| (1..=5).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit()));
-    Some(if numeric && parts[0] == "1" && parts[1] == "1" {
-        PiVersion::Supported
-    } else {
-        PiVersion::Unsupported
-    })
+    let minor = parts.get(1).and_then(|part| part.parse::<u32>().ok());
+    Some(
+        if numeric && parts[0] == "1" && minor.is_some_and(|minor| minor >= 1) {
+            PiVersion::Supported
+        } else {
+            PiVersion::Unsupported
+        },
+    )
 }
 
 /// A nonce: 128 bits from the system's generator, given in one answer and

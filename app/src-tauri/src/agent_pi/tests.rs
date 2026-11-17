@@ -333,9 +333,13 @@ fn the_version_is_compatibility_and_nothing_else() {
     assert_eq!(version("1.1.0"), Ok(PiVersion::Supported));
     assert_eq!(version("1.1.7"), Ok(PiVersion::Supported));
     assert_eq!(version("1.1.12345"), Ok(PiVersion::Supported));
+    assert_eq!(version("1.2.0"), Ok(PiVersion::Supported));
+    assert_eq!(version("1.5.2"), Ok(PiVersion::Supported));
+    assert_eq!(version("1.12345.0"), Ok(PiVersion::Supported));
     for other in [
-        "1.2.0",
         "1.0.9",
+        "01.5.2",
+        "1.123456.0",
         "2.1.0",
         "0.87.0",
         "1.1",
