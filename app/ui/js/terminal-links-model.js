@@ -328,6 +328,34 @@ export function linkMenuItems(kind) {
     ];
 }
 
+/* A path clicked in a pane whose program is `ssh` (links.rs, "A pane whose
+   program is ssh"): it is a path of that machine, so nothing of this Mac's
+   filesystem is offered. `remote` is what `link_remote` answered for the
+   click: the destination as the user typed it, and whether the chosen
+   editor can open there. Only an absolute path can be opened or written as
+   `host:path`: Deck knows neither the remote shell's directory nor its
+   home. The first item is what a Command-click runs. */
+export function remoteLinkPlan(value, remote) {
+  let path = value.trim();
+  const quote = path[0];
+  if ((quote === '\'' || quote === '"') && path.lastIndexOf(quote) > 0) {
+    const end = path.lastIndexOf(quote);
+    path = path.slice(1, end) + path.slice(end + 1);
+  }
+  if (path.endsWith(':')) path = path.slice(0, -1);
+  path = withoutLineLocation(path);
+  const absolute = path.startsWith('/');
+  const items = [];
+  if (absolute && remote.open) items.push({ action: 'remote-editor', label: path.endsWith('/') ? 'link.remoteFolder' : 'link.remoteEditor' });
+  items.push({ action: 'copy', label: 'link.copyPath' });
+  if (absolute) items.push({ action: 'copy-remote', label: 'link.copyRemote', text: `${remote.host}:${path}` });
+  return {
+    host: remote.host,
+    items,
+    note: !absolute ? 'link.remoteRelative' : remote.open ? null : 'link.remoteNoEditor',
+  };
+}
+
 /** Link ranges for one xterm buffer line: every tokenized match whose start
  * and end cells are known, restricted to the rows that line covers. */
 export function terminalLinkRanges({ matches, positions, lineNo }) {

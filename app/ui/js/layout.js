@@ -148,6 +148,9 @@ export function insertDroppedFiles(pane, fileList) {
         toast(t('error.fileAttach'));
       }
     }
+    // the path is one of this Mac: a program on the other end of an `ssh`
+    // cannot read it. Said, and typed all the same: the user decides.
+    if (paths.length && provider.get(pane.sid)?.fg === 'ssh') toast(t('drop.remoteHint'));
     return paths.length ? paths.map(shQuote).join(' ') + ' ' : '';
   });
   if (accepted && panes.get(pane.session) === pane) focusPane(pane.session);
@@ -637,7 +640,15 @@ export function wireTerminalInput(pane, term, host) {
     logEvent: uev,
     openLink: (event, link, trace, direct) => {
       const c = card();
-      (direct ? openLinkDefault : showLinkCtx)(event, link.kind, link.text, c ? c.dir : ctx.HOME, c ? c.id : null, link.lookback, trace);
+      const open = remote => (direct ? openLinkDefault : showLinkCtx)(event, link.kind, link.text,
+        c ? c.dir : ctx.HOME, c ? c.id : null, link.lookback, trace, remote);
+      // A path printed by `ssh` is a path of another machine. The poll's
+      // foreground name only decides whether to ask; the backend reads the
+      // destination itself, once, for this click (links.rs `link_remote`).
+      if (link.kind === 'url' || !c || c.fg !== 'ssh') { open(null); return; }
+      inv('link_remote', { session: c.session }).catch(() => null).then(remote => {
+        if (card()?.id === c.id) open(remote || null);
+      });
     },
   });
 

@@ -525,6 +525,8 @@ fn main() {
             pty::detach_session,
             links::open_target,
             links::resolve_parent_dir,
+            links::link_remote,
+            links::open_remote_target,
             history::recent_commands,
             resume::terminal_resume_hints,
             history::record_command,

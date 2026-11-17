@@ -138,7 +138,7 @@ test('innerHTML takes literals; interpolated sites are a reviewed list and none 
     'layout.js': ['S{card.status}'],   // the pane head dot: the same closed status word
     'scheduler.js': ['html'],          // the template menu's local `add(cls, html)`: literals only, checked below
     // the link menu: one button per entry of a closed action list
-    'terminal.js': ['S+linkMenuItems(kind).map(item=>S{item.action}).join(S)'],
+    'terminal.js': ['S+items.map(item=>S{item.action}).join(S)'],
   };
   let sites = 0;
   for (const name of readdirSync(resolve(root, 'app/ui/js')).filter(file => file.endsWith('.js')).sort()) {

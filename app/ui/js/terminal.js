@@ -32,7 +32,7 @@ import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut, registerShortcutAction } from './shortcuts.js';
 import { openAutomations } from './automation.js';
 import { openTemplates } from './templates.js';
-import { linkMenuItems } from './terminal-links-model.js';
+import { linkMenuItems, remoteLinkPlan } from './terminal-links-model.js';
 import { writeClipboard } from './terminal-clipboard.js';
 import { createResumeCache, resumeCommands, resumeTarget } from './resume-model.js';
 import { retainedBuffer } from './buffer-model.js';
@@ -201,7 +201,14 @@ let ignoreLinkOpeningClickUntil = 0;
 
    One executor, `runLinkAction`, serves both ways in: the menu's items, and
    a Command-click, which runs the menu's FIRST item for that kind without
-   showing the menu (`openLinkDefault`). The menu says so beside that item. */
+   showing the menu (`openLinkDefault`). The menu says so beside that item.
+
+   A path clicked in a card whose program is `ssh` is a path of another
+   machine. The caller asks the backend once, at the click (`link_remote`),
+   and hands its answer on as `remote`: the menu then says where the path
+   is and offers what `remoteLinkPlan` lists — the editor's remote open
+   (`open_remote_target`, which reads the destination again itself), the
+   path, and `host:path` — and nothing that would look on this Mac. */
 const LINK_FAILURE_KEYS = {
   'link-no-editor': 'terminal.openNoEditor',
   'link-path-missing': 'terminal.openPathMissing',
@@ -209,9 +216,9 @@ const LINK_FAILURE_KEYS = {
   'link-open-failed': 'terminal.openSystemFailed',
 };
 const linkFailure = err => String(err?.message || err);
-async function runLinkAction(a, value, cwd, sid, lookback, trace) {
+async function runLinkAction(a, value, cwd, sid, lookback, trace, remote = null) {
   const request = ++linkActionGeneration;
-  const action = ['copy', 'url', 'editor', 'editor-parent', 'session-parent', 'reveal'].indexOf(a) + 1;
+  const action = ['copy', 'url', 'editor', 'editor-parent', 'session-parent', 'reveal', 'remote-editor', 'copy-remote'].indexOf(a) + 1;
   if (!action) return;
   const started = Date.now();
   const log = detail => uev('terminal-link', detail, action, Date.now() - started, trace);
@@ -221,7 +228,19 @@ async function runLinkAction(a, value, cwd, sid, lookback, trace) {
     return operation(lookback);
   });
   log('action-start');
-  if (a === 'copy') {
+  if (a === 'remote-editor') {
+    // no second reading and no retry: the path is not this Mac's to look up
+    const origin = sid && provider.get(sid);
+    if (!origin) { log('action-stale'); return; }
+    inv('open_remote_target', { session: origin.session, value })
+      .then(() => { log('action-ok'); toast(t('terminal.openRemote', { host: remote?.host || '' })); })
+      .catch(err => { log('action-failed'); toast(t(LINK_FAILURE_KEYS[linkFailure(err)] || 'terminal.openFailed')); });
+  } else if (a === 'copy-remote') {
+    const text = remote && remoteLinkPlan(value, remote).items.find(item => item.action === 'copy-remote')?.text;
+    if (!text) { log('action-failed'); return; }
+    writeClipboard(text, trace).then(() => { log('action-ok'); toast(t('terminal.copied')); },
+      () => { log('action-failed'); toast(t('terminal.copyFailed')); });
+  } else if (a === 'copy') {
     writeClipboard(value, trace).then(() => { log('action-ok'); toast(t('terminal.copied')); },
       () => { log('action-failed'); toast(t('terminal.copyFailed')); });
   } else if (a === 'session-parent') {
@@ -248,25 +267,37 @@ async function runLinkAction(a, value, cwd, sid, lookback, trace) {
 
 /* Command-click: the menu's first item, run at once. Any link menu still
    open belongs to an older click and is put away first. */
-export function openLinkDefault(e, kind, value, cwd, sid = null, lookback = null, trace = null) {
+export function openLinkDefault(e, kind, value, cwd, sid = null, lookback = null, trace = null, remote = null) {
   $('ctx').style.display = 'none';
-  return runLinkAction(linkMenuItems(kind)[0].action, value, cwd, sid, lookback, trace);
+  const first = remote && kind !== 'url' ? remoteLinkPlan(value, remote).items[0] : linkMenuItems(kind)[0];
+  return runLinkAction(first.action, value, cwd, sid, lookback, trace, remote);
 }
 
-export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null, trace = null) {
+export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null, trace = null, remote = null) {
   const menu = $('ctx');
   linkActionGeneration++; // invalidate any older path resolution
   // xterm activates providers on mouseup. The browser's compatibility click
   // follows immediately; it opened this menu and must not also close it.
   ignoreLinkOpeningClickUntil = Date.now() + 120;
   const restoreFocus = document.activeElement;
-  menu.innerHTML = '<span class="ctx-value"></span>' + linkMenuItems(kind)
+  // a path of the machine this card's ssh is connected to: its own items
+  const plan = remote && kind !== 'url' ? remoteLinkPlan(value, remote) : null;
+  const items = plan ? plan.items : linkMenuItems(kind);
+  menu.innerHTML = '<span class="ctx-value"></span>' + items
     .map(item => `<button data-a="${item.action}"></button>`).join('');
   const valueLabel = menu.querySelector('.ctx-value');
   valueLabel.textContent = value;
   valueLabel.title = value;
+  if (plan) {
+    // where the path is, under it; and why something is not offered, last
+    const note = text => { const el = document.createElement('span'); el.className = 'ctx-note'; el.textContent = text; return el; };
+    valueLabel.after(note(t('link.remoteOn', { host: plan.host })));
+    if (plan.note) menu.appendChild(note(t(plan.note)));
+  }
   const labelKeys = { url: 'link.url', copy: kind === 'url' ? 'link.copyUrl' : 'link.copyPath', editor: 'link.editor', 'editor-parent': 'link.editor-parent', 'session-parent': 'link.session-parent', reveal: 'link.reveal' };
-  menu.querySelectorAll('button').forEach(button => { button.textContent = t(labelKeys[button.dataset.a]); });
+  menu.querySelectorAll('button').forEach((button, index) => {
+    button.textContent = plan ? t(items[index].label, { host: plan.host }) : t(labelKeys[button.dataset.a]);
+  });
   // the first item is what a Command-click runs without this menu
   const hint = document.createElement('span');
   hint.className = 'ctx-key'; hint.textContent = t('link.directHint');
@@ -285,7 +316,7 @@ export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null, tr
     if (!a) return;
     menu.style.display = 'none';
     if (restoreFocus && restoreFocus.isConnected && restoreFocus.focus) restoreFocus.focus();
-    runLinkAction(a, value, cwd, sid, lookback, trace);
+    runLinkAction(a, value, cwd, sid, lookback, trace, remote);
   };
   menu.onkeydown = ev => {
     const buttons = [...menu.querySelectorAll('button')];

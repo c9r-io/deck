@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { wireTerminalLinks } from '../js/terminal-links.js';
-import { terminalLogicalLine, terminalLinkRanges, tokenizeTerminalLinks } from '../js/terminal-links-model.js';
+import { remoteLinkPlan, terminalLogicalLine, terminalLinkRanges, tokenizeTerminalLinks } from '../js/terminal-links-model.js';
+import { dictionaries } from '../js/i18n.js';
 
 class Surface {
   listeners = new Map();
@@ -137,10 +138,15 @@ test('a Command-click runs the menu\'s first item through the menu\'s own execut
   const read = name => readFileSync(new URL(`../js/${name}`, import.meta.url), 'utf8');
   const terminal = read('terminal.js'), layout = read('layout.js');
   assert.match(layout, /\(direct \? openLinkDefault : showLinkCtx\)\(event, link\.kind, link\.text,/);
-  assert.match(terminal, /export function openLinkDefault\([^)]*\) \{\n[^}]*return runLinkAction\(linkMenuItems\(kind\)\[0\]\.action, value, cwd, sid, lookback, trace\);\n\}/);
+  // the first item of the menu that would be shown: the remote plan's in a card whose program is ssh
+  assert.match(terminal, /export function openLinkDefault\([^)]*\) \{\n[^}]*const first = remote && kind !== 'url' \? remoteLinkPlan\(value, remote\)\.items\[0\] : linkMenuItems\(kind\)\[0\];\n\s*return runLinkAction\(first\.action, value, cwd, sid, lookback, trace, remote\);\n\}/);
   const menu = terminal.slice(terminal.indexOf('export function showLinkCtx('));
   const body = menu.slice(0, menu.indexOf('\n}\n'));
-  assert.match(body, /runLinkAction\(a, value, cwd, sid, lookback, trace\);/);
+  assert.match(body, /runLinkAction\(a, value, cwd, sid, lookback, trace, remote\);/);
+  assert.match(body, /const items = plan \? plan\.items : linkMenuItems\(kind\);/);
+  assert.equal((terminal.match(/inv\('open_remote_target'/g) || []).length, 1, 'one place opens a remote target');
+  // the destination is asked of the backend at the click, only for a path in a card whose program is ssh
+  assert.match(layout, /if \(link\.kind === 'url' \|\| !c \|\| c\.fg !== 'ssh'\) \{ open\(null\); return; \}\n\s*inv\('link_remote', \{ session: c\.session \}\)/);
   assert.equal((terminal.match(/inv\('open_target'/g) || []).length, 1, 'one place opens a target');
   // the menu names the shortcut beside its first item, and a click on that
   // label still finds the item
@@ -262,4 +268,50 @@ test('CJK prose after a source location remains a bounded scan', () => {
   const tokens = tokenizeTerminalLinks(input);
   assert.deepEqual(tokens.map(token => token.value), ['app/SMOKE.md:180', '/tmp/end.rs']);
   assert.ok(performance.now() - started < 1000);
+});
+
+test('a path in a card whose program is ssh offers what can be done with a path of another machine', () => {
+  const air2 = { host: 'air2', open: true };
+  const actions = plan => plan.items.map(item => item.action);
+  // an absolute path: the editor's remote open first (what a Command-click runs), then the two copies
+  const file = remoteLinkPlan('/srv/app/main.rs:42:7', air2);
+  assert.deepEqual(actions(file), ['remote-editor', 'copy', 'copy-remote']);
+  assert.deepEqual(file.items.map(item => item.label), ['link.remoteEditor', 'link.copyPath', 'link.copyRemote']);
+  assert.equal(file.items[2].text, 'air2:/srv/app/main.rs', 'host:path carries no line');
+  assert.equal(file.host, 'air2');
+  assert.equal(file.note, null);
+  // a folder is named as one
+  assert.equal(remoteLinkPlan('/srv/app/', air2).items[0].label, 'link.remoteFolder');
+  // quotes and a trailing label colon are not part of the path
+  assert.equal(remoteLinkPlan("'/srv/my app/a.rs':3", air2).items[2].text, 'air2:/srv/my app/a.rs');
+  assert.equal(remoteLinkPlan('/srv/app/a.rs:', air2).items[2].text, 'air2:/srv/app/a.rs');
+  // nothing of this Mac's filesystem is ever offered there
+  for (const value of ['/srv/app/main.rs', 'src/main.rs', '~/notes.md']) {
+    for (const remote of [air2, { host: 'me@air2', open: false }]) {
+      for (const action of actions(remoteLinkPlan(value, remote))) {
+        assert.ok(!['editor', 'editor-parent', 'session-parent', 'reveal'].includes(action), `${value}: ${action}`);
+      }
+    }
+  }
+  // a relative path, or one under the remote home: only the path itself, and why
+  for (const value of ['src/main.rs:3', './a.rs', '~/notes.md', 'a.rs']) {
+    const plan = remoteLinkPlan(value, air2);
+    assert.deepEqual(actions(plan), ['copy'], value);
+    assert.equal(plan.note, 'link.remoteRelative', value);
+  }
+  // an editor that cannot open there, or an ssh with more on its command line: the copies, and why
+  const named = remoteLinkPlan('/srv/app/main.rs', { host: 'me@air2', open: false });
+  assert.deepEqual(actions(named), ['copy', 'copy-remote']);
+  assert.equal(named.items[1].text, 'me@air2:/srv/app/main.rs');
+  assert.equal(named.note, 'link.remoteNoEditor');
+  // every sentence exists in every language, and the host is a parameter, never part of a key
+  for (const [language, dictionary] of Object.entries(dictionaries)) {
+    for (const key of ['link.remoteOn', 'link.remoteEditor', 'link.remoteFolder', 'link.copyRemote',
+      'link.remoteRelative', 'link.remoteNoEditor', 'terminal.openRemote', 'drop.remoteHint']) {
+      assert.ok(dictionary[key], `${language} ${key}`);
+    }
+    for (const key of ['link.remoteOn', 'link.remoteEditor', 'link.remoteFolder', 'link.copyRemote', 'terminal.openRemote']) {
+      assert.match(dictionary[key], /\{host\}/, `${language} ${key}`);
+    }
+  }
 });

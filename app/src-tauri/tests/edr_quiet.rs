@@ -81,6 +81,10 @@
 //! fixed System Settings URL, or — for a clicked `file:line` and an editor
 //! in its closed `EDITOR_LINE_SCHEMES` table — that editor's own URL built
 //! in Rust from the table's scheme, the canonical path and parsed numbers,
+//! or, for a path clicked in a pane whose program is `ssh` and an editor in
+//! `REMOTE_EDITOR_SCHEMES`, that editor's remote URL built the same way from
+//! the destination `ssh`'s own arguments name (never a host the webview
+//! gives) — Deck itself starts no `ssh` and opens no connection —
 //! always with `-a <the chosen editor>`; never an editor's command-line
 //! tool, and no clicked text as a scheme. Execution authority permits any
 //! program, including

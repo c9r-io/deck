@@ -665,6 +665,22 @@ pub(crate) fn argv0(pid: u32) -> Option<String> {
     parse_procargs2_argv0(&procargs2(pid)?)
 }
 
+/// The complete argv a process was started with (`KERN_PROCARGS2`), for a
+/// caller that reads ONE program's own arguments and says what it reads
+/// (`links.rs`: the destination of an `ssh`). `None` for a process that is
+/// gone, another user's, or whose image is not text.
+#[cfg(target_os = "macos")]
+pub(crate) fn argv(pid: u32) -> Option<Vec<String>> {
+    let image = procargs2(pid)?;
+    let (_, argv) = parse_procargs2_command(&image)?;
+    Some(argv.into_iter().map(str::to_owned).collect())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn argv(_pid: u32) -> Option<Vec<String>> {
+    None
+}
+
 /// The raw `KERN_PROCARGS2` image of `pid`.
 #[cfg(target_os = "macos")]
 fn procargs2(pid: u32) -> Option<Vec<u8>> {
