@@ -8,6 +8,13 @@
 //! unreadable file is refused, never replaced by defaults. Toggle state is
 //! derived from the file; no second settings store exists.
 //!
+//! Codex's Stop hook has two forms, plain and `--reply workers`
+//! (`CODEX_HOOKS_WITH_REPLY`): fixed per install, never switched by who
+//! reads (a changed command stops the hook until the user trusts it again
+//! in Codex `/hooks`). A fresh install takes the forwarding form, the
+//! user's explicit `codex_replies_set` switches it, and boot migration
+//! keeps whichever it finds.
+//!
 //! Claude Code's Stop hook has three forms (`ReplyHook`): plain, `--reply`
 //! (the turn-summary switch; worker and phone replies read it too) and
 //! `--reply workers` (the message forwarded without summaries: while some
@@ -203,6 +210,22 @@ const CODEX_HOOKS: &[HookSpec] = &[
     ("UserPromptSubmit", None, "working"),
     ("PermissionRequest", None, "needs-input"),
     ("Stop", None, "turn-done"),
+    ("Interrupt", None, "turn-done"),
+];
+
+/// The same Codex hooks with the final message forwarded on the Stop hook
+/// (`--reply workers`: forward only, never a summary). Codex's form is
+/// fixed, never switched by who reads the replies: Codex keeps a trust hash
+/// per hook, so changing the command would stop the hook (and the card's
+/// turn ending) until the user trusted it again in `/hooks`. A fresh
+/// install takes this form; an install of the plain form keeps it until
+/// the user's explicit update (`codex_replies_set`); boot migration keeps
+/// whichever form it finds. Deck drops a forwarded message nobody reads
+/// (`turn_summary::offer`).
+const CODEX_HOOKS_WITH_REPLY: &[HookSpec] = &[
+    ("UserPromptSubmit", None, "working"),
+    ("PermissionRequest", None, "needs-input"),
+    ("Stop", None, "turn-done --reply workers"),
     ("Interrupt", None, "turn-done"),
 ];
 
@@ -1335,7 +1358,7 @@ pub(crate) const CODEX: AgentAdapter = AgentAdapter {
     install: Install::Hooks(HookInstall {
         hooks: CODEX_HOOKS,
         reply_hooks: None,
-        worker_reply_hooks: None,
+        worker_reply_hooks: Some(CODEX_HOOKS_WITH_REPLY),
         style: HookStyle::ShellAsync,
         config_path: codex_hooks_path,
         never_ran: "Codex has never run on this Mac — nothing to configure",
@@ -1512,6 +1535,10 @@ fn hooks_set_of(
 pub(crate) struct AgentSettingsStatus {
     signal: bool,
     lifecycle: Option<bool>,
+    /// Codex: whether its Stop hook forwards the final message
+    /// (`CODEX_HOOKS_WITH_REPLY`); false while the hooks are off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replies: Option<bool>,
     installation: Option<crate::agent_pi::config::Installation>,
 }
 
@@ -1568,6 +1595,12 @@ pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
                         }
                     }),
                     installation: None,
+                    replies: (adapter.class == SignalClass::Codex).then(|| {
+                        value.as_ref().is_some_and(|value| {
+                            hooks_installed(value, install.hooks)
+                                && reply_hook(value) != ReplyHook::Off
+                        })
+                    }),
                 }
             }
             Install::PiExtension => {
@@ -1576,6 +1609,7 @@ pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
                     signal: status.signal,
                     lifecycle: Some(status.lifecycle),
                     installation: Some(status.installation),
+                    replies: None,
                 }
             }
         };
@@ -1624,10 +1658,22 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
     let (source, style, never_ran) = (adapter.source, install.style, install.never_ran);
     let path =
         (install.config_path)().ok_or(DeckError::new(ErrorKind::Other, "no home directory"))?;
-    // re-enabling over an existing install keeps its turn-summary switch
+    // re-enabling over an existing install keeps its reply form; a fresh
+    // Codex install forwards the final message (`CODEX_HOOKS_WITH_REPLY`)
+    let fresh = |value: &serde_json::Value| !hooks_installed(value, install.hooks);
     let specs = read_settings_value(&path)
-        .map(|value| current_specs(install, &value))
-        .unwrap_or(install.hooks);
+        .map(|value| {
+            if adapter.class == SignalClass::Codex && fresh(&value) {
+                CODEX_HOOKS_WITH_REPLY
+            } else {
+                current_specs(install, &value)
+            }
+        })
+        .unwrap_or(if adapter.class == SignalClass::Codex {
+            CODEX_HOOKS_WITH_REPLY
+        } else {
+            install.hooks
+        });
     let result = if enable {
         installed_helper_path().and_then(|helper| {
             let edit = HookEdit::Install {
@@ -1658,6 +1704,63 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
         )),
     }
     result
+}
+
+/// Whether deck's Codex hooks are on and their Stop hook forwards the
+/// final message (read from the file): what an MCP card snapshot says of a
+/// Codex card's missing message (`not-forwarded`).
+// the card snapshot's tests stand in their own answer (`mcp/cards.rs`)
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn codex_reply_forwarded() -> bool {
+    let Some(install) = CODEX.hook_install() else {
+        return false;
+    };
+    (install.config_path)()
+        .and_then(|path| read_settings_value(&path).ok())
+        .is_some_and(|value| {
+            hooks_installed(&value, install.hooks) && reply_hook(&value) != ReplyHook::Off
+        })
+}
+
+/// The user's explicit choice that deck's Codex Stop hook forwards the
+/// final message (Settings: on as the update of an install of the plain
+/// form; off back to it). Rewrites ONLY deck's Codex status hooks, needs
+/// them on and a release install, as every hook edit does; Codex then asks
+/// the user to trust the changed Stop hook in `/hooks` once. Refusals are
+/// closed words: `unreadable`, `hooks-off`, `release-only`, `write`.
+#[tauri::command]
+pub(crate) fn codex_replies_set(enable: bool) -> Result<(), DeckError> {
+    let refused = |code: &'static str| {
+        applog(&format!(
+            "[agent-hooks] codex replies {} refused ({code})",
+            if enable { "on" } else { "off" }
+        ));
+        DeckError::new(ErrorKind::Other, code)
+    };
+    let install = CODEX.hook_install().ok_or_else(|| refused("unreadable"))?;
+    let path = (install.config_path)().ok_or_else(|| refused("unreadable"))?;
+    let value = read_settings_value(&path).map_err(|_| refused("unreadable"))?;
+    if !hooks_installed(&value, install.hooks) {
+        return Err(refused("hooks-off"));
+    }
+    let specs = if enable {
+        CODEX_HOOKS_WITH_REPLY
+    } else {
+        CODEX_HOOKS
+    };
+    let helper = installed_helper_path().map_err(|_| refused("release-only"))?;
+    let edit = HookEdit::Install {
+        specs,
+        source: CODEX.source,
+        style: install.style,
+        helper: &helper,
+    };
+    hooks_set(&path, edit, install.never_ran).map_err(|_| refused("write"))?;
+    applog(&format!(
+        "[agent-hooks] codex replies {}",
+        if enable { "on" } else { "off" }
+    ));
+    Ok(())
 }
 
 /// The turn-summary switch as Settings shows it: whether Claude Code's

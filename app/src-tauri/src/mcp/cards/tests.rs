@@ -67,6 +67,7 @@ fn board() -> Value {
              "reminder": {"dueAt": 1}},
             {"id": "X", "session": "deck-x", "title": "Codex", "projectId": "P1", "columnId": "C2"},
             {"id": "S", "session": "deck-s", "title": "Shell", "projectId": "P1", "columnId": "C2"},
+            {"id": "P", "session": "deck-p", "title": "Pi", "projectId": "P1", "columnId": "C2"},
             {"id": "Z", "session": "deck-z", "title": "Elsewhere", "projectId": "P2", "columnId": "C9"}
         ]
     })
@@ -90,6 +91,7 @@ fn observe_as(episodes: [(u64, u64); 1]) {
     map.insert("deck-d".to_owned(), seen("turn-done", d, "claude-code"));
     map.insert("deck-x".to_owned(), seen("turn-done", 9, "codex"));
     map.insert("deck-z".to_owned(), seen("turn-done", 11, "claude-code"));
+    map.insert("deck-p".to_owned(), seen("turn-done", 12, "pi"));
     // a live shell without an agent
     map.insert(
         "deck-s".to_owned(),
@@ -159,7 +161,7 @@ fn the_snapshot_lists_the_clients_projects_in_board_order_with_honest_replies() 
         .iter()
         .map(|c| c["cardId"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, ["B", "D", "A", "X", "S"]);
+    assert_eq!(ids, ["B", "D", "A", "X", "P", "S"]);
     let by = |id: &str| cards.iter().find(|c| c["cardId"] == id).unwrap().clone();
     let asked = by("A");
     assert_eq!(asked["column"], "Review");
@@ -173,8 +175,10 @@ fn the_snapshot_lists_the_clients_projects_in_board_order_with_honest_replies() 
     assert_eq!(by("D")["reply"]["unavailable"], "not-kept");
     assert_eq!(by("D")["reminder"], true);
     assert_eq!(by("B")["reply"]["unavailable"], "no-turn-ended");
-    assert_eq!(by("X")["reply"]["unavailable"], "not-claude");
+    // a Codex card is a reply source too: nothing kept for this turn
+    assert_eq!(by("X")["reply"]["unavailable"], "not-kept");
     assert_eq!(by("S")["reply"]["unavailable"], "no-agent");
+    assert_eq!(by("P")["reply"]["unavailable"], "no-reply-source");
     assert_eq!(by("S")["agent"], Value::Null);
     assert_eq!(by("S")["alive"], true);
     for card in cards {
@@ -200,7 +204,7 @@ fn the_snapshot_lists_the_clients_projects_in_board_order_with_honest_replies() 
     };
     assert_eq!(of("D")["reply"]["unavailable"], "not-forwarded");
     assert_eq!(of("A")["reply"]["episode"], 5);
-    assert_eq!(out["repliesForwarded"], false);
+    assert_eq!(out["repliesForwarded"]["codex"], false);
     // a project outside the scope is refused by name too
     let other = call(
         &runtime,

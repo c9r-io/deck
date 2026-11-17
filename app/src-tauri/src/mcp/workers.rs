@@ -643,7 +643,7 @@ pub(super) fn worker_reply(
         error_value(
             "REPLY_GONE",
             "Deck holds no final message for that turn ending",
-            "Only Claude Code turn endings Deck saw since it started are kept (the newest 32); ask the worker to write durable results to a file instead.",
+            "Only Claude Code and Codex turn endings Deck saw since it started are kept (the newest 32), Codex's only while the user lets Deck forward it; ask the worker to write durable results to a file instead.",
         )
     };
     let target = crate::documents::card_targets(false)

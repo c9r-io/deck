@@ -248,7 +248,7 @@
 //! Card snapshot (`cards.rs`, `docs/mcp.md` "Card snapshot"): a client
 //! with the separate local choice `allow_cards` reads the cards of its
 //! projects (`deck_cards_snapshot`: closed facts per card and, for a Claude
-//! Code card whose turn ended, the end of that turn's final message, fenced;
+//! Code or Codex card whose turn ended, the end of that turn's final message, fenced;
 //! `deck_card_reply` for the whole of it, only for the current episode) and
 //! may MARK a card's current episode (`deck_card_mark`: needs-you,
 //! can-close or working, a short note). Read only and presentation only:

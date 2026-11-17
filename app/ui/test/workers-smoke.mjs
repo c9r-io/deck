@@ -299,7 +299,12 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
       title, dir: work, cmd }, { requireCreated: true })).card;
     const ended = card => ctx.attention.get(card)?.agent === 'turn-done';
     const cards = { ask: await open('Ask', `${base} ${ASK}`), done: await open('Done', `${base} ${DONE}`), shell: await open('Shell', '') };
-    const turns = await until(() => ended(cards.ask) && ended(cards.done) || null, 300_000, 1000);
+    /* scenario `cards-codex`: also a Codex card (`codex --no-daemon` through
+       the operator's fixture codex.sh, its Stop hook forwarding the final
+       message), whose reply the client must read and mark like a Claude one */
+    const codexToo = (await inv('smoke_native_scenario').catch(() => '')) === 'cards-codex';
+    if (codexToo) cards.codex = await open('Codex done', `sh ${fixture}/codex.sh`);
+    const turns = await until(() => ended(cards.ask) && ended(cards.done) && (!codexToo || ended(cards.codex)) || null, 300_000, 1000);
     await report('cards-turns', !!turns);
     await report('cards-armed', true);
 
@@ -309,14 +314,15 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     tools.querySelector('[data-filter="ended"]').click();
     const row = card => $('attention-list').querySelector(`.attention-row[data-sid="${card.id}"]`);
     const markOf = card => { const el = row(card)?.querySelector('.attention-mark'); return el && !el.hidden ? el : null; };
-    const shown = await until(() => markOf(cards.ask) && markOf(cards.done) ? true : null, 600_000, 1000);
+    const shown = await until(() => markOf(cards.ask) && markOf(cards.done) && (!codexToo || markOf(cards.codex)) ? true : null, 600_000, 1000);
     const suggest = tools.querySelector('.attention-pick-suggested');
-    const suggestShown = !!suggest && !suggest.hidden && suggest.textContent === t('attention.pickSuggested', { count: '1' });
+    const suggestShown = !!suggest && !suggest.hidden && suggest.textContent === t('attention.pickSuggested', { count: codexToo ? '2' : '1' });
     suggest?.click(); await pause(200);
     const ticked = [...$('attention-list').querySelectorAll('.attention-row')].filter(el => el.querySelector('.attention-pick')?.checked).map(el => el.dataset.sid);
     await report('cards-marked', !!shown && markOf(cards.ask)?.dataset.mark === 'needs-you' && markOf(cards.done)?.dataset.mark === 'can-close'
       && markOf(cards.ask).textContent.includes(t('attention.mark.needs-you')) && markOf(cards.ask).textContent.includes('orchestrator')
-      && suggestShown && ticked.length === 1 && ticked[0] === cards.done.id && $('cfm').style.display !== 'flex' && !!provider.get(cards.done.id),
+      && (!codexToo || markOf(cards.codex)?.dataset.mark === 'can-close')
+      && suggestShown && ticked.includes(cards.done.id) && ticked.length === (codexToo ? 2 : 1) && $('cfm').style.display !== 'flex' && !!provider.get(cards.done.id),
       ticked.length, suggestShown ? 1 : 0);
     tools.querySelector('[data-filter="pending"]').click(); await pause(100);
     tools.querySelector('[data-filter="ended"]').click(); await pause(100);

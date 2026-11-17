@@ -16,10 +16,11 @@
 //! after that one read. Every field that leaves this process is
 //! charset-validated below, so the emitted JSON needs no escaping and cannot
 //! carry content — with ONE exception, written into the hook by deck only
-//! while the user's turn-summary switch is on: a Claude Code `turn-done`
-//! hook run with `--reply` also reads the TOP-LEVEL string
-//! `last_assistant_message` (Claude's final message of the turn, documented
-//! for the Stop hook) and forwards its head and tail (`bounded_reply`) as
+//! while the user's turn-summary switch is on (or replies are forwarded for a
+//! reader): a Claude Code or Codex `turn-done` hook run with `--reply` also
+//! reads the TOP-LEVEL string `last_assistant_message` (the final message of
+//! the turn: documented for Claude Code's Stop hook, present in Codex's
+//! Stop hook input) and forwards its head and tail (`bounded_reply`) as
 //! the JSON-escaped `reply` of a v3 line. Without the flag, for any other
 //! source or word, or when the value is not a string or its key repeats,
 //! nothing of it is read or sent.
@@ -48,6 +49,20 @@ const MAX_PAYLOAD: usize = 1 << 20;
 /// The argument deck adds to Claude Code's Stop hook while turn summaries
 /// are on; it is honoured for `claude-code turn-done` only.
 const REPLY_FLAG: &str = "--reply";
+
+/// The sources whose Stop payload carries `last_assistant_message`: Claude
+/// Code (documented) and Codex (its Stop hook input, checked on 0.169).
+const REPLY_SOURCES: [&str; 2] = ["claude-code", "codex"];
+
+/// The reply only where deck put the flag, and only on the turn-done of a
+/// source that has a final message.
+fn wants_reply(args: &[String]) -> bool {
+    args.get(3).map(String::as_str) == Some(REPLY_FLAG)
+        && args
+            .get(1)
+            .is_some_and(|s| REPLY_SOURCES.contains(&s.as_str()))
+        && args.get(2).map(String::as_str) == Some("turn-done")
+}
 /// The one payload field the flag allows: Claude's final message.
 const REPLY_FIELD: &str = "last_assistant_message";
 /// The most of that message forwarded, in bytes: its head and its tail
@@ -317,11 +332,7 @@ fn main() {
     let (Some(source), Some(state)) = (args.get(1), args.get(2)) else {
         return;
     };
-    // the reply only where deck's switch put the flag, and only on
-    // Claude Code's turn-done
-    let wants_reply = args.get(3).map(String::as_str) == Some(REPLY_FLAG)
-        && source == "claude-code"
-        && state == "turn-done";
+    let wants_reply = wants_reply(&args);
     let fields = fields_from(source, &payload, wants_reply);
     drop(payload);
     let (Ok(tmux), Ok(pane)) = (std::env::var("TMUX"), std::env::var("TMUX_PANE")) else {
@@ -758,5 +769,36 @@ mod tests {
         for leaked in ["secret", "Users", "say", OTHER] {
             assert!(!message.contains(leaked), "{leaked} in {message}");
         }
+    }
+
+    #[test]
+    fn a_reply_is_wanted_only_with_the_flag_on_a_turn_ending_of_a_source_that_has_one() {
+        let args = |words: &[&str]| -> Vec<String> {
+            std::iter::once("helper")
+                .chain(words.iter().copied())
+                .map(String::from)
+                .collect()
+        };
+        assert!(wants_reply(&args(&[
+            "claude-code",
+            "turn-done",
+            "--reply",
+            "workers"
+        ])));
+        assert!(wants_reply(&args(&[
+            "codex",
+            "turn-done",
+            "--reply",
+            "workers"
+        ])));
+        assert!(!wants_reply(&args(&["codex", "turn-done"])));
+        assert!(!wants_reply(&args(&["codex", "working", "--reply"])));
+        assert!(!wants_reply(&args(&["pi", "turn-done", "--reply"])));
+        assert!(!wants_reply(&args(&[
+            "codex",
+            "turn-done",
+            "workers",
+            "--reply"
+        ])));
     }
 }

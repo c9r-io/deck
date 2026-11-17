@@ -118,7 +118,8 @@ fn hook_status_command_returns_both_closed_agent_fields() {
     );
     for source in ["claude-code", "codex", "pi"] {
         let agent = agents[source].as_object().expect("agent status");
-        assert_eq!(agent.len(), 3);
+        // Codex also says whether its Stop hook forwards the final message
+        assert_eq!(agent.len(), if source == "codex" { 4 } else { 3 });
         assert!(agent["signal"].is_boolean());
     }
     assert!(agents["codex"]["lifecycle"].is_boolean());
@@ -1912,9 +1913,11 @@ fn worker_replies_are_a_third_form_of_the_stop_hook() {
         specs_for(install, ReplyHook::Workers),
         CLAUDE_HOOKS_WITH_WORKER_REPLY
     );
-    // Codex has neither form
+    // Codex has the forward-only form, never the summary one
     let codex = CODEX.hook_install().unwrap();
-    assert_eq!(specs_for(codex, ReplyHook::Workers), codex.hooks);
+    assert_eq!(specs_for(codex, ReplyHook::Workers), CODEX_HOOKS_WITH_REPLY);
+    assert_eq!(specs_for(codex, ReplyHook::Summaries), codex.hooks);
+    assert_eq!(specs_for(codex, ReplyHook::Off), codex.hooks);
     // the summary gate follows the form
     note_reply_hook(ReplyHook::Workers);
     assert!(!summaries_wanted());
@@ -1925,4 +1928,52 @@ fn worker_replies_are_a_third_form_of_the_stop_hook() {
         summaries_wanted(),
         "no form: a forwarded message is legacy summary use"
     );
+}
+
+/// Codex's final message (`CODEX_HOOKS_WITH_REPLY`): one fixed form of its
+/// Stop hook, written as Codex's shell command; a plain install is told
+/// apart and kept as found (boot migration), the forwarding form is told
+/// as forward-only (never a summary), and switching between them changes
+/// deck's Stop hook alone.
+#[test]
+fn codex_forwards_its_final_message_in_one_fixed_form_kept_as_found() {
+    let codex = CODEX.hook_install().unwrap();
+    let plain = hooks_with_install(
+        serde_json::json!({}),
+        CODEX_HOOKS,
+        "codex",
+        HookStyle::ShellAsync,
+        HELPER,
+    )
+    .unwrap();
+    assert_eq!(reply_hook(&plain), ReplyHook::Off);
+    // migration keeps the plain form: the user's explicit update changes it
+    assert_eq!(current_specs(codex, &plain), CODEX_HOOKS);
+    let forwarding = hooks_with_install(
+        plain.clone(),
+        CODEX_HOOKS_WITH_REPLY,
+        "codex",
+        HookStyle::ShellAsync,
+        HELPER,
+    )
+    .unwrap();
+    assert_eq!(
+        forwarding["hooks"]["Stop"][0]["hooks"][0]["command"],
+        "\"/Applications/deck.app/Contents/MacOS/deck-status-helper\" codex turn-done --reply workers"
+    );
+    assert_eq!(reply_hook(&forwarding), ReplyHook::Workers);
+    assert_eq!(current_specs(codex, &forwarding), CODEX_HOOKS_WITH_REPLY);
+    // only the Stop hook differs; the Interrupt hook never forwards
+    for event in ["UserPromptSubmit", "PermissionRequest", "Interrupt"] {
+        assert_eq!(forwarding["hooks"][event], plain["hooks"][event], "{event}");
+    }
+    let back = hooks_with_install(
+        forwarding,
+        CODEX_HOOKS,
+        "codex",
+        HookStyle::ShellAsync,
+        HELPER,
+    )
+    .unwrap();
+    assert_eq!(back, plain);
 }

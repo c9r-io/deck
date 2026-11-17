@@ -133,10 +133,11 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // The same hook specs, now owned by the configuration module; Claude's
     // turn-summary variant (Stop with `--reply`) repeats `working` and
     // `needs-input` (its Stop is spelled `turn-done --reply`).
-    ("agent_status/hooks.rs", "", "\"turn-done\"", 3, Producer),
-    // four spec tables: plain, turn summaries, worker replies, and Codex
-    ("agent_status/hooks.rs", "", "\"needs-input\"", 4, Producer),
-    ("agent_status/hooks.rs", "", "\"working\"", 4, Producer),
+    ("agent_status/hooks.rs", "", "\"turn-done\"", 4, Producer),
+    // five spec tables: Claude plain, turn summaries, worker replies, and
+    // Codex plain and forwarding its final message
+    ("agent_status/hooks.rs", "", "\"needs-input\"", 5, Producer),
+    ("agent_status/hooks.rs", "", "\"working\"", 5, Producer),
     // FR-SI-04: the interaction tracker admits words per source interaction
     // (refuses late/ended/mismatched ones); it grants nothing
     ("agent_status.rs", "admit", "NEEDS_INPUT", 4, Producer),

@@ -37,9 +37,15 @@
 //!   alone (`reply_for`). While the Stop hook forwards the message for
 //!   worker replies only (`--reply workers`, `agent_status::summaries_wanted`
 //!   false) nothing else happens to it: no summary, no model call.
+//! - Codex: its Stop hook forwards the final message in one fixed form
+//!   (`agent_status/hooks.rs` `CODEX_HOOKS_WITH_REPLY`). A Codex turn
+//!   ending accepted for its pane (only `--no-daemon` is ever accepted)
+//!   feeds the three readers below exactly as a Claude one does
+//!   (`has_final_message`); it is never summarized, and a message no reader
+//!   wants is dropped where it arrives.
 //! - Card snapshot replies (`mcp/cards.rs`): while some MCP client may read
 //!   the card snapshot (`mcp::card_readers_any`), the newest final message
-//!   of each Claude Code session is kept as it came, one per session, at
+//!   of each Claude Code or Codex session is kept as it came, one per session, at
 //!   most `KEEP_LAST`, memory only; once none may, it is forgotten
 //!   (`forget_card_replies`). `card_reply` reads it, or a worker or phone
 //!   reply of the same turn ending, for that client's snapshot only. Like
@@ -138,6 +144,14 @@ fn decide(accepted: &Accepted, reply: &str, has_key: bool) -> Decision {
     }
 }
 
+/// The sources whose accepted turn ending carries a final message the
+/// readers may keep: Claude Code and Codex (`agent_status/hooks.rs`
+/// `CODEX_HOOKS_WITH_REPLY`). A Codex event is accepted only when it is
+/// bound to its pane (`--no-daemon`), so its message is that card's.
+fn has_final_message(class: SignalClass) -> bool {
+    matches!(class, SignalClass::Claude | SignalClass::Codex)
+}
+
 /// The final message of a turn `agent_status` accepted (`dispatch`): kept
 /// as it is when short, else summarized off this thread. When the card has
 /// follow-ups (`documents::card_follow_ups`) the same one call also asks
@@ -146,25 +160,30 @@ pub(crate) fn offer(accepted: &Accepted, reply: String) {
     // a worker card's final message, for the orchestrator the user let
     // read its replies (`mcp/workers.rs`); kept before any summary choice
     if accepted.state == crate::agent_status::TURN_DONE
-        && accepted.class == SignalClass::Claude
+        && has_final_message(accepted.class)
         && crate::mcp::replies_wanted_for(&accepted.session)
     {
         remember_reply(&accepted.session, accepted.episode, &reply);
     }
-    // the newest final message of each Claude Code card, while some MCP
+    // the newest final message of each Claude Code or Codex card, while some MCP
     // client may read the card snapshot (`mcp/cards.rs`)
     if accepted.state == crate::agent_status::TURN_DONE
-        && accepted.class == SignalClass::Claude
+        && has_final_message(accepted.class)
         && crate::mcp::card_readers_any()
     {
         remember_last(&accepted.session, accepted.episode, &reply);
     }
     // a paired phone's reply list (`connector`), when the user turned it on
     if accepted.state == crate::agent_status::TURN_DONE
-        && accepted.class == SignalClass::Claude
+        && has_final_message(accepted.class)
         && phone_replies_on()
     {
         remember_phone_reply(&accepted.session, accepted.episode, &reply, now_ms());
+    }
+    // a Codex message is never summarized (its Stop hook forwards for the
+    // readers above only; nobody read it: it is dropped here)
+    if accepted.class != SignalClass::Claude {
+        return;
     }
     // the Stop hook forwards the message for worker replies alone: no
     // summary, no model call (`agent_status/hooks.rs` `ReplyHook::Workers`)

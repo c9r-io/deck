@@ -946,7 +946,9 @@ test('away notifications name the agent-status dependency only when both hooks a
   const enabling = persistAgentHooksChoice('codex', 'set-codex-hooks', 'settings.codexHooksEnableConfirm');
   cfmDone(true);
   await enabling;
-  assert.deepEqual(calls, ['agent_hooks_set']);
+  // Codex reads its file back after a write: a fresh install forwards the
+  // final message, and the reply switch shows it
+  assert.deepEqual(calls, ['agent_hooks_set', 'agent_hooks_status']);
   assert.equal(dependency.hidden, true, 'one enabled');
   assert.equal(ctx.settings.notifyAway, true, 'no other setting changes');
   box.fire('keydown', { key: 'Escape' });

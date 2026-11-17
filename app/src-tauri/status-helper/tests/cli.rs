@@ -173,8 +173,8 @@ fn one_line_reaches_the_owning_decks_socket_and_the_helper_waits_for_the_close()
     assert_silent_success(&finish(child, Duration::from_secs(3)));
 }
 
-/// The turn-summary switch: only `claude-code turn-done --reply` sends
-/// Claude's final message, and nothing else of the payload goes with it.
+/// Only a flagged `turn-done` of Claude Code or Codex sends the final
+/// message, and nothing else of the payload goes with it.
 #[test]
 fn only_the_flagged_claude_stop_sends_the_final_message() {
     let home = Private::new();
@@ -217,11 +217,18 @@ fn only_the_flagged_claude_stop_sends_the_final_message() {
             "{args:?}: {line}"
         );
     }
-    let line = line_for(&["codex", "turn-done", "--reply"]);
+    // Codex's Stop input carries the same field: forwarded the same way
+    // (this payload has no Codex turn id, so no interaction rides along)
+    let line = line_for(&["codex", "turn-done", "--reply", "workers"]);
     assert!(
-        line.starts_with("{\"v\":1,") && !line.contains("Fixed"),
+        line.starts_with("{\"v\":3,\"source\":\"codex\",")
+            && line.contains("Fixed the")
+            && !line.contains("SENTINEL"),
         "{line}"
     );
+    // a source without a final message: nothing of it
+    let line = line_for(&["pi", "turn-done", "--reply"]);
+    assert!(!line.contains("Fixed"), "{line}");
 }
 
 #[test]

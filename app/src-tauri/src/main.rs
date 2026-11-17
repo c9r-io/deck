@@ -630,6 +630,7 @@ fn main() {
             mcp::mcp_workers_ui,
             mcp::mcp_proposals,
             mcp::mcp_card_mark_clear,
+            agent_status::codex_replies_set,
             mcp::mcp_proposal_decide,
             mcp::mcp_worker_take_over,
             mcp::mcp_worker_hand_back,

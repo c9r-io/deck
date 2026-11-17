@@ -99,7 +99,11 @@ export function renderAgentContributions() {
     const isKnown = !reading && known(control);
     if (!pending(control)) box.checked = isKnown ? view[control.capability] : false;
     box.indeterminate = !isKnown;
-    box.disabled = pending(control) || !isKnown || !usable;
+    /* a control that needs another of its source's switches on (Codex's
+       forwarded replies need its status hooks) */
+    const needs = !!control.requires && view[control.requires] !== true;
+    if (needs && !pending(control)) box.checked = false;
+    box.disabled = pending(control) || !isKnown || !usable || needs;
   }
   const items = new Set(controls.map(control => control.item));
   for (const item of items) {

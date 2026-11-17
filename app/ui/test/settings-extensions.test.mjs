@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { FakeElement } from './fixtures/dom-fixture.mjs';
 import {
   extensionContributions, initializeExtensionContributions, refreshAgentContributions, validateExtensionContributions,
-  extensionController, runExtensionLifecycle, extensionControlsBusy,
+  extensionController, runExtensionLifecycle, extensionControlsBusy, persistAgentContribution,
 } from '../js/settings-extensions.js';
 
 const elements = new Map();
@@ -29,6 +29,7 @@ const calls = [];
 const inv = async (command, args) => {
   calls.push(command);
   if (command === 'agent_hooks_status') return statusAnswer();
+  if (command === 'codex_replies_set') writes.push([command, args]);
   if (command === 'agent_hooks_set') {
     writes.push([command, args]);
     if (args.agent === 'pi') { await writeGate.promise; pi = { ...pi, signal: args.enable, installation: 'current' }; }
@@ -173,4 +174,32 @@ test('lifecycle reaches subsequent controllers after synchronous and asynchronou
   } finally {
     ids.forEach((id, index) => { extensionController(id).close = originals[index]; });
   }
+});
+
+test('Codex forwarding its final message is a switch of its own that needs the status hooks on', async () => {
+  const before = statusAnswer;
+  const answer = codex => () => ({ agents: {
+    'claude-code': { signal: true, lifecycle: false, installation: null }, codex, pi,
+  } });
+  statusAnswer = answer({ signal: false, lifecycle: false, installation: null, replies: false });
+  await refreshAgentContributions();
+  assert.equal($('set-codex-replies').checked, false);
+  assert.equal($('set-codex-replies').disabled, true, 'needs the status hooks');
+  statusAnswer = answer({ signal: true, lifecycle: false, installation: null, replies: true });
+  await refreshAgentContributions();
+  assert.equal($('set-codex-replies').checked, true);
+  assert.equal($('set-codex-replies').disabled, false);
+  // an older answer without the field reads as off, not unknown
+  statusAnswer = answer({ signal: true, lifecycle: false, installation: null });
+  await refreshAgentContributions();
+  assert.equal($('set-codex-replies').checked, false);
+  assert.equal($('set-codex-replies').indeterminate, false);
+  // turning it on asks, then writes through its own command
+  const asked = confirmations;
+  $('set-codex-replies').checked = true;
+  await persistAgentContribution('set-codex-replies');
+  assert.equal(confirmations, asked + 1);
+  assert.deepEqual(writes.at(-1), ['codex_replies_set', { enable: true }]);
+  statusAnswer = before;
+  await refreshAgentContributions();
 });

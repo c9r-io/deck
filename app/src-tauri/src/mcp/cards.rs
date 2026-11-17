@@ -15,7 +15,8 @@
 //!   facts: alive or stopped, the agent's word, episode and when it began,
 //!   whether the user viewed that turn ending, how many queue rows wait,
 //!   whether a Reminder is set, how many follow-ups it has, the standing
-//!   mark, and the final message of the turn that ended (`PREVIEW_CHARS`
+//!   mark, and the final message of the Claude Code or Codex turn that
+//!   ended (`PREVIEW_CHARS`
 //!   of its end, fenced as material to judge) or why there is none: a
 //!   closed word (`REPLY_UNAVAILABLE`). The caller's own card (`origin.rs`,
 //!   from the kernel) carries `self`. A recovered Board is
@@ -23,9 +24,10 @@
 //! - `deck_card_reply` returns the whole kept final message of one turn
 //!   ending, only while that episode is the card's current one
 //!   (`EPISODE_MOVED` otherwise; `REPLY_GONE` when nothing is kept).
-//! - The message is what Claude Code's Stop hook forwarded and
-//!   `turn_summary` kept (`card_reply`): only Claude Code turn endings Deck
-//!   accepted while a reader existed; a Deck restart forgets them.
+//! - The message is what Claude Code's or Codex's Stop hook forwarded and
+//!   `turn_summary` kept (`card_reply`): only turn endings Deck accepted
+//!   while a reader existed (a Codex one only when bound to its pane,
+//!   `--no-daemon`); a Deck restart forgets them.
 //!   `agent_status::forwarding_wanted` keeps the hook forwarding while a
 //!   reader exists. Deck never reads a pane for it.
 //! - `deck_card_mark` sets ONE mark on a card's current episode:
@@ -58,7 +60,7 @@ pub(super) const MARKS: [&str; 3] = ["needs-you", "can-close", "working"];
 #[cfg(test)]
 pub(super) const REPLY_UNAVAILABLE: [&str; 5] = [
     "no-agent",
-    "not-claude",
+    "no-reply-source",
     "no-turn-ended",
     "not-forwarded",
     "not-kept",
@@ -256,14 +258,38 @@ thread_local! {
     pub(super) static FORWARDED_FOR_TESTS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
-fn reply_forwarded() -> bool {
+/// Whether each agent's hooks file forwards the final message: it only
+/// explains a missing one (`reply_of`).
+#[derive(Clone, Copy, Debug)]
+struct Forwarded {
+    claude: bool,
+    codex: bool,
+}
+
+impl Forwarded {
+    fn of(self, kind: Option<&str>) -> bool {
+        match kind {
+            Some("codex") => self.codex,
+            _ => self.claude,
+        }
+    }
+}
+
+fn reply_forwarded() -> Forwarded {
     #[cfg(test)]
     {
-        FORWARDED_FOR_TESTS.with(std::cell::Cell::get)
+        let on = FORWARDED_FOR_TESTS.with(std::cell::Cell::get);
+        Forwarded {
+            claude: on,
+            codex: on,
+        }
     }
     #[cfg(not(test))]
     {
-        crate::agent_status::claude_reply_forwarded()
+        Forwarded {
+            claude: crate::agent_status::claude_reply_forwarded(),
+            codex: crate::agent_status::codex_reply_forwarded(),
+        }
     }
 }
 
@@ -290,20 +316,20 @@ fn tail(text: &str) -> (String, bool) {
 fn reply_of(
     session: &str,
     seen: Option<&Seen>,
-    forwarded: bool,
+    forwarded: Forwarded,
 ) -> Result<(u64, String), &'static str> {
     let Some(seen) = seen.filter(|s| s.state.is_some()) else {
         return Err("no-agent");
     };
-    if seen.kind != Some("claude-code") {
-        return Err("not-claude");
+    if !matches!(seen.kind, Some("claude-code" | "codex")) {
+        return Err("no-reply-source");
     }
     if seen.state != Some(crate::agent_status::TURN_DONE) {
         return Err("no-turn-ended");
     }
     match crate::turn_summary::card_reply(session, seen.episode) {
         Some(text) => Ok((seen.episode, text)),
-        None if !forwarded => Err("not-forwarded"),
+        None if !forwarded.of(seen.kind) => Err("not-forwarded"),
         None => Err("not-kept"),
     }
 }
@@ -489,7 +515,7 @@ pub(super) fn cards_snapshot(
             "total": total,
             "nextCursor": (next < total).then(|| next.to_string()),
             "observed": seen.is_some(),
-            "repliesForwarded": forwarded,
+            "repliesForwarded": {"claudeCode": forwarded.claude, "codex": forwarded.codex},
             "now": now_ms(),
             "note": NOTE,
         })
@@ -539,7 +565,7 @@ pub(super) fn card_reply(
             error_value(
                 "REPLY_GONE",
                 "Deck holds no final message for that turn ending",
-                "Only Claude Code turn endings Deck accepted since it started, while a client could read the snapshot, are kept; judge the card from its state or tell the user.",
+                "Only Claude Code and Codex turn endings Deck accepted since it started, while a client could read the snapshot, are kept; judge the card from its state or tell the user.",
             )
         })?;
     crate::applog::applog("[mcp] card reply read");

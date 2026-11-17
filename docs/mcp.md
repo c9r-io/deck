@@ -148,7 +148,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_mention_read` | One open mention whole: text, sender, channel, link and its context (thread start and the replies before it, or the conversation's last messages, with file names), all as external content. |
 | `deck_mention_mark` | Mark one open mention for the user: `handling` (optionally with one of the caller's worker cards), `for-you` or `no-action`, with a note of at most 200 characters; `null` takes the caller's mark off. Another orchestrator's mark is `MENTION_MARKED`. Presentation only: the mention stays listed. |
 | `deck_mention_handoff` | Hand one open mention to one of the client's Agent automations (id and revision, `trigger_sequence`). Deck fills the item from the mention itself; the client names it, never its text. The acceptance and the operation are `deck_automation_trigger`'s (also needs the automation delegation); `MENTION_SETTLED` when the mention is already held. Never a Slack badge rule. |
-| `deck_cards_snapshot` | The cards of the client's projects in Board order, 40 at most per call (`cursor` → `nextCursor`; `project_id` narrows): card id, title, project, column, `self` (the card the call comes from), alive, Agent observation `{kind, state, episode, since, viewed}`, unsent queue rows, reminder, follow-up count, the standing mark, and `reply`: the end (300 characters) of the final Claude Code message of the turn that ended, as external content, or `unavailable` with a closed reason (`no-agent`, `not-claude`, `no-turn-ended`, `not-forwarded`, `not-kept`). `SOURCE_UNAVAILABLE` on a Board recovered from its backup. Needs the client's separate **card snapshot** choice. |
+| `deck_cards_snapshot` | The cards of the client's projects in Board order, 40 at most per call (`cursor` → `nextCursor`; `project_id` narrows): card id, title, project, column, `self` (the card the call comes from), alive, Agent observation `{kind, state, episode, since, viewed}`, unsent queue rows, reminder, follow-up count, the standing mark, and `reply`: the end (300 characters) of the final Claude Code or Codex message of the turn that ended, as external content, or `unavailable` with a closed reason (`no-agent`, `no-reply-source`, `no-turn-ended`, `not-forwarded`, `not-kept`). `SOURCE_UNAVAILABLE` on a Board recovered from its backup. Needs the client's separate **card snapshot** choice. |
 | `deck_card_reply` | That final message whole (head and tail when long), as external content, only while its episode is the card's current one (`EPISODE_MOVED`); `REPLY_GONE` when Deck kept none. |
 | `deck_card_mark` | Mark one card on its current episode: `needs-you`, `can-close` or `working`, with a note of at most 200 characters; `null` takes the caller's own mark off (another client's is `CARD_MARKED`, though a later mark replaces it). Presentation only. |
 | `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence`. Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over. |
@@ -359,8 +359,9 @@ card, 30 lines a minute.
 
 Claude Code and Codex (`codex --no-daemon` only; its shared-daemon Signal
 cannot be trusted, so a daemon Codex's lines would hold) can be workers; a
-Codex worker forwards no final message, so ask it to write results to
-files. Pi's input requests cannot be seen, so Pi cannot be a worker. Worker replies need Deck's Claude Code status hooks (Settings →
+Codex worker's final message is readable while the user lets Deck forward
+it (Settings → Agents, **Forward Codex's final message**), otherwise ask it
+to write results to files. Pi's input requests cannot be seen, so Pi cannot be a worker. Worker replies need Deck's Claude Code status hooks (Settings →
 Agents); with turn summaries off the Stop hook then carries `--reply
 workers`, which forwards the message for worker replies alone and never
 makes a summary or a model call.
@@ -491,8 +492,14 @@ The message is what Claude Code's Stop hook forwards (the same forwarding
 worker replies and phone replies use, without a summary or a model call):
 while a client holds the choice, Deck keeps the newest final message of each
 Claude Code card in memory, and forgets them all once no client holds it.
-Turns that ended before the choice, before Deck started, or in a Codex or
-Pi card have none, and the snapshot says why (`reply.unavailable`), so the
+A Codex card started with `--no-daemon` has one too while Deck forwards
+Codex's final message (Settings → Agents, **Forward Codex's final
+message**: Deck's Codex Stop hook carries `--reply workers` in one fixed
+form, written on a fresh install or by that switch, never by who reads;
+Codex asks to trust the changed hook in `/hooks` once; a message nobody
+reads is dropped on arrival). Turns that ended before the choice, before
+Deck started, by an Esc interrupt, in a shared-daemon Codex or in a Pi card
+have none, and the snapshot says why (`reply.unavailable`), so the
 agent can say it could not judge a card instead of guessing. Deck never
 reads a pane for it.
 

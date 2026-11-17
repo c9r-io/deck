@@ -42,6 +42,8 @@ def parse():
     p = argparse.ArgumentParser()
     for name in ("adapter", "socket", "client-id", "credential-file", "evidence"):
         p.add_argument("--" + name, required=True)
+    p.add_argument("--codex", action="store_true",
+                   help="the page also opened \"Codex done\": a codex --no-daemon card forwarding its final message")
     p.add_argument("--withdrawn-wait", type=int, default=600,
                    help="seconds to wait for the page to withdraw the choice")
     return p.parse_args()
@@ -103,6 +105,18 @@ def main():
         step("shell-no-agent", (shell.get("reply") or {}).get("unavailable") == "no-agent"
              and shell.get("agent") is None and shell.get("alive") is True)
         step("not-self", not any(c.get("self") for c in cards))
+        if args.codex:
+            codex = by.get("Codex done", {})
+            agent = codex.get("agent") or {}
+            end = (codex.get("reply") or {}).get("end", "")
+            step("codex-reply", agent.get("kind") == "codex" and agent.get("state") == "turn-done"
+                 and "CODEX-DONE-OK" in end and end.startswith(FENCE), kind=agent.get("kind"),
+                 reason=(codex.get("reply") or {}).get("unavailable"))
+            ok, whole = call("deck_card_reply", {"card_id": codex.get("cardId", ""), "episode": agent.get("episode", 0)})
+            step("codex-reply-whole", ok and "CODEX-DONE-OK" in whole.get("text", ""))
+            ok, _ = call("deck_card_mark", {"card_id": codex.get("cardId", ""), "episode": agent.get("episode", 0),
+                                            "mark": "can-close", "note": "Codex reported it finished"})
+            step("codex-marked", ok)
 
         episode = (done.get("agent") or {}).get("episode", 0)
         ok, whole = call("deck_card_reply", {"card_id": done.get("cardId", ""), "episode": episode})
