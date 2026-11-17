@@ -827,7 +827,8 @@ export async function runAttentionSmoke() {
     await pollNow(); await pause(30);
     $('attention-pick-all').click(); await pause(30);
     if ($('attention-pick-all').checked) { $('attention-pick-all').click(); await pause(30); }
-    if (endedRows.some(row => row.querySelector('.attention-pick').checked)) markBits |= 512;
+    // the rows as listed now: a card that left the list and came back has a new row
+    if ([...$('attention-list').querySelectorAll('.attention-row .attention-pick')].some(pick => pick.checked)) markBits |= 512;
     await report('attention-card-marks', markBits === 0, 1, markBits);
     // Layout at the real window, six languages at both font scales: the tick
     // sits in the card cell before the title, every filter and the bar's
