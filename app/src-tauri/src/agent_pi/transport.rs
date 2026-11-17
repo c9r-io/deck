@@ -16,7 +16,8 @@
 //!   connection or per observer. At most `MAX_PENDING` messages wait for the
 //!   worker (one more is refused `busy` at once); at most `MAX_LEASES`
 //!   observers are bound and `MAX_CHALLENGES` nonces are open; a line is
-//!   at most `agent_pi::MAX_LINE` bytes; an answer is one short line written
+//!   at most `agent_pi::MAX_LINE` bytes (`MAX_REPLY_LINE` for the frame
+//!   that carries a final message); an answer is one short line written
 //!   within `WRITE_BUDGET`. The worker's one tmux call per batch has
 //!   `LISTING_BUDGET`, and its one connection of its own, when a look has
 //!   to be marked ("Whose bytes"), `MARK_BUDGET`: that one is answered on
@@ -166,8 +167,8 @@
 //!   bind and whenever they enable less (`settings_changed`, and again at
 //!   every commit). Taking one capability away leaves the other and the
 //!   lease: turning Signal off withdraws that lease's word and episode and
-//!   nothing else; turning session observation off forgets that lease's
-//!   session and nothing else. Deck acts on a change at once; the observer
+//!   nothing else; turning the final message off forgets the one that lease
+//!   was keeping for its open run and nothing else. Deck acts on a change at once; the observer
 //!   hears of it in the answer to its next message — every answer to a
 //!   frame, and the acceptance itself, carries the two bits as they are, so
 //!   an observer bound with less than its runtime loaded knows before it
@@ -185,7 +186,7 @@
 //!   look's mark and the frame carries the lease's nonce (`again` otherwise
 //!   — and either way the lease has a new nonce before the answer is
 //!   written, and after a fork a new look and mark); the line is one of the
-//!   five frames and
+//!   four frames and
 //!   its answer is still due; for a frame that writes pane-bound state, the
 //!   pane is read from a listing taken AFTER the frame was read; then the
 //!   kernel is asked NOW — after that listing — for the peer's generation,
@@ -195,21 +196,20 @@
 //!   gap, no repeat), the frame's capability and the run rules. Nothing
 //!   before the sender is proven ends or changes a lease — but for its
 //!   nonce, and for an exec or exit of its process, which is the kernel's
-//!   word and nobody's line. A `ping` commits nothing pane-bound and needs
-//!   no listing: an idle Pi causes no tmux call. Messages that were already
+//!   word and nobody's line. A `ping` and a `reply` commit nothing pane-bound
+//!   and need no listing: an idle Pi causes no tmux call. Messages that were already
 //!   waiting when a listing is taken share it; each still gets its own
 //!   kernel reads.
-//! - **Session observation.** A lifecycle frame is a capability of its own
-//!   and of the settings, and is handed to `agent_reentry::lifecycle::
-//!   observe_pi` with the lease it came on: an observation, kept apart from
-//!   every re-entry receipt. A frame that contradicts what the lease already
-//!   reported is refused (`bad-lifecycle`) and its record is gone. An id
-//!   this build does not keep — longer than `MAX_NATIVE_ID`, or one the
-//!   observer could not put on a line and reports with `unavailable` — is
-//!   neither kept nor passed over: that lease's session observation becomes
-//!   `unsupported`, visibly, and stays so whatever the lease says next
-//!   (`lifecycle::pi_unsupported`); the frame is acknowledged and the
-//!   lease's run boundaries go on.
+//! - **The final message.** A `reply` frame is a capability of its own and
+//!   of the settings (the reply entry, `config`). It names the run that is
+//!   open — any other run is `bad-run` — and its text is kept with the
+//!   lease, one at a time, in memory: nothing of it reaches the Signal
+//!   store, a log or a `Debug`. When that run's `turn-done` is committed
+//!   the text goes, with the episode that ending was given, to
+//!   `turn_summary::offer_pi` — outside the registry lock — and to nobody
+//!   else; a new run, a lost capability and the end of the lease forget it
+//!   unread. An ending without a `reply` before it is an ending and nothing
+//!   more.
 //! - **Runs.** `working` opens run `n + 1` and only while no run is open;
 //!   `turn-done` closes the open run and names it. Anything else — a run
 //!   that goes back, a second start, an ending of another run — is refused:
@@ -235,7 +235,6 @@ use std::time::{Duration, Instant};
 
 use super::{Capabilities, Frame, Hello, Message, Nonce, PiVersion, ResetReason, RunState};
 use crate::agent_origin::ORIGIN_HOPS;
-use crate::agent_reentry::lifecycle::PiNoted;
 use crate::agent_status::{ForegroundGeneration, PaneKey, PiCoverage};
 use crate::applog::{applog, session_tag};
 use crate::procinfo::{Continuity, InstanceWatch, ProcessInfo};
@@ -382,6 +381,9 @@ struct Lease {
     /// The highest run this lease opened, and whether it is still open.
     run: u64,
     run_open: bool,
+    /// The final message the open run reported, until its ending is
+    /// committed (module header, "The final message").
+    reply: Option<String>,
     /// When a frame of this lease was last committed.
     valid: Instant,
     /// Why the lease is over, and since when. The entry stays for a while,
@@ -446,8 +448,8 @@ fn end(lease: u64, code: &'static str) {
     let ended = with_registry(|registry| {
         let entry = registry.live_mut(lease)?;
         entry.over = Some((code, Instant::now()));
+        entry.reply = None;
         crate::agent_status::pi_lost(&entry.key, entry.generation, lease);
-        crate::agent_reentry::lifecycle::forget_pi(lease);
         // that observer stops for good when it hears this, before Pi reloads
         if code == "capability-disabled" {
             crate::agent_status::pi_waits_for_reload(&entry.key, entry.generation);
@@ -501,17 +503,18 @@ fn narrowed(entry: &mut Lease, lease: u64, enabled: Capabilities) -> bool {
         // that lease's word and episode, and nothing else; a run that was
         // open is not closed by anything this lease sends later
         entry.run_open = false;
+        entry.reply = None;
         crate::agent_status::pi_lost(&entry.key, entry.generation, lease);
     }
-    if entry.usable.lifecycle && !next.lifecycle {
-        crate::agent_reentry::lifecycle::forget_pi(lease);
+    if entry.usable.reply && !next.reply {
+        entry.reply = None;
     }
     entry.usable = next;
     applog(&format!(
-        "[agent-pi] observer narrowed s={} signal={} lifecycle={}",
+        "[agent-pi] observer narrowed s={} signal={} reply={}",
         session_tag(&entry.session),
         u8::from(next.signal),
-        u8::from(next.lifecycle)
+        u8::from(next.reply)
     ));
     true
 }
@@ -987,6 +990,7 @@ fn bind(
                 next_seq: 1,
                 run: 0,
                 run_open: false,
+                reply: None,
                 valid: Instant::now(),
                 over: None,
             },
@@ -1000,10 +1004,10 @@ fn bind(
         Ok(lease)
     })?;
     applog(&format!(
-        "[agent-pi] observer bound s={} signal={} lifecycle={}",
+        "[agent-pi] observer bound s={} signal={} reply={}",
         session_tag(&row.session_name),
         u8::from(usable.signal),
-        u8::from(usable.lifecycle)
+        u8::from(usable.reply)
     ));
     Ok(Answer::Accepted {
         lease,
@@ -1129,25 +1133,6 @@ fn reset_code(reason: ResetReason) -> &'static str {
     }
 }
 
-/// The closed word a session observation is logged with: what the runtime
-/// said happened and Pi's own reason for it.
-fn session_word(event: super::SessionEvent) -> &'static str {
-    use super::{SessionEvent, ShutdownReason, StartReason};
-    match event {
-        SessionEvent::Start(StartReason::Startup) => "start-startup",
-        SessionEvent::Start(StartReason::Reload) => "start-reload",
-        SessionEvent::Start(StartReason::New) => "start-new",
-        SessionEvent::Start(StartReason::Resume) => "start-resume",
-        SessionEvent::Start(StartReason::Fork) => "start-fork",
-        SessionEvent::Shutdown(ShutdownReason::Quit) => "shutdown-quit",
-        SessionEvent::Shutdown(ShutdownReason::Reload) => "shutdown-reload",
-        SessionEvent::Shutdown(ShutdownReason::New) => "shutdown-new",
-        SessionEvent::Shutdown(ShutdownReason::Resume) => "shutdown-resume",
-        SessionEvent::Shutdown(ShutdownReason::Fork) => "shutdown-fork",
-        SessionEvent::Snapshot => "snapshot",
-    }
-}
-
 /// One frame of a lease whose sender is proven: the pane, the kernel, and
 /// then the write under the registry lock.
 fn committed(
@@ -1172,9 +1157,10 @@ fn committed(
         })
     })
     .ok_or("late")?;
-    // the pane, for a frame that writes pane-bound state: a ping does not
+    // the pane, for a frame that writes pane-bound state: a ping does not,
+    // and a final message is kept with its lease until the ending that does
     let pane = match frame {
-        Frame::Ping { .. } => None,
+        Frame::Ping { .. } | Frame::Reply { .. } => None,
         _ => {
             let rows = listing.rows().ok_or("no-such-pane")?;
             let row = rows
@@ -1196,7 +1182,7 @@ fn committed(
         return Err("late");
     }
     let enabled = (world.enabled)();
-    with_registry(|registry| {
+    let (answer, ended) = with_registry(|registry| {
         let entry = registry.live_mut(lease).ok_or("late")?;
         // what the settings enable now: less is taken from the lease here,
         // and a lease left with nothing is over
@@ -1217,61 +1203,66 @@ fn committed(
             if !entry.usable.has(capability) {
                 entry.next_seq += 1;
                 entry.valid = Instant::now();
-                return Ok(Answer::Revoked {
-                    seq,
-                    next,
-                    usable: entry.usable,
-                });
+                return Ok((
+                    Answer::Revoked {
+                        seq,
+                        next,
+                        usable: entry.usable,
+                    },
+                    None,
+                ));
             }
         }
-        if let Frame::Signal { run, state, .. } = frame {
-            match state {
-                RunState::Working if !entry.run_open && *run == entry.run + 1 => {
-                    entry.run = *run;
-                    entry.run_open = true;
+        // an ending that was accepted, with the final message its run reported
+        let mut ended = None;
+        match frame {
+            Frame::Signal { run, state, .. } => {
+                match state {
+                    RunState::Working if !entry.run_open && *run == entry.run + 1 => {
+                        entry.run = *run;
+                        entry.run_open = true;
+                        entry.reply = None;
+                    }
+                    RunState::TurnDone if entry.run_open && *run == entry.run => {
+                        entry.run_open = false;
+                    }
+                    _ => return Err("bad-run"),
                 }
-                RunState::TurnDone if entry.run_open && *run == entry.run => {
-                    entry.run_open = false;
+                let (rows, row) = pane.ok_or("pane-changed")?;
+                let episode = crate::agent_status::pi_signal(
+                    rows, row, generation, lease, &instance, *run, *state,
+                );
+                if let (RunState::TurnDone, Some(text)) = (state, entry.reply.take()) {
+                    ended = Some((entry.session.clone(), episode, text));
                 }
-                _ => return Err("bad-run"),
             }
-            let (rows, row) = pane.ok_or("pane-changed")?;
-            crate::agent_status::pi_signal(rows, row, generation, lease, &instance, *run, *state);
-        }
-        // a session, or the observer's word that it has an id it cannot send
-        let noted = match frame {
-            Frame::Lifecycle { event, native, .. } => Some((
-                crate::agent_reentry::lifecycle::observe_pi(
-                    lease, &entry.key, generation, *event, native,
-                )?,
-                session_word(*event),
-            )),
-            Frame::Unavailable { .. } => Some((
-                crate::agent_reentry::lifecycle::pi_unsupported(lease, &entry.key, generation),
-                "unsupported-native-id",
-            )),
-            _ => None,
-        };
-        // closed words and a session tag: never the id, its length or a path
-        match noted {
-            Some((PiNoted::Observed, word)) => applog(&format!(
-                "[agent-pi] session {word} s={}",
-                session_tag(&entry.session)
-            )),
-            Some((PiNoted::Unsupported, _)) => applog(&format!(
-                "[agent-pi] session unsupported-native-id s={}",
-                session_tag(&entry.session)
-            )),
-            Some((PiNoted::Ignored, _)) | None => {}
+            Frame::Reply { run, text, .. } => {
+                // of the run that is open, and of no other
+                if !(entry.run_open && *run == entry.run) {
+                    return Err("bad-run");
+                }
+                entry.reply = Some(text.clone().into_string());
+            }
+            Frame::Reset { .. } | Frame::Ping { .. } => {}
         }
         entry.next_seq += 1;
         entry.valid = Instant::now();
-        Ok(Answer::Ack {
-            seq,
-            next,
-            usable: entry.usable,
-        })
-    })
+        Ok((
+            Answer::Ack {
+                seq,
+                next,
+                usable: entry.usable,
+            },
+            ended,
+        ))
+    })?;
+    // outside the registry lock: the readers of a final message take their own
+    if let Some((session, episode, text)) = ended {
+        #[cfg(test)]
+        probe::offered(&session, episode, &text);
+        crate::turn_summary::offer_pi(&session, episode, text);
+    }
+    Ok(answer)
 }
 
 /// Write one answer and close: a short line into the buffer of a client
@@ -1430,6 +1421,27 @@ pub(crate) mod probe {
     /// since its nonce was made, it did not carry the nonce, or both.
     static AGAIN: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
+    /// (session, episode, text) of every final message that was handed on
+    /// with its run's ending, in order.
+    static OFFERED: Mutex<Vec<(String, crate::agent_status::EpisodeId, String)>> =
+        Mutex::new(Vec::new());
+
+    pub(super) fn offered(session: &str, episode: crate::agent_status::EpisodeId, text: &str) {
+        OFFERED
+            .lock_or_recover()
+            .push((session.to_string(), episode, text.to_string()));
+    }
+
+    /// Every final message handed on since `reset`.
+    pub(crate) fn replies() -> Vec<(String, crate::agent_status::EpisodeId, String)> {
+        OFFERED.lock_or_recover().clone()
+    }
+
+    /// The final message a live lease keeps for its open run.
+    pub(crate) fn keeping(lease: u64) -> Option<String> {
+        with_registry(|registry| registry.live(lease).and_then(|lease| lease.reply.clone()))
+    }
+
     /// Forget every lease and challenge.
     pub(crate) fn reset() {
         with_registry(|registry| {
@@ -1439,6 +1451,7 @@ pub(crate) mod probe {
         ENDED.lock_or_recover().clear();
         REVOKED.lock_or_recover().clear();
         AGAIN.lock_or_recover().clear();
+        OFFERED.lock_or_recover().clear();
     }
 
     pub(super) fn again(why: &'static str) {
@@ -1464,7 +1477,7 @@ pub(crate) mod probe {
         });
         let word = match capability {
             crate::agent_pi::Capability::Signal => "signal",
-            crate::agent_pi::Capability::Lifecycle => "lifecycle",
+            crate::agent_pi::Capability::Reply => "reply",
         };
         if let Some(session) = session {
             REVOKED.lock_or_recover().push((session, word));

@@ -7573,16 +7573,14 @@ fn the_wait_for_the_turn_ends_at_the_callers_own_limit_whoever_takes_the_turn_ne
 
 /// Pi is never re-entered. Its adapter has no re-entry capability, so a card
 /// whose foreground is a Pi that Deck verified is shown with its own reason
-/// and label and is no candidate — whatever is observed of its session, and
-/// even when the process would otherwise pass for a candidate. An approval
+/// and label and is no candidate — even when the process would otherwise pass for a candidate. An approval
 /// that names it (a forged request: the dialog offers no such box) is refused
 /// whole: no client is asked to exit, no shell is replaced, nothing is typed.
 /// The Claude card beside it is a candidate as before and is reopened by an
 /// approval that names it alone.
 #[test]
 fn a_verified_pi_is_named_refused_and_never_started_whatever_is_approved() {
-    use crate::agent_pi::{SessionEvent, StartReason};
-    use crate::agent_status::{PaneKey, PiCoverage};
+    use crate::agent_status::PiCoverage;
     assert!(
         crate::agent_pi::PI.reentry.is_none(),
         "Pi has no re-entry capability"
@@ -7590,7 +7588,6 @@ fn a_verified_pi_is_named_refused_and_never_started_whatever_is_approved() {
     let world = World::new();
     let _store = crate::agent_status::STORE_TEST_LOCK.lock_or_recover();
     crate::agent_status::reset_for_tests();
-    lifecycle::reset_pi_for_tests();
     world.card("a", &format!("session={ID_A}"), Some("{agent}"));
     // the "Pi": a second client of the very product a candidate must be
     world.card("p", &format!("session={ID_B}"), Some("{agent}"));
@@ -7632,30 +7629,7 @@ fn a_verified_pi_is_named_refused_and_never_started_whatever_is_approved() {
         ),
         "named as Pi, with the reason that is Pi's own"
     );
-    // a session observed for that Pi changes nothing about it
-    let id = match crate::agent_pi::parse_message(
-        r#"{"protocol":"pi-observer","v":2,"source":"pi","lease":77,"nonce":"00000000000000000000000000000000","seq":1,"event":"snapshot","nativeSessionId":"session-one"}"#,
-    ) {
-        Ok(crate::agent_pi::Message::Frame {
-            frame: Ok(crate::agent_pi::Frame::Lifecycle { native, .. }),
-            ..
-        }) => native,
-        other => panic!("{other:?}"),
-    };
-    lifecycle::observe_pi(
-        77,
-        &PaneKey::of(row),
-        generation,
-        SessionEvent::Start(StartReason::Resume),
-        &id,
-    )
-    .unwrap();
-    let (token_again, observed) = world.preview();
-    assert_eq!(
-        shown(&observed).1,
-        p,
-        "an observed session makes Pi no candidate"
-    );
+    let token_again = world.preview().0;
     // a forged approval — Pi alone, Pi beside the Claude card, under either
     // policy — is refused before anything is touched
     let (server, launches) = (world.server_pid(), world.launches().len());
@@ -7719,7 +7693,6 @@ fn a_verified_pi_is_named_refused_and_never_started_whatever_is_approved() {
     );
     assert_eq!(world.launches().len(), launches + 1);
     crate::agent_status::reset_for_tests();
-    lifecycle::reset_pi_for_tests();
 }
 
 /// The preview's log line counts each refusal by its closed code, in

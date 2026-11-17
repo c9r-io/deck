@@ -5,8 +5,8 @@
 //
 // # Settings
 // The Pi contribution adapts `agent_hooks_status.agents.pi` to this module's
-// closed legacy-shaped input: `pi` (the work-status switch), `pi_lifecycle`
-// (the session-observation switch) and `pi_installation` (the state of
+// closed legacy-shaped input: `pi` (the work-status switch), `pi_replies`
+// (the final-message switch) and `pi_installation` (the state of
 // Deck's one entry in Pi's own settings file). All are derived from that
 // file by the backend; nothing here keeps
 // a copy, and a word this build does not know is no state at all: the reduced
@@ -26,18 +26,12 @@
 // and no badge, and nothing here derives readiness from it: a recognized Pi
 // is never sent to automatically, whatever its coverage (the backend's plan
 // names that hold, `pi-input-unverified`).
-// `pi_session` is `observed` while a live observer reports which native
-// session its Pi is in, and `unsupported` while that observer named a
-// session id this build does not keep — said, because a session that is not
-// observed must not look like one that is, or like none. The id never
-// reaches the webview. Either word adds one line to the card's explanation
-// and nothing else: it is no state, and it never means that Deck can reopen
-// that session.
+// A Pi's final message is not this module's: the backend hands it to the
+// same readers as every agent's (the card's summary line, the snapshot).
 // Part of deck's no-build frontend: native ES modules, no bundler.
 
 export const PI_INSTALLATIONS = Object.freeze(['absent', 'current', 'needs-reload', 'conflict', 'unreadable', 'unsupported-location']);
 export const PI_COVERAGE = Object.freeze(['connected', 'unavailable', 'incompatible']);
-export const PI_SESSION = Object.freeze(['observed', 'unsupported']);
 
 const NOTE_KEYS = Object.freeze({
   current: 'settings.pi.note.current',
@@ -66,7 +60,7 @@ export function piStatus(status) {
   const installation = PI_INSTALLATIONS.includes(status?.pi_installation) ? status.pi_installation : null;
   return {
     signal: installation != null && status.pi === true,
-    lifecycle: installation != null && status.pi_lifecycle === true,
+    replies: installation != null && status.pi_replies === true,
     installation,
   };
 }
@@ -74,10 +68,10 @@ export function piStatus(status) {
 /** The Settings rows: whether each switch is on, whether they can be used,
  *  and the one note under them (a dictionary key, or null). */
 export function piSettingsView(status) {
-  const { signal, lifecycle, installation } = piStatus(status);
+  const { signal, replies, installation } = piStatus(status);
   return {
     signal,
-    lifecycle,
+    replies,
     // a build that may not write Pi's settings, or a state it cannot name
     usable: installation != null && installation !== 'unsupported-location',
     note: installation == null ? 'settings.pi.note.unknown' : own(NOTE_KEYS, installation),
@@ -112,29 +106,11 @@ export function piStatusKey(snapshot) {
   return own(STATUS_KEYS, piCoverage(snapshot));
 }
 
-const SESSION_KEYS = Object.freeze({
-  observed: 'signal.pi.session',
-  unsupported: 'signal.pi.sessionUnsupported',
-});
-
-/** Whether a live observer reports this card's native Pi session. */
-export function piSessionObserved(snapshot) {
-  return !!snapshot?.alive && snapshot.piSession === 'observed';
-}
-
-/** The line a live card says about its Pi's native session, or null. */
-export function piSessionKey(snapshot) {
-  return snapshot?.alive ? own(SESSION_KEYS, snapshot.piSession) : null;
-}
-
 /** The lines of the card's "Why?" dialog for a Pi, or null when the card has
  *  nothing to explain. The limited-coverage note stands under every state,
  *  a real `working` or `turn-done` included. */
 export function piDetailKeys(snapshot) {
   const coverage = piCoverage(snapshot);
   if (!coverage) return null;
-  const lines = [HINT_KEYS[coverage], 'signal.pi.hold'];
-  const session = piSessionKey(snapshot);
-  if (session) lines.push(session);
-  return lines;
+  return [HINT_KEYS[coverage], 'signal.pi.hold'];
 }

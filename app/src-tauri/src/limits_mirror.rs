@@ -227,21 +227,6 @@ fn closed_status_vocabularies_match_the_fixture() {
             ),
             l["pi_installations"]
         );
-        // the words a card may say about its Pi's native session: every
-        // variant, so that adding one breaks this match until it is listed
-        // here and in the fixture
-        use crate::agent_reentry::lifecycle::PiSession;
-        let said = |session: PiSession| match session {
-            PiSession::Observed | PiSession::Unsupported => serde_json::to_value(session).unwrap(),
-        };
-        assert_eq!(
-            serde_json::Value::Array(
-                [PiSession::Observed, PiSession::Unsupported]
-                    .map(said)
-                    .to_vec()
-            ),
-            l["pi_session"]
-        );
     }
     let notices: Vec<&str> = crate::storage::StorageNotice::ALL
         .iter()

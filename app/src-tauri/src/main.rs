@@ -562,7 +562,7 @@ fn main() {
             agent_status::agent_hooks_set,
             agent_status::turn_summary_status,
             agent_status::turn_summary_set,
-            agent_pi::config::agent_pi_lifecycle_set,
+            agent_pi::config::agent_pi_replies_set,
             agent_status::agent_lifecycle_hooks_set,
             tmux_lifecycle::agent_reentry_preview,
             tmux_lifecycle::agent_reentry_operation,

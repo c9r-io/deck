@@ -66,8 +66,8 @@ TAURI = REPO / "app/src-tauri"
 FIXTURES = REPO / "scripts/pi"
 ENTRY = "Contents/Resources/pi/signal.ts"
 CHECKS = ("pi-clean", "pi-enable", "pi-run-created", "pi-connected", "pi-hold", "pi-turn-done", "pi-attention",
-          "pi-send-now", "pi-disabled", "pi-reload", "pi-session", "pi-shown", "pi-review", "pi-narrowed",
-          "pi-unsupported", "done")
+          "pi-send-now", "pi-disabled", "pi-reload", "pi-replies", "pi-shown", "pi-review", "pi-narrowed",
+          "done")
 # what decides the carrier's behaviour and is compiled or copied into it
 BUILT_FROM = ("app/extensions", "scripts/extension_catalog.py",
               "app/src-tauri/src", "app/src-tauri/resources", "app/src-tauri/build.rs", "app/src-tauri/build",
@@ -219,7 +219,7 @@ class Run:
         files = {str(path.relative_to(self.app)): file_sha256(path) for path in carried}
         observer_as_source = all(
             file_sha256(self.app / "Contents/Resources/pi" / name) == file_sha256(TAURI / "resources/pi" / name)
-            for name in ("observer.ts", "signal.ts", "lifecycle.ts", "both.ts"))
+            for name in ("observer.ts", "signal.ts", "reply.ts"))
         self.facts["carrier"] = {
             # what ran: the carrier's files after it was signed ad hoc
             "files": files,
@@ -398,42 +398,40 @@ class Run:
         self.check("Send now delivered the row's text once", at("pi-send-now")["pane"].count(self.marker) == 1
                    and counts("pi-send-now", "agent_settled") == 3)
         log = (self.data / "app.log").read_text(errors="replace") if (self.data / "app.log").exists() else ""
-        both = json.dumps(self.entry.replace("signal.ts", "both.ts"))
-        self.check("session observation on: Deck's one entry is replaced where it stood by the one that carries both",
-                   at("pi-session")["settings"].decode(errors="replace") == before_off.replace(json.dumps(self.entry), both)
-                   and at("pi-review")["settings"] == at("pi-session")["settings"])
-        self.check("session observation off again: the same bytes as before it was turned on",
+        both = json.dumps(self.entry.replace("signal.ts", "reply.ts"))
+        self.check("the final message on: Deck's one entry is replaced where it stood by the one that reads it",
+                   at("pi-replies")["settings"].decode(errors="replace") == before_off.replace(json.dumps(self.entry), both)
+                   and at("pi-review")["settings"] == at("pi-replies")["settings"])
+        self.check("the final message off again: the same bytes as before it was turned on",
                    at("pi-narrowed")["settings"] == at("pi-reload")["settings"])
         wanted = ("[agent-pi] signal install ok", "[agent-pi] observer bound s=", "[agent-status] pi working s=",
                   "[agent-status] pi turn-done s=", "(capability-disabled)", "[agent-pi] signal remove ok",
-                  "[agent-pi] lifecycle install ok", "signal=1 lifecycle=1", "[agent-pi] session start-reload s=",
-                  "[agent-pi] lifecycle remove ok", "[agent-pi] observer narrowed s=",
-                  "[agent-pi] session unsupported-native-id s=")
+                  "[agent-pi] reply install ok", "signal=1 reply=1", "[summary] kept as written",
+                  "[agent-pi] reply remove ok", "[agent-pi] observer narrowed s=")
         self.check("app.log holds the production's closed lines for each step",
                    all(text in log for text in wanted), missing=[text for text in wanted if text not in log])
-        # the lease that lost session observation is the one that reported the next run: between the
+        # the lease that lost the final message is the one that reported the next run: between the
         # narrowing and that run's ending no observer was bound and no lease ended
         lines = log.splitlines()
-        narrowed = next((n for n, line in enumerate(lines) if "[agent-pi] observer narrowed s=" in line and "lifecycle=0" in line), None)
+        narrowed = next((n for n, line in enumerate(lines) if "[agent-pi] observer narrowed s=" in line and "reply=0" in line), None)
         ending = next((n for n, line in enumerate(lines) if narrowed is not None and n > narrowed
                        and "[agent-status] pi turn-done s=" in line), None)
         between = lines[narrowed:ending] if narrowed is not None and ending is not None else []
-        self.check("after session observation was taken from it, the SAME lease reported the next run",
+        self.check("after the final message was taken from it, the SAME lease reported the next run",
                    ending is not None and any("[agent-status] pi working s=" in line for line in between)
                    and not any("[agent-pi] observer bound" in line or "[agent-pi] observer ended" in line for line in between),
                    lines_between=len(between))
         natives = sorted({item["id"] for item in self.source() if item.get("id")})
-        leaks = [text for text in (self.marker, str(self.root), "fixture response", "hello fixture", "kkkkkkkk", *natives)
+        leaks = [text for text in (self.marker, str(self.root), "fixture response", "hello fixture", *natives)
                  if text in log]
         self.check("and nothing of the prompt, the paths, Pi's answer or a native session id",
                    leaks == [] and len(natives) >= 1, leaked=len(leaks), sessions_seen=len(natives))
-        self.check("the Pi with the 300-byte session id really had that id, by Pi's own log",
-                   any(len(native) == 300 for native in natives), longest=max(map(len, natives), default=0))
         kept = [path for path in self.data.rglob("*") if path.is_file() and self.pi_fixture not in path.parents
                 and path.suffix != ".png"]
-        self.check("no native session id is in Deck's data directory",
-                   not any(native.encode() in path.read_bytes() for native in natives for path in kept), files=len(kept))
-        self.snapshots(13)
+        self.check("no native session id and nothing Pi said is in Deck's data directory",
+                   not any(text.encode() in path.read_bytes() for text in (*natives, "fixture response") for path in kept),
+                   files=len(kept))
+        self.snapshots(9)
 
     def snapshots(self, least: int) -> None:
         """The window snapshots the page asked for: real PNG files of a window that is at least 1280 wide."""

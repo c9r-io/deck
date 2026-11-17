@@ -7,15 +7,11 @@ use std::sync::Condvar;
 
 const SIGNAL: Capabilities = Capabilities {
     signal: true,
-    lifecycle: false,
+    reply: false,
 };
 const BOTH: Capabilities = Capabilities {
     signal: true,
-    lifecycle: true,
-};
-const LIFECYCLE: Capabilities = Capabilities {
-    signal: false,
-    lifecycle: true,
+    reply: true,
 };
 
 type StandIns = HashMap<u32, (Arc<InstanceWatch>, crate::procinfo::InstanceStandIn)>;
@@ -470,23 +466,14 @@ fn done(seq: u64, run: u64) -> Frame {
     }
 }
 
-fn lifecycle_frame(seq: u64, event: crate::agent_pi::SessionEvent, id: &str) -> Frame {
-    let body = match event {
-        crate::agent_pi::SessionEvent::Start(_) => serde_json::json!({
-            "seq": seq, "event": "start", "nativeSessionId": id, "reason": "startup"
-        }),
-        crate::agent_pi::SessionEvent::Shutdown(_) => serde_json::json!({
-            "seq": seq, "event": "shutdown", "nativeSessionId": id, "reason": "quit"
-        }),
-        crate::agent_pi::SessionEvent::Snapshot => serde_json::json!({
-            "seq": seq, "event": "snapshot", "nativeSessionId": id
-        }),
-    };
+/// The final message of run `run`.
+fn said(seq: u64, run: u64, text: &str) -> Frame {
+    let body = serde_json::json!({ "seq": seq, "run": run, "reply": text });
     match crate::agent_pi::parse_message(&frame_line(1, &"0".repeat(32), body)) {
         Ok(Message::Frame {
             frame: Ok(frame), ..
         }) => frame,
-        other => panic!("a lifecycle frame, not {other:?}"),
+        other => panic!("a reply frame, not {other:?}"),
     }
 }
 
@@ -518,8 +505,12 @@ fn fresh_again() {
     *HELD.lock_or_recover() = None;
 }
 
-fn sessions() -> Vec<(u64, String, crate::agent_pi::SessionEvent)> {
-    crate::agent_reentry::lifecycle::pi_sessions_for_tests()
+/// (session, text) of every final message handed on with its run's ending.
+fn replies() -> Vec<(String, String)> {
+    probe::replies()
+        .into_iter()
+        .map(|(session, _, text)| (session, text))
+        .collect()
 }
 
 /// Everything a Pi observer's line can write, as numbers that only grow, and
@@ -530,15 +521,15 @@ fn sessions() -> Vec<(u64, String, crate::agent_pi::SessionEvent)> {
 struct Written {
     /// Writes of recognition, words and withdrawals (`agent_status`).
     store: u64,
-    /// Writes of observed sessions (`agent_reentry::lifecycle`).
-    sessions: u64,
+    /// Final messages handed on, and leases that keep one for an open run.
+    replies: (usize, usize),
     /// The episode the next accepted observation gets.
     episode: agent_status::EpisodeId,
     /// What the attention layer announced, by session.
     announced: Vec<(String, u32)>,
     /// Every lease that ended, and why.
     ended: Vec<(String, &'static str)>,
-    /// (lease, highest run, open, next sequence number, signal, lifecycle).
+    /// (lease, highest run, open, next sequence number, signal, reply).
     leases: Vec<(u64, u64, bool, u64, bool, bool)>,
 }
 
@@ -547,7 +538,13 @@ fn written() -> Written {
     announced.sort();
     Written {
         store: agent_status::pi_writes_for_tests(),
-        sessions: crate::agent_reentry::lifecycle::pi_writes_for_tests(),
+        replies: (
+            probe::replies().len(),
+            probe::leases()
+                .into_iter()
+                .filter(|seen| probe::keeping(seen.lease).is_some())
+                .count(),
+        ),
         episode: agent_status::next_episode_for_tests(),
         announced,
         ended: probe::ended(),
@@ -560,7 +557,7 @@ fn written() -> Written {
                     seen.open,
                     seen.next_seq,
                     seen.usable.signal,
-                    seen.usable.lifecycle,
+                    seen.usable.reply,
                 )
             })
             .collect(),
@@ -819,7 +816,7 @@ fn compatibility_and_the_settings_are_asked_after_identity() {
     // runtime loaded is not what its lease may use.
     *shared.enabled.lock_or_recover() = SIGNAL;
     let mut more = hello("%2");
-    more.capabilities.lifecycle = true;
+    more.capabilities.reply = true;
     let (lease, may) = bound_with(&world, &more, Some(410)).expect("bound for what is enabled");
     assert_eq!(may, SIGNAL, "the acceptance says what the observer may do");
     assert_eq!(
@@ -831,11 +828,7 @@ fn compatibility_and_the_settings_are_asked_after_identity() {
         sent_as(
             &world,
             lease,
-            Frame::Lifecycle {
-                seq: 1,
-                event: crate::agent_pi::SessionEvent::Snapshot,
-                native: crate::agent_pi::NativeId::Unsupported,
-            }
+            said(1, 1, "What its runtime may say and its lease may not.")
         ),
         Ok(Committed::Revoked(1)),
         "claimed, and not enabled: not written, and no error"
@@ -1101,10 +1094,7 @@ fn the_poll_and_the_settings_end_leases_that_no_longer_hold() {
     reconcile_with(&[], now(&shared));
     assert_eq!(probe::live(), 2);
     assert!(!mismatched(SIGNAL));
-    assert!(mismatched(Capabilities {
-        signal: true,
-        lifecycle: true
-    }));
+    assert!(mismatched(BOTH));
     // A's foreground is a shell again (Pi exited without a word)
     shared.gone(310);
     shared.foreground(7, 300);
@@ -1156,28 +1146,22 @@ fn the_poll_and_the_settings_end_leases_that_no_longer_hold() {
 /// end of the lease. Not even for a moment (`written`).
 #[test]
 fn a_line_is_the_observer_s_own_only_with_its_peer_its_nonce_and_no_fork_together() {
-    use crate::agent_pi::{SessionEvent, StartReason};
     let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
     let _guard = fresh();
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
     let shared = two_panes();
     *shared.enabled.lock_or_recover() = BOTH;
     let world = shared.world();
     let a = bound_as(&world, &both("%1"), Some(310)).unwrap();
     let b = bound(&world, "%2", 410).unwrap();
-    let start = SessionEvent::Start(StartReason::Startup);
-    assert_eq!(
-        sent(&world, a, lifecycle_frame(1, start, "session-a")),
-        Ok(1)
-    );
-    assert_eq!(sent(&world, a, working(2, 1)), Ok(2));
+    assert_eq!(sent(&world, a, working(1, 1)), Ok(1));
+    assert_eq!(sent(&world, a, said(2, 1, "What A said.")), Ok(2));
     assert_eq!(sent(&world, b, working(1, 1)), Ok(1));
     // what somebody else would want A's observer to have said: its run
-    // ended, it is in another session, it is gone, it is alive
+    // ended, its last words were others, it is gone, it is alive
     let forged = || {
         [
             done(3, 1),
-            lifecycle_frame(3, SessionEvent::Snapshot, "session-x"),
+            said(3, 1, "What somebody else said."),
             Frame::Reset {
                 seq: 3,
                 reason: ResetReason::Quit,
@@ -1192,8 +1176,8 @@ fn a_line_is_the_observer_s_own_only_with_its_peer_its_nonce_and_no_fork_togethe
             (Some("working"), Some("working")),
             "{why}"
         );
-        assert_eq!(sessions().len(), 1, "{why}");
-        assert_eq!(sessions()[0].1, "session-a", "{why}");
+        assert_eq!(probe::keeping(a).as_deref(), Some("What A said."), "{why}");
+        assert!(replies().is_empty(), "{why}");
     };
     let before = written();
     let (_, nonce) = held(a);
@@ -1280,6 +1264,11 @@ fn a_line_is_the_observer_s_own_only_with_its_peer_its_nonce_and_no_fork_togethe
         Some(1),
         "the one ending, announced once"
     );
+    assert_eq!(
+        replies(),
+        [("deck-a".to_string(), "What A said.".to_string())],
+        "and the final message that went with it is A's own"
+    );
     // B heard nothing of it, and its own nonce is still its own
     assert_eq!(sent(&world, b, done(2, 1)), Ok(2));
 
@@ -1296,7 +1285,6 @@ fn a_line_is_the_observer_s_own_only_with_its_peer_its_nonce_and_no_fork_togethe
     // and the observer itself, sending a number twice, ends its lease
     assert_eq!(sent(&world, a, working(4, 2)), Err("bad-seq"));
     assert_eq!(over(a), Some("bad-seq"));
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
 }
 
 /// The same for the two messages that bind. A hello claims nothing and is
@@ -1405,20 +1393,14 @@ fn an_attest_binds_only_with_the_nonce_its_own_process_was_given() {
 /// end of the lease, not for a moment.
 #[test]
 fn a_line_counts_only_on_a_connection_made_after_deck_last_looked() {
-    use crate::agent_pi::{SessionEvent, StartReason};
     let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
     let _guard = fresh();
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
     let shared = two_panes();
     *shared.enabled.lock_or_recover() = BOTH;
     let world = shared.world();
     let a = bound_as(&world, &both("%1"), Some(310)).unwrap();
-    let start = SessionEvent::Start(StartReason::Startup);
-    assert_eq!(
-        sent(&world, a, lifecycle_frame(1, start, "session-a")),
-        Ok(1)
-    );
-    assert_eq!(sent(&world, a, working(2, 1)), Ok(2));
+    assert_eq!(sent(&world, a, working(1, 1)), Ok(1));
+    assert_eq!(sent(&world, a, said(2, 1, "What A said.")), Ok(2));
 
     // The observer has a connection on which nothing was said yet, and
     // makes a child: the child holds that connection too.
@@ -1439,7 +1421,7 @@ fn a_line_counts_only_on_a_connection_made_after_deck_last_looked() {
     let before = written();
     for frame in [
         done(4, 1),
-        lifecycle_frame(4, SessionEvent::Snapshot, "session-x"),
+        said(4, 1, "What somebody else said."),
         Frame::Reset {
             seq: 4,
             reason: ResetReason::Quit,
@@ -1460,7 +1442,8 @@ fn a_line_counts_only_on_a_connection_made_after_deck_last_looked() {
         ["place"; 4],
         "the process, the nonce and the forks were right"
     );
-    assert_eq!(sessions().len(), 1);
+    assert_eq!(probe::keeping(a).as_deref(), Some("What A said."));
+    assert!(replies().is_empty());
     // Everything the same on a connection that was made after the look: it
     // is written, and it is the very next episode.
     let episode = agent_status::next_episode_for_tests();
@@ -1492,7 +1475,6 @@ fn a_line_counts_only_on_a_connection_made_after_deck_last_looked() {
         shared.evidence("deck-b").pi_signal,
         Some(PiCoverage::Connected)
     );
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
 }
 
 /// A look is marked by the worker's own connection. When that connection
@@ -1798,40 +1780,30 @@ fn a_peer_that_is_gone_or_cannot_be_asked_about_is_not_trusted() {
     assert_eq!(probe::live(), 0);
 }
 
-/// Turning one capability off takes exactly that one from a lease that has
-/// both: the other goes on, on the same lease, with the same run and the
-/// same unread episode. A frame of the lost capability that was on its way
-/// uses up its number and writes nothing. Nothing gives it back.
+/// Turning the final message off takes exactly that from a lease that has
+/// both: the run boundaries go on, on the same lease, with the same run and
+/// the same unread episode, and the message the lease was keeping is
+/// forgotten unread. A frame of the lost capability that was on its way
+/// uses up its number and writes nothing. Nothing gives it back. Turning the
+/// run boundaries off takes the final message with them.
 #[test]
 fn turning_one_capability_off_leaves_the_other_and_the_lease() {
-    use crate::agent_pi::{SessionEvent, ShutdownReason, StartReason};
-    use crate::agent_reentry::lifecycle::PiSession;
     let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
     let _guard = fresh();
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
     let shared = two_panes();
     *shared.enabled.lock_or_recover() = BOTH;
     let world = shared.world();
-    let start = SessionEvent::Start(StartReason::Startup);
-    let quit = SessionEvent::Shutdown(ShutdownReason::Quit);
 
-    // ---- session observation off, in the middle of a run ----
+    // ---- the final message off, in the middle of a run ----
     let (a, may) = bound_with(&world, &both("%1"), Some(310)).unwrap();
     assert_eq!(may, BOTH, "nothing less than it claimed");
-    assert_eq!(
-        sent(&world, a, lifecycle_frame(1, start, "session-a")),
-        Ok(1)
-    );
-    assert_eq!(sent(&world, a, working(2, 1)), Ok(2));
+    assert_eq!(sent(&world, a, working(1, 1)), Ok(1));
+    assert_eq!(sent(&world, a, said(2, 1, "What A said.")), Ok(2));
     let episode = shared.episode("deck-a");
-    assert_eq!(
-        shared.evidence("deck-a").pi_session,
-        Some(PiSession::Observed)
-    );
+    assert_eq!(probe::keeping(a).as_deref(), Some("What A said."));
     enabled_changed(SIGNAL);
     assert_eq!(over(a), None, "the lease stands");
-    assert!(sessions().is_empty(), "its session is forgotten at once");
-    assert_eq!(shared.evidence("deck-a").pi_session, None);
+    assert_eq!(probe::keeping(a), None, "what it kept is forgotten at once");
     assert_eq!(
         (shared.state("deck-a"), shared.episode("deck-a")),
         (Some("working"), episode),
@@ -1842,13 +1814,13 @@ fn turning_one_capability_off_leaves_the_other_and_the_lease() {
         Some(PiCoverage::Connected)
     );
     assert_eq!(usable(a), Some(SIGNAL), "taken from the lease at once");
-    // a session frame that was on its way: its number is used, nothing is
-    // written, and its answer is where the observer hears what is left
+    // a final message that was on its way: its number is used, nothing is
+    // kept, and its answer is where the observer hears what is left
     let (peer, nonce) = held(a);
     match sent_from(
         &world,
         a,
-        lifecycle_frame(3, SessionEvent::Snapshot, "session-a"),
+        said(3, 1, "What A said, once more."),
         Some(peer),
         &nonce,
     ) {
@@ -1858,11 +1830,15 @@ fn turning_one_capability_off_leaves_the_other_and_the_lease() {
         }
         other => panic!("{other:?}"),
     }
-    assert!(sessions().is_empty());
+    assert_eq!(probe::keeping(a), None);
     assert_eq!(over(a), None, "and that is no reason to end what is left");
-    // the run goes on to its end, numbered without a gap
+    // the run goes on to its end, numbered without a gap, and ends without words
     assert_eq!(sent(&world, a, done(4, 1)), Ok(4));
     assert_eq!(shared.state("deck-a"), Some("turn-done"));
+    assert!(
+        replies().is_empty(),
+        "nothing was handed on with that ending"
+    );
     let ending = shared.episode("deck-a");
     assert!(!mismatched(SIGNAL), "what runs is what is configured");
     // turned on again: not given back to a running observer
@@ -1870,15 +1846,10 @@ fn turning_one_capability_off_leaves_the_other_and_the_lease() {
     enabled_changed(BOTH);
     assert_eq!(usable(a), Some(SIGNAL));
     assert_eq!(
-        sent_as(
-            &world,
-            a,
-            lifecycle_frame(5, SessionEvent::Snapshot, "session-a")
-        ),
+        sent_as(&world, a, said(5, 1, "What A said, later.")),
         Ok(Committed::Revoked(5)),
         "a capability is never widened on a live lease"
     );
-    assert!(sessions().is_empty());
     assert_eq!(
         (shared.state("deck-a"), shared.episode("deck-a")),
         (Some("turn-done"), ending),
@@ -1886,16 +1857,15 @@ fn turning_one_capability_off_leaves_the_other_and_the_lease() {
     );
     release(a);
 
-    // ---- Signal off, in the middle of a run ----
+    // ---- the run boundaries off, in the middle of a run ----
+    // The settings never enable the final message without them (`config`):
+    // what is left when they go is nothing, and the lease is over.
     let b = bound_as(&world, &both("%2"), Some(410)).unwrap();
-    assert_eq!(
-        sent(&world, b, lifecycle_frame(1, start, "session-b")),
-        Ok(1)
-    );
-    assert_eq!(sent(&world, b, working(2, 1)), Ok(2));
+    assert_eq!(sent(&world, b, working(1, 1)), Ok(1));
+    assert_eq!(sent(&world, b, said(2, 1, "What B said.")), Ok(2));
     assert!(shared.episode("deck-b").is_some());
-    enabled_changed(LIFECYCLE);
-    assert_eq!(over(b), None, "the lease stands");
+    enabled_changed(Capabilities::NONE);
+    assert_eq!(over(b), Some("capability-disabled"));
     assert_eq!(
         (shared.state("deck-b"), shared.episode("deck-b")),
         (None, None),
@@ -1905,53 +1875,149 @@ fn turning_one_capability_off_leaves_the_other_and_the_lease() {
         shared.evidence("deck-b").pi_signal,
         Some(PiCoverage::Unavailable)
     );
-    assert_eq!(
-        shared.evidence("deck-b").pi_session,
-        Some(PiSession::Observed),
-        "and its session is not"
-    );
-    assert_eq!(usable(b), Some(LIFECYCLE));
+    assert_eq!(probe::keeping(b), None);
+    assert_eq!(sent(&world, b, done(3, 1)), Err("capability-disabled"));
+    assert!(replies().is_empty());
+    release(b);
+    // A lease left with the final message alone — two bits allow what the
+    // settings never write — stands, has no run, and so can say nothing.
+    *shared.enabled.lock_or_recover() = BOTH;
+    fresh_again();
+    let only = Capabilities {
+        signal: false,
+        reply: true,
+    };
+    let b = bound_as(&world, &both("%2"), Some(410)).unwrap();
+    assert_eq!(sent(&world, b, working(1, 1)), Ok(1));
+    assert_eq!(sent(&world, b, said(2, 1, "What B said.")), Ok(2));
+    enabled_changed(only);
+    assert_eq!((over(b), usable(b)), (None, Some(only)));
+    assert_eq!((shared.state("deck-b"), probe::keeping(b)), (None, None));
     // the run's ending was on its way: not written, now or later
     assert_eq!(sent_as(&world, b, done(3, 1)), Ok(Committed::Revoked(3)));
     assert_eq!(sent_as(&world, b, working(4, 2)), Ok(Committed::Revoked(4)));
-    assert_eq!(shared.state("deck-b"), None);
-    // what is left goes on
-    assert_eq!(
-        sent(&world, b, lifecycle_frame(5, quit, "session-b")),
-        Ok(5)
-    );
-    assert_eq!(shared.evidence("deck-b").pi_session, None);
-    assert!(mismatched(BOTH) && !mismatched(LIFECYCLE));
-    // the other one off as well: nothing is left, and the lease is over
-    enabled_changed(Capabilities::NONE);
-    assert_eq!(over(b), Some("capability-disabled"));
-    assert!(sessions().is_empty());
+    assert_eq!(sent(&world, b, said(5, 2, "Of no run.")), Err("bad-run"));
+    assert_eq!(over(b), Some("bad-run"));
+    assert!(replies().is_empty());
     release(b);
 
     // ---- an edit of the file nobody announced: noticed by the next frame ----
     *shared.enabled.lock_or_recover() = BOTH;
     let c = bound_as(&world, &both("%1"), Some(310)).unwrap();
-    assert_eq!(
-        sent(&world, c, lifecycle_frame(1, start, "session-c")),
-        Ok(1)
-    );
+    assert_eq!(sent(&world, c, working(1, 1)), Ok(1));
+    assert_eq!(sent(&world, c, said(2, 1, "What C said.")), Ok(2));
     *shared.enabled.lock_or_recover() = SIGNAL;
-    assert_eq!(sent(&world, c, working(2, 1)), Ok(2), "Signal is still on");
-    assert!(sessions().is_empty(), "narrowed by that very commit");
+    assert_eq!(sent(&world, c, done(3, 1)), Ok(3), "Signal is still on");
+    assert!(
+        replies().is_empty(),
+        "narrowed by that very commit: what it kept was not handed on"
+    );
     assert_eq!(usable(c), Some(SIGNAL));
+    assert_eq!(sent(&world, c, working(4, 2)), Ok(4));
     assert_eq!(
-        sent_as(&world, c, lifecycle_frame(3, quit, "session-c")),
-        Ok(Committed::Revoked(3))
+        sent_as(&world, c, said(5, 2, "What C said next.")),
+        Ok(Committed::Revoked(5))
     );
     // a capability the attest never claimed is a forgery, as before
     release(c);
     let d = bound(&world, "%1", 310).unwrap();
+    assert_eq!(sent(&world, d, working(1, 1)), Ok(1));
     assert_eq!(
-        sent(&world, d, lifecycle_frame(1, start, "session-d")),
+        sent(&world, d, said(2, 1, "From an entry that reads nothing.")),
         Err("capability-disabled")
     );
     assert_eq!(over(d), Some("capability-disabled"));
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+    assert_eq!(shared.state("deck-a"), None);
+}
+
+/// The final message: of the run that is open and of no other, one at a
+/// time, handed on with that run's ending and its episode — and with
+/// nothing else. A new run, and the end of the lease, forget it unread.
+#[test]
+fn a_final_message_goes_with_its_own_run_s_ending_and_nowhere_else() {
+    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+    let _guard = fresh();
+    let shared = two_panes();
+    *shared.enabled.lock_or_recover() = BOTH;
+    let world = shared.world();
+    let a = bound_as(&world, &both("%1"), Some(310)).unwrap();
+    let b = bound_as(&world, &both("%2"), Some(410)).unwrap();
+    assert_eq!(sent(&world, a, working(1, 1)), Ok(1));
+    assert_eq!(sent(&world, b, working(1, 1)), Ok(1));
+    // kept with its lease: no word, no episode, no pane listing for it
+    let (episode, listings) = (
+        shared.episode("deck-a"),
+        shared.listings.load(Ordering::SeqCst),
+    );
+    let store = agent_status::pi_writes_for_tests();
+    assert_eq!(sent(&world, a, said(2, 1, "A first draft.")), Ok(2));
+    assert_eq!(
+        sent(&world, a, said(3, 1, "Done: two files changed.")),
+        Ok(3),
+        "a later one of the same run takes its place"
+    );
+    assert_eq!(
+        probe::keeping(a).as_deref(),
+        Some("Done: two files changed.")
+    );
+    assert_eq!(
+        (shared.state("deck-a"), shared.episode("deck-a")),
+        (Some("working"), episode)
+    );
+    assert_eq!(agent_status::pi_writes_for_tests(), store);
+    assert_eq!(
+        shared.listings.load(Ordering::SeqCst),
+        listings,
+        "no tmux call for it"
+    );
+    assert!(
+        replies().is_empty(),
+        "nothing is handed on before the ending"
+    );
+    // B's ending takes nothing of A's
+    assert_eq!(sent(&world, b, done(2, 1)), Ok(2));
+    assert!(replies().is_empty());
+    // A's ending: its message, with the episode that ending was given
+    let ending = agent_status::next_episode_for_tests();
+    assert_eq!(sent(&world, a, done(4, 1)), Ok(4));
+    assert_eq!(
+        probe::replies(),
+        [(
+            "deck-a".to_string(),
+            ending,
+            "Done: two files changed.".to_string()
+        )]
+    );
+    assert_eq!(shared.episode("deck-a"), Some(ending));
+    assert_eq!(probe::keeping(a), None, "handed on once");
+    // short enough to be the card's line as it was written
+    assert_eq!(
+        crate::turn_summary::for_episode("deck-a", ending).and_then(|note| note.summary),
+        Some("Done: two files changed.".to_string())
+    );
+    // a message of a run that is over, or of one that has not begun, ends the lease
+    assert_eq!(sent(&world, a, said(5, 1, "Too late.")), Err("bad-run"));
+    assert_eq!(over(a), Some("bad-run"));
+    assert_eq!(shared.state("deck-a"), None);
+    let a = bound_as(&world, &both("%1"), Some(310)).unwrap();
+    assert_eq!(sent(&world, a, said(1, 1, "Too early.")), Err("bad-run"));
+    let a = bound_as(&world, &both("%1"), Some(310)).unwrap();
+    assert_eq!(sent(&world, a, working(1, 1)), Ok(1));
+    assert_eq!(
+        sent(&world, a, said(2, 2, "Of the next run.")),
+        Err("bad-run")
+    );
+    // a run that ends without one hands nothing on, and a new run forgets
+    // what the one before it never ended with
+    assert_eq!(sent(&world, b, working(3, 2)), Ok(3));
+    assert_eq!(sent(&world, b, done(4, 2)), Ok(4));
+    assert_eq!(probe::replies().len(), 1);
+    let a = bound_as(&world, &both("%1"), Some(310)).unwrap();
+    assert_eq!(sent(&world, a, working(1, 1)), Ok(1));
+    assert_eq!(sent(&world, a, said(2, 1, "Never ended.")), Ok(2));
+    release(a);
+    assert_eq!(probe::keeping(a), None, "gone with its lease");
+    assert_eq!(probe::replies().len(), 1);
 }
 
 // ---------- messages: the service as the listener uses it -------------------------------
@@ -1987,7 +2053,7 @@ fn until(what: &str, done: impl Fn() -> bool) {
 
 /// One line of the family: its common part and `body`.
 fn message(body: serde_json::Value) -> String {
-    let mut line = serde_json::json!({ "protocol": "pi-observer", "v": 2, "source": "pi" });
+    let mut line = serde_json::json!({ "protocol": "pi-observer", "v": 3, "source": "pi" });
     line.as_object_mut()
         .unwrap()
         .extend(body.as_object().unwrap().clone());
@@ -2005,11 +2071,11 @@ fn frame_line(lease: u64, nonce: &str, body: serde_json::Value) -> String {
 }
 
 /// What an attest claims, without its nonce.
-fn claims(pane: &str, signal: bool, lifecycle: bool) -> serde_json::Value {
+fn claims(pane: &str, signal: bool, reply: bool) -> serde_json::Value {
     serde_json::json!({
-        "socket": "deck", "server_pid": 42, "pane": pane, "observerVersion": 2,
+        "socket": "deck", "server_pid": 42, "pane": pane, "observerVersion": 3,
         "piVersion": "1.1.0", "mode": "tui",
-        "capabilities": { "signal": signal, "lifecycle": lifecycle }
+        "capabilities": { "signal": signal, "reply": reply }
     })
 }
 
@@ -2036,10 +2102,10 @@ fn asked(service: &Service, line: &str, peer: Option<u32>) -> Option<serde_json:
     answer_of(handed(service, line, peer))
 }
 
-/// The two capability bits of an answer: (signal, lifecycle).
+/// The two capability bits of an answer: (signal, reply).
 fn bits(reply: &serde_json::Value) -> Option<(bool, bool)> {
     let bits = reply.get("capabilities")?;
-    Some((bits["signal"].as_bool()?, bits["lifecycle"].as_bool()?))
+    Some((bits["signal"].as_bool()?, bits["reply"].as_bool()?))
 }
 
 fn refusal(reply: &serde_json::Value) -> Option<String> {
@@ -2243,7 +2309,7 @@ fn deck_s_own_line_is_answered_with_its_place_and_reaches_no_worker() {
     service.hand(theirs, crate::agent_pi::place_line(), 41);
     assert_eq!(
         answer_of(ours),
-        Some(serde_json::json!({"protocol": "pi-observer", "v": 2, "place": 41}))
+        Some(serde_json::json!({"protocol": "pi-observer", "v": 3, "place": 41}))
     );
     assert!(asked_at.elapsed() < Duration::from_secs(1));
     assert_eq!(probe::pending(), 1, "only the attest waits for the worker");
@@ -2293,327 +2359,65 @@ fn the_last_frames_of_a_quitting_pi_are_committed_in_order() {
     assert!(reasons.lock_or_recover().is_empty(), "nothing was refused");
 }
 
-/// Session observation is its own capability of the same lease: a lease may
-/// report only what its attest claimed AND the settings enable, a
-/// lifecycle-only lease reports no run, a signal-only lease names no
-/// session, and what a lease observed is gone with the lease.
+/// The final message through the service, as lines: an observer that
+/// claimed it and may use it sends it before its run's ending, and it is
+/// handed on with that ending; one that did not claim it is a forgery.
 #[test]
-fn session_frames_need_their_own_capability_and_are_gone_with_the_lease() {
-    use crate::agent_pi::{ShutdownReason, StartReason};
+fn a_final_message_is_one_line_before_its_run_s_ending() {
     let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
     let _guard = fresh();
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
     let shared = two_panes();
     *shared.enabled.lock_or_recover() = BOTH;
     let (service, reasons) = service(&shared, Bounds::LIVE);
-    let rows = || shared.rows.lock_or_recover().clone().unwrap();
-    let observed = |session: &str| {
-        agent_status::generation_evidence(
-            &rows(),
-            |pane| agent_status::foreground_generation(&shared.table.lock_or_recover(), pane),
-            |_| None,
-        )
-        .get(session)
-        .and_then(|evidence| evidence.pi_session)
-    };
-    let start = |seq: u64, id: &str| serde_json::json!({"seq": seq, "event": "start", "nativeSessionId": id, "reason": "startup"});
-
-    // A carries both capabilities under ONE lease; B only session observation
-    let mut a = Client::open_with(&service, claims("%1", true, true), 310).unwrap();
-    let mut b = Client::open_with(&service, claims("%2", false, true), 410).unwrap();
-    assert_eq!(a.ack(start(1, "session-one")), Some(1));
+    let mut a = Client::open_with(&service, claims("%1", true, true), 310).expect("bound");
+    assert_eq!(a.may, (true, true));
     assert_eq!(
-        a.ack(serde_json::json!({"seq": 2, "run": 1, "state": "working"})),
-        Some(2)
-    );
-    assert_eq!(b.ack(start(1, "session-one")), Some(1));
-    // one session in two panes: two leases, two records, nothing merged
-    let known = sessions();
-    assert_eq!(known.len(), 2);
-    assert!(known[0].0 != known[1].0 && known.iter().all(|k| k.1 == "session-one"));
-    assert_eq!(
-        known[0].2,
-        crate::agent_pi::SessionEvent::Start(StartReason::Startup)
-    );
-    assert_eq!(
-        observed("deck-a"),
-        Some(crate::agent_reentry::lifecycle::PiSession::Observed)
-    );
-    assert_eq!(
-        observed("deck-b"),
-        Some(crate::agent_reentry::lifecycle::PiSession::Observed)
-    );
-    // a session is no Signal: B's card has no word, A's word came from its run
-    let projected = agent_status::projections(&rows());
-    assert_eq!(projected.get("deck-a").map(|o| o.state), Some("working"));
-    assert!(!projected.contains_key("deck-b"));
-    // a lifecycle-only lease may report no run
-    assert_eq!(
-        b.refused(serde_json::json!({"seq": 2, "run": 1, "state": "working"}))
-            .as_deref(),
-        Some("capability-disabled")
-    );
-    until("B's record to go with its lease", || sessions().len() == 1);
-    assert_eq!(observed("deck-b"), None);
-    assert!(!agent_status::projections(&rows()).contains_key("deck-b"));
-
-    // the teardown, then the reset: the reason is kept until the lease ends
-    assert_eq!(a.ack(serde_json::json!({"seq": 3, "event": "shutdown", "nativeSessionId": "session-one", "reason": "quit"})), Some(3));
-    assert_eq!(
-        sessions()[0].2,
-        crate::agent_pi::SessionEvent::Shutdown(ShutdownReason::Quit)
-    );
-    assert_eq!(
-        observed("deck-a"),
-        None,
-        "a runtime that said it is going observes no session"
-    );
-    assert_eq!(
-        a.ack(serde_json::json!({"seq": 4, "reason": "quit"})),
-        Some(4)
-    );
-    until("A's lease to end", || probe::live() == 0);
-    assert!(
-        sessions().is_empty(),
-        "nothing of a lease that is over is kept"
-    );
-
-    // a signal-only lease names no session
-    *shared.enabled.lock_or_recover() = BOTH;
-    let mut signal_only = Client::open(&service, "%1", 310);
-    assert_eq!(
-        signal_only.refused(start(1, "session-one")).as_deref(),
-        Some("capability-disabled")
-    );
-    assert!(sessions().is_empty());
-    until("its lease to end", || probe::live() == 0);
-
-    // An attest that claims session observation while the settings enable
-    // Signal alone: bound for Signal, told so in its acceptance, and a
-    // session frame it sends all the same is not written — without ending
-    // the runs it may report.
-    *shared.enabled.lock_or_recover() = SIGNAL;
-    let mut narrowed = Client::open_with(&service, claims("%1", true, true), 310).unwrap();
-    assert_eq!(narrowed.may, (true, false));
-    assert_eq!(
-        narrowed.revoked(start(1, "session-one")),
-        Some(1),
-        "not committed, and no refusal"
-    );
-    assert!(sessions().is_empty());
-    assert_eq!(observed("deck-a"), None);
-    assert_eq!(
-        narrowed.ack(serde_json::json!({"seq": 2, "run": 1, "state": "working"})),
-        Some(2)
-    );
-    release(narrowed.lease);
-    // an observer none of whose capabilities are enabled is refused
-    assert_eq!(
-        Client::refused_at_once(&service, claims("%1", false, true), 310).as_deref(),
-        Some("capability-disabled")
-    );
-    // and with it enabled alone, a lifecycle-only observer binds and Signal does not
-    *shared.enabled.lock_or_recover() = LIFECYCLE;
-    assert_eq!(
-        Client::refused_at_once(&service, claims("%1", true, false), 310).as_deref(),
-        Some("capability-disabled")
-    );
-    let mut only = Client::open_with(&service, claims("%1", false, true), 310).unwrap();
-    assert_eq!(only.ack(start(1, "session-two")), Some(1));
-    assert_eq!(
-        observed("deck-a"),
-        Some(crate::agent_reentry::lifecycle::PiSession::Observed)
-    );
-    // turned off in Settings: the record goes at once, not at the next
-    // frame — which is where the observer hears why its lease is over
-    enabled_changed(Capabilities::NONE);
-    assert!(sessions().is_empty());
-    assert_eq!(observed("deck-a"), None);
-    assert_eq!(probe::live(), 0);
-    assert_eq!(
-        only.refused(serde_json::json!({"seq": 2})).as_deref(),
-        Some("capability-disabled")
-    );
-    assert!(reasons
-        .lock_or_recover()
-        .iter()
-        .all(|reason| *reason == "pi-capability-disabled"));
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
-}
-
-/// What a runtime reports about its session is checked against what the
-/// same lease reported before, and an id is Pi's own shape or nothing.
-#[test]
-fn a_session_frame_that_contradicts_its_lease_ends_the_lease() {
-    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
-    let _guard = fresh();
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
-    let shared = two_panes();
-    *shared.enabled.lock_or_recover() = BOTH;
-    let (service, reasons) = service(&shared, Bounds::LIVE);
-    let open = || Client::open_with(&service, claims("%1", true, true), 310).unwrap();
-    // a second start in one runtime
-    let mut client = open();
-    assert_eq!(client.ack(serde_json::json!({"seq": 1, "event": "start", "nativeSessionId": "one", "reason": "startup"})), Some(1));
-    assert_eq!(client.refused(serde_json::json!({"seq": 2, "event": "start", "nativeSessionId": "two", "reason": "resume"})).as_deref(), Some("bad-lifecycle"));
-    until("the lease to end", || probe::live() == 0);
-    assert!(sessions().is_empty(), "neither reading is kept");
-    // a teardown of a session it never reported
-    let mut client = open();
-    assert_eq!(client.refused(serde_json::json!({"seq": 1, "event": "shutdown", "nativeSessionId": "one", "reason": "quit"})).as_deref(), Some("bad-lifecycle"));
-    until("the lease to end", || probe::live() == 0);
-    // an id that is not Pi's shape is no frame at all
-    let mut client = open();
-    assert_eq!(client.refused(
-        serde_json::json!({"seq": 1, "event": "snapshot", "nativeSessionId": "../sessions/x"}),
-    ).as_deref(), Some("bad-native-id"));
-    until("the lease to end", || probe::live() == 0);
-    assert_eq!(
-        *reasons.lock_or_recover(),
-        ["pi-bad-lifecycle", "pi-bad-lifecycle", "pi-bad-native-id"]
-    );
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
-}
-
-/// An id this build does not keep is not cut short, not stood in for and
-/// not passed over: the lease's session observation becomes `unsupported`,
-/// which the card can say, and stays so for the lease — a short id sent
-/// afterwards is not a first observation. The runs of the same lease go
-/// on. A new lease observes again. An id that is not Pi's shape at all is
-/// a refusal, never this state.
-#[test]
-fn an_id_this_build_does_not_keep_makes_sessions_unsupported_and_leaves_the_runs() {
-    use crate::agent_reentry::lifecycle::{pi_unsupported_for_tests, PiSession};
-    let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
-    let _guard = fresh();
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
-    let shared = two_panes();
-    *shared.enabled.lock_or_recover() = BOTH;
-    let (service, reasons) = service(&shared, Bounds::LIVE);
-    let open = || Client::open_with(&service, claims("%1", true, true), 310).unwrap();
-    let session = || shared.evidence("deck-a").pi_session;
-    let start = |seq: u64, id: &str| serde_json::json!({"seq": seq, "event": "start", "nativeSessionId": id, "reason": "startup"});
-    let snapshot = |seq: u64, id: &str| serde_json::json!({"seq": seq, "event": "snapshot", "nativeSessionId": id});
-
-    // the boundary: 256 bytes are a session, 257 are not
-    let mut client = open();
-    assert_eq!(client.ack(start(1, &"a".repeat(256))), Some(1));
-    assert_eq!(
-        (sessions()[0].1.len(), session()),
-        (256, Some(PiSession::Observed))
-    );
-    release(client.lease);
-
-    // an unsupported start, then a short snapshot, on ONE lease
-    let mut client = open();
-    assert_eq!(
-        client.ack(start(1, &"a".repeat(257))),
-        Some(1),
-        "acknowledged: the lease goes on"
-    );
-    assert!(sessions().is_empty(), "nothing is kept, cut short or not");
-    assert_eq!(pi_unsupported_for_tests().len(), 1);
-    assert_eq!(session(), Some(PiSession::Unsupported));
-    assert_eq!(client.ack(snapshot(2, &"a".repeat(256))), Some(2));
-    assert!(
-        sessions().is_empty(),
-        "a short id afterwards is not a first observation"
-    );
-    assert_eq!(session(), Some(PiSession::Unsupported));
-    // the runs of the same lease are untouched
-    assert_eq!(
-        client.ack(serde_json::json!({"seq": 3, "run": 1, "state": "working"})),
-        Some(3)
-    );
-    assert_eq!(shared.state("deck-a"), Some("working"));
-    assert_eq!(
-        shared.evidence("deck-a").pi_signal,
-        Some(PiCoverage::Connected)
-    );
-    assert_eq!(
-        client.ack(serde_json::json!({"seq": 4, "run": 1, "state": "turn-done"})),
-        Some(4)
-    );
-    assert_eq!(shared.state("deck-a"), Some("turn-done"));
-    release(client.lease);
-    assert!(pi_unsupported_for_tests().is_empty(), "gone with its lease");
-    assert_eq!(session(), None);
-
-    // A, then an id that is not kept, then B: A is no longer current and B
-    // is not taken up; a teardown that names B is acknowledged and is nothing
-    let mut client = open();
-    assert_eq!(client.ack(start(1, "session-a")), Some(1));
-    assert_eq!(session(), Some(PiSession::Observed));
-    assert_eq!(client.ack(snapshot(2, &"b".repeat(512))), Some(2));
-    assert!(sessions().is_empty());
-    assert_eq!(session(), Some(PiSession::Unsupported));
-    assert_eq!(client.ack(snapshot(3, "session-b")), Some(3));
-    assert_eq!(client.ack(serde_json::json!({"seq": 4, "event": "shutdown", "nativeSessionId": "session-b", "reason": "quit"})), Some(4));
-    assert!(sessions().is_empty());
-    assert_eq!(session(), Some(PiSession::Unsupported));
-    release(client.lease);
-
-    // the observer's own word for an id that does not fit a line (513 bytes
-    // and more are never sent): the same state, and nothing else in the frame
-    let mut client = open();
-    assert_eq!(
-        client.ack(serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id"})),
+        a.ack(serde_json::json!({"seq": 1, "run": 1, "state": "working"})),
         Some(1)
     );
-    assert_eq!(session(), Some(PiSession::Unsupported));
-    assert_eq!(client.ack(snapshot(2, "session-a")), Some(2));
-    assert_eq!(session(), Some(PiSession::Unsupported));
-    release(client.lease);
-    // ... which a lease without the capability may not say,
-    let mut signal_only = Client::open(&service, "%1", 310);
+    // text as an agent writes it: lines, quotes, another script
+    let text = "Done.\n\"Two\" files changed — 完了。";
     assert_eq!(
-        signal_only
-            .refused(serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id"}))
-            .as_deref(),
-        Some("capability-disabled")
+        a.ack(serde_json::json!({"seq": 2, "run": 1, "reply": text})),
+        Some(2)
     );
-    until("the lease to end", || probe::live() == 0);
-    // ... and which is one closed word
-    let mut client = open();
+    assert!(replies().is_empty());
     assert_eq!(
-        client
-            .refused(serde_json::json!({"seq": 1, "unavailable": "anything-else"}))
-            .as_deref(),
-        Some("bad-frame")
+        a.ack(serde_json::json!({"seq": 3, "run": 1, "state": "turn-done"})),
+        Some(3)
     );
-    until("the lease to end", || probe::live() == 0);
-
-    // a consistency failure is still a failure: a teardown of ANOTHER session
-    let mut client = open();
-    assert_eq!(client.ack(start(1, "session-a")), Some(1));
-    assert_eq!(client.refused(serde_json::json!({"seq": 2, "event": "shutdown", "nativeSessionId": "session-b", "reason": "quit"})).as_deref(), Some("bad-lifecycle"));
-    until("the lease to end", || probe::live() == 0);
-    // and an id that is not Pi's shape is refused whatever its length
-    let mut client = open();
+    assert_eq!(replies(), [("deck-a".to_string(), text.to_string())]);
+    // the longest one a line may carry
+    let longest = "x".repeat(crate::agent_pi::MAX_REPLY);
     assert_eq!(
-        client
-            .refused(snapshot(1, &format!("{}/x", "c".repeat(300))))
-            .as_deref(),
-        Some("bad-native-id")
+        a.ack(serde_json::json!({"seq": 4, "run": 2, "state": "working"})),
+        Some(4)
     );
-    until("the lease to end", || probe::live() == 0);
-    assert!(pi_unsupported_for_tests().is_empty());
-
-    // a new lease observes again
-    let mut client = open();
-    assert_eq!(client.ack(snapshot(1, "session-a")), Some(1));
-    assert_eq!(session(), Some(PiSession::Observed));
-    release(client.lease);
     assert_eq!(
-        *reasons.lock_or_recover(),
-        [
-            "pi-capability-disabled",
-            "pi-bad-frame",
-            "pi-bad-lifecycle",
-            "pi-bad-native-id"
-        ]
+        a.ack(serde_json::json!({"seq": 5, "run": 2, "reply": longest})),
+        Some(5)
     );
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
+    assert_eq!(
+        a.ack(serde_json::json!({"seq": 6, "run": 2, "state": "turn-done"})),
+        Some(6)
+    );
+    assert_eq!(replies().len(), 2);
+    assert_eq!(replies()[1].1.len(), crate::agent_pi::MAX_REPLY);
+    assert!(reasons.lock_or_recover().is_empty(), "nothing was refused");
+    // an observer of the entry that reads nothing: the same line ends its lease
+    let mut b = Client::open(&service, "%2", 410);
+    assert_eq!(b.may, (true, false));
+    assert_eq!(
+        b.ack(serde_json::json!({"seq": 1, "run": 1, "state": "working"})),
+        Some(1)
+    );
+    let reply = b.send(serde_json::json!({"seq": 2, "run": 1, "reply": "x"}));
+    assert_eq!(refusal(&reply).as_deref(), Some("capability-disabled"));
+    assert_eq!(
+        probe::ended().last(),
+        Some(&("deck-b".to_string(), "capability-disabled"))
+    );
+    assert_eq!(replies().len(), 2);
 }
 
 /// A line that breaks the wire is refused, whoever sent it. It ends a lease
@@ -2638,7 +2442,7 @@ fn a_line_that_breaks_the_wire_is_refused_and_ends_only_a_proven_observer_s_leas
             "bad-mode",
         ),
         (
-            &|line: String| line.replace("\"observerVersion\":2", "\"observerVersion\":1"),
+            &|line: String| line.replace("\"observerVersion\":3", "\"observerVersion\":2"),
             "bad-version",
         ),
         (
@@ -2668,7 +2472,7 @@ fn a_line_that_breaks_the_wire_is_refused_and_ends_only_a_proven_observer_s_leas
     ] {
         let reply = attest(change);
         assert_eq!(refusal(&reply).as_deref(), Some(code), "{reply}");
-        assert_eq!(reply["v"], 2);
+        assert_eq!(reply["v"], 3);
         assert_eq!(reply.as_object().unwrap().len(), 3, "{reply}");
     }
     // a hello that carries anything is no hello
@@ -2703,11 +2507,24 @@ fn a_line_that_breaks_the_wire_is_refused_and_ends_only_a_proven_observer_s_leas
             "capabilities": { "signal": true, "lifecycle": false }
         }),
         serde_json::json!({"protocol": "pi-observer", "v": 1, "source": "pi", "seq": 1, "run": 1, "state": "working"}),
+        // the version before this one: its hello, its attest and a frame
+        // that would be a good one today
+        serde_json::json!({"protocol": "pi-observer", "v": 2, "source": "pi"}),
+        serde_json::json!({
+            "protocol": "pi-observer", "v": 2, "source": "pi", "nonce": "0".repeat(32),
+            "socket": "deck", "server_pid": 42, "pane": "%1", "observerVersion": 2,
+            "piVersion": "1.1.0", "mode": "tui",
+            "capabilities": { "signal": true, "lifecycle": true }
+        }),
+        serde_json::json!({
+            "protocol": "pi-observer", "v": 2, "source": "pi", "lease": 1, "nonce": "0".repeat(32),
+            "seq": 1, "run": 1, "state": "working"
+        }),
     ] {
         let reply = asked(&service, &old.to_string(), Some(310)).unwrap();
         assert_eq!(
             reply,
-            serde_json::json!({"protocol": "pi-observer", "v": 1, "refused": "bad-version"})
+            serde_json::json!({"protocol": "pi-observer", "v": old["v"], "refused": "bad-version"})
         );
     }
     assert_eq!(
@@ -3129,39 +2946,38 @@ fn a_frame_of_a_process_that_executed_another_image_is_refused() {
 fn a_lease_hears_what_it_may_still_do_in_its_next_answer_and_goes_on() {
     let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
     let _guard = fresh();
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
     let shared = two_panes();
     *shared.enabled.lock_or_recover() = BOTH;
     let (service, reasons) = service(&shared, Bounds::LIVE);
     let mut client = Client::open_with(&service, claims("%1", true, true), 310).unwrap();
     assert_eq!(client.may, (true, true));
     assert_eq!(
-        client.ack(serde_json::json!({"seq": 1, "event": "start", "nativeSessionId": "one", "reason": "startup"})),
+        client.ack(serde_json::json!({"seq": 1, "run": 1, "state": "working"})),
         Some(1)
     );
     assert_eq!(
-        client.ack(serde_json::json!({"seq": 2, "run": 1, "state": "working"})),
+        client.ack(serde_json::json!({"seq": 2, "run": 1, "reply": "A first draft."})),
         Some(2)
     );
     assert_eq!(client.may, (true, true));
 
-    // the session switch is turned off in Settings while the Pi is working
+    // the final-message switch is turned off in Settings while the Pi is working
     *shared.enabled.lock_or_recover() = SIGNAL;
     enabled_changed(SIGNAL);
-    assert!(sessions().is_empty(), "forgotten at once");
-    // a session frame that crossed the change, then the run's ending
+    assert_eq!(probe::keeping(client.lease), None, "forgotten at once");
+    // a final message that crossed the change, then the run's ending
     assert_eq!(
-        client
-            .revoked(serde_json::json!({"seq": 3, "event": "snapshot", "nativeSessionId": "one"})),
+        client.revoked(serde_json::json!({"seq": 3, "run": 1, "reply": "Done."})),
         Some(3)
     );
     assert_eq!(client.may, (true, false), "said in that answer");
-    assert!(sessions().is_empty());
+    assert_eq!(probe::keeping(client.lease), None);
     assert_eq!(
         client.ack(serde_json::json!({"seq": 4, "run": 1, "state": "turn-done"})),
         Some(4)
     );
     assert_eq!(shared.state("deck-a"), Some("turn-done"));
+    assert!(replies().is_empty(), "an ending, and nothing with it");
     // one more whole run under the same lease
     assert_eq!(
         client.ack(serde_json::json!({"seq": 5, "run": 2, "state": "working"})),
@@ -3185,20 +3001,18 @@ fn a_lease_hears_what_it_may_still_do_in_its_next_answer_and_goes_on() {
         Some("capability-disabled")
     );
     assert_eq!(*reasons.lock_or_recover(), ["pi-capability-disabled"]);
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
 }
 
 /// A runtime that loaded more than the settings enable now — a switch was
 /// turned off and that Pi has not reloaded — is bound for what is left, and
 /// its ACCEPTANCE says so: an observer knows what it may do before it may
-/// send anything, so no frame of the rest, and no session id, ever crosses
-/// the socket. One that sends such a frame all the same gets `revoked`, and
+/// send anything, so no frame of the rest, and no final message, ever
+/// crosses the socket. One that sends such a frame all the same gets `revoked`, and
 /// the lease goes on.
 #[test]
 fn a_lease_bound_with_less_than_its_runtime_loaded_hears_so_in_its_acceptance() {
     let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
     let _guard = fresh();
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
     let shared = two_panes();
     *shared.enabled.lock_or_recover() = SIGNAL;
     let (service, reasons) = service(&shared, Bounds::LIVE);
@@ -3209,14 +3023,13 @@ fn a_lease_bound_with_less_than_its_runtime_loaded_hears_so_in_its_acceptance() 
         Some(1)
     );
     assert_eq!(shared.state("deck-a"), Some("working"));
-    // a session frame under a lease that never had the capability in use
+    // a final message under a lease that never had the capability in use
     assert_eq!(
-        client
-            .revoked(serde_json::json!({"seq": 2, "event": "snapshot", "nativeSessionId": "one"})),
+        client.revoked(serde_json::json!({"seq": 2, "run": 1, "reply": "Done."})),
         Some(2)
     );
-    assert!(sessions().is_empty());
-    assert_eq!(probe::revoked(), [("deck-a".to_string(), "lifecycle")]);
+    assert_eq!(probe::keeping(client.lease), None);
+    assert_eq!(probe::revoked(), [("deck-a".to_string(), "reply")]);
     assert_eq!(
         client.ack(serde_json::json!({"seq": 3, "run": 1, "state": "turn-done"})),
         Some(3)
@@ -3228,7 +3041,6 @@ fn a_lease_bound_with_less_than_its_runtime_loaded_hears_so_in_its_acceptance() 
     assert_eq!(exact.may, (true, false));
     release(client.lease);
     release(exact.lease);
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
 }
 
 // ---------- real processes: the kernel's own answers --------------------------------
@@ -3315,15 +3127,15 @@ impl Server {
 
     /// The attest of an observer in `session`'s pane, as a step of the
     /// peer: the nonce is put in by the peer that sends it.
-    fn attest_with(&self, session: &str, signal: bool, lifecycle: bool) -> String {
+    fn attest_with(&self, session: &str, signal: bool, reply: bool) -> String {
         format!(
             "'{}'",
             message(serde_json::json!({
                 "nonce": "@NONCE@",
                 "socket": "t", "server_pid": self.fact(session, "#{pid}").parse::<u32>().unwrap(),
-                "pane": self.fact(session, "#{pane_id}"), "observerVersion": 2,
+                "pane": self.fact(session, "#{pane_id}"), "observerVersion": 3,
                 "piVersion": "1.1.0", "mode": "tui",
-                "capabilities": { "signal": signal, "lifecycle": lifecycle }
+                "capabilities": { "signal": signal, "reply": reply }
             }))
         )
     }
@@ -3853,8 +3665,8 @@ fn a_real_exec_inside_the_observer_s_pid_ends_its_lease() {
 // ---------- follow-up 02: R01 and R02, with real processes and the real kernel ----------
 
 /// One scenario in pane A of a server whose pane B holds an observer of its
-/// own. A's foreground program binds with both capabilities, reports its
-/// session and a run, and then does what the round is about.
+/// own. A's foreground program binds with both capabilities, reports a
+/// run and what it would end with, and then does what the round is about.
 struct Round<'a> {
     server: &'a Server,
     name: String,
@@ -3880,18 +3692,15 @@ impl Round<'_> {
 
     /// Start the round: the parent binds, reports, and waits for `go`.
     fn start(&self, then: &str) {
-        use crate::agent_reentry::lifecycle::PiSession;
         let base = self.server.base.to_str().unwrap();
-        let start = step(serde_json::json!({
-            "seq": 1, "event": "start", "nativeSessionId": "session-a", "reason": "startup"
-        }));
-        let working = step(serde_json::json!({"seq": 2, "run": 1, "state": "working"}));
+        let working = step(serde_json::json!({"seq": 1, "run": 1, "state": "working"}));
+        let said = step(serde_json::json!({"seq": 2, "run": 1, "reply": "What A said."}));
         self.server.run(
             "deck-a",
             &self.name,
             &format!(
-                "{base}/observer {base}/status.sock {base}/{name}.log @hello {attest} {start} \
-                 {working} @mark:{ready} @wait:{go} {then}",
+                "{base}/observer {base}/status.sock {base}/{name}.log @hello {attest} {working} \
+                 {said} @mark:{ready} @wait:{go} {then}",
                 name = self.name,
                 attest = self.server.attest_with("deck-a", true, true),
                 ready = self.mark("ready"),
@@ -3905,9 +3714,10 @@ impl Round<'_> {
             "{}",
             self.name
         );
-        assert_eq!(
-            self.server.evidence("deck-a").pi_session,
-            Some(PiSession::Observed),
+        assert!(
+            probe::leases()
+                .iter()
+                .any(|seen| probe::keeping(seen.lease).as_deref() == Some("What A said.")),
             "{}",
             self.name
         );
@@ -3941,8 +3751,15 @@ impl Round<'_> {
             "{}",
             self.name
         );
-        assert_eq!(sessions().len(), 1, "{}", self.name);
-        assert_eq!(sessions()[0].1, "session-a", "{}", self.name);
+        assert_eq!(
+            (written().replies.0, replies().last().cloned()),
+            (
+                before.replies.0 + 1,
+                Some(("deck-a".to_string(), "What A said.".to_string()))
+            ),
+            "{}: one final message went with it, and it is the parent's own",
+            self.name
+        );
     }
 
     /// The parent says goodbye, and the pane's shell is in front again.
@@ -3974,7 +3791,6 @@ impl Round<'_> {
 fn r01_no_child_of_the_observer_writes_anything_for_it() {
     let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
     let _guard = fresh();
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
     let server = Server::start("r01");
     let accepting = Accepting::start(&server, BOTH);
     let base = server.base.to_str().unwrap().to_string();
@@ -4003,10 +3819,8 @@ fn r01_no_child_of_the_observer_writes_anything_for_it() {
             step_line(serde_json::json!({"seq": 3, "run": 1, "state": "turn-done"})),
         ),
         (
-            "session",
-            step_line(
-                serde_json::json!({"seq": 3, "event": "snapshot", "nativeSessionId": "session-x"}),
-            ),
+            "reply",
+            step_line(serde_json::json!({"seq": 3, "run": 1, "reply": "What somebody else said."})),
         ),
         (
             "reset",
@@ -4341,14 +4155,14 @@ fn r01_no_child_of_the_observer_writes_anything_for_it() {
         assert_eq!(
             (
                 after.store,
-                after.sessions,
+                after.replies,
                 after.episode,
                 &after.announced,
                 &after.ended
             ),
             (
                 before.store,
-                before.sessions,
+                before.replies,
                 before.episode,
                 &before.announced,
                 &before.ended
@@ -4383,7 +4197,6 @@ fn r01_no_child_of_the_observer_writes_anything_for_it() {
     );
     drop(accepting);
     drop(server);
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
 }
 
 /// Pane B's observer, bound and working for as long as a test of pane A runs.
@@ -4440,7 +4253,6 @@ fn pane_b_ends(server: &Server) {
 fn r01_what_one_child_read_on_a_connection_its_parent_left_writes_nothing_on_another() {
     let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
     let _guard = fresh();
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
     let server = Server::start("r01l");
     let accepting = Accepting::start(&server, BOTH);
     build_peer(&server.base.join("observer"), "parent");
@@ -4526,7 +4338,6 @@ fn r01_what_one_child_read_on_a_connection_its_parent_left_writes_nothing_on_ano
     pane_b_ends(&server);
     drop(accepting);
     drop(server);
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
 }
 
 /// R01, a connection that existed before Deck last looked. A child holds a
@@ -4544,7 +4355,6 @@ fn r01_what_one_child_read_on_a_connection_its_parent_left_writes_nothing_on_ano
 fn r01_a_connection_made_before_deck_last_looked_is_nobody_s_whatever_it_carries() {
     let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
     let _guard = fresh();
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
     let server = Server::start("r01o");
     let accepting = Accepting::start(&server, BOTH);
     build_peer(&server.base.join("observer"), "parent");
@@ -4621,7 +4431,6 @@ fn r01_a_connection_made_before_deck_last_looked_is_nobody_s_whatever_it_carries
     pane_b_ends(&server);
     drop(accepting);
     drop(server);
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
 }
 
 /// R02. What an earlier image wrote before Deck looked at its process, and
@@ -4629,10 +4438,8 @@ fn r01_a_connection_made_before_deck_last_looked_is_nobody_s_whatever_it_carries
 /// Deck reads nothing until the test lets it.
 #[test]
 fn r02_what_an_earlier_image_wrote_or_was_given_is_not_the_new_image_s() {
-    use crate::agent_reentry::lifecycle::PiSession;
     let _operation = crate::agent_reentry::TEST_LOCK.lock_or_recover();
     let _guard = fresh();
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
     let server = Server::start("r02");
     let accepting = Accepting::start(&server, BOTH);
     let base = server.base.to_str().unwrap().to_string();
@@ -4716,8 +4523,8 @@ fn r02_what_an_earlier_image_wrote_or_was_given_is_not_the_new_image_s() {
     unrecognized("a hello with a frame behind it");
     stop("a hello with a frame behind it");
 
-    // 3. A BOUND observer reports its session and a run. The run's ending
-    //    and another session's name wait unread, each on a connection of
+    // 3. A BOUND observer reports a run and what it would end with. The
+    //    run's ending and other last words wait unread, each on a connection of
     //    its own, while its image executes another. Deck reads them
     //    afterwards: the right process, the right lease, the right nonce,
     //    no fork — and not that program.
@@ -4725,33 +4532,32 @@ fn r02_what_an_earlier_image_wrote_or_was_given_is_not_the_new_image_s() {
         "deck-a",
         "r3",
         &format!(
-            "{base}/observer {base}/status.sock {base}/r3.log @hello {both} {start} {working} \
+            "{base}/observer {base}/status.sock {base}/r3.log @hello {both} {working} {said} \
              @mark:{base}/r3-ready @wait:{base}/r3-go @open '@line:{ending}' @open \
              '@line:{other}' @exec:{base}/other @mark:{base}/r3-after @sleep",
             both = server.attest_with("deck-a", true, true),
-            start = step(serde_json::json!({
-                "seq": 1, "event": "start", "nativeSessionId": "session-a", "reason": "startup"
-            })),
-            working = step(serde_json::json!({"seq": 2, "run": 1, "state": "working"})),
+            working = step(serde_json::json!({"seq": 1, "run": 1, "state": "working"})),
+            said = step(serde_json::json!({"seq": 2, "run": 1, "reply": "What A said."})),
             ending = step_line(serde_json::json!({"seq": 3, "run": 1, "state": "turn-done"})),
             other = step_line(
-                serde_json::json!({"seq": 3, "event": "snapshot", "nativeSessionId": "session-x"})
+                serde_json::json!({"seq": 3, "run": 1, "reply": "What somebody else said."})
             ),
         ),
     );
     server.wait("deck-a", "r3-ready");
     assert_eq!(server.state("deck-a"), Some("working"));
-    assert_eq!(
-        server.evidence("deck-a").pi_session,
-        Some(PiSession::Observed)
-    );
-    assert_eq!(sessions().len(), 1);
+    let keeps = || {
+        probe::leases()
+            .iter()
+            .any(|seen| probe::keeping(seen.lease).is_some())
+    };
+    assert!(keeps(), "what A said is kept with its lease");
     accepting.held(true);
     server.go("r3-go");
     server.wait("deck-a", "r3-after");
     assert_eq!(
-        (server.state("deck-a"), server.evidence("deck-a").pi_session),
-        (None, None),
+        server.state("deck-a"),
+        None,
         "withdrawn from every reader before a frame is read"
     );
     let (before, executed) = (written(), accepting.refused("pi-peer-executed"));
@@ -4770,10 +4576,9 @@ fn r02_what_an_earlier_image_wrote_or_was_given_is_not_the_new_image_s() {
     );
     assert_eq!(written().announced, before.announced);
     assert!(
-        sessions().is_empty(),
-        "neither the old session nor the one the frame named"
+        replies().is_empty(),
+        "neither what the old image said nor what the frame carried"
     );
-    assert_eq!(server.evidence("deck-a").pi_session, None);
     unrecognized("frames that waited");
     stop("frames that waited");
 
@@ -4832,7 +4637,6 @@ fn r02_what_an_earlier_image_wrote_or_was_given_is_not_the_new_image_s() {
 
     drop(accepting);
     drop(server);
-    crate::agent_reentry::lifecycle::reset_pi_for_tests();
 }
 
 /// The observer that ships in the bundle, as text: two of its times are

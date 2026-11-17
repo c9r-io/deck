@@ -8,9 +8,9 @@ const NONCE: &str = "0123456789abcdef0123456789abcdef";
 /// An attest: the observer's claims and the nonce they answer.
 fn hello(change: impl FnOnce(&mut serde_json::Value)) -> String {
     let mut line = serde_json::json!({
-        "protocol": "pi-observer", "v": 2, "source": "pi", "nonce": NONCE, "socket": "deck",
-        "server_pid": 4242, "pane": "%7", "observerVersion": 2, "piVersion": "1.1.0",
-        "mode": "tui", "capabilities": { "signal": true, "lifecycle": false }
+        "protocol": "pi-observer", "v": 3, "source": "pi", "nonce": NONCE, "socket": "deck",
+        "server_pid": 4242, "pane": "%7", "observerVersion": 3, "piVersion": "1.1.0",
+        "mode": "tui", "capabilities": { "signal": true, "reply": false }
     });
     change(&mut line);
     line.to_string()
@@ -19,7 +19,7 @@ fn hello(change: impl FnOnce(&mut serde_json::Value)) -> String {
 /// A frame of lease 3, with a nonce.
 fn frame(body: serde_json::Value) -> String {
     let mut line = serde_json::json!({
-        "protocol": "pi-observer", "v": 2, "source": "pi", "lease": 3, "nonce": NONCE
+        "protocol": "pi-observer", "v": 3, "source": "pi", "lease": 3, "nonce": NONCE
     });
     line.as_object_mut()
         .unwrap()
@@ -70,7 +70,7 @@ fn pi_is_registered_without_a_hook_family_or_a_reentry_capability() {
 /// is can only be said once the sender is proven.
 #[test]
 fn a_line_is_a_hello_an_attest_or_a_frame_of_a_lease() {
-    let common = serde_json::json!({ "protocol": "pi-observer", "v": 2, "source": "pi" });
+    let common = serde_json::json!({ "protocol": "pi-observer", "v": 3, "source": "pi" });
     let with = |more: serde_json::Value| {
         let mut line = common.clone();
         line.as_object_mut()
@@ -84,7 +84,7 @@ fn a_line_is_a_hello_an_attest_or_a_frame_of_a_lease() {
     for more in [
         serde_json::json!({"pane": "%7"}),
         serde_json::json!({"seq": 1}),
-        serde_json::json!({"capabilities": {"signal": true, "lifecycle": false}}),
+        serde_json::json!({"capabilities": {"signal": true, "reply": false}}),
         serde_json::json!({"run": 1, "state": "working"}),
         serde_json::json!({"title": "x"}),
     ] {
@@ -150,20 +150,21 @@ fn a_line_is_a_hello_an_attest_or_a_frame_of_a_lease() {
             "{line}"
         );
     }
+    // a frame of the version before this one is no frame at all
     assert!(matches!(
         parse_message(&frame(
-            serde_json::json!({"seq": 1, "event": "snapshot", "nativeSessionId": "../x"})
+            serde_json::json!({"seq": 1, "event": "snapshot", "nativeSessionId": "abc"})
         )),
         Ok(Message::Frame {
-            frame: Err("bad-native-id"),
+            frame: Err("bad-frame"),
             ..
         })
     ));
     // another version of the wire is no line of this one, whatever it holds
     for line in [
-        common.to_string().replace("\"v\":2", "\"v\":1"),
+        common.to_string().replace("\"v\":3", "\"v\":1"),
         hello(|l| l["v"] = 1.into()),
-        frame(serde_json::json!({"seq": 1})).replace("\"v\":2", "\"v\":3"),
+        frame(serde_json::json!({"seq": 1})).replace("\"v\":3", "\"v\":4"),
     ] {
         assert_eq!(parse_message(&line), Err("bad-version"), "{line}");
     }
@@ -206,7 +207,7 @@ fn the_attest_is_one_closed_shape() {
             version: PiVersion::Supported,
             capabilities: Capabilities {
                 signal: true,
-                lifecycle: false
+                reply: false
             },
         }
     );
@@ -215,12 +216,13 @@ fn the_attest_is_one_closed_shape() {
     let refused = |change: &dyn Fn(&mut serde_json::Value), code: &str| {
         assert_eq!(parse_hello(&hello(change)), Err(code), "{code}");
     };
-    refused(&|l| l["v"] = 3.into(), "bad-version");
+    refused(&|l| l["v"] = 4.into(), "bad-version");
+    refused(&|l| l["v"] = 2.into(), "bad-version");
     refused(&|l| l["v"] = 1.into(), "bad-version");
-    refused(&|l| l["v"] = serde_json::json!(2.5), "bad-frame");
-    refused(&|l| l["v"] = serde_json::json!("2"), "bad-frame");
-    refused(&|l| l["observerVersion"] = 1.into(), "bad-version");
-    refused(&|l| l["observerVersion"] = 3.into(), "bad-version");
+    refused(&|l| l["v"] = serde_json::json!(3.5), "bad-frame");
+    refused(&|l| l["v"] = serde_json::json!("3"), "bad-frame");
+    refused(&|l| l["observerVersion"] = 2.into(), "bad-version");
+    refused(&|l| l["observerVersion"] = 4.into(), "bad-version");
     refused(&|l| l["source"] = "claude-code".into(), "bad-frame");
     refused(&|l| l["protocol"] = "agent-lifecycle".into(), "bad-frame");
     refused(&|l| l["mode"] = "rpc".into(), "bad-mode");
@@ -249,7 +251,7 @@ fn the_attest_is_one_closed_shape() {
     refused(&|l| l["piVersion"] = "1.1.0 beta".into(), "bad-frame");
     refused(&|l| l["piVersion"] = 1.into(), "bad-frame");
     refused(
-        &|l| l["capabilities"] = serde_json::json!({"signal": false, "lifecycle": false}),
+        &|l| l["capabilities"] = serde_json::json!({"signal": false, "reply": false}),
         "bad-frame",
     );
     refused(
@@ -257,14 +259,11 @@ fn the_attest_is_one_closed_shape() {
         "bad-frame",
     );
     refused(
-        &|l| l["capabilities"] = serde_json::json!({"signal": true, "lifecycle": 1}),
+        &|l| l["capabilities"] = serde_json::json!({"signal": true, "reply": 1}),
         "bad-frame",
     );
     refused(
-        &|l| {
-            l["capabilities"] =
-                serde_json::json!({"signal": true, "lifecycle": true, "tools": true})
-        },
+        &|l| l["capabilities"] = serde_json::json!({"signal": true, "reply": true, "tools": true}),
         "bad-frame",
     );
     refused(&|l| l["capabilities"] = true.into(), "bad-frame");
@@ -273,7 +272,7 @@ fn the_attest_is_one_closed_shape() {
     refused(&|l| l["prompt"] = "x".into(), "bad-frame");
     refused(&|l| l["seq"] = 1.into(), "bad-frame");
     refused(&|l| l["state"] = "working".into(), "bad-frame");
-    refused(&|l| l["nativeSessionId"] = "abc".into(), "bad-frame");
+    refused(&|l| l["reply"] = "abc".into(), "bad-frame");
     for key in [
         "socket",
         "server_pid",
@@ -352,35 +351,9 @@ fn the_version_is_compatibility_and_nothing_else() {
     }
 }
 
-/// The observer's closed word for a session id it cannot put on a line:
-/// its own shape, one word, nothing of the id, and never beside another
-/// shape's field.
+/// Which capability each shape belongs to: a reset and a heartbeat to none.
 #[test]
-fn an_id_that_cannot_be_sent_is_one_closed_word_and_no_other_shape() {
-    assert_eq!(
-        parse_frame(&frame(
-            serde_json::json!({"seq": 4, "unavailable": "unsupported-native-id"})
-        )),
-        Ok(Frame::Unavailable { seq: 4 })
-    );
-    for body in [
-        serde_json::json!({"seq": 1, "unavailable": "too-long"}),
-        serde_json::json!({"seq": 1, "unavailable": ""}),
-        serde_json::json!({"seq": 1, "unavailable": true}),
-        serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id", "nativeSessionId": "a"}),
-        serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id", "event": "start"}),
-        serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id", "reason": "quit"}),
-        serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id", "run": 1, "state": "working"}),
-        serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id", "length": 600}),
-        serde_json::json!({"unavailable": "unsupported-native-id"}),
-    ] {
-        assert_eq!(
-            parse_frame(&frame(body.clone())),
-            Err("bad-frame"),
-            "{body}"
-        );
-    }
-    // which capability each shape belongs to: a reset and a heartbeat to none
+fn each_frame_belongs_to_one_capability_or_to_none() {
     use crate::agent_pi::Capability;
     let of = |body: serde_json::Value| parse_frame(&frame(body)).unwrap().capability();
     assert_eq!(
@@ -388,12 +361,8 @@ fn an_id_that_cannot_be_sent_is_one_closed_word_and_no_other_shape() {
         Some(Capability::Signal)
     );
     assert_eq!(
-        of(serde_json::json!({"seq": 1, "event": "snapshot", "nativeSessionId": "a"})),
-        Some(Capability::Lifecycle)
-    );
-    assert_eq!(
-        of(serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id"})),
-        Some(Capability::Lifecycle)
+        of(serde_json::json!({"seq": 1, "run": 1, "reply": "Done."})),
+        Some(Capability::Reply)
     );
     assert_eq!(of(serde_json::json!({"seq": 1, "reason": "quit"})), None);
     assert_eq!(of(serde_json::json!({"seq": 1})), None);
@@ -438,41 +407,82 @@ fn frames_are_four_closed_shapes() {
             Ok(Frame::Reset { seq: 4, reason })
         );
     }
-    let lifecycle = |body: serde_json::Value| parse_frame(&frame(body));
+    let reply = |body: serde_json::Value| parse_frame(&frame(body));
     assert_eq!(
-        lifecycle(
-            serde_json::json!({"seq": 5, "event": "start", "nativeSessionId": "abc", "reason": "startup"})
-        ),
-        Ok(Frame::Lifecycle {
+        reply(serde_json::json!({"seq": 5, "run": 2, "reply": "Done.\nTwo files changed."})),
+        Ok(Frame::Reply {
             seq: 5,
-            event: SessionEvent::Start(StartReason::Startup),
-            native: NativeId::Kept(PiNativeId("abc".into()))
+            run: 2,
+            text: ReplyText("Done.\nTwo files changed.".into())
         })
     );
-    assert_eq!(
-        lifecycle(serde_json::json!({"seq": 5, "event": "shutdown", "nativeSessionId": "abc", "reason": "quit"}))
-            .map(|f| f.seq()),
-        Ok(5)
-    );
-    assert!(matches!(
-        lifecycle(serde_json::json!({"seq": 5, "event": "snapshot", "nativeSessionId": "abc"})),
-        Ok(Frame::Lifecycle {
-            event: SessionEvent::Snapshot,
-            ..
-        })
-    ));
-    // a word of the other event, a reason on a snapshot, no reason on a start
+    // a final message names its run, is not blank and stands beside nothing else
     for body in [
-        serde_json::json!({"seq": 5, "event": "start", "nativeSessionId": "abc", "reason": "quit"}),
-        serde_json::json!({"seq": 5, "event": "shutdown", "nativeSessionId": "abc", "reason": "startup"}),
-        serde_json::json!({"seq": 5, "event": "snapshot", "nativeSessionId": "abc", "reason": "startup"}),
-        serde_json::json!({"seq": 5, "event": "start", "nativeSessionId": "abc"}),
-        serde_json::json!({"seq": 5, "event": "end", "nativeSessionId": "abc", "reason": "quit"}),
-        serde_json::json!({"seq": 5, "event": "start", "reason": "startup"}),
-        serde_json::json!({"seq": 5, "nativeSessionId": "abc"}),
+        serde_json::json!({"seq": 5, "reply": "Done."}),
+        serde_json::json!({"seq": 5, "run": 0, "reply": "Done."}),
+        serde_json::json!({"seq": 5, "run": 2, "reply": ""}),
+        serde_json::json!({"seq": 5, "run": 2, "reply": " \n\t"}),
+        serde_json::json!({"seq": 5, "run": 2, "reply": 7}),
+        serde_json::json!({"seq": 5, "run": 2, "reply": ["Done."]}),
+        serde_json::json!({"seq": 5, "run": 2, "reply": "Done.", "state": "turn-done"}),
+        serde_json::json!({"seq": 5, "run": 2, "reply": "Done.", "reason": "quit"}),
+        serde_json::json!({"seq": 5, "run": 2, "reply": "Done.", "title": "x"}),
     ] {
-        assert_eq!(lifecycle(body.clone()), Err("bad-frame"), "{body}");
+        assert_eq!(reply(body.clone()), Err("bad-frame"), "{body}");
     }
+}
+
+/// The one field of free text has its own bounds — the text and the line —
+/// and is the only reason a line may be longer than the others. It is never
+/// printed.
+#[test]
+fn a_final_message_is_bounded_and_never_printed() {
+    let said = |text: &str| {
+        parse_frame(&frame(
+            serde_json::json!({"seq": 1, "run": 1, "reply": text}),
+        ))
+    };
+    let longest = "a".repeat(MAX_REPLY);
+    assert!(matches!(said(&longest), Ok(Frame::Reply { .. })));
+    assert_eq!(said(&"a".repeat(MAX_REPLY + 1)), Err("bad-frame"));
+    // multi-byte text is counted in bytes
+    let wide = "é".repeat(MAX_REPLY / 2);
+    assert!(matches!(said(&wide), Ok(Frame::Reply { .. })));
+    assert_eq!(said(&format!("{wide}é")), Err("bad-frame"));
+    // the line: text that fits by itself and not once it is written as JSON
+    let escaped = "\n".repeat(MAX_REPLY);
+    let line = frame(serde_json::json!({"seq": 1, "run": 1, "reply": escaped}));
+    assert!(line.len() > MAX_REPLY_LINE);
+    assert_eq!(parse_message(&line), Err("bad-frame"));
+    // no other shape may be that long: padding is not content
+    let padded = |body: serde_json::Value| {
+        let line = frame(body);
+        format!("{}{}", " ".repeat(MAX_LINE + 1 - line.len()), line)
+    };
+    for body in [
+        serde_json::json!({"seq": 1}),
+        serde_json::json!({"seq": 1, "run": 1, "state": "working"}),
+        serde_json::json!({"seq": 1, "reason": "quit"}),
+    ] {
+        assert_eq!(
+            parse_message(&padded(body.clone())),
+            Err("bad-frame"),
+            "{body}"
+        );
+    }
+    assert_eq!(
+        parse_hello(&format!("{}{}", " ".repeat(MAX_LINE), hello(|_| {}))),
+        Err("bad-frame")
+    );
+    // what an agent said is in no Debug: not the frame's, not the message's
+    let secret = "the deploy key is hunter2";
+    let message = parse_message(&frame(
+        serde_json::json!({"seq": 1, "run": 1, "reply": secret}),
+    ))
+    .unwrap();
+    let printed = format!("{message:?}");
+    assert!(printed.contains("ReplyText(..)"), "{printed}");
+    assert!(!printed.contains("hunter2") && !printed.contains("deploy"));
 }
 
 #[test]
@@ -519,7 +529,7 @@ fn numbers_are_whole_positive_and_exact() {
     // JSON has no NaN or Infinity: such a line is not JSON at all
     for text in ["NaN", "Infinity", "-Infinity", "1e400"] {
         let line = format!(
-            "{{\"protocol\":\"pi-observer\",\"v\":2,\"source\":\"pi\",\"lease\":3,\"nonce\":\"{NONCE}\",\"seq\":{text}}}"
+            "{{\"protocol\":\"pi-observer\",\"v\":3,\"source\":\"pi\",\"lease\":3,\"nonce\":\"{NONCE}\",\"seq\":{text}}}"
         );
         assert_eq!(parse_message(&line), Err("bad-frame"), "{text}");
     }
@@ -549,10 +559,12 @@ fn a_frame_carries_no_field_of_another_shape_and_no_content() {
         serde_json::json!({"seq": 1, "pane": "%7"}),
         serde_json::json!({"seq": 1, "socket": "deck"}),
         serde_json::json!({"seq": 1, "mode": "tui"}),
-        serde_json::json!({"seq": 1, "capabilities": {"signal": true, "lifecycle": true}}),
+        serde_json::json!({"seq": 1, "capabilities": {"signal": true, "reply": true}}),
         serde_json::json!({"seq": 1, "title": "Allow tool?"}),
         serde_json::json!({"seq": 1, "prompt": "do it"}),
         serde_json::json!({"seq": 1, "messages": []}),
+        serde_json::json!({"seq": 1, "event": "snapshot", "nativeSessionId": "abc"}),
+        serde_json::json!({"seq": 1, "unavailable": "unsupported-native-id"}),
         serde_json::json!({"seq": 1, "path": "/tmp/x"}),
         serde_json::json!({"seq": 1, "aborted": true}),
         serde_json::json!({"run": 1, "state": "working"}),
@@ -574,54 +586,8 @@ fn a_frame_carries_no_field_of_another_shape_and_no_content() {
         frame(serde_json::json!({"seq": 1})).replacen("\"seq\":1", "\"seq\":1,\"seq\":2", 1);
     assert_eq!(parse_frame(&twice), Err("bad-frame"));
     assert_eq!(
-        parse_frame(&frame(serde_json::json!({"seq": 1})).replace("\"v\":2", "\"v\":3")),
+        parse_frame(&frame(serde_json::json!({"seq": 1})).replace("\"v\":3", "\"v\":4")),
         Err("bad-version")
-    );
-}
-
-#[test]
-fn a_native_id_is_pi_s_own_shape_and_never_cut_short() {
-    let named = |id: &str| {
-        parse_frame(&frame(
-            serde_json::json!({"seq": 1, "event": "snapshot", "nativeSessionId": id}),
-        ))
-    };
-    let kept = |id: &str| {
-        Ok(Frame::Lifecycle {
-            seq: 1,
-            event: SessionEvent::Snapshot,
-            native: NativeId::Kept(PiNativeId(id.to_string())),
-        })
-    };
-    // Pi's default (a UUIDv7) and what `--session-id` accepts
-    for id in [
-        "0199e3a4-7c2b-7f31-9a50-3b2c1d0e4f5a",
-        "probe.custom-ID_123",
-        "a",
-        "A9",
-    ] {
-        assert_eq!(named(id), kept(id), "{id}");
-        // Claude's validator would refuse most of them: the two never mix
-        if id != "0199e3a4-7c2b-7f31-9a50-3b2c1d0e4f5a" {
-            assert!(!crate::agent_reentry::claude::native_id_ok(id), "{id}");
-        }
-    }
-    for id in [
-        "", "-a", "a-", ".a", "a.", "a b", "a/b", "../x", "a\u{e9}", "a\n", "a;b",
-    ] {
-        assert_eq!(named(id), Err("bad-native-id"), "{id:?}");
-    }
-    let longest = "a".repeat(MAX_NATIVE_ID);
-    assert_eq!(named(&longest), kept(&longest));
-    let longer = "a".repeat(MAX_NATIVE_ID + 1);
-    assert_eq!(
-        named(&longer),
-        Ok(Frame::Lifecycle {
-            seq: 1,
-            event: SessionEvent::Snapshot,
-            native: NativeId::Unsupported
-        }),
-        "reported as unsupported, not shortened"
     );
 }
 
@@ -633,37 +599,37 @@ fn answers_are_six_closed_lines() {
     let nonce = Nonce::parse(NONCE).unwrap();
     let only_signal = Capabilities {
         signal: true,
-        lifecycle: false,
+        reply: false,
     };
     assert_eq!(
         nonce_line(&nonce),
-        format!("{{\"protocol\":\"pi-observer\",\"v\":2,\"nonce\":\"{NONCE}\"}}\n")
+        format!("{{\"protocol\":\"pi-observer\",\"v\":3,\"nonce\":\"{NONCE}\"}}\n")
     );
     assert_eq!(
         accepted_line(41, &nonce, only_signal),
         format!(
-            "{{\"protocol\":\"pi-observer\",\"v\":2,\"accepted\":41,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":true,\"lifecycle\":false}}}}\n"
+            "{{\"protocol\":\"pi-observer\",\"v\":3,\"accepted\":41,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":true,\"reply\":false}}}}\n"
         )
     );
     assert_eq!(
         ack_line(7, &nonce, only_signal),
         format!(
-            "{{\"protocol\":\"pi-observer\",\"v\":2,\"ack\":7,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":true,\"lifecycle\":false}}}}\n"
+            "{{\"protocol\":\"pi-observer\",\"v\":3,\"ack\":7,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":true,\"reply\":false}}}}\n"
         )
     );
     assert_eq!(
         revoked_line(9, &nonce, Capabilities::NONE),
         format!(
-            "{{\"protocol\":\"pi-observer\",\"v\":2,\"revoked\":9,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":false,\"lifecycle\":false}}}}\n"
+            "{{\"protocol\":\"pi-observer\",\"v\":3,\"revoked\":9,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":false,\"reply\":false}}}}\n"
         )
     );
     assert_eq!(
         again_line(&nonce),
-        format!("{{\"protocol\":\"pi-observer\",\"v\":2,\"again\":true,\"nonce\":\"{NONCE}\"}}\n")
+        format!("{{\"protocol\":\"pi-observer\",\"v\":3,\"again\":true,\"nonce\":\"{NONCE}\"}}\n")
     );
     assert_eq!(
         refused_line("duplicate-observer"),
-        "{\"protocol\":\"pi-observer\",\"v\":2,\"refused\":\"duplicate-observer\"}\n"
+        "{\"protocol\":\"pi-observer\",\"v\":3,\"refused\":\"duplicate-observer\"}\n"
     );
     // each is one JSON object with exactly its keys, and only a refusal is
     // without a nonce
@@ -721,7 +687,7 @@ fn deck_s_own_line_is_no_observer_s_and_its_answer_is_a_place() {
     let own = place_line();
     assert_eq!(
         own,
-        "{\"protocol\":\"pi-observer\",\"v\":2,\"source\":\"deck\"}"
+        "{\"protocol\":\"pi-observer\",\"v\":3,\"source\":\"deck\"}"
     );
     assert!(is_family(&own), "the listener hands it to this family");
     assert!(asks_place(&own));
@@ -732,14 +698,14 @@ fn deck_s_own_line_is_no_observer_s_and_its_answer_is_a_place() {
         format!("{own} "),
         format!(" {own}"),
         own.replace("deck", "pi"),
-        own.replace("\"v\":2", "\"v\":1"),
+        own.replace("\"v\":3", "\"v\":1"),
         own.replace('}', ",\"lease\":1}"),
     ] {
         assert!(!asks_place(&other), "{other}");
     }
     assert_eq!(
         placed_line(41),
-        "{\"protocol\":\"pi-observer\",\"v\":2,\"place\":41}\n"
+        "{\"protocol\":\"pi-observer\",\"v\":3,\"place\":41}\n"
     );
     assert_eq!(placed(&placed_line(41)), Some(41));
     assert_eq!(placed(&placed_line(u64::MAX)), Some(u64::MAX));
@@ -748,10 +714,10 @@ fn deck_s_own_line_is_no_observer_s_and_its_answer_is_a_place() {
         nonce_line(&nonce),
         again_line(&nonce),
         refused_line("busy"),
-        "{\"protocol\":\"agent-lifecycle\",\"v\":2,\"place\":41}\n".to_string(),
-        "{\"protocol\":\"pi-observer\",\"v\":1,\"place\":41}\n".to_string(),
-        "{\"protocol\":\"pi-observer\",\"v\":2,\"place\":-1}\n".to_string(),
-        "{\"protocol\":\"pi-observer\",\"v\":2,\"place\":\"41\"}\n".to_string(),
+        "{\"protocol\":\"agent-lifecycle\",\"v\":3,\"place\":41}\n".to_string(),
+        "{\"protocol\":\"pi-observer\",\"v\":2,\"place\":41}\n".to_string(),
+        "{\"protocol\":\"pi-observer\",\"v\":3,\"place\":-1}\n".to_string(),
+        "{\"protocol\":\"pi-observer\",\"v\":3,\"place\":\"41\"}\n".to_string(),
         String::new(),
     ] {
         assert_eq!(placed(&other), None, "{other}");
@@ -795,18 +761,18 @@ fn another_version_is_refused_in_its_own_framing() {
 fn capability_sets_compose_without_a_third_value() {
     let both = Capabilities {
         signal: true,
-        lifecycle: true,
+        reply: true,
     };
     let signal = Capabilities::NONE.with(Capability::Signal, true);
-    assert!(signal.signal && !signal.lifecycle);
-    assert!(signal.has(Capability::Signal) && !signal.has(Capability::Lifecycle));
+    assert!(signal.signal && !signal.reply);
+    assert!(signal.has(Capability::Signal) && !signal.has(Capability::Reply));
     assert!(!Capabilities::NONE.any());
-    assert_eq!(both.with(Capability::Lifecycle, false), signal);
+    assert_eq!(both.with(Capability::Reply, false), signal);
     // what two sets share: never more than either
     assert_eq!(both.and(signal), signal);
     assert_eq!(signal.and(both), signal);
     assert_eq!(
-        signal.and(Capabilities::NONE.with(Capability::Lifecycle, true)),
+        signal.and(Capabilities::NONE.with(Capability::Reply, true)),
         Capabilities::NONE
     );
 }
@@ -827,13 +793,13 @@ mod native {
     //!   projection, the coverage word) on the one-shot form of the same
     //!   snapshot, at the webview's interval;
     //! - the Settings commands (`agent_hooks_set("pi", …)`,
-    //!   `agent_pi_lifecycle_set`, `agent_hooks_status`), the boot migration
+    //!   `agent_pi_replies_set`, `agent_hooks_status`), the boot migration
     //!   and the dismiss command (`notify_dismiss`);
-    //! - the session observations a lifecycle frame wrote
-    //!   (`agent_reentry::lifecycle`). Their native ids appear in this
-    //!   harness's trace so a run can compare them with what Pi itself
-    //!   logged; that trace stays in the experiment root and is never
-    //!   committed;
+    //! - the readers of a final message (`turn_summary`): the card's line
+    //!   in the poll, and the phone's reply list, which this harness turns
+    //!   on so that a run can compare what was kept with what its fixture
+    //!   model said. Those texts are the fixture's own; the trace stays in
+    //!   the experiment root and is never committed;
     //! - what the scheduler asks before it sends (`generation_evidence` by point
     //!   reads, `pi_foreground`).
     //!
@@ -943,7 +909,7 @@ mod native {
         "fg",
         "agent",
         "pi_signal",
-        "pi_session",
+        "summary",
         "codex_signal",
         "episode",
         "episode_viewed",
@@ -1038,7 +1004,7 @@ mod native {
                     "lease": seen.lease, "session": seen.session, "run": seen.run, "open": seen.open,
                     "next_seq": seen.next_seq,
                     // what the lease may still do, as the transport holds it
-                    "signal": seen.usable.signal, "lifecycle": seen.usable.lifecycle,
+                    "signal": seen.usable.signal, "reply": seen.usable.reply,
                 })
             })
             .collect();
@@ -1051,12 +1017,19 @@ mod native {
             .into_iter()
             .map(|(session, code)| json!({ "session": session, "code": code }))
             .collect();
-        let sessions: Vec<Value> = crate::agent_reentry::lifecycle::pi_sessions_for_tests()
-            .into_iter()
-            .map(|(lease, id, last)| json!({ "lease": lease, "id": id, "last": said(last) }))
+        // every final message the phone's list keeps, per session, in order
+        let replies: BTreeMap<String, Vec<Value>> = board
+            .names
+            .lock_or_recover()
+            .iter()
+            .map(|session| {
+                let kept = crate::turn_summary::phone_replies(session)
+                    .into_iter()
+                    .map(|reply| json!({ "text": reply.text, "cut": reply.cut }))
+                    .collect();
+                (session.clone(), kept)
+            })
             .collect();
-        // leases whose session is not observed for an id this build does not keep
-        let unsupported = crate::agent_reentry::lifecycle::pi_unsupported_for_tests();
         json!({
             "store": store,
             // how often a line was neither believed nor blamed, and how
@@ -1065,8 +1038,7 @@ mod native {
             "challenges": probe::challenges(),
             "leases": leases,
             "ended": ended,
-            "sessions": sessions,
-            "unsupported": unsupported,
+            "replies": replies,
             "revoked": revoked,
             "pending": probe::pending(),
             "drops": drops.counts(),
@@ -1079,19 +1051,9 @@ mod native {
         let status = serde_json::to_value(agent_status::agent_hooks_status()).unwrap_or_default();
         json!({
             "pi": status.get("pi"),
-            "pi_lifecycle": status.get("pi_lifecycle"),
+            "pi_replies": status.get("pi_replies"),
             "pi_installation": status.get("pi_installation"),
         })
-    }
-
-    /// The last thing a runtime said of its session, as one closed word.
-    fn said(event: crate::agent_pi::SessionEvent) -> String {
-        use crate::agent_pi::SessionEvent;
-        match event {
-            SessionEvent::Start(reason) => format!("start-{reason:?}").to_lowercase(),
-            SessionEvent::Shutdown(reason) => format!("shutdown-{reason:?}").to_lowercase(),
-            SessionEvent::Snapshot => "snapshot".into(),
-        }
     }
 
     /// One command of the driver; the reply's body.
@@ -1122,9 +1084,9 @@ mod native {
                     "status": settings(),
                 })
             }
-            "lifecycle" => {
+            "replies" => {
                 let enable = command.get("enable").and_then(Value::as_bool) == Some(true);
-                let result = crate::agent_pi::config::agent_pi_lifecycle_set(enable);
+                let result = crate::agent_pi::config::agent_pi_replies_set(enable);
                 json!({
                     "ok": result.is_ok(),
                     "error": result.err().map(|error| error.message().to_owned()),
@@ -1162,6 +1124,9 @@ mod native {
         let listener = agent_status::listen_at(&socket).expect("the status socket");
         let stop = Arc::new(AtomicBool::new(false));
         let drops = DropCounts::new();
+        // the phone's reply list is how this harness reads a kept final
+        // message back; nothing is paired, and it dies with this process
+        crate::turn_summary::set_phone_replies(true);
         let board = Arc::new(Board::default());
 
         let listening = std::thread::spawn({

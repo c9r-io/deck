@@ -1,19 +1,20 @@
 // observer.ts — Deck's read-only observer for the Pi coding agent.
 //
-// Pi loads ONE of the three entries beside this file (`signal.ts`,
-// `lifecycle.ts`, `both.ts`) from the signed Deck bundle; each calls
-// `deckPiObserver` with its two capability bits and nothing else. This file is
-// the whole implementation. The backend half and the wire contract are
-// `app/src-tauri/src/agent_pi.rs`.
+// Pi loads ONE of the two entries beside this file (`signal.ts`, `reply.ts`)
+// from the signed Deck bundle; each calls `deckPiObserver` with its two
+// capability bits and nothing else. This file is the whole implementation.
+// The backend half and the wire contract are `app/src-tauri/src/agent_pi.rs`.
 //
 // # Contract
-// - Content-free. It subscribes to `session_start`, `session_shutdown` and,
-//   with the signal capability, `agent_start` and `agent_settled`. It never
-//   subscribes to an event that carries a prompt, messages, a title, a tool
-//   call or a result, and never reads one. With the lifecycle capability it
-//   reads ONE value through Pi's public API, the native session id; without
-//   it the session manager is never touched. No path, cwd, model, transcript
-//   or environment value other than the three routing variables is read.
+// - Content-free unless the user chose otherwise. It subscribes to
+//   `session_start`, `session_shutdown`, `agent_start` and `agent_settled`:
+//   notifications that carry no prompt, message, title, tool call or
+//   result. Loaded from the reply entry — the user's "forward Pi's final
+//   message" switch — it also hears the end of each low-level run and reads
+//   ONE thing there: the text of the last assistant message of that run
+//   (`onRunEnd`). No user message, tool call, tool result or thinking is
+//   read, by either entry. No path, cwd, model, transcript, session or
+//   environment value other than the three routing variables is read.
 // - Observation only. It registers no tool, command, provider, shortcut or
 //   flag, sends no message, starts, switches or forks no session, runs no
 //   tool or process, and opens no network connection. Its one output is
@@ -28,8 +29,9 @@
 // - Only an interactive terminal session (`ctx.mode === "tui"`) speaks.
 //   The factory registers callbacks and starts nothing; the first message is
 //   sent by `session_start`.
-// - Protocol `pi-observer` v2, one JSON line per message, at most 1024
-//   bytes, and ONE message per connection: connect, write the line, read
+// - Protocol `pi-observer` v3, one JSON line per message, at most 1024
+//   bytes (8000 for the one frame that carries a final message), and ONE
+//   message per connection: connect, write the line, read
 //   Deck's one line of answer, close. No connection is ever kept or used
 //   twice, and no second one is made while one exists — for every observer
 //   this module made, whichever asks (`line`). Closing is immediate on both
@@ -46,8 +48,8 @@
 //   (pane, versions, mode, the capabilities it loaded). Deck answers
 //   `accepted` with a lease number and the capabilities that lease may use.
 //   Every frame after that names the lease and is numbered from 1 without a
-//   gap: `signal`, `lifecycle`, `unavailable`, `reset` and `ping`. ONE frame
-//   waits for its answer at a time.
+//   gap: `signal`, `reply`, `reset` and `ping`. ONE frame waits for its
+//   answer at a time.
 // - `again` is an answer, not an error: Deck could not tell this process's
 //   line from a child's — Pi made a child for a tool, or an answer went
 //   missing — and read nothing into anything. The same message is sent once
@@ -60,8 +62,8 @@
 // - Deck may take a capability away while this runtime lives, and never
 //   gives one back. Every answer to a frame, and the acceptance itself, says
 //   what the lease may still do: from then on nothing of a lost capability
-//   is read, queued or sent — without the lifecycle capability the session
-//   manager is not touched again — and what is left goes on under the same
+//   is read, queued or sent — without the reply capability no message of a
+//   run is looked at again — and what is left goes on under the same
 //   lease. A frame that was on its way is answered `revoked` instead of
 //   `ack`; that is an answer, not an error. A later lease of this runtime
 //   claims only what is left. Getting a capability back takes Pi loading its
@@ -73,21 +75,16 @@
 //   of a run reports that run as its run 1, and a lease accepted while idle
 //   reports nothing until the next start. An ending that happened without a
 //   lease is never reported afterwards.
-// - With the lifecycle capability the first lease reports the session this
-//   runtime started in (`start`, with Pi's own reason); a later lease
-//   reports only what the API says now (`snapshot`), never a start again.
-//   `session_shutdown` reads the id once more, then reports `shutdown` with
-//   Pi's reason. An id is sent whole or not at all: one that does not fit a
-//   line is reported as the closed word `unsupported-native-id` in place of
-//   the frame that would have carried it — never cut short, never hashed,
-//   never passed over in silence — and after that word this lease says
-//   nothing more about sessions. An id that does not even have the shape of
-//   a Pi session id is this observer's error like any other: it ends the
-//   observer and reports nothing.
+// - With the reply capability, a run that settles reports its final
+//   message BEFORE its ending: one `reply` frame with the run's number and
+//   the text, cut to its head and tail when it is long (the same cut the
+//   status helper makes for the other agents), then `turn-done`. A run the
+//   user aborted, one whose last assistant message failed, and one that
+//   said nothing report the ending alone. The text is kept in this closure
+//   from the end of the low-level run to the settlement and nowhere else.
 // - `session_shutdown` marks this runtime disposed before anything else:
 //   timers stop, later callbacks do nothing, and nothing binds again. The
-//   last frames (`shutdown` with the lifecycle capability, then `reset`,
-//   each with Pi's own reason) get at most 100 ms; then this observer's
+//   last frame (`reset`, with Pi's own reason) gets at most 100 ms; then this observer's
 //   connection, if it has one, is closed and it never makes another — a
 //   runtime Pi loads afterwards meets none of this one's. Deck ends a lease
 //   that says nothing for fifteen seconds, and at once when its process is
@@ -108,15 +105,22 @@
 //   a conflict and never write — and two observers in one process would be
 //   two connections at a time.
 //
-// The four files are JavaScript in TypeScript's syntax subset on purpose:
+// The three files are JavaScript in TypeScript's syntax subset on purpose:
 // Pi loads them as they are, and Deck's gates check them without a compiler.
 import fs from "node:fs";
 import net from "node:net";
 
 const PROTOCOL = "pi-observer";
-const WIRE_VERSION = 2;
-const OBSERVER_VERSION = 2;
+const WIRE_VERSION = 3;
+const OBSERVER_VERSION = 3;
 const MAX_LINE = 1024;
+/* the one longer line: a `reply` frame, with its text as JSON */
+const MAX_REPLY_LINE = 8000;
+const REPLY_JSON_MAX = 7600;
+/* a long final message keeps this much of its head and of its tail, in bytes */
+const REPLY_HEAD = 2000;
+const REPLY_TAIL = 4000;
+const REPLY_CUT = "\n…\n";
 const ACK_TIMEOUT_MS = 2000;
 const PING_EVERY_MS = 5000;
 const RECONNECT_MS = [1000, 2000, 5000, 10000];
@@ -131,14 +135,6 @@ const WAITING_LIMIT = 8;
 const DUPLICATE_MS = 20000;
 /* a Unix socket address holds 104 bytes on macOS, the terminator included */
 const MAX_SOCKET_PATH = 103;
-/* an id longer than this does not fit a line: Deck is told so in one closed
-   word instead. Deck itself keeps at most 256 bytes and says so on the card. */
-const MAX_NATIVE_ID = 512;
-const UNSUPPORTED_NATIVE_ID = "unsupported-native-id";
-/* the shape Pi itself gives a session id */
-const NATIVE_ID_SHAPE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
-
-const START_REASONS = ["startup", "reload", "new", "resume", "fork"];
 const SHUTDOWN_REASONS = ["quit", "reload", "new", "resume", "fork"];
 /* refusals that hold for as long as this runtime lives */
 const FINAL_REFUSALS = [
@@ -187,20 +183,35 @@ export function privateSocket(path) {
 
 const closedWord = (words, word) => (words.includes(word) ? word : null);
 
-/** What Pi gave as its session id: `{ id }`, `{ unsupported: true }` for an
- *  id that does not fit a line, `null` for none, and a throw for one that is
- *  no Pi session id at all. */
-function nativeIdOf(value) {
-  if (typeof value !== "string" || value.length === 0) return null;
-  if (value.length <= MAX_NATIVE_ID) return { id: value };
-  if (!NATIVE_ID_SHAPE.test(value)) throw new Error("native id");
-  return { unsupported: true };
+/** `text`, or its head and its tail (each cut at a character boundary)
+ *  around the cut mark: small enough, written as JSON, for one reply line. */
+export function bounded(text) {
+  const bytes = Buffer.from(text, "utf8");
+  let head = REPLY_HEAD;
+  let tail = REPLY_TAIL;
+  for (;;) {
+    let cut = text;
+    if (bytes.length > head + tail) {
+      let end = head;
+      while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+      let start = bytes.length - tail;
+      while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start += 1;
+      cut = `${bytes.subarray(0, end).toString("utf8")}${REPLY_CUT}${bytes.subarray(start).toString("utf8")}`;
+    }
+    if (Buffer.byteLength(JSON.stringify(cut), "utf8") <= REPLY_JSON_MAX || head + tail < 64) return cut;
+    head = Math.floor(head / 2);
+    tail = Math.floor(tail / 2);
+  }
 }
+
+/** Whether a message's line is longer than its kind may be. */
+const tooLong = (message) => Buffer.byteLength(textOf(message), "utf8")
+  > ("reply" in message ? MAX_REPLY_LINE : MAX_LINE);
 
 /** The two capability bits of an answer, or null when they are not exactly that. */
 function bitsOf(value) {
   return !!value && typeof value === "object" && Object.keys(value).length === 2
-    && typeof value.signal === "boolean" && typeof value.lifecycle === "boolean" ? value : null;
+    && typeof value.signal === "boolean" && typeof value.reply === "boolean" ? value : null;
 }
 
 /** The nonce of an answer, or null when it carries none. */
@@ -224,17 +235,15 @@ const later = (wait, work) => {
 /** The extension factory of one entry. `piVersion` is Pi's exported VERSION. */
 export function deckPiObserver(capabilities, piVersion) {
   const signal = capabilities.signal === true;
-  const lifecycle = capabilities.lifecycle === true;
+  const reply = capabilities.reply === true;
   return function deckPiObserverFactory(pi) {
     let disposed = false;
     let ended = false; // a final refusal: nothing binds again in this runtime
     let sealed = false; // the shutdown is over: no connection is made again
     // what this runtime may still do: Deck only ever takes away
-    const may = { signal, lifecycle };
+    const may = { signal, reply };
     let target = null;
-    let sessions = null; // this runtime's session manager, lifecycle only
-    let first = null; // the start this runtime may report under its first lease
-    let silent = false; // this lease said that its session id cannot be sent
+    let said = null; // the last assistant message of the run that is open, reply only
     let active = false; // a run started and has not settled
     let lease = null; // the number Deck accepted this observer under
     let nonce = null; // what Deck's last answer said the next message must carry
@@ -250,26 +259,6 @@ export function deckPiObserver(capabilities, piVersion) {
     let duplicate = null; // since when another observer of this process has held the lease
     let drained = null;
 
-    const nativeId = (manager) => {
-      let id = null;
-      try {
-        id = manager.getSessionId();
-      } catch (_) {
-        return null;
-      }
-      return nativeIdOf(id);
-    };
-
-    /* one session frame, or the closed word for an id that cannot be sent */
-    const session = (native, frame) => {
-      if (!native || silent) return null;
-      if (native.unsupported) {
-        silent = true;
-        return { unavailable: UNSUPPORTED_NATIVE_ID };
-      }
-      return { ...frame, nativeSessionId: native.id };
-    };
-
     const stopTimers = () => {
       if (ping) clearInterval(ping);
       if (retry) clearTimeout(retry);
@@ -279,25 +268,23 @@ export function deckPiObserver(capabilities, piVersion) {
 
     /* Deck took a capability away: nothing of it is read, queued or sent again */
     const narrow = (now) => {
-      const lost = { signal: may.signal && !now.signal, lifecycle: may.lifecycle && !now.lifecycle };
+      const lost = { signal: may.signal && !now.signal, reply: may.reply && !now.reply };
       if (lost.signal) {
         may.signal = false;
         active = false;
       }
-      if (lost.lifecycle) {
-        may.lifecycle = false;
-        sessions = null;
-        first = null;
+      if (lost.reply) {
+        may.reply = false;
+        said = null;
       }
       queue = queue.filter((frame) => !(lost.signal && "state" in frame)
-        && !(lost.lifecycle && ("event" in frame || "unavailable" in frame)));
+        && !(lost.reply && "reply" in frame));
     };
 
     const dispose = () => {
       disposed = true;
       stopTimers();
-      first = null;
-      sessions = null;
+      said = null;
     };
 
     /* One message: a connection of its own, one line, Deck's one line of
@@ -332,7 +319,7 @@ export function deckPiObserver(capabilities, piVersion) {
           // what waited for the line goes next, unless the answer's own next message took it
           if (!line.open && line.waiting.length) line.waiting.shift()();
         };
-        if (sealed || text.length > MAX_LINE || !privateSocket(target.path)) {
+        if (sealed || tooLong(message) || !privateSocket(target.path)) {
           later(0, () => finish(null));
           return;
         }
@@ -421,8 +408,6 @@ export function deckPiObserver(capabilities, piVersion) {
       nonce = null;
       busy = false;
       queue = [];
-      silent = false;
-      first = null;
       if (ping) clearInterval(ping);
       ping = null;
       const refused = refusalOf(reply);
@@ -467,7 +452,7 @@ export function deckPiObserver(capabilities, piVersion) {
         busy = false;
         narrow(bits);
         // a reset that was answered is the end of this lease
-        if ("reason" in frame && !("event" in frame)) {
+        if ("reason" in frame) {
           lease = null;
           nonce = null;
           queue = [];
@@ -482,7 +467,7 @@ export function deckPiObserver(capabilities, piVersion) {
       while (lease !== null && !busy && queue.length) {
         const frame = queue.shift();
         // a frame that cannot be written is not numbered: the next one takes its place
-        if (textOf({ lease, nonce, seq: seq + 1, ...frame }).length > MAX_LINE) continue;
+        if (tooLong({ lease, nonce, seq: seq + 1, ...frame })) continue;
         busy = true;
         send(frame, 0);
       }
@@ -506,16 +491,7 @@ export function deckPiObserver(capabilities, piVersion) {
       run = 0;
       attempt = 0;
       duplicate = null;
-      silent = false;
       narrow(bits);
-      if (may.lifecycle) {
-        const start = first;
-        first = null;
-        const frame = start
-          ? session(start.native, { event: "start", reason: start.reason })
-          : session(nativeId(sessions), { event: "snapshot" });
-        if (frame) push(frame);
-      }
       if (may.signal && active) {
         run = 1;
         push({ run, state: "working" });
@@ -527,10 +503,9 @@ export function deckPiObserver(capabilities, piVersion) {
       ping.unref();
     };
 
-    /* a binding that did not end in a lease: the start is never reported later */
+    /* a binding that did not end in a lease */
     const unbound = (reply) => {
       binding = false;
-      first = null;
       const refused = refusalOf(reply);
       if (refused !== "duplicate-observer") duplicate = null;
       else if (duplicate === null) duplicate = Date.now();
@@ -549,7 +524,7 @@ export function deckPiObserver(capabilities, piVersion) {
         observerVersion: OBSERVER_VERSION,
         piVersion,
         mode: "tui",
-        capabilities: { signal: may.signal, lifecycle: may.lifecycle },
+        capabilities: { signal: may.signal, reply: may.reply },
       }, (reply) => {
         const next = nonceOf(reply);
         // not believed and not blamed: the same claims once more, with the new nonce
@@ -571,8 +546,8 @@ export function deckPiObserver(capabilities, piVersion) {
 
     const bind = () => {
       if (disposed || ended || binding || lease !== null || !target) return;
-      // a runtime that lost both capabilities has nothing to bind for
-      if (!may.signal && !may.lifecycle) {
+      // a runtime without run boundaries has nothing to bind for
+      if (!may.signal) {
         ended = true;
         return;
       }
@@ -604,33 +579,52 @@ export function deckPiObserver(capabilities, piVersion) {
       if (typeof piVersion !== "string" || !/^[0-9A-Za-z.+-]{1,32}$/.test(piVersion)) return;
       target = route(process.env);
       if (!target) return;
-      if (may.lifecycle) {
-        sessions = ctx.sessionManager;
-        const native = nativeId(sessions);
-        const reason = closedWord(START_REASONS, event.reason);
-        first = native && reason ? { native, reason } : null;
-      }
       bind();
     });
 
     const onAgentStart = guarded(() => {
       if (!target || active || !may.signal) return;
       active = true;
+      said = null;
       if (lease === null) return;
       run += 1;
       push({ run, state: "working" });
     });
 
-    const onAgentSettled = guarded(() => {
-      if (!target || !active || !may.signal) return;
-      active = false;
-      if (lease !== null && run > 0) push({ run, state: "turn-done" });
+    /* The end of one low-level run: the text of its last assistant message
+       and whether that message failed. The ONE place anything of a
+       conversation is read, by a runtime that still has the reply
+       capability and by no other. */
+    const onRunEnd = guarded((event) => {
+      if (!target || !active || !may.reply) return;
+      const all = event.messages;
+      if (!Array.isArray(all)) return;
+      for (let at = all.length - 1; at >= 0; at -= 1) {
+        const message = all[at];
+        if (!message || message.role !== "assistant") continue;
+        const parts = message.content;
+        const text = (Array.isArray(parts) ? parts : [])
+          .map((part) => (part && part.type === "text" && typeof part.text === "string" ? part.text : ""))
+          .join("");
+        said = { text, failed: message.stopReason === "error" || message.stopReason === "aborted" };
+        return;
+      }
     });
 
-    const onShutdown = guarded((event, ctx) => {
-      // the last id, read before this runtime is disposed — and only by a
-      // lease that may still observe sessions and has not said it cannot
-      const native = may.lifecycle && target && !silent ? nativeId(ctx.sessionManager) : null;
+    const onAgentSettled = guarded((event) => {
+      if (!target || !active || !may.signal) return;
+      active = false;
+      const last = said;
+      said = null;
+      if (lease === null || run === 0) return;
+      // the final message first: Deck has it when it accepts the ending
+      if (may.reply && last && !last.failed && last.text.trim() !== "" && event.aborted !== true) {
+        push({ run, reply: bounded(last.text) });
+      }
+      push({ run, state: "turn-done" });
+    });
+
+    const onShutdown = guarded((event) => {
       dispose();
       if (lease === null) {
         seal();
@@ -638,10 +632,7 @@ export function deckPiObserver(capabilities, piVersion) {
       }
       const reason = closedWord(SHUTDOWN_REASONS, event.reason);
       // what was queued and not sent belongs to a runtime that is over
-      queue = [];
-      const last = reason ? session(native, { event: "shutdown", reason }) : null;
-      if (last) queue.push(last);
-      queue.push({ reason: reason || "fault" });
+      queue = [{ reason: reason || "fault" }];
       return new Promise((resolve) => {
         let finished = false;
         const finish = () => {
@@ -664,6 +655,7 @@ export function deckPiObserver(capabilities, piVersion) {
         pi.on("agent_start", onAgentStart);
         pi.on("agent_settled", onAgentSettled);
       }
+      if (reply) pi.on("agent_end", onRunEnd);
       pi.on("session_shutdown", onShutdown);
     } catch (_) {
       // registered or not, every callback of a disposed observer does nothing

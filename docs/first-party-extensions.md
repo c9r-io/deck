@@ -108,8 +108,9 @@ Behavioral invariants are as important as markup:
 
 - An unknown, timed-out or failed read stays visibly unknown and disabled;
   retry only reads. Older responses cannot overwrite newer choices.
-- Pi's two choices share one external config entry and a write lock. They stay
-  independent opt-ins; session observation never becomes Signal or re-entry.
+- Pi's two choices share one external config entry and a write lock. Forwarding
+  Pi's final message is its own opt-in, needs the work status and goes off with
+  it; what it forwards is never Signal, never authority and lifts no hold.
 - Confirmation, rollback, persistent inline feedback and toast behavior remain
   owned by the same user action. Mounting/importing grants nothing.
 - The one Settings document writer remains in `settings.js`. Slack authority,
@@ -198,11 +199,13 @@ manifest cannot expand any of those contracts.
 for `CODEX` and `PI` (neither way Pi is installed lets Deck prove whose
 code a client is). What a source's lifecycle receipts mean is part of that
 capability (`receipts`, a `lifecycle::ReceiptContract`): a source without
-one can send no receipt. Pi's optional session observation
-(`agent_pi_lifecycle_set`, `lifecycle::observe_pi`) is not a receipt and
-gives Pi no contract: it says which native session a running Pi is in, in
-memory only, and makes Pi no candidate for re-entry. A session id Deck does
-not keep is said as that (`unsupported`), never cut short or passed over. In the restart review a
+one can send no receipt. Pi has none, and nothing observes which native
+session a running Pi is in (the session observation of wire version 2 is
+gone: it served a re-entry that neither way Pi is installed allows). Pi's
+second opt-in is its final message (`agent_pi_replies_set`, the `reply`
+entry and frame, `turn_summary::offer_pi`): the text of the last assistant
+message of a run that settled, handed with that run's ending to the readers
+of every agent's final message. In the restart review a
 card whose foreground is a verified Pi is named as Pi and told its own
 reason (`client-identity-unverifiable`); it is never a candidate, and an
 approval that names it is refused whole. It holds the product's code requirement — whose code a client

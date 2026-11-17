@@ -80,18 +80,33 @@ test('an agents map is authoritative when one source is missing or malformed', a
 });
 
 test('partial Pi payloads keep each absent capability unknown', async () => {
-  pi = { lifecycle: true, installation: 'current' };
+  pi = { replies: true, installation: 'current' };
   await refreshAgentContributions();
   assert.deepEqual(
     [$('set-pi-hooks').checked, $('set-pi-hooks').indeterminate, $('set-pi-hooks').disabled],
     [false, true, true],
   );
+  // the final message is known only beside the work status it needs
   assert.deepEqual(
-    [$('set-pi-lifecycle').checked, $('set-pi-lifecycle').indeterminate, $('set-pi-lifecycle').disabled],
-    [true, false, false],
+    [$('set-pi-replies').checked, $('set-pi-replies').indeterminate, $('set-pi-replies').disabled],
+    [false, true, true],
   );
+  // an answer without it (an earlier build's) reads as off, not unknown
+  pi = { signal: true, installation: 'current' };
+  await refreshAgentContributions();
+  assert.deepEqual(
+    [$('set-pi-replies').checked, $('set-pi-replies').indeterminate, $('set-pi-replies').disabled],
+    [false, false, false],
+  );
+  // it needs the work status: off and unusable without it, whatever is answered
+  pi = { signal: false, replies: true, installation: 'current' };
+  await refreshAgentContributions();
+  assert.deepEqual([$('set-pi-replies').checked, $('set-pi-replies').disabled], [false, true]);
+  pi = { signal: true, replies: true, installation: 'current' };
+  await refreshAgentContributions();
+  assert.deepEqual([$('set-pi-replies').checked, $('set-pi-replies').disabled], [true, false]);
 
-  pi = { signal: true, lifecycle: false, installation: 'configured' };
+  pi = { signal: true, replies: false, installation: 'configured' };
   await refreshAgentContributions();
   assert.equal($('set-pi-hooks').checked, false);
   assert.equal($('set-pi-hooks').indeterminate, true);
@@ -99,49 +114,49 @@ test('partial Pi payloads keep each absent capability unknown', async () => {
 });
 
 test('an unusable Pi installation refuses handlers before confirmation or write', async () => {
-  pi = { signal: true, lifecycle: false, installation: 'unsupported-location' };
+  pi = { signal: true, replies: false, installation: 'unsupported-location' };
   await refreshAgentContributions();
   const beforeWrites = writes.length, beforeConfirmations = confirmations;
-  $('set-pi-lifecycle').checked = true;
-  await $('set-pi-lifecycle').onchange();
+  $('set-pi-replies').checked = true;
+  await $('set-pi-replies').onchange();
   assert.equal(writes.length, beforeWrites);
   assert.equal(confirmations, beforeConfirmations);
-  assert.equal($('set-pi-lifecycle').disabled, true);
-  pi = { signal: false, lifecycle: false, installation: 'absent' };
+  assert.equal($('set-pi-replies').disabled, true);
+  pi = { signal: false, replies: false, installation: 'absent' };
   await refreshAgentContributions();
 });
 
 test('a control becoming unusable during confirmation cannot write', async () => {
-  pi = { signal: false, lifecycle: false, installation: 'absent' };
+  pi = { signal: false, replies: false, installation: 'absent' };
   await refreshAgentContributions();
   const answer = deferred(), beforeWrites = writes.length;
   confirmBehavior = () => answer.promise;
   $('set-pi-hooks').checked = true;
   const changing = $('set-pi-hooks').onchange();
   await new Promise(resolve => setImmediate(resolve));
-  pi = { signal: false, lifecycle: false, installation: 'unsupported-location' };
+  pi = { signal: false, replies: false, installation: 'unsupported-location' };
   await refreshAgentContributions();
   answer.resolve(true);
   await changing;
   assert.equal(writes.length, beforeWrites);
   assert.equal($('set-pi-hooks').disabled, true);
   confirmBehavior = async () => true;
-  pi = { signal: false, lifecycle: false, installation: 'absent' };
+  pi = { signal: false, replies: false, installation: 'absent' };
   await refreshAgentContributions();
 });
 
-test('Pi signal and lifecycle controls share the external-settings write lock', async () => {
+test('Pi work-status and final-message controls share the external-settings write lock', async () => {
   $('set-pi-hooks').checked = true;
   const signal = $('set-pi-hooks').onchange();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal($('set-pi-lifecycle').disabled, true);
-  $('set-pi-lifecycle').checked = true;
-  await $('set-pi-lifecycle').onchange();
+  assert.equal($('set-pi-replies').disabled, true);
+  $('set-pi-replies').checked = true;
+  await $('set-pi-replies').onchange();
   assert.deepEqual(writes, [['agent_hooks_set', { agent: 'pi', enable: true }]]);
   writeGate.resolve();
   await signal;
   assert.equal($('set-pi-hooks').checked, true);
-  assert.equal($('set-pi-lifecycle').checked, false);
+  assert.equal($('set-pi-replies').checked, false);
 });
 
 

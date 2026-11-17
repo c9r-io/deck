@@ -4,10 +4,10 @@
 //!
 //! Deck owns attention around work; the Agent owns the work. This adapter
 //! observes two boundaries Pi itself declares — an agent run started, an
-//! agent run settled — and, separately, which native session a Pi runtime is
-//! in. It reads no prompt, message, title, tool call, result or transcript,
-//! sends Pi nothing but the answers to its observer's own messages, and
-//! starts, steers or resumes nothing.
+//! agent run settled — and, when the user turned that on, the final message
+//! of a run that settled. It reads no prompt, title, tool call, result,
+//! transcript or session, sends Pi nothing but the answers to its
+//! observer's own messages, and starts, steers or resumes nothing.
 //!
 //! # Contract
 //! - **What is supported, and what is not.** Pi 1.x from 1.1 gives an extension a
@@ -19,9 +19,11 @@
 //!   `needs-input` (the closed `RunState` has no such word), Deck says so on
 //!   the card, and no automatic prompt is ever sent to a recognized Pi
 //!   (`scheduler/select.rs`, `Hold::PiInputUnverified`). Pi is never
-//!   re-entered automatically: `PI.reentry` is `None`, because neither an
-//!   npm install (the running image is Node) nor the official standalone
-//!   build (ad-hoc signed) lets Deck prove whose code a client is.
+//!   re-entered: `PI.reentry` is `None`, because neither an npm install
+//!   (the running image is Node) nor the official standalone build (ad-hoc
+//!   signed, 1.5.2 included) lets Deck prove whose code a client is. To the
+//!   re-entry preview a Pi is an unsupported agent like any other program,
+//!   and nothing here observes which native session a Pi is in.
 //! - **One transport.** The observer is a Pi extension inside the signed
 //!   Deck bundle (`resources/pi/`); Pi's settings name its path, nothing is
 //!   written under the home directory but that one settings entry
@@ -41,31 +43,30 @@
 //!   Deck gave that process alone, that is what says that a line is that
 //!   process's own and no child's (`transport`, "Whose bytes"). The backend
 //!   names one accepted observer (a lease, never reused). The observer
-//!   counts its runs inside that lease. Pi's native session id is a fourth
-//!   thing, used only by the lifecycle capability and never as an
-//!   interaction id. What a line SAYS about its pane, server, version or
+//!   counts its runs inside that lease. What a line SAYS about its pane, server, version or
 //!   mode is a claim. That a process is still the instance that attested
 //!   says nothing about WHOSE program it is: it is no product identity and
 //!   admits no re-entry.
 //! - **The wire** (`parse_message`): one JSON object per line, at most
-//!   `MAX_LINE` bytes, protocol `pi-observer`, version 2, source `pi`.
-//!   Exactly seven shapes, told apart by their exact key sets: `hello` (no
-//!   key of its own: it asks for a nonce and claims nothing), `attest`
-//!   (`nonce`, `socket`, `server_pid`, `pane`, `observerVersion`,
-//!   `piVersion`, `mode`, `capabilities{signal,lifecycle}`), and, each with
-//!   the `lease` it belongs to, the `nonce` Deck's last answer gave and its
-//!   `seq`: `signal` (`run`, `state`), `reset` (`reason`), `lifecycle`
-//!   (`event`, `nativeSessionId`, and `reason` for `start` and `shutdown`
-//!   only), `unavailable` (`unavailable`: the one closed word
-//!   `unsupported-native-id`, sent INSTEAD of a lifecycle frame whose id
-//!   does not fit a line — the id itself is never cut short, hashed or left
-//!   out silently) and `ping` (nothing else). An unknown or repeated key, a
-//!   missing one, a number that is negative, fractional or beyond 2^53-1, an
-//!   unknown word, another protocol version or mode is refused; nothing is
-//!   repaired. There is no field for a prompt, a title, a path, a model or
-//!   free text. A line that names a lease and carries a nonce, and is none
-//!   of the five frames, is refused as well — and ends that lease when its
-//!   sender is proven, as any other frame Deck does not expect.
+//!   `MAX_LINE` bytes (`MAX_REPLY_LINE` for a `reply` frame), protocol
+//!   `pi-observer`, version 3, source `pi`. Exactly six shapes, told apart
+//!   by their exact key sets: `hello` (no key of its own: it asks for a
+//!   nonce and claims nothing), `attest` (`nonce`, `socket`, `server_pid`,
+//!   `pane`, `observerVersion`, `piVersion`, `mode`,
+//!   `capabilities{signal,reply}`), and, each with the `lease` it belongs
+//!   to, the `nonce` Deck's last answer gave and its `seq`: `signal` (`run`,
+//!   `state`), `reply` (`run`, `reply`), `reset` (`reason`) and `ping`
+//!   (nothing else). An unknown or repeated key, a missing one, a number
+//!   that is negative, fractional or beyond 2^53-1, an unknown word,
+//!   another protocol version or mode is refused; nothing is repaired.
+//!   `reply` is the ONE field of free text: the final message of the run it
+//!   names, at most `MAX_REPLY` bytes and not blank, sent only by an
+//!   observer Pi loaded from the reply entry (`config`), kept out of every
+//!   `Debug` and log (`ReplyText`). There is no field for a prompt, a
+//!   title, a path, a model or a session. A line that names a lease and
+//!   carries a nonce, and is none of the four frames, is refused as well —
+//!   and ends that lease when its sender is proven, as any other frame Deck
+//!   does not expect.
 //! - **What Deck says to Pi**, one line per connection and nothing else.
 //!   Every answer that is not a refusal carries a `nonce` no one has seen
 //!   before: the one the observer's NEXT message must carry, good for that
@@ -86,16 +87,18 @@
 //!   ones (`place_line`, source `deck`; answered `placed_line` to Deck's own
 //!   pid and to nobody else). It says nothing about any pane and changes
 //!   nothing; `transport`, "Whose bytes", says what the place is for.
-//! - **Versions.** Wire version 1 kept one connection per observer; it could
-//!   not say whose bytes a frame was and is gone. A runtime that still holds
-//!   a version-1 observer in memory (Pi loaded it before Deck was replaced)
-//!   is answered `bad-version` in ITS framing, which that observer takes as
-//!   final: it stops, nothing of it is recognized or shown, and Pi's next
-//!   start or reload loads the observer this build ships. Nothing of version
-//!   1 is accepted beside version 2. Such a Pi is still a Pi by its name
-//!   (`PROCESS`), so its card says `unavailable` and the hold on automatic
-//!   prompts stands; that its runtime needs a reload is not said anywhere,
-//!   because nothing of a version-1 line is proven.
+//! - **Versions.** Wire version 1 kept one connection per observer and
+//!   could not say whose bytes a frame was; version 2 carried a session
+//!   observation instead of a final message. Both are gone. A runtime that
+//!   still holds an older observer in memory (Pi loaded it before Deck was
+//!   replaced) is answered `bad-version` in ITS framing, which that
+//!   observer takes as final: it stops, nothing of it is recognized or
+//!   shown, and Pi's next start or reload loads the observer this build
+//!   ships. Nothing of an older version is accepted beside version 3. Such
+//!   a Pi is still a Pi by its name (`PROCESS`), so its card says
+//!   `unavailable` and the hold on automatic prompts stands; that its
+//!   runtime needs a reload is not said anywhere, because nothing of an
+//!   older line is proven.
 //! - **Compatibility is not identity.** `piVersion` is Pi's own exported
 //!   version, used only to decide whether this build knows the meaning of
 //!   the events (`PiVersion::supported`: major version 1 from 1.1; 1.1.0 and 1.5.2 are
@@ -127,13 +130,15 @@ pub(crate) const PROCESS: &str = "pi";
 pub(crate) const MAX_LINE: usize = 1024;
 /// The wire version and the observer's own version this build speaks
 /// (module header, "Versions").
-const WIRE_VERSION: u64 = 2;
-const OBSERVER_VERSION: u64 = 2;
+const WIRE_VERSION: u64 = 3;
+const OBSERVER_VERSION: u64 = 3;
 /// The largest integer a JavaScript client can count to without a gap.
 const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
-/// The longest native session id this build keeps. A longer one is reported
-/// as unsupported, never cut short and never hashed into something else.
-pub(crate) const MAX_NATIVE_ID: usize = 256;
+/// The longest line of the one frame that carries free text (`reply`).
+pub(crate) const MAX_REPLY_LINE: usize = 8000;
+/// The longest final message a `reply` frame may carry: the observer cuts a
+/// longer one to 2,000 bytes of head, 4,000 of tail and the mark between.
+pub(crate) const MAX_REPLY: usize = 6_100;
 
 /// Pi's registration. No re-entry capability: Pi is never started,
 /// re-entered or resumed by Deck.
@@ -149,8 +154,8 @@ pub(crate) const PI: AgentAdapter = AgentAdapter {
 pub(crate) enum Capability {
     /// Run boundaries: `working` and `turn-done`.
     Signal,
-    /// The native session a runtime is in.
-    Lifecycle,
+    /// The final message of a run that settled (needs `Signal`).
+    Reply,
 }
 
 /// A set of capabilities: what an entry carries, what the settings enable,
@@ -158,23 +163,23 @@ pub(crate) enum Capability {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Capabilities {
     pub(crate) signal: bool,
-    pub(crate) lifecycle: bool,
+    pub(crate) reply: bool,
 }
 
 impl Capabilities {
     pub(crate) const NONE: Self = Self {
         signal: false,
-        lifecycle: false,
+        reply: false,
     };
 
     pub(crate) fn any(self) -> bool {
-        self.signal || self.lifecycle
+        self.signal || self.reply
     }
 
     pub(crate) fn has(self, capability: Capability) -> bool {
         match capability {
             Capability::Signal => self.signal,
-            Capability::Lifecycle => self.lifecycle,
+            Capability::Reply => self.reply,
         }
     }
 
@@ -182,14 +187,14 @@ impl Capabilities {
     pub(crate) fn and(self, other: Self) -> Self {
         Self {
             signal: self.signal && other.signal,
-            lifecycle: self.lifecycle && other.lifecycle,
+            reply: self.reply && other.reply,
         }
     }
 
     pub(crate) fn with(mut self, capability: Capability, on: bool) -> Self {
         match capability {
             Capability::Signal => self.signal = on,
-            Capability::Lifecycle => self.lifecycle = on,
+            Capability::Reply => self.reply = on,
         }
         self
     }
@@ -215,80 +220,21 @@ pub(crate) enum ResetReason {
     Fault,
 }
 
-/// Pi's `session_start` reasons. `Startup` is also what a client started
-/// with `--session` reports: it does not say "resumed".
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StartReason {
-    Startup,
-    Reload,
-    New,
-    Resume,
-    Fork,
-}
+/// The final message a `reply` frame carried. It prints as nothing: no
+/// `Debug`, log line or failed assertion ever shows what an agent said.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ReplyText(String);
 
-/// Pi's `session_shutdown` reasons. `Quit` is the runtime's teardown, not
-/// proof that the process is gone; the others are not an exit at all.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ShutdownReason {
-    Quit,
-    Reload,
-    New,
-    Resume,
-    Fork,
-}
-
-/// One lifecycle observation as the wire carries it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SessionEvent {
-    /// This runtime started in a session.
-    Start(StartReason),
-    /// This runtime is being torn down.
-    Shutdown(ShutdownReason),
-    /// What the API says now, read after a reconnect: neither a start nor a
-    /// resume, and never reported as one.
-    Snapshot,
-}
-
-/// A native Pi session id: Pi's own character set (`--session-id` accepts
-/// more than a UUID), at most `MAX_NATIVE_ID` bytes. Never Claude's shape,
-/// never a path, and never anything Deck made.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct PiNativeId(String);
-
-#[cfg(test)]
-impl PiNativeId {
-    /// The id as text, for a test that compares it with what Pi itself
-    /// said. Production compares ids and never takes one out.
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
+impl ReplyText {
+    pub(crate) fn into_string(self) -> String {
+        self.0
     }
 }
 
-/// The id a lifecycle frame names.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum NativeId {
-    Kept(PiNativeId),
-    /// Well formed and longer than this build keeps.
-    Unsupported,
-}
-
-/// `[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?`, as Pi itself validates a
-/// session id.
-fn native_id(text: &str) -> Option<NativeId> {
-    let bytes = text.as_bytes();
-    let edge = |b: &u8| b.is_ascii_alphanumeric();
-    let shaped = bytes.first().is_some_and(edge)
-        && bytes.last().is_some_and(edge)
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
-    shaped.then(|| {
-        if bytes.len() <= MAX_NATIVE_ID {
-            NativeId::Kept(PiNativeId(text.to_string()))
-        } else {
-            NativeId::Unsupported
-        }
-    })
+impl std::fmt::Debug for ReplyText {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("ReplyText(..)")
+    }
 }
 
 /// Pi's exported version, as far as this build needs to know it.
@@ -408,7 +354,7 @@ pub(crate) enum Message {
     /// The observer's claims, with the nonce its hello was answered with.
     Attest { nonce: Nonce, hello: Hello },
     /// One frame of the lease it names, with the nonce that lease's last
-    /// answer gave. A frame that is not one of the five shapes is kept as
+    /// answer gave. A frame that is not one of the four shapes is kept as
     /// its refusal: whose mistake that is can only be said once the sender
     /// is proven (`transport`, "What is checked for every frame").
     Frame {
@@ -430,15 +376,11 @@ pub(crate) enum Frame {
         seq: u64,
         reason: ResetReason,
     },
-    Lifecycle {
+    /// The final message of run `run`, sent before that run's `turn-done`.
+    Reply {
         seq: u64,
-        event: SessionEvent,
-        native: NativeId,
-    },
-    /// The observer has a session id it cannot put on a line: it says so,
-    /// in one closed word, instead of sending a lifecycle frame.
-    Unavailable {
-        seq: u64,
+        run: u64,
+        text: ReplyText,
     },
     Ping {
         seq: u64,
@@ -450,8 +392,7 @@ impl Frame {
         match self {
             Frame::Signal { seq, .. }
             | Frame::Reset { seq, .. }
-            | Frame::Lifecycle { seq, .. }
-            | Frame::Unavailable { seq }
+            | Frame::Reply { seq, .. }
             | Frame::Ping { seq } => *seq,
         }
     }
@@ -460,7 +401,7 @@ impl Frame {
     pub(crate) fn capability(&self) -> Option<Capability> {
         match self {
             Frame::Signal { .. } => Some(Capability::Signal),
-            Frame::Lifecycle { .. } | Frame::Unavailable { .. } => Some(Capability::Lifecycle),
+            Frame::Reply { .. } => Some(Capability::Reply),
             Frame::Reset { .. } | Frame::Ping { .. } => None,
         }
     }
@@ -482,9 +423,7 @@ struct Fields {
     run: Option<u64>,
     state: Option<String>,
     reason: Option<String>,
-    event: Option<String>,
-    native_id: Option<String>,
-    unavailable: Option<String>,
+    reply: Option<String>,
     nonce: Option<String>,
     lease: Option<u64>,
     /// A key this family does not have, or one that came twice: the line is
@@ -511,36 +450,42 @@ fn keep<T>(slot: &mut Option<T>, value: T, malformed: &mut bool) {
 
 struct CapabilitiesVisitor;
 
+/// The two bits, and whether the object held anything else: a key this
+/// version does not have (an earlier version's, say) makes the LINE
+/// malformed and is not a failure to read it, so that a line of another
+/// version is still told so (`fields`).
 impl<'de> Visitor<'de> for CapabilitiesVisitor {
-    type Value = Capabilities;
+    type Value = (Capabilities, bool);
 
     fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str("the two capability bits")
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Capabilities, A::Error> {
-        use serde::de::Error;
-        let (mut signal, mut lifecycle) = (None, None);
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let (mut signal, mut reply, mut other) = (None, None, false);
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "signal" => put(&mut signal, map.next_value::<bool>()?)?,
-                "lifecycle" => put(&mut lifecycle, map.next_value::<bool>()?)?,
-                _ => return Err(A::Error::custom("unknown key")),
+                "reply" => put(&mut reply, map.next_value::<bool>()?)?,
+                _ => {
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                    other = true;
+                }
             }
         }
-        match (signal, lifecycle) {
-            (Some(signal), Some(lifecycle)) => Ok(Capabilities { signal, lifecycle }),
-            _ => Err(A::Error::custom("missing key")),
-        }
+        Ok(match (signal, reply) {
+            (Some(signal), Some(reply)) => (Capabilities { signal, reply }, other),
+            _ => (Capabilities::NONE, true),
+        })
     }
 }
 
 struct CapabilitiesSeed;
 
 impl<'de> serde::de::DeserializeSeed<'de> for CapabilitiesSeed {
-    type Value = Capabilities;
+    type Value = (Capabilities, bool);
 
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Capabilities, D::Error> {
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
         deserializer.deserialize_map(CapabilitiesVisitor)
     }
 }
@@ -569,18 +514,16 @@ impl<'de> Visitor<'de> for FieldsVisitor {
                 "observerVersion" => keep(&mut fields.observer_version, map.next_value()?, bad),
                 "piVersion" => keep(&mut fields.pi_version, map.next_value()?, bad),
                 "mode" => keep(&mut fields.mode, map.next_value()?, bad),
-                "capabilities" => keep(
-                    &mut fields.capabilities,
-                    map.next_value_seed(CapabilitiesSeed)?,
-                    bad,
-                ),
+                "capabilities" => {
+                    let (capabilities, wrong) = map.next_value_seed(CapabilitiesSeed)?;
+                    keep(&mut fields.capabilities, capabilities, bad);
+                    *bad |= wrong;
+                }
                 "seq" => keep(&mut fields.seq, map.next_value()?, bad),
                 "run" => keep(&mut fields.run, map.next_value()?, bad),
                 "state" => keep(&mut fields.state, map.next_value()?, bad),
                 "reason" => keep(&mut fields.reason, map.next_value()?, bad),
-                "event" => keep(&mut fields.event, map.next_value()?, bad),
-                "nativeSessionId" => keep(&mut fields.native_id, map.next_value()?, bad),
-                "unavailable" => keep(&mut fields.unavailable, map.next_value()?, bad),
+                "reply" => keep(&mut fields.reply, map.next_value()?, bad),
                 "nonce" => keep(&mut fields.nonce, map.next_value()?, bad),
                 "lease" => keep(&mut fields.lease, map.next_value()?, bad),
                 _ => {
@@ -630,7 +573,7 @@ pub(crate) fn placed(line: &str) -> Option<u64> {
 
 /// The fields of one line, with the family's common part checked.
 fn fields(line: &str) -> Result<Fields, &'static str> {
-    if line.len() > MAX_LINE {
+    if line.len() > MAX_REPLY_LINE {
         return Err("bad-frame");
     }
     let mut deserializer = serde_json::Deserializer::from_str(line);
@@ -643,6 +586,10 @@ fn fields(line: &str) -> Result<Fields, &'static str> {
     }
     if fields.version != Some(WIRE_VERSION) {
         return Err("bad-version");
+    }
+    // only the frame that carries a final message may be a long line
+    if fields.reply.is_none() && line.len() > MAX_LINE {
+        return Err("bad-frame");
     }
     Ok(fields)
 }
@@ -695,9 +642,7 @@ pub(crate) fn parse_message(line: &str) -> Result<Message, &'static str> {
             run: None,
             state: None,
             reason: None,
-            event: None,
-            native_id: None,
-            unavailable: None,
+            reply: None,
             ..
         } => Ok(Message::Hello),
         _ => Err("bad-frame"),
@@ -718,9 +663,7 @@ fn claims(fields: Fields) -> Result<Hello, &'static str> {
         run: None,
         state: None,
         reason: None,
-        event: None,
-        native_id: None,
-        unavailable: None,
+        reply: None,
         lease: None,
         ..
     } = fields
@@ -775,9 +718,7 @@ fn frame(fields: Fields) -> Result<Frame, &'static str> {
         run,
         state,
         reason,
-        event,
-        native_id: id,
-        unavailable,
+        reply,
         socket: None,
         server_pid: None,
         pane: None,
@@ -791,17 +732,9 @@ fn frame(fields: Fields) -> Result<Frame, &'static str> {
         return Err("bad-frame");
     };
     let seq = count(seq)?;
-    if let Some(word) = unavailable {
-        return match (word.as_str(), run, state, reason, event, id) {
-            ("unsupported-native-id", None, None, None, None, None) => {
-                Ok(Frame::Unavailable { seq })
-            }
-            _ => Err("bad-frame"),
-        };
-    }
-    match (run, state, reason, event, id) {
-        (None, None, None, None, None) => Ok(Frame::Ping { seq }),
-        (Some(run), Some(state), None, None, None) => Ok(Frame::Signal {
+    match (run, state, reason, reply) {
+        (None, None, None, None) => Ok(Frame::Ping { seq }),
+        (Some(run), Some(state), None, None) => Ok(Frame::Signal {
             seq,
             run: count(Some(run))?,
             state: match state.as_str() {
@@ -810,7 +743,17 @@ fn frame(fields: Fields) -> Result<Frame, &'static str> {
                 _ => return Err("bad-frame"),
             },
         }),
-        (None, None, Some(reason), None, None) => Ok(Frame::Reset {
+        (Some(run), None, None, Some(text)) => {
+            if text.len() > MAX_REPLY || text.trim().is_empty() {
+                return Err("bad-frame");
+            }
+            Ok(Frame::Reply {
+                seq,
+                run: count(Some(run))?,
+                text: ReplyText(text),
+            })
+        }
+        (None, None, Some(reason), None) => Ok(Frame::Reset {
             seq,
             reason: match reason.as_str() {
                 "new" => ResetReason::New,
@@ -822,41 +765,14 @@ fn frame(fields: Fields) -> Result<Frame, &'static str> {
                 _ => return Err("bad-frame"),
             },
         }),
-        (None, None, reason, Some(event), Some(id)) => {
-            let event = match (event.as_str(), reason.as_deref()) {
-                ("start", Some(reason)) => SessionEvent::Start(match reason {
-                    "startup" => StartReason::Startup,
-                    "reload" => StartReason::Reload,
-                    "new" => StartReason::New,
-                    "resume" => StartReason::Resume,
-                    "fork" => StartReason::Fork,
-                    _ => return Err("bad-frame"),
-                }),
-                ("shutdown", Some(reason)) => SessionEvent::Shutdown(match reason {
-                    "quit" => ShutdownReason::Quit,
-                    "reload" => ShutdownReason::Reload,
-                    "new" => ShutdownReason::New,
-                    "resume" => ShutdownReason::Resume,
-                    "fork" => ShutdownReason::Fork,
-                    _ => return Err("bad-frame"),
-                }),
-                ("snapshot", None) => SessionEvent::Snapshot,
-                _ => return Err("bad-frame"),
-            };
-            Ok(Frame::Lifecycle {
-                seq,
-                event,
-                native: native_id(&id).ok_or("bad-native-id")?,
-            })
-        }
         _ => Err("bad-frame"),
     }
 }
 
 fn bits(now: Capabilities) -> String {
     format!(
-        "\"capabilities\":{{\"signal\":{},\"lifecycle\":{}}}",
-        now.signal, now.lifecycle
+        "\"capabilities\":{{\"signal\":{},\"reply\":{}}}",
+        now.signal, now.reply
     )
 }
 
@@ -936,7 +852,6 @@ pub(crate) const REFUSALS: &[&str] = &[
     "bad-frame",
     "bad-version",
     "bad-mode",
-    "bad-native-id",
     "unsupported-pi-version",
     "other-server",
     "no-peer",
@@ -954,7 +869,6 @@ pub(crate) const REFUSALS: &[&str] = &[
     "busy",
     "bad-seq",
     "bad-run",
-    "bad-lifecycle",
     "late",
     "stale",
     "no-challenge",
@@ -967,7 +881,6 @@ pub(crate) fn drop_reason(code: &'static str) -> &'static str {
         "bad-frame" => "pi-bad-frame",
         "bad-version" => "pi-bad-version",
         "bad-mode" => "pi-bad-mode",
-        "bad-native-id" => "pi-bad-native-id",
         "unsupported-pi-version" => "pi-unsupported-pi-version",
         "other-server" => "pi-other-server",
         "no-peer" => "pi-no-peer",
@@ -986,7 +899,6 @@ pub(crate) fn drop_reason(code: &'static str) -> &'static str {
         "bad-seq" => "pi-bad-seq",
         "bad-run" => "pi-bad-run",
         "late" => "pi-late",
-        "bad-lifecycle" => "pi-bad-lifecycle",
         "stale" => "pi-stale",
         "no-challenge" => "pi-no-challenge",
         "sender-mismatch" => "pi-sender-mismatch",

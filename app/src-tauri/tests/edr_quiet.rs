@@ -29,9 +29,11 @@
 //!   get a path into the bundle, never a copy (`agent_pi/config.rs`). Inside
 //!   Pi it imports `node:fs` and `node:net` only, stats the status socket and
 //!   makes short connections to it — one message each, one at a time — and
-//!   of Pi's own API uses `pi.on` for four notification events and nothing
-//!   else: no process, no network client, no file read or write, and none of
-//!   Pi's tool, message, session, UI or model entry points. The test-only Pi
+//!   of Pi's own API uses `pi.on` for four notification events — and, from
+//!   the reply entry the user chose, for the end of a low-level run, of
+//!   which it reads the last assistant message's text — and nothing else:
+//!   no process, no network client, no file read or write, and none of
+//!   Pi's tool, message-sending, session, UI or model entry points. The test-only Pi
 //!   fixtures (`scripts/pi/`) use exactly those entry points and are packaged
 //!   by nothing;
 //! - run any tmux but the signed sidecar next to its own executable
@@ -1141,7 +1143,7 @@ fn bergamot_bridge_is_an_in_process_data_only_boundary() {
 // ---------------------------------------------------------------- Pi observer
 
 /// The Pi observer's files, as every packaging path must name them.
-const PI_OBSERVER_FILES: &[&str] = &["observer.ts", "signal.ts", "lifecycle.ts", "both.ts"];
+const PI_OBSERVER_FILES: &[&str] = &["observer.ts", "signal.ts", "reply.ts"];
 
 /// The only import lines a Pi observer file may hold.
 const PI_IMPORTS: &[&str] = &[
@@ -1156,14 +1158,17 @@ const PI_IMPORTS: &[&str] = &[
 const PI_MEMBERS: &[(&str, &[&str])] = &[
     // Pi's extension API: subscribing, and nothing else
     ("pi", &["on"]),
-    // the event context: the run mode word and, behind the lifecycle
-    // capability only (pinned below), the session manager
-    ("ctx", &["mode", "sessionManager"]),
-    // of the session manager: the native session id, and nothing else
-    ("manager", &["getSessionId"]),
-    ("sessions", &[]),
-    // an event: Pi's own closed reason word
-    ("event", &["reason"]),
+    // the event context: the run mode word, and nothing else
+    ("ctx", &["mode"]),
+    // an event: Pi's own closed reason word, whether the user aborted the
+    // run and, behind the reply capability only (pinned below), the
+    // messages of the low-level run that ended
+    ("event", &["reason", "aborted", "messages"]),
+    // of the last assistant message of that run: that it is one, how it
+    // stopped, and its parts
+    ("message", &["role", "stopReason", "content"]),
+    // of a part: that it is text, and the text
+    ("part", &["type", "text"]),
     ("fs", &["lstatSync", "statSync"]),
     ("net", &["createConnection"]),
     ("process", &["env", "getuid"]),
@@ -1171,14 +1176,20 @@ const PI_MEMBERS: &[(&str, &[&str])] = &[
     ("JSON", &["parse", "stringify"]),
 ];
 
-/// The events the observer subscribes to: notifications that carry no
-/// prompt, message, title, tool call or result.
+/// The events the observer subscribes to: four notifications that carry
+/// no prompt, message, title, tool call or result, and — from the reply
+/// entry alone (pinned below) — the end of a low-level run.
 const PI_EVENTS: &[&str] = &[
     "session_start",
     "agent_start",
     "agent_settled",
     "session_shutdown",
+    "agent_end",
 ];
+
+/// What stands exactly once in `observer.ts` — the one subscription and
+/// the one read of a conversation — and nowhere in an entry.
+const PI_REPLY_ONLY: &[&str] = &["agent_end", ".messages", ".content", "sessionManager"];
 
 /// Text that may not appear anywhere in a Pi observer file.
 const PI_FORBIDDEN: &[&str] = &[
@@ -1234,6 +1245,7 @@ const PI_FORBIDDEN: &[&str] = &[
     "setActiveTools",
     "setModel",
     "modelRegistry",
+    "getSessionId",
     "getSessionFile",
     "getSessionDir",
     "getSessionName",
@@ -1253,16 +1265,15 @@ const PI_FORBIDDEN: &[&str] = &[
     "isIdle",
     // content: a prompt, messages, a title, a tool call, a path
     ".prompt",
-    ".messages",
     ".title",
     ".cwd",
     ".model",
     ".toolName",
     ".input",
-    ".content",
+    ".toolCalls",
+    ".thinking",
     // events that carry content, or that Pi cannot order reliably
     "ui_prompt",
-    "agent_end",
     "before_agent_start",
     "agent_before_settle",
     "tool_call",
@@ -1279,11 +1290,11 @@ const PI_FORBIDDEN: &[&str] = &[
 
 /// The lines of an entry file that are not comments or blank: exactly
 /// these, for exactly this pair of capabilities.
-fn pi_entry_lines(signal: bool, lifecycle: bool) -> Vec<String> {
+fn pi_entry_lines(signal: bool, reply: bool) -> Vec<String> {
     vec![
         PI_IMPORTS[2].to_string(),
         PI_IMPORTS[3].to_string(),
-        format!("export default deckPiObserver({{ signal: {signal}, lifecycle: {lifecycle} }}, VERSION);"),
+        format!("export default deckPiObserver({{ signal: {signal}, reply: {reply} }}, VERSION);"),
     ]
 }
 
@@ -1376,23 +1387,25 @@ fn pi_observer_violations(name: &str, source: &str) -> Vec<String> {
                 violations.push(format!("{name}: lacks `{imported}`"));
             }
         }
-        // The native session id is the ONE value read through the session
-        // manager, in one place, and the manager is reached only behind the
-        // lifecycle capability AS THE RUNTIME STILL HAS IT (`may.lifecycle`,
-        // which Deck only ever takes away): at the session start and at the
-        // shutdown. Losing the capability lets go of the manager at once.
+        // The final message is the ONE thing read of a conversation: in
+        // one place, by one subscription that only the reply entry makes,
+        // and only while the runtime still has the capability (`may.reply`,
+        // which Deck only ever takes away). Losing it forgets what was kept.
         let reads = [
-            "        id = manager.getSessionId();",
-            "      if (may.lifecycle) {\n        sessions = ctx.sessionManager;",
-            "      const native = may.lifecycle && target && !silent ? nativeId(ctx.sessionManager) : null;",
-            "        may.lifecycle = false;\n        sessions = null;\n        first = null;",
+            "      if (reply) pi.on(\"agent_end\", onRunEnd);",
+            "      if (!target || !active || !may.reply) return;\n      const all = event.messages;",
+            "        const parts = message.content;",
+            "      if (may.reply && last && !last.failed && last.text.trim() !== \"\" && event.aborted !== true) {",
+            "        may.reply = false;\n        said = null;",
         ];
-        if source.matches("getSessionId").count() != 1
-            || source.matches("sessionManager").count() != 2
+        if source.matches("agent_end").count() != 1
+            || source.matches(".messages").count() != 1
+            || source.matches(".content").count() != 1
+            || source.contains("sessionManager")
             || reads.iter().any(|read| !source.contains(read))
         {
             violations.push(format!(
-                "{name}: the session manager is read outside the lifecycle capability"
+                "{name}: a conversation is read outside the reply capability"
             ));
         }
     } else {
@@ -1405,10 +1418,14 @@ fn pi_observer_violations(name: &str, source: &str) -> Vec<String> {
             .collect();
         let expected = match name {
             "signal.ts" => pi_entry_lines(true, false),
-            "lifecycle.ts" => pi_entry_lines(false, true),
-            "both.ts" => pi_entry_lines(true, true),
+            "reply.ts" => pi_entry_lines(true, true),
             _ => Vec::new(),
         };
+        for word in PI_REPLY_ONLY {
+            if source.contains(word) {
+                violations.push(format!("{name}: an entry names `{word}`"));
+            }
+        }
         if code != expected {
             violations.push(format!("{name}: is not the entry of its capabilities"));
         }
@@ -1450,6 +1467,11 @@ fn the_pi_observer_holds_to_its_closed_vocabulary() {
         "pi.events.emit(\"x\");",
         "pi.on(\"ui_prompt_start\", () => {});",
         "pi.on(\"agent_end\", (e) => e);",
+        "if (signal) pi.on(\"agent_end\", onRunEnd);",
+        "const role = message.role; const tools = message.toolCalls;",
+        "const usage = message.usage;",
+        "const kind = part.thinking;",
+        "const said = event.messages[0].content;",
         "pi.on(\"tool_call\", () => {});",
         "pi.on(\"before_agent_start\", () => {});",
         "pi.on(\"turn_start\", () => {});",
@@ -1471,7 +1493,7 @@ fn the_pi_observer_holds_to_its_closed_vocabulary() {
         "const text = event.prompt;",
         "const all = event.messages;",
         "const title = event.title;",
-        "const done = event.aborted;",
+        "const entries = ctx.sessionManager.getEntries();",
         "fs.writeFileSync(path, \"x\");",
         "fs.readFileSync(path);",
         "fs.appendFileSync(path, \"x\");",
@@ -1508,19 +1530,23 @@ fn the_pi_observer_holds_to_its_closed_vocabulary() {
             "if (target) return;",
         ),
         ("pi.on(\"agent_settled\"", "pi.on(\"agent_end\""),
-        // the session manager outside the lifecycle capability
+        // the final message outside the reply capability
         (
-            "      if (may.lifecycle) {\n        sessions = ctx.sessionManager;",
-            "      {\n        sessions = ctx.sessionManager;",
+            "      if (reply) pi.on(\"agent_end\", onRunEnd);",
+            "      pi.on(\"agent_end\", onRunEnd);",
         ),
         (
-            "const native = may.lifecycle && target && !silent ? nativeId(ctx.sessionManager) : null;",
-            "const native = target && !silent ? nativeId(ctx.sessionManager) : null;",
+            "      if (!target || !active || !may.reply) return;\n      const all = event.messages;",
+            "      if (!target || !active) return;\n      const all = event.messages;",
         ),
-        // a lost capability that kept the session manager
         (
-            "        may.lifecycle = false;\n        sessions = null;\n        first = null;",
-            "        may.lifecycle = false;\n        first = null;",
+            "      if (may.reply && last && !last.failed && last.text.trim() !== \"\" && event.aborted !== true) {",
+            "      if (last && !last.failed && last.text.trim() !== \"\" && event.aborted !== true) {",
+        ),
+        // a lost capability that kept what a run said
+        (
+            "        may.reply = false;\n        said = null;",
+            "        may.reply = false;",
         ),
     ] {
         assert!(observer.contains(from), "{from}");
@@ -1533,18 +1559,13 @@ fn the_pi_observer_holds_to_its_closed_vocabulary() {
     for (name, own, other) in [
         (
             "signal.ts",
-            "signal: true, lifecycle: false",
-            "signal: true, lifecycle: true",
+            "signal: true, reply: false",
+            "signal: true, reply: true",
         ),
         (
-            "lifecycle.ts",
-            "signal: false, lifecycle: true",
-            "signal: true, lifecycle: true",
-        ),
-        (
-            "both.ts",
-            "signal: true, lifecycle: true",
-            "signal: true, lifecycle: false",
+            "reply.ts",
+            "signal: true, reply: true",
+            "signal: true, reply: false",
         ),
     ] {
         let entry = pi_observer_file(name);
@@ -1556,10 +1577,8 @@ fn the_pi_observer_holds_to_its_closed_vocabulary() {
     }
     let entry = pi_observer_file("signal.ts");
     for changed in [
-        entry.replace(
-            "signal: true, lifecycle: false",
-            "signal: false, lifecycle: false",
-        ),
+        entry.replace("signal: true, reply: false", "signal: false, reply: false"),
+        format!("{entry}\n// an entry that names agent_end reads nothing either\n"),
         format!("{entry}\nexport const extra = 1;\n"),
         entry.replace(
             "export default",

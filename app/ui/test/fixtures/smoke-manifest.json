@@ -349,11 +349,10 @@
         "pi-send-now": {},
         "pi-disabled": {},
         "pi-reload": {},
-        "pi-session": {},
+        "pi-replies": {},
         "pi-shown": {},
         "pi-review": {"a": 1, "b": 0},
-        "pi-narrowed": {},
-        "pi-unsupported": {}
+        "pi-narrowed": {}
       }
     },
     "locale-layout": {

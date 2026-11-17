@@ -32,7 +32,7 @@ writeFileSync(join(loaded, 'node_modules/@earendil-works/pi-coding-agent/package
 writeFileSync(join(loaded, 'node_modules/@earendil-works/pi-coding-agent/index.js'), 'export const VERSION = "1.1.0";\n');
 copyFileSync(join(resources, 'observer.ts'), join(loaded, 'observer.mjs'));
 const entries = {};
-for (const name of ['signal', 'lifecycle', 'both']) {
+for (const name of ['signal', 'reply']) {
   const text = readFileSync(join(resources, `${name}.ts`), 'utf8');
   writeFileSync(join(loaded, `${name}.mjs`), text.replace('"./observer.ts"', '"./observer.mjs"'));
   entries[name] = { text, factory: (await import(pathToFileURL(join(loaded, `${name}.mjs`)).href)).default };
@@ -73,7 +73,7 @@ net.createConnection = function createConnection(...args) {
 };
 test.after(() => { net.createConnection = connect; });
 
-const common = { protocol: 'pi-observer', v: 2, source: 'pi' };
+const common = { protocol: 'pi-observer', v: 3, source: 'pi' };
 /** A line without its nonce: what it says. */
 const plain = ({ nonce: _nonce, ...line }) => line;
 
@@ -104,11 +104,11 @@ function deck(name, mode = 'auto') {
     return nonce;
   };
   state.bits = loaded => (state.usable
-    ? { signal: loaded.signal && state.usable.signal, lifecycle: loaded.lifecycle && state.usable.lifecycle }
+    ? { signal: loaded.signal && state.usable.signal, reply: loaded.reply && state.usable.reply }
     : loaded);
   state.say = (connection, reply) => {
     connection.said = reply;
-    connection.socket.end(typeof reply === 'string' ? reply : `${JSON.stringify({ protocol: 'pi-observer', v: 2, ...reply })}\n`);
+    connection.socket.end(typeof reply === 'string' ? reply : `${JSON.stringify({ protocol: 'pi-observer', v: 3, ...reply })}\n`);
   };
   /** What Deck answers this connection's line with. */
   state.answer = (connection) => {
@@ -227,16 +227,16 @@ async function bound(name) {
 }
 
 test('each entry is two imports and one call, and the files load as plain JavaScript', () => {
-  for (const [name, signal, lifecycle] of [['signal', true, false], ['lifecycle', false, true], ['both', true, true]]) {
+  for (const [name, signal, reply] of [['signal', true, false], ['reply', true, true]]) {
     assert.equal(entries[name].text.split('\n').filter(line => line && !line.startsWith('//')).join('\n'), [
       'import { VERSION } from "@earendil-works/pi-coding-agent";',
       'import { deckPiObserver } from "./observer.ts";',
-      `export default deckPiObserver({ signal: ${signal}, lifecycle: ${lifecycle} }, VERSION);`,
+      `export default deckPiObserver({ signal: ${signal}, reply: ${reply} }, VERSION);`,
     ].join('\n'), name);
     assert.equal(typeof entries[name].factory, 'function');
   }
   assert.equal(entryText, entries.signal.text);
-  assert.deepEqual(Object.keys(observer).sort(), ['deckPiObserver', 'privateSocket', 'route']);
+  assert.deepEqual(Object.keys(observer).sort(), ['bounded', 'deckPiObserver', 'privateSocket', 'route']);
 });
 
 test('the factory asks Pi for four events and starts nothing', async () => {
@@ -254,7 +254,7 @@ test('the factory asks Pi for four events and starts nothing', async () => {
   assert.equal(server.connections.length, 0);
   // a capability the entry does not carry subscribes to nothing of it
   const quiet = pi();
-  observer.deckPiObserver({ signal: false, lifecycle: false }, '1.1.0')(quiet.api);
+  observer.deckPiObserver({ signal: false, reply: false }, '1.1.0')(quiet.api);
   assert.deepEqual([...quiet.handlers.keys()], ['session_start', 'session_shutdown']);
   await closed(server);
 });
@@ -330,7 +330,7 @@ test('only an interactive terminal session connects, and only with a route', asy
   // a version Pi could not have exported is not sent anywhere
   for (const version of ['', '1.1.0 beta', '1'.repeat(33), 110, undefined]) {
     const host = pi();
-    observer.deckPiObserver({ signal: true, lifecycle: false }, version)(host.api);
+    observer.deckPiObserver({ signal: true, reply: false }, version)(host.api);
     route(routed(server));
     host.emit('session_start');
   }
@@ -346,7 +346,7 @@ test('binding is a hello and an attest, and frames are numbered run boundaries t
   assert.deepEqual(hello, common);
   assert.deepEqual(attest, {
     ...common, nonce: server.connections[0].said.nonce, socket: 'deck-dev', server_pid: 4242, pane: '%7',
-    observerVersion: 2, piVersion: '1.1.0', mode: 'tui', capabilities: { signal: true, lifecycle: false },
+    observerVersion: 3, piVersion: '1.1.0', mode: 'tui', capabilities: { signal: true, reply: false },
   });
   // a settlement without a run reports nothing
   host.emit('agent_settled');
@@ -579,11 +579,11 @@ test('a second observer of one process stops asking once the lease cannot be one
 });
 
 test('an answer the observer did not ask for ends the lease, and Deck is told', async () => {
-  const bits = { signal: true, lifecycle: false };
+  const bits = { signal: true, reply: false };
   for (const [name, reply] of [
     ['a wrong number', server => ({ ack: 7, nonce: server.give('nobody'), capabilities: bits })],
     ['another protocol', server => ({ protocol: 'agent-lifecycle', ack: 1, nonce: server.give('nobody'), capabilities: bits })],
-    ['another version', server => ({ v: 3, ack: 1, nonce: server.give('nobody'), capabilities: bits })],
+    ['another version', server => ({ v: 4, ack: 1, nonce: server.give('nobody'), capabilities: bits })],
     ['an acceptance in place of an acknowledgement', server => ({ accepted: 1, nonce: server.give('nobody'), capabilities: bits })],
     ['no nonce', () => ({ ack: 1, capabilities: bits })],
     ['a nonce that is none', () => ({ ack: 1, nonce: 'N'.repeat(32), capabilities: bits })],
@@ -742,295 +742,292 @@ test('an error inside a callback ends the observer and never reaches Pi', async 
   await closed(fresh);
 });
 
-/* ---------- session observation: the lifecycle capability ---------- */
+/* ---------- the final message: the reply capability ---------- */
 
-/** A context whose session manager answers `getSessionId` and records any
- *  other thing asked of it. */
-function sessionContext(host, id) {
-  const state = { id, asked: 0 };
-  const manager = new Proxy({}, {
-    get(_target, name) {
-      if (name === 'getSessionId') return () => { state.asked += 1; if (state.id instanceof Error) throw state.id; return state.id; };
-      if (typeof name === 'string') host.touched.push(`sessionManager.${name}`);
-      return undefined;
+/** `object`, recording every property read of it that `allowed` does not
+ *  name: what the observer may read of an event or of a message. */
+function watched(label, object, allowed, touched) {
+  return new Proxy(object, {
+    get(target, name) {
+      if (typeof name === 'string' && !allowed.includes(name)) touched.push(`${label}.${name}`);
+      return target[name];
     },
   });
-  const ctx = new Proxy({}, {
-    get(_target, name) {
-      if (name === 'mode') return 'tui';
-      if (name === 'sessionManager') return manager;
-      if (typeof name === 'string') host.touched.push(`ctx.${name}`);
-      return undefined;
-    },
-  });
-  return { state, ctx };
 }
 
-async function observing(which, id, reason = 'startup', mode = 'auto') {
-  const server = deck(`lifecycle-${which}`, mode);
+/** One assistant message as Pi holds it, with everything a real one carries
+ *  beside its text. */
+const assistant = (touched, parts, stopReason = 'stop') => watched('message', {
+  role: 'assistant', stopReason, content: parts, provider: 'fixture', model: 'fixture', usage: { input: 1 },
+  errorMessage: 'provider said no', timestamp: 1,
+}, ['role', 'stopReason', 'content'], touched);
+const text = value => ({ type: 'text', text: value });
+
+/** The end of one low-level run. */
+const ended = (touched, messages) => watched('event', { messages }, ['messages'], touched);
+/** The settlement of a run. */
+const settled = (touched, aborted = false) => watched('event', { aborted }, ['aborted'], touched);
+
+async function replying(which = 'reply', mode = 'auto') {
+  const server = deck(`reply-${which}`, mode);
   await server.listening;
   const host = pi();
   entries[which].factory(host.api);
   route(routed(server));
-  const session = sessionContext(host, id);
-  host.emit('session_start', { reason }, session.ctx);
-  return { server, host, session };
+  host.emit('session_start');
+  return { server, host };
 }
+
+/** One whole run of `host`: start, the end of its low-level run, settlement. */
+function ran(host, messages, aborted = false) {
+  host.emit('agent_start');
+  if (messages) host.emit('agent_end', ended(host.touched, messages));
+  host.emit('agent_settled', settled(host.touched, aborted));
+}
+
+test('the signal entry never hears the end of a run and reads nothing of one', async () => {
+  const { server, host } = await replying('signal');
+  assert.deepEqual([...host.handlers.keys()], ['session_start', 'agent_start', 'agent_settled', 'session_shutdown']);
+  await until('the lease', () => server.leases === 1);
+  host.emit('agent_start');
+  // the settlement's event is not even looked at: not its `aborted`
+  host.emit('agent_settled');
+  await until('the ending', () => server.frames().length === 2);
+  await host.emit('session_shutdown', { reason: 'quit' });
+  assert.deepEqual(server.attests()[0].capabilities, { signal: true, reply: false });
+  assert.ok(server.lines().every(line => !('reply' in line)));
+  assert.deepEqual(host.touched, []);
+  await closed(server);
+});
+
+test('a run that settles says its final message, and only that, before its ending', async () => {
+  const { server, host } = await replying();
+  assert.deepEqual([...host.handlers.keys()],
+    ['session_start', 'agent_start', 'agent_settled', 'agent_end', 'session_shutdown']);
+  await until('the lease', () => server.leases === 1);
+  assert.deepEqual(server.attests()[0].capabilities, { signal: true, reply: true });
+  ran(host, [
+    { role: 'user', content: 'the user asked for the deploy key' },
+    assistant(host.touched, [
+      { type: 'thinking', thinking: 'what the model thought' },
+      text('An earlier answer.'),
+      { type: 'toolCall', name: 'bash', arguments: { command: 'cat secret' } },
+    ], 'toolUse'),
+    { role: 'toolResult', content: [text('what the tool printed')] },
+    assistant(host.touched, [
+      { type: 'thinking', thinking: 'more thought' },
+      text('Done.\n'),
+      text('"Two" files changed — 完了。'),
+    ]),
+  ]);
+  await until('the three frames', () => server.frames().length === 3);
+  assert.deepEqual(server.frames().map(plain), [
+    { ...common, lease: 1, seq: 1, run: 1, state: 'working' },
+    { ...common, lease: 1, seq: 2, run: 1, reply: 'Done.\n"Two" files changed — 完了。' },
+    { ...common, lease: 1, seq: 3, run: 1, state: 'turn-done' },
+  ]);
+  const said = JSON.stringify(server.lines());
+  for (const never of ['deploy key', 'thought', 'earlier answer', 'cat secret', 'tool printed', 'fixture', 'provider said no']) {
+    assert.ok(!said.toLowerCase().includes(never), never);
+  }
+  assert.deepEqual(host.touched, [], 'of a message: its role, how it stopped and its parts; of the events: nothing else');
+  // the next run: its own message, numbered on
+  ran(host, [assistant(host.touched, [text('Second.')])]);
+  await until('the next run', () => server.frames().length === 6);
+  assert.deepEqual(server.frames().slice(3).map(plain), [
+    { ...common, lease: 1, seq: 4, run: 2, state: 'working' },
+    { ...common, lease: 1, seq: 5, run: 2, reply: 'Second.' },
+    { ...common, lease: 1, seq: 6, run: 2, state: 'turn-done' },
+  ]);
+  await closed(server);
+});
+
+test('a retry, a queued follow-up and a continuation are one run with one final message: the last', async () => {
+  const { server, host } = await replying();
+  await until('the lease', () => server.leases === 1);
+  host.emit('agent_start');
+  host.emit('agent_end', ended(host.touched, [assistant(host.touched, [text('half an answer')], 'error')]));
+  host.emit('agent_start');
+  host.emit('agent_end', ended(host.touched, [assistant(host.touched, [text('First answer.')])]));
+  host.emit('agent_start');
+  host.emit('agent_end', ended(host.touched, [assistant(host.touched, [text('The follow-up’s answer.')])]));
+  host.emit('agent_settled', settled(host.touched));
+  await until('the frames', () => server.frames().length === 3);
+  assert.deepEqual(server.frames().map(frame => frame.reply ?? frame.state),
+    ['working', 'The follow-up’s answer.', 'turn-done']);
+  await closed(server);
+});
+
+test('a run that was aborted, failed or said nothing ends without words', async () => {
+  const { server, host } = await replying();
+  await until('the lease', () => server.leases === 1);
+  const said = [text('What it had written so far.')];
+  const cases = [
+    ['the user aborted it', [assistant(host.touched, said)], true],
+    ['its last message failed', [assistant(host.touched, said), assistant(host.touched, said, 'error')], false],
+    ['its last message was aborted', [assistant(host.touched, said, 'aborted')], false],
+    ['it said nothing', [assistant(host.touched, [text(' \n\t')])], false],
+    ['it has no text', [assistant(host.touched, [{ type: 'toolCall', name: 'bash' }], 'toolUse')], false],
+    ['no assistant spoke', [{ role: 'user', content: 'hello' }], false],
+    ['no low-level run ended', null, false],
+    // what is no list of messages, no message and no part is not read as one
+    ['the messages are no list', 'What it had written so far.', false],
+    ['a message is nothing', [null, 7, 'assistant'], false],
+    ['its parts are no list', [assistant(host.touched, 'What it had written so far.')], false],
+    ['a part is nothing', [assistant(host.touched, [null, 7, { type: 'text', text: 9 }, { text: 'no type' }])], false],
+  ];
+  for (const [index, [why, messages, aborted]] of cases.entries()) {
+    ran(host, messages, aborted);
+    await until(why, () => server.frames().length === 2 * (index + 1));
+    assert.deepEqual(server.frames().slice(-2).map(frame => frame.state), ['working', 'turn-done'], why);
+  }
+  // and what one run said is never the next run's: a run without an ending
+  // of its own after one that had words
+  ran(host, [assistant(host.touched, [text('Words of run twelve.')])]);
+  await until('the run with words', () => server.frames().length === 2 * cases.length + 3);
+  ran(host, null);
+  await until('the run after it', () => server.frames().length === 2 * cases.length + 5);
+  assert.deepEqual(server.frames().slice(-2).map(frame => frame.reply ?? frame.state), ['working', 'turn-done']);
+  assert.ok(server.lines().every(line => !JSON.stringify(line).includes('written so far')));
+  assert.deepEqual(host.touched, []);
+  await closed(server);
+});
+
+test('a long final message is its head and its tail on one line that fits', async () => {
+  const bytes = value => Buffer.byteLength(value, 'utf8');
+  assert.equal(observer.bounded('short'), 'short');
+  assert.equal(observer.bounded('x'.repeat(6000)), 'x'.repeat(6000), 'head and tail together: nothing is cut');
+  const long = `${'h'.repeat(3000)}${'m'.repeat(9000)}${'t'.repeat(5000)}`;
+  assert.equal(observer.bounded(long), `${'h'.repeat(2000)}\n…\n${'t'.repeat(4000)}`);
+  // cut at a character boundary: no half of a character, on either side
+  const wide = `${'é'.repeat(4000)}${'尾'.repeat(4000)}`;
+  const cut = observer.bounded(wide);
+  assert.ok(!cut.includes('\ufffd') && bytes(cut) <= 6100, String(bytes(cut)));
+  assert.ok(cut.startsWith('é'.repeat(999)) && cut.endsWith('尾'.repeat(1333)));
+  // text that grows when it is written as JSON still fits its line
+  for (const swollen of ['a\n'.repeat(3000), '"'.repeat(20000), `${'\\'.repeat(3000)}${'\u0001'.repeat(3000)}`]) {
+    assert.ok(bytes(JSON.stringify(observer.bounded(swollen))) <= 7600);
+  }
+  const { server, host } = await replying();
+  await until('the lease', () => server.leases === 1);
+  for (const [index, message] of [long, wide, 'a\n'.repeat(3000)].entries()) {
+    ran(host, [assistant(host.touched, [text(message)])]);
+    await until('the frames', () => server.frames().length === 3 * (index + 1));
+    const frame = server.frames().at(-2);
+    assert.equal(frame.reply, observer.bounded(message));
+    assert.ok(bytes(frame.reply) <= 6100);
+    assert.ok(bytes(JSON.stringify({ ...frame, lease: 2 ** 53 - 1, seq: 2 ** 53 - 1, run: 2 ** 53 - 1 })) <= 8000);
+  }
+  await closed(server);
+});
 
 /** Deck no longer has the lease: the frame that is sent next is refused, and
  *  the observer asks for a new one. `settle` then `start` keeps a run open. */
-function forgotten(server, host, session) {
+function forgotten(server, host) {
   server.next.push(() => ({ refused: 'late' }));
-  host.emit('agent_settled', undefined, session.ctx);
-  host.emit('agent_start', undefined, session.ctx);
+  host.emit('agent_settled');
+  host.emit('agent_start');
 }
 
-test('without the lifecycle capability the session manager is never asked', async () => {
-  const { server, host, session } = await observing('signal', 'session-one');
+test('a capability Deck takes away is neither read nor sent again, and the run boundaries go on', async () => {
+  const { server, host } = await replying();
   await until('the lease', () => server.leases === 1);
-  host.emit('agent_start', undefined, session.ctx);
-  await until('the start', () => server.frames().length === 1);
-  host.emit('agent_settled', undefined, session.ctx);
-  await until('the ending', () => server.frames().length === 2);
-  await host.emit('session_shutdown', { reason: 'quit' }, session.ctx);
-  assert.equal(session.state.asked, 0);
-  assert.deepEqual(server.attests()[0].capabilities, { signal: true, lifecycle: false });
-  assert.ok(server.lines().every(line => !('nativeSessionId' in line) && !('event' in line)));
-  assert.deepEqual(host.touched, []);
-  await closed(server);
-});
-
-test('the session a runtime starts in, what the API says under a later lease, and its teardown', async () => {
-  const { server, host, session } = await observing('both', 'session-one', 'resume');
-  await until('the start', () => server.frames().length === 1);
-  assert.deepEqual(server.attests()[0].capabilities, { signal: true, lifecycle: true });
-  assert.deepEqual(plain(server.frames()[0]), { ...common, lease: 1, seq: 1, event: 'start', nativeSessionId: 'session-one', reason: 'resume' });
-  // both capabilities are ONE lease with one numbering
-  host.emit('agent_start', undefined, session.ctx);
-  await until('the run', () => server.frames().length === 2);
-  assert.deepEqual(plain(server.frames()[1]), { ...common, lease: 1, seq: 2, run: 1, state: 'working' });
-  // the lease is lost; the next one says what the API says NOW, as a snapshot, never a start again
-  session.state.id = 'session-two';
-  forgotten(server, host, session);
-  await until('the second lease', () => server.leases === 2, 3000);
-  await until('its frames', () => server.frames().length === 2);
-  assert.deepEqual(server.frames().map(plain), [
-    { ...common, lease: 2, seq: 1, event: 'snapshot', nativeSessionId: 'session-two' },
-    { ...common, lease: 2, seq: 2, run: 1, state: 'working' },
+  ran(host, [assistant(host.touched, [text('First.')])]);
+  await until('the first run', () => server.frames().length === 3);
+  // Deck: the final message is turned off. The observer hears it in the
+  // answer to its next frame — the start of the next run.
+  server.usable = { signal: true, reply: false };
+  host.emit('agent_start');
+  await until('the start', () => server.frames().length === 4);
+  await sleep(60);
+  // from here on nothing of a run's end is read: a plain proxy would record it
+  host.emit('agent_end');
+  host.emit('agent_settled');
+  await until('the ending', () => server.frames().length === 5);
+  assert.deepEqual(server.frames().slice(3).map(plain), [
+    { ...common, lease: 1, seq: 4, run: 2, state: 'working' },
+    { ...common, lease: 1, seq: 5, run: 2, state: 'turn-done' },
   ]);
-  // the teardown: the id is read once more, then the shutdown and the reset with Pi's reason
-  session.state.id = 'session-three';
-  await host.emit('session_shutdown', { reason: 'fork' }, session.ctx);
-  assert.deepEqual(server.frames().slice(2).map(plain), [
-    { ...common, lease: 2, seq: 3, event: 'shutdown', nativeSessionId: 'session-three', reason: 'fork' },
-    { ...common, lease: 2, seq: 4, reason: 'fork' },
-  ]);
-  assert.deepEqual(host.touched, [], 'nothing but the mode and the session id was read');
-  await closed(server);
-});
-
-test('session observation alone subscribes to no run and reports none', async () => {
-  const { server, host, session } = await observing('lifecycle', 'fixture.custom-ID_123');
-  assert.deepEqual([...host.handlers.keys()], ['session_start', 'session_shutdown']);
-  await until('the start', () => server.frames().length === 1);
-  assert.deepEqual(server.attests()[0].capabilities, { signal: false, lifecycle: true });
-  assert.deepEqual(plain(server.frames()[0]), { ...common, lease: 1, seq: 1, event: 'start', nativeSessionId: 'fixture.custom-ID_123', reason: 'startup' });
-  await host.emit('session_shutdown', { reason: 'quit' }, session.ctx);
-  assert.deepEqual(server.frames().slice(1).map(frame => frame.event ?? `reset:${frame.reason}`), ['shutdown', 'reset:quit']);
-  await closed(server);
-});
-
-test('an id or a reason the observer cannot vouch for is not sent', async () => {
-  // a start reason Pi does not have: only what the API says is reported, as a snapshot
-  const odd = await observing('lifecycle', 'session-one', 'restored');
-  await until('the snapshot', () => odd.server.frames().length === 1);
-  assert.deepEqual(plain(odd.server.frames()[0]), { ...common, lease: 1, seq: 1, event: 'snapshot', nativeSessionId: 'session-one' });
-  // a shutdown reason Pi does not have: no shutdown is claimed, the lease is withdrawn as a fault
-  await odd.host.emit('session_shutdown', { reason: 'exit' }, odd.session.ctx);
-  assert.deepEqual(odd.server.frames().slice(1).map(plain), [{ ...common, lease: 1, seq: 2, reason: 'fault' }]);
-  await closed(odd.server);
-  // no id, an id that is no string, a manager that throws: there is nothing to say of a session
-  for (const id of ['', null, 42, new Error('no session')]) {
-    const { server, host, session } = await observing('lifecycle', id);
-    await until('the lease', () => server.leases === 1);
-    await sleep(150);
-    assert.deepEqual(server.frames(), [], String(id).slice(0, 12));
-    await host.emit('session_shutdown', { reason: 'quit' }, session.ctx);
-    assert.deepEqual(server.frames().map(plain), [{ ...common, lease: 1, seq: 1, reason: 'quit' }]);
-    await closed(server);
-  }
-  // the longest id that is sent at all (Deck keeps at most 256 bytes and says so itself)
-  const long = await observing('lifecycle', 'a'.repeat(512));
-  await until('the start', () => long.server.frames().length === 1);
-  assert.equal(long.server.frames()[0].nativeSessionId.length, 512);
-  assert.ok(JSON.stringify({ ...long.server.frames()[0], lease: 2 ** 53 - 1, seq: 2 ** 53 - 1 }).length <= 1024);
-  await long.host.emit('session_shutdown', { reason: 'quit' }, long.session.ctx);
-  await closed(long.server);
-});
-
-test('an id that does not fit a line is said in one closed word, once, and never passed over', async () => {
-  const { server, host, session } = await observing('both', 'a'.repeat(513));
-  await until('the word', () => server.frames().length === 1);
-  // in place of the start: no id, no part of it, no length, no reason
-  assert.deepEqual(plain(server.frames()[0]), { ...common, lease: 1, seq: 1, unavailable: 'unsupported-native-id' });
-  // run boundaries of the same lease are not affected
-  host.emit('agent_start', undefined, session.ctx);
-  await until('the run', () => server.frames().length === 2);
-  assert.deepEqual(plain(server.frames()[1]), { ...common, lease: 1, seq: 2, run: 1, state: 'working' });
-  // a later lease says it again: it is what the API says now
-  forgotten(server, host, session);
-  await until('the second lease', () => server.leases === 2, 3000);
-  await until('its frames', () => server.frames().length === 2);
-  assert.deepEqual(server.frames().map(plain), [
-    { ...common, lease: 2, seq: 1, unavailable: 'unsupported-native-id' },
-    { ...common, lease: 2, seq: 2, run: 1, state: 'working' },
-  ]);
-  // after that word this lease says nothing more of sessions: the id is not even read at the teardown
-  const asked = session.state.asked;
-  session.state.id = 'session-short';
-  await host.emit('session_shutdown', { reason: 'quit' }, session.ctx);
-  assert.equal(session.state.asked, asked, 'not asked again');
-  assert.deepEqual(server.frames().slice(2).map(plain), [{ ...common, lease: 2, seq: 3, reason: 'quit' }]);
-  assert.ok(server.lines().every(line => !('nativeSessionId' in line) && !JSON.stringify(line).includes('aaaa')));
-  assert.deepEqual(host.touched, []);
-  await closed(server);
-
-  // an id that turns too long only at the teardown: the word instead of the shutdown, then the reset
-  const late = await observing('lifecycle', 'session-one');
-  await until('the start', () => late.server.frames().length === 1);
-  late.session.state.id = 'b'.repeat(2000);
-  await late.host.emit('session_shutdown', { reason: 'new' }, late.session.ctx);
-  assert.deepEqual(late.server.frames().slice(1).map(plain), [
-    { ...common, lease: 1, seq: 2, unavailable: 'unsupported-native-id' },
-    { ...common, lease: 1, seq: 3, reason: 'new' },
-  ]);
-  await closed(late.server);
-});
-
-test('an id that is too long AND not a session id at all is an error, not that word', async () => {
-  const { server, host, session } = await observing('both', `../${'a'.repeat(600)}`);
-  await sleep(300);
-  // nothing connected and nothing was said: the observer of this runtime is over
-  assert.equal(server.connections.length, 0);
-  host.emit('agent_start', undefined, session.ctx);
-  await sleep(1300);
-  assert.equal(server.connections.length, 0, 'and it does not come back');
-  assert.doesNotThrow(() => host.emit('session_shutdown', { reason: 'quit' }, session.ctx));
-  await closed(server);
-});
-
-test('a capability Deck takes away is neither read nor sent again, and the other goes on', async () => {
-  const { server, host, session } = await observing('both', 'session-one');
-  await until('the start', () => server.frames().length === 1);
-  host.emit('agent_start', undefined, session.ctx);
-  await until('the run', () => server.frames().length === 2);
-  const asked = session.state.asked;
-  // Deck: session observation is turned off, in the middle of a run. The
-  // observer hears it in the answer to its next frame.
-  server.usable = { signal: true, lifecycle: false };
-  // the run goes on to its end under the same lease, numbered without a gap
-  host.emit('agent_settled', undefined, session.ctx);
-  await until('the ending', () => server.frames().length === 3);
-  assert.deepEqual(plain(server.frames()[2]), { ...common, lease: 1, seq: 3, run: 1, state: 'turn-done' });
-  host.emit('agent_start', undefined, session.ctx);
-  await until('the next run', () => server.frames().length === 4);
-  assert.deepEqual(plain(server.frames()[3]), { ...common, lease: 1, seq: 4, run: 2, state: 'working' });
-  // a later lease of this runtime claims only what is left, and says nothing of a session
-  forgotten(server, host, session);
+  assert.deepEqual(host.touched, [], 'neither the messages nor `aborted`');
+  // a later lease of this runtime claims only what is left
+  host.emit('agent_start');
+  await until('the next start', () => server.frames().length === 6);
+  forgotten(server, host);
   await until('the second lease', () => server.leases === 2, 3000);
   await until('its run', () => server.frames().length === 1);
-  assert.deepEqual(server.attests()[1].capabilities, { signal: true, lifecycle: false });
-  assert.deepEqual(server.frames().map(plain), [{ ...common, lease: 2, seq: 1, run: 1, state: 'working' }]);
-  // the teardown does not ask for the id either
-  await host.emit('session_shutdown', { reason: 'quit' }, session.ctx);
-  assert.equal(session.state.asked, asked, 'the session manager is not asked again');
-  assert.deepEqual(server.frames().slice(1).map(plain), [{ ...common, lease: 2, seq: 2, reason: 'quit' }]);
+  assert.deepEqual(server.attests()[1].capabilities, { signal: true, reply: false });
+  host.emit('agent_end');
+  host.emit('agent_settled');
+  await until('its ending', () => server.frames().length === 2);
+  assert.deepEqual(server.frames().map(frame => frame.reply ?? frame.state), ['working', 'turn-done']);
+  assert.deepEqual(host.touched, []);
   await closed(server);
 });
 
-test('losing work status leaves session observation, and losing both ends the observer', async () => {
-  const { server, host, session } = await observing('both', 'session-one');
+test('a final message that crossed the change is answered `revoked`, and its ending follows', async () => {
+  const { server, host } = await replying();
+  await until('the lease', () => server.leases === 1);
+  host.emit('agent_start');
   await until('the start', () => server.frames().length === 1);
-  host.emit('agent_start', undefined, session.ctx);
-  await until('the run', () => server.frames().length === 2);
-  // work status is turned off: the run's ending was on its way and is answered `revoked`
-  server.usable = { signal: false, lifecycle: true };
+  server.usable = { signal: true, reply: false };
+  host.emit('agent_end', ended(host.touched, [assistant(host.touched, [text('On its way.')])]));
   server.next.push(line => ({ revoked: line.seq, nonce: server.give(line.lease), capabilities: server.usable }));
-  host.emit('agent_settled', undefined, session.ctx);
-  await until('that frame', () => server.frames().length === 3);
-  // no later run is sent
-  host.emit('agent_start', undefined, session.ctx);
-  host.emit('agent_settled', undefined, session.ctx);
-  await sleep(150);
-  assert.equal(server.frames().length, 3, 'no run boundary after the loss');
-  // the session's teardown is what is left, numbered after the frame that was not committed
-  await host.emit('session_shutdown', { reason: 'fork' }, session.ctx);
-  assert.deepEqual(server.frames().slice(3).map(plain), [
-    { ...common, lease: 1, seq: 4, event: 'shutdown', nativeSessionId: 'session-one', reason: 'fork' },
-    { ...common, lease: 1, seq: 5, reason: 'fork' },
+  host.emit('agent_settled', settled(host.touched));
+  await until('both frames', () => server.frames().length === 3);
+  assert.deepEqual(server.frames().slice(1).map(plain), [
+    { ...common, lease: 1, seq: 2, run: 1, reply: 'On its way.' },
+    { ...common, lease: 1, seq: 3, run: 1, state: 'turn-done' },
   ]);
+  // an answer that names MORE than the observer has changes nothing: only ever less
+  server.usable = { signal: true, reply: true };
+  ran(host, [assistant(host.touched, [text('Not given back.')])]);
+  await until('the next run', () => server.frames().length === 5);
+  assert.deepEqual(server.frames().slice(3).map(frame => frame.reply ?? frame.state), ['working', 'turn-done']);
   await closed(server);
-
-  // both are taken: Deck ends the lease, and this runtime does not bind again
-  const last = await observing('both', 'session-one');
-  await until('the start', () => last.server.frames().length === 1);
-  last.server.next.push(() => ({ refused: 'capability-disabled' }));
-  last.host.emit('agent_start', undefined, last.session.ctx);
-  await until('the refused frame', () => last.server.frames().length === 2);
-  last.host.emit('agent_settled', undefined, last.session.ctx);
-  await sleep(1300);
-  assert.equal(last.server.lines().length, 4, 'no further line in this runtime');
-  await closed(last.server);
 });
 
-test('nothing Deck says gives a capability back, and a frame answered `revoked` is answered', async () => {
-  const { server, host, session } = await observing('both', 'session-one', 'startup', 'manual');
+test('losing work status ends what the final message belongs to, and this runtime does not bind again', async () => {
+  const { server, host } = await replying();
+  await until('the lease', () => server.leases === 1);
+  host.emit('agent_start');
+  await until('the start', () => server.frames().length === 1);
+  host.emit('agent_end', ended(host.touched, [assistant(host.touched, [text('Never sent on.')])]));
+  // Deck ended the lease for its capabilities: what was queued behind the
+  // refused frame is forgotten, the ending included
+  server.next.push(() => ({ refused: 'capability-disabled' }));
+  host.emit('agent_settled', settled(host.touched));
+  await until('the refused frame', () => server.frames().length === 2);
+  ran(host, [assistant(host.touched, [text('Nor this.')])]);
+  await sleep(1300);
+  assert.equal(server.lines().length, 4, 'no further line in this runtime');
+  await closed(server);
+});
+
+test('bound with less than this runtime loaded: said with the acceptance, and no message is read', async () => {
+  const { server, host } = await replying('reply', 'manual');
   server.answer(await server.arrival(0));
-  server.answer(await server.arrival(1));
-  const start = await server.arrival(2);
-  // the start crossed a change of the settings: answered as not committed, with what is left
-  server.say(start, { revoked: 1, nonce: server.give(1), capabilities: { signal: true, lifecycle: false } });
-  host.emit('agent_start', undefined, session.ctx);
-  const run = await server.arrival(3);
-  assert.deepEqual(plain(run.line), { ...common, lease: 1, seq: 2, run: 1, state: 'working' });
-  // an answer that names MORE than the observer has changes nothing: only ever less
-  server.say(run, { ack: 2, nonce: server.give(1), capabilities: { signal: true, lifecycle: true } });
+  const attest = await server.arrival(1);
+  assert.deepEqual(attest.line.capabilities, { signal: true, reply: true }, 'what this runtime loaded');
+  // Deck's settings enable work status alone
+  server.usable = { signal: true, reply: false };
+  server.answer(attest);
+  assert.deepEqual(attest.said.capabilities, { signal: true, reply: false });
   await sleep(60);
-  const asked = session.state.asked;
-  const over = host.emit('session_shutdown', { reason: 'quit' }, session.ctx);
+  host.emit('agent_start');
+  const run = await server.arrival(2);
+  assert.deepEqual(plain(run.line), { ...common, lease: 1, seq: 1, run: 1, state: 'working' });
+  server.answer(run);
+  host.emit('agent_end');
+  host.emit('agent_settled');
+  const ending = await server.arrival(3);
+  assert.deepEqual(plain(ending.line), { ...common, lease: 1, seq: 2, run: 1, state: 'turn-done' });
+  server.answer(ending);
+  const over = host.emit('session_shutdown', { reason: 'quit' });
   const reset = await server.arrival(4);
   assert.deepEqual(plain(reset.line), { ...common, lease: 1, seq: 3, reason: 'quit' });
   server.answer(reset);
   await over;
-  assert.equal(session.state.asked, asked, 'session observation did not come back');
-  await closed(server);
-});
-
-test('bound with less than this runtime loaded: said with the acceptance, and nothing of the rest is sent', async () => {
-  const { server, host, session } = await observing('both', 'session-one', 'startup', 'manual');
-  server.answer(await server.arrival(0));
-  const attest = await server.arrival(1);
-  assert.deepEqual(attest.line.capabilities, { signal: true, lifecycle: true }, 'what this runtime loaded');
-  // the session this runtime started in was read once, inside Pi, before any connection
-  const asked = session.state.asked;
-  // Deck's settings enable work status alone
-  server.usable = { signal: true, lifecycle: false };
-  server.answer(attest);
-  assert.deepEqual(attest.said.capabilities, { signal: true, lifecycle: false });
-  await sleep(120);
-  assert.equal(server.connections.length, 2, 'no start frame: the session id never crosses the socket');
-  // work status goes on, numbered from 1
-  host.emit('agent_start', undefined, session.ctx);
-  const run = await server.arrival(2);
-  assert.deepEqual(plain(run.line), { ...common, lease: 1, seq: 1, run: 1, state: 'working' });
-  server.answer(run);
-  const over = host.emit('session_shutdown', { reason: 'quit' }, session.ctx);
-  const reset = await server.arrival(3);
-  assert.deepEqual(plain(reset.line), { ...common, lease: 1, seq: 2, reason: 'quit' });
-  server.answer(reset);
-  await over;
-  assert.equal(session.state.asked, asked, 'the session manager is not asked again');
-  assert.deepEqual(host.touched, []);
+  assert.deepEqual(host.touched, [], 'no final message ever crosses the socket, or is read');
   await closed(server);
 });
 

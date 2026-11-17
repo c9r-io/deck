@@ -9,7 +9,7 @@
 //
 //   exec-peer <socket path> <log file> <step>...
 //
-// It speaks `pi-observer` v2 as an observer does: ONE line per connection,
+// It speaks `pi-observer` v3 as an observer does: ONE line per connection,
 // Deck's one line of answer, the end. It remembers the lease and the nonce
 // Deck last gave it, and puts them wherever a step says `@LEASE@` and
 // `@NONCE@`. Every answer it reads is appended to the log.
@@ -177,7 +177,7 @@ int main(int argc, char **argv) {
             sscanf(s + 7, "%d:%31[^:]:%39s", &kept, lease, given);
             snprintf(nonce, sizeof nonce, "%s", given);
         } else if (!strcmp(s, "@hello")) {
-            message("{\"protocol\":\"pi-observer\",\"v\":2,\"source\":\"pi\"}", 1);
+            message("{\"protocol\":\"pi-observer\",\"v\":3,\"source\":\"pi\"}", 1);
         } else if (s[0] == '{') {
             message(s, 6);
         } else if (!strncmp(s, "@once:", 6)) {

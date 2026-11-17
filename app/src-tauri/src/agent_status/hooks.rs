@@ -1536,7 +1536,8 @@ pub(crate) struct AgentSettingsStatus {
     signal: bool,
     lifecycle: Option<bool>,
     /// Codex: whether its Stop hook forwards the final message
-    /// (`CODEX_HOOKS_WITH_REPLY`); false while the hooks are off.
+    /// (`CODEX_HOOKS_WITH_REPLY`); false while the hooks are off. Pi:
+    /// whether its entry is the one that forwards it (`agent_pi::config`).
     #[serde(skip_serializing_if = "Option::is_none")]
     replies: Option<bool>,
     installation: Option<crate::agent_pi::config::Installation>,
@@ -1552,7 +1553,7 @@ pub(crate) struct AgentHooksStatus {
     /// Pi's two switches and the state of its one extension entry, all
     /// derived from Pi's own settings file (`agent_pi::config`).
     pi: bool,
-    pi_lifecycle: bool,
+    pi_replies: bool,
     pi_installation: crate::agent_pi::config::Installation,
 }
 
@@ -1607,9 +1608,9 @@ pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
                 let status = crate::agent_pi::config::status();
                 AgentSettingsStatus {
                     signal: status.signal,
-                    lifecycle: Some(status.lifecycle),
+                    lifecycle: None,
                     installation: Some(status.installation),
-                    replies: None,
+                    replies: Some(status.reply),
                 }
             }
         };
@@ -1629,7 +1630,7 @@ pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
         codex: codex.signal,
         claude_reentry: claude.lifecycle.unwrap_or(false),
         pi: pi.signal,
-        pi_lifecycle: pi.lifecycle.unwrap_or(false),
+        pi_replies: pi.replies.unwrap_or(false),
         pi_installation: pi.installation.unwrap_or_default(),
     }
 }

@@ -34,8 +34,7 @@
     "resources": {
       "resources/pi/observer.ts": "pi/observer.ts",
       "resources/pi/signal.ts": "pi/signal.ts",
-      "resources/pi/lifecycle.ts": "pi/lifecycle.ts",
-      "resources/pi/both.ts": "pi/both.ts"
+      "resources/pi/reply.ts": "pi/reply.ts"
     },
     "createUpdaterArtifacts": true,
     "macOS": {

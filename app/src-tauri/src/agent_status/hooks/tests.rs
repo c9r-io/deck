@@ -118,8 +118,8 @@ fn hook_status_command_returns_both_closed_agent_fields() {
     );
     for source in ["claude-code", "codex", "pi"] {
         let agent = agents[source].as_object().expect("agent status");
-        // Codex also says whether its Stop hook forwards the final message
-        assert_eq!(agent.len(), if source == "codex" { 4 } else { 3 });
+        // Codex and Pi also say whether the final message is forwarded
+        assert_eq!(agent.len(), if source == "claude-code" { 3 } else { 4 });
         assert!(agent["signal"].is_boolean());
     }
     assert!(agents["codex"]["lifecycle"].is_boolean());
@@ -128,11 +128,12 @@ fn hook_status_command_returns_both_closed_agent_fields() {
     assert_eq!(object["codex"], agents["codex"]["signal"]);
     assert_eq!(object["claude_reentry"], agents["claude-code"]["lifecycle"]);
     assert_eq!(object["pi"], agents["pi"]["signal"]);
-    assert_eq!(object["pi_lifecycle"], agents["pi"]["lifecycle"]);
+    assert_eq!(object["pi_replies"], agents["pi"]["replies"]);
+    assert!(agents["pi"]["lifecycle"].is_null());
     assert_eq!(object["pi_installation"], agents["pi"]["installation"]);
     assert!(object.get("pi").is_some_and(serde_json::Value::is_boolean));
     assert!(object
-        .get("pi_lifecycle")
+        .get("pi_replies")
         .is_some_and(serde_json::Value::is_boolean));
     let installation = object
         .get("pi_installation")
@@ -158,10 +159,10 @@ fn hook_status_command_returns_both_closed_agent_fields() {
             .message(),
         "pi-config-unsupported-location"
     );
-    // the session-observation switch is Pi's own command, under the same rule
+    // the final-message switch is Pi's own command, under the same rule
     for enable in [true, false] {
         assert_eq!(
-            crate::agent_pi::config::agent_pi_lifecycle_set(enable)
+            crate::agent_pi::config::agent_pi_replies_set(enable)
                 .unwrap_err()
                 .message(),
             "pi-config-unsupported-location"
@@ -260,7 +261,7 @@ fn duplicate_agent_registry_has_no_status_reads_or_legacy_projection() {
     assert_eq!(status["codex"], false);
     assert_eq!(status["claude_reentry"], false);
     assert_eq!(status["pi"], false);
-    assert_eq!(status["pi_lifecycle"], false);
+    assert_eq!(status["pi_replies"], false);
     assert_eq!(status["pi_installation"], "absent");
 }
 

@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  PI_COVERAGE, PI_INSTALLATIONS, PI_SESSION, piCoverage, piDetailKeys, piErrorKey, piSessionKey, piSessionObserved, piSettingsView,
+  PI_COVERAGE, PI_INSTALLATIONS, piCoverage, piDetailKeys, piErrorKey, piSettingsView,
   piStatus, piStatusKey,
 } from '../js/pi-model.js';
 import { createAttentionTracker, attentionBadge, DELIVERY_WAITS, deliveryWaits } from '../js/attention-model.js';
@@ -15,30 +15,32 @@ const limits = JSON.parse(readFileSync(new URL('./fixtures/limits.json', import.
 test('the closed words are one list with the backend', () => {
   assert.deepEqual([...PI_COVERAGE], limits.pi_coverage);
   assert.deepEqual([...PI_INSTALLATIONS], limits.pi_installations);
-  assert.deepEqual([...PI_SESSION], limits.pi_session);
+  assert.equal(limits.pi_session, undefined, 'no word about a native Pi session exists');
 });
 
 test('the Settings row is read from the backend and from nothing else', () => {
-  assert.deepEqual(piStatus({ pi: true, pi_installation: 'current' }), { signal: true, lifecycle: false, installation: 'current' });
+  assert.deepEqual(piStatus({ pi: true, pi_installation: 'current' }), { signal: true, replies: false, installation: 'current' });
   assert.deepEqual(piSettingsView({ pi: true, pi_installation: 'current' }),
-    { signal: true, lifecycle: false, usable: true, note: 'settings.pi.note.current' });
+    { signal: true, replies: false, usable: true, note: 'settings.pi.note.current' });
   // off, nothing to say
   assert.deepEqual(piSettingsView({ pi: false, pi_installation: 'absent' }),
-    { signal: false, lifecycle: false, usable: true, note: null });
-  // the two switches are two answers of the backend: neither implies the other
-  assert.deepEqual(piSettingsView({ pi: false, pi_lifecycle: true, pi_installation: 'current' }),
-    { signal: false, lifecycle: true, usable: true, note: 'settings.pi.note.current' });
-  assert.deepEqual(piSettingsView({ pi: true, pi_lifecycle: true, pi_installation: 'needs-reload' }),
-    { signal: true, lifecycle: true, usable: true, note: 'settings.pi.note.needsReload' });
+    { signal: false, replies: false, usable: true, note: null });
+  // the two switches are two answers of the backend, shown as they are answered
+  assert.deepEqual(piSettingsView({ pi: true, pi_replies: true, pi_installation: 'current' }),
+    { signal: true, replies: true, usable: true, note: 'settings.pi.note.current' });
+  assert.deepEqual(piSettingsView({ pi: true, pi_replies: true, pi_installation: 'needs-reload' }),
+    { signal: true, replies: true, usable: true, note: 'settings.pi.note.needsReload' });
   for (const value of ['true', 1, null, undefined]) {
-    assert.equal(piStatus({ pi: true, pi_lifecycle: value, pi_installation: 'current' }).lifecycle, false, String(value));
+    assert.equal(piStatus({ pi: true, pi_replies: value, pi_installation: 'current' }).replies, false, String(value));
   }
-  assert.equal(piStatus({ pi_lifecycle: true, pi_installation: 'somewhere' }).lifecycle, false, 'an unknown state is no state');
+  assert.equal(piStatus({ pi_replies: true, pi_installation: 'somewhere' }).replies, false, 'an unknown state is no state');
+  // an answer of a build that still had session observation says nothing of a final message
+  assert.equal(piStatus({ pi: true, pi_lifecycle: true, pi_installation: 'current' }).replies, false);
   // configured is not connected: the note says what the entry is, never that Pi loaded it
   assert.equal(piSettingsView({ pi: true, pi_installation: 'needs-reload' }).note, 'settings.pi.note.needsReload');
   // the switch shows what the file says even where this build cannot change it
   assert.deepEqual(piSettingsView({ pi: true, pi_installation: 'unsupported-location' }),
-    { signal: true, lifecycle: false, usable: false, note: 'settings.pi.note.unsupportedLocation' });
+    { signal: true, replies: false, usable: false, note: 'settings.pi.note.unsupportedLocation' });
   for (const installation of ['conflict', 'unreadable']) {
     const view = piSettingsView({ pi: false, pi_installation: installation });
     assert.equal(view.usable, true, installation);
@@ -50,7 +52,7 @@ test('the Settings row is read from the backend and from nothing else', () => {
     const view = piSettingsView(status);
     assert.equal(view.signal, status?.pi === true && status.pi_installation === 'current' ? true : false);
     if (status?.pi_installation !== 'current') {
-      assert.deepEqual(view, { signal: false, lifecycle: false, usable: false, note: 'settings.pi.note.unknown' });
+      assert.deepEqual(view, { signal: false, replies: false, usable: false, note: 'settings.pi.note.unknown' });
     }
   }
   // every state has its sentence in both languages
@@ -147,14 +149,28 @@ test('what the page says about Pi promises no more than Deck observes', () => {
       assert.match(sentence, /does not (support )?reopen/i, `${key}: ${sentence}`);
     }
   }
-  // session observation says what it is and what it is not, in both languages
-  for (const key of ['settings.piLifecycleHint', 'settings.piLifecycleEnableConfirm', 'signal.pi.session']) {
-    assert.match(dictionaries.en[key], /does not (support )?reopen/i, key);
-    assert.match(dictionaries['zh-Hans'][key], /不会自动重新打开|暂不支持自动重入/, key);
+  // the final-message switch says what is read, where it goes and what it does not change — in every language
+  for (const [language, dictionary] of Object.entries(dictionaries)) {
+    for (const key of ['settings.piReplies', 'settings.piRepliesHint', 'settings.piRepliesEnableConfirm',
+      'settings.piRepliesEnabled', 'settings.piRepliesDisabled']) {
+      assert.ok(dictionary[key] && (language === 'en' || dictionary[key] !== dictionaries.en[key]), `${language} ${key}`);
+    }
+    // nothing of the capability that is gone is left to be said
+    for (const key of Object.keys(dictionary)) assert.doesNotMatch(key, /piLifecycle|signal\.pi\.session/, `${language} ${key}`);
   }
-  assert.match(dictionaries['zh-Hans']['settings.piLifecycleHint'], /观察当前原生会话；此安装暂不支持自动重入。/);
-  // the id is never promised to be shown, and the hint says where it stays
-  assert.match(dictionaries.en['settings.piLifecycleHint'], /in memory only[^.]*never shows, logs or stores it/);
+  // it leaves the Mac only for a model provider, and only under the summary switch: said in the hint and the confirmation
+  for (const key of ['settings.piRepliesHint', 'settings.piRepliesEnableConfirm']) {
+    assert.match(dictionaries.en[key], /model provider[^.]*only while Summarize turn endings is on/, key);
+    assert.match(dictionaries['zh-Hans'][key], /只有在开启了?“轮次结束时写摘要”[^。]*才会发给你的模型服务商/, key);
+  }
+  assert.match(dictionaries.en['settings.piRepliesHint'], /Nothing is written to disk or logged\./);
+  assert.match(dictionaries.en['settings.piRepliesHint'], /no prompt, tool call or tool output is read/);
+  assert.match(dictionaries['zh-Hans']['settings.piRepliesHint'], /不写入磁盘，不记日志。/);
+  // and it lifts no hold: the confirmation says so
+  assert.match(dictionaries.en['settings.piRepliesEnableConfirm'], /Automatic sending to Pi sessions stays paused\./);
+  assert.match(dictionaries['zh-Hans']['settings.piRepliesEnableConfirm'], /向 Pi session 的自动发送保持暂停。/);
+  // the switch whose entry reads nothing still promises exactly that
+  assert.match(dictionaries.en['settings.piSignalEnableConfirm'], /no prompt text, output, or paths ever leave/);
   // the one fixed sentence of the work-status switch, in both languages
   assert.match(dictionaries.en['settings.piSignalHint'],
     /Shows when work starts and when an interaction ends\. Deck currently cannot reliably observe when Pi is waiting for input, so automatic sending to Pi sessions is paused\./);
@@ -165,44 +181,21 @@ test('what the page says about Pi promises no more than Deck observes', () => {
   }
 });
 
-test('an observed session is one more line of explanation and nothing else', () => {
-  const live = { alive: true, piSignal: 'connected', piSession: 'observed' };
-  assert.equal(piSessionObserved(live), true);
-  assert.deepEqual(piDetailKeys(live), ['signal.pi.connectedHint', 'signal.pi.hold', 'signal.pi.session']);
-  // not observed, a word this build does not know, a stopped card: no line
-  for (const snapshot of [{ alive: true, piSignal: 'connected' }, { alive: true, piSignal: 'connected', piSession: 'resumable' },
-    { alive: false, piSignal: 'connected', piSession: 'observed' }]) {
-    assert.equal(piSessionObserved(snapshot), false);
-  }
+test('a card explains its coverage and the hold, and says nothing about a native session', () => {
+  assert.deepEqual(piDetailKeys({ alive: true, piSignal: 'connected' }), ['signal.pi.connectedHint', 'signal.pi.hold']);
   assert.deepEqual(piDetailKeys({ alive: true, piSignal: 'unavailable' }), ['signal.pi.unavailableHint', 'signal.pi.hold']);
-  // observation alone, without any coverage word, explains nothing on a card that is no recognized Pi
+  // a word an earlier build's poll carried changes nothing
+  assert.deepEqual(piDetailKeys({ alive: true, piSignal: 'connected', piSession: 'observed' }),
+    ['signal.pi.connectedHint', 'signal.pi.hold']);
   assert.equal(piDetailKeys({ alive: true, piSession: 'observed' }), null);
-  // A session id Deck does not support is SAID: neither an observed session nor nothing. One line, no state.
-  const unsupported = { alive: true, piSignal: 'connected', piSession: 'unsupported' };
-  assert.equal(piSessionObserved(unsupported), false);
-  assert.equal(piSessionKey(unsupported), 'signal.pi.sessionUnsupported');
-  assert.deepEqual(piDetailKeys(unsupported), ['signal.pi.connectedHint', 'signal.pi.hold', 'signal.pi.sessionUnsupported']);
-  assert.equal(piStatusKey(unsupported), piStatusKey({ alive: true, piSignal: 'connected' }));
-  assert.equal(piSessionKey({ alive: false, piSession: 'unsupported' }), null);
-  assert.equal(piSessionKey({ alive: true, piSession: 'truncated' }), null);
-  for (const dictionary of [dictionaries.en, dictionaries['zh-Hans']]) {
-    const text = dictionary['signal.pi.sessionUnsupported'];
-    assert.ok(text && text !== dictionary['signal.pi.session']);
-    // no id, length or number is ever part of the sentence
-    assert.doesNotMatch(text, /\d/);
-  }
+  assert.equal(piStatusKey({ alive: true, piSignal: 'connected', piSession: 'observed' }),
+    piStatusKey({ alive: true, piSignal: 'connected' }));
   // a missing settings directory is said as that, and not as "Pi never ran on this Mac"
   assert.doesNotMatch(dictionaries.en['error.pi.neverRan'], /this Mac|never|not been run/i);
   assert.doesNotMatch(dictionaries['zh-Hans']['error.pi.neverRan'], /这台 Mac|没有运行过/);
-  // it is no state: the status text of the card does not change with it
-  assert.equal(piStatusKey(live), piStatusKey({ alive: true, piSignal: 'connected' }));
-  // the snapshot the Board keeps takes the closed word from the poll, or nothing
+  // the snapshot the Board keeps takes nothing of a session from the poll
   const tracker = createAttentionTracker();
   const card = { id: 'c', session: 's' };
   tracker.record([card], [{ name: 's', alive: true, pi_signal: 'connected', pi_session: 'observed' }]);
-  assert.equal(tracker.get(card).piSession, 'observed');
-  tracker.record([card], [{ name: 's', alive: true, pi_signal: 'connected', pi_session: 'unsupported' }]);
-  assert.equal(tracker.get(card).piSession, 'unsupported');
-  tracker.record([card], [{ name: 's', alive: true, pi_signal: 'connected', pi_session: 'abc-123' }]);
-  assert.equal(tracker.get(card).piSession, null, 'anything but the closed word is nothing');
+  assert.equal('piSession' in tracker.get(card), false);
 });

@@ -26,8 +26,9 @@ differed from it and where, one hash over the sources as they were on disk
 `--standalone` a verified, unpacked official Pi build (the directory that
 holds `pi`). The npm install and Node are found on this machine and only read.
 
-`<root>/logs/` keeps the private trace: it holds native session ids and is
-never committed. `<root>/result.json` is the summary: closed words, counts and
+`<root>/logs/` keeps the private trace: it holds native session ids (Pi's
+own, from the fixture's log) and the fixture model's answers, and is never
+committed. `<root>/result.json` is the summary: closed words, counts and
 relations only. Exit 0 when every check passed and the cleanup found nothing.
 """
 
@@ -56,7 +57,7 @@ FIXTURES = REPO / "scripts/pi"
 TMUX = REPO / "app/src-tauri/binaries/tmux-aarch64-apple-darwin"
 NPM_PACKAGE = Path.home() / ".local/lib/node_modules/@earendil-works/pi-coding-agent"
 ENTRY = "Contents/Resources/pi/signal.ts"
-OBSERVER_FILES = ("observer.ts", "signal.ts", "lifecycle.ts", "both.ts")
+OBSERVER_FILES = ("observer.ts", "signal.ts", "reply.ts")
 
 # What the account's own Pi settings could look like: other keys, the user's
 # own entries, Pi's own two-space layout. Deck's entry is added by the real
@@ -128,9 +129,9 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def status(signal: bool, lifecycle: bool, installation: str) -> dict:
+def status(signal: bool, replies: bool, installation: str) -> dict:
     """Pi's part of the Settings status reply."""
-    return {"pi": signal, "pi_lifecycle": lifecycle, "pi_installation": installation}
+    return {"pi": signal, "pi_replies": replies, "pi_installation": installation}
 
 
 def alive(pid: int) -> bool:
@@ -218,13 +219,12 @@ class Tap:
             for event in reversed(self.heard()):
                 if "now" in event:
                     return event["now"]
-        return {"store": {}, "leases": [], "ended": [], "sessions": [], "unsupported": [], "revoked": [], "drops": {},
+        return {"store": {}, "leases": [], "ended": [], "replies": {}, "revoked": [], "drops": {},
                 "announced": {}, "agains": 0, "challenges": 0, "pending": 0}
 
-    def session(self, name: str) -> dict | None:
-        """What the live lease of this card's Pi said of its native session, if anything."""
-        lease = self.lease(name)
-        return next((item for item in self.now()["sessions"] if lease and item["lease"] == lease["lease"]), None)
+    def replies(self, name: str) -> list[dict]:
+        """Every final message Deck kept for this card, in order: its text, and whether it was cut."""
+        return list(self.now().get("replies", {}).get(name, []))
 
     def ended(self, session: str) -> list[str]:
         """Why this card's leases ended, in order: the closed words production writes to app.log."""
@@ -906,7 +906,7 @@ class Run:
         cards = {p.session: tap.card(p.session) for p in (a, b)}
         self.check("A08", "a reload, or a new Pi, loads the entry and connects",
                    all(card["agent"] is None and card["pi_signal"] == "connected" for card in cards.values()), cards=cards)
-        after = {key: tap.ask("status")[key] for key in ("pi", "pi_lifecycle", "pi_installation")}
+        after = {key: tap.ask("status")[key] for key in ("pi", "pi_replies", "pi_installation")}
         self.check("F03", "the reload note follows the Pis that run: still there while one has not reloaded, gone once none waits",
                    waiting["pi_installation"] == "needs-reload" and after == status(True, False, "current"),
                    while_one_waits=waiting["pi_installation"], after=after)
@@ -1045,233 +1045,139 @@ class Run:
                    card["fg"] == "node" and not card["scheduler"].get("pi") and "pi_signal" not in card and card["agent"] is None, card=card)
         self.until("node to exit", lambda: not alive(node), 15)
 
-    # ---- P2: the native session a Pi runtime is in --------------------------------
+    # ---- the final message of a run ------------------------------------------------
 
     def entry_of(self, name: str) -> str:
         return str((self.bundle / ENTRY).with_name(name))
 
-    def started(self, pane: Pane, mark: int) -> dict:
-        """The last session start Pi itself logged for this pane's process since `mark`."""
-        return [e for e in pane.events(mark) if e["event"] == "session_start"][-1]
-
-    def observed(self, pane: Pane, timeout: float = 30) -> dict:
-        return self.until(f"{pane.session}: a session observation", lambda: self.tap.session(pane.session), timeout)
-
-    def session_file(self, native: str) -> Path:
-        named = [path for path in self.sessions.rglob("*.jsonl") if native in path.name]
-        if named:
-            return named[0]
-        return next(path for path in self.sessions.rglob("*.jsonl") if native in path.read_text(errors="replace")[:600])
-
-    def replaced(self, pane: Pane, command: str, reason: str, ac: str, label: str, same_id: bool | None = None) -> dict:
-        """One in-process session change: Pi tears a runtime down and starts another."""
-        tap = self.tap
-        before, old = self.observed(pane), tap.lease(pane.session)["lease"]
-        source, mark = self.source_mark(), tap.mark()
-        pane.type(command)
-        self.until(f"{pane.session}: a new lease after {command.split()[0]}",
-                   lambda: (tap.lease(pane.session) or {}).get("lease", old) != old and tap.session(pane.session), 30)
-        time.sleep(0.4)
-        said = [(e["event"], e.get("reason")) for e in pane.events(source) if e["event"].startswith("session_")]
-        native, now = self.started(pane, source), self.observed(pane)
-        torn = any(item["lease"] == old and item["last"] == f"shutdown-{reason}"
-                   for event in tap.since(mark) if "now" in event for item in event["now"]["sessions"])
-        self.facts.setdefault("teardown_seen_before_the_reset", {})[f"{pane.runtime}:{reason}"] = torn
-        same = now["id"] == before["id"]
-        self.check(ac, f"{pane.runtime}: {label}: Pi's own reasons, the id Pi names, a new lease, the old one ended by its reset",
-                   said == [("session_shutdown", reason), ("session_start", reason)] and now["id"] == native["id"]
-                   and now["last"] == f"start-{reason}" and tap.ended(pane.session)[-1] == f"reset-{reason}"
-                   and (same_id is None or same == same_id),
-                   said=said, last=now["last"], same_id_as_before=same, ended=tap.ended(pane.session)[-1:])
-        return now
-
-    def native_sessions(self) -> None:
-        tap, a, b = self.tap, self.a, self.b
-        for pane in (a, b):
-            pane.quit()
-        every = [json.loads(line) for number in range(1, self.taps + 1)
-                 for line in (self.logs / f"tap-{number}.jsonl").read_text().splitlines()]
-        self.check("B01", "with work status alone no session was ever named: no id reached Deck",
-                   all(not event["now"].get("sessions") for event in every if "now" in event))
-        # the second switch: the ONE entry is replaced where it stood
-        before = self.settings.read_text()
-        reply = tap.ask("lifecycle", enable=True)
-        self.check("B01", "session observation is a second switch on the same entry: one entry, now the one that carries both",
-                   reply["ok"] and reply["status"] == status(True, True, "current")
-                   and before.count(json.dumps(self.entry)) == 1
-                   and self.settings.read_text() == before.replace(json.dumps(self.entry), json.dumps(self.entry_of("both.ts"))),
-                   status=reply["status"])
-        # a session started with Pi: startup
-        source = self.source_mark()
-        a.launch()
-        self.bound(a)
-        first, seen = self.started(a, source), self.observed(a)
-        card = tap.card(a.session)
-        self.check("B03", "npm: the session Pi started in is observed, with Pi's own reason, and the card says only that one is observed",
-                   seen["id"] == first["id"] and first["reason"] == "startup" and seen["last"] == "start-startup"
-                   and card.get("pi_session") == "observed" and card["pi_signal"] == "connected", last=seen["last"])
-        self.one_run("B03", a, "a run in the first session", "hello fixture")
-        self.check("B02", "a run changes nothing about the observed session", self.observed(a)["id"] == first["id"])
-        ids = [first["id"]]
-        second = self.replaced(a, "/fx-new", "new", "B03", "a new session", same_id=False)
-        ids.append(second["id"])
-        self.one_run("B03", a, "a run in the second session", "hello fixture")
-        third = self.replaced(a, "/fx-fork", "fork", "B03", "a fork", same_id=False)
-        ids.append(third["id"])
-        self.check("B03", "new and fork each named a session of its own", len(set(ids)) == 3)
-        back = self.replaced(a, f"/fx-resume {self.session_file(first['id'])}", "resume", "B03", "a resume while Pi runs")
-        self.check("B03", "the resumed session is the first one, by the id Pi names", back["id"] == first["id"])
-        self.replaced(a, "/reload", "reload", "B05", "a reload: another runtime in the same session", same_id=True)
-        # the same changes inside a running Pi of the standalone build
-        source = self.source_mark()
-        b.launch()
-        self.bound(b)
-        b_first, b_seen = self.started(b, source), self.observed(b)
-        self.check("B03", "standalone: the session Pi started in is observed, with Pi's own reason",
-                   b_seen["id"] == b_first["id"] and b_first["reason"] == "startup" and b_seen["last"] == "start-startup"
-                   and tap.card(b.session).get("pi_session") == "observed", last=b_seen["last"])
-        self.one_run("B03", b, "a run in the first session", "hello fixture")
-        b_ids = [b_first["id"]]
-        b_ids.append(self.replaced(b, "/fx-new", "new", "B03", "a new session", same_id=False)["id"])
-        self.one_run("B03", b, "a run in the second session", "hello fixture")
-        b_ids.append(self.replaced(b, "/fx-fork", "fork", "B03", "a fork", same_id=False)["id"])
-        b_back = self.replaced(b, f"/fx-resume {self.session_file(b_first['id'])}", "resume", "B03", "a resume while Pi runs")
-        self.check("B03", "standalone: new and fork each named a session of its own, and the resumed one is the first",
-                   len(set(b_ids)) == 3 and b_back["id"] == b_first["id"] and not set(b_ids) & set(ids))
-        self.replaced(b, "/reload", "reload", "B05", "a reload: another runtime in the same session", same_id=True)
-        ids.extend(b_ids)
-        b.quit()
-        # quit: the runtime's own word; then a session named on the command line starts as a startup
-        source, mark, lease = self.source_mark(), tap.mark(), tap.lease(a.session)["lease"]
-        pid = a.pid
-        a.quit()
-        self.until("the quit lease to end", lambda: tap.lease(a.session) is None, 10)
-        said = [(e["event"], e.get("reason")) for e in self.source(source) if e.get("pid") == pid and e["event"].startswith("session_")]
-        self.check("B07", "npm: a quit is the runtime's teardown, said by Pi and ended by its reset; nothing of it is kept",
-                   said == [("session_shutdown", "quit")] and tap.ended(a.session)[-1] == "reset-quit"
-                   and not any(item["lease"] == lease for item in tap.now()["sessions"]))
-        source = self.source_mark()
-        a.launch(flags=("--session", str(self.session_file(first["id"]))))
-        self.bound(a)
-        named, seen = self.started(a, source), self.observed(a)
-        self.check("B04", "npm: a session named on the command line starts as a startup: Deck does not call it a resume",
-                   named["reason"] == "startup" and named["id"] == first["id"] and seen["id"] == first["id"]
-                   and seen["last"] == "start-startup", reason=named["reason"], last=seen["last"])
-        # the same session in a second pane: two processes, two leases, two observations
-        source = self.source_mark()
-        b.launch(flags=("--session", str(self.session_file(first["id"]))))
-        self.bound(b)
-        other = self.observed(b)
-        self.check("B06", "one session in two panes is two observations, each of its own process and lease",
-                   other["id"] == first["id"] == self.observed(a)["id"] and other["lease"] != self.observed(a)["lease"]
-                   and len(tap.now()["sessions"]) == 2)
-        # a Pi that dies without a word: no teardown is observed or invented
-        mark, lease, pid = tap.mark(), tap.lease(b.session)["lease"], b.pid
-        b.type("/fx-crash")
-        self.until("the killed Pi to be gone", lambda: not alive(pid) and tap.lease(b.session) is None, 15)
-        b.key("Enter")
-        self.until("the shell in front again", lambda: b.foreground() == "zsh", 10)
-        b.pid = None
-        torn = any(item["lease"] == lease and item["last"].startswith("shutdown")
-                   for event in tap.since(mark) if "now" in event for item in event["now"]["sessions"])
-        self.check("B07", "standalone: a Pi killed without a shutdown: its exit is all there is, no teardown and no quit",
-                   not torn and tap.ended(b.session)[-1] == "generation-mismatch" and len(tap.now()["sessions"]) == 1
-                   and self.observed(a)["id"] == first["id"], ended=tap.ended(b.session)[-1:])
-        # what the command line can name, on the standalone build
-        for flags, label, expect in (
-            (("--session", str(self.sessions / "not-there.jsonl")), "a session path that does not exist creates a session", "new"),
-            (("--session-id", "fixture.custom-ID_123"), "a session id of the user's own, not a UUID, is kept as it is", "custom"),
-            (("--session", "00000000-0000-4000-8000-00000000dead"), "a session id that does not exist starts no Pi", "none"),
-        ):
-            source = self.source_mark()
-            b.launch(flags=flags, expect_start=expect != "none")
-            if expect == "none":
-                time.sleep(1.0)
-                self.check("B04", f"standalone: {label}: no hello, no observation",
-                           b.gone() and tap.lease(b.session) is None and len(tap.now()["sessions"]) == 1)
-                b.pid = None
-                continue
-            self.bound(b)
-            named, seen = self.started(b, source), self.observed(b)
-            ok = seen["id"] == named["id"] and named["reason"] == "startup" and seen["last"] == "start-startup"
-            if expect == "new":
-                ok = ok and named["id"] not in ids
-            else:
-                ok = ok and named["id"] == "fixture.custom-ID_123"
-            ids.append(named["id"])
-            self.check("B04" if expect == "new" else "B02", f"standalone: {label}", ok, reason=named["reason"])
-            b.quit()
-        # session observation alone: no work status, and a run says nothing on the card
-        a.quit()
-        reply = tap.ask("signal", enable=False)
-        self.check("B01", "work status off, session observation on: the one entry is the one that observes sessions only",
-                   reply["ok"] and reply["status"] == status(False, True, "current")
-                   and json.loads(self.settings.read_text())["extensions"][-1] == self.entry_of("lifecycle.ts"))
-        source, mark = self.source_mark(), tap.mark()
-        b.launch()
-        self.bound(b)
-        seen = self.observed(b)
-        b.type("hello fixture")
-        self.until("a run Deck is not told of", lambda: "agent_settled" in b.names(source), 20)
-        time.sleep(1.0)
-        card = tap.card(b.session)
-        self.check("B01", "standalone: session observation alone reports a session and no run: the card has no word",
-                   seen["id"] == self.started(b, source)["id"] and tap.changes(b.session, mark) == [] and card["agent"] is None
-                   and card.get("pi_session") == "observed" and card["pi_signal"] == "unavailable"
-                   and card["scheduler"]["pi"], card=card)
-        # Deck restarts: nothing is restored; the running Pi says what its API says now, as a snapshot
-        native = seen["id"]
-        self.registry("stop", "--pid", str(tap.process.pid))
-        self.until("the old backend to be gone", lambda: tap.process.poll() is not None, 10)
-        time.sleep(1.5)
-        tap = self.backend()
-        # what the new backend held when it began, before any observer could have been answered: the running
-        # Pi's observer binds again by itself within a second or two of Deck's return
-        began = next((event["now"] for event in tap.since(0) if "now" in event), None)
-        self.check("B08", "a restarted Deck knows no session: nothing is read back from disk",
-                   began is not None and began["sessions"] == [] and began["leases"] == [])
-        self.bound(b, 40)
-        again = self.observed(b)
-        self.check("B08", "the running Pi's observer reports the session it is in NOW, as a snapshot and never as a start",
-                   again["id"] == native and again["last"] == "snapshot", last=again["last"])
-        # off: the observation is gone at once, and the user's file is theirs again
-        mark = tap.mark()
-        reply = tap.ask("lifecycle", enable=False)
-        gone = tap.first(lambda e: "now" in e and e["now"]["sessions"] == [] and e["now"]["leases"] == [], "the withdrawal", 5, mark)
-        self.check("B08", "session observation turned off: every record is gone at once and Deck's entry with it",
-                   reply["ok"] and reply["status"] == status(False, False, "absent") and bool(gone)
-                   and tap.ended(b.session)[-1] == "capability-disabled"
-                   and json.loads(self.settings.read_text())["extensions"] == json.loads(self.original_settings)["extensions"])
-        b.quit()
-        # the ids stayed where they may be: this run's private trace, Pi's own files, and nowhere else
-        public = json.dumps(self.results) + json.dumps(self.facts) + self.settings.read_text()
-        kept = [path for path in (self.root / "deck").rglob("*") if path.is_file()]
-        leaked = [native for native in set(ids) if native in public
-                  or any(native.encode() in path.read_bytes() for path in kept)]
-        self.check("B08", "no native session id is in Deck's data directory, Pi's settings or this run's summary",
-                   leaked == [] and len(set(ids)) >= 4, sessions_seen=len(set(ids)), leaked=len(leaked))
-
-    # ---- follow-up 01: capabilities one by one, ids Deck does not keep, an exec in the observer's pid ----
-
-    def switches(self, signal: bool, lifecycle: bool) -> dict:
+    def switches(self, signal: bool, replies: bool) -> dict:
         """Put the two Settings switches where a scenario needs them, through the Settings commands."""
         tap = self.tap
         now = tap.ask("status")
         if now["pi"] != signal:
             tap.ask("signal", enable=signal)
-        if now["pi_lifecycle"] != lifecycle:
-            tap.ask("lifecycle", enable=lifecycle)
+        if signal and tap.ask("status")["pi_replies"] != replies:
+            tap.ask("replies", enable=replies)
         return self.settings_now()
 
     def settings_now(self) -> dict:
         reply = self.tap.ask("status")
-        return {key: reply[key] for key in ("pi", "pi_lifecycle", "pi_installation")}
+        return {key: reply[key] for key in ("pi", "pi_replies", "pi_installation")}
+
+    def said(self, pane: Pane, command: str, expect: str | None, ac: str, label: str, **kw) -> dict:
+        """One run whose model answer the fixture was told (`/fx-say`, `/fx-long`): what Deck kept of it."""
+        tap = self.tap
+        before = len(tap.replies(pane.session))
+        seen = self.turn(pane, command, **kw)
+        time.sleep(0.3)
+        kept = tap.replies(pane.session)[before:]
+        card = tap.card(pane.session)
+        texts = [item["text"] for item in kept]
+        self.check(ac, f"{pane.runtime}: {label}",
+                   seen["states"][-1:] == ["turn-done"] and texts == ([expect] if expect is not None else []),
+                   states=seen["states"], kept=len(kept), bytes=[len(text.encode()) for text in texts],
+                   summary_shown=card.get("summary") is not None)
+        return {"seen": seen, "kept": kept, "card": card}
+
+    def replies(self) -> None:
+        """The final message: read by the reply entry alone, handed on with its run's ending, and by nothing else."""
+        tap, a, b = self.tap, self.a, self.b
+        for pane in (a, b):
+            pane.quit()
+        # ---- work status alone: the entry that reads nothing
+        self.check("P01", "work status on, the final message off: the entry that reads nothing of a conversation",
+                   self.switches(True, False) == status(True, False, "current")
+                   and json.loads(self.settings.read_text())["extensions"][-1] == self.entry)
+        for pane in (a, b):
+            pane.launch()
+            self.bound(pane)
+            self.said(pane, "/fx-say Not for Deck.", None, "P01", "work status alone: a run ends and nothing of what Pi said reaches Deck")
+            self.check("P01", f"{pane.runtime}: its lease may report run boundaries and nothing else",
+                       self.may(pane) == (True, False) and tap.card(pane.session).get("summary") is None)
+        # ---- the second switch: one entry, replaced where it stood, and a running Pi follows at its reload
+        before = self.settings.read_text()
+        reply = tap.ask("replies", enable=True)
+        self.check("P01", "the final message is a second switch on the same entry: one entry, now the one that reads it",
+                   reply["ok"] and reply["status"] == status(True, True, "needs-reload")
+                   and self.settings.read_text() == before.replace(json.dumps(self.entry), json.dumps(self.entry_of("reply.ts"))),
+                   status=reply["status"])
+        self.said(a, "/fx-say Still not for Deck.", None, "P01", "a Pi that has not reloaded goes on reading nothing")
+        for pane in (a, b):
+            old = tap.lease(pane.session)["lease"]
+            pane.type("/reload")
+            self.until(f"{pane.session}: the reloaded runtime's lease",
+                       lambda: (tap.lease(pane.session) or {}).get("lease") not in (None, old), 30)
+            self.until(f"{pane.session}: a lease that may do both", lambda: self.may(pane) == (True, True), 30)
+        self.check("P01", "after their reload nothing waits", self.settings_now() == status(True, True, "current"))
+        long_head, long_tail = "H" * 3000, "T" * 5000
+        cut_mark = "\n…\n"
+        for pane in (a, b):
+            # ---- a short message: the card's line, as it was written
+            got = self.said(pane, "/fx-say Done: two files changed.", "Done: two files changed.", "P02",
+                            "a short final message is kept whole, with its run's ending")
+            self.check("P02", f"{pane.runtime}: it is the card's line as written, and the kept one is not marked cut",
+                       got["card"].get("summary") == "Done: two files changed." and got["card"]["agent"] == "turn-done"
+                       and [item["cut"] for item in got["kept"]] == [False])
+            # ---- the next run takes the line away at once, and brings its own
+            mark = tap.mark()
+            source = self.source_mark()
+            pane.type("/fx-slow 3000")
+            self.until(f"{pane.session} working", lambda: tap.state(pane.session) == "working", 10)
+            time.sleep(0.3)
+            self.check("P02", f"{pane.runtime}: a new run hides the old line: a working card says nothing of the last ending",
+                       tap.card(pane.session).get("summary") is None)
+            self.until(f"{pane.session}: the slow run to settle", lambda: "agent_settled" in pane.names(source), 20)
+            self.until(f"{pane.session}: its ending", lambda: tap.state(pane.session) == "turn-done", 10)
+            time.sleep(0.3)
+            self.check("P02", f"{pane.runtime}: that run's own message is the line now",
+                       tap.card(pane.session).get("summary") == "fixture response"
+                       and tap.replies(pane.session)[-1]["text"] == "fixture response", changes=tap.changes(pane.session, mark))
+            # ---- a long message: its head and its tail
+            got = self.said(pane, "/fx-long 9000", long_head[:2000] + cut_mark + long_tail[-4000:], "P03",
+                            "a long final message is kept as its head and its tail")
+            self.check("P03", f"{pane.runtime}: it is marked cut, and without a model key it makes no line of the card",
+                       [item["cut"] for item in got["kept"]] == [True] and got["card"].get("summary") is None)
+            # ---- Pi's own retry and its queued follow-up: one run, one message, the last
+            got = self.said(pane, "/fx-retry", "fixture response", "P04", "a retry is one run with one final message: the one that succeeded")
+            got = self.said(pane, "/fx-follow", "fixture response", "P04", "a queued follow-up is one run with one final message: the last")
+            # ---- a run the user aborted, and one that failed: an ending without words
+            before_count = len(tap.replies(pane.session))
+            source = self.source_mark()
+            pane.type("/fx-slow 8000")
+            self.until(f"{pane.session} working", lambda: tap.state(pane.session) == "working", 10)
+            pane.key("Escape")
+            self.until(f"{pane.session}: the aborted run to settle", lambda: "agent_settled" in pane.names(source), 20)
+            self.until(f"{pane.session}: its ending", lambda: tap.state(pane.session) == "turn-done", 10)
+            time.sleep(0.5)
+            aborted = [e.get("aborted") for e in pane.events(source) if e["event"] == "agent_settled"]
+            self.check("P05", f"{pane.runtime}: a run the user aborted ends on the card and hands nothing on",
+                       aborted == [True] and len(tap.replies(pane.session)) == before_count
+                       and tap.card(pane.session).get("summary") is None, aborted=aborted)
+            self.said(pane, "/fx-error", None, "P05", "a run whose last message failed ends on the card and hands nothing on",
+                      timeout=90)
+            pane.type("/fx-ok")
+            time.sleep(0.3)
+            self.said(pane, "/fx-say Back again.", "Back again.", "P05", "the run after it is said again")
+        # ---- nothing of it anywhere but in memory
+        kept_texts = ("Done: two files changed.", "Back again.", "HHHHHHHH")
+        written = [path for path in (self.root / "deck").rglob("*") if path.is_file()
+                   and any(text.encode() in path.read_bytes() for text in kept_texts)]
+        self.check("P06", "no final message is in Deck's data directory, in Pi's settings or in this run's summary",
+                   written == [] and all(text not in self.settings.read_text() for text in kept_texts)
+                   and all(text not in json.dumps(self.results) for text in kept_texts), files=len(written))
+        refused = {reason: count for reason, count in tap.now()["drops"].items() if reason in ("pi-bad-frame", "pi-bad-run")}
+        self.check("P06", "none of that was a refusal: no final message was called malformed or of another run",
+                   not any(refused.values()), refused=refused)
+        for pane in (a, b):
+            pane.quit()
+        self.check("P01", "both switches off again: the settings file holds the user's entries only",
+                   self.switches(False, False) == status(False, False, "absent")
+                   and json.loads(self.settings.read_text())["extensions"] == json.loads(self.original_settings)["extensions"])
 
     def capabilities(self) -> None:
-        """Each capability is taken from a running lease by itself: the other, the lease and the run go on.
+        """The final message is taken from a running lease by itself: the run boundaries, the lease and the run go on.
 
-        Twice, the two runtimes changing places: each is once the idle one and once the one in a run, for either
-        capability."""
+        Twice, the two runtimes changing places: each is once the idle one and once the one in a run."""
         for number, (first, second) in enumerate(((self.a, self.b), (self.b, self.a)), 1):
             self.prefix = f"[{number}/2] "
             try:
@@ -1280,7 +1186,7 @@ class Run:
                 self.prefix = ""
 
     def capabilities_round(self, a: Pane, b: Pane) -> None:
-        """One round: `a` is idle when session observation goes and in a run when work status goes; `b` the reverse."""
+        """One round: `a` is idle with an unread ending when the final message goes, `b` in the middle of a run."""
         tap = self.tap
         for pane in (a, b):
             pane.quit()
@@ -1288,7 +1194,7 @@ class Run:
         for pane in (a, b):
             pane.launch()
             self.bound(pane)
-            self.observed(pane)
+            self.until(f"{pane.session}: a lease that may do both", lambda: self.may(pane) == (True, True), 30)
         cards_of = lambda: {p.session: tap.card(p.session) for p in (a, b)}
         leases, ended = {}, {}
         on_their_way = list(tap.now()["revoked"])
@@ -1303,160 +1209,124 @@ class Run:
         same_leases = lambda: all((tap.lease(p.session) or {}).get("lease") == leases[p.session] for p in (a, b))
         no_ending = lambda: all(len(tap.ended(p.session)) == ended[p.session] for p in (a, b))
         refused = tap.drops("pi-capability-disabled")
+        counts = lambda: {p.session: len(tap.replies(p.session)) for p in (a, b)}
 
-        # ---- session observation off: A idle with an unread ending, B in the middle of a run
-        self.one_run("F03", a, "a run before anything is turned off", "hello fixture")
+        # ---- the final message off: A idle with an unread ending, B in the middle of a run
+        self.said(a, "/fx-say Before anything is turned off.", "Before anything is turned off.", "F03",
+                  "a run before anything is turned off, with its final message")
         a_unread = dict(tap.now()["store"][a.session])
         b_source = self.source_mark()
         b.type("/fx-slow 6000")
         self.until("B working", lambda: tap.state(b.session) == "working", 10)
         b_open = dict(tap.now()["store"][b.session])
         remember()
+        kept = counts()
         mark, asked = tap.mark(), time.time() * 1000
-        reply = tap.ask("lifecycle", enable=False)
-        forgotten = tap.first(lambda e: "now" in e and e["now"]["sessions"] == [], "the sessions to be forgotten", 5, mark)
-        off = tap.mark()
+        reply = tap.ask("replies", enable=False)
         cards = cards_of()
-        self.check("F03", "session observation off: both leases lose their session at once and nothing else; no lease ends",
-                   reply["ok"] and reply["status"] == status(True, False, "current")
-                   and forgotten["wall"] - asked < 1000 and same_leases() and no_ending()
-                   and all("pi_session" not in card and card["pi_signal"] == "connected" for card in cards.values()),
-                   milliseconds=round(forgotten["wall"] - asked), status=reply["status"])
-        self.check("F03", f"{a.runtime}, idle: its unread ending is still there — the same episode, not viewed",
+        self.check("F03", "the final message off: no lease ends, and both go on with their run boundaries",
+                   reply["ok"] and reply["status"] == status(True, False, "current") and same_leases() and no_ending()
+                   and all(self.may(p) == (True, False) for p in (a, b))
+                   and all(card["pi_signal"] == "connected" for card in cards.values()),
+                   milliseconds=round(time.time() * 1000 - asked), status=reply["status"])
+        self.check("F03", f"{a.runtime}, idle: its unread ending is still there — the same episode, not viewed, with its line",
                    tap.now()["store"].get(a.session) == a_unread and cards[a.session]["agent"] == "turn-done"
-                   and cards[a.session]["episode_viewed"] is False)
+                   and cards[a.session]["episode_viewed"] is False
+                   and cards[a.session].get("summary") == "Before anything is turned off.")
         self.check("F03", f"{b.runtime}, in a run: the run is still the same working episode",
                    tap.now()["store"].get(b.session) == b_open and cards[b.session]["agent"] == "working")
+        # the run that is open in B may end before B's observer has been answered once more: its final message
+        # is then on its way, and is answered `revoked`
+        may_cross.append({"session": b.session, "capability": "reply"})
         self.until("B's run to settle in Pi", lambda: "agent_settled" in b.names(b_source), 20)
         self.until("B's ending on the card", lambda: tap.state(b.session) == "turn-done", 10)
-        self.check("F03", f"{b.runtime}: the run that was open when its lease lost session observation ends on the same lease",
-                   same_leases() and no_ending() and [c[0] for c in tap.changes(b.session, mark) if c] == ["turn-done"])
+        time.sleep(0.5)
+        self.check("F03", f"{b.runtime}: the run that was open when its lease lost the final message ends on the same lease, "
+                          "without words",
+                   same_leases() and no_ending() and [c[0] for c in tap.changes(b.session, mark) if c] == ["turn-done"]
+                   and counts() == kept and tap.card(b.session).get("summary") is None)
         for pane in (a, b):
-            self.one_run("F03", pane, "a whole run after session observation was taken from its lease", "hello fixture")
+            self.said(pane, "/fx-say After the loss.", None, "F03",
+                      "a whole run after the final message was taken from its lease: an ending, and nothing with it")
         self.check("F03", "both are still on the lease they had, and nothing was refused for a capability",
                    same_leases() and no_ending() and tap.drops("pi-capability-disabled") == refused)
         heard = list(tap.now()["revoked"])
-        # both observers have been answered since: they stopped reading, and a session change inside Pi names
-        # nothing — not under the old lease, not under the new runtime's
-        for pane in (a, b):
-            old, source = tap.lease(pane.session)["lease"], self.source_mark()
-            pane.type("/fx-new")
-            self.until(f"{pane.session}: the new runtime's lease",
-                       lambda: (tap.lease(pane.session) or {}).get("lease", old) != old, 30)
-            self.until(f"{pane.session}: Pi's own new session",
-                       lambda: any(e["event"] == "session_start" and e.get("reason") == "new" for e in pane.events(source)), 10)
-        time.sleep(1.0)
-        named = [event["now"]["sessions"] for event in tap.since(off) if "now" in event and event["now"]["sessions"]]
-        cards = cards_of()
-        self.check("F03", "a new session inside Pi: the new runtime's lease is bound for work status only and names no session, "
-                          "and an observer that was answered since the loss sent nothing of what it lost",
-                   named == [] and all("pi_session" not in card and card["pi_signal"] == "connected" for card in cards.values())
-                   and self.settings_now() == status(True, False, "current") and tap.drops("pi-capability-disabled") == refused
-                   and tap.now()["revoked"] == heard,
-                   sessions_named_since=len(named), answered_revoked_since=len(tap.now()["revoked"]) - len(heard))
 
         # ---- turned on again: nothing is given back to a running Pi
-        reply = tap.ask("lifecycle", enable=True)
+        reply = tap.ask("replies", enable=True)
         time.sleep(1.5)
-        self.check("F03", "session observation on again: Settings says the running Pis need a reload, and no session is observed",
-                   reply["ok"] and reply["status"] == status(True, True, "needs-reload") and tap.now()["sessions"] == []
-                   and all("pi_session" not in card for card in cards_of().values()), status=reply["status"])
+        self.check("F03", "the final message on again: Settings says the running Pis need a reload",
+                   reply["ok"] and reply["status"] == status(True, True, "needs-reload")
+                   and all(self.may(p) == (True, False) for p in (a, b)), status=reply["status"])
+        self.said(a, "/fx-say Not given back.", None, "F03", "a running observer is not given the capability back")
+        self.check("F03", "an observer that was answered since the loss sent nothing of what it lost",
+                   tap.now()["revoked"] == heard, answered_revoked_since=len(tap.now()["revoked"]) - len(heard))
         a.type("/reload")
-        self.until("A's reloaded runtime to report its session", lambda: tap.session(a.session), 30)
+        self.until("A's reloaded runtime", lambda: self.may(a) == (True, True), 30)
         one = self.settings_now()["pi_installation"]
         b.type("/reload")
-        self.until("B's reloaded runtime to report its session", lambda: tap.session(b.session), 30)
+        self.until("B's reloaded runtime", lambda: self.may(b) == (True, True), 30)
         both = self.settings_now()["pi_installation"]
-        cards = cards_of()
         self.check("F03", "a reload gives it back, Pi by Pi: the note stays while one Pi has not reloaded",
-                   one == "needs-reload" and both == "current"
-                   and all(card.get("pi_session") == "observed" and card["pi_signal"] == "connected" for card in cards.values()),
-                   after_one=one, after_both=both)
+                   one == "needs-reload" and both == "current", after_one=one, after_both=both)
+        for pane in (a, b):
+            self.said(pane, "/fx-say Given back by a reload.", "Given back by a reload.", "F03",
+                      "after its reload a run is said again")
 
-        # ---- work status off: A in the middle of a run, B idle with an unread ending
-        self.one_run("F03", b, "a run before work status is turned off", "hello fixture")
+        # ---- work status off takes the final message with it: nothing is left, and the leases end
         a_source = self.source_mark()
         a.type("/fx-slow 6000")
         self.until("A working", lambda: tap.state(a.session) == "working", 10)
-        remember()
-        sessions = {p.session: tap.session(p.session)["id"] for p in (a, b)}
+        kept = counts()
         mark, asked = tap.mark(), time.time() * 1000
         reply = tap.ask("signal", enable=False)
-        withdrawn = tap.first(lambda e: "now" in e and e["now"]["store"] == {}, "the words to be withdrawn", 5, mark)
+        over = tap.first(lambda e: "now" in e and e["now"]["leases"] == [] and e["now"]["store"] == {}, "the leases to end", 5, mark)
         cards = cards_of()
-        # the run that is open in A may end before A's observer has been answered once more: its ending is then on
-        # its way, and is answered `revoked`
-        may_cross.append({"session": a.session, "capability": "signal"})
-        self.check("F03", "work status off: both leases lose their word and episode at once, and keep their lease and their session",
-                   reply["ok"] and reply["status"] == status(False, True, "current") and withdrawn["wall"] - asked < 1000
-                   and same_leases() and no_ending()
-                   and tap.changes(a.session, mark) == [None] and tap.changes(b.session, mark) == [None]
+        self.check("F03", "work status off: the entry is gone, both leases end for that reason, and every word is withdrawn",
+                   reply["ok"] and reply["status"] == status(False, False, "absent") and over["wall"] - asked < 1000
+                   and all(tap.ended(p.session)[-1] == "capability-disabled" for p in (a, b))
                    and all(card["agent"] is None and card["episode"] is None and card["pi_signal"] == "unavailable"
-                           and card.get("pi_session") == "observed" and card["scheduler"]["pi"] for card in cards.values())
-                   and all((tap.session(p.session) or {}).get("id") == sessions[p.session] for p in (a, b)),
-                   milliseconds=round(withdrawn["wall"] - asked), status=reply["status"])
+                           and card["scheduler"]["pi"] for card in cards.values()),
+                   milliseconds=round(over["wall"] - asked), status=reply["status"])
         self.until("A's run to settle in Pi", lambda: "agent_settled" in a.names(a_source), 20)
         time.sleep(1.0)
-        self.check("F03", f"{a.runtime}: the run that was open ends in Pi and writes nothing: no word, no refusal, the same lease",
-                   tap.now()["store"] == {} and same_leases() and no_ending() and tap.drops("pi-capability-disabled") == refused)
-        b_source = self.source_mark()
-        b.type("hello fixture")
-        self.until("B's run to settle in Pi", lambda: "agent_settled" in b.names(b_source), 20)
-        time.sleep(1.0)
-        self.check("F03", f"{b.runtime}, idle with an unread ending: a whole run after work status was taken: Deck is told nothing of it",
-                   tap.now()["store"] == {} and same_leases() and no_ending())
-        for pane in (a, b):
-            self.replaced(pane, "/fx-new", "new", "F03", "a new session while only session observation is left", same_id=False)
-
-        # ---- the other one off as well: nothing is left, and the leases end
-        mark, asked = tap.mark(), time.time() * 1000
-        reply = tap.ask("lifecycle", enable=False)
-        over = tap.first(lambda e: "now" in e and e["now"]["leases"] == [] and e["now"]["sessions"] == [], "the leases to end", 5, mark)
-        self.check("F03", "both off: every lease ends, for that reason",
-                   reply["ok"] and reply["status"] == status(False, False, "absent") and over["wall"] - asked < 1000
-                   and all(tap.ended(p.session)[-1] == "capability-disabled" for p in (a, b)))
+        self.check("F03", f"{a.runtime}: the run that was open ends in Pi and writes nothing: no word and no final message",
+                   tap.now()["store"] == {} and tap.now()["leases"] == [] and counts() == kept)
         reply = tap.ask("signal", enable=True)
         time.sleep(3.0)
-        self.check("F03", "on again after both were off: the observers do not come back by themselves, and Settings says so",
+        self.check("F03", "on again after it was off: work status alone, the observers do not come back by themselves, "
+                          "and Settings says so",
                    reply["status"] == status(True, False, "needs-reload") and tap.now()["leases"] == [],
                    status=reply["status"])
         for pane in (a, b):
             pane.type("/reload")
             self.bound(pane)
-        self.check("F03", "after their reload both are connected and nothing waits",
+        self.check("F03", "after their reload both are connected for work status alone, and nothing waits",
                    self.settings_now() == status(True, False, "current")
+                   and all(self.may(p) == (True, False) for p in (a, b))
                    and all(card["pi_signal"] == "connected" for card in cards_of().values()))
 
         # ---- one switch after the other, quickly: every answer is what the running Pis can do
         remember()
-        steps = (("lifecycle", True, status(True, True, "needs-reload")),
-                 ("lifecycle", False, status(True, False, "current")),
-                 ("lifecycle", True, status(True, True, "needs-reload")))
+        steps = (("replies", True, status(True, True, "needs-reload")),
+                 ("replies", False, status(True, False, "current")),
+                 ("replies", True, status(True, True, "needs-reload")))
         answers = [tap.ask(op, enable=enable)["status"] for op, enable, _ in steps]
-        kept = same_leases() and no_ending()
-        self.check("F03", "session observation on, off, on: the running leases keep work status throughout, and the note follows",
-                   answers == [expected for _, _, expected in steps] and kept and tap.now()["sessions"] == [], answers=answers)
-        self.one_run("F03", a, "a run in the middle of the switching", "hello fixture")
-        steps = (("signal", False, status(False, True, "needs-reload")), ("signal", True, status(True, True, "needs-reload")))
-        answers = [tap.ask(op, enable=enable)["status"] for op, enable, _ in steps]
-        time.sleep(1.0)
-        self.check("F03", "work status off and on again: the leases, whose runtimes loaded nothing else, ended and wait for a reload",
-                   answers == [expected for _, _, expected in steps] and tap.now()["leases"] == [] and tap.now()["store"] == {}
-                   and all(tap.ended(p.session)[-1] == "capability-disabled" for p in (a, b)), answers=answers)
+        self.check("F03", "the final message on, off, on: the running leases keep work status throughout, and the note follows",
+                   answers == [expected for _, _, expected in steps] and same_leases() and no_ending(), answers=answers)
+        self.said(a, "/fx-say In the middle of the switching.", None, "F03", "a run in the middle of the switching")
         for pane in (a, b):
             pane.type("/reload")
-            self.until(f"{pane.session}: the reloaded runtime's session", lambda: tap.session(pane.session), 30)
-        cards = cards_of()
-        self.check("F03", "after a reload each Pi does what the switches say: work status and its session",
-                   self.settings_now() == status(True, True, "current")
-                   and all(card["pi_signal"] == "connected" and card.get("pi_session") == "observed" for card in cards.values()))
+            self.until(f"{pane.session}: the reloaded runtime", lambda: self.may(pane) == (True, True), 30)
+        self.check("F03", "after a reload each Pi does what the switches say",
+                   self.settings_now() == status(True, True, "current"))
         for pane in (a, b):
-            self.one_run("F03", pane, "a run at the end", "hello fixture")
+            self.said(pane, "/fx-say At the end.", "At the end.", "F03", "a run at the end")
             pane.quit()
         crossed = tap.now()["revoked"][len(on_their_way):]
         self.check("F03", "with Deck's own switches a frame of a lost capability was sent only while the loss had not reached "
-                          "its observer: at most the one ending that was on its way, answered `revoked` and never written; an "
-                          "observer bound with less than it loaded, or answered since the loss, sent none",
+                          "its observer: at most the one final message that was on its way, answered `revoked` and never "
+                          "kept; an observer answered since the loss sent none",
                    all(item in may_cross for item in crossed) and len(crossed) <= len(may_cross),
                    answered_revoked=len(crossed), could_cross=len(may_cross))
         self.facts.setdefault("revoked_after_decks_own_switch", []).append(len(crossed))
@@ -1465,9 +1335,9 @@ class Run:
                    and json.loads(self.settings.read_text())["extensions"] == json.loads(self.original_settings)["extensions"])
 
     def may(self, pane: Pane) -> tuple[bool, bool] | None:
-        """What this pane's live lease may still do, as the transport holds it: (work status, session observation)."""
+        """What this pane's live lease may still do, as the transport holds it: (work status, the final message)."""
         lease = self.tap.lease(pane.session)
-        return (lease["signal"], lease["lifecycle"]) if lease else None
+        return (lease["signal"], lease["reply"]) if lease else None
 
     def heartbeat(self, pane: Pane, timeout: float = 12) -> None:
         """Wait until an idle lease's heartbeat was acknowledged just now: its next one is five seconds away."""
@@ -1482,7 +1352,7 @@ class Run:
     def by_hand(self, variant: str) -> None:
         """Put another of Deck's entries into Pi's settings the way an editor would: Deck is not told."""
         text = self.settings.read_text()
-        present = [name for name in ("signal.ts", "lifecycle.ts", "both.ts") if json.dumps(self.entry_of(name)) in text]
+        present = [name for name in ("signal.ts", "reply.ts") if json.dumps(self.entry_of(name)) in text]
         if len(present) != 1:
             raise Failed(f"Pi's settings hold {len(present)} of Deck's entries")
         # saved the way an editor saves: a whole new file in the old one's place, never a half-written one
@@ -1492,16 +1362,17 @@ class Run:
         os.replace(saved, self.settings)
 
     def on_the_way(self) -> None:
-        """A frame whose capability stopped being enabled while the frame was on its way.
+        """A final message whose capability stopped being enabled while it was on its way.
 
         Deck's own switch takes the capability from a lease at once. Here Deck's entry is changed in Pi's
         settings by hand, and Deck learns of it only when it commits the next frame: the very frame that is no
-        longer allowed. It is answered `revoked` — its number is used up, nothing is written — and the lease goes
-        on with what it has left. A lease that is idle meanwhile is told at its next heartbeat."""
+        longer allowed. It is answered `revoked` — its number is used up, nothing is kept — and the lease goes
+        on with what it has left: the run's ending follows. A lease that is idle meanwhile is told at its next
+        heartbeat."""
         tap, a, b = self.tap, self.a, self.b
 
         def fresh() -> None:
-            """Both switches on, and both Pis in a runtime that loaded both and reported its session."""
+            """Both switches on, and both Pis in a runtime that loaded both."""
             self.switches(True, True)
             for pane in (a, b):
                 if pane.gone():
@@ -1511,14 +1382,13 @@ class Run:
                     pane.type("/reload")
                     self.until(f"{pane.session}: the reloaded runtime's lease",
                                lambda: (tap.lease(pane.session) or {}).get("lease") not in (None, old), 30)
-                self.until(f"{pane.session}: a lease that may do both, with its session",
-                           lambda: self.may(pane) == (True, True) and tap.session(pane.session), 30)
+                self.until(f"{pane.session}: a lease that may do both", lambda: self.may(pane) == (True, True), 30)
 
         def held() -> dict:
             return {
                 "leases": {p.session: tap.lease(p.session)["lease"] for p in (a, b)},
-                "ids": {p.session: tap.session(p.session)["id"] for p in (a, b)},
                 "endings": {p.session: len(tap.ended(p.session)) for p in (a, b)},
+                "replies": {p.session: len(tap.replies(p.session)) for p in (a, b)},
                 "refused": tap.drops("pi-capability-disabled"),
                 "revoked": list(tap.now()["revoked"]),
             }
@@ -1531,145 +1401,56 @@ class Run:
         for pane in (a, b):
             pane.quit()
 
-        # ---- the ending of a run is on its way when work status stops being enabled
         for x, y in ((a, b), (b, a)):
             fresh()
-            self.one_run("F03", y, "a run before the entry is changed by hand", "hello fixture")
+            self.said(y, "/fx-say Before the entry is changed by hand.", "Before the entry is changed by hand.", "F03",
+                      "a run before the entry is changed by hand")
+            y_unread = dict(tap.now()["store"][y.session])
             self.heartbeat(x)
             source = self.source_mark()
             x.type("/fx-slow 2500")
             self.until(f"{x.session} working", lambda: tap.state(x.session) == "working", 10)
             before, mark = held(), tap.mark()
-            self.by_hand("lifecycle.ts")
+            self.by_hand("signal.ts")
             edited = time.time() * 1000
             self.until(f"{x.session}: the run to settle in Pi", lambda: "agent_settled" in x.names(source), 20)
             answer = tap.first(lambda e: "now" in e and len(e["now"]["revoked"]) > len(before["revoked"]),
                                f"{x.session}: the answer to the frame that was on its way", 5, mark)
+            self.until(f"{x.session}: the ending on the card", lambda: tap.state(x.session) == "turn-done", 10)
             time.sleep(0.5)
             card = tap.card(x.session)
-            self.check("F03", f"{x.runtime}: a run's ending was on its way when the entry stopped enabling work status: "
-                              "answered revoked, nothing written, the word withdrawn and never an ending",
-                       tap.now()["revoked"][len(before["revoked"]):] == [{"session": x.session, "capability": "signal"}]
-                       and tap.changes(x.session, mark) == [None] and kept(before, x) and self.may(x) == (False, True)
+            self.check("F03", f"{x.runtime}: a run's final message was on its way when the entry stopped enabling it: "
+                              "answered revoked, nothing kept, and the run's ending follows on the same lease",
+                       tap.now()["revoked"][len(before["revoked"]):] == [{"session": x.session, "capability": "reply"}]
+                       and [c[0] for c in tap.changes(x.session, mark) if c] == ["turn-done"]
+                       and kept(before, x) and self.may(x) == (True, False)
                        and tap.drops("pi-capability-disabled") == before["refused"]
-                       and card["agent"] is None and card["episode"] is None and card["pi_signal"] == "unavailable"
-                       and card.get("pi_session") == "observed" and card["scheduler"]["pi"]
-                       and (tap.session(x.session) or {}).get("id") == before["ids"][x.session],
+                       and len(tap.replies(x.session)) == before["replies"][x.session]
+                       and card["agent"] == "turn-done" and card.get("summary") is None and card["pi_signal"] == "connected",
                        milliseconds_after_the_edit=round(answer["wall"] - edited), changes=tap.changes(x.session, mark),
-                       may=self.may(x), card={k: card.get(k) for k in ("agent", "pi_signal", "pi_session")})
-            self.until(f"{y.session}: its next heartbeat", lambda: self.may(y) == (False, True), 8)
-            time.sleep(0.3)
-            self.check("F03", f"{y.runtime}, idle with an unread ending: told at its next heartbeat, with no frame on its way: "
-                              "its word is withdrawn, its lease and its session stay",
-                       tap.changes(y.session, mark) == [None] and kept(before, y)
-                       and len(tap.now()["revoked"]) == len(before["revoked"]) + 1
-                       and (tap.session(y.session) or {}).get("id") == before["ids"][y.session]
-                       and tap.drops("pi-capability-disabled") == before["refused"],
-                       changes=tap.changes(y.session, mark), may=self.may(y))
-            self.check("F03", f"{x.runtime} first: Settings says what the file says, and nothing waits for a reload",
-                       self.settings_now() == status(False, True, "current"), status=self.settings_now())
-            self.heartbeat(x)
-            self.check("F03", f"{x.runtime}: its lease goes on: the next heartbeat is acknowledged on the same lease",
-                       kept(before, x) and kept(before, y))
-            self.replaced(x, "/fx-new", "new", "F03", "a session change under the lease that kept session observation",
-                          same_id=False)
-
-        # ---- the teardown of a session is on its way when session observation stops being enabled
-        for x, y in ((a, b), (b, a)):
-            fresh()
-            self.one_run("F03", y, "a run before the entry is changed by hand", "hello fixture")
-            y_unread = dict(tap.now()["store"][y.session])
-            self.heartbeat(x)
-            before, source, mark = held(), self.source_mark(), tap.mark()
-            old = before["leases"][x.session]
-            self.by_hand("signal.ts")
-            x.type("/fx-new")
-            self.until(f"{x.session}: the new runtime's lease",
-                       lambda: (tap.lease(x.session) or {}).get("lease", old) != old, 30)
-            self.until(f"{x.session}: Pi's own new session",
-                       lambda: any(e["event"] == "session_start" and e.get("reason") == "new" for e in x.events(source)), 10)
-            time.sleep(1.0)
-            said = [item["last"] for event in tap.since(mark) if "now" in event
-                    for item in event["now"]["sessions"] if item["lease"] == old]
-            card = tap.card(x.session)
-            self.check("F03", f"{x.runtime}: the teardown of its session was on its way when the entry stopped enabling session "
-                              "observation: answered revoked and never written; the lease ended by its own reset, and the new "
-                              "runtime's lease names no session",
-                       tap.now()["revoked"][len(before["revoked"]):] == [{"session": x.session, "capability": "lifecycle"}]
-                       and all(not word.startswith("shutdown") for word in said)
-                       and tap.ended(x.session)[-1] == "reset-new" and tap.drops("pi-capability-disabled") == before["refused"]
-                       and self.may(x) == (True, False) and tap.session(x.session) is None
-                       and "pi_session" not in card and card["pi_signal"] == "connected",
-                       said_of_the_old_lease=sorted(set(said)), ended=tap.ended(x.session)[-1], may=self.may(x))
+                       may=self.may(x), card={k: card.get(k) for k in ("agent", "pi_signal")})
             self.until(f"{y.session}: its next heartbeat", lambda: self.may(y) == (True, False), 8)
             time.sleep(0.3)
             card = tap.card(y.session)
-            self.check("F03", f"{y.runtime}, idle with an unread ending: told at its next heartbeat: its session is forgotten, "
-                              "its unread ending and its lease stay",
-                       tap.now()["store"].get(y.session) == y_unread and kept(before, y) and tap.session(y.session) is None
+            self.check("F03", f"{y.runtime}, idle with an unread ending: told at its next heartbeat, with no frame on its way: "
+                              "its unread ending, its line and its lease stay",
+                       tap.now()["store"].get(y.session) == y_unread and kept(before, y)
                        and len(tap.now()["revoked"]) == len(before["revoked"]) + 1
-                       and card["agent"] == "turn-done" and card["episode_viewed"] is False and "pi_session" not in card
+                       and card["agent"] == "turn-done" and card["episode_viewed"] is False
+                       and card.get("summary") == "Before the entry is changed by hand."
                        and tap.drops("pi-capability-disabled") == before["refused"], may=self.may(y))
             self.check("F03", f"{x.runtime} first: Settings says what the file says, and nothing waits for a reload",
                        self.settings_now() == status(True, False, "current"), status=self.settings_now())
             for pane in (x, y):
-                self.one_run("F03", pane, "a whole run under the lease that kept work status", "hello fixture")
+                self.said(pane, "/fx-say Under the lease that kept work status.", None, "F03",
+                          "a whole run under the lease that kept work status: an ending, and nothing with it")
+            self.check("F03", f"{x.runtime} first: both leases go on, and nothing more was answered revoked",
+                       kept(before, x) and kept(before, y) and len(tap.now()["revoked"]) == len(before["revoked"]) + 1)
         for pane in (a, b):
             pane.quit()
         self.check("F03", "both switches off again: the settings file holds the user's entries only",
                    self.switches(False, False) == status(False, False, "absent")
                    and json.loads(self.settings.read_text())["extensions"] == json.loads(self.original_settings)["extensions"])
-
-    def unsupported_ids(self) -> None:
-        """A session id Deck does not keep is said on the card — never cut short, never passed over — and runs go on."""
-        tap, a, b = self.tap, self.a, self.b
-        for pane in (a, b):
-            pane.quit()
-        self.check("B02", "both switches on", self.switches(True, True) == status(True, True, "current"))
-        for length in (256, 257, 512, 513):
-            supported = length <= 256
-            for pane in (a, b):
-                source = self.source_mark()
-                # an in-memory session: Pi cannot name a session file after an id this long
-                pane.launch(flags=("--no-session", "--session-id", "k" * length))
-                lease = self.bound(pane)
-                self.until(f"{pane.session}: what the lease said of its session",
-                           lambda: tap.session(pane.session) or lease["lease"] in tap.now()["unsupported"], 20)
-                named, card, kept = self.started(pane, source), tap.card(pane.session), tap.session(pane.session)
-                self.one_run("B02", pane, f"a run beside a {length}-byte session id", "hello fixture")
-                after = tap.card(pane.session)
-                word = "observed" if supported else "unsupported"
-                self.check("B02", f"{pane.runtime}: a {length}-byte session id is "
-                           + ("observed whole" if supported else "said to be unsupported: not cut short, not passed over")
-                           + ", and work status is not affected",
-                           len(named["id"]) == length and card.get("pi_session") == word and after.get("pi_session") == word
-                           and card["pi_signal"] == "connected" and after["agent"] == "turn-done"
-                           and (kept is not None and len(kept["id"]) == length if supported else kept is None)
-                           and (lease["lease"] in tap.now()["unsupported"]) == (not supported),
-                           session_word=card.get("pi_session"), id_bytes_in_pi=len(named["id"]),
-                           kept_bytes=len(kept["id"]) if kept else 0)
-                if length == 257:
-                    # another runtime of the same Pi, in a session whose id Deck keeps: a new lease observes again
-                    old, source = lease["lease"], self.source_mark()
-                    pane.type("/fx-new")
-                    self.until(f"{pane.session}: the new runtime's observation",
-                               lambda: (tap.lease(pane.session) or {}).get("lease", old) != old and tap.session(pane.session), 30)
-                    again, fresh = tap.session(pane.session), self.started(pane, source)
-                    self.check("B02", f"{pane.runtime}: a new runtime in a session Deck keeps: a new lease observes again",
-                               again["id"] == fresh["id"] and len(fresh["id"]) <= 256 and again["lease"] != old
-                               and tap.card(pane.session).get("pi_session") == "observed"
-                               and old not in tap.now()["unsupported"] and tap.ended(pane.session)[-1] == "reset-new")
-                pane.quit()
-                self.check("B02", f"{pane.runtime}: {length} bytes: the quit ends the lease by its reset, with no refusal",
-                           tap.ended(pane.session)[-1] == "reset-quit" and tap.now()["unsupported"] == [])
-        refusals = {reason: count for reason, count in tap.now()["drops"].items() if reason in ("pi-bad-native-id", "pi-bad-lifecycle", "pi-bad-frame")}
-        self.check("B02", "none of that was a refusal: no id was called malformed and no lease was ended for one",
-                   refusals == {}, refusals=refusals)
-        kept = [path for path in (self.root / "deck").rglob("*") if path.is_file()]
-        self.check("B08", "no part of such an id is in Deck's data directory or in this run's summary",
-                   not any(b"kkkkkkkk" in path.read_bytes() for path in kept)
-                   and "kkkkkkkk" not in json.dumps(self.results) + json.dumps(self.facts))
-        self.switches(False, False)
 
     def tool_children(self) -> None:
         """Pi makes a child for every tool it runs.
@@ -1687,7 +1468,7 @@ class Run:
                        check=True, capture_output=True)
         server_pid = int(self.tm("display-message", "-p", "#{pid}"))
         marks = self.root / "tmp"
-        line = lambda **body: json.dumps({"protocol": "pi-observer", "v": 2, "source": "pi", **body}, separators=(",", ":"))
+        line = lambda **body: json.dumps({"protocol": "pi-observer", "v": 3, "source": "pi", **body}, separators=(",", ":"))
         for pane in (self.a, self.b):
             pane.launch(tools=True)
             lease = self.bound(pane)["lease"]
@@ -1708,8 +1489,8 @@ class Run:
             now = tap.lease(pane.session)
             log = self.logs / f"tool-{pane.runtime}.log"
             attest = line(nonce="@NONCE@", socket=tap.ready["socket"], server_pid=server_pid,
-                          pane=self.tm("display-message", "-p", "-t", pane.target, "#{pane_id}"), observerVersion=2,
-                          piVersion="1.1.0", mode="tui", capabilities={"signal": True, "lifecycle": False})
+                          pane=self.tm("display-message", "-p", "-t", pane.target, "#{pane_id}"), observerVersion=3,
+                          piVersion="1.1.0", mode="tui", capabilities={"signal": True, "reply": False})
             # the frame that would end the run Pi is in: its lease, the number and the run that come next
             forged = line(lease=now["lease"], nonce="0" * 32, seq=now["next_seq"] + 1, run=now["run"] + 1, state="turn-done")
             script = marks / f"tool-forge-{pane.runtime}.sh"
@@ -1750,7 +1531,7 @@ class Run:
         self.facts["exec_peer"] = {"images_differ": len({sha256(observer), sha256(other), sha256(staged)}) == 3}
         marks = self.root / "tmp"
         server_pid = int(self.tm("display-message", "-p", "#{pid}"))
-        line = lambda **body: json.dumps({"protocol": "pi-observer", "v": 2, "source": "pi", **body}, separators=(",", ":"))
+        line = lambda **body: json.dumps({"protocol": "pi-observer", "v": 3, "source": "pi", **body}, separators=(",", ":"))
         # a frame as a step of the peer, which puts in the lease and the nonce it holds
         frame = lambda **body: line(lease="@LEASE@", nonce="@NONCE@", **body).replace('"@LEASE@"', "@LEASE@")
         work, ping, done = frame(seq=1, run=1, state="working"), frame(seq=2), frame(seq=3, run=1, state="turn-done")
@@ -1764,8 +1545,8 @@ class Run:
         def start(pane: Pane, name: str, last: list[str]) -> Path:
             log = self.logs / f"exec-{name}.log"
             attest = line(nonce="@NONCE@", socket=tap.ready["socket"], server_pid=server_pid,
-                          pane=self.tm("display-message", "-p", "-t", pane.target, "#{pane_id}"), observerVersion=2,
-                          piVersion="1.1.0", mode="tui", capabilities={"signal": True, "lifecycle": False})
+                          pane=self.tm("display-message", "-p", "-t", pane.target, "#{pane_id}"), observerVersion=3,
+                          piVersion="1.1.0", mode="tui", capabilities={"signal": True, "reply": False})
             command = shlex.join([str(observer), tap.ready["status_sock"], str(log), "@hello", attest, work, "@fork", ping,
                                   f"@mark:{marks}/before-{name}", f"@wait:{marks}/go-{name}", *last])
             # read from a file: its length is no matter to the shell's line editor
@@ -1889,8 +1670,8 @@ class Run:
         self.switches(False, False)
 
     SCENARIOS = ("settings_loop", "start_both", "boundaries", "viewed", "dialogs", "together", "inactive_pane", "reload",
-                 "frozen", "restart", "disable", "not_loaded", "out_of_order", "endings", "native_sessions",
-                 "capabilities", "on_the_way", "unsupported_ids", "tool_children", "exec_peer")
+                 "frozen", "restart", "disable", "not_loaded", "out_of_order", "endings", "replies",
+                 "capabilities", "on_the_way", "tool_children", "exec_peer")
 
     def all(self) -> None:
         only = set(self.args.only.split(",")) if self.args.only else None

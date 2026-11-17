@@ -68,9 +68,9 @@
 // switch names the entry's state (configured is never shown as connected),
 // a build that may not write Pi's settings cannot use the switch, and a
 // refusal has its own sentence for each closed code.
-// Pi session observation is a second, separate switch on the same entry
-// (`pi_lifecycle`, written by `agent_pi_lifecycle_set`): it turns on no work
-// status, and nothing it observes lets Deck reopen a Pi session.
+// Forwarding Pi's final message is a second switch on the same entry
+// (`pi_replies`, written by `agent_pi_replies_set`): it needs the work
+// status, and what it forwards lifts no hold.
 // Claude session re-entry observation is its own explicit opt-in: the box
 // shows `claude_reentry` of `agent_hooks_status` (the backend derives it from
 // the installed lifecycle hooks; there is no settings key), is written only
@@ -676,7 +676,7 @@ async function persistNotifyChoice() {
 // registry owns the controls and the generic host owns their state machine.
 export const persistAgentHooksChoice = (_agent, boxId) => persistAgentContribution(boxId);
 export const persistPiChoice = () => persistAgentContribution('set-pi-hooks');
-export const persistPiLifecycle = () => persistAgentContribution('set-pi-lifecycle');
+export const persistPiReplies = () => persistAgentContribution('set-pi-replies');
 export const persistClaudeReentryChoice = () => persistAgentContribution('set-claude-reentry');
 
 function renderNotifyDependency(agentSignals) {

@@ -1,5 +1,5 @@
 import { reminderDue } from './reminder-model.js';
-import { PI_COVERAGE, PI_SESSION } from './pi-model.js';
+import { PI_COVERAGE } from './pi-model.js';
 // attention-model.js — runtime-only observations and derived attention.
 // No Board writes, hook installation, inferred readiness, or durable ordering.
 // Three layers, kept apart:
@@ -183,7 +183,6 @@ export function createAttentionTracker() {
           session: card.session, alive: info.alive, agent, status,
           codexSignal: info.alive && CODEX_SIGNAL_TRUST.includes(info.codex_signal) ? info.codex_signal : null,
           piSignal: info.alive && PI_COVERAGE.includes(info.pi_signal) ? info.pi_signal : null,
-          piSession: info.alive && PI_SESSION.includes(info.pi_session) ? info.pi_session : null,
           idle: info.idle_secs ?? null, observedAt: now, stale: false, episode, episodeViewed,
           /* one line about what Claude said when this episode's turn ended
              (turn_summary.rs, opt-in): the backend sends it only for the

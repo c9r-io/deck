@@ -43,6 +43,14 @@
 //!   feeds the three readers below exactly as a Claude one does
 //!   (`has_final_message`); it is never summarized, and a message no reader
 //!   wants is dropped where it arrives.
+//! - Pi: an observer loaded from the reply entry (`agent_pi`, the user's
+//!   "forward Pi's final message" switch) sends the final message of a run
+//!   before that run's ending; the transport hands it over with the
+//!   ending's episode (`offer_pi`). It feeds the readers below as the other
+//!   two do. A short one is the card's line as written, whatever the
+//!   summary switch says; a long one is summarized only while that switch
+//!   is on and a key is stored. No follow-up is picked for a Pi card:
+//!   nothing is ever sent to a Pi automatically.
 //! - Card snapshot replies (`mcp/cards.rs`): while some MCP client may read
 //!   the card snapshot (`mcp::card_readers_any`), the newest final message
 //!   of each Claude Code or Codex session is kept as it came, one per session, at
@@ -128,7 +136,9 @@ enum Decision {
 }
 
 fn decide(accepted: &Accepted, reply: &str, has_key: bool) -> Decision {
-    if accepted.state != crate::agent_status::TURN_DONE || accepted.class != SignalClass::Claude {
+    if accepted.state != crate::agent_status::TURN_DONE
+        || !matches!(accepted.class, SignalClass::Claude | SignalClass::Pi)
+    {
         return Decision::Skip;
     }
     let text = reply.trim();
@@ -145,11 +155,32 @@ fn decide(accepted: &Accepted, reply: &str, has_key: bool) -> Decision {
 }
 
 /// The sources whose accepted turn ending carries a final message the
-/// readers may keep: Claude Code and Codex (`agent_status/hooks.rs`
-/// `CODEX_HOOKS_WITH_REPLY`). A Codex event is accepted only when it is
-/// bound to its pane (`--no-daemon`), so its message is that card's.
+/// readers may keep: Claude Code, Codex (`agent_status/hooks.rs`
+/// `CODEX_HOOKS_WITH_REPLY`) and Pi (`agent_pi`, the reply entry). A Codex
+/// event is accepted only when it is bound to its pane (`--no-daemon`) and
+/// a Pi frame only from the proven observer of its pane's foreground
+/// program, so the message is that card's.
 fn has_final_message(class: SignalClass) -> bool {
-    matches!(class, SignalClass::Claude | SignalClass::Codex)
+    matches!(
+        class,
+        SignalClass::Claude | SignalClass::Codex | SignalClass::Pi
+    )
+}
+
+/// The final message of a Pi run whose ending the transport committed
+/// (`agent_pi/transport.rs`, "The final message"), with the episode that
+/// ending was given: the readers of every agent's final message, and the
+/// card's one line.
+pub(crate) fn offer_pi(session: &str, episode: EpisodeId, reply: String) {
+    offer(
+        &Accepted {
+            session: session.to_string(),
+            episode,
+            state: crate::agent_status::TURN_DONE,
+            class: SignalClass::Pi,
+        },
+        reply,
+    );
 }
 
 /// The final message of a turn `agent_status` accepted (`dispatch`): kept
@@ -182,17 +213,24 @@ pub(crate) fn offer(accepted: &Accepted, reply: String) {
     }
     // a Codex message is never summarized (its Stop hook forwards for the
     // readers above only; nobody read it: it is dropped here)
-    if accepted.class != SignalClass::Claude {
+    if accepted.class == SignalClass::Codex {
         return;
     }
     // the Stop hook forwards the message for worker replies alone: no
     // summary, no model call (`agent_status/hooks.rs` `ReplyHook::Workers`)
-    if !crate::agent_status::summaries_wanted() {
+    let summaries = crate::agent_status::summaries_wanted();
+    let pi = accepted.class == SignalClass::Pi;
+    if !summaries && !pi {
         return;
     }
-    let has_key = crate::model_api::has_key();
+    // Pi's switch is the user's choice to see what Pi said: a short message
+    // is shown as written whatever the summary switch says; a long one goes
+    // to a model only while that switch is on, as for Claude Code
+    let has_key = summaries && crate::model_api::has_key();
     let decision = decide(accepted, &reply, has_key);
-    let follow_ups = if has_key && decision != Decision::Skip {
+    // no automatic prompt is ever sent to a Pi (`Hold::PiInputUnverified`):
+    // nothing is picked for a card whose follow-up could not be delivered
+    let follow_ups = if has_key && !pi && decision != Decision::Skip {
         crate::documents::card_follow_ups(&accepted.session)
     } else {
         Vec::new()

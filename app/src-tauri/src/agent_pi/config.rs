@@ -1,20 +1,22 @@
-//! Pi's one settings entry: which of Deck's three bundled observer entries
+//! Pi's one settings entry: which of Deck's two bundled observer entries
 //! Pi loads, if any. The two Settings switches are derived from it and
 //! written through it; nothing else stores them.
 //!
 //! # Contract
 //! - **One source of truth, in Pi's own file.** Pi's agent-directory
 //!   `settings.json` has an `extensions` array. Deck owns at most ONE string
-//!   in it: the absolute path of `signal.ts`, `lifecycle.ts` or `both.ts`
-//!   inside the Deck bundle (`<bundle>/Contents/Resources/pi/`). Which one is
-//!   there IS the pair of switches; no entry is both off. Deck keeps no
+//!   in it: the absolute path of `signal.ts` or `reply.ts` inside the Deck
+//!   bundle (`<bundle>/Contents/Resources/pi/`). Which one is there IS the
+//!   pair of switches — `reply.ts` carries the final message AND the run
+//!   boundaries it belongs to, so the second switch needs the first and
+//!   goes off with it; no entry is both off. Deck keeps no
 //!   boolean of its own, and the backend's admission asks this file too
 //!   (`enabled`). Turning one switch replaces the entry by the one that
 //!   carries the resulting pair, in one write: there is never a moment with
 //!   two entries or with a capability nobody asked for.
 //! - **Nothing executable under the home directory.** The observer's code
 //!   stays in the signed bundle; the settings file gets a path. Before a
-//!   path is written, the four files it leads to must be regular files in
+//!   path is written, the three files it leads to must be regular files in
 //!   that bundle with exactly the bytes this build was compiled with.
 //! - **Only from a stable install.** A write needs Deck to run from
 //!   `/Applications/deck.app` or `~/Applications/deck.app`
@@ -22,8 +24,12 @@
 //!   included. A development or smoke bundle reads the file and writes
 //!   nothing (`unsupported-location`).
 //! - **Ownership is an exact path.** An entry is Deck's when it equals one
-//!   of those three files under one of the two stable bundle locations —
-//!   never a file name, a substring or a pattern. Every other string in the
+//!   of those two files — or one of the two an earlier Deck wrote
+//!   (`LEGACY`: `lifecycle.ts`, session observation alone, and `both.ts`) —
+//!   under one of the two stable bundle locations — never a file name, a
+//!   substring or a pattern. An earlier entry admits no observer; the boot
+//!   migration turns `both.ts` into `signal.ts` and takes `lifecycle.ts`
+//!   out, and never turns the final message on. Every other string in the
 //!   array, every other key and every other byte of the file is the user's
 //!   and stays as written: the text is edited in place with the span tools
 //!   of `agent_status::hooks` (re-exported by `agent_status`) and is used
@@ -77,29 +83,41 @@ use crate::applog::applog;
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 
-/// One of the three bundled entries: the capability pair it carries.
+/// One of the two bundled entries: the capability pair it carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Variant {
     Signal,
-    Lifecycle,
-    Both,
+    Reply,
 }
 
+/// The entries an earlier Deck wrote (wire version 2) and what each is
+/// worth now: its run boundaries, never anything this build did not ask
+/// the user about. Their files are no longer in the bundle.
+const LEGACY: [(&str, Capabilities); 2] = [
+    ("lifecycle.ts", Capabilities::NONE),
+    (
+        "both.ts",
+        Capabilities {
+            signal: true,
+            reply: false,
+        },
+    ),
+];
+
 impl Variant {
-    const ALL: [Variant; 3] = [Variant::Signal, Variant::Lifecycle, Variant::Both];
+    const ALL: [Variant; 2] = [Variant::Signal, Variant::Reply];
 
     fn file(self) -> &'static str {
         match self {
             Variant::Signal => "signal.ts",
-            Variant::Lifecycle => "lifecycle.ts",
-            Variant::Both => "both.ts",
+            Variant::Reply => "reply.ts",
         }
     }
 
     pub(crate) fn capabilities(self) -> Capabilities {
         Capabilities {
-            signal: matches!(self, Variant::Signal | Variant::Both),
-            lifecycle: matches!(self, Variant::Lifecycle | Variant::Both),
+            signal: true,
+            reply: matches!(self, Variant::Reply),
         }
     }
 
@@ -113,17 +131,13 @@ impl Variant {
 
 /// The observer's files as this build was compiled with them: what a bundle
 /// must hold, byte for byte, before a path into it is written anywhere.
-pub(crate) const RESOURCES: [(&str, &str); 4] = [
+pub(crate) const RESOURCES: [(&str, &str); 3] = [
     (
         "observer.ts",
         include_str!("../../resources/pi/observer.ts"),
     ),
     ("signal.ts", include_str!("../../resources/pi/signal.ts")),
-    (
-        "lifecycle.ts",
-        include_str!("../../resources/pi/lifecycle.ts"),
-    ),
-    ("both.ts", include_str!("../../resources/pi/both.ts")),
+    ("reply.ts", include_str!("../../resources/pi/reply.ts")),
 ];
 
 /// Where the observer's files are inside a bundle.
@@ -154,7 +168,7 @@ pub(crate) enum Installation {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Status {
     pub(crate) signal: bool,
-    pub(crate) lifecycle: bool,
+    pub(crate) reply: bool,
     pub(crate) installation: Installation,
 }
 
@@ -227,7 +241,7 @@ fn entry_path(bundle: &Path, variant: Variant) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The four files in `bundle` are regular files with this build's bytes.
+/// The three files in `bundle` are regular files with this build's bytes.
 fn resources_present(bundle: &Path) -> bool {
     RESOURCES.iter().all(|(name, content)| {
         let path = bundle.join(RESOURCE_DIR).join(name);
@@ -343,12 +357,23 @@ fn document(text: Option<&str>) -> Result<(Value, Option<Vec<String>>), DeckErro
 
 // ---------- ownership --------------------------------------------------------------
 
+/// One entry of Deck's: the bundled entry it is, or `None` for one an
+/// earlier Deck wrote, and the capabilities it is worth.
+type OwnedEntry = (Option<Variant>, Capabilities);
+
 /// Which of Deck's own files an entry names, by exact path.
-fn owned_variant(path: &str, place: &Place) -> Option<Variant> {
+fn owned_variant(path: &str, place: &Place) -> Option<OwnedEntry> {
     place.owned.iter().find_map(|root| {
         Variant::ALL
             .into_iter()
             .find(|variant| entry_path(root, *variant).as_deref() == Some(path))
+            .map(|variant| (Some(variant), variant.capabilities()))
+            .or_else(|| {
+                LEGACY.into_iter().find_map(|(file, capabilities)| {
+                    (root.join(RESOURCE_DIR).join(file).to_str() == Some(path))
+                        .then_some((None, capabilities))
+                })
+            })
     })
 }
 
@@ -356,7 +381,7 @@ fn owned_variant(path: &str, place: &Place) -> Option<Variant> {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Owned {
     /// (index, the entry it is) of every entry that loads one of Deck's files
-    positive: Vec<(usize, Variant)>,
+    positive: Vec<(usize, OwnedEntry)>,
     /// the user disabled one of Deck's files (`-<path>`)
     disabled: bool,
 }
@@ -381,9 +406,9 @@ impl Owned {
     fn capabilities(&self) -> Capabilities {
         self.positive
             .iter()
-            .fold(Capabilities::NONE, |all, (_, variant)| Capabilities {
-                signal: all.signal || variant.capabilities().signal,
-                lifecycle: all.lifecycle || variant.capabilities().lifecycle,
+            .fold(Capabilities::NONE, |all, (_, (_, entry))| Capabilities {
+                signal: all.signal || entry.signal,
+                reply: all.reply || entry.reply,
             })
     }
 }
@@ -600,10 +625,15 @@ fn status_in(place: &Place, mismatched: impl FnOnce(Capabilities) -> bool) -> St
         ([_], _) if owned.disabled => Installation::Conflict,
         (_, None) => Installation::UnsupportedLocation,
         ([], Some(_)) => Installation::Absent,
-        ([(index, variant)], Some(bundle)) => {
-            // an entry of the other stable location is not what this
-            // install writes: the next switch, or the next boot, moves it
-            if entry_path(bundle, *variant).as_deref() != Some(entries[*index].as_str()) {
+        ([(index, (variant, _))], Some(bundle)) => {
+            // an entry of the other stable location, or one an earlier Deck
+            // wrote, is not what this install writes: the next switch, or
+            // the next boot, moves it
+            if variant
+                .and_then(|variant| entry_path(bundle, variant))
+                .as_deref()
+                != Some(entries[*index].as_str())
+            {
                 Installation::Conflict
             } else if mismatched(capabilities) {
                 Installation::NeedsReload
@@ -614,7 +644,7 @@ fn status_in(place: &Place, mismatched: impl FnOnce(Capabilities) -> bool) -> St
     };
     Status {
         signal: capabilities.signal,
-        lifecycle: capabilities.lifecycle,
+        reply: capabilities.reply,
         installation,
     }
 }
@@ -631,7 +661,8 @@ fn enabled_in(place: &Place) -> Capabilities {
     };
     let owned = Owned::of(&entries.unwrap_or_default(), place);
     match owned.positive.as_slice() {
-        [(_, variant)] if !owned.disabled => variant.capabilities(),
+        // an entry an earlier Deck wrote names a file that is gone: none
+        [(_, (Some(variant), _))] if !owned.disabled => variant.capabilities(),
         _ => Capabilities::NONE,
     }
 }
@@ -692,7 +723,7 @@ pub(crate) fn set(capability: Capability, enable: bool) -> Result<(), DeckError>
         "[agent-pi] {} {} {}",
         match capability {
             Capability::Signal => "signal",
-            Capability::Lifecycle => "lifecycle",
+            Capability::Reply => "reply",
         },
         if enable { "install" } else { "remove" },
         result.as_ref().map_or_else(|e| e.code(), |_| "ok")
@@ -704,15 +735,22 @@ pub(crate) fn set(capability: Capability, enable: bool) -> Result<(), DeckError>
     result.map(|_written| ())
 }
 
-/// The lifecycle switch's own command: observing Pi's native session is an
-/// opt-in of its own, beside the signal switch (`agent_hooks_set`). It
-/// turns on no Signal, and nothing it observes makes Pi re-enterable.
+/// The final-message switch's own command: forwarding what Pi said at the
+/// end of a run is an opt-in of its own, on top of the signal switch
+/// (`agent_hooks_set`) and refused without it. Its readers are those of
+/// every agent's final message (`turn_summary`); it lifts no hold.
 #[tauri::command]
-pub(crate) fn agent_pi_lifecycle_set(enable: bool) -> Result<(), DeckError> {
+pub(crate) fn agent_pi_replies_set(enable: bool) -> Result<(), DeckError> {
     if crate::extensions::agent(super::SOURCE).is_none() {
         return Err(DeckError::new(ErrorKind::Other, "unknown agent"));
     }
-    set(Capability::Lifecycle, enable)
+    // asked of an install that may write at all: elsewhere the switch is
+    // refused for where Deck runs, as every write is (`set`)
+    let now = status();
+    if enable && !now.signal && now.installation != Installation::UnsupportedLocation {
+        return Err(refused(ErrorKind::Other, "pi-replies-need-signal"));
+    }
+    set(Capability::Reply, enable)
 }
 
 /// The boot migration (stable installs only): entries that are there are

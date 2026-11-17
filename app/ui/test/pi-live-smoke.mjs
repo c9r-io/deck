@@ -11,12 +11,12 @@
 // this carrier's bundle, the production status socket, `poll_sessions`, the
 // card's status text and the Needs attention list, the scheduler's Pi hold on
 // that run's first step, the real Send now, the switch turned off while Pi
-// runs, and the second switch (session observation): on, read in the real
-// Settings dialog, on the card and in its "Why?" dialog, and in the real
-// shell-service restart review (opened and read, never confirmed); off again
-// while Pi runs, after which the SAME Pi's next run is still reported; and a
-// Pi whose session id Deck does not keep, which the card says in so many
-// words. The model is the operator's local fixture provider; what is typed
+// runs, and the second switch (forwarding Pi's final message): on, read in
+// the real Settings dialog, after which a run's ending carries what the
+// fixture model said, in the poll and in the Needs attention row; the card's
+// "Why?" dialog and the real shell-service restart review (opened and read,
+// never confirmed); and off again while Pi runs, after which the SAME Pi's
+// next run is still reported, without words. The model is the operator's local fixture provider; what is typed
 // into Pi or into the pane's shell goes through `pty_write`, the path a key
 // press takes. Snapshots of the window land in <data dir>/evidence/.
 //
@@ -237,27 +237,43 @@ export async function runPiLiveSmoke() {
     await report('pi-reload', again9.pi_installation === 'needs-reload' && waits && stillOut && back && fresh.agent == null
       && settled9.pi_installation === 'current');
 
-    // 10. session observation: a second switch on the same entry. The running Pi keeps
-    //     its earlier setting until its own reload; then the card may say that a session
-    //     is observed, as one closed word and nothing of the session itself
+    // 10. the final message: a second switch on the same entry. The running Pi keeps its
+    //     earlier setting until its own reload; then the ending of a run carries what Pi
+    //     said, as the card's line, and nothing else of the conversation
     await openAgents();
-    const asked2 = await setSwitch(true, 'set-pi-lifecycle');
+    const asked2 = await setSwitch(true, 'set-pi-replies');
     const both = await status();
     const waiting = $('set-pi-note').textContent === t('settings.pi.note.needsReload');
     $('set-close').click();
-    const notYet = (await info(card.session)).pi_session == null;
+    const settledQuiet = (await fixture()).settled;
+    await openSession(card.id);
+    await pause(800);
+    await type(card.session, 'hello fixture\r');
+    await waitFor(async () => (await fixture()).settled === settledQuiet + 1, 30_000, 300);
+    await pollNow();
+    const notYet = (await info(card.session)).summary == null;
     await type(card.session, '/reload\r');
-    const observed = await waitFor(async () => (await info(card.session)).pi_session === 'observed', 60_000, 500);
+    const reloaded = await waitFor(async () => (await status()).pi_installation === 'current', 60_000, 500);
+    await pause(500);
+    await type(card.session, 'hello fixture\r');
+    const spoken = await waitFor(async () => {
+      await pollNow();
+      const now = await info(card.session);
+      return now.agent === 'turn-done' && now.summary === 'fixture response';
+    }, 30_000, 300);
+    backToBoard();
     await pollNow();
     const seen = await info(card.session);
-    const sessionShown = ctx.attention.get(card)?.piSession === 'observed';
-    // the payload holds the closed word and no value that could be an id of the session
+    const lineShown = ctx.attention.get(card)?.summary === 'fixture response';
+    // the payload holds closed words and that one line: nothing else of what was said or asked
     // (the session's own name, its directory, the two process names and the pane's opaque identity are Deck's, not Pi's)
-    const strings = Object.entries(seen).filter(([key, value]) => typeof value === 'string' && !['name', 'cwd', 'fg', 'finish_fg', 'lifecycle'].includes(key));
-    const closed = strings.every(([, value]) => ['observed', 'connected', 'working', 'turn-done'].includes(value));
-    await report('pi-session', asked2 === t('settings.piLifecycleEnableConfirm') && both.pi === true && both.pi_lifecycle === true
-      && both.pi_installation === 'needs-reload' && waiting && notYet && observed && sessionShown && seen.pi_signal === 'connected' && closed
-      && (await status()).pi_installation === 'current');
+    const strings = Object.entries(seen).filter(([key, value]) => typeof value === 'string'
+      && !['name', 'cwd', 'fg', 'finish_fg', 'lifecycle', 'summary'].includes(key));
+    const closed = strings.every(([, value]) => ['connected', 'working', 'turn-done'].includes(value))
+      && !JSON.stringify(seen).includes('hello fixture');
+    await report('pi-replies', asked2 === t('settings.piRepliesEnableConfirm') && both.pi === true && both.pi_replies === true
+      && both.pi_installation === 'needs-reload' && waiting && notYet && reloaded && spoken && lineShown
+      && seen.pi_signal === 'connected' && closed);
 
     // 11. what the user SEES of all that, in the real window with the real backend's answers:
     //     the two switches and their note, the card's status and its explanation
@@ -284,7 +300,7 @@ export async function runPiLiveSmoke() {
     const settingsShown = await languages(async language => {
       $('set-pi-hooks').scrollIntoView({ block: 'center' });
       await pause(80);
-      const ok = [$('set-pi-hooks'), $('set-pi-lifecycle')].every(box => box.checked && visibleNode(box) && reachable(box))
+      const ok = [$('set-pi-hooks'), $('set-pi-replies')].every(box => box.checked && visibleNode(box) && reachable(box))
         && !$('set-pi-note').hidden && $('set-pi-note').textContent === t('settings.pi.note.current')
         && $('set-content').scrollWidth <= $('set-content').clientWidth + 1 && inside(rect($('settings-box')), view());
       await snapshot(`pilive-settings-${language}`);
@@ -312,7 +328,7 @@ export async function runPiLiveSmoke() {
       await waitFor(() => $('chd').style.display !== 'flex', 3000, 50);
       return ok;
     });
-    const whyObserved = await explained(['signal.pi.connectedHint', 'signal.pi.hold', 'signal.pi.session'], 'observed');
+    const whyObserved = await explained(['signal.pi.connectedHint', 'signal.pi.hold'], 'connected');
     await report('pi-shown', settingsShown && whyObserved && (await info(card.session)).pi_signal === 'connected', 1, shots.written);
 
     // 12. the restart review, asked of the real backend while this Pi is connected and its
@@ -355,13 +371,13 @@ export async function runPiLiveSmoke() {
     await report('pi-review', modelSays && reviewShown && restartsAsked === 0
       && (await info(card.session)).pi_signal === 'connected', 1, restartsAsked);
 
-    // 13. session observation off again while this Pi runs: its lease loses that and nothing
-    //     else. Without any reload, the next run is reported like the ones before it.
+    // 13. the final message off again while this Pi runs: its lease loses that and nothing
+    //     else. Without any reload, the next run is reported like the ones before it,
+    //     and ends without words.
     await openAgents();
-    const quiet2 = await setSwitch(false, 'set-pi-lifecycle');
+    const quiet2 = await setSwitch(false, 'set-pi-replies');
     const after = await status();
     $('set-close').click();
-    const withdrawn2 = await waitFor(async () => (await info(card.session)).pi_session == null, 5000, 200);
     const stays = (await info(card.session)).pi_signal === 'connected';
     const settledNarrow = (await fixture()).settled;
     await openSession(card.id);
@@ -369,41 +385,15 @@ export async function runPiLiveSmoke() {
     await type(card.session, '/fx-slow 3000\r');
     const worksOn = await waitFor(async () => (await info(card.session)).agent === 'working', 10_000, 200);
     const endsOn = await waitFor(async () => { await pollNow(); return (await info(card.session)).agent === 'turn-done'; }, 30_000, 300);
+    await pause(500);
+    await pollNow();
     const narrowed = await info(card.session);
     backToBoard();
-    await report('pi-narrowed', quiet2 === '' && after.pi === true && after.pi_lifecycle === false
-      && after.pi_installation === 'current' && withdrawn2 && stays && worksOn && endsOn
-      && (await fixture()).settled === settledNarrow + 1 && narrowed.pi_signal === 'connected' && narrowed.pi_session == null
-      && narrowed.episode != null);
-
-    // 14. a session whose id Deck does not keep: said on the card, never passed over, and the
-    //     same Pi's runs are reported as ever. (A new Pi, started by a person in the same pane.)
-    await openAgents();
-    await setSwitch(true, 'set-pi-lifecycle');
-    $('set-close').click();
-    await openSession(card.id);
-    await pause(800);
-    await type(card.session, '/quit\r');
-    const shellBack = await waitFor(async () => { const now = await info(card.session); return now.fg === 'zsh' && now.pi_signal == null; }, 30_000, 300);
-    const settledLong = (await fixture()).settled;
-    await type(card.session, `${fx.command} --no-session --session-id ${'k'.repeat(300)}\r`);
-    const said = await waitFor(async () => (await info(card.session)).pi_session === 'unsupported', 60_000, 500);
-    const long = await info(card.session);
-    await type(card.session, 'hello fixture\r');
-    const ranLong = await waitFor(async () => { await pollNow(); return (await info(card.session)).agent === 'turn-done'; }, 30_000, 300);
-    const afterLong = await info(card.session);
-    backToBoard();
-    await pollNow();
-    const whyUnsupported = await explained(['signal.pi.connectedHint', 'signal.pi.hold', 'signal.pi.sessionUnsupported'], 'unsupported');
-    const noId = !JSON.stringify(afterLong).includes('kkkkkkkk') && !document.body.textContent.includes('kkkkkkkk');
-    await report('pi-unsupported', shellBack && said && long.pi_signal === 'connected' && ranLong
-      && afterLong.pi_session === 'unsupported' && afterLong.pi_signal === 'connected'
-      && (await fixture()).settled === settledLong + 1 && whyUnsupported && noId
-      && shots.written === shots.asked && shots.asked >= 13, 1, shots.written);
-    await openAgents();
-    await setSwitch(false, 'set-pi-lifecycle');
-    $('set-close').click();
-    backToBoard();
+    await report('pi-narrowed', quiet2 === '' && after.pi === true && after.pi_replies === false
+      && after.pi_installation === 'current' && stays && worksOn && endsOn
+      && (await fixture()).settled === settledNarrow + 1 && narrowed.pi_signal === 'connected' && narrowed.summary == null
+      && narrowed.episode != null && ctx.attention.get(card)?.summary == null
+      && shots.written === shots.asked && shots.asked >= 9, 1, shots.written);
   } catch (error) {
     await inv('ui_event', { code: 'js-reject', detail: (error && error.name) || 'error', a: 20, b: 0 });
     failed = true;

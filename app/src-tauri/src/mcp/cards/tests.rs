@@ -178,7 +178,8 @@ fn the_snapshot_lists_the_clients_projects_in_board_order_with_honest_replies() 
     // a Codex card is a reply source too: nothing kept for this turn
     assert_eq!(by("X")["reply"]["unavailable"], "not-kept");
     assert_eq!(by("S")["reply"]["unavailable"], "no-agent");
-    assert_eq!(by("P")["reply"]["unavailable"], "no-reply-source");
+    // and so is a Pi card (its reply entry): nothing kept for this turn
+    assert_eq!(by("P")["reply"]["unavailable"], "not-kept");
     assert_eq!(by("S")["agent"], Value::Null);
     assert_eq!(by("S")["alive"], true);
     for card in cards {

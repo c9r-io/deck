@@ -281,11 +281,10 @@
 //! recognized Pi and has no word, coverage or session, whatever the
 //! program before it proved; a kernel that cannot be asked leaves the
 //! recognition (it only ever adds a hold) and no word.
-//! With the separate lifecycle capability the same observer may also say
-//! which native session its runtime is in; that goes to `agent_reentry::
-//! lifecycle::observe_pi` and never into this store. All a card learns of
-//! it is the closed word `Evidence::pi_session` (`observed`): no id, no
-//! state, no episode, no hold lifted.
+//! With the separate reply capability the same observer also reports the
+//! final message of a run that settled; that is kept by the transport with
+//! its lease and handed to `turn_summary` with the ending's episode, and
+//! never comes into this store.
 //! `pi_signal` writes one run boundary — `working` or `turn-done`, the only
 //! two words the closed `agent_pi::RunState` has — into the SAME store,
 //! under `InteractionKey::PiRun { lease, run }`, with the same episode,
@@ -877,11 +876,6 @@ pub(crate) struct Evidence {
     /// What may be said about that Pi's Signal coverage (`None`: not a
     /// recognized Pi). A name alone reads `Unavailable`.
     pub(crate) pi_signal: Option<PiCoverage>,
-    /// A live observer of this generation reported which native session its
-    /// runtime is in (`agent_reentry::lifecycle::pi_session`). An
-    /// observation with Signal's trust ceiling: it explains, and it makes
-    /// Pi neither re-enterable nor ready for input.
-    pub(crate) pi_session: Option<crate::agent_reentry::lifecycle::PiSession>,
 }
 
 /// Evidence per session's Signal target, bound to its CURRENT foreground
@@ -917,16 +911,6 @@ pub(crate) fn generation_evidence(
                     claude_interaction: proven.is_some_and(|r| r.claude_interaction),
                     pi,
                     pi_signal: pi.then_some(observed.unwrap_or(PiCoverage::Unavailable)),
-                    // a session is said only by a lease whose process is
-                    // still the instance it was bound as
-                    pi_session: now
-                        .filter(|_| seen.is_some_and(PiSeen::continuous))
-                        .and_then(|generation| {
-                            crate::agent_reentry::lifecycle::pi_session(
-                                &PaneKey::of(row),
-                                generation,
-                            )
-                        }),
                 };
                 (session, evidence)
             })
@@ -1543,7 +1527,7 @@ pub(crate) fn pi_signal(
     instance: &Arc<InstanceWatch>,
     run: u64,
     state: crate::agent_pi::RunState,
-) {
+) -> EpisodeId {
     #[cfg(test)]
     PI_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let state = match state {
@@ -1608,6 +1592,7 @@ pub(crate) fn pi_signal(
     if targeted {
         crate::notify::observe(&row.session_name, observation);
     }
+    observation.episode
 }
 
 /// A Pi observer lease is over (a reset, a frame that was refused, a
@@ -2009,8 +1994,6 @@ const DROP_REASONS: &[&str] = &[
     "pi-busy",
     "pi-bad-seq",
     "pi-bad-run",
-    "pi-bad-lifecycle",
-    "pi-bad-native-id",
     "pi-late",
     "pi-stale",
     "pi-no-challenge",
@@ -5030,10 +5013,10 @@ mod tests {
             .unwrap();
         let given: serde_json::Value = serde_json::from_str(&given).expect("a reply line");
         let attest = serde_json::json!({
-            "protocol": "pi-observer", "v": 2, "source": "pi", "nonce": given["nonce"],
-            "socket": "deck", "server_pid": 42, "pane": "%3", "observerVersion": 2,
+            "protocol": "pi-observer", "v": 3, "source": "pi", "nonce": given["nonce"],
+            "socket": "deck", "server_pid": 42, "pane": "%3", "observerVersion": 3,
             "piVersion": "1.1.0", "mode": "tui",
-            "capabilities": { "signal": true, "lifecycle": false }
+            "capabilities": { "signal": true, "reply": false }
         })
         .to_string();
         let (ours, theirs) = UnixStream::pair().expect("a socket pair");
@@ -5227,7 +5210,7 @@ mod tests {
 
     /// A Pi observer's first message: it asks for a nonce and claims nothing.
     fn pi_hello() -> String {
-        serde_json::json!({ "protocol": "pi-observer", "v": 2, "source": "pi" }).to_string()
+        serde_json::json!({ "protocol": "pi-observer", "v": 3, "source": "pi" }).to_string()
     }
 
     /// The answer of the Pi transport to a hello, and how long it took.

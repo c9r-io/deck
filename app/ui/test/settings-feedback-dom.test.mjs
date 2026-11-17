@@ -228,7 +228,7 @@ regression('hook reads show bounded unknown and failure states; retry recovers w
   assert.deepEqual(checkboxState('set-codex-hooks'), { checked: false, indeterminate: true, disabled: true });
   assert.deepEqual(checkboxState('set-claude-reentry'), { checked: false, indeterminate: true, disabled: true });
   assert.deepEqual(checkboxState('set-pi-hooks'), { checked: false, indeterminate: true, disabled: true });
-  assert.deepEqual(checkboxState('set-pi-lifecycle'), { checked: false, indeterminate: true, disabled: true });
+  assert.deepEqual(checkboxState('set-pi-replies'), { checked: false, indeterminate: true, disabled: true });
   readPlans[0].reject(new Error('mock unreadable hooks'));
   await turn();
   assert.ok(get('set-agent-status-read').textContent);
@@ -240,7 +240,7 @@ regression('hook reads show bounded unknown and failure states; retry recovers w
   assert.equal(get('set-agent-status-retry').disabled, true);
   readPlans[1].resolve({
     claude: true, codex: false, claude_reentry: 'yes',
-    pi: false, pi_lifecycle: false, pi_installation: 'absent',
+    pi: false, pi_replies: false, pi_installation: 'absent',
   });
   await retry;
   assert.deepEqual(checkboxState('set-agent-hooks'), { checked: true, indeterminate: false, disabled: false });
@@ -277,7 +277,7 @@ regression('a hook read times out, stays unknown after its late reply, and a fre
     assert.equal(get('set-agent-status-retry').disabled, true);
     readPlans[0].resolve({
       claude: true, codex: true, claude_reentry: true,
-      pi: true, pi_lifecycle: true, pi_installation: 'current',
+      pi: true, pi_replies: true, pi_installation: 'current',
     });
     await turn();
     assert.deepEqual(checkboxState('set-agent-hooks'), { checked: false, indeterminate: true, disabled: true },
@@ -285,7 +285,7 @@ regression('a hook read times out, stays unknown after its late reply, and a fre
 
     readPlans[1].resolve({
       claude: false, codex: true, claude_reentry: false,
-      pi: false, pi_lifecycle: false, pi_installation: 'absent',
+      pi: false, pi_replies: false, pi_installation: 'absent',
     });
     await retry;
     assert.deepEqual(checkboxState('set-agent-hooks'), { checked: false, indeterminate: false, disabled: false });
@@ -301,7 +301,7 @@ regression('a failed hook write keeps field feedback through closing and reopeni
   await openSettings({ section: 'agents' });
   readPlans[0].resolve({
     claude: true, codex: false, claude_reentry: false,
-    pi: false, pi_lifecycle: false, pi_installation: 'absent',
+    pi: false, pi_replies: false, pi_installation: 'absent',
   });
   await turn();
 
@@ -319,7 +319,7 @@ regression('a failed hook write keeps field feedback through closing and reopeni
   assert.equal(get('set-save-issues').hidden, false);
   readPlans[1].resolve({
     claude: true, codex: false, claude_reentry: false,
-    pi: false, pi_lifecycle: false, pi_installation: 'absent',
+    pi: false, pi_replies: false, pi_installation: 'absent',
   });
   await turn();
 });

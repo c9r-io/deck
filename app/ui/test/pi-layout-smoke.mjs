@@ -121,13 +121,13 @@ export async function runPiLayoutSmoke() {
 
   /* ---- the script ---- */
   const scripted = { status: null, refusal: null, poll: {}, server: null, preview: null, previewReads: 0, restarts: [], operation: null };
-  const REFUSED = new Set(['kill_session', 'pty_write', 'mcp_start_session', 'voice_deliver', 'defer_tmux_restart', 'agent_pi_lifecycle_set']);
+  const REFUSED = new Set(['kill_session', 'pty_write', 'mcp_start_session', 'voice_deliver', 'defer_tmux_restart', 'agent_pi_replies_set']);
   let refused = 0;
   const script = async (command, args) => {
     if (command === 'agent_hooks_status' && scripted.status) return {
       ...scripted.base, ...scripted.status, ...planted,
       agents: { ...scripted.base.agents, pi: {
-        signal: scripted.status.pi, lifecycle: scripted.status.pi_lifecycle,
+        signal: scripted.status.pi, replies: scripted.status.pi_replies,
         installation: scripted.status.pi_installation, ...planted,
       } },
     };
@@ -138,7 +138,7 @@ export async function runPiLayoutSmoke() {
         const mine = scripted.poll[entry.name];
         if (!mine) return entry;
         const next = { ...entry, ...planted };
-        for (const key of ['agent', 'episode', 'episode_viewed', 'pi_signal', 'pi_session', 'codex_signal', 'fg']) {
+        for (const key of ['agent', 'episode', 'episode_viewed', 'pi_signal', 'codex_signal', 'fg']) {
           if (mine[key] === undefined) delete next[key];
           else next[key] = mine[key];
         }
@@ -191,14 +191,14 @@ export async function runPiLayoutSmoke() {
     cards.shell = await make('plain shell');
     scripted.base = await nativeInvoke('agent_hooks_status');
     window.__TAURI__ = { ...nativeTauri, core: { ...nativeTauri.core, invoke: script } };
-    scripted.status = { pi: false, pi_lifecycle: false, pi_installation: 'absent' };
+    scripted.status = { pi: false, pi_replies: false, pi_installation: 'absent' };
     installed = window.__TAURI__.core.invoke === script && (await inv('agent_hooks_status')).pi_installation === 'absent';
     if (!installed) throw new Error('the script is not installed');
 
     // ---- 1. the Board: a Pi's status on its card, beside Claude, Codex and a shell ----
     stage = 2;
     const words = (session, fields) => { scripted.poll[session] = fields; };
-    words(cards.piLong.session, { fg: 'node', agent: 'working', episode: 1, episode_viewed: false, pi_signal: 'connected', pi_session: 'unsupported' });
+    words(cards.piLong.session, { fg: 'node', agent: 'working', episode: 1, episode_viewed: false, pi_signal: 'connected' });
     words(cards.piZh.session, { fg: 'pi', pi_signal: 'unavailable' });
     words(cards.piOld.session, { fg: 'pi', pi_signal: 'incompatible' });
     words(cards.claude.session, { fg: 'claude', agent: 'turn-done', episode: 2, episode_viewed: false });
@@ -256,7 +256,7 @@ export async function runPiLayoutSmoke() {
     // ---- 1b. Needs attention: a Pi's unread ending is listed like any other; a Pi with nothing but coverage asks for nothing ----
     stage = 12;
     const { showAttention, attentionStatusText } = await import('../js/attention.js');
-    words(cards.piLong.session, { fg: 'node', agent: 'turn-done', episode: 4, episode_viewed: false, pi_signal: 'connected', pi_session: 'observed' });
+    words(cards.piLong.session, { fg: 'node', agent: 'turn-done', episode: 4, episode_viewed: false, pi_signal: 'connected' });
     await pollNow();
     await until(() => ctx.attention.get(cards.piLong)?.agent === 'turn-done');
     showAttention();
@@ -322,21 +322,18 @@ export async function runPiLayoutSmoke() {
     await until(() => state.view === 'board' && !!cardNode(cards.piLong));
     await report('pilay-attention', attentionOk === attentionAll, attentionAll, attentionOk);
 
-    // ---- 2. "Why?": what a card says about its Pi, for every coverage and session word ----
+    // ---- 2. "Why?": what a card says about its Pi, for every coverage word ----
     stage = 3;
     const WHY = [
-      ['connected', undefined, ['signal.pi.connectedHint', 'signal.pi.hold'], 'connected'],
-      ['connected', 'observed', ['signal.pi.connectedHint', 'signal.pi.hold', 'signal.pi.session'], 'observed'],
-      ['connected', 'unsupported', ['signal.pi.connectedHint', 'signal.pi.hold', 'signal.pi.sessionUnsupported'], 'unsupported'],
-      ['unavailable', undefined, ['signal.pi.unavailableHint', 'signal.pi.hold'], 'unavailable'],
-      ['unavailable', 'unsupported', ['signal.pi.unavailableHint', 'signal.pi.hold', 'signal.pi.sessionUnsupported'], 'lifecycle-only'],
-      ['incompatible', undefined, ['signal.pi.incompatibleHint', 'signal.pi.hold'], 'incompatible'],
+      ['connected', ['signal.pi.connectedHint', 'signal.pi.hold'], 'connected'],
+      ['unavailable', ['signal.pi.unavailableHint', 'signal.pi.hold'], 'unavailable'],
+      ['incompatible', ['signal.pi.incompatibleHint', 'signal.pi.hold'], 'incompatible'],
     ];
     let whyOk = 0, whyAll = 0;
-    for (const [coverage, session, keys, name] of WHY) {
-      words(cards.piLong.session, { fg: 'node', pi_signal: coverage, pi_session: session });
+    for (const [coverage, keys, name] of WHY) {
+      words(cards.piLong.session, { fg: 'node', pi_signal: coverage });
       await pollNow();
-      await until(() => ctx.attention.get(cards.piLong)?.piSignal === coverage && (ctx.attention.get(cards.piLong)?.piSession ?? undefined) === session);
+      await until(() => ctx.attention.get(cards.piLong)?.piSignal === coverage);
       await each(async (language, size) => {
         helpOf(cards.piLong).click();
         await until(() => $('chd').style.display === 'flex');
@@ -354,7 +351,7 @@ export async function runPiLayoutSmoke() {
         whyAll += 1;
         if (parts.every(Boolean)) whyOk += 1; else await tell(2, whyAll, bits(parts));
         capture($('chd-box'));
-        if (size !== 0.5 && (name === 'unsupported' || name === 'unavailable' || (name === 'incompatible' && size === 1))) {
+        if (size !== 0.5 && (name === 'connected' || name === 'unavailable' || (name === 'incompatible' && size === 1))) {
           await snapshot(`pilay-why-${name}-${tag(language, size)}`);
         }
         buttons[0].click();
@@ -362,7 +359,7 @@ export async function runPiLayoutSmoke() {
       });
     }
     await report('pilay-why', whyOk === whyAll, whyAll, whyOk);
-    words(cards.piLong.session, { fg: 'node', agent: 'working', episode: 1, episode_viewed: false, pi_signal: 'connected', pi_session: 'unsupported' });
+    words(cards.piLong.session, { fg: 'node', agent: 'working', episode: 1, episode_viewed: false, pi_signal: 'connected' });
 
     // ---- 3. Settings: the two switches and their note, in every state of the entry ----
     stage = 4;
@@ -377,24 +374,25 @@ export async function runPiLayoutSmoke() {
       ['a-word-of-a-later-build', true, true, 'settings.pi.note.unknown', false, 'unknown'],
     ];
     let settingsOk = 0, settingsAll = 0;
-    for (const [installation, signal, lifecycle, note, usable, name] of STATES) {
-      scripted.status = { pi: signal, pi_lifecycle: lifecycle, pi_installation: installation };
+    for (const [installation, signal, replies, note, usable, name] of STATES) {
+      scripted.status = { pi: signal, pi_replies: replies, pi_installation: installation };
       await openSettings();
       selectSettingsSection('agents');
       await until(() => $('set-pi-note').hidden === !note && $('set-pi-hooks').disabled === !usable);
       await each(async (language, size) => {
         const content = $('set-content');
-        const boxes = [$('set-pi-hooks'), $('set-pi-lifecycle')];
+        const boxes = [$('set-pi-hooks'), $('set-pi-replies')];
         const labels = boxes.map(box => document.querySelector(`label[for="${box.id}"]`));
         const noteNode = $('set-pi-note');
         boxes[0].scrollIntoView({ block: 'center' });
         await pause(40);
         const known = installation !== 'a-word-of-a-later-build';
         const first = [
-          boxes[0].checked === (known && signal) && boxes[1].checked === (known && lifecycle),
-          boxes.every(box => box.disabled === !usable),
+          boxes[0].checked === (known && signal) && boxes[1].checked === (known && signal && replies),
+          // the final message needs the work status: without it the second switch cannot be used
+          boxes[0].disabled === !usable && boxes[1].disabled === (!usable || !(known && signal)),
           noteNode.hidden === !note && noteNode.textContent === (note ? t(note) : ''),
-          labels[0].textContent === t('settings.piSignal') && labels[1].textContent === t('settings.piLifecycle'),
+          labels[0].textContent === t('settings.piSignal') && labels[1].textContent === t('settings.piReplies'),
           inside(rect($('settings-box')), view()) && noOverflowX(content),
           // each label is beside its switch or, at the large text size, above it; never under or over it
           boxes.every((box, index) => shown(box) && shown(labels[index])
@@ -423,11 +421,11 @@ export async function runPiLayoutSmoke() {
 
     // the "Learn more" of both switches, open: the long explanations fit as well
     stage = 5;
-    scripted.status = { pi: true, pi_lifecycle: true, pi_installation: 'needs-reload' };
+    scripted.status = { pi: true, pi_replies: true, pi_installation: 'needs-reload' };
     await openSettings();
     selectSettingsSection('agents');
     await until(() => !$('set-pi-note').hidden);
-    const hints = ['settings.piSignalHint', 'settings.piLifecycleHint']
+    const hints = ['settings.piSignalHint', 'settings.piRepliesHint']
       .map(key => document.querySelector(`#set-content [data-i18n="${key}"]`));
     for (const hint of hints) hint.closest('details').open = true;
     let hintsOk = 0, hintsAll = 0;
@@ -437,9 +435,9 @@ export async function runPiLayoutSmoke() {
       const content = $('set-content');
       const parts = [
         hints.every(hint => shown(hint) && noOverflowX(hint) && insideX(rect(hint), rect(content))),
-        hints[0].textContent === t('settings.piSignalHint') && hints[1].textContent === t('settings.piLifecycleHint'),
+        hints[0].textContent === t('settings.piSignalHint') && hints[1].textContent === t('settings.piRepliesHint'),
         noOverflowX(content) && inside(rect($('settings-box')), view()),
-        stacked([$('set-pi-hooks').closest('.set-row'), $('set-pi-note'), hints[0], $('set-pi-lifecycle').closest('.set-row'), hints[1]]),
+        stacked([$('set-pi-hooks').closest('.set-row'), $('set-pi-note'), hints[0], $('set-pi-replies').closest('.set-row'), hints[1]]),
         // the dialog's own way out stays where it is
         shown($('set-close')) && inside(rect($('set-close')), rect($('settings-box'))) && reachable($('set-close')),
       ];

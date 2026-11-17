@@ -240,6 +240,10 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // and, while a client may read the card snapshot, the newest one of
     // every Claude Code card (`mcp/cards.rs`): read, never sent
     ("turn_summary.rs", "offer", "TURN_DONE", 3, Presentation),
+    // a Pi run's final message, handed over by the transport with the
+    // ending it committed: named as that ending for the same readers and
+    // the card's line, and nothing else — no send, no hold lifted
+    ("turn_summary.rs", "offer_pi", "TURN_DONE", 1, Presentation),
     // a worker card's content-free view for its orchestrator; the same
     // observation can only REFUSE a send whose episode moved on
     // (`EPISODE_MOVED`), never release one: every hold still decides
