@@ -1,0 +1,138 @@
+name: pi-compat
+
+# Deck's Pi adapter accepts every Pi 1.x from 1.1 (`agent_pi.rs`,
+# `PiVersion`), on the strength of what was run against it. Pi ships a minor
+# release every week or two. This workflow runs the native Pi acceptance
+# (`scripts/pi_native.py`: real interactive Pi, npm and the official
+# standalone build, against Deck's production Pi ingress) against the
+# NEWEST Pi once a week, so a release that changes what the observer's
+# events mean is seen here and not by a user.
+#
+# It is an alarm, not a gate: nothing needs it, no release waits for it, and
+# a red run means "look at Pi's changelog", never "main is broken". It
+# builds no app, holds no secret and writes nothing to the repository.
+
+on:
+  schedule:
+    # Mondays 03:17 UTC
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      pi_version:
+        description: 'Pi release to run against (a version such as 1.5.2, or latest)'
+        required: true
+        default: latest
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pi-compat
+  cancel-in-progress: true
+
+jobs:
+  native:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+      PI_VERSION: ${{ inputs.pi_version || 'latest' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          # keep in step with rust-toolchain.toml at the repository root
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            app/src-tauri
+            app/src-tauri/status-helper -> target
+            app/src-tauri/mcp-runner -> target
+            app/src-tauri/mcp-adapter -> target
+
+      - name: Bundled tmux matches its committed SHA-256
+        run: shasum -a 256 -c app/src-tauri/binaries/tmux-aarch64-apple-darwin.sha256
+
+      # Where pi_native.py looks for the npm install: this user's own prefix.
+      - name: Install Pi from npm
+        run: |
+          set -euo pipefail
+          case "$PI_VERSION" in
+            latest|[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "not a Pi version: $PI_VERSION" >&2; exit 1 ;;
+          esac
+          npm install --global --prefix "$HOME/.local" --ignore-scripts \
+            "@earendil-works/pi-coding-agent@$PI_VERSION"
+          node -p "require('$HOME/.local/lib/node_modules/@earendil-works/pi-coding-agent/package.json').version" \
+            > "$RUNNER_TEMP/pi-version"
+          echo "Pi from npm: $(cat "$RUNNER_TEMP/pi-version")"
+
+      # The official standalone build of the SAME release, checked against
+      # the release's own SHA256SUMS. A public download: no token is sent.
+      - name: Fetch the official standalone Pi
+        run: |
+          set -euo pipefail
+          version=$(cat "$RUNNER_TEMP/pi-version")
+          base="https://github.com/earendil-works/pi/releases/download/v${version}"
+          mkdir -p "$RUNNER_TEMP/pi-standalone/dl" "$RUNNER_TEMP/pi-standalone/unpacked"
+          cd "$RUNNER_TEMP/pi-standalone/dl"
+          for name in pi-darwin-arm64.tar.gz SHA256SUMS; do
+            curl --fail --silent --show-error --location --retry 3 "$base/$name" --output "$name"
+          done
+          grep ' pi-darwin-arm64.tar.gz$' SHA256SUMS | shasum -a 256 -c -
+          tar -xzf pi-darwin-arm64.tar.gz -C ../unpacked
+          test -x ../unpacked/pi/pi
+
+      - name: Build the deck-app test executable
+        run: |
+          set -euo pipefail
+          cargo test --locked --manifest-path app/src-tauri/Cargo.toml --bin deck-app --no-run --message-format=json \
+            | python3 -c '
+          import json, sys
+          found = [m["executable"] for m in map(json.loads, sys.stdin)
+                   if m.get("reason") == "compiler-artifact" and m.get("executable")
+                   and m["target"]["name"] == "deck-app" and m["profile"]["test"]]
+          assert len(found) == 1, found
+          print(found[0])' > "$RUNNER_TEMP/test-binary"
+          test -x "$(cat "$RUNNER_TEMP/test-binary")"
+
+      - name: The native Pi acceptance against this Pi
+        run: |
+          set -euo pipefail
+          python3 scripts/pi_native.py \
+            --test-binary "$(cat "$RUNNER_TEMP/test-binary")" \
+            --standalone "$RUNNER_TEMP/pi-standalone/unpacked/pi" \
+            --root "/private/tmp/deck-pi-compat-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+      # Closed words, counts and relations only (`result.json`): never the
+      # private trace under <root>/logs, which holds the fixture's answers
+      # and Pi's native session ids.
+      - name: Say which Pi ran, and what failed
+        if: always()
+        run: |
+          set -euo pipefail
+          result="/private/tmp/deck-pi-compat-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/result.json"
+          {
+            echo "### Native Pi acceptance"
+            echo
+            echo "Pi: $(cat "$RUNNER_TEMP/pi-version" 2>/dev/null || echo unknown)"
+            if [ -f "$result" ]; then
+              python3 -c '
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          print("passed:", r["passed"])
+          print("stopped:", r["stopped"])
+          print()
+          for name in r["failed"]:
+              print("- FAILED:", name)' "$result"
+            else
+              echo "no result was written"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
