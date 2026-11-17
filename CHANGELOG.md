@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.26 — 2026-11-17 (Nightly)
+
+- MCP: a new permission, "Read the card snapshot" (Settings › Remote
+  access, in the client's dialog, off by default). A client with it can
+  read the cards of its projects — each one's state and, for a Claude Code
+  or Codex card whose turn ended, the end of its last message — and mark
+  cards for you: Needs you, Can close or Still working, with a short
+  reason. Ask an agent "go over my cards" and the marks appear in Needs
+  attention. A mark holds for that turn only, never closes, sends to or
+  moves a card, and you can clear it. Nothing it reads is written to disk.
+- Needs attention › Turn ended lists the longest-ended turn first and says
+  how long ago it ended. "Tick suggested (N)" ticks the cards an agent
+  marked Can close; Close selected still asks once.
+- Codex: Deck's Codex status hooks can forward Codex's final message
+  (Settings › Agents & notifications, "Forward Codex's final message";
+  on for a new install). Deck keeps it in memory only for the card
+  snapshot, worker replies and phone replies, and drops it otherwise.
+  Changing the switch rewrites Deck's Codex Stop hook: trust it again in
+  Codex /hooks. Only Codex started with --no-daemon.
+- Phone Connector: the replies switch is now "Agent replies on the phone"
+  and includes Codex cards that forward their final message.
+- Fixed: after turning Remote access off and on again, Claude Code's Stop
+  hook forwards replies again for the clients that read them.
+
 ## 0.8.25 — 2026-11-16 (Nightly)
 
 - Phone Connector: a new switch, "Claude Code replies on the phone"
