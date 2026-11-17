@@ -411,6 +411,35 @@ mod tests {
                 .ok()
                 .map(|path| std::path::PathBuf::from(path.trim()))
         }
+        /// A plain shell session, returned once its foreground has settled:
+        /// tmux names the pane's command before the shell has exec'd (on
+        /// macOS `/bin/sh` reads `sh` or `zsh`, then `bash`), so a listing
+        /// taken at once and the next one may differ, which a restart's own
+        /// check rightly reads as a changed server.
+        fn shell(&self, name: &str) {
+            self.run(&["new-session", "-d", "-s", name, "/bin/sh"])
+                .unwrap();
+            let command = || {
+                self.rows()
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.session_name == name)
+                    .map(|r| r.command)
+            };
+            let until = Instant::now() + Duration::from_secs(2);
+            let (mut last, mut same) = (command(), 0);
+            while same < 3 {
+                assert!(Instant::now() < until, "the shell settled");
+                std::thread::sleep(Duration::from_millis(20));
+                let now = command();
+                same = if now.is_some() && now == last {
+                    same + 1
+                } else {
+                    0
+                };
+                last = now;
+            }
+        }
         fn fixture(&self, name: &str, keys: usize) {
             // Raw-mode fake agent: consume N control bytes, print an exit hint,
             // then return to an ordinary shell. No real credentials/model calls.
@@ -596,9 +625,7 @@ mod tests {
         let agent = unique("rx-agent");
         let plain = unique("rx-plain");
         server.fixture(&agent, 2);
-        server
-            .run(&["new-session", "-d", "-s", &plain, "/bin/sh"])
-            .unwrap();
+        server.shell(&plain);
         let reviewed = server.rows().unwrap();
         let frozen: Vec<PaneRow> = reviewed
             .iter()
