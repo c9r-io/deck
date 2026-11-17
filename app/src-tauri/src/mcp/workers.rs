@@ -1254,6 +1254,7 @@ struct Choices {
     worker_types: Vec<WorkerType>,
     drafts: bool,
     mentions: bool,
+    cards: bool,
     rule_column: bool,
 }
 
@@ -1268,6 +1269,7 @@ impl Choices {
             worker_types: client.worker_types.clone(),
             drafts: client.allow_drafts,
             mentions: client.allow_mentions,
+            cards: client.allow_cards,
             rule_column: client.rule_column,
         }
     }
@@ -1284,6 +1286,7 @@ impl Choices {
             worker_types: input.worker_types.clone(),
             drafts: input.allow_drafts,
             mentions: input.allow_mentions,
+            cards: input.allow_cards,
             rule_column: input.rule_column,
         }
     }
@@ -1297,6 +1300,7 @@ impl Choices {
         client.worker_types = self.worker_types;
         client.allow_drafts = self.drafts;
         client.allow_mentions = self.mentions;
+        client.allow_cards = self.cards;
         client.rule_column = self.rule_column;
     }
 }
@@ -1424,6 +1428,7 @@ pub(super) fn client_permissions(
     if withdrew_drafts {
         super::proposals::note_withdrawn(runtime);
     }
+    super::cards::note_readers_changed(runtime);
     sync_reply_hook();
     note_worker_change();
     Ok(())

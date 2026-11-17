@@ -618,7 +618,9 @@ fn only_a_load_a_save_and_the_users_exit_commit_a_board() {
 /// `turn_summary` offers the model to pick one to mark; it grants nothing,
 /// so a recovered Board answers too. `card_targets` and `project_dirs` answer
 /// an MCP client's worker cards and project scope; `project_dirs` names only
-/// a current Board's projects. The reminder module keeps its own copy to
+/// a current Board's projects. `board_layout` and `board_is_current` serve
+/// an MCP client's card snapshot (`mcp/cards.rs`): names and order for
+/// presentation, and a recovered Board refused. The reminder module keeps its own copy to
 /// project from (a wake or a tick projects without a commit) and offers it to
 /// nobody. The door reaches the projection through one observer, registered
 /// by the reminder module itself when its bridge starts; a second registrant,
@@ -650,6 +652,8 @@ fn the_board_door_owns_the_committed_board_and_tells_one_observer() {
         users(&documents, "COMMITTED_BOARD"),
         [
             "board_authority",
+            "board_is_current",
+            "board_layout",
             "board_preset_choices",
             "card_follow_ups",
             "card_targets",
@@ -657,16 +661,28 @@ fn the_board_door_owns_the_committed_board_and_tells_one_observer() {
             "committed_board",
             "project_dirs"
         ],
-        "the door's committed-Board copy has one writer and six readers: `committed_board` \
+        "the door's committed-Board copy has one writer and eight readers: `committed_board` \
          for the door's own persistence decisions, `board_authority`, which answers only for a \
          current Board, for a reader that grants something on what the Board says, \
          `board_preset_choices` for the readers that take a preset's choice back, and \
          `card_follow_ups`, presentation only, for the follow-ups a turn summary may mark, and \
          `card_targets`, where a worker card's terminal is (current only for a send), and \
-         `project_dirs`, the current Board's projects for an MCP client's project scope"
+         `project_dirs`, the current Board's projects for an MCP client's project scope, and \
+         `board_layout` (projects and columns by name) with `board_is_current` for an MCP \
+         client's card snapshot, presentation only, refused on a recovered Board"
     );
-    // the presentation reader has one caller, and it grants nothing
-    assert_eq!(callers_of("card_follow_ups("), ["turn_summary.rs offer"]);
+    // the card snapshot's readers grant nothing and have one caller each
+    assert_eq!(callers_of("board_layout("), ["mcp/cards.rs ordered"]);
+    assert_eq!(
+        callers_of("board_is_current("),
+        ["mcp/cards.rs cards_snapshot"]
+    );
+    // the presentation reader's callers grant nothing: the turn summary,
+    // and the card snapshot's follow-up count
+    assert_eq!(
+        callers_of("card_follow_ups("),
+        ["mcp/cards.rs cards_snapshot", "turn_summary.rs offer"]
+    );
     // who may read which: an admission grants only on the current Board, and
     // the one reader of a recovered Board's (empty) choices is the source the
     // sweep and the fence share

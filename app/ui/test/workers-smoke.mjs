@@ -27,7 +27,7 @@
 //      sends each at least one line. The page counts them.
 // No hook word and no event is synthesized: the Signal comes from the real
 // Claude Code in each card.
-export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false } = {}) {
+export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false } = {}) {
   const { openPermissions, pause, setPermission, until } = await import('./smoke-mcp-helpers.mjs');
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider, panes } = await import('../js/board.js');
@@ -268,6 +268,91 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     await report('mentions-withdrawn', !!off);
     await report('done', !failed, 1, 5);
   };
+  /* `cards-mcp`: the card snapshot (mcp/cards.rs). The page authorizes a
+     client that may read the card snapshot of its project and opens three
+     cards: "Ask" and "Done", real Claude Code started with a first prompt
+     (the fixture's hooks forward their final message), and "Shell", a plain
+     shell; once both turns ended it reports `cards-armed`. The scripted
+     client (scripts/mcp-cards-e2e.py) reads and marks them; the page sees
+     the marks in Needs attention › Turn ended, ticks the suggested ones
+     with the user's button (only Done; nothing closes), clears Ask's mark
+     with its × and withdraws the choice in the dialog (every mark goes).
+     Then, granted again, two fresh cards for a real Claude Code asked in
+     plain words to go over the cards, run from a card of its own
+     ("Orchestrator", the fixture's agent.sh): it must mark the asking one
+     needs-you and the finished one can-close. */
+  const cardsRun = async ({ project, column, work, fixture }) => {
+    const { showAttention } = await import('../js/attention.js');
+    const base = `claude --setting-sources project --permission-mode acceptEdits --settings ${fixture}/worker-hooks.json`;
+    const ASK = "'Do not use any tool. Reply with one short question asking me whether you should also update the iOS app, and nothing else.'";
+    const DONE = "'Do not use any tool. Reply with exactly this line and nothing else: Finished. CARDS-DONE-OK'";
+    await inv('mcp_enable');
+    const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
+      permissions: { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false,
+        workerTypes: [], workerFirstSend: false, allowDrafts: false, allowMentions: false, allowCards: true } });
+    const listed = await until(async () => {
+      const status = await inv('mcp_status');
+      return status.enabled && status.socketReady && status.clients.some(value => value.id === client.id && value.allowCards) ? status : null;
+    }, 15_000, 250);
+    await report('workers-client', !!listed && client.allowCards === true);
+    const open = async (title, cmd) => (await provider.createStarted({ projectId: project.id, columnId: column.id,
+      title, dir: work, cmd }, { requireCreated: true })).card;
+    const ended = card => ctx.attention.get(card)?.agent === 'turn-done';
+    const cards = { ask: await open('Ask', `${base} ${ASK}`), done: await open('Done', `${base} ${DONE}`), shell: await open('Shell', '') };
+    const turns = await until(() => ended(cards.ask) && ended(cards.done) || null, 300_000, 1000);
+    await report('cards-turns', !!turns);
+    await report('cards-armed', true);
+
+    /* the scripted client's marks, as Needs attention shows them */
+    showAttention();
+    const tools = $('attention-tools');
+    tools.querySelector('[data-filter="ended"]').click();
+    const row = card => $('attention-list').querySelector(`.attention-row[data-sid="${card.id}"]`);
+    const markOf = card => { const el = row(card)?.querySelector('.attention-mark'); return el && !el.hidden ? el : null; };
+    const shown = await until(() => markOf(cards.ask) && markOf(cards.done) ? true : null, 600_000, 1000);
+    const suggest = tools.querySelector('.attention-pick-suggested');
+    const suggestShown = !!suggest && !suggest.hidden && suggest.textContent === t('attention.pickSuggested', { count: '1' });
+    suggest?.click(); await pause(200);
+    const ticked = [...$('attention-list').querySelectorAll('.attention-row')].filter(el => el.querySelector('.attention-pick')?.checked).map(el => el.dataset.sid);
+    await report('cards-marked', !!shown && markOf(cards.ask)?.dataset.mark === 'needs-you' && markOf(cards.done)?.dataset.mark === 'can-close'
+      && markOf(cards.ask).textContent.includes(t('attention.mark.needs-you')) && markOf(cards.ask).textContent.includes('orchestrator')
+      && suggestShown && ticked.length === 1 && ticked[0] === cards.done.id && $('cfm').style.display !== 'flex' && !!provider.get(cards.done.id),
+      ticked.length, suggestShown ? 1 : 0);
+    tools.querySelector('[data-filter="pending"]').click(); await pause(100);
+    tools.querySelector('[data-filter="ended"]').click(); await pause(100);
+    /* the user clears Ask's mark */
+    row(cards.ask)?.querySelector('.attention-mark-clear')?.click();
+    const cleared = await until(() => !markOf(cards.ask) && markOf(cards.done) ? true : null, 15_000, 500);
+    await report('cards-cleared', !!cleared);
+    /* withdrawn in the client's dialog: every mark of it goes */
+    await setPermission('orchestrator', 'mcp-perm-cards', false);
+    $('set-close').click();
+    showAttention(); tools.querySelector('[data-filter="ended"]').click();
+    const off = await until(async () => {
+      const status = await inv('mcp_status');
+      return status.clients.some(value => value.id === client.id && value.allowCards === false) && !markOf(cards.done) ? true : null;
+    }, 15_000, 500);
+    await report('cards-withdrawn', !!off);
+    /* the client sees PERMISSION_DENIED within a second; then granted again */
+    await pause(15_000);
+    await setPermission('orchestrator', 'mcp-perm-cards', true);
+    $('set-close').click();
+    /* fresh turns for the real agent: the withdrawal forgot the kept replies */
+    const fresh = { ask: await open('Ask again', `${base} ${ASK}`), done: await open('Done again', `${base} ${DONE}`) };
+    const freshTurns = await until(() => ended(fresh.ask) && ended(fresh.done) || null, 300_000, 1000);
+    showAttention(); tools.querySelector('[data-filter="ended"]').click();
+    await report('cards-agent-ready', !!freshTurns);
+    /* the real agent runs in a card of its own (the runner's fixture
+       agent.sh: `claude -p` with only this instance's adapter), so the
+       snapshot names that card `self` */
+    await open('Orchestrator', `sh ${fixture}/agent.sh`);
+    const agentMarks = await until(() => markOf(fresh.ask) && markOf(fresh.done) ? true : null, 1_500_000, 2000);
+    await pause(10_000);
+    await report('cards-agent-marked', !!agentMarks && markOf(fresh.ask)?.dataset.mark === 'needs-you'
+      && markOf(fresh.done)?.dataset.mark === 'can-close' && !!provider.get(fresh.done.id),
+      markOf(fresh.ask) ? 1 : 0, markOf(fresh.done) ? 1 : 0);
+    await report('done', !failed, 1, 6);
+  };
   /* `orchestrators`: ONE client, several orchestrator cards (mcp/origin.rs).
      The page adds the columns "Orch A", "Orch B" and "Orch C", authorizes
      one client that may trigger automations and drive workers (one Claude
@@ -458,8 +543,8 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
        `--no-daemon` worker through part A only (no reply is forwarded for
        Codex, and part B is not run: `done` then reports b=2) */
     const scenario = drafting ? 'drafts' : mentioning ? 'mentions' : orchestrating ? 'orchestrators'
-      : projecting ? 'projects' : await inv('smoke_native_scenario').catch(() => '');
-    if (!['live', 'codex', 'types', 'drafts', 'mentions', 'orchestrators', 'projects'].includes(scenario)) throw new Error('scenario');
+      : projecting ? 'projects' : carding ? 'cards' : await inv('smoke_native_scenario').catch(() => '');
+    if (!['live', 'codex', 'types', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards'].includes(scenario)) throw new Error('scenario');
     const codex = scenario === 'codex';
     /* `types`: no template and no rule; the client carries one Claude worker
        type and the first-send choice, and the scripted client starts the
@@ -477,6 +562,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     const column = project.columns[0];
     if (scenario === 'drafts') { await drafts({ project, column, work }); return; }
     if (scenario === 'mentions') { await mentionsRun({ project, column, work }); return; }
+    if (scenario === 'cards') { await cardsRun({ project, column, work, fixture }); return; }
     if (scenario === 'projects') {
       await projectsRun({ work, cmd: 'claude --setting-sources project' });
       return;

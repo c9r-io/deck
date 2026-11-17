@@ -424,6 +424,9 @@ struct Entry {
     episode: EpisodeId,
     last: Option<(InteractionKey, &'static str)>,
     viewed: bool,
+    /// When the current episode began (ms since the epoch, this process's
+    /// clock): presentation only (`facts`), never a timer or authority.
+    since: u64,
     /// The last accepted word came from Codex (the only source whose
     /// observation an `Unavailable` trust proof clears).
     codex: bool,
@@ -1181,6 +1184,53 @@ pub(crate) fn projections(rows: &[PaneRow]) -> HashMap<String, Observation> {
         .collect()
 }
 
+/// Presentation facts of the observation `projected` reports for a
+/// session's Signal target: when its episode began and which agent's words
+/// it carries. Never authority, a hold or a timer: Needs attention shows how
+/// long a turn has been over, and an MCP client's card snapshot
+/// (`mcp/cards.rs`) reads the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Facts {
+    /// ms since the epoch; 0 before any episode
+    pub(crate) since: u64,
+    /// `claude-code`, `codex` or `pi`
+    pub(crate) kind: &'static str,
+}
+
+pub(crate) fn facts(rows: &[PaneRow]) -> HashMap<String, Facts> {
+    let targets = signal_targets(rows);
+    with_agents(|agents| {
+        targets
+            .into_iter()
+            .filter_map(|(session, target)| {
+                let entry = agents
+                    .get(&PaneKey::of(target))
+                    .filter(|entry| entry.of_pane(target) && entry.speaks())?;
+                let kind = if entry.pi.is_some() {
+                    "pi"
+                } else if entry.codex {
+                    "codex"
+                } else {
+                    "claude-code"
+                };
+                Some((
+                    session,
+                    Facts {
+                        since: entry.since,
+                        kind,
+                    },
+                ))
+            })
+            .collect()
+    })
+}
+
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
 use crate::agent_origin::{terminal_continuous, ORIGIN_HOPS};
 // Re-exported: existing callers and tests name the origin through this module.
 pub(crate) use crate::agent_origin::Origin;
@@ -1312,6 +1362,7 @@ pub(crate) fn ingest_accepted(
                     episode: 0,
                     last: None,
                     viewed: false,
+                    since: 0,
                     codex,
                     pi: None,
                 },
@@ -1336,6 +1387,7 @@ pub(crate) fn ingest_accepted(
             entry.last = Some(sameness);
             entry.episode = NEXT_EPISODE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             entry.viewed = false;
+            entry.since = epoch_ms();
         }
         Ok(Observation {
             state: entry.state,
@@ -1513,6 +1565,7 @@ pub(crate) fn pi_signal(
             episode: 0,
             last: None,
             viewed: false,
+            since: 0,
             codex: false,
             pi: None,
         };
@@ -1534,6 +1587,7 @@ pub(crate) fn pi_signal(
             entry.last = Some(sameness);
             entry.episode = NEXT_EPISODE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             entry.viewed = false;
+            entry.since = epoch_ms();
         }
         Observation {
             state: entry.state,

@@ -245,6 +245,21 @@
 //! mark; other orchestrators see a mark and cannot change it. A ledger
 //! holding a mark is written at `STATE_VERSION_MARKS` (sticky).
 //!
+//! Card snapshot (`cards.rs`, `docs/mcp.md` "Card snapshot"): a client
+//! with the separate local choice `allow_cards` reads the cards of its
+//! projects (`deck_cards_snapshot`: closed facts per card and, for a Claude
+//! Code card whose turn ended, the end of that turn's final message, fenced;
+//! `deck_card_reply` for the whole of it, only for the current episode) and
+//! may MARK a card's current episode (`deck_card_mark`: needs-you,
+//! can-close or working, a short note). Read only and presentation only:
+//! no send, close, move, hold or count reads a mark; marks live in memory,
+//! one per card, and a new turn hides one. While a reader exists the Stop
+//! hook forwards the message (`agent_status::forwarding_wanted`) and
+//! `turn_summary` keeps the newest of each card; with none, it forgets
+//! them. Withdrawal, a scope change, revocation and disable run
+//! `cards::note_readers_changed`. A ledger holding the choice is written at
+//! `STATE_VERSION_CARDS` (sticky).
+//!
 //! Orchestrator cards (`origin.rs`, `docs/mcp.md` "Orchestrator cards"):
 //! several agents may share one client, each in its own Deck card. Deck
 //! reads which card a call comes from out of the kernel (the adapter's peer
@@ -271,7 +286,7 @@
 //! session-level requests including close; `automation` the automation
 //! delegation above; `workers` the worker cards; `origin` the orchestrator
 //! card of a call; `mentions` the Slack mentions reader and its marks;
-//! `proposals` the drafted
+//! `cards` the card snapshot and its marks; `proposals` the drafted
 //! configuration; `jobs` exec, job reads and every
 //! job side effect; `control` request routing plus the socket thread; and
 //! `commands` the local Tauri commands and the guards other modules call
@@ -304,6 +319,8 @@ pub(crate) const INTEGRATION: crate::extensions::AccessIntegration =
 #[cfg(test)]
 mod admission_tests;
 mod automation;
+mod cards;
+pub(crate) use cards::{card_mark_for, card_readers_any, CardMarkView};
 mod commands;
 mod control;
 mod grants;
@@ -326,6 +343,15 @@ pub(crate) fn clear_mention_mark(key: &str) -> Result<bool, DeckError> {
         Some(runtime) => clear_mark(runtime, key),
         None => Ok(false),
     }
+}
+/// The user cleared a card's mark in Needs attention (`cards.rs`): any
+/// client's. Presentation bookkeeping only.
+#[tauri::command]
+pub(crate) fn mcp_card_mark_clear(card_id: String) -> bool {
+    valid_id(&card_id)
+        && RUNTIME
+            .get()
+            .is_some_and(|r| cards::clear_mark(r, &card_id))
 }
 mod project;
 mod proposals;
@@ -380,6 +406,9 @@ const STATE_VERSION_ALL_PROJECTS: u32 = 12;
 /// The sticky version a ledger takes once it holds a mark on a Slack
 /// mention (`mentions::MentionMark`): a v12 build refuses it.
 const STATE_VERSION_MARKS: u32 = 13;
+/// The sticky version a ledger takes once a client may read the card
+/// snapshot (`cards::uses_cards`): a v13 build refuses it.
+const STATE_VERSION_CARDS: u32 = 14;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

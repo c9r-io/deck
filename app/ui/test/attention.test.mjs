@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ATTENTION_BADGE_LABELS, ATTENTION_SECTION_LABELS, DELIVERY_WAITS, attentionBadge, createAttentionTracker, attentionRows, codexCoverageGap, deliveryWaits } from '../js/attention-model.js';
+import { ATTENTION_BADGE_LABELS, ATTENTION_SECTION_LABELS, CARD_MARKS, DELIVERY_WAITS, attentionBadge, createAttentionTracker, attentionRows, codexCoverageGap, deliveryWaits, endedAgo, suggestedToClose } from '../js/attention-model.js';
 import { NOTIFY_COUNTED_FILTERS } from '../js/notify-model.js';
 import { dictionaries } from '../js/i18n.js';
 import fixture from './fixtures/attention-fixture.mjs';
@@ -475,4 +475,48 @@ test('"Turn ended" offers every live card whose turn ended, read or not, and nev
   tracker.record(all, [{ name: 's-read', alive: true, agent: 'turn-done', episode: 2, idle_secs: 3 }], new Set(), 200);
   const rows = attentionRows([{ id: 'Atlas', name: 'Atlas', columns: [{ id: 'Working', name: 'Working' }] }], all, tracker, 'ended');
   assert.deepEqual(rows.map(row => row.card.id), ['read']);
+});
+
+test('turn age and MCP marks are presentation: "Turn ended" lists the longest-ended first and a click ticks only can-close', () => {
+  const tracker = createAttentionTracker();
+  const project = { id: 'P', name: 'P', columns: [{ id: 'C', name: 'C' }] };
+  const list = ['a', 'b', 'c', 'd'].map(id => ({ id, session: `s-${id}`, projectId: 'P', columnId: 'C' }));
+  const base = { alive: true, agent: 'turn-done', idle_secs: 300 };
+  tracker.record(list, [
+    { name: 's-a', ...base, episode: 1, episode_since: 5_000, card_mark: { mark: 'can-close', note: 'Committed', by: 'Claude' } },
+    { name: 's-b', ...base, episode: 2, episode_since: 1_000, card_mark: { mark: 'needs-you', note: 'Asks about iOS', by: 'Claude' } },
+    { name: 's-c', ...base, episode: 3, card_mark: { mark: 'close-everything', note: 'x' } },
+    { name: 's-d', alive: true, agent: 'working', idle_secs: 1, episode: 4, episode_since: 9_000, card_mark: { mark: 'can-close' } },
+  ]);
+  assert.deepEqual(CARD_MARKS, ['needs-you', 'can-close', 'working']);
+  assert.equal(tracker.get(list[0]).since, 5_000);
+  assert.deepEqual(tracker.get(list[0]).mark, { mark: 'can-close', note: 'Committed', by: 'Claude' });
+  assert.equal(tracker.get(list[2]).mark, null, 'an unknown mark word is dropped');
+  assert.equal(tracker.get(list[2]).since, null);
+  // order: longest-ended first, unknown start last; working cards are not listed
+  const rows = attentionRows([project], list, tracker, 'ended');
+  assert.deepEqual(rows.map(r => r.card.id), ['b', 'a', 'c']);
+  assert.deepEqual(suggestedToClose(rows, tracker), ['a']);
+  // a mark neither changes a category nor a count
+  const before = tracker.counts(list);
+  const categories = list.map(c => tracker.category(c));
+  tracker.record(list, [
+    { name: 's-a', ...base, episode: 1, episode_since: 5_000 },
+    { name: 's-b', ...base, episode: 2, episode_since: 1_000 },
+    { name: 's-c', ...base, episode: 3 },
+    { name: 's-d', alive: true, agent: 'working', idle_secs: 1, episode: 4, episode_since: 9_000 },
+  ]);
+  assert.deepEqual(tracker.counts(list), before);
+  assert.deepEqual(list.map(c => tracker.category(c)), categories);
+  // the age
+  assert.equal(endedAgo(null, 0), null);
+  assert.deepEqual(endedAgo(1_000, 1_000), { key: 'attention.endedMinutes', count: 1 });
+  assert.deepEqual(endedAgo(0 + 1, 59 * 60_000), { key: 'attention.endedMinutes', count: 58 });
+  assert.deepEqual(endedAgo(1, 3 * 3_600_000 + 1), { key: 'attention.endedHours', count: 3 });
+  assert.deepEqual(endedAgo(1, 50 * 3_600_000 + 1), { key: 'attention.endedDays', count: 2 });
+  for (const [name, dictionary] of Object.entries(dictionaries)) {
+    for (const key of ['attention.endedMinutes', 'attention.endedHours', 'attention.endedDays', 'attention.pickSuggested', ...CARD_MARKS.map(m => `attention.mark.${m}`)]) {
+      assert.ok(dictionary[key], `${name} has ${key}`);
+    }
+  }
 });

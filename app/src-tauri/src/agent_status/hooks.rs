@@ -11,7 +11,7 @@
 //! Claude Code's Stop hook has three forms (`ReplyHook`): plain, `--reply`
 //! (the turn-summary switch; worker and phone replies read it too) and
 //! `--reply workers` (the message forwarded without summaries: while some
-//! MCP client may read worker replies or the user turned on Claude Code
+//! MCP client may read worker replies or the card snapshot, or the user turned on Claude Code
 //! replies on the phone, and summaries are off; `forwarding_wanted`,
 //! `sync_worker_replies`). The word stays `workers` so no hooks file needs
 //! migrating; it means "forward only". The helper forwards the message the
@@ -1737,10 +1737,12 @@ pub(crate) fn turn_summary_set(enable: bool) -> Result<(), DeckError> {
 
 /// Whether deck's Claude Code Stop hook must forward the final message for
 /// something other than turn summaries: some MCP client may read worker
-/// replies (`mcp/workers.rs`), or the user turned on Claude Code replies on
+/// replies (`mcp/workers.rs`) or the card snapshot (`mcp/cards.rs`), or the user turned on Claude Code replies on
 /// the phone (`turn_summary::phone_replies_on`).
 pub(crate) fn forwarding_wanted() -> bool {
-    crate::mcp::replies_wanted_any() || crate::turn_summary::phone_replies_on()
+    crate::mcp::replies_wanted_any()
+        || crate::mcp::card_readers_any()
+        || crate::turn_summary::phone_replies_on()
 }
 
 /// Bring the Stop hook in line with `forwarding_wanted` (a phone-replies

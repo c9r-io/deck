@@ -82,6 +82,7 @@ pub(super) enum Choice {
     Workers,
     Drafts,
     Mentions,
+    Cards,
 }
 
 impl Choice {
@@ -92,6 +93,7 @@ impl Choice {
             Choice::Workers => client.allow_workers,
             Choice::Drafts => client.allow_drafts,
             Choice::Mentions => client.allow_mentions,
+            Choice::Cards => client.allow_cards,
         }
     }
 
@@ -102,6 +104,7 @@ impl Choice {
             Choice::Workers => "client may not drive worker cards",
             Choice::Drafts => "client may not draft configuration",
             Choice::Mentions => "client may not read Slack mentions",
+            Choice::Cards => "client may not read the card snapshot",
         }
     }
 }

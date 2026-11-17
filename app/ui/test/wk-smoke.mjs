@@ -3430,6 +3430,13 @@ export async function verifyMentionsMcp() {
   await runWorkersSmoke({ mentioning: true });
 }
 
+// The card snapshot read and marked by a scripted client, then a real
+// agent, over real Claude Code cards (workers-smoke.mjs).
+export async function verifyCardsMcp() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ carding: true });
+}
+
 export async function verifyOrchestrators() {
   const { runWorkersSmoke } = await import('./workers-smoke.mjs');
   await runWorkersSmoke({ orchestrating: true });

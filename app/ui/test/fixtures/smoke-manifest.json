@@ -482,6 +482,7 @@
         "attention-batch-layout": {},
         "attention-batch-offer": {},
         "attention-board": {},
+        "attention-card-marks": {},
         "attention-follow-bar": {},
         "attention-follow-send": {},
         "attention-navigation": { "a": 18, "b": 0 },
@@ -899,6 +900,20 @@
         "mentions-agent": {},
         "mentions-agent-marked": {},
         "mentions-withdrawn": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
+    "cards-mcp": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "cards-turns": {},
+        "cards-armed": {},
+        "cards-marked": {},
+        "cards-cleared": {},
+        "cards-withdrawn": {},
+        "cards-agent-ready": {},
+        "cards-agent-marked": {},
         "workers-exception": { "failureOnly": true }
       }
     },

@@ -326,6 +326,7 @@ fn client_record(root: &Path) -> Client {
         worker_first_send: false,
         allow_drafts: false,
         allow_mentions: false,
+        allow_cards: false,
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
@@ -399,6 +400,7 @@ fn inspect_separates_execution_authorization_from_output_sharing() {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_test".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     };
     let view = || inspect(&runtime, "client_a", json!({"session_id":"mcp_a"})).unwrap();
@@ -534,6 +536,7 @@ fn control_socket_exists_only_while_mcp_is_enabled() {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_socket".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     };
     let mut listener = None;
@@ -645,6 +648,7 @@ fn a_protocol_mismatch_is_noted_for_an_authenticated_client_only() {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_test".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     };
     let skewed = |client: &str, credential: &str| {
@@ -858,6 +862,7 @@ fn authorization_is_client_project_session_and_control_scoped() {
         worker_first_send: false,
         allow_drafts: false,
         allow_mentions: false,
+        allow_cards: false,
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
@@ -966,6 +971,7 @@ fn grant_expiry_is_audited_once_without_reviving_authority() {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_test".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     };
 
@@ -1005,6 +1011,7 @@ fn emergency_fence_survives_state_write_failure() {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_test".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     };
     runtime
@@ -1077,6 +1084,7 @@ fn unreadable_runtime(tag: &str) -> (Runtime, crate::test_dir::TestDir) {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_unreadable".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     };
     (runtime, root)
@@ -1499,6 +1507,7 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_test".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     });
     // Before the service exists nothing is managed: ordinary input, a close
@@ -1766,6 +1775,7 @@ fn production_routes_cover_authorized_job_and_control_lifecycle() {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_test".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     });
 
@@ -2162,7 +2172,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
     );
 
     let mut invalid = DiskDoc {
-        version: STATE_VERSION_MARKS + 1,
+        version: STATE_VERSION_CARDS + 1,
         ..DiskDoc::default()
     };
     assert!(validate_doc(&invalid).is_err());
@@ -2201,6 +2211,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
         worker_first_send: false,
         allow_drafts: false,
         allow_mentions: false,
+        allow_cards: false,
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
@@ -2267,6 +2278,7 @@ fn concurrent_create_reserves_one_operation_and_one_plan() {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_concurrent".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     });
     let barrier = Arc::new(std::sync::Barrier::new(3));
@@ -2332,6 +2344,7 @@ fn fixture(tag: &str, service: &str) -> (Arc<Runtime>, FakeRunner, crate::test_d
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: service.into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     });
     (runtime, runner, root)
@@ -2359,6 +2372,7 @@ fn authorized_create_control_job_takeover_return_and_release_stay_in_sync() {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_test".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     });
     let created = session_create(
@@ -3150,7 +3164,7 @@ fn v3_state_upgrades_stickily_and_future_state_is_refused() {
     // The v3 build accepted exactly version 3; the same rule refuses a
     // future schema here.
     let mut future = saved.clone();
-    future["version"] = json!(STATE_VERSION_MARKS + 1);
+    future["version"] = json!(STATE_VERSION_CARDS + 1);
     std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
     assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
     assert_eq!(
@@ -3855,6 +3869,7 @@ fn reload(runtime: &Runtime, service: &str) -> Arc<Runtime> {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: service.into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     })
 }
@@ -4547,6 +4562,7 @@ fn project_runtime(tag: &str) -> (Arc<Runtime>, crate::test_dir::TestDir) {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_test".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     });
     (runtime, root)
@@ -5035,6 +5051,7 @@ fn takeover_hands_the_pane_over_even_when_its_fence_cannot_be_persisted() {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_test".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     };
     let error = takeover(&runtime, "M1").unwrap_err();
@@ -5674,6 +5691,7 @@ fn accepted_triggers_are_reconciled_against_the_inbox_after_a_restart() {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_next".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     });
     reconcile_inbox(&reloaded);
@@ -5923,6 +5941,7 @@ fn set_permissions(runtime: &Runtime, automations: bool, workers: bool, replies:
             worker_first_send: false,
             allow_drafts: false,
             allow_mentions: false,
+            allow_cards: false,
             rule_column: false,
             all_projects: false,
             projects: None,
@@ -5988,6 +6007,7 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
             worker_first_send: first,
             allow_drafts: false,
             allow_mentions: false,
+            allow_cards: false,
             rule_column: false,
             all_projects: false,
             projects: None,
@@ -6125,6 +6145,7 @@ fn no_permissions(allow_create: bool) -> super::commands::PermissionsInput {
         worker_first_send: false,
         allow_drafts: false,
         allow_mentions: false,
+        allow_cards: false,
         rule_column: false,
         all_projects: false,
         projects: None,
@@ -6646,6 +6667,7 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
         worker_first_send: false,
         allow_drafts: false,
         allow_mentions: false,
+        allow_cards: false,
         rule_column,
     };
     client_permissions(&runtime, "client_a", permissions(false)).unwrap();

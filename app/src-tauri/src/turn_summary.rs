@@ -37,6 +37,13 @@
 //!   alone (`reply_for`). While the Stop hook forwards the message for
 //!   worker replies only (`--reply workers`, `agent_status::summaries_wanted`
 //!   false) nothing else happens to it: no summary, no model call.
+//! - Card snapshot replies (`mcp/cards.rs`): while some MCP client may read
+//!   the card snapshot (`mcp::card_readers_any`), the newest final message
+//!   of each Claude Code session is kept as it came, one per session, at
+//!   most `KEEP_LAST`, memory only; once none may, it is forgotten
+//!   (`forget_card_replies`). `card_reply` reads it, or a worker or phone
+//!   reply of the same turn ending, for that client's snapshot only. Like
+//!   worker replies, the forward-only Stop hook form makes no summary.
 //! - Phone replies (`connector/projection.rs` `replies`): while the user's
 //!   "Claude Code replies on the phone" switch is on (Settings › Phone
 //!   Connector, `connector_set_phone_replies`), the final message of every
@@ -143,6 +150,14 @@ pub(crate) fn offer(accepted: &Accepted, reply: String) {
         && crate::mcp::replies_wanted_for(&accepted.session)
     {
         remember_reply(&accepted.session, accepted.episode, &reply);
+    }
+    // the newest final message of each Claude Code card, while some MCP
+    // client may read the card snapshot (`mcp/cards.rs`)
+    if accepted.state == crate::agent_status::TURN_DONE
+        && accepted.class == SignalClass::Claude
+        && crate::mcp::card_readers_any()
+    {
+        remember_last(&accepted.session, accepted.episode, &reply);
     }
     // a paired phone's reply list (`connector`), when the user turned it on
     if accepted.state == crate::agent_status::TURN_DONE
@@ -382,6 +397,55 @@ pub(crate) fn reply_for(session: &str, episode: EpisodeId) -> Option<String> {
         .rev()
         .find(|r| r.session == session && r.episode == episode)
         .map(|r| r.text.clone())
+}
+
+/// Card snapshot replies kept, one per session, oldest dropped first.
+const KEEP_LAST: usize = 256;
+
+/// The newest final message of each Claude Code session, kept while some
+/// MCP client may read the card snapshot (`mcp/cards.rs`).
+static LAST: Mutex<VecDeque<Reply>> = Mutex::new(VecDeque::new());
+
+fn remember_last(session: &str, episode: EpisodeId, text: &str) {
+    let mut kept = LAST.lock_or_recover();
+    kept.retain(|r| r.session != session);
+    kept.push_back(Reply {
+        session: session.to_string(),
+        episode,
+        text: text.to_string(),
+    });
+    while kept.len() > KEEP_LAST {
+        kept.pop_front();
+    }
+}
+
+/// Once no client may read the card snapshot, forget what it kept.
+pub(crate) fn forget_card_replies() {
+    LAST.lock_or_recover().clear();
+}
+
+/// `session`'s final message of turn ending `episode`, from whatever Deck
+/// still keeps of it: the card snapshot's own, a worker reply or a phone
+/// reply (each kept for its own reader; this reads, never keeps).
+pub(crate) fn card_reply(session: &str, episode: EpisodeId) -> Option<String> {
+    let found = LAST
+        .lock_or_recover()
+        .iter()
+        .find(|r| r.session == session && r.episode == episode)
+        .map(|r| r.text.clone());
+    found.or_else(|| reply_for(session, episode)).or_else(|| {
+        PHONE
+            .lock_or_recover()
+            .iter()
+            .rev()
+            .find(|e| e.session == session && e.episode == episode)
+            .map(|e| e.reply.text.clone())
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn keep_card_reply_for_tests(session: &str, episode: EpisodeId, text: &str) {
+    remember_last(session, episode, text);
 }
 
 /// Phone replies kept for one card session, and in all.

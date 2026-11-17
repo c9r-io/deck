@@ -45,8 +45,11 @@
 //   Returning (`showAttention(true)`) restores the captured view and row.
 // - Batch close lives in the "Turn ended" filter only (`tracker.ended`: a
 //   current observation of a live card whose agent ended its turn, viewed
-//   or not). Its rows carry tick boxes and the tools a "select all" box and
-//   "Close selected (N)". Nothing is ever ticked for the user, and leaving
+//   or not). Its rows carry tick boxes and the tools a "select all" box,
+//   "Tick the suggested (N)" (shown while an MCP client marked some rows
+//   can-close, mcp/cards.rs: the user's click ticks those rows, as "select
+//   all" ticks every row) and "Close selected (N)". Nothing is ever ticked
+//   without the user's click, and leaving
 //   the filter or a card leaving the list drops its tick. Closing hands the
 //   ticked ids to Board's `closeSelectedCards` (one confirmation, the same
 //   close step as a card's ✕, cards with a reminder or a scratchpad left
@@ -62,8 +65,8 @@
 //   `closeBuffer`, `openSession`, `closeSelectedCards`, `queueFollowUp`) arrive through
 //   `initAttention(deps)` from app.js, so board.js and layout.js may import
 //   this module without a cycle.
-import { $, ctx, QUIET_SECS, state, store } from './state.js';
-import { ATTENTION_BADGE_LABELS, ATTENTION_FILTERS, ATTENTION_SECTION_LABELS, attentionBadge, attentionRows, codexCoverageGap } from './attention-model.js';
+import { $, ctx, inv, QUIET_SECS, state, store } from './state.js';
+import { ATTENTION_BADGE_LABELS, ATTENTION_FILTERS, ATTENTION_SECTION_LABELS, attentionBadge, attentionRows, codexCoverageGap, endedAgo, suggestedToClose } from './attention-model.js';
 import { piCoverage, piDetailKeys, piStatusKey } from './pi-model.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
 import { choiceDialog } from './dialogs.js';
@@ -189,9 +192,16 @@ function fillTools(container, cards) {
       refreshAttention();
     };
     const allLabel = node('label', 'attention-pick-all-label'); allLabel.htmlFor = 'attention-pick-all';
+    /* tick the cards an MCP client marked can-close: a tick only, the
+       close below still asks (mcp/cards.rs) */
+    const suggested = node('button', 'btn attention-pick-suggested'); suggested.type = 'button';
+    suggested.onclick = () => {
+      for (const id of suggestedToClose(lastRows, ctx.attention)) picked.add(id);
+      refreshAttention();
+    };
     const close = node('button', 'btn attention-close-picked'); close.type = 'button';
     close.onclick = () => closePicked();
-    batch.append(all, allLabel, close);
+    batch.append(all, allLabel, suggested, close);
     container.append(summary, notice, filters, batch);
   }
   const tracker = ctx.attention;
@@ -311,6 +321,17 @@ function updateRows() {
       const open = node('button', 'btn attention-open'); open.type = 'button';
       open.onclick = () => openAttentionCard(card.id);
       el.append(open);
+      /* an MCP client's mark on this turn ending, on a line of its own:
+         a suggestion the user may clear (mcp/cards.rs) */
+      const mark = node('div', 'attention-mark');
+      mark.hidden = true;
+      const clear = node('button', 'btn attention-mark-clear'); clear.type = 'button';
+      clear.onclick = async () => {
+        try { await inv('mcp_card_mark_clear', { cardId: card.id }); } catch { /* the next poll shows what stands */ }
+        pollNow();
+      };
+      mark.append(node('span', 'attention-mark-text'), clear);
+      el.append(mark);
       /* the card's follow-ups, on a line of their own under the row */
       const follow = node('div', 'attention-follow follow-bar');
       follow.hidden = true;
@@ -333,9 +354,10 @@ function updateRows() {
     pin.setAttribute('aria-pressed', String(card.pinned === true));
     pin.classList.toggle('active', card.pinned === true);
     row.querySelector('.attention-origin').textContent = `${project.name} / ${column.name}`;
-    row.querySelector('.attention-reason').textContent = (card.pinned === true ? `${t('attention.filter.followed')} · ` : '') + attentionStatusText(card) + (ctx.attention.waiting(card) ? ' · ' + t(`attention.waiting.${ctx.attention.waiting(card)}`) : '') + (ctx.attention.rang(card) ? ' · ' + t('attention.bell') : '') + (card.reminder ? ' · ' + t(card.reminder.due || card.reminder.dueAt <= Date.now() ? 'reminder.due' : 'reminder.pending') : '');
+    row.querySelector('.attention-reason').textContent = (card.pinned === true ? `${t('attention.filter.followed')} · ` : '') + attentionStatusText(card) + (ctx.attention.waiting(card) ? ' · ' + t(`attention.waiting.${ctx.attention.waiting(card)}`) : '') + (ctx.attention.rang(card) ? ' · ' + t('attention.bell') : '') + (card.reminder ? ' · ' + t(card.reminder.due || card.reminder.dueAt <= Date.now() ? 'reminder.due' : 'reminder.pending') : '') + endedText(snapshot);
     row.querySelector('.attention-reason').dataset.status = snapshot?.status || 'unknown';
     row.querySelector('.attention-viewed').textContent = sourceText(card);
+    paintMark(row.querySelector('.attention-mark'), card, snapshot?.mark);
     paintFollowUps(row.querySelector('.attention-follow'), card, index => queueFollowUp(card.id, index));
     row.querySelector('.attention-open').textContent = t(locate ? 'attention.locate' : 'attention.open');
     row.querySelector('.attention-open').setAttribute('aria-label', t(locate ? 'attention.locateNamed' : 'attention.openNamed', { name: card.title, project: project.name }));
@@ -360,6 +382,25 @@ function updateRows() {
   list.scrollTop = scroll;
 }
 
+/* " · ended 3 h ago" for a turn ending whose start the backend knows */
+function endedText(snapshot) {
+  if (snapshot?.agent !== 'turn-done') return '';
+  const ago = endedAgo(snapshot.since, Date.now());
+  return ago ? ' · ' + t(ago.key, { count: formatNumber(ago.count) }) : '';
+}
+
+function paintMark(el, card, mark) {
+  el.hidden = !mark;
+  if (!mark) return;
+  el.dataset.mark = mark.mark;
+  const label = t(`attention.mark.${mark.mark}`);
+  el.querySelector('.attention-mark-text').textContent = [label, mark.note].filter(Boolean).join(': ') + (mark.by ? ` — ${mark.by}` : '');
+  const clear = el.querySelector('.attention-mark-clear');
+  clear.textContent = '×';
+  clear.title = t('attention.markClear');
+  clear.setAttribute('aria-label', t('attention.markClearNamed', { name: card.title }));
+}
+
 /* The batch tools of "Turn ended": shown only there; a tick of a card no
    longer listed goes, and so does every tick once the filter changes. */
 function paintBatch() {
@@ -379,6 +420,11 @@ function paintBatch() {
   all.indeterminate = picked.size > 0 && picked.size < listed.size;
   all.disabled = !listed.size;
   batch.querySelector('.attention-pick-all-label').textContent = t('attention.pickAll');
+  const suggested = suggestedToClose(lastRows, ctx.attention);
+  const tick = batch.querySelector('.attention-pick-suggested');
+  tick.hidden = !suggested.length;
+  tick.textContent = t('attention.pickSuggested', { count: formatNumber(suggested.length) });
+  tick.title = t('attention.pickSuggestedHint');
   const close = batch.querySelector('.attention-close-picked');
   close.textContent = t('attention.closePicked', { count: formatNumber(picked.size) });
   /* aria-disabled, as the star does: WebKit moves focus off a control that

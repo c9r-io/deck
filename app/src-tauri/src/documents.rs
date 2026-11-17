@@ -1289,12 +1289,62 @@ pub(crate) struct CardTarget {
     /// opens beside it (`mcp/origin.rs`). Placement at creation only.
     pub(crate) project_id: String,
     pub(crate) column_id: String,
+    /// The card carries a Card Reminder (pending or due): presentation
+    /// only, for an MCP client's card snapshot (`mcp/cards.rs`).
+    pub(crate) reminder: bool,
 }
 
 /// Every card of the committed Board by id, `None` while no Board is known
 /// (before the webview's first load). `current_only` refuses a recovered
 /// Board, as an admission must (`board_authority`); a read for
 /// presentation takes either.
+/// A project of the committed Board as an MCP client's card snapshot
+/// lists it (`mcp/cards.rs`): id, name and its columns (id, name), in Board
+/// order. Presentation only.
+pub(crate) struct ProjectLayout {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) columns: Vec<(String, String)>,
+}
+
+/// Every project of the committed Board in order; empty while none is known.
+pub(crate) fn board_layout() -> Vec<ProjectLayout> {
+    let committed = COMMITTED_BOARD.lock_or_recover();
+    let Some((board, _)) = committed.as_ref() else {
+        return Vec::new();
+    };
+    let named = |item: &serde_json::Value| -> Option<(String, String)> {
+        Some((
+            item["id"].as_str()?.to_string(),
+            item["name"].as_str().unwrap_or_default().to_string(),
+        ))
+    };
+    board["projects"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|project| {
+            let (id, name) = named(project)?;
+            let columns = project["columns"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(named)
+                .collect();
+            Some(ProjectLayout { id, name, columns })
+        })
+        .collect()
+}
+
+/// Whether the committed Board is the current one (not answered from a
+/// backup): an MCP client's card snapshot refuses a recovered Board.
+pub(crate) fn board_is_current() -> bool {
+    matches!(
+        COMMITTED_BOARD.lock_or_recover().as_ref(),
+        Some((_, BoardStanding::Current))
+    )
+}
+
 pub(crate) fn card_targets(current_only: bool) -> Option<HashMap<String, CardTarget>> {
     let committed = COMMITTED_BOARD.lock_or_recover();
     let (board, standing) = committed.as_ref()?;
@@ -1319,6 +1369,7 @@ pub(crate) fn card_targets(current_only: bool) -> Option<HashMap<String, CardTar
                         cmd: text("cmd"),
                         project_id: text("projectId"),
                         column_id: text("columnId"),
+                        reminder: card.get("reminder").is_some_and(|r| !r.is_null()),
                     },
                 ))
             })

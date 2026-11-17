@@ -236,7 +236,9 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     ("turn_summary.rs", "decide", "TURN_DONE", 1, Presentation),
     // a worker card's final message is kept for its orchestrator to read
     // (`deck_worker_reply`): text handed to a reader, never a send
-    ("turn_summary.rs", "offer", "TURN_DONE", 2, Presentation),
+    // and, while a client may read the card snapshot, the newest one of
+    // every Claude Code card (`mcp/cards.rs`): read, never sent
+    ("turn_summary.rs", "offer", "TURN_DONE", 3, Presentation),
     // a worker card's content-free view for its orchestrator; the same
     // observation can only REFUSE a send whose episode moved on
     // (`EPISODE_MOVED`), never release one: every hold still decides
@@ -254,6 +256,27 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         1,
         Presentation,
     ),
+    // the card snapshot for an MCP client with the user's own choice
+    // (`mcp/cards.rs`): the observation says which turn ended and why a
+    // card has no final message; a mark is a suggestion the user reads.
+    // Nothing here sends, closes, moves or releases anything.
+    (
+        "mcp/cards.rs",
+        "observe",
+        "agent_status::projections",
+        1,
+        Presentation,
+    ),
+    (
+        "mcp/cards.rs",
+        "observe",
+        "agent_status::reporting",
+        1,
+        Presentation,
+    ),
+    ("mcp/cards.rs", "reply_of", "TURN_DONE", 1, Presentation),
+    // the mark word `working` ("still going"), not the hook word
+    ("mcp/cards.rs", "", "\"working\"", 1, NotSignal),
     // "Draft title" reads Claude Code's own session title only for a pane
     // whose current generation proved a Claude interaction; it picks where a
     // draft comes from and grants nothing.
@@ -581,6 +604,17 @@ const JS: &[(&str, &str, &str, usize, Class)] = &[
         Presentation,
     ),
     ("attention.js", "sourceText", ".agent", 1, Presentation),
+    // "ended 3 h ago" beside a turn ending (the backend's episode start)
+    ("attention.js", "endedText", ".agent", 1, Presentation),
+    ("attention.js", "endedText", "'turn-done'", 1, Presentation),
+    // the mark word `working` of an MCP client's suggestion (mcp/cards.rs)
+    (
+        "attention-model.js",
+        "CARD_MARKS",
+        "'working'",
+        1,
+        NotSignal,
+    ),
     ("notify-model.js", "seenDismissals", ".agent", 1, Attention),
     (
         "notify-model.js",

@@ -148,6 +148,9 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_mention_read` | One open mention whole: text, sender, channel, link and its context (thread start and the replies before it, or the conversation's last messages, with file names), all as external content. |
 | `deck_mention_mark` | Mark one open mention for the user: `handling` (optionally with one of the caller's worker cards), `for-you` or `no-action`, with a note of at most 200 characters; `null` takes the caller's mark off. Another orchestrator's mark is `MENTION_MARKED`. Presentation only: the mention stays listed. |
 | `deck_mention_handoff` | Hand one open mention to one of the client's Agent automations (id and revision, `trigger_sequence`). Deck fills the item from the mention itself; the client names it, never its text. The acceptance and the operation are `deck_automation_trigger`'s (also needs the automation delegation); `MENTION_SETTLED` when the mention is already held. Never a Slack badge rule. |
+| `deck_cards_snapshot` | The cards of the client's projects in Board order, 40 at most per call (`cursor` → `nextCursor`; `project_id` narrows): card id, title, project, column, `self` (the card the call comes from), alive, Agent observation `{kind, state, episode, since, viewed}`, unsent queue rows, reminder, follow-up count, the standing mark, and `reply`: the end (300 characters) of the final Claude Code message of the turn that ended, as external content, or `unavailable` with a closed reason (`no-agent`, `not-claude`, `no-turn-ended`, `not-forwarded`, `not-kept`). `SOURCE_UNAVAILABLE` on a Board recovered from its backup. Needs the client's separate **card snapshot** choice. |
+| `deck_card_reply` | That final message whole (head and tail when long), as external content, only while its episode is the card's current one (`EPISODE_MOVED`); `REPLY_GONE` when Deck kept none. |
+| `deck_card_mark` | Mark one card on its current episode: `needs-you`, `can-close` or `working`, with a note of at most 200 characters; `null` takes the caller's own mark off (another client's is `CARD_MARKED`, though a later mark replaces it). Presentation only. |
 | `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence`. Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over. |
 
 All input schemas reject unknown fields. Side-effecting tools advertise
@@ -475,6 +478,44 @@ Deck cannot stop an agent from quoting what it read in its own words —
 for example in a line it sends a worker card — which is the risk you accept
 when you tick the box. Stopping the choice takes effect on the next call.
 A ledger holding this choice is written at version 10 (sticky).
+
+## Card snapshot
+
+**Read the card snapshot** (in the same dialog, off by default) lets a
+client go over the cards of its projects with you — "look at all my cards
+and tell me which wait for me and which I can close". It reads each card's
+state and, for a Claude Code card whose turn ended, the final message of
+that turn, and it may mark each card for you.
+
+The message is what Claude Code's Stop hook forwards (the same forwarding
+worker replies and phone replies use, without a summary or a model call):
+while a client holds the choice, Deck keeps the newest final message of each
+Claude Code card in memory, and forgets them all once no client holds it.
+Turns that ended before the choice, before Deck started, or in a Codex or
+Pi card have none, and the snapshot says why (`reply.unavailable`), so the
+agent can say it could not judge a card instead of guessing. Deck never
+reads a pane for it.
+
+A mark (`deck_card_mark`) is one of **Needs you** (it asked you something
+or waits for a decision), **Can close** (its work looks done and nothing
+waits) or **Still working**, with one line of reason. It holds for the
+card's current turn only: the card's next turn hides it at once, and it
+lives in memory only. Needs attention shows it on its own line under the
+card's row, with who set it and a button to clear it. In **Turn ended**,
+**Tick suggested (N)** appears while some listed cards are marked Can
+close: your click ticks those rows, exactly as **Select all** ticks every
+row, and **Close selected** then asks once as ever (cards with a Reminder
+or a scratchpad are left alone). A mark never closes, sends to, moves,
+notifies about or counts a card.
+
+Every row of Turn ended also says how long ago the turn ended and the list
+puts the longest-ended first, with or without any client.
+
+What it cannot do: read a card outside its projects, close a card, send a
+card anything, move one, answer an Agent's question. Stopping the choice,
+a project leaving the client's scope, revoking the client or disabling MCP
+takes effect on the next call and removes the client's marks. A ledger
+holding this choice is written at version 14 (sticky).
 
 ## Execution, output, and lifecycle
 

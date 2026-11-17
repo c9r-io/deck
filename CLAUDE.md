@@ -282,7 +282,7 @@ evolution; it makes scope expansion deliberate.
   sticky v8. An Agent trigger rule (settings.json) and the queue origins it
   admits (queue.json) upgrade to sticky v9, and the MCP ledger takes its own
   sticky versions, one per delegated capability: v7 for an automation
-  delegation or a trigger record, up to v13 (`mcp/mod.rs` `STATE_VERSION_*`). Channel inbox v2 protects
+  delegation or a trigger record, up to v14 (`mcp/mod.rs` `STATE_VERSION_*`). Channel inbox v2 protects
   native staged grant references; v1 entries gain no new permission. A
   settings backup is handed to the webview without channel grants. Native
   template edits retire affected grants before the Board write, under
@@ -327,7 +327,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | tmux sidecar and long-lived clients | `tmux.rs`, `tmux_clients.rs` |
 | tmux server lifecycle, restart, verified shell exit, restart recovery | `tmux_lifecycle.rs`, `restart.rs`, `session_runtime.rs`, `shell_exit.rs`, `shell_state.rs` (+ `docs/tmux-server-lifecycle.md`) |
 | PTY attach bridge | `pty.rs` |
-| MCP terminal control, automation delegation, worker cards, orchestrator cards, drafted configuration and Slack mentions | `mcp/` (contract in `mcp/mod.rs`; delegation in `mcp/automation.rs`; worker cards in `mcp/workers.rs`; orchestrator cards in `mcp/origin.rs`; drafts in `mcp/proposals.rs`; Slack mentions in `mcp/mentions.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/`, `ui/js/mcp.js`, `ui/js/workers.js`, `ui/js/proposals.js`, `proposals-model.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`; smoke `agent-live`, `workers`, `drafts`, `mentions-mcp`, `orchestrators`, `projects`) |
+| MCP terminal control, automation delegation, worker cards, orchestrator cards, drafted configuration, Slack mentions and the card snapshot | `mcp/` (contract in `mcp/mod.rs`; delegation in `mcp/automation.rs`; worker cards in `mcp/workers.rs`; orchestrator cards in `mcp/origin.rs`; drafts in `mcp/proposals.rs`; Slack mentions in `mcp/mentions.rs`; card snapshot and marks in `mcp/cards.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/`, `ui/js/mcp.js`, `ui/js/workers.js`, `ui/js/proposals.js`, `proposals-model.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`; smoke `agent-live`, `workers`, `drafts`, `mentions-mcp`, `orchestrators`, `projects`) |
 | Controlled Execution calibration (CE1) | `scripts/ce/`, `scripts/ce_parity.py`, `scripts/ce_verdict.py`, `mcp/tests.rs` `ce1_probe_*` (+ `docs/ce-calibration.md`) |
 | Voice input, shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice*.js` (+ `docs/voice-input.md`) |
 | Local translation, pasteboard observation, Lens | `native/BergamotBridge.cpp`, `native/PasteboardBridge.swift`, `vendor/bergamot/`, `intelligence/`, `ui/js/local-intelligence.js`, `translation-lens*.js` (+ `docs/translation-lens.md`) |

@@ -573,6 +573,14 @@ pub(crate) struct SessInfo {
     /// the backend's authoritative "this turn-done episode was viewed" —
     /// every attention surface converges to it (FR-SI-05)
     episode_viewed: bool,
+    /// when that episode began (ms since the epoch): Needs attention shows
+    /// how long a turn has been over. Presentation only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    episode_since: Option<u64>,
+    /// an MCP client's suggestion for this card at that same episode
+    /// (`mcp/cards.rs`): presentation only, gone with the episode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    card_mark: Option<crate::mcp::CardMarkView>,
     /// one line about what Claude said when that episode's turn ended
     /// (`turn_summary`, opt-in); gone with the episode. Presentation only.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -973,6 +981,7 @@ pub(crate) fn poll_observing_bells(
     // foreground process generation that reported it
     crate::agent_status::reconcile(&rows, &table);
     let agents = crate::agent_status::projections(&rows);
+    let facts = crate::agent_status::facts(&rows);
     let evidence = crate::agent_status::generation_evidence(
         &rows,
         |pane| crate::agent_status::foreground_generation(&table, pane),
@@ -1059,6 +1068,14 @@ pub(crate) fn poll_observing_bells(
                 pi_session: pane.and(evidence.get(&name)).and_then(|e| e.pi_session),
                 episode: pane.and(agents.get(&name)).map(|o| o.episode),
                 episode_viewed: pane.and(agents.get(&name)).is_some_and(|o| o.viewed),
+                episode_since: pane
+                    .and(agents.get(&name))
+                    .and(facts.get(&name))
+                    .map(|f| f.since)
+                    .filter(|since| *since > 0),
+                card_mark: pane
+                    .and(agents.get(&name))
+                    .and_then(|o| crate::mcp::card_mark_for(&name, o.episode)),
                 summary,
                 follow_choice: pick.as_ref().map(|(choice, _)| *choice),
                 follow_reason: pick

@@ -960,6 +960,11 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .follow-bar .follow-reason { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: var(--fs-11); }
 .spane-follow { flex: none; padding: var(--sp-6) var(--sp-16); background: var(--quickbar-bg); border-top: 1px solid var(--border-soft); }
 .attention-row .attention-follow { grid-column: 1 / -1; }
+.attention-row .attention-mark { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--sp-8); min-width: 0; color: var(--muted); font-size: var(--fs-11); }
+.attention-row .attention-mark[hidden] { display: none; }
+.attention-mark .attention-mark-text { min-width: 0; overflow-wrap: anywhere; }
+.attention-mark[data-mark="needs-you"] .attention-mark-text { color: var(--text); }
+.attention-mark .attention-mark-clear { flex: none; padding: 0 var(--sp-6); }
 
 /* ---------- confirm dialog (window.confirm is a no-op in WKWebView) ---------- */
 #cfm {

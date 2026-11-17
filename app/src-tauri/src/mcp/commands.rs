@@ -39,6 +39,8 @@ pub(crate) struct ClientView {
     pub(super) allow_drafts: bool,
     /// May read the Slack mention list (and hand mentions to its rules).
     pub(super) allow_mentions: bool,
+    /// May read the card snapshot and mark cards (`cards.rs`).
+    pub(super) allow_cards: bool,
     /// Its orchestrator cards' worker cards open in their type's or rule's
     /// column, not beside the orchestrator card (`origin.rs`).
     pub(super) rule_column: bool,
@@ -81,6 +83,7 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
                 worker_first_send: client.worker_first_send,
                 allow_drafts: client.allow_drafts,
                 allow_mentions: client.allow_mentions,
+                allow_cards: client.allow_cards,
                 rule_column: client.rule_column,
                 all_projects: client.all_projects,
                 projects: client.projects.clone(),
@@ -237,6 +240,8 @@ pub(crate) fn mcp_enable() -> Result<(), DeckError> {
         runtime.emergency.lock_or_recover().disabled = false;
     }
     wake_control_thread();
+    // readers of replies are back: the Stop hook forwards for them again
+    sync_reply_hook();
     Ok(())
 }
 
@@ -281,6 +286,7 @@ pub(super) fn disable(runtime: &Runtime) -> Result<(), DeckError> {
         Ok(doc.sessions.clone())
     })?;
     retire_inbox();
+    super::cards::note_readers_changed(runtime);
     sync_reply_hook();
     note_worker_change();
     let mut uncertain = false;
@@ -312,6 +318,7 @@ pub(crate) fn mcp_client_add(
         worker_first_send,
         allow_drafts,
         allow_mentions,
+        allow_cards,
         rule_column,
         all_projects,
         projects: _,
@@ -366,6 +373,7 @@ pub(crate) fn mcp_client_add(
             worker_first_send,
             allow_drafts,
             allow_mentions,
+            allow_cards,
             rule_column,
             lanes: Default::default(),
         };
@@ -383,6 +391,7 @@ pub(crate) fn mcp_client_add(
             worker_first_send: client.worker_first_send,
             allow_drafts: client.allow_drafts,
             allow_mentions: client.allow_mentions,
+            allow_cards: client.allow_cards,
             rule_column: client.rule_column,
             all_projects: client.all_projects,
             projects: client.projects,
@@ -391,7 +400,10 @@ pub(crate) fn mcp_client_add(
     if result.is_err() && runtime.app.is_some() {
         let _ = crate::keychain::clear_mcp_credential(&client_id);
     }
-    if result.as_ref().is_ok_and(|view| view.allow_replies) {
+    if result
+        .as_ref()
+        .is_ok_and(|view| view.allow_replies || view.allow_cards)
+    {
         sync_reply_hook();
     }
     result
@@ -513,6 +525,7 @@ pub(super) fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), 
             .collect::<Vec<_>>())
     })?;
     retire_inbox_for(&client_id);
+    super::cards::note_readers_changed(runtime);
     sync_reply_hook();
     note_worker_change();
     note_withdrawn(runtime);
@@ -551,6 +564,9 @@ pub(crate) struct PermissionsInput {
     /// May read Slack mentions (`mentions.rs`); absent = off.
     #[serde(default)]
     pub(super) allow_mentions: bool,
+    /// May read the card snapshot and mark cards (`cards.rs`); absent = off.
+    #[serde(default)]
+    pub(super) allow_cards: bool,
     /// Worker cards open in their type's or rule's column, not beside their
     /// orchestrator card (`origin.rs`); absent = beside it.
     #[serde(default)]

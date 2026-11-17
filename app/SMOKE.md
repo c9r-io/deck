@@ -497,6 +497,36 @@ mark what it leaves: `mentions-agent-marked` needs a mark on lunch. Last the pag
 withdraws the choice in the client's dialog (`mentions-withdrawn`). Judge
 with `scripts/smoke-verdict <data> mentions-mcp`. Keep the screen unlocked.
 
+## Card snapshot through MCP (WKWebView mode `cards-mcp`)
+
+`cards-mcp` is the card snapshot (`mcp/cards.rs`) in the real window over
+real Claude Code cards: the same carrier and fixture as `workers` `live`
+(debug only, isolated data dir under `/private/tmp`, a unique
+`deck-smoke-…` socket, `copy_agent.py`, `work/` and `worker-hooks.json`
+whose Stop hook carries `--reply workers`; the Claude Code signed in under
+the user's own home, `/private/tmp` trusted). The page authorizes one client
+`orchestrator` that may read the card snapshot of the project, opens "Ask"
+and "Done" (`claude … '<first prompt>'`: one ends its turn on a question,
+the other on `CARDS-DONE-OK`) and "Shell" (a plain shell), waits for both
+turn endings (`cards-turns`) and reports `cards-armed`.
+`scripts/mcp-cards-e2e.py` (adapter, socket, credential and evidence
+arguments as `mcp-mentions-e2e.py`) reads the snapshot (31 tools, the last
+words fenced, the shell `no-agent`), the whole reply, `EPISODE_MOVED`,
+`CARD_NOT_FOUND`, refuses a bad mark word and a mark on the shell, marks
+Ask `needs-you` and Done `can-close`, then waits for `PERMISSION_DENIED`.
+The page checks `cards-marked` (both marks in Needs attention › Turn ended,
+"Tick suggested (1)" ticks Done alone, nothing closes), clears Ask's mark
+with its × (`cards-cleared`) and withdraws the choice in the client's
+dialog (`cards-withdrawn`: Done's mark goes too). Granted again, it opens
+"Ask again" and "Done again" (`cards-agent-ready`: the withdrawal forgot
+the kept replies) and an "Orchestrator" card running the fixture's
+`agent.sh` (the operator writes it: a real Claude Code `-p` with only this
+instance's adapter, asked in plain words to go over the cards; run in a
+card, its calls carry that card as `self`); `cards-agent-marked`
+needs "Ask again" marked needs-you and "Done again" can-close, and both
+still open. Judge with `scripts/smoke-verdict <data> cards-mcp`. Keep the
+screen unlocked and the window in front.
+
 ## Orchestrator cards (WKWebView mode `orchestrators`)
 
 `orchestrators` is several orchestrators on ONE MCP client, each in its
@@ -764,7 +794,13 @@ carries the batch-close gate (`attention-batch-*`, four checks) on four
 dedicated live shells whose synthetic status says a turn ended, one with a
 kept scratchpad: the Turn ended filter lists every such card with nothing
 ticked, ticks exist only in that filter and leaving it forgets them, a tick
-never opens a card, Select all / none, the tick placed before the title and
+never opens a card, Select all / none, and (`attention-card-marks`) the
+turn age and MCP card marks from the poll (`episode_since`, `card_mark`):
+the longest-ended first with "ended N h ago", a mark on its own line,
+"Tick suggested (N)" shown only while a listed row is marked can-close and
+ticking exactly those without asking or closing anything, marks changing
+no count, the backend's `mcp_card_mark_clear` answering, a new turn hiding
+the mark; the tick placed before the title and
 the bar and every filter inside the tools in all six languages at both font
 scales; ONE confirmation whose count
 leaves out the scratchpad card, then a card that started a new turn while the

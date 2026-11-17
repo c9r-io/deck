@@ -786,6 +786,49 @@ export async function runAttentionSmoke() {
     tools.querySelector('[data-filter="ended"]').click(); await pause(30);
     if (!leftHidden || [...$('attention-list').querySelectorAll('.attention-pick')].some(pick => pick.checked)) offerBits |= 256;
     await report('attention-batch-offer', offerBits === 0, endedCount, offerBits);
+    // Turn age and MCP marks (mcp/cards.rs, the poll's `episode_since` and
+    // `card_mark`): "Turn ended" lists the longest-ended first and says how
+    // long ago; a mark shows on its own line; "Tick suggested" appears only
+    // while a listed row is marked can-close and ticks exactly those rows,
+    // asking nothing and closing nothing; the user's clear reaches the
+    // backend's own command. Marks feed no count.
+    const countsBefore = JSON.stringify(ctx.attention.counts(store.cards));
+    const nowMs = Date.now();
+    Object.assign(statuses.get(batch.a.session), { episode: 9101, episode_since: nowMs - 3 * 3_600_000,
+      card_mark: { mark: 'can-close', note: 'Committed and tested', by: 'Smoke client' } });
+    Object.assign(statuses.get(batch.b.session), { episode: 9102, episode_since: nowMs - 26 * 3_600_000,
+      card_mark: { mark: 'needs-you', note: 'Asks about iOS', by: 'Smoke client' } });
+    Object.assign(statuses.get(batch.c.session), { episode: 9103, episode_since: nowMs - 5 * 60_000 });
+    await pollNow(); await pause(30);
+    let markBits = 0;
+    const order = [...$('attention-list').querySelectorAll('.attention-row')].map(row => row.dataset.sid);
+    if (!(order.indexOf(batch.b.id) < order.indexOf(batch.a.id) && order.indexOf(batch.a.id) < order.indexOf(batch.c.id))) markBits |= 1;
+    const markOf = card => rowOfCard(card)?.querySelector('.attention-mark');
+    if (markOf(batch.a)?.hidden !== false || !markOf(batch.a).textContent.includes(t('attention.mark.can-close'))
+      || !markOf(batch.a).textContent.includes('Committed and tested')) markBits |= 2;
+    if (markOf(batch.c)?.hidden !== true) markBits |= 4;
+    if (!rowOfCard(batch.a).querySelector('.attention-reason').textContent.includes(t('attention.endedHours', { count: '3' }))) markBits |= 8;
+    const suggestBtn = bar.querySelector('.attention-pick-suggested');
+    if (suggestBtn.hidden || suggestBtn.textContent !== t('attention.pickSuggested', { count: '1' })) markBits |= 16;
+    suggestBtn.click(); await pause(30);
+    const ticked = endedRows.filter(row => row.querySelector('.attention-pick').checked).map(row => row.dataset.sid);
+    if (ticked.length !== 1 || ticked[0] !== batch.a.id || $('cfm').style.display === 'flex' || !provider.get(batch.a.id)) markBits |= 32;
+    if (JSON.stringify(ctx.attention.counts(store.cards)) !== countsBefore) markBits |= 64;
+    let clearAnswer = null;
+    try { clearAnswer = await nativeInvoke('mcp_card_mark_clear', { cardId: batch.a.id }); } catch (_) { clearAnswer = 'threw'; }
+    if (typeof clearAnswer !== 'boolean') markBits |= 128;
+    // a new turn hides the mark (the backend sends none for it)
+    Object.assign(statuses.get(batch.a.session), { agent: 'working', episode: 9104, card_mark: undefined });
+    await pollNow(); await pause(30);
+    if (suggestBtn.hidden !== true) markBits |= 256;
+    for (const key of ['a', 'b', 'c']) {
+      Object.assign(statuses.get(batch[key].session), { agent: 'turn-done', episode: undefined, episode_since: undefined, card_mark: undefined });
+    }
+    await pollNow(); await pause(30);
+    $('attention-pick-all').click(); await pause(30);
+    if ($('attention-pick-all').checked) { $('attention-pick-all').click(); await pause(30); }
+    if (endedRows.some(row => row.querySelector('.attention-pick').checked)) markBits |= 512;
+    await report('attention-card-marks', markBits === 0, 1, markBits);
     // Layout at the real window, six languages at both font scales: the tick
     // sits in the card cell before the title, every filter and the bar's
     // button stay inside the tools, nothing scrolls sideways.

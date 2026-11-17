@@ -10,7 +10,7 @@ use super::*;
 /// added there without listing the tool here (and in
 /// `mcp-fixtures/tools.json`) is unreachable; the tests hold this list equal
 /// to the fixture and check that every member routes.
-pub(super) const CONTROL_TOOLS: [&str; 28] = [
+pub(super) const CONTROL_TOOLS: [&str; 31] = [
     "deck_automation_list",
     "deck_automation_trigger",
     "deck_capabilities",
@@ -39,6 +39,9 @@ pub(super) const CONTROL_TOOLS: [&str; 28] = [
     "deck_mention_read",
     "deck_mention_handoff",
     "deck_mention_mark",
+    "deck_cards_snapshot",
+    "deck_card_reply",
+    "deck_card_mark",
 ];
 
 /// Whether `credential` is the current credential of a client that may use
@@ -216,6 +219,15 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
             "deck_mention_handoff" => {
                 mention_handoff(runtime, &request.client_id, request.arguments)
             }
+            "deck_cards_snapshot" => {
+                super::cards::cards_snapshot(runtime, &request.client_id, request.arguments)
+            }
+            "deck_card_reply" => {
+                super::cards::card_reply(runtime, &request.client_id, request.arguments)
+            }
+            "deck_card_mark" => {
+                super::cards::card_mark(runtime, &request.client_id, request.arguments)
+            }
             _ => unsupported(),
         }
     };
@@ -234,6 +246,7 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
                 | "deck_config_propose"
                 | "deck_mention_handoff"
                 | "deck_mention_mark"
+                | "deck_card_mark"
         ) {
             Some("request-denied")
         } else {
@@ -463,6 +476,7 @@ pub(crate) fn spawn(app: AppHandle) {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: random_id("svc_", 16).unwrap_or_else(|_| "svc_unavailable".into()),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     });
     let _ = RUNTIME.set(runtime.clone());

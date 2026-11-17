@@ -100,6 +100,11 @@ pub(super) struct Client {
     /// rules (`mentions.rs`). Account-wide, never implied by another choice.
     #[serde(default)]
     pub(super) allow_mentions: bool,
+    /// The user's choice that this client may read the card snapshot of
+    /// its projects and mark cards for the user (`cards.rs`). Read only:
+    /// never a send, a close or a move. Never implied by another choice.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) allow_cards: bool,
     /// The user's choice that a worker card this client's orchestrator
     /// card starts opens in its type's or rule's column, not beside the
     /// orchestrator card (`origin.rs`; off, the default, follows it).
@@ -431,6 +436,8 @@ pub(super) struct Runtime {
     /// kept with the pane PID the runner was verified to run as.
     pub(super) runner_auth: Mutex<HashMap<String, RunnerAuth>>,
     pub(super) started: Instant,
+    /// Clients' marks on cards, by tmux session (`cards.rs`): memory only.
+    pub(super) card_marks: Mutex<HashMap<String, super::cards::CardMark>>,
 }
 
 #[derive(Default)]
@@ -754,7 +761,9 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
 /// Validation requires at least it; a write raises to it and never lowers
 /// (sticky). The versions rise in this order (`mod.rs`).
 fn needed_version(doc: &DiskDoc) -> u32 {
-    if !doc.mention_marks.is_empty() {
+    if super::cards::uses_cards(doc) {
+        STATE_VERSION_CARDS
+    } else if !doc.mention_marks.is_empty() {
         STATE_VERSION_MARKS
     } else if super::grants::uses_all_projects(doc) {
         STATE_VERSION_ALL_PROJECTS
@@ -776,7 +785,7 @@ fn needed_version(doc: &DiskDoc) -> u32 {
 pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
     let needed = needed_version(doc);
-    let version_valid = (needed..=STATE_VERSION_MARKS).contains(&doc.version)
+    let version_valid = (needed..=STATE_VERSION_CARDS).contains(&doc.version)
         && super::proposals::valid_proposals(doc);
     let clients_valid = version_valid
         && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)

@@ -933,6 +933,22 @@ pub(crate) fn worker_rows(
     (unsent, states)
 }
 
+/// How many rows each card still has to send (pending or failed), by card
+/// id: a count for an MCP client's card snapshot (`mcp/cards.rs`), never
+/// their text.
+pub(crate) fn unsent_by_card(queue: &Mutex<QueueState>) -> HashMap<String, usize> {
+    let q = queue.lock_or_recover();
+    let mut counts = HashMap::new();
+    for item in q
+        .items
+        .iter()
+        .filter(|i| matches!(i.state, ItemState::Pending | ItemState::Failed))
+    {
+        *counts.entry(item.card_id.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
 pub(crate) fn operation_replay(
     queue: &Mutex<QueueState>,
     args: &QueueAddArgs,

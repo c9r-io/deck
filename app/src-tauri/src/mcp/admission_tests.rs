@@ -16,6 +16,7 @@ fn runtime(doc: DiskDoc) -> Runtime {
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: "svc_test".into(),
         runner_auth: Mutex::new(HashMap::new()),
+        card_marks: Mutex::new(HashMap::new()),
         started: Instant::now(),
     }
 }
@@ -42,6 +43,7 @@ fn client() -> Client {
         worker_first_send: false,
         allow_drafts: false,
         allow_mentions: false,
+        allow_cards: false,
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),

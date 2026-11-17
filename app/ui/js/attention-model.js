@@ -59,6 +59,12 @@ import { PI_COVERAGE, PI_SESSION } from './pi-model.js';
 //   times the notice and proves nothing else). The model never measures that
 //   itself. These words are one list with the backend's (limits.json
 //   `delivery_waits`).
+// - Turn age and marks: `since` is when the backend accepted the current
+//   episode (presentation only: "Turn ended" lists the longest-ended first
+//   and says how long ago). `mark` is an MCP client's suggestion for that
+//   same episode (needs-you, can-close, working; mcp/cards.rs): the row
+//   shows it and the user may tick the can-close ones; no category, count,
+//   badge, notification or side effect reads either.
 // - Bell: `rang(card)` passes on the backend's `bell` (bell.rs): a program
 //   in a session without agent state rang the terminal bell and nobody has
 //   looked since. The backend alone decides it and when it was viewed (the
@@ -68,6 +74,8 @@ import { PI_COVERAGE, PI_SESSION } from './pi-model.js';
 //   bell rang — not that anything ended, succeeded or needs input.
 import { CARD_QUIET_SECS, effectiveCardStatus, itemDead } from './pure.js';
 
+/* the marks an MCP client may set on a card (mcp/cards.rs MARKS) */
+export const CARD_MARKS = Object.freeze(['needs-you', 'can-close', 'working']);
 export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'waiting', 'done', 'ended', 'followed', 'unavailable', 'stopped', 'reminder', 'reminders']);
 export const ATTENTION_SECTION_LABELS = Object.freeze({
   /* The pending list's sections, in row order, each with its heading. Every
@@ -170,6 +178,7 @@ export function createAttentionTracker() {
         const status = effectiveCardStatus(info.alive, agent, info.idle_secs != null && info.idle_secs >= CARD_QUIET_SECS);
         const episode = agent && Number.isSafeInteger(info.episode) ? info.episode : null;
         const episodeViewed = episode != null && info.episode_viewed === true;
+        const mark = info.card_mark;
         snapshots.set(card.id, {
           session: card.session, alive: info.alive, agent, status,
           codexSignal: info.alive && CODEX_SIGNAL_TRUST.includes(info.codex_signal) ? info.codex_signal : null,
@@ -186,6 +195,14 @@ export function createAttentionTracker() {
           followChoice: episode != null && Number.isInteger(info.follow_choice) ? info.follow_choice : null,
           followReason: episode != null && typeof info.follow_reason === 'string' && info.follow_reason.trim()
             ? info.follow_reason.trim().slice(0, 120) : null,
+          /* when this episode began (backend clock, ms): how long a turn
+             has been over. Presentation only. */
+          since: episode != null && Number.isSafeInteger(info.episode_since) ? info.episode_since : null,
+          /* an MCP client's suggestion for this episode (mcp/cards.rs):
+             presentation only, gone with the episode */
+          mark: episode != null && mark && CARD_MARKS.includes(mark.mark)
+            ? { mark: mark.mark, note: typeof mark.note === 'string' ? mark.note.slice(0, 200) : '', by: typeof mark.by === 'string' ? mark.by.slice(0, 120) : '' }
+            : null,
           bell: info.alive && !agent && info.bell === true,
           seen: episode != null
             ? !!(episodeViewed || visible.has(card.id) || (old?.episode === episode && old.seen))
@@ -259,6 +276,23 @@ export function attentionBadge(tracker, card) {
 }
 
 // Presentation order only. Never sort the durable card/project arrays.
+/* How long ago a turn ended, as an i18n key and its count: minutes under
+   an hour, hours under two days, then days. Null without a start. */
+export function endedAgo(since, now) {
+  if (!Number.isSafeInteger(since) || since <= 0) return null;
+  const minutes = Math.max(0, Math.floor((now - since) / 60000));
+  if (minutes < 60) return { key: 'attention.endedMinutes', count: Math.max(1, minutes) };
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return { key: 'attention.endedHours', count: hours };
+  return { key: 'attention.endedDays', count: Math.floor(hours / 24) };
+}
+
+/* The ids among `rows` an MCP client marked can-close: what "Tick the
+   suggested" adds to the user's ticks (nothing is ticked without a click). */
+export function suggestedToClose(rows, tracker) {
+  return rows.filter(row => tracker.get(row.card)?.mark?.mark === 'can-close').map(row => row.card.id);
+}
+
 export function attentionRows(projects, cards, tracker, filter) {
   const ordered = [];
   const added = new Set();
@@ -277,6 +311,11 @@ export function attentionRows(projects, cards, tracker, filter) {
     }
   }
   if (filter === 'reminder' || filter === 'reminders') return ordered.sort((a, b) => a.card.reminder.dueAt - b.card.reminder.dueAt);
+  /* "Turn ended": the longest-ended first; a turn without a known start last */
+  if (filter === 'ended') {
+    const since = row => tracker.get(row.card)?.since ?? Number.MAX_SAFE_INTEGER;
+    return ordered.sort((a, b) => since(a) - since(b));
+  }
   if (filter !== 'pending') return ordered;
   return Object.keys(ATTENTION_SECTION_LABELS).flatMap(kind => ordered.filter(row => row.kind === kind));
 }

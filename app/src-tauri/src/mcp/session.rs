@@ -81,6 +81,7 @@ pub(super) fn capabilities(
                 "nextTriggerSequence": super::origin::trigger_sequence(client, orchestrator.as_deref()),
                 "mayDraftConfig": client.allow_drafts,
                 "mayReadMentions": client.allow_mentions,
+                "mayReadCards": client.allow_cards,
                 // the Deck card this call comes from, as the kernel says
                 // (`origin.rs`); its worker cards are grouped under it
                 "orchestratorCard": card

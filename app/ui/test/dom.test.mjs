@@ -149,7 +149,7 @@ test('MCP authorization requires an explicit project and shows its directory', a
   assert.deepEqual(await pending, {
     name: 'ChatGPT', allProjects: false,
     scopes: [{ project: { id: 'P2', name: 'No directory', dir: '' }, root: '/Users/test/explicit' }],
-    permissions: { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, allowDrafts: false, allowMentions: false, ruleColumn: false, workerTypes: [] },
+    permissions: { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, allowDrafts: false, allowMentions: false, allowCards: false, ruleColumn: false, workerTypes: [] },
   });
   assert.equal(modal.style.display, 'none');
   assert.equal(name.oninput, null);
@@ -2051,7 +2051,7 @@ test('a pairing is announced by name and time and hides the spent QR code', asyn
 
 test('an MCP client row opens its permissions in the one dialog and saves them at once', async () => {
   const calls = [];
-  let saved = { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, allowDrafts: false, allowMentions: false, ruleColumn: false, workerTypes: [] };
+  let saved = { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, allowDrafts: false, allowMentions: false, allowCards: false, ruleColumn: false, workerTypes: [] };
   store.projects = [{ id: 'P1', name: 'Deck', dir: '/w', columns: [{ id: 'C1', name: 'Doing' }, { id: 'C2', name: 'Done' }] }];
   window.__TAURI__ = { core: { invoke: async (cmd, args) => {
     calls.push([cmd, args]);
@@ -2085,7 +2085,7 @@ test('an MCP client row opens its permissions in the one dialog and saves them a
   await tick(); await tick();
   const call = calls.find(([cmd]) => cmd === 'mcp_client_permissions');
   assert.equal(call[1].clientId, 'client_live');
-  assert.deepEqual(call[1].permissions, { allowCreate: false, allowAutomations: true, allowWorkers: true, allowReplies: true, workerFirstSend: false, allowDrafts: false, allowMentions: false, ruleColumn: false,
+  assert.deepEqual(call[1].permissions, { allowCreate: false, allowAutomations: true, allowWorkers: true, allowReplies: true, workerFirstSend: false, allowDrafts: false, allowMentions: false, allowCards: false, ruleColumn: false,
     workerTypes: [{ name: 'claude', cmd: 'claude --permission-mode auto', columnId: 'C1', description: 'Write code, edit files, run tests' },
       { name: 'codex', cmd: 'codex --no-daemon --yolo', columnId: 'C1', description: 'Computer use (operating desktop apps and browsers), image generation, independent implementation, a second opinion' }], allProjects: false });
   row = fakeDocument.getElementById('set-mcp-clients').children[0];
