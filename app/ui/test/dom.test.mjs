@@ -2235,3 +2235,38 @@ test('a refused install re-reads the feed: a newer version replaces the offer, t
   assert.equal(calls.filter(c => c[0] === 'check_for_update').length, before);
   assert.equal(ctx.pendingUpdate.version, '0.8.30');
 });
+
+test('a Phone Connector listener that is not running says why, in Settings and after a refused enable', async () => {
+  const toasts = fakeDocument.getElementById('toasts');
+  const line = fakeDocument.getElementById('set-connector-status');
+  let status = { enabled: true, running: false, address: '192.168.1.20', port: 47631, devices: [], refusal: 'network-changed' };
+  let refuse = false;
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    if (cmd === 'connector_status') return status;
+    if (cmd === 'connector_addresses') return ['192.168.1.20'];
+    if (cmd === 'connector_enable' && refuse) throw new Error('connector port is already in use');
+    return {};
+  } } };
+  // enabled at launch, the network is another one now
+  await renderConnectorSettings();
+  assert.match(line.textContent, /different network interface/);
+  // a word this build does not know, or none, keeps the plain line
+  status = { ...status, refusal: 'something-new' };
+  await renderConnectorSettings();
+  assert.equal(line.textContent, 'enabled, not listening');
+  status = { ...status, refusal: null };
+  await renderConnectorSettings();
+  assert.equal(line.textContent, 'enabled, not listening');
+
+  // a refused enable: the switch stays off and both the toast and the line say why
+  status = { enabled: false, running: false, address: '192.168.1.20', port: 47631, devices: [], refusal: null };
+  await renderConnectorSettings();
+  refuse = true;
+  const clicked = fakeDocument.getElementById('set-connector-toggle').onclick();
+  cfmDone(true);
+  status = { ...status, refusal: 'port-in-use' };
+  await clicked;
+  assert.match(toasts.children.at(-1).textContent, /another program is using this port/);
+  assert.match(line.textContent, /another program is using this port/);
+  assert.equal(fakeDocument.getElementById('set-connector-toggle').dataset.enabled, 'false');
+});

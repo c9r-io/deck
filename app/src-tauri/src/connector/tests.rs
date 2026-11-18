@@ -3726,3 +3726,44 @@ fn a_snapshot_carries_the_switch_and_readable_cards_reply_counts() {
     assert_eq!(off["replies"], "off");
     assert!(off["cards"][0].get("replyCount").is_none());
 }
+
+#[test]
+fn a_refused_listener_start_is_one_closed_reason_word() {
+    let code = |message: &'static str| refusal_code(&DeckError::new(ErrorKind::Other, message));
+    assert_eq!(code("connector address or port is invalid"), "address");
+    assert_eq!(
+        code("connector address is not an available private-network address"),
+        "address"
+    );
+    assert_eq!(code(server::BIND_UNAVAILABLE), "address");
+    assert_eq!(code("connector network changed"), "network-changed");
+    assert_eq!(code("connector identity reset required"), "reset-required");
+    assert_eq!(code("connector identity is missing"), "identity-missing");
+    assert_eq!(code(server::BIND_IN_USE), "port-in-use");
+    assert_eq!(code(server::BIND_DENIED), "bind-denied");
+    assert_eq!(code(server::BIND_FAILED), "bind-failed");
+    // anything this module did not say itself carries no detail out
+    assert_eq!(
+        code("/Users/someone/.deck/connector.json: disk full"),
+        "other"
+    );
+
+    // the refusals the start path can really produce map to a word
+    let cfg = Config {
+        enabled: true,
+        address: "10.9.8.7".into(),
+        port: 47631,
+        interface: None,
+        scope: SnapshotScope::default(),
+        scope_revision: 0,
+        phone_replies: false,
+    };
+    assert_eq!(
+        refusal_code(&listener_network_ok(&cfg, &[]).unwrap_err()),
+        "address"
+    );
+    assert_eq!(
+        refusal_code(&validate_connector_listener("10.9.8.7", 47631, &[]).unwrap_err()),
+        "address"
+    );
+}

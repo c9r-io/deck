@@ -19,6 +19,8 @@ pub(crate) struct Status {
     pub(super) origin: Option<String>,
     pub(super) fingerprint: Option<String>,
     pub(super) reset_required: bool,
+    /// Why the listener is not running (`listener_refusal`), for Settings.
+    pub(super) refusal: Option<&'static str>,
     pub(super) scope: SnapshotScope,
     /// The "Claude Code replies on the phone" switch, and whether deck's
     /// Claude Code Stop hook forwards the final message now (the switch
@@ -72,6 +74,7 @@ pub(crate) fn connector_status() -> Result<Status, DeckError> {
             .identity_address
             .as_ref()
             .is_some_and(|address| !d.config.address.is_empty() && address != &d.config.address),
+        refusal: listener_refusal(),
         scope: d.config.scope,
         phone_replies: d.config.phone_replies,
         phone_replies_forwarded: forwarded,
@@ -100,6 +103,16 @@ pub(crate) fn connector_status() -> Result<Status, DeckError> {
 #[tauri::command]
 pub(crate) async fn connector_enable(address: String, port: u16) -> Result<Status, DeckError> {
     tauri::async_runtime::spawn_blocking(move || {
+        let enabled = enable(address, port);
+        note_listener_start(&enabled);
+        enabled
+    })
+    .await
+    .map_err(|_| DeckError::new(ErrorKind::Other, "connector worker failed"))?
+}
+
+fn enable(address: String, port: u16) -> Result<Status, DeckError> {
+    {
         let ip = validate_connector_listener(&address, port, &local_ipv4_addresses())?;
         let r = rt()?.clone();
         let _lifecycle = r.lifecycle.lock_or_recover();
@@ -145,10 +158,9 @@ pub(crate) async fn connector_enable(address: String, port: u16) -> Result<Statu
             });
             return Err(error);
         }
+        set_listener_refusal(None);
         connector_status()
-    })
-    .await
-    .map_err(|_| DeckError::new(ErrorKind::Other, "connector worker failed"))?
+    }
 }
 
 /// Local sharing consent. A change retires unresolved requests and fences
@@ -228,6 +240,7 @@ pub(crate) fn connector_disable() -> Result<(), DeckError> {
     let _lifecycle = r.lifecycle.lock_or_recover();
     r.server_epoch.fetch_add(1, Ordering::SeqCst);
     *r.pairing.lock_or_recover() = None;
+    set_listener_refusal(None);
     r.with_doc(|d| {
         d.config.enabled = false;
         invalidate_commands(d, None, "connector-disabled");

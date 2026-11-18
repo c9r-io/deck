@@ -49,6 +49,13 @@ const MAX_NATIVE_JOBS: usize = 8;
 /// netmask are unchanged.
 const NETWORK_RECHECK: Duration = Duration::from_secs(5);
 
+/// The fixed bind refusals (`refusal_code` in `mod.rs` reads them): only the
+/// kind of the OS error is kept, never its text.
+pub(super) const BIND_IN_USE: &str = "connector port is already in use";
+pub(super) const BIND_DENIED: &str = "connector listener was denied by the system";
+pub(super) const BIND_UNAVAILABLE: &str = "connector address is not available to bind";
+pub(super) const BIND_FAILED: &str = "connector address could not be bound";
+
 /// Per-source connection accounting; a slot is released when its guard drops.
 #[derive(Clone, Default)]
 struct SourceSlots(Arc<std::sync::Mutex<std::collections::HashMap<IpAddr, usize>>>);
@@ -185,16 +192,14 @@ pub(super) fn spawn(
                     network_unchanged,
                 ));
             } else {
-                let _ = ready_tx.send(None);
+                let _ = ready_tx.send(Err(BIND_FAILED));
             }
         })
         .map_err(|_| DeckError::new(ErrorKind::Other, "connector server could not start"))?;
     match ready_rx.recv_timeout(Duration::from_secs(3)) {
-        Ok(Some(port)) => Ok(port),
-        _ => Err(DeckError::new(
-            ErrorKind::Other,
-            "connector address could not be bound",
-        )),
+        Ok(Ok(port)) => Ok(port),
+        Ok(Err(message)) => Err(DeckError::new(ErrorKind::Other, message)),
+        Err(_) => Err(DeckError::new(ErrorKind::Other, BIND_FAILED)),
     }
 }
 
@@ -203,23 +208,28 @@ async fn run(
     addr: SocketAddr,
     tls: Arc<rustls::ServerConfig>,
     epoch: u64,
-    ready: std::sync::mpsc::SyncSender<Option<u16>>,
+    ready: std::sync::mpsc::SyncSender<Result<u16, &'static str>>,
     network_unchanged: impl Fn() -> bool,
 ) {
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(value) => value,
-        Err(_) => {
-            let _ = ready.send(None);
+        Err(failure) => {
+            let _ = ready.send(Err(match failure.kind() {
+                std::io::ErrorKind::AddrInUse => BIND_IN_USE,
+                std::io::ErrorKind::PermissionDenied => BIND_DENIED,
+                std::io::ErrorKind::AddrNotAvailable => BIND_UNAVAILABLE,
+                _ => BIND_FAILED,
+            }));
             return;
         }
     };
     let bound_port = listener.local_addr().map(|address| address.port()).ok();
     let Some(bound_port) = bound_port else {
-        let _ = ready.send(None);
+        let _ = ready.send(Err(BIND_FAILED));
         return;
     };
     runtime.running_epoch.store(epoch, Ordering::SeqCst);
-    let _ = ready.send(Some(bound_port));
+    let _ = ready.send(Ok(bound_port));
     let acceptor = tokio_rustls::TlsAcceptor::from(tls);
     let connections = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     let sources = SourceSlots::default();
@@ -279,6 +289,8 @@ async fn run(
         .running_epoch
         .compare_exchange(epoch, 0, Ordering::SeqCst, Ordering::SeqCst);
     if network_changed {
+        super::set_listener_refusal(Some("network-changed"));
+        crate::applog::applog("[connector] listener stopped (network-changed)");
         if let Some(app) = runtime.app.as_ref() {
             use tauri::Emitter;
             let _ = app.emit("connector-changed", ());

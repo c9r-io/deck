@@ -78,6 +78,10 @@
 //! restart binds only while the address is on that interface. The running
 //! listener keeps the (address, interface, netmask) it started with and stops
 //! when a periodic `getifaddrs` recheck finds a different one (`server.rs`).
+//! A listener that did not start, or stopped by itself, leaves one closed
+//! reason word (`listener_refusal`): written to app.log and shown in
+//! Settings, never an address, a port or an OS error text. It is
+//! presentation only and is cleared by the next start or by disabling.
 //! Pairing strips bidi, zero-width and tag characters from the supplied
 //! device name before validation and persistence, then emits
 //! `connector-changed` so the desktop can show it at once.
@@ -559,7 +563,8 @@ pub(crate) fn spawn_connector(app: AppHandle) {
     );
     crate::documents::set_write_claim_guard(board_commit_guard);
     if runtime.read(|d| d.config.enabled).unwrap_or(false) {
-        let _ = start_server(runtime);
+        let started = start_server(runtime);
+        note_listener_start(&started);
     }
     let wake = app.clone();
     std::thread::spawn(move || loop {
@@ -568,6 +573,50 @@ pub(crate) fn spawn_connector(app: AppHandle) {
             let _ = wake.emit("connector-changed", ());
         }
     });
+}
+
+/// Why the listener is not running, as one closed word (None while it runs
+/// or was never asked to). Process memory only.
+static LISTENER_REFUSAL: Mutex<Option<&'static str>> = Mutex::new(None);
+
+pub(super) fn listener_refusal() -> Option<&'static str> {
+    *LISTENER_REFUSAL.lock_or_recover()
+}
+
+pub(super) fn set_listener_refusal(code: Option<&'static str>) {
+    *LISTENER_REFUSAL.lock_or_recover() = code;
+}
+
+/// The closed reason word for a failed start. The messages are this
+/// module's own fixed refusals; anything else (Keychain, storage) is
+/// `other`.
+pub(super) fn refusal_code(error: &DeckError) -> &'static str {
+    match error.to_string().as_str() {
+        "invalid connector address"
+        | "connector address or port is invalid"
+        | "connector address is not an available private-network address"
+        | server::BIND_UNAVAILABLE => "address",
+        "connector network changed" => "network-changed",
+        "connector identity reset required" => "reset-required",
+        "connector identity is missing" => "identity-missing",
+        server::BIND_IN_USE => "port-in-use",
+        server::BIND_DENIED => "bind-denied",
+        server::BIND_FAILED => "bind-failed",
+        _ => "other",
+    }
+}
+
+/// Record the outcome of one start: the reason word on a refusal (also to
+/// app.log), nothing once it runs.
+pub(super) fn note_listener_start<T>(result: &Result<T, DeckError>) {
+    match result {
+        Ok(_) => set_listener_refusal(None),
+        Err(error) => {
+            let code = refusal_code(error);
+            set_listener_refusal(Some(code));
+            crate::applog::applog(&format!("[connector] listener not started ({code})"));
+        }
+    }
 }
 
 fn start_server(runtime: Arc<Runtime>) -> Result<(), DeckError> {

@@ -81,6 +81,19 @@ export function createConnectorSettings(host) {
     $('set-connector-new-device-trust').onclick = show ? () => setTrusted(device, true) : null;
   }
 
+  // The backend's closed reason words for a listener that is not running
+  // (connector/mod.rs `refusal_code`); an unknown or absent word has no text.
+  const refusalKeys = {
+    address: 'connector.refused.address',
+    'network-changed': 'connector.refused.networkChanged',
+    'reset-required': 'connector.refused.resetRequired',
+    'identity-missing': 'connector.refused.identityMissing',
+    'port-in-use': 'connector.refused.portInUse',
+    'bind-denied': 'connector.refused.bindDenied',
+    'bind-failed': 'connector.refused.bindFailed',
+  };
+  const refusalText = code => (Object.hasOwn(refusalKeys, code) ? t(refusalKeys[code]) : '');
+
   async function setTrusted(device, trusted) {
     if (trusted && !(await confirmDialog(t('connector.trustConfirm', { name: device.name })))) return;
     try { await inv('connector_set_trusted', { deviceId: device.id, trusted }); }
@@ -129,8 +142,11 @@ export function createConnectorSettings(host) {
     }
     if (status?.address) select.value = status.address;
     $('set-connector-port').value = String(status?.port || 47631);
-    $('set-connector-status').textContent = !status?.enabled ? t('connector.off')
-      : status.running ? t('connector.listening', { origin: status.origin || '' }) : t('connector.notRunning');
+    // no listener after a start that was asked for: say why, when the
+    // backend knows (a refused enable leaves the switch off)
+    $('set-connector-status').textContent = !status?.enabled ? (refusalText(status?.refusal) || t('connector.off'))
+      : status.running ? t('connector.listening', { origin: status.origin || '' })
+      : refusalText(status.refusal) || t('connector.notRunning');
     $('set-connector-toggle').textContent = t(status?.enabled ? 'connector.disable' : 'connector.enable');
     $('set-connector-toggle').dataset.enabled = String(status?.enabled === true);
     if (status) connectorScope = knownScope(status.scope);
@@ -189,7 +205,11 @@ export function createConnectorSettings(host) {
       try {
         if (enabled) await inv('connector_disable');
         else await inv('connector_enable', { address: $('set-connector-address').value, port: Number($('set-connector-port').value) });
-      } catch (_) { toast(t('connector.actionFailed')); }
+      } catch (_) {
+        // a refused start leaves its reason word in the status
+        const refused = enabled ? null : await inv('connector_status').catch(() => null);
+        toast(refusalText(refused?.refusal) || t('connector.actionFailed'));
+      }
       await renderConnectorSettings();
     };
     $('set-connector-scope').onchange = async () => {
