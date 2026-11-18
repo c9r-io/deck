@@ -641,6 +641,7 @@ const dictionary = {
   "update.unavailableDev": "el actualizador no está disponible en las compilaciones de desarrollo",
   "update.checking": "Comprobando…",
   "update.installHint": "v{version} está disponible: haz clic en “Actualizar a v{version}” en la barra lateral para instalarla.",
+  "update.changed": "Entretanto se publicó v{version}: vuelve a hacer clic en “Actualizar a v{version}” para instalarla.",
   "update.current": "deck está actualizado (v{version})",
   "update.checkFailed": "error al buscar actualizaciones: ¿tienes conexión?",
   "update.downloadingPercent": "Descargando {percent}%",

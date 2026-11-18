@@ -641,6 +641,7 @@ const dictionary = {
   "update.unavailableDev": "開発ビルドではアップデータを利用できません",
   "update.checking": "確認中…",
   "update.installHint": "v{version} を利用できます — サイドバーの「v{version} にアップデート」をクリックしてインストールしてください。",
+  "update.changed": "その間に v{version} が公開されました — もう一度「v{version} にアップデート」をクリックしてインストールしてください。",
   "update.current": "deck は最新です（v{version}）",
   "update.checkFailed": "アップデートを確認できませんでした — オンラインですか？",
   "update.downloadingPercent": "ダウンロード中 {percent}%",

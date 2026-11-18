@@ -1118,7 +1118,7 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     ("update-check-fail", DetailPolicy::Closed(&["manual"])),
     (
         "update-install-fail",
-        DetailPolicy::Closed(&["not-writable"]),
+        DetailPolicy::Closed(&["not-writable", "changed"]),
     ),
     // away notifications (notify.rs): the authorization word after a
     // settings change, and a click that opened a card

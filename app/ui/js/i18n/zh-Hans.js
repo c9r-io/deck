@@ -647,6 +647,7 @@ const dictionary = {
   'update.unavailableDev': '开发版中无法使用更新程序',
   'update.checking': '正在检查…',
   'update.installHint': 'v{version} 已发布；点击侧边栏中的“更新到 v{version}”即可安装。',
+  'update.changed': '刚刚发布了 v{version}；再点一次“更新到 v{version}”即可安装。',
   'update.current': 'deck 已是最新版本（v{version}）',
   'update.checkFailed': '检查更新失败，请确认网络连接',
   'update.downloadingPercent': '正在下载 {percent}%',

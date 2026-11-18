@@ -27,6 +27,7 @@ import { initWorkers, startWorkers } from './workers.js';
 import { initProposals, startProposals } from './proposals.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
+import { installPendingUpdate, renderPendingUpdate } from './update-install.js';
 import { initVoice } from './voice.js';
 import { createVoiceTarget } from './voice-target.js';
 import { initInputSource } from './input-source.js';
@@ -52,13 +53,6 @@ activateTheme({ theme: 'deck-dark', accent: 'teal' });
 // and text-search menus are browser chrome. Keep native editing menus in real
 // form fields, but not xterm's hidden input. Never stop propagation: Deck's
 // card/project handlers must still receive the event and open their own menu.
-
-function renderPendingUpdate() {
-  if (!ctx.pendingUpdate) return;
-  const btn = $('update-btn');
-  btn.querySelector('.label').textContent = t('update.available', { version: ctx.pendingUpdate.version });
-  btn.title = t('update.availableTitle', { version: ctx.pendingUpdate.version });
-}
 
 function channelLabel(channel = ctx.settings.updateChannel) {
   return t(channel === 'nightly' ? 'settings.channel.nightly' : 'settings.channel.stable');
@@ -824,29 +818,7 @@ function wireChrome() {
 
   $('set-check').onclick = () => manualUpdateCheck();
 
-  $('update-btn').onclick = async () => {
-    if (!ctx.pendingUpdate) return;
-    const btn = $('update-btn');
-    const label = btn.querySelector('.label');
-    btn.disabled = true;
-    ctx.updateDownloadBytes = 0;
-    try {
-      await inv('install_update', {
-        channel: ctx.settings.updateChannel,
-        expectedVersion: ctx.pendingUpdate.version,
-      });
-      label.textContent = t('update.restarting');
-      await inv('relaunch_after_update');
-    } catch (e) {
-      btn.disabled = false;
-      label.textContent = t('update.failedRetry');
-      // the backend's fixed refusal for an admin-installed bundle (updater.rs)
-      const notWritable = String(e).includes('not writable');
-      toast(notWritable ? t('update.bundleNotWritable')
-                        : t('error.operation', { operation: t('settings.updates') }));
-      uev('update-install-fail', notWritable ? 'not-writable' : null);
-    }
-  };
+  $('update-btn').onclick = () => installPendingUpdate();
 
   onLocaleChange(() => {
     renderPendingUpdate();

@@ -648,6 +648,7 @@ const dictionary = {
   'update.unavailableDev': 'updater unavailable in dev builds',
   'update.checking': 'Checking…',
   'update.installHint': 'v{version} is available — click “Update to v{version}” in the sidebar to install.',
+  'update.changed': 'v{version} was published meanwhile — click “Update to v{version}” again to install it.',
   'update.current': 'deck is up to date (v{version})',
   'update.checkFailed': 'update check failed — are you online?',
   'update.downloadingPercent': 'Downloading {percent}%',

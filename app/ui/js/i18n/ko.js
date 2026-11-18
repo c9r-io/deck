@@ -641,6 +641,7 @@ const dictionary = {
   "update.unavailableDev": "개발 빌드에서는 업데이트 프로그램을 사용할 수 없습니다",
   "update.checking": "확인 중…",
   "update.installHint": "v{version}을 사용할 수 있습니다 — 사이드바에서 “v{version}으로 업데이트”를 클릭하여 설치하세요.",
+  "update.changed": "그 사이 v{version}이 게시되었습니다 — “v{version}으로 업데이트”를 다시 클릭하여 설치하세요.",
   "update.current": "deck이 최신 버전입니다(v{version})",
   "update.checkFailed": "업데이트 확인 실패 — 온라인 상태인가요?",
   "update.downloadingPercent": "다운로드 중 {percent}%",

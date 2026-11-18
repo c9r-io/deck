@@ -368,7 +368,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Model API keys (OpenAI, Anthropic): Keychain, proven by the model list; their two uses: Draft title (Claude Code's own title, else the end of the card's pane to the stored provider, on click) and turn summaries | `model_api.rs` (`complete`: `draft_title`, `summarize_turn`, the only content-sending paths), `card_title.rs`, `ui/js/extension-model-api.js`, `title-draft.js` (+ `docs/first-party-extensions.md`) |
 | Turn summaries (opt-in switch = Claude Code's Stop hook with `--reply`): Claude's final message → one line on the card, and for a card with follow-ups the model's pick, presentation only | `turn_summary.rs` (contract), `status-helper` (the reply field), `agent_status/hooks.rs` (`turn_summary_set`), `agent_status.rs` (`ingest_line`) |
 | Preset follow-ups: a template's fixed replies frozen into a run's plan, buttons in the card's pane and Needs attention row; a click = owner `queue_add` + scheduler wake, never a send without one | `ui/js/follow-up-model.js` (contract), `follow-up-bar.js`, `templates.js`, `board.js` (`queueFollowUp`), `documents.rs` (bounds) |
-| Updates | `updater.rs`, `relaunch.rs` |
+| Updates | `updater.rs`, `relaunch.rs`, `ui/js/update-install.js` (the sidebar button; a refused install re-reads the feed) |
 | File drop / image paste | `drops.rs` |
 | Smoke fault injection, native driver (debug profiles only) | `smoke_faults.rs`, `smoke_native.rs`, `native/SmokeBridge.swift` |
 

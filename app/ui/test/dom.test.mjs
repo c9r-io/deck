@@ -2184,3 +2184,54 @@ test('the script fallback sizes a textarea with its border and keeps the scrolle
   assert.doesNotThrow(() => autoGrowField(null));
   assert.doesNotThrow(() => autoGrowField({ style: {} }));
 });
+
+test('a refused install re-reads the feed: a newer version replaces the offer, the same one is a plain failure', async () => {
+  const { installPendingUpdate } = await import('../js/update-install.js');
+  const btn = fakeDocument.getElementById('update-btn');
+  const label = new FakeElement('span');
+  btn.querySelector = () => label;
+  const toasts = fakeDocument.getElementById('toasts');
+  ctx.settings = { ...ctx.settings, updateChannel: 'nightly', locale: 'en' };
+  let feed = { version: '0.8.30' };
+  const calls = [];
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'install_update') throw new Error('the selected update changed; check again');
+    if (cmd === 'check_for_update') return feed;
+    return null;
+  } } };
+
+  ctx.pendingUpdate = { version: '0.8.29' };
+  await installPendingUpdate();
+  assert.equal(ctx.pendingUpdate.version, '0.8.30');
+  assert.equal(btn.disabled, false);
+  assert.match(label.textContent, /0\.8\.30/);
+  assert.match(toasts.children.at(-1).textContent, /0\.8\.30 was published meanwhile/);
+  assert.deepEqual(calls.filter(c => c[0] === 'install_update').map(c => c[1].expectedVersion), ['0.8.29']);
+  assert.equal(calls.some(c => c[0] === 'relaunch_after_update'), false);
+  assert.deepEqual(calls.filter(c => c[0] === 'ui_event').at(-1)[1].detail, 'changed');
+
+  // the feed still answers the version that failed: an ordinary failure
+  await installPendingUpdate();
+  assert.equal(ctx.pendingUpdate.version, '0.8.30');
+  assert.match(label.textContent, /retry/);
+  assert.equal(calls.filter(c => c[0] === 'ui_event').at(-1)[1].detail ?? null, null);
+
+  // the feed no longer offers anything: the offer goes away
+  feed = null;
+  await installPendingUpdate();
+  assert.equal(ctx.pendingUpdate, null);
+  assert.equal(btn.style.display, 'none');
+
+  // a bundle this user cannot replace is never re-checked
+  ctx.pendingUpdate = { version: '0.8.30' };
+  const before = calls.filter(c => c[0] === 'check_for_update').length;
+  window.__TAURI__.core.invoke = async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'install_update') throw new Error('app bundle is not writable by this user');
+    return null;
+  };
+  await installPendingUpdate();
+  assert.equal(calls.filter(c => c[0] === 'check_for_update').length, before);
+  assert.equal(ctx.pendingUpdate.version, '0.8.30');
+});

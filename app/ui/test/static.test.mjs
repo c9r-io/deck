@@ -158,7 +158,7 @@ test('innerHTML takes literals; interpolated sites are a reviewed list and none 
 });
 
 test('the updater, relaunch and server restart stay backend-owned', () => {
-  const app = read('app/ui/js/app.js');
+  const app = read('app/ui/js/app.js') + read('app/ui/js/update-install.js');
   const dialogs = read('app/ui/js/dialogs.js') + read('app/ui/js/settings.js');
   const html = read('app/ui/index.html');
   const capabilities = read('app/src-tauri/capabilities/default.json');
