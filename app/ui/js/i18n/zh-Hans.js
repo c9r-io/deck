@@ -121,6 +121,7 @@ const dictionary = {
   "attention.mark.working": "仍在进行",
   "attention.markClear": "清除这条建议",
   "attention.markClearNamed": "清除 {name} 上的建议",
+  "attention.markedCount": "标记 {count}",
   "attention.pickSuggested": "勾选建议关闭的（{count}）",
   "attention.pickSuggestedHint": "勾选 Agent 标为「可关闭」的卡片。确认之前不会关闭任何卡片。",
   "attention.section.bell": "终端响铃",

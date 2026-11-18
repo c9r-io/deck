@@ -509,7 +509,11 @@ or waits for a decision), **Can close** (its work looks done and nothing
 waits) or **Still working**, with one line of reason. It holds for the
 card's current turn only: the card's next turn hides it at once, and it
 lives in memory only. Needs attention shows it on its own line under the
-card's row, with who set it and a button to clear it. In **Turn ended**,
+card's row, with who set it and a button to clear it. Each filter button
+says how many of the cards it lists carry a mark ("Turn ended 12 · 3
+marked"); a card whose ending you already viewed is under **Turn ended**,
+not the default list. The number is on the buttons only: no card count,
+badge or notification reads a mark. In **Turn ended**,
 **Tick suggested (N)** appears while some listed cards are marked Can
 close: your click ticks those rows, exactly as **Select all** ticks every
 row, and **Close selected** then asks once as ever (cards with a Reminder

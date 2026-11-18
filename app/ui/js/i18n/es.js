@@ -116,6 +116,7 @@ const dictionary = {
   "attention.mark.working": "Sigue trabajando",
   "attention.markClear": "Quitar esta sugerencia",
   "attention.markClearNamed": "Quitar la sugerencia de {name}",
+  "attention.markedCount": "{count} marcadas",
   "attention.pickSuggested": "Marcar las sugeridas ({count})",
   "attention.pickSuggestedHint": "Marca las tarjetas que un agente señaló como «Se puede cerrar». No se cierra nada hasta que confirmes.",
   "attention.section.bell": "Campana del terminal",

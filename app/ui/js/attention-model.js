@@ -63,8 +63,11 @@ import { PI_COVERAGE } from './pi-model.js';
 //   episode (presentation only: "Turn ended" lists the longest-ended first
 //   and says how long ago). `mark` is an MCP client's suggestion for that
 //   same episode (needs-you, can-close, working; mcp/cards.rs): the row
-//   shows it and the user may tick the can-close ones; no category, count,
-//   badge, notification or side effect reads either.
+//   shows it and the user may tick the can-close ones; no category, list,
+//   pending or Dock count, badge, notification or side effect reads either.
+//   `marked(cards)` says, per filter, how many of the cards that filter
+//   lists carry a mark of any kind: the filter buttons show it so a mark
+//   can be found without opening each filter. It changes no list.
 // - Bell: `rang(card)` passes on the backend's `bell` (bell.rs): a program
 //   in a session without agent state rang the terminal bell and nobody has
 //   looked since. The backend alone decides it and when it was viewed (the
@@ -248,6 +251,14 @@ export function createAttentionTracker() {
       }
       if (cards.some(card => card.reminder)) { counts.reminder = cards.filter(card => reminderDue(card)).length; counts.reminders = cards.filter(card => card.reminder).length; }
       return counts;
+    },
+    /* per filter, the cards it lists that carry an MCP client's mark:
+       shown on the filter buttons, read by nothing else */
+    marked(cards) {
+      const marked = {};
+      const carrying = cards.filter(card => get(card)?.mark);
+      for (const filter of ATTENTION_FILTERS) marked[filter] = carrying.filter(card => matches(card, filter)).length;
+      return marked;
     },
   };
 }

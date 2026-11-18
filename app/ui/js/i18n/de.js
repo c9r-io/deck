@@ -116,6 +116,7 @@ const dictionary = {
   "attention.mark.working": "Läuft noch",
   "attention.markClear": "Diesen Vorschlag entfernen",
   "attention.markClearNamed": "Vorschlag bei {name} entfernen",
+  "attention.markedCount": "{count} markiert",
   "attention.pickSuggested": "Vorgeschlagene auswählen ({count})",
   "attention.pickSuggestedHint": "Wählt die Karten aus, die ein Agent als „Kann geschlossen werden“ markiert hat. Geschlossen wird erst nach Ihrer Bestätigung.",
   "attention.section.bell": "Terminal-Glocke",

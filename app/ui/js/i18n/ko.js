@@ -116,6 +116,7 @@ const dictionary = {
   "attention.mark.working": "진행 중",
   "attention.markClear": "이 제안 지우기",
   "attention.markClearNamed": "{name}의 제안 지우기",
+  "attention.markedCount": "표시 {count}",
   "attention.pickSuggested": "제안된 카드 선택({count})",
   "attention.pickSuggestedHint": "Agent가 “닫아도 됨”으로 표시한 카드를 선택합니다. 확인하기 전에는 아무것도 닫히지 않습니다.",
   "attention.section.bell": "터미널 벨",

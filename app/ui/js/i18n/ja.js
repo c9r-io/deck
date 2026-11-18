@@ -116,6 +116,7 @@ const dictionary = {
   "attention.mark.working": "作業中",
   "attention.markClear": "この提案を消す",
   "attention.markClearNamed": "{name} の提案を消す",
+  "attention.markedCount": "マーク {count}",
   "attention.pickSuggested": "提案されたものを選択（{count}）",
   "attention.pickSuggestedHint": "Agent が「閉じてよさそう」と付けたカードを選択します。確認するまで何も閉じません。",
   "attention.section.bell": "ターミナルのベル",

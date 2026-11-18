@@ -122,6 +122,7 @@ const dictionary = {
   "attention.mark.working": "Still working",
   "attention.markClear": "Clear this suggestion",
   "attention.markClearNamed": "Clear the suggestion on {name}",
+  "attention.markedCount": "{count} marked",
   "attention.pickSuggested": "Tick suggested ({count})",
   "attention.pickSuggestedHint": "Ticks the cards an agent marked “Can close”. Nothing closes until you confirm.",
   "attention.section.bell": "Terminal bell",

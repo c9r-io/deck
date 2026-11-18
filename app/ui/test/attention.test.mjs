@@ -520,3 +520,29 @@ test('turn age and MCP marks are presentation: "Turn ended" lists the longest-en
     }
   }
 });
+
+test('a filter button counts the marked cards its filter lists, and a mark changes no card count', () => {
+  const tracker = createAttentionTracker();
+  const list = ['a', 'b', 'c', 'd'].map(id => ({ id, session: `s-${id}`, projectId: 'P', columnId: 'C' }));
+  const base = { alive: true, agent: 'turn-done', idle_secs: 300 };
+  tracker.record(list, [
+    { name: 's-a', ...base, episode: 1, card_mark: { mark: 'can-close', note: 'Committed', by: 'Claude' } },
+    { name: 's-b', ...base, episode: 2, card_mark: { mark: 'needs-you' } },
+    { name: 's-c', ...base, episode: 3 },
+    { name: 's-d', alive: true, agent: 'working', idle_secs: 1, episode: 4, card_mark: { mark: 'can-close' } },
+  ]);
+  // the filter buttons: how many of each filter's cards carry a mark of any
+  // kind; a marked card no filter lists (still working) is counted nowhere
+  const counts = tracker.counts(list);
+  const marked = tracker.marked(list);
+  assert.deepEqual([marked.pending, marked.done, marked.ended, marked.input, marked.followed, marked.stopped, marked.unavailable], [2, 2, 2, 0, 0, 0, 0]);
+  assert.deepEqual([counts.pending, counts.done, counts.ended], [3, 3, 3], 'the card counts are the same with or without marks');
+  tracker.saw(list[0]);
+  assert.deepEqual([tracker.marked(list).pending, tracker.marked(list).done, tracker.marked(list).ended], [1, 1, 2], 'a viewed ending keeps its mark under "Turn ended" only');
+  const pinned = list.map(card => card.id === 'd' ? { ...card, pinned: true } : card);
+  tracker.record(pinned, [
+    { name: 's-a', ...base, episode: 1, card_mark: { mark: 'can-close' } },
+    { name: 's-d', alive: true, agent: 'working', idle_secs: 1, episode: 4, card_mark: { mark: 'working' } },
+  ]);
+  assert.deepEqual([tracker.marked(pinned).followed, tracker.marked(pinned).ended], [1, 1]);
+});

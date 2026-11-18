@@ -57,6 +57,11 @@
 //   whether a card is still in the list: a card that started a new turn
 //   during the confirmation stays. The list reads agent state and closes
 //   nothing; the closer closes and reads none (tests/signal_census.rs).
+// - A filter button says its card count and, when some of those cards carry
+//   an MCP client's mark (`tracker.marked`), how many: "Turn ended 12 · 3
+//   marked". The three marks are one number; the row says which. It is on
+//   the buttons only: not the sidebar number, the Dock badge or a
+//   notification, and no list changes for it.
 // - A card with follow-ups (follow-up-model.js) carries their buttons on a
 //   line under its row; a click is Board's `queueFollowUp`, the same as in
 //   the card's pane. Painting them reads no agent word.
@@ -206,6 +211,7 @@ function fillTools(container, cards) {
   }
   const tracker = ctx.attention;
   const counts = tracker.counts(cards);
+  const marked = tracker.marked(cards);
   const freshness = tracker.freshness(cards);
   container.querySelector('.attention-totals').textContent = t('attention.summaryGlobal', {
     input: freshness.kind === 'unknown' ? '—' : formatNumber(counts.input),
@@ -231,7 +237,9 @@ function fillTools(container, cards) {
       filters.append(button);
     }
     const count = countText(filter, counts, freshness);
-    button.textContent = `${t(`attention.filter.${filter}`)} ${count}`;
+    /* how many of this filter's cards carry an MCP client's mark, so the
+       user sees where a mark is without opening each filter */
+    button.textContent = `${t(`attention.filter.${filter}`)} ${count}${marked[filter] ? ` · ${t('attention.markedCount', { count: formatNumber(marked[filter]) })}` : ''}`;
     button.setAttribute('aria-pressed', String(selected === filter));
     button.classList.toggle('active', selected === filter);
   }
