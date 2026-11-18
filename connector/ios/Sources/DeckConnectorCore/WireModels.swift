@@ -112,8 +112,12 @@ public struct DeviceCredential: Codable, Equatable, Sendable {
     public let hostId: String
     public let deviceId: String
     public let token: String
+    /// The Mac's name as last stated by it (the pairing code, then each
+    /// snapshot); absent in an item an earlier build wrote. Display only.
+    public let hostName: String?
 
-    public init(origin: String, fingerprint: String, hostId: String, deviceId: String, token: String) {
+    public init(origin: String, fingerprint: String, hostId: String, deviceId: String, token: String, hostName: String? = nil) {
+        self.hostName = hostName
         self.origin = origin
         self.fingerprint = fingerprint
         self.hostId = hostId

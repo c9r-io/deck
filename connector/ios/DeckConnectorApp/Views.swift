@@ -20,7 +20,16 @@ struct RootView: View {
                 PairingView()
             case .revoked:
                 ContentUnavailableView("Device revoked", systemImage: "lock.slash", description: Text("Revoke status comes from the desktop host. Remove this pairing, then create a new QR code on Deck."))
-                    .safeAreaInset(edge: .bottom) { Button("Remove pairing", role: .destructive) { confirmUnpair = true }.buttonStyle(.borderedProminent).padding() }
+                    .safeAreaInset(edge: .bottom) {
+                        VStack {
+                            if model.hosts.count > 1 {
+                                Text(model.currentHostTitle).font(.footnote).foregroundStyle(.secondary)
+                                Menu(String(localized: "hosts.switch")) { HostSwitchItems() }
+                                    .accessibilityIdentifier("deck.hosts.switch")
+                            }
+                            Button("Remove pairing", role: .destructive) { confirmUnpair = true }.buttonStyle(.borderedProminent)
+                        }.padding()
+                    }
             case .connecting, .online, .offline:
                 TaskListView(confirmUnpair: $confirmUnpair)
             }
@@ -28,10 +37,28 @@ struct RootView: View {
         .alert("Deck Connector", isPresented: Binding(get: { model.message != nil }, set: { if !$0 { model.message = nil } })) {
             Button("OK") { model.message = nil }
         } message: { Text(model.message ?? "") }
-        .confirmationDialog("Remove this pairing from this phone?", isPresented: $confirmUnpair, titleVisibility: .visible) {
+        .confirmationDialog(model.hosts.count > 1
+                            ? String(format: String(localized: "hosts.remove.title"), model.hosts.first { $0.id == model.currentHostID }.map(model.hostLabel) ?? model.currentHostTitle)
+                            : String(localized: "Remove this pairing from this phone?"),
+                            isPresented: $confirmUnpair, titleVisibility: .visible) {
             Button("Remove pairing", role: .destructive) { model.unpair() }
             Button("Cancel", role: .cancel) { }
         } message: { Text("The local recovery archive and unresolved operation history remain on this device.") }
+    }
+}
+
+/// The Macs to choose from, for a menu. The current one carries the check.
+struct HostSwitchItems: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        ForEach(model.hosts) { host in
+            Button { Task { await model.switchHost(host.id) } } label: {
+                Text(host.title)
+                Text(host.address)
+                if host.id == model.currentHostID { Image(systemName: "checkmark") }
+            }
+        }
     }
 }
 
@@ -39,10 +66,24 @@ struct PairingView: View {
     @EnvironmentObject private var model: AppModel
     @State private var descriptor = ""
     @State private var scanning = false
+    @State private var failure: String?
+    /// Set when the view adds one more Mac from the paired list: it can be
+    /// cancelled, closes once paired and states a failure in place (the
+    /// list's alert is underneath the sheet).
+    var close: (() -> Void)?
 
     var body: some View {
         NavigationStack {
             Form {
+                if close == nil, !model.hosts.isEmpty {
+                    Section(String(localized: "hosts.title")) {
+                        ForEach(model.hosts) { host in
+                            Button { Task { await model.switchHost(host.id) } } label: {
+                                VStack(alignment: .leading) { Text(host.title); Text(host.address).font(.caption).foregroundStyle(.secondary) }
+                            }
+                        }
+                    }
+                }
                 Section("Pair with Deck") {
                     Text("On the desktop, enable Connector and create a short-lived pairing code. The phone connects only to that pinned HTTPS host.")
                     Button("Scan QR code") { scanning = true }
@@ -51,13 +92,29 @@ struct PairingView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("deck.pair.descriptor")
-                    Button("Pair") { Task { await model.pair(descriptor: descriptor); descriptor = "" } }
-                        .disabled(descriptor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Pair") {
+                        Task {
+                            failure = nil
+                            let paired = await model.pair(descriptor: descriptor)
+                            descriptor = ""
+                            guard let close else { return }
+                            if paired { close() } else { failure = model.message; model.message = nil }
+                        }
+                    }
+                        .disabled(model.pairing || descriptor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .accessibilityIdentifier("deck.pair.submit")
+                    if model.pairing { ProgressView() }
+                    if let failure {
+                        Text(failure).font(.footnote).foregroundStyle(.red).accessibilityIdentifier("deck.pair.failure")
+                    }
                 }
                 Section { Text("Pairing data is used once and is not stored. The host identity, certificate pin, device ID and token are stored together in Keychain.").font(.footnote).foregroundStyle(.secondary) }
             }
-            .navigationTitle("Deck Connector")
+            .navigationTitle(close == nil ? String(localized: "Deck Connector") : String(localized: "hosts.add"))
+            .toolbar {
+                if let close { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { close() }.disabled(model.pairing) } }
+            }
+            .interactiveDismissDisabled(model.pairing)
             .sheet(isPresented: $scanning) {
                 NavigationStack {
                     QRScannerView { value in descriptor = value; scanning = false }
@@ -74,6 +131,7 @@ struct TaskListView: View {
     @Binding var confirmUnpair: Bool
     /// "<host id>|<scope>" the user chose to keep; a per-phone convenience only.
     @AppStorage("deck.sharing.kept") private var keptSharing = ""
+    @State private var addingHost = false
 
     var body: some View {
         NavigationStack {
@@ -167,8 +225,16 @@ struct TaskListView: View {
             }
             .refreshable { await model.refresh() }
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Menu { Button("Refresh") { Task { await model.refresh() } }; Button("Remove pairing", role: .destructive) { confirmUnpair = true } } label: { Image(systemName: "ellipsis.circle") } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Refresh") { Task { await model.refresh() } }
+                        if model.hosts.count > 1 { Section(String(localized: "hosts.title")) { HostSwitchItems() } }
+                        Button(String(localized: "hosts.add")) { addingHost = true }
+                        Button("Remove pairing", role: .destructive) { confirmUnpair = true }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                }
             }
+            .sheet(isPresented: $addingHost) { PairingView(close: { addingHost = false }) }
         }
     }
 
@@ -215,7 +281,14 @@ struct TaskListView: View {
     @ViewBuilder private var connectionBanner: some View {
         switch model.connection {
         case .connecting: HStack { ProgressView(); Text("Connecting to desktop…") }
-        case let .offline(reason): Label(reason, systemImage: "wifi.slash").foregroundStyle(.orange)
+        case let .offline(reason):
+            Label(reason, systemImage: "wifi.slash").foregroundStyle(.orange)
+            // another paired Mac answers: an offer, never a switch
+            ForEach(model.hosts.filter { model.reachableElsewhere.contains($0.id) }) { host in
+                Button { Task { await model.switchHost(host.id) } } label: {
+                    Label(String(format: String(localized: "hosts.reachable"), model.hostLabel(host)), systemImage: "desktopcomputer")
+                }.accessibilityIdentifier("deck.hosts.reachable")
+            }
         default: EmptyView()
         }
     }

@@ -43,7 +43,24 @@ final class AppModel: ObservableObject {
     /// Why a card's reply list has nothing to show from the Mac.
     enum RepliesIssue: Equatable { case off, unavailable }
 
+    /// One Mac this phone is paired with, as the switcher lists it.
+    struct PairedHost: Identifiable, Equatable {
+        let id: String
+        let name: String?
+        let address: String
+        var title: String { name ?? address }
+    }
+
     @Published var connection: ConnectionState = .loading
+    /// Every paired Mac. Exactly one is bound at a time (`currentHostID`);
+    /// nothing is read from, shown for or sent to another one, except the
+    /// one reachability question below.
+    @Published private(set) var hosts: [PairedHost] = []
+    @Published private(set) var currentHostID: String?
+    /// Other paired Macs that answered while the current one could not be
+    /// reached. An offer to switch, never a switch.
+    @Published private(set) var reachableElsewhere: [String] = []
+    @Published private(set) var pairing = false
     @Published var snapshot: Snapshot?
     @Published var outputs: [String: TerminalOutput] = [:]
     /// Claude Code replies the Mac keeps per card. Unlike output they are
@@ -202,7 +219,7 @@ final class AppModel: ObservableObject {
             if error as? ConnectorError == .revoked { setError(error); return }
             mentionsStale = mentions != nil
             mentionsIssue = Self.isNetworkLoss(error)
-                ? Self.unreachableMessage(host: snapshot?.hostName ?? pairedAddress ?? "Mac")
+                ? Self.unreachableMessage(host: currentHostTitle)
                 : error.localizedDescription
         }
     }
@@ -264,11 +281,24 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private let credentialStore = KeychainCredentialStore()
-    /// The paired origin's address, shown when the host name is not known yet
-    /// (a cold launch that cannot reach the Mac). It matches the address the
-    /// Mac's Settings show for its listener.
-    private var pairedAddress: String?
+    private let roster = HostRoster(vault: KeychainVault())
+    private var credentials: [DeviceCredential] = []
+    private static let currentHostKey = "deck.host.current"
+    private var probeTask: Task<Void, Never>?
+    private var lastProbe: Date?
+    /// The current Mac as the user knows it: its name, or the paired address
+    /// (the one the Mac's Settings show for its listener) while no name is
+    /// known yet.
+    var currentHostTitle: String {
+        snapshot?.hostName ?? hosts.first { $0.id == currentHostID }?.title ?? "Mac"
+    }
+    /// A Mac's name for a sentence; two Macs of one name also get their address.
+    func hostLabel(_ host: PairedHost) -> String {
+        hosts.filter { $0.title == host.title }.count > 1 ? "\(host.title) (\(host.address))" : host.title
+    }
+    private func publishHosts() {
+        hosts = credentials.map { PairedHost(id: $0.hostId, name: $0.hostName, address: Self.address(of: $0.origin) ?? $0.origin) }
+    }
     static func address(of origin: String) -> String? {
         URLComponents(string: origin).flatMap { components in
             components.host.map { host in components.port.map { "\(host):\($0)" } ?? host }
@@ -301,19 +331,29 @@ final class AppModel: ObservableObject {
         noteDrafts = [:]; noteDraftErrors = [:]; noteVersions = [:]; noteTasks = [:]
         pendingSends = [:]; pendingCardCommands = [:]; pendingTaskCreate = nil
         hasPendingTaskCreate = false; operationReceipts = [:]
+        // nothing of the Mac just left may show under the next one
+        sentMessages = [:]; sendingCards = []; busyCards = []; creatingTask = false
+        busyMentions = []
+        probeTask?.cancel(); probeTask = nil; lastProbe = nil; reachableElsewhere = []
     }
 
+    /// Binds the Mac last chosen (or the first listed). Also the one way to
+    /// change Mac: everything of the previous binding is dropped first and
+    /// its late answers are refused by the binding epoch.
     func start() async {
         beginBinding()
         let epoch = bindingEpoch
         do {
-            if let credential = try credentialStore.load() {
+            credentials = try roster.load()
+            publishHosts()
+            let chosen = HostRoster.current(credentials, preferred: UserDefaults.standard.string(forKey: Self.currentHostKey))
+            currentHostID = chosen?.hostId
+            if let credential = chosen {
                 let openedJournal = try await openJournal(for: credential)
                 guard epoch == bindingEpoch else { return }
                 journal = openedJournal
                 draftCoordinator = DraftSaveCoordinator(sink: openedJournal)
                 client = try DeckHTTPClient(credential: credential)
-                pairedAddress = Self.address(of: credential.origin)
                 connection = .connecting
                 await refresh()
                 // beginBinding cancels the old loop. Resume from the current
@@ -329,70 +369,104 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func pair(descriptor raw: String) async {
-        beginBinding()
-        let epoch = bindingEpoch
-        connection = .connecting
+    func switchHost(_ id: String) async {
+        guard credentials.contains(where: { $0.hostId == id }) else { return }
+        if id == currentHostID, connection != .unpaired { return }
+        UserDefaults.standard.set(id, forKey: Self.currentHostKey)
+        await start()
+    }
+
+    /// Pairs with one more Mac (or again with a known one, replacing that
+    /// pairing) and shows it. The current binding is left alone until the
+    /// new pairing is stored, so a failed attempt changes nothing.
+    @discardableResult
+    func pair(descriptor raw: String) async -> Bool {
+        guard !pairing else { return false }
+        pairing = true
+        defer { pairing = false }
         do {
             let descriptor = try PairingDescriptor.parse(raw)
             let pairingClient = try DeckHTTPClient(pairing: descriptor)
             defer { pairingClient.invalidate() }
             let response = try await pairingClient.pair(code: descriptor.code, deviceName: UIDevice.current.name)
-            guard epoch == bindingEpoch else { return }
             guard response.version == 1, response.hostId == descriptor.hostId else { throw ConnectorError.invalidResponse }
-            let credential = DeviceCredential(origin: descriptor.origin, fingerprint: descriptor.fingerprint, hostId: response.hostId, deviceId: response.deviceId, token: response.token)
-            try credentialStore.save(credential)
-            let openedJournal = try await openJournal(for: credential)
-            guard epoch == bindingEpoch else { return }
-            journal = openedJournal
-            draftCoordinator = DraftSaveCoordinator(sink: openedJournal)
-            client = try DeckHTTPClient(credential: credential)
-            pairedAddress = Self.address(of: credential.origin)
-            await refresh()
-            if isCurrent(journal: openedJournal, epoch: epoch), foreground { setForeground(true) }
+            try roster.save(DeviceCredential(origin: descriptor.origin, fingerprint: descriptor.fingerprint, hostId: response.hostId, deviceId: response.deviceId, token: response.token, hostName: descriptor.hostName))
+            UserDefaults.standard.set(response.hostId, forKey: Self.currentHostKey)
+            await start()
+            return true
         } catch {
-            guard epoch == bindingEpoch else { return }
-            connection = .unpaired
             let host = (try? PairingDescriptor.parse(raw))?.hostName ?? "Mac"
             message = Self.isNetworkLoss(error) ? Self.unreachableMessage(host: host) : error.localizedDescription
+            return false
         }
     }
 
+    /// Removes the pairing with the current Mac from this phone only; the
+    /// Mac still lists the device until it is revoked there. Another paired
+    /// Mac, if any, is shown next.
     func unpair() {
-        bindingEpoch &+= 1
-        let active = foreground
-        setForeground(false)
-        foreground = active
-        clearRemoteContent()
         do {
-            try credentialStore.delete()
-            client?.invalidate()
-            client = nil
-            pairedAddress = nil
-            journal = nil
-            draftCoordinator = nil
-            noteCoordinator = nil; noteDrafts = [:]; noteDraftErrors = [:]; noteVersions = [:]
-            noteTasks = [:]
-            draftSaveTasks.values.forEach { $0.cancel() }
-            draftSaveTasks = [:]
-            latestDraftVersions = [:]
-            draftWriteSequences = [:]
-            draftPersistence = [:]
-            snapshot = nil
-            outputs = [:]
-            buffers = [:]
-            drafts = [:]
-            sentMessages = [:]
-            pendingSends = [:]
-            pendingCardCommands = [:]
-            hasPendingTaskCreate = false
-            pendingTaskCreate = nil
-            operationReceipts = [:]
-            sendingCards = []
-            busyCards = []
-            creatingTask = false
-            connection = .unpaired
-        } catch { message = error.localizedDescription }
+            if let id = currentHostID { try roster.remove(hostID: id) }
+            credentials = try roster.load()
+        } catch { message = error.localizedDescription; return }
+        UserDefaults.standard.removeObject(forKey: Self.currentHostKey)
+        beginBinding()
+        publishHosts()
+        currentHostID = nil
+        if credentials.isEmpty { connection = .unpaired } else {
+            connection = .loading
+            Task { await self.start() }
+        }
+    }
+
+    /// Test support: a simulator's Keychain may hold earlier pairings.
+    func removeAllPairings() {
+        for credential in (try? roster.load()) ?? [] { try? roster.remove(hostID: credential.hostId) }
+        currentHostID = nil
+        unpair()
+    }
+
+    /// While the current Mac cannot be reached, asks each other paired Mac
+    /// once whether it answers (its own pin and token, four seconds, at
+    /// most every fifteen). Only that one bit is kept.
+    private func probeOtherHosts() {
+        let others = credentials.filter { $0.hostId != currentHostID }
+        guard foreground, probeTask == nil, !others.isEmpty,
+              lastProbe.map({ Date().timeIntervalSince($0) >= 15 }) ?? true else { return }
+        lastProbe = Date()
+        let epoch = bindingEpoch
+        probeTask = Task { [weak self] in
+            var reachable: [String] = []
+            await withTaskGroup(of: String?.self) { group in
+                for credential in others { group.addTask { await Self.answers(credential) ? credential.hostId : nil } }
+                for await id in group { if let id { reachable.append(id) } }
+            }
+            guard let self, !Task.isCancelled, epoch == self.bindingEpoch else { return }
+            self.probeTask = nil
+            if case .offline = self.connection { self.reachableElsewhere = reachable }
+        }
+    }
+
+    nonisolated private static func answers(_ credential: DeviceCredential) async -> Bool {
+        guard let client = try? DeckHTTPClient(credential: credential) else { return false }
+        defer { client.invalidate() }
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask { (try? await client.snapshot())?.hostId == credential.hostId }
+            group.addTask { try? await Task.sleep(for: .seconds(4)); return false }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+    }
+
+    /// A Mac renamed since pairing (or paired by an earlier build) is listed
+    /// under the name it states now.
+    private func rememberHostName(_ name: String?) {
+        guard let name, !name.isEmpty, let old = credentials.first(where: { $0.hostId == currentHostID }), old.hostName != name else { return }
+        let renamed = DeviceCredential(origin: old.origin, fingerprint: old.fingerprint, hostId: old.hostId, deviceId: old.deviceId, token: old.token, hostName: name)
+        guard (try? roster.save(renamed)) != nil else { return }
+        credentials = credentials.map { $0.hostId == renamed.hostId ? renamed : $0 }
+        publishHosts()
     }
 
     func refresh() async {
@@ -419,6 +493,8 @@ final class AppModel: ObservableObject {
             applySnapshot(newSnapshot)
             connection = .online
             lastSyncedAt = Date()
+            reachableElsewhere = []
+            rememberHostName(newSnapshot.hostName)
             // Publish the Board before local recovery/draft work and detail reads.
             for card in newSnapshot.cards {
                 drafts[card.id] = await journal.draft(for: card.id)
@@ -438,8 +514,9 @@ final class AppModel: ObservableObject {
                 staleOutputs.formUnion(outputs.keys)
                 mentionsStale = mentions != nil
                 connection = .offline(Self.isNetworkLoss(error)
-                    ? Self.unreachableMessage(host: snapshot?.hostName ?? pairedAddress ?? "Mac")
+                    ? Self.unreachableMessage(host: currentHostTitle)
                     : error.localizedDescription)
+                probeOtherHosts()
             }
         }
     }

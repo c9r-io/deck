@@ -11,12 +11,12 @@ final class AppModelTests: XCTestCase {
         throw XCTSkip("AppModel host tests require a disposable iOS Simulator and never touch a physical-device Keychain.")
         #endif
         model = AppModel()
-        model.unpair()
+        model.removeAllPairings()
         XCTAssertEqual(model.connection, .unpaired)
     }
 
     override func tearDown() async throws {
-        model?.unpair()
+        model?.removeAllPairings()
         model = nil
     }
 
@@ -113,7 +113,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(card.canSend)
         XCTAssertTrue(card.canQueue)
         #if DEBUG && targetEnvironment(simulator)
-        let savedCredential = try XCTUnwrap(KeychainCredentialStore().load())
+        let savedCredential = try XCTUnwrap(HostRoster(vault: KeychainVault()).load().first)
         let diagnosticClient = try DeckHTTPClient(credential: savedCredential)
         do {
             _ = try await diagnosticClient.output(cardID: fixture.shellCardId)

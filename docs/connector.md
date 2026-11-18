@@ -68,6 +68,25 @@ Pairing uses a five-minute, single-use QR descriptor. The iOS app refuses a desc
 
 Changing to an address outside the current certificate requires **Reset and re-pair** while Connector is disabled. Reset removes the Connector identity, paired devices, and its remote-command journal. Revoking one device prevents its pending commands from running and drops its command history; a revoked device's slot is reused when a new device pairs and all 32 slots are taken.
 
+## One phone, several Macs
+
+A phone can be paired with more than one Mac (a work Mac and a personal
+one). Nothing changes on a Mac: each has its own identity, device list, trust,
+sharing scope and revocation, and never learns what else the phone is paired
+with. On the phone the Macs are never mixed: it shows one Mac at a time — the
+one last chosen — and its menu lists the paired Macs by name and address,
+adds a Mac (the same QR or pasted code) and removes the pairing with the
+current one. Drafts and unresolved operations belong to the Mac they were
+written for and are there again after switching back. Pairing again with a
+known Mac replaces that pairing.
+
+The phone never changes Mac by itself. While the current Mac cannot be
+reached it asks each other paired Mac once (that Mac's own certificate pin and
+token, four seconds, at most every fifteen) whether it answers, keeps only
+that answer, and offers the switch as one line under the unreachable notice.
+A Mac on another network stays unreachable; a Mac that was reset is a
+different identity and its old entry must be removed on the phone.
+
 ## Slack mentions on the phone
 
 Pairing is the consent for this: there is no separate switch, the three sharing scopes and **Trust this device** do not narrow it, and a phone paired before the update that added it gains it with that update (a deliberate exception to "updating never expands consent", which describes the sharing selector). The phone shows the same list as the Mac's **Slack mentions** view (`GET /v1/mentions`): the open mentions of the last week with their context, the ones an MCP client took, the marks an orchestrator set, and your Slack badge automations as routes. The Mac's memory is the only source; the phone never talks to Slack, and while the Slack connection is off, no search has finished or the last search failed, it gets that state and no list.

@@ -16,7 +16,7 @@ remain authoritative, including foreground/generation and MCP fences.
 
 ## Layout
 
-- `Sources/DeckConnectorCore`: Foundation/Security wire models, pairing parser, exact-origin HTTP client, pinned TLS, one-value Keychain credential, bounded response loader, and durable command journal.
+- `Sources/DeckConnectorCore`: Foundation/Security wire models, pairing parser, exact-origin HTTP client, pinned TLS, one Keychain credential per paired Mac (`HostRoster`), bounded response loader, and durable command journal.
 - `DeckConnectorApp`: SwiftUI task/scratchpad/queue UI plus AVFoundation QR scanner. The system keyboard microphone supplies dictation; the app does not request microphone access or run a Speech service.
 - `Tests/DeckConnectorCoreTests`: macOS-runnable protocol and recovery tests.
 - `DeckConnectorTests`: app-hosted XCTest coverage for the production `AppModel`, Simulator Keychain, and an opt-in real Deck loopback host.
@@ -60,7 +60,7 @@ a page chosen by hand is kept for every card. Replies are not tied to the
 pane's generation: they stay while the card exists and stays readable.
 With the switch off the page says how to turn it on; a host without the
 list shows no switch.
- It does not promise background connectivity. Pairing descriptors remain in memory only. The saved Keychain value binds origin, certificate pin, host ID, device ID, and bearer token with `WhenUnlockedThisDeviceOnly` accessibility. HTTP uses an ephemeral session with cookies, redirects, disk cache, and credential storage disabled. The self-signed leaf must match the pinned DER SHA-256 and also pass hostname and validity evaluation as the sole trust anchor.
+ It does not promise background connectivity. Pairing descriptors remain in memory only. The phone can be paired with several Macs: each has its own Keychain item (account `host:<host id>`), and the app binds exactly one at a time — the one last chosen — so nothing of one Mac is read, shown or sent while another is shown; changing Mac drops the whole binding first. The single item an earlier build wrote becomes that Mac's item on the first read. Each saved Keychain value binds origin, certificate pin, host ID, device ID, and bearer token with `WhenUnlockedThisDeviceOnly` accessibility. HTTP uses an ephemeral session with cookies, redirects, disk cache, and credential storage disabled. The self-signed leaf must match the pinned DER SHA-256 and also pass hostname and validity evaluation as the sole trust anchor.
 
 Message drafts preserve the target generation that was current when their first character was typed (an empty composer follows the card). A refresh never silently changes that binding; if the desktop target changes, the user must explicitly accept the current generation before sending. Each command's immutable ID and body is atomically persisted before POST. An unknown result is recovered by querying that same ID and is never automatically retried under a new ID. Pending sends are visible and block another send for the card.
 

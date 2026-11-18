@@ -7,6 +7,9 @@ Resumable subcommands share one experiment root (state.json inside it):
                    (e41bf49) iOS sources built as the side-by-side test variant
   host             launch the isolated host (connector-device carrier), register
                    it, enable the LAN listener and decode the displayed pairing QR
+  host2            a second isolated host from the same bundle (own data dir,
+                   tmux socket, port and identity): the "other Mac" of a phone
+                   paired with two
   agents           type into the isolated shells: a marker, then `claude` by hand
   test <name> [K=V ...]  run one ConnectorUITests method on the phone; DECKSTEP
                    markers in the live log trigger host steps (grant, fault, ...)
@@ -76,6 +79,35 @@ class State(dict):
     def event(self, name, **fields):
         self.setdefault("events", []).append({"t": round(time.time(), 3), "event": name, **fields})
         self.save()
+
+
+class Second:
+    """The root's second isolated host, seen through the first one's helpers:
+    the per-host keys are kept under a `2` suffix, everything else is shared."""
+    KEYS = {"hostPID", "serverRegistered", "tmuxSocket", "stepSeq", "pairing", "socket", "tls", "hostAddress",
+            "pairingDecodedAt"}
+    second = True
+
+    def __init__(self, state):
+        self.state, self.root = state, state.root
+
+    def key(self, name):
+        return name + "2" if name in self.KEYS else name
+
+    def __getitem__(self, name):
+        return self.state[self.key(name)]
+
+    def __setitem__(self, name, value):
+        self.state[self.key(name)] = value
+
+    def get(self, name, default=None):
+        return self.state.get(self.key(name), default)
+
+    def save(self):
+        self.state.save()
+
+    def event(self, name, **fields):
+        self.state.event(name, host=2, **fields)
 
 
 def load():
@@ -249,7 +281,7 @@ def cmd_rebuild_host(_args):
 
 
 def data_dir(state):
-    return state.root / "host-data"
+    return state.root / ("host-data-2" if getattr(state, "second", False) else "host-data")
 
 
 def app_log(state):
@@ -294,6 +326,9 @@ def register_host(state):
         rows = out(["ps", "-axo", "pid=,comm="], 10).splitlines()
         pids = [int(r.split(None, 1)[0]) for r in rows if len(r.split(None, 1)) == 2
                 and os.path.realpath(r.split(None, 1)[1]) == os.path.realpath(executable)]
+        # the root's other host runs the same executable and is already registered
+        whole = getattr(state, "state", state)
+        pids = [p for p in pids if p not in {whole.get("hostPID"), whole.get("hostPID2")} - {state.get("hostPID")}]
         if len(pids) == 1:
             if state.get("hostPID") != pids[0]:
                 registry(state, "add-process", "--pid", pids[0])
@@ -337,9 +372,20 @@ print(codes.first!)
 
 
 def cmd_host(_args):
+    start_host(load(), int(os.environ.get("DECK_DEVICE_HOST_PORT", "47731")))
+
+
+def cmd_host2(_args):
     state = load()
+    if not state.get("hostPID"):
+        raise SystemExit("run `host` first")
+    second = Second(state)
+    second["socket"] = state["socket"] + "b"
+    start_host(second, int(os.environ.get("DECK_DEVICE_HOST2_PORT", "47732")))
+
+
+def start_host(state, port):
     address = os.environ.get("DECK_DEVICE_HOST_ADDRESS") or out(["ipconfig", "getifaddr", "en0"])
-    port = int(os.environ.get("DECK_DEVICE_HOST_PORT", "47731"))
     data = data_dir(state); data.mkdir(mode=0o700, exist_ok=True)
     env = dict(ENV, TMUX_TMPDIR=str(state.root / "t"))
     sh(["open", "-g", "-n", state["hostBundle"], "--env", f"TMUX_TMPDIR={state.root / 't'}", "--args",
@@ -381,6 +427,12 @@ def decode_pairing(state, address, port):
     state["pairingDecodedAt"] = time.time()
     state.event("pairing-decoded", tls=state["tls"])
     print(json.dumps(state["tls"]))
+
+
+def cmd_pair_refresh2(_args):
+    state = Second(load())
+    host_step(state, "pair")
+    decode_pairing(state, state["hostAddress"], state["pairing"]["port"])
 
 
 def cmd_pair_refresh(_args):
@@ -467,6 +519,10 @@ def plan_for(state, test, extra):
                 "DECK_DEVICE_ADDRESS": f"{state.get('hostAddress', '')}:{state.get('pairing', {}).get('port', '')}"})
     if test in ("testDeviceM1SlackMentionsRouteAndDismiss", "testDeviceM2SlackMentionRouteStartsByItself"):
         env["DECK_DEVICE_PAIRING_URI"] = state["pairing"]["uri"]
+    if test == "testDeviceH1TwoMacsSwitchWithoutMixing":
+        env["DECK_DEVICE_PAIRING_URI"] = state["pairing"]["uri"]
+        env["DECK_DEVICE_PAIRING_URI_2"] = state["pairing2"]["uri"]
+        env["DECK_DEVICE_ADDRESS_2"] = f"{state['hostAddress2']}:{state['pairing2']['port']}"
     if test == "testDeviceR1OldBuildReproducesFieldDenial":
         env["DECK_DEVICE_PAIRING_URI"] = state["pairing"]["uri"]
         target["UITargetAppPath"] = state["iosOldApp"]
@@ -570,7 +626,7 @@ def cmd_cleanup(_args):
 
 
 if __name__ == "__main__":
-    commands = {"prepare": cmd_prepare, "rebuild-host": cmd_rebuild_host, "rebuild-ios": cmd_rebuild_ios, "pair-refresh": cmd_pair_refresh, "host": cmd_host, "agents": cmd_agents, "test": cmd_test,
+    commands = {"host2": cmd_host2, "pair-refresh2": cmd_pair_refresh2, "prepare": cmd_prepare, "rebuild-host": cmd_rebuild_host, "rebuild-ios": cmd_rebuild_ios, "pair-refresh": cmd_pair_refresh, "host": cmd_host, "agents": cmd_agents, "test": cmd_test,
                 "step": cmd_step, "tmux": cmd_tmux, "cleanup": cmd_cleanup}
     if len(sys.argv) < 2 or sys.argv[1] not in commands:
         raise SystemExit(__doc__)

@@ -958,8 +958,19 @@ extension ConnectorUITests {
     /// test variant can wake up with an earlier run's pairing. Remove it the
     /// way a user would (revoked screen or menu → 移除配对 → confirm).
     /// Returns whether a pairing was present.
+    /// A phone paired with several Macs shows the next one after each removal.
     @discardableResult
     private func removePairingIfPresent(_ app: XCUIApplication) -> Bool {
+        var removed = false
+        for _ in 0..<4 {
+            guard removeOnePairingIfPresent(app) else { return removed }
+            removed = true
+        }
+        XCTFail("Pairings kept returning after four removals.")
+        return removed
+    }
+
+    private func removeOnePairingIfPresent(_ app: XCUIApplication) -> Bool {
         if pairingScan(app).waitForExistence(timeout: 6) { return false }
         answerSystemAlert(["允许", "Allow"], timeout: 3)
         let remove = app.buttons["移除配对"].firstMatch
@@ -971,8 +982,118 @@ extension ConnectorUITests {
         remove.tap()
         let confirm = app.sheets.buttons["移除配对"].exists ? app.sheets.buttons["移除配对"] : app.buttons.matching(identifier: "移除配对").element(boundBy: max(0, app.buttons.matching(identifier: "移除配对").count - 1))
         XCTAssertTrue(confirm.waitForExistence(timeout: 5)); confirm.tap()
-        XCTAssertTrue(pairingScan(app).waitForExistence(timeout: 15), "Removing the pairing must return to the pairing screen.")
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: confirm)
+        XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 10), .completed, "The removal must be taken.")
         return true
+    }
+
+    private func hostMenu(_ app: XCUIApplication) -> XCUIElement {
+        app.navigationBars.buttons.allElementsBoundByIndex.last ?? app.navigationBars.buttons.firstMatch
+    }
+
+    /// The menu's entry for the paired Mac listening on `address`.
+    private func hostEntry(_ address: String, in app: XCUIApplication) -> XCUIElement {
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", address)).firstMatch
+    }
+
+    private func draftValue(_ app: XCUIApplication, card title: String) -> String? {
+        openCard(named: title, in: app)
+        let draft = app.textViews["deck.message.draft"].firstMatch
+        let value = draft.waitForExistence(timeout: 8) && reveal(draft, in: app) ? draft.value as? String : nil
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(waitUntil(10) { !app.navigationBars[title].exists }, "Back must return to the list.")
+        return value
+    }
+
+    // H1: one phone, two Macs (two isolated hosts on different ports). The
+    // first is paired and trusted and gets a draft; the second is added from
+    // the list, shows the same-titled card without that draft and without the
+    // first Mac's trust; switching back finds the draft. With the current Mac
+    // unreachable the other is offered, never chosen; removing a pairing
+    // shows the remaining Mac, and removing that one ends at the pairing page.
+    func testDeviceH1TwoMacsSwitchWithoutMixing() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_PAIRING_URI", "DECK_DEVICE_PAIRING_URI_2", "DECK_DEVICE_HOST",
+                                                       "DECK_DEVICE_ADDRESS", "DECK_DEVICE_ADDRESS_2", "DECK_DEVICE_SHELL_TITLE", "DECK_DEVICE_NONCE"])
+        let first = environment["DECK_DEVICE_ADDRESS"]!, second = environment["DECK_DEVICE_ADDRESS_2"]!
+        let title = environment["DECK_DEVICE_SHELL_TITLE"]!
+        let message = "h1-\(environment["DECK_DEVICE_NONCE"]!)"
+        let app = chineseApp()
+        app.launch()
+        if pairingScan(app).waitForExistence(timeout: 8) {
+            pairByPaste(environment["DECK_DEVICE_PAIRING_URI"]!, host: environment["DECK_DEVICE_HOST"]!, in: app, cameraDenial: false)
+            deckStep("first-paired-now")
+        } else {
+            answerSystemAlert(["允许", "Allow"], timeout: 3)
+            XCTAssertTrue(app.staticTexts[title].firstMatch.waitForExistence(timeout: 45), "An earlier build's pairing must still show its Mac.")
+            deckStep("first-paired-by-earlier-build")
+        }
+        deckStep("ready-trust")
+        let notShared = app.staticTexts["输出未共享"].firstMatch
+        XCTAssertTrue(waitUntil(60) { !notShared.exists }, "Trusting this phone on the first Mac must share its cards.")
+        openCard(named: title, in: app)
+        let draft = app.textViews["deck.message.draft"].firstMatch
+        XCTAssertTrue(reveal(draft, in: app)); draft.tap(); draft.typeText(message)
+        app.buttons["deck.keyboard.done"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        // add the second Mac from the list
+        hostMenu(app).tap()
+        let add = app.buttons["添加 Mac"].firstMatch
+        XCTAssertTrue(add.waitForExistence(timeout: 5), "The paired list must offer adding a Mac."); add.tap()
+        let field = pairField(app)
+        XCTAssertTrue(field.waitForExistence(timeout: 10)); field.tap(); field.typeText(environment["DECK_DEVICE_PAIRING_URI_2"]!)
+        app.buttons["deck.pair.submit"].tap()
+        XCTAssertTrue(waitUntil(45) { !app.buttons["deck.pair.submit"].exists }, "Pairing the second Mac must close the sheet.")
+        XCTAssertTrue(notShared.waitForExistence(timeout: 45), "The second Mac never trusted this phone: its cards stay unshared.")
+        keepScreenshot("second-mac", app)
+        hostMenu(app).tap()
+        XCTAssertTrue(hostEntry(first, in: app).waitForExistence(timeout: 5) && hostEntry(second, in: app).exists,
+                      "The menu must list both Macs with their addresses.")
+        keepScreenshot("two-macs-menu", app)
+        deckStep("second-added")
+        // back to the first: its trust and its draft are its own
+        hostEntry(first, in: app).tap()
+        XCTAssertTrue(waitUntil(45) { app.staticTexts[title].firstMatch.exists && !notShared.exists }, "The first Mac must come back as it was.")
+        XCTAssertEqual(draftValue(app, card: title), message, "The first Mac's draft must be there after switching away and back.")
+        hostMenu(app).tap(); hostEntry(second, in: app).tap()
+        XCTAssertTrue(notShared.waitForExistence(timeout: 45))
+        XCTAssertNotEqual(draftValue(app, card: title), message, "The second Mac's same-titled card must not show the first Mac's draft.")
+        hostMenu(app).tap(); hostEntry(first, in: app).tap()
+        XCTAssertTrue(waitUntil(45) { app.staticTexts[title].firstMatch.exists && !notShared.exists })
+        deckStep("switched-both-ways")
+
+        // the current Mac stops listening: the other is offered, not chosen
+        deckStep("ready-disable")
+        let offer = app.buttons["deck.hosts.reachable"].firstMatch
+        XCTAssertTrue(offer.waitForExistence(timeout: 90), "With the current Mac unreachable, the reachable one must be offered.")
+        XCTAssertFalse(notShared.exists, "The offer must not switch by itself: the first Mac's last content stays.")
+        keepScreenshot("other-mac-offered", app)
+        offer.tap()
+        XCTAssertTrue(notShared.waitForExistence(timeout: 45), "Taking the offer must show the second Mac.")
+        XCTAssertTrue(waitUntil(20) { !offer.exists })
+        deckStep("offer-taken")
+
+        // removing the current pairing shows the remaining Mac
+        hostMenu(app).tap()
+        app.buttons["移除配对"].firstMatch.tap()
+        let named = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "的配对")).firstMatch
+        XCTAssertTrue(named.waitForExistence(timeout: 5), "With two Macs the confirmation must name the one being removed.")
+        keepScreenshot("remove-names-the-mac", app)
+        let confirm = app.sheets.buttons["移除配对"].exists ? app.sheets.buttons["移除配对"] : app.buttons.matching(identifier: "移除配对").element(boundBy: max(0, app.buttons.matching(identifier: "移除配对").count - 1))
+        confirm.tap()
+        deckStep("ready-enable")
+        XCTAssertTrue(waitUntil(90) { app.staticTexts[title].firstMatch.exists && !notShared.exists && !app.buttons["deck.hosts.reachable"].exists },
+                      "The remaining Mac must be shown once it listens again.")
+        XCTAssertEqual(draftValue(app, card: title), message)
+        hostMenu(app).tap()
+        XCTAssertTrue(app.buttons["添加 Mac"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(hostEntry(second, in: app).exists, "The removed Mac must be gone from the menu.")
+        app.buttons["移除配对"].firstMatch.tap()
+        let last = app.sheets.buttons["移除配对"].exists ? app.sheets.buttons["移除配对"] : app.buttons.matching(identifier: "移除配对").element(boundBy: max(0, app.buttons.matching(identifier: "移除配对").count - 1))
+        XCTAssertTrue(last.waitForExistence(timeout: 5)); last.tap()
+        XCTAssertTrue(pairingScan(app).waitForExistence(timeout: 15), "Removing the last pairing must return to the pairing page.")
+        deckStep("h1-done")
+        app.terminate()
     }
 
     // Z1: cleanup — removes this test variant's pairing through the app so no
