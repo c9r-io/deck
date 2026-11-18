@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.28 — 2026-11-18 (Nightly)
+
+- Board: a card can move to another project. The card menu has "Move to
+  project…", and a card dragged onto a project tab lands in that project's
+  default column. The session, queue, reminder and scratchpad go with it.
+  Three cards stay where they are and say why: an automation run whose first
+  step has not been handed to the queue yet, a channel card still collecting
+  messages, and a shell an MCP client manages.
+- MCP: a new permission, "Organize cards" (Settings › Remote access, off by
+  default, needs the card snapshot). A client holding it may rename one card
+  or move it to a column of any project it can reach, through the new tool
+  `deck_card_update`. Each request names the title and column the client
+  saw and is refused if you changed the card meanwhile; it types nothing,
+  starts nothing and closes nothing. The card snapshot now lists each
+  project's columns.
+- Needs attention: each filter button also says how many of its cards carry
+  a client's mark ("Turn ended 12 · 3 marked"). A mark on a turn you already
+  viewed is listed under Turn ended, not the default list; the number shows
+  where to look. Marks still enter no badge or notification.
+
 ## 0.8.27 — 2026-11-18 (Nightly)
 
 - Pi: fixed — Deck accepted Pi 1.1.x only, so every Pi since 1.2.0 showed
