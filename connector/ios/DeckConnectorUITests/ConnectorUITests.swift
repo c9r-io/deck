@@ -1209,6 +1209,53 @@ extension ConnectorUITests {
         keepScreenshot("tasks-after-mentions", app)
     }
 
+    /// The route that starts by itself: a rule the Mac approved, with the
+    /// first-send choice. The phone names the mention and the rule; the Mac
+    /// creates the card, starts Claude and sends the approved first step,
+    /// and the phone reads the reply in that card's output. Nobody touches
+    /// the Mac in between.
+    func testDeviceM2SlackMentionRouteStartsByItself() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_HOST", "DECK_DEVICE_PAIRING_URI"])
+        let host = environment["DECK_DEVICE_HOST"]!
+        let app = chineseApp()
+        app.launch()
+        if !app.staticTexts[host].firstMatch.waitForExistence(timeout: 8) {
+            pairByPaste(environment["DECK_DEVICE_PAIRING_URI"]!, host: host, in: app, cameraDenial: false)
+        }
+        deckStep("ready-mentions-auto")
+        let entry = app.descendants(matching: .any).matching(identifier: "deck.mentions.entry").firstMatch
+        let count = app.staticTexts["deck.mentions.count"].firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 40))
+        XCTAssertTrue(waitUntil(40) { count.exists && count.label == "1" }, "One mention waits.")
+        entry.tap()
+        let mention = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "QA-MENTION-AUTO")).firstMatch
+        XCTAssertTrue(mention.waitForExistence(timeout: 20))
+        mention.tap()
+        let route = app.buttons["deck.mention.route.Rqaauto"].firstMatch
+        XCTAssertTrue(route.waitForExistence(timeout: 10))
+        XCTAssertTrue(route.label.contains("🚀") && route.label.contains("会自动开始"), "An approved rule with the first-send choice says it starts by itself: \(route.label)")
+        keepScreenshot("mention-auto-detail", app)
+        route.tap()
+        let go = app.buttons["路由"].firstMatch
+        XCTAssertTrue(go.waitForExistence(timeout: 5))
+        go.tap()
+        XCTAssertTrue(app.staticTexts["这个范围内没有未处理的提及"].firstMatch.waitForExistence(timeout: 30), "The routed mention leaves the list.")
+        deckStep("ready-mentions-auto-routed")
+        app.navigationBars.buttons.firstMatch.tap()
+        // the run's card is an ordinary saved Claude card: listed and readable
+        let card = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "QA-MENTION-AUTO")).firstMatch
+        // the list builds its rows as they scroll into view, and this one is below the fold
+        XCTAssertTrue(waitUntil(40) { self.reveal(card, in: app) }, "The card the route created appears in the list.")
+        keepScreenshot("mention-auto-card-listed", app)
+        card.tap()
+        let output = outputText(app)
+        // 4127 + 5311: the sum is in Claude's reply and nowhere in the prompt
+        XCTAssertTrue(waitUntil(150) { output.exists && output.label.contains("9438") },
+                      "The approved first step was sent and answered without anyone at the Mac.")
+        XCTAssertTrue(output.label.contains("QA-MENTION-AUTO"), "The step carried the routed message.")
+        keepScreenshot("mention-auto-reply", app)
+    }
+
     func testDeviceS1ShellStoppedAndWithdrawal() throws {
         let environment = try requireDeviceAcceptance(["DECK_DEVICE_SHELL_TITLE", "DECK_DEVICE_SHELL_MARKER", "DECK_DEVICE_STOPPED_TITLE", "DECK_DEVICE_HOST"])
         let app = chineseApp()
