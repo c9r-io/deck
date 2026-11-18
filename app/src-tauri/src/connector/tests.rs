@@ -1115,8 +1115,9 @@ fn command_surface_preserves_the_durable_lifecycle_and_closes_on_disable() {
         Err(("rejected", "frontend-required"))
     );
 
-    assert!(!connector_addresses().iter().any(|address| {
-        address
+    assert!(!connector_addresses().iter().any(|entry| {
+        entry
+            .address
             .parse::<Ipv4Addr>()
             .is_ok_and(|ip| !connector_network_range(ip))
     }));
@@ -2890,10 +2891,6 @@ fn pairing_and_identity_reset_refuse_while_the_listener_state_forbids_them() {
         })
         .unwrap();
     let status = connector_status().unwrap();
-    assert!(
-        status.reset_required,
-        "an identity minted for another address needs a reset"
-    );
     assert_eq!(status.fingerprint.as_deref(), Some("f".repeat(64).as_str()));
     assert_eq!(status.origin.as_deref(), Some("https://127.0.0.1:8443"));
 }
@@ -3737,7 +3734,6 @@ fn a_refused_listener_start_is_one_closed_reason_word() {
     );
     assert_eq!(code(server::BIND_UNAVAILABLE), "address");
     assert_eq!(code("connector network changed"), "network-changed");
-    assert_eq!(code("connector identity reset required"), "reset-required");
     assert_eq!(code("connector identity is missing"), "identity-missing");
     assert_eq!(code(server::BIND_IN_USE), "port-in-use");
     assert_eq!(code(server::BIND_DENIED), "bind-denied");
@@ -3766,4 +3762,35 @@ fn a_refused_listener_start_is_one_closed_reason_word() {
         refusal_code(&validate_connector_listener("10.9.8.7", 47631, &[]).unwrap_err()),
         "address"
     );
+}
+
+#[test]
+fn offered_addresses_put_ethernet_and_wifi_first_and_name_the_interface() {
+    let at = |ip: [u8; 4], interface: &str| LocalAddress {
+        ip: Ipv4Addr::from(ip),
+        interface: interface.into(),
+        netmask: Ipv4Addr::new(255, 255, 255, 0),
+    };
+    let offered = offered_addresses(vec![
+        at([10, 8, 0, 2], "utun4"),
+        at([192, 168, 64, 1], "bridge100"),
+        at([192, 168, 31, 39], "en5"),
+        at([192, 168, 31, 30], "en0"),
+        at([192, 168, 31, 30], "en0"),
+    ]);
+    let seen: Vec<(&str, &str)> = offered
+        .iter()
+        .map(|entry| (entry.address.as_str(), entry.interface.as_str()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("192.168.31.30", "en0"),
+            ("192.168.31.39", "en5"),
+            ("192.168.64.1", "bridge100"),
+            ("10.8.0.2", "utun4"),
+        ],
+        "a tunnel's 10.x no longer sorts ahead of the LAN address"
+    );
+    assert!(offered_addresses(vec![]).is_empty());
 }

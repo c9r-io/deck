@@ -17,16 +17,23 @@ private func fixtureTrust(verifyAt: TimeInterval) throws -> (SecTrust, String) {
     return (value, pin)
 }
 
-@Test func pinnedSelfSignedIPLeafIsSoleAnchorWithHostnameAndValidityChecks() throws {
+@Test func pinnedSelfSignedLeafIsSoleAnchorWithValidityChecksWhateverAddressItNames() throws {
     let (valid, pin) = try fixtureTrust(verifyAt: 1_798_761_600) // 2027-01-01, inside fixture validity.
-    #expect(PinnedTrustEvaluator.evaluate(trust: valid, host: "192.168.1.4", fingerprint: pin))
+    #expect(PinnedTrustEvaluator.evaluate(trust: valid, fingerprint: pin))
 
-    let (wrongHost, _) = try fixtureTrust(verifyAt: 1_798_761_600)
-    #expect(!PinnedTrustEvaluator.evaluate(trust: wrongHost, host: "192.168.1.5", fingerprint: pin))
+    // The connection was made to another address than the one the
+    // certificate names (the Mac moved): the pinned certificate is still it.
+    let data = try #require(Data(base64Encoded: ipLeafDER))
+    let certificate = try #require(SecCertificateCreateWithData(nil, data as CFData))
+    var moved: SecTrust?
+    #expect(SecTrustCreateWithCertificates(certificate, SecPolicyCreateSSL(true, "192.168.1.5" as CFString), &moved) == errSecSuccess)
+    let movedTrust = try #require(moved)
+    SecTrustSetVerifyDate(movedTrust, Date(timeIntervalSince1970: 1_798_761_600) as CFDate)
+    #expect(PinnedTrustEvaluator.evaluate(trust: movedTrust, fingerprint: pin))
 
     let (wrongPin, _) = try fixtureTrust(verifyAt: 1_798_761_600)
-    #expect(!PinnedTrustEvaluator.evaluate(trust: wrongPin, host: "192.168.1.4", fingerprint: String(repeating: "0", count: 64)))
+    #expect(!PinnedTrustEvaluator.evaluate(trust: wrongPin, fingerprint: String(repeating: "0", count: 64)))
 
     let (expired, _) = try fixtureTrust(verifyAt: 1_830_297_600) // 2028-01-01.
-    #expect(!PinnedTrustEvaluator.evaluate(trust: expired, host: "192.168.1.4", fingerprint: pin))
+    #expect(!PinnedTrustEvaluator.evaluate(trust: expired, fingerprint: pin))
 }

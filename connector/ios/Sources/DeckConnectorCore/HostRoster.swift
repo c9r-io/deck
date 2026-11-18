@@ -60,6 +60,18 @@ public struct HostRoster: Sendable {
         }
     }
 
+    /// A pairing code scanned for a Mac this phone is already paired with:
+    /// the same host and the same pinned certificate, so only where to reach
+    /// it can differ. Returns the kept pairing at the code's address; nil
+    /// when the code is for another Mac or for a Mac that was reset (another
+    /// certificate), which is an ordinary new pairing. The caller proves the
+    /// kept token still works there before storing the result.
+    public static func readdressed(_ hosts: [DeviceCredential], hostId: String, fingerprint: String, origin: String, hostName: String?) -> DeviceCredential? {
+        guard let known = hosts.first(where: { $0.hostId == hostId }), known.fingerprint == fingerprint else { return nil }
+        return DeviceCredential(origin: origin, fingerprint: known.fingerprint, hostId: known.hostId, deviceId: known.deviceId,
+                                token: known.token, hostName: hostName ?? known.hostName)
+    }
+
     /// The Mac to show: the one last chosen while it is still paired,
     /// otherwise the first listed. Never a Mac chosen by reachability.
     public static func current(_ hosts: [DeviceCredential], preferred: String?) -> DeviceCredential? {

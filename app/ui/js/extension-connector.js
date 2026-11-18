@@ -17,7 +17,8 @@ const PANEL_HTML = `
     <div class="set-group" id="set-item-connector" data-setting-id="connector" tabindex="-1" role="group" aria-labelledby="set-item-connector-title">
       <div class="set-group-head"><h3 class="set-group-title" id="set-item-connector-title" data-i18n="connector.title">Phone Connector</h3><span class="set-group-status" id="set-connector-status"></span></div>
       <div class="set-hint" data-i18n="connector.hint">Off by default. When enabled, deck listens only on the selected local address over pinned HTTPS.</div>
-      <div class="set-row"><label for="set-connector-address" data-i18n="connector.address">Local address</label><select id="set-connector-address"></select><input id="set-connector-port" type="number" min="1024" max="65535" value="47631"><button class="btn" id="set-connector-toggle" data-i18n="connector.enable">Enable</button></div>
+      <div class="set-row"><label for="set-connector-address" data-i18n="connector.address">Local address</label><select id="set-connector-address"></select><input id="set-connector-port" type="number" min="1024" max="65535" value="47631"><button class="btn" id="set-connector-toggle" data-i18n="connector.enable">Enable</button><button class="btn" id="set-connector-relisten" data-i18n="connector.relisten" hidden>Listen on the selected address</button></div>
+      <div class="set-hint" id="set-connector-stale" aria-live="polite" hidden></div>
       <div class="set-row"><label for="set-connector-scope" data-i18n="connector.scope">Phone access</label><select id="set-connector-scope" disabled><option value="agentCards" data-i18n="connector.scope.agentCards">Saved Codex/Claude cards</option><option value="boardMetadata" data-i18n="connector.scope.boardMetadata">All card summaries</option><option value="boardAccess" data-i18n="connector.scope.boardAccess">All card output and notes</option></select></div>
       <div class="set-hint" id="set-connector-scope-effect" aria-live="polite"></div>
       <div class="set-hint" id="set-connector-withheld" hidden></div>
@@ -86,7 +87,6 @@ export function createConnectorSettings(host) {
   const refusalKeys = {
     address: 'connector.refused.address',
     'network-changed': 'connector.refused.networkChanged',
-    'reset-required': 'connector.refused.resetRequired',
     'identity-missing': 'connector.refused.identityMissing',
     'port-in-use': 'connector.refused.portInUse',
     'bind-denied': 'connector.refused.bindDenied',
@@ -134,13 +134,25 @@ export function createConnectorSettings(host) {
     try { [status, addresses] = await Promise.all([inv('connector_status'), inv('connector_addresses')]); } catch (_) {}
     connectorDevices = status?.devices || [];
     const select = $('set-connector-address'); select.replaceChildren();
-    for (const address of addresses || []) {
-      const option = document.createElement('option'); option.value = address; option.textContent = address; select.appendChild(option);
+    // Only addresses this Mac has now are offered, each with the interface
+    // carrying it. A saved address that is gone is named in a line of its
+    // own, never offered: enabling on it can only be refused.
+    const offered = (addresses || []).map(entry => (typeof entry === 'string' ? { address: entry, interface: '' } : entry));
+    for (const entry of offered) {
+      const option = document.createElement('option'); option.value = entry.address;
+      option.textContent = entry.interface ? `${entry.address} · ${entry.interface}` : entry.address;
+      select.appendChild(option);
     }
-    if (status?.address && !(addresses || []).includes(status.address)) {
-      const option = document.createElement('option'); option.value = status.address; option.textContent = status.address; select.appendChild(option);
-    }
-    if (status?.address) select.value = status.address;
+    const saved = status?.address || '';
+    const gone = !!saved && !offered.some(entry => entry.address === saved);
+    if (saved && !gone) select.value = saved;
+    else if (offered.length) select.value = offered[0].address;
+    $('set-connector-stale').hidden = !gone;
+    $('set-connector-stale').textContent = gone
+      ? t(offered.length ? 'connector.addressGone' : 'connector.addressGoneNone', { address: saved }) : '';
+    // enabled without a listener: the same switch would only turn it off,
+    // so listening where the Mac is now gets its own button
+    $('set-connector-relisten').hidden = !(status?.enabled && !status.running && offered.length);
     $('set-connector-port').value = String(status?.port || 47631);
     // no listener after a start that was asked for: say why, when the
     // backend knows (a refused enable leaves the switch off)
@@ -199,19 +211,23 @@ export function createConnectorSettings(host) {
 
   function mount() {
     listen('connector-changed', connectorPairingChanged).catch(() => uev('listen-fail', 'connector-changed'));
-    $('set-connector-toggle').onclick = async () => {
-      const enabled = $('set-connector-toggle').dataset.enabled === 'true';
-      if (!enabled && !(await confirmDangerDialog(t('connector.enableConfirm'), t('connector.enable')))) return;
+    // a refused start leaves its reason word in the status
+    const enableSelected = async () => {
+      if (!(await confirmDangerDialog(t('connector.enableConfirm'), t('connector.enable')))) return;
       try {
-        if (enabled) await inv('connector_disable');
-        else await inv('connector_enable', { address: $('set-connector-address').value, port: Number($('set-connector-port').value) });
+        await inv('connector_enable', { address: $('set-connector-address').value, port: Number($('set-connector-port').value) });
       } catch (_) {
-        // a refused start leaves its reason word in the status
-        const refused = enabled ? null : await inv('connector_status').catch(() => null);
+        const refused = await inv('connector_status').catch(() => null);
         toast(refusalText(refused?.refusal) || t('connector.actionFailed'));
       }
       await renderConnectorSettings();
     };
+    $('set-connector-toggle').onclick = async () => {
+      if ($('set-connector-toggle').dataset.enabled !== 'true') return enableSelected();
+      try { await inv('connector_disable'); } catch (_) { toast(t('connector.actionFailed')); }
+      await renderConnectorSettings();
+    };
+    $('set-connector-relisten').onclick = enableSelected;
     $('set-connector-scope').onchange = async () => {
       const control = $('set-connector-scope');
       if (control.disabled || scopeChangePending) { control.value = connectorScope; return; }

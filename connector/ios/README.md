@@ -60,7 +60,7 @@ a page chosen by hand is kept for every card. Replies are not tied to the
 pane's generation: they stay while the card exists and stays readable.
 With the switch off the page says how to turn it on; a host without the
 list shows no switch.
- It does not promise background connectivity. Pairing descriptors remain in memory only. The phone can be paired with several Macs: each has its own Keychain item (account `host:<host id>`), and the app binds exactly one at a time — the one last chosen — so nothing of one Mac is read, shown or sent while another is shown; changing Mac drops the whole binding first. The single item an earlier build wrote becomes that Mac's item on the first read. Each saved Keychain value binds origin, certificate pin, host ID, device ID, and bearer token with `WhenUnlockedThisDeviceOnly` accessibility. HTTP uses an ephemeral session with cookies, redirects, disk cache, and credential storage disabled. The self-signed leaf must match the pinned DER SHA-256 and also pass hostname and validity evaluation as the sole trust anchor.
+ It does not promise background connectivity. Pairing descriptors remain in memory only. The phone can be paired with several Macs: each has its own Keychain item (account `host:<host id>`), and the app binds exactly one at a time — the one last chosen — so nothing of one Mac is read, shown or sent while another is shown; changing Mac drops the whole binding first. The single item an earlier build wrote becomes that Mac's item on the first read. Each saved Keychain value binds origin, certificate pin, host ID, device ID, and bearer token with `WhenUnlockedThisDeviceOnly` accessibility. HTTP uses an ephemeral session with cookies, redirects, disk cache, and credential storage disabled. The self-signed leaf must match the pinned DER SHA-256 and pass validity evaluation as the sole trust anchor. The name inside the certificate is the address it was issued for and is not compared with the address in use: a Mac keeps its identity when its address changes. A pairing code scanned for a Mac the phone is already paired with (same host ID, same pin) only replaces the stored origin, after the kept token read a snapshot there; no pairing code is used and nothing else of the pairing changes.
 
 Message drafts preserve the target generation that was current when their first character was typed (an empty composer follows the card). A refresh never silently changes that binding; if the desktop target changes, the user must explicitly accept the current generation before sending. Each command's immutable ID and body is atomically persisted before POST. An unknown result is recovered by querying that same ID and is never automatically retried under a new ID. Pending sends are visible and block another send for the card.
 
@@ -237,13 +237,13 @@ work directory and leaves its own session history there.
 On a Mac with an assigned Development Team, install a signed development build on a physical iPhone and verify:
 
 1. camera denial still leaves paste pairing usable;
-2. correct host pairing succeeds, while wrong pin, expired QR, hostname/SAN mismatch, redirect, changed address, and revoked device fail closed;
+2. correct host pairing succeeds, while wrong pin, expired QR, redirect, and revoked device fail closed; a host that moved to another address is reached again after its code is scanned, with the pairing kept (device tests A1 + A2);
 3. the Keychain item is unavailable while locked and does not migrate to another device;
 4. local-network permission denial and desktop sleep/offline states are actionable;
 5. Codex and Claude Code tasks show bounded read-only output; system keyboard dictation remains editable before send;
 6. restart/generation conflicts, stale buffer revisions, concurrent note edits, queue pause/cancel, unknown delivery recovery, foreground reconnect, and host removal never cause silent loss or duplicate send.
 
-Do not add an ATS exception that permits arbitrary/self-signed certificates. The host certificate must include the paired LAN IP or DNS name in SAN; an address outside SAN requires desktop reset and re-pairing.
+Do not add an ATS exception that permits arbitrary/self-signed certificates. The certificate is trusted only as the exact pinned leaf; its SAN names the address it was issued for and is not required to match the address in use.
 
 ### Opt-in paired-device UI smoke
 

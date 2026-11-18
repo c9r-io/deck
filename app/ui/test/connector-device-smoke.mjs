@@ -238,18 +238,38 @@ export async function runConnectorDeviceSmoke() {
         return (await status()).devices.every(device => device.revoked);
       },
     };
+    // `move-<a>-<b>-<c>-<d>-<port>`: the Mac's address changed. The listener
+    // is turned off and enabled on the other address through the same
+    // Settings controls; the identity and every paired device must survive,
+    // and a new pairing code is shown for the phone to learn the address.
+    const move = async word => {
+      const parts = word.slice('move-'.length).split('-');
+      const address = parts.slice(0, 4).join('.'); const port = parts[4];
+      const before = await status();
+      if (!await toggle(false)) return false;
+      const listening = await toggle(true, () => {
+        $('set-connector-address').value = address;
+        $('set-connector-port').value = port;
+        return $('set-connector-address').value === address && $('set-connector-port').value === port;
+      });
+      const after = await status();
+      const kept = after.fingerprint === before.fingerprint && after.devices.length === before.devices.length
+        && after.devices.every((device, index) => device.id === before.devices[index].id && device.revoked === before.devices[index].revoked);
+      return listening && kept && after.origin === `https://${address}:${port}` && await steps.pair();
+    };
     const codes = Object.keys(steps);
     let seq = 0;
     for (;;) {
       const current = await word();
       const [number, step] = current.split(':');
-      if (Number(number) === seq + 1 && Object.hasOwn(steps, step)) {
+      const moving = (step || '').startsWith('move-');
+      if (Number(number) === seq + 1 && (moving || Object.hasOwn(steps, step))) {
         seq += 1;
         let ok = false;
-        try { ok = await steps[step](); } catch (_) { ok = false; }
+        try { ok = moving ? await move(step) : await steps[step](); } catch (_) { ok = false; }
         await pause(400);
-        await snapshot(`step-${seq}-${step}`);
-        await report('connector-device-step', ok, seq, codes.indexOf(step) + 1);
+        await snapshot(`step-${seq}-${moving ? 'move' : step}`);
+        await report('connector-device-step', ok, seq, moving ? 99 : codes.indexOf(step) + 1);
       } else if (step === 'done') {
         return;
       }

@@ -289,6 +289,11 @@ struct TaskListView: View {
                     Label(String(format: String(localized: "hosts.reachable"), model.hostLabel(host)), systemImage: "desktopcomputer")
                 }.accessibilityIdentifier("deck.hosts.reachable")
             }
+            // the phone cannot find a Mac whose address changed; scanning its
+            // pairing code again keeps the pairing and learns the address
+            Button { addingHost = true } label: {
+                Label(String(localized: "hosts.rescan"), systemImage: "qrcode.viewfinder")
+            }.accessibilityIdentifier("deck.hosts.rescan")
         default: EmptyView()
         }
     }

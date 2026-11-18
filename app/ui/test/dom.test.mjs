@@ -2270,3 +2270,39 @@ test('a Phone Connector listener that is not running says why, in Settings and a
   assert.match(line.textContent, /another program is using this port/);
   assert.equal(fakeDocument.getElementById('set-connector-toggle').dataset.enabled, 'false');
 });
+
+test('a saved Phone Connector address that is gone is named, never offered, and the Mac can listen where it is now', async () => {
+  const select = fakeDocument.getElementById('set-connector-address');
+  const stale = fakeDocument.getElementById('set-connector-stale');
+  const relisten = fakeDocument.getElementById('set-connector-relisten');
+  let status = { enabled: true, running: false, address: '192.168.31.16', port: 47631, devices: [], refusal: 'address' };
+  const enables = [];
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    if (cmd === 'connector_status') return status;
+    if (cmd === 'connector_addresses') return [{ address: '192.168.31.44', interface: 'en0' }, { address: '10.8.0.2', interface: 'utun4' }];
+    if (cmd === 'connector_enable') { enables.push(args); status = { ...status, running: true, address: args.address, refusal: null }; }
+    return {};
+  } } };
+  await renderConnectorSettings();
+  assert.deepEqual(select.children.map(option => option.value), ['192.168.31.44', '10.8.0.2']);
+  assert.deepEqual(select.children.map(option => option.textContent), ['192.168.31.44 · en0', '10.8.0.2 · utun4']);
+  assert.equal(select.value, '192.168.31.44', 'the first current address, not the one that is gone');
+  assert.equal(stale.hidden, false);
+  assert.match(stale.textContent, /192\.168\.31\.16 is not on this Mac now/);
+  assert.equal(relisten.hidden, false);
+
+  const clicked = relisten.onclick();
+  assert.equal(fakeDocument.getElementById('cfm').style.display, 'flex', 'listening on a new address is confirmed like enabling');
+  cfmDone(true);
+  await clicked;
+  assert.deepEqual(enables, [{ address: '192.168.31.44', port: 47631 }]);
+  assert.equal(stale.hidden, true);
+  assert.equal(relisten.hidden, true);
+  assert.equal(select.value, '192.168.31.44');
+
+  // a saved address the Mac still has stays selected, wherever it sorts
+  status = { enabled: true, running: true, address: '10.8.0.2', port: 47631, devices: [], refusal: null };
+  await renderConnectorSettings();
+  assert.equal(select.value, '10.8.0.2');
+  assert.equal(stale.hidden, true);
+});

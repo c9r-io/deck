@@ -10,6 +10,10 @@ Resumable subcommands share one experiment root (state.json inside it):
   host2            a second isolated host from the same bundle (own data dir,
                    tmux socket, port and identity): the "other Mac" of a phone
                    paired with two
+  move <address> [port]  the host's address changes: the listener moves to
+                   another private address of this Mac, identity and paired
+                   devices kept; decodes the new pairing QR
+  summary          redacted identity/device summary of the isolated host
   agents           type into the isolated shells: a marker, then `claude` by hand
   test <name> [K=V ...]  run one ConnectorUITests method on the phone; DECKSTEP
                    markers in the live log trigger host steps (grant, fault, ...)
@@ -435,6 +439,41 @@ def cmd_pair_refresh2(_args):
     decode_pairing(state, state["hostAddress"], state["pairing"]["port"])
 
 
+def cmd_move(args):
+    """The isolated host's address changes: it listens on another of this
+    Mac's private addresses with the same identity and paired devices."""
+    state = load()
+    address, port = args[0], int(args[1]) if len(args) > 1 else state["pairing"]["port"]
+    before = connector_summary(state)
+    state["hostAddressOld"] = f"{state['hostAddress']}:{state['pairing']['port']}"
+    host_step(state, f"move-{address.replace('.', '-')}-{port}", timeout=120)
+    listeners = out(["lsof", "-nP", "-a", "-p", state["hostPID"], "-iTCP", "-sTCP:LISTEN"], 10)
+    if f"{address}:{port}" not in listeners:
+        raise SystemExit("the moved listener does not belong to the isolated host")
+    decode_pairing(state, address, port)
+    after = connector_summary(state)
+    state.event("host-moved", before=before, after=after, tls=state["tls"])
+    state.save()
+    if (before["fingerprint"], before["devices"]) != (after["fingerprint"], after["devices"]):
+        raise SystemExit(f"identity or devices changed across the move: {before} -> {after}")
+    print(json.dumps({"before": before, "after": after}))
+
+
+def connector_summary(state):
+    """Redacted: a hash of the pinned certificate hash and each device's
+    hashed id with its revoked bit."""
+    doc = json.loads((data_dir(state) / "connector.json").read_text())
+    doc = doc.get("data", doc)
+    short = lambda value: hashlib.sha256(str(value).encode()).hexdigest()[:12]
+    return {"fingerprint": short(doc.get("identity_fingerprint") or doc.get("identityFingerprint")),
+            "address": doc["config"]["address"],
+            "devices": [[short(d["id"]), bool(d.get("revoked_at") or d.get("revokedAt"))] for d in doc.get("devices", [])]}
+
+
+def cmd_summary(_args):
+    print(json.dumps(connector_summary(load())))
+
+
 def cmd_pair_refresh(_args):
     state = load()
     host_step(state, "pair")
@@ -523,6 +562,9 @@ def plan_for(state, test, extra):
         env["DECK_DEVICE_PAIRING_URI"] = state["pairing"]["uri"]
         env["DECK_DEVICE_PAIRING_URI_2"] = state["pairing2"]["uri"]
         env["DECK_DEVICE_ADDRESS_2"] = f"{state['hostAddress2']}:{state['pairing2']['port']}"
+    if test in ("testDeviceA1PairAndDraftBeforeTheMacMoves", "testDeviceA2MovedMacKeepsItsPairing"):
+        env["DECK_DEVICE_PAIRING_URI"] = state["pairing"]["uri"]
+        env["DECK_DEVICE_ADDRESS_OLD"] = state.get("hostAddressOld", "")
     if test == "testDeviceR1OldBuildReproducesFieldDenial":
         env["DECK_DEVICE_PAIRING_URI"] = state["pairing"]["uri"]
         target["UITargetAppPath"] = state["iosOldApp"]
@@ -626,7 +668,7 @@ def cmd_cleanup(_args):
 
 
 if __name__ == "__main__":
-    commands = {"host2": cmd_host2, "pair-refresh2": cmd_pair_refresh2, "prepare": cmd_prepare, "rebuild-host": cmd_rebuild_host, "rebuild-ios": cmd_rebuild_ios, "pair-refresh": cmd_pair_refresh, "host": cmd_host, "agents": cmd_agents, "test": cmd_test,
+    commands = {"move": cmd_move, "summary": cmd_summary, "host2": cmd_host2, "pair-refresh2": cmd_pair_refresh2, "prepare": cmd_prepare, "rebuild-host": cmd_rebuild_host, "rebuild-ios": cmd_rebuild_ios, "pair-refresh": cmd_pair_refresh, "host": cmd_host, "agents": cmd_agents, "test": cmd_test,
                 "step": cmd_step, "tmux": cmd_tmux, "cleanup": cmd_cleanup}
     if len(sys.argv) < 2 or sys.argv[1] not in commands:
         raise SystemExit(__doc__)

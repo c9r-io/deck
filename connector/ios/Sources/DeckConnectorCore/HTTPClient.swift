@@ -281,7 +281,7 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
               challenge.protectionSpace.host.lowercased() == origin.host,
               challenge.protectionSpace.port == origin.port,
               let trust = challenge.protectionSpace.serverTrust,
-              PinnedTrustEvaluator.evaluate(trust: trust, host: origin.host, fingerprint: fingerprint) else {
+              PinnedTrustEvaluator.evaluate(trust: trust, fingerprint: fingerprint) else {
             completionHandler(.cancelAuthenticationChallenge, nil); return
         }
         completionHandler(.useCredential, URLCredential(trust: trust))
@@ -296,14 +296,20 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
     }
 }
 
+/// The Mac is the certificate the phone pinned at pairing, byte for byte.
+/// The name inside the certificate is the address it was issued for and is
+/// not compared with the address in use: a Mac keeps its identity when its
+/// address changes, and a certificate that is not the pinned one is refused
+/// whatever it names. The system still evaluates the pinned certificate as
+/// the only anchor (validity period, key usage).
 enum PinnedTrustEvaluator {
-    static func evaluate(trust: SecTrust, host: String, fingerprint: String) -> Bool {
+    static func evaluate(trust: SecTrust, fingerprint: String) -> Bool {
         guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate], let leaf = chain.first else { return false }
         let leafData = SecCertificateCopyData(leaf) as Data
         let actual = SHA256.hash(data: leafData).map { String(format: "%02x", $0) }.joined()
         guard actual == fingerprint else { return false }
 
-        let policy = SecPolicyCreateSSL(true, host as CFString)
+        let policy = SecPolicyCreateSSL(true, nil)
         guard SecTrustSetPolicies(trust, policy) == errSecSuccess,
               SecTrustSetAnchorCertificates(trust, [leaf] as CFArray) == errSecSuccess,
               SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess else { return false }

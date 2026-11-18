@@ -386,6 +386,23 @@ final class AppModel: ObservableObject {
         defer { pairing = false }
         do {
             let descriptor = try PairingDescriptor.parse(raw)
+            // A Mac this phone is already paired with, at another address:
+            // keep the pairing and only learn where it is now. The kept
+            // token is proven there first; the pairing code is not used.
+            if let moved = HostRoster.readdressed((try? roster.load()) ?? [], hostId: descriptor.hostId, fingerprint: descriptor.fingerprint,
+                                                  origin: descriptor.origin, hostName: descriptor.hostName) {
+                let movedClient = try DeckHTTPClient(credential: moved)
+                defer { movedClient.invalidate() }
+                do {
+                    _ = try await movedClient.snapshot()
+                    try roster.save(moved)
+                    UserDefaults.standard.set(moved.hostId, forKey: Self.currentHostKey)
+                    await start()
+                    return true
+                } catch ConnectorError.revoked {
+                    // revoked on the Mac: an ordinary new pairing below
+                }
+            }
             let pairingClient = try DeckHTTPClient(pairing: descriptor)
             defer { pairingClient.invalidate() }
             let response = try await pairingClient.pair(code: descriptor.code, deviceName: UIDevice.current.name)

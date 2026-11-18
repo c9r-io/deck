@@ -1098,6 +1098,63 @@ extension ConnectorUITests {
 
     // Z1: cleanup — removes this test variant's pairing through the app so no
     // credential is left in the phone's Keychain when the variant is uninstalled.
+    // A1 + A2: the Mac's address changes (the isolated host moves to another
+    // private address between the two runs, keeping its identity). A1 pairs
+    // at the first address, is trusted and leaves a draft. A2 opens the app
+    // with the Mac gone from that address: the last content stays, scanning
+    // the Mac's new pairing code is offered, and taking it only changes
+    // where the Mac is reached: same pairing, trust and draft.
+    func testDeviceA1PairAndDraftBeforeTheMacMoves() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_PAIRING_URI", "DECK_DEVICE_HOST", "DECK_DEVICE_SHELL_TITLE", "DECK_DEVICE_NONCE"])
+        let title = environment["DECK_DEVICE_SHELL_TITLE"]!
+        let app = chineseApp()
+        app.launch()
+        XCTAssertTrue(pairingScan(app).waitForExistence(timeout: 12), "A1 starts unpaired.")
+        pairByPaste(environment["DECK_DEVICE_PAIRING_URI"]!, host: environment["DECK_DEVICE_HOST"]!, in: app, cameraDenial: false)
+        deckStep("ready-trust")
+        let notShared = app.staticTexts["输出未共享"].firstMatch
+        XCTAssertTrue(waitUntil(60) { !notShared.exists }, "Trusting this phone must share the cards.")
+        openCard(named: title, in: app)
+        let draft = app.textViews["deck.message.draft"].firstMatch
+        XCTAssertTrue(reveal(draft, in: app)); draft.tap(); draft.typeText("a1-\(environment["DECK_DEVICE_NONCE"]!)")
+        app.buttons["deck.keyboard.done"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(waitUntil(10) { !app.navigationBars[title].exists })
+        deckStep("a1-drafted")
+    }
+
+    func testDeviceA2MovedMacKeepsItsPairing() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_PAIRING_URI", "DECK_DEVICE_ADDRESS", "DECK_DEVICE_ADDRESS_OLD",
+                                                       "DECK_DEVICE_SHELL_TITLE", "DECK_DEVICE_NONCE"])
+        let title = environment["DECK_DEVICE_SHELL_TITLE"]!
+        let old = environment["DECK_DEVICE_ADDRESS_OLD"]!, new = environment["DECK_DEVICE_ADDRESS"]!
+        XCTAssertNotEqual(old, new, "The host must have moved before A2.")
+        let app = chineseApp()
+        app.launch()
+        answerSystemAlert(["允许", "Allow"], timeout: 3)
+        let rescan = app.buttons["deck.hosts.rescan"].firstMatch
+        XCTAssertTrue(rescan.waitForExistence(timeout: 90), "With the Mac gone from its address, scanning its code again must be offered.")
+        XCTAssertFalse(pairingScan(app).exists, "An unreachable Mac is still a paired Mac.")
+        keepScreenshot("moved-unreachable", app)
+        rescan.tap()
+        let field = pairField(app)
+        XCTAssertTrue(field.waitForExistence(timeout: 10)); field.tap(); field.typeText(environment["DECK_DEVICE_PAIRING_URI"]!)
+        app.buttons["deck.pair.submit"].tap()
+        XCTAssertTrue(waitUntil(45) { !app.buttons["deck.pair.submit"].exists }, "Taking the code must close the sheet.")
+        let notShared = app.staticTexts["输出未共享"].firstMatch
+        XCTAssertTrue(waitUntil(45) { app.staticTexts[title].firstMatch.exists && !rescan.exists && !notShared.exists },
+                      "The Mac must be back at its new address with the trust this phone already had.")
+        keepScreenshot("moved-reached", app)
+        deckStep("a2-reached")
+        XCTAssertEqual(draftValue(app, card: title), "a1-\(environment["DECK_DEVICE_NONCE"]!)", "The draft written before the move must still be there.")
+        // one Mac, at the new address only
+        hostMenu(app).tap()
+        XCTAssertTrue(app.buttons["添加 Mac"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(hostEntry(old, in: app).exists, "The old address must not remain as a second Mac.")
+        keepScreenshot("moved-menu", app)
+        deckStep("a2-one-mac")
+    }
+
     func testDeviceZ1RemovePairing() throws {
         _ = try requireDeviceAcceptance()
         let app = chineseApp()

@@ -18,7 +18,6 @@ pub(crate) struct Status {
     pub(super) port: u16,
     pub(super) origin: Option<String>,
     pub(super) fingerprint: Option<String>,
-    pub(super) reset_required: bool,
     /// Why the listener is not running (`listener_refusal`), for Settings.
     pub(super) refusal: Option<&'static str>,
     pub(super) scope: SnapshotScope,
@@ -46,11 +45,39 @@ pub(super) struct DeviceView {
     pub(super) client_build: Option<String>,
 }
 
+/// One address the listener may be enabled on, with the interface carrying
+/// it so the user can tell Wi-Fi from a tunnel.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub(crate) struct AddressView {
+    pub(super) address: String,
+    pub(super) interface: String,
+}
+
+/// The addresses this Mac has now, in the order Settings offers them
+/// (`offered_addresses`). A saved address that is gone is never in it.
 #[tauri::command]
-pub(crate) fn connector_addresses() -> Vec<String> {
-    local_ipv4_addresses()
+pub(crate) fn connector_addresses() -> Vec<AddressView> {
+    offered_addresses(local_ipv4_interfaces())
+}
+
+/// Ethernet and Wi-Fi (`en*`) first, tunnels and bridges after; each group
+/// by interface name, then address. The first entry is what Settings
+/// selects when the saved address is not available.
+pub(super) fn offered_addresses(mut interfaces: Vec<LocalAddress>) -> Vec<AddressView> {
+    interfaces.sort_by(|a, b| {
+        (!a.interface.starts_with("en"), &a.interface, a.ip).cmp(&(
+            !b.interface.starts_with("en"),
+            &b.interface,
+            b.ip,
+        ))
+    });
+    interfaces.dedup_by(|a, b| a.ip == b.ip);
+    interfaces
         .into_iter()
-        .map(|x| x.to_string())
+        .map(|entry| AddressView {
+            address: entry.ip.to_string(),
+            interface: entry.interface,
+        })
         .collect()
 }
 #[tauri::command]
@@ -70,10 +97,6 @@ pub(crate) fn connector_status() -> Result<Status, DeckError> {
             .enabled
             .then(|| format!("https://{}:{}", d.config.address, d.config.port)),
         fingerprint: d.identity_fingerprint.clone(),
-        reset_required: d
-            .identity_address
-            .as_ref()
-            .is_some_and(|address| !d.config.address.is_empty() && address != &d.config.address),
         refusal: listener_refusal(),
         scope: d.config.scope,
         phone_replies: d.config.phone_replies,
@@ -122,14 +145,10 @@ fn enable(address: String, port: u16) -> Result<Status, DeckError> {
         if already_running {
             return connector_status();
         }
+        // The identity is the Keychain key, not the address it was issued
+        // for: another address keeps it, and with it every paired device.
         let identity = match identity_get()? {
-            Some(i) if i.address == address => i,
-            Some(_) => {
-                return Err(DeckError::new(
-                    ErrorKind::ContextChanged,
-                    "connector identity reset required",
-                ))
-            }
+            Some(i) => i,
             None => {
                 let i = Identity::generate(&address)?;
                 keychain::set(Slot::ConnectorIdentity, &i.encode()?)?;

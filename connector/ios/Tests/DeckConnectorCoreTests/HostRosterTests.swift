@@ -86,3 +86,18 @@ private let legacyJSON = #"{"origin":"https://192.168.1.2:47731","fingerprint":"
     #expect(HostRoster.current(hosts, preferred: nil)?.hostId == "host_a")
     #expect(HostRoster.current([], preferred: "host_a") == nil)
 }
+
+@Test func aCodeForAnAlreadyPairedMacOnlyChangesWhereToReachIt() {
+    let known = DeviceCredential(origin: "https://192.168.31.16:47631", fingerprint: String(repeating: "a", count: 64),
+                                 hostId: "H1", deviceId: "D1", token: "T1", hostName: "Work Mac")
+    let moved = HostRoster.readdressed([known], hostId: "H1", fingerprint: known.fingerprint,
+                                       origin: "https://192.168.31.44:47631", hostName: nil)
+    #expect(moved == DeviceCredential(origin: "https://192.168.31.44:47631", fingerprint: known.fingerprint,
+                                      hostId: "H1", deviceId: "D1", token: "T1", hostName: "Work Mac"))
+    // a Mac that was reset has another certificate: an ordinary new pairing
+    #expect(HostRoster.readdressed([known], hostId: "H1", fingerprint: String(repeating: "b", count: 64),
+                                   origin: "https://192.168.31.44:47631", hostName: nil) == nil)
+    // another Mac
+    #expect(HostRoster.readdressed([known], hostId: "H2", fingerprint: known.fingerprint,
+                                   origin: "https://192.168.31.44:47631", hostName: nil) == nil)
+}

@@ -78,6 +78,13 @@
 //! restart binds only while the address is on that interface. The running
 //! listener keeps the (address, interface, netmask) it started with and stops
 //! when a periodic `getifaddrs` recheck finds a different one (`server.rs`).
+//! The identity is the Keychain key and its certificate; phones pin the
+//! certificate's hash. The address in the certificate is only where it was
+//! issued: enabling on another address keeps the identity, the paired
+//! devices and the journal (ruling 2026-11-18), and the certificate is never
+//! reissued, which would change the pinned hash. Where to listen stays the
+//! user's act: the saved address must be on its recorded interface, and
+//! Deck never follows a new address by itself.
 //! A listener that did not start, or stopped by itself, leaves one closed
 //! reason word (`listener_refusal`): written to app.log and shown in
 //! Settings, never an address, a port or an OS error text. It is
@@ -597,7 +604,6 @@ pub(super) fn refusal_code(error: &DeckError) -> &'static str {
         | "connector address is not an available private-network address"
         | server::BIND_UNAVAILABLE => "address",
         "connector network changed" => "network-changed",
-        "connector identity reset required" => "reset-required",
         "connector identity is missing" => "identity-missing",
         server::BIND_IN_USE => "port-in-use",
         server::BIND_DENIED => "bind-denied",
@@ -627,12 +633,6 @@ fn start_server(runtime: Arc<Runtime>) -> Result<(), DeckError> {
     let network = listener_network_ok(&cfg, &local_ipv4_interfaces())?;
     let identity = identity_get()?
         .ok_or_else(|| DeckError::new(ErrorKind::Missing, "connector identity is missing"))?;
-    if identity.address != cfg.address {
-        return Err(DeckError::new(
-            ErrorKind::ContextChanged,
-            "connector identity reset required",
-        ));
-    }
     let epoch = runtime.server_epoch.fetch_add(1, Ordering::SeqCst) + 1;
     let listening = cfg.clone();
     server::spawn(runtime, cfg, identity, epoch, move || {

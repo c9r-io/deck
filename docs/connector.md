@@ -64,11 +64,13 @@ When enabled, deck listens on the selected private-network address over HTTPS. E
 
 While it runs, deck re-reads the Mac's interfaces about every 5 seconds. If the address is gone, has moved to another interface, or its netmask has changed, the listener stops and Settings says so with the reason; disable and enable Connector to listen again (a restart of deck also listens again once the recorded interface carries the address). deck cannot see *which* network an interface has joined: moving to another Wi-Fi network that hands out the same address with the same netmask on the same interface — or losing and regaining the address between two checks — is not detected. Disable Connector before joining an untrusted network. Connections that do not arrive on the configured address are dropped unread.
 
-When the listener is not running, Settings shows one of a fixed set of reasons in place of "enabled, not listening" (also after a refused enable, where the switch stays off), and app.log records the same word as `[connector] listener not started (<word>)` or `listener stopped (network-changed)`: `address` (the address is not on this Mac or not eligible), `network-changed`, `reset-required`, `identity-missing`, `port-in-use`, `bind-denied` (the system refused the listener), `bind-failed`, `other`. The word never carries an address, a port or an operating-system error text. deck does not retry by itself. A listener that started says nothing about whether the phone can reach it: a firewall that drops inbound connections is invisible to deck.
+When the listener is not running, Settings shows one of a fixed set of reasons in place of "enabled, not listening" (also after a refused enable, where the switch stays off), and app.log records the same word as `[connector] listener not started (<word>)` or `listener stopped (network-changed)`: `address` (the address is not on this Mac or not eligible), `network-changed`, `identity-missing`, `port-in-use`, `bind-denied` (the system refused the listener), `bind-failed`, `other`. The word never carries an address, a port or an operating-system error text. deck does not retry by itself. A listener that started says nothing about whether the phone can reach it: a firewall that drops inbound connections is invisible to deck.
 
 Pairing uses a five-minute, single-use QR descriptor. The iOS app refuses a descriptor whose address is not an IPv4 address in the ranges above, or exactly `127.0.0.1` for the isolated smoke host (it cannot see the Mac's interface, so it checks only the range). Anyone who sees the QR code and can reach the Mac during those five minutes can pair, so the desktop shows each new pairing immediately (device name and time), hides the spent code, and lists every device with the time it was paired. Device names are stripped of bidi controls, zero-width characters and Unicode tag characters before they are validated and stored. The TLS private key remains in the macOS Keychain. The host journal stores only each device token's hash; the raw token exists on the host only in the one-time in-memory pairing response and is stored by the phone in the iOS Keychain. The desktop UI receives only the generated SVG, expiry, public fingerprint, and device summaries.
 
-Changing to an address outside the current certificate requires **Reset and re-pair** while Connector is disabled. Reset removes the Connector identity, paired devices, and its remote-command journal. Revoking one device prevents its pending commands from running and drops its command history; a revoked device's slot is reused when a new device pairs and all 32 slots are taken.
+The Mac's identity is its Keychain key and certificate, and a phone recognises the Mac by the hash of that certificate. The address in the certificate is only where it was issued. When the Mac's address changes (DHCP, another network), Settings names the saved address that is gone and offers only the addresses the Mac has now, each with its interface (Ethernet and Wi-Fi first); **Listen on the selected address** starts the listener there and keeps the identity, every paired device and the command journal. deck never follows a new address by itself. Each phone then scans the Mac's pairing code once more: for the Mac it is already paired with, the phone only replaces the stored address and uses no pairing code (iOS 1.0 (9) and later; an earlier phone build requires the certificate's address to match and cannot connect to a Mac that moved — update it, or reset the Mac).
+
+**Reset and re-pair**, while Connector is disabled, is for ending every pairing. Reset removes the Connector identity, paired devices, and its remote-command journal. Revoking one device prevents its pending commands from running and drops its command history; a revoked device's slot is reused when a new device pairs and all 32 slots are taken.
 
 ## One phone, several Macs
 
@@ -87,7 +89,11 @@ reached it asks each other paired Mac once (that Mac's own certificate pin and
 token, four seconds, at most every fifteen) whether it answers, keeps only
 that answer, and offers the switch as one line under the unreachable notice.
 A Mac on another network stays unreachable; a Mac that was reset is a
-different identity and its old entry must be removed on the phone.
+different identity and its old entry must be removed on the phone. A Mac
+whose address changed is not found by the phone: under the unreachable
+notice the phone offers scanning that Mac's pairing code again, which keeps
+the pairing, its drafts and its unresolved operations and only replaces the
+address.
 
 ## Slack mentions on the phone
 

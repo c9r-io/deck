@@ -3041,6 +3041,22 @@
         }
       }
     },
+    "hosts.rescan": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac changed its address? Scan its pairing code again"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac 换了地址？重新扫描它的配对码"
+          }
+        }
+      }
+    },
     "hosts.switch": {
       "localizations": {
         "en": {
