@@ -5,6 +5,7 @@
     "deck_capabilities",
     "deck_card_mark",
     "deck_card_reply",
+    "deck_card_update",
     "deck_cards_snapshot",
     "deck_config_describe",
     "deck_config_proposal_get",
@@ -35,6 +36,7 @@
   "mutating": [
     "deck_automation_trigger",
     "deck_card_mark",
+    "deck_card_update",
     "deck_config_propose",
     "deck_exec",
     "deck_job_input",

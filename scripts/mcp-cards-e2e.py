@@ -9,7 +9,7 @@ question), "Done" (one whose turn ended on `CARDS-DONE-OK`) and "Shell" (a
 plain shell). `--adapter` must be a DEBUG deck-mcp build (the --socket /
 --credential-fd seams).
 
-The run: tools/list (31 tools); deck_capabilities says mayReadCards; the
+The run: tools/list (32 tools); deck_capabilities says mayReadCards; the
 snapshot lists the three, Claude Code's last words fenced (Done's carries
 the token, Ask's ends on a question), the shell `no-agent`; the whole reply
 of Done carries the token, a wrong episode is EPISODE_MOVED, an unknown card
@@ -33,7 +33,7 @@ spec = importlib.util.spec_from_file_location("agent_e2e", os.path.join(HERE, "m
 agent_e2e = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(agent_e2e)
 Adapter, PROTOCOL = agent_e2e.Adapter, agent_e2e.PROTOCOL
-TOOLS = 31
+TOOLS = 32
 FENCE = "<external_message "
 TOKEN = "CARDS-DONE-OK"
 

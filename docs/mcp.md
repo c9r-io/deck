@@ -148,9 +148,10 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_mention_read` | One open mention whole: text, sender, channel, link and its context (thread start and the replies before it, or the conversation's last messages, with file names), all as external content. |
 | `deck_mention_mark` | Mark one open mention for the user: `handling` (optionally with one of the caller's worker cards), `for-you` or `no-action`, with a note of at most 200 characters; `null` takes the caller's mark off. Another orchestrator's mark is `MENTION_MARKED`. Presentation only: the mention stays listed. |
 | `deck_mention_handoff` | Hand one open mention to one of the client's Agent automations (id and revision, `trigger_sequence`). Deck fills the item from the mention itself; the client names it, never its text. The acceptance and the operation are `deck_automation_trigger`'s (also needs the automation delegation); `MENTION_SETTLED` when the mention is already held. Never a Slack badge rule. |
-| `deck_cards_snapshot` | The cards of the client's projects in Board order, 40 at most per call (`cursor` → `nextCursor`; `project_id` narrows): card id, title, project, column, `self` (the card the call comes from), alive, Agent observation `{kind, state, episode, since, viewed}`, unsent queue rows, reminder, follow-up count, the standing mark, and `reply`: the end (300 characters) of the final Claude Code, Codex or Pi message of the turn that ended, as external content, or `unavailable` with a closed reason (`no-agent`, `no-turn-ended`, `not-forwarded`, `not-kept`). `SOURCE_UNAVAILABLE` on a Board recovered from its backup. Needs the client's separate **card snapshot** choice. |
+| `deck_cards_snapshot` | The cards of the client's projects in Board order, 40 at most per call (`cursor` → `nextCursor`; `project_id` narrows): card id, title, project, column and `columnId`, `self` (the card the call comes from), alive, Agent observation `{kind, state, episode, since, viewed}`, unsent queue rows, reminder, follow-up count, the standing mark, and `reply`: the end (300 characters) of the final Claude Code, Codex or Pi message of the turn that ended, as external content, or `unavailable` with a closed reason (`no-agent`, `no-turn-ended`, `not-forwarded`, `not-kept`). `projects` lists each project in reach with its columns (`columnId`, name). `SOURCE_UNAVAILABLE` on a Board recovered from its backup. Needs the client's separate **card snapshot** choice. |
 | `deck_card_reply` | That final message whole (head and tail when long), as external content, only while its episode is the card's current one (`EPISODE_MOVED`); `REPLY_GONE` when Deck kept none. |
 | `deck_card_mark` | Mark one card on its current episode: `needs-you`, `can-close` or `working`, with a note of at most 200 characters; `null` takes the caller's own mark off (another client's is `CARD_MARKED`, though a later mark replaces it). Presentation only. |
+| `deck_card_update` | Rename one card of the client's projects and/or move it to a column, of its own project or (`project_id`) of another the client reaches: `card_id`, `request_id`, `title` + `from_title`, `column_id` + `from_column_id`. Refused with `CARD_CHANGED` when the card is no longer where or named as the request says, `COLUMN_NOT_FOUND` for a column outside the target project or a project out of reach, `CAPACITY_EXCEEDED` past 30 a minute. Returns an operation (`deck_operation_get`): `committed`, or `rejected` with `card-changed`, `card-starting`, `card-collecting`, `card-managed` or `card-missing`. Types, starts and closes nothing. Needs the client's separate **organize cards** choice (and the card snapshot). |
 | `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence`. Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over. |
 
 All input schemas reject unknown fields. Side-effecting tools advertise
@@ -519,10 +520,54 @@ Every row of Turn ended also says how long ago the turn ended and the list
 puts the longest-ended first, with or without any client.
 
 What it cannot do: read a card outside its projects, close a card, send a
-card anything, move one, answer an Agent's question. Stopping the choice,
+card anything, move one (that is the separate choice below), answer an
+Agent's question. Stopping the choice,
 a project leaving the client's scope, revoking the client or disabling MCP
 takes effect on the next call and removes the client's marks. A ledger
 holding this choice is written at version 14 (sticky).
+
+## Organizing cards
+
+**Organize cards** (under the card snapshot in the same dialog, off by
+default, and only with it) lets a client rename the cards of its projects
+and move them: between the columns of a project, and between the projects
+it reaches (`deck_card_update`). It is the one way a card changes place
+without your own gesture, and it happens only on that client's explicit
+request for one card.
+
+- **One card per request, bound to what the client saw.** The request
+  names the title and the column the snapshot showed. If you renamed or
+  moved the card in the meantime it is refused (`CARD_CHANGED`) and
+  nothing is written: your change is never overwritten.
+- **One Board transaction.** Deck journals the request and the Board's
+  own writer commits it, the rename and the move together or neither. A
+  Deck restart never replays one (it reads `ambiguous`).
+- **What stays put.** A card whose automation has not handed its steps to
+  the queue yet (`card-starting`, usually a few seconds after it opens), a
+  channel card still collecting (`card-collecting`) and an MCP-managed
+  session (`card-managed`) do not leave their project; inside their
+  project every card may change column. The same three states hold for
+  your own **Move to project**.
+- **Nothing else changes.** The session, directory, command, queued
+  steps, scratchpad and Reminder stay the card's. A title and a column are
+  read by no approval; a card's project is read only when an automation's
+  first step is admitted, before the card can move. A run's later steps
+  keep the approval of the rule that made them, and a rule that closes its
+  run when it finishes still does.
+- **Who sees the card.** A card moved to another project is in the
+  snapshot of every client that reaches that project, final reply
+  included, and no longer in that of a client that reaches only the old
+  one. A worker card stays its client's to drive wherever it is.
+- **What you see.** Deck says one line (“<client> moved … to …”) only
+  while you are looking at the Board the card left or reached; otherwise
+  the card is simply where the client put it.
+
+What it cannot do: move a card to or from a project outside its scope,
+close a card, type into one, start anything, set a Reminder, write a
+scratchpad. At most 30 updates a minute per client. Stopping the choice
+(or the card snapshot), a project leaving the scope, revoking the client
+or disabling MCP rejects what waits and refuses the next call. A ledger
+holding this choice is written at version 15 (sticky).
 
 ## Execution, output, and lifecycle
 

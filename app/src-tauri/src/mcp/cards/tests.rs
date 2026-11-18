@@ -28,6 +28,7 @@ fn client(id: &str, cards: bool) -> Client {
         allow_drafts: false,
         allow_mentions: false,
         allow_cards: cards,
+        allow_card_edits: false,
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
@@ -111,6 +112,7 @@ fn call(runtime: &Runtime, client: &str, tool: &str, args: Value) -> Value {
         "snapshot" => cards_snapshot(runtime, client, args),
         "reply" => card_reply(runtime, client, args),
         "mark" => card_mark(runtime, client, args),
+        "update" => card_update(runtime, client, args),
         _ => unreachable!(),
     };
     out.unwrap_or_else(|e| e)
@@ -438,6 +440,7 @@ fn the_choice_is_saved_at_its_sticky_version_and_a_page_fits_one_line() {
         "client_a",
         super::super::commands::PermissionsInput {
             allow_cards: true,
+            allow_card_edits: false,
             ..Default::default()
         },
     )
@@ -492,4 +495,228 @@ fn the_choice_is_saved_at_its_sticky_version_and_a_page_fits_one_line() {
     assert_eq!(code(&bad), "INVALID_ARGUMENTS");
     crate::turn_summary::forget_card_replies();
     OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// A client that reads the snapshot and may organize cards, reaching P1
+/// and P2.
+fn editor(id: &str) -> Client {
+    let mut client = client(id, true);
+    client.allow_card_edits = true;
+    client.projects.push(ProjectScope {
+        project_id: "P2".into(),
+        roots: vec!["/nonexistent-deck-cards-2".into()],
+    });
+    client
+}
+
+fn pending_updates(runtime: &Runtime) -> Vec<Value> {
+    runtime
+        .read(|doc| {
+            doc.operations
+                .iter()
+                .filter(|o| o.kind == CARD_UPDATE_KIND && o.state == "accepted")
+                .filter_map(|o| o.result.clone())
+                .collect()
+        })
+        .unwrap()
+}
+
+#[test]
+fn a_card_update_needs_its_own_choice_and_the_snapshot() {
+    let root = crate::test_dir::TestDir::new("mcp-cards-update-gate");
+    let mut no_snapshot = editor("client_b");
+    no_snapshot.allow_cards = false;
+    let runtime = runtime(&root, vec![client("client_a", true), no_snapshot]);
+    let _board = test_door::hold();
+    test_door::commit(board(), true);
+    let rename = json!({"card_id": "A", "request_id": "r1", "title": "New", "from_title": "Asked"});
+    for id in ["client_a", "client_b"] {
+        assert_eq!(
+            code(&call(&runtime, id, "update", rename.clone())),
+            "PERMISSION_DENIED",
+            "{id}"
+        );
+    }
+    assert!(pending_updates(&runtime).is_empty());
+    // the snapshot names the columns a move may use
+    let snapshot = call(&runtime, "client_a", "snapshot", json!({}));
+    assert_eq!(snapshot["cards"][0]["columnId"], "C1");
+    assert_eq!(
+        snapshot["projects"],
+        json!([{"projectId": "P1", "project": "main", "columns": [
+            {"columnId": "C1", "column": "Doing"}, {"columnId": "C2", "column": "Review"}]}])
+    );
+}
+
+#[test]
+fn a_card_update_is_bound_to_what_the_caller_saw_and_to_its_reach() {
+    let root = crate::test_dir::TestDir::new("mcp-cards-update");
+    let mut narrow = editor("client_b");
+    narrow.projects.truncate(1);
+    let runtime = runtime(&root, vec![editor("client_a"), narrow]);
+    let _board = test_door::hold();
+    test_door::commit(board(), true);
+    let update = |client: &str, args: Value| call(&runtime, client, "update", args);
+    // out of shape: no change, half a pair, a title of two lines, a project
+    // without a column
+    for args in [
+        json!({"card_id": "A", "request_id": "r0"}),
+        json!({"card_id": "A", "request_id": "r0", "title": "New"}),
+        json!({"card_id": "A", "request_id": "r0", "column_id": "C1"}),
+        json!({"card_id": "A", "request_id": "r0", "title": "a\nb", "from_title": "Asked"}),
+        json!({"card_id": "A", "request_id": "r0", "title": "x".repeat(81), "from_title": "Asked"}),
+        json!({"card_id": "A", "request_id": "r0", "project_id": "P2"}),
+    ] {
+        assert_eq!(
+            code(&update("client_a", args.clone())),
+            "INVALID_ARGUMENTS",
+            "{args}"
+        );
+    }
+    // not what the caller saw
+    assert_eq!(
+        code(&update(
+            "client_a",
+            json!({"card_id": "A", "request_id": "r1", "title": "New", "from_title": "Other"})
+        )),
+        "CARD_CHANGED"
+    );
+    assert_eq!(
+        code(&update(
+            "client_a",
+            json!({"card_id": "A", "request_id": "r1", "column_id": "C1", "from_column_id": "C1"})
+        )),
+        "CARD_CHANGED"
+    );
+    // a column of another project, a project out of reach, a card out of reach
+    assert_eq!(
+        code(&update(
+            "client_a",
+            json!({"card_id": "A", "request_id": "r1", "column_id": "C9", "from_column_id": "C2"})
+        )),
+        "COLUMN_NOT_FOUND"
+    );
+    assert_eq!(
+        code(&update(
+            "client_b",
+            json!({"card_id": "A", "request_id": "r1", "project_id": "P2", "column_id": "C9", "from_column_id": "C2"})
+        )),
+        "COLUMN_NOT_FOUND"
+    );
+    assert_eq!(
+        code(&update(
+            "client_b",
+            json!({"card_id": "Z", "request_id": "r1", "title": "Mine", "from_title": "Elsewhere"})
+        )),
+        "CARD_NOT_FOUND"
+    );
+    // nothing to change settles at once and journals nothing
+    let same = update(
+        "client_a",
+        json!({"card_id": "A", "request_id": "r1", "title": "Asked", "from_title": "Asked",
+        "column_id": "C2", "from_column_id": "C2"}),
+    );
+    assert_eq!(
+        (same["state"].as_str(), same["unchanged"].as_bool()),
+        (Some("committed"), Some(true))
+    );
+    assert!(pending_updates(&runtime).is_empty());
+    // accepted: one Board intent that names both sides of the change
+    let args = json!({"card_id": "A", "request_id": "r2", "title": "  Sorted  ", "from_title": "Asked",
+        "project_id": "P2", "column_id": "C9", "from_column_id": "C2"});
+    let accepted = update("client_a", args.clone());
+    assert_eq!(
+        (accepted["kind"].as_str(), accepted["state"].as_str()),
+        (Some(CARD_UPDATE_KIND), Some("accepted"))
+    );
+    assert_eq!(
+        pending_updates(&runtime),
+        [
+            json!({"cardId": "A", "client": "Client client_a", "fromProjectId": "P1", "title": "Sorted",
+            "fromTitle": "Asked", "projectId": "P2", "columnId": "C9", "fromColumnId": "C2"})
+        ]
+    );
+    // the same request again is the same operation; other arguments are refused
+    assert_eq!(
+        update("client_a", args)["operationId"],
+        accepted["operationId"]
+    );
+    assert_eq!(
+        code(&update(
+            "client_a",
+            json!({"card_id": "A", "request_id": "r2", "title": "Else", "from_title": "Asked"})
+        )),
+        "REQUEST_ID_CONFLICT"
+    );
+    assert_eq!(pending_updates(&runtime).len(), 1);
+    // a recovered Board is never changed on a client's word
+    test_door::commit(board(), false);
+    assert_eq!(
+        code(&update(
+            "client_a",
+            json!({"card_id": "B", "request_id": "r3", "title": "New", "from_title": "Busy"})
+        )),
+        "SOURCE_UNAVAILABLE"
+    );
+}
+
+#[test]
+fn withdrawing_the_choice_or_a_project_rejects_the_updates_that_wait() {
+    let root = crate::test_dir::TestDir::new("mcp-cards-update-withdraw");
+    let runtime = runtime(&root, vec![editor("client_a")]);
+    let _board = test_door::hold();
+    test_door::commit(board(), true);
+    let state_of = |request: &str| {
+        runtime
+            .read(|doc| {
+                doc.operations
+                    .iter()
+                    .find(|o| o.request_id == request)
+                    .map(|o| (o.state.clone(), o.code.clone()))
+            })
+            .unwrap()
+            .unwrap()
+    };
+    let permissions = |edits: bool| super::super::commands::PermissionsInput {
+        allow_cards: true,
+        allow_card_edits: edits,
+        ..Default::default()
+    };
+    call(
+        &runtime,
+        "client_a",
+        "update",
+        json!({"card_id": "A", "request_id": "r1", "title": "New", "from_title": "Asked"}),
+    );
+    client_permissions(&runtime, "client_a", permissions(false)).unwrap();
+    assert_eq!(
+        state_of("r1"),
+        ("rejected".into(), Some("client-revoked".into()))
+    );
+    assert_eq!(
+        code(&call(
+            &runtime,
+            "client_a",
+            "update",
+            json!({"card_id": "A", "request_id": "r2", "title": "New", "from_title": "Asked"})
+        )),
+        "PERMISSION_DENIED"
+    );
+    // the choice is saved at its own sticky version, and only with the snapshot
+    client_permissions(&runtime, "client_a", permissions(true)).unwrap();
+    let saved: Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+    assert_eq!(saved["version"], STATE_VERSION_CARD_EDITS);
+    assert_eq!(saved["config"]["clients"][0]["allowCardEdits"], true);
+    client_permissions(
+        &runtime,
+        "client_a",
+        super::super::commands::PermissionsInput {
+            allow_card_edits: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!runtime
+        .read(|doc| doc.config.clients[0].allow_card_edits)
+        .unwrap());
 }

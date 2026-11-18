@@ -82,6 +82,7 @@ pub(super) fn capabilities(
                 "mayDraftConfig": client.allow_drafts,
                 "mayReadMentions": client.allow_mentions,
                 "mayReadCards": client.allow_cards,
+                "mayEditCards": client.allow_cards && client.allow_card_edits,
                 // the Deck card this call comes from, as the kernel says
                 // (`origin.rs`); its worker cards are grouped under it
                 "orchestratorCard": card

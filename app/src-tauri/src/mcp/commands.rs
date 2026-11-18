@@ -41,6 +41,8 @@ pub(crate) struct ClientView {
     pub(super) allow_mentions: bool,
     /// May read the card snapshot and mark cards (`cards.rs`).
     pub(super) allow_cards: bool,
+    /// May rename and move the cards of its projects (`cards.rs`).
+    pub(super) allow_card_edits: bool,
     /// Its orchestrator cards' worker cards open in their type's or rule's
     /// column, not beside the orchestrator card (`origin.rs`).
     pub(super) rule_column: bool,
@@ -84,6 +86,7 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
                 allow_drafts: client.allow_drafts,
                 allow_mentions: client.allow_mentions,
                 allow_cards: client.allow_cards,
+                allow_card_edits: client.allow_card_edits,
                 rule_column: client.rule_column,
                 all_projects: client.all_projects,
                 projects: client.projects.clone(),
@@ -319,12 +322,14 @@ pub(crate) fn mcp_client_add(
         allow_drafts,
         allow_mentions,
         allow_cards,
+        allow_card_edits,
         rule_column,
         all_projects,
         projects: _,
     } = permissions;
     let allow_replies = allow_workers && allow_replies;
     let worker_first_send = allow_workers && worker_first_send;
+    let allow_card_edits = allow_cards && allow_card_edits;
     validate_worker_types(&worker_types)?;
     // a client of all projects names none; any other names one to 64
     let projects = if all_projects { Vec::new() } else { projects };
@@ -374,6 +379,7 @@ pub(crate) fn mcp_client_add(
             allow_drafts,
             allow_mentions,
             allow_cards,
+            allow_card_edits,
             rule_column,
             lanes: Default::default(),
         };
@@ -392,6 +398,7 @@ pub(crate) fn mcp_client_add(
             allow_drafts: client.allow_drafts,
             allow_mentions: client.allow_mentions,
             allow_cards: client.allow_cards,
+            allow_card_edits: client.allow_card_edits,
             rule_column: client.rule_column,
             all_projects: client.all_projects,
             projects: client.projects,
@@ -567,6 +574,10 @@ pub(crate) struct PermissionsInput {
     /// May read the card snapshot and mark cards (`cards.rs`); absent = off.
     #[serde(default)]
     pub(super) allow_cards: bool,
+    /// May rename and move the cards of its projects (`cards.rs`; needs
+    /// the card snapshot); absent = off.
+    #[serde(default)]
+    pub(super) allow_card_edits: bool,
     /// Worker cards open in their type's or rule's column, not beside their
     /// orchestrator card (`origin.rs`); absent = beside it.
     #[serde(default)]
@@ -946,7 +957,10 @@ pub(crate) fn mcp_pending() -> Result<Vec<PendingView>, DeckError> {
                     operation.state == "accepted"
                         && matches!(
                             operation.kind.as_str(),
-                            "session-create" | "session-close" | WORKER_START_KIND
+                            "session-create"
+                                | "session-close"
+                                | WORKER_START_KIND
+                                | super::cards::CARD_UPDATE_KIND
                         )
                 })
                 .filter_map(|operation| {

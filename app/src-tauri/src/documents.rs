@@ -3591,6 +3591,41 @@ mod tests {
         )
     }
 
+    /// A card changes project in ONE save (board.js `updateCard`): both ids
+    /// together pass the door and everything else on the card, a run's
+    /// origin included, goes with it; the project alone, its column left
+    /// behind, is refused and the saved Board stays.
+    #[test]
+    fn a_card_moves_to_another_project_through_the_save_door() {
+        let _held = door::hold();
+        let dir = crate::test_dir::TestDir::new("board-move-project");
+        let path = dir.join("deck.json");
+        let run = |project: &str, column: &str| {
+            board(&card("s1", project, column, "deck-a-1111").replace(
+                r#""session":"deck-a-1111""#,
+                r#""session":"deck-a-1111","origin":{"source":"slack","key":"k","badge":"eyes"}"#,
+            ))
+        };
+        door::save(&path, &run("P1", "C1")).unwrap();
+        door::save(&path, &run("P2", "C9")).unwrap();
+        let target = card_targets(true).unwrap().remove("s1").unwrap();
+        assert_eq!(
+            (
+                target.project_id.as_str(),
+                target.column_id.as_str(),
+                target.session.as_str()
+            ),
+            ("P2", "C9", "deck-a-1111")
+        );
+        let half = door::save(&path, &run("P1", "C9")).unwrap_err();
+        assert_eq!(half.kind(), ErrorKind::InvalidDoc);
+        let (payload, source, _) = door::load(&path).unwrap().unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(source, "main");
+        assert_eq!(saved["cards"][0]["projectId"], "P2");
+        assert_eq!(saved["cards"][0]["origin"]["badge"], "eyes");
+    }
+
     /// The one Board document both sides pin. `dom.test.mjs` proves the
     /// fixture is exactly what `persistence.js` writes; this test proves
     /// what `BoardCard` requires of it and names every key it merely

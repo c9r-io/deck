@@ -27,7 +27,7 @@ function setup(cards) {
 test('a card moves to another project in one write and keeps everything else', async () => {
   const run = { origin: { source: 'slack', key: 'k', badge: 'eyes' }, inboundPlan: { initialQueued: true, followUps: ['ok'] } };
   const saves = setup([{ id: 'S1', ...run }, { id: 'S2' }]);
-  assert.deepEqual(await provider.moveToProject('S1', 'P2'), { ok: true, project: 'Two', column: 'Sorted', moved: true });
+  assert.deepEqual(await provider.moveToProject('S1', 'P2'), { ok: true, moved: true, renamed: false, project: 'Two', column: 'Sorted' });
   assert.equal(saves.length, 1);
   const saved = saves[0].cards.find(card => card.id === 'S1');
   assert.deepEqual([saved.projectId, saved.columnId], ['P2', 'B2']);
@@ -51,20 +51,33 @@ test('the states that stay put write nothing and say why', async () => {
   assert.deepEqual(store.cards.map(card => card.projectId), ['P1', 'P1', 'P1']);
 });
 
-test('a named column and the place the caller saw (the MCP move)', async () => {
+test('a named column, a title and what the caller saw (the MCP update)', async () => {
   const saves = setup([{ id: 'S1' }, { id: 'S2', inboundPlan: { initialQueued: false } }]);
   const seen = { projectId: 'P1', columnId: 'A1' };
   // within the project: a column move, allowed in every state
-  assert.equal((await provider.moveToProject('S2', 'P1', { expect: seen, columnId: 'A2' })).moved, true);
+  assert.equal((await provider.updateCard('S2', { expect: seen, columnId: 'A2' })).moved, true);
   assert.equal(store.cards[1].columnId, 'A2');
   // the user moved it meanwhile: refused, nothing written
-  assert.deepEqual(await provider.moveToProject('S2', 'P1', { expect: seen, columnId: 'A1' }), { ok: false, reason: 'changed' });
+  assert.deepEqual(await provider.updateCard('S2', { expect: seen, columnId: 'A1' }), { ok: false, reason: 'changed' });
   // a column of another project is no column of the target
-  assert.deepEqual(await provider.moveToProject('S1', 'P2', { expect: seen, columnId: 'A2' }), { ok: false, reason: 'gone' });
-  assert.deepEqual(await provider.moveToProject('S1', 'P2', { expect: seen, columnId: 'B3' }),
-    { ok: true, project: 'Two', column: 'Done', moved: true });
+  assert.deepEqual(await provider.updateCard('S1', { projectId: 'P2', expect: seen, columnId: 'A2' }), { ok: false, reason: 'gone' });
+  // the rename and the move are one write, and both or neither
+  let writes = saves.length;
+  assert.deepEqual(await provider.updateCard('S1', { projectId: 'P2', columnId: 'B3', title: 'Sorted out',
+    expect: { ...seen, title: 'other' } }), { ok: false, reason: 'changed' });
+  assert.deepEqual(await provider.updateCard('S1', { projectId: 'P2', columnId: 'B3', title: 'Sorted out',
+    expect: { ...seen, title: 'S1' } }), { ok: true, moved: true, renamed: true, project: 'Two', column: 'Done' });
+  assert.equal(saves.length, writes + 1);
+  assert.deepEqual([store.cards[0].projectId, store.cards[0].columnId, store.cards[0].title, store.cards[0].session],
+    ['P2', 'B3', 'Sorted out', 'deck-S1']);
+  // a rename alone leaves the place, and a blocked move keeps the old title
+  assert.deepEqual(await provider.updateCard('S1', { title: 'Again', expect: { title: 'Sorted out' } }),
+    { ok: true, moved: false, renamed: true });
+  assert.deepEqual(await provider.updateCard('S2', { projectId: 'P2', columnId: 'B1', title: 'No' }), { ok: false, reason: 'starting' });
+  assert.equal(store.cards[1].title, 'S2');
   // already there: settled without a write
-  const writes = saves.length;
-  assert.equal((await provider.moveToProject('S1', 'P2', { columnId: 'B3' })).moved, false);
+  writes = saves.length;
+  assert.equal((await provider.updateCard('S1', { projectId: 'P2', columnId: 'B3' })).moved, false);
+  assert.equal((await provider.moveToProject('S1', 'P2')).moved, false);
   assert.equal(saves.length, writes);
 });

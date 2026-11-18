@@ -168,3 +168,77 @@ test('close outcomes and local error codes map to fixed states and sentences', (
   assert.equal(mcpErrorKey('mcp-fence-unpersisted'), 'mcp.errorUnpersisted');
   assert.equal(mcpErrorKey('/Users/someone/private path'), 'mcp.actionFailed');
 });
+
+function bridge(pending, { save = async () => {} } = {}) {
+  let items = [pending]; const done = []; let saves = 0;
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    if (cmd === 'mcp_pending') { const value = items; items = []; return value; }
+    if (cmd === 'mcp_claim') return pending;
+    if (cmd === 'save_board') { saves++; return save(); }
+    if (cmd === 'mcp_complete') { done.push([args.state, args.code]); return; }
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  return { done, saves: () => saves };
+}
+
+function twoProjects(card = {}) {
+  store.projects = [
+    { id: 'P1', name: 'One', columns: [{ id: 'A1', name: 'Todo' }, { id: 'A2', name: 'Done' }] },
+    { id: 'P2', name: 'Two', columns: [{ id: 'B1', name: 'In' }] },
+  ];
+  store.cards = [{ id: 'S1', projectId: 'P1', columnId: 'A1', title: 'old', desc: '', cmd: 'claude', dir: '/w',
+    session: 'deck-s1', launched: true, ...card }];
+}
+
+test('a card update renames and moves in one Board write, bound to what the client saw', async () => {
+  twoProjects();
+  const plan = { cardId: 'S1', client: 'Tidy', fromProjectId: 'P1', title: 'new', fromTitle: 'old',
+    projectId: 'P2', columnId: 'B1', fromColumnId: 'A1' };
+  let run = bridge({ operationId: 'op_u1', kind: 'card-update', result: plan });
+  await drainMcp();
+  assert.deepEqual(run.done, [['committed', null]]);
+  assert.equal(run.saves(), 1);
+  assert.deepEqual([store.cards[0].projectId, store.cards[0].columnId, store.cards[0].title, store.cards[0].session],
+    ['P2', 'B1', 'new', 'deck-s1']);
+  // the same plan again: the card is no longer where the client saw it
+  run = bridge({ operationId: 'op_u2', kind: 'card-update', result: plan });
+  await drainMcp();
+  assert.deepEqual(run.done, [['rejected', 'card-changed']]);
+  assert.equal(run.saves(), 0);
+});
+
+test('a card update is refused whole for a card that may not leave its project, or is gone', async () => {
+  const move = { cardId: 'S1', fromProjectId: 'P1', projectId: 'P2', columnId: 'B1', fromColumnId: 'A1', title: 'new', fromTitle: 'old' };
+  for (const [card, code] of [
+    [{ inboundPlan: { initialQueued: false } }, 'card-starting'],
+    [{ channelRun: { initialQueued: true, collecting: true } }, 'card-collecting'],
+    [{ origin: { source: 'mcp', key: 'op', badge: 'managed' } }, 'card-managed'],
+  ]) {
+    twoProjects(card);
+    const run = bridge({ operationId: 'op_u3', kind: 'card-update', result: move });
+    await drainMcp();
+    assert.deepEqual(run.done, [['rejected', code]]);
+    assert.deepEqual([store.cards[0].projectId, store.cards[0].title, run.saves()], ['P1', 'old', 0]);
+    // the same card still changes column inside its project
+    const within = bridge({ operationId: 'op_u4', kind: 'card-update',
+      result: { cardId: 'S1', fromProjectId: 'P1', projectId: 'P1', columnId: 'A2', fromColumnId: 'A1' } });
+    await drainMcp();
+    assert.deepEqual(within.done, [['committed', null]]);
+    assert.equal(store.cards[0].columnId, 'A2');
+  }
+  twoProjects();
+  store.cards = [];
+  const gone = bridge({ operationId: 'op_u5', kind: 'card-update', result: move });
+  await drainMcp();
+  assert.deepEqual(gone.done, [['rejected', 'card-missing']]);
+});
+
+test('a card update whose Board save failed is ambiguous, never rejected', async () => {
+  twoProjects();
+  const run = bridge({ operationId: 'op_u6', kind: 'card-update',
+    result: { cardId: 'S1', fromProjectId: 'P1', title: 'new', fromTitle: 'old' } },
+  { save: async () => { throw new Error('disk full'); } });
+  await drainMcp();
+  assert.deepEqual(run.done, [['ambiguous', 'board-transaction-unknown']]);
+  assert.equal(store.cards[0].title, 'old');
+});

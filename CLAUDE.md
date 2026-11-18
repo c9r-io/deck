@@ -3,7 +3,8 @@
 Kanban over tmux sessions. Small by design: tmux owns the shells; deck is only the
 board projection plus metadata. Resist adding session management features that tmux
 already provides. **No automatic card movement, ever** — the board surfaces
-information; the user makes every placement decision.
+information; the user makes every placement decision (the one delegated
+exception is in the hard rules).
 
 This file is an index plus the rules that cut across modules. Each subsystem's
 full contract lives in the `//!` (Rust) or leading `//` (JS) header of the module
@@ -154,8 +155,8 @@ evolution; it makes scope expansion deliberate.
 
 ## Hard rules
 
-- **No automatic card movement.** The board never moves a card; not on agent
-  state, not on inbound events, not on delivery. There are exactly TWO
+- **No automatic card movement.** The board never moves a card on its own;
+  not on agent state, not on inbound events, not on delivery. There are exactly TWO
   sanctioned automatic retirements, both through the ordinary durable
   `provider.close` path. (1) A verified normal exit of an ordinary card's
   owning shell (Ctrl+D, `exit N`): tmux's own `pane-died` hook recorded an
@@ -189,7 +190,19 @@ evolution; it makes scope expansion deliberate.
   collection card; both use `provider.createStarted`, and neither moves or
   retires a card. An item a delegated MCP client hands to an Agent rule
   (`mcp/automation.rs` → `inbound_agent.rs` → the ordinary dispatcher)
-  creates that rule's card exactly as a badge does. Nothing else retires or
+  creates that rule's card exactly as a badge does. ONE sanctioned
+  relocation (approved 2026-11-18): a delegated MCP client holding the
+  user's separate, revocable "organize cards" choice may rename one card
+  of its projects or move it to a column of its own or another reachable
+  project, on its explicit request naming that card and the title and
+  column it saw (`deck_card_update`, `mcp/cards.rs`, `mcp.js`
+  `updateCard`). It goes through the webview's one Board transaction, is
+  refused when the user changed the card meanwhile, is never replayed, and
+  types, starts, closes and authorizes nothing; no agent word, mark, quiet
+  time or rule ever moves a card. The user's own cross-project move
+  (`provider.moveToProject`) and this one share `projectMoveBlock`
+  (pure.js): a run not yet handed to the queue, a collecting channel card
+  and an MCP-managed shell stay in their project. Nothing else retires or
   relocates a card on its own.
 - **Deck may coordinate an Agent session ≠ Deck owns Agent execution.**
   Deck owns attention around work; the Agent owns the work. No headless
@@ -282,7 +295,7 @@ evolution; it makes scope expansion deliberate.
   sticky v8. An Agent trigger rule (settings.json) and the queue origins it
   admits (queue.json) upgrade to sticky v9, and the MCP ledger takes its own
   sticky versions, one per delegated capability: v7 for an automation
-  delegation or a trigger record, up to v14 (`mcp/mod.rs` `STATE_VERSION_*`). Channel inbox v2 protects
+  delegation or a trigger record, up to v15 (`mcp/mod.rs` `STATE_VERSION_*`). Channel inbox v2 protects
   native staged grant references; v1 entries gain no new permission. A
   settings backup is handed to the webview without channel grants. Native
   template edits retire affected grants before the Board write, under

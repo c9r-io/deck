@@ -510,7 +510,7 @@ and "Done" (`claude … '<first prompt>'`: one ends its turn on a question,
 the other on `CARDS-DONE-OK`) and "Shell" (a plain shell), waits for both
 turn endings (`cards-turns`) and reports `cards-armed`.
 `scripts/mcp-cards-e2e.py` (adapter, socket, credential and evidence
-arguments as `mcp-mentions-e2e.py`) reads the snapshot (31 tools, the last
+arguments as `mcp-mentions-e2e.py`) reads the snapshot (32 tools, the last
 words fenced, the shell `no-agent`), the whole reply, `EPISODE_MOVED`,
 `CARD_NOT_FOUND`, refuses a bad mark word and a mark on the shell, marks
 Ask `needs-you` and Done `can-close`, then waits for `PERMISSION_DENIED`.

@@ -83,6 +83,7 @@ pub(super) enum Choice {
     Drafts,
     Mentions,
     Cards,
+    CardEdits,
 }
 
 impl Choice {
@@ -94,6 +95,7 @@ impl Choice {
             Choice::Drafts => client.allow_drafts,
             Choice::Mentions => client.allow_mentions,
             Choice::Cards => client.allow_cards,
+            Choice::CardEdits => client.allow_cards && client.allow_card_edits,
         }
     }
 
@@ -105,6 +107,7 @@ impl Choice {
             Choice::Drafts => "client may not draft configuration",
             Choice::Mentions => "client may not read Slack mentions",
             Choice::Cards => "client may not read the card snapshot",
+            Choice::CardEdits => "client may not rename or move cards",
         }
     }
 }
@@ -247,14 +250,18 @@ pub(super) fn withdraw_projects(
             operation.client_id == client_id
                 && matches!(
                     operation.kind.as_str(),
-                    "session-create" | super::workers::WORKER_START_KIND
+                    "session-create"
+                        | super::workers::WORKER_START_KIND
+                        | super::cards::CARD_UPDATE_KIND
                 )
-                && operation
-                    .result
-                    .as_ref()
-                    .and_then(|r| r.get("projectId"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|p| removed.contains(p))
+                && ["projectId", "fromProjectId"].iter().any(|key| {
+                    operation
+                        .result
+                        .as_ref()
+                        .and_then(|r| r.get(*key))
+                        .and_then(Value::as_str)
+                        .is_some_and(|p| removed.contains(p))
+                })
         },
         "scope-removed",
     );

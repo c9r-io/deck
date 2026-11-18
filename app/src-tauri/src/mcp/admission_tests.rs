@@ -44,6 +44,7 @@ fn client() -> Client {
         allow_drafts: false,
         allow_mentions: false,
         allow_cards: false,
+        allow_card_edits: false,
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),

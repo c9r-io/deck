@@ -437,33 +437,45 @@ export const provider = {
      One transaction writes both ids (documents.rs refuses a column outside
      the card's project); the session, directory, command, queue rows,
      scratchpad and reminder stay the card's. `projectMoveBlock` (pure.js)
-     names the three states that stay put. `expect` (the MCP move) names
-     the project and column the caller saw and an explicit target column. */
-  async moveToProject(sid, pid, { expect = null, columnId = null } = {}) {
+     names the three states that stay put. */
+  async moveToProject(sid, pid) {
+    return this.updateCard(sid, { projectId: pid });
+  },
+  /* The one writer of a card's place and, for an MCP update (mcp.js), its
+     title with it: `projectId` (default the card's own) and `columnId`
+     (default the column a new session takes), `title`, and `expect`, the
+     project, column and title the caller saw (refused as `changed`).
+     Within the project every card moves; leaving it, `projectMoveBlock`
+     decides. All or nothing, in one transaction. */
+  async updateCard(sid, { projectId = null, columnId = null, title = null, expect = null } = {}) {
     let outcome = { ok: false, reason: 'gone' };
     await mutateBoard(draft => {
       const c = draft.cards.find(x => x.id === sid);
-      const p = draft.projects.find(x => x.id === pid);
+      if (!c) return { noop: true };
+      const moving = !!(projectId || columnId);
+      const p = draft.projects.find(x => x.id === (projectId || c.projectId));
       const column = p && (columnId ? p.columns.find(x => x.id === columnId) : newSessionColumn(p));
-      if (!c || !column) return { noop: true };
-      if (expect && (c.projectId !== expect.projectId || c.columnId !== expect.columnId)) {
+      if (moving && !column) return { noop: true };
+      if (expect && ((expect.projectId && c.projectId !== expect.projectId)
+        || (expect.columnId && c.columnId !== expect.columnId)
+        || (typeof expect.title === 'string' && c.title !== expect.title))) {
         outcome = { ok: false, reason: 'changed' };
         return { noop: true };
       }
-      const same = c.projectId === pid;
-      if (same && (!columnId || c.columnId === column.id)) {
-        outcome = { ok: true, project: p.name, column: column.name, moved: false };
-        return { noop: true };
-      }
-      const blocked = same ? null : projectMoveBlock(c);
+      const leaves = moving && c.projectId !== p.id;
+      /* a same-project request that names no column asks for nothing */
+      const moved = moving && (leaves || (!!columnId && c.columnId !== column.id));
+      const renamed = !!title && title !== c.title;
+      const blocked = leaves ? projectMoveBlock(c) : null;
       if (blocked) { outcome = { ok: false, reason: blocked }; return { noop: true }; }
-      c.projectId = pid;
-      c.columnId = column.id;
-      outcome = { ok: true, project: p.name, column: column.name, moved: true };
+      outcome = { ok: true, moved, renamed, ...(moving ? { project: p.name, column: column.name } : {}) };
+      if (!moved && !renamed) return { noop: true };
+      if (moved) { c.projectId = p.id; c.columnId = column.id; }
+      if (renamed) c.title = title;
       return undefined;
     });
     const c = this.get(sid);
-    if (c && outcome.ok && outcome.moved) emit('list', c);
+    if (c && outcome.ok && (outcome.moved || outcome.renamed)) emit('list', c);
     return outcome;
   },
   async rename(sid, title) {

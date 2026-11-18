@@ -105,6 +105,12 @@ pub(super) struct Client {
     /// never a send, a close or a move. Never implied by another choice.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) allow_cards: bool,
+    /// The user's choice that this client may rename the cards of its
+    /// projects and move them between columns and between the projects it
+    /// reaches (`cards.rs`, `deck_card_update`). Needs `allow_cards`; never
+    /// a send, a close or a start.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) allow_card_edits: bool,
     /// The user's choice that a worker card this client's orchestrator
     /// card starts opens in its type's or rule's column, not beside the
     /// orchestrator card (`origin.rs`; off, the default, follows it).
@@ -682,6 +688,7 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
                 | super::automation::TRIGGER_KIND
                 | super::workers::WORKER_SEND_KIND
                 | super::workers::WORKER_START_KIND
+                | super::cards::CARD_UPDATE_KIND
         )
     };
     let bound_live = |operation: &Operation| {
@@ -761,7 +768,9 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
 /// Validation requires at least it; a write raises to it and never lowers
 /// (sticky). The versions rise in this order (`mod.rs`).
 fn needed_version(doc: &DiskDoc) -> u32 {
-    if super::cards::uses_cards(doc) {
+    if super::cards::uses_card_edits(doc) {
+        STATE_VERSION_CARD_EDITS
+    } else if super::cards::uses_cards(doc) {
         STATE_VERSION_CARDS
     } else if !doc.mention_marks.is_empty() {
         STATE_VERSION_MARKS
@@ -785,7 +794,7 @@ fn needed_version(doc: &DiskDoc) -> u32 {
 pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
     let needed = needed_version(doc);
-    let version_valid = (needed..=STATE_VERSION_CARDS).contains(&doc.version)
+    let version_valid = (needed..=STATE_VERSION_CARD_EDITS).contains(&doc.version)
         && super::proposals::valid_proposals(doc);
     let clients_valid = version_valid
         && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)

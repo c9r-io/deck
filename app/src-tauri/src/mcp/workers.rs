@@ -1255,6 +1255,7 @@ struct Choices {
     drafts: bool,
     mentions: bool,
     cards: bool,
+    card_edits: bool,
     rule_column: bool,
 }
 
@@ -1270,6 +1271,7 @@ impl Choices {
             drafts: client.allow_drafts,
             mentions: client.allow_mentions,
             cards: client.allow_cards,
+            card_edits: client.allow_card_edits,
             rule_column: client.rule_column,
         }
     }
@@ -1287,6 +1289,7 @@ impl Choices {
             drafts: input.allow_drafts,
             mentions: input.allow_mentions,
             cards: input.allow_cards,
+            card_edits: input.allow_cards && input.allow_card_edits,
             rule_column: input.rule_column,
         }
     }
@@ -1301,6 +1304,7 @@ impl Choices {
         client.allow_drafts = self.drafts;
         client.allow_mentions = self.mentions;
         client.allow_cards = self.cards;
+        client.allow_card_edits = self.card_edits;
         client.rule_column = self.rule_column;
     }
 }
@@ -1398,6 +1402,15 @@ pub(super) fn client_permissions(
             if before.drafts && !after.drafts && super::proposals::withdraw_pending(doc, client_id)
             {
                 withdrew_drafts = true;
+            }
+            if before.card_edits && !after.card_edits {
+                doc.reject_pending(
+                    |operation| {
+                        operation.client_id == client_id
+                            && operation.kind == super::cards::CARD_UPDATE_KIND
+                    },
+                    "client-revoked",
+                );
             }
             if withdrew_workers {
                 doc.reject_pending(

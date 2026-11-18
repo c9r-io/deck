@@ -259,6 +259,21 @@
 //! them. Withdrawal, a scope change, revocation and disable run
 //! `cards::note_readers_changed`. A ledger holding the choice is written at
 //! `STATE_VERSION_CARDS` (sticky).
+//! With the further choice `allow_card_edits` (only with `allow_cards`) it
+//! may rename a card of its projects and move it to a column, of its own
+//! project or of another it reaches (`deck_card_update`): the ONE place a
+//! card changes without the user's gesture, a hard-rule exception
+//! (CLAUDE.md). One card per explicit request, bound to the title and
+//! column the caller saw (`CARD_CHANGED`), journaled as a `card-update`
+//! Board intent the webview's one transaction commits or refuses whole
+//! (`mcp.js` `updateCard`), never replayed after a restart. A title and a
+//! column are read by no authority check; a card's project only by the
+//! unqueued head's first-send admission, and a card in that state, a
+//! channel card still collecting and an MCP-managed shell stay in their
+//! project (pure.js `projectMoveBlock`, the user's own move too). It
+//! types, starts and closes nothing; 30 a minute per client. Withdrawal,
+//! a scope change, revocation and disable reject what waits. A ledger
+//! holding the choice is written at `STATE_VERSION_CARD_EDITS` (sticky).
 //!
 //! Orchestrator cards (`origin.rs`, `docs/mcp.md` "Orchestrator cards"):
 //! several agents may share one client, each in its own Deck card. Deck
@@ -409,6 +424,9 @@ const STATE_VERSION_MARKS: u32 = 13;
 /// The sticky version a ledger takes once a client may read the card
 /// snapshot (`cards::uses_cards`): a v13 build refuses it.
 const STATE_VERSION_CARDS: u32 = 14;
+/// The sticky version a ledger takes once a client may rename and move
+/// cards (`cards::uses_card_edits`): a v14 build refuses it.
+const STATE_VERSION_CARD_EDITS: u32 = 15;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

@@ -55,6 +55,10 @@ const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" a
       <p class="set-hint mcp-perm-hint mcp-perm-danger" data-i18n="mcp.permMentionsHint">Other people wrote these messages, and this agent will read them. Covers your whole Slack account. With automations, it may hand them to its own.</p>
       <label class="mcp-perm"><input type="checkbox" id="mcp-perm-cards"> <span data-i18n="mcp.permCards">Read the card snapshot</span></label>
       <p class="set-hint mcp-perm-hint" data-i18n="mcp.permCardsHint">Its projects' cards and what Claude Code last said in each. It may mark cards for you in Needs attention; it cannot close, send or move any.</p>
+      <div class="mcp-perm-sub" id="mcp-perm-card-edits-box">
+        <label class="mcp-perm"><input type="checkbox" id="mcp-perm-card-edits"> <span data-i18n="mcp.permCardEdits">Organize cards</span></label>
+        <p class="set-hint mcp-perm-hint" data-i18n="mcp.permCardEditsHint">It may rename its projects' cards and move them between columns and between the projects it reaches.</p>
+      </div>
       <p class="mcp-field-error" id="mcp-perm-error" role="alert" hidden></p>
     </div>
     <div class="cfm-actions">
@@ -384,6 +388,8 @@ export function createMcpSettings(host) {
         $('mcp-perm-drafts').checked = perms.allowDrafts;
         $('mcp-perm-mentions').checked = perms.allowMentions;
         $('mcp-perm-cards').checked = perms.allowCards;
+        $('mcp-perm-card-edits').checked = perms.allowCards && perms.allowCardEdits;
+        $('mcp-perm-card-edits-box').hidden = !perms.allowCards;
         $('mcp-perm-worker-box').hidden = !perms.allowWorkers;
         $('mcp-perm-follow').checked = !perms.ruleColumn;
         $('mcp-perm-follow-box').hidden = !(perms.allowWorkers || perms.allowAutomations);
@@ -406,7 +412,8 @@ export function createMcpSettings(host) {
       $('mcp-perm-replies').onchange = () => { perms.allowReplies = $('mcp-perm-replies').checked; };
       $('mcp-perm-drafts').onchange = () => { perms.allowDrafts = $('mcp-perm-drafts').checked; };
       $('mcp-perm-mentions').onchange = () => { perms.allowMentions = $('mcp-perm-mentions').checked; };
-      $('mcp-perm-cards').onchange = () => { perms.allowCards = $('mcp-perm-cards').checked; };
+      $('mcp-perm-cards').onchange = () => { perms.allowCards = $('mcp-perm-cards').checked; paintPerms(); };
+      $('mcp-perm-card-edits').onchange = () => { perms.allowCardEdits = $('mcp-perm-card-edits').checked; };
       $('mcp-perm-type-add').onclick = () => {
         perms.workerTypes.push({ name: '', cmd: '', columnId: columns()[0]?.id || '', description: '' });
         paintTypes();

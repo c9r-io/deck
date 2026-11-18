@@ -43,6 +43,7 @@ export function initialPermissions(client) {
     allowDrafts: client?.allowDrafts === true,
     allowMentions: client?.allowMentions === true,
     allowCards: client?.allowCards === true,
+    allowCardEdits: client?.allowCards === true && client?.allowCardEdits === true,
     ruleColumn: client?.ruleColumn === true,
     workerTypes: Array.isArray(client?.workerTypes) ? client.workerTypes.map(t => ({ ...t })) : [],
   };
@@ -90,6 +91,7 @@ export function permissionsPayload(p) {
     allowDrafts: p.allowDrafts === true,
     allowMentions: p.allowMentions === true,
     allowCards: p.allowCards === true,
+    allowCardEdits: p.allowCards === true && p.allowCardEdits === true,
     ruleColumn: p.ruleColumn === true,
     workerTypes: workers ? p.workerTypes.map(t => ({
       name: String(t.name || '').trim(),
@@ -143,6 +145,7 @@ export function permissionSummary(client) {
   if (client.allowDrafts) keys.push('mcp.summaryDrafts');
   if (client.allowMentions) keys.push('mcp.summaryMentions');
   if (client.allowCards) keys.push('mcp.summaryCards');
+  if (client.allowCards && client.allowCardEdits) keys.push('mcp.summaryCardEdits');
   return keys;
 }
 

@@ -671,11 +671,21 @@ fn the_board_door_owns_the_committed_board_and_tells_one_observer() {
          `board_layout` (projects and columns by name) with `board_is_current` for an MCP \
          client's card snapshot, presentation only, refused on a recovered Board"
     );
-    // the card snapshot's readers grant nothing and have one caller each
-    assert_eq!(callers_of("board_layout("), ["mcp/cards.rs ordered"]);
+    // the card snapshot's readers grant nothing. Besides the snapshot,
+    // `card_update` reads them only to REFUSE before journaling a Board
+    // intent: a column that is not the target project's, and a Board
+    // recovered from its backup. The webview's transaction decides again.
+    assert_eq!(
+        callers_of("board_layout("),
+        [
+            "mcp/cards.rs card_update",
+            "mcp/cards.rs cards_snapshot",
+            "mcp/cards.rs ordered"
+        ]
+    );
     assert_eq!(
         callers_of("board_is_current("),
-        ["mcp/cards.rs cards_snapshot"]
+        ["mcp/cards.rs card_update", "mcp/cards.rs cards_snapshot"]
     );
     // the presentation reader's callers grant nothing: the turn summary,
     // and the card snapshot's follow-up count

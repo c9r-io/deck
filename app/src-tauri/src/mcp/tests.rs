@@ -327,6 +327,7 @@ fn client_record(root: &Path) -> Client {
         allow_drafts: false,
         allow_mentions: false,
         allow_cards: false,
+        allow_card_edits: false,
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
@@ -863,6 +864,7 @@ fn authorization_is_client_project_session_and_control_scoped() {
         allow_drafts: false,
         allow_mentions: false,
         allow_cards: false,
+        allow_card_edits: false,
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
@@ -2172,7 +2174,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
     );
 
     let mut invalid = DiskDoc {
-        version: STATE_VERSION_CARDS + 1,
+        version: STATE_VERSION_CARD_EDITS + 1,
         ..DiskDoc::default()
     };
     assert!(validate_doc(&invalid).is_err());
@@ -2212,6 +2214,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
         allow_drafts: false,
         allow_mentions: false,
         allow_cards: false,
+        allow_card_edits: false,
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
@@ -3164,7 +3167,7 @@ fn v3_state_upgrades_stickily_and_future_state_is_refused() {
     // The v3 build accepted exactly version 3; the same rule refuses a
     // future schema here.
     let mut future = saved.clone();
-    future["version"] = json!(STATE_VERSION_CARDS + 1);
+    future["version"] = json!(STATE_VERSION_CARD_EDITS + 1);
     std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
     assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
     assert_eq!(
@@ -5942,6 +5945,7 @@ fn set_permissions(runtime: &Runtime, automations: bool, workers: bool, replies:
             allow_drafts: false,
             allow_mentions: false,
             allow_cards: false,
+            allow_card_edits: false,
             rule_column: false,
             all_projects: false,
             projects: None,
@@ -6008,6 +6012,7 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
             allow_drafts: false,
             allow_mentions: false,
             allow_cards: false,
+            allow_card_edits: false,
             rule_column: false,
             all_projects: false,
             projects: None,
@@ -6146,6 +6151,7 @@ fn no_permissions(allow_create: bool) -> super::commands::PermissionsInput {
         allow_drafts: false,
         allow_mentions: false,
         allow_cards: false,
+        allow_card_edits: false,
         rule_column: false,
         all_projects: false,
         projects: None,
@@ -6668,6 +6674,7 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
         allow_drafts: false,
         allow_mentions: false,
         allow_cards: false,
+        allow_card_edits: false,
         rule_column,
     };
     client_permissions(&runtime, "client_a", permissions(false)).unwrap();
