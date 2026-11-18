@@ -1145,6 +1145,70 @@ extension ConnectorUITests {
     // S1: under Board access a plain shell's output is readable, sending stays
     // disabled, and a stopped card says so; then sharing changes take effect
     // on an open detail and regrant revives no old operation.
+    /// Slack mentions on the phone, against a host whose list was seeded
+    /// (no Slack workspace): the entry and its count, the list, one mention
+    /// in full with its routes and what each leads to, a route that creates
+    /// the card on the Mac, and a dismissal. The host checks its own side at
+    /// each `ready-mentions-*` step.
+    func testDeviceM1SlackMentionsRouteAndDismiss() throws {
+        let environment = try requireDeviceAcceptance(["DECK_DEVICE_HOST", "DECK_DEVICE_PAIRING_URI"])
+        let host = environment["DECK_DEVICE_HOST"]!
+        let app = chineseApp()
+        app.launch()
+        if !app.staticTexts[host].firstMatch.waitForExistence(timeout: 8) {
+            pairByPaste(environment["DECK_DEVICE_PAIRING_URI"]!, host: host, in: app, cameraDenial: false)
+        }
+        // before the Mac has a list there is an entry that says so, and no count
+        deckStep("ready-mentions")
+        let entry = app.descendants(matching: .any).matching(identifier: "deck.mentions.entry").firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 40), "A host with a mentions list must show its entry.")
+        let count = app.staticTexts["deck.mentions.count"].firstMatch
+        XCTAssertTrue(waitUntil(40) { count.exists && count.label == "2" }, "The entry counts the open mentions of the last day.")
+        keepScreenshot("mentions-entry", app)
+        entry.tap()
+        let one = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "QA-MENTION-ONE")).firstMatch
+        let two = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "QA-MENTION-TWO")).firstMatch
+        XCTAssertTrue(one.waitForExistence(timeout: 20) && two.exists, "Both seeded mentions are listed.")
+        XCTAssertTrue(app.staticTexts["Dana"].firstMatch.exists && app.staticTexts["#qa"].firstMatch.exists)
+        keepScreenshot("mentions-list", app)
+
+        one.tap()
+        let text = app.staticTexts["deck.mention.text"].firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 10) && text.label.contains("QA-MENTION-ONE the lint job fails"), "The mention is shown in full.")
+        let route = app.buttons["deck.mention.route.Rqaeyes"].firstMatch
+        let refused = app.buttons["deck.mention.route.Rqamemo"].firstMatch
+        XCTAssertTrue(route.waitForExistence(timeout: 10) && refused.exists, "Both Slack badge rules are routes.")
+        XCTAssertTrue(route.label.contains("👀") && route.label.contains("triage") && route.label.contains("在 Mac 上等你点"),
+                      "An unapproved rule says its steps wait on the Mac: \(route.label)")
+        XCTAssertTrue(route.isEnabled)
+        XCTAssertTrue(!refused.isEnabled && refused.label.contains("不可用"), "A rule the admission refuses is listed with its reason: \(refused.label)")
+        keepScreenshot("mention-detail", app)
+        route.tap()
+        let go = app.buttons["路由"].firstMatch
+        XCTAssertTrue(go.waitForExistence(timeout: 5), "A route asks once before it starts anything.")
+        keepScreenshot("mention-route-confirm", app)
+        go.tap()
+        XCTAssertTrue(waitUntil(30) { two.exists && !one.exists }, "A routed mention leaves the list and the list is shown again.")
+        deckStep("ready-mentions-routed")
+        keepScreenshot("mentions-after-route", app)
+
+        two.tap()
+        let dismiss = app.buttons["deck.mention.dismiss"].firstMatch
+        XCTAssertTrue(dismiss.waitForExistence(timeout: 10))
+        dismiss.tap()
+        let confirm = app.sheets.buttons["忽略"].firstMatch.exists ? app.sheets.buttons["忽略"].firstMatch
+            : app.buttons.matching(NSPredicate(format: "label == %@", "忽略")).allElementsBoundByIndex.last!
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.tap()
+        XCTAssertTrue(app.staticTexts["这个范围内没有未处理的提及"].firstMatch.waitForExistence(timeout: 30), "A dismissed mention leaves the list.")
+        deckStep("ready-mentions-dismissed")
+        keepScreenshot("mentions-empty", app)
+        // back on the card list the entry stays, without a count
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(waitUntil(30) { entry.exists && !count.exists }, "Nothing open: the entry carries no number.")
+        keepScreenshot("tasks-after-mentions", app)
+    }
+
     func testDeviceS1ShellStoppedAndWithdrawal() throws {
         let environment = try requireDeviceAcceptance(["DECK_DEVICE_SHELL_TITLE", "DECK_DEVICE_SHELL_MARKER", "DECK_DEVICE_STOPPED_TITLE", "DECK_DEVICE_HOST"])
         let app = chineseApp()

@@ -445,7 +445,8 @@ def cmd_agents(_args):
 # Settings (per-device trust); the global scope stays "All card summaries".
 HOST_REACTIONS = {"ready-trust": "trust", "ready-grant": "grant", "ready-fault": "fault",
                   "ready-downgrade": "untrust", "ready-regrant": "trust", "ready-disable": "disable",
-                  "ready-enable": "enable", "ready-revoke": "revoke"}
+                  "ready-enable": "enable", "ready-revoke": "revoke", "ready-mentions": "mentions",
+                  "ready-mentions-routed": "mentions-routed", "ready-mentions-dismissed": "mentions-dismissed"}
 
 
 def plan_for(state, test, extra):
@@ -463,6 +464,8 @@ def plan_for(state, test, extra):
                 "DECK_DEVICE_AGENT_MARKER": state.get("agentMarker", ""), "DECK_DEVICE_SHELL_MARKER": state.get("shellMarker", ""),
                 "DECK_DEVICE_EXIT_MARKER": f"DQA-EXIT-{n}",
                 "DECK_DEVICE_ADDRESS": f"{state.get('hostAddress', '')}:{state.get('pairing', {}).get('port', '')}"})
+    if test == "testDeviceM1SlackMentionsRouteAndDismiss":
+        env["DECK_DEVICE_PAIRING_URI"] = state["pairing"]["uri"]
     if test == "testDeviceR1OldBuildReproducesFieldDenial":
         env["DECK_DEVICE_PAIRING_URI"] = state["pairing"]["uri"]
         target["UITargetAppPath"] = state["iosOldApp"]

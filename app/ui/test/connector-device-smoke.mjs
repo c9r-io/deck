@@ -110,6 +110,7 @@ export async function runConnectorDeviceSmoke() {
     await report('connector-device-ready', listening && qr && offered, stage,
       (legacy ? 1 : 0) | (enabled ? 2 : 0) | (qr ? 4 : 0) | (offered ? 8 : 0));
 
+    let slackBase = 0;
     const steps = {
       'snap-settings': async () => { await showRemote(); return true; },
       pair: async () => {
@@ -146,6 +147,52 @@ export async function runConnectorDeviceSmoke() {
         if (!button) return false;
         await button.onclick();
         return (await status()).devices.every(device => !device.trusted);
+      },
+      // Slack mentions on the phone: two Slack badge rules saved through the
+      // one settings writer (one a route, one the channel admission refuses),
+      // the Slack source on, and two mentions seeded in place of a search
+      // (`smoke_mentions_seed`, debug only: the poll neither searches nor
+      // clears them). The route menu reaches the backend by the production
+      // publisher.
+      mentions: async () => {
+        const { ctx } = await import('../js/state.js');
+        const { persistInbound } = await import('../js/settings.js');
+        const { refreshMentions } = await import('../js/slack-mentions.js');
+        await provider.saveTemplate(project.id, 'triage', ['Slack request from {{msg.from}} in {{msg.where}}: {{msg.text}}']);
+        const rule = (id, badge, cmd) => ({ id, source: 'slack', badge, projectId: project.id, columnId: column.id,
+          cmd, dir: '/tmp', template: 'triage', finish: 'keep' });
+        const { store } = await import('../js/state.js');
+        slackBase = store.cards.filter(card => card.origin?.source === 'slack').length;
+        const kept = (ctx.settings.inbound.rules || []).filter(value => !['Rqaeyes', 'Rqamemo'].includes(value.id));
+        const saved = await persistInbound({ ...ctx.settings.inbound,
+          sources: { ...ctx.settings.inbound.sources, slack: { enabled: true } },
+          rules: [...kept, rule('Rqaeyes', 'eyes', 'claude'), rule('Rqamemo', 'memo', 'bash')] });
+        const now = Math.floor(Date.now() / 1000);
+        const mention = (ago, n, from, text) => ({ key: `C0QA/${now - ago}.00000${n}`, from, where: '#qa',
+          link: `https://example.slack.com/archives/C0QA/p${now - ago}00000${n}`, text });
+        const seeded = await inv('smoke_mentions_seed', { items: [
+          mention(120, 1, 'Dana', '@me QA-MENTION-ONE the lint job fails, could you look?'),
+          mention(600, 2, 'Eve', '@me QA-MENTION-TWO lunch on Friday?')] });
+        await refreshMentions();
+        const listed = await until(async () => (await inv('slack_mentions')).items.length === 2);
+        return saved !== false && seeded === 2 && listed;
+      },
+      // after the phone routed the first and dismissed nothing yet: exactly
+      // one Slack-origin card, made by the ordinary dispatcher from the
+      // seeded message under the chosen rule, and that mention off the list
+      'mentions-routed': async () => {
+        const { store } = await import('../js/state.js');
+        const made = await until(() => store.cards.filter(card => card.origin?.source === 'slack').length === slackBase + 1, 30000);
+        const card = store.cards.filter(value => value.origin?.source === 'slack').at(-1);
+        const view = await inv('slack_mentions');
+        return made && card.origin.badge === 'eyes' && card.origin.key.startsWith('C0QA/') && card.cmd === 'claude'
+          && view.items.length === 1 && !view.items.some(item => item.key === card.origin.key);
+      },
+      // after the phone dismissed the second: nothing listed, still one card
+      'mentions-dismissed': async () => {
+        const { store } = await import('../js/state.js');
+        const empty = await until(async () => (await inv('slack_mentions')).items.length === 0, 15000);
+        return empty && store.cards.filter(card => card.origin?.source === 'slack').length === slackBase + 1;
       },
       fault: async () => (await inv('smoke_fault_set', { kind: 'connector-after-accept', count: 1 })).remaining === 1,
       revoke: async () => {

@@ -1354,6 +1354,13 @@ struct RepliesView: View, Equatable {
 
 enum MentionsDestination: Hashable { case list, mention(String) }
 
+private extension AppModel.MutationOutcome {
+    /// The host took the command (applied, or accepted and still running):
+    /// the detail returns to the list, which shows what is open now. Only a
+    /// refusal or a failed send keeps the mention on screen.
+    var leftTheScreen: Bool { if case .failed = self { false } else { true } }
+}
+
 private func mentionStateMessage(_ state: String) -> String {
     switch state {
     case "slack-off": String(localized: "mentions.state.slackOff")
@@ -1575,7 +1582,7 @@ struct MentionDetailView: View {
                             isPresented: Binding(get: { choosing != nil }, set: { if !$0 { choosing = nil } }), titleVisibility: .visible) {
             if let route = choosing, let mention {
                 Button(String(localized: "mentions.route.go")) {
-                    Task { if case .applied = await model.routeMention(mention, to: route) { dismiss() } }
+                    Task { if await model.routeMention(mention, to: route).leftTheScreen { dismiss() } }
                 }
             }
             Button("Cancel", role: .cancel) { choosing = nil }
@@ -1583,7 +1590,7 @@ struct MentionDetailView: View {
         .confirmationDialog(String(localized: "mentions.dismiss.confirm"), isPresented: $confirmDismiss, titleVisibility: .visible) {
             if let mention {
                 Button(String(localized: "mentions.dismiss"), role: .destructive) {
-                    Task { if case .applied = await model.dismissMention(mention) { dismiss() } }
+                    Task { if await model.dismissMention(mention).leftTheScreen { dismiss() } }
                 }
             }
             Button("Cancel", role: .cancel) { }
