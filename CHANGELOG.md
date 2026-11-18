@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.30 — 2026-11-18 (Nightly)
+
+- Phone Connector (iOS 1.0 (8)): one phone can be paired with several Macs,
+  for example a work Mac and a personal one. The phone shows one Mac at a
+  time, the one last chosen, and never mixes their cards, mentions or
+  queues. The list's menu names the paired Macs with their addresses, adds
+  a Mac with the usual QR or pasted code and removes the pairing with the
+  current one. Drafts and unresolved operations stay with the Mac they were
+  written for. While the current Mac cannot be reached and another paired
+  Mac answers, one line offers the switch; the phone never switches by
+  itself. A phone that was already paired keeps its Mac without pairing
+  again. Nothing changes on the Mac: this Deck build is the same as 0.8.29
+  apart from documentation, and each Mac keeps its own device list, trust,
+  sharing scope and revocation.
+
 ## 0.8.29 — 2026-11-18 (Nightly)
 
 - Phone Connector: the Mac's Slack mentions list on the phone. A paired
