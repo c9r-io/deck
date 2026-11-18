@@ -4,7 +4,8 @@ Phone Connector is disabled by default. Enabling it in **Settings → Remote acc
 
 - read the recent output of Codex and Claude cards;
 - submit prompts to Codex and Claude sessions — a prompt can lead the agent to run commands, so this is equivalent to running code under your macOS account, with whatever permissions the saved card command and the agent's own configuration grant;
-- start sessions from project presets.
+- start sessions from project presets;
+- while the Slack connection is on, read the Slack messages that mention you (with the messages just before them) and hand one to one of your Slack badge automations, or set it aside.
 
 A paired device keeps these abilities until it is revoked. Disabling Connector stops the listener; it does not revoke devices, so their tokens work again when Connector is re-enabled on the same identity. **Revoke** a device (or **Reset and re-pair**) to end its access.
 
@@ -66,6 +67,16 @@ While it runs, deck re-reads the Mac's interfaces about every 5 seconds. If the 
 Pairing uses a five-minute, single-use QR descriptor. The iOS app refuses a descriptor whose address is not an IPv4 address in the ranges above, or exactly `127.0.0.1` for the isolated smoke host (it cannot see the Mac's interface, so it checks only the range). Anyone who sees the QR code and can reach the Mac during those five minutes can pair, so the desktop shows each new pairing immediately (device name and time), hides the spent code, and lists every device with the time it was paired. Device names are stripped of bidi controls, zero-width characters and Unicode tag characters before they are validated and stored. The TLS private key remains in the macOS Keychain. The host journal stores only each device token's hash; the raw token exists on the host only in the one-time in-memory pairing response and is stored by the phone in the iOS Keychain. The desktop UI receives only the generated SVG, expiry, public fingerprint, and device summaries.
 
 Changing to an address outside the current certificate requires **Reset and re-pair** while Connector is disabled. Reset removes the Connector identity, paired devices, and its remote-command journal. Revoking one device prevents its pending commands from running and drops its command history; a revoked device's slot is reused when a new device pairs and all 32 slots are taken.
+
+## Slack mentions on the phone
+
+Pairing is the consent for this: there is no separate switch, the three sharing scopes and **Trust this device** do not narrow it, and a phone paired before the update that added it gains it with that update (a deliberate exception to "updating never expands consent", which describes the sharing selector). The phone shows the same list as the Mac's **Slack mentions** view (`GET /v1/mentions`): the open mentions of the last week with their context, the ones an MCP client took, the marks an orchestrator set, and your Slack badge automations as routes. The Mac's memory is the only source; the phone never talks to Slack, and while the Slack connection is off, no search has finished or the last search failed, it gets that state and no list.
+
+Each route says what choosing it leads to: the automation starts by itself (approved, with the first-send choice), the Agent starts and the first step waits for its first interaction (approved), or the card is created and its steps wait for **Send now** on the Mac (not approved now). A route whose project is gone, or whose command or template the channel admission refuses, is listed with the reason and cannot be chosen. These lines are explanations computed by the desktop window; what is actually sent is decided by the backend when the run is admitted.
+
+`mention-route` names one listed mention and one Slack badge rule; `mention-dismiss` names one mention. Neither carries text, a card, a Board revision or a pane generation. A route is exactly the Mac's own route: the message becomes that rule's badge event, byte for byte what a badge added in Slack would carry, and the rule's approval and first-send choice apply as they do there. `applied` means the mention was handed to the dispatcher (or set aside), not that a card exists; the card appears in a later snapshot. A refusal is `mention-settled` (already started, dismissed or taken), `mention-not-found`, `mention-rule` or `mention-slack-off`. The same message is never started twice under one rule, whether the phone retries, routes again or the badge is later added in Slack. The phone cannot dismiss everything at once, clear a mark, route to an Agent or clock automation, or change or approve an automation; Deck still never writes to Slack. A failure to create the card (a missing directory, for example) is shown on the Mac only.
+
+A host journal that retains a mention command is written as format version 4; an older Deck refuses it instead of reading it. A journal without one stays version 3.
 
 ## What the phone can send
 

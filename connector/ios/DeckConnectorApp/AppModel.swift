@@ -74,6 +74,17 @@ final class AppModel: ObservableObject {
     @Published var loadingDetails = Set<String>()
     @Published var staleOutputs = Set<String>()
     @Published var lastSyncedAt: Date?
+    /// The Mac's Slack mentions list, read while its screen is open
+    /// (`Mentions.swift`). Kept, and marked stale, while the Mac is unreachable.
+    @Published var mentions: MentionsList?
+    @Published var mentionsStale = false
+    @Published var mentionsIssue: String?
+    @Published var loadingMentions = false
+    /// Mentions with a route or dismissal in flight or not yet confirmed.
+    @Published var busyMentions = Set<String>()
+    @Published var unconfirmedMentions = Set<String>()
+    private var showingMentions = false
+    private var mentionsSequence: UInt64 = 0
     @Published var noteDrafts: [String: NoteDraft] = [:]
     @Published var noteDraftErrors: [String: String] = [:]
     private var noteCoordinator: NoteDraftSaveCoordinator?
@@ -168,7 +179,64 @@ final class AppModel: ObservableObject {
         visibleCardID = cardID
     }
 
+    func showMentions(_ visible: Bool) {
+        showingMentions = visible
+        if visible { Task { await loadMentions() } }
+    }
+
+    /// Reads the list from the Mac's memory; the Mac searches Slack again
+    /// for the next read. A failed read keeps the last list, marked stale.
+    func loadMentions() async {
+        guard let client, let journal else { return }
+        let epoch = bindingEpoch
+        mentionsSequence &+= 1
+        let sequence = mentionsSequence
+        loadingMentions = true
+        defer { if sequence == mentionsSequence { loadingMentions = false } }
+        do {
+            let list = try await client.mentions()
+            guard isCurrent(client: client, journal: journal, epoch: epoch), sequence == mentionsSequence else { return }
+            mentions = list; mentionsStale = false; mentionsIssue = nil
+        } catch {
+            guard isCurrent(client: client, journal: journal, epoch: epoch), sequence == mentionsSequence else { return }
+            if error as? ConnectorError == .revoked { setError(error); return }
+            mentionsStale = mentions != nil
+            mentionsIssue = Self.isNetworkLoss(error)
+                ? Self.unreachableMessage(host: snapshot?.hostName ?? pairedAddress ?? "Mac")
+                : error.localizedDescription
+        }
+    }
+
+    /// Hands one listed mention to one Slack badge automation. The phone
+    /// names both and sends no text; the Mac decides what is sent.
+    func routeMention(_ mention: Mention, to route: MentionRoute) async -> MutationOutcome {
+        guard route.canBeChosen else { return .failed(String(localized: "mentions.route.blocked")) }
+        return await mentionCommand(MentionCommand.route(id: UUID().uuidString.lowercased(), key: mention.key, ruleID: route.id), key: mention.key)
+    }
+
+    func dismissMention(_ mention: Mention) async -> MutationOutcome {
+        await mentionCommand(MentionCommand.dismiss(id: UUID().uuidString.lowercased(), key: mention.key), key: mention.key)
+    }
+
+    private func mentionCommand(_ command: CommandRequest, key: String) async -> MutationOutcome {
+        guard !busyMentions.contains(key), !unconfirmedMentions.contains(key), !mentionsStale else {
+            return .failed(String(localized: "mentions.busy"))
+        }
+        busyMentions.insert(key)
+        let epoch = bindingEpoch
+        defer { if epoch == bindingEpoch { busyMentions.remove(key) } }
+        let outcome = await execute(command)
+        guard epoch == bindingEpoch else { return outcome }
+        // applied, or settled by someone else: either way it left the list
+        if case .applied = outcome, let list = mentions {
+            mentions = list.removing(key)
+        }
+        await loadMentions()
+        return outcome
+    }
+
     private func clearRemoteContent() {
+        mentions = nil; mentionsStale = false; mentionsIssue = nil
         outputs = [:]; buffers = [:]; bufferErrors = [:]; outputUnavailable = [:]; staleOutputs = []
         replies = [:]; repliesIssue = [:]; repliesFetched = [:]
         detailTasks.values.forEach { $0.cancel() }; detailTasks = [:]
@@ -187,6 +255,10 @@ final class AppModel: ObservableObject {
                 ?? ConnectorError.unsupportedTarget.localizedDescription
         case "mcp-controlled":
             return capabilityMessage("mcp-controlled", kind: .sendMessage, snapshot: snapshot)
+        case "mention-settled": return String(localized: "mentions.error.settled")
+        case "mention-not-found": return String(localized: "mentions.error.notFound")
+        case "mention-rule": return String(localized: "mentions.error.rule")
+        case "mention-slack-off": return String(localized: "mentions.error.slackOff")
         default:
             return code ?? "The command was rejected."
         }
@@ -353,6 +425,7 @@ final class AppModel: ObservableObject {
                 guard !Task.isCancelled, isCurrent(client: client, journal: journal, epoch: epoch) else { return }
             }
             await refreshJournalStatus(journal: journal, epoch: epoch)
+            if showingMentions, newSnapshot.mentions != nil { await loadMentions() }
             if let id = visibleCardID, let card = snapshot?.cards.first(where: { $0.id == id }) {
                 await loadDetails(card: card)
             }
@@ -363,6 +436,7 @@ final class AppModel: ObservableObject {
                 if !Self.isNetworkLoss(error) { clearRemoteContent() }
                 if let error = error as? ConnectorError, [.invalidResponse, .certificateMismatch, .untrustedServer, .redirected].contains(error) { snapshot = nil }
                 staleOutputs.formUnion(outputs.keys)
+                mentionsStale = mentions != nil
                 connection = .offline(Self.isNetworkLoss(error)
                     ? Self.unreachableMessage(host: snapshot?.hostName ?? pairedAddress ?? "Mac")
                     : error.localizedDescription)
@@ -371,6 +445,8 @@ final class AppModel: ObservableObject {
     }
 
     func applySnapshot(_ value: Snapshot) {
+        // a host without the list, or one whose list is not current, shows none
+        if value.mentions?.state != "ok" { mentions = nil; mentionsStale = false }
         let current = Dictionary(value.cards.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         for old in snapshot?.cards ?? [] {
             let next = current[old.id]
@@ -801,6 +877,12 @@ final class AppModel: ObservableObject {
             $0.request.kind == "task-create" && [.prepared, .unknown, .notFound, .awaitingFinal, .ambiguous, .expired].contains($0.localState)
         }
         hasPendingTaskCreate = pendingTaskCreate != nil
+        unconfirmedMentions = Set(records.compactMap { record -> String? in
+            guard ["mention-route", "mention-dismiss"].contains(record.request.kind),
+                  [.prepared, .unknown, .notFound, .awaitingFinal, .ambiguous].contains(record.localState),
+                  case let .string(key)? = record.request.payload["key"] else { return nil }
+            return key
+        })
         for record in records where record.localState == .resolved {
             if record.request.kind == "send-message", let cardID = record.request.cardId {
                 let draft = await journal.draft(for: cardID)

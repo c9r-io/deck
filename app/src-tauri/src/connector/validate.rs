@@ -216,8 +216,21 @@ pub(super) fn validate_command(r: &CommandRequest) -> Result<(), DeckError> {
             | "task-create"
             | "queue-pause"
             | "queue-cancel"
+            | "mention-route"
+            | "mention-dismiss"
     ) {
         return Err(DeckError::new(ErrorKind::Invalid, "unknown command kind"));
+    }
+    if mention_kind(&r.kind) {
+        // a mention names no card and no Board revision (the phone writes
+        // `expectedGeneration: null` in every command; it is not read here)
+        if r.card_id.is_some() || r.expected_revision.is_some() {
+            return Err(DeckError::new(
+                ErrorKind::Invalid,
+                "a mention command names no card",
+            ));
+        }
+        return validate_command_payload(r);
     }
     if r.kind != "task-create"
         && r.card_id
@@ -275,6 +288,16 @@ pub(super) fn command_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
 }
 
+/// A Slack mention's key as the list gives it (`channel/ts`; the shape
+/// `slack_mentions::key_shape` accepts).
+pub(super) fn mention_key(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'/' || b == b'.')
+}
+
 pub(super) fn command_text(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_TEXT
@@ -320,7 +343,23 @@ pub(super) fn validate_command_payload(r: &CommandRequest) -> Result<(), DeckErr
         revision: String,
     }
 
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct MentionRoute {
+        key: String,
+        rule_id: String,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct MentionKey {
+        key: String,
+    }
+
     let valid = match r.kind.as_str() {
+        "mention-route" => serde_json::from_value::<MentionRoute>(r.payload.clone())
+            .is_ok_and(|p| mention_key(&p.key) && command_id(&p.rule_id) && p.rule_id.len() <= 64),
+        "mention-dismiss" => serde_json::from_value::<MentionKey>(r.payload.clone())
+            .is_ok_and(|p| mention_key(&p.key)),
         "send-message" | "buffer-add" => {
             serde_json::from_value::<Text>(r.payload.clone()).is_ok_and(|p| command_text(&p.text))
         }

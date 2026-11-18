@@ -291,6 +291,91 @@
         },
         "seq": 0
       }
+    },
+    {
+      "reason": "mention route naming a card",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "mention-route-1",
+        "kind": "mention-route",
+        "cardId": "C1",
+        "payload": {
+          "key": "C1/1794989000.000200",
+          "ruleId": "r-eyes"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "mention route without a rule",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "mention-route-1",
+        "kind": "mention-route",
+        "payload": {
+          "key": "C1/1794989000.000200"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "mention route carrying text",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "mention-route-1",
+        "kind": "mention-route",
+        "payload": {
+          "key": "C1/1794989000.000200",
+          "ruleId": "r-eyes",
+          "text": "do this instead"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "mention key that is not an identifier",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "mention-dismiss-1",
+        "kind": "mention-dismiss",
+        "payload": {
+          "key": "C1/17 94"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "mention dismissal of several keys",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "mention-dismiss-1",
+        "kind": "mention-dismiss",
+        "payload": {
+          "keys": [
+            "C1/1794989000.000200"
+          ]
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "mention dismissal with a Board revision",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "mention-dismiss-1",
+        "kind": "mention-dismiss",
+        "expectedRevision": "abc",
+        "payload": {
+          "key": "C1/1794989000.000200"
+        },
+        "seq": 1
+      }
     }
   ]
 }

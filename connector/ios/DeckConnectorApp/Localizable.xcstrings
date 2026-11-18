@@ -2320,6 +2320,694 @@
           }
         }
       }
+    },
+    "mentions.blocked.command": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unavailable: its command is not a supported Agent command."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不可用：它的启动命令不是受支持的 Agent 命令。"
+          }
+        }
+      }
+    },
+    "mentions.blocked.project": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unavailable: its project is gone."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不可用：它的项目已不存在。"
+          }
+        }
+      }
+    },
+    "mentions.blocked.template": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unavailable: a template line starts with the message."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不可用：模板里有一行以消息内容开头。"
+          }
+        }
+      }
+    },
+    "mentions.busy": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This mention already has an action in progress, or your Mac cannot be reached."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这条提及已有操作在进行，或者连不上 Mac。"
+          }
+        }
+      }
+    },
+    "mentions.check": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check now"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "现在检查"
+          }
+        }
+      }
+    },
+    "mentions.context.before": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Just before"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "之前的消息"
+          }
+        }
+      }
+    },
+    "mentions.context.thread": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Earlier in the thread"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "线程里之前的消息"
+          }
+        }
+      }
+    },
+    "mentions.dismiss": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dismiss"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "忽略"
+          }
+        }
+      }
+    },
+    "mentions.dismiss.confirm": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dismiss this mention?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "忽略这条提及？"
+          }
+        }
+      }
+    },
+    "mentions.dismiss.note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "It leaves the list on your Mac and this phone and starts nothing. A badge you add in Slack later still works."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "它会从 Mac 和手机的列表里消失，不启动任何东西。之后在 Slack 里加表情仍然有效。"
+          }
+        }
+      }
+    },
+    "mentions.empty": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No open mentions in this range"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个范围内没有未处理的提及"
+          }
+        }
+      }
+    },
+    "mentions.error.notFound": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This mention is no longer listed on your Mac."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac 上已不再列出这条提及。"
+          }
+        }
+      }
+    },
+    "mentions.error.rule": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That automation no longer exists or is no longer a Slack badge automation."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这条自动化已不存在，或已不是 Slack 表情自动化。"
+          }
+        }
+      }
+    },
+    "mentions.error.settled": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This mention was already started, dismissed or taken."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这条提及已经被启动、忽略或接手。"
+          }
+        }
+      }
+    },
+    "mentions.error.slackOff": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Slack connection is off on your Mac."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac 上的 Slack 连接已关闭。"
+          }
+        }
+      }
+    },
+    "mentions.gone": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This mention is no longer open"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这条提及已处理"
+          }
+        }
+      }
+    },
+    "mentions.handed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Taken by an agent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已由 Agent 接手"
+          }
+        }
+      }
+    },
+    "mentions.handed.to": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Handed to “%@”"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已交给「%@」"
+          }
+        }
+      }
+    },
+    "mentions.mark.closed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "handled it; its card is closed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已处理，卡片已关闭"
+          }
+        }
+      }
+    },
+    "mentions.mark.forYou": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "for you"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要你"
+          }
+        }
+      }
+    },
+    "mentions.mark.handling": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "handling"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "处理中"
+          }
+        }
+      }
+    },
+    "mentions.mark.noAction": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "no action needed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无需处理"
+          }
+        }
+      }
+    },
+    "mentions.more": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld more are listed on your Mac."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还有 %lld 条只在 Mac 上列出。"
+          }
+        }
+      }
+    },
+    "mentions.noRoutes": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Slack badge automation yet. Add one on your Mac to route mentions."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没有 Slack 表情自动化。请先在 Mac 上添加一条，才能路由提及。"
+          }
+        }
+      }
+    },
+    "mentions.openInSlack": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open in Slack"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Slack 打开"
+          }
+        }
+      }
+    },
+    "mentions.outcome.auto": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Starts by itself: the Agent launches and gets the first step."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会自动开始：Agent 启动并收到第一步。"
+          }
+        }
+      }
+    },
+    "mentions.outcome.gated": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creates the card and starts the Agent. The first step is sent after you have interacted with that Agent once."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会建卡并启动 Agent；第一步要等你和这个 Agent 交互过一次后才发送。"
+          }
+        }
+      }
+    },
+    "mentions.outcome.manual": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creates the card. Its steps wait for Send now on your Mac."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会建卡；步骤在 Mac 上等你点「立即发送」。"
+          }
+        }
+      }
+    },
+    "mentions.range": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Range"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "范围"
+          }
+        }
+      }
+    },
+    "mentions.range.day": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "24 h · %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "24 小时 · %lld"
+          }
+        }
+      }
+    },
+    "mentions.range.threeDays": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3 days · %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3 天 · %lld"
+          }
+        }
+      }
+    },
+    "mentions.range.week": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Week · %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一周 · %lld"
+          }
+        }
+      }
+    },
+    "mentions.route.blocked": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This automation cannot be chosen."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这条自动化不能选择。"
+          }
+        }
+      }
+    },
+    "mentions.route.confirm": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Route this mention to %@?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "把这条提及路由到 %@？"
+          }
+        }
+      }
+    },
+    "mentions.route.go": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Route"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "路由"
+          }
+        }
+      }
+    },
+    "mentions.routeTo": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Route to"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "路由到"
+          }
+        }
+      }
+    },
+    "mentions.stale": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your Mac cannot be reached. This is the last list read; routing and dismissing are unavailable."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连不上 Mac。这是上次读到的列表；现在不能路由或忽略。"
+          }
+        }
+      }
+    },
+    "mentions.state.failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The last Slack search failed (%@), so the list may be out of date. It is shown again after a search succeeds."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一次 Slack 搜索失败（%@），列表可能已过期。搜索成功后会重新显示。"
+          }
+        }
+      }
+    },
+    "mentions.state.notSearched": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deck has not searched Slack yet. Pull to refresh in a moment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deck 还没有搜索过 Slack。请稍后下拉刷新。"
+          }
+        }
+      }
+    },
+    "mentions.state.slackOff": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Slack connection is off on your Mac."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac 上的 Slack 连接已关闭。"
+          }
+        }
+      }
+    },
+    "mentions.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Slack mentions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Slack 提及"
+          }
+        }
+      }
+    },
+    "mentions.unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No current list"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有当前列表"
+          }
+        }
+      }
+    },
+    "mentions.unconfirmed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An earlier action on this mention is not confirmed yet."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "之前对这条提及的操作还没有确认结果。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

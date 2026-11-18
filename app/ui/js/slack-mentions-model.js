@@ -15,7 +15,9 @@
 //   or, for a custom one, as `:name:`. A rule whose project is gone, or whose command or template
 //   the channel admission refuses (`channelBlockReason`, the same check a
 //   badge item passes in inbound.js), is listed but cannot be chosen, so the
-//   menu says why instead of failing after the click.
+//   menu says why instead of failing after the click. A paired phone's menu
+//   is the same list (`phoneRoutes`), published to the backend whenever it
+//   changes; each line also says whether the route starts by itself.
 // - Selection: after mentions leave the list, the next one is selected
 //   (`mentionAfter`), so deciding one by one needs no extra click.
 // - The count is the number of open mentions in the chosen range, shown
@@ -41,6 +43,28 @@ export function mentionRoutes(rules, projects, blockReason) {
       return { id: rule.id, badge: rule.badge, label, disabled: !project || !!blockReason(rule, project) };
     })
     .sort((a, b) => a.badge.localeCompare(b.badge));
+}
+
+/* the same routes as a paired phone's menu shows them (slack_mentions.rs
+   `PhoneRoute`), each with what choosing it leads to: `auto` (approved and
+   the first step is sent without waiting), `gated` (approved; the first
+   step waits for the Agent's first interaction) or `manual` (not approved
+   now: the steps wait for Send now on the Mac), or the reason it cannot be
+   chosen. `grantState` and `firstSendSupported` are automation-model.js's.
+   Presentation only: nothing is admitted from this. */
+export async function phoneRoutes(rules, projects, blockReason, grantState, firstSendSupported) {
+  const out = [];
+  for (const route of mentionRoutes(rules, projects, blockReason)) {
+    const rule = rules.find(value => value?.id === route.id);
+    const project = (projects || []).find(value => value.id === rule.projectId);
+    const blocked = !project ? 'project' : blockReason(rule, project);
+    const template = (project?.templates || []).find(value => value.name === rule.template);
+    const approved = !blocked && (await grantState(rule, template)) === 'valid';
+    const outcome = !approved ? 'manual'
+      : rule.firstSendWithoutReadiness === true && firstSendSupported(rule.cmd) ? 'auto' : 'gated';
+    out.push({ id: route.id, label: route.label.slice(0, 300), outcome, ...(blocked ? { blocked } : {}) });
+  }
+  return out;
 }
 
 /* the ranges the view offers, in days; the first is the default */

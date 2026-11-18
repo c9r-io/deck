@@ -579,6 +579,7 @@ fn main() {
             slack_mentions::slack_mentions,
             slack_mentions::slack_mention_route,
             slack_mentions::slack_mention_dismiss,
+            slack_mentions::slack_mention_routes_publish,
             slack_mentions::slack_mention_clear_mark,
             slack_mentions::slack_mentions_refresh,
             slack_mentions::smoke_mentions_seed,

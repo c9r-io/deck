@@ -54,7 +54,8 @@ import { formatDateTime, formatNumber, t } from './i18n.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { channelBlockReason } from './channel-model.js';
 import { workerOf } from './workers.js';
-import { MENTION_RANGES, handedRows, markLabel, markedApart, mentionAfter, mentionErrorKey, mentionMark, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin, openWithin } from './slack-mentions-model.js';
+import { firstSendSupported, grantState } from './automation-model.js';
+import { MENTION_RANGES, handedRows, markLabel, markedApart, mentionAfter, mentionErrorKey, mentionMark, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin, openWithin, phoneRoutes } from './slack-mentions-model.js';
 
 let render, switchProject, leaveSessionView, closeBuffer, provider;
 let view = null;
@@ -214,8 +215,25 @@ function select(key, focus = false) {
   if (focus) $('mentions-list').focus?.({ preventScroll: true });
 }
 
+/* the route menu a paired phone shows (connector/projection.rs): published
+   whenever it differs from the last one the backend took */
+let publishedRoutes = null;
+let publishing = false;
+async function publishRoutes() {
+  if (publishing) return;
+  publishing = true;
+  try {
+    const list = await phoneRoutes(ctx.settings?.inbound?.rules || [], store.projects, channelBlockReason, grantState, firstSendSupported);
+    const key = JSON.stringify(list);
+    if (key === publishedRoutes) return;
+    await inv('slack_mention_routes_publish', { routes: list });
+    publishedRoutes = key;
+  } catch (_) { uev('mentions', 'routes-publish-fail'); } finally { publishing = false; }
+}
+
 /* the sidebar entry and, while the view is shown, both panes */
 export function paintMentions() {
+  publishRoutes();
   const count = openWithin(view, range, nowSecs()).length;
   const btn = $('mentions-btn');
   btn.hidden = !view?.enabled;

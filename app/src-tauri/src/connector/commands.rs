@@ -624,6 +624,14 @@ pub(crate) async fn connector_execute_native(
             );
         }
         let executing = runtime.executing(&handle)?;
+        if mention_kind(&executing.request.kind) {
+            return match execute_mention(&app, &handle) {
+                Ok(state) => connector_complete(handle, state.into(), None, None),
+                Err((state, code)) => {
+                    connector_complete(handle, state.into(), Some(code.into()), None)
+                }
+            };
+        }
         let queues = app.state::<Queues>();
         let result = execute_native(&executing.request, &handle, &executing.device_id, &queues);
         match result {

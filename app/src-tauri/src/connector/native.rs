@@ -8,6 +8,46 @@
 
 use super::*;
 
+/// A paired phone's route or dismissal of ONE listed Slack mention
+/// (`slack_mentions.rs`): the phone names a mention and, for a route, one of
+/// the user's Slack badge rules; it supplies no text. Under the lifecycle
+/// lock the command must still be executing for a device that is still
+/// paired, then the user's own route or dismissal runs and answers with its
+/// closed word. `applied` means handed to the dispatcher (or set aside),
+/// never that a card exists.
+pub(super) fn execute_mention<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    handle: &str,
+) -> Result<&'static str, (&'static str, &'static str)> {
+    let runtime = rt().map_err(|_| ("rejected", "connector-disabled"))?;
+    let _lifecycle = runtime.lifecycle.lock_or_recover();
+    if !runtime.feature_active() {
+        return Err(("rejected", "connector-disabled"));
+    }
+    let executing = runtime
+        .executing(handle)
+        .map_err(|_| ("rejected", "target-changed"))?;
+    let req = &executing.request;
+    let field = |name: &str| req.payload.get(name).and_then(Value::as_str).unwrap_or("");
+    let outcome = match req.kind.as_str() {
+        "mention-route" => crate::slack_mentions::phone_route(app, field("key"), field("ruleId")),
+        "mention-dismiss" => crate::slack_mentions::phone_dismiss(app, field("key")),
+        _ => return Err(("rejected", "frontend-required")),
+    };
+    outcome.map(|()| "applied").map_err(|word| {
+        (
+            "rejected",
+            match word {
+                "slack-off" => "mention-slack-off",
+                "rule" => "mention-rule",
+                "not-found" => "mention-not-found",
+                "settled" => "mention-settled",
+                _ => "invalid-payload",
+            },
+        )
+    })
+}
+
 pub(super) fn execute_native(
     req: &CommandRequest,
     handle: &str,

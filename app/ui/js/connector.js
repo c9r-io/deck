@@ -140,7 +140,7 @@ async function handlePending(pending) {
     if (['buffer-add', 'buffer-edit', 'buffer-delete'].includes(request.kind)) return await mutateBuffer(handle, request);
     if (request.kind === 'buffer-queue') return await queueBuffer(handle, request);
     if (request.kind === 'task-create') return await createTask(handle, request);
-    if (['send-message', 'queue-pause', 'queue-cancel'].includes(request.kind)) {
+    if (['send-message', 'queue-pause', 'queue-cancel', 'mention-route', 'mention-dismiss'].includes(request.kind)) {
       let attempted = false;
       try {
         await mutateBoard(async () => {

@@ -1144,7 +1144,13 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     // mention, never which one
     (
         "mentions",
-        DetailPolicy::Closed(&["routed", "route-refused", "dismissed", "mark-cleared"]),
+        DetailPolicy::Closed(&[
+            "routed",
+            "route-refused",
+            "dismissed",
+            "mark-cleared",
+            "routes-publish-fail",
+        ]),
     ),
     // worker cards (workers.js): the user took one over, or handed it back
     (

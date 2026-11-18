@@ -134,7 +134,26 @@ pub(super) fn snapshot(app: &AppHandle, device_id: &str) -> Result<Value, DeckEr
         crate::turn_summary::phone_replies_on(),
         crate::turn_summary::phone_reply_count,
     );
+    let (state, count) = crate::slack_mentions::phone_count();
+    with_mentions(&mut value, state, count);
     Ok(value)
+}
+
+/// Mark a snapshot with the Slack mentions list's state word and, while it
+/// is `ok`, how many mentions of the last 24 hours are open (an older host
+/// sends neither, and the phone then shows no entry).
+pub(super) fn with_mentions(snapshot: &mut Value, state: &str, count: usize) {
+    snapshot["mentions"] = if state == "ok" {
+        json!({"state": state, "count": count})
+    } else {
+        json!({"state": state})
+    };
+}
+
+/// The Slack mentions list for one paired device (`slack_mentions.rs`):
+/// pairing is the consent, so no scope applies. Memory only.
+pub(super) fn mentions() -> Result<Value, DeckError> {
+    Ok(crate::slack_mentions::phone_view())
 }
 
 /// Each Board card's session, by card id.

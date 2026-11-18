@@ -101,6 +101,20 @@ struct TaskListView: View {
                     if SharingGuide.needsFullAccessSetup(snapshot) {
                         sharingSetupSection(snapshot)
                     }
+                    if let summary = snapshot.mentions {
+                        Section {
+                            NavigationLink(value: MentionsDestination.list) {
+                                HStack {
+                                    Label(String(localized: "mentions.title"), systemImage: "at")
+                                    Spacer()
+                                    if summary.state == "ok", let count = summary.count, count > 0 {
+                                        Text(count.formatted()).foregroundStyle(.secondary)
+                                            .accessibilityIdentifier("deck.mentions.count")
+                                    }
+                                }
+                            }.accessibilityIdentifier("deck.mentions.entry")
+                        }
+                    }
                     if snapshot.cards.isEmpty {
                         ContentUnavailableView("No shared cards", systemImage: "rectangle.stack", description: Text("Check the sharing scope on your Mac. Refreshing does not change which cards are shared."))
                     }
@@ -144,6 +158,12 @@ struct TaskListView: View {
             .navigationTitle("Tasks")
             .navigationDestination(for: String.self) { id in
                 TaskDetailView(cardID: id)
+            }
+            .navigationDestination(for: MentionsDestination.self) { destination in
+                switch destination {
+                case .list: MentionsView()
+                case let .mention(key): MentionDetailView(key: key)
+                }
             }
             .refreshable { await model.refresh() }
             .toolbar {
@@ -1326,5 +1346,247 @@ struct RepliesView: View, Equatable {
                 proxy.scrollTo(Self.endID, anchor: .bottomLeading)
             }
         }
+    }
+}
+
+
+// MARK: - Slack mentions
+
+enum MentionsDestination: Hashable { case list, mention(String) }
+
+private func mentionStateMessage(_ state: String) -> String {
+    switch state {
+    case "slack-off": String(localized: "mentions.state.slackOff")
+    case "not-searched": String(localized: "mentions.state.notSearched")
+    default: String(format: String(localized: "mentions.state.failed"), state)
+    }
+}
+
+private func mentionOutcomeMessage(_ route: MentionRoute) -> String {
+    switch route.blocked {
+    case "project": return String(localized: "mentions.blocked.project")
+    case "command": return String(localized: "mentions.blocked.command")
+    case "template": return String(localized: "mentions.blocked.template")
+    case .some: return String(localized: "mentions.route.blocked")
+    case nil: break
+    }
+    switch route.leadsTo {
+    case .auto: return String(localized: "mentions.outcome.auto")
+    case .gated: return String(localized: "mentions.outcome.gated")
+    case .manual: return String(localized: "mentions.outcome.manual")
+    }
+}
+
+private func mentionMarkMessage(_ mark: MentionMark) -> String {
+    let word: String
+    switch mark.mark {
+    case "handling": word = String(localized: mark.cardClosed == true ? "mentions.mark.closed" : "mentions.mark.handling")
+    case "for-you": word = String(localized: "mentions.mark.forYou")
+    case "no-action": word = String(localized: "mentions.mark.noAction")
+    default: word = mark.mark
+    }
+    let note = (mark.note ?? "").isEmpty ? "" : " — \(mark.note ?? "")"
+    return "\(mark.by): \(word)\(note)"
+}
+
+/// The Mac's Slack mentions list: the open mentions of the chosen range and,
+/// apart, the ones an agent took. Reading it never touches Slack.
+struct MentionsView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var range: MentionRange = .day
+
+    var body: some View {
+        List {
+            if let issue = model.mentionsIssue {
+                Section { Label(issue, systemImage: "wifi.slash").font(.caption).foregroundStyle(.orange) }
+            }
+            if let list = model.mentions {
+                if list.isCurrent {
+                    Section {
+                        Picker(String(localized: "mentions.range"), selection: $range) {
+                            ForEach(MentionRange.allCases) { value in
+                                Text(rangeLabel(value, count: list.items(within: value, now: Date()).count)).tag(value)
+                            }
+                        }.pickerStyle(.segmented).accessibilityIdentifier("deck.mentions.range")
+                    }
+                    let items = list.items(within: range, now: Date())
+                    if items.isEmpty {
+                        ContentUnavailableView(String(localized: "mentions.empty"), systemImage: "at")
+                    }
+                    Section {
+                        ForEach(items) { mention in
+                            NavigationLink(value: MentionsDestination.mention(mention.key)) { MentionRow(mention: mention) }
+                        }
+                    } footer: {
+                        if (list.more ?? 0) > 0 { Text(String(format: String(localized: "mentions.more"), list.more ?? 0)) }
+                    }
+                    let handed = list.handed(within: range, now: Date())
+                    if !handed.isEmpty {
+                        Section(String(localized: "mentions.handed")) {
+                            ForEach(handed) { mention in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    MentionRow(mention: mention)
+                                    if let rule = mention.rule {
+                                        Text(String(format: String(localized: "mentions.handed.to"), rule)).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if list.routes.isEmpty {
+                        Section { Text(String(localized: "mentions.noRoutes")).font(.caption).foregroundStyle(.secondary) }
+                    }
+                } else {
+                    ContentUnavailableView(String(localized: "mentions.unavailable"), systemImage: "at.badge.minus",
+                                           description: Text(mentionStateMessage(list.state)))
+                }
+            } else if model.loadingMentions {
+                ProgressView()
+            } else if let state = model.snapshot?.mentions?.state, state != "ok" {
+                ContentUnavailableView(String(localized: "mentions.unavailable"), systemImage: "at.badge.minus",
+                                       description: Text(mentionStateMessage(state)))
+            }
+        }
+        .navigationTitle(String(localized: "mentions.title"))
+        .refreshable { await model.loadMentions() }
+        .onAppear { model.showMentions(true) }
+        .onDisappear { model.showMentions(false) }
+    }
+
+    private func rangeLabel(_ value: MentionRange, count: Int) -> String {
+        let key: String.LocalizationValue = switch value {
+        case .day: "mentions.range.day"
+        case .threeDays: "mentions.range.threeDays"
+        case .week: "mentions.range.week"
+        }
+        return String(format: String(localized: key), count)
+    }
+}
+
+private struct MentionRow: View {
+    let mention: Mention
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(mention.from).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text(mention.where).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Spacer()
+                Text(replyTime(mention.date)).font(.caption).foregroundStyle(.secondary)
+            }
+            Text(MentionText.plain(mention.text)).font(.callout).lineLimit(2)
+            if let mark = mention.mark {
+                Text(mentionMarkMessage(mark)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }
+    }
+}
+
+/// One mention in full with the messages before it, and the three things a
+/// phone may do with it: route it to one Slack badge automation, set it
+/// aside, or open it in Slack.
+struct MentionDetailView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    let key: String
+    @State private var choosing: MentionRoute?
+    @State private var confirmDismiss = false
+
+    private var mention: Mention? { model.mentions?.items.first { $0.key == key } }
+    private var locked: Bool {
+        model.mentionsStale || model.busyMentions.contains(key) || model.unconfirmedMentions.contains(key)
+    }
+
+    var body: some View {
+        List {
+            if let mention {
+                if model.mentionsStale {
+                    Section { Label(String(localized: "mentions.stale"), systemImage: "wifi.slash").font(.caption).foregroundStyle(.orange) }
+                }
+                if model.unconfirmedMentions.contains(key) {
+                    Section {
+                        Text(String(localized: "mentions.unconfirmed")).font(.caption).foregroundStyle(.orange)
+                        Button(String(localized: "mentions.check")) { Task { await model.checkOriginalOperations(); await model.loadMentions() } }
+                    }
+                }
+                if let context = mention.context, !context.before.isEmpty {
+                    Section(String(localized: context.thread ? "mentions.context.thread" : "mentions.context.before")) {
+                        ForEach(Array(context.before.enumerated()), id: \.offset) { _, message in
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack {
+                                    Text(message.from).font(.caption.weight(.semibold))
+                                    Spacer()
+                                    Text(replyTime(Date(timeIntervalSince1970: TimeInterval(message.at)))).font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Text(MentionText.plain(message.text)).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                                ForEach(message.files, id: \.self) { Label($0, systemImage: "paperclip").font(.caption).foregroundStyle(.secondary) }
+                            }
+                        }
+                    }
+                }
+                Section {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(mention.from).font(.subheadline.weight(.semibold))
+                            Text(mention.where).font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Text(replyTime(mention.date)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text(MentionText.plain(mention.text)).textSelection(.enabled)
+                            .accessibilityIdentifier("deck.mention.text")
+                        ForEach(mention.context?.files ?? [], id: \.self) { Label($0, systemImage: "paperclip").font(.caption).foregroundStyle(.secondary) }
+                        if let mark = mention.mark {
+                            Text(mentionMarkMessage(mark)).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Section(String(localized: "mentions.routeTo")) {
+                    let routes = model.mentions?.routes ?? []
+                    if routes.isEmpty {
+                        Text(String(localized: "mentions.noRoutes")).font(.caption).foregroundStyle(.secondary)
+                    }
+                    ForEach(routes) { route in
+                        Button { choosing = route } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(route.label)
+                                Text(mentionOutcomeMessage(route)).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .disabled(locked || !route.canBeChosen)
+                        .accessibilityIdentifier("deck.mention.route.\(route.id)")
+                    }
+                }
+                Section {
+                    if let url = URL(string: mention.link), url.scheme == "https" {
+                        Button(String(localized: "mentions.openInSlack")) { openURL(url) }
+                    }
+                    Button(String(localized: "mentions.dismiss"), role: .destructive) { confirmDismiss = true }
+                        .disabled(locked)
+                        .accessibilityIdentifier("deck.mention.dismiss")
+                }
+            } else {
+                ContentUnavailableView(String(localized: "mentions.gone"), systemImage: "checkmark.circle")
+            }
+        }
+        .navigationTitle(mention?.from ?? String(localized: "mentions.title"))
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { model.showMentions(true) }
+        .confirmationDialog(choosing.map { String(format: String(localized: "mentions.route.confirm"), $0.label) } ?? "",
+                            isPresented: Binding(get: { choosing != nil }, set: { if !$0 { choosing = nil } }), titleVisibility: .visible) {
+            if let route = choosing, let mention {
+                Button(String(localized: "mentions.route.go")) {
+                    Task { if case .applied = await model.routeMention(mention, to: route) { dismiss() } }
+                }
+            }
+            Button("Cancel", role: .cancel) { choosing = nil }
+        } message: { Text(choosing.map(mentionOutcomeMessage) ?? "") }
+        .confirmationDialog(String(localized: "mentions.dismiss.confirm"), isPresented: $confirmDismiss, titleVisibility: .visible) {
+            if let mention {
+                Button(String(localized: "mentions.dismiss"), role: .destructive) {
+                    Task { if case .applied = await model.dismissMention(mention) { dismiss() } }
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: { Text(String(localized: "mentions.dismiss.note")) }
     }
 }

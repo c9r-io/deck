@@ -15,6 +15,7 @@ public protocol ConnectorTransport: AnyObject, CommandTransport {
     func output(cardID: String) async throws -> TerminalOutput
     func buffer(cardID: String) async throws -> CardBuffer
     func replies(cardID: String) async throws -> CardReplies
+    func mentions() async throws -> MentionsList
     func invalidate()
 }
 
@@ -127,6 +128,12 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
         let value: CardReplies = try await request(path: "/v1/cards/\(encodePath(cardID))/replies", method: "GET", body: nil, authenticated: true)
         try WireValidator.validate(value)
         guard value.cardId == cardID else { throw ConnectorError.invalidResponse }
+        return value
+    }
+
+    public func mentions() async throws -> MentionsList {
+        let value: MentionsList = try await request(path: "/v1/mentions", method: "GET", body: nil, authenticated: true)
+        try WireValidator.validate(value)
         return value
     }
 

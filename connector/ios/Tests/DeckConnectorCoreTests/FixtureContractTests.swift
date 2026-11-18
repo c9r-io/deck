@@ -44,7 +44,7 @@ private func requests(_ name: String) throws -> [[String: Any]] {
 
 @Test func everyValidHostRequestDecodesValidatesAndRoundTrips() throws {
     let list = try requests("requests-valid.json")
-    #expect(Set(list.compactMap { $0["kind"] as? String }) == ["send-message", "buffer-add", "buffer-edit", "buffer-delete", "buffer-queue", "task-create", "queue-pause", "queue-cancel"])
+    #expect(Set(list.compactMap { $0["kind"] as? String }) == ["send-message", "buffer-add", "buffer-edit", "buffer-delete", "buffer-queue", "task-create", "queue-pause", "queue-cancel", "mention-route", "mention-dismiss"])
     for raw in list {
         let command = try JSONDecoder().decode(CommandRequest.self, from: JSONSerialization.data(withJSONObject: raw))
         try WireValidator.validate(command)

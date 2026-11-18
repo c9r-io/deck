@@ -15,8 +15,8 @@
 #[cfg(test)]
 use super::SnapshotScope;
 use super::{
-    buffer, note_device_seen, output, replies, snapshot, CommandRequest, Config, Identity, Runtime,
-    CLIENT_UPGRADE_REQUIRED, COMMAND_EXPIRED,
+    buffer, mentions, note_device_seen, output, replies, snapshot, CommandRequest, Config,
+    Identity, Runtime, CLIENT_UPGRADE_REQUIRED, COMMAND_EXPIRED,
 };
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Bytes, Incoming};
@@ -480,6 +480,11 @@ async fn handle(
                             note_device_seen(device, user_agent.as_deref());
                             response(StatusCode::OK, value)
                         })
+                        .unwrap_or_else(|failure| mapped(&failure));
+                }
+                if path == "/v1/mentions" {
+                    return mentions()
+                        .map(|value| response(StatusCode::OK, value))
                         .unwrap_or_else(|failure| mapped(&failure));
                 }
                 if let Some(id) = path.strip_prefix("/v1/commands/").and_then(decode_segment) {
@@ -1125,6 +1130,9 @@ mod tests {
         let (status, body) = get("/v1/snapshot", &token);
         assert_eq!(status, 503, "{body}");
         assert!(body.contains("connector-disabled"));
+        // the mentions list is a paired device's read like any other
+        assert_eq!(get("/v1/mentions", "wrong-token").0, 401);
+        assert_eq!(get("/v1/mentions/x", &token).0, 404);
         let (status, body) = get("/v1/cards/C1/buffer", &token);
         assert_eq!(status, 503, "{body}");
         assert_eq!(get("/v1/cards/C1/history", &token).0, 404);

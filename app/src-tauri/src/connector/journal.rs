@@ -40,7 +40,7 @@ pub(super) fn load(path: &Path) -> Result<DiskDoc, DeckError> {
         return DiskDoc::fresh();
     };
     let mut doc: DiskDoc = crate::ledger::decode(&bytes, "connector state")?;
-    if !(1..=VERSION).contains(&doc.version)
+    if !(1..=VERSION_MENTIONS).contains(&doc.version)
         || doc.devices.len() > MAX_DEVICES
         || doc.host_id.is_empty()
         || doc
@@ -174,6 +174,8 @@ pub(super) fn command_kind(kind: &str) -> bool {
             | "task-create"
             | "queue-pause"
             | "queue-cancel"
+            | "mention-route"
+            | "mention-dismiss"
     )
 }
 
@@ -194,6 +196,7 @@ pub(super) fn compact(doc: &mut DiskDoc) {
         .count()
         .saturating_sub(MAX_TOMBSTONES);
     if excess == 0 {
+        stamp_version(doc);
         return;
     }
     let mut pruned = std::collections::HashMap::<String, u64>::new();
@@ -213,6 +216,22 @@ pub(super) fn compact(doc: &mut DiskDoc) {
             device.retired_through = device.retired_through.max(*floor);
         }
     }
+    stamp_version(doc);
+}
+
+/// The version a write carries: `VERSION_MENTIONS` while any retained entry
+/// (a tombstone too) is a Slack mention command, else `VERSION`.
+fn stamp_version(doc: &mut DiskDoc) {
+    doc.version = if doc.commands.iter().any(|c| mention_kind(&c.kind)) {
+        VERSION_MENTIONS
+    } else {
+        VERSION
+    };
+}
+
+/// The command kinds of the phone's Slack mentions list.
+pub(super) fn mention_kind(kind: &str) -> bool {
+    matches!(kind, "mention-route" | "mention-dismiss")
 }
 
 #[cfg(test)]
@@ -284,7 +303,7 @@ pub(super) fn validate_terminal(
         "rejected" | "ambiguous" => result.is_none(),
         "delivered" => kind == "send-message" && code.is_none() && result.is_none(),
         "applied" => {
-            if matches!(kind, "queue-pause" | "queue-cancel") {
+            if matches!(kind, "queue-pause" | "queue-cancel") || mention_kind(kind) {
                 return code.is_none() && result.is_none();
             }
             let Some(object) = result.and_then(Value::as_object) else {

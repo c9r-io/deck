@@ -59,6 +59,20 @@
 //!   gives it back. A route checks the same openness (`is_open`); a route
 //!   and a handoff of one message in the same instant are not serialized
 //!   with each other (the inbox serializes handoffs, the ledger routes).
+//! - The phone reader (`connector/projection.rs`, `connector/native.rs`). A
+//!   paired phone reads this same list (`phone_view`: memory only, never a
+//!   Slack call, and only the state word while the list may be stale) with
+//!   the route menu the webview publishes (`slack_mention_routes_publish`:
+//!   the desktop menu's labels and block reasons, plus whether each route
+//!   starts by itself; presentation only). Pairing is the consent: no scope
+//!   and no switch narrows it. It may route ONE open mention to ONE Slack
+//!   badge rule or set ONE aside (`phone_route`, `phone_dismiss`), through
+//!   the same `route` and `dismiss` as the user's click and refused with the
+//!   same closed words. The phone supplies a key and a rule id, never text;
+//!   the event stays the badge event and the rule's approval and first-send
+//!   choice decide what is sent (`TriggerClass::SlackBadge`), so revoking
+//!   the device or the rule's approval ends it. The phone cannot dismiss
+//!   all, clear a mark or reach an Agent rule.
 //! - Marks. An MCP orchestrator may mark a listed mention (handling, for-you,
 //!   no-action, `mcp/mentions.rs`); the view carries the standing marks by
 //!   key (`MentionsView.marks`, names resolved there) and the user clears
@@ -370,12 +384,20 @@ fn list_since(now: u64) -> u64 {
 /// state of the last search.
 #[tauri::command]
 pub(crate) fn slack_mentions() -> MentionsView {
+    current_view(true)
+}
+
+/// The list as it stands. `shown` records it as what the user's own view
+/// was last told (`announce_if_changed`); another reader passes false.
+fn current_view(shown: bool) -> MentionsView {
     let open = open_now();
     let now = now_secs();
     let handoffs = crate::inbound_agent::mention_handoffs(now);
     let mut marks = crate::mcp::mention_marks_ui();
     with_state(|s| {
-        s.shown = open.clone();
+        if shown {
+            s.shown = open.clone();
+        }
         let handed_keys: Vec<String> = handoffs.iter().map(|h| h.mention.clone()).collect();
         let handed = view(&s.items, &handed_keys, &s.contexts, list_since(now))
             .into_iter()
@@ -447,6 +469,194 @@ pub(crate) fn source_cursor(items: &[MentionView]) -> String {
         bytes.push(if m.context.is_some() { 1 } else { 0 });
     }
     crate::ledger::sha(&bytes)[..16].to_string()
+}
+
+/* ---------- the list a paired phone reads (`connector/projection.rs`) ---------- */
+
+/// One Slack badge rule as a paired phone's route menu shows it. The
+/// webview publishes these (`slack_mention_routes_publish`): it already
+/// owns the label, the channel admission and the approval's state, so
+/// nothing of that is rebuilt here. Presentation only: a route is admitted
+/// by `route`, the plan by the webview and the first step by the scheduler,
+/// whatever this line said.
+#[derive(Clone, Debug, Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PhoneRoute {
+    id: String,
+    label: String,
+    /// `auto` (approved, first step sent without waiting), `gated`
+    /// (approved, first step waits for the Agent's first interaction) or
+    /// `manual` (the steps wait for Send now on the Mac).
+    outcome: String,
+    /// Why it cannot be chosen: `project`, `command` or `template`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blocked: Option<String>,
+}
+
+const ROUTE_LABEL_MAX: usize = 300;
+static PHONE_ROUTES: Mutex<Vec<PhoneRoute>> = Mutex::new(Vec::new());
+
+fn phone_route_shape(route: &PhoneRoute) -> bool {
+    inbound::bounded_id(&route.id, inbound::RULE_ID_MAX)
+        && !route.label.is_empty()
+        && route.label.len() <= ROUTE_LABEL_MAX
+        && !route.label.chars().any(char::is_control)
+        && matches!(route.outcome.as_str(), "auto" | "gated" | "manual")
+        && route
+            .blocked
+            .as_deref()
+            .is_none_or(|word| matches!(word, "project" | "command" | "template"))
+}
+
+/// The webview's current route menu, for the phones. Replaces the last one.
+#[tauri::command]
+pub(crate) fn slack_mention_routes_publish(routes: Vec<PhoneRoute>) -> Result<(), DeckError> {
+    if routes.len() > inbound::MAX_RULES || !routes.iter().all(phone_route_shape) {
+        return Err(DeckError::new(ErrorKind::Invalid, "shape"));
+    }
+    *PHONE_ROUTES.lock_or_recover() = routes;
+    Ok(())
+}
+
+/// Most mentions one phone read carries (newest first); the rest are
+/// counted in `more`.
+const PHONE_ITEMS_MAX: usize = 200;
+
+/// What a paired phone reads: the user's own list (`slack_mentions`) with
+/// the state word an MCP reader gets (`ok`, `slack-off`, `not-searched` or
+/// the last search's failure), no items unless it is `ok`, and the route
+/// menu filtered to the rules that still are Slack badge rules. Memory
+/// only; it asks for a fresh search like opening the list does.
+pub(crate) fn phone_view() -> serde_json::Value {
+    let view = current_view(false);
+    slack_mentions_refresh();
+    let cfg = inbound::read_config();
+    let routes: Vec<PhoneRoute> = PHONE_ROUTES
+        .lock_or_recover()
+        .iter()
+        .filter(|route| {
+            cfg.rules
+                .iter()
+                .any(|r| r.id == route.id && r.source == SOURCE)
+        })
+        .cloned()
+        .collect();
+    phone_value(&view, &routes, &|badge| {
+        // the Agent rule's own name, where the settings still hold it
+        cfg.rules
+            .iter()
+            .find(|r| r.source == "agent" && r.badge == badge)
+            .map(|r| r.name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| badge.to_string())
+    })
+}
+
+/// The wire value of `phone_view` (golden: the phone's `mentions.json`).
+fn phone_value(
+    view: &MentionsView,
+    routes: &[PhoneRoute],
+    rule_name: &dyn Fn(&str) -> String,
+) -> serde_json::Value {
+    let state = if !view.enabled {
+        "slack-off"
+    } else if view.last_poll.is_none() {
+        "not-searched"
+    } else {
+        view.last_error.unwrap_or("ok")
+    };
+    if state != "ok" {
+        return serde_json::json!({"state": state, "lastPoll": view.last_poll,
+            "items": [], "handed": [], "routes": [], "more": 0});
+    }
+    let more = view.items.len().saturating_sub(PHONE_ITEMS_MAX);
+    let items: Vec<serde_json::Value> = view
+        .items
+        .iter()
+        .take(PHONE_ITEMS_MAX)
+        .map(|m| {
+            let mut value = serde_json::to_value(m).unwrap_or_default();
+            if let Some(mark) = view.marks.get(&m.key) {
+                value["mark"] = serde_json::to_value(mark).unwrap_or_default();
+            }
+            value
+        })
+        .collect();
+    let handed: Vec<serde_json::Value> = view
+        .handed
+        .iter()
+        .take(PHONE_ITEMS_MAX)
+        .map(|h| {
+            let mut value = serde_json::to_value(&h.mention).unwrap_or_default();
+            value["rule"] = serde_json::json!(rule_name(&h.rule));
+            value
+        })
+        .collect();
+    serde_json::json!({"state": state, "lastPoll": view.last_poll, "items": items,
+        "handed": handed, "routes": routes, "more": more})
+}
+
+/// The list's state word and how many mentions of the last 24 hours are
+/// open, for the phone's snapshot (the count only while the word is `ok`).
+pub(crate) fn phone_count() -> (&'static str, usize) {
+    let open = open_now();
+    let now = now_secs();
+    with_state(|s| {
+        if !s.enabled {
+            return ("slack-off", 0);
+        }
+        if s.last_poll.is_none() {
+            return ("not-searched", 0);
+        }
+        if let Some(code) = s.last_error {
+            return (code, 0);
+        }
+        let since = now.saturating_sub(86_400);
+        let count = s
+            .items
+            .iter()
+            .filter(|e| open.contains(&e.key) && message_time(&e.key) >= since)
+            .count();
+        ("ok", count)
+    })
+}
+
+/// A paired phone's route of ONE listed mention to ONE Slack badge rule
+/// (`connector/native.rs`): the same `route` the user's own click takes,
+/// refused with the same closed words.
+pub(crate) fn phone_route<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    key: &str,
+    rule: &str,
+) -> Result<(), &'static str> {
+    route(app, key, rule, &inbound::read_config()).map_err(|e| closed_word(&e))?;
+    let _ = app.emit(CHANGED, ());
+    Ok(())
+}
+
+/// A paired phone set ONE mention aside. `settled` when it was not open.
+pub(crate) fn phone_dismiss<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    key: &str,
+) -> Result<(), &'static str> {
+    if !key_shape(key) {
+        return Err("shape");
+    }
+    if !is_open(key) {
+        return Err("settled");
+    }
+    dismiss(&[key.to_string()]).map_err(|e| closed_word(&e))?;
+    let _ = app.emit(CHANGED, ());
+    Ok(())
+}
+
+/// The closed word a refusal carries (`route` builds its errors from them).
+fn closed_word(error: &DeckError) -> &'static str {
+    let text = error.to_string();
+    ["shape", "slack-off", "rule", "not-found", "settled"]
+        .into_iter()
+        .find(|word| text == *word)
+        .unwrap_or("failed")
 }
 
 /// The user cleared a mention's mark (`mcp/mentions.rs`), whoever set it.
@@ -826,6 +1036,196 @@ mod tests {
             );
             with_state(|s| *s = State::default());
         });
+    }
+
+    fn phone_route(id: &str, outcome: &str, blocked: Option<&str>) -> PhoneRoute {
+        PhoneRoute {
+            id: id.into(),
+            label: format!("\u{1f440} \u{2192} Deck / {id}"),
+            outcome: outcome.into(),
+            blocked: blocked.map(str::to_string),
+        }
+    }
+
+    fn phone_mention(key: &str, text: &str, context: Option<MentionContext>) -> MentionView {
+        MentionView {
+            key: key.into(),
+            text: text.into(),
+            from: "alice".into(),
+            where_: "#dev".into(),
+            link: "https://example.slack.com/archives/C1/p1".into(),
+            at: message_time(key),
+            context,
+        }
+    }
+
+    #[test]
+    fn the_phone_reads_the_list_the_fixture_pins() {
+        let context = MentionContext {
+            from: "alice".into(),
+            thread: true,
+            before: vec![crate::inbound_slack::ContextMessage {
+                from: "bob".into(),
+                text: "the build is red".into(),
+                at: 1_794_900_000,
+                files: vec!["log.txt".into()],
+            }],
+            text: "<@U1|me> can you look?".into(),
+            files: vec![],
+        };
+        let view = MentionsView {
+            enabled: true,
+            last_poll: Some(1_794_990_000),
+            last_error: None,
+            items: vec![
+                phone_mention(
+                    "C1/1794989000.000200",
+                    "<@U1|me> can you look?",
+                    Some(context),
+                ),
+                phone_mention("C1/1794980000.000100", "<@U1> ping", None),
+            ],
+            handed: vec![HandedView {
+                mention: phone_mention("C2/1794970000.000300", "<@U1> triage this", None),
+                client: "client-1".into(),
+                rule: "agent-badge".into(),
+                card: None,
+            }],
+            marks: HashMap::from([(
+                "C1/1794980000.000100".to_string(),
+                crate::mcp::MarkView::for_tests(
+                    "for-you",
+                    "Orchestrator",
+                    "needs a decision",
+                    1_794_985_000,
+                ),
+            )]),
+        };
+        let routes = [
+            phone_route("r-auto", "auto", None),
+            phone_route("r-gated", "gated", None),
+            phone_route("r-manual", "manual", None),
+            phone_route("r-blocked", "manual", Some("command")),
+        ];
+        let produced = phone_value(&view, &routes, &|_| "Triage".to_string());
+        let golden: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../connector/ios/Tests/DeckConnectorCoreTests/Fixtures/mentions.json"
+        )))
+        .unwrap();
+        assert_eq!(
+            produced,
+            golden,
+            "produced:\n{}",
+            serde_json::to_string_pretty(&produced).unwrap()
+        );
+        // a list that may be stale is never handed out: only its state word
+        for (enabled, last_poll, last_error, word) in [
+            (false, Some(1), None, "slack-off"),
+            (true, None, None, "not-searched"),
+            (true, Some(1), Some("rate-limited"), "rate-limited"),
+        ] {
+            let stale = MentionsView {
+                enabled,
+                last_poll,
+                last_error,
+                ..view.clone()
+            };
+            let value = phone_value(&stale, &routes, &|_| String::new());
+            assert_eq!(value["state"], word);
+            assert_eq!(value["items"], json!([]));
+            assert_eq!(value["routes"], json!([]));
+        }
+    }
+
+    #[test]
+    fn a_published_route_menu_is_shape_checked_and_replaces_the_last() {
+        let good = vec![
+            phone_route("r-eyes", "auto", None),
+            phone_route("r-two", "manual", Some("template")),
+        ];
+        slack_mention_routes_publish(good.clone()).unwrap();
+        assert_eq!(*PHONE_ROUTES.lock_or_recover(), good);
+        for bad in [
+            PhoneRoute {
+                id: "has space".into(),
+                ..phone_route("x", "auto", None)
+            },
+            PhoneRoute {
+                label: String::new(),
+                ..phone_route("x", "auto", None)
+            },
+            PhoneRoute {
+                label: "a\nb".into(),
+                ..phone_route("x", "auto", None)
+            },
+            PhoneRoute {
+                label: "x".repeat(ROUTE_LABEL_MAX + 1),
+                ..phone_route("x", "auto", None)
+            },
+            phone_route("x", "always", None),
+            phone_route("x", "auto", Some("because")),
+        ] {
+            assert_eq!(
+                slack_mention_routes_publish(vec![bad]).unwrap_err(),
+                "shape"
+            );
+        }
+        let many = (0..=inbound::MAX_RULES)
+            .map(|i| phone_route(&format!("r{i}"), "auto", None))
+            .collect();
+        assert_eq!(slack_mention_routes_publish(many).unwrap_err(), "shape");
+        assert_eq!(
+            *PHONE_ROUTES.lock_or_recover(),
+            good,
+            "a refused menu changes nothing"
+        );
+        slack_mention_routes_publish(vec![]).unwrap();
+    }
+
+    #[test]
+    fn a_phone_dismisses_one_open_mention_and_counts_the_last_day() {
+        crate::inbound::with_fresh_runtime(|_| {
+            let app = tauri::test::mock_app();
+            let (day, week) = (recent(600, "000001"), recent(3 * 86_400, "000002"));
+            load_for_tests(
+                true,
+                vec![mention(&day, "<@U1> one"), mention(&week, "<@U1> two")],
+                vec![],
+                None,
+            );
+            assert_eq!(
+                phone_count(),
+                ("ok", 1),
+                "only the last 24 hours are counted"
+            );
+            assert_eq!(phone_dismiss(app.handle(), "C1/x y").unwrap_err(), "shape");
+            phone_dismiss(app.handle(), &day).unwrap();
+            assert_eq!(phone_dismiss(app.handle(), &day).unwrap_err(), "settled");
+            assert_eq!(phone_count(), ("ok", 0));
+            assert_eq!(
+                slack_mentions().items.len(),
+                1,
+                "the other one stays listed"
+            );
+            load_for_tests(false, vec![], vec![], None);
+            assert_eq!(phone_count(), ("slack-off", 0));
+            load_for_tests(true, vec![], vec![], Some("rate-limited"));
+            assert_eq!(phone_count(), ("rate-limited", 0));
+            with_state(|s| *s = State::default());
+            assert_eq!(phone_count(), ("slack-off", 0));
+        });
+    }
+
+    #[test]
+    fn a_refusal_reaches_the_phone_as_its_closed_word() {
+        for word in ["shape", "slack-off", "rule", "not-found", "settled"] {
+            assert_eq!(closed_word(&DeckError::new(ErrorKind::Invalid, word)), word);
+        }
+        assert_eq!(
+            closed_word(&DeckError::new(ErrorKind::Other, "disk said no")),
+            "failed"
+        );
     }
 
     #[test]

@@ -51,6 +51,15 @@
 //! its output read, without requiring the agent in the foreground (they are
 //! the agent's own past messages, not the pane). Presentation only: nothing
 //! is written, logged with content, notified or used as authority.
+//! Slack mentions (`slack_mentions.rs`, "The phone reader"): GET
+//! `/v1/mentions` answers the user's own mentions list to any paired device,
+//! whatever its scope (pairing is the consent), and the snapshot carries the
+//! list's state word and the last day's count. `mention-route` and
+//! `mention-dismiss` name one listed mention (and one Slack badge rule) and
+//! no card, revision, generation or text; they run the user's own route and
+//! dismissal under the lifecycle lock after the device was checked again,
+//! and their result is a state and a closed code. A journal retaining one
+//! is written as v4 (`VERSION_MENTIONS`).
 //! Native routes enforce each capability, not the snapshot. Reads reauthorize
 //! device/feature/scope revision before returning; output also rechecks card,
 //! session, foreground generation and MCP control after capture. Process names
@@ -143,6 +152,11 @@ pub(crate) const INTEGRATION: crate::extensions::AccessIntegration =
 /// floor and re-admit retired commands, so it refuses v3 untouched. Older
 /// files are upgraded in memory and persisted as v3 on the next write.
 const VERSION: u32 = 3;
+/// v4 is sticky: written only while a retained entry is a Slack mention
+/// command (`mention-route`, `mention-dismiss`). A v3 reader refuses a whole
+/// journal holding a kind it does not know, so it is told "newer version"
+/// instead; a journal without such an entry stays v3.
+const VERSION_MENTIONS: u32 = 4;
 const MAX_DEVICES: usize = 32;
 /// Unresolved (accepted/executing) commands: the only entries that carry a
 /// request body.

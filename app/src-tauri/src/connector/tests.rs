@@ -314,11 +314,146 @@ fn v1_state_loads_compacted_and_newer_versions_are_refused_untouched() {
     assert_eq!(load(&r.path).err().unwrap().kind(), ErrorKind::Recovery);
 
     let mut future = v1;
-    future["version"] = json!(VERSION + 1);
+    future["version"] = json!(VERSION_MENTIONS + 1);
     let bytes = serde_json::to_vec(&future).unwrap();
     std::fs::write(&r.path, &bytes).unwrap();
     assert_eq!(load(&r.path).err().unwrap().kind(), ErrorKind::Recovery);
     assert_eq!(std::fs::read(&r.path).unwrap(), bytes, "refused untouched");
+}
+
+fn mention_request(id: &str, kind: &str) -> CommandRequest {
+    CommandRequest {
+        id: id.into(),
+        kind: kind.into(),
+        card_id: None,
+        expected_generation: ExpectedGeneration::Missing,
+        expected_revision: None,
+        payload: if kind == "mention-route" {
+            json!({"key":"C1/1794989000.000200","ruleId":"r-eyes"})
+        } else {
+            json!({"key":"C1/1794989000.000200"})
+        },
+        seq: Some(next_seq()),
+    }
+}
+
+#[test]
+fn a_journal_holding_a_mention_command_is_v4_until_none_is_retained() {
+    let (r, _held) = test_runtime("mention-version");
+    let mut doc = r.read(Clone::clone).unwrap();
+    doc.devices.push(device("D"));
+    doc.commands = vec![pending("D", &request("note", "body"), "accepted")];
+    compact(&mut doc);
+    assert_eq!(doc.version, VERSION, "ordinary commands stay v3");
+    let route = mention_request("route", "mention-route");
+    doc.commands.push(pending("D", &route, "accepted"));
+    compact(&mut doc);
+    assert_eq!(doc.version, VERSION_MENTIONS);
+    // its tombstone still names the kind an older reader does not know
+    doc.commands[1] = JournalEntry {
+        code: Some("mention-settled".into()),
+        ..tombstone("D", &route, "rejected")
+    };
+    compact(&mut doc);
+    assert_eq!(doc.version, VERSION_MENTIONS);
+    save(&r.path, &doc).unwrap();
+    let loaded = load(&r.path).unwrap();
+    assert_eq!(loaded.version, VERSION_MENTIONS);
+    assert_eq!(loaded.commands[1].kind, "mention-route");
+    doc.commands.truncate(1);
+    compact(&mut doc);
+    assert_eq!(
+        doc.version, VERSION,
+        "nothing retained needs the newer reader"
+    );
+}
+
+#[test]
+fn a_mention_command_names_a_key_and_nothing_of_a_card() {
+    for kind in ["mention-route", "mention-dismiss"] {
+        let good = mention_request("m", kind);
+        assert!(validate_command(&good).is_ok(), "{kind}");
+        // the phone writes `expectedGeneration: null` in every command
+        let from_the_phone = CommandRequest {
+            expected_generation: ExpectedGeneration::Stopped,
+            ..good.clone()
+        };
+        assert!(validate_command(&from_the_phone).is_ok(), "{kind}");
+        for bad in [
+            CommandRequest {
+                card_id: Some("C1".into()),
+                ..good.clone()
+            },
+            CommandRequest {
+                expected_revision: Some("1".into()),
+                ..good.clone()
+            },
+            CommandRequest {
+                payload: json!({"key":"C1/17 94","ruleId":"r-eyes"}),
+                ..good.clone()
+            },
+            CommandRequest {
+                payload: json!({}),
+                ..good.clone()
+            },
+            CommandRequest {
+                payload: json!({"key":"C1/1794989000.000200","ruleId":"r-eyes","text":"typed on the phone"}),
+                ..good.clone()
+            },
+        ] {
+            assert_eq!(
+                validate_command(&bad).unwrap_err().kind(),
+                ErrorKind::Invalid,
+                "{kind} {}",
+                bad.payload
+            );
+        }
+        // a result carries a state and at most a closed code, never data
+        assert!(validate_terminal(kind, "applied", None, None));
+        assert!(validate_terminal(
+            kind,
+            "rejected",
+            Some("mention-settled"),
+            None
+        ));
+        assert!(!validate_terminal(
+            kind,
+            "applied",
+            None,
+            Some(&json!({"cardId":"C1"}))
+        ));
+        assert!(!validate_terminal(kind, "delivered", None, None));
+    }
+    assert!(
+        validate_command(&CommandRequest {
+            payload: json!({"key":"C1/1794989000.000200"}),
+            ..mention_request("m", "mention-route")
+        })
+        .is_err(),
+        "a route names its rule"
+    );
+    // applicability asks nothing of the Board: there is no card to check
+    let board = json!({"projects":[],"cards":[]});
+    assert!(validate_applicable_in_scope(
+        &mention_request("m", "mention-route"),
+        "rev",
+        &board,
+        SnapshotScope::AgentCards
+    )
+    .is_ok());
+}
+
+#[test]
+fn a_snapshot_says_whether_the_mentions_list_is_current_and_how_many_wait() {
+    let mut snapshot = json!({"cards":[]});
+    with_mentions(&mut snapshot, "ok", 3);
+    assert_eq!(snapshot["mentions"], json!({"state":"ok","count":3}));
+    with_mentions(&mut snapshot, "slack-off", 3);
+    assert_eq!(
+        snapshot["mentions"],
+        json!({"state":"slack-off"}),
+        "no count beside a stale list"
+    );
 }
 
 #[test]

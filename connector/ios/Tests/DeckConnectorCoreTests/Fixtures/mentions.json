@@ -1,0 +1,84 @@
+{
+  "handed": [
+    {
+      "at": 1794970000,
+      "context": null,
+      "from": "alice",
+      "key": "C2/1794970000.000300",
+      "link": "https://example.slack.com/archives/C1/p1",
+      "rule": "Triage",
+      "text": "<@U1> triage this",
+      "where": "#dev"
+    }
+  ],
+  "items": [
+    {
+      "at": 1794989000,
+      "context": {
+        "before": [
+          {
+            "at": 1794900000,
+            "files": [
+              "log.txt"
+            ],
+            "from": "bob",
+            "text": "the build is red"
+          }
+        ],
+        "files": [],
+        "from": "alice",
+        "text": "<@U1|me> can you look?",
+        "thread": true
+      },
+      "from": "alice",
+      "key": "C1/1794989000.000200",
+      "link": "https://example.slack.com/archives/C1/p1",
+      "text": "<@U1|me> can you look?",
+      "where": "#dev"
+    },
+    {
+      "at": 1794980000,
+      "context": null,
+      "from": "alice",
+      "key": "C1/1794980000.000100",
+      "link": "https://example.slack.com/archives/C1/p1",
+      "mark": {
+        "at": 1794985000,
+        "by": "Orchestrator",
+        "cardClosed": false,
+        "cardId": null,
+        "cardTitle": null,
+        "mark": "for-you",
+        "note": "needs a decision"
+      },
+      "text": "<@U1> ping",
+      "where": "#dev"
+    }
+  ],
+  "lastPoll": 1794990000,
+  "more": 0,
+  "routes": [
+    {
+      "id": "r-auto",
+      "label": "👀 → Deck / r-auto",
+      "outcome": "auto"
+    },
+    {
+      "id": "r-gated",
+      "label": "👀 → Deck / r-gated",
+      "outcome": "gated"
+    },
+    {
+      "id": "r-manual",
+      "label": "👀 → Deck / r-manual",
+      "outcome": "manual"
+    },
+    {
+      "blocked": "command",
+      "id": "r-blocked",
+      "label": "👀 → Deck / r-blocked",
+      "outcome": "manual"
+    }
+  ],
+  "state": "ok"
+}

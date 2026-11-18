@@ -375,6 +375,11 @@ message yourself.
 Deck never writes to Slack: no reaction, reply or read mark. Whether the
 Agent replies in Slack is up to the rule's template.
 
+A paired phone shows this same list and can route or dismiss one mention at
+a time (see [Phone Connector](connector.md), "Slack mentions on the phone").
+A route from the phone is this route: the same badge event and the same
+rule choices.
+
 ## What deck keeps
 
 

@@ -86,6 +86,23 @@
         "revision": "12"
       },
       "seq": 1
+    },
+    {
+      "id": "mention-route-1",
+      "kind": "mention-route",
+      "payload": {
+        "key": "C1/1794989000.000200",
+        "ruleId": "r-eyes"
+      },
+      "seq": 1
+    },
+    {
+      "id": "mention-dismiss-1",
+      "kind": "mention-dismiss",
+      "payload": {
+        "key": "C1/1794989000.000200"
+      },
+      "seq": 1
     }
   ]
 }

@@ -137,6 +137,9 @@ public struct Snapshot: Codable, Equatable, Sendable {
     /// The Mac's "Claude Code replies on the phone" switch: `on` or `off`;
     /// nil from a host that has no reply list.
     public var replies: String?
+    /// The Mac's Slack mentions list (`Mentions.swift`); nil from a host
+    /// that has none, and the phone then shows no entry for it.
+    public var mentions: MentionsSummary?
 
     /// Whether a card's detail offers its reply list: the host has one, and
     /// the card runs Claude Code now or already has replies kept.
@@ -340,6 +343,18 @@ public enum WireValidator {
     /// the host's `command_text` rule (validate.rs) is non-empty, at most
     /// `commandTextUTF8Bytes`, and no control character except `\n` and `\t`.
     public static func validate(_ command: CommandRequest) throws {
+        if command.kind == "mention-route" || command.kind == "mention-dismiss" {
+            // a mention command names a key (and a rule), never text or a card
+            guard command.cardId == nil, command.expectedRevision == nil,
+                  case let .string(key)? = command.payload["key"], MentionCommand.validKey(key),
+                  command.payload.keys.allSatisfy({ $0 == "key" || (command.kind == "mention-route" && $0 == "ruleId") })
+            else { throw ConnectorError.transport("invalid mention command") }
+            if command.kind == "mention-route" {
+                guard case let .string(rule)? = command.payload["ruleId"], !rule.isEmpty,
+                      rule.utf8.count <= MentionLimits.ruleIDUTF8Bytes else { throw ConnectorError.transport("invalid mention command") }
+            }
+            return
+        }
         guard ["send-message", "buffer-add", "buffer-edit"].contains(command.kind) else { return }
         guard case let .string(text)? = command.payload["text"] else { throw ConnectorError.invalidCommandText }
         guard text.utf8.count <= ConnectorLimits.commandTextUTF8Bytes else { throw ConnectorError.requestTooLarge }

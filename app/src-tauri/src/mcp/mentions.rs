@@ -536,6 +536,22 @@ pub(crate) struct MarkView {
     at: u64,
 }
 
+#[cfg(test)]
+impl MarkView {
+    /// A mark for another module's projection test.
+    pub(crate) fn for_tests(mark: &str, by: &str, note: &str, at: u64) -> Self {
+        Self {
+            mark: mark.into(),
+            by: by.into(),
+            card_id: None,
+            card_title: None,
+            card_closed: false,
+            note: note.into(),
+            at,
+        }
+    }
+}
+
 /// Every standing mark, by mention key, for the user's list.
 pub(super) fn marks_ui(runtime: &Runtime) -> HashMap<String, MarkView> {
     let targets = crate::documents::card_targets(false);

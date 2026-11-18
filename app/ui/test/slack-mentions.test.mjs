@@ -8,7 +8,7 @@ import { fakeDocument, ids } from './fixtures/dom-fixture.mjs';
 globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
-const { MENTION_RANGES, handedRows, markLabel, markedApart, mentionAfter, mentionCount, mentionErrorKey, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin, openWithin } = await import('../js/slack-mentions-model.js');
+const { MENTION_RANGES, handedRows, markLabel, markedApart, mentionAfter, mentionCount, mentionErrorKey, mentionRanges, mentionRoutes, mentionSignature, mentionStatus, mentionsWithin, openWithin, phoneRoutes } = await import('../js/slack-mentions-model.js');
 const { initMentions, paintMentions, refreshMentions, showMentions, startMentions } = await import('../js/slack-mentions.js');
 const { channelBlockReason } = await import('../js/channel-model.js');
 const { ctx, state, store } = await import('../js/state.js');
@@ -395,4 +395,34 @@ test('the view folds what orchestrators took care of below, shows each mark and 
   await refreshMentions();
   assert.equal(detail().some(node => String(node.className).startsWith('mention-mark-line')), true);
   state.view = 'board';
+});
+
+test("a paired phone's route menu says what each route leads to", async () => {
+  const rules = [
+    { ...RULES[0], autoSend: { digest: 'd' }, firstSendWithoutReadiness: true },
+    { ...RULES[3], autoSend: { digest: 'd' } },
+    { ...RULES[1], autoSend: { digest: 'd' }, firstSendWithoutReadiness: true },
+    RULES[2], RULES[4],
+    { id: 'R-plain', source: 'slack', badge: 'bell', projectId: 'P1', columnId: 'C1', cmd: 'claude', template: 'triage' },
+    { id: 'R-codex', source: 'slack', badge: 'robot_face', projectId: 'P1', columnId: 'C1', cmd: 'codex', template: 'triage',
+      autoSend: { digest: 'd' }, firstSendWithoutReadiness: true },
+  ];
+  const asked = [];
+  const grantState = async (rule, template) => { asked.push([rule.id, template?.name]); return rule.autoSend ? 'valid' : 'none'; };
+  const supported = cmd => cmd === 'claude';
+  const routes = await phoneRoutes(rules, PROJECTS, channelBlockReason, grantState, supported);
+  assert.deepEqual(routes.map(({ id, outcome, blocked }) => [id, outcome, blocked || null]), [
+    ['R-plain', 'manual', null],
+    ['R-custom', 'gated', null],
+    ['R-eyes', 'auto', null],
+    ['R-memo', 'manual', 'command'],
+    ['R-codex', 'gated', null],
+    ['R-gone', 'manual', 'project'],
+  ], 'in the menu order; the override counts only for a command it can reach; a clock rule is no route');
+  assert.equal(routes[2].label, '👀 → Proj / triage', "the desktop menu's own label");
+  assert.ok(!asked.some(([id]) => id === 'R-memo' || id === 'R-gone'), 'a blocked route is not asked for its approval');
+  assert.deepEqual(asked[0], ['R-plain', 'triage'], 'approval is judged against the current template');
+  const stale = await phoneRoutes([rules[0]], PROJECTS, channelBlockReason, async () => 'stale', supported);
+  assert.equal(stale[0].outcome, 'manual', 'a stale approval sends nothing by itself');
+  assert.deepEqual(await phoneRoutes(null, PROJECTS, channelBlockReason, grantState, supported), []);
 });
