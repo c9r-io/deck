@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.31 — 2026-11-19 (Nightly)
+
+- Phone Connector: a Mac keeps its pairings when its address changes (DHCP,
+  another network). Settings offers only the addresses the Mac has now,
+  each with its interface, Ethernet and Wi-Fi first; a saved address that
+  is gone is named in a line of its own instead of being offered and
+  selected, and "Listen on the selected address" starts the listener where
+  the Mac is now. The identity, every paired device and the command record
+  are kept; "Reset and re-pair" is only for ending every pairing. Deck
+  never follows a new address by itself. On the phone (iOS 1.0 (9)) the
+  unreachable notice offers scanning the Mac's pairing code again: for a
+  Mac the phone is already paired with this only replaces the address, and
+  the pairing, its trust and its drafts stay. An earlier phone build cannot
+  reach a Mac whose address changed; update the phone together with the Mac.
+- Phone Connector: a listener that is not running says why, in Settings and
+  in app.log (the address is gone, the network interface changed, the port
+  is in use, the system refused the listener, …), instead of one generic
+  sentence.
+- Updates: when a newer release is published between the periodic check and
+  your click, the Update button now takes the new version and says so,
+  instead of "update failed". One more click installs it.
+
 ## 0.8.30 — 2026-11-18 (Nightly)
 
 - Phone Connector (iOS 1.0 (8)): one phone can be paired with several Macs,
