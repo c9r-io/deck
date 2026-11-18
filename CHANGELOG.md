@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.29 — 2026-11-18 (Nightly)
+
+- Phone Connector: the Mac's Slack mentions list on the phone. A paired
+  phone shows "Slack mentions" with the number open in the last 24 hours,
+  the list (24 hours, 3 days, a week) and each mention in full with the
+  messages before it. From there you can hand one mention to one of your
+  Slack badge automations, dismiss it, or open it in Slack. The phone names
+  the message and the automation and sends no text; what is sent is decided
+  on the Mac by that automation's own approval and first-send choice, as
+  for a badge added in Slack. Each route says what it leads to: it starts
+  by itself, the Agent starts and the first step waits for its first
+  interaction, or the card is created and its steps wait for Send now on
+  the Mac; an automation that cannot be used says why.
+  Pairing is the consent: there is no separate switch, the sharing scopes
+  do not narrow it, and a phone that was already paired gains it with this
+  update. The enable confirmation and the Remote access hint now say so.
+  The phone cannot dismiss everything at once, reach an Agent or clock
+  automation, or change an automation, and Deck still never writes to
+  Slack. Needs the new iOS build (1.0 (7)); the Mac must be awake with Deck
+  running and reachable.
+- Phone Connector: a host journal that holds a mention command is written
+  as format version 4, which an older Deck refuses instead of reading.
+
 ## 0.8.28 — 2026-11-18 (Nightly)
 
 - Board: a card can move to another project. The card menu has "Move to
