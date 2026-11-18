@@ -248,6 +248,7 @@ body.side-collapsed .side-new .label { display: none; }
 .tab:hover { color: var(--text); background: var(--hover); }
 .tab.active { color: var(--text); background: var(--bg); border-color: var(--border-soft); font-weight: 600; }
 .tab.dragging { opacity: 0.45; }
+.tab.drop-target { color: var(--text); border-color: var(--accent-dim); background: var(--drop-target); }
 .tab.drag-before::before, .tab.drag-after::after {
   content: ''; position: absolute; top: 4px; bottom: 3px; width: 2px;
   border-radius: 2px; background: var(--accent); pointer-events: none;

@@ -24,9 +24,9 @@
 // command. A directory that no longer exists asks (choiceDialog) instead of
 // guessing: cancel, edit the project defaults, or a shell in $HOME.
 import { $, ctx, duev, inv, state, uev } from './state.js';
-import { collapseHome, isComposingKeyEvent, isNotDirectoryError, newSessionColumn, newSessionPlan } from './pure.js';
+import { collapseHome, isComposingKeyEvent, isNotDirectoryError, newSessionColumn, newSessionPlan, projectMoveBlock } from './pure.js';
 import { choiceDialog, confirmDangerDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
-import { closeSession, editReminder, openBuffer, openProjectDefaults, panes, provider, renameTab, render, showBoard, switchProject, activeProject } from './board.js';
+import { closeSession, editReminder, moveCardToProject, moveRefusalKey, openBuffer, openProjectDefaults, panes, provider, renameTab, render, showBoard, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession } from './layout.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut, registerShortcutAction } from './shortcuts.js';
@@ -104,7 +104,9 @@ export function showSessionCtx(e, sid) {
     ? e.currentTarget.querySelector('.name, .card-title') : null;
   const ctx = $('ctx');
   ctx.onkeydown = null;
-  ctx.innerHTML = '<button data-a="rename"></button><button data-a="draft"></button><button data-a="desc"></button><button data-a="buffer"></button><button data-a="reminder"></button><button data-a="quiet"></button><button data-a="here"></button><hr><button data-a="close" class="danger"></button>';
+  ctx.innerHTML = '<button data-a="rename"></button><button data-a="draft"></button><button data-a="desc"></button><button data-a="buffer"></button><button data-a="reminder"></button><button data-a="quiet"></button><button data-a="here"></button><button data-a="project"></button><hr><button data-a="close" class="danger"></button>';
+  ctx.querySelector('[data-a="project"]').textContent = t('menu.moveToProject');
+  ctx.querySelector('[data-a="project"]').hidden = provider.projects().length < 2;
   ctx.querySelector('[data-a="rename"]').textContent = t('menu.renameCard');
   ctx.querySelector('[data-a="draft"]').textContent = t('menu.draftTitle');
   ctx.querySelector('[data-a="desc"]').textContent = t(s.desc ? 'menu.editDescription' : 'menu.addDescription');
@@ -115,6 +117,9 @@ export function showSessionCtx(e, sid) {
   ctx.querySelector('[data-a="close"]').textContent = t('menu.closeSession');
   ctx.onclick = ev => {
     const a = ev.target.dataset && ev.target.dataset.a;
+    /* the second level replaces this menu in place: keep the click from
+       reaching the document's dismissal, which no longer finds its target */
+    if (a === 'project') { ev.stopPropagation(); showMoveToProject(sid); return; }
     ctx.style.display = 'none';
     if (a === 'rename') renameCardInline(sid, renameHost);
     if (a === 'draft') draftCardTitle(sid, renameHost);
@@ -126,6 +131,45 @@ export function showSessionCtx(e, sid) {
     if (a === 'close') closeSession(sid);
   };
   placeCtx(e);
+}
+
+/* The card menu's second level: the other projects. A card that may not
+   leave its project now (pure.js `projectMoveBlock`) says why instead. */
+function showMoveToProject(sid) {
+  const card = provider.get(sid);
+  const ctx = $('ctx');
+  ctx.replaceChildren();
+  ctx.onkeydown = null;
+  if (!card) { hideCtx(); return; }
+  const label = document.createElement('div');
+  label.className = 'ctx-label';
+  label.textContent = t('menu.moveToProjectLabel');
+  ctx.appendChild(label);
+  const blocked = projectMoveBlock(card);
+  if (blocked) {
+    const note = document.createElement('span');
+    note.className = 'ctx-note';
+    note.textContent = t(moveRefusalKey(blocked));
+    ctx.appendChild(note);
+  } else {
+    for (const p of provider.projects()) {
+      if (p.id === card.projectId) continue;
+      const button = document.createElement('button');
+      button.dataset.pid = p.id;
+      button.textContent = p.name;
+      ctx.appendChild(button);
+    }
+  }
+  ctx.onclick = ev => {
+    const pid = ev.target.closest('button')?.dataset.pid;
+    if (!pid) return;
+    hideCtx();
+    moveCardToProject(sid, pid);
+  };
+  /* longer names may widen the menu: keep it inside the window */
+  const box = ctx.getBoundingClientRect();
+  ctx.style.left = Math.max(8, Math.min(box.left, innerWidth - ctx.offsetWidth - 8)) + 'px';
+  ctx.style.top = Math.max(8, Math.min(box.top, innerHeight - ctx.offsetHeight - 8)) + 'px';
 }
 
 export function showProjectCtx(e, pid) {

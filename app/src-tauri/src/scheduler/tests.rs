@@ -9258,6 +9258,50 @@ fn a_phone_task_approval_is_swept_and_fenced_against_the_board_and_the_device() 
     assert!(q.items[0].authority.is_some());
 }
 
+/// A card moved to another project (`board.js` `moveToProject`) keeps the
+/// rows it already has: a queued row's approval and override rest on the
+/// preset or rule and on the row's own frozen claim, never on where the
+/// card is now. Only the unqueued head reads the card's project, and there
+/// a moved card admits nothing (pure.js `projectMoveBlock` keeps the user
+/// from moving it in that window).
+#[test]
+fn moved_card_keeps_row_authority() {
+    let (board, digest) = approved_board();
+    let mut moved = board.clone();
+    moved["projects"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"id": "P2"}));
+    moved["cards"][0]["projectId"] = "P2".into();
+    moved["cards"][0]["connectorRun"]["initialQueued"] = true.into();
+    let tasks = phone_tasks(moved.clone());
+    let step = external_step("e", Some(preset_authority(&digest, 1)));
+    assert_eq!(fence(&step, board_sources(&tasks)), Fence::Clear);
+    let mut q = qs(vec![step, preset_head()]);
+    assert_eq!(revoke_stale(&mut q, board_sources(&tasks)), 0);
+    assert_eq!(first_send::revoke_stale(&mut q, board_sources(&tasks)), 0);
+    assert!(q.items[0].authority.is_some() && q.items[1].readiness_override.is_some());
+    // the settings-backed sources never see a card at all: a rule's rows
+    // are judged from the rule
+    let cfg = config_with(vec![granted_rule()]);
+    let row = external_step("r", Some(step_authority(0)));
+    assert_eq!(
+        fence(&row, first_send::Sources::settings(&cfg)),
+        Fence::Clear
+    );
+    // the unqueued head is the one reader of the card's project: moved,
+    // it is refused, never admitted elsewhere
+    let mut early = preset_board();
+    early["cards"][0]["projectId"] = "P2".into();
+    assert!(first_send::verify_connector(
+        Some(&early),
+        &preset_claim(),
+        &preset_args(),
+        Some(&task_proof())
+    )
+    .is_err());
+}
+
 /// Revoking the device also takes back the first-send override of the tasks
 /// it created.
 #[test]

@@ -127,6 +127,27 @@ export function newSessionColumn(p) {
     || p.columns[1] || p.columns[0] || null;
 }
 
+/* Why a card may not leave its project now (`provider.moveToProject`, and
+   the MCP move, mcp.js), as a closed word, or null when it may. A card's
+   project is read by an authority check only while its run has not been
+   handed to the queue: the head's first-send admission compares the card's
+   project with the rule's or preset's, and only with an explicit
+   `initialQueued: false` (scheduler/first_send.rs, channel_first_send.rs).
+   Once queued, each row carries its own frozen claim and nothing reads the
+   card's project again (pinned natively by `moved_card_keeps_row_authority`).
+   A channel rule finds its collecting card by project (channel-model.js
+   `collectingCard`), and an MCP-managed shell's session and execution grant
+   record theirs in the MCP ledger. Passing this refusal grants nothing: a
+   card moved in spite of it only loses its unsent first step. */
+export function projectMoveBlock(card) {
+  if (!card) return 'gone';
+  if (card.origin?.source === 'mcp') return 'managed';
+  if (card.inboundPlan?.initialQueued === false || card.connectorRun?.initialQueued === false
+    || card.channelRun?.initialQueued === false) return 'starting';
+  if (card.channelRun?.collecting === true) return 'collecting';
+  return null;
+}
+
 /* ---------- project defaults (04 A v01) ----------
    A project may carry a default directory and a default launch command,
    both optional strings. They apply to the Board's OWN creation paths

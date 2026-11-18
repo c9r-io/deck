@@ -40,6 +40,11 @@
 // Codex coverage diagnostics live in the runtime attention snapshot and
 // the status row; no card field or persistence is added for signal coverage.
 // Foreground changes in the focused pane invalidate ephemeral resume hints.
+// A card changes project only by the user's own gesture (card menu, a drop
+// on a project tab; `moveCardToProject`) or one explicit MCP request
+// (mcp.js): `provider.moveToProject`, one transaction, the session and
+// everything on the card untouched. pure.js `projectMoveBlock` names the
+// states that stay put.
 // Creation (04 A v01): `provider.createStarted` is the path that makes a
 // card together with its session — it starts the tmux session first and
 // persists the card only after that succeeded, so a failed start never
@@ -67,7 +72,7 @@
 import { $, columnHint, ctx, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { reminderRequestId, reminderAction, reminderClaim, reminderDay, reminderDue, reminderShort, rememberRetirement, retirementBlocked, retirementKey, sameReminder } from './reminder-model.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
-import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, promptSummary, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
+import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, projectMoveBlock, promptSummary, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
 import { cardFollowUps, followUpSuggestion } from './follow-up-model.js';
 import { channelAgentCommand } from './channel-model.js';
 import { claimSessionTool, registerSessionTool, releaseSessionTool } from './session-tools.js';
@@ -427,6 +432,39 @@ export const provider = {
     });
     const c = this.get(sid);
     if (c) emit('list', c);
+  },
+  /* To another project, into the column a new session there would take.
+     One transaction writes both ids (documents.rs refuses a column outside
+     the card's project); the session, directory, command, queue rows,
+     scratchpad and reminder stay the card's. `projectMoveBlock` (pure.js)
+     names the three states that stay put. `expect` (the MCP move) names
+     the project and column the caller saw and an explicit target column. */
+  async moveToProject(sid, pid, { expect = null, columnId = null } = {}) {
+    let outcome = { ok: false, reason: 'gone' };
+    await mutateBoard(draft => {
+      const c = draft.cards.find(x => x.id === sid);
+      const p = draft.projects.find(x => x.id === pid);
+      const column = p && (columnId ? p.columns.find(x => x.id === columnId) : newSessionColumn(p));
+      if (!c || !column) return { noop: true };
+      if (expect && (c.projectId !== expect.projectId || c.columnId !== expect.columnId)) {
+        outcome = { ok: false, reason: 'changed' };
+        return { noop: true };
+      }
+      const same = c.projectId === pid;
+      if (same && (!columnId || c.columnId === column.id)) {
+        outcome = { ok: true, project: p.name, column: column.name, moved: false };
+        return { noop: true };
+      }
+      const blocked = same ? null : projectMoveBlock(c);
+      if (blocked) { outcome = { ok: false, reason: blocked }; return { noop: true }; }
+      c.projectId = pid;
+      c.columnId = column.id;
+      outcome = { ok: true, project: p.name, column: column.name, moved: true };
+      return undefined;
+    });
+    const c = this.get(sid);
+    if (c && outcome.ok && outcome.moved) emit('list', c);
+    return outcome;
   },
   async rename(sid, title) {
     const c = this.get(sid);
@@ -1423,6 +1461,25 @@ export function updateSidebarStatus(card) {
   if (dot) dot.className = 'dot ' + card.status;
 }
 
+/* The sentence for each reason a card did not change project. */
+export const moveRefusalKey = reason => ({
+  starting: 'board.moveBlocked.starting',
+  collecting: 'board.moveBlocked.collecting',
+  managed: 'board.moveBlocked.managed',
+}[reason] || 'board.moveFailed');
+
+/* The user's move of a card to another project (card menu, a drop on a
+   project tab): the one sentence either way. */
+export async function moveCardToProject(sid, pid) {
+  const card = provider.get(sid);
+  if (!card || card.projectId === pid) return;
+  let outcome;
+  try { outcome = await provider.moveToProject(sid, pid); }
+  catch (_) { outcome = { ok: false, reason: 'gone' }; }
+  if (outcome.ok) toast(t('board.movedToProject', { project: outcome.project, column: outcome.column }));
+  else toast(t(moveRefusalKey(outcome.reason)));
+}
+
 /* ---------- project tabs ---------- */
 export function renderTabs() {
   const bar = $('tabs');
@@ -1456,6 +1513,13 @@ export function renderTabs() {
       el.classList.add('dragging');
     });
     el.addEventListener('dragover', event => {
+      /* a card dragged onto another project's tab moves there */
+      if (Array.from(event.dataTransfer.types || []).includes('text/deck-session')) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        el.classList.add('drop-target');
+        return;
+      }
       if (!Array.from(event.dataTransfer.types || []).includes('text/deck-project')) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
@@ -1466,10 +1530,13 @@ export function renderTabs() {
       el.classList.add(after ? 'drag-after' : 'drag-before');
     });
     el.addEventListener('dragleave', event => {
-      if (!el.contains(event.relatedTarget)) el.classList.remove('drag-before', 'drag-after');
+      if (!el.contains(event.relatedTarget)) el.classList.remove('drag-before', 'drag-after', 'drop-target');
     });
     el.addEventListener('drop', async event => {
       event.preventDefault();
+      el.classList.remove('drop-target');
+      const sid = event.dataTransfer.getData('text/deck-session');
+      if (sid) { await moveCardToProject(sid, p.id); return; }
       const movingId = event.dataTransfer.getData('text/deck-project');
       const after = el.classList.contains('drag-after');
       bar.querySelectorAll('.tab').forEach(tab => tab.classList.remove('drag-before', 'drag-after'));

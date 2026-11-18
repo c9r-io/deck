@@ -12,7 +12,7 @@ import {
   MIN_QUIET_SECS, MAX_QUIET_SECS, quietSecsOf, localEpoch, isoDate, isoTime,
   scheduleMatchesDay, nextScheduleSlot, nextScheduleSlots, parseCivilDate, civilDay, createConfirmationCounter, isoWeekday, daysInMonth, runFinishHolds, toggleClockRule,
   createExitRetirementTracker, createSerialTransactionQueue, sidebarGroups,
-   createTerminalResizeCoordinator, newSessionColumn, createTerminalSelectionModel,
+   createTerminalResizeCoordinator, newSessionColumn, projectMoveBlock, createTerminalSelectionModel,
   projectDefaults, newSessionPlan, collapseHome, isNotDirectoryError,
   reorderById, splitCandidates,
     terminalSelectionEdgeLines,
@@ -1473,4 +1473,21 @@ test('the split picker lists every unopened card, newest first within a status',
   assert.equal(ids[1], 'Snew', 'the newest live card leads its group');
   assert.deepEqual(ids.slice(-5), ['S12', 'S9', 'S6', 'S3', 'S0'], 'stopped last, newest first');
   assert.deepEqual(splitCandidates([{ id: 'a' }, { id: 'b' }], new Set()).map(c => c.id), ['b', 'a'], 'a card without status yet still shows');
+});
+
+test('a card leaves its project except while its run is unqueued, collecting or MCP-managed', () => {
+  assert.equal(projectMoveBlock(null), 'gone');
+  assert.equal(projectMoveBlock({ id: 'a' }), null);
+  // a run handed to the queue is as free as a card opened by hand
+  for (const source of ['slack', 'clock', 'agent', 'connector', 'channel', 'worker']) {
+    assert.equal(projectMoveBlock({ origin: { source, key: 'k', badge: 'b' } }), null, source);
+  }
+  assert.equal(projectMoveBlock({ origin: { source: 'slack' }, inboundPlan: { initialQueued: true } }), null);
+  assert.equal(projectMoveBlock({ origin: { source: 'channel' }, channelRun: { initialQueued: true, collecting: false } }), null);
+  // the three states that stay put
+  assert.equal(projectMoveBlock({ inboundPlan: { initialQueued: false } }), 'starting');
+  assert.equal(projectMoveBlock({ connectorRun: { initialQueued: false } }), 'starting');
+  assert.equal(projectMoveBlock({ channelRun: { initialQueued: false, collecting: true } }), 'starting');
+  assert.equal(projectMoveBlock({ channelRun: { initialQueued: true, collecting: true } }), 'collecting');
+  assert.equal(projectMoveBlock({ origin: { source: 'mcp', key: 'k', badge: 'managed' } }), 'managed');
 });
