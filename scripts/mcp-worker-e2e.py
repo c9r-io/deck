@@ -43,6 +43,9 @@ def parse():
     p.add_argument("--card", help="continue with this worker card (its first line already sent) instead of starting one")
     p.add_argument("--first-token", help="with --card: the token the card's first line asked for")
     p.add_argument("--start-type", help="start the worker with deck_worker_start of this worker type instead of the automation")
+    p.add_argument("--report", action="store_true",
+                   help="the worker's agent has this instance's adapter: its first line also asks it to call "
+                        "deck_worker_report, and the report is waited for and read (deck_worker_reports)")
     p.add_argument("--no-replies", action="store_true",
                    help="the worker's agent forwards no final message (Codex): each reply must be REPLY_GONE")
     return p.parse_args()
@@ -129,19 +132,27 @@ def main():
             types = [t.get("type") for t in out.get("workerTypes", [])]
             step("worker-types-listed", ok and args.start_type in types, types=",".join(types))
         token1 = args.first_token or f"WORKER-{tag}-ONE"
+        report_token = f"REPORT-{tag}"
+        first_line = (f"First call the deck_worker_report tool with exactly this text: {report_token}. "
+                      f"Then reply with exactly: {token1}. Use no other tool."
+                      if args.report else f"Reply with exactly: {token1}. Do not use tools.")
+        if args.report:
+            # only a worker card reports: this caller runs in no card
+            ok, out = call("deck_worker_report", {"text": "not from a card"})
+            step("report-refused-outside-a-card", not ok and code(out) == "NOT_A_WORKER_CARD", code=code(out))
         if args.card:
             trig = None
         elif args.start_type:
             ok, trig = call("deck_worker_start", {
                 "request_id": f"wstart_{tag}", "send_sequence": sequence, "type": args.start_type,
-                "text": f"Reply with exactly: {token1}. Do not use tools.", "title": f"worker {tag}"})
+                "text": first_line, "title": f"worker {tag}"})
             step("worker-start-accepted", ok and trig.get("kind") == "worker-start" and "text" not in (trig.get("result") or {}))
             sequence += 1
         else:
           ok, trig = call("deck_automation_trigger", {
             "request_id": f"wtrig_{tag}", "trigger_sequence": listed.get("nextTriggerSequence", 0),
             "automation_id": args.automation, "expected_revision": auto["revision"],
-            "text": f"Reply with exactly: {token1}. Do not use tools.", "from": "worker smoke", "where": "#deck-smoke"})
+            "text": first_line, "from": "worker smoke", "where": "#deck-smoke"})
         op = trig.get("operationId") if trig else None
         card = args.card
         deadline = time.time() + (0 if args.card else 120)
@@ -163,6 +174,24 @@ def main():
              takenOver=view and view.get("takenOver"))
         ok, out = reply_has(card, e1, token1)
         step("first-reply", ok, truncated=out.get("truncated"), code=code(out))
+        if args.report:
+            # the summary is on the card's row without the text; a wait that
+            # saw no report returns at once; the text is read on request
+            row, listing = worker(card)
+            summary = (row or {}).get("reports") or {}
+            step("report-summarized", summary.get("count") == 1 and summary.get("latest") == 1
+                 and report_token not in json.dumps(listing), count=summary.get("count"), latest=summary.get("latest"))
+            started = time.time()
+            ok, out = call("deck_worker_wait", {"cards": [{"card_id": card, "episode": e1, "reports": 0}], "wait_ms": 5000})
+            step("report-wakes-the-wait", ok and out.get("changed") is True and time.time() - started < 3,
+                 seconds=round(time.time() - started, 1))
+            ok, out = call("deck_worker_wait", {"cards": [{"card_id": card, "episode": e1, "reports": 1}], "wait_ms": 0})
+            step("report-seen-does-not", ok and out.get("changed") is False)
+            ok, out = call("deck_worker_reports", {"card_id": card})
+            texts = [r.get("text") for r in out.get("reports", [])]
+            step("report-read", ok and texts == [report_token] and out.get("latest") == 1, count=len(texts))
+            ok, again = call("deck_worker_reports", {"card_id": card, "after": 1})
+            step("report-after", ok and again.get("reports") == [] and again.get("latest") == 1)
 
         # refused lines: a moved episode, a stale sequence
         ok, out = send(card, e1 + 1000, "never sent", f"wbad_{tag}")

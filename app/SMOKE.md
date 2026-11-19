@@ -438,7 +438,13 @@ Scenario `types` (write `types`; the fixture hooks file as for `live`): no
 template and no rule. The client is authorized with one Claude worker type
 (the same restricted `claude` command) and the first-send choice, and the
 client runs with `--start-type claude`, so the worker is started with
-`deck_worker_start`; part A only, `done` b=3. Keep the screen unlocked and
+`deck_worker_start`; part A only, `done` b=3. With `--report` as well (the
+fixture hooks file then also carries `enableAllProjectMcpServers` and an
+allow rule for `mcp__deck__deck_worker_report`, and `work/.mcp.json` names
+this instance's adapter once the page is armed) the first line asks the
+worker to call `deck_worker_report`, and the client checks the refusal
+outside a card, the content-free summary, the wait that returns on a
+report and the text read back. Keep the screen unlocked and
 the window in front: a locked screen or a covered window freezes the page's
 timers (its takeover and hand-back steps then never come).
 

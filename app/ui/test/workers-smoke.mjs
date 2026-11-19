@@ -660,7 +660,8 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
 
     /* A5. handed back through the card's own button: it goes out */
     const chip = await until(() => document.querySelector(`.card[data-sid="${first.id}"] .card-worker.taken`), 10_000, 250);
-    if (!chip || chip.textContent !== t('workers.takenOver', { name: 'orchestrator' })) throw new Error('hand-back button');
+    /* a card that reported says so after the label's own words (workers.js) */
+    if (!chip || !chip.textContent.startsWith(t('workers.takenOver', { name: 'orchestrator' }))) throw new Error('hand-back button');
     chip.click();
     const back = await until(async () => {
       const s = await queue(first.session);
