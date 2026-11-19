@@ -1409,6 +1409,8 @@ const dictionary = {
   'mcp.workersNoReplies': '驱动工作卡片，不共享回复',
   'workers.driven': '由 {name} 驱动',
   'workers.drivenTitle': '{name} 可以往这张卡片的 Agent 里输入。你自己在这里打字就会接管这张卡片。',
+  "workers.reported": "已报告 {time}",
+  "workers.reportedTitle": "它已把报告交给 Deck，供开出它的编排者读取；何时读由编排者决定。",
   'workers.takenOver': '已接管 · 交还',
   'workers.takenOverTitle': '你已接管这张卡片：{name} 的输入会一直等到你交还。',
   'workers.orphaned': '编排卡片已关闭 · 交还',

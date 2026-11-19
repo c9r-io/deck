@@ -1714,6 +1714,7 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
                 created_at: 1,
                 held: false,
                 orchestrator: None,
+                reported: 0,
             });
             doc.mention_marks.push(MentionMark {
                 key: "C1/1.000001".into(),
@@ -2174,7 +2175,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
     );
 
     let mut invalid = DiskDoc {
-        version: STATE_VERSION_CLOCK_DRAFTS + 1,
+        version: STATE_VERSION_REPORTS + 1,
         ..DiskDoc::default()
     };
     assert!(validate_doc(&invalid).is_err());
@@ -3167,7 +3168,7 @@ fn v3_state_upgrades_stickily_and_future_state_is_refused() {
     // The v3 build accepted exactly version 3; the same rule refuses a
     // future schema here.
     let mut future = saved.clone();
-    future["version"] = json!(STATE_VERSION_CLOCK_DRAFTS + 1);
+    future["version"] = json!(STATE_VERSION_REPORTS + 1);
     std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
     assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
     assert_eq!(
@@ -7156,6 +7157,7 @@ fn a_client_reaches_listed_or_all_projects_through_their_own_directories() {
                 created_at: 1,
                 held: false,
                 orchestrator: None,
+                reported: 0,
             });
             Ok(())
         })
@@ -7213,6 +7215,232 @@ fn a_client_reaches_listed_or_all_projects_through_their_own_directories() {
     drop(root);
 }
 
+/// Worker reports (`reports.rs`): only a call Deck sees coming from one of
+/// the client's worker cards records one; it is filed for the orchestrator
+/// card that started the worker, which reads it when it chooses (with the
+/// reply choice) and whose wait returns when another arrives; another
+/// orchestrator card reads nothing. Bounded per card, never duplicated by
+/// a retry, gone with the worker record, and the ledger takes its version.
+#[test]
+fn a_worker_card_reports_one_way_to_the_orchestrator_that_started_it() {
+    let (runtime, _runner, root) = fixture("worker-reports", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let call = |card: Option<&str>, tool: &str, args: Value| {
+        let _as = super::origin::enter_as(card);
+        route(&runtime, request(tool, args))
+    };
+    let permissions = |workers: bool, replies: bool| super::commands::PermissionsInput {
+        allow_automations: true,
+        allow_workers: workers,
+        allow_replies: replies,
+        ..no_permissions(false)
+    };
+    client_permissions(&runtime, "client_a", permissions(true, false)).unwrap();
+    let worker = |card: &str, client: &str, orchestrator: Option<&str>| Worker {
+        card_id: card.into(),
+        client_id: client.into(),
+        operation_id: format!("op_{card}"),
+        automation_id: "claude".into(),
+        created_at: 1,
+        held: false,
+        orchestrator: orchestrator.map(str::to_owned),
+        reported: 0,
+    };
+    runtime
+        .write(|doc| {
+            doc.workers.push(worker("W1", "client_a", Some("OA")));
+            doc.workers.push(worker("W2", "client_a", Some("OB")));
+            doc.workers.push(worker("WX", "client_other", None));
+            Ok(())
+        })
+        .unwrap();
+    let card = |id: &str| json!({"id": id, "session": format!("deck-{}", id.to_lowercase()), "title": id, "cmd": "claude", "dir": "/tmp"});
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [card("OA"), card("OB"), card("W1"), card("W2"), card("WX"), card("PLAIN")]}),
+        true,
+    );
+    let before = runtime.read(|doc| doc.version).unwrap();
+    assert!(before < STATE_VERSION_REPORTS);
+
+    // who may report: a worker card of this client, and nobody else
+    for caller in [None, Some("PLAIN"), Some("OA"), Some("WX")] {
+        let refused = call(caller, "deck_worker_report", json!({"text": "done"}));
+        assert_eq!(
+            refused["error"]["code"], "NOT_A_WORKER_CARD",
+            "{caller:?}: {refused}"
+        );
+    }
+    for bad in [json!({"text": "  "}), json!({"text": "x".repeat(8193)})] {
+        let refused = call(Some("W1"), "deck_worker_report", bad);
+        assert_eq!(refused["error"]["code"], "INVALID_ARGUMENTS");
+    }
+    assert!(runtime.read(|doc| doc.reports.is_empty()).unwrap());
+
+    // recorded with the card's own rising sequence; a retry is not a second report
+    let first = call(
+        Some("W1"),
+        "deck_worker_report",
+        json!({"text": " tests pass \n"}),
+    );
+    assert_eq!(first["sequence"], 1, "{first}");
+    assert_eq!(first["cardId"], "W1");
+    assert_eq!(first["recorded"], true);
+    let retry = call(
+        Some("W1"),
+        "deck_worker_report",
+        json!({"text": "tests pass"}),
+    );
+    assert_eq!(
+        (retry["sequence"].as_u64(), retry["recorded"].as_bool()),
+        (Some(1), Some(false))
+    );
+    assert_eq!(
+        call(
+            Some("W2"),
+            "deck_worker_report",
+            json!({"text": "other result"})
+        )["sequence"],
+        1
+    );
+    assert_eq!(
+        runtime.read(|doc| doc.version).unwrap(),
+        STATE_VERSION_REPORTS
+    );
+    assert_eq!(
+        runtime.read(|doc| doc.reports[0].text.clone()).unwrap(),
+        "tests pass"
+    );
+    // the webview learns that the card reported, never what
+    let ui = serde_json::to_value(workers_ui(&runtime).unwrap()).unwrap();
+    let w1 = ui
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["cardId"] == "W1")
+        .unwrap();
+    assert!(w1["reportedAt"].as_u64().unwrap() > 0);
+    assert!(!ui.to_string().contains("tests pass"));
+
+    // reading needs the reply choice, and the orchestrator card that started it
+    let denied = call(Some("OA"), "deck_worker_reports", json!({"card_id": "W1"}));
+    assert_eq!(denied["error"]["code"], "PERMISSION_DENIED", "{denied}");
+    client_permissions(&runtime, "client_a", permissions(true, true)).unwrap();
+    let read = call(Some("OA"), "deck_worker_reports", json!({"card_id": "W1"}));
+    assert_eq!(read["latest"], 1, "{read}");
+    assert_eq!(read["reports"][0]["text"], "tests pass");
+    assert_eq!(read["reports"][0]["sequence"], 1);
+    let again = call(Some("OA"), "deck_worker_reports", json!({"card_id": "W1"}));
+    assert_eq!(
+        again["reports"], read["reports"],
+        "reading consumes nothing"
+    );
+    assert_eq!(
+        call(Some("OB"), "deck_worker_reports", json!({"card_id": "W1"}))["error"]["code"],
+        "WORKER_NOT_FOUND",
+        "another orchestrator card's worker"
+    );
+    assert_eq!(
+        call(None, "deck_worker_reports", json!({"card_id": "W1"}))["latest"],
+        1,
+        "a caller from no card sees all of the client's"
+    );
+
+    // the list and the wait carry the summary without the text
+    OBSERVE_FOR_TESTS.with(|cell| {
+        *cell.borrow_mut() = Some(Some(HashMap::from([(
+            "deck-w1".to_string(),
+            seen_for_tests(Some("working"), 3),
+        )])))
+    });
+    let listed = call(Some("OA"), "deck_worker_list", json!({}));
+    let row = listed["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["cardId"] == "W1")
+        .unwrap();
+    assert_eq!(row["reports"]["count"], 1, "{listed}");
+    assert_eq!(row["reports"]["latest"], 1);
+    assert!(!listed.to_string().contains("tests pass"));
+    let wait = |seen: Option<u64>| {
+        call(
+            Some("OA"),
+            "deck_worker_wait",
+            json!({"wait_ms": 0, "cards": [{"card_id": "W1", "episode": 3, "reports": seen}]}),
+        )
+    };
+    assert_eq!(wait(Some(1))["changed"], false);
+    assert_eq!(
+        wait(None)["changed"],
+        false,
+        "a caller that does not follow reports"
+    );
+    assert_eq!(wait(Some(0))["changed"], true, "a report it has not seen");
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+
+    // the newest four are kept, the sequence never restarts, `after` filters
+    for i in 2..=6 {
+        let more = call(
+            Some("W1"),
+            "deck_worker_report",
+            json!({"text": format!("step {i}")}),
+        );
+        assert_eq!(more["sequence"], i, "{more}");
+    }
+    let limited = call(
+        Some("W1"),
+        "deck_worker_report",
+        json!({"text": "one too many"}),
+    );
+    assert_eq!(limited["error"]["code"], "RATE_LIMITED", "{limited}");
+    let kept = call(Some("OA"), "deck_worker_reports", json!({"card_id": "W1"}));
+    assert_eq!(kept["firstKept"], 3, "{kept}");
+    assert_eq!(kept["latest"], 6);
+    assert_eq!(kept["reports"].as_array().unwrap().len(), 4);
+    let newer = call(
+        Some("OA"),
+        "deck_worker_reports",
+        json!({"card_id": "W1", "after": 5}),
+    );
+    assert_eq!(newer["reports"].as_array().unwrap().len(), 1);
+    assert_eq!(newer["reports"][0]["text"], "step 6");
+
+    // a closed card's reports stay readable while its record stays
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [card("OA"), card("OB"), card("W2")]}),
+        true,
+    );
+    assert_eq!(
+        call(Some("OA"), "deck_worker_reports", json!({"card_id": "W1"}))["latest"],
+        6
+    );
+
+    // without the worker choice nothing is recorded; revoking the client
+    // drops its worker records and their reports with them
+    client_permissions(&runtime, "client_a", permissions(false, false)).unwrap();
+    assert_eq!(
+        call(Some("W2"), "deck_worker_report", json!({"text": "late"}))["error"]["code"],
+        "PERMISSION_DENIED"
+    );
+    runtime
+        .write(|doc| {
+            doc.workers.retain(|w| w.card_id != "W1");
+            super::reports::prune(doc);
+            Ok(())
+        })
+        .unwrap();
+    let left: Vec<String> = runtime
+        .read(|doc| doc.reports.iter().map(|r| r.card_id.clone()).collect())
+        .unwrap();
+    assert_eq!(left, ["W2"]);
+    assert_eq!(
+        runtime.read(|doc| doc.version).unwrap(),
+        STATE_VERSION_REPORTS,
+        "sticky"
+    );
+    drop(root);
+}
+
 /// Worker capacity: 8 per orchestrator card (callers from no card count
 /// together), 32 per client.
 #[test]
@@ -7233,6 +7461,7 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
                     created_at: 1,
                     held: false,
                     orchestrator: Some("OA".into()),
+                    reported: 0,
                 });
             }
             Ok(())
@@ -7291,6 +7520,7 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
                     created_at: 1,
                     held: false,
                     orchestrator: Some(format!("O{}", i / 8)),
+                    reported: 0,
                 });
             }
             Ok(())
@@ -7344,6 +7574,7 @@ fn orchestrators_mark_mentions_for_the_user_and_never_dismiss_them() {
                     created_at: 1,
                     held: false,
                     orchestrator: Some("OA".into()),
+                    reported: 0,
                 });
                 Ok(())
             })

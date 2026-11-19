@@ -299,6 +299,9 @@ pub(super) struct DiskDoc {
     /// The marks orchestrators set on Slack mentions (`mentions.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) mention_marks: Vec<super::mentions::MentionMark>,
+    /// What worker cards reported for their orchestrators (`reports.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) reports: Vec<super::reports::Report>,
 }
 
 impl Default for DiskDoc {
@@ -314,6 +317,7 @@ impl Default for DiskDoc {
             workers: Vec::new(),
             proposals: Vec::new(),
             mention_marks: Vec::new(),
+            reports: Vec::new(),
         }
     }
 }
@@ -768,7 +772,9 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
 /// Validation requires at least it; a write raises to it and never lowers
 /// (sticky). The versions rise in this order (`mod.rs`).
 fn needed_version(doc: &DiskDoc) -> u32 {
-    if super::proposals::uses_clock_drafts(doc) {
+    if super::reports::uses_reports(doc) {
+        STATE_VERSION_REPORTS
+    } else if super::proposals::uses_clock_drafts(doc) {
         STATE_VERSION_CLOCK_DRAFTS
     } else if super::cards::uses_card_edits(doc) {
         STATE_VERSION_CARD_EDITS
@@ -796,8 +802,9 @@ fn needed_version(doc: &DiskDoc) -> u32 {
 pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
     let needed = needed_version(doc);
-    let version_valid = (needed..=STATE_VERSION_CLOCK_DRAFTS).contains(&doc.version)
-        && super::proposals::valid_proposals(doc);
+    let version_valid = (needed..=STATE_VERSION_REPORTS).contains(&doc.version)
+        && super::proposals::valid_proposals(doc)
+        && super::reports::valid_reports(doc);
     let clients_valid = version_valid
         && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)
             .contains(&doc.config.output_retention_ms)

@@ -700,6 +700,7 @@ pub(crate) fn mcp_client_delete(client_id: String) -> Result<(), DeckError> {
         // sessions, operations, jobs, grants, audit — keeps its ids.
         doc.proposals.retain(|p| p.client_id != client_id);
         doc.workers.retain(|w| w.client_id != client_id);
+        super::reports::prune(doc);
         doc.mention_marks.retain(|m| m.client_id != client_id);
         audit(
             doc,

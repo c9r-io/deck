@@ -1403,6 +1403,8 @@ const dictionary = {
   "mcp.workersNoReplies": "steuert seine Arbeitskarten, Antworten nicht geteilt",
   "workers.driven": "Gesteuert von {name}",
   "workers.drivenTitle": "{name} kann in den Agent dieser Karte schreiben. Wenn Sie hier selbst tippen, übernehmen Sie die Karte.",
+  "workers.reported": "berichtet {time}",
+  "workers.reportedTitle": "Sie hat Deck einen Bericht für den Orchestrator übergeben, der sie gestartet hat; dieser liest ihn, wann er will.",
   "workers.takenOver": "Übernommen · Zurückgeben",
   "workers.takenOverTitle": "Sie haben diese Karte übernommen: Zeilen von {name} warten, bis Sie sie zurückgeben.",
   "workers.orphaned": "Orchestrator geschlossen · Zurückgeben",

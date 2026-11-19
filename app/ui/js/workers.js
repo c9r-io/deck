@@ -18,10 +18,13 @@
 //   terminal-input.js tells apart) tells the backend once
 //   (`mcp_worker_take_over`). The backend then holds the client's lines for
 //   that card (`Hold::Human`); this module only reports the fact.
+// - A worker card that reported to its orchestrator (`reportedAt`) says so
+//   on its label, with the time; the report's text never reaches here.
 // - A leaf: `render` arrives through `initWorkers(deps)`.
 import { $, inv, listen, store, uev } from './state.js';
 import { t } from './i18n.js';
 import { toast } from './dialogs.js';
+import { fmtClock } from './scheduler-model.js';
 
 let render = () => {};
 let workers = new Map();
@@ -70,7 +73,7 @@ export async function handBack(cardId) {
 
 /* who drives a worker card, as its label says it: the orchestrator card while
    on the Board, else the client; `orphaned` once that card is gone */
-export function workerLabel(worker, cards) {
+export function workerLabel(worker, cards, now = new Date()) {
   const owner = worker.orchestratorCardId
     ? cards.find(c => c.id === worker.orchestratorCardId) : null;
   const orphaned = Boolean(worker.orchestratorCardId) && !owner;
@@ -78,7 +81,15 @@ export function workerLabel(worker, cards) {
   const takenOver = worker.takenOver || orphaned;
   const key = orphaned ? 'workers.orphaned' : takenOver ? 'workers.takenOver' : 'workers.driven';
   const title = orphaned ? 'workers.orphanedTitle' : takenOver ? 'workers.takenOverTitle' : 'workers.drivenTitle';
-  return { takenOver, orphaned, text: t(key, { name }), title: t(title, { name, client: worker.clientName }) };
+  /* the card handed Deck a report for its orchestrator (mcp/reports.rs):
+     that it did and when, never what it says */
+  const reported = worker.reportedAt ? t('workers.reported', { time: fmtClock(Math.floor(worker.reportedAt / 1000), now) }) : '';
+  const titleText = t(title, { name, client: worker.clientName });
+  return {
+    takenOver, orphaned,
+    text: reported ? `${t(key, { name })} · ${reported}` : t(key, { name }),
+    title: reported ? `${titleText} ${t('workers.reportedTitle')}` : titleText,
+  };
 }
 
 /* a card's label: plain while driven, a button once taken over */

@@ -100,3 +100,22 @@ test('a worker card is labelled with its orchestrator card, and is the user’s 
   assert.equal(chip.className, 'card-worker taken');
   assert.equal(typeof chip.onclick, 'function');
 });
+
+test('a worker card that reported says so on its label, with the time and never the text', async () => {
+  setLocale('en');
+  const { workerLabel } = await import('../js/workers.js');
+  const { fmtClock } = await import('../js/scheduler-model.js');
+  const now = new Date(2026, 10, 19, 15, 0);
+  const at = new Date(2026, 10, 19, 14, 5).getTime();
+  const worker = { cardId: 'W1', clientName: 'Orchestrator', takenOver: false, orchestratorCardId: 'OA', reportedAt: at };
+  const cards = [{ id: 'OA', title: 'Orch A' }, { id: 'W1', title: 'Fix' }];
+  const label = workerLabel(worker, cards, now);
+  const time = fmtClock(Math.floor(at / 1000), now);
+  assert.equal(label.text, `${t('workers.driven', { name: 'Orch A' })} · ${t('workers.reported', { time })}`);
+  assert.match(label.text, /05/);
+  assert.ok(label.title.endsWith(t('workers.reportedTitle')));
+  assert.equal(label.takenOver, false);
+  /* held cards say it too */
+  assert.match(workerLabel({ ...worker, takenOver: true }, cards, now).text, /reported/);
+  assert.doesNotMatch(workerLabel({ ...worker, reportedAt: undefined }, cards, now).text, /reported/);
+});

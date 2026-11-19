@@ -185,6 +185,12 @@
 //! bounded by `MAX_WAIT_MS` and holds no lock. `deck_worker_reply` needs
 //! `allow_replies` too and returns the Claude Code final message the Stop
 //! hook forwarded (memory only, `turn_summary::reply_for`).
+//! `deck_worker_report` is the other direction: the agent IN a worker card
+//! hands Deck a text for the orchestrator that started the card (the
+//! calling card is the one `origin.rs` proves, and must be one of the
+//! client's worker cards); `deck_worker_reports` reads it under
+//! `allow_replies`. A report is durable data at rest, never a send, a wake
+//! or authority (`reports.rs`).
 //! `deck_worker_send` is bound to the client's `send_sequence` exactly as a
 //! trigger is to its own, and refuses a line whose `after_episode` is no
 //! longer the card's (`EPISODE_MOVED`): an observation may refuse a send,
@@ -370,6 +376,7 @@ pub(crate) fn mcp_card_mark_clear(card_id: String) -> bool {
 }
 mod project;
 mod proposals;
+mod reports;
 mod runner;
 mod session;
 mod state;
@@ -388,6 +395,7 @@ use mentions::*;
 use operations::*;
 use project::*;
 use proposals::*;
+use reports::*;
 use runner::*;
 use session::*;
 use state::*;
@@ -430,6 +438,9 @@ const STATE_VERSION_CARD_EDITS: u32 = 15;
 /// The sticky version a ledger takes once it holds a drafted clock rule
 /// (`proposals::uses_clock_drafts`): a v15 build refuses it.
 const STATE_VERSION_CLOCK_DRAFTS: u32 = 16;
+/// The sticky version a ledger takes once it holds a worker report
+/// (`reports::uses_reports`): a v16 build refuses it.
+const STATE_VERSION_REPORTS: u32 = 17;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

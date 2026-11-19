@@ -139,6 +139,8 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_automation_trigger` | Hand one classified item (`text`, optional `from`/`where`/`link`) to one automation by id and revision. Deck creates the rule's card and sends its approved steps; the operation reports `committed` with `cardId` or `rejected` with a closed code (`RULE_CHANGED` with `currentRevision`, `TARGET_MISSING`, `TEMPLATE_MISSING`, `RULE_BLOCKED`, `RULE_MISSING`, `CLIENT_REVOKED`). Not session or execution authority. |
 | `deck_worker_list` | This client's worker cards (the cards its automation triggers created, and those `deck_worker_start` started, while it may drive them): card id, title, alive, Agent observation `{state, episode}`, `takenOver`, unsent lines and the states of its recent lines, plus `mayReadReplies` and `nextSendSequence`. Content-free. Needs the client's separate **worker** choice. |
 | `deck_worker_wait` | The same views once one of the named cards moves past the episode the caller saw, is taken over or stops; at most 5 s (`wait_ms`), call again after `changed: false`. |
+| `deck_worker_report` | Called by the agent IN a worker card: hands Deck a text (at most 8192 bytes) for the orchestrator that started the card. It names no card and no recipient; Deck sees which card the call comes from. `NOT_A_WORKER_CARD` anywhere else. |
+| `deck_worker_reports` | A worker card's kept reports (the newest 4, each with its sequence and time; `after` for newer ones only). Durable; needs the **replies** choice. |
 | `deck_worker_reply` | A worker card's final Claude Code message of one turn ending (its episode), head and tail when long; memory only, the newest 32 (`REPLY_GONE` otherwise). Needs the further **replies** choice. |
 | `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in the project named by `project_id` (default: the orchestrator card's, else the client's first), optionally in `dir` inside that project's directory, with its first line. An operation to poll (`committed` with `cardId`); at most 8 worker cards per orchestrator card on the Board (callers from no card together), 32 per client. |
 | `deck_config_describe` | Before drafting: the workflow, every field of a template and an Agent handover rule with its rules, copyable examples, and the client's projects with their columns, templates (name and structure, never step text) and Agent rules. Needs the client's separate **draft** choice. |
@@ -330,7 +332,18 @@ Agent observation's closed word (`working`, `turn-done`, `needs-input`,
 states of its lines. `turn-done` is a turn boundary, not proof the work is
 finished. `deck_worker_reply` returns the final message Claude Code's Stop
 hook forwarded for one turn ending (needs **Share replies**; it is kept in
-memory only). `deck_worker_send` queues one line: Deck refuses it when the
+memory only). A worker can also report on purpose: tell it in its task to
+call `deck_worker_report` with its result. The worker names nobody — Deck
+sees which card the call comes from and keeps the text for the
+orchestrator that started that card, which reads it with
+`deck_worker_reports` when it chooses (also under **Share replies**). Each
+card's row in the list and the wait says how many reports it holds and the
+newest one's number, never their text, so a wait that passes the number it
+last saw returns when the card reports again. Reports survive a Deck
+restart and stay while Deck keeps the worker's record; the newest four per
+card are kept. Deck does nothing else with a report: it sends nothing,
+notifies nobody and moves no card, and on the worker's card you see only
+"reported" with the time. `deck_worker_send` queues one line: Deck refuses it when the
 card's episode is no longer the one the line was written after, and
 otherwise types it only when the ordinary readiness holds allow, never
 while the agent is asking you something (after 10 s of quiet in the pane,

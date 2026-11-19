@@ -59,6 +59,26 @@ pub(super) struct TriggerArgs {
 pub(super) struct WorkerSeen {
     pub(super) card_id: String,
     pub(super) episode: u64,
+    /// The newest report sequence the caller saw of this card: the wait
+    /// also returns when another arrived.
+    #[serde(default)]
+    pub(super) reports: Option<u64>,
+}
+
+/// `deck_worker_report`: the calling worker card's report.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorkerReportArgs {
+    pub(super) text: String,
+}
+
+/// `deck_worker_reports`: one worker card's kept reports after `after`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorkerReportsArgs {
+    pub(super) card_id: String,
+    #[serde(default)]
+    pub(super) after: Option<u64>,
 }
 
 /// `deck_worker_wait`: until one of these cards moves on, or `wait_ms`.

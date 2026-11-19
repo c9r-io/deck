@@ -1403,6 +1403,8 @@ const dictionary = {
   "mcp.workersNoReplies": "ワーカーカードを操作、返信は共有しない",
   "workers.driven": "{name} が操作中",
   "workers.drivenTitle": "{name} はこのカードの Agent に入力できます。ここで自分で入力するとカードを引き継ぎます。",
+  "workers.reported": "報告済み {time}",
+  "workers.reportedTitle": "このカードは、開始したオーケストレーター向けの報告を Deck に渡しました。いつ読むかはオーケストレーターが決めます。",
   "workers.takenOver": "引き継ぎ中 · 返す",
   "workers.takenOverTitle": "このカードを引き継ぎました。{name} の入力は返すまで待機します。",
   "workers.orphaned": "オーケストレーター終了 · 返す",

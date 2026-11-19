@@ -42,6 +42,9 @@
 //!   and drive it, its sequences are that card's lane, and once the card
 //!   left the Board the user holds it (`origin::taken_over`, read wherever
 //!   `held` is) until handing it back makes it unowned.
+//! - A worker card's agent may hand its result to Deck for its orchestrator
+//!   to read (`deck_worker_report`, `reports.rs`): data at rest, never a
+//!   send, a wake or authority.
 //! - Withdrawing `allow_workers`, revoking the client or disabling MCP takes
 //!   the client out of `automation_delegations` under the settings fence the
 //!   scheduler's firing intent also takes: no delegated line starts after
@@ -84,6 +87,15 @@ pub(super) struct Worker {
     /// this card (`origin.rs`); `None` for an unowned worker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) orchestrator: Option<String>,
+    /// The newest report sequence this card was given (`reports.rs`); it
+    /// never goes back, whatever reports were dropped since.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(super) reported: u64,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// The key a client's worker delegation takes in `automation_delegations`
@@ -169,6 +181,7 @@ pub(super) fn record_worker(doc: &mut DiskDoc, operation: &Operation, card: &str
         while doc.workers.len() >= MAX_WORKER_RECORDS {
             doc.workers.remove(0);
         }
+        super::reports::prune(doc);
     }
     doc.workers.push(Worker {
         card_id: card.into(),
@@ -178,6 +191,7 @@ pub(super) fn record_worker(doc: &mut DiskDoc, operation: &Operation, card: &str
         created_at: now_ms(),
         held: false,
         orchestrator: super::origin::of_operation(operation),
+        reported: 0,
     });
 }
 
@@ -442,6 +456,8 @@ struct WorkerRow {
     taken_over: bool,
     target: Option<crate::documents::CardTarget>,
     sends: Vec<String>,
+    /// `reports::summary`: content-free.
+    reports: Value,
 }
 
 fn rows_of(doc: &DiskDoc, client: &str, orchestrator: Option<&str>) -> Vec<WorkerRow> {
@@ -457,6 +473,7 @@ fn rows_of(doc: &DiskDoc, client: &str, orchestrator: Option<&str>) -> Vec<Worke
                 taken_over: super::origin::taken_over(w, Some(&targets)),
                 target,
                 sends: sends_of(doc, client, &w.card_id),
+                reports: super::reports::summary(doc, w),
             })
         })
         .collect()
@@ -493,6 +510,7 @@ fn view(
         "agent": agent,
         "takenOver": row.taken_over,
         "unsent": unsent,
+        "reports": row.reports,
         "sends": states
             .iter()
             .map(|(id, state)| json!({"operationId": id, "state": state}))
@@ -569,6 +587,9 @@ pub(super) fn worker_wait(
                     v["takenOver"] == true
                         || v["alive"] == false
                         || v["agent"]["episode"].as_u64() != Some(asked.episode)
+                        || asked
+                            .reports
+                            .is_some_and(|seen| v["reports"]["latest"].as_u64() != Some(seen))
                 }
             }
         });
@@ -591,7 +612,7 @@ pub(super) fn worker_wait(
     }
 }
 
-fn own_card(
+pub(super) fn own_card(
     doc: &DiskDoc,
     client_id: &str,
     orchestrator: Option<&str>,
@@ -874,6 +895,10 @@ pub(crate) struct WorkerCardView {
     /// names the card and tells a closed one from the Board it holds.
     #[serde(skip_serializing_if = "Option::is_none")]
     orchestrator_card_id: Option<String>,
+    /// When the card's newest kept report came (`reports.rs`), epoch ms;
+    /// the text never reaches the webview.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reported_at: Option<u64>,
 }
 
 pub(super) fn workers_ui(runtime: &Runtime) -> Result<Vec<WorkerCardView>, DeckError> {
@@ -892,6 +917,7 @@ pub(super) fn workers_ui(runtime: &Runtime) -> Result<Vec<WorkerCardView>, DeckE
                     client_name: client.name.clone(),
                     taken_over: super::origin::taken_over(w, targets.as_ref()),
                     orchestrator_card_id: w.orchestrator.clone(),
+                    reported_at: super::reports::reported_at(doc, w),
                 })
             })
             .collect()

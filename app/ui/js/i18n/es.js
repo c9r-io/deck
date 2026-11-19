@@ -1403,6 +1403,8 @@ const dictionary = {
   "mcp.workersNoReplies": "maneja sus tarjetas de trabajo, sin compartir respuestas",
   "workers.driven": "Manejada por {name}",
   "workers.drivenTitle": "{name} puede escribir en el agente de esta tarjeta. Si escribes tú aquí, tomas la tarjeta.",
+  "workers.reported": "informó {time}",
+  "workers.reportedTitle": "Entregó a Deck un informe para el orquestador que la inició; el orquestador lo lee cuando decide.",
   "workers.takenOver": "Tomada · Devolver",
   "workers.takenOverTitle": "Tomaste esta tarjeta: las líneas de {name} esperan hasta que la devuelvas.",
   "workers.orphaned": "Orquestador cerrado · Devolver",

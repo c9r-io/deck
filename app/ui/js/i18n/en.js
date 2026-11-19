@@ -1410,6 +1410,8 @@ const dictionary = {
   'mcp.workersNoReplies': 'drives its worker cards, replies not shared',
   'workers.driven': 'Driven by {name}',
   'workers.drivenTitle': '{name} may type into this card’s agent. Typing here yourself takes the card over.',
+  "workers.reported": "reported {time}",
+  "workers.reportedTitle": "It handed Deck a report for the orchestrator that started it; the orchestrator reads it when it chooses.",
   'workers.takenOver': 'Taken over · Hand back',
   'workers.takenOverTitle': 'You took this card over: lines from {name} wait until you hand it back.',
   'workers.orphaned': 'Orchestrator closed · Hand back',

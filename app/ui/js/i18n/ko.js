@@ -1403,6 +1403,8 @@ const dictionary = {
   "mcp.workersNoReplies": "워커 카드 조작, 답장 공유 안 함",
   "workers.driven": "{name}이(가) 조작 중",
   "workers.drivenTitle": "{name}은(는) 이 카드의 Agent에 입력할 수 있습니다. 여기서 직접 입력하면 카드를 넘겨받습니다.",
+  "workers.reported": "보고함 {time}",
+  "workers.reportedTitle": "이 카드는 자신을 시작한 오케스트레이터에게 줄 보고를 Deck에 넘겼습니다. 언제 읽을지는 오케스트레이터가 정합니다.",
   "workers.takenOver": "넘겨받음 · 돌려주기",
   "workers.takenOverTitle": "이 카드를 넘겨받았습니다. {name}의 입력은 돌려줄 때까지 기다립니다.",
   "workers.orphaned": "오케스트레이터 닫힘 · 돌려주기",
