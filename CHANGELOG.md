@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.8.33 — 2026-11-19 (Nightly)
+
+- MCP worker cards: an orchestrator can now close a worker card it started
+  (`deck_worker_close`), and only from the Deck card it started it from. It
+  can never close your cards, another orchestrator's or an automation's, and
+  it closes nothing when it runs outside a Deck card. Deck leaves the card
+  alone while a pane shows it, while you have taken it over, while its agent
+  asks you something, when it carries a Reminder or a kept scratchpad, and
+  when it started a new turn after the orchestrator looked. Closing is part
+  of "Drive worker cards": a client that already has that permission can
+  close the cards it started once you update. While you look at that Board
+  or at Needs attention you see "‹orchestrator› closed ‹card›".
+- Needs attention: a worker card's row says who drives it, as its Board card
+  does, and Turn ended offers "Tick those ‹orchestrator› opened (N)" for
+  each orchestrator with listed cards, including the cards a closed
+  orchestrator card left behind. The close still asks once.
+- MCP worker cards: a worker type no longer has a column. A worker card
+  opens beside its orchestrator's card as before; in another project it now
+  opens where your own new cards open there, no longer in that project's
+  first column. An orchestrator you also let organize cards can name the
+  column when it starts a card; a column of another project is refused,
+  never replaced by another. MCP-managed shells open where your new cards
+  open too. Worker types an earlier build saved keep working; Deck drops
+  their column the next time it saves its MCP state, and an earlier Deck
+  then refuses that state untouched, as it does any newer one.
+
 ## 0.8.32 — 2026-11-19 (Nightly)
 
 - Automations: a clock rule can run once. In the editor choose "once, on" and
