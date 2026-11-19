@@ -82,3 +82,52 @@ test('pending drafts, their row summary, and who drafted a saved rule', () => {
   assert.deepEqual(proposalSummary(proposal()).map(part => part.key), ['proposals.summary.template', 'proposals.summary.rule']);
   assert.equal(agentRuleOf([{ source: 'slack', badge: 'review' }, { source: 'agent', badge: 'review', id: 'R1' }], 'review').id, 'R1');
 });
+
+/* ---------- clock drafts ---------- */
+import { clockDraftProblem, draftPrevious, isClockDraft } from '../js/proposals-model.js';
+
+const clockRule = {
+  trigger: 'clock', automationId: '', name: 'Follow up', columnId: 'C1', dir: '/w', cmd: 'claude', template: 'plain',
+  finish: 'keep', reviewEach: false, autoContinue: false, external: false, firstSend: true,
+  schedule: { unit: 'once', days: [], minute: 570, anchor: '2999-01-02' }, graceMin: null, targetRuleId: null,
+};
+const clockDraft = (extra = {}) => proposal({ template: null, rule: { ...clockRule, ...extra } });
+
+test('a clock draft becomes an ordinary clock rule; one that changes a rule keeps its id', () => {
+  assert.ok(isClockDraft(clockDraft()) && !isClockDraft(proposal()));
+  const made = proposalRule(clockDraft(), { previous: null, genId: prefix => `${prefix}new`, nowSecs: 1000 });
+  assert.deepEqual(made, {
+    id: 'anew', source: 'clock', badge: 'anew', projectId: 'P1', columnId: 'C1', cmd: 'claude', template: 'plain',
+    dir: '/w', name: 'Follow up', enabled: true, finish: 'keep',
+    schedule: { unit: 'once', days: [], minute: 570, anchor: '2999-01-02' }, graceMin: 15, since: 1000,
+  });
+  const saved = { ...made, id: 'a7', badge: 'a7', enabled: false, graceMin: 60, since: 5, ranAt: 9 };
+  const rules = [{ id: 'a7', source: 'agent', badge: 'x' }, saved];
+  assert.equal(draftPrevious(rules, clockDraft({ targetRuleId: 'a7' })), saved);
+  assert.equal(draftPrevious(rules, clockDraft()), null);
+  assert.equal(draftPrevious(null, clockDraft({ targetRuleId: 'a7' })), null);
+  /* the same schedule: pause, since, grace and the run record stay */
+  const same = proposalRule(clockDraft({ targetRuleId: 'a7', name: 'Renamed' }), { previous: saved, genId: () => 'never', nowSecs: 2000 });
+  assert.deepEqual([same.id, same.badge, same.enabled, same.since, same.graceMin, same.ranAt], ['a7', 'a7', false, 5, 60, 9]);
+  /* a new schedule starts from now, on, without the record */
+  const moved = proposalRule(clockDraft({ targetRuleId: 'a7', graceMin: 30, schedule: { unit: 'day', days: [], minute: 60 } }),
+    { previous: saved, genId: () => 'never', nowSecs: 2000 });
+  assert.deepEqual([moved.enabled, moved.since, moved.graceMin, 'ranAt' in moved], [true, 2000, 30, false]);
+});
+
+test('a clock draft lists its schedule change and goes stale when its rule is gone or its time passed', () => {
+  const saved = { id: 'a7', source: 'clock', name: 'Follow up', columnId: 'C1', dir: '/w', cmd: 'claude', template: 'plain',
+    finish: 'keep', schedule: { unit: 'day', days: [], minute: 60 }, firstSendWithoutReadiness: true };
+  const changes = proposalChanges(clockDraft({ targetRuleId: 'a7' }), { project, rules: [saved] });
+  assert.equal(changes[0].isNew, false);
+  assert.deepEqual(changes[0].fields, [{ key: 'schedule', before: saved.schedule, after: clockRule.schedule }]);
+  assert.equal(proposalChanges(clockDraft(), { project, rules: [saved] })[0].isNew, true);
+  assert.equal(clockDraftProblem(proposal(), [], 0), null);
+  assert.equal(clockDraftProblem(clockDraft(), [], 0), null);
+  assert.equal(clockDraftProblem(clockDraft({ schedule: null }), [], 0), 'proposals.stale.schedule');
+  assert.equal(clockDraftProblem(clockDraft({ targetRuleId: 'a7' }), [], 0), 'proposals.stale.rule');
+  assert.equal(clockDraftProblem(clockDraft({ targetRuleId: 'a7' }), [saved], 0), null);
+  assert.equal(clockDraftProblem(clockDraft({ schedule: { unit: 'once', days: [], minute: 0, anchor: '2026-01-01' } }), [], 4102444800), 'proposals.stale.past');
+  assert.equal(clockDraftProblem(clockDraft({ schedule: { unit: 'day', days: [], minute: 0 } }), [], 4102444800), null);
+  assert.deepEqual(proposalSummary(clockDraft()), [{ key: 'proposals.summary.clock', params: { name: 'Follow up' }, schedule: clockRule.schedule }]);
+});

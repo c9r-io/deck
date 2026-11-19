@@ -442,6 +442,21 @@ client runs with `--start-type claude`, so the worker is started with
 the window in front: a locked screen or a covered window freezes the page's
 timers (its takeover and hand-back steps then never come).
 
+## One-time automations (check `automation-once`, mode `run`)
+
+`automation-once` runs after `automation-editor` in the ordinary `run`
+carrier. In the real engine it chooses "once, on" in the automations
+editor (the date appears; the interval, its word and the grace row leave
+layout; the row still fits the drawer), saves a rule dated years ahead with
+an empty command, reopens it, records a run on it the way the dispatcher
+does and adds a second rule whose day is years past, then reads the
+drawer's "Ended" group, presses "Clear ended" (the spent rule and the
+template only it used go, the missed one stays), opens Needs attention,
+finds the missed row and removes it with its template. Eight bits, 255
+when all hold. Nothing can come due during the run. Whether the native
+clock starts a one-time rule and the webview records it is `clock-live`'s
+business, not this check's.
+
 ## Drafted configuration (WKWebView mode `drafts`)
 
 `drafts` runs the same carrier as `workers` (debug only, isolated data dir

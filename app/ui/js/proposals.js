@@ -28,9 +28,9 @@ import { $, ctx, genId, inv, listen, uev } from './state.js';
 import { formatNumber, t } from './i18n.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { persistInbound } from './settings.js';
-import { approveRule, mergeRules, withFirstSend } from './automation-model.js';
+import { approveRule, graceText, mergeRules, scheduleText, withFirstSend } from './automation-model.js';
 import { channelBlockReason } from './channel-model.js';
-import { agentRuleOf, draftedBy, pendingProposals, proposalChanges, proposalProblem, proposalRule, proposalSummary, proposalTemplate } from './proposals-model.js';
+import { clockDraftProblem, draftedBy, draftPrevious, isClockDraft, pendingProposals, proposalChanges, proposalProblem, proposalRule, proposalSummary, proposalTemplate } from './proposals-model.js';
 
 let deps = { provider: null, refresh: () => {}, switchProject: () => {}, openRuleEditor: async () => {}, openTemplates: () => {} };
 let proposals = [];
@@ -72,7 +72,8 @@ export function proposalRow(existing, p) {
   })();
   el.querySelector('.attention-card-name').textContent = t('proposals.rowTitle', { name: p.clientName || '—' });
   el.querySelector('.attention-origin').textContent = projectOf(p)?.name || '—';
-  el.querySelector('.attention-reason').textContent = proposalSummary(p).map(part => t(part.key, part.params)).join(' · ');
+  el.querySelector('.attention-reason').textContent = proposalSummary(p)
+    .map(part => t(part.key, part.schedule ? { ...part.params, when: scheduleText(part.schedule) } : part.params)).join(' · ');
   el.querySelector('.attention-viewed').textContent = p.note || '';
   const open = el.querySelector('.attention-open');
   open.textContent = t('proposals.review');
@@ -94,6 +95,7 @@ const yesNo = value => t(value ? 'proposals.yes' : 'proposals.no');
 function fieldText(key, value, project) {
   if (key === 'columnId') return (project?.columns || []).find(c => c.id === value)?.name || value;
   if (key === 'finish') return t(value === 'close' ? 'automation.finish.close' : 'automation.finish.keep');
+  if (key === 'schedule') return value ? scheduleText(value) : t('proposals.empty');
   if (typeof value === 'boolean') return yesNo(value);
   return value || t('proposals.empty');
 }
@@ -131,8 +133,15 @@ function paintDialog(p) {
       }
     } else {
       const draft = p.rule;
-      body.append(node('h3', '', t(change.isNew ? 'proposals.ruleNew' : 'proposals.ruleChanged', { id: draft.automationId })));
+      const clock = isClockDraft(p);
+      body.append(node('h3', '', clock
+        ? t(change.isNew ? 'proposals.clockNew' : 'proposals.clockChanged', { name: draft.name })
+        : t(change.isNew ? 'proposals.ruleNew' : 'proposals.ruleChanged', { id: draft.automationId })));
       const list = node('dl', 'prop-kv');
+      if (clock) {
+        kv(list, t('proposals.field.schedule'), fieldText('schedule', draft.schedule));
+        if (draft.schedule?.unit !== 'once') kv(list, t('automation.kv.grace'), graceText(Number.isInteger(draft.graceMin) ? draft.graceMin : 15));
+      }
       kv(list, t('proposals.field.name'), draft.name || '—');
       kv(list, t('proposals.field.columnId'), fieldText('columnId', draft.columnId, project));
       kv(list, t('proposals.field.dir'), draft.dir);
@@ -140,7 +149,7 @@ function paintDialog(p) {
       kv(list, t('proposals.field.template'), draft.template);
       kv(list, t('proposals.field.finish'), fieldText('finish', draft.finish));
       kv(list, t('proposals.field.reviewEach'), yesNo(draft.reviewEach));
-      kv(list, t('proposals.field.autoContinue'), t(draft.autoContinue ? (draft.external ? 'proposals.asks.autoExternal' : 'proposals.asks.auto') : 'proposals.asks.no'));
+      if (!clock) kv(list, t('proposals.field.autoContinue'), t(draft.autoContinue ? (draft.external ? 'proposals.asks.autoExternal' : 'proposals.asks.auto') : 'proposals.asks.no'));
       kv(list, t('proposals.field.firstSend'), t(draft.firstSend ? 'proposals.asks.firstSend' : 'proposals.asks.no'));
       body.append(list);
       if (change.fields.length) {
@@ -155,11 +164,13 @@ function paintDialog(p) {
         }
         body.append(diff);
       }
+      if (clock) body.append(node('p', 'set-hint', t(draft.schedule?.unit === 'once' ? 'proposals.clock.once' : 'proposals.clock.repeats')));
+      if (clock && !draft.firstSend) body.append(node('p', 'set-hint', t('proposals.clock.waits')));
       if (draft.firstSend) body.append(node('p', 'set-hint prop-risk', t('proposals.risk.firstSend')));
       if (draft.autoContinue && draft.external) body.append(node('p', 'set-hint prop-risk', t('proposals.risk.external', { name: p.clientName || '—' })));
     }
   }
-  const problem = proposalProblem(p, project);
+  const problem = proposalProblem(p, project) || clockDraftProblem(p, rules);
   $('prop-problem').textContent = problem ? t(problem) : '';
   $('prop-problem').hidden = !problem;
   $('prop-approve').disabled = !!problem;
@@ -190,7 +201,7 @@ export function closeProposal() {
 async function writeDraft(p, { edited }) {
   const { provider } = deps;
   const project = projectOf(p);
-  const problem = proposalProblem(p, project);
+  const problem = proposalProblem(p, project) || clockDraftProblem(p, ctx.settings?.inbound?.rules);
   if (problem) throw new Error(problem);
   if (p.template) {
     await provider.saveTemplate(p.projectId, p.template.name, p.template.steps);
@@ -202,11 +213,13 @@ async function writeDraft(p, { edited }) {
   if (!p.rule) return null;
   const now = provider.project(p.projectId);
   const inbound = ctx.settings.inbound;
-  const previous = agentRuleOf(inbound.rules, p.rule.automationId);
+  const previous = draftPrevious(inbound.rules, p);
   let rule = proposalRule(p, { previous, genId });
-  if (channelBlockReason(rule, now)) throw new Error('proposals.stale.blocked');
+  /* a clock rule's steps are fixed text: the handed-over-message admission
+     has nothing to judge */
+  if (!isClockDraft(p) && channelBlockReason(rule, now)) throw new Error('proposals.stale.blocked');
   rule = withFirstSend(rule, !edited && p.rule.firstSend === true);
-  if (!edited && p.rule.autoContinue) {
+  if (!edited && !isClockDraft(p) && p.rule.autoContinue) {
     rule = await approveRule(rule, proposalTemplate(p, now), { external: p.rule.external === true });
   }
   const current = ctx.settings.inbound;

@@ -1256,6 +1256,7 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
    capture name is marked hidden for the other matchers and stayed on screen */
 #auto-capture-row[hidden] { display: none; }
 .auto-empty { color: var(--faint); font-size: var(--fs-12); padding: var(--sp-6) 0; }
+.auto-ended-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); }
 .card .auto-chip {
   font-family: var(--mono); font-size: var(--fs-10); color: var(--accent);
   border: 1px solid var(--accent-dim); border-radius: 4px; padding: 1px var(--sp-6); flex: none;
@@ -1452,6 +1453,7 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
    list past the window */
 .attention-row, .attention-labels { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto; gap: var(--sp-16); align-items: center; padding: var(--sp-16) var(--sp-12); border-bottom: 1px solid var(--border); line-height: 1.55; }
 .attention-row > span { min-width: 0; overflow-wrap: anywhere; }
+.attention-row > .missed-acts { display: flex; gap: var(--sp-8); }
 .attention-card-name { font-weight: 600; display: flex; align-items: center; }
 /* a long title keeps to three lines (the whole title is its tooltip), so a
    row stays a row at the largest font size */
@@ -1496,7 +1498,7 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 @media (max-width: 1050px) {
   .attention-row, .attention-labels { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: var(--sp-8) var(--sp-12); }
   .attention-row .attention-viewed { grid-column: 2; }
-  .attention-row > button { grid-column: 3; grid-row: span 2; }
+  .attention-row > button, .attention-row > .missed-acts { grid-column: 3; grid-row: span 2; }
 }
 @media (max-width: 720px) {
   .attention-row, .attention-labels { grid-template-columns: minmax(0, 1fr) auto; }

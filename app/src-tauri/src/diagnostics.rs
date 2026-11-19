@@ -174,6 +174,9 @@ const INBOUND_OUTCOMES: &[&str] = &[
     "run-closed",
     "run-close-fail",
     "rule-orphaned",
+    "once-record-fail",
+    "once-rescheduled",
+    "once-removed",
 ];
 
 const LISTEN_TARGETS: &[&str] = &[
@@ -765,6 +768,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "dropdown",
     "automation",
     "automation-editor",
+    "automation-once",
     "rename-restart",
     "done",
     "tl-a01-display",

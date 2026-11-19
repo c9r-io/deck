@@ -1001,7 +1001,8 @@ export function planInbound(item, { cards, projects, home }) {
 }
 
 /* ---------- clock automations ----------
-   Twin of `Schedule` in inbound.rs: a minute of the local day on every day /
+   A one-time schedule (`unit: 'once'`) has one slot: `minute` on the date
+   `anchor`. Twin of `Schedule` in inbound.rs: a minute of the local day on every day /
    the listed ISO weekdays (1 = Monday) / the listed days of the month, where
    a day the month lacks means its last day; repeating `every` units (1 when
    absent) counted from the calendar date `anchor` ("YYYY-MM-DD", present
@@ -1050,8 +1051,19 @@ function inPeriod(schedule, d) {
   if (schedule.unit === 'month') return ((d.getFullYear() * 12 + d.getMonth()) - (anchor.y * 12 + anchor.m - 1)) % every === 0;
   return false;
 }
+/* the instant of a one-time schedule (`unit: 'once'`: `minute` on the
+   calendar date `anchor`, local wall time), or null */
+export function onceInstant(schedule) {
+  const date = schedule?.unit === 'once' ? parseCivilDate(schedule.anchor) : null;
+  if (!date) return null;
+  return Math.floor(new Date(date.y, date.m - 1, date.d, Math.floor(schedule.minute / 60), schedule.minute % 60, 0, 0).getTime() / 1000);
+}
 export function scheduleMatchesDay(schedule, d) {
   if (!schedule) return false;
+  if (schedule.unit === 'once') {
+    const date = parseCivilDate(schedule.anchor);
+    return !!date && date.y === d.getFullYear() && date.m === d.getMonth() + 1 && date.d === d.getDate();
+  }
   if (schedule.every > 1 && !inPeriod(schedule, d)) return false;
   if (schedule.unit === 'day') return true;
   if (schedule.unit === 'week') return schedule.days.includes(isoWeekday(d));
@@ -1070,6 +1082,10 @@ export function scheduleMatchesDay(schedule, d) {
    instant. */
 export function nextScheduleSlot(schedule, now, since = 0) {
   if (now == null) now = Math.floor(Date.now() / 1000);
+  if (schedule.unit === 'once') {
+    const slot = onceInstant(schedule);
+    return slot != null && slot > now && slot >= since ? slot : null;
+  }
   const base = new Date(now * 1000);
   const anchor = schedule.every > 1 ? parseCivilDate(schedule.anchor) : null;
   const first = anchor

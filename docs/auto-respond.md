@@ -212,6 +212,16 @@ holding an interval rule are written in a format older decks refuse
 untouched (they would otherwise run it every week and save it back that
 way).
 
+A schedule may instead be **once, on** a date at a time: one run, for work
+that should happen later and not again (an agent may draft one for you, see
+`docs/mcp.md`). If Deck is not running at that time the run starts later the
+same day; after that day nothing starts it, and it is listed under Needs
+attention as missed until you give it a new date or remove it. A one-time
+automation that ran stays in the drawer under **Ended** with the time it
+ran; **Clear ended** removes those and the templates only they used.
+Settings holding a one-time rule are written in a format older decks refuse
+untouched.
+
 - One run at a time: a slot that comes due while the rule's previous card is
   still on the Board is skipped and recorded as such.
 - A slot deck slept through (asleep, updating, not running) still starts a

@@ -10,6 +10,7 @@
       "checks": {
         "automation": {},
         "automation-editor": {},
+        "automation-once": {},
         "board-concurrency": {},
         "board-fault": {},
         "buffer-board-overlay": {},

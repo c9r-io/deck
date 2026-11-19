@@ -82,3 +82,48 @@ test('reject answers rejected and saves nothing', async () => {
   assert.deepEqual(w.saved, []);
   assert.deepEqual(w.decided().map(([, args]) => args.decision), ['rejected']);
 });
+
+/* a clock draft: the dialog words its schedule, Approve saves an ordinary
+   clock rule through the settings writer, and a draft whose one-time slot
+   passed while it waited cannot be approved */
+test('a clock draft is saved as a clock rule with its first-send choice; a past one cannot be approved', async () => {
+  const { ctx } = await import('../js/state.js');
+  const { normalizeSettings, serializeSettings } = await import('../js/settings-model.js');
+  const { refreshChannelAuthority } = await import('../js/settings.js');
+  const clock = (anchor, extra = {}) => ({
+    id: 'prop_c', status: 'pending', projectId: 'P1', clientName: 'orchestrator', template: null,
+    rule: { trigger: 'clock', automationId: '', name: 'Follow up', columnId: 'C1', dir: '/w', cmd: 'claude', template: 'plain',
+      finish: 'keep', reviewEach: false, autoContinue: false, external: false, firstSend: true,
+      schedule: { unit: 'once', days: [], minute: 570, anchor }, graceMin: null, targetRuleId: null, ...extra },
+  });
+  const w = world([clock('2999-01-02')]);
+  ctx.settings = normalizeSettings({});
+  const disk = { data: serializeSettings(ctx.settings), writes: [] };
+  const invoke = window.__TAURI__.core.invoke;
+  window.__TAURI__.core.invoke = async (cmd, args) => {
+    if (cmd === 'load_settings') return { data: disk.data };
+    if (cmd === 'save_settings') { disk.data = args.data; disk.writes.push(args.data); return disk.data; }
+    return invoke(cmd, args);
+  };
+  await refreshChannelAuthority();
+  await refreshProposals();
+  openProposal('prop_c');
+  assert.equal(fakeDocument.getElementById('prop-approve').disabled, false);
+  fakeDocument.getElementById('prop-approve').fire('click');
+  for (let i = 0; i < 12; i++) await tick();
+  assert.equal(disk.writes.length, 1, 'one settings write');
+  const [rule] = ctx.settings.inbound.rules;
+  assert.equal(rule.source, 'clock');
+  assert.equal(rule.badge, rule.id);
+  assert.deepEqual(rule.schedule, { unit: 'once', days: [], minute: 570, anchor: '2999-01-02' });
+  assert.equal(rule.firstSendWithoutReadiness, true);
+  assert.equal('autoSend' in rule, false, 'a clock rule carries no approval');
+  assert.deepEqual(w.decided().map(([, args]) => [args.decision, args.ruleId]), [['approved', rule.id]]);
+
+  w.set([clock('2020-01-01')]);
+  await refreshProposals();
+  openProposal('prop_c');
+  assert.equal(fakeDocument.getElementById('prop-approve').disabled, true);
+  assert.equal(fakeDocument.getElementById('prop-edit').disabled, true);
+  assert.notEqual(fakeDocument.getElementById('prop-problem').textContent, '');
+});

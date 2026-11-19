@@ -3,7 +3,8 @@
 //!
 //! # Contract
 //! Every poll offers ONE event per enabled clock rule whose schedule has a
-//! slot today that is already due and not before the rule's `since`:
+//! slot today that is already due and not before the rule's `since` (a
+//! one-time rule has one slot ever, and none once it records its run):
 //! `Event {source: "clock", key: <slot key>, badge: <rule id>, text: <rule
 //! name>}` — nothing else. A slot has two facts that must not be confused:
 //! - its KEY, `day_start + minute * 60`: the slot's identity, one value for
@@ -45,7 +46,7 @@ pub(crate) struct Clock {
 /// The key of the slot of `rule` that is due on the day `clock` describes,
 /// if any.
 pub(crate) fn due_slot(rule: &Rule, clock: &LocalClock) -> Option<u64> {
-    if rule.source != "clock" || !rule.enabled {
+    if rule.source != "clock" || !rule.enabled || rule.ran_at.is_some() {
         return None;
     }
     let schedule = rule.schedule.as_ref()?;
@@ -126,6 +127,43 @@ mod tests {
     /// instant mktime gives is the civil clock's own `now`.
     fn at(year: i32, month: u32, day: u32, minute: u32) -> LocalClock {
         LocalClock::civil(year, month, day, minute)
+    }
+
+    /// A one-time rule has one slot: its minute on its date, offered that
+    /// day only, with the rest of the day as grace whatever it stores, and
+    /// nothing once it recorded its run.
+    #[test]
+    fn a_one_time_rule_is_due_on_its_date_only_and_never_after_its_run() {
+        let _tz = TZ_TESTS.lock_or_recover();
+        let _zone = TzOverride::set("UTC");
+        let once = json!({"unit": "once", "anchor": "2026-12-01", "minute": 570});
+        let mut value = rule("r1", once.clone());
+        value["graceMin"] = json!(0);
+        let c = cfg(vec![value.clone()]);
+        assert!(due_events(&c, &at(2026, 11, 30, 600)).is_empty());
+        assert!(due_events(&c, &at(2026, 12, 1, 569)).is_empty());
+        let due = due_events(&c, &at(2026, 12, 1, 570));
+        assert_eq!(due.len(), 1);
+        let late = due_events(&c, &at(2026, 12, 1, 1439));
+        assert_eq!(late[0].key, due[0].key, "one key for its day");
+        assert!(due_events(&c, &at(2026, 12, 2, 570)).is_empty());
+        assert!(due_events(&c, &at(2027, 12, 1, 570)).is_empty());
+        // the stored grace of 0 does not make a late start that day a miss
+        let rule = &c.rules[0];
+        assert_eq!(rule.grace(), 1440);
+        assert!(!slot_missed(&due[0].key, rule, at(2026, 12, 1, 1439).now));
+        // a spent rule offers nothing
+        value["ranAt"] = json!(1_796_000_000u64);
+        assert!(due_events(&cfg(vec![value]), &at(2026, 12, 1, 600)).is_empty());
+        // an ordinary rule keeps its own grace
+        let daily = cfg(vec![rule_with_grace("r2", 30)]);
+        assert_eq!(daily.rules[0].grace(), 30);
+    }
+
+    fn rule_with_grace(id: &str, grace: u32) -> serde_json::Value {
+        let mut value = rule(id, json!({"unit": "day", "minute": 540}));
+        value["graceMin"] = json!(grace);
+        value
     }
 
     #[test]

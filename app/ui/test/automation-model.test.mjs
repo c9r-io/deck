@@ -416,3 +416,102 @@ test('an Agent handover rule composes like a badge rule with an automation id, o
   assert.equal(facts['automation.kv.firstSend'], 'waits for your first interaction or Send now');
   assert.deepEqual(recentRuns([{ rule: 'slack-mention', started: 1 }, { rule: 'g1', started: 2 }], agentRule()).map(r => r.started), [1]);
 });
+
+/* ---------- one-time schedules ---------- */
+import { clearEndedPlan as clearEndedPlanT, composeRule as composeRuleT, endedOnce as endedOnceT, missedOnceRules as missedOnceRulesT, onceState as onceStateT, orphanedTemplates as orphanedTemplatesT, ruleFacts as ruleFactsT, scheduleFromFields as scheduleFromFieldsT, scheduleText as scheduleTextT } from '../js/automation-model.js';
+import { normalizeInbound as normalizeInboundT, normalizeSchedule as normalizeScheduleT } from '../js/settings-model.js';
+import { nextScheduleSlot as nextScheduleSlotT, onceInstant as onceInstantT } from '../js/pure.js';
+
+const at = (y, m, d, h = 0, min = 0) => Math.floor(new Date(y, m - 1, d, h, min).getTime() / 1000);
+const onceRule = (extra = {}) => ({
+  id: 'a1', source: 'clock', badge: 'a1', projectId: 'P1', columnId: 'C1', cmd: 'claude', template: 'follow',
+  name: 'Follow up', enabled: true, finish: 'keep', since: at(2026, 11, 19, 10), graceMin: 15,
+  schedule: { unit: 'once', days: [], minute: 570, anchor: '2026-12-01' }, ...extra,
+});
+
+test('a one-time schedule is one date and time: read, worded, normalized, and never repeated', () => {
+  assert.deepEqual(scheduleFromFieldsT({ unit: 'once', date: '2026-12-01', time: '09:30', every: '7', days: [1] }),
+    { schedule: { unit: 'once', days: [], minute: 570, anchor: '2026-12-01' } });
+  assert.equal(scheduleFromFieldsT({ unit: 'once', date: '', time: '09:30' }).error, 'automation.needsDate');
+  assert.equal(scheduleFromFieldsT({ unit: 'once', date: '2026-02-30', time: '09:30' }).focus, 'auto-date');
+  assert.equal(scheduleFromFieldsT({ unit: 'once', date: '2026-12-01', time: '' }).error, 'automation.needsTime');
+  assert.match(scheduleTextT(onceRule().schedule), /2026-12-01.*09:30/);
+  assert.deepEqual(normalizeScheduleT({ unit: 'once', minute: 570, anchor: '2026-12-01', days: [3] }), onceRule().schedule);
+  assert.equal(normalizeScheduleT({ unit: 'once', minute: 570 }), null, 'a one-time schedule needs its date');
+  assert.equal(normalizeScheduleT({ unit: 'once', minute: 570, anchor: '2026-12-01', every: 2 }), null);
+  const slot = at(2026, 12, 1, 9, 30);
+  assert.equal(onceInstantT(onceRule().schedule), slot);
+  assert.equal(onceInstantT({ unit: 'day', days: [], minute: 570 }), null);
+  assert.equal(nextScheduleSlotT(onceRule().schedule, at(2026, 11, 19), 0), slot);
+  assert.equal(nextScheduleSlotT(onceRule().schedule, slot, 0), null, 'nothing after its one slot');
+  assert.equal(nextScheduleSlotT(onceRule().schedule, at(2026, 11, 19), slot + 1), null, 'since still applies');
+});
+
+test('the editor refuses a one-time slot that is over, and a new date revives a spent rule', () => {
+  const fields = { trigger: 'clock', name: 'Follow up', columnId: 'C1', template: 'follow', cmd: 'claude', dir: '',
+    finish: 'keep', unit: 'once', date: '2026-12-01', time: '09:30', graceMin: '15' };
+  const ctx = { rules: [], projectId: 'P1', genId: p => `${p}1` };
+  assert.equal(composeRuleT(fields, { ...ctx, nowSecs: at(2026, 12, 1, 9, 30) }).error, 'automation.oncePast');
+  const made = composeRuleT(fields, { ...ctx, nowSecs: at(2026, 11, 19, 10) }).rule;
+  assert.deepEqual(made.schedule, onceRule().schedule);
+  assert.equal(made.since, at(2026, 11, 19, 10));
+  /* an unchanged schedule keeps the record of its run, also when it is past */
+  const spent = { ...made, enabled: true, ranAt: at(2026, 12, 1, 9, 31) };
+  const renamed = composeRuleT({ ...fields, name: 'Renamed' }, { ...ctx, previous: spent, nowSecs: at(2026, 12, 5) }).rule;
+  assert.equal(renamed.ranAt, spent.ranAt);
+  assert.equal(renamed.since, made.since);
+  /* a new date: the record goes, the rule is on again from now */
+  const again = composeRuleT({ ...fields, date: '2026-12-09' }, { ...ctx, previous: { ...spent, enabled: false }, nowSecs: at(2026, 12, 5) }).rule;
+  assert.equal('ranAt' in again, false);
+  assert.equal(again.enabled, true);
+  assert.equal(again.since, at(2026, 12, 5));
+});
+
+test('where a one-time rule stands: upcoming through its day, then ran, missed or ended', () => {
+  const rule = onceRule();
+  assert.equal(onceStateT({ ...rule, schedule: { unit: 'day', days: [], minute: 570 } }, [], at(2026, 12, 2)), null);
+  assert.equal(onceStateT(rule, [], at(2026, 11, 20)), 'upcoming');
+  assert.equal(onceStateT(rule, [], at(2026, 12, 1, 23, 59)), 'upcoming', 'late that day it may still run');
+  assert.equal(onceStateT(rule, [], at(2026, 12, 2)), 'missed');
+  assert.equal(onceStateT({ ...rule, enabled: false }, [], at(2026, 12, 2)), 'ended', 'paused through its day');
+  assert.equal(onceStateT({ ...rule, ranAt: at(2026, 12, 1, 9, 31) }, [], at(2026, 12, 1, 10)), 'ran');
+  /* the record could not be written: the run list still says it ran */
+  const runs = [{ rule: 'a1', card: 'S1', started: at(2026, 12, 1, 9, 31), outcome: 'running' }];
+  assert.equal(onceStateT(rule, runs, at(2026, 12, 2)), 'ran');
+  assert.equal(onceStateT(rule, [{ rule: 'a1', card: null, started: at(2026, 12, 1, 9, 31), outcome: 'skipped' }], at(2026, 12, 2)), 'missed', 'a skipped slot started nothing');
+  assert.equal(onceStateT(rule, [{ ...runs[0], started: at(2026, 11, 1) }], at(2026, 12, 2)), 'missed', 'a run before this schedule is not its run');
+  assert.deepEqual(missedOnceRulesT([rule, { ...rule, id: 'a2', ranAt: 5 }], [], at(2026, 12, 2)).map(r => r.id), ['a1']);
+  assert.deepEqual(missedOnceRulesT(null, [], 0), []);
+  assert.ok(endedOnceT(rule, [], at(2026, 12, 2)) && !endedOnceT(rule, [], at(2026, 11, 20)));
+  /* its facts: the rest of the day as grace, and the next slot or the run */
+  const facts = Object.fromEntries(ruleFactsT(rule, { nowSecs: at(2026, 11, 20) }));
+  assert.equal(facts['automation.kv.grace'], graceText(1440));
+  assert.notEqual(facts['automation.kv.next'], '—');
+  assert.match(Object.fromEntries(ruleFactsT({ ...rule, ranAt: at(2026, 12, 1, 9, 31) }, { nowSecs: at(2026, 12, 2) }))['automation.kv.next'], /09:31/);
+});
+
+test('clearing ended one-time rules removes the spent ones and the templates only they used', () => {
+  const now = at(2026, 12, 2);
+  const rules = [
+    onceRule({ id: 'ran', ranAt: at(2026, 12, 1, 9, 31), template: 'only-mine' }),
+    onceRule({ id: 'paused', enabled: false, template: 'shared' }),
+    onceRule({ id: 'missed', template: 'missed-tpl' }),
+    onceRule({ id: 'later', schedule: { unit: 'once', days: [], minute: 0, anchor: '2027-01-01' }, template: 'later-tpl' }),
+    { id: 'R1', source: 'slack', badge: 'deck', projectId: 'P1', template: 'shared' },
+    onceRule({ id: 'other', projectId: 'P2', ranAt: 5, template: 'only-mine' }),
+  ];
+  assert.deepEqual(clearEndedPlanT(rules, 'P1', [], now), { removed: ['ran', 'paused'], templates: ['only-mine'] });
+  assert.deepEqual(clearEndedPlanT(rules, 'P3', [], now), { removed: [], templates: [] });
+  assert.deepEqual(orphanedTemplatesT(rules, ['missed'], 'P1'), ['missed-tpl']);
+  assert.deepEqual(orphanedTemplatesT(rules, ['paused'], 'P1'), [], 'a template another rule names stays');
+});
+
+test('settings keep a one-time rule and the record of its run, and only on a one-time rule', () => {
+  const base = { id: 'a1', source: 'clock', badge: 'a1', projectId: 'P1', columnId: 'C1', cmd: 'claude', template: 'follow', name: 'x' };
+  const kept = normalizeInboundT({ rules: [{ ...base, schedule: { unit: 'once', minute: 570, anchor: '2026-12-01' }, ranAt: 1700000000 }] }).rules[0];
+  assert.equal(kept.ranAt, 1700000000);
+  assert.deepEqual(kept.schedule, { unit: 'once', days: [], minute: 570, anchor: '2026-12-01' });
+  const daily = normalizeInboundT({ rules: [{ ...base, schedule: { unit: 'day', minute: 570 }, ranAt: 1700000000 }] }).rules[0];
+  assert.equal('ranAt' in daily, false);
+  assert.equal('ranAt' in normalizeInboundT({ rules: [{ ...base, schedule: { unit: 'once', minute: 570, anchor: '2026-12-01' }, ranAt: 'x' }] }).rules[0], false);
+});

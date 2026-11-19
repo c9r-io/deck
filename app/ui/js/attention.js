@@ -77,6 +77,7 @@ import { formatDateTime, formatNumber, t } from './i18n.js';
 import { choiceDialog } from './dialogs.js';
 import { paintFollowUps } from './follow-up-bar.js';
 import { draftsCountText, pendingNow, proposalRow } from './proposals.js';
+import { missedCountText, missedNow, missedRow } from './missed-once.js';
 
 let pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp;
 
@@ -287,6 +288,13 @@ function updateRows() {
     heading.textContent = t('proposals.section');
     for (const p of drafts) proposalRow(place(`proposal-${p.id}`, () => proposalRow(null, p)), p);
   }
+  /* one-time automations whose day passed without a run (missed-once.js) */
+  const missed = ctx.attentionFilter === 'pending' ? missedNow() : [];
+  if (missed.length) {
+    const heading = place('heading-missed', () => node('h2', 'attention-section'));
+    heading.textContent = t('automation.missed.section');
+    for (const rule of missed) missedRow(place(`missed-${rule.id}`, () => missedRow(null, rule)), rule);
+  }
   if (rows.length) {
     const labels = place('labels', () => {
       const el = node('div', 'attention-labels');
@@ -370,7 +378,7 @@ function updateRows() {
     row.querySelector('.attention-open').textContent = t(locate ? 'attention.locate' : 'attention.open');
     row.querySelector('.attention-open').setAttribute('aria-label', t(locate ? 'attention.locateNamed' : 'attention.openNamed', { name: card.title, project: project.name }));
   }
-  if (!rows.length && !drafts.length) {
+  if (!rows.length && !drafts.length && !missed.length) {
     const empty = place('empty', () => node('p', 'attention-empty'));
     empty.textContent = t(ctx.attentionFilter === 'followed' ? 'attention.emptyFilter'
       : ctx.attention.freshness(store.cards).kind === 'unknown' ? 'attention.unknownHint'
@@ -465,7 +473,8 @@ export function refreshAttention() {
   const counts = ctx.attention.counts(store.cards);
   const freshness = ctx.attention.freshness(store.cards);
   const drafts = draftsCountText();
-  $('attention-count').textContent = `${countText('pending', counts, freshness)}${freshness.kind === 'stale' ? ` · ${t('attention.old')}` : ''}${drafts ? ` · ${drafts}` : ''}`;
+  const missed = missedCountText();
+  $('attention-count').textContent = `${countText('pending', counts, freshness)}${freshness.kind === 'stale' ? ` · ${t('attention.old')}` : ''}${drafts ? ` · ${drafts}` : ''}${missed ? ` · ${missed}` : ''}`;
   $('attention-btn').title = t('attention.globalTitle');
   $('attention-btn').classList.toggle('active', state.view === 'attention');
   $('attention-btn').setAttribute('aria-pressed', String(state.view === 'attention'));

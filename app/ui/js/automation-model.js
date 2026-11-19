@@ -34,7 +34,7 @@
 // `scheduler/channel_first_send.rs`); its rule facts do not advertise the
 // badge follow-up approval or inherit the clock/badge readiness-only flag.
 import { channelAgentCommand } from './channel-model.js';
-import { badgeTaken, hmToMin, INBOUND_BADGE_RE, INBOUND_PLACEHOLDERS, isoWeekday, minToHM, nextScheduleSlot, nextScheduleSlots, normalizeTemplateStep, parseCivilDate, runDateLabel } from './pure.js';
+import { badgeTaken, hmToMin, INBOUND_BADGE_RE, INBOUND_PLACEHOLDERS, isoWeekday, minToHM, nextScheduleSlot, nextScheduleSlots, normalizeTemplateStep, onceInstant, parseCivilDate, runDateLabel } from './pure.js';
 import { DEFAULT_GRACE_MIN, GRACE_CHOICES, SCHEDULE_EVERY_MAX } from './settings-model.js';
 import { formatNumber, t } from './i18n.js';
 import { fmtClock } from './scheduler-model.js';
@@ -56,6 +56,7 @@ export const graceOptions = value => [...new Set([...GRACE_CHOICES, value])].sor
    2026-10-19" in the user's language */
 export function scheduleText(schedule) {
   const time = minToHM(schedule.minute);
+  if (schedule.unit === 'once') return t('automation.schedule.once', { date: schedule.anchor, time });
   const interval = schedule.every > 1;
   const count = interval ? formatNumber(schedule.every) : '';
   const from = interval ? schedule.anchor : '';
@@ -88,6 +89,11 @@ export function parseMonthDays(text) {
 export function scheduleFromFields(fields) {
   const fail = (error, focus = null) => ({ error, focus });
   const unit = fields.unit;
+  if (unit === 'once') {
+    if (!parseCivilDate(fields.date)) return fail('automation.needsDate', 'auto-date');
+    if (!fields.time) return fail('automation.needsTime', 'auto-time');
+    return { schedule: { unit, days: [], minute: hmToMin(fields.time), anchor: String(fields.date) } };
+  }
   const every = fields.every === '' || fields.every == null ? 1 : Number(fields.every);
   if (!Number.isInteger(every) || every < 1 || every > SCHEDULE_EVERY_MAX) return fail('automation.badEvery', 'auto-every');
   let days = [];
@@ -107,6 +113,58 @@ export function scheduleFromFields(fields) {
     schedule.anchor = String(fields.anchor);
   }
   return { schedule };
+}
+
+/* Where a one-time rule stands, or null for any other rule:
+   - `upcoming`: its day has not ended (it may still run, late that day too);
+   - `ran`: it recorded its run (`ranAt`), or the run list still shows the
+     card it started (the record's write failed);
+   - `missed`: its day ended and it never ran, though it was on: Deck was
+     not running, or its slot was refused. The user reschedules or removes
+     it (Needs attention);
+   - `ended`: its day ended while the user had it paused.
+   `runs` is the backend's run list (`inbound_runs`). */
+export function onceState(rule, runs = [], nowSecs = Math.floor(Date.now() / 1000)) {
+  const slot = rule?.source === 'clock' ? onceInstant(rule.schedule) : null;
+  if (slot == null) return null;
+  if (rule.ranAt) return 'ran';
+  const day = new Date(slot * 1000);
+  const dayEnd = Math.floor(new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1).getTime() / 1000);
+  if (runs.some(run => run.rule === rule.id && run.card && run.started >= rule.since)) return 'ran';
+  if (nowSecs < dayEnd) return 'upcoming';
+  return rule.enabled ? 'missed' : 'ended';
+}
+
+/* how an ended one-time rule's state reads on its head line */
+export const ONCE_STATE_KEYS = Object.freeze({
+  ran: 'automation.onceState.ran', missed: 'automation.onceState.missed', ended: 'automation.onceState.ended',
+});
+
+/* the one-time rules whose day passed without a run, for Needs attention */
+export const missedOnceRules = (rules, runs, nowSecs) => (Array.isArray(rules) ? rules : [])
+  .filter(rule => onceState(rule, runs, nowSecs) === 'missed');
+
+/* the one-time rules that are over (ran, missed or paused through their
+   day): the drawer's "Ended" group */
+export const endedOnce = (rule, runs, nowSecs) => ['ran', 'missed', 'ended'].includes(onceState(rule, runs, nowSecs));
+
+/* The templates of `projectId` that only the rules in `removed` (ids)
+   name: removing those rules leaves them unused. A template another rule of
+   the project names (`rules` holds every trigger's rules) is not one. */
+export function orphanedTemplates(rules, removed, projectId) {
+  const gone = rules.filter(rule => removed.includes(rule.id) && rule.projectId === projectId);
+  const kept = rules.filter(rule => !removed.includes(rule.id) && rule.projectId === projectId);
+  return [...new Set(gone.map(rule => rule.template))].filter(name => !kept.some(rule => rule.template === name));
+}
+
+/* What "Clear ended" removes in a project: its spent one-time rules (ran,
+   or paused through their day; a missed one stays until the user decides)
+   and the templates only those rules used. */
+export function clearEndedPlan(rules, projectId, runs, nowSecs) {
+  const removed = rules
+    .filter(rule => rule.projectId === projectId && ['ran', 'ended'].includes(onceState(rule, runs, nowSecs)))
+    .map(rule => rule.id);
+  return { removed, templates: orphanedTemplates(rules, removed, projectId) };
 }
 
 /* the editor's preview line: the next three slots as date and weekday (the
@@ -173,7 +231,13 @@ export function ruleFacts(rule, { columnName = null, home = '', slackConnected =
     rows.push(['queue.plan', t(rule.reviewEach ? 'queue.review.enabled' : 'queue.review.disabled')]);
     rows.push(['automation.kv.finish', t(rule.finish === 'close' ? 'automation.finish.close' : 'automation.finish.keep')]);
   }
-  if (rule.source === 'clock') {
+  if (rule.source === 'clock' && rule.schedule.unit === 'once') {
+    /* one slot: the rest of its day is its grace, whatever the rule stores */
+    const next = rule.enabled && !rule.ranAt ? nextScheduleSlot(rule.schedule, nowSecs, rule.since) : null;
+    rows.push(['automation.kv.grace', graceText(1440)]);
+    rows.push(['automation.kv.next', rule.ranAt ? t('automation.once.ranAt', { when: fmtClock(rule.ranAt, new Date(nowSecs * 1000)) })
+      : next ? fmtClock(next, new Date(nowSecs * 1000)) : rule.enabled ? '—' : t('automation.paused')]);
+  } else if (rule.source === 'clock') {
     const next = rule.enabled ? nextScheduleSlot(rule.schedule, nowSecs, rule.since) : null;
     rows.push(['automation.kv.grace', graceText(rule.graceMin ?? DEFAULT_GRACE_MIN)]);
     rows.push(['automation.kv.next', rule.enabled ? (next ? fmtClock(next, new Date(nowSecs * 1000)) : '—') : t('automation.paused')]);
@@ -241,11 +305,15 @@ export function composeRule(fields, { previous = null, rules = [], projectId, ge
   const { schedule } = read;
   const id = previous && previous.source === 'clock' ? previous.id : genId('a');
   const changed = !previous || previous.source !== 'clock' || JSON.stringify(previous.schedule) !== JSON.stringify(schedule);
+  /* a one-time slot that is already over could never run */
+  if (schedule.unit === 'once' && changed && onceInstant(schedule) <= nowSecs) return fail('automation.oncePast', 'auto-date');
   return {
     rule: {
       id, source: 'clock', badge: id, ...shared, schedule,
       graceMin: Number(fields.graceMin),
       since: changed ? nowSecs : previous.since,
+      /* a new date makes a spent one-time rule run again (and on) */
+      ...(changed ? (schedule.unit === 'once' ? { enabled: true } : {}) : (previous.ranAt ? { ranAt: previous.ranAt } : {})),
     },
   };
 }

@@ -14,6 +14,13 @@
 // command, template and a finish mode — and both go through the same
 // dispatch (inbound.js) and the same run ledger (`inbound_runs`), so a
 // badge-started card is finished by `board.js` exactly like a clock run.
+// A clock rule may be one-time (`schedule.unit: 'once'`): the editor shows a
+// date instead of the interval and the grace choice; a rule that ran, was
+// missed or was paused through its day (automation-model.js `onceState`)
+// sits in the list's "Ended" group, and "Clear ended" removes the spent
+// ones with the templates only they used — only on the user's click. A
+// missed one stays, and is also listed under Needs attention
+// (missed-once.js).
 // Both Slack triggers carry other people's text, so a badge rule obeys the
 // channel admission (`channelBlockReason`): the editor refuses to save one
 // that fails it and the list shows a stored one as blocked.
@@ -148,7 +155,7 @@ import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { persistInbound } from './settings.js';
 import { isoDate, minToHM, normalizeTemplateStep, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
-import { approveRule, composeRule, finishHintShown, firstSendNeedsConfirm, firstSendSupported, firstSendText, withFirstSend, graceOptions, graceText, grantDetail, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, scheduleFromFields, schedulePreview, templateCarriesMessage, triggerText } from './automation-model.js';
+import { approveRule, clearEndedPlan, ONCE_STATE_KEYS, composeRule, endedOnce, onceState, finishHintShown, firstSendNeedsConfirm, firstSendSupported, firstSendText, withFirstSend, graceOptions, graceText, grantDetail, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, scheduleFromFields, schedulePreview, templateCarriesMessage, triggerText } from './automation-model.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN } from './settings-model.js';
@@ -255,6 +262,13 @@ function ruleEl(rule) {
     + '<div class="ar-body"><div class="ar-kv"></div><div class="ar-runs"></div></div>';
   el.querySelector('.ar-name').textContent = ruleLabel(rule);
   el.querySelector('.ar-when').textContent = triggerText(rule);
+  /* a one-time rule that is over says how it ended; it has nothing to pause */
+  const over = onceState(rule, runsCache);
+  if (over && over !== 'upcoming') {
+    el.classList.add('off');
+    el.querySelector('.ar-when').textContent = `${triggerText(rule)} · ${t(ONCE_STATE_KEYS[over])}`;
+    el.querySelector('.ar-pause')?.remove();
+  }
   const blocked = rule.source !== 'clock' && channelBlockReason(rule, project);
   if (blocked) {
     el.classList.add('off');
@@ -281,7 +295,7 @@ function ruleEl(rule) {
   const rows = ruleFacts(rule, { columnName: column ? column.name : null, home: ctx.HOME, slackConnected: slackConnected(),
     approval: approvalOf(rule) });
   /* drafted by an MCP client and approved by the user (proposals.js) */
-  const drafted = rule.source === 'agent' ? drafter(rule.id) : null;
+  const drafted = ['agent', 'clock'].includes(rule.source) ? drafter(rule.id) : null;
   if (drafted) rows.push(['proposals.draftedBy', drafted]);
   for (const [key, value] of rows) {
     const k = document.createElement('span'); k.textContent = t(key);
@@ -335,7 +349,47 @@ function paintAutomations() {
     empty.textContent = t('automation.empty');
     list.appendChild(empty);
   }
-  for (const rule of rules) list.appendChild(ruleEl(rule));
+  const ended = rules.filter(rule => endedOnce(rule, runsCache));
+  for (const rule of rules.filter(rule => !ended.includes(rule))) list.appendChild(ruleEl(rule));
+  if (!ended.length) return;
+  /* one-time automations that are over: kept until the user clears them */
+  const head = document.createElement('div');
+  head.className = 'auto-ended-head';
+  const title = document.createElement('h3');
+  title.className = 'auto-section';
+  title.textContent = t('automation.ended', { count: formatNumber(ended.length) });
+  const clear = document.createElement('button');
+  clear.type = 'button';
+  clear.className = 'btn';
+  clear.id = 'auto-clear-ended';
+  clear.textContent = t('automation.clearEnded');
+  const plan = clearEndedPlan(allRules(), state.projectId, runsCache);
+  clear.disabled = !plan.removed.length;
+  clear.onclick = () => clearEnded();
+  head.append(title, clear);
+  list.appendChild(head);
+  for (const rule of ended) list.appendChild(ruleEl(rule));
+}
+
+/* remove the project's spent one-time rules and the templates only they
+   used (automation-model.js `clearEndedPlan`); a missed one stays */
+async function clearEnded() {
+  const projectId = state.projectId;
+  const plan = clearEndedPlan(allRules(), projectId, runsCache);
+  if (!plan.removed.length) return;
+  if (!(await confirmDialog(t('automation.clearEndedConfirm', {
+    count: formatNumber(plan.removed.length), templates: formatNumber(plan.templates.length),
+  })))) return;
+  const current = ctx.settings.inbound;
+  const ok = await persistInbound({ ...current, rules: current.rules.filter(rule => !plan.removed.includes(rule.id)) });
+  if (ok) {
+    /* the rules are gone first: a template is never removed from under a
+       rule that still names it */
+    for (const name of plan.templates) {
+      try { await provider.deleteTemplate(projectId, name); } catch (_) { toast(t('error.templateSave')); }
+    }
+  }
+  renderAutomations();
 }
 
 /* ---------- editor ---------- */
@@ -365,6 +419,7 @@ function buildDayControls() {
 const scheduleFields = () => ({
   unit: $('auto-unit').value, days: pressedDays(), monthDays: $('auto-dom').value,
   time: $('auto-time').value, every: $('auto-every').value, anchor: $('auto-anchor').value,
+  date: $('auto-date').value,
 });
 
 /* automation-model.js `schedulePreview`: the next three slots of the
@@ -400,7 +455,16 @@ function syncEditor() {
   $('auto-dom').hidden = trigger !== 'clock' || unit !== 'month';
   /* an interval counts from a date: the row appears with the interval, and
      a date not chosen yet starts as today */
-  const interval = trigger === 'clock' && Number($('auto-every').value) > 1;
+  /* a one-time rule: a date instead of the interval, and no grace choice
+     (it has the rest of its day) */
+  const once = trigger === 'clock' && unit === 'once';
+  $('auto-date').hidden = !once;
+  $('auto-once-hint').hidden = !once;
+  $('auto-every').hidden = trigger !== 'clock' || once;
+  $('auto-every-word').hidden = trigger !== 'clock' || once;
+  $('auto-grace-row').hidden = trigger !== 'clock' || once;
+  if (once && !$('auto-date').value) $('auto-date').value = isoDate(new Date(Date.now() + 86400000));
+  const interval = trigger === 'clock' && !once && Number($('auto-every').value) > 1;
   if (interval && !$('auto-anchor').value) $('auto-anchor').value = isoDate(new Date());
   $('auto-anchor-row').hidden = !interval;
   $('auto-anchor-hint').hidden = !interval;
@@ -577,6 +641,7 @@ export function openEditor(rule) {
   $('auto-unit').value = schedule.unit;
   $('auto-every').value = String(schedule.every > 1 ? schedule.every : 1);
   $('auto-anchor').value = schedule.every > 1 ? schedule.anchor : '';
+  $('auto-date').value = schedule.unit === 'once' ? schedule.anchor : '';
   buildDayControls();
   if (schedule.unit === 'week') {
     $('auto-days').querySelectorAll('.q-day').forEach(b => b.setAttribute('aria-pressed', schedule.days.includes(Number(b.dataset.d)) ? 'true' : 'false'));
@@ -989,7 +1054,7 @@ export function initAutomation(deps) {
   $('auto-template').addEventListener('change', syncApproval);
   $('auto-unit').addEventListener('change', syncEditor);
   $('auto-every').addEventListener('input', syncEditor);
-  for (const id of ['auto-anchor', 'auto-time', 'auto-dom']) $(id).addEventListener('input', syncPreview);
+  for (const id of ['auto-anchor', 'auto-time', 'auto-dom', 'auto-date']) $(id).addEventListener('input', syncPreview);
   $('auto-match-kind').addEventListener('change', syncEditor);
   $('auto-trigger').querySelectorAll('button').forEach(b => {
     b.onclick = () => {

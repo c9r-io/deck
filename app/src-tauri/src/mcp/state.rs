@@ -768,7 +768,9 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
 /// Validation requires at least it; a write raises to it and never lowers
 /// (sticky). The versions rise in this order (`mod.rs`).
 fn needed_version(doc: &DiskDoc) -> u32 {
-    if super::cards::uses_card_edits(doc) {
+    if super::proposals::uses_clock_drafts(doc) {
+        STATE_VERSION_CLOCK_DRAFTS
+    } else if super::cards::uses_card_edits(doc) {
         STATE_VERSION_CARD_EDITS
     } else if super::cards::uses_cards(doc) {
         STATE_VERSION_CARDS
@@ -794,7 +796,7 @@ fn needed_version(doc: &DiskDoc) -> u32 {
 pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
     let needed = needed_version(doc);
-    let version_valid = (needed..=STATE_VERSION_CARD_EDITS).contains(&doc.version)
+    let version_valid = (needed..=STATE_VERSION_CLOCK_DRAFTS).contains(&doc.version)
         && super::proposals::valid_proposals(doc);
     let clients_valid = version_valid
         && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)

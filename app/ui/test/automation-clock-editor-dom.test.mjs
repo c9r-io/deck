@@ -168,3 +168,70 @@ test('pausing and resuming an interval rule keeps its date; only resume moves si
   assert.deepEqual(rules()[0].schedule, rule.schedule, 'the date and interval are kept');
   assert.ok(rules()[0].since > 1000, 'resume starts fresh from now');
 });
+
+/* a one-time rule: the date control replaces the interval and the grace
+   choice, the saved schedule is the date, a past time is refused, and a
+   spent rule sits in the "Ended" group until the user clears it */
+test('a one-time rule round-trips, refuses a past time, and ended ones are cleared with their own template', async () => {
+  const disk = await scene();
+  openEditor(null);
+  await turn();
+  assert.ok(get('auto-date').hidden && get('auto-once-hint').hidden, 'no date while the rule repeats');
+  get('auto-name').value = 'Follow up';
+  get('auto-column').value = 'C1';
+  get('auto-template').value = 'tpl';
+  fill('auto-unit', 'once', 'change');
+  assert.ok(!get('auto-date').hidden && !get('auto-once-hint').hidden);
+  assert.ok(get('auto-every').hidden && get('auto-every-word').hidden && get('auto-grace-row').hidden && get('auto-anchor-row').hidden);
+  assert.match(get('auto-date').value, /^\d{4}-\d{2}-\d{2}$/, 'tomorrow is filled in');
+  fill('auto-date', '2020-01-01');
+  fill('auto-time', '09:30');
+  await get('auto-save').onclick();
+  await turn();
+  assert.equal(disk.writes.length, 0, 'a past one-time slot is not saved');
+  assert.ok(said().includes(t('automation.oncePast')));
+  fill('auto-date', '2999-01-02');
+  await get('auto-save').onclick();
+  await turn();
+  const expected = { unit: 'once', days: [], minute: 570, anchor: '2999-01-02' };
+  assert.deepEqual(rules().map(rule => rule.schedule), [expected]);
+  assert.deepEqual(JSON.parse(disk.writes[0]).inbound.rules[0].schedule, expected);
+  openEditor(rules()[0]);
+  await turn();
+  assert.equal(get('auto-unit').value, 'once');
+  assert.equal(get('auto-date').value, '2999-01-02');
+  assert.ok(get('auto-grace-row').hidden);
+  get('auto-cancel').onclick();
+
+  // a spent rule, a missed one and an upcoming one; another rule shares no template
+  const once = (id, extra) => ({ id, source: 'clock', badge: id, projectId: 'P1', columnId: 'C1', cmd: 'claude', template: 'tpl',
+    name: id, enabled: true, finish: 'keep', since: 1, graceMin: 15, schedule: { unit: 'once', days: [], minute: 570, anchor: '2020-01-01' }, ...extra });
+  const deleted = [];
+  const original = provider.deleteTemplate;
+  provider.deleteTemplate = async (...args) => { deleted.push(args); };
+  try {
+    const disk2 = await scene([
+      once('ran', { ranAt: 1577870000, template: 'spent-only' }),
+      once('missed', {}),
+      once('later', { schedule: { unit: 'once', days: [], minute: 570, anchor: '2999-01-02' } }),
+    ]);
+    const list = get('auto-list').children;
+    const clear = list.find(el => el.id === 'auto-clear-ended');
+    assert.ok(!clear, 'the button sits inside the group head');
+    const head = list.find(el => el.className === 'auto-ended-head');
+    assert.ok(head, 'the ended group');
+    assert.equal(list.indexOf(head), 1, 'the upcoming rule is above the group');
+    assert.equal(list.length, 4, 'one live rule, the head, two ended rules');
+    const button = head.children.find(el => el.id === 'auto-clear-ended');
+    assert.equal(button.disabled, false);
+    const pending = button.onclick();
+    await turn();
+    const { cfmDone } = await import('../js/dialogs.js');
+    cfmDone(true);
+    await pending;
+    await turn();
+    assert.deepEqual(rules().map(rule => rule.id), ['missed', 'later'], 'the missed one stays for the user to decide');
+    assert.deepEqual(deleted, [['P1', 'spent-only']], 'only the template nothing else names');
+    assert.equal(disk2.writes.length, 1);
+  } finally { provider.deleteTemplate = original; }
+});

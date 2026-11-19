@@ -2174,7 +2174,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
     );
 
     let mut invalid = DiskDoc {
-        version: STATE_VERSION_CARD_EDITS + 1,
+        version: STATE_VERSION_CLOCK_DRAFTS + 1,
         ..DiskDoc::default()
     };
     assert!(validate_doc(&invalid).is_err());
@@ -3167,7 +3167,7 @@ fn v3_state_upgrades_stickily_and_future_state_is_refused() {
     // The v3 build accepted exactly version 3; the same rule refuses a
     // future schema here.
     let mut future = saved.clone();
-    future["version"] = json!(STATE_VERSION_CARD_EDITS + 1);
+    future["version"] = json!(STATE_VERSION_CLOCK_DRAFTS + 1);
     std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
     assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
     assert_eq!(
@@ -6156,6 +6156,196 @@ fn no_permissions(allow_create: bool) -> super::commands::PermissionsInput {
         all_projects: false,
         projects: None,
     }
+}
+
+/// A clock draft (`rule.trigger: clock`) is how a client registers later
+/// work: its schedule is checked like the editor's (a one-time date not in
+/// the past), its steps are fixed text, it carries no Agent-rule field, and
+/// it may change only a clock rule an approved draft of the same client
+/// saved. Holding one raises the ledger to its own sticky version.
+#[test]
+fn a_clock_draft_registers_later_work_and_changes_only_its_own_rule() {
+    let (runtime, _runner, _root) = fixture("config-clock-drafts", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    crate::documents::test_door::commit(
+        json!({"projects": [{"id": "P1", "name": "Deck", "columns": [{"id": "C1", "name": "Doing"}],
+            "templates": [{"name": "handed", "steps": ["Task: {{msg.text}}"]}, {"name": "plain", "steps": ["Hello"]}]}]}),
+        true,
+    );
+    let users: crate::inbound::Rule = serde_json::from_value(json!({
+        "id": "a_user", "source": "clock", "badge": "a_user", "projectId": "P1", "columnId": "C1",
+        "cmd": "claude", "template": "plain", "name": "Mine",
+        "schedule": {"unit": "week", "days": [1], "minute": 540}
+    }))
+    .unwrap();
+    let set_rules = |rules: Vec<crate::inbound::Rule>| {
+        CONFIG_FOR_TESTS.with(|cell| {
+            *cell.borrow_mut() = Some(Some(crate::inbound::Config {
+                slack_enabled: false,
+                rules,
+            }))
+        })
+    };
+    set_rules(vec![users.clone()]);
+    let call = |tool: &str, args: Value| route(&runtime, request(tool, args));
+    let mut permissions = no_permissions(false);
+    permissions.allow_drafts = true;
+    client_permissions(&runtime, "client_a", permissions).unwrap();
+    let codes = |answer: &Value| -> Vec<String> {
+        answer["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["code"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let validate = |rule: Value| {
+        call(
+            "deck_config_propose",
+            json!({"project_id": "P1", "validate_only": true, "rule": rule}),
+        )
+    };
+    let clock = |extra: Value| {
+        let mut rule = json!({"trigger": "clock", "name": "Follow up", "column_id": "C1",
+            "cmd": "claude", "template": "plain",
+            "schedule": {"unit": "once", "date": "2999-01-02", "time": "09:30"}});
+        for (key, value) in extra.as_object().unwrap() {
+            rule[key] = value.clone();
+        }
+        rule
+    };
+
+    // the user's clock rules are listed, and none is the client's to change
+    let described = call("deck_config_describe", json!({}));
+    let listed = &described["projects"][0]["clockRules"][0];
+    assert_eq!(listed["rule_id"], "a_user");
+    assert_eq!(
+        listed["schedule"],
+        json!({"unit": "week", "time": "09:00", "days": [1]})
+    );
+    assert_eq!(listed["draftedByYou"], false);
+
+    // each way a clock draft is wrong names its own problem
+    for (rule, code) in [
+        (clock(json!({"schedule": null})), "SCHEDULE_NEEDED"),
+        (
+            clock(json!({"schedule": {"unit": "once", "date": "2000-01-01", "time": "09:00"}})),
+            "SCHEDULE_PAST",
+        ),
+        (
+            clock(json!({"schedule": {"unit": "once", "time": "09:00"}})),
+            "SCHEDULE_INVALID",
+        ),
+        (
+            clock(json!({"schedule": {"unit": "once", "date": "2999-02-30", "time": "09:00"}})),
+            "SCHEDULE_INVALID",
+        ),
+        (
+            clock(json!({"schedule": {"unit": "day", "time": "9:00"}})),
+            "SCHEDULE_INVALID",
+        ),
+        (
+            clock(json!({"schedule": {"unit": "week", "time": "09:00"}})),
+            "SCHEDULE_INVALID",
+        ),
+        (
+            clock(json!({"schedule": {"unit": "day", "date": "2999-01-02", "time": "09:00"}})),
+            "SCHEDULE_INVALID",
+        ),
+        (clock(json!({"name": ""})), "RULE_NAME_NEEDED"),
+        (
+            clock(json!({"automation_id": "x"})),
+            "AGENT_FIELD_ON_CLOCK_RULE",
+        ),
+        (
+            clock(json!({"auto_continue": true})),
+            "AGENT_FIELD_ON_CLOCK_RULE",
+        ),
+        (
+            clock(json!({"template": "handed"})),
+            "CLOCK_TEMPLATE_PLACEHOLDER",
+        ),
+        (clock(json!({"grace_min": 1441})), "GRACE_INVALID"),
+        (clock(json!({"rule_id": "a_user"})), "RULE_NOT_YOURS"),
+        (clock(json!({"rule_id": "a_none"})), "RULE_NOT_YOURS"),
+        (clock(json!({"trigger": "slack"})), "TRIGGER_INVALID"),
+    ] {
+        let answer = validate(rule.clone());
+        assert_eq!(answer["valid"], false, "{rule}");
+        assert!(codes(&answer).iter().any(|c| c == code), "{code}: {answer}");
+    }
+    // an Agent draft carries no clock field
+    let agent = validate(
+        json!({"automation_id": "x", "column_id": "C1", "cmd": "claude",
+        "template": "plain", "schedule": {"unit": "day", "time": "09:00"}}),
+    );
+    assert!(codes(&agent)
+        .iter()
+        .any(|c| c == "CLOCK_FIELD_ON_AGENT_RULE"));
+
+    // a valid one-time draft and a valid recurring one
+    let once = validate(clock(json!({"first_send": true})));
+    assert_eq!(once["valid"], true, "{once}");
+    assert_eq!(once["preview"]["rule"]["trigger"], "clock");
+    assert_eq!(once["preview"]["rule"]["new"], true);
+    assert_eq!(
+        once["preview"]["rule"]["schedule"],
+        json!({"unit": "once", "time": "09:30", "date": "2999-01-02"})
+    );
+    let weekly = validate(clock(json!({"schedule":
+        {"unit": "week", "days": [5, 1, 1], "time": "18:05", "every": 2, "anchor": "2026-11-16"}})));
+    assert_eq!(weekly["valid"], true, "{weekly}");
+    assert_eq!(
+        weekly["preview"]["rule"]["schedule"],
+        json!({"unit": "week", "time": "18:05", "days": [1, 5], "every": 2, "anchor": "2026-11-16"})
+    );
+
+    // recorded: the ledger takes the clock-draft version, and the webview
+    // is handed the schedule in the shape a rule stores
+    let submitted = call(
+        "deck_config_propose",
+        json!({"request_id": "req_once", "project_id": "P1", "rule": clock(json!({}))}),
+    );
+    assert_eq!(submitted["ok"], true, "{submitted}");
+    assert_eq!(
+        runtime.read(|doc| doc.version).unwrap(),
+        STATE_VERSION_CLOCK_DRAFTS
+    );
+    let ui = proposals_ui(&runtime).unwrap();
+    assert_eq!(ui[0]["rule"]["trigger"], "clock");
+    assert_eq!(
+        ui[0]["rule"]["schedule"],
+        json!({"unit": "once", "days": [], "minute": 570, "anchor": "2999-01-02"})
+    );
+    let id = submitted["proposalId"].as_str().unwrap().to_string();
+    assert_eq!(
+        call("deck_config_proposal_get", json!({"proposal_id": id}))["trigger"],
+        "clock"
+    );
+
+    // the user approved it as rule a_new: now it is the client's to change,
+    // and still only that one
+    proposal_decide(&runtime, &id, "approved", Some("a_new".into())).unwrap();
+    let saved: crate::inbound::Rule = serde_json::from_value(json!({
+        "id": "a_new", "source": "clock", "badge": "a_new", "projectId": "P1", "columnId": "C1",
+        "cmd": "claude", "template": "plain", "name": "Follow up",
+        "schedule": {"unit": "once", "minute": 570, "anchor": "2999-01-02"}
+    }))
+    .unwrap();
+    set_rules(vec![users, saved]);
+    let described = call("deck_config_describe", json!({}));
+    let rules = described["projects"][0]["clockRules"].as_array().unwrap();
+    assert_eq!(rules[1]["rule_id"], "a_new");
+    assert_eq!(rules[1]["draftedByYou"], true);
+    let change = validate(clock(json!({"rule_id": "a_new",
+        "schedule": {"unit": "once", "date": "2999-03-04", "time": "09:30"}})));
+    assert_eq!(change["valid"], true, "{change}");
+    assert_eq!(change["preview"]["rule"]["new"], false);
+    assert_eq!(change["preview"]["changes"][0]["field"], "rule.schedule");
+    assert!(codes(&validate(clock(json!({"rule_id": "a_user"}))))
+        .iter()
+        .any(|c| c == "RULE_NOT_YOURS"));
+    CONFIG_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
 }
 
 /// Drafted configuration (`proposals.rs`): only a client the user lets draft

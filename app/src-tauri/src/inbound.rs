@@ -81,7 +81,11 @@
 //! poll offers `(clock, <slot key>, <rule id>)` for a slot that is due today
 //! and not older than the rule's `since` — the ledger's dedupe is what makes
 //! each slot fire once, and there is no baseline (clock events are live by
-//! nature). A slot's KEY is local midnight plus the rule's minute, one value
+//! nature). A ONE-TIME rule (`unit: once`, its date in `anchor`) has that
+//! one slot, the rest of its day as grace (`Rule::grace`), and records its
+//! started run on the rule (`ranAt`, written by the webview's settings
+//! writer); with the record it offers nothing. Nothing catches a one-time
+//! slot up after its day: the webview lists it as missed for the user. A slot's KEY is local midnight plus the rule's minute, one value
 //! per day; the instant it is DUE is the zone's reading of that wall time
 //! (`procinfo::wall_time_epoch`), which differs from the key only on a DST
 //! switch day, and `slot_missed` judges grace by that instant. A
@@ -165,7 +169,10 @@ const SKIP_REASONS: &[&str] = &[
 pub(crate) const DEFAULT_GRACE_MIN: u32 = 15;
 pub(crate) const MAX_GRACE_MIN: u32 = 1440;
 pub(crate) const MAX_RULES: usize = 32;
-pub(crate) const SCHEDULE_UNITS: &[&str] = &["day", "week", "month"];
+pub(crate) const SCHEDULE_UNITS: &[&str] = &["day", "week", "month", "once"];
+/// The unit of a schedule that has exactly one slot: `minute` on the
+/// calendar date `anchor`.
+pub(crate) const SCHEDULE_ONCE: &str = "once";
 /// A schedule repeats every 1..=12 of its unit (every 12 months is a year).
 pub(crate) const SCHEDULE_EVERY_MAX: u32 = 12;
 /// An interval schedule's anchor date is a real calendar date in this span.
@@ -237,6 +244,29 @@ pub(crate) struct Rule {
     /// (false) on every legacy rule; an older Deck ignores it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) first_send_without_readiness: bool,
+    /// A one-time clock rule only: when its run started (epoch seconds),
+    /// written by the webview with the run's acknowledgement
+    /// (inbound.js). A rule that carries it is spent and offers nothing; a
+    /// new date in the editor removes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ran_at: Option<u64>,
+}
+
+impl Rule {
+    /// Minutes after its slot a run may still start. A one-time rule has the
+    /// rest of its day whatever it stores: its slot has no next occurrence to
+    /// wait for, so a late start that day beats recording it as missed.
+    pub(crate) fn grace(&self) -> u32 {
+        if self
+            .schedule
+            .as_ref()
+            .is_some_and(|s| s.unit == SCHEDULE_ONCE)
+        {
+            MAX_GRACE_MIN
+        } else {
+            self.grace_min.min(MAX_GRACE_MIN)
+        }
+    }
 }
 
 /// An automation delivery grant, stored on the rule it approves. `digest` is
@@ -316,6 +346,12 @@ fn default_grace() -> u32 {
 /// bound), so an interval rule's phase survives both. Twin of
 /// settings-model.js `normalizeSchedule` and pure.js `scheduleMatchesDay`;
 /// both sides are pinned to ui/test/fixtures/schedule-cases.json.
+///
+/// A `once` schedule has ONE slot: `minute` on the calendar date `anchor`
+/// (required, no `days`, no interval). Its key is that day's ordinary slot
+/// key, and it is offered that day only, like every slot: nothing here
+/// catches a one-time slot up on a later day (`Rule::grace`, and the
+/// webview's "missed" row, automation-model.js `onceState`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct Schedule {
     /// "day" | "week" | "month"
@@ -326,7 +362,8 @@ pub(crate) struct Schedule {
     /// every N units, 1..=`SCHEDULE_EVERY_MAX`; 1 is written as absent
     #[serde(default = "default_every", skip_serializing_if = "is_one")]
     pub(crate) every: u32,
-    /// the calendar date the interval counts from; only with `every > 1`
+    /// the calendar date the interval counts from (only with `every > 1`),
+    /// or a one-time schedule's date
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) anchor: Option<String>,
 }
@@ -371,7 +408,16 @@ impl Schedule {
             return bad("schedule time must be a minute of the day");
         }
         if !SCHEDULE_UNITS.contains(&self.unit.as_str()) {
-            return bad("schedule unit must be day, week or month");
+            return bad("schedule unit must be day, week, month or once");
+        }
+        if self.unit == SCHEDULE_ONCE {
+            if self.every != 1 || !self.days.is_empty() {
+                return bad("a one-time schedule has no interval and no days");
+            }
+            return match self.anchor.as_deref().map(parse_anchor) {
+                Some(Some(_)) => Ok(()),
+                _ => bad("a one-time schedule needs its calendar date"),
+            };
         }
         if self.every == 0 || self.every > SCHEDULE_EVERY_MAX {
             return bad("schedule interval must be 1 to 12");
@@ -400,6 +446,10 @@ impl Schedule {
 
     /// Does the schedule have a slot on the local day `clock` describes?
     pub(crate) fn matches_day(&self, clock: &crate::procinfo::LocalClock) -> bool {
+        if self.unit == SCHEDULE_ONCE {
+            return self.anchor.as_deref().and_then(parse_anchor)
+                == Some((clock.year, clock.month, clock.mday));
+        }
         if self.every > 1 && !self.in_period(clock) {
             return false;
         }
@@ -572,13 +622,19 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
                         "a clock rule finishes by keep or close",
                     ));
                 }
+                if rule.ran_at.is_some() && schedule.unit != SCHEDULE_ONCE {
+                    return Err(DeckError::new(
+                        ErrorKind::InvalidDoc,
+                        "only a one-time rule records its run",
+                    ));
+                }
                 if rule.grace_min > MAX_GRACE_MIN {
                     return Err(DeckError::new(
                         ErrorKind::InvalidDoc,
                         "a clock rule's grace is at most a day",
                     ));
                 }
-            } else if rule.schedule.is_some() {
+            } else if rule.schedule.is_some() || rule.ran_at.is_some() {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "only a clock rule carries a schedule",
@@ -1088,7 +1144,7 @@ pub(crate) fn slot_missed(key: &str, rule: &Rule, now: u64) -> bool {
         .and_then(|key| key.checked_sub(u64::from(minute) * 60))
         .map(|day_start| {
             let due = crate::procinfo::slot_instant(day_start, minute);
-            now > due + u64::from(rule.grace_min.min(MAX_GRACE_MIN)) * 60
+            now > due + u64::from(rule.grace()) * 60
         })
         .unwrap_or(false)
 }
@@ -2150,6 +2206,65 @@ mod tests {
             round["schedule"].get("every").is_none() && round["schedule"].get("anchor").is_none(),
             "a legacy schedule round-trips without the interval fields: {round}"
         );
+    }
+
+    #[test]
+    fn a_one_time_schedule_is_a_date_without_days_or_interval() {
+        let ok = |s: Value| validate_settings(&json!({"rules": [clock_rule("a1", s)]})).is_ok();
+        let refused = |s: Value| {
+            validate_settings(&json!({"rules": [clock_rule("a1", s)]}))
+                .unwrap_err()
+                .message()
+                .to_string()
+        };
+        assert!(ok(
+            json!({"unit": "once", "anchor": "2026-12-01", "minute": 570})
+        ));
+        for bad in [
+            json!({"unit": "once", "minute": 570}),
+            json!({"unit": "once", "anchor": "2026-02-30", "minute": 570}),
+        ] {
+            assert_eq!(refused(bad), "a one-time schedule needs its calendar date");
+        }
+        for bad in [
+            json!({"unit": "once", "anchor": "2026-12-01", "minute": 570, "every": 2}),
+            json!({"unit": "once", "anchor": "2026-12-01", "minute": 570, "days": [1]}),
+        ] {
+            assert_eq!(
+                refused(bad),
+                "a one-time schedule has no interval and no days"
+            );
+        }
+        // the record of its run belongs to a one-time rule alone
+        let mut spent = clock_rule(
+            "a1",
+            json!({"unit": "once", "anchor": "2026-12-01", "minute": 570}),
+        );
+        spent["ranAt"] = json!(1_796_000_000u64);
+        let cfg = config_from_value(Some(&json!({"rules": [spent.clone()]})));
+        assert_eq!(cfg.rules[0].ran_at, Some(1_796_000_000));
+        assert_eq!(
+            serde_json::to_value(&cfg.rules[0]).unwrap()["ranAt"],
+            json!(1_796_000_000u64)
+        );
+        spent["schedule"] = json!({"unit": "day", "minute": 570});
+        assert_eq!(
+            validate_settings(&json!({"rules": [spent]}))
+                .unwrap_err()
+                .message(),
+            "only a one-time rule records its run"
+        );
+        let slack = json!({"id": "R1", "source": "slack", "badge": "deck", "projectId": "P1",
+            "columnId": "C1", "cmd": "claude", "template": "t", "ranAt": 5});
+        assert!(validate_settings(&json!({"rules": [slack]})).is_err());
+        // an ordinary rule serializes without the field
+        let plain = config_from_value(Some(
+            &json!({"rules": [clock_rule("a1", json!({"unit": "day", "minute": 5}))]}),
+        ));
+        assert!(serde_json::to_value(&plain.rules[0])
+            .unwrap()
+            .get("ranAt")
+            .is_none());
     }
 
     #[test]

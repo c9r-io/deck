@@ -408,10 +408,22 @@ client's: withdrawing a choice withdraws it for every orchestrator.
 ## Drafted configuration
 
 **Draft templates and automations** (in the same dialog) lets a client
-draft a prompt template and an Agent handover rule for you — "set up an
-automation that reviews pull requests in three steps". It drafts only:
-templates and Agent rules (the ones `deck_automation_trigger` names), never
-Slack badge, clock or channel rules or any other setting. Deck checks a
+draft a prompt template and one rule for you — "set up an automation that
+reviews pull requests in three steps", or "check this pull request's CI
+tomorrow at nine". It drafts only: templates, Agent rules (the ones
+`deck_automation_trigger` names) and clock rules (`trigger: clock`: a
+schedule the automations editor could hold, once or repeating), never
+Slack badge or channel rules or any other setting.
+
+A clock draft is how an agent registers later work. At its time Deck opens
+a new card and sends the template's steps; that card's agent has none of
+the drafting conversation, so the steps carry what it needs, and you read
+them in full before approving. Its steps are fixed text (no `{{msg.*}}`
+placeholder), a one-time date is not in the past, and a client may draft a
+change only to a clock rule one of its own approved drafts saved. Once
+approved it is an ordinary clock rule of yours: it takes nothing from the
+client when it runs, and stopping the choice or revoking the client leaves
+it in place. Deck checks a
 draft when it is made (the command is `claude` or `codex --no-daemon` with
 simple flags, the directory is inside the authorized one, the template it
 names exists or is drafted with it, no step begins with a `{{msg.*}}`

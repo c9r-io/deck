@@ -427,6 +427,9 @@ const STATE_VERSION_CARDS: u32 = 14;
 /// The sticky version a ledger takes once a client may rename and move
 /// cards (`cards::uses_card_edits`): a v14 build refuses it.
 const STATE_VERSION_CARD_EDITS: u32 = 15;
+/// The sticky version a ledger takes once it holds a drafted clock rule
+/// (`proposals::uses_clock_drafts`): a v15 build refuses it.
+const STATE_VERSION_CLOCK_DRAFTS: u32 = 16;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

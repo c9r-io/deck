@@ -19,8 +19,16 @@
 //!   effect anywhere but here. No proposal state is authority: a decision
 //!   is bookkeeping the webview records after it wrote what the user chose
 //!   (`mcp_proposal_decide`), so the client learns the outcome.
-//! - Scope (D4): templates and Agent rules (`source: agent`) only — no
-//!   Slack badge, clock or channel rule, no other setting. A rule's command
+//! - Scope: templates, Agent rules (`source: agent`) and clock rules
+//!   (`trigger: clock`, approved 2026-11-19: a schedule the automations
+//!   editor could hold, the one-time schedule included) — no Slack badge or
+//!   channel rule, no other setting. A clock draft is how a client registers
+//!   later work: once approved it is an ordinary clock rule of the user's,
+//!   it takes nothing from the client when it runs, and withdrawing the
+//!   client leaves it. Its steps are fixed text (no `{{msg.*}}`
+//!   placeholder: nothing is handed over), a one-time date is not in the
+//!   past, and a draft may change only a clock rule an approved draft of
+//!   the same client saved (`rule_id`). A rule's command
 //!   passes the remote admission, Codex only with `--no-daemon`; its
 //!   directory is inside the client's authorized roots of that project; its
 //!   template is the drafted one or one the project has, and no step may
@@ -34,7 +42,8 @@
 //! - Withdrawing the client's draft choice, or revoking the client, turns
 //!   its pending proposals `withdrawn`; the user can no longer approve them.
 //! - A ledger that holds a proposal or the draft choice is written at
-//!   `STATE_VERSION_PROPOSALS` (sticky), so an older Deck refuses it.
+//!   `STATE_VERSION_PROPOSALS` (sticky), so an older Deck refuses it; one
+//!   that holds a clock draft at `STATE_VERSION_CLOCK_DRAFTS`.
 
 use super::*;
 
@@ -64,11 +73,111 @@ pub(super) struct TemplateDraft {
     pub(super) follow_ups: Vec<String>,
 }
 
-/// A drafted Agent handover rule (`source: agent`).
+pub(super) const TRIGGER_AGENT: &str = "agent";
+pub(super) const TRIGGER_CLOCK: &str = "clock";
+
+fn default_trigger() -> String {
+    TRIGGER_AGENT.into()
+}
+
+fn is_agent_trigger(trigger: &String) -> bool {
+    trigger == TRIGGER_AGENT
+}
+
+/// A drafted clock rule's schedule, in the words a client writes: `time`
+/// is `HH:MM` local; `once` carries its `date`, `week` and `month` their
+/// `days`, an interval (`every` > 1) its `anchor` date.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ScheduleDraft {
+    pub(super) unit: String,
+    pub(super) time: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) date: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) days: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) every: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) anchor: Option<String>,
+}
+
+/// `HH:MM` (24 hours) as a minute of the day.
+fn minute_of(time: &str) -> Option<u32> {
+    let (h, m) = time.split_once(':')?;
+    let part = |s: &str| {
+        (s.len() == 2 && s.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| s.parse::<u32>().ok())
+            .flatten()
+    };
+    let (h, m) = (part(h)?, part(m)?);
+    (h < 24 && m < 60).then_some(h * 60 + m)
+}
+
+impl ScheduleDraft {
+    /// The schedule a rule stores (`inbound::Schedule`), or what is wrong.
+    pub(super) fn schedule(&self) -> Result<crate::inbound::Schedule, String> {
+        let once = self.unit == crate::inbound::SCHEDULE_ONCE;
+        let minute = minute_of(&self.time).ok_or("time must be HH:MM, 00:00 to 23:59")?;
+        if once && self.anchor.is_some() {
+            return Err("a one-time schedule carries `date`, not `anchor`".into());
+        }
+        if !once && self.date.is_some() {
+            return Err("only a one-time schedule carries `date`".into());
+        }
+        let mut days = self.days.clone();
+        days.sort_unstable();
+        days.dedup();
+        let schedule = crate::inbound::Schedule {
+            unit: self.unit.clone(),
+            days,
+            minute,
+            every: self.every.unwrap_or(1),
+            anchor: if once {
+                self.date.clone()
+            } else {
+                self.anchor.clone()
+            },
+        };
+        schedule.validate().map_err(|e| e.message().to_string())?;
+        Ok(schedule)
+    }
+
+    fn of(schedule: &crate::inbound::Schedule) -> Self {
+        let once = schedule.unit == crate::inbound::SCHEDULE_ONCE;
+        ScheduleDraft {
+            unit: schedule.unit.clone(),
+            time: format!("{:02}:{:02}", schedule.minute / 60, schedule.minute % 60),
+            date: schedule.anchor.clone().filter(|_| once),
+            days: schedule.days.clone(),
+            every: (schedule.every > 1).then_some(schedule.every),
+            anchor: schedule.anchor.clone().filter(|_| !once),
+        }
+    }
+}
+
+/// A drafted Agent handover rule (`source: agent`) or clock rule
+/// (`trigger: clock`).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RuleDraft {
+    /// Absent on an Agent draft, so drafts recorded before clock drafts
+    /// existed keep their request and content hashes.
+    #[serde(default = "default_trigger", skip_serializing_if = "is_agent_trigger")]
+    pub(super) trigger: String,
+    /// Agent rules only.
+    #[serde(default)]
     pub(super) automation_id: String,
+    /// Clock rules only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) schedule: Option<ScheduleDraft>,
+    /// Clock rules only: minutes after its slot a run may still start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) grace_min: Option<u32>,
+    /// Clock rules only: the rule of this client's own earlier draft that
+    /// this draft changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) rule_id: Option<String>,
     #[serde(default)]
     pub(super) name: String,
     pub(super) column_id: String,
@@ -148,6 +257,26 @@ pub(super) struct ProposalGetArgs {
 
 pub(super) fn uses_proposals(doc: &DiskDoc) -> bool {
     !doc.proposals.is_empty() || doc.config.clients.iter().any(|c| c.allow_drafts)
+}
+
+pub(super) fn uses_clock_drafts(doc: &DiskDoc) -> bool {
+    doc.proposals
+        .iter()
+        .any(|p| p.rule.as_ref().is_some_and(|r| r.trigger != TRIGGER_AGENT))
+}
+
+/// The clock rules an approved draft of this client saved: the only ones
+/// it may draft a change to.
+fn own_clock_rules(doc: &DiskDoc, client_id: &str) -> HashSet<String> {
+    doc.proposals
+        .iter()
+        .filter(|p| {
+            p.client_id == client_id
+                && matches!(p.status.as_str(), "approved" | "edited")
+                && p.rule.as_ref().is_some_and(|r| r.trigger == TRIGGER_CLOCK)
+        })
+        .filter_map(|p| p.rule_id.clone())
+        .collect()
 }
 
 pub(super) fn valid_proposals(doc: &DiskDoc) -> bool {
@@ -253,19 +382,46 @@ fn agent_rule<'a>(
         .find(|r| r.source == crate::inbound_agent::SOURCE && r.badge == automation_id)
 }
 
+fn clock_rule<'a>(
+    config: &'a crate::inbound::Config,
+    rule_id: &str,
+) -> Option<&'a crate::inbound::Rule> {
+    rules_of(config)
+        .iter()
+        .find(|r| r.source == TRIGGER_CLOCK && r.id == rule_id)
+}
+
+/// The saved rule a draft would change, if any.
+fn rule_before<'a>(
+    config: &'a crate::inbound::Config,
+    draft: &RuleDraft,
+) -> Option<&'a crate::inbound::Rule> {
+    if draft.trigger == TRIGGER_CLOCK {
+        clock_rule(config, draft.rule_id.as_deref()?)
+    } else {
+        agent_rule(config, &draft.automation_id)
+    }
+}
+
+/// A schedule as one line for a preview's change list.
+fn schedule_line(schedule: &ScheduleDraft) -> String {
+    serde_json::to_string(schedule).unwrap_or_default()
+}
+
 fn problem(field: &str, code: &str, message: &str, fix: &str) -> Value {
     json!({"field": field, "code": code, "message": message, "fix": fix})
 }
 
 /* ---------- describe ---------- */
 
-const WORKFLOW: [&str; 6] = [
+const WORKFLOW: [&str; 7] = [
     "1. Read this description; reuse an existing template or rule when one fits.",
     "2. Call deck_config_propose with validate_only: true and fix every problem it returns (each names the field and how to fix it).",
     "3. Submit the same draft without validate_only and a fresh request_id. Submit one proposal per change; never resubmit an identical draft.",
     "4. Tell the user what you drafted: it waits in Deck's Needs attention until they approve, open it in the editor, or reject it.",
     "5. Poll deck_config_proposal_get (seldom: the user decides when they come back). Nothing you drafted works before it is approved.",
-    "6. Once approved, deck_automation_list lists the rule; trigger it with deck_automation_trigger (needs the user's separate automation permission).",
+    "6. Once approved, deck_automation_list lists an Agent rule; trigger it with deck_automation_trigger (needs the user's separate automation permission).",
+    "7. To register LATER work (a follow-up tomorrow, a weekly check), draft a clock rule (rule.trigger: \"clock\" with a schedule): Deck opens a NEW card at that time and types the template's steps. That card's agent knows nothing of this conversation, so put the background, paths, links and what to do into the steps. You never trigger a clock rule; it runs on the user's Mac while Deck is running.",
 ];
 
 fn fields_help() -> Value {
@@ -276,16 +432,20 @@ fn fields_help() -> Value {
             "follow_ups": format!("optional, at most {FOLLOW_UPS_MAX} fixed replies shown as buttons on the card (no placeholders).")
         },
         "rule": {
-            "automation_id": "the id you will pass to deck_automation_trigger: lowercase letters, digits, _ + - (at most 64). An existing Agent rule's id proposes a change to that rule.",
-            "name": format!("display name, at most {RULE_NAME_MAX_CHARS} characters"),
+            "trigger": "agent (default): the rule runs when you call deck_automation_trigger. clock: the rule runs at its schedule, once or repeatedly, without you.",
+            "automation_id": "Agent rules only. The id you will pass to deck_automation_trigger: lowercase letters, digits, _ + - (at most 64). An existing Agent rule's id proposes a change to that rule.",
+            "schedule": "clock rules only. {unit, time, ...} in the Mac's local time, time as \"HH:MM\". unit once: date \"YYYY-MM-DD\" (not in the past; runs one time). unit day: every day. unit week: days [1..7], 1 = Monday. unit month: days [1..31], a day the month lacks means its last day. Optional every 2..12 with anchor \"YYYY-MM-DD\" (the date the interval counts from) repeats every N days, weeks or months. The shortest repeat is daily.",
+            "grace_min": "clock rules only, optional (default 15, at most 1440): how many minutes after its time a run may still start when Deck was not running. A one-time rule always has the rest of its day; after that the user is told it was missed.",
+            "rule_id": "clock rules only, optional: the rule_id of a clock rule one of your approved drafts saved (clockRules below, draftedByYou: true), to propose a change to it. Omit it for a new rule.",
+            "name": format!("display name, at most {RULE_NAME_MAX_CHARS} characters; required for a clock rule"),
             "column_id": "a column id of the project (listed below)",
             "dir": "the card's working directory: inside your authorized directory; the authorized directory itself when empty",
             "cmd": "the agent the card starts: `claude` or `codex --no-daemon`, optionally with simple flags (letters, digits and -_./:=+,@ only)",
-            "template": "the drafted template's name, or one the project already has",
+            "template": "the drafted template's name, or one the project already has. A clock rule's template has no {{msg.*}} placeholder (nothing is handed over).",
             "finish": "keep (default) or close: close retires the card once its steps are sent and the agent exited",
             "review_each": "true: every step waits for the user's check before it is sent",
-            "auto_continue": "ask the user to approve sending steps 2..N automatically after each turn ends; otherwise the user sends each step",
-            "external": "with auto_continue and placeholder steps: also ask to approve steps carrying the handed-over text",
+            "auto_continue": "Agent rules only (a clock rule's steps are the user's approved fixed text and follow each other). Ask the user to approve sending steps 2..N automatically after each turn ends; otherwise the user sends each step",
+            "external": "Agent rules only. With auto_continue and placeholder steps: also ask to approve steps carrying the handed-over text",
             "first_send": "ask the user to let step 1 go to the freshly started agent at once, without waiting for its first interaction (risk: a startup dialog may take it)"
         }
     })
@@ -317,6 +477,20 @@ fn examples() -> Value {
                 "template": {"name": "Icons", "steps": ["Generate the images described here and save them as PNG files under ./assets: {{msg.text}}"]},
                 "rule": {"automation_id": "icons", "name": "Icons", "column_id": "<a column id>", "cmd": "codex --no-daemon", "template": "Icons"}
             }
+        },
+        {
+            "purpose": "A one-time follow-up: tomorrow morning a new card checks on work this conversation started",
+            "draft": {
+                "template": {"name": "Follow up PR 123", "steps": ["Follow-up on pull request #123 of this repository (branch fix/login, opened 2026-11-19): check whether CI passed. If it did, merge it and delete the branch. If it failed, read the failing job's log, fix the cause and push. Summarize what you did in one paragraph."]},
+                "rule": {"trigger": "clock", "name": "Follow up PR 123", "schedule": {"unit": "once", "date": "<YYYY-MM-DD>", "time": "09:00"}, "column_id": "<a column id>", "cmd": "claude", "template": "Follow up PR 123", "first_send": true}
+            }
+        },
+        {
+            "purpose": "A recurring check every Monday morning",
+            "draft": {
+                "template": {"name": "Dependency check", "steps": ["Check this repository for outdated or vulnerable dependencies and write the findings to deps-report.md, most urgent first. Change nothing else."]},
+                "rule": {"trigger": "clock", "name": "Dependency check", "schedule": {"unit": "week", "days": [1], "time": "09:00"}, "column_id": "<a column id>", "cmd": "claude", "template": "Dependency check", "finish": "close", "first_send": true}
+            }
         }
     ])
 }
@@ -327,16 +501,17 @@ pub(super) fn config_describe(
     arguments: Value,
 ) -> Result<Value, Value> {
     parse::<Empty>(arguments)?;
-    let (client, pending) = runtime
+    let (client, pending, own) = runtime
         .read(|doc| {
             let client = permitted(doc, client_id, Choice::Drafts)?.clone();
+            let own = own_clock_rules(doc, client_id);
             let pending: Vec<Value> = doc
                 .proposals
                 .iter()
                 .filter(|p| p.client_id == client_id && p.status == PENDING)
                 .map(proposal_view)
                 .collect();
-            Ok((client, pending))
+            Ok((client, pending, own))
         })
         .map_err(map_error)?
         .map_err(map_error)?;
@@ -380,6 +555,22 @@ pub(super) fn config_describe(
                     })
                 })
                 .collect();
+            let clock_rules: Vec<Value> = rules_of(&config)
+                .iter()
+                .filter(|r| r.source == TRIGGER_CLOCK && r.project_id == scope.project_id)
+                .filter_map(|r| {
+                    Some(json!({
+                        "rule_id": r.id,
+                        "name": r.name,
+                        "schedule": ScheduleDraft::of(r.schedule.as_ref()?),
+                        "column_id": r.column_id,
+                        "cmd": r.cmd,
+                        "template": r.template,
+                        "enabled": r.enabled,
+                        "draftedByYou": own.contains(&r.id),
+                    }))
+                })
+                .collect();
             Some(json!({
                 "project_id": scope.project_id,
                 "name": project["name"],
@@ -387,13 +578,14 @@ pub(super) fn config_describe(
                 "columns": columns(project),
                 "templates": templates,
                 "agentRules": rules,
+                "clockRules": clock_rules,
             }))
         })
         .collect();
     Ok(json!({
         "ok": true,
         "workflow": WORKFLOW,
-        "scope": "Templates and Agent handover rules (triggered by deck_automation_trigger) only. You draft; the local user approves in Deck. You cannot approve, delete or change anything yourself.",
+        "scope": "Templates, Agent handover rules (triggered by deck_automation_trigger) and clock rules (run at a schedule, once or repeatedly, in a new card). You draft; the local user approves in Deck. You cannot approve, delete or change anything yourself.",
         "fields": fields_help(),
         "examples": examples(),
         "projects": projects,
@@ -419,6 +611,7 @@ fn check(
     args: &ProposeArgs,
     board: &Value,
     config: &crate::inbound::Config,
+    own_clock: &HashSet<String>,
 ) -> Result<Checked, Value> {
     let scope = scoped_project(client, &args.project_id).map_err(|error| {
         if error.message() == NO_PROJECT_DIRECTORY {
@@ -566,7 +759,7 @@ fn check(
             raw,
             scope,
             project,
-            config,
+            &Saved { config, own_clock },
             template.as_ref(),
             &find_template,
             &mut problems,
@@ -587,43 +780,72 @@ fn check(
     })
 }
 
+/// What a rule draft is checked against besides the Board: the saved rules
+/// and the clock rules this client's approved drafts saved.
+struct Saved<'s> {
+    config: &'s crate::inbound::Config,
+    own_clock: &'s HashSet<String>,
+}
+
 fn check_rule<'a>(
     raw: &RuleDraft,
     scope: &ProjectScope,
     project: &Value,
-    config: &crate::inbound::Config,
+    saved: &Saved,
     template: Option<&TemplateDraft>,
     find_template: &dyn Fn(&str) -> Option<&'a Value>,
     problems: &mut Vec<Value>,
 ) -> RuleDraft {
+    let Saved { config, own_clock } = *saved;
     let mut rule = raw.clone();
     rule.name = rule.name.trim().to_string();
     rule.cmd = rule.cmd.trim().to_string();
     rule.template = rule.template.trim().to_string();
     rule.external = rule.auto_continue && rule.external;
-    if !crate::inbound::valid_badge(&rule.automation_id) {
+    let clock = rule.trigger == TRIGGER_CLOCK;
+    if !clock && rule.trigger != TRIGGER_AGENT {
         problems.push(problem(
-            "rule.automation_id",
-            "AUTOMATION_ID_INVALID",
-            "the automation id is not lowercase letters, digits, _ + - (1–64)",
-            "Use an id like `code-review`.",
+            "rule.trigger",
+            "TRIGGER_INVALID",
+            "trigger is agent or clock",
+            "Use `clock` for a rule that runs at a schedule; omit it for a rule you trigger yourself.",
         ));
     }
-    let existing = agent_rule(config, &rule.automation_id);
-    if existing.is_some_and(|r| r.project_id != scope.project_id) {
-        problems.push(problem(
-            "rule.automation_id",
-            "AUTOMATION_ID_TAKEN",
-            "another project's Agent rule has this id",
-            "Choose another automation id.",
-        ));
+    if clock {
+        check_clock(&mut rule, scope, config, own_clock, problems);
+    } else {
+        if rule.schedule.is_some() || rule.grace_min.is_some() || rule.rule_id.is_some() {
+            problems.push(problem(
+                "rule.schedule",
+                "CLOCK_FIELD_ON_AGENT_RULE",
+                "schedule, grace_min and rule_id belong to a clock rule",
+                "Add trigger: \"clock\", or remove these fields.",
+            ));
+        }
+        if !crate::inbound::valid_badge(&rule.automation_id) {
+            problems.push(problem(
+                "rule.automation_id",
+                "AUTOMATION_ID_INVALID",
+                "the automation id is not lowercase letters, digits, _ + - (1–64)",
+                "Use an id like `code-review`.",
+            ));
+        }
+        if agent_rule(config, &rule.automation_id).is_some_and(|r| r.project_id != scope.project_id)
+        {
+            problems.push(problem(
+                "rule.automation_id",
+                "AUTOMATION_ID_TAKEN",
+                "another project's Agent rule has this id",
+                "Choose another automation id.",
+            ));
+        }
     }
-    if existing.is_none() && rules_of(config).len() >= crate::inbound::MAX_RULES {
+    if rule_before(config, &rule).is_none() && rules_of(config).len() >= crate::inbound::MAX_RULES {
         problems.push(problem(
             "rule",
             "RULES_FULL",
             "Deck already holds 32 automations",
-            "Propose a change to an existing Agent rule instead.",
+            "Propose a change to an existing rule instead, or ask the user to remove one.",
         ));
     }
     if rule.name.chars().count() > RULE_NAME_MAX_CHARS || rule.name.chars().any(char::is_control) {
@@ -697,6 +919,16 @@ fn check_rule<'a>(
             "the template is neither drafted here nor in the project",
             "Name the drafted template, or one deck_config_describe lists.",
         )),
+        Some(steps) if clock => {
+            if steps.iter().any(|s| step_class(s) == "bounded") {
+                problems.push(problem(
+                    "rule.template",
+                    "CLOCK_TEMPLATE_PLACEHOLDER",
+                    "a clock rule's template may not use {{msg.*}} placeholders: nothing is handed over when it runs",
+                    "Write the full instructions into the steps.",
+                ));
+            }
+        }
         Some(steps) => {
             if template.is_none_or(|t| t.name != rule.template)
                 && steps.iter().any(|s| leads_with_message(s))
@@ -732,6 +964,89 @@ fn check_rule<'a>(
     rule
 }
 
+/// The clock half of a rule draft: its schedule, its name, the fields it
+/// may not carry and the rule it changes.
+fn check_clock(
+    rule: &mut RuleDraft,
+    scope: &ProjectScope,
+    config: &crate::inbound::Config,
+    own_clock: &HashSet<String>,
+    problems: &mut Vec<Value>,
+) {
+    if !rule.automation_id.is_empty() || rule.auto_continue || rule.external {
+        problems.push(problem(
+            "rule.automation_id",
+            "AGENT_FIELD_ON_CLOCK_RULE",
+            "automation_id, auto_continue and external belong to an Agent rule",
+            "Remove them: a clock rule runs by itself and its steps follow each other.",
+        ));
+    }
+    if rule.name.is_empty() {
+        problems.push(problem(
+            "rule.name",
+            "RULE_NAME_NEEDED",
+            "a clock rule needs a name",
+            "Name what it does, e.g. \"Follow up PR 123\".",
+        ));
+    }
+    if rule
+        .grace_min
+        .is_some_and(|g| g > crate::inbound::MAX_GRACE_MIN)
+    {
+        problems.push(problem(
+            "rule.grace_min",
+            "GRACE_INVALID",
+            "grace_min is at most 1440",
+            "Use 0 to 1440 minutes, or omit it for 15.",
+        ));
+    }
+    match rule.schedule.as_ref().map(ScheduleDraft::schedule) {
+        None => problems.push(problem(
+            "rule.schedule",
+            "SCHEDULE_NEEDED",
+            "a clock rule needs a schedule",
+            "Add e.g. {\"unit\": \"once\", \"date\": \"2026-12-01\", \"time\": \"09:00\"}.",
+        )),
+        Some(Err(message)) => problems.push(problem(
+            "rule.schedule",
+            "SCHEDULE_INVALID",
+            &message,
+            "See fields.rule.schedule in deck_config_describe.",
+        )),
+        Some(Ok(schedule)) => {
+            let now = crate::procinfo::local_clock();
+            if schedule.unit == crate::inbound::SCHEDULE_ONCE
+                && schedule
+                    .anchor
+                    .as_deref()
+                    .and_then(crate::inbound::parse_anchor)
+                    .is_some_and(|(y, m, d)| {
+                        (y, m, d, schedule.minute) <= (now.year, now.month, now.mday, now.min)
+                    })
+            {
+                problems.push(problem(
+                    "rule.schedule",
+                    "SCHEDULE_PAST",
+                    "the one-time date and time are not in the future (the Mac's local time)",
+                    "Use a later date or time.",
+                ));
+            }
+            rule.schedule = Some(ScheduleDraft::of(&schedule));
+        }
+    }
+    if let Some(id) = rule.rule_id.as_deref() {
+        let known = clock_rule(config, id).is_some_and(|r| r.project_id == scope.project_id);
+        if !known || !own_clock.contains(id) {
+            problems.push(problem(
+                "rule.rule_id",
+                "RULE_NOT_YOURS",
+                "that is not a clock rule of this project one of your approved drafts saved",
+                "Omit rule_id to draft a new rule, or use a rule_id deck_config_describe lists with draftedByYou: true.",
+            ));
+        }
+    }
+}
+
 fn preview<'a>(
     project: &Value,
     template: Option<&TemplateDraft>,
@@ -763,7 +1078,16 @@ fn preview<'a>(
         }
     }
     if let Some(r) = rule {
-        if let Some(before) = agent_rule(config, &r.automation_id) {
+        if let Some(before) = rule_before(config, r) {
+            let schedules = (
+                before.schedule.as_ref().map(ScheduleDraft::of),
+                r.schedule.as_ref(),
+            );
+            if let (Some(old), Some(new)) = schedules {
+                if &old != new {
+                    changes.push(json!({"field": "rule.schedule", "before": schedule_line(&old), "after": schedule_line(new)}));
+                }
+            }
             for (field, old, new) in [
                 ("name", before.name.clone(), r.name.clone()),
                 ("column_id", before.column_id.clone(), r.column_id.clone()),
@@ -803,19 +1127,45 @@ fn preview<'a>(
                 }
             }
         }
-        happens.push(format!(
-            "Each deck_automation_trigger naming \"{}\" opens one card in column \"{}\" running `{}` in {}.",
-            r.automation_id,
-            column_name(&r.column_id),
-            r.cmd,
-            r.dir
-        ));
+        if r.trigger == TRIGGER_CLOCK {
+            let once = r
+                .schedule
+                .as_ref()
+                .is_some_and(|s| s.unit == crate::inbound::SCHEDULE_ONCE);
+            happens.push(format!(
+                "{} Deck opens one new card in column \"{}\" running `{}` in {} (the Mac's local time; only while Deck is running).",
+                if once {
+                    "Once, at the drafted date and time,"
+                } else {
+                    "At every slot of the schedule"
+                },
+                column_name(&r.column_id),
+                r.cmd,
+                r.dir
+            ));
+            happens.push(if once {
+                "If Deck was not running at that time it starts the run later that day; after that day the user is told it was missed and reschedules or removes it.".into()
+            } else {
+                "A slot Deck slept through starts only within grace_min; a slot is skipped while the previous run's card is still on the Board.".into()
+            });
+            happens.push("The new card's agent has none of this conversation: everything it needs must be in the steps.".into());
+        } else {
+            happens.push(format!(
+                "Each deck_automation_trigger naming \"{}\" opens one card in column \"{}\" running `{}` in {}.",
+                r.automation_id,
+                column_name(&r.column_id),
+                r.cmd,
+                r.dir
+            ));
+        }
         happens.push(if r.first_send {
             "Step 1 is typed into the new agent at once (if the user also approves that).".into()
         } else {
             "Step 1 waits until the agent has interacted once, or the user sends it.".into()
         });
-        happens.push(if r.auto_continue {
+        happens.push(if r.trigger == TRIGGER_CLOCK {
+            "Later steps follow, each after the previous turn ended.".into()
+        } else if r.auto_continue {
             "Later steps are sent after each turn ends, if the user approves auto-continue; otherwise the user sends each.".into()
         } else {
             "Later steps wait for the user to send each one.".into()
@@ -830,8 +1180,12 @@ fn preview<'a>(
             "follow_ups": t.follow_ups,
         })),
         "rule": rule.map(|r| json!({
+            "trigger": r.trigger,
             "automation_id": r.automation_id,
-            "new": agent_rule(config, &r.automation_id).is_none(),
+            "rule_id": r.rule_id,
+            "schedule": r.schedule,
+            "grace_min": r.grace_min,
+            "new": rule_before(config, r).is_none(),
             "name": r.name,
             "column": {"id": r.column_id, "name": column_name(&r.column_id)},
             "dir": r.dir,
@@ -863,14 +1217,18 @@ pub(super) fn config_propose(
             "Use a project_id from deck_config_describe and a fresh request id (letters, digits, _ -).",
         ));
     }
-    let client = runtime
-        .read(|doc| permitted(doc, client_id, Choice::Drafts).cloned())
+    let (client, own_clock) = runtime
+        .read(|doc| {
+            permitted(doc, client_id, Choice::Drafts)
+                .cloned()
+                .map(|client| (client, own_clock_rules(doc, client_id)))
+        })
         .map_err(map_error)?
         .map_err(map_error)?;
     let (Some(board), Some(config)) = (board(), super::automation::automation_config()) else {
         return Err(unavailable());
     };
-    let checked = check(&client, &args, &board, &config)?;
+    let checked = check(&client, &args, &board, &config, &own_clock)?;
     if args.validate_only {
         return Ok(json!({
             "ok": true,
@@ -1017,7 +1375,9 @@ fn proposal_view(p: &Proposal) -> Value {
         "status": p.status,
         "projectId": p.project_id,
         "template": p.template.as_ref().map(|t| t.name.clone()),
-        "automationId": p.rule.as_ref().map(|r| r.automation_id.clone()),
+        "trigger": p.rule.as_ref().map(|r| r.trigger.clone()),
+        "automationId": p.rule.as_ref().map(|r| r.automation_id.clone()).filter(|id| !id.is_empty()),
+        "ruleId": p.rule_id,
         "createdAt": p.created_at,
         "decidedAt": p.decided_at,
         "nextAction": next_action(&p.status),
@@ -1084,6 +1444,11 @@ pub(super) fn proposals_ui(runtime: &Runtime) -> Result<Vec<Value>, DeckError> {
                         "name": t.name, "steps": t.steps, "followUps": t.follow_ups,
                     })),
                     "rule": p.rule.as_ref().map(|r| json!({
+                        "trigger": r.trigger,
+                        // the stored shape (`inbound::Schedule`), ready to save
+                        "schedule": r.schedule.as_ref().and_then(|s| s.schedule().ok()),
+                        "graceMin": r.grace_min,
+                        "targetRuleId": r.rule_id,
                         "automationId": r.automation_id,
                         "name": r.name,
                         "columnId": r.column_id,

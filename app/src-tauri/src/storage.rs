@@ -22,7 +22,8 @@
 //!   records. These sources stay v7 even when only their snapshot or audit
 //!   retains the fact; v8 settings.json holding a clock rule whose schedule
 //!   repeats every N > 1 units from an anchor date (a v7 reader would run
-//!   it every unit and its webview would save it back that way). A settings v2 barrier
+//!   it every unit and its webview would save it back that way); v11
+//!   settings.json holding a clock rule with a one-time schedule. A settings v2 barrier
 //!   precedes the first reviewed queue save, so an old automation finish
 //!   rule never takes a refused queue for an empty one;
 //! - loading is TYPED: a file must parse as JSON, carry a readable envelope
@@ -113,8 +114,9 @@ use std::sync::Mutex;
 // protects an Agent trigger rule (settings.json) and the queue origins it
 // admits (a row's or a delivery's authority or override with the agent
 // trigger word); v10 protects a worker card's delegated queue rows (queue
-// only). Ordinary documents keep v1; upgrades are sticky.
-pub const SCHEMA_VERSION: u64 = 10;
+// only); v11 protects a clock rule's one-time schedule (settings only).
+// Ordinary documents keep v1; upgrades are sticky.
+pub const SCHEMA_VERSION: u64 = 11;
 
 // An Agent rule is a source word a v8 reader rejects wholesale (its settings
 // validation refuses the unknown source, which would quarantine the file),
@@ -174,6 +176,24 @@ fn uses_review(v: &serde_json::Value) -> bool {
 // (settings.json only). A v7 reader knows neither field: its serde drops
 // them, so the rule would fire every unit, and its webview's normalization
 // would save it back without them. Refuse the file untouched instead.
+// A one-time schedule is a unit word a v10 reader rejects wholesale (its
+// settings validation refuses the unknown unit, which would quarantine the
+// file). Refuse the file untouched instead.
+fn uses_schedule_once(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(o) => {
+            (o.get("source").and_then(|v| v.as_str()) == Some("clock")
+                && o.get("schedule")
+                    .and_then(|s| s.get("unit"))
+                    .and_then(|v| v.as_str())
+                    == Some("once"))
+                || o.values().any(uses_schedule_once)
+        }
+        serde_json::Value::Array(a) => a.iter().any(uses_schedule_once),
+        _ => false,
+    }
+}
+
 fn uses_schedule_interval(v: &serde_json::Value) -> bool {
     match v {
         serde_json::Value::Object(o) => {
@@ -824,7 +844,9 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let feature_version = if name == "queue.json" && uses_worker_send(&data) {
+    let feature_version = if name == "settings.json" && uses_schedule_once(&data) {
+        11
+    } else if name == "queue.json" && uses_worker_send(&data) {
         10
     } else if matches!(name.as_ref(), "queue.json" | "settings.json") && uses_agent_trigger(&data) {
         9
@@ -2410,6 +2432,47 @@ mod agent_trigger_version_tests {
         save_typed::<serde_json::Value>(&p, &row("delegated").to_string()).unwrap();
         let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         assert!(raw["schema_version"].as_u64().unwrap() < 10);
+    }
+
+    /// v11 on settings.json only, and only for a clock rule's one-time
+    /// schedule: sticky, and refused by a v10 reader.
+    #[test]
+    fn one_time_schedules_upgrade_settings_to_sticky_v11_only_when_used() {
+        let dir = TestDir::new("once-version");
+        let settings = |schedule: serde_json::Value| serde_json::json!({"inbound":{"rules":[{"id":"a1","source":"clock","badge":"a1","schedule":schedule}]}});
+        let once = settings(serde_json::json!({"unit":"once","anchor":"2026-12-01","minute":570}));
+        let p = dir.join("settings.json");
+        save_typed::<serde_json::Value>(
+            &p,
+            &settings(serde_json::json!({"unit":"day","minute":570})).to_string(),
+        )
+        .unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert!(raw["schema_version"].as_u64().unwrap() < 11);
+        save_typed::<serde_json::Value>(&p, &once.to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], 11);
+        assert!(
+            envelope_payload_for(&raw, 10).is_err(),
+            "a v10 reader refuses it"
+        );
+        save_typed::<serde_json::Value>(
+            &p,
+            &settings(serde_json::json!({"unit":"day","minute":570})).to_string(),
+        )
+        .unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], 11, "sticky");
+        // a Slack rule's stray field is not the fact, and only settings carry it
+        let p = dir.join("plain").join("settings.json");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        save_typed::<serde_json::Value>(&p, &serde_json::json!({"inbound":{"rules":[{"id":"r","source":"slack","badge":"deck","schedule":{"unit":"once"}}]}}).to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert!(raw["schema_version"].as_u64().unwrap() < 11);
+        let p = dir.join("deck.json");
+        save_typed::<serde_json::Value>(&p, &once.to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert!(raw["schema_version"].as_u64().unwrap() < 11);
     }
 
     /// v9 on settings.json and queue.json only; deck.json keeps its own

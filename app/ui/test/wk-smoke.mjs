@@ -2154,6 +2154,99 @@ async function automationEditorSmoke(project, column) {
   await report('automation-editor', mask === 255, mask, 255);
 }
 
+/* A one-time automation in the real engine. The editor's "once, on" choice
+   shows the date and takes the interval and the grace row out of layout;
+   the saved rule is the date and comes back when reopened. A rule that
+   recorded its run sits in the drawer's "Ended" group and "Clear ended"
+   removes it with the template only it used; a rule whose day passed
+   without a run is a row under Needs attention, and its "Remove" deletes it
+   and its template. Every date is years away or years ago and the command
+   empty, so no slot can come due during the run (the fake-DOM twins are
+   automation-clock-editor-dom.test.mjs and missed-once-dom.test.mjs). */
+async function automationOnceSmoke(project, column) {
+  const { showAttention } = await import('../js/attention.js');
+  const stamp = Date.now().toString(36);
+  const name = `Smoke once ${stamp}`;
+  const templates = { once: `smoke-once-${stamp}`, missed: `smoke-missed-${stamp}` };
+  for (const template of Object.values(templates)) await provider.saveTemplate(project.id, template, ['echo once-smoke']);
+  const rules = () => ctx.settings.inbound.rules;
+  const mine = () => rules().find(r => r.source === 'clock' && r.name === name);
+  const hasTemplate = template => (provider.project(project.id)?.templates || []).some(tp => tp.name === template);
+  const set = (id, value, event = 'input') => { $(id).value = value; $(id).dispatchEvent(new Event(event, { bubbles: true })); };
+  const laidOut = id => $(id).getClientRects().length > 0;
+  const once = { unit: 'once', days: [], minute: 570, anchor: '2999-01-02' };
+  state.view === 'board' || backToBoard();
+  toggleAutomations();
+  await pause(200);
+  openEditor(null);
+  await pause(100);
+  $('auto-name').value = name;
+  set('auto-column', column.id, 'change');
+  set('auto-template', templates.once, 'change');
+  set('auto-cmd', '');
+  const before = !laidOut('auto-date') && laidOut('auto-every') && laidOut('auto-grace-row');
+  set('auto-unit', 'once', 'change');
+  await pause(50);
+  const controls = before && laidOut('auto-date') && laidOut('auto-once-hint') && !laidOut('auto-every')
+    && !laidOut('auto-every-word') && !laidOut('auto-grace-row') && !laidOut('auto-anchor-row')
+    && /^\d{4}-\d{2}-\d{2}$/.test($('auto-date').value);
+  /* the row still fits the drawer: nothing pushed out of it */
+  const fits = $('auto-drawer').scrollWidth <= $('auto-drawer').clientWidth
+    && $('auto-time').getBoundingClientRect().right <= $('auto-editor').getBoundingClientRect().right + 1;
+  set('auto-date', '2999-01-02');
+  set('auto-time', '09:30');
+  $('auto-save').click();
+  const saved = await waitFor(() => JSON.stringify(mine()?.schedule) === JSON.stringify(once), 5000);
+  const first = mine();
+  if (first) openEditor(first);
+  await pause(100);
+  const reopened = !!first && $('auto-unit').value === 'once' && $('auto-date').value === '2999-01-02'
+    && $('auto-time').value === '09:30' && !laidOut('auto-grace-row');
+  $('auto-cancel').click();
+  await pause(100);
+  /* the run is recorded as inbound.js records it; a second rule's day passed */
+  const missedName = `Smoke missed ${stamp}`;
+  await persistInbound({ ...ctx.settings.inbound, rules: [
+    ...rules().map(r => (r.id === first?.id ? { ...r, ranAt: Math.floor(Date.now() / 1000) } : r)),
+    { ...first, id: `a${stamp}m`, badge: `a${stamp}m`, name: missedName, template: templates.missed,
+      schedule: { ...once, anchor: '2020-01-02' } },
+  ] });
+  /* closed and opened again: the list is painted from the saved rules */
+  toggleAutomations();
+  await pause(100);
+  toggleAutomations();
+  await pause(300);
+  const row = text => [...document.querySelectorAll('#auto-drawer .auto-rule')].find(el => el.textContent.includes(text));
+  const head = document.querySelector('#auto-drawer .auto-ended-head');
+  const ended = !!head && !!row(name) && !!row(missedName) && !row(name).querySelector('.ar-pause')
+    && !!(head.compareDocumentPosition(row(name)) & Node.DOCUMENT_POSITION_FOLLOWING);
+  $('auto-clear-ended')?.click();
+  await pause(100);
+  $('cfm-yes').click();
+  const cleared = await waitFor(() => !mine() && !hasTemplate(templates.once), 5000)
+    && rules().some(r => r.name === missedName) && hasTemplate(templates.missed);
+  toggleAutomations();
+  showAttention();
+  await pause(200);
+  const missedRow = () => [...document.querySelectorAll('#attention-view .missed-row')].find(el => el.textContent.includes(missedName));
+  const listed = !!missedRow() && missedRow().querySelector('.missed-reschedule').getClientRects().length > 0
+    && $('attention-count').textContent.length > 0;
+  missedRow()?.querySelector('.missed-remove').click();
+  await pause(100);
+  $('cfm-yes').click();
+  const removed = await waitFor(() => !rules().some(r => r.name === missedName) && !hasTemplate(templates.missed) && !missedRow(), 5000);
+  $('attention-back').click();
+  await pause(100);
+  /* nothing of this check stays behind, whatever failed above */
+  if (rules().some(r => [name, missedName].includes(r.name))) {
+    await persistInbound({ ...ctx.settings.inbound, rules: rules().filter(r => ![name, missedName].includes(r.name)) });
+  }
+  for (const template of Object.values(templates)) if (hasTemplate(template)) await provider.deleteTemplate(project.id, template);
+  const mask = (controls ? 1 : 0) | (fits ? 2 : 0) | (saved ? 4 : 0) | (reopened ? 8 : 0)
+    | (ended ? 16 : 0) | (cleared ? 32 : 0) | (listed ? 64 : 0) | (removed ? 128 : 0);
+  await report('automation-once', mask === 255, mask, 255);
+}
+
 /* Prompts became multi-line, so the queue's field became a textarea and the
    panel rows became collapsible. Both are exactly the class of change a fake
    document cannot judge: WebKit REFUSES keyboard input in a textarea that
@@ -2820,6 +2913,7 @@ export async function run() {
     stage = 15;
     await automationSmoke(project, column);
     await automationEditorSmoke(project, column);
+    await automationOnceSmoke(project, column);
     await terminalPaintSmoke(project, column);
     await inv('smoke_seed_ambiguous');
     await report('page-visible', shown && visibility.hidden === 0 && !document.hidden,

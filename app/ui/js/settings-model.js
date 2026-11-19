@@ -66,7 +66,7 @@ export const INBOUND_SOURCES = Object.freeze(['slack', 'clock', 'agent']);
 /* sources with an on/off switch of their own; the clock is on whenever one
    of its rules is enabled */
 const INBOUND_TOGGLES = Object.freeze(['slack']);
-export const SCHEDULE_UNITS = Object.freeze(['day', 'week', 'month']);
+export const SCHEDULE_UNITS = Object.freeze(['day', 'week', 'month', 'once']);
 /* a schedule repeats every 1..12 of its unit (every 12 months is a year) */
 export const SCHEDULE_EVERY_MAX = 12;
 export const FINISH_MODES = Object.freeze(['keep', 'close']);
@@ -124,6 +124,8 @@ export function normalizeSchedule(raw) {
      wrong shape, not a number to repair */
   const every = raw.every == null ? 1 : raw.every;
   if (!Number.isInteger(every) || every < 1 || every > SCHEDULE_EVERY_MAX) return null;
+  /* one slot: its date in `anchor`, no interval, no days */
+  if (unit === 'once') return every === 1 && parseCivilDate(raw.anchor) ? { unit, days: [], minute, anchor: String(raw.anchor) } : null;
   if ((every > 1) !== (raw.anchor != null)) return null;
   if (every > 1 && !parseCivilDate(raw.anchor)) return null;
   const interval = every > 1 ? { every, anchor: String(raw.anchor) } : {};
@@ -170,6 +172,8 @@ export function normalizeInbound(value) {
       rule.schedule = normalizeSchedule(r.schedule);
       if (!rule.schedule) continue;
       rule.graceMin = normalizeGrace(r.graceMin);
+      /* a one-time rule's recorded run (inbound.js): the rule is spent */
+      if (rule.schedule.unit === 'once' && Number.isSafeInteger(r.ranAt) && r.ranAt > 0) rule.ranAt = r.ranAt;
     }
     if (rule.name.length > INBOUND_NAME_MAX || /[\r\n]/.test(rule.name)) continue;
     if (!INBOUND_SOURCES.includes(rule.source) || !INBOUND_BADGE_RE.test(rule.badge)) continue;

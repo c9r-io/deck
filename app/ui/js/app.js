@@ -25,6 +25,7 @@ import { initAttention, openFromNotification, refreshAttention } from './attenti
 import { initMentions, startMentions } from './slack-mentions.js';
 import { initWorkers, startWorkers } from './workers.js';
 import { initProposals, startProposals } from './proposals.js';
+import { initMissedOnce, startMissedOnce } from './missed-once.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
 import { installPendingUpdate, renderPendingUpdate } from './update-install.js';
@@ -511,14 +512,16 @@ function initModules() {
   initAttention({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp });
   initMentions({ provider, render, switchProject, leaveSessionView, closeBuffer });
   initWorkers({ render });
+  const editRule = async ruleId => {
+    await openAutomations();
+    const rule = (ctx.settings?.inbound?.rules || []).find(value => value.id === ruleId);
+    if (rule) openRuleEditor(rule);
+  };
+  initMissedOnce({ provider, switchProject, refresh: () => refreshAttention(), openRuleEditor: editRule });
   initProposals({
     provider, switchProject,
     refresh: () => { refreshAttention(); if (automationsOpen()) renderAutomations(); },
-    openRuleEditor: async ruleId => {
-      await openAutomations();
-      const rule = (ctx.settings?.inbound?.rules || []).find(value => value.id === ruleId);
-      if (rule) openRuleEditor(rule);
-    },
+    openRuleEditor: editRule,
     openTemplates: () => openTemplates(),
   });
   initLayout();
@@ -609,6 +612,7 @@ const offerBoardExit = createBoardExit({
     startMentions();
     startWorkers();
     startProposals();
+    startMissedOnce();
     startOrphanPruning();
   },
 });
@@ -738,6 +742,7 @@ export async function boot() {
   if (!loadErr) startMentions();
   if (!loadErr) startWorkers();
   if (!loadErr) startProposals();
+  if (!loadErr) startMissedOnce();
   drainConnector();
   setTimeout(checkForUpdate, 4000);
   /* runtime cadence comes from a Rust thread (App Nap freezes JS timers) */

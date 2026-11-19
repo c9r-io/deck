@@ -108,13 +108,15 @@
           </div>
           <div class="set-row q-p q-p-clock">
             <label for="auto-every" data-i18n="automation.when">When</label>
-            <span class="auto-every-word" data-i18n="automation.every">every</span>
+            <span class="auto-every-word" id="auto-every-word" data-i18n="automation.every">every</span>
             <input type="number" id="auto-every" min="1" max="12" step="1" value="1" aria-label="Repeat every" data-i18n-aria-label="automation.everyLabel">
             <select id="auto-unit">
               <option value="day" data-i18n="automation.unit.day">day(s) at</option>
               <option value="week" data-i18n="automation.unit.week">week(s) on</option>
               <option value="month" data-i18n="automation.unit.month">month(s) on day</option>
+              <option value="once" data-i18n="automation.unit.once">once, on</option>
             </select>
+            <input type="date" id="auto-date" aria-label="Date" data-i18n-aria-label="automation.onceDate">
             <span id="auto-days" class="q-days" role="group" aria-label="Weekdays" data-i18n-aria-label="automation.weekdays"></span>
             <input id="auto-dom" autocomplete="off" spellcheck="false" placeholder="1, 15" aria-label="Days of the month" data-i18n-aria-label="automation.monthDays">
             <input type="time" id="auto-time" value="09:00">
@@ -125,7 +127,8 @@
           </div>
           <div class="set-hint q-p q-p-clock" id="auto-anchor-hint" data-i18n="automation.fromHint">The week (day, month) this date falls in is an on period and nothing before it runs; pausing, missed slots and later edits do not shift it.</div>
           <div class="set-hint q-p q-p-clock" id="auto-preview" aria-live="polite"></div>
-          <div class="set-row q-p q-p-clock">
+          <div class="set-hint q-p q-p-clock" id="auto-once-hint" data-i18n="automation.onceHint">Runs one time. If Deck is not running then, it starts later that day; after that day it is listed under Needs attention as missed.</div>
+          <div class="set-row q-p q-p-clock" id="auto-grace-row">
             <label for="auto-grace" data-i18n="automation.grace">If missed</label>
             <select id="auto-grace"></select>
           </div>

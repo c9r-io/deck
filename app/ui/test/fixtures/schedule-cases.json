@@ -1,6 +1,7 @@
 {
   "about": "Clock rule schedules, pinned on both sides. `days`: from the calendar date `from` (inclusive), the first calendar days the schedule has a slot on, in order — pure calendar, no zone, no `since`; pure.test.mjs runs them through scheduleMatchesDay / nextScheduleSlots and inbound.rs through Schedule::matches_day. `instants`: the zone contract for a slot's due instant (procinfo.rs `wall_time_epoch`, pure.js `nextScheduleSlot`): a wall time the spring switch skips moves forward by the gap, one the autumn switch repeats is its first occurrence; `key` is the slot's identity (`day_start + minute * 60`), unchanged by the contract. Expected dates were generated with Python's datetime, independently of either implementation.",
   "days": [
+    {"name": "one time on its date, never again", "schedule": {"unit": "once", "anchor": "2026-12-01", "minute": 570}, "from": "2026-11-19", "expect": ["2026-12-01"]},
     {
       "name": "biweekly Monday from its anchor",
       "schedule": { "unit": "week", "every": 2, "anchor": "2026-10-19", "days": [1], "minute": 540 },

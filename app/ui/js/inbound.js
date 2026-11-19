@@ -37,6 +37,8 @@
 // `firstSend: {rule}` into the plan; the head row alone claims it with the
 // event key, and the backend re-checks the claim against settings and its
 // own copy of the event. Clock runs use owner admission with their native slot.
+// A one-time clock rule's started run is recorded on the rule (`ranAt`,
+// `recordOnceRun`), through the one settings writer.
 // A badge, clock, Agent or channel run also freezes its template's
 // follow-ups (`followUps`: the owner's own fixed replies, never filled) into
 // its plan. Nothing queues them here: each is a button until the user
@@ -57,6 +59,7 @@
 // after a restart, and the channel event stays in its inbox.
 import { ctx, genId, inv, listen, store, uev } from './state.js';
 import { provider } from './board.js';
+import { persistInbound } from './settings.js';
 import { toast } from './dialogs.js';
 import { planInbound } from './pure.js';
 import { t } from './i18n.js';
@@ -302,7 +305,23 @@ async function handleInbound(item) {
   }
   if (!(await reconcileInboundCard(card))) return;
   toast(clock ? t('automation.created', { name: card.title }) : t('inbound.created', { badge, where: item.event.where }));
-  return ack(item.id, 'done', 'created', { card: card.id });
+  await ack(item.id, 'done', 'created', { card: card.id });
+  if (clock) await recordOnceRun(item.rule.id);
+}
+
+/* A one-time clock rule that started its run is spent: the rule records
+   when (`ranAt`), so it never offers its slot again and the drawer lists it
+   as ended long after the run list forgot the run. The rule stays on (its
+   first-send choice is read from it until the first step is sent). A failed
+   write changes nothing that matters today: the slot is acknowledged, and
+   the run list still says the rule ran. */
+async function recordOnceRun(ruleId) {
+  const inbound = ctx.settings?.inbound;
+  const rule = (inbound?.rules || []).find(r => r.id === ruleId);
+  if (rule?.source !== 'clock' || rule.schedule?.unit !== 'once' || rule.ranAt) return;
+  const rules = inbound.rules.map(r => (r.id === ruleId ? { ...r, ranAt: Math.floor(Date.now() / 1000) } : r));
+  const ok = await persistInbound({ ...inbound, rules }).catch(() => false);
+  if (!ok) uev('inbound', 'once-record-fail');
 }
 
 /* Everything this module pulls starts here, when app.js says the webview
