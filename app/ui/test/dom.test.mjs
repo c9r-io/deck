@@ -2076,7 +2076,7 @@ test('an MCP client row opens its permissions in the one dialog and saves them a
   assert.equal(fakeDocument.getElementById('mcp-auth-title').textContent, 'What Patrol may do');
   assert.equal(fakeDocument.getElementById('mcp-auth-name').disabled, true, 'identity is fixed when editing');
   assert.equal(fakeDocument.getElementById('mcp-perm-worker-box').hidden, true);
-  // turning on worker cards brings a Claude and a Codex type in the first column and shared replies
+  // turning on worker cards brings a Claude and a Codex type (no column: the start decides) and shared replies
   const workers = fakeDocument.getElementById('mcp-perm-workers');
   workers.checked = true; workers.fire('change');
   assert.equal(fakeDocument.getElementById('mcp-perm-worker-box').hidden, false);
@@ -2089,8 +2089,8 @@ test('an MCP client row opens its permissions in the one dialog and saves them a
   const call = calls.find(([cmd]) => cmd === 'mcp_client_permissions');
   assert.equal(call[1].clientId, 'client_live');
   assert.deepEqual(call[1].permissions, { allowCreate: false, allowAutomations: true, allowWorkers: true, allowReplies: true, workerFirstSend: false, allowDrafts: false, allowMentions: false, allowCards: false, allowCardEdits: false, ruleColumn: false,
-    workerTypes: [{ name: 'claude', cmd: 'claude --permission-mode auto', columnId: 'C1', description: 'Write code, edit files, run tests' },
-      { name: 'codex', cmd: 'codex --no-daemon --yolo', columnId: 'C1', description: 'Computer use (operating desktop apps and browsers), image generation, independent implementation, a second opinion' }], allProjects: false });
+    workerTypes: [{ name: 'claude', cmd: 'claude --permission-mode auto', description: 'Write code, edit files, run tests' },
+      { name: 'codex', cmd: 'codex --no-daemon --yolo', description: 'Computer use (operating desktop apps and browsers), image generation, independent implementation, a second opinion' }], allProjects: false });
   row = fakeDocument.getElementById('set-mcp-clients').children[0];
   assert.match(row.children[0].children[1].textContent, /automations delegated · drives its worker cards/);
   // a Codex type without --no-daemon is refused in the dialog, nothing is saved
@@ -2099,6 +2099,8 @@ test('an MCP client row opens its permissions in the one dialog and saves them a
   fakeDocument.getElementById('mcp-perm-type-add').fire('click');
   const types = fakeDocument.getElementById('mcp-perm-types').children;
   assert.equal(types.length, 3);
+  assert.deepEqual(types[0].children.map(c => String(c.className)), ['mcp-type-name', 'mcp-type-cmd', 'mcp-type-desc', 'btn mcp-type-remove'],
+    'name, command, what it is good at: no column');
   const [name, cmd] = types[2].children;
   name.value = 'codex-plain'; name.fire('input');
   cmd.value = 'codex'; cmd.fire('input');

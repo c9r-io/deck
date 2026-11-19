@@ -10,9 +10,14 @@ Phase `first`: deck_capabilities says allProjects, lists A and B among
 authorizedWorkspaces (each with its default directory) and the first
 project, which has none, in projectsWithoutDirectory; a start named there
 is refused; a start without a project opens in this card's project, in
-that project's directory. Phase `after` (in "Orch B", once the page
-narrowed the client to A): A alone is reached, a start from B's card is
-refused, and B's own worker reads as taken over by the user.
+that project's directory. In "Orch A" only, where its worker cards open
+(the client may organize cards, so it may name a column): a start in B
+naming no column decides none (the page sees it where the user's new cards
+open in B), one of A's columns for B is COLUMN_NOT_FOUND listing exactly
+B's columns, and B's third column named is the one the start records.
+Phase `after` (in "Orch B", once the page narrowed the client to A): A
+alone is reached, a start from B's card is refused, and B's own worker
+reads as taken over by the user.
 
 Prints closed facts only. Exit 0 when every expectation held, 1 otherwise.
 """
@@ -64,11 +69,14 @@ def main():
         role = card.get("title", "?")[-1:]
         spaces = caps.get("authorizedWorkspaces") or []
         ok_l, listed = call("deck_worker_list")
-        seq = listed.get("nextSendSequence", 0)
-        start = lambda request, project=None: call("deck_worker_start", dict(
-            {"request_id": f"{request}_{role}_{args.tag}", "send_sequence": seq, "type": "claude",
-             "title": f"{role} worker", "text": f"Orchestrator {role}: say hello."},
-            **({"project_id": project} if project else {})))
+
+        def start(request, project=None, column=None, title=None):
+            # this card's lane moves with every accepted start: read it each time
+            sequence = call("deck_worker_list")[1].get("nextSendSequence", 0)
+            return call("deck_worker_start", dict(
+                {"request_id": f"{request}_{role}_{args.tag}", "send_sequence": sequence, "type": "claude",
+                 "title": title or f"{role} worker", "text": f"Orchestrator {role}: say hello."},
+                **({"project_id": project} if project else {}), **({"column_id": column} if column else {})))
         if args.phase == "first":
             without = caps.get("projectsWithoutDirectory") or []
             step("all-projects", ok and caps.get("allProjects") is True and len(spaces) >= 2 and len(without) >= 1
@@ -81,6 +89,27 @@ def main():
             mine = next((s for s in spaces if s["projectId"] == result.get("projectId")), {})
             step("started-in-own-project", ok and bool(mine) and result.get("dir") == (mine.get("roots") or [""])[0]
                  and result.get("dir", "").endswith(f"/work/{role.lower()}"), dir=os.path.basename(result.get("dir", "")))
+            if role == "A":
+                ok_s, snap = call("deck_cards_snapshot")
+                layout = {p["projectId"]: [c["columnId"] for c in p.get("columns", [])] for p in snap.get("projects", [])}
+                other = next((s["projectId"] for s in spaces
+                              if (s.get("roots") or [""])[0].endswith("/work/b")), None)
+                a_columns, b_columns = layout.get(result.get("projectId"), []), layout.get(other, [])
+                step("columns-visible", ok_s and len(a_columns) >= 1 and len(b_columns) >= 3,
+                     a=len(a_columns), b=len(b_columns))
+                ok, cross = start("cross", other, title="A to B")
+                placed = cross.get("result") or {}
+                step("cross-project-no-column", ok and placed.get("projectId") == other
+                     and placed.get("columnId") is None, decided=placed.get("columnId") is not None)
+                ok, wrong = start("wrong", other, column=(a_columns or ["none"])[0])
+                offered = [c.get("columnId") for c in (wrong.get("error") or {}).get("columns") or []]
+                step("other-projects-column-refused", not ok and code(wrong) == "COLUMN_NOT_FOUND"
+                     and offered == b_columns, code=code(wrong), offered=len(offered))
+                third = b_columns[2] if len(b_columns) >= 3 else "none"
+                ok, named = start("named", other, column=third, title="A to B queued")
+                placed = named.get("result") or {}
+                step("named-column", ok and placed.get("projectId") == other and placed.get("columnId") == third,
+                     state=named.get("state"))
         else:
             step("narrowed", ok and caps.get("allProjects") is False and len(spaces) == 1, reached=len(spaces))
             ok, refused = start("after")

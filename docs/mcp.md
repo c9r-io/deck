@@ -142,7 +142,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_worker_report` | Called by the agent IN a worker card: hands Deck a text (at most 8192 bytes) for the orchestrator that started the card. It names no card and no recipient; Deck sees which card the call comes from. `NOT_A_WORKER_CARD` anywhere else. |
 | `deck_worker_reports` | A worker card's kept reports (the newest 4, each with its sequence and time; `after` for newer ones only). Durable; needs the **replies** choice. |
 | `deck_worker_reply` | A worker card's final Claude Code message of one turn ending (its episode), head and tail when long; memory only, the newest 32 (`REPLY_GONE` otherwise). Needs the further **replies** choice. |
-| `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in the project named by `project_id` (default: the orchestrator card's, else the client's first), optionally in `dir` inside that project's directory, with its first line. An operation to poll (`committed` with `cardId`); at most 8 worker cards per orchestrator card on the Board (callers from no card together), 32 per client. |
+| `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in the project named by `project_id` (default: the orchestrator card's, else the client's first), optionally in `dir` inside that project's directory, with its first line. It opens beside the orchestrator card, else where your own new cards open in that project; a client you also let **organize cards** may name the column (`column_id`, a column of that project: another project's is `COLUMN_NOT_FOUND`, listing the right ones; without that choice `PERMISSION_DENIED`). An operation to poll (`committed` with `cardId`); at most 8 worker cards per orchestrator card on the Board (callers from no card together), 32 per client. |
 | `deck_config_describe` | Before drafting: the workflow, every field of a template and an Agent handover rule with its rules, copyable examples, and the client's projects with their columns, templates (name and structure, never step text) and Agent rules. Needs the client's separate **draft** choice. |
 | `deck_config_propose` | Draft a template and/or one Agent handover rule. `validate_only: true` checks and previews and records nothing; every problem is `{field, code, message, fix}`. A valid submission (fresh `request_id`) waits in Needs attention as a proposal; an identical pending draft is refused (`DUPLICATE_PROPOSAL`), at most 4 wait per client. Writes and authorizes nothing. |
 | `deck_config_proposal_get` | One of the client's proposals: `pending`, `approved` (saved as drafted), `edited` (saved without automatic sending, finished in the editor), `rejected` or `withdrawn`, with the next action. |
@@ -310,11 +310,17 @@ reasons.
 Every choice of a client is in one dialog: **Authorize MCP client…** for a
 new one, **Permissions…** on its row afterwards (changes take effect at
 once). **Drive worker cards** lets it start and drive worker cards; below
-it you list the **worker types** it may start — a name, your command, the
-column and one line saying what the type is good at, which the
+it you list the **worker types** it may start — a name, your command and
+one line saying what the type is good at, which the
 orchestrator reads to choose (two types are filled in: `claude
 --permission-mode auto` and `codex --no-daemon --yolo`; any Codex type
-must use `--no-daemon`). **Send a new worker card's first line
+must use `--no-daemon`). A type has no column: a worker card opens in
+the project the orchestrator names (default its own card's), beside its
+own card when both are in that project, otherwise where your own new
+cards open in that project (the column you picked for new sessions, else
+the working one). An orchestrator you also let **organize cards** may
+choose the column itself (`column_id`); a column of another project is
+refused, never swapped for another one. **Send a new worker card's first line
 without waiting for readiness** and **Share replies** are further choices
 there. A worker card is a card it started with `deck_worker_start`, or one
 its own `deck_automation_trigger` call created while it could drive worker
@@ -393,7 +399,9 @@ cannot claim another card. That card is the call's **orchestrator card**:
   moment, when both are in one project. Moving the orchestrator card later
   moves nothing; its next worker opens in the new column. Turn off **Open
   worker cards beside their orchestrator** in the client's dialog to use
-  each type's or automation's column instead.
+  the automation's column instead, and for a `deck_worker_start` the
+  column your new cards open in. A start that names its column (only
+  with **organize cards**) opens there either way.
 - Its worker cards are labelled "Driven by ‹orchestrator card›", and only
   it drives them: `deck_worker_list` from another orchestrator card does
   not list them, and a send to one is `WORKER_NOT_FOUND`. Worker cards that
@@ -562,7 +570,10 @@ default, and only with it) lets a client rename the cards of its projects
 and move them: between the columns of a project, and between the projects
 it reaches (`deck_card_update`). It is the one way a card changes place
 without your own gesture, and it happens only on that client's explicit
-request for one card.
+request for one card. With **Drive worker cards** too, the same choice
+lets the client name the column a worker card it starts opens in
+(`deck_worker_start` `column_id`); without it a worker opens beside its
+orchestrator card or where your new cards open.
 
 - **One card per request, bound to what the client saw.** The request
   names the title and the column the snapshot showed. If you renamed or

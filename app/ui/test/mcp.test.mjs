@@ -42,6 +42,45 @@ test('create starts the managed runner before persisting and commits the real ca
   assert.equal(complete.tmuxSession, store.cards[0].session);
 });
 
+/* where an MCP-started card lands (mcp/workers.rs decides a worker's
+   column or none): the column native named, else — none named, or gone
+   meanwhile — the project's new-card column (pure.js newSessionColumn),
+   never simply the first; a managed shell always the latter */
+test('MCP-started cards open in the named column, else where the user’s new cards open', async () => {
+  store.projects = [{ id: 'P1', name: 'Project', selected: null, columns: [
+    { id: 'CA', name: 'Needs attention', semantic: 'attention' },
+    { id: 'CW', name: 'In progress', semantic: 'working' },
+    { id: 'CQ', name: 'Queued', semantic: 'queued' },
+  ] }];
+  store.cards = [];
+  const worker = (id, columnId) => ({ operationId: `op_${id}`, kind: 'worker-start', result: {
+    cardId: id, projectId: 'P1', columnId, cmd: 'claude', dir: '/tmp', title: id, type: 'claude',
+  } });
+  const shell = { operationId: 'op_M9', kind: 'session-create', result: {
+    cardId: 'M9', sessionId: 'mcp_9', projectId: 'P1', title: 'MCP shell', cwd: '/tmp', generation: 'g_9',
+  } };
+  let items = [worker('W1', 'CQ'), worker('W2', null), worker('W3', 'gone'), shell];
+  const all = [...items];
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    if (cmd === 'mcp_pending') { const value = items; items = []; return value; }
+    if (cmd === 'mcp_claim') return all.find(item => item.operationId === args.operationId);
+    if (cmd === 'start_session' || cmd === 'mcp_start_session') return { created: true };
+    if (cmd === 'save_board' || cmd === 'mcp_complete') return;
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  await drainMcp();
+  const column = id => store.cards.find(card => card.id === id)?.columnId;
+  assert.equal(column('W1'), 'CQ', 'the column native named');
+  assert.equal(column('W2'), 'CW', 'none named: the working column, not the attention column first');
+  assert.equal(column('W3'), 'CW', 'a column gone meanwhile: the same');
+  assert.equal(column('M9'), 'CW', 'a managed shell: the same rule');
+  store.projects[0].selected = 'CQ';
+  store.cards = [];
+  items = [worker('W4', null)]; all.push(...items);
+  await drainMcp();
+  assert.equal(column('W4'), 'CQ', 'the project’s selected new-card column first');
+});
+
 test('a Board save failure kills only the newly created session and records ambiguity', async () => {
   project();
   const pending = { operationId: 'op_2', kind: 'session-create', result: {

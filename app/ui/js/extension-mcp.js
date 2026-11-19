@@ -12,7 +12,7 @@ const PANEL_HTML = `
       <div id="set-mcp-clients"></div>
     </div>`;
 
-import { claudeAddCommand, codexConfig, defaultWorkerTypes, previewErrorKey, scopeProblem, typeColumnChoice, initialPermissions, initialScope, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
+import { claudeAddCommand, codexConfig, defaultWorkerTypes, previewErrorKey, scopeProblem, initialPermissions, initialScope, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
 
 const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" aria-labelledby="mcp-auth-title">
   <div id="mcp-auth-box">
@@ -37,7 +37,7 @@ const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" a
       <label class="mcp-perm"><input type="checkbox" id="mcp-perm-workers"> <span data-i18n="mcp.permWorkers">Drive worker cards</span></label>
       <p class="set-hint mcp-perm-hint" data-i18n="mcp.permWorkersHint">It starts worker cards.</p>
       <div class="mcp-perm-sub" id="mcp-perm-worker-box">
-        <div class="mcp-types-head"><span data-i18n="mcp.typeName">Name</span><span data-i18n="mcp.typeCommand">Command</span><span data-i18n="mcp.typeColumn">Column</span><span data-i18n="mcp.typeDescription">Good at</span><span></span></div>
+        <div class="mcp-types-head"><span data-i18n="mcp.typeName">Name</span><span data-i18n="mcp.typeCommand">Command</span><span data-i18n="mcp.typeDescription">Good at</span><span></span></div>
         <div id="mcp-perm-types"></div>
         <button class="btn" id="mcp-perm-type-add" type="button" data-i18n="mcp.typeAdd">Add type</button>
         <label class="mcp-perm"><input type="checkbox" id="mcp-perm-first-send"> <span data-i18n="mcp.permFirstSend">Send the first line without waiting</span></label>
@@ -47,7 +47,7 @@ const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" a
       </div>
       <div class="mcp-perm-sub" id="mcp-perm-follow-box">
         <label class="mcp-perm"><input type="checkbox" id="mcp-perm-follow"> <span data-i18n="mcp.permFollow">Open worker cards beside their orchestrator</span></label>
-        <p class="set-hint mcp-perm-hint" data-i18n="mcp.permFollowHint">When the agent runs in a Deck card, the cards it starts open in that card's column and only it drives them. Off: each type's or automation's column.</p>
+        <p class="set-hint mcp-perm-hint" data-i18n="mcp.permFollowHint">When the agent runs in a Deck card, the cards it starts open in that card's column and only it drives them. Off: the automation's column, or where your new cards open in that project.</p>
       </div>
       <label class="mcp-perm"><input type="checkbox" id="mcp-perm-drafts"> <span data-i18n="mcp.permDrafts">Draft templates and automations</span></label>
       <p class="set-hint mcp-perm-hint" data-i18n="mcp.permDraftsHint">Drafts wait in Needs attention; nothing works until you approve.</p>
@@ -57,7 +57,7 @@ const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" a
       <p class="set-hint mcp-perm-hint" data-i18n="mcp.permCardsHint">Its projects' cards and what Claude Code last said in each. It may mark cards for you in Needs attention; it cannot close, send or move any.</p>
       <div class="mcp-perm-sub" id="mcp-perm-card-edits-box">
         <label class="mcp-perm"><input type="checkbox" id="mcp-perm-card-edits"> <span data-i18n="mcp.permCardEdits">Organize cards</span></label>
-        <p class="set-hint mcp-perm-hint" data-i18n="mcp.permCardEditsHint">It may rename its projects' cards and move them between columns and between the projects it reaches.</p>
+        <p class="set-hint mcp-perm-hint" data-i18n="mcp.permCardEditsHint">It may rename its projects' cards and move them between columns and between the projects it reaches. With Drive worker cards on, it may also choose the column each worker card it starts opens in.</p>
       </div>
       <p class="mcp-field-error" id="mcp-perm-error" role="alert" hidden></p>
     </div>
@@ -130,8 +130,7 @@ export function createMcpSettings(host) {
         const permissions = document.createElement('button'); permissions.className = 'btn mcp-permissions';
         permissions.textContent = t('mcp.permissions');
         permissions.onclick = async () => {
-          const project = store.projects.find(value => value.id === client.projects?.[0]?.projectId) || null;
-          const chosen = await mcpAuthorizationDialog(store.projects, { client, project,
+          const chosen = await mcpAuthorizationDialog(store.projects, { client,
             previewRoot: root => inv('mcp_scope_preview', { root }) });
           if (!chosen) return;
           try {
@@ -340,7 +339,6 @@ export function createMcpSettings(host) {
       };
       const scopeNow = () => ({ all: all.checked, rows: [{ projectId: select.value, root: root.value.trim() },
         ...moreRows.map(entry => ({ projectId: entry.select.value, root: entry.input.value.trim() }))] });
-      const columns = () => (selected() || options.project || available[0])?.columns || [];
       const paintTypes = () => {
         const list = $('mcp-perm-types'); list.replaceChildren();
         perms.workerTypes.forEach((type, index) => {
@@ -356,17 +354,6 @@ export function createMcpSettings(host) {
           typeName.oninput = () => { type.name = typeName.value; showError(permError, null, ''); };
           const cmd = field('mcp-type-cmd', 'mcp.typeCommand', type.cmd);
           cmd.oninput = () => { type.cmd = cmd.value; showError(permError, null, ''); };
-          const column = document.createElement('select'); column.className = 'mcp-type-column';
-          column.setAttribute('aria-label', t('mcp.typeColumn'));
-          const choice = typeColumnChoice(columns(), available, type.columnId);
-          for (const value of choice.options) {
-            const option = document.createElement('option');
-            option.value = value.id; option.textContent = value.name;
-            column.appendChild(option);
-          }
-          type.columnId = choice.value;
-          column.value = type.columnId;
-          column.onchange = () => { type.columnId = column.value; };
           const description = field('mcp-type-desc', 'mcp.typeDescription', type.description);
           description.maxLength = 200;
           description.oninput = () => { type.description = description.value; };
@@ -374,7 +361,7 @@ export function createMcpSettings(host) {
           remove.type = 'button'; remove.className = 'btn mcp-type-remove'; remove.textContent = '✕';
           remove.title = t('mcp.typeRemove'); remove.setAttribute('aria-label', t('mcp.typeRemove'));
           remove.onclick = () => { perms.workerTypes.splice(index, 1); paintTypes(); };
-          row.append(typeName, cmd, column, description, remove);
+          row.append(typeName, cmd, description, remove);
           list.appendChild(row);
         });
         $('mcp-perm-type-add').disabled = perms.workerTypes.length >= 8;
@@ -402,7 +389,7 @@ export function createMcpSettings(host) {
         perms.allowWorkers = $('mcp-perm-workers').checked;
         /* turned on: a Claude and a Codex type and shared replies, ready to use */
         if (perms.allowWorkers && !perms.workerTypes.length) {
-          perms.workerTypes.push(...defaultWorkerTypes(columns(), { claude: t('mcp.typeDefaultDescription'), codex: t('mcp.typeDefaultCodexDescription') }));
+          perms.workerTypes.push(...defaultWorkerTypes({ claude: t('mcp.typeDefaultDescription'), codex: t('mcp.typeDefaultCodexDescription') }));
           perms.allowReplies = true;
         }
         showError(permError, null, '');
@@ -415,7 +402,7 @@ export function createMcpSettings(host) {
       $('mcp-perm-cards').onchange = () => { perms.allowCards = $('mcp-perm-cards').checked; paintPerms(); };
       $('mcp-perm-card-edits').onchange = () => { perms.allowCardEdits = $('mcp-perm-card-edits').checked; };
       $('mcp-perm-type-add').onclick = () => {
-        perms.workerTypes.push({ name: '', cmd: '', columnId: columns()[0]?.id || '', description: '' });
+        perms.workerTypes.push({ name: '', cmd: '', description: '' });
         paintTypes();
         $('mcp-perm-types').lastElementChild?.querySelector?.('.mcp-type-name')?.focus?.();
       };

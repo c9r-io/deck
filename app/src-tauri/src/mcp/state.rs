@@ -112,7 +112,8 @@ pub(super) struct Client {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) allow_card_edits: bool,
     /// The user's choice that a worker card this client's orchestrator
-    /// card starts opens in its type's or rule's column, not beside the
+    /// card starts opens in its rule's column (a handover) or its project's
+    /// new-card column (a start naming no column), not beside the
     /// orchestrator card (`origin.rs`; off, the default, follows it).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) rule_column: bool,

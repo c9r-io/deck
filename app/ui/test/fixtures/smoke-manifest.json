@@ -935,6 +935,9 @@
         "workers-client": {},
         "projects-armed": {},
         "projects-placed": {},
+        "projects-columns": {},
+        "projects-live-ready": {},
+        "projects-live": {},
         "projects-narrowed": {},
         "workers-exception": { "failureOnly": true }
       }

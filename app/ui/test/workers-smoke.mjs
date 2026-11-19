@@ -362,7 +362,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
   /* `orchestrators`: ONE client, several orchestrator cards (mcp/origin.rs).
      The page adds the columns "Orch A", "Orch B" and "Orch C", authorizes
      one client that may trigger automations and drive workers (one Claude
-     type in the first column, workers beside their orchestrator), saves an
+     type, workers beside their orchestrator), saves an
      Agent rule `worker` in the first column and opens two plain-shell
      cards "Orch A" and "Orch B" in their columns (`orchestrators-armed`).
      The operator types scripts/mcp-orchestrators-e2e.py into both panes:
@@ -379,11 +379,11 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
   const orchestratorsRun = async ({ project, work, cmd }) => {
     const columns = {};
     for (const name of ['Orch A', 'Orch B', 'Orch C']) columns[name] = await provider.addColumn(project.id, name);
-    const typeColumn = project.columns[0];
+    const firstColumn = project.columns[0];
     await inv('mcp_enable');
     const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
       permissions: { allowCreate: false, allowAutomations: true, allowWorkers: true, allowReplies: false,
-        workerTypes: [{ name: 'claude', cmd, columnId: typeColumn.id, description: 'Write code' }], workerFirstSend: false,
+        workerTypes: [{ name: 'claude', cmd, description: 'Write code' }], workerFirstSend: false,
         allowDrafts: false, allowMentions: false, ruleColumn: false } });
     const listed = await until(async () => {
       const status = await inv('mcp_status');
@@ -393,14 +393,14 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     await provider.saveTemplate(project.id, TEMPLATE, ['Task: {{msg.text}}']);
     await openAutomations({ trigger: 'agent' });
     $('auto-badge').value = AUTOMATION;
-    $('auto-column').value = typeColumn.id;
+    $('auto-column').value = firstColumn.id;
     $('auto-template').value = TEMPLATE; $('auto-template').dispatchEvent(new Event('change'));
     $('auto-dir').value = work; $('auto-cmd').value = cmd;
     document.querySelector('#auto-finish [data-v="keep"]').click();
     $('auto-save').click();
     const rule = await until(() => ctx.settings.inbound.rules.find(value => value.source === 'agent' && value.badge === AUTOMATION) || null, 10_000, 100);
     closeAutomations();
-    await report('workers-rule', !!rule && rule.columnId === typeColumn.id);
+    await report('workers-rule', !!rule && rule.columnId === firstColumn.id);
     const open = async name => (await provider.createStarted({ projectId: project.id, columnId: columns[name].id,
       title: name, dir: work, cmd: '' }, { requireCreated: true })).card;
     const orch = { A: await open('Orch A'), B: await open('Orch B') };
@@ -470,54 +470,88 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     await report('orchestrators-live', !!live && liveBeside, live ? live.length : 0);
     await report('done', !failed, 1, 6);
   };
-  /* `projects`: ONE client reaching ALL projects (mcp/grants.rs). The page
-     makes two projects with default directories (work/a, work/b; the
-     operator created them), authorizes one client of all projects that may
-     drive workers (one Claude type) and opens a plain-shell card "Orch A"
-     in A and "Orch B" in B (`projects-armed`). The operator types
-     scripts/mcp-projects-e2e.py into both panes: each sees every project
-     with a directory, the first project (no directory) listed apart, is
-     refused a start there, and starts one worker. The page sees each in its
-     orchestrator's project and column, with that project's directory
-     (`projects-placed`), then narrows the scope to A through the client's
-     Permissions… dialog: B's worker is the user's (`projects-narrowed`).
-     The script's second phase in "Orch B" is refused a start. */
-  const projectsRun = async ({ work, cmd }) => {
+  /* `projects`: ONE client reaching ALL projects (mcp/grants.rs), and where
+     its worker cards open (mcp/workers.rs). The page makes two projects
+     with default directories (work/a, work/b; the operator created them)
+     and a column "Review" in B, authorizes one client of all projects that
+     may drive workers (one Claude type, which has no column) and organize
+     cards, and opens a plain-shell card "Orch A" in A and "Orch B" in B
+     (`projects-armed`). The operator types scripts/mcp-projects-e2e.py into
+     both panes: each sees every project with a directory, the first project
+     (no directory) listed apart, is refused a start there, and starts one
+     worker; "Orch A" also starts one in B naming no column, is refused one
+     of A's columns for B, and starts one naming B's third column. The page
+     sees each own worker in its orchestrator's project and column, with
+     that project's directory (`projects-placed`), and A's two in B: the
+     unnamed one where the user's own new cards open in B, not B's first
+     column, the named one in it (`projects-columns`). Then a real Claude
+     Code in a card "Orch L" of A (the runner's fixture live.sh: `claude -p`
+     with only this instance's adapter) is asked in plain words for a worker
+     in B's "Review" column (`projects-live`). Last the page narrows the
+     scope to A through the client's Permissions… dialog: B's workers are the
+     user's (`projects-narrowed`). The script's second phase in "Orch B" is
+     refused a start. */
+  const projectsRun = async ({ work, cmd, fixture }) => {
+    const { newSessionColumn } = await import('../js/pure.js');
     const made = {};
     for (const [key, name] of [['a', 'Proj A'], ['b', 'Proj B']]) {
       const created = await provider.createProject(name);
       await provider.setProjectDefaults(created.id, { dir: `${work}/${key}`, cmd: '' });
       made[key] = provider.project(created.id);
     }
+    const review = await provider.addColumn(made.b.id, 'Review');
     await inv('mcp_enable');
     const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [],
       permissions: { allowCreate: false, allowAutomations: false, allowWorkers: true, allowReplies: false,
-        workerTypes: [{ name: 'claude', cmd, columnId: made.a.columns[0].id, description: 'Write code' }], workerFirstSend: false,
-        allowDrafts: false, allowMentions: false, ruleColumn: false, allProjects: true } });
+        workerTypes: [{ name: 'claude', cmd, description: 'Write code' }], workerFirstSend: false,
+        allowDrafts: false, allowMentions: false, allowCards: true, allowCardEdits: true, ruleColumn: false, allProjects: true } });
     const listed = await until(async () => {
       const status = await inv('mcp_status');
-      return status.enabled && status.socketReady && status.clients.some(value => value.id === client.id && value.allProjects) ? status : null;
+      return status.enabled && status.socketReady
+        && status.clients.some(value => value.id === client.id && value.allProjects && value.allowCardEdits) ? status : null;
     }, 15_000, 250);
     await report('workers-client', !!listed);
-    const open = async (key, name) => (await provider.createStarted({ projectId: made[key].id, columnId: made[key].columns[1].id,
-      title: name, dir: `${work}/${key}`, cmd: '' }, { requireCreated: true })).card;
+    const open = async (key, name, command = '') => (await provider.createStarted({ projectId: made[key].id, columnId: made[key].columns[1].id,
+      title: name, dir: `${work}/${key}`, cmd: command }, { requireCreated: true })).card;
     const orch = { a: await open('a', 'Orch A'), b: await open('b', 'Orch B') };
     await report('projects-armed', !!orch.a?.session && !!orch.b?.session);
 
+    /* the scripts' four workers, by the titles they gave them */
     const typed = () => store.cards.filter(card => card.origin?.source === 'worker');
+    const titled = title => typed().find(card => card.title === title);
+    const ownerOf = card => store.cards.find(value => value.id === workerOf(card.id)?.orchestratorCardId);
     const placed = await until(async () => {
       await refreshWorkers();
-      const cards = typed();
-      return cards.length >= 2 && cards.every(card => workerOf(card.id)?.orchestratorCardId) ? cards : null;
+      const cards = ['A worker', 'B worker', 'A to B', 'A to B queued'].map(titled);
+      return cards.every(card => card && workerOf(card.id)?.orchestratorCardId) ? cards : null;
     }, 600_000, 2000);
-    const right = (placed || []).every(card => {
-      const owner = store.cards.find(value => value.id === workerOf(card.id).orchestratorCardId);
-      const key = owner?.id === orch.a.id ? 'a' : 'b';
-      return owner && card.projectId === owner.projectId && card.columnId === owner.columnId
+    const [aOwn, bOwn, aCross, aNamed] = placed || [];
+    const right = !!placed && [[aOwn, 'a'], [bOwn, 'b']].every(([card, key]) => {
+      const owner = ownerOf(card);
+      return owner?.id === orch[key].id && card.projectId === owner.projectId && card.columnId === owner.columnId
         && card.dir.endsWith(`/work/${key}`);
     });
-    await report('projects-placed', !!placed && right && new Set((placed || []).map(card => card.projectId)).size === 2,
-      placed ? placed.length : 0);
+    await report('projects-placed', right, placed ? placed.length : 0);
+    /* A's two in B: naming no column, where the user's own new cards open
+       in B (never simply B's first column); naming B's third, there */
+    const b = provider.project(made.b.id);
+    const at = card => (card ? b.columns.findIndex(column => column.id === card.columnId) : -1);
+    const columns = !!placed && [aCross, aNamed].every(card => ownerOf(card)?.id === orch.a.id
+        && card.projectId === made.b.id && card.dir.endsWith('/work/b'))
+      && aCross.columnId === newSessionColumn(b)?.id && aCross.columnId !== b.columns[0].id
+      && aNamed.columnId === b.columns[2].id;
+    await report('projects-columns', columns, at(aCross), at(aNamed));
+
+    /* a real agent asked in plain words for B's "Review" column */
+    const before = new Set(typed().map(card => card.id));
+    const live = await open('a', 'Orch L', `sh ${fixture}/live.sh`);
+    await report('projects-live-ready', !!live?.session);
+    const chosen = await until(async () => {
+      await refreshWorkers();
+      return typed().find(card => !before.has(card.id) && workerOf(card.id)?.orchestratorCardId === live.id) || null;
+    }, 900_000, 3000);
+    await report('projects-live', !!chosen && chosen.projectId === made.b.id && chosen.columnId === review.id,
+      chosen?.projectId === made.b.id ? 1 : 0, at(chosen));
 
     /* narrowed to A through the dialog, as the person does it */
     await openPermissions('orchestrator');
@@ -534,11 +568,10 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
       return mine && !mine.allProjects && mine.projects.length === 1 && mine.projects[0].projectId === made.a.id ? mine : null;
     }, 10_000, 250);
     const ui = await inv('mcp_workers_ui');
-    const bWorker = (placed || []).find(card => card.projectId === made.b.id);
-    const aWorker = (placed || []).find(card => card.projectId === made.a.id);
     await report('projects-narrowed', !!narrowed
-      && ui.find(value => value.cardId === bWorker?.id)?.takenOver === true
-      && ui.find(value => value.cardId === aWorker?.id)?.takenOver === false);
+      && ui.find(value => value.cardId === bOwn?.id)?.takenOver === true
+      && ui.find(value => value.cardId === aCross?.id)?.takenOver === true
+      && ui.find(value => value.cardId === aOwn?.id)?.takenOver === false);
     await pause(60_000);
     await report('done', !failed, 1, 7);
   };
@@ -570,7 +603,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     if (scenario === 'mentions') { await mentionsRun({ project, column, work }); return; }
     if (scenario === 'cards') { await cardsRun({ project, column, work, fixture }); return; }
     if (scenario === 'projects') {
-      await projectsRun({ work, cmd: 'claude --setting-sources project' });
+      await projectsRun({ work, cmd: 'claude --setting-sources project', fixture });
       return;
     }
     if (scenario === 'orchestrators') {
@@ -582,7 +615,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     await inv('mcp_enable');
     const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
       permissions: { allowCreate: false, allowAutomations: !types, allowWorkers: true, allowReplies: true,
-        workerTypes: types ? [{ name: 'claude', cmd, columnId: column.id, description: 'Write code' }] : [], workerFirstSend: types } });
+        workerTypes: types ? [{ name: 'claude', cmd, description: 'Write code' }] : [], workerFirstSend: types } });
     const listed = await until(async () => {
       const status = await inv('mcp_status');
       return status.enabled && status.socketReady

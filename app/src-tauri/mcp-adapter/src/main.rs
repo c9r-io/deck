@@ -230,6 +230,13 @@ struct WorkerStartInput {
     /// first project.
     #[serde(default)]
     project_id: Option<String>,
+    /// The column the card opens in: a columnId of that project from
+    /// deck_cards_snapshot (projects[].columns). Only with the local user's
+    /// permission to organize cards (deck_capabilities mayEditCards);
+    /// default your own card's column, else the column the user's new cards
+    /// open in.
+    #[serde(default)]
+    column_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -800,7 +807,7 @@ impl DeckServer {
             ),
             tool::<WorkerStartInput>(
                 "deck_worker_start",
-                "Start one worker card of one of the worker types the local user offers this client (deck_worker_list workerTypes: each type's description says what it is good at, e.g. writing code or generating images). Deck opens the card with the user's own command for that type and types `text` as its first line when the agent is ready. It opens in the project you run in (or project_id) beside your own card. Returns an operation to poll (deck_operation_get: committed with cardId); the card then appears in deck_worker_list. At most 8 worker cards per orchestrator card on the Board, 32 per client. A Codex worker's final message is readable only while the user lets Deck forward it (else REPLY_GONE): prefer files for large results.",
+                "Start one worker card of one of the worker types the local user offers this client (deck_worker_list workerTypes: each type's description says what it is good at, e.g. writing code or generating images). Deck opens the card with the user's own command for that type and types `text` as its first line when the agent is ready. It opens in the project you run in (or project_id), beside your own card, else where the user's new cards open in that project; if the user lets you organize cards (deck_capabilities mayEditCards) you may choose its column instead (column_id, a column of that project from deck_cards_snapshot). Returns an operation to poll (deck_operation_get: committed with cardId); the card then appears in deck_worker_list. At most 8 worker cards per orchestrator card on the Board, 32 per client. A Codex worker's final message is readable only while the user lets Deck forward it (else REPLY_GONE): prefer files for large results.",
                 mutating.clone(),
             ),
             tool::<Empty>(

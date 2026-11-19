@@ -200,7 +200,10 @@
 //! `automation_delegations`); every hold then decides when it goes, the
 //! human hold included. `deck_worker_start` opens a card of one of the
 //! client's worker types (the user's commands; Codex only with
-//! `--no-daemon`) through a `worker-start` Board intent the webview commits;
+//! `--no-daemon`) through a `worker-start` Board intent the webview commits,
+//! in a project of the client's scope and a column it names only under the
+//! organize-cards choice (else beside its orchestrator card, else the
+//! project's new-card column; a type has no column);
 //! its first line is the run's head row, sent without interaction evidence
 //! only while the client's worker first-send choice stands. That choice also
 //! covers the card's later lines: interaction evidence is never persisted,
@@ -269,7 +272,9 @@
 //! may rename a card of its projects and move it to a column, of its own
 //! project or of another it reaches (`deck_card_update`): the ONE place a
 //! card changes without the user's gesture, a hard-rule exception
-//! (CLAUDE.md). One card per explicit request, bound to the title and
+//! (CLAUDE.md). The same choice, and only it, lets a worker start name the
+//! column its card opens in (`workers::named_column`): placement at
+//! creation, the one other placement a client decides. One card per explicit request, bound to the title and
 //! column the caller saw (`CARD_CHANGED`), journaled as a `card-update`
 //! Board intent the webview's one transaction commits or refuses whole
 //! (`mcp.js` `updateCard`), never replayed after a restart. A title and a
@@ -287,8 +292,9 @@
 //! pid and one process-table snapshot, checked as an Agent Signal's origin
 //! is, `agent_origin`), never from anything the client says. That card is
 //! the call's orchestrator card: the worker cards it starts open in its
-//! column at that moment (unless the user chose the type's or rule's column,
-//! `Client.rule_column`), are recorded as its own (`Worker.orchestrator`),
+//! column at that moment (unless the start names a column, or the user
+//! chose the rule's or the project's new-card column, `Client.rule_column`),
+//! are recorded as its own (`Worker.orchestrator`),
 //! and only it and callers from no card see and drive them; the client's
 //! unowned workers stay everyone's. Trigger and send sequences are kept per
 //! orchestrator card (`Client.lanes`). A worker whose orchestrator card left

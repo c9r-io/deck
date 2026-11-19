@@ -11,10 +11,16 @@
 //!   one, and a client sees only its own.
 //! - Worker types (`WorkerType`): the user's list, per client, of the kinds
 //!   of worker card it may start — a name, the user's own command (`claude`
-//!   or `codex --no-daemon` with simple arguments, `validate_worker_types`),
-//!   a column and a description the orchestrator reads. `deck_worker_start`
-//!   names a type (never a command), a project in the client's scope and
-//!   optionally a directory inside that project's, and journals a `worker-start` intent with the first
+//!   or `codex --no-daemon` with simple arguments, `validate_worker_types`)
+//!   and a description the orchestrator reads. `deck_worker_start`
+//!   names a type (never a command), a project in the client's scope,
+//!   optionally a directory inside that project's and, only under the
+//!   organize-cards choice (`Choice::CardEdits`, the one delegation that
+//!   places a card), one of that project's columns (`named_column`: a wrong
+//!   one is `COLUMN_NOT_FOUND`, never a fallback). Unnamed, the card opens
+//!   beside its orchestrator card (`origin::beside`), else in the project's
+//!   new-card column (`mcp.js`, pure.js `newSessionColumn`). It journals a
+//!   `worker-start` intent with the first
 //!   line; the webview creates and starts the card (`mcp.js`), and the
 //!   commit queues that line as the run's head row (`settle_start`), which
 //!   then leaves the ledger. Its first-send override rests on the client's
@@ -986,17 +992,43 @@ const MAX_WORKER_TITLE_CHARS: usize = 80;
 pub(crate) const WORKER_TYPE_RULE_PREFIX: &str = "worker-type:";
 
 /// One kind of worker card the user offers a client: the command its cards
-/// start, the column they open in, and a line the orchestrator reads to
-/// choose between types. The client only ever names a type; it never writes
-/// a command.
+/// start and a line the orchestrator reads to choose between types. The
+/// client only ever names a type; it never writes a command. Where a card
+/// opens is not the type's: `worker_start` decides it (the column the start
+/// names, else beside the orchestrator card, else the project's new-card
+/// column).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase", from = "WorkerTypeRecord")]
 pub(crate) struct WorkerType {
     pub(crate) name: String,
     pub(crate) cmd: String,
-    pub(crate) column_id: String,
-    #[serde(default)]
     pub(crate) description: String,
+}
+
+/// A worker type as it is read: builds before 2026-11-19 gave each type a
+/// column (`columnId`), accepted here only so their ledgers still load;
+/// it is ignored and omitted on the next save (as `allowShell` is). An
+/// older build cannot read a type without one and refuses the whole ledger
+/// untouched.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkerTypeRecord {
+    name: String,
+    cmd: String,
+    #[serde(default, rename = "columnId")]
+    _legacy_column: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    description: String,
+}
+
+impl From<WorkerTypeRecord> for WorkerType {
+    fn from(record: WorkerTypeRecord) -> Self {
+        Self {
+            name: record.name,
+            cmd: record.cmd,
+            description: record.description,
+        }
+    }
 }
 
 /// The closed reasons a worker type list is refused (stable `mcp-*` codes the
@@ -1034,8 +1066,7 @@ pub(super) fn validate_worker_types(types: &[WorkerType]) -> Result<(), DeckErro
         if agent == "codex" && !worker_type.cmd.split(' ').any(|word| word == "--no-daemon") {
             return Err(invalid(TYPE_CODEX_DAEMON));
         }
-        if !valid_id(&worker_type.column_id)
-            || worker_type.description.chars().count() > MAX_TYPE_DESCRIPTION_CHARS
+        if worker_type.description.chars().count() > MAX_TYPE_DESCRIPTION_CHARS
             || worker_type.description.chars().any(char::is_control)
         {
             return Err(invalid(TYPE_LIST_INVALID));
@@ -1072,6 +1103,55 @@ fn types_view(client: &Client) -> Vec<Value> {
         .collect()
 }
 
+/// A start that names its column while the client may not place cards:
+/// that is the organize-cards choice (`Choice::CardEdits`, the one
+/// delegation that places a card), never the worker choice.
+fn column_not_permitted() -> Value {
+    error_value(
+        "PERMISSION_DENIED",
+        "naming the column a worker card opens in needs the local user's permission to organize cards",
+        "Leave column_id out (the card opens beside your own card, or where the user's new cards open in that project), or ask the local Deck user to let this client organize cards (deck_capabilities mayEditCards).",
+    )
+}
+
+/// A start's named column: the client may organize cards, the Board is the
+/// current one (never one recovered from its backup) and the column is one
+/// of the project's the card opens in; otherwise refused, a wrong column
+/// with that project's columns.
+fn named_column(
+    runtime: &Runtime,
+    client_id: &str,
+    project: &str,
+    column: &str,
+) -> Result<(), Value> {
+    let may = runtime
+        .read(|doc| permitted(doc, client_id, Choice::CardEdits).is_ok())
+        .map_err(map_error)?;
+    if !may {
+        return Err(column_not_permitted());
+    }
+    if !crate::documents::board_is_current() {
+        return Err(super::cards::source_unavailable());
+    }
+    let columns = crate::documents::board_layout()
+        .into_iter()
+        .find(|p| p.id == project)
+        .map(|p| p.columns)
+        .unwrap_or_default();
+    if columns.iter().any(|(id, _)| id == column) {
+        return Ok(());
+    }
+    Err(json!({"ok": false, "error": {
+        "code": "COLUMN_NOT_FOUND",
+        "message": "that column is not a column of the project the card opens in",
+        "nextAction": "Use one of the columns listed here, name the project the column belongs to (project_id), or leave column_id out.",
+        "columns": columns
+            .iter()
+            .map(|(id, name)| json!({"columnId": id, "column": name}))
+            .collect::<Vec<_>>(),
+    }}))
+}
+
 pub(super) fn worker_start(
     runtime: &Runtime,
     client_id: &str,
@@ -1079,6 +1159,7 @@ pub(super) fn worker_start(
 ) -> Result<Value, Value> {
     let args: WorkerStartArgs = parse(arguments)?;
     if !valid_id(&args.request_id)
+        || args.column_id.as_deref().is_some_and(|id| !valid_id(id))
         || args.text.trim().is_empty()
         || args.text.len() > MAX_SEND_BYTES
         || args
@@ -1088,8 +1169,8 @@ pub(super) fn worker_start(
     {
         return Err(error_value(
             "INVALID_ARGUMENTS",
-            "request id, text or title is out of shape or bounds",
-            "Send a first line of at most 16 KiB, an optional title of at most 80 characters, and a fresh request id.",
+            "request id, column id, text or title is out of shape or bounds",
+            "Send a first line of at most 16 KiB, an optional title of at most 80 characters, an optional column_id from deck_cards_snapshot (projects[].columns), and a fresh request id.",
         ));
     }
     let hash = request_hash("deck_worker_start", &args);
@@ -1122,12 +1203,19 @@ pub(super) fn worker_start(
     if let Some(operation) = replay {
         return Ok(operation_view(&operation));
     }
+    if let Some(column) = args.column_id.as_deref() {
+        named_column(runtime, client_id, &scope.project_id, column)?;
+    }
     let operation = runtime
         .write(|doc| -> Result<Result<Operation, Value>, DeckError> {
             if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
                 return Ok(Ok(existing.clone()));
             }
             let client = permitted(doc, client_id, Choice::Workers)?.clone();
+            // withdrawn since the check above: the start is refused whole
+            if args.column_id.is_some() && permitted(doc, client_id, Choice::CardEdits).is_err() {
+                return Ok(Err(column_not_permitted()));
+            }
             if !super::origin::lane_room(&client, orchestrator) {
                 return Ok(Err(super::origin::no_lane()));
             }
@@ -1167,8 +1255,11 @@ pub(super) fn worker_start(
             let operation = Operation { result: Some(json!({
                     "cardId": random_id("W", 16)?,
                     "projectId": project.project_id,
-                    "columnId": super::origin::beside(&client, orchestrator, &project.project_id)
-                        .unwrap_or_else(|| worker_type.column_id.clone()),
+                    // the column the start names, else beside the orchestrator
+                    // card, else none: the project's new-card column (`mcp.js`)
+                    "columnId": args.column_id.clone().or_else(|| {
+                        super::origin::beside(&client, orchestrator, &project.project_id)
+                    }),
                     "cmd": worker_type.cmd,
                     "dir": dir,
                     "title": title,

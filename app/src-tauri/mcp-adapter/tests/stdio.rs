@@ -222,6 +222,23 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         .find(|tool| tool["name"] == "deck_automation_trigger")
         .unwrap();
     assert_sequence_field(trigger, "trigger_sequence");
+    // a worker start may name the column its card opens in (only under the
+    // user's organize-cards choice, which Deck checks); it is never required
+    let worker_start = tools
+        .iter()
+        .find(|tool| tool["name"] == "deck_worker_start")
+        .unwrap();
+    assert_sequence_field(worker_start, "send_sequence");
+    assert_eq!(
+        worker_start["inputSchema"]["properties"]["column_id"]["type"],
+        json!(["string", "null"]),
+        "{worker_start}"
+    );
+    assert!(!worker_start["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "column_id"));
     assert_eq!(
         control["inputSchema"]["properties"]["lease_ms"]["minimum"],
         1000

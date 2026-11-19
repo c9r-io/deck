@@ -5965,7 +5965,6 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
     let claude = |name: &str, cmd: &str| WorkerType {
         name: name.into(),
         cmd: cmd.into(),
-        column_id: "C1".into(),
         description: "Write code".into(),
     };
     assert!(validate_worker_types(&[claude("claude", "claude --permission-mode auto")]).is_ok());
@@ -6137,6 +6136,152 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
         .read(|doc| !doc.config.clients[0].worker_first_send
             && doc.config.clients[0].worker_types.is_empty())
         .unwrap());
+    drop(root);
+}
+
+/// A worker type has no column. One written by an earlier build, with its
+/// `columnId`, still loads, and the field is gone on the next save; any
+/// other unknown field still refuses the type.
+#[test]
+fn a_worker_type_column_from_an_earlier_build_is_read_and_dropped() {
+    let claude = WorkerType {
+        name: "claude".into(),
+        cmd: "claude".into(),
+        description: "Write code".into(),
+    };
+    let legacy =
+        json!({"name": "claude", "cmd": "claude", "columnId": "C1", "description": "Write code"});
+    let read: WorkerType = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(read, claude);
+    assert_eq!(
+        serde_json::to_value(&read).unwrap(),
+        json!({"name": "claude", "cmd": "claude", "description": "Write code"})
+    );
+    assert!(serde_json::from_value::<WorkerType>(
+        json!({"name": "claude", "cmd": "claude", "other": 1})
+    )
+    .is_err());
+
+    // a whole ledger of that build: it loads at its own version, a write
+    // keeps that version and leaves no column behind
+    let (runtime, _runner, root) = fixture("legacy-type-column", "svc_test");
+    client_permissions(
+        &runtime,
+        "client_a",
+        super::commands::PermissionsInput {
+            allow_workers: true,
+            worker_types: vec![claude.clone()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let path = runtime.path.clone();
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let version = saved["version"].clone();
+    saved["config"]["clients"][0]["workerTypes"][0] = legacy;
+    std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let loaded = load(&path).unwrap();
+    assert_eq!(loaded.config.clients[0].worker_types, vec![claude.clone()]);
+    save(&path, &loaded).unwrap();
+    let again: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(again["version"], version);
+    assert_eq!(
+        again["config"]["clients"][0]["workerTypes"][0],
+        json!({"name": "claude", "cmd": "claude", "description": "Write code"})
+    );
+    drop(root);
+}
+
+/// The column a worker card opens in is the start's to name only under the
+/// organize-cards choice (`workers::named_column`): a column of the project
+/// it opens in, on the current Board, beating the orchestrator card's own;
+/// refused whole otherwise, never moved to another column on its own.
+#[test]
+fn a_worker_start_names_its_column_only_when_the_client_may_organize_cards() {
+    let (runtime, _runner, root) = fixture("start-columns", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let call = |tool: &str, args: Value| route(&runtime, request(tool, args));
+    let permissions = |organize: bool| super::commands::PermissionsInput {
+        allow_workers: true,
+        worker_types: vec![WorkerType {
+            name: "claude".into(),
+            cmd: "claude".into(),
+            description: "Write code".into(),
+        }],
+        allow_cards: organize,
+        allow_card_edits: organize,
+        ..Default::default()
+    };
+    client_permissions(&runtime, "client_a", permissions(false)).unwrap();
+    let board = json!({
+        "projects": [
+            {"id": "P1", "name": "One", "columns": [{"id": "CA", "name": "Doing"}, {"id": "CB", "name": "Queue"}]},
+            {"id": "P2", "name": "Two", "columns": [{"id": "CX", "name": "Elsewhere"}]}
+        ],
+        "cards": [
+            {"id": "OA", "session": "deck-oa", "title": "Orch A", "cmd": "", "dir": "/tmp", "projectId": "P1", "columnId": "CA"}
+        ]
+    });
+    crate::documents::test_door::commit(board.clone(), true);
+    let start = |request: &str, sequence: u64, column: Option<&str>| {
+        let _as = super::origin::enter_as(Some("OA"));
+        let mut args = json!({"request_id": request, "send_sequence": sequence, "text": "go"});
+        if let Some(column) = column {
+            args["column_id"] = json!(column);
+        }
+        call("deck_worker_start", args)
+    };
+    // the worker choice alone: the start may not choose
+    let refused = start("req_c1", 0, Some("CB"));
+    assert_eq!(refused["error"]["code"], "PERMISSION_DENIED", "{refused}");
+    assert!(refused["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("organize cards"));
+    // the same start without a column opens beside its orchestrator card
+    let beside = start("req_c2", 0, None);
+    assert_eq!(beside["result"]["columnId"], "CA", "{beside}");
+
+    // with organize cards: the named column, not the orchestrator card's
+    client_permissions(&runtime, "client_a", permissions(true)).unwrap();
+    let named = start("req_c3", 1, Some("CB"));
+    assert_eq!(named["state"], "accepted", "{named}");
+    assert_eq!(named["result"]["columnId"], "CB");
+    assert_eq!(named["result"]["projectId"], "P1");
+    assert_eq!(
+        start("req_c3", 1, Some("CB"))["operationId"],
+        named["operationId"],
+        "a replay is the same operation"
+    );
+    // another project's column: refused, with the project's own listed
+    let elsewhere = start("req_c4", 2, Some("CX"));
+    assert_eq!(
+        elsewhere["error"]["code"], "COLUMN_NOT_FOUND",
+        "{elsewhere}"
+    );
+    assert_eq!(
+        elsewhere["error"]["columns"],
+        json!([{"columnId": "CA", "column": "Doing"}, {"columnId": "CB", "column": "Queue"}])
+    );
+    assert_eq!(
+        start("req_c5", 2, Some("no such column!"))["error"]["code"],
+        "INVALID_ARGUMENTS"
+    );
+    // a Board recovered from its backup decides no column
+    crate::documents::test_door::commit(board.clone(), false);
+    assert_eq!(
+        start("req_c6", 2, Some("CB"))["error"]["code"],
+        "SOURCE_UNAVAILABLE"
+    );
+    crate::documents::test_door::commit(board, true);
+    // the refusals moved no sequence
+    assert_eq!(start("req_c7", 2, Some("CA"))["result"]["columnId"], "CA");
+    // the choice withdrawn: refused again
+    client_permissions(&runtime, "client_a", permissions(false)).unwrap();
+    assert_eq!(
+        start("req_c8", 3, Some("CB"))["error"]["code"],
+        "PERMISSION_DENIED"
+    );
     drop(root);
 }
 
@@ -6838,7 +6983,8 @@ fn slack_mentions_are_read_through_deck_and_handed_to_an_agent_rule_only() {
 /// Orchestrator cards (`origin.rs`): two orchestrator cards of ONE client
 /// each start a worker beside themselves on their own sequence, each sees
 /// and drives only its own, a caller from no card sees both, the user's
-/// "type's column" choice keeps the type's column, a worker whose
+/// choice not to follow leaves the column to the Board (none decided here:
+/// the webview's new-card column), a worker whose
 /// orchestrator card left the Board is the user's until handed back (then
 /// unowned, seen by every orchestrator), and the ledger takes the sticky
 /// orchestrator version.
@@ -6850,7 +6996,6 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
     let claude = WorkerType {
         name: "claude".into(),
         cmd: "claude".into(),
-        column_id: "C1".into(),
         description: "Write code".into(),
     };
     let permissions = |rule_column: bool| super::commands::PermissionsInput {
@@ -6901,7 +7046,10 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
     assert_eq!(x["error"]["code"], "PERMISSION_DENIED", "{x}");
     // a caller from no card keeps the client's sequence, untouched by A and B
     let none = start(None, "req_n1");
-    assert_eq!(none["result"]["columnId"], "C1", "{none}");
+    assert!(
+        none["result"]["columnId"].is_null(),
+        "no card to be beside: the project's new-card column, the webview's ({none})"
+    );
     assert!(none["result"]["orchestratorCardId"].is_null());
     for (view, session) in [(&a, "deck-wa"), (&b, "deck-wb"), (&none, "deck-wn")] {
         let op = view["operationId"].as_str().unwrap().to_owned();
@@ -6990,7 +7138,7 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
         })
         .unwrap();
     assert_eq!(owner.as_deref(), Some("OB"));
-    // the type's column, by the user's choice
+    // not beside it, by the user's choice: the Board's new-card column
     client_permissions(&runtime, "client_a", permissions(true)).unwrap();
     let kept = {
         let _as = super::origin::enter_as(Some("OA"));
@@ -6999,7 +7147,8 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
             json!({"request_id": "req_a2", "send_sequence": 1, "text": "again"}),
         )
     };
-    assert_eq!(kept["result"]["columnId"], "C1", "{kept}");
+    assert_eq!(kept["state"], "accepted", "{kept}");
+    assert!(kept["result"]["columnId"].is_null(), "{kept}");
     client_permissions(&runtime, "client_a", permissions(false)).unwrap();
     // B's card closes: its worker is the user's, nobody else's
     crate::documents::test_door::commit(
@@ -7075,7 +7224,6 @@ fn a_client_reaches_listed_or_all_projects_through_their_own_directories() {
     let claude = WorkerType {
         name: "claude".into(),
         cmd: "claude".into(),
-        column_id: "C1".into(),
         description: "Write code".into(),
     };
     let permissions =

@@ -199,7 +199,14 @@ evolution; it makes scope expansion deliberate.
   `updateCard`). It goes through the webview's one Board transaction, is
   refused when the user changed the card meanwhile, is never replayed, and
   types, starts, closes and authorizes nothing; no agent word, mark, quiet
-  time or rule ever moves a card. The user's own cross-project move
+  time or rule ever moves a card. The same choice, and only it, lets that
+  client's worker start name the column its new card opens in
+  (`deck_worker_start` `column_id`, `mcp/workers.rs` `named_column`,
+  approved 2026-11-19): placement at creation, a column of the card's own
+  project on the current Board or refused (`COLUMN_NOT_FOUND`), never
+  swapped for another; only a column deleted before the card exists leaves
+  it where the user's new cards open.
+  The user's own cross-project move
   (`provider.moveToProject`) and this one share `projectMoveBlock`
   (pure.js): a run not yet handed to the queue, a collecting channel card
   and an MCP-managed shell stay in their project. Nothing else retires or
@@ -256,9 +263,10 @@ evolution; it makes scope expansion deliberate.
   open mention may go to one of the client's own Agent rules, never a Slack
   badge rule, and a mark is presentation only. **Orchestrator cards**: Deck
   reads the calling card from the kernel (`mcp/origin.rs`), never a claim;
-  it groups the client's own worker cards (placement at creation only,
-  beside the calling card unless the user chose each type's or rule's
-  column) and grants nothing. No Signal word, quiet
+  it groups the client's own worker cards (placement at creation only:
+  the column a start names under "organize cards", else beside the
+  calling card unless the user chose the rule's or the project's new-card
+  column; a worker type has no column) and grants nothing. No Signal word, quiet
   time or activity ever creates, restores or upgrades authority
   (`tests/signal_census.rs`).
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the

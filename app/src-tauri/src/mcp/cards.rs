@@ -425,7 +425,7 @@ fn ordered(
     Some(out)
 }
 
-fn source_unavailable() -> Value {
+pub(super) fn source_unavailable() -> Value {
     json!({"ok": false, "error": {
         "code": "SOURCE_UNAVAILABLE",
         "message": "Deck has no current Board to read",

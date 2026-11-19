@@ -28,8 +28,9 @@
 //!   * a worker card it starts (`deck_worker_start`, an Agent handover,
 //!     a Slack mention handover) opens in the orchestrator card's column
 //!     at that moment, when both are in one project and the client follows
-//!     its orchestrators (`Client.rule_column` off, the default); never
-//!     moved later;
+//!     its orchestrators (`Client.rule_column` off, the default), unless the
+//!     start names its column (`workers::named_column`, organize cards);
+//!     never moved later;
 //!   * the worker record keeps the orchestrator card (`Worker.orchestrator`)
 //!     and a call from that card sees and drives only its own worker cards
 //!     and the client's unowned ones (`sees`); a caller without a card sees
@@ -159,8 +160,8 @@ pub(super) fn card_view(card: Option<&str>) -> Value {
 /* ---------- placement ---------- */
 
 /// The column a worker card started from `orchestrator` in `project` opens
-/// in: the orchestrator card's own, now, when the client follows its
-/// orchestrators and both cards are in that project.
+/// in when the start names none: the orchestrator card's own, now, when the
+/// client follows its orchestrators and both cards are in that project.
 pub(super) fn beside(client: &Client, orchestrator: Option<&str>, project: &str) -> Option<String> {
     if client.rule_column {
         return None;

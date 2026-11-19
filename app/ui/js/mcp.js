@@ -11,6 +11,7 @@
 // is never replayed here: native marks it ambiguous on load.
 import { inv, listen, state } from './state.js';
 import { provider } from './board.js';
+import { newSessionColumn } from './pure.js';
 import { toast } from './dialogs.js';
 import { t } from './i18n.js';
 
@@ -33,7 +34,8 @@ async function createSession(pending) {
     return;
   }
   const project = provider.project(plan.projectId);
-  const column = project?.columns?.find(value => value.id === project.selected) || project?.columns?.[0];
+  /* where the user's own new cards open (pure.js newSessionColumn) */
+  const column = project ? newSessionColumn(project) : null;
   if (!project || !column) {
     await finish(pending.operationId, 'rejected', 'project-missing');
     return;
@@ -65,10 +67,12 @@ async function createSession(pending) {
 }
 
 /* a worker card a driving client asked for (`deck_worker_start`,
-   mcp/workers.rs): an ordinary card in the type's column, its command the
-   user's own for that type, started like any card; native queues its first
-   line once this is committed. Quiet routine turn endings, as every worker
-   card's. */
+   mcp/workers.rs): an ordinary card in the column native decided (the one
+   the start named, or its orchestrator card's), else — none decided, or
+   that column gone meanwhile — where the user's own new cards open in the
+   project (pure.js newSessionColumn); its command the user's own for that
+   type, started like any card; native queues its first line once this is
+   committed. Quiet routine turn endings, as every worker card's. */
 async function startWorker(pending) {
   const plan = pending.result || {};
   const existing = provider.get(plan.cardId);
@@ -77,7 +81,7 @@ async function startWorker(pending) {
     return;
   }
   const project = provider.project(plan.projectId);
-  const column = project?.columns?.find(value => value.id === plan.columnId) || project?.columns?.[0];
+  const column = project?.columns?.find(value => value.id === plan.columnId) || (project ? newSessionColumn(project) : null);
   if (!project || !column) {
     await finish(pending.operationId, 'rejected', 'project-missing');
     return;

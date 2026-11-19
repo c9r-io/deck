@@ -43,8 +43,9 @@ pub(crate) struct ClientView {
     pub(super) allow_cards: bool,
     /// May rename and move the cards of its projects (`cards.rs`).
     pub(super) allow_card_edits: bool,
-    /// Its orchestrator cards' worker cards open in their type's or rule's
-    /// column, not beside the orchestrator card (`origin.rs`).
+    /// Its orchestrator cards' worker cards open in their rule's column (a
+    /// handover) or their project's new-card column (a start naming no
+    /// column), not beside the orchestrator card (`origin.rs`).
     pub(super) rule_column: bool,
     /// Reaches every project through its default directory.
     pub(super) all_projects: bool,
@@ -578,8 +579,9 @@ pub(crate) struct PermissionsInput {
     /// the card snapshot); absent = off.
     #[serde(default)]
     pub(super) allow_card_edits: bool,
-    /// Worker cards open in their type's or rule's column, not beside their
-    /// orchestrator card (`origin.rs`); absent = beside it.
+    /// Worker cards open in their rule's column (a handover) or their
+    /// project's new-card column (a start naming no column), not beside
+    /// their orchestrator card (`origin.rs`); absent = beside it.
     #[serde(default)]
     pub(super) rule_column: bool,
     /// Every project of the Board, those made later too, each through its

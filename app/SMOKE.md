@@ -557,7 +557,7 @@ fixture's `copy_agent.py` and `work/`). The workers are the user's signed-in
 Claude Code (`claude --setting-sources project`), started and left idle.
 The page adds the columns "Orch A", "Orch B" and "Orch C", authorizes one
 client `orchestrator` that may trigger automations and drive workers (one
-Claude type in the first column, workers beside their orchestrator), saves
+Claude type, workers beside their orchestrator), saves
 the Agent rule `worker` in the first column, opens two plain-shell cards
 "Orch A" and "Orch B" in their columns and reports `orchestrators-armed`.
 The operator then types `scripts/mcp-orchestrators-e2e.py --phase first`
@@ -585,22 +585,35 @@ reading the checkout on its external volume blocked in `open()` for good
 
 ## One client, all projects (WKWebView mode `projects`)
 
-`projects` is one MCP client reaching every project (`mcp/grants.rs`):
-the same carrier as `orchestrators`; before the launch also create
-`<data>/translation-fixture/work/a` and `work/b`. The page creates the
+`projects` is one MCP client reaching every project (`mcp/grants.rs`) and
+where its worker cards open (`mcp/workers.rs`): the same carrier as
+`orchestrators`; before the launch also create
+`<data>/translation-fixture/work/a` and `work/b`, and write
+`<data>/translation-fixture/live.sh` (a real Claude Code `-p` with only
+this instance's adapter, its MCP config made from the run's ledger and
+credential at start, asked in plain words to start one worker of type
+`claude` in the project "Proj B", column "Review"). The page creates the
 projects "Proj A" and "Proj B" with those default directories (the
-isolated Board's first project has none), authorizes one client of all
-projects that may drive workers (one Claude type), opens a plain-shell card
-"Orch A" in A and "Orch B" in B and reports `projects-armed`. The operator
-types copies of `scripts/mcp-projects-e2e.py --phase first` into both
-panes: each sees A and B reached, the first project listed as without a
-directory and refused, and starts one worker, which opens in its own
-project and directory. The page checks `projects-placed`, then narrows the
-client to A through its Permissions… dialog (`projects-narrowed`: B's
-worker is the user's, A's is not). `--phase after` in "Orch B": A alone is
-reached, a start from B's card is refused, B's worker reads as taken over.
-Judge with `scripts/smoke-verdict <data> projects` and the scripts' PASS
-lines. Keep the screen unlocked.
+isolated Board's first project has none) and a column "Review" in B,
+authorizes one client of all projects that may drive workers (one Claude
+type) and organize cards, opens a plain-shell card "Orch A" in A and
+"Orch B" in B and reports `projects-armed`. The operator types copies of
+`scripts/mcp-projects-e2e.py --phase first` into both panes: each sees A
+and B reached, the first project listed as without a directory and
+refused, and starts one worker, which opens in its own project and
+directory; "Orch A" also starts one in B naming no column, is refused one
+of A's columns for B (`COLUMN_NOT_FOUND`, listing B's), and starts one
+naming B's third column. The page checks `projects-placed` (each own
+worker beside its orchestrator) and `projects-columns` (the unnamed one
+where your own new cards open in B, not B's first column; the named one
+there), then opens a card "Orch L" in A running `sh live.sh`
+(`projects-live-ready`): `projects-live` needs the worker that agent
+started in B's "Review". Then it narrows the client to A through its
+Permissions… dialog (`projects-narrowed`: B's workers are the user's, A's
+is not). `--phase after` in "Orch B": A alone is reached, a start from
+B's card is refused, B's worker reads as taken over. Judge with
+`scripts/smoke-verdict <data> projects` and the scripts' PASS lines. Keep
+the screen unlocked.
 
 ## Re-entry launch shapes (WKWebView mode `reentry-shapes`)
 

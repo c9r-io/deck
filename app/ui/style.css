@@ -822,9 +822,9 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 #mcp-auth-box .mcp-perm-hint { margin: 0 0 var(--sp-6) calc(22 * var(--u)); font-size: var(--fs-11); }
 #mcp-auth-box .mcp-perm-danger { color: var(--danger); }
 .mcp-perm-sub { display: flex; flex-direction: column; gap: var(--sp-6); margin: 0 0 var(--sp-6) calc(22 * var(--u)); padding: var(--sp-8) var(--sp-10); border: 1px solid var(--border-soft); border-radius: 8px; }
-.mcp-types-head, .mcp-type-row { display: grid; grid-template-columns: calc(84 * var(--u)) minmax(0, 1.4fr) calc(110 * var(--u)) minmax(0, 1.6fr) auto; gap: var(--sp-6); align-items: center; }
+.mcp-types-head, .mcp-type-row { display: grid; grid-template-columns: calc(84 * var(--u)) minmax(0, 1.4fr) minmax(0, 1.6fr) auto; gap: var(--sp-6); align-items: center; }
 .mcp-types-head { font-size: var(--fs-10); color: var(--muted); }
-.mcp-type-row input, .mcp-type-row select { min-width: 0; font-size: var(--fs-11); }
+.mcp-type-row input { min-width: 0; font-size: var(--fs-11); }
 .mcp-type-row .mcp-type-cmd { font-family: var(--mono); }
 #mcp-perm-type-add { align-self: flex-start; }
 .pdf-chips { display: flex; flex-wrap: wrap; gap: var(--sp-6); margin: 0 0 var(--sp-6) calc(var(--label-w) + var(--sp-10)); }

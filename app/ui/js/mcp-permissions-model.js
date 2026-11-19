@@ -12,20 +12,19 @@
 //   save a state the backend would refuse for that reason.
 // - Worker types mirror the backend's rules (`validate_worker_types`): at
 //   most 8, lowercase names unique, a `claude` or `codex` command with
-//   simple arguments, `--no-daemon` for Codex, a column, a one-line
-//   description. The backend decides; these checks only say what is wrong
-//   before a round trip.
-// - Painting never moves a type's column (`typeColumnChoice`): a column of
-//   another project stays chosen, named with its project; only a column no
-//   project has any more falls back to the shown project's first.
+//   simple arguments, `--no-daemon` for Codex, a one-line description. The
+//   backend decides; these checks only say what is wrong before a round
+//   trip. A type has no column: where its cards open is the start's
+//   (mcp/workers.rs `worker_start`), and a `columnId` a type still carries
+//   from an older build is dropped here (`permissionsPayload`).
 // - The client row copies a ready setup: `claude mcp add --scope user` for
 //   Claude Code (every directory, since an orchestrator may start anywhere)
 //   or Codex's TOML (`claudeAddCommand`, `codexConfig`).
 // - The scope rows are checked here before any directory is (`scopeProblem`),
 //   and a directory preview's refusal names its message (`previewErrorKey`).
 // - The default list offers a Claude type (`--permission-mode auto`) and a
-//   Codex type (`--no-daemon --yolo`) in the project's first column, so
-//   driving worker cards needs no further configuration.
+//   Codex type (`--no-daemon --yolo`), so driving worker cards needs no
+//   further configuration.
 
 export const MAX_WORKER_TYPES = 8;
 const TYPE_NAME = /^[a-z0-9_-]{1,32}$/;
@@ -50,33 +49,13 @@ export function initialPermissions(client) {
 }
 
 /* the types a newly enabled worker choice starts with: Claude in auto mode
-   and Codex (`--no-daemon`, which Deck's Signal needs) without approvals,
-   both in the project's first column; `descriptions` by type name */
-export function defaultWorkerTypes(columns, descriptions) {
-  const columnId = columns?.[0]?.id || '';
+   and Codex (`--no-daemon`, which Deck's Signal needs) without approvals;
+   `descriptions` by type name */
+export function defaultWorkerTypes(descriptions) {
   return [
-    { name: 'claude', cmd: 'claude --permission-mode auto', columnId, description: descriptions?.claude || '' },
-    { name: 'codex', cmd: 'codex --no-daemon --yolo', columnId, description: descriptions?.codex || '' },
+    { name: 'claude', cmd: 'claude --permission-mode auto', description: descriptions?.claude || '' },
+    { name: 'codex', cmd: 'codex --no-daemon --yolo', description: descriptions?.codex || '' },
   ];
-}
-
-/* the column choices of a type's row: the shown project's columns, plus
-   the type's own column when it belongs to another project (kept, named
-   "project › column"); a column no project has any more, or none, becomes
-   the first shown one. Painting never moves a type's column on its own. */
-export function typeColumnChoice(columns, projects, columnId) {
-  const options = (columns || []).map(c => ({ id: c.id, name: c.name }));
-  if (columnId && !options.some(o => o.id === columnId)) {
-    for (const project of projects || []) {
-      const column = (project.columns || []).find(c => c.id === columnId);
-      if (column) {
-        options.push({ id: column.id, name: `${project.name} › ${column.name}` });
-        return { options, value: columnId };
-      }
-    }
-  }
-  if (options.some(o => o.id === columnId)) return { options, value: columnId };
-  return { options, value: options[0]?.id || '' };
 }
 
 /* the choices as the backend takes them: children of an unchecked parent off */
@@ -96,7 +75,6 @@ export function permissionsPayload(p) {
     workerTypes: workers ? p.workerTypes.map(t => ({
       name: String(t.name || '').trim(),
       cmd: String(t.cmd || '').trim().replace(/\s+/g, ' '),
-      columnId: String(t.columnId || ''),
       description: String(t.description || '').trim(),
     })) : [],
   };
@@ -118,7 +96,7 @@ export function workerTypesProblem(p) {
       return 'mcp.typeCommandInvalid';
     }
     if (words[0] === 'codex' && !words.includes('--no-daemon')) return 'mcp.typeCodexDaemon';
-    if (!type.columnId || [...type.description].length > 200 || /\p{Cc}/u.test(type.description)) {
+    if ([...type.description].length > 200 || /\p{Cc}/u.test(type.description)) {
       return 'mcp.typeListInvalid';
     }
   }

@@ -116,6 +116,11 @@ pub(super) struct WorkerStartArgs {
     /// else the client's first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) project_id: Option<String>,
+    /// The column the card opens in, one of that project's; only for a
+    /// client the user lets organize cards. Default beside the orchestrator
+    /// card, else the project's new-card column (`workers::worker_start`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) column_id: Option<String>,
 }
 
 /// `deck_worker_send`: one line for one worker card, written after the
