@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.8.32 — 2026-11-19 (Nightly)
+
+- Automations: a clock rule can run once. In the editor choose "once, on" and
+  give a date and time. After it ran it stays in the drawer under "Ended"
+  with the time it ran, until "Clear ended" removes these rules together
+  with the templates only they used; Deck deletes nothing by itself. If
+  Deck was not running at the time, the rule still runs when Deck starts
+  later the same day. Once that day has passed it no longer runs, and
+  Needs attention shows one row for it, where you can reschedule or delete
+  it.
+  An earlier Deck build refuses a settings file that holds a one-time rule
+  and leaves it untouched.
+- MCP: a client allowed to draft templates and automations can now draft a
+  clock rule, one-time or repeating ("check this PR's CI tomorrow at 9",
+  "every Monday at 9"). It is the way an Agent registers later work: at the
+  time, Deck opens a new card and sends the approved steps; nothing goes
+  back into the card that drafted it. The draft waits in Needs attention
+  like any other, and the review shows the time, the project and column,
+  the command and every step in full. Nothing is saved until you approve.
+  An approved rule is your ordinary clock rule and stays when the client's
+  permission is withdrawn. A client can draft a change only to a clock rule
+  that came from its own approved draft, and cannot approve, pause or
+  delete anything.
+- MCP worker cards: the Agent in a worker card can hand Deck a report for
+  the Agent that started the card (`deck_worker_report`), without knowing
+  who that is. The orchestrator reads it when it chooses
+  (`deck_worker_reports`, under the existing "read worker replies"
+  choice), and `deck_worker_wait` returns when a new report arrives.
+  Reports survive a Deck restart; each card keeps its latest 4, 8 KB each.
+  The worker card's label shows "reported" with the time, never the text.
+  A report is stored text only: Deck sends nothing because of it, raises
+  no notification and moves no card. A Codex worker must run with
+  `--no-daemon`, as worker cards already require.
+
 ## 0.8.31 — 2026-11-19 (Nightly)
 
 - Phone Connector: a Mac keeps its pairings when its address changes (DHCP,
