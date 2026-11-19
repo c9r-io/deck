@@ -155,6 +155,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_card_mark` | Mark one card on its current episode: `needs-you`, `can-close` or `working`, with a note of at most 200 characters; `null` takes the caller's own mark off (another client's is `CARD_MARKED`, though a later mark replaces it). Presentation only. |
 | `deck_card_update` | Rename one card of the client's projects and/or move it to a column, of its own project or (`project_id`) of another the client reaches: `card_id`, `request_id`, `title` + `from_title`, `column_id` + `from_column_id`. Refused with `CARD_CHANGED` when the card is no longer where or named as the request says, `COLUMN_NOT_FOUND` for a column outside the target project or a project out of reach, `CAPACITY_EXCEEDED` past 30 a minute. Returns an operation (`deck_operation_get`): `committed`, or `rejected` with `card-changed`, `card-starting`, `card-collecting`, `card-managed` or `card-missing`. Types, starts and closes nothing. Needs the client's separate **organize cards** choice (and the card snapshot). |
 | `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence`. Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over. |
+| `deck_worker_close` | Close one worker card the calling orchestrator card started (`card_id`, `after_episode`, `send_sequence`, `request_id`): `WORKER_NOT_FOUND` for any other card and for every card when the call comes from no Deck card, `WORKER_TAKEN_OVER` while you hold it, `WORKER_NEEDS_YOU` while its agent asks you something, `EPISODE_MOVED` when it moved on. An operation to poll: `committed` once the card is gone, or `rejected` with `card-shown` (a pane shows it), `reminder-protected`, `card-kept` (a kept scratchpad), or the refusals above when the card changed before the close ran. Part of **Drive worker cards**; 30 a minute together with lines. |
 
 All input schemas reject unknown fields. Side-effecting tools advertise
 `readOnlyHint=false`, `destructiveHint=true`, `idempotentHint=false` and
@@ -330,7 +331,7 @@ labelled "Driven by ‹client›" (or by its orchestrator card, below) and its r
 (its orchestrator reads them; the card menu announces them again).
 
 The orchestrator (Claude Code, Codex or any MCP client) decides everything;
-Deck only provides five tools. `deck_worker_start` starts a card of a
+Deck only provides its worker tools. `deck_worker_start` starts a card of a
 type you listed; `deck_worker_list` and `deck_worker_wait`
 show each card's state without content: whether its session is alive, the
 Agent observation's closed word (`working`, `turn-done`, `needs-input`,
@@ -365,6 +366,21 @@ risk you accepted for a worker's first line); with it off, it waits until
 you type into the card or send it yourself. The orchestrator can never answer
 an Agent's permission or trust prompt.
 
+**Closing.** An orchestrator may close a worker card it started once it is
+done with it (`deck_worker_close`), and only from the Deck card it started
+it from: Deck reads that card from the operating system, so it can never
+close your cards, another orchestrator's, an automation's, or anything when
+it runs outside a Deck card. The card closes exactly as your ✕ closes it,
+and you see "‹orchestrator› closed ‹card›" while you look at its Board or
+at Needs attention. Deck leaves the card alone while a pane shows it, while
+you hold it, while its agent asks you something, when it carries a
+Reminder or a kept scratchpad, and when it started a new turn after the
+orchestrator looked. The card's screen goes with it; its reports stay
+readable. In Needs attention a worker card's row says who drives it, and
+**Turn ended** offers "Tick those ‹orchestrator› opened (N)" for each
+orchestrator with listed cards (and for the cards a closed orchestrator
+card left behind), so you can close them yourself in one confirmation.
+
 **Taking over.** Typing into a worker card yourself (a key, a paste, a
 dropped file) takes it over: the orchestrator's lines for that card wait
 (queue stage "you took this card over") until you click **Taken over ·
@@ -373,9 +389,10 @@ timer; your other worker cards go on.
 
 **Stopping.** Stopping the worker choice, revoking the client or turning
 MCP off takes the orchestrator's unsent lines off automatic delivery at
-once (they stay in each card's list for Send now); already open cards stay.
+once (they stay in each card's list for Send now) and refuses a close still
+waiting; already open cards stay.
 At most 8 worker cards per orchestrator card and 32 per client may be on the Board, 4 unsent lines per
-card, 30 lines a minute.
+card, 30 lines and closes a minute.
 
 Claude Code and Codex (`codex --no-daemon` only; its shared-daemon Signal
 cannot be trusted, so a daemon Codex's lines would hold) can be workers; a

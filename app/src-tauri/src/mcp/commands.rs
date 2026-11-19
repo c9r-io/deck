@@ -963,6 +963,7 @@ pub(crate) fn mcp_pending() -> Result<Vec<PendingView>, DeckError> {
                             "session-create"
                                 | "session-close"
                                 | WORKER_START_KIND
+                                | super::workers::WORKER_CLOSE_KIND
                                 | super::cards::CARD_UPDATE_KIND
                         )
                 })
@@ -1050,9 +1051,25 @@ pub(super) fn close_admit(
             return Err(error);
         }
     }
+    // a worker card's close is decided again on what the card is now: the
+    // Board and the card's Agent observation, read before the write (the
+    // observation lists tmux panes)
+    let worker_close = runtime.read(|doc| {
+        doc.operations
+            .iter()
+            .any(|o| o.operation_id == operation_id && o.kind == WORKER_CLOSE_KIND)
+    })?;
+    let (targets, seen) = if worker_close {
+        (
+            crate::documents::card_targets(false),
+            super::workers::observe_sessions(),
+        )
+    } else {
+        (None, None)
+    };
     let admission = random_id("close_", 16)?;
     let admission_hash = sha(admission.as_bytes());
-    runtime.write(|doc| {
+    let refused = runtime.write(|doc| -> Result<Option<&'static str>, DeckError> {
         if !doc.config.enabled {
             return Err(DeckError::new(ErrorKind::Perm, "MCP control is disabled"));
         }
@@ -1061,7 +1078,7 @@ pub(super) fn close_admit(
             .iter()
             .position(|operation| {
                 operation.operation_id == operation_id
-                    && operation.kind == "session-close"
+                    && matches!(operation.kind.as_str(), "session-close" | WORKER_CLOSE_KIND)
                     && operation.state == "executing"
             })
             .ok_or_else(|| {
@@ -1072,6 +1089,30 @@ pub(super) fn close_admit(
             })?;
         let operation = doc.operations[index].clone();
         client(doc, &operation.client_id)?;
+        if operation.kind == WORKER_CLOSE_KIND {
+            // refused: recorded with its closed code, which the webview's
+            // own "rejected" then repeats without changing it
+            let verdict = super::workers::close_still_admissible(
+                doc,
+                &operation,
+                targets.as_ref(),
+                seen.as_ref(),
+            );
+            let saved = &mut doc.operations[index];
+            saved.updated_at = now_ms();
+            return Ok(match verdict {
+                Ok(()) => {
+                    saved.state = "admitted".into();
+                    saved.admission_hash = Some(admission_hash.clone());
+                    None
+                }
+                Err(code) => {
+                    saved.state = "rejected".into();
+                    saved.code = Some(code.into());
+                    Some(code)
+                }
+            });
+        }
         let result = operation.result.as_ref().ok_or_else(|| {
             DeckError::new(ErrorKind::ContextChanged, "MCP close plan is missing")
         })?;
@@ -1100,8 +1141,15 @@ pub(super) fn close_admit(
         saved.state = "admitted".into();
         saved.admission_hash = Some(admission_hash);
         saved.updated_at = now_ms();
-        Ok(())
+        Ok(None)
     })?;
+    if let Some(code) = refused {
+        super::workers::note_worker_change();
+        return Err(DeckError::new(
+            ErrorKind::ContextChanged,
+            format!("MCP worker close refused: {code}"),
+        ));
+    }
     Ok(CloseAdmissionView { admission })
 }
 
@@ -1129,13 +1177,24 @@ pub(super) fn validate_close_admission_with(
             .operations
             .iter()
             .find(|operation| {
-                operation.kind == "session-close"
+                matches!(operation.kind.as_str(), "session-close" | WORKER_CLOSE_KIND)
                     && operation.state == "admitted"
                     && operation.admission_hash.as_deref() == Some(&hash)
             })
             .ok_or_else(|| {
                 DeckError::new(ErrorKind::ContextChanged, "MCP close admission is invalid")
             })?;
+        // a worker card's close ends exactly the card's own session
+        if operation.kind == WORKER_CLOSE_KIND {
+            let session = super::workers::close_session(operation).unwrap_or_default();
+            if tmux_sessions.len() != 1 || session.is_empty() || tmux_sessions[0] != session {
+                return Err(DeckError::new(
+                    ErrorKind::ContextChanged,
+                    "MCP close admission target changed",
+                ));
+            }
+            return Ok(());
+        }
         let session_id = operation
             .result
             .as_ref()
@@ -1322,7 +1381,8 @@ pub(super) fn complete(
         // an idempotent no-op; anything else is refused.
         match (operation.state.as_str(), state.as_str()) {
             ("executing", _) => {}
-            ("admitted", "committed" | "ambiguous") if operation.kind == "session-close" => {}
+            ("admitted", "committed" | "ambiguous")
+                if matches!(operation.kind.as_str(), "session-close" | WORKER_CLOSE_KIND) => {}
             (recorded, requested) if recorded == requested => return Ok(Err(String::new())),
             _ => {
                 return Err(DeckError::new(
@@ -1434,6 +1494,14 @@ pub(super) fn complete(
             if let Some(session) = tmux_session.as_deref() {
                 settle_start(runtime, &operation_id, session);
             }
+            if let Some(app) = runtime.app.as_ref() {
+                let _ = app.emit("mcp-workers-changed", ());
+            }
+        }
+        // a worker card closed (or its close refused): a wait sees it, the
+        // labels repaint
+        Err(kind) if kind == WORKER_CLOSE_KIND => {
+            note_worker_change();
             if let Some(app) = runtime.app.as_ref() {
                 let _ = app.emit("mcp-workers-changed", ());
             }

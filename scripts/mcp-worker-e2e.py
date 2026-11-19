@@ -193,6 +193,14 @@ def main():
             ok, again = call("deck_worker_reports", {"card_id": card, "after": 1})
             step("report-after", ok and again.get("reports") == [] and again.get("latest") == 1)
 
+        # this caller runs in no Deck card: it closes nothing, not even the
+        # worker it started (only the orchestrator card that started a
+        # worker card may close it)
+        ok, out = call("deck_worker_close", {"request_id": f"wclose_{tag}", "send_sequence": sequence,
+                                             "card_id": card, "after_episode": e1})
+        step("close-refused-outside-a-card", not ok and code(out) == "WORKER_NOT_FOUND"
+             and "no Deck card" in ((out.get("error") or {}).get("message") or ""), code=code(out))
+
         # refused lines: a moved episode, a stale sequence
         ok, out = send(card, e1 + 1000, "never sent", f"wbad_{tag}")
         step("episode-moved", not ok and code(out) == "EPISODE_MOVED" and out["error"].get("currentEpisode") == e1)

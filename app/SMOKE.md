@@ -415,8 +415,12 @@ message) and an "Agent handover" rule `worker`
 (approval, external-content consent, first step without readiness) and
 reports `workers-armed`. Part A is `scripts/mcp-worker-e2e.py` (same
 adapter, socket and credential arguments as `mcp-agent-e2e.py`, plus
-`--automation worker`): one worker, its reply, `EPISODE_MOVED`,
-`STALE_REQUEST`, a second line and its reply; the page then takes the card
+`--automation worker`): one worker, its reply, a close refused because the
+client runs in no Deck card (`WORKER_NOT_FOUND`), `EPISODE_MOVED`,
+`STALE_REQUEST`, a second line and its reply; meanwhile the page opens
+Needs attention › Turn ended, where the worker's row says "Driven by
+orchestrator" and "Tick those orchestrator opened (1)" ticks exactly that
+row and closes nothing (`workers-attention`); it then takes the card
 over through the pane's own input path, sees the client's third line held
 at `human` and undelivered, hands the card back through the card's button,
 sees it delivered, withdraws the worker choice through the client row (the
@@ -592,7 +596,8 @@ where its worker cards open (`mcp/workers.rs`): the same carrier as
 `<data>/translation-fixture/live.sh` (a real Claude Code `-p` with only
 this instance's adapter, its MCP config made from the run's ledger and
 credential at start, asked in plain words to start one worker of type
-`claude` in the project "Proj B", column "Review"). The page creates the
+`claude` in the project "Proj B", column "Review") and `live-close.sh` (the
+same, asked to close every worker card it started). The page creates the
 projects "Proj A" and "Proj B" with those default directories (the
 isolated Board's first project has none) and a column "Review" in B,
 authorizes one client of all projects that may drive workers (one Claude
@@ -608,9 +613,16 @@ worker beside its orchestrator) and `projects-columns` (the unnamed one
 where your own new cards open in B, not B's first column; the named one
 there), then opens a card "Orch L" in A running `sh live.sh`
 (`projects-live-ready`): `projects-live` needs the worker that agent
-started in B's "Review". Then it narrows the client to A through its
-Permissions… dialog (`projects-narrowed`: B's workers are the user's, A's
-is not). `--phase after` in "Orch B": A alone is reached, a start from
+started in B's "Review". Closing: the page shows "A to B queued" in a pane
+(`projects-close-ready`) and the operator types `--phase close` into "Orch
+A": B's worker and "Orch B" are refused (`WORKER_NOT_FOUND`), the shown
+card's close is rejected `card-shown`, and "A to B" closes; the page checks
+`projects-closed` (only "A to B" gone), leaves the pane and reports
+`projects-live-close-ready`, and the operator types `sh live-close.sh` into
+"Orch L" (the same kind of agent, asked in plain words to close every card
+it started): `projects-live-closed` needs "Live pick" gone and nothing else.
+Then it narrows the client to A through its Permissions… dialog
+(`projects-narrowed`: B's workers are the user's, A's is not). `--phase after` in "Orch B": A alone is reached, a start from
 B's card is refused, B's worker reads as taken over. Judge with
 `scripts/smoke-verdict <data> projects` and the scripts' PASS lines. Keep
 the screen unlocked.

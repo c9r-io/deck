@@ -213,6 +213,16 @@
 //! client is saved at once (`mcp_client_permissions`, under the settings
 //! fence). The user takes a card over by typing into its pane
 //! (`worker_set_held`, from the webview) and hands it back by hand only.
+//! `deck_worker_close` (part of the worker choice) closes ONE worker card
+//! for the orchestrator card that started it, proven from the kernel
+//! (`origin.rs`; a caller from no card closes nothing, an unowned card is
+//! nobody's to close), bound to the client's send sequence and to the
+//! episode it decided on, refused while the user holds the card or its
+//! Agent asks the user, and journaled as a `worker-close` Board intent the
+//! webview closes through `provider.close` as a remote close (never while
+//! a pane shows it, with a Reminder or a kept scratchpad); its admission
+//! (`commands::close_admit`) decides again on the card as it is then and
+//! records a refusal with its closed code.
 //! Withdrawing `allow_workers`, revoking the client or disabling MCP takes
 //! the key out under `storage::settings_fence`. Capacity: 8 worker cards on
 //! the Board per orchestrator card (callers from no card together), 32 per

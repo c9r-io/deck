@@ -174,6 +174,63 @@ test('a remote close never retires a card that a pane is showing', async () => {
   assert.deepEqual([complete.state, complete.code], ['rejected', 'card-shown']);
 });
 
+/* a worker card its orchestrator card closes (`deck_worker_close`): the
+   ordinary remote close — admitted at the first side effect, its token on
+   the queue clear and the kill — refused before any side effect while a
+   pane shows the card, with a Reminder or a kept scratchpad; a card already
+   gone is committed; a refusal at admission leaves the card (native keeps
+   the code it recorded) */
+test('a worker close goes through the ordinary remote close and leaves what is the user’s', async () => {
+  const worker = (id, extra = {}) => ({ id, projectId: 'P1', columnId: 'C1', title: id, cmd: 'claude', dir: '/tmp',
+    session: `deck-${id}`, origin: { source: 'worker', badge: 'claude' }, ...extra });
+  const run = async (cards, plan, { admit = true, shown = null } = {}) => {
+    project();
+    store.cards = cards;
+    if (shown) panes.set(shown, { sid: 'x', session: shown });
+    const pending = { operationId: `op_${plan.cardId}`, kind: 'worker-close', result: { orchestratorCardId: 'OA', ...plan } };
+    let items = [pending]; const calls = [];
+    window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+      calls.push([cmd, args]);
+      if (cmd === 'mcp_pending') { const value = items; items = []; return value; }
+      if (cmd === 'mcp_claim') return pending;
+      if (cmd === 'mcp_close_admit') { if (!admit) throw new Error('MCP worker close refused: episode-moved'); return { admission: 'close_w' }; }
+      if (cmd === 'queue_clear_sessions') return { removed: 0 };
+      if (cmd === 'kill_session' || cmd === 'save_board' || cmd === 'mcp_complete') return;
+      throw new Error(`unexpected ${cmd}`);
+    } } };
+    try { await drainMcp(); } finally { if (shown) panes.delete(shown); }
+    const complete = calls.find(([cmd]) => cmd === 'mcp_complete')[1];
+    return { calls, outcome: [complete.state, complete.code] };
+  };
+  // closed: admitted first, its token on the queue clear and the kill
+  let { calls, outcome } = await run([worker('W1')], { cardId: 'W1', session: 'deck-W1' });
+  assert.deepEqual(outcome, ['committed', null]);
+  assert.equal(store.cards.length, 0);
+  const at = cmd => calls.findIndex(([name]) => name === cmd);
+  assert.ok(at('mcp_close_admit') < at('queue_clear_sessions') && at('queue_clear_sessions') < at('kill_session'));
+  assert.equal(calls[at('kill_session')][1].mcpAdmission, 'close_w');
+  // already gone
+  ({ outcome } = await run([], { cardId: 'W2', session: 'deck-W2' }));
+  assert.deepEqual(outcome, ['committed', null]);
+  // the user's: shown in a pane, a Reminder, a kept scratchpad — refused
+  // before any side effect
+  for (const [card, code, shown] of [
+    [worker('W3'), 'card-shown', 'deck-W3'],
+    [worker('W4', { reminder: { dueAt: Date.now() + 60_000 } }), 'reminder-protected', null],
+    [worker('W5', { buffer: { entries: [{ id: 'e1', text: 'kept' }] } }), 'card-kept', null],
+  ]) {
+    ({ calls, outcome } = await run([card], { cardId: card.id, session: card.session }, { shown }));
+    assert.deepEqual(outcome, ['rejected', code], card.id);
+    assert.equal(store.cards.length, 1, `${card.id} stays`);
+    assert.ok(!calls.some(([cmd]) => cmd === 'kill_session' || cmd === 'mcp_close_admit'), card.id);
+  }
+  // refused at admission (the card moved on): kept, nothing killed
+  ({ calls, outcome } = await run([worker('W6')], { cardId: 'W6', session: 'deck-W6' }, { admit: false }));
+  assert.equal(outcome[0], 'rejected');
+  assert.equal(store.cards.length, 1);
+  assert.ok(!calls.some(([cmd]) => cmd === 'kill_session'));
+});
+
 test('a failed native completion is surfaced as a fixed sentence, not swallowed or thrown', async () => {
   project();
   const pending = { operationId: 'op_6', kind: 'unknown-kind', result: {} };

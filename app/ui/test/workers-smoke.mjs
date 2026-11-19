@@ -487,10 +487,16 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
      column, the named one in it (`projects-columns`). Then a real Claude
      Code in a card "Orch L" of A (the runner's fixture live.sh: `claude -p`
      with only this instance's adapter) is asked in plain words for a worker
-     in B's "Review" column (`projects-live`). Last the page narrows the
-     scope to A through the client's Permissions… dialog: B's workers are the
-     user's (`projects-narrowed`). The script's second phase in "Orch B" is
-     refused a start. */
+     in B's "Review" column (`projects-live`). Then closing: with "A to B
+     queued" shown in a pane (`projects-close-ready`), the script's phase
+     close in "Orch A" is refused B's worker and "Orch B", sees the shown
+     card's close rejected and closes "A to B" (`projects-closed`); the agent
+     in "Orch L" is asked in plain words to close what it opened
+     (`projects-live-close-ready`, the runner's live-close.sh;
+     `projects-live-closed`). Last the page narrows the scope to A through
+     the client's Permissions… dialog: B's workers are the user's
+     (`projects-narrowed`). The script's second phase in "Orch B" is refused
+     a start. */
   const projectsRun = async ({ work, cmd, fixture }) => {
     const { newSessionColumn } = await import('../js/pure.js');
     const made = {};
@@ -553,6 +559,22 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     await report('projects-live', !!chosen && chosen.projectId === made.b.id && chosen.columnId === review.id,
       chosen?.projectId === made.b.id ? 1 : 0, at(chosen));
 
+    /* closing (`deck_worker_close`): "A to B queued" is shown in a pane,
+       and the script in "Orch A" (phase close) is refused B's worker and
+       "Orch B" itself, sees the shown card's close rejected, and closes "A to
+       B"; then the real agent in "Orch L" is asked in plain words to close
+       what it opened */
+    await openSession(aNamed.id);
+    await report('projects-close-ready', !!panes.get(aNamed.session));
+    const scripted = await until(() => !provider.get(aCross.id) || null, 600_000, 1000);
+    await pause(8_000);
+    const kept = !!provider.get(aNamed.id) && !!provider.get(bOwn.id) && !!provider.get(orch.b.id);
+    backToBoard();
+    await report('projects-closed', !!scripted && kept, scripted ? 1 : 0, kept ? 1 : 0);
+    await report('projects-live-close-ready', !!chosen);
+    const liveClosed = await until(() => (chosen && !provider.get(chosen.id)) || null, 900_000, 2000);
+    await report('projects-live-closed', !!liveClosed && !!provider.get(aOwn.id) && !!provider.get(aNamed.id));
+
     /* narrowed to A through the dialog, as the person does it */
     await openPermissions('orchestrator');
     $('mcp-auth-all').click();
@@ -570,7 +592,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     const ui = await inv('mcp_workers_ui');
     await report('projects-narrowed', !!narrowed
       && ui.find(value => value.cardId === bOwn?.id)?.takenOver === true
-      && ui.find(value => value.cardId === aCross?.id)?.takenOver === true
+      && ui.find(value => value.cardId === aNamed?.id)?.takenOver === true
       && ui.find(value => value.cardId === aOwn?.id)?.takenOver === false);
     await pause(60_000);
     await report('done', !failed, 1, 7);
@@ -666,7 +688,35 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     const sent = await until(async () => { const s = await queue(first.session); return s.delegated.length >= 1 ? s : null; }, 480_000, 2000);
     await report('workers-send', !!sent, sent ? sent.delegated.length : 0);
     // the client reads that turn's reply first
-    await pause(45_000);
+    const readUntil = Date.now() + 45_000;
+
+    /* A2b. Needs attention › Turn ended says who opened the worker card
+       and ticks the cards its orchestrator opened in one click, closing
+       nothing; the user's own cards carry no label */
+    {
+      const { showAttention } = await import('../js/attention.js');
+      const listed = await until(() => ctx.attention.ended(first) || null, 240_000, 1000);
+      showAttention();
+      const tools = $('attention-tools');
+      tools.querySelector('[data-filter="ended"]').click();
+      await pause(300);
+      const row = $('attention-list').querySelector(`.attention-row[data-sid="${first.id}"]`);
+      const chip = row?.querySelector('.attention-worker');
+      /* the Board's label, a report's time after it when the worker reported */
+      const labelOk = !!chip && !chip.hidden && chip.textContent.startsWith(t('workers.driven', { name: 'orchestrator' }));
+      const button = [...tools.querySelectorAll('.attention-pick-driver')]
+        .find(el => el.textContent === t('attention.pickDriver', { name: 'orchestrator', count: '1' }));
+      button?.click(); await pause(200);
+      const ticked = [...$('attention-list').querySelectorAll('.attention-row')]
+        .filter(el => el.querySelector('.attention-pick')?.checked).map(el => el.dataset.sid);
+      /* b says which part held: 1 listed, 2 the label, 4 the button */
+      await report('workers-attention', !!listed && labelOk && !!button && ticked.length === 1 && ticked[0] === first.id
+        && $('cfm').style.display !== 'flex' && !!provider.get(first.id), ticked.length,
+        (listed ? 1 : 0) + (labelOk ? 2 : 0) + (button ? 4 : 0));
+      tools.querySelector('[data-filter="pending"]').click(); await pause(100);
+      backToBoard();
+    }
+    await pause(Math.max(0, readUntil - Date.now()));
 
     /* A3. the user's own keystroke in the pane takes the card over */
     await openSession(first.id);

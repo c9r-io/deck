@@ -252,6 +252,7 @@ pub(super) fn withdraw_projects(
                     operation.kind.as_str(),
                     "session-create"
                         | super::workers::WORKER_START_KIND
+                        | super::workers::WORKER_CLOSE_KIND
                         | super::cards::CARD_UPDATE_KIND
                 )
                 && ["projectId", "fromProjectId"].iter().any(|key| {

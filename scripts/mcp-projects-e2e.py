@@ -15,6 +15,11 @@ that project's directory. In "Orch A" only, where its worker cards open
 naming no column decides none (the page sees it where the user's new cards
 open in B), one of A's columns for B is COLUMN_NOT_FOUND listing exactly
 B's columns, and B's third column named is the one the start records.
+Phase `close` (in "Orch A", once the page shows "A to B queued" in a pane):
+B's worker and "Orch B" itself are WORKER_NOT_FOUND (not cards A started),
+the shown card's close is accepted and then rejected `card-shown`, and "A to
+B" closes (committed). The shown card goes first and is settled before the
+second close, so the page's own wait cannot race it.
 Phase `after` (in "Orch B", once the page narrowed the client to A): A
 alone is reached, a start from B's card is refused, and B's own worker
 reads as taken over by the user.
@@ -39,7 +44,7 @@ def parse():
     p = argparse.ArgumentParser()
     for name in ("adapter", "socket", "client-id", "credential-file", "evidence"):
         p.add_argument("--" + name, required=True)
-    p.add_argument("--phase", choices=("first", "after"), default="first")
+    p.add_argument("--phase", choices=("first", "close", "after"), default="first")
     p.add_argument("--tag", default=str(int(time.time())))
     return p.parse_args()
 
@@ -110,6 +115,39 @@ def main():
                 placed = named.get("result") or {}
                 step("named-column", ok and placed.get("projectId") == other and placed.get("columnId") == third,
                      state=named.get("state"))
+        elif args.phase == "close":
+            ok_s, snap = call("deck_cards_snapshot")
+            by_title = {c.get("title"): c.get("cardId") for c in snap.get("cards", [])}
+            mine = {w.get("title"): w for w in call("deck_worker_list")[1].get("workers", [])}
+
+            def close(request, card, episode=0):
+                sequence = call("deck_worker_list")[1].get("nextSendSequence", 0)
+                return call("deck_worker_close", {"request_id": f"{request}_{role}_{args.tag}", "send_sequence": sequence,
+                                                  "card_id": card or "none", "after_episode": episode})
+
+            def settle(out, seconds=90):
+                deadline = time.time() + seconds
+                while time.time() < deadline:
+                    got = call("deck_operation_get", {"operation_id": out.get("operationId")})[1]
+                    if got.get("state") in ("committed", "rejected", "ambiguous"):
+                        return got
+                    time.sleep(1)
+                return {}
+
+            episode = lambda title: ((mine.get(title) or {}).get("agent") or {}).get("episode", 0)
+            step("close-cards-visible", ok_s and all(t in by_title for t in ("B worker", "Orch B", "A to B", "A to B queued"))
+                 and all(t in mine for t in ("A to B", "A to B queued")), cards=len(by_title))
+            ok, out = close("closeb", by_title.get("B worker"))
+            step("other-orchestrators-card-refused", not ok and code(out) == "WORKER_NOT_FOUND", code=code(out))
+            ok, out = close("closeo", by_title.get("Orch B"))
+            step("orchestrator-card-refused", not ok and code(out) == "WORKER_NOT_FOUND", code=code(out))
+            ok, out = close("closes", by_title.get("A to B queued"), episode("A to B queued"))
+            got = settle(out) if ok else {}
+            step("shown-card-kept", ok and got.get("state") == "rejected" and got.get("code") == "card-shown",
+                 state=got.get("state"), code=got.get("code"))
+            ok, out = close("closec", by_title.get("A to B"), episode("A to B"))
+            got = settle(out) if ok else {}
+            step("own-card-closed", ok and got.get("state") == "committed", state=got.get("state"))
         else:
             step("narrowed", ok and caps.get("allProjects") is False and len(spaces) == 1, reached=len(spaces))
             ok, refused = start("after")

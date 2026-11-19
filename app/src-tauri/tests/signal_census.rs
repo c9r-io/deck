@@ -261,6 +261,19 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         1,
         Presentation,
     ),
+    // a worker card's close (`deck_worker_close`): an Agent asking the
+    // user (`needs-input`) REFUSES the close, at the request and again at
+    // admission, and nothing else is read: no word ever closes a card
+    // (contract test `a_worker_card_closes_only_for_the_orchestrator_card_
+    // that_started_it`)
+    ("mcp/workers.rs", "worker_close", "\"needs-input\"", 1, Hold),
+    (
+        "mcp/workers.rs",
+        "close_still_admissible",
+        "\"needs-input\"",
+        1,
+        Hold,
+    ),
     // the card snapshot for an MCP client with the user's own choice
     // (`mcp/cards.rs`): the observation says which turn ended and why a
     // card has no final message; a mark is a suggestion the user reads.

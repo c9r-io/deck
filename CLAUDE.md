@@ -184,7 +184,14 @@ evolution; it makes scope expansion deliberate.
   and is refused under human lock or while any pane shows the card; both are
   idempotent by request id and go through `provider.createStarted` /
   `provider.close`, and a Deck restart never replays either (they become
-  ambiguous). A paired Connector `task-create` (`connector.js`) may create
+  ambiguous). The one other MCP close (approved 2026-11-19): the
+  orchestrator card that started a worker card may close that card
+  (`deck_worker_close`, `mcp/workers.rs`), proven from the kernel (a
+  caller from no card closes nothing), bound to the episode it saw and
+  re-checked at admission; refused while any pane shows the card, while
+  the user holds it, while its Agent asks the user (`needs-input`: Signal
+  may refuse, never release), with a Reminder or a kept scratchpad; the
+  same `provider.close`, never replayed. A paired Connector `task-create` (`connector.js`) may create
   one card from a locally saved project preset, and the first message matched
   by a saved Slack channel rule (`inbound.js`) may create that rule's
   collection card; both use `provider.createStarted`, and neither moves or
@@ -249,7 +256,8 @@ evolution; it makes scope expansion deliberate.
   readiness hold plus the human hold (the user's keystroke holds it until
   handed back); it starts only the worker types the user listed (Codex only
   with `--no-daemon`), never a command it writes, and never answers an
-  Agent's prompt or reads a screen. The agent in a worker card may hand
+  Agent's prompt or reads a screen. It may close only a card it started,
+  from the card it started it from (above). The agent in a worker card may hand
   Deck a report for its orchestrator (`deck_worker_report`, approved
   2026-11-19, `mcp/reports.rs`): Deck proves the calling card from the
   kernel, files the text for the orchestrator card that started it, and

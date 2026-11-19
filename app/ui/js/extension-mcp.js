@@ -35,7 +35,7 @@ const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" a
       <label class="mcp-perm"><input type="checkbox" id="mcp-perm-automations"> <span data-i18n="mcp.permAutomations">Trigger Agent automations</span></label>
       <p class="set-hint mcp-perm-hint" data-i18n="mcp.permAutomationsHint">Items it hands over open cards.</p>
       <label class="mcp-perm"><input type="checkbox" id="mcp-perm-workers"> <span data-i18n="mcp.permWorkers">Drive worker cards</span></label>
-      <p class="set-hint mcp-perm-hint" data-i18n="mcp.permWorkersHint">It starts worker cards.</p>
+      <p class="set-hint mcp-perm-hint" data-i18n="mcp.permWorkersHint">It starts, drives and closes its worker cards.</p>
       <div class="mcp-perm-sub" id="mcp-perm-worker-box">
         <div class="mcp-types-head"><span data-i18n="mcp.typeName">Name</span><span data-i18n="mcp.typeCommand">Command</span><span data-i18n="mcp.typeDescription">Good at</span><span></span></div>
         <div id="mcp-perm-types"></div>

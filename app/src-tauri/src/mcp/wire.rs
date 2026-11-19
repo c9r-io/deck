@@ -123,6 +123,17 @@ pub(super) struct WorkerStartArgs {
     pub(super) column_id: Option<String>,
 }
 
+/// `deck_worker_close`: close one worker card the calling orchestrator card
+/// started, decided on at the card's episode `after_episode`.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorkerCloseArgs {
+    pub(super) request_id: String,
+    pub(super) send_sequence: u64,
+    pub(super) card_id: String,
+    pub(super) after_episode: u64,
+}
+
 /// `deck_worker_send`: one line for one worker card, written after the
 /// card's episode `after_episode`.
 #[derive(Deserialize, Serialize)]

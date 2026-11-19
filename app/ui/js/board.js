@@ -356,6 +356,14 @@ export const provider = {
           }
           if (opts.automatic && retirementBlocked(card, opts.retirementKey)) return { noop: true, protected: true };
           if (opts.automatic && retainedBuffer(card)) return { noop: true, protected: true };
+          // A worker card's remote close (`deck_worker_close`) leaves a kept
+          // scratchpad to the user, as the batch close does. Refused before
+          // any side effect.
+          if (opts.keepBuffer && retainedBuffer(card)) {
+            const error = new Error('card keeps a scratchpad');
+            error.stage = 'kept';
+            throw error;
+          }
           // An automation finish (`unlessShown`) never retires a card a pane
           // is showing: it gives the close up, and the run has to qualify
           // again once the pane is gone. Read here, before any side effect:

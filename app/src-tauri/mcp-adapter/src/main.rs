@@ -45,7 +45,7 @@ const BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
 /// Deck may legitimately take longer than one runner round trip: a request
 /// can wait for the delivery lock behind an in-flight job dispatch.
 const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const MUTATING: [&str; 15] = [
+const MUTATING: [&str; 16] = [
     "deck_automation_trigger",
     "deck_card_update",
     "deck_mention_handoff",
@@ -55,6 +55,7 @@ const MUTATING: [&str; 15] = [
     "deck_worker_report",
     "deck_worker_send",
     "deck_worker_start",
+    "deck_worker_close",
     "deck_session_create",
     "deck_session_control",
     "deck_exec",
@@ -65,7 +66,7 @@ const MUTATING: [&str; 15] = [
 /// What every client reads at initialization: how to use Deck, and the one
 /// workflow for drafting configuration.
 const INSTRUCTIONS: &str = "Use Deck MCP only for authorized development work. Call deck_capabilities first: it says which of the local user's separate permissions this client holds. Retain operation, session, job, generation, cursor, control epoch, control sequence and create sequence values; never blindly retry ambiguous work.
-Worker cards (when the user lets this client drive them): deck_worker_start opens a card of a worker type the user lists (choose by its description), deck_worker_wait/list follow it, deck_worker_send queues your next line, deck_worker_reply reads a Claude turn's final message. The user may take a card over; never fight it.
+Worker cards (when the user lets this client drive them): deck_worker_start opens a card of a worker type the user lists (choose by its description), deck_worker_wait/list follow it, deck_worker_send queues your next line, deck_worker_reply reads a Claude turn's final message, deck_worker_close closes a card you started once you are done with it. The user may take a card over; never fight it.
 Reports: when you give a worker its task, tell it in that first line to call deck_worker_report with its result when done (and, if useful, what the report should contain). Pass the newest reports.latest you saw to deck_worker_wait so the wait returns when a card reports, then read the text with deck_worker_reports. If YOU were started as a worker and your task says to report, call deck_worker_report once you have the result; you need not know who asked.
 Drafting configuration (mayDraftConfig), when the user asks you to set up an automation or template:
 1. deck_config_describe: read the fields, examples, and the project's columns, templates, Agent rules and clock rules; reuse what exists.
@@ -504,6 +505,22 @@ struct WorkerSendInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct WorkerCloseInput {
+    /// Stable idempotency key for this close; persist it before the first
+    /// attempt and reuse it on every retry.
+    request_id: String,
+    /// This client's current send sequence (`nextSendSequence` from
+    /// deck_worker_list or deck_worker_wait); starts, lines and closes share it.
+    send_sequence: u64,
+    /// A worker card id from deck_worker_list that you started from this card.
+    card_id: String,
+    /// The card's agent episode you decided on; Deck refuses the close
+    /// (EPISODE_MOVED) when the card has moved on since.
+    after_episode: u64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct SessionInput {
     session_id: String,
     /// Optional current flow holder used to evaluate mayStartNextJob.
@@ -868,6 +885,11 @@ impl DeckServer {
             tool::<WorkerSendInput>(
                 "deck_worker_send",
                 "Queue one line for one of your worker cards, written after the episode you name (refused with EPISODE_MOVED if the card moved on). Deck types it into the card's agent only when its own readiness checks allow: never while the agent asks the user something (needs-input) or while the user has taken the card over. Returns an operation; its delivery shows in deck_worker_list sends. You can never answer the agent's permission prompts.",
+                mutating.clone(),
+            ),
+            tool::<WorkerCloseInput>(
+                "deck_worker_close",
+                "Close one worker card you started from the Deck card you run in, once you are done with it (read its reply or report first: its screen goes with it, its reports stay readable). Name the episode you decided on (deck_worker_list agent.episode). Only cards you started can be closed: WORKER_NOT_FOUND for any other card, and for every card when you run outside a Deck card. Refused with WORKER_TAKEN_OVER while the user has taken it over, WORKER_NEEDS_YOU while its agent asks the user something (leave it to them), EPISODE_MOVED if the card moved on. Returns an operation to poll (deck_operation_get): committed when the card is gone, or rejected with a code: card-shown = the user is looking at it, reminder-protected = it carries a reminder, card-kept = it holds a kept scratchpad (each the user's to close), worker-taken-over, worker-needs-you, episode-moved. Shares nextSendSequence with starts and lines; at most 30 a minute together.",
                 mutating,
             ),
         ];
@@ -1144,6 +1166,17 @@ impl DeckServer {
                     return invalid_arguments(issue);
                 }
                 self.invoke::<WorkerSendInput>("deck_worker_send", arguments)
+                    .await
+            }
+            "deck_worker_close" => {
+                if let Err(issue) = validate_sequence(
+                    &arguments,
+                    "send_sequence",
+                    "non-negative integer (nextSendSequence from deck_worker_list or deck_worker_wait)",
+                ) {
+                    return invalid_arguments(issue);
+                }
+                self.invoke::<WorkerCloseInput>("deck_worker_close", arguments)
                     .await
             }
             _ => CallToolResult::structured_error(json!({

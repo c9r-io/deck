@@ -48,7 +48,10 @@
 //   or not). Its rows carry tick boxes and the tools a "select all" box,
 //   "Tick the suggested (N)" (shown while an MCP client marked some rows
 //   can-close, mcp/cards.rs: the user's click ticks those rows, as "select
-//   all" ticks every row) and "Close selected (N)". Nothing is ever ticked
+//   all" ticks every row), one "Tick those ‹orchestrator› opened (N)" per
+//   orchestrator whose worker cards are listed (`driverGroups`; the cards
+//   its closed orchestrator card left behind get theirs) and "Close
+//   selected (N)". Nothing is ever ticked
 //   without the user's click, and leaving
 //   the filter or a card leaving the list drops its tick. Closing hands the
 //   ticked ids to Board's `closeSelectedCards` (one confirmation, the same
@@ -57,6 +60,9 @@
 //   whether a card is still in the list: a card that started a new turn
 //   during the confirmation stays. The list reads agent state and closes
 //   nothing; the closer closes and reads none (tests/signal_census.rs).
+// - A worker card's row (any filter) carries the label its Board card has
+//   (workers.js `workerLabel`: driven by, taken over, orchestrator closed):
+//   who opened a card is visible here too. Every other card carries none.
 // - A filter button says its card count and, when some of those cards carry
 //   an MCP client's mark (`tracker.marked`), how many: "Turn ended 12 · 3
 //   marked". The three marks are one number; the row says which. It is on
@@ -71,13 +77,14 @@
 //   `initAttention(deps)` from app.js, so board.js and layout.js may import
 //   this module without a cycle.
 import { $, ctx, inv, QUIET_SECS, state, store } from './state.js';
-import { ATTENTION_BADGE_LABELS, ATTENTION_FILTERS, ATTENTION_SECTION_LABELS, attentionBadge, attentionRows, codexCoverageGap, endedAgo, suggestedToClose } from './attention-model.js';
+import { ATTENTION_BADGE_LABELS, ATTENTION_FILTERS, ATTENTION_SECTION_LABELS, attentionBadge, attentionRows, codexCoverageGap, driverGroups, endedAgo, suggestedToClose } from './attention-model.js';
 import { piCoverage, piDetailKeys, piStatusKey } from './pi-model.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
 import { choiceDialog } from './dialogs.js';
 import { paintFollowUps } from './follow-up-bar.js';
 import { draftsCountText, pendingNow, proposalRow } from './proposals.js';
 import { missedCountText, missedNow, missedRow } from './missed-once.js';
+import { workerDriver, workerLabel, workerOf } from './workers.js';
 
 let pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp;
 
@@ -205,9 +212,12 @@ function fillTools(container, cards) {
       for (const id of suggestedToClose(lastRows, ctx.attention)) picked.add(id);
       refreshAttention();
     };
+    /* one "Tick those … opened" per orchestrator with listed cards
+       (`driverGroups`), painted in `paintBatch` */
+    const drivers = node('span', 'attention-pick-drivers');
     const close = node('button', 'btn attention-close-picked'); close.type = 'button';
     close.onclick = () => closePicked();
-    batch.append(all, allLabel, suggested, close);
+    batch.append(all, allLabel, suggested, drivers, close);
     container.append(summary, notice, filters, batch);
   }
   const tracker = ctx.attention;
@@ -333,7 +343,7 @@ function updateRows() {
         if (pick.checked) picked.add(card.id); else picked.delete(card.id);
         paintBatch();
       };
-      el.querySelector('.attention-card-name').append(pick, node('span', 'attention-card-title'), pin);
+      el.querySelector('.attention-card-name').append(pick, node('span', 'attention-card-title'), node('span', 'attention-worker'), pin);
       const open = node('button', 'btn attention-open'); open.type = 'button';
       open.onclick = () => openAttentionCard(card.id);
       el.append(open);
@@ -358,6 +368,15 @@ function updateRows() {
     const locate = !snapshot || snapshot.stale || !snapshot.alive;
     row.querySelector('.attention-card-title').textContent = card.title;
     row.querySelector('.attention-card-title').title = card.title;
+    /* who opened it: an orchestrator's worker card carries its Board label
+       (workers.js), every other card none */
+    const worker = workerOf(card.id);
+    const label = worker ? workerLabel(worker, store.cards) : null;
+    const chip = row.querySelector('.attention-worker');
+    chip.hidden = !label;
+    chip.textContent = label?.text || '';
+    chip.title = label?.title || '';
+    chip.classList.toggle('taken', !!label?.takenOver);
     const pick = row.querySelector('.attention-pick');
     pick.hidden = ctx.attentionFilter !== 'ended';
     pick.checked = picked.has(card.id);
@@ -436,6 +455,7 @@ function paintBatch() {
   all.indeterminate = picked.size > 0 && picked.size < listed.size;
   all.disabled = !listed.size;
   batch.querySelector('.attention-pick-all-label').textContent = t('attention.pickAll');
+  paintDrivers(batch.querySelector('.attention-pick-drivers'));
   const suggested = suggestedToClose(lastRows, ctx.attention);
   const tick = batch.querySelector('.attention-pick-suggested');
   tick.hidden = !suggested.length;
@@ -446,6 +466,37 @@ function paintBatch() {
   /* aria-disabled, as the star does: WebKit moves focus off a control that
      becomes disabled while it has it */
   close.setAttribute('aria-disabled', String(!picked.size || batchBusy));
+}
+
+/* "Tick those ‹driver› opened (N)": one button per orchestrator whose
+   worker cards are listed, a tick only (the close below still asks). The
+   buttons are rebuilt only when the groups change, so a focused one keeps
+   its focus across repaints. */
+let driversShown = '';
+const driverOf = card => {
+  const worker = workerOf(card.id);
+  return worker ? workerDriver(worker, store.cards) : null;
+};
+function paintDrivers(holder) {
+  const groups = driverGroups(lastRows, driverOf);
+  const text = group => t(group.orphaned ? 'attention.pickDriverLeft' : 'attention.pickDriver',
+    { name: group.name, count: formatNumber(group.ids.length) });
+  const shown = JSON.stringify(groups.map(group => [group.key, text(group)]));
+  if (shown === driversShown && holder.children.length === groups.length) return;
+  driversShown = shown;
+  holder.replaceChildren(...groups.map(group => {
+    const button = node('button', 'btn attention-pick-driver'); button.type = 'button';
+    button.dataset.driver = group.key;
+    button.textContent = text(group);
+    button.title = t('attention.pickDriverHint');
+    /* the group as listed now, not as it was painted */
+    button.onclick = () => {
+      const now = driverGroups(lastRows, driverOf).find(value => value.key === group.key);
+      for (const id of now?.ids || []) picked.add(id);
+      refreshAttention();
+    };
+    return button;
+  }));
 }
 
 /* Close the ticked cards through Board's closer; `offered` is the list's

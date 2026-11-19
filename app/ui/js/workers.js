@@ -20,6 +20,9 @@
 //   that card (`Hold::Human`); this module only reports the fact.
 // - A worker card that reported to its orchestrator (`reportedAt`) says so
 //   on its label, with the time; the report's text never reaches here.
+// - Needs attention shows the same label on a worker card's row and groups
+//   the cards one driver opened (`workerDriver`) for its "Tick those …
+//   opened" button (attention.js).
 // - A leaf: `render` arrives through `initWorkers(deps)`.
 import { $, inv, listen, store, uev } from './state.js';
 import { t } from './i18n.js';
@@ -71,13 +74,23 @@ export async function handBack(cardId) {
   await refreshWorkers();
 }
 
-/* who drives a worker card, as its label says it: the orchestrator card while
-   on the Board, else the client; `orphaned` once that card is gone */
-export function workerLabel(worker, cards, now = new Date()) {
+/* who drives a worker card: the orchestrator card while it is on the
+   Board, else the client; `orphaned` once that card is gone. `key` groups
+   the cards one driver opened (Needs attention's "Tick those … opened") */
+export function workerDriver(worker, cards) {
   const owner = worker.orchestratorCardId
     ? cards.find(c => c.id === worker.orchestratorCardId) : null;
   const orphaned = Boolean(worker.orchestratorCardId) && !owner;
-  const name = (owner && owner.title) || worker.clientName;
+  return {
+    key: owner ? `card:${owner.id}` : `${orphaned ? 'left' : 'client'}:${worker.clientName}`,
+    name: (owner && owner.title) || worker.clientName,
+    orphaned,
+  };
+}
+
+/* who drives a worker card, as its label says it (`workerDriver`) */
+export function workerLabel(worker, cards, now = new Date()) {
+  const { name, orphaned } = workerDriver(worker, cards);
   const takenOver = worker.takenOver || orphaned;
   const key = orphaned ? 'workers.orphaned' : takenOver ? 'workers.takenOver' : 'workers.driven';
   const title = orphaned ? 'workers.orphanedTitle' : takenOver ? 'workers.takenOverTitle' : 'workers.drivenTitle';

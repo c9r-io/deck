@@ -2,8 +2,9 @@
 // scopes and the durable operation ledger; this module is the only MCP path
 // into the Board's serialized persist-before-commit transaction.
 //
-// Close outcomes: refused before admission (card shown in a pane, plan no
-// longer current) → rejected; failed after admission (a queue/tmux side
+// Close outcomes (a managed shell's or a worker card's): refused before
+// admission (card shown in a pane, a Reminder, a worker card's kept
+// scratchpad, plan no longer current) → rejected; failed after admission (a queue/tmux side
 // effect may have run) → ambiguous, never rejected; committed only after the
 // Board write. A failed report to native is surfaced as a toast with no free
 // text — native keeps the operation pending/admitted and restart turns it
@@ -12,6 +13,7 @@
 import { inv, listen, state } from './state.js';
 import { provider } from './board.js';
 import { newSessionColumn } from './pure.js';
+import { workerOf } from './workers.js';
 import { toast } from './dialogs.js';
 import { t } from './i18n.js';
 
@@ -108,6 +110,7 @@ export function closeOutcome(result) {
   if (result.ok) return { state: 'committed', code: null };
   if (result.stage === 'reminder-protected') return { state: 'rejected', code: 'reminder-protected' };
   if (result.stage === 'shown') return { state: 'rejected', code: 'card-shown' };
+  if (result.stage === 'kept') return { state: 'rejected', code: 'card-kept' };
   if (result.admitted) return { state: 'ambiguous', code: 'close-failed' };
   return { state: 'rejected', code: 'close-failed' };
 }
@@ -123,6 +126,35 @@ async function closeSession(pending) {
   });
   const outcome = closeOutcome(result);
   await finish(pending.operationId, outcome.state, outcome.code);
+}
+
+/* a worker card its orchestrator card asked to close (`deck_worker_close`,
+   mcp/workers.rs): the card's ordinary close as a remote one, so never
+   while a pane shows the card or with a Reminder (provider.close), nor with
+   a kept scratchpad (`keepBuffer`). Native admits it right before the first
+   side effect and may still refuse it there (the card moved on, the user
+   took it over): that refusal is recorded natively with its own code, and
+   the "rejected" reported here repeats it. A card already gone is
+   committed. The user hears of it while looking at that card's Board or at
+   Needs attention. */
+async function closeWorker(pending) {
+  const plan = pending.result || {};
+  const card = provider.get(plan.cardId);
+  if (!card) {
+    await finish(pending.operationId, 'committed');
+    return;
+  }
+  const worker = workerOf(card.id);
+  const result = await provider.close(card.id, {
+    detail: true, quiet: true, mcpOperationId: pending.operationId, keepBuffer: true,
+  });
+  const outcome = closeOutcome(result);
+  await finish(pending.operationId, outcome.state, outcome.code);
+  if (result.ok && result.applied && (state.view === 'attention'
+    || (state.view === 'board' && state.projectId === card.projectId))) {
+    const name = provider.get(plan.orchestratorCardId)?.title || worker?.clientName || 'MCP';
+    toast(t('mcp.workerClosed', { name, title: card.title }));
+  }
 }
 
 /* one card update a client asked for (`deck_card_update`, mcp/cards.rs):
@@ -164,6 +196,7 @@ async function handle(item) {
     if (pending.kind === 'session-create') return await createSession(pending);
     if (pending.kind === 'session-close') return await closeSession(pending);
     if (pending.kind === 'worker-start') return await startWorker(pending);
+    if (pending.kind === 'worker-close') return await closeWorker(pending);
     if (pending.kind === 'card-update') return await updateCard(pending);
     await finish(pending.operationId, 'rejected', 'unsupported-operation');
   } catch (_) {

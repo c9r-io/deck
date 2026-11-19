@@ -34,7 +34,9 @@
 //!   * the worker record keeps the orchestrator card (`Worker.orchestrator`)
 //!     and a call from that card sees and drives only its own worker cards
 //!     and the client's unowned ones (`sees`); a caller without a card sees
-//!     all of the client's, as before;
+//!     all of the client's, as before; only that card may close one
+//!     (`deck_worker_close`, `workers::opened_by`): no unowned card, and
+//!     nothing from a caller without a card;
 //!   * a worker whose orchestrator card is gone from the Board is taken
 //!     over by the user (`taken_over`, derived, never written): its lines
 //!     hold at `human`; handing it back makes it unowned;

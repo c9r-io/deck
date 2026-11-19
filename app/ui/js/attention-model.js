@@ -303,6 +303,22 @@ export function suggestedToClose(rows, tracker) {
   return rows.filter(row => tracker.get(row.card)?.mark?.mark === 'can-close').map(row => row.card.id);
 }
 
+/* the listed cards an MCP orchestrator opened, one group per driver in the
+   order its first card is listed (`driverOf(card)`: workers.js
+   `workerDriver` for a worker card, else null): the "Tick those … opened"
+   buttons of "Turn ended". A card no orchestrator opened belongs to no
+   group. Presentation only: a group ticks rows, the close still asks. */
+export function driverGroups(rows, driverOf) {
+  const groups = new Map();
+  for (const row of rows) {
+    const driver = driverOf(row.card);
+    if (!driver) continue;
+    if (!groups.has(driver.key)) groups.set(driver.key, { key: driver.key, name: driver.name, orphaned: driver.orphaned, ids: [] });
+    groups.get(driver.key).ids.push(row.card.id);
+  }
+  return [...groups.values()];
+}
+
 export function attentionRows(projects, cards, tracker, filter) {
   const ordered = [];
   const added = new Set();

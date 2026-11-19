@@ -6285,6 +6285,220 @@ fn a_worker_start_names_its_column_only_when_the_client_may_organize_cards() {
     drop(root);
 }
 
+/// `deck_worker_close` (`workers.rs`): ONE worker card closes for the
+/// orchestrator card that started it and for nobody else — not another
+/// orchestrator card, not a caller from no card, never a card no
+/// orchestrator started. Bound to the send sequence and the episode the
+/// client decided on; refused while the Agent asks the user or the user
+/// holds the card. The close goes as a Board intent whose admission decides
+/// again (and records why it refused), and whose admission token ends
+/// exactly that card's session. Withdrawing the worker choice rejects a
+/// close still waiting.
+#[test]
+fn a_worker_card_closes_only_for_the_orchestrator_card_that_started_it() {
+    let (runtime, _runner, root) = fixture("worker-close", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let call = |tool: &str, args: Value| route(&runtime, request(tool, args));
+    let workers_on = |on: bool| super::commands::PermissionsInput {
+        allow_workers: on,
+        worker_types: if on {
+            vec![WorkerType {
+                name: "claude".into(),
+                cmd: "claude".into(),
+                description: "Write code".into(),
+            }]
+        } else {
+            Vec::new()
+        },
+        ..Default::default()
+    };
+    client_permissions(&runtime, "client_a", workers_on(true)).unwrap();
+    let card = |id: &str, column: &str, cmd: &str| json!({"id": id, "session": format!("deck-{}", id.to_lowercase()), "title": id, "cmd": cmd, "dir": "/tmp", "projectId": "P1", "columnId": column});
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [
+            card("OA", "CA", ""), card("OB", "CB", ""), card("H1", "CA", "claude"),
+            card("WA", "CA", "claude"), card("WB", "CB", "claude"), card("WC", "CA", "claude")
+        ]}),
+        true,
+    );
+    let worker = |id: &str, by: &str| Worker {
+        card_id: id.into(),
+        client_id: "client_a".into(),
+        operation_id: format!("op_{id}"),
+        automation_id: "claude".into(),
+        created_at: 1,
+        held: false,
+        orchestrator: Some(by.into()),
+        reported: 0,
+    };
+    runtime
+        .write(|doc| {
+            doc.workers
+                .extend([worker("WA", "OA"), worker("WB", "OB"), worker("WC", "OA")]);
+            Ok(())
+        })
+        .unwrap();
+    let observe = |entries: &[(&str, &'static str, u64)]| {
+        let map: HashMap<String, Seen> = entries
+            .iter()
+            .map(|(session, state, episode)| {
+                ((*session).to_owned(), seen_for_tests(Some(state), *episode))
+            })
+            .collect();
+        OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(Some(map)));
+    };
+    observe(&[
+        ("deck-wa", "turn-done", 3),
+        ("deck-wb", "turn-done", 2),
+        ("deck-wc", "turn-done", 1),
+    ]);
+    let close = |from: Option<&str>, request: &str, sequence: u64, target: &str, episode: u64| {
+        let _as = super::origin::enter_as(from);
+        call(
+            "deck_worker_close",
+            json!({"request_id": request, "send_sequence": sequence, "card_id": target, "after_episode": episode}),
+        )
+    };
+    let code = |out: &Value| out["error"]["code"].as_str().unwrap_or_default().to_owned();
+    // nobody else's: from no card, from the other orchestrator card, a card
+    // no orchestrator started, an orchestrator card itself
+    let from_nowhere = close(None, "req_x1", 0, "WA", 3);
+    assert_eq!(code(&from_nowhere), "WORKER_NOT_FOUND", "{from_nowhere}");
+    assert!(from_nowhere["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("no Deck card"));
+    assert_eq!(
+        code(&close(Some("OB"), "req_x2", 0, "WA", 3)),
+        "WORKER_NOT_FOUND"
+    );
+    assert_eq!(
+        code(&close(Some("OA"), "req_x3", 0, "H1", 0)),
+        "WORKER_NOT_FOUND"
+    );
+    assert_eq!(
+        code(&close(Some("OA"), "req_x4", 0, "OB", 0)),
+        "WORKER_NOT_FOUND"
+    );
+    // the sequence and the episode the close was decided on
+    assert_eq!(
+        code(&close(Some("OA"), "req_x5", 7, "WA", 3)),
+        "STALE_REQUEST"
+    );
+    let moved = close(Some("OA"), "req_x6", 0, "WA", 2);
+    assert_eq!(code(&moved), "EPISODE_MOVED");
+    assert_eq!(moved["error"]["currentEpisode"], 3);
+    // a question for the user is theirs; a card the user holds is theirs
+    observe(&[
+        ("deck-wa", "needs-input", 3),
+        ("deck-wb", "turn-done", 2),
+        ("deck-wc", "turn-done", 1),
+    ]);
+    assert_eq!(
+        code(&close(Some("OA"), "req_x7", 0, "WA", 3)),
+        "WORKER_NEEDS_YOU"
+    );
+    observe(&[
+        ("deck-wa", "turn-done", 3),
+        ("deck-wb", "turn-done", 2),
+        ("deck-wc", "turn-done", 1),
+    ]);
+    worker_set_held(&runtime, "WA", true).unwrap();
+    assert_eq!(
+        code(&close(Some("OA"), "req_x8", 0, "WA", 3)),
+        "WORKER_TAKEN_OVER"
+    );
+    worker_set_held(&runtime, "WA", false).unwrap();
+
+    // accepted once, replayed as the same operation; the lane moved once
+    let accepted = close(Some("OA"), "req_c1", 0, "WA", 3);
+    assert_eq!(accepted["state"], "accepted", "{accepted}");
+    assert_eq!(accepted["kind"], WORKER_CLOSE_KIND);
+    assert_eq!(accepted["result"]["cardId"], "WA");
+    assert_eq!(accepted["result"]["session"], "deck-wa");
+    assert_eq!(accepted["result"]["orchestratorCardId"], "OA");
+    let op = accepted["operationId"].as_str().unwrap().to_owned();
+    assert_eq!(close(Some("OA"), "req_c1", 0, "WA", 3)["operationId"], op);
+    {
+        let _as = super::origin::enter_as(Some("OA"));
+        assert_eq!(call("deck_worker_list", json!({}))["nextSendSequence"], 1);
+    }
+    // the webview's close: claimed, admitted at its first side effect, the
+    // admission ending exactly that card's session, then committed
+    claim(&runtime, &op).unwrap();
+    let admission = close_admit(&runtime, &op).unwrap().admission;
+    assert!(
+        validate_close_admission_with(&runtime, Some(&admission), &["deck-wa".to_owned()]).is_ok()
+    );
+    assert!(
+        validate_close_admission_with(&runtime, Some(&admission), &["deck-wb".to_owned()]).is_err()
+    );
+    complete(&runtime, op.clone(), "committed".into(), None, None).unwrap();
+    let state_of = |id: &str| {
+        runtime
+            .read(|doc| {
+                doc.operations
+                    .iter()
+                    .find(|o| o.operation_id == id)
+                    .map(|o| (o.state.clone(), o.code.clone()))
+            })
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(state_of(&op).0, "committed");
+
+    // decided again at admission: the user took B's card over meanwhile,
+    // C's agent started a new turn; each refusal keeps its own code when the
+    // webview then reports "rejected"
+    let b = close(Some("OB"), "req_c2", 0, "WB", 2);
+    let b_op = b["operationId"].as_str().unwrap().to_owned();
+    claim(&runtime, &b_op).unwrap();
+    worker_set_held(&runtime, "WB", true).unwrap();
+    assert!(close_admit(&runtime, &b_op).is_err());
+    assert_eq!(
+        state_of(&b_op),
+        ("rejected".into(), Some("worker-taken-over".into()))
+    );
+    complete(
+        &runtime,
+        b_op.clone(),
+        "rejected".into(),
+        Some("close-failed".into()),
+        None,
+    )
+    .unwrap();
+    assert_eq!(state_of(&b_op).1.as_deref(), Some("worker-taken-over"));
+    let c = close(Some("OA"), "req_c3", 1, "WC", 1);
+    let c_op = c["operationId"].as_str().unwrap().to_owned();
+    claim(&runtime, &c_op).unwrap();
+    observe(&[
+        ("deck-wa", "turn-done", 3),
+        ("deck-wb", "turn-done", 2),
+        ("deck-wc", "working", 2),
+    ]);
+    assert!(close_admit(&runtime, &c_op).is_err());
+    assert_eq!(
+        state_of(&c_op),
+        ("rejected".into(), Some("episode-moved".into()))
+    );
+
+    // withdrawing the worker choice rejects a close still waiting
+    observe(&[
+        ("deck-wa", "turn-done", 3),
+        ("deck-wb", "turn-done", 2),
+        ("deck-wc", "turn-done", 2),
+    ]);
+    let waiting = close(Some("OA"), "req_c4", 2, "WC", 2);
+    let waiting_op = waiting["operationId"].as_str().unwrap().to_owned();
+    client_permissions(&runtime, "client_a", workers_on(false)).unwrap();
+    assert_eq!(
+        state_of(&waiting_op),
+        ("rejected".into(), Some("client-revoked".into()))
+    );
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    drop(root);
+}
+
 /// A new client's choices: sessions as given, everything else off.
 fn no_permissions(allow_create: bool) -> super::commands::PermissionsInput {
     super::commands::PermissionsInput {

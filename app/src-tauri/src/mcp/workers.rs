@@ -1,6 +1,6 @@
 //! Worker cards: the cards a delegated client started through its Agent
 //! automations or `deck_worker_start`, which the user also let it drive. The
-//! five tools it uses (start, list, wait, reply, send), the ledger records that say which cards are
+//! tools it uses (start, list, wait, reply, send, close), the ledger records that say which cards are
 //! its own and which ones the user took over, and the facts the scheduler,
 //! the reply store and the webview read.
 //!
@@ -43,6 +43,14 @@
 //! - The user takes a card over by typing into its pane and hands it back
 //!   only by hand, both through `worker_set_held` from the webview.
 //!   While held, the card's delegated lines hold at `human`.
+//! - `deck_worker_close` closes one worker card for the orchestrator card
+//!   that started it, and only for it (`opened_by`: the kernel-proven
+//!   calling card is the one recorded at the start; from no card, nothing).
+//!   It is refused while the user holds the card, while its Agent asks the
+//!   user (`needs-input`) and once its episode moved on, and goes as a
+//!   `worker-close` Board intent through the webview's ordinary close as a
+//!   remote one (`mcp.js` `closeWorker`); the admission reads the card again
+//!   (`close_still_admissible`). Its reports stay readable.
 //! - Within one client, a worker started from an orchestrator card
 //!   (`origin.rs`) is that card's: only calls from it (and from no card) see
 //!   and drive it, its sequences are that card's lane, and once the card
@@ -59,6 +67,10 @@
 use super::*;
 
 pub(super) const WORKER_SEND_KIND: &str = "worker-send";
+/// A worker card its orchestrator card asked to close: a Board intent the
+/// webview's close commits (`mcp.js` `closeWorker`), admitted like a managed
+/// session's close (`commands::close_admit`).
+pub(super) const WORKER_CLOSE_KIND: &str = "worker-close";
 /// Worker cards one orchestrator card (or the client's callers from no
 /// card, together) may have on the Board at once; a start beyond it is
 /// refused (`CAPACITY_EXCEEDED`).
@@ -121,10 +133,12 @@ pub(super) fn uses_workers(doc: &DiskDoc) -> bool {
                 || c.worker_first_send
                 || !c.worker_types.is_empty()
         })
-        || doc
-            .operations
-            .iter()
-            .any(|o| matches!(o.kind.as_str(), WORKER_SEND_KIND | WORKER_START_KIND))
+        || doc.operations.iter().any(|o| {
+            matches!(
+                o.kind.as_str(),
+                WORKER_SEND_KIND | WORKER_START_KIND | WORKER_CLOSE_KIND
+            )
+        })
 }
 
 /* ---------- change notification (for wait) ---------- */
@@ -378,7 +392,7 @@ pub(super) struct Seen {
 /// One pane listing: for each session, whether it is alive and what its
 /// Signal target reported for the current generation. `None` when tmux
 /// could not be read.
-fn observe_sessions() -> Option<HashMap<String, Seen>> {
+pub(super) fn observe_sessions() -> Option<HashMap<String, Seen>> {
     #[cfg(test)]
     if let Some(forced) = OBSERVE_FOR_TESTS.with(|cell| cell.borrow().clone()) {
         return forced;
@@ -879,6 +893,241 @@ pub(super) fn worker_send(
         })
         .map_err(map_error)?;
     Ok(operation_view(&settled))
+}
+
+/* ---------- closing ---------- */
+
+/// Why a close is refused, as the client reads it (closed codes).
+fn not_opened_here(from_no_card: bool) -> Value {
+    error_value(
+        "WORKER_NOT_FOUND",
+        if from_no_card {
+            "this call comes from no Deck card: only the orchestrator card that started a worker card can close it"
+        } else {
+            "that card is not a worker card this orchestrator card started"
+        },
+        "Close only the cards you started from this Deck card (deck_worker_list); the user closes every other card.",
+    )
+}
+
+fn taken_over_refusal() -> Value {
+    error_value(
+        "WORKER_TAKEN_OVER",
+        "the user took this card over: it is theirs until they hand it back",
+        "Leave it to the user; once they hand it back you may close it.",
+    )
+}
+
+fn needs_you_refusal() -> Value {
+    error_value(
+        "WORKER_NEEDS_YOU",
+        "the card's Agent is asking the local user something: that question is theirs to answer",
+        "Leave the card to the user; you may close it once its turn has ended.",
+    )
+}
+
+fn episode_moved_refusal(current: u64) -> Value {
+    json!({"ok": false, "error": {
+        "code": "EPISODE_MOVED",
+        "message": "the card's Agent observation is no longer the episode this close was decided on; nothing was closed",
+        "nextAction": "Read the card again (deck_worker_wait or deck_worker_list) and decide on its current state.",
+        "currentEpisode": current
+    }})
+}
+
+/// The worker card `card` of `client` that orchestrator card `caller`
+/// started (`Worker.orchestrator`, read from the kernel at its start):
+/// never another card's, an unowned one, or any other card.
+fn opened_by<'a>(doc: &'a DiskDoc, client: &str, caller: &str, card: &str) -> Option<&'a Worker> {
+    doc.workers.iter().find(|w| {
+        w.card_id == card && w.client_id == client && w.orchestrator.as_deref() == Some(caller)
+    })
+}
+
+/// Whether a planned close may still go ahead, read again where it is
+/// admitted (`commands::close_admit`, inside the webview's Board
+/// transaction): still this client's choice, still a card the planning
+/// orchestrator card started and nobody took over, its Agent not asking the
+/// user, its episode the one the close was decided on. `Err` is the closed
+/// code the operation is rejected with.
+pub(super) fn close_still_admissible(
+    doc: &DiskDoc,
+    operation: &Operation,
+    targets: Option<&HashMap<String, crate::documents::CardTarget>>,
+    seen: Option<&HashMap<String, Seen>>,
+) -> Result<(), &'static str> {
+    let plan = operation.result.as_ref().ok_or("worker-close-plan")?;
+    let text = |key: &str| plan.get(key).and_then(Value::as_str).unwrap_or_default();
+    if permitted(doc, &operation.client_id, Choice::Workers).is_err() {
+        return Err("client-revoked");
+    }
+    let worker = opened_by(
+        doc,
+        &operation.client_id,
+        text("orchestratorCardId"),
+        text("cardId"),
+    )
+    .ok_or("worker-not-found")?;
+    if super::origin::taken_over(worker, targets) {
+        return Err("worker-taken-over");
+    }
+    let seen = seen.ok_or("worker-unobserved")?;
+    let now = seen.get(text("session")).copied();
+    if now.map_or(0, |s| s.episode)
+        != plan
+            .get("afterEpisode")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    {
+        return Err("episode-moved");
+    }
+    if now.and_then(|s| s.state) == Some("needs-input") {
+        return Err("worker-needs-you");
+    }
+    Ok(())
+}
+
+/// The tmux session an admitted worker close may end (`validate_close_admission`).
+pub(super) fn close_session(operation: &Operation) -> Option<&str> {
+    operation.result.as_ref()?.get("session")?.as_str()
+}
+
+/// `deck_worker_close`: the orchestrator card that started a worker card
+/// asks Deck to close it. Refused unless the call comes from that very
+/// card (the kernel's word, `origin.rs`; a caller from no card closes
+/// nothing), the card is on the current Board, the user has not taken it
+/// over, its episode is still the one the client decided on and its Agent
+/// is not asking the user anything (an observation may refuse a close,
+/// never release one). Bound to the client's send sequence exactly as a
+/// start or a line; journaled as a `worker-close` Board intent the
+/// webview's one close commits or refuses (`mcp.js` `closeWorker`: never
+/// while a pane shows the card, with a Reminder or a kept scratchpad).
+pub(super) fn worker_close(
+    runtime: &Runtime,
+    client_id: &str,
+    arguments: Value,
+) -> Result<Value, Value> {
+    let args: WorkerCloseArgs = parse(arguments)?;
+    if !valid_id(&args.request_id) || !valid_id(&args.card_id) {
+        return Err(error_value(
+            "INVALID_ARGUMENTS",
+            "request id or card id is out of shape",
+            "Use a cardId from deck_worker_list and a fresh request id.",
+        ));
+    }
+    let hash = request_hash("deck_worker_close", &args);
+    let orchestrator = super::origin::orchestrator();
+    let orchestrator = orchestrator.as_deref();
+    let replay = replay_of(runtime, client_id, Choice::Workers, &args.request_id, &hash)?;
+    if let Some(operation) = replay {
+        return Ok(operation_view(&operation));
+    }
+    let Some(caller) = orchestrator else {
+        return Err(not_opened_here(true));
+    };
+    let (worker, stale) = runtime
+        .read(|doc| -> Result<Result<(Worker, bool), Value>, DeckError> {
+            let client = permitted(doc, client_id, Choice::Workers)?;
+            if !super::origin::lane_room(client, orchestrator) {
+                return Ok(Err(super::origin::no_lane()));
+            }
+            let stale = super::origin::send_sequence(client, orchestrator) != args.send_sequence;
+            Ok(opened_by(doc, client_id, caller, &args.card_id)
+                .cloned()
+                .map(|w| (w, stale))
+                .ok_or_else(|| not_opened_here(false)))
+        })
+        .map_err(map_error)?
+        .map_err(map_error)??;
+    if stale {
+        return Err(map_error(DeckError::new(
+            ErrorKind::ContextChanged,
+            STALE_REQUEST,
+        )));
+    }
+    // the card as the committed Board says now; a recovered Board closes
+    // nothing
+    let targets = crate::documents::card_targets(true);
+    let target = targets
+        .as_ref()
+        .and_then(|cards| cards.get(&worker.card_id).cloned())
+        .ok_or_else(|| {
+            error_value(
+                "WORKER_NOT_FOUND",
+                "the card is no longer on the Board, or Deck cannot read the Board as current",
+                "Read deck_worker_list again; a card already closed needs nothing more.",
+            )
+        })?;
+    if super::origin::taken_over(&worker, targets.as_ref()) {
+        return Err(taken_over_refusal());
+    }
+    let seen = observe_sessions().ok_or_else(|| {
+        map_error(DeckError::new(
+            ErrorKind::ContextChanged,
+            "Deck could not read the card's terminal",
+        ))
+    })?;
+    let now = seen.get(&target.session).copied();
+    let current = now.map_or(0, |s| s.episode);
+    if current != args.after_episode {
+        return Err(episode_moved_refusal(current));
+    }
+    if now.and_then(|s| s.state) == Some("needs-input") {
+        return Err(needs_you_refusal());
+    }
+    if !within_rate(client_id) {
+        return Err(error_value(
+            "CAPACITY_EXCEEDED",
+            "this client sent 30 lines or closes in the last minute",
+            "Slow down, then close again with a new request.",
+        ));
+    }
+    let minted = random_id("op_", 16).map_err(map_error)?;
+    let operation = runtime
+        .write(|doc| -> Result<Result<Operation, Value>, DeckError> {
+            let client = permitted(doc, client_id, Choice::Workers)?;
+            if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
+                return Ok(Ok(existing.clone()));
+            }
+            if args.send_sequence != super::origin::send_sequence(client, orchestrator) {
+                return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
+            }
+            // taken over meanwhile: refused whole
+            match opened_by(doc, client_id, caller, &worker.card_id) {
+                None => return Ok(Err(not_opened_here(false))),
+                Some(w) if super::origin::taken_over(w, targets.as_ref()) => {
+                    return Ok(Err(taken_over_refusal()))
+                }
+                Some(_) => {}
+            }
+            reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
+            let operation = Operation {
+                result: Some(json!({
+                    "cardId": worker.card_id,
+                    "session": target.session,
+                    "projectId": target.project_id,
+                    "title": target.title,
+                    "afterEpisode": args.after_episode,
+                    "orchestratorCardId": caller,
+                })),
+                ..Operation::new(
+                    minted.clone(),
+                    client_id,
+                    args.request_id.clone(),
+                    hash.clone(),
+                    WORKER_CLOSE_KIND,
+                    "accepted",
+                )
+            };
+            if let Some(client) = doc.config.clients.iter_mut().find(|c| c.id == client_id) {
+                super::origin::bump_send(client, orchestrator);
+            }
+            doc.operations.push(operation.clone());
+            Ok(Ok(operation))
+        })
+        .map_err(map_error)??;
+    emit_changed(runtime);
+    Ok(operation_view(&operation))
 }
 
 /* ---------- local commands ---------- */
@@ -1532,7 +1781,11 @@ pub(super) fn client_permissions(
             if withdrew_workers {
                 doc.reject_pending(
                     |operation| {
-                        operation.client_id == client_id && operation.kind == WORKER_START_KIND
+                        operation.client_id == client_id
+                            && matches!(
+                                operation.kind.as_str(),
+                                WORKER_START_KIND | WORKER_CLOSE_KIND
+                            )
                     },
                     "client-revoked",
                 );

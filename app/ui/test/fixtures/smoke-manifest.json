@@ -863,6 +863,7 @@
         "workers-card": {},
         "workers-first": {},
         "workers-send": {},
+        "workers-attention": {},
         "workers-taken": {},
         "workers-held": {},
         "workers-handed-back": {},
@@ -938,6 +939,10 @@
         "projects-columns": {},
         "projects-live-ready": {},
         "projects-live": {},
+        "projects-close-ready": {},
+        "projects-closed": {},
+        "projects-live-close-ready": {},
+        "projects-live-closed": {},
         "projects-narrowed": {},
         "workers-exception": { "failureOnly": true }
       }

@@ -1442,6 +1442,8 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
    action on the right; it wraps rather than run past a narrow window */
 .attention-batch { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-8) var(--sp-10); margin-top: var(--sp-10); }
 .attention-batch .attention-close-picked { margin-left: auto; }
+/* the per-orchestrator tick buttons sit in the batch row's own flow */
+.attention-batch .attention-pick-drivers { display: contents; }
 .attention-batch .attention-close-picked[aria-disabled="true"] { opacity: .5; cursor: default; }
 /* the tick stays at the cell's left and a long title wraps beside it,
    never under it */
@@ -1459,6 +1461,16 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
    row stays a row at the largest font size */
 .attention-card-title { min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .attention-card-name .card-pin { margin-left: var(--sp-6); }
+/* a worker card's label on its attention row (attention.js): the Board
+   label's shape, one line beside the title */
+.attention-card-name .attention-worker {
+  flex: none; max-width: 50%; margin-left: var(--sp-6);
+  font-family: var(--mono); font-size: var(--fs-10); font-weight: 400; line-height: 1.2;
+  padding: 0 var(--sp-6); border: 1px solid var(--border-soft); border-radius: 4px;
+  color: var(--muted); background: var(--panel);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.attention-card-name .attention-worker.taken { color: var(--attn); border-color: var(--attn-border); }
 .attention-origin, .attention-viewed { color: var(--muted); font-size: var(--fs-12); }
 .attention-reason[data-status="attention"] { color: var(--attn); }
 .attention-reason[data-status="done"] { color: var(--done); }

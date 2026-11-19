@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ATTENTION_BADGE_LABELS, ATTENTION_SECTION_LABELS, CARD_MARKS, DELIVERY_WAITS, attentionBadge, createAttentionTracker, attentionRows, codexCoverageGap, deliveryWaits, endedAgo, suggestedToClose } from '../js/attention-model.js';
+import { ATTENTION_BADGE_LABELS, ATTENTION_SECTION_LABELS, CARD_MARKS, DELIVERY_WAITS, attentionBadge, createAttentionTracker, attentionRows, codexCoverageGap, deliveryWaits, driverGroups, endedAgo, suggestedToClose } from '../js/attention-model.js';
 import { NOTIFY_COUNTED_FILTERS } from '../js/notify-model.js';
 import { dictionaries } from '../js/i18n.js';
 import fixture from './fixtures/attention-fixture.mjs';
@@ -545,4 +545,26 @@ test('a filter button counts the marked cards its filter lists, and a mark chang
     { name: 's-d', alive: true, agent: 'working', idle_secs: 1, episode: 4, card_mark: { mark: 'working' } },
   ]);
   assert.deepEqual([tracker.marked(pinned).followed, tracker.marked(pinned).ended], [1, 1]);
+});
+
+test('the cards one orchestrator opened form one group, listed in the order their first card is', () => {
+  const rows = ['h1', 'a1', 'b1', 'a2', 'h2', 'l1'].map(id => ({ card: { id } }));
+  const drivers = {
+    a1: { key: 'card:OA', name: 'Orch A', orphaned: false },
+    a2: { key: 'card:OA', name: 'Orch A', orphaned: false },
+    b1: { key: 'card:OB', name: 'Orch B', orphaned: false },
+    l1: { key: 'left:Orchestrator', name: 'Orchestrator', orphaned: true },
+  };
+  assert.deepEqual(driverGroups(rows, card => drivers[card.id] || null), [
+    { key: 'card:OA', name: 'Orch A', orphaned: false, ids: ['a1', 'a2'] },
+    { key: 'card:OB', name: 'Orch B', orphaned: false, ids: ['b1'] },
+    { key: 'left:Orchestrator', name: 'Orchestrator', orphaned: true, ids: ['l1'] },
+  ]);
+  // the user's own cards and an automation's belong to no group
+  assert.deepEqual(driverGroups([{ card: { id: 'h1' } }], () => null), []);
+  for (const [name, dictionary] of Object.entries(dictionaries)) {
+    for (const key of ['attention.pickDriver', 'attention.pickDriverLeft', 'attention.pickDriverHint']) {
+      assert.ok(dictionary[key], `${name} has ${key}`);
+    }
+  }
 });

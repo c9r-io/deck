@@ -101,6 +101,20 @@ test('a worker card is labelled with its orchestrator card, and is the user’s 
   assert.equal(typeof chip.onclick, 'function');
 });
 
+test('a worker card’s driver groups the cards one orchestrator opened, its closed card’s apart', async () => {
+  const { workerDriver } = await import('../js/workers.js');
+  const worker = { cardId: 'W1', clientName: 'Orchestrator', takenOver: false, orchestratorCardId: 'OA' };
+  const cards = [{ id: 'OA', title: 'Orch A' }, { id: 'W1', title: 'Fix' }];
+  assert.deepEqual(workerDriver(worker, cards), { key: 'card:OA', name: 'Orch A', orphaned: false });
+  // started from no card: its client
+  assert.deepEqual(workerDriver({ ...worker, orchestratorCardId: undefined }, cards),
+    { key: 'client:Orchestrator', name: 'Orchestrator', orphaned: false });
+  // its orchestrator card closed: left behind, under the client's name, a
+  // group of its own (not the client's live cards)
+  assert.deepEqual(workerDriver(worker, [{ id: 'W1', title: 'Fix' }]),
+    { key: 'left:Orchestrator', name: 'Orchestrator', orphaned: true });
+});
+
 test('a worker card that reported says so on its label, with the time and never the text', async () => {
   setLocale('en');
   const { workerLabel } = await import('../js/workers.js');
