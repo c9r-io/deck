@@ -81,7 +81,8 @@ else
   # What is checked is that the directory holds regular `.ts` files only,
   # that `observer.ts` is among them, and that none carries a word of the
   # closed list below: a process spawn, a network client, or one of Pi's
-  # execution and session APIs. tests/edr_quiet.rs is authoritative for the
+  # execution and session APIs (the one hand-over call is pinned below).
+  # tests/edr_quiet.rs is authoritative for the
   # source; this is the same vocabulary on what was actually packaged.
   pi_dir="$target_path/Contents/Resources/pi"
   set +e
@@ -113,7 +114,7 @@ else
       for forbidden in \
         child_process spawn execFile 'exec(' 'eval(' 'require(' 'import(' \
         node:http node:https node:dgram node:tls node:dns 'fetch(' WebSocket \
-        sendUserMessage sendMessage newSession switchSession executeTool \
+        sendMessage newSession switchSession executeTool \
         registerTool registerCommand registerProvider appendEntry setActiveTools \
         getEntries getBranch getSessionFile getSystemPrompt needs-input \
         writeFile appendFile readFile createWriteStream createServer
@@ -123,6 +124,17 @@ else
           exit 1
         fi
       done
+      # The one hand-over of a worker card's line (agent_pi/handover.rs,
+      # approved 2026-11-20): Pi's send-a-message entry point, once, as the
+      # plain call with the text alone, in observer.ts and in no other file
+      # (tests/edr_quiet.rs pins the same on the source).
+      sends=$(LC_ALL=C grep -F -o -- sendUserMessage "$entry" | wc -l | tr -d ' ' || true)
+      plain=$(LC_ALL=C grep -F -c -- 'pi.sendUserMessage(text);' "$entry" || true)
+      if [ "${entry##*/}" = observer.ts ]; then wanted=1; else wanted=0; fi
+      if [ "$sends" != "$wanted" ] || [ "$plain" != "$wanted" ]; then
+        echo "$entry contains forbidden Pi observer token: sendUserMessage" >&2
+        exit 1
+      fi
     done < <(find "$pi_dir" -mindepth 1 -print0)
   elif [ "${evidence[1]}" -eq 0 ]; then
     echo "$macos/$executable references Contents/Resources/pi, but the bundle does not contain it" >&2
