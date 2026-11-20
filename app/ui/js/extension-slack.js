@@ -151,7 +151,9 @@ function createController(host) {
 
   const slackFailureText = code => t('settings.inboundStatus.error', { reason: t(slackFailureKey(code)), code });
 
-  function inboundSlackStatusText(status) {
+  /* `shownBelow`: a reason the user-token line below already gives, so
+     the summary does not say it twice */
+  function inboundSlackStatusText(status, shownBelow = null) {
     const slack = (status && status.sources || []).find(s => s.id === 'slack');
     if (!ctx.settings.inbound.sources.slack.enabled) return t('settings.inboundStatus.off');
     if (!slack) return '';
@@ -165,7 +167,7 @@ function createController(host) {
         : t('settings.inboundAgoMinutes', { count: formatNumber(Math.floor(ago / 60)) });
       parts.push(t('settings.inboundStatus.lastPoll', { ago: label }));
     }
-    if (slack.lastError) parts.push(slackFailureText(slack.lastError));
+    if (slack.lastError && slack.lastError !== shownBelow) parts.push(slackFailureText(slack.lastError));
     return parts.join(' · ');
   }
 
@@ -194,7 +196,13 @@ function createController(host) {
     // a token Slack refused says so where its state is shown, not only "invalid"
     if (view.socket === 'disconnected' && connection?.appError) $('set-slack-transport').textContent += ' · ' + slackFailureText(connection.appError);
     $('set-slack-reaction-ready').textContent = t('settings.slackReactionState', { state: t(SLACK_STATE_KEYS[view.reaction]) });
-    if (view.reaction === 'invalid' && connection?.userError) $('set-slack-reaction-ready').textContent += ' · ' + slackFailureText(connection.userError);
+    // each reason once: on the line of the credential Slack refused
+    const userReason = view.reaction === 'invalid' ? connection?.userError || null : null;
+    if (userReason) {
+      $('set-slack-reaction-ready').textContent += ' · ' + slackFailureText(userReason);
+      $('set-inbound-status').textContent = inboundSlackStatusText(status, userReason);
+    }
+    const appReason = view.socket === 'disconnected' ? connection?.appError || null : null;
     $('set-channel-status').textContent = t('settings.slackChannelState', { state: t(SLACK_STATE_KEYS[view.channel]) });
     if (view.channel === 'invalid' && connection?.botError) $('set-channel-status').textContent += ' · ' + slackFailureText(connection.botError);
     if (view.channel === 'ready') $('set-channel-status').textContent += ' · ' + t('settings.slackChannelRules', { count: formatNumber(view.channelRules) });
@@ -206,7 +214,7 @@ function createController(host) {
       if (channel.pendingCount) facts.push(t('settings.channelPending', { count: formatNumber(channel.pendingCount) }));
       if (channel.rejectedCount) facts.push(t('settings.channelRejected', { count: formatNumber(channel.rejectedCount) }));
       if (channel.gapUnresolved) facts.push(t('settings.channelGap'));
-      if (channel.lastError) facts.push(slackFailureText(channel.lastError));
+      if (channel.lastError && channel.lastError !== appReason) facts.push(slackFailureText(channel.lastError));
       if (facts.length) $('set-channel-status').textContent += ' · ' + facts.join(' · ');
     } catch (_) { /* status remains explicit from credential/config state */ }
     $('set-slack-legacy').hidden = !view.legacyNotice;

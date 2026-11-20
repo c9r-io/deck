@@ -462,7 +462,8 @@ test('Settings renders the transport-fault replies the backend produces: not con
       assert.equal(el('set-slack-transport').textContent, t('settings.slackSocketDisconnected') + ' · ' + failure);
     }
     assert.ok(text.includes(t('settings.channelGap')), code);
-    assert.ok(text.includes(failure), code);
+    // each reason once: a refused App token is said on the socket line only
+    assert.equal(text.includes(failure), code === 'network', code);
   }
   reply = vector.recovered;
   await renderInboundSettings();

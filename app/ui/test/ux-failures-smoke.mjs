@@ -80,11 +80,14 @@ export async function runUxFailuresSmoke() {
     $('set-inbound-status')?.scrollIntoView({ block: 'center' });
     await pause(200);
     const auth = t('settings.slackFailure.auth'); const scope = t('settings.slackFailure.scope');
-    const slackOk = textOf('set-slack-transport').includes(scope) && textOf('set-slack-reaction-ready').includes(auth);
+    const once = (text, part) => text.split(part).length === 2;
+    const all = ['set-inbound-status', 'set-slack-transport', 'set-slack-reaction-ready', 'set-channel-status'].map(textOf).join('\n');
+    const slackOk = textOf('set-slack-transport').includes(scope) && textOf('set-slack-reaction-ready').includes(auth)
+      && once(all, auth) && once(all, scope);
     await snapshot('uxf-slack');
     ctx.settings.inbound = savedInbound;
     await report('uxf-slack', slackOk, 1, (textOf('set-slack-transport').includes(scope) ? 0 : 1)
-      + (textOf('set-slack-reaction-ready').includes(auth) ? 0 : 2) + (textOf('set-inbound-status').includes(auth) ? 0 : 4));
+      + (textOf('set-slack-reaction-ready').includes(auth) ? 0 : 2) + (once(all, auth) ? 0 : 4) + (once(all, scope) ? 0 : 8));
 
     // Model APIs: a key a turn summary found refused
     replies.set('model_api_status', async () => ({ openai: { saved: false, check: null },
