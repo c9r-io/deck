@@ -73,7 +73,7 @@ net.createConnection = function createConnection(...args) {
 };
 test.after(() => { net.createConnection = connect; });
 
-const common = { protocol: 'pi-observer', v: 3, source: 'pi' };
+const common = { protocol: 'pi-observer', v: 4, source: 'pi' };
 /** A line without its nonce: what it says. */
 const plain = ({ nonce: _nonce, ...line }) => line;
 
@@ -108,7 +108,7 @@ function deck(name, mode = 'auto') {
     : loaded);
   state.say = (connection, reply) => {
     connection.said = reply;
-    connection.socket.end(typeof reply === 'string' ? reply : `${JSON.stringify({ protocol: 'pi-observer', v: 3, ...reply })}\n`);
+    connection.socket.end(typeof reply === 'string' ? reply : `${JSON.stringify({ protocol: 'pi-observer', v: 4, ...reply })}\n`);
   };
   /** What Deck answers this connection's line with. */
   state.answer = (connection) => {
@@ -174,7 +174,7 @@ async function closed(server, broken = []) {
 
 /** Pi's extension API as far as the observer may use it: `on`. Anything
  *  else it reaches for — on the API, a context or an event — is recorded. */
-function pi() {
+function pi(extra = {}) {
   const handlers = new Map();
   const touched = [];
   const only = (label, allowed) => new Proxy({}, {
@@ -187,12 +187,12 @@ function pi() {
     has(_target, name) { touched.push(`${String(name)} in ${label}`); return false; },
     ownKeys() { touched.push(`keys(${label})`); return []; },
   });
-  const api = only('pi', { on: (event, handler) => { handlers.set(event, handler); } });
+  const api = only('pi', { on: (event, handler) => { handlers.set(event, handler); }, ...extra });
   return {
     api,
     handlers,
     touched,
-    context: mode => only('ctx', { mode }),
+    context: (mode, more = {}) => only('ctx', { mode, ...more }),
     emit: (event, payload = only(`${event} event`, {}), ctx = only('ctx', { mode: 'tui' })) => handlers.get(event)(payload, ctx),
   };
 }
@@ -236,7 +236,7 @@ test('each entry is two imports and one call, and the files load as plain JavaSc
     assert.equal(typeof entries[name].factory, 'function');
   }
   assert.equal(entryText, entries.signal.text);
-  assert.deepEqual(Object.keys(observer).sort(), ['bounded', 'deckPiObserver', 'privateSocket', 'route']);
+  assert.deepEqual(Object.keys(observer).sort(), ['bounded', 'deckPiObserver', 'handoverOf', 'privateSocket', 'route']);
 });
 
 test('the factory asks Pi for four events and starts nothing', async () => {
@@ -346,7 +346,7 @@ test('binding is a hello and an attest, and frames are numbered run boundaries t
   assert.deepEqual(hello, common);
   assert.deepEqual(attest, {
     ...common, nonce: server.connections[0].said.nonce, socket: 'deck-dev', server_pid: 4242, pane: '%7',
-    observerVersion: 3, piVersion: '1.1.0', mode: 'tui', capabilities: { signal: true, reply: false },
+    observerVersion: 4, piVersion: '1.1.0', mode: 'tui', capabilities: { signal: true, reply: false },
   });
   // a settlement without a run reports nothing
   host.emit('agent_settled');
@@ -583,7 +583,7 @@ test('an answer the observer did not ask for ends the lease, and Deck is told', 
   for (const [name, reply] of [
     ['a wrong number', server => ({ ack: 7, nonce: server.give('nobody'), capabilities: bits })],
     ['another protocol', server => ({ protocol: 'agent-lifecycle', ack: 1, nonce: server.give('nobody'), capabilities: bits })],
-    ['another version', server => ({ v: 4, ack: 1, nonce: server.give('nobody'), capabilities: bits })],
+    ['another version', server => ({ v: 5, ack: 1, nonce: server.give('nobody'), capabilities: bits })],
     ['an acceptance in place of an acknowledgement', server => ({ accepted: 1, nonce: server.give('nobody'), capabilities: bits })],
     ['no nonce', () => ({ ack: 1, capabilities: bits })],
     ['a nonce that is none', () => ({ ack: 1, nonce: 'N'.repeat(32), capabilities: bits })],
@@ -1061,4 +1061,82 @@ test('whichever observer asks, one connection exists at a time and each is close
   assert.equal(live.size, 0, 'none is left open');
   assert.equal(seen.most, 1, `of ${seen.made} connections, at most one existed at a time`);
   assert.ok(seen.made > 200, `${seen.made} connections were made`);
+});
+
+
+/* ---------- a worker card's line (agent_pi/handover.rs) ---------- */
+
+/** An observer bound against `name` whose Pi records what it was given and
+ *  says it is idle when `idle()` does. */
+async function handing(name, idle = () => true) {
+  const server = deck(name);
+  await server.listening;
+  const given = [];
+  const host = pi({ sendUserMessage: (...args) => { given.push(args); } });
+  entry(host.api);
+  route(routed(server));
+  host.emit('session_start', undefined, host.context('tui', { isIdle: () => idle() }));
+  await until(`the lease of ${name}`, () => server.leases === 1);
+  return { server, host, given };
+}
+
+/** The next frame answered with an ack that carries `deliver`. */
+function deliverNext(server, deliver) {
+  server.next.push(line => ({ ack: line.seq, nonce: server.give(line.lease), capabilities: { signal: true, reply: false }, deliver }));
+}
+
+const receipts = server => server.lines().filter(line => 'delivered' in line || 'declined' in line).map(plain);
+
+test('a worker line in an ack goes to an idle Pi as a plain message, and the receipt is the next frame', async () => {
+  const { server, host, given } = await handing('handover');
+  deliverNext(server, { id: 'h_0a1b', text: '/review src — fix the failing test' });
+  await until('the receipt', () => receipts(server).length === 1, 8000);
+  // given exactly as written: no options, so never a command, template or queued follow-up
+  assert.deepEqual(given, [['/review src — fix the failing test']]);
+  const [receipt] = receipts(server);
+  assert.equal(receipt.delivered, 'h_0a1b');
+  assert.equal(Object.keys(receipt).length, 6, 'the common part, lease, seq and the id');
+  assert.deepEqual(host.touched, []);
+  host.emit('session_shutdown', { reason: 'quit' });
+  await closed(server);
+});
+
+test('a worker line is declined while a run is open or Pi is not idle, and nothing reaches Pi', async () => {
+  let idle = true;
+  const { server, host, given } = await handing('handover-busy', () => idle);
+  host.emit('agent_start');
+  await until('the working frame', () => server.frames().some(line => line.state === 'working'));
+  deliverNext(server, { id: 'h_busy', text: 'later' });
+  await until('the first refusal', () => receipts(server).length === 1, 8000);
+  assert.deepEqual(receipts(server)[0], { ...common, lease: 1, seq: receipts(server)[0].seq, declined: 'h_busy', because: 'busy' });
+  host.emit('agent_settled', { aborted: false });
+  idle = false;
+  deliverNext(server, { id: 'h_idle', text: 'later' });
+  await until('the second refusal', () => receipts(server).length === 2, 8000);
+  assert.equal(receipts(server)[1].because, 'busy');
+  assert.deepEqual(given, [], 'nothing was given to Pi');
+  host.emit('session_shutdown', { reason: 'quit' });
+  await closed(server);
+});
+
+test('an ack whose line is not exactly an id and a text ends the lease, and the text is never given', async () => {
+  for (const deliver of [{ id: 'H!', text: 'x' }, { id: 'h_1', text: '' }, { id: 'h_1', text: 'x', more: 1 },
+    { id: 'h_1', text: 'x'.repeat(16 * 1024 + 1) }, 'h_1']) {
+    const { server, host, given } = await handing('handover-bad');
+    deliverNext(server, deliver);
+    await until('the reset', () => server.lines().some(line => line.reason === 'fault'), 8000);
+    assert.deepEqual(given, [], JSON.stringify(deliver).slice(0, 40));
+    assert.deepEqual(receipts(server), []);
+    host.emit('session_shutdown', { reason: 'quit' });
+    // the farewell carries the nonce of the last answer it believed, as for any answer it refused
+    await closed(server, [{ ...common, lease: 1, seq: 1, reason: 'fault' }]);
+  }
+});
+
+test('the hand-over parser takes exactly an id and a bounded text', () => {
+  assert.equal(observer.handoverOf({ ack: 1 }), null);
+  assert.deepEqual(observer.handoverOf({ deliver: { id: 'h_a1', text: 'go' } }), { id: 'h_a1', text: 'go' });
+  for (const bad of [null, 'x', { id: 'h_a1' }, { id: 'A', text: 'go' }, { id: 'h_a1', text: 3 }, { id: 'x'.repeat(65), text: 'go' }]) {
+    assert.equal(observer.handoverOf({ deliver: bad }), false, JSON.stringify(bad));
+  }
 });

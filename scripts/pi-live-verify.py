@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import select
 import json
 import os
 import plistlib
@@ -447,6 +448,175 @@ class Run:
                    len(shots) >= least and len(sizes) >= 1 and all(w >= 1280 and h >= 700 for w, h in sizes),
                    written=len(shots), sizes=self.facts["snapshot_pixel_sizes"])
 
+    # ---------- `pi-worker`: the operator is the orchestrator (agent_pi/handover.rs) ----------
+
+    def tmux_pi(self, *args: str) -> str:
+        """A tmux command at the pane where Pi runs (the one pane whose program is not the shell)."""
+        panes = subprocess.run([str(self.tmux), "-S", str(self.socket), "list-panes", "-a", "-F",
+                                "#{pane_id} #{pane_current_command}"], capture_output=True, text=True).stdout
+        target = next((line.split()[0] for line in panes.splitlines() if line.split()[1:] and line.split()[1] != "zsh"), None)
+        if not target:
+            raise RuntimeError("no Pi pane")
+        return subprocess.run([str(self.tmux), "-S", str(self.socket), *args[:1], "-t", target, *args[1:]],
+                              capture_output=True, text=True).stdout
+
+    def events(self, name: str) -> list[dict]:
+        return [item for item in self.source() if item["event"] == name]
+
+    def orchestrate(self) -> dict:
+        """Wait for `piw-armed`, then drive the worker through this carrier's own adapter: start it, then send a
+        line while an extension dialog is open in Pi and one while a draft sits in Pi's editor."""
+        facts: dict = {}
+        end = time.monotonic() + 240
+        while time.monotonic() < end and "piw-armed" not in self.log_checks():
+            self.register_new()
+            time.sleep(0.5)
+        if "piw-armed" not in self.log_checks():
+            raise RuntimeError("the page never armed the client")
+        credentials = sorted(self.evidence.glob("mcp-credential-client_*"))
+        if len(credentials) != 1:
+            raise RuntimeError("not one client credential")
+        client = credentials[0].name[len("mcp-credential-"):]
+        fd = os.open(credentials[0], os.O_RDONLY)
+        adapter = subprocess.Popen([str(self.app / "Contents/MacOS/deck-mcp"), "--client-id", client,
+                                    "--socket", str(self.data / "mcp-control.sock"), "--credential-fd", str(fd)],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, pass_fds=(fd,))
+        os.close(fd)
+        self.registry("add-process", "--pid", str(adapter.pid), check=False)
+        buffer = b""
+        ids = iter(range(1, 10_000))
+
+        def request(method: str, params: dict | None = None, timeout: float = 20) -> dict:
+            nonlocal buffer
+            rid = next(ids)
+            adapter.stdin.write((json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}}) + "\n").encode())
+            adapter.stdin.flush()
+            deadline = time.time() + timeout
+            while True:
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    if line.strip() and json.loads(line).get("id") == rid:
+                        return json.loads(line)
+                ready, _, _ = select.select([adapter.stdout], [], [], max(0.0, deadline - time.time()))
+                if not ready:
+                    raise RuntimeError(f"no answer to {method}")
+                chunk = os.read(adapter.stdout.fileno(), 65536)
+                if not chunk:
+                    raise RuntimeError("the adapter closed its output")
+                buffer += chunk
+
+        def call(name: str, arguments: dict | None = None) -> tuple[bool, dict]:
+            result = request("tools/call", {"name": name, "arguments": arguments or {}})["result"]
+            return not result.get("isError", False), result.get("structuredContent") or {}
+
+        def turn_done_after(card: str, episode: int, seconds: float) -> int | None:
+            deadline = time.time() + seconds
+            while time.time() < deadline:
+                ok, out = call("deck_worker_wait", {"cards": [{"card_id": card, "episode": episode}], "wait_ms": 5000})
+                view = next((w for w in out.get("workers", []) if w.get("cardId") == card), None) if ok else None
+                if view and view["agent"]["state"] == "turn-done" and view["agent"]["episode"] != episode:
+                    return view["agent"]["episode"]
+                self.register_new()
+            return None
+
+        try:
+            request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                   "clientInfo": {"name": "deck-pi-worker", "version": "1"}})
+            adapter.stdin.write((json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}) + "\n").encode())
+            adapter.stdin.flush()
+            ok, listed = call("deck_worker_list")
+            sequence = listed.get("nextSendSequence", 0)
+            facts["types"] = [t.get("type") for t in listed.get("workerTypes", [])]
+            first, second, third = (f"{self.marker}-{n}" for n in ("one", "two", "three"))
+            ok, started = call("deck_worker_start", {"request_id": f"pw_{self.suffix}", "send_sequence": sequence,
+                                                     "type": "pi", "text": first, "title": "pi worker"})
+            sequence += 1
+            card = None
+            deadline = time.time() + 120
+            while ok and time.time() < deadline and not card:
+                _, got = call("deck_operation_get", {"operation_id": started.get("operationId")})
+                card = (got.get("result") or {}).get("cardId") if got.get("state") == "committed" else None
+                time.sleep(1 if not card else 0)
+            facts["card"] = bool(card)
+            if not card:
+                return facts
+            e1 = turn_done_after(card, 0, 240)
+            facts["first"] = {"turn": e1 is not None, "pane": self.tmux_pi("capture-pane", "-p", "-J", "-S", "-300").count(first),
+                              "requests": len(self.events("fixture_provider_request"))}
+            # a dialog of an extension of Pi's is open: the line must not answer it
+            self.tmux_pi("send-keys", "-l", "/fx-confirm")
+            self.tmux_pi("send-keys", "Enter")
+            deadline = time.time() + 15
+            while time.time() < deadline and not self.events("ui_prompt_start"):
+                time.sleep(0.25)
+            opened = bool(self.events("ui_prompt_start"))
+            prompts_before = len(self.events("ui_prompt_start"))
+            runs_before = len(self.events("agent_start"))
+            ok2, _ = call("deck_worker_send", {"request_id": f"pw2_{self.suffix}", "send_sequence": sequence,
+                                               "card_id": card, "after_episode": e1, "text": second})
+            sequence += 1
+            deadline = time.time() + 150
+            while time.time() < deadline and len(self.events("agent_start")) == runs_before:
+                self.register_new()
+                time.sleep(1)
+            ran_during = len(self.events("agent_start")) > runs_before
+            facts["dialog"] = {"opened": opened and prompts_before >= 1, "sent": ok2, "ran_while_open": ran_during,
+                               "answered_by_the_line": bool(self.events("ui_prompt_end")) or any(
+                                   e.get("command") == "confirm" for e in self.events("fixture_command_done")),
+                               "pane": self.tmux_pi("capture-pane", "-p", "-J", "-S", "-300")}
+            self.tmux_pi("send-keys", "Escape")
+            e2 = turn_done_after(card, e1, 240)
+            facts["dialog"]["turn"] = e2 is not None
+            facts["dialog"]["closed_by_escape"] = any(e.get("command") == "confirm" for e in self.events("fixture_command_done"))
+            # the user's half-typed draft sits in Pi's editor: the line must leave it there
+            draft = f"draft-{self.suffix}-unsent"
+            self.tmux_pi("send-keys", "-l", draft)
+            time.sleep(1)
+            ok3, _ = call("deck_worker_send", {"request_id": f"pw3_{self.suffix}", "send_sequence": sequence,
+                                               "card_id": card, "after_episode": e2 or e1, "text": third})
+            e3 = turn_done_after(card, e2 or e1, 240)
+            pane = self.tmux_pi("capture-pane", "-p", "-J", "-S", "-300")
+            tail = [line for line in pane.splitlines() if line.strip()][-6:]
+            facts["draft"] = {"sent": ok3, "turn": e3 is not None, "third": pane.count(third),
+                              "draft_once": pane.count(draft) == 1, "draft_at_editor": any(draft in line for line in tail)}
+            (self.logs / "pane-after-worker.txt").write_text(pane)
+            return facts
+        finally:
+            try:
+                adapter.stdin.close()
+                adapter.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                adapter.kill()
+            end = time.monotonic() + 480
+            while time.monotonic() < end and "done" not in self.log_checks():
+                self.register_new()
+                time.sleep(1)
+
+    def judge_worker(self, facts: dict) -> None:
+        log = (self.data / "app.log").read_text(errors="replace") if (self.data / "app.log").exists() else ""
+        first, dialog, draft = facts.get("first") or {}, facts.get("dialog") or {}, facts.get("draft") or {}
+        self.check("the client sees its one Pi worker type and the worker card was started", facts.get("types") == ["pi"]
+                   and facts.get("card"), types=facts.get("types"))
+        self.check("the first line reached Pi through its own message path: shown once, one model request, one turn",
+                   first.get("turn") and first.get("pane") == 1 and first.get("requests", 0) >= 1, first=first)
+        self.check("with an extension dialog open, the line did not answer it",
+                   dialog.get("opened") and dialog.get("sent") and not dialog.get("answered_by_the_line"),
+                   dialog={k: v for k, v in dialog.items() if k != "pane"})
+        self.check("the dialog was still Pi's to close, and the line's turn ended", dialog.get("closed_by_escape")
+                   and dialog.get("turn"))
+        self.check("with a draft in Pi's editor, the line went out and the draft stayed in the editor, unsent",
+                   draft.get("sent") and draft.get("turn") and draft.get("third") == 1 and draft.get("draft_once")
+                   and draft.get("draft_at_editor"), draft=draft)
+        wanted = ("[pi] worker line handed to Pi", "[queue] sent to")
+        self.check("app.log holds the closed hand-over lines", all(text in log for text in wanted),
+                   handed=log.count("[pi] worker line handed to Pi"))
+        self.check("no worker line was typed into the pane, and none was left uncertain",
+                   "explicit resolution required" not in log)
+        leaks = [text for text in (self.marker, str(self.root), "fixture response") if text in log]
+        self.check("nothing of a line, a path or Pi's answer is in app.log", leaks == [], leaked=len(leaks))
+        self.facts["pi_worker"] = {"ran_while_dialog_open": dialog.get("ran_while_open")}
+        self.snapshots(2)
+
     def judge_layout(self, seen: dict) -> None:
         log = (self.data / "app.log").read_text(errors="replace") if (self.data / "app.log").exists() else ""
         self.check("the page reached its end", "done" in seen)
@@ -465,6 +635,8 @@ class Run:
             self.launch()
             if self.mode == "pi-live":
                 self.judge(self.watch())
+            elif self.mode == "pi-worker":
+                self.judge_worker(self.orchestrate())
             else:
                 self.judge_layout(self.watch(360))
         except (RuntimeError, OSError, subprocess.CalledProcessError, KeyError, ValueError) as error:
@@ -520,7 +692,7 @@ def on_host(run: Run, host: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--mode", choices=("pi-live", "pi-layout"), default="pi-live")
+    parser.add_argument("--mode", choices=("pi-live", "pi-layout", "pi-worker"), default="pi-live")
     parser.add_argument("--runtime", choices=("npm", "standalone"))
     parser.add_argument("--standalone", help="the unpacked official build (the directory that holds pi)")
     parser.add_argument("--npm-package", default=str(Path.home() / ".local/lib/node_modules/@earendil-works/pi-coding-agent"))
@@ -532,7 +704,7 @@ def main() -> int:
         args.mode = (Path(args.root) / "mode").read_text().strip()
         summary = Run(args).carry_out()
         return 0 if not summary["stopped"] and summary["cleanup"]["exit"] == 0 else 1
-    if args.mode == "pi-live":
+    if args.mode in ("pi-live", "pi-worker"):
         if not args.runtime:
             parser.error("--runtime is needed")
         if args.runtime == "standalone" and not (args.standalone and (Path(args.standalone) / "pi").is_file()):

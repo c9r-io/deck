@@ -56,6 +56,9 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
         ErrorKind::Other,
         "delivery identity is missing",
     ))?;
+    if pi_handover(item) {
+        return hand_to_pi(item, pane);
+    }
     let result = crate::prompt_delivery::deliver(literal_request(item, pane, delivery))?;
     if result == crate::prompt_delivery::LiteralOutcome::EnterRefused {
         applog("[queue] Enter refused after paste — prompt left in the input");
@@ -65,6 +68,41 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
         ));
     }
     Ok(())
+}
+
+/// A worker card's line for a Pi: never typed. It waits in the mailbox for
+/// the pane's proven observer, which gives it to Pi between two runs
+/// (`agent_pi::handover`). A line nobody asked for, or one Pi was too busy
+/// for, was not sent and is retried like any failed send; one that went out
+/// without a receipt may have reached Pi and is left for the user
+/// (`PartialDelivery`), never offered again.
+fn hand_to_pi(item: &QueueItem, pane: &PaneIdentity) -> Result<(), DeckError> {
+    use crate::agent_pi::handover::{hand_over, Outcome, Pane};
+    match hand_over(
+        Pane {
+            server_pid: pane.server_pid,
+            pane_id: &pane.pane_id,
+            pane_pid: pane.pane_pid,
+        },
+        &item.text,
+    ) {
+        Outcome::Delivered => Ok(()),
+        Outcome::Declined(_) => Err(DeckError::new(
+            ErrorKind::Other,
+            "Pi was not idle; the line was not handed over",
+        )),
+        Outcome::NotAsked => Err(DeckError::new(
+            ErrorKind::Other,
+            "Pi's observer did not ask for the line; it was not handed over",
+        )),
+        Outcome::Unconfirmed => {
+            applog("[queue] Pi did not confirm a handed-over line — explicit resolution required");
+            Err(DeckError::new(
+                ErrorKind::PartialDelivery,
+                "Pi did not confirm the line; inspect the card before sending it again",
+            ))
+        }
+    }
 }
 
 /// A process-bound item (Codex/Claude expected) is delivered only while that
@@ -806,7 +844,9 @@ fn send_one_guarded(
         // the tick's observation: a recognized Pi in the target's
         // foreground is never sent to automatically, whatever was approved
         // or overridden. The row and everything it carries stay as they are.
-        if automatic && pi_target_now(&sel) {
+        // A worker card's line for a Pi is no send to the foreground: it is
+        // handed over through the pane's proven observer (`fire_item`).
+        if automatic && pi_target_now(&sel) && !pi_handover(&sel) {
             return Ok(None);
         }
         // The human hold again, read now and not from the tick: a worker

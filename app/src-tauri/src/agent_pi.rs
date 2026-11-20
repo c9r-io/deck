@@ -7,7 +7,11 @@
 //! agent run settled — and, when the user turned that on, the final message
 //! of a run that settled. It reads no prompt, title, tool call, result,
 //! transcript or session, sends Pi nothing but the answers to its
-//! observer's own messages, and starts, steers or resumes nothing.
+//! observer's own messages, and starts, steers or resumes nothing. ONE
+//! exception (approved 2026-11-20, `handover`): an answer may carry a line
+//! of a worker card whose command starts `pi`, which the observer gives to
+//! Pi through Pi's own message path between two runs — never typed, never a
+//! command or a template, never offered twice.
 //!
 //! # Contract
 //! - **What is supported, and what is not.** Pi 1.x from 1.1 gives an extension a
@@ -49,14 +53,15 @@
 //!   admits no re-entry.
 //! - **The wire** (`parse_message`): one JSON object per line, at most
 //!   `MAX_LINE` bytes (`MAX_REPLY_LINE` for a `reply` frame), protocol
-//!   `pi-observer`, version 3, source `pi`. Exactly six shapes, told apart
+//!   `pi-observer`, version 4, source `pi`. Exactly eight shapes, told apart
 //!   by their exact key sets: `hello` (no key of its own: it asks for a
 //!   nonce and claims nothing), `attest` (`nonce`, `socket`, `server_pid`,
 //!   `pane`, `observerVersion`, `piVersion`, `mode`,
 //!   `capabilities{signal,reply}`), and, each with the `lease` it belongs
 //!   to, the `nonce` Deck's last answer gave and its `seq`: `signal` (`run`,
-//!   `state`), `reply` (`run`, `reply`), `reset` (`reason`) and `ping`
-//!   (nothing else). An unknown or repeated key, a missing one, a number
+//!   `state`), `reply` (`run`, `reply`), `reset` (`reason`), `ping`
+//!   (nothing else), and the receipt of a hand-over: `delivered` (its id)
+//!   or `declined` (its id and `because`: `busy` or `error`). An unknown or repeated key, a missing one, a number
 //!   that is negative, fractional or beyond 2^53-1, an unknown word,
 //!   another protocol version or mode is refused; nothing is repaired.
 //!   `reply` is the ONE field of free text: the final message of the run it
@@ -64,7 +69,7 @@
 //!   observer Pi loaded from the reply entry (`config`), kept out of every
 //!   `Debug` and log (`ReplyText`). There is no field for a prompt, a
 //!   title, a path, a model or a session. A line that names a lease and
-//!   carries a nonce, and is none of the four frames, is refused as well —
+//!   carries a nonce, and is none of the six frames, is refused as well —
 //!   and ends that lease when its sender is proven, as any other frame Deck
 //!   does not expect.
 //! - **What Deck says to Pi**, one line per connection and nothing else.
@@ -75,6 +80,10 @@
 //!   that was committed, or `revoked` with the number of a frame that was
 //!   NOT committed because its capability was taken from the lease in the
 //!   meantime (the lease goes on) — both with the two bits as they are now;
+//!   an `ack` to any frame but a `reset`, while the lease has run
+//!   boundaries and no run of it is open, may also carry `deliver` (`id`,
+//!   `text`): the one worker card's line waiting for that lease's pane
+//!   (`handover::take_for`), the ONE text Deck ever sends Pi;
 //!   `again`, when the sender could not be proven for a reason that is
 //!   nobody's fault (its process made a child, or an answer was lost):
 //!   nothing was read into anything, and the same message is welcome on a
@@ -89,7 +98,8 @@
 //!   nothing; `transport`, "Whose bytes", says what the place is for.
 //! - **Versions.** Wire version 1 kept one connection per observer and
 //!   could not say whose bytes a frame was; version 2 carried a session
-//!   observation instead of a final message. Both are gone. A runtime that
+//!   observation instead of a final message; version 3 could not take a
+//!   worker card's line. All are gone. A runtime that
 //!   still holds an older observer in memory (Pi loaded it before Deck was
 //!   replaced) is answered `bad-version` in ITS framing, which that
 //!   observer takes as final: it stops, nothing of it is recognized or
@@ -113,6 +123,7 @@
 //! (`extensions.rs`): the entry below earns nothing by being listed.
 
 pub(crate) mod config;
+pub(crate) mod handover;
 pub(crate) mod transport;
 
 use serde::de::{Deserializer, MapAccess, Visitor};
@@ -130,8 +141,8 @@ pub(crate) const PROCESS: &str = "pi";
 pub(crate) const MAX_LINE: usize = 1024;
 /// The wire version and the observer's own version this build speaks
 /// (module header, "Versions").
-const WIRE_VERSION: u64 = 3;
-const OBSERVER_VERSION: u64 = 3;
+const WIRE_VERSION: u64 = 4;
+const OBSERVER_VERSION: u64 = 4;
 /// The largest integer a JavaScript client can count to without a gap.
 const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 /// The longest line of the one frame that carries free text (`reply`).
@@ -385,6 +396,36 @@ pub(crate) enum Frame {
     Ping {
         seq: u64,
     },
+    /// The hand-over Deck's last answer carried (`handover`) was given to
+    /// Pi (`pi.sendUserMessage`).
+    Delivered {
+        seq: u64,
+        id: String,
+    },
+    /// The hand-over was NOT given to Pi, for a closed reason: Pi was not
+    /// idle, or Pi refused the call.
+    Declined {
+        seq: u64,
+        id: String,
+        because: Decline,
+    },
+}
+
+/// Why an observer did not hand a line to Pi.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Decline {
+    /// Pi was running, or a run had not settled.
+    Busy,
+    /// `pi.sendUserMessage` threw.
+    Error,
+}
+
+/// A hand-over id: Deck's own, a closed alphabet that needs no escaping.
+pub(crate) fn handover_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 impl Frame {
@@ -393,7 +434,9 @@ impl Frame {
             Frame::Signal { seq, .. }
             | Frame::Reset { seq, .. }
             | Frame::Reply { seq, .. }
-            | Frame::Ping { seq } => *seq,
+            | Frame::Ping { seq }
+            | Frame::Delivered { seq, .. }
+            | Frame::Declined { seq, .. } => *seq,
         }
     }
 
@@ -402,6 +445,9 @@ impl Frame {
         match self {
             Frame::Signal { .. } => Some(Capability::Signal),
             Frame::Reply { .. } => Some(Capability::Reply),
+            // a hand-over's receipt needs run boundaries: it is only ever
+            // offered between them
+            Frame::Delivered { .. } | Frame::Declined { .. } => Some(Capability::Signal),
             Frame::Reset { .. } | Frame::Ping { .. } => None,
         }
     }
@@ -424,6 +470,9 @@ struct Fields {
     state: Option<String>,
     reason: Option<String>,
     reply: Option<String>,
+    delivered: Option<String>,
+    declined: Option<String>,
+    because: Option<String>,
     nonce: Option<String>,
     lease: Option<u64>,
     /// A key this family does not have, or one that came twice: the line is
@@ -524,6 +573,9 @@ impl<'de> Visitor<'de> for FieldsVisitor {
                 "state" => keep(&mut fields.state, map.next_value()?, bad),
                 "reason" => keep(&mut fields.reason, map.next_value()?, bad),
                 "reply" => keep(&mut fields.reply, map.next_value()?, bad),
+                "delivered" => keep(&mut fields.delivered, map.next_value()?, bad),
+                "declined" => keep(&mut fields.declined, map.next_value()?, bad),
+                "because" => keep(&mut fields.because, map.next_value()?, bad),
                 "nonce" => keep(&mut fields.nonce, map.next_value()?, bad),
                 "lease" => keep(&mut fields.lease, map.next_value()?, bad),
                 _ => {
@@ -643,6 +695,9 @@ pub(crate) fn parse_message(line: &str) -> Result<Message, &'static str> {
             state: None,
             reason: None,
             reply: None,
+            delivered: None,
+            declined: None,
+            because: None,
             ..
         } => Ok(Message::Hello),
         _ => Err("bad-frame"),
@@ -664,6 +719,9 @@ fn claims(fields: Fields) -> Result<Hello, &'static str> {
         state: None,
         reason: None,
         reply: None,
+        delivered: None,
+        declined: None,
+        because: None,
         lease: None,
         ..
     } = fields
@@ -719,6 +777,9 @@ fn frame(fields: Fields) -> Result<Frame, &'static str> {
         state,
         reason,
         reply,
+        delivered,
+        declined,
+        because,
         socket: None,
         server_pid: None,
         pane: None,
@@ -732,6 +793,30 @@ fn frame(fields: Fields) -> Result<Frame, &'static str> {
         return Err("bad-frame");
     };
     let seq = count(seq)?;
+    // a receipt of a hand-over: its id, and for a refusal its closed reason
+    match (delivered, declined, because) {
+        (None, None, None) => {}
+        (Some(id), None, None)
+            if run.is_none() && state.is_none() && reason.is_none() && reply.is_none() =>
+        {
+            return handover_id(&id)
+                .then_some(Frame::Delivered { seq, id })
+                .ok_or("bad-frame");
+        }
+        (None, Some(id), Some(why))
+            if run.is_none() && state.is_none() && reason.is_none() && reply.is_none() =>
+        {
+            let because = match why.as_str() {
+                "busy" => Decline::Busy,
+                "error" => Decline::Error,
+                _ => return Err("bad-frame"),
+            };
+            return handover_id(&id)
+                .then_some(Frame::Declined { seq, id, because })
+                .ok_or("bad-frame");
+        }
+        _ => return Err("bad-frame"),
+    }
     match (run, state, reason, reply) {
         (None, None, None, None) => Ok(Frame::Ping { seq }),
         (Some(run), Some(state), None, None) => Ok(Frame::Signal {
@@ -796,9 +881,29 @@ pub(crate) fn accepted_line(lease: u64, next: &Nonce, now: Capabilities) -> Stri
 
 /// Frame `seq` was verified and committed; the nonce the next frame must
 /// carry and what the lease may do now.
+#[cfg(test)]
 pub(crate) fn ack_line(seq: u64, next: &Nonce, now: Capabilities) -> String {
+    ack_line_with(seq, next, now, None)
+}
+
+/// `ack_line`, carrying one hand-over (`handover`): a line of a worker card
+/// the observer is asked to give to Pi. The ONE place Deck sends Pi text.
+pub(crate) fn ack_line_with(
+    seq: u64,
+    next: &Nonce,
+    now: Capabilities,
+    deliver: Option<(&str, &str)>,
+) -> String {
+    let deliver = deliver
+        .map(|(id, text)| {
+            format!(
+                ",\"deliver\":{{\"id\":\"{id}\",\"text\":{}}}",
+                serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into())
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"ack\":{seq},\"nonce\":\"{}\",{}}}\n",
+        "{{\"protocol\":\"{FAMILY}\",\"v\":{WIRE_VERSION},\"ack\":{seq},\"nonce\":\"{}\",{}{deliver}}}\n",
         next.hex(),
         bits(now)
     )

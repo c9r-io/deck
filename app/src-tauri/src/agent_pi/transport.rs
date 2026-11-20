@@ -657,11 +657,13 @@ pub(crate) enum Answer {
         next: Nonce,
         usable: Capabilities,
     },
-    /// The frame was written.
+    /// The frame was written; with a worker card's line for the observer to
+    /// give to Pi when one waits for its pane (`handover`).
     Ack {
         seq: u64,
         next: Nonce,
         usable: Capabilities,
+        deliver: Option<Handed>,
     },
     /// Its capability was taken from the lease before it arrived: its
     /// number is used up and nothing was written.
@@ -685,10 +687,34 @@ impl Answer {
                 next,
                 usable,
             } => super::accepted_line(*lease, next, *usable),
-            Answer::Ack { seq, next, usable } => super::ack_line(*seq, next, *usable),
+            Answer::Ack {
+                seq,
+                next,
+                usable,
+                deliver,
+            } => super::ack_line_with(
+                *seq,
+                next,
+                *usable,
+                deliver.as_ref().map(|d| (d.id.as_str(), d.text.as_str())),
+            ),
             Answer::Revoked { seq, next, usable } => super::revoked_line(*seq, next, *usable),
             Answer::Again(next) => super::again_line(next),
         }
+    }
+}
+
+/// A line offered to an observer (`handover::take_for`). Its text never
+/// reaches a `Debug`, a log line or a failed assertion.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Handed {
+    pub(crate) id: String,
+    pub(crate) text: String,
+}
+
+impl std::fmt::Debug for Handed {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("Handed(..)")
     }
 }
 
@@ -1160,7 +1186,10 @@ fn committed(
     // the pane, for a frame that writes pane-bound state: a ping does not,
     // and a final message is kept with its lease until the ending that does
     let pane = match frame {
-        Frame::Ping { .. } | Frame::Reply { .. } => None,
+        Frame::Ping { .. }
+        | Frame::Reply { .. }
+        | Frame::Delivered { .. }
+        | Frame::Declined { .. } => None,
         _ => {
             let rows = listing.rows().ok_or("no-such-pane")?;
             let row = rows
@@ -1182,7 +1211,7 @@ fn committed(
         return Err("late");
     }
     let enabled = (world.enabled)();
-    let (answer, ended) = with_registry(|registry| {
+    let (answer, ended, receipt) = with_registry(|registry| {
         let entry = registry.live_mut(lease).ok_or("late")?;
         // what the settings enable now: less is taken from the lease here,
         // and a lease left with nothing is over
@@ -1210,11 +1239,13 @@ fn committed(
                         usable: entry.usable,
                     },
                     None,
+                    None,
                 ));
             }
         }
         // an ending that was accepted, with the final message its run reported
         let mut ended = None;
+        let mut receipt = None;
         match frame {
             Frame::Signal { run, state, .. } => {
                 match state {
@@ -1243,19 +1274,41 @@ fn committed(
                 }
                 entry.reply = Some(text.clone().into_string());
             }
+            Frame::Delivered { id, .. } => receipt = Some((id.clone(), Ok(()))),
+            Frame::Declined { id, because, .. } => receipt = Some((id.clone(), Err(*because))),
             Frame::Reset { .. } | Frame::Ping { .. } => {}
         }
         entry.next_seq += 1;
         entry.valid = Instant::now();
+        // a worker card's line waiting for this pane goes out with the answer
+        // to any frame but the lease's last, between two runs of a lease that
+        // still has run boundaries (`handover`)
+        let deliver = (!entry.run_open
+            && entry.usable.signal
+            && !matches!(frame, Frame::Reset { .. }))
+        .then(|| super::handover::take_for(lease, key.server_pid(), key.pane_id(), pane_pid))
+        .flatten()
+        .map(|(id, text)| Handed { id, text });
         Ok((
             Answer::Ack {
                 seq,
                 next,
                 usable: entry.usable,
+                deliver,
             },
             ended,
+            receipt,
         ))
     })?;
+    if let Some((id, outcome)) = receipt {
+        let counted = super::handover::receipt(lease, &id, outcome);
+        crate::applog::applog(match (outcome, counted) {
+            (Ok(()), true) => "[pi] worker line handed to Pi",
+            (Err(super::Decline::Busy), true) => "[pi] worker line not handed: Pi busy",
+            (Err(super::Decline::Error), true) => "[pi] worker line not handed: Pi refused it",
+            (_, false) => "[pi] late receipt for a worker line",
+        });
+    }
     // outside the registry lock: the readers of a final message take their own
     if let Some((session, episode, text)) = ended {
         #[cfg(test)]

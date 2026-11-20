@@ -994,6 +994,18 @@
         "empty-start-started": {}
       }
     },
+    "pi-worker": {
+      "terminal": "done",
+      "checks": {
+        "done": {},
+        "piw-armed": {},
+        "piw-certain": {},
+        "piw-delivered": {},
+        "piw-enable": {},
+        "piw-started": {},
+        "piw-exception": { "failureOnly": true }
+      }
+    },
     "ux-failures": {
       "terminal": "done",
       "checks": {

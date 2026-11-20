@@ -328,7 +328,18 @@ it you list the **worker types** it may start — a name, your command and
 one line saying what the type is good at, which the
 orchestrator reads to choose (two types are filled in: `claude
 --permission-mode auto` and `codex --no-daemon --yolo`; any Codex type
-must use `--no-daemon`). A type has no column: a worker card opens in
+must use `--no-daemon`). A type may also run Pi (`pi --model …`) once
+Pi's work status is on in Settings › Agents & notifications: Deck never
+types into Pi, so each line of a Pi worker card is handed to Pi by Deck's
+own extension in that Pi, through Pi's own message path, only between two
+of Pi's runs while Pi is idle. It appears in Pi's conversation as your
+message; the input box (and anything you were typing there) is left
+alone. While Pi is not connected or still running, the line waits in the
+⏱ panel as "Waiting for Pi". A line that went out without Pi's receipt is
+never sent again: it waits for you as an uncertain delivery. Deck still
+cannot see when Pi waits on one of its own dialogs, so such a card reads
+"working" meanwhile. Pi's final message reaches `deck_worker_reply` only
+while you let Deck forward it (the same switch). A type has no column: a worker card opens in
 the project the orchestrator names (default its own card's), beside its
 own card when both are in that project, otherwise where your own new
 cards open in that project (the column you picked for new sessions, else

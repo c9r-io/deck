@@ -10,8 +10,10 @@
 //!   `deck_worker_start` Board intent (`record_worker`); nothing else makes
 //!   one, and a client sees only its own.
 //! - Worker types (`WorkerType`): the user's list, per client, of the kinds
-//!   of worker card it may start — a name, the user's own command (`claude`
-//!   or `codex --no-daemon` with simple arguments, `validate_worker_types`)
+//!   of worker card it may start — a name, the user's own command (`claude`,
+//!   `codex --no-daemon` or, while Pi's work status is on, `pi`, with simple
+//!   arguments, `validate_worker_types`; a Pi worker's lines are handed to Pi
+//!   by Deck's observer, never typed: `agent_pi::handover`)
 //!   and a description the orchestrator reads. `deck_worker_start`
 //!   names a type (never a command), a project in the client's scope,
 //!   optionally a directory inside that project's and, only under the
@@ -684,7 +686,7 @@ pub(super) fn worker_reply(
         error_value(
             "REPLY_GONE",
             "Deck holds no final message for that turn ending",
-            "Only Claude Code and Codex turn endings Deck saw since it started are kept (the newest 32), Codex's only while the user lets Deck forward it; ask the worker to write durable results to a file instead.",
+            "Only Claude Code, Codex and Pi turn endings Deck saw since it started are kept (the newest 32), Codex's and Pi's only while the user lets Deck forward them; ask the worker to write durable results to a file instead.",
         )
     };
     let target = crate::documents::card_targets(false)
@@ -1286,6 +1288,7 @@ pub(super) const TYPE_NAME_INVALID: &str = "mcp-worker-type-name";
 pub(super) const TYPE_COMMAND_INVALID: &str = "mcp-worker-type-command";
 pub(super) const TYPE_CODEX_DAEMON: &str = "mcp-worker-type-codex-daemon";
 pub(super) const TYPE_LIST_INVALID: &str = "mcp-worker-type-list";
+pub(super) const TYPE_PI_OBSERVER: &str = "mcp-worker-type-pi-observer";
 
 fn valid_type_name(name: &str) -> bool {
     !name.is_empty()
@@ -1310,8 +1313,13 @@ pub(super) fn validate_worker_types(types: &[WorkerType]) -> Result<(), DeckErro
         if !valid_type_name(&worker_type.name) || !names.insert(worker_type.name.as_str()) {
             return Err(invalid(TYPE_NAME_INVALID));
         }
-        let agent = crate::admission::channel_agent_command(&worker_type.cmd)
+        let agent = crate::admission::worker_agent_command(&worker_type.cmd)
             .ok_or_else(|| invalid(TYPE_COMMAND_INVALID))?;
+        // a Pi worker's lines go through Deck's observer in that Pi: without
+        // Pi's work status turned on there is none (`agent_pi::handover`)
+        if agent == crate::agent_pi::PROCESS && !crate::agent_pi::config::enabled().signal {
+            return Err(invalid(TYPE_PI_OBSERVER));
+        }
         if agent == "codex" && !worker_type.cmd.split(' ').any(|word| word == "--no-daemon") {
             return Err(invalid(TYPE_CODEX_DAEMON));
         }

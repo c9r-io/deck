@@ -35,6 +35,9 @@ test('worker types are checked as the backend checks them', () => {
   assert.equal(problem([{ ...claude, cmd: 'bash' }]), 'mcp.typeCommandInvalid');
   assert.equal(problem([{ ...claude, cmd: 'claude; rm' }]), 'mcp.typeCommandInvalid');
   assert.equal(problem([{ ...claude, name: 'codex', cmd: 'codex' }]), 'mcp.typeCodexDaemon');
+  // a Pi worker: the command passes here; the backend says when Pi's work status is off
+  assert.equal(problem([{ ...claude, name: 'terra', cmd: 'pi --model gpt-5.6-terra' }]), null);
+  assert.equal(problem([{ ...claude, name: 'terra', cmd: 'pie' }]), 'mcp.typeCommandInvalid');
   assert.equal(problem([{ ...claude, name: 'codex', cmd: 'codex --no-daemon' }]), null);
   assert.equal(problem([{ ...claude, columnId: '' }]), null, 'a type has no column');
   assert.equal(problem([{ ...claude, description: 'x'.repeat(201) }]), 'mcp.typeListInvalid');
@@ -52,6 +55,7 @@ test('the default types are Claude and Codex, without a column; refusals map to 
   assert.equal(workerTypeErrorKey('mcp-worker-type-codex-daemon'), 'mcp.typeCodexDaemon');
   assert.equal(workerTypeErrorKey('mcp-worker-type-name'), 'mcp.typeNameInvalid');
   assert.equal(workerTypeErrorKey('mcp-worker-type-command'), 'mcp.typeCommandInvalid');
+  assert.equal(workerTypeErrorKey('mcp-worker-type-pi-observer'), 'mcp.typePiObserver');
   assert.equal(workerTypeErrorKey('mcp-worker-type-list'), 'mcp.typeListInvalid');
   assert.equal(workerTypeErrorKey('other'), null);
 });

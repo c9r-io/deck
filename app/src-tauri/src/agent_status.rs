@@ -371,6 +371,14 @@ impl PaneKey {
     pub(crate) fn names(&self, row: &PaneRow) -> bool {
         self.server_pid == row.server_pid && self.pane_id == row.pane_id
     }
+
+    pub(crate) fn server_pid(&self) -> u32 {
+        self.server_pid
+    }
+
+    pub(crate) fn pane_id(&self) -> &str {
+        &self.pane_id
+    }
 }
 
 /// The tty foreground process group that owned the reporting helper: its
@@ -3103,6 +3111,7 @@ mod tests {
             board_unverified: false,
             channel_unverified: false,
             human_held: false,
+            pi_ready: false,
             activity: 0,
             agent: projections(rows).get(session).map(|o| o.state),
             codex: trust(rows, table).get(session).copied(),
@@ -3270,6 +3279,7 @@ mod tests {
             board_unverified: false,
             channel_unverified: false,
             human_held: false,
+            pi_ready: false,
             activity: 0,
             agent: Some("turn-done"),
             codex,
@@ -5013,8 +5023,8 @@ mod tests {
             .unwrap();
         let given: serde_json::Value = serde_json::from_str(&given).expect("a reply line");
         let attest = serde_json::json!({
-            "protocol": "pi-observer", "v": 3, "source": "pi", "nonce": given["nonce"],
-            "socket": "deck", "server_pid": 42, "pane": "%3", "observerVersion": 3,
+            "protocol": "pi-observer", "v": 4, "source": "pi", "nonce": given["nonce"],
+            "socket": "deck", "server_pid": 42, "pane": "%3", "observerVersion": 4,
             "piVersion": "1.1.0", "mode": "tui",
             "capabilities": { "signal": true, "reply": false }
         })
@@ -5210,7 +5220,7 @@ mod tests {
 
     /// A Pi observer's first message: it asks for a nonce and claims nothing.
     fn pi_hello() -> String {
-        serde_json::json!({ "protocol": "pi-observer", "v": 3, "source": "pi" }).to_string()
+        serde_json::json!({ "protocol": "pi-observer", "v": 4, "source": "pi" }).to_string()
     }
 
     /// The answer of the Pi transport to a hello, and how long it took.

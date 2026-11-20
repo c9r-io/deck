@@ -1468,7 +1468,7 @@ class Run:
                        check=True, capture_output=True)
         server_pid = int(self.tm("display-message", "-p", "#{pid}"))
         marks = self.root / "tmp"
-        line = lambda **body: json.dumps({"protocol": "pi-observer", "v": 3, "source": "pi", **body}, separators=(",", ":"))
+        line = lambda **body: json.dumps({"protocol": "pi-observer", "v": 4, "source": "pi", **body}, separators=(",", ":"))
         for pane in (self.a, self.b):
             pane.launch(tools=True)
             lease = self.bound(pane)["lease"]
@@ -1489,7 +1489,7 @@ class Run:
             now = tap.lease(pane.session)
             log = self.logs / f"tool-{pane.runtime}.log"
             attest = line(nonce="@NONCE@", socket=tap.ready["socket"], server_pid=server_pid,
-                          pane=self.tm("display-message", "-p", "-t", pane.target, "#{pane_id}"), observerVersion=3,
+                          pane=self.tm("display-message", "-p", "-t", pane.target, "#{pane_id}"), observerVersion=4,
                           piVersion="1.1.0", mode="tui", capabilities={"signal": True, "reply": False})
             # the frame that would end the run Pi is in: its lease, the number and the run that come next
             forged = line(lease=now["lease"], nonce="0" * 32, seq=now["next_seq"] + 1, run=now["run"] + 1, state="turn-done")
@@ -1531,7 +1531,7 @@ class Run:
         self.facts["exec_peer"] = {"images_differ": len({sha256(observer), sha256(other), sha256(staged)}) == 3}
         marks = self.root / "tmp"
         server_pid = int(self.tm("display-message", "-p", "#{pid}"))
-        line = lambda **body: json.dumps({"protocol": "pi-observer", "v": 3, "source": "pi", **body}, separators=(",", ":"))
+        line = lambda **body: json.dumps({"protocol": "pi-observer", "v": 4, "source": "pi", **body}, separators=(",", ":"))
         # a frame as a step of the peer, which puts in the lease and the nonce it holds
         frame = lambda **body: line(lease="@LEASE@", nonce="@NONCE@", **body).replace('"@LEASE@"', "@LEASE@")
         work, ping, done = frame(seq=1, run=1, state="working"), frame(seq=2), frame(seq=3, run=1, state="turn-done")
@@ -1545,7 +1545,7 @@ class Run:
         def start(pane: Pane, name: str, last: list[str]) -> Path:
             log = self.logs / f"exec-{name}.log"
             attest = line(nonce="@NONCE@", socket=tap.ready["socket"], server_pid=server_pid,
-                          pane=self.tm("display-message", "-p", "-t", pane.target, "#{pane_id}"), observerVersion=3,
+                          pane=self.tm("display-message", "-p", "-t", pane.target, "#{pane_id}"), observerVersion=4,
                           piVersion="1.1.0", mode="tui", capabilities={"signal": True, "reply": False})
             command = shlex.join([str(observer), tap.ready["status_sock"], str(log), "@hello", attest, work, "@fork", ping,
                                   f"@mark:{marks}/before-{name}", f"@wait:{marks}/go-{name}", *last])

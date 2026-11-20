@@ -92,7 +92,8 @@ export function workerTypesProblem(p) {
     if (!TYPE_NAME.test(type.name) || names.has(type.name)) return 'mcp.typeNameInvalid';
     names.add(type.name);
     const words = type.cmd.split(' ');
-    if (!['claude', 'codex'].includes(words[0]) || !words.slice(1).every(word => COMMAND_WORD.test(word))) {
+    // a Pi worker's lines go through Deck's extension in Pi (agent_pi/handover.rs)
+    if (!['claude', 'codex', 'pi'].includes(words[0]) || !words.slice(1).every(word => COMMAND_WORD.test(word))) {
       return 'mcp.typeCommandInvalid';
     }
     if (words[0] === 'codex' && !words.includes('--no-daemon')) return 'mcp.typeCodexDaemon';
@@ -110,6 +111,7 @@ export function workerTypeErrorKey(error) {
   if (text.includes('mcp-worker-type-command')) return 'mcp.typeCommandInvalid';
   if (text.includes('mcp-worker-type-codex-daemon')) return 'mcp.typeCodexDaemon';
   if (text.includes('mcp-worker-type-list')) return 'mcp.typeListInvalid';
+  if (text.includes('mcp-worker-type-pi-observer')) return 'mcp.typePiObserver';
   return null;
 }
 

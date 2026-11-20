@@ -219,6 +219,11 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         1,
         Hold,
     ),
+    // a Pi worker card's line waits while Pi's observer reports a run
+    // (`Observed::pi_ready`, `Hold::PiHandover`): the word only HOLDS — the
+    // hand-over itself rests on the observer's own idle check at that
+    // instant (`agent_pi/handover.rs`), never on the absence of the word
+    ("scheduler/select.rs", "observe_with", "WORKING", 1, Hold),
     // Per-generation evidence (Codex shared-daemon FR + Agent Bootstrap Input
     // Safety): Codex Signal trust and Claude interaction evidence are not
     // words; admission produces them, the hold consumes them for safety,

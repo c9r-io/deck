@@ -22,6 +22,31 @@ pub(crate) fn channel_agent_command(cmd: &str) -> Option<&'static str> {
         .then_some(agent)
 }
 
+/// A worker card's command (`mcp/workers.rs` worker types,
+/// `scheduler::worker_queue_add`): remote admission's agents above, or Pi
+/// with the same simple arguments. A Pi worker's lines are handed to Pi by
+/// Deck's own observer and never typed (`agent_pi::handover`, approved
+/// 2026-11-20); no other path admits Pi, and `interactive_agent` stays the
+/// closed list remote admission and the first-interaction gate read.
+pub(crate) fn worker_agent_command(cmd: &str) -> Option<&'static str> {
+    if let Some(agent) = channel_agent_command(cmd) {
+        return Some(agent);
+    }
+    let rest = cmd.strip_prefix(crate::agent_pi::PROCESS)?;
+    if !rest.is_empty() && !rest.starts_with(' ') {
+        return None;
+    }
+    rest.split(' ')
+        .skip(1)
+        .all(|word| {
+            !word.is_empty()
+                && word
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_./:=+,@".contains(&byte))
+        })
+        .then_some(crate::agent_pi::PROCESS)
+}
+
 /// Deck's closed set of recognized interactive agents, by executable
 /// basename. Remote admission above and the scheduler's first-interaction
 /// gate (`scheduler/select.rs`) both read this one list; any other program —
@@ -71,6 +96,30 @@ pub(crate) fn strip_invisible(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_worker_card_may_also_run_pi_and_nothing_else_admits_it() {
+        assert_eq!(worker_agent_command("pi"), Some("pi"));
+        assert_eq!(worker_agent_command("pi --model gpt-5.6-terra"), Some("pi"));
+        assert_eq!(worker_agent_command("claude --model opus"), Some("claude"));
+        for refused in [
+            "pip install x",
+            "pi  --model x",
+            "pi --model $(x)",
+            "pi;ls",
+            "pie",
+            "pi --x 'y'",
+            "",
+        ] {
+            assert_eq!(worker_agent_command(refused), None, "{refused}");
+        }
+        assert_eq!(
+            channel_agent_command("pi"),
+            None,
+            "remote admission does not know Pi"
+        );
+        assert_eq!(interactive_agent("pi"), None);
+    }
 
     #[test]
     fn agent_commands_admit_simple_arguments_without_shell_syntax() {

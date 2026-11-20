@@ -349,6 +349,16 @@ const ADMISSION_SITES: &[(&str, &str, &str, usize, Entry)] = &[
         1,
         Entry::Admission,
     ),
+    // a worker card's line: the same admission, which also accepts a Pi
+    // (`admission::worker_agent_command`; its lines are handed over by
+    // Deck's observer, never typed: `agent_pi::handover`)
+    (
+        "scheduler/ops.rs",
+        "admit_worker",
+        "channel_path = true",
+        1,
+        Entry::Admission,
+    ),
     (
         "scheduler/mod.rs",
         "migrate_context",
@@ -597,10 +607,11 @@ fn channel_head_claim_is_closed_and_native_verdict_is_not_deserializable() {
     );
     let worker = body("scheduler/ops.rs", "worker_queue_add");
     assert!(
-        worker.find("admit_external(&mut args)?;").unwrap()
-            < worker.find("queue_add_core(").unwrap()
+        worker.find("admit_worker(&mut args)?;").unwrap() < worker.find("queue_add_core(").unwrap()
     );
     assert!(worker.contains("class: ContentClass::Delegated,"));
+    assert!(body("scheduler/ops.rs", "admit_worker")
+        .contains("crate::admission::worker_agent_command(&args.cmd).is_none()"));
     assert!(worker.contains("quiet_secs: (!head).then_some(MIN_QUIET_SECS),"));
     assert!(
         worker.contains("first_send_granted: None,")
@@ -1390,8 +1401,22 @@ fn pi_is_no_remote_agent_and_its_adapter_reaches_no_terminal_or_queue() {
     // the pre-fire transaction asks again, for automatic sends only
     let delivery = text("scheduler/delivery.rs");
     assert!(delivery.contains(
-        "if automatic && pi_target_now(&sel) {\n            return Ok(None);\n        }"
+        "if automatic && pi_target_now(&sel) && !pi_handover(&sel) {\n            return Ok(None);\n        }"
     ));
+    // the one exception, a worker card's line for a Pi, is never typed: the
+    // fire step hands it to the mailbox, which only the observer reads
+    let fire = body("scheduler/delivery.rs", "fire_item");
+    assert!(
+        fire.find("if pi_handover(item) {\n        return hand_to_pi(item, pane);\n    }")
+            .unwrap()
+            < fire.find("crate::prompt_delivery::deliver(").unwrap()
+    );
+    assert_eq!(
+        text("scheduler/delivery.rs")
+            .matches("handover::{hand_over")
+            .count(),
+        1
+    );
     assert!(delivery.contains("if row_agent(item).is_some() || row_pi(item) {"));
     // the adapter: no queue item, no terminal input, no spawn, no session start
     for file in ["agent_pi.rs", "agent_pi/config.rs", "agent_pi/transport.rs"] {

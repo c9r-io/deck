@@ -94,6 +94,17 @@
 //!   (`pi_target_now`), so a Pi that appeared after the tick's observation
 //!   is held too. Send-now stays the user's own act, under every existing
 //!   target, foreground and paste guard.
+//!   ONE kind of row is not typed and so is not under this hold (approved
+//!   2026-11-20): a worker card's delegated line on a card whose command
+//!   starts `pi` (`pi_handover`). It is handed to Pi by Deck's observer in
+//!   that pane (`agent_pi::handover`, `delivery::fire_item`) and waits at
+//!   `Hold::PiHandover` (stage `pi-handover`, the machine's own wait) until
+//!   an observer is bound to the Signal target's current foreground
+//!   generation and no run of it is open (`Observed::pi_ready`); then only
+//!   the human hold and an unreadable approval source hold it. No keystroke
+//!   reaches the pane, so the first-interaction gate does not apply; the
+//!   observer's own idle check and the one-line-per-pane mailbox stand in
+//!   for it. Every other row for a Pi keeps the hold.
 //!
 //! - Human hold: a row a delegated client wrote for its worker card
 //!   (`delegated_row`, `mcp/workers.rs`) is never selected automatically
@@ -140,6 +151,11 @@ pub(crate) struct Observed {
     /// a proven observer of its current foreground generation, or Pi's name
     /// on that foreground. Recognition only: it holds, and proves nothing.
     pub(crate) pi: bool,
+    /// The Signal target's Pi has Deck's observer bound to its current
+    /// foreground generation (`PiCoverage::Connected`) and is not in a run:
+    /// a worker card's line may be put in the mailbox for it
+    /// (`agent_pi::handover`). It releases nothing that is typed.
+    pub(crate) pi_ready: bool,
     /// Not Signal: a tick-wide fact copied to every session so selection
     /// stays pure — this tick could not read the automation-authority source
     /// (settings), so no row may be sent automatically on its approval
@@ -240,6 +256,10 @@ pub(crate) fn observe_with(
                 codex: evidence.get(session).and_then(|e| e.codex),
                 claude_interaction: evidence.get(session).is_some_and(|e| e.claude_interaction),
                 pi: evidence.get(session).is_some_and(|e| e.pi),
+                pi_ready: evidence
+                    .get(session)
+                    .is_some_and(|e| e.pi_signal == Some(agent_status::PiCoverage::Connected))
+                    && agents.get(session).map(|o| o.state) != Some(agent_status::WORKING),
                 authority_unverified: false,
                 board_unverified: false,
                 channel_unverified: false,
@@ -272,6 +292,10 @@ pub(crate) enum Hold {
     /// the target is a recognized Pi, whose input requests Deck cannot
     /// observe: send-now only (plan stage `pi-input-unverified`)
     PiInputUnverified,
+    /// a worker card's line for a Pi whose observer is not bound now or is
+    /// in a run (plan stage `pi-handover`): it goes to Pi through the
+    /// observer between two runs, never typed (`agent_pi::handover`)
+    PiHandover,
     /// a delegated client's row for a worker card the user took over and
     /// has not handed back (plan stage `human`); send-now still works
     Human,
@@ -289,6 +313,15 @@ pub(crate) fn row_agent(i: &QueueItem) -> Option<&'static str> {
 /// the row and makes starting its session start-only.
 pub(crate) fn row_pi(i: &QueueItem) -> bool {
     i.expected_process.as_deref() == Some(crate::agent_pi::PROCESS)
+}
+
+/// A worker card's line for a Pi (approved 2026-11-20): the client's
+/// delegated line on a card whose command starts `pi`. It is handed to Pi by
+/// Deck's observer and never typed (`agent_pi::handover`,
+/// `delivery::fire_item`); every other row for a Pi stays at
+/// `pi-input-unverified`.
+pub(crate) fn pi_handover(i: &QueueItem) -> bool {
+    row_pi(i) && delegated_row(i)
 }
 
 /// Whether an automatic send of `i` would go to a recognized Pi, asked of
@@ -374,7 +407,17 @@ fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool
     // and lifted by none of them, nor by anything its observer reports. Pi
     // gives Deck no way to observe that it waits for input.
     if row_pi(i) || o.pi {
-        return Some(Hold::PiInputUnverified);
+        if !pi_handover(i) {
+            return Some(Hold::PiInputUnverified);
+        }
+        // a worker card's line: handed over between two runs by the observer
+        // the kernel proved to be this pane's Pi; no keystroke, so no
+        // first-interaction gate (the delegation still stands: the tick's
+        // authority sweep strips it like any approval)
+        if !o.pi_ready {
+            return Some(Hold::PiHandover);
+        }
+        return o.authority_unverified.then_some(Hold::AuthorityUnverified);
     }
     // a failed read of the authority source is no proof the approval
     // still stands (and no proof it was revoked): hold, keep everything

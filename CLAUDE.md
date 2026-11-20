@@ -256,7 +256,16 @@ evolution; it makes scope expansion deliberate.
   readiness hold plus the human hold (the user's keystroke holds it until
   handed back); it starts only the worker types the user listed (Codex only
   with `--no-daemon`), never a command it writes, and never answers an
-  Agent's prompt or reads a screen. It may close only a card it started,
+  Agent's prompt or reads a screen. A worker type may be Pi (approved
+  2026-11-20): Deck never types into a Pi, so a Pi worker's line is handed
+  to Pi by Deck's own observer extension in that pane
+  (`agent_pi/handover.rs`) through Pi's own message path — only to the
+  observer the kernel proved to be that pane's foreground Pi, only between
+  two runs while Pi says it is idle, never as a command or template, one
+  line per pane, never offered twice (a line without a receipt is left for
+  the user). It is the one text Deck sends an Agent other than by the
+  pane; it is still an interactive session, never a headless or SDK
+  transport, and no other row for a Pi is ever sent automatically. It may close only a card it started,
   from the card it started it from (above). The agent in a worker card may hand
   Deck a report for its orchestrator (`deck_worker_report`, approved
   2026-11-19, `mcp/reports.rs`): Deck proves the calling card from the
@@ -387,7 +396,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Card Reminders | `reminder.rs`, `ui/js/reminder-model.js` (+ `docs/card-reminders.md`) |
 | Agent status, attribution and listener | `agent_status.rs`, `agent_origin.rs`, `src-tauri/status-helper/` |
 | Agent hooks configuration, installation and migration | `agent_status/hooks.rs` (contract), `agent_status/hooks/tests.rs` |
-| Pi agent adapter: registration, the one settings entry (work status; with it, the final message), observer transport | `agent_pi.rs` (contract), `agent_pi/config.rs`, `agent_pi/transport.rs` (the sender proof, wire v3), `resources/pi/` (the observer extension: `signal.ts` reads nothing, `reply.ts` the final message), `scripts/pi_native.py`, `scripts/pi-live-verify.py`, `.github/workflows/pi-compat.yml` (weekly, newest Pi: an alarm, not a gate) |
+| Pi agent adapter: registration, the one settings entry (work status; with it, the final message), observer transport | `agent_pi.rs` (contract), `agent_pi/config.rs`, `agent_pi/transport.rs` (the sender proof, wire v4), `agent_pi/handover.rs` (a Pi worker card's line, handed over by the observer), `resources/pi/` (the observer extension: `signal.ts` reads nothing, `reply.ts` the final message; both hand over a worker line), `scripts/pi_native.py`, `scripts/pi-live-verify.py`, `.github/workflows/pi-compat.yml` (weekly, newest Pi: an alarm, not a gate) |
 | Agent re-entry on a shell-service restart, crash recovery | `agent_reentry/` (contract in `mod.rs`; adapters `claude.rs`, `codex.rs`; crash recovery `recovery.rs`, `ui/js/recovery-model.js`, `agent-recovery.js`), `src-tauri/lifecycle-helper/`, `procinfo.rs`, `procinfo/code_identity.rs`, `resume.rs` (`printed`, the one pane-text reader), `ui/js/reentry-model.js`, `restart-reentry.js` |
 | First-party extension composition, access startup and Settings controllers | `extensions.rs`, `app/extensions/*.json`, `scripts/extension_catalog.py`, `ui/js/settings-extensions.js`, `ui/js/extension-*.js` (Agent, Slack, translation, Connector, MCP/Tunnel, voice preferences; + `docs/first-party-extensions.md`) |
 | Model API keys (OpenAI, Anthropic): Keychain, proven by the model list; their two uses: Draft title (Claude Code's own title, else the end of the card's pane to the stored provider, on click) and turn summaries | `model_api.rs` (`complete`: `draft_title`, `summarize_turn`, the only content-sending paths), `card_title.rs`, `ui/js/extension-model-api.js`, `title-draft.js` (+ `docs/first-party-extensions.md`) |

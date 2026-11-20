@@ -33,7 +33,10 @@
 //!   the reply entry the user chose, for the end of a low-level run, of
 //!   which it reads the last assistant message's text — and nothing else:
 //!   no process, no network client, no file read or write, and none of
-//!   Pi's tool, message-sending, session, UI or model entry points. The test-only Pi
+//!   Pi's tool, message-sending, session, UI or model entry points but ONE:
+//!   a worker card's line, which it hands to Pi with one plain call of Pi's
+//!   send-a-message entry point after one idle check (`agent_pi/handover.rs`,
+//!   approved 2026-11-20; pinned below). The test-only Pi
 //!   fixtures (`scripts/pi/`) use exactly those entry points and are packaged
 //!   by nothing;
 //! - run any tmux but the signed sidecar next to its own executable
@@ -1160,8 +1163,9 @@ const PI_IMPORTS: &[&str] = &[
 /// The members that may be read of each named object, wherever the name
 /// stands — in code, a string or a comment.
 const PI_MEMBERS: &[(&str, &[&str])] = &[
-    // Pi's extension API: subscribing, and nothing else
-    ("pi", &["on"]),
+    // Pi's extension API: subscribing, and the one hand-over of a worker
+    // card's line (pinned below: once, in observer.ts, with no options)
+    ("pi", &["on", "sendUserMessage"]),
     // the event context: the run mode word, and nothing else
     ("ctx", &["mode"]),
     // an event: Pi's own closed reason word, whether the user aborted the
@@ -1233,8 +1237,8 @@ const PI_FORBIDDEN: &[&str] = &[
     "unlink",
     "rename",
     "chmod",
-    // Pi's execution, message, session, model and UI entry points
-    "sendUserMessage",
+    // Pi's execution, message, session, model and UI entry points (the one
+    // hand-over call and the one idle check are pinned in observer.ts below)
     "sendMessage",
     "newSession",
     "switchSession",
@@ -1266,7 +1270,6 @@ const PI_FORBIDDEN: &[&str] = &[
     ".compact(",
     ".ui.",
     "hasUI",
-    "isIdle",
     // content: a prompt, messages, a title, a tool call, a path
     ".prompt",
     ".title",
@@ -1363,6 +1366,24 @@ fn pi_observer_violations(name: &str, source: &str) -> Vec<String> {
         if !PI_EVENTS.contains(event) {
             violations.push(format!("{name}: subscribes to `{event}`"));
         }
+    }
+    // the hand-over of a worker card's line (`agent_pi/handover.rs`, approved
+    // 2026-11-20): ONE call of Pi's own send-a-message entry point, with the
+    // text alone — never a command or template option, never queued behind a
+    // run — after ONE idle check; named nowhere else, not even in a comment
+    let (sends, idles) = (
+        source.matches("sendUserMessage").count(),
+        source.matches("isIdle").count(),
+    );
+    if name == "observer.ts" {
+        if sends != 1 || source.matches("pi.sendUserMessage(text);").count() != 1 {
+            violations.push(format!("{name}: the hand-over is not the one plain call"));
+        }
+        if idles != 1 || source.matches("context.isIdle() === true").count() != 1 {
+            violations.push(format!("{name}: the idle check is not the one it is"));
+        }
+    } else if sends + idles != 0 {
+        violations.push(format!("{name}: an entry hands nothing over"));
     }
     if name == "observer.ts" {
         // the one connection: a Unix path, in the object form that cannot
@@ -1465,6 +1486,9 @@ fn the_pi_observer_holds_to_its_closed_vocabulary() {
         "const cp = await import(\"node:child_process\");",
         "const cp = require(\"child_process\");",
         "pi.sendUserMessage(\"continue\");",
+        "pi.sendUserMessage(text, { expandPromptTemplates: true });",
+        "pi.sendUserMessage(text, { deliverAs: \"followUp\" });",
+        "const idle = ctx.isIdle();",
         "pi.sendMessage({});",
         "pi.registerTool({});",
         "pi.registerCommand(\"x\", {});",

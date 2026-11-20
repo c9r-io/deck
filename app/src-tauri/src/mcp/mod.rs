@@ -209,7 +209,9 @@
 //! `automation_delegations`); every hold then decides when it goes, the
 //! human hold included. `deck_worker_start` opens a card of one of the
 //! client's worker types (the user's commands; Codex only with
-//! `--no-daemon`) through a `worker-start` Board intent the webview commits,
+//! `--no-daemon`; Pi only while Pi's work status is on, its lines handed to
+//! Pi by Deck's observer between runs and never typed,
+//! `agent_pi::handover`) through a `worker-start` Board intent the webview commits,
 //! in a project of the client's scope and a column it names only under the
 //! organize-cards choice (else beside its orchestrator card, else the
 //! project's new-card column; a type has no column);

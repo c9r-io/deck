@@ -230,6 +230,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("projects", "m.verifyProjects()"),
     ("reentry-shapes", "m.verifyReentryShapes()"),
     ("ux-failures", "m.verifyUxFailures()"),
+    ("pi-worker", "m.verifyPiWorker()"),
 ];
 
 fn smoke_entry(mode: &str) -> &'static str {

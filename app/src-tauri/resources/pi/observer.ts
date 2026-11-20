@@ -15,10 +15,20 @@
 //   (`onRunEnd`). No user message, tool call, tool result or thinking is
 //   read, by either entry. No path, cwd, model, transcript, session or
 //   environment value other than the three routing variables is read.
-// - Observation only. It registers no tool, command, provider, shortcut or
-//   flag, sends no message, starts, switches or forks no session, runs no
-//   tool or process, and opens no network connection. Its one output is
+// - Observation, and ONE hand-over. It registers no tool, command,
+//   provider, shortcut or flag, starts, switches or forks no session, runs
+//   no tool or process, and opens no network connection. Its one output is
 //   short connections to Deck's private status socket, one per message.
+//   The one thing it ever gives Pi is a worker card's line (approved
+//   2026-11-20, `agent_pi/handover.rs`): when Deck's answer to a frame of
+//   this lease carries `deliver`, and only while Pi is idle and no run of
+//   this lease is open, it gives the text to Pi's own send-a-message call — never as a
+//   command or a template (no `expandPromptTemplates`), never queued behind
+//   a run (no `deliverAs`) — and says so in its next frame, `delivered`
+//   with the line's id; otherwise `declined` with `busy` (a run is open or
+//   Pi is not idle) or `error` (Pi refused the call). Pi's own message path,
+//   not the keyboard: the line lands in no dialog and leaves the editor's
+//   draft alone. The text is held in this closure only until that call.
 // - Routing is `DECK_STATUS_SOCK`, `TMUX` and `TMUX_PANE`, which Deck's own
 //   tmux server exports to its panes. All three must be present and well
 //   formed; there is no fallback path. The socket path is used only as a Unix
@@ -29,7 +39,7 @@
 // - Only an interactive terminal session (`ctx.mode === "tui"`) speaks.
 //   The factory registers callbacks and starts nothing; the first message is
 //   sent by `session_start`.
-// - Protocol `pi-observer` v3, one JSON line per message, at most 1024
+// - Protocol `pi-observer` v4, one JSON line per message, at most 1024
 //   bytes (8000 for the one frame that carries a final message), and ONE
 //   message per connection: connect, write the line, read
 //   Deck's one line of answer, close. No connection is ever kept or used
@@ -111,9 +121,12 @@ import fs from "node:fs";
 import net from "node:net";
 
 const PROTOCOL = "pi-observer";
-const WIRE_VERSION = 3;
-const OBSERVER_VERSION = 3;
+const WIRE_VERSION = 4;
+const OBSERVER_VERSION = 4;
 const MAX_LINE = 1024;
+/* Deck's answer that carries a worker card's line (16 KiB of text, as JSON) */
+const MAX_ANSWER = 128 * 1024;
+const MAX_HANDOVER_TEXT = 16 * 1024;
 /* the one longer line: a `reply` frame, with its text as JSON */
 const MAX_REPLY_LINE = 8000;
 const REPLY_JSON_MAX = 7600;
@@ -219,6 +232,17 @@ function nonceOf(reply) {
   return !!reply && typeof reply.nonce === "string" && /^[0-9a-f]{32}$/.test(reply.nonce) ? reply.nonce : null;
 }
 
+/** The worker card's line an answer carries, `{ id, text }`, null when it
+ *  carries none, or false when what it carries is not exactly that. */
+export function handoverOf(reply) {
+  if (!reply || !("deliver" in reply)) return null;
+  const d = reply.deliver;
+  return !!d && typeof d === "object" && Object.keys(d).length === 2
+    && typeof d.id === "string" && /^[a-z0-9_]{1,64}$/.test(d.id)
+    && typeof d.text === "string" && d.text.length > 0
+    && Buffer.byteLength(d.text, "utf8") <= MAX_HANDOVER_TEXT ? { id: d.id, text: d.text } : false;
+}
+
 /** The closed word of a refusal, or null for any other answer. */
 function refusalOf(reply) {
   return !!reply && typeof reply.refused === "string" ? reply.refused : null;
@@ -258,6 +282,7 @@ export function deckPiObserver(capabilities, piVersion) {
     let attempt = 0;
     let duplicate = null; // since when another observer of this process has held the lease
     let drained = null;
+    let context = null; // the session's context: whether Pi is idle at a hand-over
 
     const stopTimers = () => {
       if (ping) clearInterval(ping);
@@ -341,7 +366,7 @@ export function deckPiObserver(capabilities, piVersion) {
         });
         which.on("data", (chunk) => {
           buffer += chunk;
-          if (buffer.length > 4 * MAX_LINE) {
+          if (buffer.length > MAX_ANSWER) {
             finish(null);
             return;
           }
@@ -441,8 +466,11 @@ export function deckPiObserver(capabilities, piVersion) {
           return;
         }
         const bits = reply ? bitsOf(reply.capabilities) : null;
-        // `revoked` answers a frame whose capability was taken while it was on its way
-        if (asked || !bits || !next || Object.keys(reply).length !== 5
+        const handed = reply && reply.ack === number ? handoverOf(reply) : null;
+        // `revoked` answers a frame whose capability was taken while it was on its way;
+        // an `ack` may carry one worker card's line besides
+        if (asked || !bits || !next || handed === false
+          || Object.keys(reply).length !== (handed ? 6 : 5)
           || (reply.ack !== number && reply.revoked !== number)) {
           lost(asked ? null : reply);
           return;
@@ -459,6 +487,7 @@ export function deckPiObserver(capabilities, piVersion) {
           if (ping) clearInterval(ping);
           ping = null;
         }
+        if (handed && lease !== null) handOver(handed);
         pump();
       });
     };
@@ -482,6 +511,25 @@ export function deckPiObserver(capabilities, piVersion) {
       }
       queue.push(frame);
       pump();
+    };
+
+    /* A worker card's line: given to Pi only while it is idle and no run of
+       this lease is open, through Pi's own message path; the receipt is the
+       next frame (file header). */
+    const handOver = ({ id, text }) => {
+      let idle = false;
+      try { idle = !!context && context.isIdle() === true; } catch (_) { idle = false; }
+      if (!may.signal || active || !idle) {
+        queue.unshift({ declined: id, because: "busy" });
+        return;
+      }
+      try {
+        pi.sendUserMessage(text);
+      } catch (_) {
+        queue.unshift({ declined: id, because: "error" });
+        return;
+      }
+      queue.unshift({ delivered: id });
     };
 
     const onAccepted = (number, given, bits) => {
@@ -575,6 +623,7 @@ export function deckPiObserver(capabilities, piVersion) {
     };
 
     const onStart = guarded((event, ctx) => {
+      if (ctx.mode === "tui") context = ctx;
       if (target || ctx.mode !== "tui") return;
       if (typeof piVersion !== "string" || !/^[0-9A-Za-z.+-]{1,32}$/.test(piVersion)) return;
       target = route(process.env);

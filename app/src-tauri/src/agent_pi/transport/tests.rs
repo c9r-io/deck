@@ -2053,7 +2053,7 @@ fn until(what: &str, done: impl Fn() -> bool) {
 
 /// One line of the family: its common part and `body`.
 fn message(body: serde_json::Value) -> String {
-    let mut line = serde_json::json!({ "protocol": "pi-observer", "v": 3, "source": "pi" });
+    let mut line = serde_json::json!({ "protocol": "pi-observer", "v": 4, "source": "pi" });
     line.as_object_mut()
         .unwrap()
         .extend(body.as_object().unwrap().clone());
@@ -2073,7 +2073,7 @@ fn frame_line(lease: u64, nonce: &str, body: serde_json::Value) -> String {
 /// What an attest claims, without its nonce.
 fn claims(pane: &str, signal: bool, reply: bool) -> serde_json::Value {
     serde_json::json!({
-        "socket": "deck", "server_pid": 42, "pane": pane, "observerVersion": 3,
+        "socket": "deck", "server_pid": 42, "pane": pane, "observerVersion": 4,
         "piVersion": "1.1.0", "mode": "tui",
         "capabilities": { "signal": signal, "reply": reply }
     })
@@ -2309,7 +2309,7 @@ fn deck_s_own_line_is_answered_with_its_place_and_reaches_no_worker() {
     service.hand(theirs, crate::agent_pi::place_line(), 41);
     assert_eq!(
         answer_of(ours),
-        Some(serde_json::json!({"protocol": "pi-observer", "v": 3, "place": 41}))
+        Some(serde_json::json!({"protocol": "pi-observer", "v": 4, "place": 41}))
     );
     assert!(asked_at.elapsed() < Duration::from_secs(1));
     assert_eq!(probe::pending(), 1, "only the attest waits for the worker");
@@ -2442,7 +2442,7 @@ fn a_line_that_breaks_the_wire_is_refused_and_ends_only_a_proven_observer_s_leas
             "bad-mode",
         ),
         (
-            &|line: String| line.replace("\"observerVersion\":3", "\"observerVersion\":2"),
+            &|line: String| line.replace("\"observerVersion\":4", "\"observerVersion\":3"),
             "bad-version",
         ),
         (
@@ -2472,7 +2472,7 @@ fn a_line_that_breaks_the_wire_is_refused_and_ends_only_a_proven_observer_s_leas
     ] {
         let reply = attest(change);
         assert_eq!(refusal(&reply).as_deref(), Some(code), "{reply}");
-        assert_eq!(reply["v"], 3);
+        assert_eq!(reply["v"], 4);
         assert_eq!(reply.as_object().unwrap().len(), 3, "{reply}");
     }
     // a hello that carries anything is no hello
@@ -2509,15 +2509,15 @@ fn a_line_that_breaks_the_wire_is_refused_and_ends_only_a_proven_observer_s_leas
         serde_json::json!({"protocol": "pi-observer", "v": 1, "source": "pi", "seq": 1, "run": 1, "state": "working"}),
         // the version before this one: its hello, its attest and a frame
         // that would be a good one today
-        serde_json::json!({"protocol": "pi-observer", "v": 2, "source": "pi"}),
+        serde_json::json!({"protocol": "pi-observer", "v": 3, "source": "pi"}),
         serde_json::json!({
-            "protocol": "pi-observer", "v": 2, "source": "pi", "nonce": "0".repeat(32),
+            "protocol": "pi-observer", "v": 3, "source": "pi", "nonce": "0".repeat(32),
             "socket": "deck", "server_pid": 42, "pane": "%1", "observerVersion": 2,
             "piVersion": "1.1.0", "mode": "tui",
             "capabilities": { "signal": true, "lifecycle": true }
         }),
         serde_json::json!({
-            "protocol": "pi-observer", "v": 2, "source": "pi", "lease": 1, "nonce": "0".repeat(32),
+            "protocol": "pi-observer", "v": 3, "source": "pi", "lease": 1, "nonce": "0".repeat(32),
             "seq": 1, "run": 1, "state": "working"
         }),
     ] {
@@ -3133,7 +3133,7 @@ impl Server {
             message(serde_json::json!({
                 "nonce": "@NONCE@",
                 "socket": "t", "server_pid": self.fact(session, "#{pid}").parse::<u32>().unwrap(),
-                "pane": self.fact(session, "#{pane_id}"), "observerVersion": 3,
+                "pane": self.fact(session, "#{pane_id}"), "observerVersion": 4,
                 "piVersion": "1.1.0", "mode": "tui",
                 "capabilities": { "signal": signal, "reply": reply }
             }))
@@ -4675,4 +4675,135 @@ fn observer_constants_match_the_transport() {
     // a lease outlives one lost heartbeat, and the next one after it
     assert!(ping_every * 2 <= STALE_AFTER.as_millis());
     assert!(ping_every < STALE_AFTER.as_millis());
+}
+
+/// A worker card's line (`handover`): offered with the answer to a frame of
+/// the lease the kernel proved to be its pane's Pi, between two runs, once;
+/// counted by that lease's receipt; never offered during a run, to another
+/// pane's lease, or with the answer to the lease's last frame.
+#[test]
+fn a_worker_line_goes_with_the_answer_to_its_own_pane_s_lease_between_runs() {
+    use crate::agent_pi::handover::{hand_over_within, Outcome, Pane};
+    let _guard = fresh();
+    let shared = two_panes();
+    let world = shared.world();
+    let lease = bound(&world, "%1", 310).expect("the pane's own foreground program");
+    let other = bound(&world, "%2", 410).expect("the other pane's");
+    let waiting = |text: &'static str| {
+        std::thread::spawn(move || {
+            hand_over_within(
+                Pane {
+                    server_pid: 42,
+                    pane_id: "%1",
+                    pane_pid: 300,
+                },
+                text,
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+            )
+        })
+    };
+    let offered = |answer: Answer| match answer {
+        Answer::Ack { deliver, .. } => deliver,
+        other => panic!("not an ack: {other:?}"),
+    };
+    let ack = |lease: u64, frame: Frame| {
+        let (peer, nonce) = held(lease);
+        let answer = sent_from(&world, lease, frame, Some(peer), &nonce).unwrap();
+        if let Answer::Ack { next, .. } = &answer {
+            hold(lease, peer, next.clone());
+        }
+        answer
+    };
+    // during a run nothing is offered; another pane's lease is never offered it
+    assert_eq!(sent(&world, lease, working(1, 1)), Ok(1));
+    let worker = waiting("fix \"the\" test\nand say done");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        offered(ack(lease, Frame::Ping { seq: 2 })).is_none(),
+        "a run is open"
+    );
+    assert!(
+        offered(ack(other, Frame::Ping { seq: 1 })).is_none(),
+        "another pane"
+    );
+    // the run settles: the next answer carries the line, and only that one
+    let handed = offered(ack(lease, done(3, 1))).expect("offered between runs");
+    assert_eq!(handed.text, "fix \"the\" test\nand say done");
+    assert_eq!(format!("{handed:?}"), "Handed(..)", "never printed");
+    assert!(
+        offered(ack(lease, Frame::Ping { seq: 4 })).is_none(),
+        "offered once"
+    );
+    // the line as the observer reads it: one JSON object, the text intact
+    let line = super::super::ack_line_with(
+        4,
+        &Nonce::of([7; 16]),
+        Capabilities {
+            signal: true,
+            reply: false,
+        },
+        Some((&handed.id, &handed.text)),
+    );
+    let value: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+    assert_eq!(value.as_object().unwrap().len(), 6);
+    assert_eq!(value["deliver"]["text"], "fix \"the\" test\nand say done");
+    // another lease's receipt does not count; the lease's own does
+    assert_eq!(
+        sent(
+            &world,
+            other,
+            Frame::Delivered {
+                seq: 2,
+                id: handed.id.clone()
+            }
+        ),
+        Ok(2)
+    );
+    assert_eq!(
+        sent(
+            &world,
+            lease,
+            Frame::Delivered {
+                seq: 5,
+                id: handed.id.clone()
+            }
+        ),
+        Ok(5)
+    );
+    assert_eq!(worker.join().unwrap(), Outcome::Delivered);
+    // a refusal comes back as one; the answer to a lease's last frame offers nothing
+    let worker = waiting("again");
+    std::thread::sleep(Duration::from_millis(50));
+    let handed = offered(ack(lease, Frame::Ping { seq: 6 })).expect("offered");
+    assert_eq!(
+        sent(
+            &world,
+            lease,
+            Frame::Declined {
+                seq: 7,
+                id: handed.id,
+                because: crate::agent_pi::Decline::Busy
+            }
+        ),
+        Ok(7)
+    );
+    assert_eq!(
+        worker.join().unwrap(),
+        Outcome::Declined(crate::agent_pi::Decline::Busy)
+    );
+    let worker = waiting("last");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        offered(ack(
+            lease,
+            Frame::Reset {
+                seq: 8,
+                reason: ResetReason::Quit
+            }
+        ))
+        .is_none(),
+        "nothing goes with the end of a lease"
+    );
+    assert_eq!(worker.join().unwrap(), Outcome::NotAsked);
 }

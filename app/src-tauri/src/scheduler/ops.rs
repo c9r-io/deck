@@ -850,7 +850,7 @@ pub(crate) fn worker_queue_add(
         channel_first_send: None,
         channel_first_send_granted: None,
     };
-    admit_external(&mut args)?;
+    admit_worker(&mut args)?;
     validate_add(&args)?;
     args.first_send_granted = first_send.then(|| ReadinessOverride {
         rule: worker_override_rule(send.automation),
@@ -979,6 +979,21 @@ pub(crate) fn operation_replay(
 /// `channel_path` (`QueueItem.external`). Both `channel_queue_add*` commands
 /// call it before the owner core; `tests/external_admission.rs` fails CI on a
 /// new enqueue path, Tauri command or frontend call site that skips it.
+/// A worker card's line (`worker_queue_add`): the external admission, whose
+/// one difference is the command it accepts — remote admission's agents, or
+/// a Pi whose lines Deck's observer hands over and never types
+/// (`admission::worker_agent_command`, `agent_pi::handover`).
+pub(super) fn admit_worker(args: &mut QueueAddArgs) -> Result<(), DeckError> {
+    if crate::admission::worker_agent_command(&args.cmd).is_none() {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "channel automation requires a supported agent",
+        ));
+    }
+    args.channel_path = true;
+    Ok(())
+}
+
 pub(super) fn admit_external(args: &mut QueueAddArgs) -> Result<(), DeckError> {
     require_channel_agent(args)?;
     args.channel_path = true;

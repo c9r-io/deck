@@ -2957,6 +2957,7 @@ fn seen_codex(
             board_unverified: false,
             channel_unverified: false,
             human_held: false,
+            pi_ready: false,
         },
     )])
 }
@@ -10599,5 +10600,80 @@ fn a_worker_cards_later_line_is_not_stuck_after_a_restart() {
     assert_eq!(
         hold_reason(&ruled, Some(&restarted)),
         Some(Hold::FirstInteraction)
+    );
+}
+
+/// A Pi worker card's line (approved 2026-11-20, `agent_pi::handover`):
+/// waits at `pi-handover` until the pane's observer is bound and not in a
+/// run, then needs no interaction evidence (nothing is typed) and is
+/// selected; the human hold and an unreadable approval source still hold
+/// it. A Pi row that is not a worker card's line stays at
+/// `pi-input-unverified`.
+#[test]
+fn a_pi_worker_line_waits_for_its_observer_between_runs_and_nothing_else_of_pi_moves() {
+    let quiet = NOW - 400;
+    let mut row = pi_row("w", "at");
+    row.external = true;
+    row.authority = Some(StepAuthority {
+        rule: "worker-type:pi".into(),
+        grant: String::new(),
+        step: 0,
+        class: ContentClass::Delegated,
+        trigger: TriggerClass::Agent,
+        connector: None,
+        delegation: Some(AgentSource {
+            client: "client_a".into(),
+        }),
+    });
+    assert!(pi_handover(&row));
+    assert!(!pi_handover(&pi_row("p", "at")), "not a worker card's line");
+    let q = qs(vec![row]);
+    let observed = |ready: bool, agent: Option<&'static str>| {
+        let mut seen = seen_pi(quiet);
+        let entry = seen.get_mut("s").unwrap();
+        entry.pi_ready = ready;
+        entry.agent = agent;
+        seen
+    };
+    let stage = |seen: &Observations| {
+        serde_json::to_value(plan_item(&q, &q.items[0], NOW, 720, Some(seen))).unwrap()["stage"]
+            .clone()
+    };
+    // no observer bound, or a run open: it waits, and that is the machine's wait
+    for seen in [observed(false, None), observed(false, Some("working"))] {
+        assert_eq!(
+            hold_reason(&q.items[0], seen.get("s")),
+            Some(Hold::PiHandover)
+        );
+        assert!(select_due(&q, NOW, 720, &seen).is_empty());
+        assert_eq!(stage(&seen), "pi-handover");
+    }
+    assert!(!DELIVERY_WAIT_STAGES.contains(&"pi-handover"));
+    // bound between runs: selected, without any interaction evidence
+    let ready = observed(true, Some("turn-done"));
+    assert_eq!(hold_reason(&q.items[0], ready.get("s")), None);
+    assert_eq!(ids(&select_due(&q, NOW, 720, &ready)), ["w"]);
+    let fresh = observed(true, None);
+    assert_eq!(
+        hold_reason(&q.items[0], fresh.get("s")),
+        None,
+        "a fresh Pi before its first run"
+    );
+    // the user took the card over: their hold comes first
+    let mut held = observed(true, None);
+    held.get_mut("s").unwrap().human_held = true;
+    assert_eq!(hold_reason(&q.items[0], held.get("s")), Some(Hold::Human));
+    // the approval source could not be read this tick
+    let mut unread = observed(true, None);
+    unread.get_mut("s").unwrap().authority_unverified = true;
+    assert_eq!(
+        hold_reason(&q.items[0], unread.get("s")),
+        Some(Hold::AuthorityUnverified)
+    );
+    // any other row for a Pi stays where it was, ready observer or not
+    let other = qs(vec![pi_row("p", "at")]);
+    assert_eq!(
+        hold_reason(&other.items[0], ready.get("s")),
+        Some(Hold::PiInputUnverified)
     );
 }

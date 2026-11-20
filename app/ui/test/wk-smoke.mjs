@@ -3538,6 +3538,13 @@ export async function verifyUxFailures() {
   await runUxFailuresSmoke();
 }
 
+// A Pi worker card whose lines Deck's observer hands to a real Pi
+// (pi-worker-smoke.mjs, run by scripts/pi-live-verify.py --mode pi-worker).
+export async function verifyPiWorker() {
+  const { runPiWorkerSmoke } = await import('./pi-worker-smoke.mjs');
+  await runPiWorkerSmoke();
+}
+
 export async function verifyOrchestrators() {
   const { runWorkersSmoke } = await import('./workers-smoke.mjs');
   await runWorkersSmoke({ orchestrating: true });

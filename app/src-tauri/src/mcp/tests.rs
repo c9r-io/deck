@@ -5983,6 +5983,14 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
     assert_eq!(refused(&[claude("a", "claude; rm")]), TYPE_COMMAND_INVALID);
     assert_eq!(refused(&[claude("codex", "codex")]), TYPE_CODEX_DAEMON);
     assert!(validate_worker_types(&[claude("codex", "codex --no-daemon")]).is_ok());
+    // a Pi worker: its lines need Deck's observer in Pi (`agent_pi::handover`),
+    // and this test's home has no Pi settings turning it on
+    assert_eq!(
+        refused(&[claude("terra", "pi --model gpt-5.6-terra")]),
+        TYPE_PI_OBSERVER
+    );
+    assert_eq!(refused(&[claude("pie", "pie")]), TYPE_COMMAND_INVALID);
+    assert_eq!(refused(&[claude("pi", "pi $(x)")]), TYPE_COMMAND_INVALID);
     let nine: Vec<_> = (0..9).map(|i| claude(&format!("t{i}"), "claude")).collect();
     assert_eq!(refused(&nine), TYPE_LIST_INVALID);
 
