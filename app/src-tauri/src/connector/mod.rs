@@ -595,8 +595,9 @@ pub(super) fn set_listener_refusal(code: Option<&'static str>) {
 }
 
 /// The closed reason word for a failed start. The messages are this
-/// module's own fixed refusals; anything else (Keychain, storage) is
-/// `other`.
+/// module's own fixed refusals plus the Keychain's two (a denied or locked
+/// read, an unreadable stored identity), each with its own way out in
+/// Settings; anything else (storage) is `other`.
 pub(super) fn refusal_code(error: &DeckError) -> &'static str {
     match error.to_string().as_str() {
         "invalid connector address"
@@ -605,6 +606,8 @@ pub(super) fn refusal_code(error: &DeckError) -> &'static str {
         | server::BIND_UNAVAILABLE => "address",
         "connector network changed" => "network-changed",
         "connector identity is missing" => "identity-missing",
+        "keychain unavailable" => "keychain",
+        "keychain value is invalid" | "connector identity is invalid" => "identity-invalid",
         server::BIND_IN_USE => "port-in-use",
         server::BIND_DENIED => "bind-denied",
         server::BIND_FAILED => "bind-failed",

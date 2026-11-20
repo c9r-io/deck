@@ -53,3 +53,15 @@ test('legacy cleanup visibility and capability state remain independent', () => 
   assert.equal(cleared.socket, 'connected');
   assert.equal(slackConnectionView({ ...base, appPresent: false, botPresent: false, channelRules: 2 }, settings(true, true)).channel, 'upgrade-required');
 });
+test('a Slack failure word reads as its reason and way out', async () => {
+  const { slackFailureKey } = await import('../js/slack-connection-model.js');
+  assert.equal(slackFailureKey('auth'), 'settings.slackFailure.auth');
+  assert.equal(slackFailureKey('scope'), 'settings.slackFailure.scope');
+  assert.equal(slackFailureKey('ratelimited'), 'settings.slackFailure.ratelimited');
+  for (const word of ['network', 'timeout', 'http', 'socket', 'stalled', 'closed', 'reconnect']) {
+    assert.equal(slackFailureKey(word), 'settings.slackFailure.network', word);
+  }
+  assert.equal(slackFailureKey('slack'), 'settings.slackFailure.other');
+  assert.equal(slackFailureKey('constructor'), 'settings.slackFailure.other');
+  assert.equal(slackFailureKey(undefined), 'settings.slackFailure.other');
+});

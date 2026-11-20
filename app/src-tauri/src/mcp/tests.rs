@@ -8051,3 +8051,81 @@ fn orchestrators_mark_mentions_for_the_user_and_never_dismiss_them() {
         drop(root);
     });
 }
+
+#[test]
+fn a_reissued_credential_replaces_the_old_one_and_revokes_its_grants_never_a_revoked_client() {
+    let (runtime, runner, root) = fixture("reissue", "svc_test");
+    let session = session_state(&runtime);
+    runtime
+        .write(|doc| {
+            doc.execution_grants.push(execution_grant(&session));
+            Ok(())
+        })
+        .unwrap();
+    let standing = |runtime: &Runtime| {
+        runtime
+            .read(|doc| grants::grant_standing(runtime, doc, &doc.execution_grants[0]))
+            .unwrap()
+    };
+    assert!(matches!(standing(&runtime), grants::GrantStanding::Active));
+    assert!(super::control::credential_matches(
+        &runtime, "client_a", "mcp_test"
+    ));
+
+    client_reissue(&runtime, "client_a".into()).unwrap();
+    let (hash, version) = runtime
+        .read(|doc| {
+            let client = &doc.config.clients[0];
+            (client.credential_hash.clone(), client.credential_version)
+        })
+        .unwrap();
+    assert_eq!(version, 2, "the credential moved on");
+    assert_ne!(hash, sha(b"mcp_test"));
+    assert!(
+        !super::control::credential_matches(&runtime, "client_a", "mcp_test"),
+        "the old bearer no longer authenticates"
+    );
+    assert!(
+        matches!(standing(&runtime), grants::GrantStanding::Revoked),
+        "a grant issued under the old credential stands revoked"
+    );
+    // nothing else about the client changed
+    let client = runtime.read(|doc| doc.config.clients[0].clone()).unwrap();
+    assert!(client.revoked_at.is_none() && client.allow_create);
+    assert!(runtime
+        .read(|doc| doc
+            .audit
+            .iter()
+            .any(|event| event.kind == "client-credential-reissued"
+                && event.principal_id.as_deref() == Some("client_a")))
+        .unwrap());
+
+    // an unknown or revoked client gets no credential
+    assert_eq!(
+        client_reissue(&runtime, "client_missing".into())
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Missing
+    );
+    runtime
+        .write(|doc| {
+            doc.config.clients[0].revoked_at = Some(now_ms());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        client_reissue(&runtime, "client_a".into())
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Missing
+    );
+    assert_eq!(
+        runtime
+            .read(|doc| doc.config.clients[0].credential_version)
+            .unwrap(),
+        2,
+        "a revoked client keeps what it had"
+    );
+    drop(runner);
+    drop(root);
+}

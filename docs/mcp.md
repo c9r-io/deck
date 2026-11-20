@@ -66,6 +66,19 @@ its authorization display record and Keychain credential, but retains opaque
 client ids in historical sessions, operations, jobs, grants, and audit events;
 deleting a client is not a way to erase the security ledger.
 
+**Reissue credential…** on an active client's row is the way out when an
+integration reports `deck-mcp credential is unavailable` or
+`AUTH_REQUIRED` with "MCP credential is invalid or revoked" for a client that
+Deck still shows as active (the Keychain item was removed, cannot be read, or
+no longer matches). Deck writes a fresh bearer to the Keychain under the same
+client id and moves the client's credential version on: the old bearer stops
+authenticating at once, and every execution window approved under it ends (a
+new one needs your approval as before). Permissions and projects stay as they
+are, and no configuration changes, so restarting the integration is enough
+(for the Secure Tunnel: Stop Tunnel, then Start Tunnel). A revoked client is
+never reissued; add a new client instead. Reissuing is also the step to take
+if a bearer may have been read by someone else.
+
 Stopping the STDIO client stops only the Adapter. Quit Deck through the normal
 app lifecycle when desired; neither action implicitly kills a managed tmux
 session or an already running program. Close the visible MCP card explicitly
@@ -733,7 +746,8 @@ client. Command execution still requires a currently open, locally approved
 execution window for the target managed session; the remembered Keychain
 decision does not create that window. Use per-client authorization scopes,
 avoid **Always Allow** on accounts that run untrusted same-user code, and
-revoke the client in Deck if its identity may have been reused.
+reissue the client's credential (or revoke the client) in Deck if its
+identity may have been reused.
 
 Descriptor-relative reads reject traversal, unverified symlinks and special
 files (FIFOs, sockets and devices are refused without blocking). One name

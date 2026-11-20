@@ -51,7 +51,7 @@ pub(super) const CONTROL_TOOLS: [&str; 35] = [
 /// Whether `credential` is the current credential of a client that may use
 /// the control surface now: the feature on, the client neither revoked nor
 /// emergency-fenced.
-fn credential_matches(runtime: &Runtime, client_id: &str, credential: &str) -> bool {
+pub(super) fn credential_matches(runtime: &Runtime, client_id: &str, credential: &str) -> bool {
     let emergency_auth_blocked = runtime
         .emergency
         .lock_or_recover()
@@ -119,7 +119,7 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
         return error_value(
             "AUTH_REQUIRED",
             "MCP credential is invalid or revoked",
-            "Reauthorize this integration locally in Deck.",
+            "In Deck Settings > MCP choose Reissue credential for this client, then restart this integration; a revoked client is replaced by adding a new one.",
         );
     }
     // this client's adapter speaks the current protocol (again)

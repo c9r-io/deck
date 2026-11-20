@@ -151,6 +151,15 @@
 //! The control socket is bound under a private temporary name, made 0600, and
 //! atomically renamed into place; Deck never changes its process-wide umask.
 //!
+//! Credential re-issue (approved 2026-11-20, `commands::client_reissue`):
+//! the user's click on an active client writes a fresh bearer to the
+//! Keychain, then the ledger takes its hash and moves `credential_version`
+//! on, so the old bearer stops authenticating and every execution grant
+//! issued under it stands revoked. Same client id, choices and projects; it
+//! grants nothing and never applies to a revoked client (revocation stays
+//! final). The adapter reads its bearer at start, so the integration is
+//! restarted to use the new one.
+//!
 //! Automation delegation (`automation.rs`, `docs/mcp.md`): a client with the
 //! separate local choice `allow_automations` may list the user's Agent
 //! rules (`deck_automation_list`: id, name, project, current revision) and

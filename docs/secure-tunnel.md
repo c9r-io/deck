@@ -137,7 +137,7 @@ To remove the optional Helper, stop the related Tunnel runtime first, then delet
 | **Tunnel visible in Platform but not ChatGPT** | Check the ChatGPT workspace association, the connecting user's Tunnels Read + Use role and Developer mode access, the Tunnel's propagation time, and Deck's **ready** status. |
 | **Stuck on starting, unhealthy, or stale** | A start that did not reach ready leaves a line on the client row, “Last start failed: …”, with the reason and the helper's code; the commonest is that OpenAI no longer accepts the Runtime key (`invalid_api_key`, above): tunnel-client keeps running in **starting** while every control-plane poll is refused. Allow the bounded start time, then check the Helper and official `tunnel-client` status, the Runtime key, Tunnel ID, and permissions. See the [official troubleshooting guide](https://github.com/openai/tunnel-client/blob/master/docs/troubleshooting.md). Do not substitute an Admin key. |
 | **Tunnel stopped after reboot** | Expected. Choose **Start Tunnel** again. |
-| **`AUTH_REQUIRED`** | The Deck MCP client may be revoked or deleted, or its local credential invalid. Re-authorize in Deck; restarting the Tunnel cannot bypass Deck authorization. |
+| **`AUTH_REQUIRED`** | The Deck MCP client may be revoked or deleted, or its local credential invalid. If the client row is still active, choose **Reissue credential…** on it, then Stop Tunnel and Start Tunnel; a revoked client is replaced by adding a new one. Restarting the Tunnel alone cannot bypass Deck authorization. |
 
 ## Security model
 

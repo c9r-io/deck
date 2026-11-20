@@ -1487,7 +1487,7 @@ async fn main() {
             },
             Err(_) => {
                 eprintln!(
-                    "deck-mcp credential is unavailable; reauthorize this integration in Deck"
+                    "deck-mcp credential is unavailable; in Deck Settings > MCP choose Reissue credential for this client, then restart this integration"
                 );
                 std::process::exit(78);
             }

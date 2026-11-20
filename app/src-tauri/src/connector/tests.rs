@@ -3738,6 +3738,9 @@ fn a_refused_listener_start_is_one_closed_reason_word() {
     assert_eq!(code(server::BIND_IN_USE), "port-in-use");
     assert_eq!(code(server::BIND_DENIED), "bind-denied");
     assert_eq!(code(server::BIND_FAILED), "bind-failed");
+    assert_eq!(code("keychain unavailable"), "keychain");
+    assert_eq!(code("keychain value is invalid"), "identity-invalid");
+    assert_eq!(code("connector identity is invalid"), "identity-invalid");
     // anything this module did not say itself carries no detail out
     assert_eq!(
         code("/Users/someone/.deck/connector.json: disk full"),

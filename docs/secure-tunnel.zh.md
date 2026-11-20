@@ -137,7 +137,7 @@ Deck 的结构化 **list、read、search** 工具只在获准的项目目录内�
 | **Platform 中可见、ChatGPT 中不可见** | 检查 ChatGPT workspace 关联、连接用户的 Tunnels Read + Use 角色和 Developer mode 权限、新 Tunnel 的传播时间，以及 Deck 是否显示 **ready**。 |
 | **启动一直停在 starting、unhealthy 或 stale** | 没能进入 ready 的启动会在 client 条目上留下一行「上次启动失败：…」，写明原因和 Helper 的错误码；最常见的是 OpenAI 已不接受这把 Runtime key（见上面的 `invalid_api_key`）：此时 tunnel-client 仍在运行、停在 **starting**，但每次控制面轮询都被拒。等待有上限的启动时间，再检查 Helper 与官方 `tunnel-client` 状态、Runtime key、Tunnel ID 和权限。参阅[官方排障指南](https://github.com/openai/tunnel-client/blob/master/docs/troubleshooting.md)。不要改用 Admin key。 |
 | **重启后 Tunnel stopped** | 这是预期行为。再次选择 **Start Tunnel**。 |
-| **`AUTH_REQUIRED`** | Deck MCP client 可能已撤销或删除，也可能是其本机凭据失效。请在 Deck 中重新授权；重启 Tunnel 不能绕过 Deck 授权。 |
+| **`AUTH_REQUIRED`** | Deck MCP client 可能已撤销或删除，也可能是其本机凭据失效。客户端那一行仍是有效状态时，点它的 **重新签发凭据…**，再停止并启动 Tunnel；已撤销的客户端只能新建一个替代。单纯重启 Tunnel 不能绕过 Deck 授权。 |
 
 ## 安全模型
 

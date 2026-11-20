@@ -376,6 +376,39 @@ test('a hung optional Tunnel status cannot delay MCP client revoke', async () =>
   assert.ok(calls.some(([cmd, args]) => cmd === 'mcp_client_revoke' && args.clientId === 'client_live'));
 });
 
+test('an MCP client credential is reissued after a confirm, and a refused one says the action failed', async () => {
+  const calls = [];
+  let refuse = false;
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'mcp_status') return { enabled: true, outputRetentionMs: 86_400_000,
+      clients: [{ id: 'client_live', name: 'Live', revoked: false, projects: [] },
+        { id: 'client_old', name: 'Old', revoked: true, projects: [] }] };
+    if (cmd === 'tunnel_helper_status') return new Promise(() => {});
+    if (cmd === 'mcp_client_reissue') { if (refuse) throw 'MCP client not found'; return; }
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  await renderMcpSettings();
+  const rows = fakeDocument.getElementById('set-mcp-clients').children;
+  const reissueOf = row => row.children[1].children.find(button => button.textContent === 'Reissue credential…');
+  assert.equal(reissueOf(rows[1]), undefined, 'a revoked client has no reissue');
+  reissueOf(rows[0]).fire('click');
+  assert.equal(fakeDocument.getElementById('cfm').style.display, 'flex');
+  cfmDone(false);
+  await tick(); await tick();
+  assert.ok(!calls.some(([cmd]) => cmd === 'mcp_client_reissue'), 'cancel issues nothing');
+  reissueOf(rows[0]).fire('click');
+  cfmDone(true);
+  await tick(); await tick();
+  assert.ok(calls.some(([cmd, args]) => cmd === 'mcp_client_reissue' && args.clientId === 'client_live'));
+  refuse = true;
+  const again = fakeDocument.getElementById('set-mcp-clients').children[0];
+  reissueOf(again).fire('click');
+  cfmDone(true);
+  await tick(); await tick();
+  assert.equal(calls.filter(([cmd]) => cmd === 'mcp_client_reissue').length, 2);
+});
+
 test('Settings shows how many channel events are pending: the quiet place a once-told event stays visible', async () => {
   const { renderInboundSettings } = await import('../js/settings.js');
   const el = id => fakeDocument.getElementById(id);
@@ -417,10 +450,19 @@ test('Settings renders the transport-fault replies the backend produces: not con
     reply = vector[code];
     await renderInboundSettings();
     const text = el('set-channel-status').textContent;
-    assert.ok(text.includes(t('settings.channelStatus.disconnected')), code);
+    const reason = t(code === 'network' ? 'settings.slackFailure.network' : 'settings.slackFailure.scope');
+    const failure = t('settings.inboundStatus.error', { reason, code });
+    if (code === 'network') {
+      // the network says nothing about the token: the channel is ready but not connected
+      assert.ok(text.includes(t('settings.channelStatus.disconnected')), code);
+      assert.equal(el('set-slack-transport').textContent, t('settings.slackSocketDisconnected'));
+    } else {
+      // Slack refused the App token: the channel is not ready, and the socket line says why
+      assert.ok(text.includes(t('settings.slackChannelState', { state: t('settings.slackState.invalid') })), code);
+      assert.equal(el('set-slack-transport').textContent, t('settings.slackSocketDisconnected') + ' · ' + failure);
+    }
     assert.ok(text.includes(t('settings.channelGap')), code);
-    assert.ok(text.includes(t('settings.inboundStatus.error', { code })), code);
-    assert.equal(el('set-slack-transport').textContent, t('settings.slackSocketDisconnected'));
+    assert.ok(text.includes(failure), code);
   }
   reply = vector.recovered;
   await renderInboundSettings();

@@ -29,6 +29,7 @@ import { initMissedOnce, startMissedOnce } from './missed-once.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
 import { installPendingUpdate, renderPendingUpdate } from './update-install.js';
+import { updateCheckFailureKey } from './update-model.js';
 import { initVoice } from './voice.js';
 import { createVoiceTarget } from './voice-target.js';
 import { initInputSource } from './input-source.js';
@@ -490,7 +491,7 @@ export async function manualUpdateCheck() {
       say(t('update.current', { version: ctx.buildIdentity.version || '?' }));
     }
   } catch (e) {
-    say(t('update.checkFailed'));
+    say(t(updateCheckFailureKey(e)));
     uev('update-check-fail', 'manual');
   }
 }

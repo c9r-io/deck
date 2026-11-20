@@ -91,8 +91,19 @@ export function createConnectorSettings(host) {
     'port-in-use': 'connector.refused.portInUse',
     'bind-denied': 'connector.refused.bindDenied',
     'bind-failed': 'connector.refused.bindFailed',
+    keychain: 'connector.refused.keychain',
+    'identity-invalid': 'connector.refused.identityInvalid',
+    other: 'connector.refused.other',
   };
   const refusalText = code => (Object.hasOwn(refusalKeys, code) ? t(refusalKeys[code]) : '');
+  // A pairing that cannot read the identity says which way out applies: the
+  // backend's two fixed Keychain messages (keychain.rs, connector/identity.rs).
+  const PAIRING_KEYS = {
+    'keychain unavailable': 'connector.pairKeychain',
+    'keychain value is invalid': 'connector.pairIdentityInvalid',
+    'connector identity is invalid': 'connector.pairIdentityInvalid',
+  };
+  const pairingFailureText = error => t(Object.hasOwn(PAIRING_KEYS, String(error)) ? PAIRING_KEYS[String(error)] : 'connector.actionFailed');
 
   async function setTrusted(device, trusted) {
     if (trusted && !(await confirmDialog(t('connector.trustConfirm', { name: device.name })))) return;
@@ -250,7 +261,7 @@ export function createConnectorSettings(host) {
         $('set-connector-expiry').textContent = t('connector.expires', { seconds: formatNumber(Math.max(0, pairing.expiresAt - Math.floor(Date.now() / 1000))) });
         $('set-connector-pairing').hidden = false;
         renderPairScope();
-      } catch (_) { toast(t('connector.actionFailed')); }
+      } catch (error) { toast(pairingFailureText(error)); }
     };
     $('set-connector-reset').onclick = async () => {
       if (!await confirmDangerDialog(t('connector.resetConfirm'), t('connector.reset'))) return;

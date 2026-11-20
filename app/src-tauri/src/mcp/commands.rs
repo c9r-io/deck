@@ -452,6 +452,64 @@ pub(super) fn validate_new_client_scopes(
     Ok(scopes)
 }
 
+/// Re-issuing a current client's credential (approved 2026-11-20): the way
+/// out when its integration says "reauthorize this integration in Deck"
+/// (the Keychain item is gone or unreadable, or Deck refuses the one it
+/// read). It grants nothing new: same client id, same choices, same
+/// projects. A fresh bearer goes to the Keychain first, then the ledger
+/// takes its hash and moves `credential_version` on, so the old bearer stops
+/// authenticating and every execution grant it was issued under stands
+/// revoked (`grants::standing_at`); a new one needs the user's approval as
+/// before. A revoked client stays revoked: re-issuing never restores
+/// authority the user withdrew. If the ledger write fails after the Keychain
+/// write, the client cannot authenticate until a re-issue succeeds, which
+/// fails closed. The running adapter read its bearer at start, so the
+/// integration is restarted to use the new one (Settings says so).
+#[tauri::command(async)]
+pub(crate) fn mcp_client_reissue(client_id: String) -> Result<(), DeckError> {
+    client_reissue(runtime()?, client_id)
+}
+
+pub(super) fn client_reissue(runtime: &Runtime, client_id: String) -> Result<(), DeckError> {
+    let current = |doc: &DiskDoc| {
+        doc.config.clients.iter().any(|client| {
+            client.id == client_id && client.revoked_at.is_none() && client.credential_version > 0
+        })
+    };
+    if !runtime.read(current)? {
+        return Err(DeckError::new(ErrorKind::Missing, "MCP client not found"));
+    }
+    let credential = random_id("mcp_", 16)?;
+    // ordered against every side effect's final standing check
+    let _delivery = runtime.delivery.lock_or_recover();
+    if runtime.app.is_some() {
+        crate::keychain::set_mcp_credential(&client_id, &credential)?;
+    }
+    runtime.write(|doc| {
+        if !current(doc) {
+            return Err(DeckError::new(ErrorKind::Missing, "MCP client not found"));
+        }
+        let client = doc
+            .config
+            .clients
+            .iter_mut()
+            .find(|client| client.id == client_id)
+            .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP client not found"))?;
+        client.credential_hash = sha(credential.as_bytes());
+        client.credential_version = client.credential_version.saturating_add(1);
+        audit(
+            doc,
+            "client-credential-reissued",
+            AuditLink {
+                principal_id: Some(&client_id),
+                ..Default::default()
+            },
+        )
+    })?;
+    crate::applog::applog("[mcp] client credential reissued");
+    Ok(())
+}
+
 /// Revocation fences the client in memory and removes its Keychain bearer
 /// BEFORE waiting for the delivery lock, persists, then hands the client's
 /// panes to the local user. The bearer goes first so a failed state write

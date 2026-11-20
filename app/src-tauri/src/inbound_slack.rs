@@ -790,7 +790,13 @@ impl Source for Slack {
         let token = keychain::get(Slot::SlackUserToken).ok_or("no-token")?;
         // Search is a separate recovery path, but it shares the same installed
         // scope gate as live delivery. A token with partial scopes is not ready.
-        crate::slack_api::verify(Slot::SlackUserToken, &token)?;
+        // A refusal here is the poll's answer too: Settings shows it instead
+        // of an unchanged "checked N minutes ago" after the token died.
+        if let Err(code) = crate::slack_api::verify(Slot::SlackUserToken, &token) {
+            self.last_poll = Some(now_secs());
+            self.last_error = Some(code);
+            return Err(code);
+        }
         let mut all = Vec::new();
         let mut result = Ok(());
         for badge in badges {
@@ -1397,6 +1403,22 @@ mod tests {
         assert!(status.last_poll.is_none());
         assert!(status.last_error.is_none());
         assert!(now_secs() > 0);
+    }
+
+    #[test]
+    fn a_refused_user_token_is_the_polls_last_error_not_a_quiet_last_check() {
+        keychain::set(Slot::SlackUserToken, "xoxp-revoked").unwrap();
+        let mut slack = Slack::default();
+        let (result, requests) = with_responses(
+            vec![(200, r#"{"ok":false,"error":"token_revoked"}"#)],
+            || slack.poll(&Config::default(), &["eyes".to_string()]),
+        );
+        assert_eq!(result.err(), Some("auth"));
+        assert_eq!(requests.len(), 1, "no search after the refusal");
+        let status = slack.status();
+        assert_eq!(status.last_error, Some("auth"));
+        assert!(status.last_poll.is_some());
+        keychain::clear(Slot::SlackUserToken).unwrap();
     }
 
     #[test]

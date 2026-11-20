@@ -88,7 +88,7 @@ pub(crate) async fn slack_connection_status() -> Result<SlackConnectionStatus, &
             Some(Err(e)) => (false, Some(*e)),
             None => (false, None),
         };
-        let app_error = None;
+        let app_error = app_refused();
         let workspace_match = match (&user, &bot) {
             (Some(Ok(u)), Some(Ok(b))) => workspace_match(u, b),
             (Some(_), Some(_)) => false,
@@ -171,6 +171,11 @@ fn clear_legacy_with(
 static CONNECTED: AtomicBool = AtomicBool::new(false);
 static OBSERVED_APP: Mutex<Option<(u64, String)>> = Mutex::new(None);
 static APP_VERIFIED: AtomicBool = AtomicBool::new(false);
+/// What Slack last answered when it refused to open Socket Mode with the
+/// saved App token (`auth`, `scope`, `slack`); cleared by the next open that
+/// succeeds and by a save. Without it a revoked App token reads only as "not
+/// connected" while the loop retries forever.
+static APP_REFUSED: Mutex<Option<&'static str>> = Mutex::new(None);
 static EPOCH: AtomicU64 = AtomicU64::new(1);
 static WAKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
 /// Until when (epoch seconds) a first-send save is waiting for the channel
@@ -183,6 +188,22 @@ const PREPARE_WAIT: Duration = Duration::from_secs(20);
 /// A loopback socket is accepted only when a unit test asks for it.
 pub(crate) static LOOPBACK_SOCKET: AtomicBool = AtomicBool::new(false);
 const MAX_SOCKET_TEXT: usize = 1024 * 1024;
+
+/// Slack's answer to an open: a refusal of the credential is remembered for
+/// Settings, anything else (network, timeout) says nothing about the token.
+fn app_open_answered(result: &Result<String, &'static str>) {
+    match result {
+        Ok(_) => *APP_REFUSED.lock_or_recover() = None,
+        Err(code @ ("auth" | "scope" | "slack")) => {
+            APP_VERIFIED.store(false, Ordering::SeqCst);
+            *APP_REFUSED.lock_or_recover() = Some(code);
+        }
+        Err(_) => {}
+    }
+}
+fn app_refused() -> Option<&'static str> {
+    *APP_REFUSED.lock_or_recover()
+}
 
 fn app_valid_fact(present: bool, verified_this_process: bool, connected: bool) -> bool {
     present && (verified_this_process || connected)
@@ -202,6 +223,7 @@ fn app_id_at_epoch(observed: Option<&(u64, String)>, epoch: u64) -> Option<Strin
 }
 pub(crate) fn app_credential_saved(present: bool) {
     *OBSERVED_APP.lock_or_recover() = None;
+    *APP_REFUSED.lock_or_recover() = None;
     APP_VERIFIED.store(present, Ordering::SeqCst);
 }
 /// `channel_preparing`: a first-send save is waiting for the identity, so
@@ -566,7 +588,9 @@ pub(crate) fn socket_loop(consumers: Consumers) {
             continue;
         }
         let attempt = (|| -> Result<(), &'static str> {
-            let url = open_url(&app_token)?;
+            let opened = open_url(&app_token);
+            app_open_answered(&opened);
+            let url = opened?;
             APP_VERIFIED.store(true, Ordering::SeqCst);
             if rustls::crypto::CryptoProvider::get_default().is_none() {
                 let _ = rustls::crypto::ring::default_provider().install_default();
@@ -689,6 +713,31 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::HashSet;
+
+    #[test]
+    fn a_refused_app_token_is_remembered_for_settings_until_an_open_or_a_save() {
+        app_credential_saved(true);
+        assert_eq!(app_refused(), None);
+        app_open_answered(&Err("network"));
+        assert_eq!(
+            app_refused(),
+            None,
+            "the network says nothing about the token"
+        );
+        assert!(APP_VERIFIED.load(Ordering::SeqCst));
+        app_open_answered(&Err("auth"));
+        assert_eq!(app_refused(), Some("auth"));
+        assert!(
+            !APP_VERIFIED.load(Ordering::SeqCst),
+            "a refused token is not verified"
+        );
+        app_open_answered(&Ok("wss://wss-primary.slack.com/link".into()));
+        assert_eq!(app_refused(), None, "an open that succeeds clears it");
+        app_open_answered(&Err("scope"));
+        app_credential_saved(true);
+        assert_eq!(app_refused(), None, "a save clears it");
+        app_credential_saved(false);
+    }
 
     #[test]
     fn the_transport_has_one_owner_per_process() {
@@ -1094,7 +1143,7 @@ mod tests {
         assert_eq!(transport.matches("ws.send(Message::Text(").count(), 1);
         let runtime = transport.split("fn socket_loop(consumers:").nth(1).unwrap();
         assert!(
-            runtime.find("open_url(&app_token)?").unwrap()
+            runtime.find("open_url(&app_token)").unwrap()
                 < runtime.find("tungstenite::connect(url)").unwrap()
         );
         assert!(

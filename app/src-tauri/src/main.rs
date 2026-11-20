@@ -632,6 +632,7 @@ fn main() {
             mcp::mcp_disable,
             mcp::mcp_client_add,
             mcp::mcp_client_revoke,
+            mcp::mcp_client_reissue,
             mcp::mcp_client_delete,
             mcp::mcp_client_permissions,
             mcp::mcp_workers_ui,

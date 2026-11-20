@@ -18,3 +18,19 @@ export function slackConnectionView(status, settings) {
   return { reaction, channel, legacy: !!s.legacyPresent, legacyNotice, socket: s.connected ? 'connected' : 'disconnected',
     workspace: s.workspace || '', channelRules: Number(s.channelRules) || 0 };
 }
+
+// What a closed Slack failure word means for the user (slack_api.rs maps
+// Slack's answers to `auth`, `scope`, `ratelimited`, `slack`; the transport
+// adds its socket words). Each reason names its own way out: a refused token
+// is replaced in the field above it, a network word fixes itself.
+const FAILURE_KEYS = {
+  auth: 'settings.slackFailure.auth',
+  scope: 'settings.slackFailure.scope',
+  ratelimited: 'settings.slackFailure.ratelimited',
+  network: 'settings.slackFailure.network',
+};
+const NETWORK_WORDS = ['network', 'timeout', 'http', 'socket', 'stalled', 'closed', 'reconnect'];
+export function slackFailureKey(code) {
+  if (NETWORK_WORDS.includes(code)) return FAILURE_KEYS.network;
+  return Object.hasOwn(FAILURE_KEYS, code) ? FAILURE_KEYS[code] : 'settings.slackFailure.other';
+}

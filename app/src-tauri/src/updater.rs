@@ -32,6 +32,7 @@
 //! `tests/edr_quiet.rs` so a bump re-reads its installer.
 
 use crate::error::{DeckError, ErrorKind};
+use crate::sync::LockRecover;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -92,10 +93,57 @@ async fn update_for_channel(
     let updater = builder
         .build()
         .map_err(|_| DeckError::new(ErrorKind::Other, "updater could not be initialized"))?;
-    updater
-        .check()
-        .await
-        .map_err(|_| DeckError::new(ErrorKind::Other, "update check failed"))
+    let checked = updater.check().await;
+    note_check(checked.as_ref().err().map(check_failure));
+    checked.map_err(|error| {
+        DeckError::new(
+            ErrorKind::Other,
+            check_failure_message(check_failure(&error)),
+        )
+    })
+}
+
+/// Why a check failed, as one closed word: the feed could not be reached
+/// (`network`, `timeout`), the server answered without a feed
+/// (`feed-unavailable`), or the feed it sent is not one this build reads
+/// (`feed-invalid`); the plugin's own text never leaves this function.
+fn check_failure(error: &tauri_plugin_updater::Error) -> &'static str {
+    use tauri_plugin_updater::Error as E;
+    match error {
+        E::Reqwest(e) if e.is_timeout() => "timeout",
+        E::Reqwest(_) | E::Network(_) | E::Io(_) => "network",
+        E::ReleaseNotFound => "feed-unavailable",
+        E::Serialization(_) | E::Semver(_) | E::TargetNotFound(_) | E::TargetsNotFound(_) => {
+            "feed-invalid"
+        }
+        _ => "other",
+    }
+}
+
+/// The message the webview matches (`ui/js/update-model.js`).
+fn check_failure_message(code: &'static str) -> &'static str {
+    match code {
+        "timeout" => "update check failed: timeout",
+        "network" => "update check failed: network",
+        "feed-unavailable" => "update check failed: feed-unavailable",
+        "feed-invalid" => "update check failed: feed-invalid",
+        _ => "update check failed: other",
+    }
+}
+
+/// The last check's failure reason; None after a check that answered.
+static LAST_CHECK_FAILURE: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+/// One app.log line per change of reason, so an offline night of
+/// background checks is one line, not one per check; true when it logged.
+fn note_check(failure: Option<&'static str>) -> bool {
+    let mut last = LAST_CHECK_FAILURE.lock_or_recover();
+    let changed = failure.is_some() && *last != failure;
+    *last = failure;
+    if let (true, Some(code)) = (changed, failure) {
+        crate::applog::applog(&format!("[update] check failed ({code})"));
+    }
+    changed
 }
 
 #[derive(Serialize)]
@@ -336,6 +384,54 @@ pub(crate) fn build_identity() -> BuildIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_check_says_why_in_a_closed_word_and_logs_each_change_once() {
+        use tauri_plugin_updater::Error as E;
+        assert_eq!(check_failure(&E::ReleaseNotFound), "feed-unavailable");
+        assert_eq!(check_failure(&E::Network("secret /path".into())), "network");
+        assert_eq!(
+            check_failure(&E::TargetNotFound("darwin".into())),
+            "feed-invalid"
+        );
+        assert_eq!(
+            check_failure(&E::Serialization(
+                serde_json::from_str::<u8>("x").unwrap_err()
+            )),
+            "feed-invalid"
+        );
+        assert_eq!(check_failure(&E::UnsupportedOs), "other");
+        for code in [
+            "timeout",
+            "network",
+            "feed-unavailable",
+            "feed-invalid",
+            "other",
+        ] {
+            assert_eq!(
+                check_failure_message(code),
+                format!("update check failed: {code}")
+            );
+        }
+        // the webview's dictionary of these words is the same list
+        let model = include_str!("../../ui/js/update-model.js");
+        for code in ["timeout", "network", "feed-unavailable", "feed-invalid"] {
+            assert!(model.contains(&format!("'{code}'")), "{code}");
+        }
+        note_check(None);
+        assert!(note_check(Some("network")));
+        assert!(
+            !note_check(Some("network")),
+            "the same reason again is one line"
+        );
+        assert!(note_check(Some("feed-invalid")));
+        assert!(!note_check(None));
+        assert!(
+            note_check(Some("feed-invalid")),
+            "after a good check it logs again"
+        );
+        note_check(None);
+    }
 
     #[test]
     fn update_channel_endpoints_are_a_closed_single_choice() {

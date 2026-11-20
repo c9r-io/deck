@@ -140,7 +140,17 @@ export function createMcpSettings(host) {
           }
           catch (error) { toast(t(workerTypeErrorKey(error) || 'mcp.actionFailed')); }
         };
-        actions.append(copyClaude, copy, permissions, revoke);
+        /* a fresh bearer under the same client and choices (commands.rs
+           `client_reissue`): the way out when the integration says to
+           reauthorize; the old bearer and its execution grants end now */
+        const reissue = document.createElement('button'); reissue.className = 'btn mcp-reissue';
+        reissue.textContent = t('mcp.reissue');
+        reissue.onclick = async () => {
+          if (!await confirmDangerDialog(t('mcp.reissueConfirm', { name: client.name }), t('mcp.reissueAction'))) return;
+          try { await inv('mcp_client_reissue', { clientId: client.id }); toast(t('mcp.reissued', { name: client.name })); await renderMcpSettings(); }
+          catch (_) { toast(t('mcp.actionFailed')); }
+        };
+        actions.append(copyClaude, copy, permissions, reissue, revoke);
       } else {
         const remove = document.createElement('button'); remove.className = 'btn set-danger'; remove.textContent = t('mcp.delete');
         remove.onclick = async () => {

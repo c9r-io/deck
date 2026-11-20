@@ -36,7 +36,10 @@
 //!   `refused` (the model declined); never the provider's own text.
 //! - The last check of each provider is kept in memory only (outcome and
 //!   time) and describes the stored key: a candidate that failed to save
-//!   leaves it as it was. Status reads only whether a key exists, which
+//!   leaves it as it was. A use of the key (`complete`) is a check too when
+//!   it says something about the key: accepted, or refused as `auth`,
+//!   `permission` or `model` (logged as a closed word); `busy`, `network`,
+//!   `response` and `refused` leave the last check as it was. Status reads only whether a key exists, which
 //!   never opens the Keychain access prompt (`keychain::has`).
 
 use crate::applog::applog;
@@ -280,8 +283,27 @@ fn complete(instructions: &str, input: &str) -> Result<(String, &'static str), &
     let reply = match provider {
         Provider::Anthropic => anthropic_draft(&key, instructions, input),
         Provider::OpenAi => openai_draft(&key, instructions, input),
-    }?;
-    Ok((reply, provider.id()))
+    };
+    used(provider, reply.as_ref().map(|_| ()).map_err(|code| *code));
+    Ok((reply?, provider.id()))
+}
+
+/// What one use of the stored key says about it: an accepted call or the
+/// provider refusing the key is the key's last check, so Settings never
+/// keeps showing "valid" for a key that turn summaries can no longer use;
+/// a busy, unreachable or declining provider says nothing about the key.
+fn used(provider: Provider, outcome: Result<(), &'static str>) {
+    match outcome {
+        Ok(()) => record(provider, Ok(())),
+        Err(code @ ("auth" | "permission" | "model")) => {
+            record(provider, Err(code));
+            applog(&format!(
+                "[model-api] {} key refused in use: {code}",
+                provider.id()
+            ));
+        }
+        Err(_) => {}
+    }
 }
 
 /// Anthropic's Messages API: the text of the reply's `text` blocks.
@@ -893,6 +915,31 @@ mod tests {
             assert_eq!(draft_title("x"), Ok(("A".to_string(), "anthropic")));
         });
         assert!(requests[0].contains("sk-ant-api03-both"));
+        reset();
+    }
+
+    #[test]
+    fn a_use_the_provider_refuses_is_the_keys_last_check_and_a_busy_one_is_not() {
+        let _serial = SERIAL.lock_or_recover();
+        reset();
+        keychain::set(Slot::AnthropicApiKey, "sk-ant-api03-used").unwrap();
+        let anthropic = r#"{"content":[{"type":"text","text":"A"}],"stop_reason":"end_turn"}"#;
+        serve_seq(&[("200 OK", anthropic)], || {
+            assert!(summarize_turn("done", &[]).is_ok());
+        });
+        assert_eq!(status()["anthropic"]["check"]["ok"], json!(true));
+        // a busy provider says nothing about the key
+        serve_seq(&[("529 Overloaded", "{}")], || {
+            assert_eq!(summarize_turn("done", &[]), Err("busy"));
+        });
+        assert_eq!(status()["anthropic"]["check"]["ok"], json!(true));
+        // a revoked key: Settings no longer says it is valid
+        serve_seq(&[("401 Unauthorized", "{}")], || {
+            assert_eq!(summarize_turn("done", &[]), Err("auth"));
+        });
+        let check = status()["anthropic"]["check"].clone();
+        assert_eq!(check["ok"], json!(false));
+        assert_eq!(check["code"], json!("auth"));
         reset();
     }
 

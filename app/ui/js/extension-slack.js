@@ -2,7 +2,7 @@
 // credentials and Channel Monitoring remain one panel and one mount lifecycle.
 // Controller owns feature state and actions; the host retains the one settings writer.
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { slackConnectionView } from './slack-connection-model.js';
+import { slackConnectionView, slackFailureKey } from './slack-connection-model.js';
 import { createSlackChannelSetup, mergeSlackChannelManifest, slackAppSettingsUrl } from './slack-setup-model.js';
 import { removeLegacySlackCredentials } from './slack-legacy-cleanup.js';
 
@@ -149,6 +149,8 @@ function createController(host) {
      never read back into the page — the backend only reports whether a slot
      is filled. */
 
+  const slackFailureText = code => t('settings.inboundStatus.error', { reason: t(slackFailureKey(code)), code });
+
   function inboundSlackStatusText(status) {
     const slack = (status && status.sources || []).find(s => s.id === 'slack');
     if (!ctx.settings.inbound.sources.slack.enabled) return t('settings.inboundStatus.off');
@@ -163,7 +165,7 @@ function createController(host) {
         : t('settings.inboundAgoMinutes', { count: formatNumber(Math.floor(ago / 60)) });
       parts.push(t('settings.inboundStatus.lastPoll', { ago: label }));
     }
-    if (slack.lastError) parts.push(t('settings.inboundStatus.error', { code: slack.lastError }));
+    if (slack.lastError) parts.push(slackFailureText(slack.lastError));
     return parts.join(' · ');
   }
 
@@ -189,8 +191,12 @@ function createController(host) {
     $('set-channel-enabled').checked = !!ctx.settings.inbound.channelConnection?.enabled;
     $('set-slack-workspace').textContent = view.workspace ? t('settings.slackWorkspace', { workspace: view.workspace }) : '';
     $('set-slack-transport').textContent = t(view.socket === 'connected' ? 'settings.slackSocketConnected' : 'settings.slackSocketDisconnected');
+    // a token Slack refused says so where its state is shown, not only "invalid"
+    if (view.socket === 'disconnected' && connection?.appError) $('set-slack-transport').textContent += ' · ' + slackFailureText(connection.appError);
     $('set-slack-reaction-ready').textContent = t('settings.slackReactionState', { state: t(SLACK_STATE_KEYS[view.reaction]) });
+    if (view.reaction === 'invalid' && connection?.userError) $('set-slack-reaction-ready').textContent += ' · ' + slackFailureText(connection.userError);
     $('set-channel-status').textContent = t('settings.slackChannelState', { state: t(SLACK_STATE_KEYS[view.channel]) });
+    if (view.channel === 'invalid' && connection?.botError) $('set-channel-status').textContent += ' · ' + slackFailureText(connection.botError);
     if (view.channel === 'ready') $('set-channel-status').textContent += ' · ' + t('settings.slackChannelRules', { count: formatNumber(view.channelRules) });
     if (view.channel === 'ready' && view.socket === 'disconnected') $('set-channel-status').textContent += ' · ' + t('settings.channelStatus.disconnected');
     try {
@@ -200,7 +206,7 @@ function createController(host) {
       if (channel.pendingCount) facts.push(t('settings.channelPending', { count: formatNumber(channel.pendingCount) }));
       if (channel.rejectedCount) facts.push(t('settings.channelRejected', { count: formatNumber(channel.rejectedCount) }));
       if (channel.gapUnresolved) facts.push(t('settings.channelGap'));
-      if (channel.lastError) facts.push(t('settings.inboundStatus.error', { code: channel.lastError }));
+      if (channel.lastError) facts.push(slackFailureText(channel.lastError));
       if (facts.length) $('set-channel-status').textContent += ' · ' + facts.join(' · ');
     } catch (_) { /* status remains explicit from credential/config state */ }
     $('set-slack-legacy').hidden = !view.legacyNotice;
