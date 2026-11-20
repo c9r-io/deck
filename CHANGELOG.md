@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.8.34 — 2026-11-21 (Nightly)
+
+- Project environment variables: a project's Defaults dialog takes
+  variables (name and value) that every new shell of that project's cards
+  starts with, scheduled runs and restarts included. Values live only in
+  the macOS Keychain and are never shown again once saved: leave a value
+  empty to keep it, type a new one to replace it. If the Keychain refuses
+  to read them, or what is saved is damaged, a new card says so instead of
+  failing quietly, and the dialog offers "Clear these variables…" (two
+  clicks) so you can set them up again.
+- MCP worker cards can run Pi (`pi …`) once Pi's work status is on in
+  Settings › Agents & notifications. Deck never types into Pi: each line is
+  handed to Pi by Deck's own extension inside that Pi, through Pi's own
+  message path, only between two of Pi's runs while Pi is idle. It shows in
+  Pi's conversation as your message; the input box, and anything you were
+  typing there, is left alone. While Pi is not connected or still running,
+  the line waits in the ⏱ panel as "Waiting for Pi"; a line Pi did not
+  confirm is never sent again and waits for you. Pi's final message reaches
+  `deck_worker_reply` while you let Deck forward it, and a Pi worker can
+  report with `deck_worker_report`. A Pi that was already running needs a
+  restart to load the new extension.
+- MCP clients: "Reissue credential…" on a client's row writes a fresh
+  credential for the same client, permissions and projects; the old one
+  stops working at once and every execution window approved under it
+  ends. Restart the integration afterwards. A revoked client is never
+  reissued.
+- Secure Tunnel: a start that failed says why on the client's row ("Last
+  start failed: …", most often a Runtime key OpenAI no longer accepts), and
+  "Set up again…" is offered in every configured state so a dead key can
+  be replaced.
+- Refused credentials and failed checks say why where they are shown:
+  Slack (a refused user or App token, once, on that token's line), model
+  API keys (a key a turn summary found refused no longer reads "valid"),
+  the Phone Connector (a locked Keychain or a damaged identity, each with
+  its way out) and update checks (unreachable server, no release
+  information, or information this build cannot read).
+
 ## 0.8.33 — 2026-11-19 (Nightly)
 
 - MCP worker cards: an orchestrator can now close a worker card it started
