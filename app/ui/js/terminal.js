@@ -24,6 +24,7 @@
 // command. A directory that no longer exists asks (choiceDialog) instead of
 // guessing: cancel, edit the project defaults, or a shell in $HOME.
 import { $, ctx, duev, inv, state, uev } from './state.js';
+import { envStartFailureKey } from './project-env-model.js';
 import { collapseHome, isComposingKeyEvent, isNotDirectoryError, newSessionColumn, newSessionPlan, projectMoveBlock } from './pure.js';
 import { choiceDialog, confirmDangerDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { closeSession, editReminder, moveCardToProject, moveRefusalKey, openBuffer, openProjectDefaults, panes, provider, renameTab, render, showBoard, switchProject, activeProject } from './board.js';
@@ -440,7 +441,7 @@ export function newDefaultSession({ shellOnly = false } = {}) {
 /* A missing/unreadable directory is the user's call: never guess a fallback,
    never leave a card. Every other failure keeps the one generic toast. */
 async function reportCreateFailure(error, { project, dir, defaults }) {
-  if (!project || !isNotDirectoryError(error)) { toast(t('terminal.createFailed')); return; }
+  if (!project || !isNotDirectoryError(error)) { toast(t(envStartFailureKey(error) || 'terminal.createFailed')); return; }
   const shown = collapseHome(dir, ctx.HOME);
   const choices = [];
   if (defaults) choices.push({ id: 'edit', label: t('terminal.editDefaults') });

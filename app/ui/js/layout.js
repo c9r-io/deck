@@ -62,6 +62,7 @@ import { choiceDialog, confirmDialog, inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { syncReminderButton, markSessionSeen, panes, pollNow, provider, queueFollowUp, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, openLinkDefault, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
+import { envStartFailureKey } from './project-env-model.js';
 import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, MAX_DROP_BYTES, mcpErrorKey, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, splitCandidates, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCellAt, terminalSelectionWheelRoute, terminalWheelLines } from './pure.js';
 import { closeSessionTools } from './session-tools.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, terminalSelectionElsewhere, wireTerminalSelection } from './selection.js';
@@ -933,7 +934,7 @@ async function attachPane(pane, { allowStart = true } = {}, request) {
     }
     if (outcome.restored) toast(t('session.restored'));
   } catch (e) {
-    toast(t('error.attach'));
+    toast(t(envStartFailureKey(e) || 'error.attach'));
   }
   return outcome;
 }
@@ -990,14 +991,14 @@ async function newShellInSplit(targetSid, dir, cwd) {
     const { card, started } = await start(cwd);
     addSplit(targetSid, dir, false, card.id, { started });
   } catch (error) {
-    if (!isNotDirectoryError(error)) { toast(t('terminal.createFailed')); return; }
+    if (!isNotDirectoryError(error)) { toast(t(envStartFailureKey(error) || 'terminal.createFailed')); return; }
     const choice = await choiceDialog(t('terminal.dirUnavailable', { dir: collapseHome(cwd, ctx.HOME) }),
       [{ id: 'home', label: t('terminal.newHomeShell'), primary: true }]);
     if (choice !== 'home') return;
     try {
       const { card, started } = await start(ctx.HOME);
       addSplit(targetSid, dir, false, card.id, { started });
-    } catch (_) { toast(t('terminal.createFailed')); }
+    } catch (error) { toast(t(envStartFailureKey(error) || 'terminal.createFailed')); }
   }
 }
 

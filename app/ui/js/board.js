@@ -1784,6 +1784,7 @@ export async function openProjectDefaults(pid, opener = null) {
     recent: Array.isArray(recent) ? recent.filter(c => typeof c === 'string') : [],
     presets: p.presets || [], columns: p.columns,
     loadEnv: () => inv('project_env_names', { projectId: p.id }),
+    clearEnv: () => inv('project_env_clear', { projectId: p.id }),
   });
   if (result) {
     const env = result.env;

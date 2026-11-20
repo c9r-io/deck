@@ -154,7 +154,7 @@ export function createBoardExit({ mutateBoard, hold, exited }) {
    could not be checked (the hash is local; this bounds a broken one) */
 const PRESET_CHECK_MS = 5000;
 let pdfResolve = null;
-export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = '', recent = [], presets = [], columns = [], loadEnv = null }) {
+export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = '', recent = [], presets = [], columns = [], loadEnv = null, clearEnv = null }) {
   return new Promise(resolve => {
     if (pdfResolve) pdfResolve(null);
     $('pdf-title').textContent = t('projectDefaults.title', { name });
@@ -172,9 +172,14 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
     /* The project's environment variables (project-env-model.js): names
        only come in; a value leaves only when the user typed one. Until the
        names are read the section is locked (`envLoaded` null), and a read
-       that failed keeps it locked, so a save never touches the stored list. */
+       that failed keeps it locked, so a save never touches the stored list.
+       A list that cannot be read (Keychain denied or locked, or data Deck
+       cannot decode) would otherwise stop every new card of the project
+       with no way out but deleting it: the failed read offers clearing it,
+       armed by a first click and done by a second. */
     let envRows = []; let envLoaded = null; let envProblem = null;
     const envBox = $('pdf-env'), envNote = $('pdf-env-note');
+    $('pdf-env-clear').hidden = true;
     const sayEnv = (key, vars) => { envNote.hidden = !key; envNote.textContent = key ? t(key, vars) : ''; };
     const envHint = () => {
       if (envProblem) return;
@@ -239,7 +244,24 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
         envLoaded = Array.isArray(names) ? names.filter(n => typeof n === 'string') : [];
         envRows = envLoaded.map(n => ({ name: n, value: '', stored: n }));
         sayEnv(null); renderEnv();
-      }, () => { if (!closed) sayEnv('projectEnv.loadFailed'); });
+      }, () => {
+        if (closed) return;
+        sayEnv('projectEnv.loadFailed');
+        if (!clearEnv) return;
+        const clear = $('pdf-env-clear');
+        let armed = false;
+        clear.textContent = t('projectEnv.clear'); clear.hidden = false; clear.disabled = false;
+        clear.onclick = async () => {
+          if (!armed) { armed = true; clear.textContent = t('projectEnv.clearConfirm'); return; }
+          clear.disabled = true;
+          try { await clearEnv(); }
+          catch (_) { if (!closed) { sayEnv('projectEnv.clearHereFailed'); clear.disabled = false; } return; }
+          if (closed) return;
+          clear.hidden = true;
+          envLoaded = []; envRows = [];
+          renderEnv(); sayEnv('projectEnv.cleared');
+        };
+      });
     }
     let draftPresets = normalizeTaskPresets(presets, columns);
     /* ONE edit of one preset, from opening it to Done, Cancel, Delete,
@@ -467,6 +489,7 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
       closed = true; edit = null;
       // typed values never linger in the hidden dialog
       envRows = []; envBox.replaceChildren(); sayEnv(null);
+      $('pdf-env-clear').hidden = true; $('pdf-env-clear').onclick = null;
       $('pdf').style.display = 'none'; $('pdf').onkeydown = null; pdfResolve = null; resolve(v);
     };
     pdfResolve = done;

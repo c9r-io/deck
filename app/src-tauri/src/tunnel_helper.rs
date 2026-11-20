@@ -17,6 +17,20 @@
 //! start 135s) sit above the helper's own budgets (10s, 8s, 120s, in
 //! tools/deck-tunnelctl/src/cli.rs), so the helper normally finishes and
 //! removes its temporary Runtime-key file itself.
+//!
+//! A failed action keeps its reason. The helper answers a failure with a
+//! non-zero exit and `{"protocolVersion":1,"ok":false,"errorCode":…}`; Deck
+//! passes the code on only when it is one of the helper's own closed codes
+//! (`HELPER_FAILURES`, the set in tools/deck-tunnelctl), else
+//! `helper_action_failed`. The last failure per client is remembered for the
+//! app session and returned with every status (`failedAction` /
+//! `failureCode`) until an action succeeds or the runtime reports `ready` or
+//! `not_configured`: a start that timed out leaves tunnel-client running in
+//! `starting`, and without it the row would look as if it were still trying.
+//! Each action writes one app.log line of closed words (`[tunnel] start
+//! failed code=…`, `[tunnel] stop ok state=…`), never helper text. Setup runs
+//! in the user's Terminal and replaces the stored key, so the frontend offers
+//! it for every configured state, not only before the first setup.
 
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
@@ -49,6 +63,41 @@ static STATUS_CACHE: Mutex<Option<StatusCache>> = Mutex::new(None);
 /// Bumped when any action finishes; older cached statuses no longer match.
 static STATUS_GENERATION: AtomicU64 = AtomicU64::new(0);
 
+/// The last failed action per client id: (action, closed failure code).
+static LAST_FAILURE: Mutex<Option<HashMap<String, (&'static str, &'static str)>>> =
+    Mutex::new(None);
+
+/// Failure codes the helper itself returns (tools/deck-tunnelctl/src): the
+/// only helper words Deck passes to the webview or the log.
+const HELPER_FAILURES: [&str; 26] = [
+    "tunnel_client_readiness_timeout",
+    "tunnel_not_ready",
+    "tunnel_client_timeout",
+    "tunnel_client_connect_failed",
+    "tunnel_client_failed",
+    "tunnel_client_status_failed",
+    "tunnel_client_stop_failed",
+    "tunnel_client_remove_failed",
+    "tunnel_client_list_failed",
+    "tunnel_client_invalid_json",
+    "tunnel_client_output_too_large",
+    "tunnel_client_missing",
+    "tunnel_client_untrusted",
+    "tunnel_client_replaced",
+    "executable_missing",
+    "executable_untrusted",
+    "development_executable_missing",
+    "adapter_untrusted",
+    "adapter_unsupported_platform",
+    "key_missing",
+    "key_invalid",
+    "keychain_unavailable",
+    "not_configured",
+    "runtime_config_invalid",
+    "secret_create_failed",
+    "secret_write_failed",
+];
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HelperStatus {
@@ -59,6 +108,16 @@ pub(crate) struct HelperStatus {
     runtime_alias: Option<String>,
     tunnel_id: Option<String>,
     error_code: Option<&'static str>,
+    failed_action: Option<&'static str>,
+    failure_code: Option<&'static str>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FailureResponse {
+    protocol_version: u32,
+    ok: bool,
+    error_code: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,7 +187,7 @@ fn helper_status(client_id: &str) -> HelperStatus {
     if let Some((_, cached_generation, path, identity, status)) = cache.get(client_id) {
         if *cached_generation == generation && *path == helper.path && *identity == helper.identity
         {
-            return status.clone();
+            return with_last_failure(client_id, status.clone());
         }
     }
     let status = query_status(&helper, client_id);
@@ -142,7 +201,65 @@ fn helper_status(client_id: &str) -> HelperStatus {
             status.clone(),
         ),
     );
+    with_last_failure(client_id, status)
+}
+
+/// Adds the client's remembered failure, or forgets it once the runtime
+/// itself says the failure is over.
+fn with_last_failure(client_id: &str, mut status: HelperStatus) -> HelperStatus {
+    let mut failures = LAST_FAILURE.lock_or_recover();
+    let failures = failures.get_or_insert_with(HashMap::new);
+    if matches!(
+        status.tunnel_state.as_deref(),
+        Some("ready" | "not_configured")
+    ) {
+        failures.remove(client_id);
+    } else if let Some((action, code)) = failures.get(client_id) {
+        status.failed_action = Some(action);
+        status.failure_code = Some(code);
+    }
     status
+}
+
+fn remember_failure(client_id: &str, action: &'static str, code: Option<&'static str>) {
+    let mut failures = LAST_FAILURE.lock_or_recover();
+    let failures = failures.get_or_insert_with(HashMap::new);
+    match code {
+        Some(code) => failures.insert(client_id.to_string(), (action, code)),
+        None => failures.remove(client_id),
+    };
+}
+
+/// The helper's own failure code when it is one of its closed codes.
+fn failure_code(stdout: &[u8]) -> &'static str {
+    match parse_json::<FailureResponse>(stdout) {
+        Ok(response) if response.protocol_version == PROTOCOL_VERSION && !response.ok => {
+            HELPER_FAILURES
+                .iter()
+                .find(|code| **code == response.error_code)
+                .copied()
+                .unwrap_or("helper_action_failed")
+        }
+        _ => "helper_action_failed",
+    }
+}
+
+/// The closed state word, for the log line.
+fn state_word(value: &str) -> &'static str {
+    [
+        "tunnel_client_missing",
+        "not_configured",
+        "key_missing",
+        "stopped",
+        "starting",
+        "ready",
+        "unhealthy",
+        "stale",
+        "error",
+    ]
+    .into_iter()
+    .find(|state| *state == value)
+    .unwrap_or("unknown")
 }
 
 fn query_status(helper: &ResolvedHelper, client_id: &str) -> HelperStatus {
@@ -177,6 +294,8 @@ fn query_status(helper: &ResolvedHelper, client_id: &str) -> HelperStatus {
         runtime_alias: Some(response.runtime_alias),
         tunnel_id: response.tunnel_id.filter(|id| valid_tunnel_id(id)),
         error_code: None,
+        failed_action: None,
+        failure_code: None,
     }
 }
 
@@ -233,26 +352,48 @@ fn action(
     if !valid_client_id(client_id) {
         return Err(error("invalid_client_id"));
     }
-    let helper = resolve_helper().map_err(error)?;
-    verify_protocol(&helper).map_err(error)?;
+    let result = run_action(command, client_id, timeout);
+    match &result {
+        Ok(status) => {
+            remember_failure(client_id, command, None);
+            crate::applog::applog(&format!(
+                "[tunnel] {command} ok state={}",
+                state_word(status.tunnel_state.as_deref().unwrap_or(""))
+            ));
+        }
+        Err(code) => {
+            remember_failure(client_id, command, Some(code));
+            crate::applog::applog(&format!("[tunnel] {command} failed code={code}"));
+        }
+    }
+    result.map_err(error)
+}
+
+fn run_action(
+    command: &'static str,
+    client_id: &str,
+    timeout: Duration,
+) -> Result<HelperStatus, &'static str> {
+    let helper = resolve_helper()?;
+    verify_protocol(&helper)?;
     let output = invoke(
         &helper,
         &[command, "--client-id", client_id, "--json"],
         timeout,
     );
     STATUS_GENERATION.fetch_add(1, Ordering::SeqCst);
-    let output = output.map_err(error)?;
+    let output = output?;
     if !output.status.success() {
-        return Err(error("helper_action_failed"));
+        return Err(failure_code(&output.stdout));
     }
-    let response: ActionResponse = parse_json(&output.stdout).map_err(error)?;
+    let response: ActionResponse = parse_json(&output.stdout)?;
     if response.protocol_version != PROTOCOL_VERSION
         || !response.ok
         || !valid_state(&response.state)
         || !valid_alias(&response.runtime_alias)
         || response.error_code.is_some()
     {
-        return Err(error("helper_schema"));
+        return Err("helper_schema");
     }
     Ok(HelperStatus {
         helper_state: "installed",
@@ -262,6 +403,8 @@ fn action(
         runtime_alias: Some(response.runtime_alias),
         tunnel_id: None,
         error_code: None,
+        failed_action: None,
+        failure_code: None,
     })
 }
 
@@ -551,6 +694,8 @@ fn unavailable_with_dev(
         runtime_alias: None,
         tunnel_id: None,
         error_code: Some(error_code),
+        failed_action: None,
+        failure_code: None,
     }
 }
 fn protocol_unavailable(code: &'static str, development: bool) -> HelperStatus {
@@ -749,9 +894,55 @@ mod tests {
             serde_json::json!({
                 "helperState":"helper_missing","developmentHelper":false,"tunnelState":null,
                 "runtimeExists":false,"runtimeAlias":null,"tunnelId":null,
-                "errorCode":"helper_missing"
+                "errorCode":"helper_missing","failedAction":null,"failureCode":null
             })
         );
+        // every failure code Deck passes on is one the helper really returns,
+        // and every code the helper returns from an action is passed on
+        let helper_src: String = [
+            "cli.rs",
+            "tunnel_client.rs",
+            "keychain.rs",
+            "secret_file.rs",
+            "identity.rs",
+            "lib.rs",
+            "process.rs",
+        ]
+        .iter()
+        .map(|f| {
+            fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tools/deck-tunnelctl/src")
+                    .join(f),
+            )
+            .unwrap()
+        })
+        .collect();
+        for code in HELPER_FAILURES {
+            assert!(
+                helper_src.contains(&format!("\"{code}\"")),
+                "{code} is not a helper code"
+            );
+        }
+        for (at, _) in helper_src.match_indices("Err(\"") {
+            let code: String = helper_src[at + 5..]
+                .chars()
+                .take_while(|c| *c != '"')
+                .collect();
+            let input_only = matches!(
+                code.as_str(),
+                "usage"
+                    | "invalid_client_id"
+                    | "invalid_tunnel_id"
+                    | "input_failed"
+                    | "secret_validate_failed"
+                    | "random_unavailable"
+            );
+            assert!(
+                input_only || HELPER_FAILURES.contains(&code.as_str()),
+                "helper code {code} is not passed on"
+            );
+        }
         assert_eq!(error("helper_schema").message(), "helper_schema");
         assert_eq!(error("helper_schema").kind(), ErrorKind::Other);
         assert_eq!(remaining(Instant::now()), Err("helper_timeout"));
@@ -901,6 +1092,70 @@ mod tests {
                 .message(),
             "helper_action_failed"
         );
+
+        // A failed start keeps the helper's own closed reason; any other word
+        // the helper writes stays generic. The reason rides on every status
+        // of that client until the runtime says ready, and only of that client.
+        fs::write(&reply, b"{\"protocolVersion\":1,\"ok\":false,\"errorCode\":\"tunnel_client_readiness_timeout\"}").unwrap();
+        fs::write(&code, b"1").unwrap();
+        assert_eq!(
+            action("start", "client_fail", Duration::from_secs(5))
+                .unwrap_err()
+                .message(),
+            "tunnel_client_readiness_timeout"
+        );
+        fs::write(
+            &reply,
+            b"{\"protocolVersion\":1,\"ok\":false,\"errorCode\":\"/Users/x said hi\"}",
+        )
+        .unwrap();
+        assert_eq!(
+            action("stop", "client_other", Duration::from_secs(5))
+                .unwrap_err()
+                .message(),
+            "helper_action_failed"
+        );
+        fs::write(&code, b"0").unwrap();
+        fs::write(&reply, format!("{{\"protocolVersion\":1,\"state\":\"starting\",\"runtimeAlias\":\"{alias}\",\"runtimeExists\":true,\"errorCode\":null}}")).unwrap();
+        let stuck = helper_status("client_fail");
+        assert_eq!(stuck.tunnel_state.as_deref(), Some("starting"));
+        assert_eq!(stuck.failed_action, Some("start"));
+        assert_eq!(stuck.failure_code, Some("tunnel_client_readiness_timeout"));
+        let cached = helper_status("client_fail");
+        assert_eq!(
+            cached.failure_code,
+            Some("tunnel_client_readiness_timeout"),
+            "a cached status still carries it"
+        );
+        assert_eq!(
+            helper_status("client_clean").failure_code,
+            None,
+            "only the client that failed"
+        );
+        STATUS_GENERATION.fetch_add(1, Ordering::SeqCst);
+        fs::write(&reply, format!("{{\"protocolVersion\":1,\"state\":\"ready\",\"runtimeAlias\":\"{alias}\",\"runtimeExists\":true,\"errorCode\":null}}")).unwrap();
+        assert_eq!(helper_status("client_fail").failure_code, None);
+        STATUS_GENERATION.fetch_add(1, Ordering::SeqCst);
+        fs::write(&reply, format!("{{\"protocolVersion\":1,\"state\":\"starting\",\"runtimeAlias\":\"{alias}\",\"runtimeExists\":true,\"errorCode\":null}}")).unwrap();
+        assert_eq!(
+            helper_status("client_fail").failure_code,
+            None,
+            "ready ended it"
+        );
+        // a later successful action ends a remembered failure as well
+        fs::write(
+            &reply,
+            b"{\"protocolVersion\":1,\"ok\":false,\"errorCode\":\"key_invalid\"}",
+        )
+        .unwrap();
+        fs::write(&code, b"1").unwrap();
+        assert!(action("start", "client_fail", Duration::from_secs(5)).is_err());
+        fs::write(&code, b"0").unwrap();
+        fs::write(&reply, format!("{{\"protocolVersion\":1,\"ok\":true,\"state\":\"stopped\",\"runtimeAlias\":\"{alias}\",\"errorCode\":null}}")).unwrap();
+        action("stop", "client_fail", Duration::from_secs(5)).unwrap();
+        fs::write(&reply, format!("{{\"protocolVersion\":1,\"state\":\"stopped\",\"runtimeAlias\":\"{alias}\",\"runtimeExists\":true,\"errorCode\":null}}")).unwrap();
+        assert_eq!(helper_status("client_fail").failure_code, None);
+        fs::write(&code, b"3").unwrap();
 
         // Status: a non-zero helper is an error (not incompatible), a schema
         // violation is incompatible, and a foreign tunnel id is dropped.

@@ -45,6 +45,14 @@
 //!   show-environment`); this protects values at rest, not from the user's
 //!   own processes or the Agent that is meant to use them. MCP-managed shells
 //!   (`deck-mcp-runner`) are not given them.
+//! - A list that cannot be read stops the project's new shells (a start
+//!   without it would be a silent guess) and is never a dead end: its read
+//!   fails with one of two fixed messages, `UNAVAILABLE` (the Keychain
+//!   denied it or is locked) or `INVALID` (the stored bytes do not decode),
+//!   which the webview turns into the reason a card did not start
+//!   (`project-env-model.js` `envStartFailureKey`); the defaults dialog,
+//!   whose read failed too, then offers clearing the list
+//!   (`project_env_clear`, two clicks) so it can be set again.
 
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
@@ -134,7 +142,7 @@ fn decode(data: &str) -> Result<Vars, DeckError> {
         v: u64,
         vars: Vars,
     }
-    let bad = || DeckError::new(ErrorKind::Recovery, "project environment is invalid");
+    let bad = || DeckError::new(ErrorKind::Recovery, INVALID);
     let stored: Stored = serde_json::from_str(data).map_err(|_| bad())?;
     if stored.v != VERSION || validate(&stored.vars).is_err() {
         return Err(bad());
@@ -142,9 +150,22 @@ fn decode(data: &str) -> Result<Vars, DeckError> {
     Ok(stored.vars)
 }
 
+/// The message of a list the Keychain would not hand over (denied, locked).
+/// It and decode's "project environment is invalid" are the two the webview
+/// recognises (`project-env-model.js` `envStartFailureKey`) to say why a
+/// card of the project did not start, and where to clear the list.
+pub(crate) const UNAVAILABLE: &str = "project environment unavailable";
+/// The message of a stored list Deck cannot decode.
+pub(crate) const INVALID: &str = "project environment is invalid";
+
 /// A project's variables; empty when it has none.
 pub(crate) fn for_project(project_id: &str) -> Result<Vars, DeckError> {
-    match crate::keychain::env_get(project_id)? {
+    let stored = crate::keychain::env_get(project_id).map_err(|error| match error.kind() {
+        // the item is there but its bytes are not text: the list is broken
+        ErrorKind::Recovery => DeckError::new(ErrorKind::Recovery, INVALID),
+        kind => DeckError::new(kind, UNAVAILABLE),
+    })?;
+    match stored {
         Some(data) => decode(&data),
         None => Ok(Vars::new()),
     }
@@ -370,6 +391,13 @@ mod tests {
         assert!(decode("not json").is_err());
         assert!(decode(r#"{"v":2,"vars":[]}"#).is_err());
         assert!(decode(r#"{"v":1,"vars":[["TMUX","x"]]}"#).is_err());
+        // a broken stored list says so in the one message the webview reads,
+        // and clearing it is the way out
+        crate::keychain::env_set("Ptest_broken", "not json").unwrap();
+        assert_eq!(for_project("Ptest_broken").unwrap_err().message(), INVALID);
+        assert!(project_env_names("Ptest_broken".into()).is_err());
+        project_env_clear("Ptest_broken".into()).unwrap();
+        assert!(project_env_names("Ptest_broken".into()).unwrap().is_empty());
     }
 
     #[test]

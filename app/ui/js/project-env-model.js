@@ -74,3 +74,14 @@ export function envChanged(rows, loaded) {
 export const envWarnings = rows => rows
   .map(row => String(row.name || '').trim())
   .filter(name => ENV_WARN_NAMES.includes(name));
+
+/* why a card of the project did not start, when the reason is its stored
+   list (project_env.rs UNAVAILABLE / INVALID): the Keychain would not hand
+   it over, or it cannot be decoded. Either way the project's defaults
+   dialog is where it is read again or cleared. Null for any other failure. */
+export function envStartFailureKey(error) {
+  const text = String(error?.message ?? error ?? '');
+  if (text === 'project environment unavailable') return 'projectEnv.startUnavailable';
+  if (text === 'project environment is invalid') return 'projectEnv.startInvalid';
+  return null;
+}

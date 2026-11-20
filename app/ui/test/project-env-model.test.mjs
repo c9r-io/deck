@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ENV_MAX_TOTAL_BYTES, ENV_MAX_VALUE_BYTES, ENV_MAX_VARS, envChanged, envEntries, envNameProblem, envWarnings,
+  ENV_MAX_TOTAL_BYTES, ENV_MAX_VALUE_BYTES, ENV_MAX_VARS, envChanged, envEntries, envNameProblem, envStartFailureKey, envWarnings,
 } from '../js/project-env-model.js';
 
 const row = (name, value = '', stored = '') => ({ name, value, stored });
@@ -59,4 +59,11 @@ test('the stored list is touched only when the rows say something new', () => {
 test('names that move an Agent off Deck’s hooks are pointed out', () => {
   assert.deepEqual(envWarnings([row('CLAUDE_CONFIG_DIR'), row('X'), row(' CODEX_HOME ')]), ['CLAUDE_CONFIG_DIR', 'CODEX_HOME']);
   assert.deepEqual(envWarnings([row('X')]), []);
+});
+
+test('a card that did not start because of its project list says so', () => {
+  assert.equal(envStartFailureKey('project environment unavailable'), 'projectEnv.startUnavailable');
+  assert.equal(envStartFailureKey(new Error('project environment is invalid')), 'projectEnv.startInvalid');
+  assert.equal(envStartFailureKey('tmux could not create the session'), null);
+  assert.equal(envStartFailureKey(undefined), null);
 });

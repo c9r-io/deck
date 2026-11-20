@@ -13,6 +13,7 @@ const PANEL_HTML = `
     </div>`;
 
 import { claudeAddCommand, codexConfig, defaultWorkerTypes, previewErrorKey, scopeProblem, initialPermissions, initialScope, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
+import { tunnelActionKey, tunnelCode, tunnelFailureKey, tunnelSetupKey } from './tunnel-model.js';
 
 const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" aria-labelledby="mcp-auth-title">
   <div id="mcp-auth-box">
@@ -209,6 +210,18 @@ export function createMcpSettings(host) {
     }
     const stateKey = `mcp.tunnelState.${status.tunnelState || 'error'}`;
     line.textContent = `${t(status.developmentHelper ? 'mcp.tunnelDevelopmentHelper' : 'mcp.tunnelInstalled')} · ${t(stateKey)}`;
+    /* the last failed action stays on the row until it succeeds or the
+       runtime reports ready: a start that timed out leaves the runtime in
+       `starting`, which alone would read as "still trying" */
+    if (status.failureCode) {
+      const failure = document.createElement('div'); failure.className = 'mcp-tunnel-status mcp-tunnel-failure';
+      failure.style.color = 'var(--wait)';
+      const code = tunnelCode(status.failureCode);
+      failure.textContent = t('mcp.tunnelLastFailure', {
+        action: t(tunnelActionKey(status.failedAction)), reason: t(tunnelFailureKey(code)), code,
+      });
+      row.appendChild(failure);
+    }
     const buttons = [];
     let pending = false;
     const addAction = (label, command) => {
@@ -218,14 +231,20 @@ export function createMcpSettings(host) {
         pending = true;
         for (const item of buttons) item.disabled = true;
         try { await inv(command, { clientId: client.id }); await renderMcpSettings(); }
-        catch (_) { pending = false; toast(t('mcp.tunnelActionFailed')); for (const item of buttons) item.disabled = false; }
+        catch (error) {
+          pending = false;
+          toast(t(tunnelFailureKey(tunnelCode(String(error)))));
+          for (const item of buttons) item.disabled = false;
+          await renderMcpSettings();
+        }
       };
       buttons.push(button); actions.append(button);
     };
     if (status.tunnelState === 'stopped') addAction(t('mcp.tunnelStart'), 'tunnel_helper_start');
     if (['starting', 'ready', 'unhealthy', 'stale'].includes(status.tunnelState)) addAction(t('mcp.tunnelStop'), 'tunnel_helper_stop');
-    if (['not_configured', 'key_missing'].includes(status.tunnelState)) {
-      const setup = document.createElement('button'); setup.className = 'btn'; setup.textContent = t('mcp.tunnelSetup');
+    const setupKey = tunnelSetupKey(status.tunnelState);
+    if (setupKey) {
+      const setup = document.createElement('button'); setup.className = 'btn'; setup.textContent = t(setupKey);
       setup.onclick = async () => {
         if (pending) return;
         pending = true;

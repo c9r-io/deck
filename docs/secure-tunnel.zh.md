@@ -132,10 +132,10 @@ Deck 的结构化 **list、read、search** 工具只在获准的项目目录内�
 | **Optional Helper not installed** | 从同一 Deck Release 下载 Helper，安装到 `/Applications`，然后重新打开 MCP 设置。 |
 | **Helper unavailable、untrusted 或 incompatible** | 从[官方 Deck Releases](https://github.com/c9r-io/deck/releases)重新安装已签名且版本匹配的 Helper。不要绕过 Gatekeeper。 |
 | **tunnel-client missing** | 安装[受支持的 OpenAI 官方客户端](https://github.com/openai/tunnel-client/blob/master/docs/troubleshooting.md#macos-gatekeeper-blocks-a-downloaded-archive)。如果新安装的版本仍无法识别，请获取支持它的 Helper 版本。 |
-| **`invalid_api_key` 或 401** | 确认密钥复制正确、尚未撤销，并且是**组织级 Runtime API key**。创建新的 Restricted 密钥，授予 Tunnels Read + Use，再运行 **Set up…**。 |
+| **`invalid_api_key` 或 401** | 确认密钥复制正确、尚未撤销，并且是**组织级 Runtime API key**。创建新的 Restricted 密钥，授予 Tunnels Read + Use，再运行 **重新设置…**（client 条目在任何已配置状态下都提供它；它会替换已保存的密钥）。 |
 | **403 或权限错误** | 检查密钥本身的 **Tunnels Read + Use** 限制，以及所属主体的组织/Tunnel 角色；还要检查 Tunnel 所属组织。新角色授权最多可能需要 30 分钟传播。 |
 | **Platform 中可见、ChatGPT 中不可见** | 检查 ChatGPT workspace 关联、连接用户的 Tunnels Read + Use 角色和 Developer mode 权限、新 Tunnel 的传播时间，以及 Deck 是否显示 **ready**。 |
-| **启动一直停在 starting、unhealthy 或 stale** | 等待有上限的启动时间，再检查 Helper 与官方 `tunnel-client` 状态、Runtime key、Tunnel ID 和权限。参阅[官方排障指南](https://github.com/openai/tunnel-client/blob/master/docs/troubleshooting.md)。不要改用 Admin key。 |
+| **启动一直停在 starting、unhealthy 或 stale** | 没能进入 ready 的启动会在 client 条目上留下一行「上次启动失败：…」，写明原因和 Helper 的错误码；最常见的是 OpenAI 已不接受这把 Runtime key（见上面的 `invalid_api_key`）：此时 tunnel-client 仍在运行、停在 **starting**，但每次控制面轮询都被拒。等待有上限的启动时间，再检查 Helper 与官方 `tunnel-client` 状态、Runtime key、Tunnel ID 和权限。参阅[官方排障指南](https://github.com/openai/tunnel-client/blob/master/docs/troubleshooting.md)。不要改用 Admin key。 |
 | **重启后 Tunnel stopped** | 这是预期行为。再次选择 **Start Tunnel**。 |
 | **`AUTH_REQUIRED`** | Deck MCP client 可能已撤销或删除，也可能是其本机凭据失效。请在 Deck 中重新授权；重启 Tunnel 不能绕过 Deck 授权。 |
 

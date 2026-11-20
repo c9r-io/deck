@@ -1658,6 +1658,40 @@ test('project environment variables: names come in, only typed values go out', a
   assert.equal(note.hidden, false);
   el('pdf-yes').fire('click');
   assert.deepEqual(await promise, { dir: '', cmd: '' });
+  assert.equal(el('pdf-env-clear').hidden, true, 'no clearing without a way to do it');
+
+  // a list that cannot be read is not a dead end: clearing it (two clicks)
+  // unlocks the section, and nothing is cleared on the first click
+  let cleared = 0;
+  promise = projectDefaultsDialog({ name: 'Atlas', loadEnv: async () => { throw new Error('denied'); }, clearEnv: async () => { cleared += 1; } });
+  await tick();
+  const clear = el('pdf-env-clear');
+  assert.equal(clear.hidden, false);
+  clear.fire('click');
+  assert.equal(cleared, 0, 'the first click only arms it');
+  assert.equal(clear.textContent, 'Click again to clear them');
+  clear.fire('click');
+  await tick();
+  assert.equal(cleared, 1);
+  assert.equal(clear.hidden, true);
+  assert.equal(el('pdf-env-add').disabled, false, 'the section is open again');
+  assert.match(note.textContent, /Cleared/);
+  el('pdf-env-add').fire('click');
+  env.children[0].children[0].value = 'K'; env.children[0].children[0].fire('input');
+  env.children[0].children[1].value = 'v'; env.children[0].children[1].fire('input');
+  el('pdf-yes').fire('click');
+  assert.deepEqual(await promise, { dir: '', cmd: '', env: [{ name: 'K', value: 'v' }] });
+  // a clear the Keychain refused says so and stays available
+  promise = projectDefaultsDialog({ name: 'Atlas', loadEnv: async () => { throw new Error('denied'); }, clearEnv: async () => { throw new Error('denied'); } });
+  await tick();
+  clear.fire('click'); clear.fire('click');
+  await tick();
+  assert.equal(clear.hidden, false);
+  assert.equal(clear.disabled, false);
+  assert.equal(el('pdf-env-add').disabled, true, 'still locked: nothing was cleared');
+  el('pdf-no').fire('click');
+  assert.equal(await promise, null);
+  assert.equal(clear.hidden, true, 'closing hides it');
 
   // an invalid name is refused before anything is saved
   promise = projectDefaultsDialog({ name: 'Atlas', loadEnv: async () => [] });
