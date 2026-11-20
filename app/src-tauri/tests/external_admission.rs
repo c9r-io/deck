@@ -940,6 +940,15 @@ const TERMINAL_INPUT: &[(&str, &str, &str, usize, Input)] = &[
         1,
         Input::Display,
     ),
+    // the same sanitized transcript, loaded on its own call when the pane
+    // is then created from a project's environment script (project_env.rs)
+    (
+        "commands.rs",
+        "restore_load_args",
+        "load-buffer",
+        1,
+        Input::Display,
+    ),
 ];
 
 /// `send-keys -X` drives copy mode (scroll, selection) and types nothing:

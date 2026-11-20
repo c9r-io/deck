@@ -79,6 +79,15 @@
   },
   "drop_max_bytes": 33554432,
   "find_query_max_bytes": 256,
+  "project_env": {
+    "vars_max": 64,
+    "name_max_bytes": 128,
+    "value_max_bytes": 8192,
+    "total_max_bytes": 32768,
+    "valid_names": ["ANTHROPIC_API_KEY", "_x1", "DECKX"],
+    "invalid_names": ["", "1X", "A-B", "A B", "Ä"],
+    "reserved_names": ["DECK_STATUS_SOCK", "deck_x", "TMUX", "TMUX_PANE"]
+  },
   "translation_max_bytes": 16384,
   "translation_live_bytes": 4096,
   "translation_document_choices": [8192, 16384],

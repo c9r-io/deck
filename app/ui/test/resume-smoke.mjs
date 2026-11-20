@@ -18,9 +18,24 @@ export async function runResumeSmoke() {
   const ids = ['01a0b76c-b577-7493-86ef-a1f6209b823e', '0f3ab19c-4d2e-4a71-9b8c-1d2e3f4a5b6c'];
   const cards = [];
   const write = (card, text) => inv('pty_write', { name: card.session, gen: ctx.ptyGens.get(card.session), dataB64: strToB64(text) });
+  /* The project's environment variables (project_env.rs) reach a new shell
+     and a restored one: the pane prints the value between markers and the
+     card's tail must show it byte for byte. */
+  const envValue = "v1 it's $HOME ~;x";
+  let envProject = null;
+  const envShown = async card => {
+    await write(card, "printf 'ENV<%s>\\n' \"$SMOKE_ENV_PROBE\"\r");
+    return waitFor(async () => {
+      const infos = await inv('poll_sessions', { names: [card.session], tailFor: [card.session], checkpointShells: false });
+      const tail = (infos || []).find(info => info.name === card.session)?.tail || [];
+      return tail.some(line => line.includes('ENV<' + envValue + '>'));
+    });
+  };
   try {
     stopPolling();
     const project = provider.projects()[0];
+    envProject = project.id;
+    await inv('project_env_set', { projectId: project.id, entries: [{ name: 'SMOKE_ENV_PROBE', value: envValue }] });
     for (let i = 0; i < 2; i++) {
       const { card } = await provider.createStarted({ projectId: project.id, columnId: project.columns[0].id,
         title: 'resume-smoke-' + i, cmd: '', dir: '/tmp' });
@@ -34,6 +49,7 @@ export async function runResumeSmoke() {
       // only this pane's prompt variables change (zsh and bash).
       await write(card, "PS1='$ '; PROMPT='$ '; RPROMPT=''\r");
       await pause(400);
+      if (i === 0) await report('resume-env-start', await envShown(card));
       // A narrow real PTY soft-wraps both exit commands. -J must recover IDs.
       await inv('pty_resize', { name: card.session, cols: 32, rows: 20 });
       await write(card, "printf '\\nTo continue this session, run:\\n\\n  codex resume " + ids[i]
@@ -77,6 +93,7 @@ export async function runResumeSmoke() {
       const hints = await inv('terminal_resume_hints', { name: cards[0].session });
       return hints.length === 2 && hints.every(h => h.id === ids[0]);
     }));
+    await report('resume-env-restored', await envShown(cards[0]));
     await openSession(cards[1].id); stopPolling();
     provider.get(cards[1].id).fg = 'zsh';
     ctx.histCache = []; ctx.lineBuf = 'claude -r '; renderSuggest();
@@ -99,6 +116,7 @@ export async function runResumeSmoke() {
   } finally {
     ctx.tmuxRestarting = false;
     resetSuggest();
+    if (envProject) await inv('project_env_clear', { projectId: envProject }).catch(() => {});
     for (const card of cards) await inv('kill_session', { name: card.session }).catch(() => {});
     await inv('ui_event', { code: 'smoke-check', detail: 'resume-done', a: failed ? -1 : 1, b: stage });
   }

@@ -1605,6 +1605,73 @@ test('the project defaults dialog edits two trimmed strings and chips only fill 
   assert.equal(await promise, null);
 });
 
+test('project environment variables: names come in, only typed values go out', async () => {
+  const el = id => fakeDocument.getElementById(id);
+  const env = el('pdf-env'), note = el('pdf-env-note');
+  // the stored names; values never reach the webview
+  let promise = projectDefaultsDialog({ name: 'Atlas', dir: '~/w', cmd: '', loadEnv: async () => ['A', 'B'] });
+  assert.equal(el('pdf-env-add').disabled, true, 'locked until the names are read');
+  await tick();
+  assert.equal(env.children.length, 2);
+  const rowA = env.children[0];
+  assert.equal(rowA.children[0].value, 'A');
+  assert.equal(rowA.children[1].value, '', 'no value is shown');
+  assert.equal(rowA.children[1].type, 'password');
+  // untouched: Save leaves the stored list alone
+  el('pdf-yes').fire('click');
+  assert.deepEqual(await promise, { dir: '~/w', cmd: '' });
+  assert.equal(env.children.length, 0, 'typed values do not linger in the closed dialog');
+
+  promise = projectDefaultsDialog({ name: 'Atlas', dir: '~/w', cmd: '', loadEnv: async () => ['A', 'B'] });
+  await tick();
+  // replace A's value, remove B, add C without a value: refused, named
+  env.children[0].children[1].value = 'new-secret'; env.children[0].children[1].fire('input');
+  env.children[1].children[2].fire('click');
+  el('pdf-env-add').fire('click');
+  assert.equal(fakeDocument.activeElement, env.children[1].children[0], 'a new row takes the focus');
+  env.children[1].children[0].value = 'CLAUDE_CONFIG_DIR'; env.children[1].children[0].fire('input');
+  assert.equal(note.hidden, false);
+  assert.match(note.textContent, /CLAUDE_CONFIG_DIR/, 'the hooks warning names it');
+  el('pdf-yes').fire('click');
+  await tick();
+  assert.equal(el('pdf').style.display, 'flex', 'a refused list keeps the dialog open');
+  assert.equal(env.children[1].children[1]['aria-invalid'], 'true');
+  assert.equal(fakeDocument.activeElement, env.children[1].children[1]);
+  env.children[1].children[1].value = '/tmp/claude'; env.children[1].children[1].fire('input');
+  assert.equal(env.children[1].children[1]['aria-invalid'], 'false');
+  el('pdf-yes').fire('click');
+  assert.deepEqual(await promise, { dir: '~/w', cmd: '', env: [
+    { name: 'A', value: 'new-secret' }, { name: 'CLAUDE_CONFIG_DIR', value: '/tmp/claude' },
+  ] });
+
+  // keep a stored value under its own name; clear everything = an empty list
+  promise = projectDefaultsDialog({ name: 'Atlas', loadEnv: async () => ['A'] });
+  await tick();
+  env.children[0].children[2].fire('click');
+  el('pdf-yes').fire('click');
+  assert.deepEqual(await promise, { dir: '', cmd: '', env: [] });
+
+  // a failed read keeps the section locked and the stored list untouched
+  promise = projectDefaultsDialog({ name: 'Atlas', loadEnv: async () => { throw new Error('denied'); } });
+  await tick();
+  assert.equal(el('pdf-env-add').disabled, true);
+  assert.equal(note.hidden, false);
+  el('pdf-yes').fire('click');
+  assert.deepEqual(await promise, { dir: '', cmd: '' });
+
+  // an invalid name is refused before anything is saved
+  promise = projectDefaultsDialog({ name: 'Atlas', loadEnv: async () => [] });
+  await tick();
+  el('pdf-env-add').fire('click');
+  env.children[0].children[0].value = 'TMUX_X'; env.children[0].children[0].fire('input');
+  env.children[0].children[1].value = '1'; env.children[0].children[1].fire('input');
+  el('pdf-yes').fire('click');
+  await tick();
+  assert.equal(env.children[0].children[0]['aria-invalid'], 'true');
+  el('pdf-no').fire('click');
+  assert.equal(await promise, null);
+});
+
 test('project defaults creates a bounded desktop task preset in the same Board draft', async () => {
   const promise = projectDefaultsDialog({ name: 'Atlas', dir: '~/work', cmd: 'codex', recent: [],
     presets: [], columns: [{ id: 'C1', name: 'Working' }] });

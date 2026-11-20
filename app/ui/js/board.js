@@ -220,6 +220,9 @@ export const provider = {
       return false;
     }
     gone.forEach(noteRunEnded);
+    /* the project's environment variables live in the Keychain, not on the
+       Board (project_env.rs): they go with the project */
+    inv('project_env_clear', { projectId: pid }).catch(() => toast(t('projectEnv.clearFailed')));
     emit('projects');
     return true;
   },
@@ -304,7 +307,7 @@ export const provider = {
             ? await opts.start(card)
             : await inv('start_session', {
               name: card.session, dir: card.dir, cmd: card.cmd,
-              restoreShell: !!ctx.settings.sessionRestore,
+              restoreShell: !!ctx.settings.sessionRestore, projectId: card.projectId,
             });
           if (opts.requireCreated && !result.created) {
             const error = new Error('deterministic session already exists without its card');
@@ -1780,10 +1783,18 @@ export async function openProjectDefaults(pid, opener = null) {
     projectId: p.id, name: p.name, dir: current.dir, cmd: current.cmd,
     recent: Array.isArray(recent) ? recent.filter(c => typeof c === 'string') : [],
     presets: p.presets || [], columns: p.columns,
+    loadEnv: () => inv('project_env_names', { projectId: p.id }),
   });
   if (result) {
+    const env = result.env;
+    delete result.env;
     try { await provider.setProjectDefaults(pid, result); }
     catch (_) { toast(t('projectDefaults.saveFailed')); }
+    /* the environment is the Keychain's, never the Board's (project_env.rs) */
+    if (env) {
+      try { await inv('project_env_set', { projectId: pid, entries: env }); }
+      catch (_) { toast(t('projectEnv.saveFailed')); }
+    }
   }
   const back = typeof opener === 'function' ? opener() : opener;
   if (back && back.isConnected && back.focus) back.focus();

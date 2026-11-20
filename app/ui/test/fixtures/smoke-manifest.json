@@ -543,6 +543,8 @@
         "resume-capture-1": {},
         "resume-chip": {},
         "resume-cleared": {},
+        "resume-env-restored": {},
+        "resume-env-start": {},
         "resume-exception": { "failureOnly": true },
         "resume-ghost": {},
         "resume-no-execution": {},

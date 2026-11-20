@@ -5,7 +5,10 @@
 // `~/.deck`: every token lives as a generic password in the user's login
 // Keychain under one service name, keyed by a CLOSED account name, so the
 // item is readable only by this user and only after macOS's own access
-// prompt for a new binary. Callers receive the bytes; nothing here logs,
+// prompt for a new binary. A project's environment variables
+// (`project_env.rs`) are the one open-ended family: one item per project
+// under their own service, `io.c9r.deck.env`, the account a validated
+// project id. Callers receive the bytes; nothing here logs,
 // returns or interpolates a token into any error string.
 // Unit tests and isolated smoke launches never call the operating-system
 // credential APIs; their optional credential values remain process-local,
@@ -275,9 +278,145 @@ pub(crate) fn clear_mcp_credential(account: &str) -> Result<(), DeckError> {
     }
 }
 
+/// A project's environment variables (`project_env.rs`): ONE generic
+/// password per project under its own service, the account being the
+/// project id (`valid_env_account`), the data the module's encoded list.
+/// Values are read once per process and then served from memory, like the
+/// closed slots. Unit tests and isolated smoke launches keep them in this
+/// same process-local map and never touch the Keychain.
+pub(crate) const ENV_SERVICE: &str = "io.c9r.deck.env";
+const ENV_MAX_LEN: usize = 64 * 1024;
+static ENV_STORE: Mutex<std::collections::BTreeMap<String, String>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+fn valid_env_account(account: &str) -> bool {
+    !account.is_empty()
+        && account.len() <= 64
+        && account
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn env_account(account: &str) -> Result<(), DeckError> {
+    if valid_env_account(account) {
+        Ok(())
+    } else {
+        Err(DeckError::new(ErrorKind::Invalid, "invalid project id"))
+    }
+}
+
+fn env_local() -> bool {
+    cfg!(test) || crate::smoke_faults::enabled()
+}
+
+/// The stored environment of one project. `Ok(None)` only when there is no
+/// item; a denied, locked or malformed item is an error, never "none".
+pub(crate) fn env_get(account: &str) -> Result<Option<String>, DeckError> {
+    env_account(account)?;
+    if let Some(value) = ENV_STORE.lock_or_recover().get(account) {
+        return Ok(Some(value.clone()));
+    }
+    if env_local() {
+        return Ok(None);
+    }
+    let bytes = match get_generic_password(ENV_SERVICE, account) {
+        Ok(bytes) => bytes,
+        Err(error) if error.code() == -25300 => return Ok(None),
+        Err(_) => return Err(DeckError::new(ErrorKind::Perm, "keychain unavailable")),
+    };
+    let value = String::from_utf8(bytes)
+        .ok()
+        .filter(|value| value.len() <= ENV_MAX_LEN)
+        .ok_or_else(|| DeckError::new(ErrorKind::Recovery, "keychain value is invalid"))?;
+    ENV_STORE
+        .lock_or_recover()
+        .insert(account.to_string(), value.clone());
+    Ok(Some(value))
+}
+
+pub(crate) fn env_set(account: &str, value: &str) -> Result<(), DeckError> {
+    env_account(account)?;
+    if value.len() > ENV_MAX_LEN {
+        return Err(DeckError::new(ErrorKind::Invalid, "too large"));
+    }
+    if !env_local() {
+        set_generic_password(ENV_SERVICE, account, value.as_bytes())
+            .map_err(|_| DeckError::new(ErrorKind::Other, "keychain"))?;
+    }
+    ENV_STORE
+        .lock_or_recover()
+        .insert(account.to_string(), value.to_string());
+    Ok(())
+}
+
+pub(crate) fn env_delete(account: &str) -> Result<(), DeckError> {
+    env_account(account)?;
+    ENV_STORE.lock_or_recover().remove(account);
+    if env_local() {
+        return Ok(());
+    }
+    match delete_generic_password(ENV_SERVICE, account) {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == -25300 => Ok(()),
+        Err(_) => Err(DeckError::new(ErrorKind::Other, "keychain")),
+    }
+}
+
+/// Whether ANY project has an environment item, from attributes only (no
+/// access prompt). A failed search answers yes: the caller refuses a start
+/// it cannot place rather than starting it without its variables.
+pub(crate) fn env_any() -> bool {
+    // Unit tests run in parallel over this one store: the projects they
+    // write are named `Ptest*` and never make an unrelated test's card
+    // unplaceable.
+    if ENV_STORE
+        .lock_or_recover()
+        .keys()
+        .any(|account| !(cfg!(test) && account.starts_with("Ptest")))
+    {
+        return true;
+    }
+    if env_local() {
+        return false;
+    }
+    match ItemSearchOptions::new()
+        .class(ItemClass::generic_password())
+        .service(ENV_SERVICE)
+        .limit(1)
+        .load_attributes(true)
+        .search()
+    {
+        Ok(items) => !items.is_empty(),
+        Err(error) => error.code() != -25300,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_accounts_are_project_ids_only() {
+        assert!(valid_env_account("Pm1abc2"));
+        assert!(valid_env_account("P-1_x"));
+        assert!(!valid_env_account(""));
+        assert!(!valid_env_account("a/b"));
+        assert!(!valid_env_account("a b"));
+        assert!(!valid_env_account(&"p".repeat(65)));
+        assert!(env_get("../x").is_err());
+        assert!(env_set("a b", "{}").is_err());
+    }
+
+    #[test]
+    fn env_items_round_trip_in_the_process_store() {
+        let account = "Ptest-keychain-roundtrip";
+        assert_eq!(env_get(account).unwrap(), None);
+        env_set(account, "data").unwrap();
+        assert_eq!(env_get(account).unwrap().as_deref(), Some("data"));
+        env_delete(account).unwrap();
+        assert_eq!(env_get(account).unwrap(), None);
+        assert!(env_set(account, &"x".repeat(ENV_MAX_LEN + 1)).is_err());
+    }
 
     #[test]
     fn slots_are_a_closed_set() {

@@ -24,6 +24,11 @@
 //! command-less form for the restart transaction, which already owns that
 //! operation and the exclusive activity guard and therefore takes neither.
 //! It creates the shell only: an Agent request is never part of this path.
+//! A card whose project has environment variables (`project_env.rs`) gets
+//! them as its session's own environment from a `new-session` line read on
+//! stdin; a project without them creates its sessions exactly as before.
+//! They are resolved only when a session is really created, so attaching to
+//! a running one never touches the Keychain.
 //!
 //! # Wire naming (all commands, not only this file's)
 //! A NEW struct returned to JS is `#[serde(rename_all = "camelCase")]`
@@ -224,6 +229,12 @@ fn restore_tty(output: &str) -> Result<String, DeckError> {
     Ok(tty.to_string())
 }
 
+/// The transcript load alone, for a restore whose pane is then created from
+/// the environment script (stdin carries one of them per call).
+fn restore_load_args(buffer: &str) -> [&str; 6] {
+    ["start-server", ";", "load-buffer", "-b", buffer, "-"]
+}
+
 pub(crate) fn restore_emit_args(buffer: &str, tty: &str) -> Vec<String> {
     [
         "save-buffer",
@@ -269,6 +280,26 @@ pub(crate) fn start_session(
     dir: String,
     cmd: String,
     restore_shell: bool,
+    project_id: Option<String>,
+) -> Result<StartSessionResult, DeckError> {
+    // The project's environment (`project_env.rs`) is read only when a
+    // session is actually created: attaching to a running one never waits
+    // on, or fails with, the Keychain.
+    let env = || match project_id.as_deref().filter(|id| !id.is_empty()) {
+        Some(id) => crate::project_env::for_project(id),
+        None => Ok(Vec::new()),
+    };
+    start_session_with_env(name, dir, cmd, restore_shell, &env)
+}
+
+/// `start_session` with the variables supplied by the caller's resolver
+/// (the scheduler's delivery start resolves them from the Board).
+pub(crate) fn start_session_with_env(
+    name: String,
+    dir: String,
+    cmd: String,
+    restore_shell: bool,
+    env: &dyn Fn() -> Result<crate::project_env::Vars, DeckError>,
 ) -> Result<StartSessionResult, DeckError> {
     let t0 = std::time::Instant::now();
     validate_session_name(&name)?;
@@ -289,12 +320,16 @@ pub(crate) fn start_session(
         });
     }
     let gate_ms = t0.elapsed().as_millis();
+    let env = env().inspect_err(|error| {
+        applog(&start_failure_line(&name, "environment", error));
+    })?;
     create_session(
         &tmux,
         &tmux_with_stdin,
         &name,
         &dir,
         &cmd,
+        &env,
         restore_shell,
         false,
         t0,
@@ -313,6 +348,7 @@ pub(crate) fn create_reentry_shell(
     stdin: TmuxStdin<'_>,
     name: &str,
     dir: &std::path::Path,
+    env: &[(String, String)],
     restore_shell: bool,
 ) -> Result<(), DeckError> {
     let t0 = std::time::Instant::now();
@@ -323,7 +359,7 @@ pub(crate) fn create_reentry_shell(
     if run(&["has-session", "-t", &session_target(name)]).is_ok() {
         return Err(DeckError::new(ErrorKind::Other, "session-exists"));
     }
-    create_session(run, stdin, name, dir, "", restore_shell, true, t0, 0).map(|_| ())
+    create_session(run, stdin, name, dir, "", env, restore_shell, true, t0, 0).map(|_| ())
 }
 
 /// Create the session after the caller's gate. `exact_dir` keeps the pane in
@@ -335,6 +371,7 @@ fn create_session(
     name: &str,
     dir: &str,
     cmd: &str,
+    env: &[(String, String)],
     restore_shell: bool,
     exact_dir: bool,
     t0: std::time::Instant,
@@ -357,6 +394,18 @@ fn create_session(
             format!("not a directory: {dir}"),
         ));
     }
+    // A clean shell: exactly as always without variables; with them, the
+    // same pane from the stdin script (`project_env.rs`).
+    let clean_start = || {
+        if env.is_empty() {
+            run(&["new-session", "-d", "-s", name, "-c", &dir])
+        } else {
+            crate::project_env::new_session_script(name, &dir, None, env).and_then(|script| {
+                stdin(&crate::project_env::SCRIPT_ARGS, script.as_bytes())
+                    .map_err(crate::project_env::scrub)
+            })
+        }
+    };
     let bootstrap = recovery
         .as_ref()
         .filter(|snapshot| !snapshot.transcript.trim().is_empty())
@@ -377,9 +426,26 @@ fn create_session(
         // The pane is created exactly like a clean shell (tmux's own login
         // shell, no command). `new-session -P` returns THIS pane's tty; never
         // let an attached control client's ambient target choose the device.
-        let args = restore_start_args(name, &dir, &bootstrap.buffer);
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let restored_start = stdin(&args, &bootstrap.output).and_then(|output| {
+        let restored_start = if env.is_empty() {
+            let args = restore_start_args(name, &dir, &bootstrap.buffer);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            stdin(&args, &bootstrap.output)
+        } else {
+            // the transcript and the environment each need stdin: the
+            // buffer is loaded first, then the pane is created from the
+            // script (`project_env.rs`), printing its tty the same way
+            stdin(&restore_load_args(&bootstrap.buffer), &bootstrap.output).and_then(|_| {
+                let script = crate::project_env::new_session_script(
+                    name,
+                    &dir,
+                    Some(crate::shell_state::RESTORE_TTY_FORMAT),
+                    env,
+                )?;
+                stdin(&crate::project_env::SCRIPT_ARGS, script.as_bytes())
+                    .map_err(crate::project_env::scrub)
+            })
+        };
+        let restored_start = restored_start.and_then(|output| {
             let tty = restore_tty(&output)?;
             let emit = restore_emit_args(&bootstrap.buffer, &tty);
             let emit: Vec<&str> = emit.iter().map(String::as_str).collect();
@@ -398,12 +464,12 @@ fn create_session(
                 if run(&["has-session", "-t", &session_target(name)]).is_ok() {
                     (Ok(String::new()), false)
                 } else {
-                    (run(&["new-session", "-d", "-s", name, "-c", &dir]), false)
+                    (clean_start(), false)
                 }
             }
         }
     } else {
-        (run(&["new-session", "-d", "-s", name, "-c", &dir]), false)
+        (clean_start(), false)
     };
     if let Err(error) = start {
         applog(&start_failure_line(name, "create", &error));

@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
 use crate::applog::applog;
-use crate::commands::start_session;
+use crate::commands::start_session_with_env;
 use crate::context::{self, ContextCheck, ContextCode, ContextStatus, PaneIdentity, ProbeResult};
 use crate::datadir::now_epoch;
 use crate::error::{DeckError, ErrorKind};
@@ -175,11 +175,12 @@ pub(crate) fn prepare_context(item: &QueueItem, cancelled: &dyn Fn() -> bool) ->
                 .is_ok()
             },
             start: &|item| {
-                start_session(
+                start_session_with_env(
                     item.session.clone(),
                     item.dir.clone(),
                     item.cmd.clone(),
                     false,
+                    &|| crate::project_env::for_card(&item.card_id, &item.session),
                 )
                 .map(|_| ())
             },

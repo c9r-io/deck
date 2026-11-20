@@ -42,6 +42,7 @@ mod mcp_fs;
 mod model_api;
 mod notify;
 mod procinfo;
+mod project_env;
 mod prompt_delivery;
 mod pty;
 mod redact;
@@ -502,6 +503,9 @@ fn main() {
             commands::default_dir,
             commands::tmux_available,
             commands::start_session,
+            project_env::project_env_names,
+            project_env::project_env_set,
+            project_env::project_env_clear,
             commands::kill_session,
             terminal::scroll_session,
             terminal::click_session,

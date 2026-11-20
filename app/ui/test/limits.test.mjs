@@ -1,5 +1,6 @@
 import { REMINDER_NOTE_BYTES } from '../js/reminder-model.js';
 import { FIND_QUERY_MAX_BYTES } from '../js/terminal-find-model.js';
+import { ENV_MAX_NAME_BYTES, ENV_MAX_TOTAL_BYTES, ENV_MAX_VALUE_BYTES, ENV_MAX_VARS, envNameProblem } from '../js/project-env-model.js';
 // Frontend ↔ backend mirrored constants. This is the JS half of the mirror:
 // test/fixtures/limits.json is the one list, this file holds the frontend
 // exports to it, and src-tauri/src/limits_mirror.rs holds the Rust constants
@@ -233,4 +234,15 @@ test('held-delivery reasons are one list with the backend', () => {
       assert.equal(typeof dictionary[`attention.waiting.${reason}`], 'string', `${locale} ${reason}`);
     }
   }
+});
+
+test('project environment mirrors', () => {
+  const env = limits.project_env;
+  assert.equal(ENV_MAX_VARS, env.vars_max);
+  assert.equal(ENV_MAX_NAME_BYTES, env.name_max_bytes);
+  assert.equal(ENV_MAX_VALUE_BYTES, env.value_max_bytes);
+  assert.equal(ENV_MAX_TOTAL_BYTES, env.total_max_bytes);
+  for (const name of env.valid_names) assert.equal(envNameProblem(name), null, name);
+  for (const name of env.invalid_names) assert.equal(envNameProblem(name), 'name', name);
+  for (const name of env.reserved_names) assert.equal(envNameProblem(name), 'reserved', name);
 });

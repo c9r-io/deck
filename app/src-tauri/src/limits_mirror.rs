@@ -43,6 +43,25 @@ fn translation_input_bound_matches_frontend() {
 }
 
 #[test]
+fn project_environment_bounds_match_frontend() {
+    use crate::project_env::{name_problem, MAX_NAME, MAX_TOTAL, MAX_VALUE, MAX_VARS};
+    let env = &limits()["project_env"];
+    assert_eq!(number(&env["vars_max"]), MAX_VARS as u64);
+    assert_eq!(number(&env["name_max_bytes"]), MAX_NAME as u64);
+    assert_eq!(number(&env["value_max_bytes"]), MAX_VALUE as u64);
+    assert_eq!(number(&env["total_max_bytes"]), MAX_TOTAL as u64);
+    for name in words(&env["valid_names"]) {
+        assert_eq!(name_problem(name), None, "{name}");
+    }
+    for name in words(&env["invalid_names"]) {
+        assert_eq!(name_problem(name), Some("name"), "{name}");
+    }
+    for name in words(&env["reserved_names"]) {
+        assert_eq!(name_problem(name), Some("reserved"), "{name}");
+    }
+}
+
+#[test]
 fn find_query_bound_matches_frontend() {
     assert_eq!(
         number(&limits()["find_query_max_bytes"]),

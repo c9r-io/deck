@@ -1115,6 +1115,85 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text(topology:
 }
 topology_matrix!(shell_restore_bootstrap_becomes_tmux_history_without_executing_text);
 
+/// A project's environment (`src/project_env.rs`): the transcript is loaded
+/// on one stdin call, then the pane is created from a `new-session` line read
+/// by `source-file -` on a second. tmux prints `-P -F` of THAT new pane
+/// through `source-file` (whatever client is attached), keeps every
+/// single-quoted word literal (no `$`, `~`, format or `;` expansion; `'"'"'`
+/// embeds a quote) and fails the call when the line fails. Mirrors the shape
+/// `project_env::new_session_script` pins in its unit test.
+fn project_environment_script_creates_the_pane_and_keeps_values_literal(topology: Topology) {
+    let s = Server(unique_name(&format!(
+        "deck-test-{}",
+        topology.tag("project-env")
+    )));
+    s.run_raw_checked(&["new-session", "-d", "-s", "older", "/bin/cat"]);
+    let _clients = topology.attach(&s);
+    let buffer = "deck-env-contract";
+    s.run_with_stdin_checked(
+        &["start-server", ";", "load-buffer", "-b", buffer, "-"],
+        b"restored-env-contract\n",
+    );
+    let value = r#"it'"'"'s "q" $HOME ~ #{session_name} ;x {b} \n"#;
+    let script = format!(
+        "new-session -d -P -F '#{{pane_tty}}' -s 'e'\"'\"'nv' -c '/tmp' -e 'SECRET={value}' -e 'EMPTY=' '/bin/cat'\n"
+    );
+    let printed = s.run_with_stdin_checked(
+        &["start-server", ";", "source-file", "-"],
+        script.as_bytes(),
+    );
+    let tty = String::from_utf8(printed).unwrap().trim().to_string();
+    let own = s.run(&["display-message", "-p", "-t", "=e'nv:", "#{pane_tty}"]);
+    assert_eq!(tty, own.trim(), "the tty printed is the new pane's");
+    let shown = s.run(&["show-environment", "-t", "=e'nv", "SECRET"]);
+    assert_eq!(
+        shown.trim_end(),
+        r#"SECRET=it's "q" $HOME ~ #{session_name} ;x {b} \n"#
+    );
+    assert_eq!(
+        s.run(&["show-environment", "-t", "=e'nv", "EMPTY"])
+            .trim_end(),
+        "EMPTY="
+    );
+    assert!(
+        s.output(&["show-environment", "-t", "=older", "SECRET"])
+            .stdout
+            .is_empty(),
+        "another session never sees it"
+    );
+    let start = s.run(&[
+        "display-message",
+        "-p",
+        "-t",
+        "=e'nv:",
+        "#{pane_start_command}",
+    ]);
+    assert!(
+        !start.contains("SECRET"),
+        "no value in the pane's argv: {start}"
+    );
+    // the same line again: a duplicate session fails the whole call
+    let mut child = Command::new(tmux_bin())
+        .args(["-f", "/dev/null", "-L", &s.0, "source-file", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    assert!(
+        !child.wait().unwrap().success(),
+        "a failed line is a failed call"
+    );
+    s.run_raw_checked(&["delete-buffer", "-b", buffer]);
+}
+topology_matrix!(project_environment_script_creates_the_pane_and_keeps_values_literal);
+
 /// v0.4.12: resize reflow pushes blank lines into history, so "empty" shells
 /// scrolled into void. deck clears history once after the first attach; the
 /// empty-history guard in scroll_session then makes scrolling a true no-op.

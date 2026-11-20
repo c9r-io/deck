@@ -13,6 +13,7 @@ import { inlineRenameValue, isComposingKeyEvent } from './pure.js';
 import { formatDateTime, t } from './i18n.js';
 import { normalizeTaskPreset, normalizeTaskPresets, presetApproved, taskPresetProblem, withPresetApproval } from './connector-model.js';
 import { firstSendNeedsConfirm, firstSendSupported } from './automation-model.js';
+import { ENV_MAX_VARS, envChanged, envEntries, envWarnings } from './project-env-model.js';
 
 /* ---------- confirm dialog (window.confirm is a silent no-op in WKWebView) ---------- */
 let confirmPointerOnly = false;
@@ -153,7 +154,7 @@ export function createBoardExit({ mutateBoard, hold, exited }) {
    could not be checked (the hash is local; this bounds a broken one) */
 const PRESET_CHECK_MS = 5000;
 let pdfResolve = null;
-export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = '', recent = [], presets = [], columns = [] }) {
+export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = '', recent = [], presets = [], columns = [], loadEnv = null }) {
   return new Promise(resolve => {
     if (pdfResolve) pdfResolve(null);
     $('pdf-title').textContent = t('projectDefaults.title', { name });
@@ -168,6 +169,78 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
       chips.appendChild(b);
     }
     chips.hidden = !recent.length;
+    /* The project's environment variables (project-env-model.js): names
+       only come in; a value leaves only when the user typed one. Until the
+       names are read the section is locked (`envLoaded` null), and a read
+       that failed keeps it locked, so a save never touches the stored list. */
+    let envRows = []; let envLoaded = null; let envProblem = null;
+    const envBox = $('pdf-env'), envNote = $('pdf-env-note');
+    const sayEnv = (key, vars) => { envNote.hidden = !key; envNote.textContent = key ? t(key, vars) : ''; };
+    const envHint = () => {
+      if (envProblem) return;
+      const warned = envWarnings(envRows);
+      sayEnv(warned.length ? 'projectEnv.hooks' : null, { names: warned.join(', ') });
+    };
+    const envInput = (row, field) => {
+      const input = document.createElement('input');
+      input.autocomplete = field === 'value' ? 'new-password' : 'off'; input.spellcheck = false;
+      if (field === 'value') { input.type = 'password'; input.placeholder = row.stored ? t('projectEnv.kept') : t('projectEnv.value'); }
+      else input.placeholder = t('projectEnv.name');
+      input.setAttribute('aria-label', t(field === 'value' ? 'projectEnv.value' : 'projectEnv.name'));
+      input.value = row[field];
+      input.oninput = () => {
+        row[field] = input.value;
+        if (envProblem) { envProblem = null; for (const other of envRows) for (const el of Object.values(other.el || {})) el.setAttribute('aria-invalid', 'false'); }
+        envHint();
+      };
+      (row.el ||= {})[field] = input;
+      return input;
+    };
+    const renderEnv = () => {
+      envBox.replaceChildren();
+      envRows.forEach((row, index) => {
+        row.el = {};
+        const line = document.createElement('div'); line.className = 'pdf-env-row';
+        const remove = document.createElement('button');
+        remove.type = 'button'; remove.className = 'btn'; remove.textContent = '✕';
+        remove.title = t('projectEnv.remove'); remove.setAttribute('aria-label', t('projectEnv.remove'));
+        remove.onclick = () => { envRows.splice(index, 1); envProblem = null; renderEnv(); $('pdf-env-add').focus(); };
+        line.append(envInput(row, 'name'), envInput(row, 'value'), remove);
+        envBox.appendChild(line);
+      });
+      $('pdf-env-add').disabled = envLoaded === null || envRows.length >= ENV_MAX_VARS;
+      envHint();
+    };
+    $('pdf-env-add').onclick = () => {
+      envRows.push({ name: '', value: '', stored: '' }); renderEnv();
+      envRows[envRows.length - 1].el.name.focus();
+    };
+    /* the entries to save, `undefined` for "leave the stored list alone",
+       or null after saying what keeps them from being saved */
+    const readEnv = () => {
+      if (envLoaded === null || !envChanged(envRows, envLoaded)) return undefined;
+      const result = envEntries(envRows);
+      if (!result.problem) return result.entries;
+      envProblem = result.problem;
+      sayEnv({ name: 'projectEnv.invalid.name', reserved: 'projectEnv.invalid.reserved',
+        duplicate: 'projectEnv.invalid.duplicate', value: 'projectEnv.invalid.value',
+        control: 'projectEnv.invalid.control', count: 'projectEnv.invalid.count',
+        size: 'projectEnv.invalid.size' }[result.problem]);
+      const field = ['value', 'control'].includes(result.problem) ? 'value' : 'name';
+      const input = envRows[result.index]?.el?.[field];
+      if (input) { input.setAttribute('aria-invalid', 'true'); input.focus(); }
+      return null;
+    };
+    renderEnv();
+    if (loadEnv) {
+      sayEnv('projectEnv.loading');
+      loadEnv().then(names => {
+        if (closed) return;
+        envLoaded = Array.isArray(names) ? names.filter(n => typeof n === 'string') : [];
+        envRows = envLoaded.map(n => ({ name: n, value: '', stored: n }));
+        sayEnv(null); renderEnv();
+      }, () => { if (!closed) sayEnv('projectEnv.loadFailed'); });
+    }
     let draftPresets = normalizeTaskPresets(presets, columns);
     /* ONE edit of one preset, from opening it to Done, Cancel, Delete,
        Escape, another preset or the dialog closing. Three facts stay apart
@@ -380,13 +453,20 @@ export function projectDefaultsDialog({ projectId = '', name, dir = '', cmd = ''
       closePreset(null);
     };
     renderPresets(); editor.hidden = true;
-    const read = async () => await commitPreset() ? ({ dir: dirInput.value.trim(), cmd: cmdInput.value.trim(),
-      ...(draftPresets.length || presets.length ? { presets: draftPresets } : {}) }) : null;
+    const read = async () => {
+      const env = readEnv();
+      if (env === null) return null;
+      return await commitPreset() ? ({ dir: dirInput.value.trim(), cmd: cmdInput.value.trim(),
+        ...(draftPresets.length || presets.length ? { presets: draftPresets } : {}),
+        ...(env ? { env } : {}) }) : null;
+    };
     /* closing ends the edit, once: a save or a check that finishes later
        belongs to nothing, and cannot close a dialog opened since */
     const done = v => {
       if (closed) return;
       closed = true; edit = null;
+      // typed values never linger in the hidden dialog
+      envRows = []; envBox.replaceChildren(); sayEnv(null);
       $('pdf').style.display = 'none'; $('pdf').onkeydown = null; pdfResolve = null; resolve(v);
     };
     pdfResolve = done;

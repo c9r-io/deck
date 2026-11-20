@@ -1674,7 +1674,8 @@ mod tests {
     fn command_boundaries_reject_invalid_sessions_before_any_tmux_effect() {
         let bad = "bad:name".to_string();
         assert!(
-            crate::commands::start_session(bad.clone(), "/tmp".into(), "".into(), false).is_err()
+            crate::commands::start_session(bad.clone(), "/tmp".into(), "".into(), false, None)
+                .is_err()
         );
         assert!(scroll_session(bad.clone(), 1, None, None).is_err());
         assert!(scroll_bottom(bad.clone()).is_err());

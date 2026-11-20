@@ -708,6 +708,19 @@
         <li data-i18n="projectDefaults.scope.automation">A new automation starts with these two values filled in; existing rules are untouched.</li>
       </ul>
     </details>
+    <h3 id="pdf-env-title" data-i18n="projectEnv.title">Environment variables</h3>
+    <p class="set-hint" data-i18n="projectEnv.hint">Every new shell of this project’s cards gets these, including scheduled starts and restarts. Values are kept in the macOS Keychain and are never shown again: leave a value empty to keep it, type to replace it.</p>
+    <div id="pdf-env" role="group" aria-labelledby="pdf-env-title"></div>
+    <button class="btn" type="button" id="pdf-env-add" data-i18n="projectEnv.add">Add variable</button>
+    <p class="opt-state warn" id="pdf-env-note" role="status" hidden></p>
+    <details class="set-details">
+      <summary data-i18n="projectEnv.scope">What these do and do not do</summary>
+      <ul class="help-list">
+        <li data-i18n="projectEnv.scope.created">They are given when a shell is created. A running card keeps what it started with; close it or let it stop, and the next start gets the current list. Your shell’s startup files may still override one.</li>
+        <li data-i18n="projectEnv.scope.visible">The Keychain protects them at rest. Once given, the Agent and every program in the card can read them, as can other programs you run.</li>
+        <li data-i18n="projectEnv.scope.reserved">Names starting with DECK_ or TMUX are Deck’s and tmux’s own and are refused. MCP shells do not get these variables.</li>
+      </ul>
+    </details>
     <h3 data-i18n="presets.title">Phone task presets</h3>
     <div id="pdf-presets"></div>
     <button class="btn" type="button" id="pdf-preset-add" data-i18n="presets.add">Add preset</button>

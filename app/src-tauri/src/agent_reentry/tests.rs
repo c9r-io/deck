@@ -6323,6 +6323,7 @@ fn the_production_shell_creator_makes_one_command_less_shell_in_the_exact_direct
             &|args, input| world.tmux_stdin(args, input),
             name,
             dir,
+            &[],
             restore,
         )
     };
@@ -6345,6 +6346,86 @@ fn the_production_shell_creator_makes_one_command_less_shell_in_the_exact_direct
     assert!(create("gone", &world.base.join("missing"), false).is_err());
     assert!(!world.has_session("gone"), "no fallback directory");
     assert!(create("bad name", &dir, false).is_err());
+}
+
+/// A project's variables (`project_env.rs`) become the new session's own
+/// environment, literally, and reach tmux only on stdin: no argv of any
+/// call carries a value, and nothing is typed.
+#[test]
+fn the_shell_creator_gives_the_session_its_project_environment_on_stdin_only() {
+    let world = World::new();
+    let dir = world.base.join("cards").join("env dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    let secret = "sk-ant-it's \"q\" $HOME ~ #{session_name} ;x {b} \\n";
+    let env = vec![
+        ("ANTHROPIC_API_KEY".to_string(), secret.to_string()),
+        ("EMPTY".to_string(), String::new()),
+    ];
+    crate::commands::create_reentry_shell(
+        &|args| world.tmux(args),
+        &|args, input| world.tmux_stdin(args, input),
+        "with-env",
+        &dir,
+        &env,
+        false,
+    )
+    .expect("a new shell with its environment");
+    let shown = world
+        .raw(&["show-environment", "-t", "=with-env", "ANTHROPIC_API_KEY"])
+        .unwrap();
+    assert_eq!(shown.trim_end(), format!("ANTHROPIC_API_KEY={secret}"));
+    let empty = world
+        .raw(&["show-environment", "-t", "=with-env", "EMPTY"])
+        .unwrap();
+    assert_eq!(empty.trim_end(), "EMPTY=");
+    let rows = crate::tmux::list_panes_with(&|args| world.raw(args)).unwrap();
+    let row = rows
+        .iter()
+        .find(|row| row.session_name == "with-env")
+        .unwrap();
+    assert_eq!(Path::new(&row.path), dir);
+    assert!(crate::context::shell_process(Some(&row.command)));
+    let calls = world.calls.borrow();
+    assert!(calls
+        .iter()
+        .all(|(args, _)| args.iter().all(|arg| !arg.contains("sk-ant"))));
+    assert!(calls.iter().any(|(args, input)| {
+        args == &crate::project_env::SCRIPT_ARGS
+            && input
+                .as_deref()
+                .is_some_and(|input| String::from_utf8_lossy(input).contains("sk-ant"))
+    }));
+    assert!(!calls
+        .iter()
+        .any(|(args, _)| args.iter().any(|arg| arg.contains("send-keys"))));
+    drop(calls);
+    // a session without variables is created exactly as before: argv only
+    crate::commands::create_reentry_shell(
+        &|args| world.tmux(args),
+        &|args, input| world.tmux_stdin(args, input),
+        "no-env",
+        &dir,
+        &[],
+        false,
+    )
+    .unwrap();
+    assert!(world
+        .raw(&["show-environment", "-t", "=no-env", "ANTHROPIC_API_KEY"])
+        .is_err());
+    // an existing name is refused before any variable reaches tmux
+    let before = world.calls.borrow().len();
+    assert!(crate::commands::create_reentry_shell(
+        &|args| world.tmux(args),
+        &|args, input| world.tmux_stdin(args, input),
+        "with-env",
+        &dir,
+        &env,
+        false,
+    )
+    .is_err());
+    assert!(world.calls.borrow()[before..]
+        .iter()
+        .all(|(_, input)| input.is_none()));
 }
 
 // ---------- a validation that cannot be interrupted, and answers late ----------

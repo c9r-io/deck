@@ -894,7 +894,7 @@ async function attachPane(pane, { allowStart = true } = {}, request) {
       const cmd = startCommand(card);
       const started = await inv('start_session', {
         name: card.session, dir: card.dir, cmd,
-        restoreShell: !!ctx.settings.sessionRestore,
+        restoreShell: !!ctx.settings.sessionRestore, projectId: card.projectId,
       });
       outcome.created = !!started.created;
       outcome.restored = !!started.restored;

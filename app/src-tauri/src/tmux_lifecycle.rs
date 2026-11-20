@@ -1594,7 +1594,17 @@ pub(crate) fn assemble_reentry_env<R>(
     let helper = parts.helper.clone().unwrap_or_default();
     let login_shell = crate::procinfo::login_shell().unwrap_or_default();
     let create = |name: &str, dir: &Path, restore: bool| {
-        crate::commands::create_reentry_shell(parts.tmux, parts.tmux_stdin, name, dir, restore)
+        // the card's project environment (`project_env.rs`): a resumed
+        // Agent keeps what the project gives its shells
+        let env = crate::project_env::for_card("", name)?;
+        crate::commands::create_reentry_shell(
+            parts.tmux,
+            parts.tmux_stdin,
+            name,
+            dir,
+            &env,
+            restore,
+        )
     };
     // Lock order: this runs inside the restart, which already holds the
     // lifecycle operation and the exclusive activity guard (both try-locks,

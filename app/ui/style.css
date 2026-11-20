@@ -827,6 +827,12 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .mcp-type-row input { min-width: 0; font-size: var(--fs-11); }
 .mcp-type-row .mcp-type-cmd { font-family: var(--mono); }
 #mcp-perm-type-add { align-self: flex-start; }
+/* a project's environment variables: name, a write-only value, remove */
+#pdf-env { display: flex; flex-direction: column; gap: var(--sp-6); margin-bottom: var(--sp-8); }
+.pdf-env-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: var(--sp-6); align-items: center; }
+.pdf-env-row input { min-width: 0; font-family: var(--mono); font-size: var(--fs-12); }
+.pdf-env-row input[aria-invalid="true"] { border-color: var(--danger); }
+#pdf-env-note { margin: var(--sp-6) 0 0; }
 .pdf-chips { display: flex; flex-wrap: wrap; gap: var(--sp-6); margin: 0 0 var(--sp-6) calc(var(--label-w) + var(--sp-10)); }
 .pdf-chips[hidden] { display: none; }
 /* a long recent command wraps inside its chip and never runs past the dialog */
