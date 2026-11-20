@@ -145,6 +145,10 @@ class Run:
         self.entry = str(self.app / ENTRY)
         self.marker = "deck-pi-live-step-" + self.suffix
         self.mode = getattr(args, "mode", None) or "pi-live"
+        # `pi-worker --model PROVIDER/MODEL`: a real model instead of the fixture, so the worker's agent can be asked
+        # to call `deck_worker_report`; the choice travels with the root to the machine that runs it
+        chosen = getattr(args, "model", None)
+        self.model = chosen or ((self.root / "model").read_text().strip() if (self.root / "model").exists() else None)
         self.evidence = self.data / "evidence"
         self.results: list[dict] = []
         self.registered: set[int] = set()
@@ -261,7 +265,21 @@ class Run:
         self.settings.write_text(self.user_settings())
         self.settings.chmod(0o600)
         # what a person would type: Pi by its name (a rule's command holds at most 200 characters)
-        command = shlex.join(["pi", "--provider", "deck-fixture", "--model", "fixture"])
+        provider, model = self.model.split("/", 1) if self.model and self.model != "default" else ("deck-fixture", "fixture")
+        # `default`: Pi by its name alone, on the running machine's own default model (`borrow_credential`)
+        command = "pi" if self.model == "default" else shlex.join(["pi", "--provider", provider, "--model", model])
+        if self.model:
+            (self.root / "model").write_text(self.model + "\n")
+            # Deck's MCP server for the worker's agent: this carrier's adapter, given the one client's credential on
+            # a descriptor (the smoke keeps it in the data directory, never the Keychain); only the report tool is
+            # declared to the model
+            wrapper = (f'f=$(ls {shlex.quote(str(self.evidence))}/mcp-credential-client_* | head -1); exec 3<"$f"; '
+                       f'exec {shlex.quote(str(self.app / "Contents/MacOS/deck-mcp"))} --client-id "${{f##*mcp-credential-}}" '
+                       f'--socket {shlex.quote(str(self.data / "mcp-control.sock"))} --credential-fd 3')
+            (self.agent / "mcp.json").write_text(json.dumps({"mcpServers": {"deck": {
+                "command": "/bin/sh", "args": ["-c", wrapper], "exposure": "hidden",
+                "toolExposure": {"deck_worker_report": "direct"},
+                "description": "Deck: report the result of this worker card to its orchestrator"}}}, indent=2) + "\n")
         (self.pi_fixture / "command").write_text(command + "\n")
         (self.pi_fixture / "dir").write_text(str(self.work) + "\n")
         (self.pi_fixture / "marker").write_text(self.marker + "\n")
@@ -277,7 +295,44 @@ class Run:
                 "data": sha256(json.dumps(listing).encode()) if listing is not None else "absent"}
 
     def user_settings(self) -> str:
-        return USER_SETTINGS.replace("FIXTURE", str(self.root / "fixture/fixture.ts"))
+        settings = USER_SETTINGS.replace("FIXTURE", str(self.root / "fixture/fixture.ts"))
+        # a real model's worker reaches Deck's report tool through Pi's own MCP support
+        return settings.replace('    "-builtin:mcp",\n', "") if getattr(self, "model", None) else settings
+
+    def borrow_credential(self) -> bool:
+        """With a real model: the one provider entry of THIS machine's own Pi credentials, copied into the root's
+        agent directory (0600) for the run and removed right after (`return_credential`). Nothing else is read."""
+        provider = self.model.split("/", 1)[0]
+        if self.model == "default":
+            # the running machine's own default model: its provider's entry, and that default in the root's settings
+            try:
+                own = json.loads((Path.home() / ".pi/agent/settings.json").read_text())
+            except (OSError, ValueError):
+                return False
+            provider, model = own.get("defaultProvider"), own.get("defaultModel")
+            if not provider or not model:
+                return False
+            settings = json.loads(self.settings.read_text())
+            settings.update({"defaultProvider": provider, "defaultModel": model})
+            self.settings.write_text(json.dumps(settings, indent=2) + "\n")
+            self.facts["model"] = f"{provider}/{model}"
+        source = Path.home() / ".pi/agent/auth.json"
+        try:
+            entry = json.loads(source.read_text()).get(provider)
+        except (OSError, ValueError):
+            entry = None
+        if not entry:
+            return False
+        target = self.agent / "auth.json"
+        target.write_text(json.dumps({provider: entry}))
+        target.chmod(0o600)
+        return True
+
+    def return_credential(self) -> None:
+        try:
+            (self.agent / "auth.json").unlink()
+        except FileNotFoundError:
+            pass
 
     def launch(self) -> None:
         env = {
@@ -286,6 +341,9 @@ class Run:
             "PI_CODING_AGENT_DIR": str(self.agent), "PI_SKIP_VERSION_CHECK": "1", "PI_OFFLINE": "1",
             "PI_TELEMETRY": "0", "FIXTURE_LOG": str(self.source_log),
         }
+        if self.model:
+            # a real model: Pi may fetch its model catalog (the root holds none), and nothing else differs
+            env.pop("PI_OFFLINE")
         passed = [part for name, value in env.items() for part in ("--env", f"{name}={value}")]
         # the display stays awake for the run; this is the run's own process and ends with it
         awake = subprocess.Popen(["/usr/bin/caffeinate", "-d", "-u", "-t", "480"])
@@ -528,6 +586,11 @@ class Run:
             sequence = listed.get("nextSendSequence", 0)
             facts["types"] = [t.get("type") for t in listed.get("workerTypes", [])]
             first, second, third = (f"{self.marker}-{n}" for n in ("one", "two", "three"))
+            token = f"REPORT-{self.suffix}"
+            if self.model:
+                first = (f"{first}: call the deck_worker_report tool once with exactly this text: {token}. "
+                         f"Then reply with exactly: DONE. Use no other tool.")
+                second, third = (f"{line}: reply with exactly: OK. Use no tool." for line in (second, third))
             ok, started = call("deck_worker_start", {"request_id": f"pw_{self.suffix}", "send_sequence": sequence,
                                                      "type": "pi", "text": first, "title": "pi worker"})
             sequence += 1
@@ -540,8 +603,17 @@ class Run:
             facts["card"] = bool(card)
             if not card:
                 return facts
-            e1 = turn_done_after(card, 0, 240)
-            facts["first"] = {"turn": e1 is not None, "pane": self.tmux_pi("capture-pane", "-p", "-J", "-S", "-300").count(first),
+            e1 = turn_done_after(card, 0, 300)
+            if self.model:
+                _, rows = call("deck_worker_list")
+                row = next((w for w in rows.get("workers", []) if w.get("cardId") == card), {})
+                ok_read, read = call("deck_worker_reports", {"card_id": card})
+                facts["report"] = {"summary": (row.get("reports") or {}),
+                                   "texts_match": ok_read and [r.get("text") for r in read.get("reports", [])] == [token],
+                                   "count": len(read.get("reports", [])) if ok_read else None,
+                                   "token_in_listing": token in json.dumps(rows)}
+            facts["first"] = {"turn": e1 is not None,
+                              "pane": self.tmux_pi("capture-pane", "-p", "-J", "-S", "-300").count(first.split(":")[0]),
                               "requests": len(self.events("fixture_provider_request"))}
             # a dialog of an extension of Pi's is open: the line must not answer it
             self.tmux_pi("send-keys", "-l", "/fx-confirm")
@@ -597,8 +669,14 @@ class Run:
         first, dialog, draft = facts.get("first") or {}, facts.get("dialog") or {}, facts.get("draft") or {}
         self.check("the client sees its one Pi worker type and the worker card was started", facts.get("types") == ["pi"]
                    and facts.get("card"), types=facts.get("types"))
-        self.check("the first line reached Pi through its own message path: shown once, one model request, one turn",
-                   first.get("turn") and first.get("pane") == 1 and first.get("requests", 0) >= 1, first=first)
+        self.check("the first line reached Pi through its own message path: shown once, one turn"
+                   + ("" if self.model else ", one fixture request"),
+                   first.get("turn") and first.get("pane") >= 1 and (self.model or first.get("requests", 0) >= 1), first=first)
+        if self.model:
+            report = facts.get("report") or {}
+            self.check("Pi called deck_worker_report itself: the card's row counts one report, and the text read back "
+                       "is exactly the token", report.get("texts_match") and (report.get("summary") or {}).get("count") == 1
+                       and not report.get("token_in_listing"), report=report)
         self.check("with an extension dialog open, the line did not answer it",
                    dialog.get("opened") and dialog.get("sent") and not dialog.get("answered_by_the_line"),
                    dialog={k: v for k, v in dialog.items() if k != "pane"})
@@ -612,7 +690,7 @@ class Run:
                    handed=log.count("[pi] worker line handed to Pi"))
         self.check("no worker line was typed into the pane, and none was left uncertain",
                    "explicit resolution required" not in log)
-        leaks = [text for text in (self.marker, str(self.root), "fixture response") if text in log]
+        leaks = [text for text in (self.marker, str(self.root), "fixture response", f"REPORT-{self.suffix}") if text in log]
         self.check("nothing of a line, a path or Pi's answer is in app.log", leaks == [], leaked=len(leaks))
         self.facts["pi_worker"] = {"ran_while_dialog_open": dialog.get("ran_while_open")}
         self.snapshots(2)
@@ -631,7 +709,14 @@ class Run:
         """Launch, watch, judge and clean up, on the machine the root is on. The summary, written to the root."""
         failure = None
         before = self.formal()
+        borrowed = False
         try:
+            if self.model:
+                borrowed = self.borrow_credential()
+                self.check("this machine's Pi has a credential for the model's provider", borrowed,
+                           model=self.facts.get("model", self.model))
+                if not borrowed:
+                    raise RuntimeError("no credential for the model's provider on this machine")
             self.launch()
             if self.mode == "pi-live":
                 self.judge(self.watch())
@@ -644,6 +729,10 @@ class Run:
             print(f"STOPPED: {failure}", flush=True)
         self.register_new()
         cleanup = self.registry("cleanup", check=False)
+        if self.model:
+            self.return_credential()
+            self.check("the borrowed credential is gone from the root", not (self.agent / "auth.json").exists(),
+                       borrowed=borrowed)
         left = self.owned()
         after = self.formal()
         self.check("this machine's own Deck is as it was: the same processes, the same file names in its data directory",
@@ -694,6 +783,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mode", choices=("pi-live", "pi-layout", "pi-worker"), default="pi-live")
     parser.add_argument("--runtime", choices=("npm", "standalone"))
+    parser.add_argument("--model", help="pi-worker only: PROVIDER/MODEL, or `default` for the running machine's own Pi "
+                        "default; a real model whose credential entry is borrowed for the run, and the worker is asked "
+                        "to call deck_worker_report")
     parser.add_argument("--standalone", help="the unpacked official build (the directory that holds pi)")
     parser.add_argument("--npm-package", default=str(Path.home() / ".local/lib/node_modules/@earendil-works/pi-coding-agent"))
     parser.add_argument("--host", help="an SSH alias: run on that machine instead of this one")
