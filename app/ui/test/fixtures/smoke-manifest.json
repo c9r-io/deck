@@ -994,6 +994,21 @@
         "empty-start-started": {}
       }
     },
+    "ux-failures": {
+      "terminal": "done",
+      "checks": {
+        "done": {},
+        "uxf-connector": {},
+        "uxf-intercept": {},
+        "uxf-mcp-reissue": {},
+        "uxf-model-api": {},
+        "uxf-project-env": {},
+        "uxf-slack": {},
+        "uxf-tunnel": {},
+        "uxf-update": {},
+        "uxf-exception": { "failureOnly": true }
+      }
+    },
     "clock-live": {
       "terminal": "done",
       "checks": {

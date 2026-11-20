@@ -3531,6 +3531,13 @@ export async function verifyCardsMcp() {
   await runWorkersSmoke({ carding: true });
 }
 
+// Each place a refused credential or a failed check says why, in the real
+// webview, kept as evidence/uxf-*.png (ux-failures-smoke.mjs).
+export async function verifyUxFailures() {
+  const { runUxFailuresSmoke } = await import('./ux-failures-smoke.mjs');
+  await runUxFailuresSmoke();
+}
+
 export async function verifyOrchestrators() {
   const { runWorkersSmoke } = await import('./workers-smoke.mjs');
   await runWorkersSmoke({ orchestrating: true });
