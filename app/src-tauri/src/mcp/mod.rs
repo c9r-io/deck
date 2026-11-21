@@ -211,7 +211,10 @@
 //! client's worker types (the user's commands; Codex only with
 //! `--no-daemon`; Pi only while Pi's work status is on, its lines handed to
 //! Pi by Deck's observer between runs and never typed,
-//! `agent_pi::handover`) through a `worker-start` Board intent the webview commits,
+//! `agent_pi::handover`; with, when the type lists models, one of them the
+//! start chose, byte for byte, appended as `--model <the listed entry>`,
+//! never a model the client wrote: `MODEL_NOT_LISTED`, approved 2026-11-21)
+//! through a `worker-start` Board intent the webview commits,
 //! in a project of the client's scope and a column it names only under the
 //! organize-cards choice (else beside its orchestrator card, else the
 //! project's new-card column; a type has no column);
@@ -240,7 +243,8 @@
 //! client, counting starts and handovers accepted that have no card yet (a
 //! further start is `CAPACITY_EXCEEDED`), 4
 //! unsent lines per card, 30 lines a minute. A ledger holding any of this is
-//! written at `STATE_VERSION_WORKERS` (sticky).
+//! written at `STATE_VERSION_WORKERS` (sticky); one holding a type's model
+//! list or a card started with a model at `STATE_VERSION_WORKER_MODELS`.
 //!
 //! Drafted configuration (`proposals.rs`, `docs/mcp.md` "Drafted
 //! configuration"): a client with the separate local choice `allow_drafts`
@@ -468,6 +472,10 @@ const STATE_VERSION_CLOCK_DRAFTS: u32 = 16;
 /// The sticky version a ledger takes once it holds a worker report
 /// (`reports::uses_reports`): a v16 build refuses it.
 const STATE_VERSION_REPORTS: u32 = 17;
+/// The sticky version a ledger takes once a worker type lists models or a
+/// worker card was started with one (`workers::uses_worker_models`): a v17
+/// build refuses it.
+const STATE_VERSION_WORKER_MODELS: u32 = 18;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

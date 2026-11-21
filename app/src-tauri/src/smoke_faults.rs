@@ -211,13 +211,15 @@ pub(crate) fn smoke_signal_fixture() -> Result<SmokeSignalFixture, DeckError> {
 /// run — it names the operator's own Pi and fixture provider inside the
 /// experiment root — its working directory and the step text, and how often
 /// the fixture provider was asked and Pi settled, counted from the fixture's
-/// own event log. Nothing else of that log is read back, and this command
-/// starts nothing.
+/// own event log, plus the models the operator lists for the worker type
+/// (`models`, one per line, optional). Nothing else of that log is read
+/// back, and this command starts nothing.
 #[derive(Debug, Serialize)]
 pub(crate) struct SmokePiFixture {
     command: String,
     dir: String,
     marker: String,
+    models: Vec<String>,
     requests: u32,
     settled: u32,
 }
@@ -251,6 +253,15 @@ fn pi_fixture_in(dir: &std::path::Path) -> Option<SmokePiFixture> {
         command: line("command")?,
         dir: line("dir")?,
         marker: line("marker")?,
+        // one model per line: each bounded, and nothing a terminal could misread
+        models: std::fs::read_to_string(dir.join("models"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|m| !m.is_empty() && m.len() <= 100 && !m.chars().any(char::is_control))
+            .take(20)
+            .map(str::to_owned)
+            .collect(),
         requests: count("fixture_provider_request"),
         settled: count("agent_settled"),
     })
@@ -507,6 +518,12 @@ mod tests {
             ("/tmp/x/work", "deck-pi-live-step-1")
         );
         assert_eq!((fixture.requests, fixture.settled), (0, 0), "no log yet");
+        assert!(fixture.models.is_empty(), "no models listed");
+        std::fs::write(dir.join("models"), "minimax/MiniMax-M3\n\nopenai/gpt-5.6\n").unwrap();
+        assert_eq!(
+            pi_fixture_in(&dir).unwrap().models,
+            ["minimax/MiniMax-M3", "openai/gpt-5.6"]
+        );
         std::fs::write(
             dir.join("source.jsonl"),
             "{\"event\":\"session_start\",\"pid\":7,\"id\":\"private\"}\n\
@@ -517,9 +534,9 @@ mod tests {
         .unwrap();
         let fixture = pi_fixture_in(&dir).unwrap();
         assert_eq!((fixture.requests, fixture.settled), (2, 1));
-        // only the five fields leave: nothing of the log's content
+        // only the six fields leave: nothing of the log's content
         let sent = serde_json::to_value(&fixture).unwrap();
-        assert_eq!(sent.as_object().unwrap().len(), 5);
+        assert_eq!(sent.as_object().unwrap().len(), 6);
         assert!(!sent.to_string().contains("private"));
         // a line a terminal could misread, or an oversized one, is no fixture
         for bad in ["pi\u{1b}[2J", &"p".repeat(2049), "  \n"] {

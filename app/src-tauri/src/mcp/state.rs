@@ -776,7 +776,9 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
 /// Validation requires at least it; a write raises to it and never lowers
 /// (sticky). The versions rise in this order (`mod.rs`).
 fn needed_version(doc: &DiskDoc) -> u32 {
-    if super::reports::uses_reports(doc) {
+    if super::workers::uses_worker_models(doc) {
+        STATE_VERSION_WORKER_MODELS
+    } else if super::reports::uses_reports(doc) {
         STATE_VERSION_REPORTS
     } else if super::proposals::uses_clock_drafts(doc) {
         STATE_VERSION_CLOCK_DRAFTS
@@ -806,7 +808,7 @@ fn needed_version(doc: &DiskDoc) -> u32 {
 pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
     let needed = needed_version(doc);
-    let version_valid = (needed..=STATE_VERSION_REPORTS).contains(&doc.version)
+    let version_valid = (needed..=STATE_VERSION_WORKER_MODELS).contains(&doc.version)
         && super::proposals::valid_proposals(doc)
         && super::reports::valid_reports(doc);
     let clients_valid = version_valid

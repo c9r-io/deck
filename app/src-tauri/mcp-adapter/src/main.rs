@@ -66,7 +66,7 @@ const MUTATING: [&str; 16] = [
 /// What every client reads at initialization: how to use Deck, and the one
 /// workflow for drafting configuration.
 const INSTRUCTIONS: &str = "Use Deck MCP only for authorized development work. Call deck_capabilities first: it says which of the local user's separate permissions this client holds. Retain operation, session, job, generation, cursor, control epoch, control sequence and create sequence values; never blindly retry ambiguous work.
-Worker cards (when the user lets this client drive them): deck_worker_start opens a card of a worker type the user lists (choose by its description), deck_worker_wait/list follow it, deck_worker_send queues your next line, deck_worker_reply reads a Claude turn's final message, deck_worker_close closes a card you started once you are done with it. The user may take a card over; never fight it.
+Worker cards (when the user lets this client drive them): deck_worker_start opens a card of a worker type the user lists (choose by its description; when it lists models, pick the one that suits the task), deck_worker_wait/list follow it, deck_worker_send queues your next line, deck_worker_reply reads a Claude turn's final message, deck_worker_close closes a card you started once you are done with it. The user may take a card over; never fight it.
 Reports: when you give a worker its task, tell it in that first line to call deck_worker_report with its result when done (and, if useful, what the report should contain). Pass the newest reports.latest you saw to deck_worker_wait so the wait returns when a card reports, then read the text with deck_worker_reports. If YOU were started as a worker and your task says to report, call deck_worker_report once you have the result; you need not know who asked.
 Drafting configuration (mayDraftConfig), when the user asks you to set up an automation or template:
 1. deck_config_describe: read the fields, examples, and the project's columns, templates, Agent rules and clock rules; reuse what exists.
@@ -238,6 +238,11 @@ struct WorkerStartInput {
     /// open in.
     #[serde(default)]
     column_id: Option<String>,
+    /// One of the chosen type's models (deck_worker_list workerTypes[].models),
+    /// exactly as listed; the type's own command (its default model) when
+    /// omitted. Pick by the task.
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -824,7 +829,7 @@ impl DeckServer {
             ),
             tool::<WorkerStartInput>(
                 "deck_worker_start",
-                "Start one worker card of one of the worker types the local user offers this client (deck_worker_list workerTypes: each type's description says what it is good at, e.g. writing code or generating images). Deck opens the card with the user's own command for that type and types `text` as its first line when the agent is ready. It opens in the project you run in (or project_id), beside your own card, else where the user's new cards open in that project; if the user lets you organize cards (deck_capabilities mayEditCards) you may choose its column instead (column_id, a column of that project from deck_cards_snapshot). Returns an operation to poll (deck_operation_get: committed with cardId); the card then appears in deck_worker_list. At most 8 worker cards per orchestrator card on the Board, 32 per client. A Codex worker's final message is readable only while the user lets Deck forward it (else REPLY_GONE): prefer files for large results.",
+                "Start one worker card of one of the worker types the local user offers this client (deck_worker_list workerTypes: each type's description says what it is good at, e.g. writing code or generating images). Deck opens the card with the user's own command for that type and types `text` as its first line when the agent is ready. When the type lists models (workerTypes[].models) you may pick one for this card (model, exactly as listed; MODEL_NOT_LISTED otherwise); the card keeps it, so start another card for another model. It opens in the project you run in (or project_id), beside your own card, else where the user's new cards open in that project; if the user lets you organize cards (deck_capabilities mayEditCards) you may choose its column instead (column_id, a column of that project from deck_cards_snapshot). Returns an operation to poll (deck_operation_get: committed with cardId); the card then appears in deck_worker_list. At most 8 worker cards per orchestrator card on the Board, 32 per client. A Codex worker's final message is readable only while the user lets Deck forward it (else REPLY_GONE): prefer files for large results.",
                 mutating.clone(),
             ),
             tool::<Empty>(

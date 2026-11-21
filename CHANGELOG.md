@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- MCP worker types may list the models an orchestrator can choose from,
+  one per line, under Settings › MCP › a client › Permissions…. A start
+  then names one of them (`deck_worker_start` `model`) and Deck adds
+  `--model <that line>` to your command, so one Claude, Codex or Pi type
+  covers several models instead of one type per model. Only a model on
+  your list is accepted (`MODEL_NOT_LISTED` otherwise), only on a command
+  that does not already name a model, and a card keeps the model it
+  started with. A ledger holding such a list is refused by older Deck
+  builds: empty the lists before going back to one.
+
 ## 0.8.34 — 2026-11-21 (Nightly)
 
 - Project environment variables: a project's Defaults dialog takes

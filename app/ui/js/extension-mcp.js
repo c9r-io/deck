@@ -12,7 +12,7 @@ const PANEL_HTML = `
       <div id="set-mcp-clients"></div>
     </div>`;
 
-import { claudeAddCommand, codexConfig, defaultWorkerTypes, previewErrorKey, scopeProblem, initialPermissions, initialScope, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
+import { claudeAddCommand, codexConfig, defaultWorkerTypes, previewErrorKey, scopeProblem, initialPermissions, initialScope, modelLines, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
 import { tunnelActionKey, tunnelCode, tunnelFailureKey, tunnelSetupKey } from './tunnel-model.js';
 
 const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" aria-labelledby="mcp-auth-title">
@@ -390,7 +390,13 @@ export function createMcpSettings(host) {
           remove.type = 'button'; remove.className = 'btn mcp-type-remove'; remove.textContent = '✕';
           remove.title = t('mcp.typeRemove'); remove.setAttribute('aria-label', t('mcp.typeRemove'));
           remove.onclick = () => { perms.workerTypes.splice(index, 1); paintTypes(); };
-          row.append(typeName, cmd, description, remove);
+          /* the models a start may choose: one per line, under the row */
+          const models = document.createElement('textarea');
+          models.className = 'mcp-type-models'; models.rows = 1; models.spellcheck = false;
+          models.value = modelLines(type.models).join('\n');
+          models.placeholder = t('mcp.typeModels'); models.setAttribute('aria-label', t('mcp.typeModels'));
+          models.oninput = () => { type.models = models.value.split('\n'); showError(permError, null, ''); };
+          row.append(typeName, cmd, description, remove, models);
           list.appendChild(row);
         });
         $('mcp-perm-type-add').disabled = perms.workerTypes.length >= 8;

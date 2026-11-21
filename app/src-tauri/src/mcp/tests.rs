@@ -1715,6 +1715,7 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
                 held: false,
                 orchestrator: None,
                 reported: 0,
+                model: None,
             });
             doc.mention_marks.push(MentionMark {
                 key: "C1/1.000001".into(),
@@ -2175,7 +2176,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
     );
 
     let mut invalid = DiskDoc {
-        version: STATE_VERSION_REPORTS + 1,
+        version: STATE_VERSION_WORKER_MODELS + 1,
         ..DiskDoc::default()
     };
     assert!(validate_doc(&invalid).is_err());
@@ -3168,7 +3169,7 @@ fn v3_state_upgrades_stickily_and_future_state_is_refused() {
     // The v3 build accepted exactly version 3; the same rule refuses a
     // future schema here.
     let mut future = saved.clone();
-    future["version"] = json!(STATE_VERSION_REPORTS + 1);
+    future["version"] = json!(STATE_VERSION_WORKER_MODELS + 1);
     std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
     assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
     assert_eq!(
@@ -5966,6 +5967,7 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
         name: name.into(),
         cmd: cmd.into(),
         description: "Write code".into(),
+        models: Vec::new(),
     };
     assert!(validate_worker_types(&[claude("claude", "claude --permission-mode auto")]).is_ok());
     let refused = |types: &[WorkerType]| {
@@ -6147,6 +6149,209 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
     drop(root);
 }
 
+/// A worker type may list models (approved 2026-11-21): a start chooses one
+/// byte for byte and the card's command is the type's plus `--model <the
+/// listed entry>`; a model the type does not list starts nothing. A list
+/// sits only on a command that names no model itself, and the ledger takes
+/// `STATE_VERSION_WORKER_MODELS` once it holds one.
+#[test]
+fn a_worker_start_chooses_one_of_its_types_listed_models() {
+    let typed = |name: &str, cmd: &str, models: &[&str]| WorkerType {
+        name: name.into(),
+        cmd: cmd.into(),
+        description: "Write code".into(),
+        models: models.iter().map(|m| (*m).to_string()).collect(),
+    };
+    let refused = |types: &[WorkerType]| {
+        validate_worker_types(types)
+            .unwrap_err()
+            .message()
+            .to_string()
+    };
+    assert!(validate_worker_types(&[
+        typed(
+            "claude",
+            "claude --permission-mode auto",
+            &["sonnet", "opus"]
+        ),
+        typed("codex", "codex --no-daemon --yolo", &["gpt-5.6-terra"]),
+    ])
+    .is_ok());
+    // a command that already names its model keeps working without a list
+    assert!(validate_worker_types(&[
+        typed("a", "claude --model sonnet --permission-mode auto", &[]),
+        typed("b", "codex --no-daemon --yolo -m gpt-5.6", &[]),
+    ])
+    .is_ok());
+    // ...and with one, two places would name the model
+    for cmd in [
+        "claude --model sonnet",
+        "claude --model=sonnet",
+        "codex --no-daemon -m gpt",
+        "codex --no-daemon -mgpt",
+        "codex --no-daemon -c model=gpt",
+        "codex --no-daemon --config=model=gpt",
+        "claude --models a,b",
+        "claude --provider openai",
+        "claude --provider=openai",
+    ] {
+        assert_eq!(
+            refused(&[typed("a", cmd, &["x"])]),
+            TYPE_MODEL_IN_COMMAND,
+            "{cmd}"
+        );
+    }
+    // the other options of the user's commands are no model
+    assert!(validate_worker_types(&[typed(
+        "a",
+        "claude --permission-mode auto --fallback-model haiku",
+        &["opus"]
+    )])
+    .is_ok());
+    for bad in [
+        &["--yolo"][..],
+        &["a b"],
+        &["$(x)"],
+        &["a;b"],
+        &[""],
+        &["x", "x"],
+    ] {
+        assert_eq!(
+            refused(&[typed("a", "claude", bad)]),
+            TYPE_MODELS_INVALID,
+            "{bad:?}"
+        );
+    }
+    let long = "m".repeat(101);
+    assert_eq!(
+        refused(&[typed("a", "claude", &[long.as_str()])]),
+        TYPE_MODELS_INVALID
+    );
+    let many: Vec<String> = (0..=MAX_TYPE_MODELS).map(|i| format!("m{i}")).collect();
+    let many: Vec<&str> = many.iter().map(String::as_str).collect();
+    assert_eq!(refused(&[typed("a", "claude", &many)]), TYPE_MODELS_INVALID);
+    assert!(validate_worker_types(&[typed("a", "claude", &many[..MAX_TYPE_MODELS])]).is_ok());
+
+    let (runtime, _runner, root) = fixture("worker-models", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let call = |tool: &str, args: Value| route(&runtime, request(tool, args));
+    let start = |request: &str, sequence: u64, extra: Value| {
+        let mut args =
+            json!({"request_id": request, "send_sequence": sequence, "text": "fix the bug"});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        call("deck_worker_start", args)
+    };
+    let before = runtime.read(|doc| doc.version).unwrap();
+    assert!(before < STATE_VERSION_WORKER_MODELS);
+    client_permissions(
+        &runtime,
+        "client_a",
+        super::commands::PermissionsInput {
+            allow_workers: true,
+            worker_types: vec![
+                typed(
+                    "claude",
+                    "claude --permission-mode auto",
+                    &["sonnet", "anthropic/claude-opus-5-5:high"],
+                ),
+                typed("plain", "claude", &[]),
+            ],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        runtime.read(|doc| doc.version).unwrap(),
+        STATE_VERSION_WORKER_MODELS
+    );
+    // the orchestrator reads each type's models
+    assert_eq!(
+        call("deck_worker_list", json!({}))["workerTypes"],
+        json!([
+            {"type": "claude", "description": "Write code",
+             "models": ["sonnet", "anthropic/claude-opus-5-5:high"]},
+            {"type": "plain", "description": "Write code"},
+        ])
+    );
+    // a model the type does not list, also by case, or a type with no list
+    for (request, extra) in [
+        ("req_m0", json!({"type": "claude", "model": "haiku"})),
+        ("req_m1", json!({"type": "claude", "model": "Sonnet"})),
+        (
+            "req_m2",
+            json!({"type": "claude", "model": "sonnet --yolo"}),
+        ),
+        ("req_m3", json!({"type": "plain", "model": "sonnet"})),
+    ] {
+        let answer = start(request, 0, extra);
+        assert_eq!(answer["error"]["code"], "MODEL_NOT_LISTED", "{answer}");
+        assert!(answer["error"]["models"].is_array());
+    }
+    assert_eq!(
+        call("deck_worker_list", json!({}))["nextSendSequence"],
+        0,
+        "a refused start takes no sequence"
+    );
+    // no model: the type's own command
+    let plain = start("req_m4", 0, json!({"type": "claude"}));
+    assert_eq!(
+        plain["result"]["cmd"], "claude --permission-mode auto",
+        "{plain}"
+    );
+    assert!(plain["result"]["model"].is_null());
+    // a listed one: appended exactly as listed
+    let chosen = start(
+        "req_m5",
+        1,
+        json!({"type": "claude", "model": "anthropic/claude-opus-5-5:high"}),
+    );
+    assert_eq!(
+        chosen["result"]["cmd"],
+        "claude --permission-mode auto --model anthropic/claude-opus-5-5:high",
+        "{chosen}"
+    );
+    assert_eq!(chosen["result"]["model"], "anthropic/claude-opus-5-5:high");
+    // the same request with another model is another request
+    let conflict = start("req_m5", 1, json!({"type": "claude", "model": "sonnet"}));
+    assert_eq!(
+        conflict["error"]["code"], "REQUEST_ID_CONFLICT",
+        "{conflict}"
+    );
+    // committed, the card keeps its model and the list says which
+    let op = chosen["operationId"].as_str().unwrap().to_owned();
+    let card = chosen["result"]["cardId"].as_str().unwrap().to_owned();
+    claim(&runtime, &op).unwrap();
+    complete(
+        &runtime,
+        op,
+        "committed".into(),
+        None,
+        Some("deck-w-opus".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        runtime
+            .read(|doc| doc
+                .workers
+                .iter()
+                .find(|w| w.card_id == card)
+                .and_then(|w| w.model.clone()))
+            .unwrap()
+            .as_deref(),
+        Some("anthropic/claude-opus-5-5:high")
+    );
+    // the list survives a save and a load
+    let loaded = load(&runtime.path).unwrap();
+    assert_eq!(loaded.version, STATE_VERSION_WORKER_MODELS);
+    assert_eq!(
+        loaded.config.clients[0].worker_types[0].models,
+        vec!["sonnet", "anthropic/claude-opus-5-5:high"]
+    );
+    drop(root);
+}
+
 /// A worker type has no column. One written by an earlier build, with its
 /// `columnId`, still loads, and the field is gone on the next save; any
 /// other unknown field still refuses the type.
@@ -6156,6 +6361,7 @@ fn a_worker_type_column_from_an_earlier_build_is_read_and_dropped() {
         name: "claude".into(),
         cmd: "claude".into(),
         description: "Write code".into(),
+        models: Vec::new(),
     };
     let legacy =
         json!({"name": "claude", "cmd": "claude", "columnId": "C1", "description": "Write code"});
@@ -6215,6 +6421,7 @@ fn a_worker_start_names_its_column_only_when_the_client_may_organize_cards() {
             name: "claude".into(),
             cmd: "claude".into(),
             description: "Write code".into(),
+            models: Vec::new(),
         }],
         allow_cards: organize,
         allow_card_edits: organize,
@@ -6314,6 +6521,7 @@ fn a_worker_card_closes_only_for_the_orchestrator_card_that_started_it() {
                 name: "claude".into(),
                 cmd: "claude".into(),
                 description: "Write code".into(),
+                models: Vec::new(),
             }]
         } else {
             Vec::new()
@@ -6338,6 +6546,7 @@ fn a_worker_card_closes_only_for_the_orchestrator_card_that_started_it() {
         held: false,
         orchestrator: Some(by.into()),
         reported: 0,
+        model: None,
     };
     runtime
         .write(|doc| {
@@ -7219,6 +7428,7 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
         name: "claude".into(),
         cmd: "claude".into(),
         description: "Write code".into(),
+        models: Vec::new(),
     };
     let permissions = |rule_column: bool| super::commands::PermissionsInput {
         all_projects: false,
@@ -7447,6 +7657,7 @@ fn a_client_reaches_listed_or_all_projects_through_their_own_directories() {
         name: "claude".into(),
         cmd: "claude".into(),
         description: "Write code".into(),
+        models: Vec::new(),
     };
     let permissions =
         |all: bool, projects: Option<Vec<(&str, &str)>>| super::commands::PermissionsInput {
@@ -7528,6 +7739,7 @@ fn a_client_reaches_listed_or_all_projects_through_their_own_directories() {
                 held: false,
                 orchestrator: None,
                 reported: 0,
+                model: None,
             });
             Ok(())
         })
@@ -7615,6 +7827,7 @@ fn a_worker_card_reports_one_way_to_the_orchestrator_that_started_it() {
         held: false,
         orchestrator: orchestrator.map(str::to_owned),
         reported: 0,
+        model: None,
     };
     runtime
         .write(|doc| {
@@ -7832,6 +8045,7 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
                     held: false,
                     orchestrator: Some("OA".into()),
                     reported: 0,
+                    model: None,
                 });
             }
             Ok(())
@@ -7891,6 +8105,7 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
                     held: false,
                     orchestrator: Some(format!("O{}", i / 8)),
                     reported: 0,
+                    model: None,
                 });
             }
             Ok(())
@@ -7945,6 +8160,7 @@ fn orchestrators_mark_mentions_for_the_user_and_never_dismiss_them() {
                     held: false,
                     orchestrator: Some("OA".into()),
                     reported: 0,
+                    model: None,
                 });
                 Ok(())
             })

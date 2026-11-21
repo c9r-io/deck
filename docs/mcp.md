@@ -155,7 +155,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_worker_report` | Called by the agent IN a worker card: hands Deck a text (at most 8192 bytes) for the orchestrator that started the card. It names no card and no recipient; Deck sees which card the call comes from. `NOT_A_WORKER_CARD` anywhere else. |
 | `deck_worker_reports` | A worker card's kept reports (the newest 4, each with its sequence and time; `after` for newer ones only). Durable; needs the **replies** choice. |
 | `deck_worker_reply` | A worker card's final Claude Code message of one turn ending (its episode), head and tail when long; memory only, the newest 32 (`REPLY_GONE` otherwise). Needs the further **replies** choice. |
-| `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in the project named by `project_id` (default: the orchestrator card's, else the client's first), optionally in `dir` inside that project's directory, with its first line. It opens beside the orchestrator card, else where your own new cards open in that project; a client you also let **organize cards** may name the column (`column_id`, a column of that project: another project's is `COLUMN_NOT_FOUND`, listing the right ones; without that choice `PERMISSION_DENIED`). An operation to poll (`committed` with `cardId`); at most 8 worker cards per orchestrator card on the Board (callers from no card together), 32 per client. |
+| `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in the project named by `project_id` (default: the orchestrator card's, else the client's first), optionally in `dir` inside that project's directory, with its first line, and optionally one of the type's listed `models` (`model`, byte for byte: the card's command is the type's plus `--model <that entry>`; any other is `MODEL_NOT_LISTED`, listing the type's models, and starts nothing). It opens beside the orchestrator card, else where your own new cards open in that project; a client you also let **organize cards** may name the column (`column_id`, a column of that project: another project's is `COLUMN_NOT_FOUND`, listing the right ones; without that choice `PERMISSION_DENIED`). An operation to poll (`committed` with `cardId`); at most 8 worker cards per orchestrator card on the Board (callers from no card together), 32 per client. |
 | `deck_config_describe` | Before drafting: the workflow, every field of a template and an Agent handover rule with its rules, copyable examples, and the client's projects with their columns, templates (name and structure, never step text) and Agent rules. Needs the client's separate **draft** choice. |
 | `deck_config_propose` | Draft a template and/or one Agent handover rule. `validate_only: true` checks and previews and records nothing; every problem is `{field, code, message, fix}`. A valid submission (fresh `request_id`) waits in Needs attention as a proposal; an identical pending draft is refused (`DUPLICATE_PROPOSAL`), at most 4 wait per client. Writes and authorizes nothing. |
 | `deck_config_proposal_get` | One of the client's proposals: `pending`, `approved` (saved as drafted), `edited` (saved without automatic sending, finished in the editor), `rejected` or `withdrawn`, with the next action. |
@@ -339,7 +339,17 @@ alone. While Pi is not connected or still running, the line waits in the
 never sent again: it waits for you as an uncertain delivery. Deck still
 cannot see when Pi waits on one of its own dialogs, so such a card reads
 "working" meanwhile. Pi's final message reaches `deck_worker_reply` only
-while you let Deck forward it (the same switch). A type has no column: a worker card opens in
+while you let Deck forward it (the same switch). Under a type you may
+also list **models the orchestrator may choose**, one per line (at most
+20, each one word without spaces that does not start with `-`): a start
+may then name one of them (`model`) and Deck appends `--model <that
+line>` to your command, so one type covers several models (Claude
+`--model`, Codex `--model`, Pi `--model provider/id[:thinking]`). Only a
+command that names no model itself may carry a list (no `--model`, `-m`,
+`--models`, `--provider` or `…model=…` in it); a model Deck does not find
+in the list starts nothing, and Deck never checks that a listed model
+exists — a wrong one shows when its card starts. A card keeps the model it
+started with; `deck_worker_list` says which (`model`). A type has no column: a worker card opens in
 the project the orchestrator names (default its own card's), beside its
 own card when both are in that project, otherwise where your own new
 cards open in that project (the column you picked for new sessions, else

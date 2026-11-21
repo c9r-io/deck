@@ -14,8 +14,13 @@
 //!   `codex --no-daemon` or, while Pi's work status is on, `pi`, with simple
 //!   arguments, `validate_worker_types`; a Pi worker's lines are handed to Pi
 //!   by Deck's observer, never typed: `agent_pi::handover`)
-//!   and a description the orchestrator reads. `deck_worker_start`
-//!   names a type (never a command), a project in the client's scope,
+//!   and a description the orchestrator reads, optionally with the models
+//!   a start may choose (`models`: single simple arguments, at most
+//!   `MAX_TYPE_MODELS`, only on a command that names no model itself).
+//!   `deck_worker_start` names a type (never a command) and optionally one
+//!   of its listed models (byte for byte, else `MODEL_NOT_LISTED`; the card's
+//!   command is the type's plus `--model <the listed entry>`,
+//!   `start_command`), a project in the client's scope,
 //!   optionally a directory inside that project's and, only under the
 //!   organize-cards choice (`Choice::CardEdits`, the one delegation that
 //!   places a card), one of that project's columns (`named_column`: a wrong
@@ -111,6 +116,10 @@ pub(super) struct Worker {
     /// never goes back, whatever reports were dropped since.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub(super) reported: u64,
+    /// The model the start chose from its type's list (`worker_start`);
+    /// `None` when it chose none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) model: Option<String>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -140,6 +149,22 @@ pub(super) fn uses_workers(doc: &DiskDoc) -> bool {
                 o.kind.as_str(),
                 WORKER_SEND_KIND | WORKER_START_KIND | WORKER_CLOSE_KIND
             )
+        })
+}
+
+/// Whether the ledger holds a worker type's model list or a worker card
+/// started with a chosen model: a v17 reader would drop them.
+pub(super) fn uses_worker_models(doc: &DiskDoc) -> bool {
+    doc.config
+        .clients
+        .iter()
+        .any(|c| c.worker_types.iter().any(|t| !t.models.is_empty()))
+        || doc.workers.iter().any(|w| w.model.is_some())
+        || doc.operations.iter().any(|o| {
+            o.kind == WORKER_START_KIND
+                && o.result
+                    .as_ref()
+                    .is_some_and(|r| r.get("model").is_some_and(|m| !m.is_null()))
         })
 }
 
@@ -214,6 +239,12 @@ pub(super) fn record_worker(doc: &mut DiskDoc, operation: &Operation, card: &str
         held: false,
         orchestrator: super::origin::of_operation(operation),
         reported: 0,
+        model: operation
+            .result
+            .as_ref()
+            .and_then(|r| r.get("model"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     });
 }
 
@@ -528,6 +559,7 @@ fn view(
         "cardId": row.worker.card_id,
         "title": target.map(|t| t.title.as_str()).unwrap_or_default(),
         "automationId": row.worker.automation_id,
+        "model": row.worker.model,
         "alive": observed.is_some_and(|o| o.alive),
         "agent": agent,
         "takenOver": row.taken_over,
@@ -1243,8 +1275,11 @@ const MAX_WORKER_TITLE_CHARS: usize = 80;
 pub(crate) const WORKER_TYPE_RULE_PREFIX: &str = "worker-type:";
 
 /// One kind of worker card the user offers a client: the command its cards
-/// start and a line the orchestrator reads to choose between types. The
-/// client only ever names a type; it never writes a command. Where a card
+/// start, a line the orchestrator reads to choose between types and,
+/// optionally, the models a start may choose from (`models`, approved
+/// 2026-11-21: Deck appends `--model <the listed entry>`, `start_command`).
+/// The client only ever names a type and one of its listed models; it never
+/// writes a command or a model of its own. Where a card
 /// opens is not the type's: `worker_start` decides it (the column the start
 /// names, else beside the orchestrator card, else the project's new-card
 /// column).
@@ -1254,6 +1289,8 @@ pub(crate) struct WorkerType {
     pub(crate) name: String,
     pub(crate) cmd: String,
     pub(crate) description: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) models: Vec<String>,
 }
 
 /// A worker type as it is read: builds before 2026-11-19 gave each type a
@@ -1270,6 +1307,8 @@ struct WorkerTypeRecord {
     _legacy_column: Option<serde::de::IgnoredAny>,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    models: Vec<String>,
 }
 
 impl From<WorkerTypeRecord> for WorkerType {
@@ -1278,6 +1317,7 @@ impl From<WorkerTypeRecord> for WorkerType {
             name: record.name,
             cmd: record.cmd,
             description: record.description,
+            models: record.models,
         }
     }
 }
@@ -1289,6 +1329,45 @@ pub(super) const TYPE_COMMAND_INVALID: &str = "mcp-worker-type-command";
 pub(super) const TYPE_CODEX_DAEMON: &str = "mcp-worker-type-codex-daemon";
 pub(super) const TYPE_LIST_INVALID: &str = "mcp-worker-type-list";
 pub(super) const TYPE_PI_OBSERVER: &str = "mcp-worker-type-pi-observer";
+pub(super) const TYPE_MODELS_INVALID: &str = "mcp-worker-type-models";
+pub(super) const TYPE_MODEL_IN_COMMAND: &str = "mcp-worker-type-model-in-command";
+
+/// Models one worker type may list, and the longest entry.
+pub(super) const MAX_TYPE_MODELS: usize = 20;
+const MAX_MODEL_CHARS: usize = 100;
+
+/// One listed model: a single simple argument (the alphabet of
+/// `admission::worker_agent_command`) that is not itself a flag.
+fn valid_model(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= MAX_MODEL_CHARS
+        && !model.starts_with('-')
+        && model
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_./:=+,@".contains(&byte))
+}
+
+/// Whether a command word already chooses a model, so a list would make two
+/// places say which one: Claude, Codex and Pi `--model`/`--model=`, Codex
+/// and Claude `-m` (also with its value attached), Pi `--models` and
+/// `--provider`, Codex's config override `-c model=…` (any word holding
+/// `model=`).
+fn names_a_model(word: &str) -> bool {
+    matches!(word, "--model" | "--models" | "--provider")
+        || word.starts_with("--provider=")
+        || word.contains("model=")
+        || (word.starts_with("-m") && !word.starts_with("--"))
+}
+
+/// The command a worker card of `worker_type` starts: the type's own, or
+/// with `--model <entry>` when the start chose one of its listed models.
+/// The entry comes from the user's list, never from the request.
+pub(super) fn start_command(worker_type: &WorkerType, listed: Option<&str>) -> String {
+    match listed {
+        Some(model) => format!("{} --model {model}", worker_type.cmd),
+        None => worker_type.cmd.clone(),
+    }
+}
 
 fn valid_type_name(name: &str) -> bool {
     !name.is_empty()
@@ -1328,6 +1407,29 @@ pub(super) fn validate_worker_types(types: &[WorkerType]) -> Result<(), DeckErro
         {
             return Err(invalid(TYPE_LIST_INVALID));
         }
+        if worker_type.models.is_empty() {
+            continue;
+        }
+        if worker_type.cmd.split(' ').skip(1).any(names_a_model) {
+            return Err(invalid(TYPE_MODEL_IN_COMMAND));
+        }
+        let mut listed = HashSet::new();
+        if worker_type.models.len() > MAX_TYPE_MODELS
+            || !worker_type
+                .models
+                .iter()
+                .all(|model| valid_model(model) && listed.insert(model.as_str()))
+        {
+            return Err(invalid(TYPE_MODELS_INVALID));
+        }
+        // each command a start could make is one the admission accepts
+        for model in &worker_type.models {
+            if crate::admission::worker_agent_command(&start_command(worker_type, Some(model)))
+                != Some(agent)
+            {
+                return Err(invalid(TYPE_MODELS_INVALID));
+            }
+        }
     }
     Ok(())
 }
@@ -1356,7 +1458,13 @@ fn types_view(client: &Client) -> Vec<Value> {
     client
         .worker_types
         .iter()
-        .map(|t| json!({"type": t.name, "description": t.description}))
+        .map(|t| {
+            let mut view = json!({"type": t.name, "description": t.description});
+            if !t.models.is_empty() {
+                view["models"] = json!(t.models);
+            }
+            view
+        })
         .collect()
 }
 
@@ -1490,6 +1598,36 @@ pub(super) fn worker_start(
                     "workerTypes": types_view(&client)
                 }})));
             };
+            // a model only from the type's own list, compared byte for byte;
+            // the command takes the listed entry, never the request's string
+            let listed = match args.model.as_deref() {
+                None => None,
+                Some(asked) => match worker_type.models.iter().find(|m| m.as_str() == asked) {
+                    Some(listed) => Some(listed.as_str()),
+                    None => {
+                        return Ok(Err(json!({"ok": false, "error": {
+                            "code": "MODEL_NOT_LISTED",
+                            "message": "this worker type does not list that model",
+                            "nextAction": if worker_type.models.is_empty() {
+                                "This worker type offers no model choice: leave model out, or use a type deck_worker_list lists with models."
+                            } else {
+                                "Use one of this type's models exactly as listed, or leave model out for the type's own command."
+                            },
+                            "type": worker_type.name,
+                            "models": worker_type.models,
+                        }})));
+                    }
+                },
+            };
+            let cmd = start_command(worker_type, listed);
+            // the type was admitted when saved; the command it makes now is
+            // checked again before anything is journaled
+            let admitted = crate::admission::worker_agent_command(&cmd);
+            if admitted.is_none()
+                || (admitted == Some("codex") && !cmd.split(' ').any(|word| word == "--no-daemon"))
+            {
+                return Err(DeckError::new(ErrorKind::Invalid, TYPE_COMMAND_INVALID));
+            }
             let project = &scope;
             let dir = match args.dir.as_deref() {
                 Some(dir) => canonical_scope(dir, &project.roots)?,
@@ -1517,7 +1655,8 @@ pub(super) fn worker_start(
                     "columnId": args.column_id.clone().or_else(|| {
                         super::origin::beside(&client, orchestrator, &project.project_id)
                     }),
-                    "cmd": worker_type.cmd,
+                    "cmd": cmd,
+                    "model": listed,
                     "dir": dir,
                     "title": title,
                     "type": worker_type.name,

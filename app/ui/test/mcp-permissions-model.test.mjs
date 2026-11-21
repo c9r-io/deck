@@ -3,7 +3,7 @@
 // that mirror the backend's, and the row's summary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_WORKER_TYPES, claudeAddCommand, codexConfig, defaultWorkerTypes, initialPermissions, initialScope, permissionSummary, permissionsPayload, scopePayload, previewErrorKey, scopeProblem, workerTypeErrorKey, workerTypesProblem } from '../js/mcp-permissions-model.js';
+import { MAX_TYPE_MODELS, MAX_WORKER_TYPES, claudeAddCommand, modelLines, codexConfig, defaultWorkerTypes, initialPermissions, initialScope, permissionSummary, permissionsPayload, scopePayload, previewErrorKey, scopeProblem, workerTypeErrorKey, workerTypesProblem } from '../js/mcp-permissions-model.js';
 
 const claude = { name: 'claude', cmd: 'claude --permission-mode auto', description: 'Write code' };
 
@@ -42,6 +42,37 @@ test('worker types are checked as the backend checks them', () => {
   assert.equal(problem([{ ...claude, columnId: '' }]), null, 'a type has no column');
   assert.equal(problem([{ ...claude, description: 'x'.repeat(201) }]), 'mcp.typeListInvalid');
   assert.equal(problem(Array.from({ length: MAX_WORKER_TYPES + 1 }, (_, i) => ({ ...claude, name: `t${i}` }))), 'mcp.typeListInvalid');
+});
+
+test('a type may list models: one per line, only on a command that names none', () => {
+  const on = types => ({ allowWorkers: true, workerTypes: types });
+  const problem = types => workerTypesProblem(on(types));
+  const type = (cmd, models) => ({ name: 'a', cmd, description: '', models });
+  assert.deepEqual(modelLines(' sonnet \n\nopus\n'), ['sonnet', 'opus']);
+  assert.deepEqual(modelLines(['x', ' ']), ['x']);
+  // the payload carries the trimmed lines, and no key when there are none
+  assert.deepEqual(permissionsPayload(on([type('claude', 'sonnet\n opus ')])).workerTypes[0].models, ['sonnet', 'opus']);
+  assert.equal('models' in permissionsPayload(on([type('claude', '\n')])).workerTypes[0], false);
+  assert.equal(problem([type('claude --permission-mode auto', 'sonnet\nopus')]), null);
+  assert.equal(problem([type('pi', 'openai/gpt-5.6-terra\nminimax/MiniMax-M3\nanthropic/claude-opus-5-5:high')]), null);
+  assert.equal(problem([type('codex --no-daemon --yolo', ['gpt-5.6'])]), null);
+  // a command that names its model keeps working without a list...
+  assert.equal(problem([type('claude --model sonnet --permission-mode auto', '')]), null);
+  assert.equal(problem([type('codex --no-daemon --yolo -m gpt', '')]), null);
+  // ...and not with one
+  for (const cmd of ['claude --model sonnet', 'claude --model=x', 'codex --no-daemon -m x', 'codex --no-daemon -mx',
+    'codex --no-daemon -c model=x', 'pi --models a,b', 'pi --provider openai', 'pi --provider=openai']) {
+    assert.equal(problem([type(cmd, 'x')]), 'mcp.typeModelInCommand', cmd);
+  }
+  assert.equal(problem([type('claude --fallback-model haiku', 'opus')]), null);
+  for (const bad of ['--yolo', 'a b', '$(x)', 'x\nx', 'm'.repeat(101)]) {
+    assert.equal(problem([type('claude', bad)]), 'mcp.typeModelsInvalid', bad);
+  }
+  const many = Array.from({ length: MAX_TYPE_MODELS + 1 }, (_, i) => `m${i}`);
+  assert.equal(problem([type('claude', many)]), 'mcp.typeModelsInvalid');
+  assert.equal(problem([type('claude', many.slice(1))]), null);
+  assert.equal(workerTypeErrorKey('mcp-worker-type-models'), 'mcp.typeModelsInvalid');
+  assert.equal(workerTypeErrorKey('mcp-worker-type-model-in-command'), 'mcp.typeModelInCommand');
 });
 
 test('the default types are Claude and Codex, without a column; refusals map to one sentence each', () => {

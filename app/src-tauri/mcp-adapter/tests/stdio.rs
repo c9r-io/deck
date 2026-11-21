@@ -239,6 +239,18 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         .unwrap()
         .iter()
         .any(|value| value == "column_id"));
+    // and the model its card runs, one of the type's listed ones (Deck
+    // checks), never required
+    assert_eq!(
+        worker_start["inputSchema"]["properties"]["model"]["type"],
+        json!(["string", "null"]),
+        "{worker_start}"
+    );
+    assert!(!worker_start["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "model"));
     assert_eq!(
         control["inputSchema"]["properties"]["lease_ms"]["minimum"],
         1000

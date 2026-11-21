@@ -121,6 +121,10 @@ pub(super) struct WorkerStartArgs {
     /// card, else the project's new-card column (`workers::worker_start`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) column_id: Option<String>,
+    /// One of the worker type's listed models, exactly as listed; the
+    /// type's own command when omitted (`workers::worker_start`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) model: Option<String>,
 }
 
 /// `deck_worker_close`: close one worker card the calling orchestrator card

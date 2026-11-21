@@ -255,7 +255,10 @@ evolution; it makes scope expansion deliberate.
   or `deck_worker_start` started (`ContentClass::Delegated`), under every
   readiness hold plus the human hold (the user's keystroke holds it until
   handed back); it starts only the worker types the user listed (Codex only
-  with `--no-daemon`), never a command it writes, and never answers an
+  with `--no-daemon`), never a command it writes — it may pick one of the
+  models the user listed for that type, which Deck appends as `--model`
+  from the list, never a model it names (approved 2026-11-21,
+  `mcp/workers.rs` `start_command`) — and never answers an
   Agent's prompt or reads a screen. A worker type may be Pi (approved
   2026-11-20): Deck never types into a Pi, so a Pi worker's line is handed
   to Pi by Deck's own observer extension in that pane

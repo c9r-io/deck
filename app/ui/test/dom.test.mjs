@@ -2243,8 +2243,8 @@ test('an MCP client row opens its permissions in the one dialog and saves them a
   fakeDocument.getElementById('mcp-perm-type-add').fire('click');
   const types = fakeDocument.getElementById('mcp-perm-types').children;
   assert.equal(types.length, 3);
-  assert.deepEqual(types[0].children.map(c => String(c.className)), ['mcp-type-name', 'mcp-type-cmd', 'mcp-type-desc', 'btn mcp-type-remove'],
-    'name, command, what it is good at: no column');
+  assert.deepEqual(types[0].children.map(c => String(c.className)), ['mcp-type-name', 'mcp-type-cmd', 'mcp-type-desc', 'btn mcp-type-remove', 'mcp-type-models'],
+    'name, command, what it is good at, the models a start may choose: no column');
   const [name, cmd] = types[2].children;
   name.value = 'codex-plain'; name.fire('input');
   cmd.value = 'codex'; cmd.fire('input');
@@ -2258,6 +2258,23 @@ test('an MCP client row opens its permissions in the one dialog and saves them a
   await tick(); await tick();
   const second = calls.find(([c]) => c === 'mcp_client_permissions');
   assert.deepEqual(second[1].permissions.workerTypes.map(t => t.cmd), ['claude --permission-mode auto', 'codex --no-daemon --yolo', 'codex --no-daemon']);
+  // a type's models: one per line, sent trimmed; refused on a command that names a model
+  calls.length = 0;
+  open().fire('click');
+  const rows = fakeDocument.getElementById('mcp-perm-types').children;
+  const models = rows[0].children[4];
+  models.value = ' sonnet\n\nopus '; models.fire('input');
+  rows[0].children[1].value = 'claude --model haiku'; rows[0].children[1].fire('input');
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
+  await tick();
+  assert.match(fakeDocument.getElementById('mcp-perm-error').textContent, /already names a model/);
+  assert.ok(!calls.some(([c]) => c === 'mcp_client_permissions'));
+  rows[0].children[1].value = 'claude --permission-mode auto'; rows[0].children[1].fire('input');
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
+  await tick(); await tick();
+  const withModels = calls.find(([c]) => c === 'mcp_client_permissions')[1].permissions.workerTypes;
+  assert.deepEqual(withModels[0].models, ['sonnet', 'opus']);
+  assert.equal('models' in withModels[1], false);
   // turning worker cards off sends its children off too
   calls.length = 0;
   open().fire('click');

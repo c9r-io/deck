@@ -17,6 +17,11 @@
 //   trip. A type has no column: where its cards open is the start's
 //   (mcp/workers.rs `worker_start`), and a `columnId` a type still carries
 //   from an older build is dropped here (`permissionsPayload`).
+// - A type may list the models a start may choose (one per line, each a
+//   single simple argument not starting with `-`, at most 20, no repeats),
+//   only on a command that names no model itself (`--model`, `-m…`,
+//   `--models`, `--provider`, any `…model=…`): Deck then appends
+//   `--model <the listed entry>` (mcp/workers.rs `start_command`).
 // - The client row copies a ready setup: `claude mcp add --scope user` for
 //   Claude Code (every directory, since an orchestrator may start anywhere)
 //   or Codex's TOML (`claudeAddCommand`, `codexConfig`).
@@ -29,6 +34,22 @@
 export const MAX_WORKER_TYPES = 8;
 const TYPE_NAME = /^[a-z0-9_-]{1,32}$/;
 const COMMAND_WORD = /^[A-Za-z0-9\-_./:=+,@]+$/;
+export const MAX_TYPE_MODELS = 20;
+
+/* a model list as typed (one per line) or as stored (an array): trimmed
+   entries, blank lines dropped */
+export function modelLines(value) {
+  const lines = Array.isArray(value) ? value : String(value || '').split('\n');
+  return lines.map(line => String(line).trim()).filter(Boolean);
+}
+
+/* whether a command word already chooses a model (mirrors `names_a_model`) */
+function namesAModel(word) {
+  return ['--model', '--models', '--provider'].includes(word)
+    || word.startsWith('--provider=')
+    || word.includes('model=')
+    || (word.startsWith('-m') && !word.startsWith('--'));
+}
 
 /* a client's choices as the dialog starts: the client's own (editing) or
    none (a new client) */
@@ -76,6 +97,7 @@ export function permissionsPayload(p) {
       name: String(t.name || '').trim(),
       cmd: String(t.cmd || '').trim().replace(/\s+/g, ' '),
       description: String(t.description || '').trim(),
+      ...(modelLines(t.models).length ? { models: modelLines(t.models) } : {}),
     })) : [],
   };
 }
@@ -100,6 +122,13 @@ export function workerTypesProblem(p) {
     if ([...type.description].length > 200 || /\p{Cc}/u.test(type.description)) {
       return 'mcp.typeListInvalid';
     }
+    const models = type.models || [];
+    if (!models.length) continue;
+    if (words.slice(1).some(namesAModel)) return 'mcp.typeModelInCommand';
+    if (models.length > MAX_TYPE_MODELS || new Set(models).size !== models.length
+      || !models.every(model => model.length <= 100 && !model.startsWith('-') && COMMAND_WORD.test(model))) {
+      return 'mcp.typeModelsInvalid';
+    }
   }
   return null;
 }
@@ -112,6 +141,8 @@ export function workerTypeErrorKey(error) {
   if (text.includes('mcp-worker-type-codex-daemon')) return 'mcp.typeCodexDaemon';
   if (text.includes('mcp-worker-type-list')) return 'mcp.typeListInvalid';
   if (text.includes('mcp-worker-type-pi-observer')) return 'mcp.typePiObserver';
+  if (text.includes('mcp-worker-type-models')) return 'mcp.typeModelsInvalid';
+  if (text.includes('mcp-worker-type-model-in-command')) return 'mcp.typeModelInCommand';
   return null;
 }
 

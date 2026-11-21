@@ -5,7 +5,8 @@
 //
 // The page does what the person does: Pi's work status on through its
 // Settings switch, Remote access on and ONE client authorized to drive
-// worker cards of one type, the operator's Pi command (`piw-armed`). The
+// worker cards of one type, the operator's Pi command with the models the
+// operator lists for it, if any (`piw-armed`). The
 // operator is then the orchestrator: through this carrier's own adapter it
 // starts the worker, waits for its turns and sends two more lines — one
 // while an extension dialog is open in Pi, one while the user's draft sits
@@ -60,9 +61,11 @@ export async function runPiWorkerSmoke() {
       name: 'orchestrator', projects: [{ projectId: project.id, roots: [fx.dir] }],
       permissions: { allowCreate: false, allowAutomations: false, allowWorkers: true, allowReplies: true,
         workerFirstSend: false, allowDrafts: false, allowMentions: false, ruleColumn: false, allProjects: false,
-        workerTypes: [{ name: 'pi', cmd: fx.command, description: 'Pi on the local fixture model' }] },
+        workerTypes: [{ name: 'pi', cmd: fx.command, description: 'Pi on the local fixture model',
+          ...(fx.models?.length ? { models: fx.models } : {}) }] },
     });
-    await report('piw-armed', !!client?.id && client.workerTypes?.[0]?.cmd === fx.command);
+    await report('piw-armed', !!client?.id && client.workerTypes?.[0]?.cmd === fx.command
+      && JSON.stringify(client.workerTypes[0].models || []) === JSON.stringify(fx.models || []));
 
     // 3. the operator starts the worker: a card of that type appears
     const worker = () => store.cards.find(card => card.origin?.source === 'worker' && card.origin.badge === 'pi');

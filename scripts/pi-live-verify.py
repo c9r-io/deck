@@ -149,6 +149,10 @@ class Run:
         # to call `deck_worker_report`; the choice travels with the root to the machine that runs it
         chosen = getattr(args, "model", None)
         self.model = chosen or ((self.root / "model").read_text().strip() if (self.root / "model").exists() else None)
+        # `--choose PROVIDER/MODEL`: the type is plain `pi` listing that model, and the orchestrator's start picks it
+        # (`deck_worker_start` `model`); the run then reads which model answered from Pi's own session files
+        picked = getattr(args, "choose", None)
+        self.choose = picked or ((self.root / "choose").read_text().strip() if (self.root / "choose").exists() else None)
         self.evidence = self.data / "evidence"
         self.results: list[dict] = []
         self.registered: set[int] = set()
@@ -267,7 +271,10 @@ class Run:
         # what a person would type: Pi by its name (a rule's command holds at most 200 characters)
         provider, model = self.model.split("/", 1) if self.model and self.model != "default" else ("deck-fixture", "fixture")
         # `default`: Pi by its name alone, on the running machine's own default model (`borrow_credential`)
-        command = "pi" if self.model == "default" else shlex.join(["pi", "--provider", provider, "--model", model])
+        command = "pi" if self.model == "default" or self.choose else shlex.join(["pi", "--provider", provider, "--model", model])
+        if self.choose:
+            (self.root / "choose").write_text(self.choose + "\n")
+            (self.pi_fixture / "models").write_text(self.choose + "\n")
         if self.model:
             (self.root / "model").write_text(self.model + "\n")
             # Deck's MCP server for the worker's agent: this carrier's adapter, given the one client's credential on
@@ -316,17 +323,40 @@ class Run:
             settings.update({"defaultProvider": provider, "defaultModel": model})
             self.settings.write_text(json.dumps(settings, indent=2) + "\n")
             self.facts["model"] = f"{provider}/{model}"
+        elif self.choose:
+            # the type's own command is plain `pi`: the named model is its default
+            settings = json.loads(self.settings.read_text())
+            settings.update({"defaultProvider": provider, "defaultModel": self.model.split("/", 1)[1]})
+            self.settings.write_text(json.dumps(settings, indent=2) + "\n")
+            self.facts["model"] = self.model
+        providers = {provider} | ({self.choose.split("/", 1)[0]} if self.choose else set())
         source = Path.home() / ".pi/agent/auth.json"
         try:
-            entry = json.loads(source.read_text()).get(provider)
+            own = json.loads(source.read_text())
+            entries = {name: own.get(name) for name in providers}
         except (OSError, ValueError):
-            entry = None
-        if not entry:
+            entries = {}
+        if not entries or not all(entries.values()):
             return False
         target = self.agent / "auth.json"
-        target.write_text(json.dumps({provider: entry}))
+        target.write_text(json.dumps(entries))
         target.chmod(0o600)
         return True
+
+    def models_answered(self) -> list[str]:
+        """Which models answered in this root's Pi sessions, from Pi's own session files: provider/model of each
+        assistant message, nothing else of them."""
+        seen: set[str] = set()
+        for path in list(self.agent.rglob("*.jsonl")) + list(self.sessions.rglob("*.jsonl")):
+            for line in path.read_text(errors="replace").splitlines():
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                message = entry.get("message") if isinstance(entry, dict) else None
+                if isinstance(message, dict) and message.get("role") == "assistant":
+                    seen.add(f"{message.get('provider')}/{message.get('model')}")
+        return sorted(seen)
 
     def return_credential(self) -> None:
         try:
@@ -591,8 +621,18 @@ class Run:
                 first = (f"{first}: call the deck_worker_report tool once with exactly this text: {token}. "
                          f"Then reply with exactly: DONE. Use no other tool.")
                 second, third = (f"{line}: reply with exactly: OK. Use no tool." for line in (second, third))
-            ok, started = call("deck_worker_start", {"request_id": f"pw_{self.suffix}", "send_sequence": sequence,
-                                                     "type": "pi", "text": first, "title": "pi worker"})
+            start = {"request_id": f"pw_{self.suffix}", "send_sequence": sequence,
+                     "type": "pi", "text": first, "title": "pi worker"}
+            if self.choose:
+                # first a model the type does not list: refused, nothing started, no sequence taken
+                ok_bad, refused = call("deck_worker_start", {**start, "request_id": f"pwx_{self.suffix}",
+                                                             "model": self.choose + "-unlisted"})
+                facts["unlisted"] = {"refused": not ok_bad or (refused.get("error") or {}).get("code") == "MODEL_NOT_LISTED",
+                                     "code": (refused.get("error") or {}).get("code"),
+                                     "models": [t.get("models") for t in listed.get("workerTypes", [])]}
+                start["model"] = self.choose
+            ok, started = call("deck_worker_start", start)
+            facts["start_model"] = (started.get("result") or {}).get("model")
             sequence += 1
             card = None
             deadline = time.time() + 120
@@ -652,6 +692,10 @@ class Run:
             facts["draft"] = {"sent": ok3, "turn": e3 is not None, "third": pane.count(third),
                               "draft_once": pane.count(draft) == 1, "draft_at_editor": any(draft in line for line in tail)}
             (self.logs / "pane-after-worker.txt").write_text(pane)
+            if self.choose:
+                _, rows = call("deck_worker_list")
+                facts["listed_model"] = next((w.get("model") for w in rows.get("workers", []) if w.get("cardId") == card), None)
+                facts["answered"] = self.models_answered()
             return facts
         finally:
             try:
@@ -677,6 +721,17 @@ class Run:
             self.check("Pi called deck_worker_report itself: the card's row counts one report, and the text read back "
                        "is exactly the token", report.get("texts_match") and (report.get("summary") or {}).get("count") == 1
                        and not report.get("token_in_listing"), report=report)
+        if self.choose:
+            unlisted = facts.get("unlisted") or {}
+            self.check("a model the type does not list starts nothing", unlisted.get("refused")
+                       and unlisted.get("code") == "MODEL_NOT_LISTED" and unlisted.get("models") == [[self.choose]],
+                       unlisted=unlisted)
+            self.check("the card runs the model the orchestrator chose from the type's list: the start and the list "
+                       "say so, and every answer in Pi's session came from it",
+                       facts.get("start_model") == self.choose and facts.get("listed_model") == self.choose
+                       and facts.get("answered") == [self.choose],
+                       start=facts.get("start_model"), listed=facts.get("listed_model"), answered=facts.get("answered"),
+                       default=self.facts.get("model"))
         self.check("with an extension dialog open, the line did not answer it",
                    dialog.get("opened") and dialog.get("sent") and not dialog.get("answered_by_the_line"),
                    dialog={k: v for k, v in dialog.items() if k != "pane"})
@@ -786,6 +841,8 @@ def main() -> int:
     parser.add_argument("--model", help="pi-worker only: PROVIDER/MODEL, or `default` for the running machine's own Pi "
                         "default; a real model whose credential entry is borrowed for the run, and the worker is asked "
                         "to call deck_worker_report")
+    parser.add_argument("--choose", help="pi-worker with --model only: PROVIDER/MODEL the type lists and the start "
+                        "picks (the type's command is then plain `pi`, its default the --model one)")
     parser.add_argument("--standalone", help="the unpacked official build (the directory that holds pi)")
     parser.add_argument("--npm-package", default=str(Path.home() / ".local/lib/node_modules/@earendil-works/pi-coding-agent"))
     parser.add_argument("--host", help="an SSH alias: run on that machine instead of this one")
@@ -796,6 +853,8 @@ def main() -> int:
         args.mode = (Path(args.root) / "mode").read_text().strip()
         summary = Run(args).carry_out()
         return 0 if not summary["stopped"] and summary["cleanup"]["exit"] == 0 else 1
+    if args.choose and not (args.mode == "pi-worker" and args.model and "/" in args.choose):
+        parser.error("--choose PROVIDER/MODEL is for --mode pi-worker with --model")
     if args.mode in ("pi-live", "pi-worker"):
         if not args.runtime:
             parser.error("--runtime is needed")
