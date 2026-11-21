@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.36 — 2026-11-21 (Nightly)
+
+- An MCP client you let draft configuration can now also read a summary
+  of your settings (`deck_settings_read`), so its agent can tell you why
+  something does not work — no away notifications, no Agent status on a
+  card, no turn summaries, an automation that does not fire — and which
+  setting to change. The summary holds switches, status words and counts
+  only (for example: notifications on but not allowed by macOS, Claude
+  Code's status hooks not installed, a model API key saved or not and what
+  its last check said). It never carries a template's or rule's text, a
+  name, a path, a command, a project environment variable or a secret,
+  and it checks nothing live. The client cannot change any setting.
+- Settings search: typing a setting's id (the summary names each one, for
+  example `away-notifications`) shows exactly that setting.
+- MCP worker types take their models as one comma-separated line instead
+  of one per line; a pasted list with line breaks still splits.
+- Settings › MCP: each client reads as one block — its name and
+  permissions on top, its buttons in one row below, and the Secure
+  Tunnel's status and buttons in their own strip.
+
 ## 0.8.35 — 2026-11-21 (Nightly)
 
 - MCP worker types may list the models an orchestrator can choose from,
