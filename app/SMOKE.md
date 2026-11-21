@@ -355,7 +355,7 @@ separate session; the rule sends its first step without readiness) or
 `rehearsal` (no sign-in: the first-send policy stays off and every row is
 held, so nothing is ever typed into Claude's login screen).
 
-The page enables Remote access and authorizes one client with the
+The page turns MCP on and authorizes one client with the
 automation delegation (the Settings dialog's own IPCs), turns the Claude
 status hooks on, saves a three-step template (step 2 carries `{{msg.text}}`)
 and an "Agent handover" rule through the automation editor (approval,
@@ -408,7 +408,7 @@ acceptEdits --settings <that file>`: only the workers get those hooks, and
 no user-level hooks (another Deck's, whose duplicate turn ending would be
 dropped together with its forwarded reply).
 
-The page enables Remote access, authorizes one client `orchestrator` with
+The page turns MCP on, authorizes one client `orchestrator` with
 the automation delegation and the worker and reply choices, saves the
 one-step template `Task: {{msg.text}}` (a step may not open with the
 message) and an "Agent handover" rule `worker`

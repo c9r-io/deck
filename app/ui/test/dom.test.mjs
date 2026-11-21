@@ -486,7 +486,7 @@ test('MCP settings say when the authorization data could not be loaded and offer
   const note = el('set-mcp-clients').children;
   assert.equal(note.length, 1);
   assert.equal(note[0].className, 'set-hint');
-  assert.match(note[0].textContent, /MCP terminal control stays off.*file was left untouched.*Ordinary terminals are not affected.*Restarting or updating Deck/);
+  assert.match(note[0].textContent, /so MCP stays off.*file was left untouched.*Ordinary terminals are not affected.*Restarting or updating Deck/);
   assert.doesNotMatch(note[0].textContent, /mcp\.json|ledger|runner/, 'no internal names');
 
   // a ledger that loads again: the row and its controls are as before
@@ -790,7 +790,7 @@ test('enabling shell recovery is opt-in and saves only after disclosure', async 
 });
 
 
-const SECTIONS = ['general', 'shortcuts', 'terminal', 'agents', 'integrations', 'remote', 'data', 'about'];
+const SECTIONS = ['general', 'shortcuts', 'terminal', 'agents', 'mcp', 'integrations', 'remote', 'data', 'about'];
 const panel = id => fakeDocument.getElementById('set-panel-' + id);
 const navItem = id => fakeDocument.getElementById('set-nav-' + id);
 const group = id => fakeDocument.getElementById('set-item-' + id);
@@ -817,9 +817,12 @@ test('settings navigation and search show matching setting groups under their se
   assert.deepEqual(visiblePanels(), ['agents']);
   search.value = 'MCP';
   filterSettings();
-  assert.deepEqual(visiblePanels(), ['remote']);
+  assert.deepEqual(visiblePanels(), ['mcp']);
   assert.equal(group('mcp').hidden, false);
-  assert.equal(group('connector').hidden, true);
+  search.value = '配对';
+  filterSettings();
+  assert.deepEqual(visiblePanels(), ['remote']);
+  assert.equal(group('connector').hidden, false);
   search.value = 'SLACK';
   filterSettings();
   assert.deepEqual(visiblePanels(), ['integrations']);
@@ -860,15 +863,15 @@ test('locating a setting selects its section, scrolls, highlights and focuses it
   filterSettings();
   assert.equal(locateSetting('mcp'), true);
   assert.equal(search.value, '', 'locating leaves search mode');
-  assert.deepEqual(visiblePanels(), ['remote']);
-  assert.equal(navItem('remote')['aria-current'], 'page');
+  assert.deepEqual(visiblePanels(), ['mcp']);
+  assert.equal(navItem('mcp')['aria-current'], 'page');
   assert.equal(mcp.hidden, false);
   assert.deepEqual(scrolled, { block: 'start' });
   assert.equal(classes.has('set-located'), true);
   assert.equal(fakeDocument.activeElement, mcp);
   for (const bad of ['no-such-setting', '', undefined, null, 'remote']) {
     assert.equal(locateSetting(bad), false, String(bad));
-    assert.deepEqual(visiblePanels(), ['remote']);
+    assert.deepEqual(visiblePanels(), ['mcp']);
     assert.equal(fakeDocument.activeElement, mcp);
   }
   selectSettingsSection('general');

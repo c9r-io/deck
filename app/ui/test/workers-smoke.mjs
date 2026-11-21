@@ -6,7 +6,7 @@
 // operator put in `<data>/translation-fixture/worker-hooks.json`, never from
 // Deck's own hook installer). app/SMOKE.md "Worker cards".
 //
-// The page does what the person does: Remote access on and ONE client
+// The page does what the person does: MCP on and ONE client
 // authorized with the automation delegation AND the worker choice (the
 // Settings dialog's IPCs), a one-step template `Task: {{msg.text}}` (a step
 // may not open with the message) and an "Agent
@@ -633,7 +633,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
       return;
     }
 
-    /* 1. Remote access on; one client that may start and drive workers */
+    /* 1. MCP on; one client that may start and drive workers */
     await inv('mcp_enable');
     const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
       permissions: { allowCreate: false, allowAutomations: !types, allowWorkers: true, allowReplies: true,

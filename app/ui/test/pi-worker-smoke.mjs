@@ -4,7 +4,7 @@
 // home of its own with a real interactive Pi on the local fixture model.
 //
 // The page does what the person does: Pi's work status on through its
-// Settings switch, Remote access on and ONE client authorized to drive
+// Settings switch, MCP on and ONE client authorized to drive
 // worker cards of one type, the operator's Pi command with the models the
 // operator lists for it, if any (`piw-armed`). The
 // operator is then the orchestrator: through this carrier's own adapter it

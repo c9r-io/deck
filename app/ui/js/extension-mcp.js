@@ -1,11 +1,12 @@
-// MCP terminal control's first-party Settings contribution. This module owns
+// The MCP clients' first-party Settings contribution (its own section,
+// Settings › MCP, since 2026-11-21). This module owns
 // the panel markup, authorization dialog, client/tunnel presentation and DOM
 // bindings; the generic Settings extension host supplies native services.
 // Part of deck's no-build frontend: native ES modules, no bundler.
 
 const PANEL_HTML = `
     <div class="set-group" id="set-item-mcp" data-setting-id="mcp" tabindex="-1" role="group" aria-labelledby="set-item-mcp-title">
-      <div class="set-group-head"><h3 class="set-group-title" id="set-item-mcp-title" data-i18n="mcp.title">MCP terminal control</h3><span class="set-group-status" id="set-mcp-status"></span></div>
+      <div class="set-group-head"><h3 class="set-group-title" id="set-item-mcp-title" data-i18n="mcp.title">MCP clients</h3><span class="set-group-status" id="set-mcp-status"></span></div>
       <div class="set-hint" data-i18n="mcp.hint">Off by default. An authorized MCP client can execute code with your account permissions and receive terminal output. This trusted-host mode is not an OS sandbox.</div>
       <div class="set-actions mcp-settings-actions"><button class="btn" id="set-mcp-toggle" data-i18n="mcp.enable">Enable</button><button class="btn" id="set-mcp-add" data-i18n="mcp.add">Authorize this project…</button></div>
       <div class="set-row mcp-retention-row"><label for="set-mcp-retention" data-i18n="mcp.outputRetention">Managed output retention</label><select id="set-mcp-retention"><option value="3600000" data-i18n="mcp.retention1h">1 hour</option><option value="86400000" data-i18n="mcp.retention24h">24 hours</option><option value="259200000" data-i18n="mcp.retention3d">3 days</option><option value="604800000" data-i18n="mcp.retention7d">7 days</option></select></div>
@@ -610,14 +611,14 @@ export function createMcpSettings(host) {
 export const CONTRIBUTION = Object.freeze({
   id: 'mcp',
   slots: Object.freeze([
-    Object.freeze({ slotId: 'set-extension-remote', html: PANEL_HTML }),
+    Object.freeze({ slotId: 'set-extension-mcp', html: PANEL_HTML }),
     Object.freeze({ slotId: 'set-extension-dialogs', html: AUTHORIZATION_HTML }),
   ]),
   settings: Object.freeze([Object.freeze({
-    id: 'mcp', section: 'remote', order: 1,
+    id: 'mcp', section: 'mcp', order: 0,
     labelKeys: ['mcp.title', 'mcp.add', 'mcp.outputRetention'],
-    keywords: ['mcp', 'chatgpt', 'codex', 'client', 'authorize', 'authorization', 'tunnel', 'remote', 'terminal control',
-      '远程', '控制', '授权', '客户端'],
+    keywords: ['mcp', 'chatgpt', 'codex', 'client', 'authorize', 'authorization', 'tunnel', 'remote', 'terminal control', 'worker', 'orchestrator',
+      '远程', '控制', '授权', '客户端', '工作卡', '编排'],
   })]),
   create: createMcpSettings,
 });

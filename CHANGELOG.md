@@ -11,6 +11,10 @@
   that does not already name a model, and a card keeps the model it
   started with. A ledger holding such a list is refused by older Deck
   builds: empty the lists before going back to one.
+- Settings: MCP has its own section, right after Agents & notifications,
+  and its group is now called "MCP clients"; the former "Remote access"
+  section holds only the Phone Connector and is named after it. Nothing
+  inside either moved or changed, and search finds both as before.
 
 ## 0.8.34 — 2026-11-21 (Nightly)
 

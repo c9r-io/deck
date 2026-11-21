@@ -5,7 +5,7 @@
 // stable location; app/SMOKE.md "Agent handover: delegated MCP client").
 //
 // The page does what the person does, and nothing a person could not:
-// Remote access on and ONE client authorized with the automation delegation
+// MCP on and ONE client authorized with the automation delegation
 // (the two IPCs the Settings dialog calls after its confirmations), the
 // Claude status hooks on (the Settings switch's command, into this home's
 // own settings file), a three-step template through the provider (step 2
@@ -78,7 +78,7 @@ export async function runAgentLiveSmoke() {
     const project = provider.projects()[0];
     const column = project.columns[0];
 
-    /* 1. Remote access on, one client with the automation delegation */
+    /* 1. MCP on, one client with the automation delegation */
     await inv('mcp_enable');
     const client = await inv('mcp_client_add', { name: 'patrol', projects: [{ projectId: project.id, roots: [work] }],
       permissions: { allowCreate: false, allowAutomations: true, allowWorkers: false, allowReplies: false, workerTypes: [], workerFirstSend: false } });

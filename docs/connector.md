@@ -1,6 +1,6 @@
 # Phone Connector
 
-Phone Connector is disabled by default. Enabling it in **Settings → Remote access** asks for confirmation, because a paired phone can:
+Phone Connector is disabled by default. Enabling it in **Settings → Phone Connector** asks for confirmation, because a paired phone can:
 
 - read the recent output of Codex and Claude cards;
 - submit prompts to Codex and Claude sessions — a prompt can lead the agent to run commands, so this is equivalent to running code under your macOS account, with whatever permissions the saved card command and the agent's own configuration grant;
@@ -28,7 +28,7 @@ The hint under **Phone access** always describes the scope this Mac currently
 keeps: what a paired phone can do now, what it cannot, and which choice adds
 output. When a listed card lacks output, messages or notes only because of the
 kept scope, the phone leads its list with a setup note naming the Mac and the
-exact path (Deck → Settings → Remote access → Phone Connector → Phone access →
+exact path (Deck → Settings → Phone Connector → Phone access →
 All card output and notes), and each such card says "not shared". The wire
 code stays `unsupported-target`; the phone derives the remedy from the
 advertised scope and the denied capability (queueing always names the saved

@@ -16,7 +16,7 @@
 // where none does, the section title counts as part of each item's text. So
 // "通知" shows the notification group and not the agent-status group in the
 // same "Agent 与通知" section, while "terminal" shows Terminal & sessions
-// (whose items never say "terminal") beside MCP terminal control, and
+// (whose items never say "terminal") beside the MCP clients, and
 // "terminal voice" narrows to Voice input.
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { EXTENSION_CONTRIBUTIONS } from './extensions-generated.js';
@@ -26,6 +26,7 @@ export const SETTINGS_SECTIONS = Object.freeze([
   { id: 'shortcuts', titleKey: 'settings.shortcuts' },
   { id: 'terminal', titleKey: 'settings.terminal' },
   { id: 'agents', titleKey: 'settings.agents' },
+  { id: 'mcp', titleKey: 'settings.mcp' },
   { id: 'integrations', titleKey: 'settings.integrations' },
   { id: 'remote', titleKey: 'settings.remote' },
   { id: 'data', titleKey: 'settings.data' },

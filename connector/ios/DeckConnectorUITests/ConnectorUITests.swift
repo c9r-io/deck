@@ -1216,7 +1216,7 @@ extension ConnectorUITests {
         XCTAssertFalse(app.textFields["deck.pair.descriptor"].exists, "Upgrade must not ask to pair again.")
         let setup = app.staticTexts["deck.sharing.setup"].firstMatch
         XCTAssertTrue(setup.waitForExistence(timeout: 20), "The kept summaries-only scope must lead with setup guidance.")
-        XCTAssertTrue(setup.label.contains("「\(host)」") && setup.label.contains("「信任此设备」") && setup.label.contains("「设置 → 远程访问」")
+        XCTAssertTrue(setup.label.contains("「\(host)」") && setup.label.contains("「信任此设备」") && setup.label.contains("「设置 → 手机连接器」")
                       && setup.label.contains("下次回到") && setup.label.contains("无需重新配对"),
                       "Setup must name the host and the exact desktop action: \(setup.label)")
         // Compact enough that the first card stays on the first screen.

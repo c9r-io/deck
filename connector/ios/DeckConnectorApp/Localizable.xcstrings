@@ -1100,7 +1100,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在 Mac 的 Deck「设置」→「远程访问」中启用手机连接器并生成配对码，然后扫码或粘贴配对码连接。"
+            "value": "在 Mac 的 Deck「设置」→「手机连接器」中启用手机连接器并生成配对码，然后扫码或粘贴配对码连接。"
           }
         }
       }
@@ -1452,7 +1452,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请在 Mac 的 Deck「设置」→「远程访问」中检查「手机访问范围」。刷新不会改变共享范围。"
+            "value": "请在 Mac 的 Deck「设置」→「手机连接器」中检查「手机访问范围」。刷新不会改变共享范围。"
           }
         }
       }
@@ -1868,7 +1868,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此卡片未共享这项访问权限。请在 Mac 上的 Deck「设置」→「远程访问」→「手机访问范围」中检查。"
+            "value": "此卡片未共享这项访问权限。请在 Mac 上的 Deck「设置」→「手机连接器」→「手机访问范围」中检查。"
           }
         }
       }
@@ -2166,13 +2166,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Next time you are at “%@”, choose “Trust this device…” for this phone in Deck → Settings → Remote access to read every card’s output and send messages. Once is enough; no re-pairing."
+            "value": "Next time you are at “%@”, choose “Trust this device…” for this phone in Deck → Settings → Phone Connector to read every card’s output and send messages. Once is enough; no re-pairing."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "下次回到「%@」时，在 Deck「设置 → 远程访问」中对这台手机选择「信任此设备」，即可查看所有卡片的输出并发送消息。只需一次，无需重新配对。"
+            "value": "下次回到「%@」时，在 Deck「设置 → 手机连接器」中对这台手机选择「信任此设备」，即可查看所有卡片的输出并发送消息。只需一次，无需重新配对。"
           }
         }
       }
@@ -2198,13 +2198,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Output, messages and notes for this card are not shared. On “%@”, open Deck → Settings → Remote access and choose “Trust this device…” for this phone."
+            "value": "Output, messages and notes for this card are not shared. On “%@”, open Deck → Settings → Phone Connector and choose “Trust this device…” for this phone."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此卡片的输出、消息和便签未共享。请在「%@」上打开 Deck →「设置」→「远程访问」，对这台手机选择「信任此设备」。"
+            "value": "此卡片的输出、消息和便签未共享。请在「%@」上打开 Deck →「设置」→「手机连接器」，对这台手机选择「信任此设备」。"
           }
         }
       }

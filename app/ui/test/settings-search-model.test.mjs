@@ -16,7 +16,7 @@ const ids = query => (search(query) || []).flatMap(result => result.items);
 
 test('the sections follow user intent, in sidebar order, and every one is in the markup', () => {
   assert.deepEqual(SETTINGS_SECTIONS.map(section => section.id),
-    ['general', 'shortcuts', 'terminal', 'agents', 'integrations', 'remote', 'data', 'about']);
+    ['general', 'shortcuts', 'terminal', 'agents', 'mcp', 'integrations', 'remote', 'data', 'about']);
   const navOrder = [...html.matchAll(/id="set-nav-([a-z]+)"/g)].map(match => match[1]);
   assert.deepEqual(navOrder, SETTINGS_SECTIONS.map(section => section.id));
   for (const { id, titleKey } of SETTINGS_SECTIONS) {
@@ -25,7 +25,8 @@ test('the sections follow user intent, in sidebar order, and every one is in the
   }
   assert.equal(dictionaries['zh-Hans']['settings.agents'], 'Agent 与通知');
   assert.equal(dictionaries['zh-Hans']['settings.integrations'], '集成');
-  assert.equal(dictionaries['zh-Hans']['settings.remote'], '远程访问');
+  assert.equal(dictionaries['zh-Hans']['settings.remote'], '手机连接器');
+  assert.equal(dictionaries['zh-Hans']['settings.mcp'], 'MCP');
   assert.equal(dictionaries['zh-Hans']['settings.data'], '数据与隐私');
 });
 
@@ -50,11 +51,12 @@ test('every setting has a unique stable id, a real section, translated labels an
     for (const keyword of item.keywords) assert.equal(keyword, normalizeSearchQuery(keyword), 'keywords are stored normalized');
   }
   assert.deepEqual(sectionItems('agents').map(item => item.id), ['agent-status', 'claude-reentry', 'codex-reentry', 'away-notifications']);
-  assert.deepEqual(sectionItems('remote').map(item => item.id), ['connector', 'mcp']);
+  assert.deepEqual(sectionItems('remote').map(item => item.id), ['connector']);
+  assert.deepEqual(sectionItems('mcp').map(item => item.id), ['mcp']);
 });
 
 test('item lookups never guess', () => {
-  assert.equal(settingItem('mcp').section, 'remote');
+  assert.equal(settingItem('mcp').section, 'mcp');
   for (const bad of ['nope', '', null, undefined, 42, { id: 'mcp' }, 'constructor', '__proto__']) assert.equal(settingItem(bad), null);
   assert.equal(isSettingsSection('integrations'), true);
   assert.equal(isSettingsSection('Integrations'), false);
@@ -101,10 +103,12 @@ test('a notification search shows only the notification group, not the pages aro
   assert.deepEqual(search('Play a sound'), [{ section: 'agents', items: ['away-notifications'] }]);
 });
 
-test('an MCP search lands on MCP terminal control under Remote access', () => {
-  assert.deepEqual(search('MCP'), [{ section: 'remote', items: ['mcp'] }]);
-  assert.deepEqual(search('mcp 终端控制'), [{ section: 'remote', items: ['mcp'] }]);
-  assert.deepEqual(search('remote'), [{ section: 'remote', items: ['connector', 'mcp'] }]);
+test('an MCP search lands on the MCP clients in their own section', () => {
+  assert.deepEqual(search('MCP'), [{ section: 'mcp', items: ['mcp'] }]);
+  assert.deepEqual(search('mcp 客户端'), [{ section: 'mcp', items: ['mcp'] }]);
+  assert.deepEqual(search('mcp 工作卡'), [{ section: 'mcp', items: ['mcp'] }]);
+  assert.deepEqual(search('配对'), [{ section: 'remote', items: ['connector'] }]);
+  assert.deepEqual(search('remote'), [{ section: 'mcp', items: ['mcp'] }, { section: 'remote', items: ['connector'] }]);
 });
 
 test('text that lives only in hints or Learn more never surfaces a group', () => {
@@ -133,7 +137,7 @@ test('a section title shows that section when no setting names the query', () =>
 test('a section title and a setting name narrow together; a named setting beats its section title', () => {
   assert.deepEqual(search('terminal'), [
     { section: 'terminal', items: ['voice', 'local-translation', 'editor', 'session-restore', 'shell-service'] },
-    { section: 'remote', items: ['mcp'] },
+    { section: 'mcp', items: ['mcp'] },
   ]);
   assert.deepEqual(search('terminal voice'), [{ section: 'terminal', items: ['voice'] }]);
   assert.deepEqual(search('集成'), [{ section: 'integrations', items: ['slack-reactions', 'model-api'] }]);

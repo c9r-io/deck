@@ -73,7 +73,7 @@ export async function runLocaleLayoutSmoke() {
         await pause(200);
         const found = overflowing($('settings-box'));
         overflow += found.length; scrolled ||= sideways(); outside ||= !inWindow($('settings-box'));
-        if (['general', 'terminal', 'agents', 'integrations'].includes(section.id)) {
+        if (['general', 'terminal', 'agents', 'mcp', 'integrations', 'remote'].includes(section.id)) {
           mark(found); await snapshot(`ll-${short}-settings-${section.id}`); unmark(found);
         }
       }

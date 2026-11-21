@@ -286,7 +286,7 @@ untouched.
 ## The Agent handover trigger
 
 The third source is an **Agent**: an MCP client you delegated under
-**Settings → Remote access** (the **Trigger your Agent automations**
+**Settings → MCP** (the **Trigger your Agent automations**
 choice, in the dialog that authorizes the client or later under its row's
 **Permissions…**) names one of your
 Agent rules by its **automation id** and hands over one classified item —

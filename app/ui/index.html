@@ -94,7 +94,7 @@
             <input id="auto-badge" autocomplete="off" spellcheck="false" maxlength="64" placeholder="bug">
           </div>
           <div class="set-hint auto-editor-hint q-p q-p-slack" id="auto-slack-state"></div>
-          <div class="set-hint auto-editor-hint q-p q-p-agent" id="auto-agent-hint" data-i18n="automation.agentHint">An MCP client you delegated under Settings → Remote access names this id and hands over one classified item. Deck creates a fresh card and sends this rule's template with the item filled in, under the choices below; the client never types into a session.</div>
+          <div class="set-hint auto-editor-hint q-p q-p-agent" id="auto-agent-hint" data-i18n="automation.agentHint">An MCP client you delegated under Settings → MCP names this id and hands over one classified item. Deck creates a fresh card and sends this rule's template with the item filled in, under the choices below; the client never types into a session.</div>
           <div class="q-p q-p-channel auto-channel-fields">
             <div class="set-row"><label for="auto-channel-ids" data-i18n="automation.channelIds">Channel IDs</label><input id="auto-channel-ids" autocomplete="off" spellcheck="false" placeholder="C0123, G0456"></div>
             <div class="set-row"><label for="auto-sender-users" data-i18n="automation.senderUsers">Allowed user IDs</label><input id="auto-sender-users" autocomplete="off" spellcheck="false" placeholder="U0123, W0456"></div>
@@ -363,13 +363,17 @@
             <span aria-hidden="true">◉</span>
             <span data-i18n="settings.agents">Agents & notifications</span>
           </button>
+          <button class="set-nav-item" id="set-nav-mcp" aria-controls="set-panel-mcp">
+            <span aria-hidden="true">⌬</span>
+            <span data-i18n="settings.mcp">MCP</span>
+          </button>
           <button class="set-nav-item" id="set-nav-integrations" aria-controls="set-panel-integrations">
             <span aria-hidden="true">◇</span>
             <span data-i18n="settings.integrations">Integrations</span>
           </button>
           <button class="set-nav-item" id="set-nav-remote" aria-controls="set-panel-remote">
             <span aria-hidden="true">⇄</span>
-            <span data-i18n="settings.remote">Remote access</span>
+            <span data-i18n="settings.remote">Phone Connector</span>
           </button>
           <button class="set-nav-item" id="set-nav-data" aria-controls="set-panel-data">
             <span aria-hidden="true">▤</span>
@@ -497,12 +501,16 @@
             </details>
           </div>
         </section>
+        <section class="set-panel" id="set-panel-mcp" aria-labelledby="set-heading-mcp" hidden>
+          <h2 id="set-heading-mcp" data-i18n="settings.mcp">MCP</h2>
+          <div id="set-extension-mcp" hidden></div>
+        </section>
         <section class="set-panel" id="set-panel-integrations" aria-labelledby="set-heading-integrations" hidden>
           <h2 id="set-heading-integrations" data-i18n="settings.integrations">Integrations</h2>
           <div id="set-extension-integrations" hidden></div>
         </section>
         <section class="set-panel" id="set-panel-remote" aria-labelledby="set-heading-remote" hidden>
-          <h2 id="set-heading-remote" data-i18n="settings.remote">Remote access</h2>
+          <h2 id="set-heading-remote" data-i18n="settings.remote">Phone Connector</h2>
           <div id="set-extension-remote" hidden></div>
         </section>
         <section class="set-panel" id="set-panel-data" aria-labelledby="set-heading-data" hidden>

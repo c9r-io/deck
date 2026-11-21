@@ -275,7 +275,7 @@ weeks on Mon"), a **Slack badge**
 (an emoji reaction you put on a message; see
 [docs/auto-respond.md](auto-respond.md) for the one-app Slack
 connection in Settings) or an **Agent handover** (an MCP client you
-delegated under Settings → Remote access names the rule by its automation
+delegated under Settings → MCP names the rule by its automation
 id and hands over one classified item; the same document). When it fires, deck creates a fresh card in a
 column, launches the command and queues a template in a new session. A launch
 command may restore its own prior context; a clock runs one card at a time.
