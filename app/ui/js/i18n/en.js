@@ -1360,7 +1360,7 @@ const dictionary = {
   'mcp.rootResolved': 'Deck will authorize {root}. Check it, then click Authorize again.',
   'mcp.summaryCreate': 'creates sessions',
   "mcp.permDrafts": "Draft templates and automations",
-  "mcp.permDraftsHint": "Drafts wait in Needs attention; nothing works until you approve it.",
+  "mcp.permDraftsHint": "Drafts wait in Needs attention; nothing works until you approve it. It may also read a summary of your settings (switches and counts, no text or secrets) to tell you why something does not work; it cannot change them.",
   "mcp.summaryDrafts": "drafts configuration",
   "mcp.permMentions": "Read Slack mentions",
   "mcp.permMentionsHint": "Other people wrote these messages, and this agent will read them. Covers your whole Slack account. With automations, it may hand them to its own.",

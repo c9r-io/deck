@@ -52,7 +52,7 @@ const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" a
         <p class="set-hint mcp-perm-hint" data-i18n="mcp.permFollowHint">When the agent runs in a Deck card, the cards it starts open in that card's column and only it drives them. Off: the automation's column, or where your new cards open in that project.</p>
       </div>
       <label class="mcp-perm"><input type="checkbox" id="mcp-perm-drafts"> <span data-i18n="mcp.permDrafts">Draft templates and automations</span></label>
-      <p class="set-hint mcp-perm-hint" data-i18n="mcp.permDraftsHint">Drafts wait in Needs attention; nothing works until you approve.</p>
+      <p class="set-hint mcp-perm-hint" data-i18n="mcp.permDraftsHint">Drafts wait in Needs attention; nothing works until you approve it. It may also read a summary of your settings (switches and counts, no text or secrets) to tell you why something does not work; it cannot change them.</p>
       <label class="mcp-perm"><input type="checkbox" id="mcp-perm-mentions"> <span data-i18n="mcp.permMentions">Read Slack mentions</span></label>
       <p class="set-hint mcp-perm-hint mcp-perm-danger" data-i18n="mcp.permMentionsHint">Other people wrote these messages, and this agent will read them. Covers your whole Slack account. With automations, it may hand them to its own.</p>
       <label class="mcp-perm"><input type="checkbox" id="mcp-perm-cards"> <span data-i18n="mcp.permCards">Read the card snapshot</span></label>

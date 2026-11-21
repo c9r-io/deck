@@ -2404,6 +2404,20 @@ fn settings_value() -> Option<serde_json::Value> {
     settings_value_at(&settings_path())
 }
 
+/// The settings document for the MCP settings summary
+/// (`mcp/settings_read.rs`): its value and which file answered ("main" |
+/// "backup"), `(None, "none")` when there is no settings file yet, and
+/// `Err` when it cannot be read — never defaults in place of a failure.
+pub(crate) fn settings_for_summary() -> Result<(Option<serde_json::Value>, &'static str), ()> {
+    match storage::read_typed::<SettingsDoc>(&settings_path()) {
+        Ok(Some(doc)) => serde_json::from_str(&doc.payload)
+            .map(|value| (Some(value), doc.source))
+            .map_err(|_| ()),
+        Ok(None) => Ok((None, "none")),
+        Err(_) => Err(()),
+    }
+}
+
 fn settings_value_at(path: &std::path::Path) -> Option<serde_json::Value> {
     let raw = storage::read_typed::<SettingsDoc>(path).ok()??.payload;
     serde_json::from_str(&raw).ok()

@@ -151,6 +151,11 @@ pub(super) fn verify_at(dir: &Path) -> Result<(), DeckError> {
 pub(super) fn verify() -> Result<(), DeckError> {
     verify_at(&directory())
 }
+/// Whether the pack's directory exists, without verifying (hashing) it:
+/// what the MCP settings summary reports (`mcp/settings_read.rs`).
+pub(crate) fn on_disk() -> bool {
+    directory().exists()
+}
 pub(super) fn status() -> PackStatus {
     match verify() {
         Ok(()) => status_for(true, false),

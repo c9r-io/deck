@@ -134,6 +134,12 @@ fn check_failure_message(code: &'static str) -> &'static str {
 /// The last check's failure reason; None after a check that answered.
 static LAST_CHECK_FAILURE: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
 
+/// The last update check's failure code, None after one that answered (or
+/// before any check): the MCP settings summary reports it.
+pub(crate) fn last_check_failure() -> Option<&'static str> {
+    *LAST_CHECK_FAILURE.lock_or_recover()
+}
+
 /// One app.log line per change of reason, so an offline night of
 /// background checks is one line, not one per check; true when it logged.
 fn note_check(failure: Option<&'static str>) -> bool {

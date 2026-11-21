@@ -300,6 +300,14 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     ("mcp/cards.rs", "reply_of", "TURN_DONE", 1, Presentation),
     // the mark word `working` ("still going"), not the hook word
     ("mcp/cards.rs", "", "\"working\"", 1, NotSignal),
+    // the settings summary's new-card column: a Board column semantic
+    (
+        "mcp/settings_read.rs",
+        "project_view",
+        "\"working\"",
+        1,
+        NotSignal,
+    ),
     // "Draft title" reads Claude Code's own session title only for a pane
     // whose current generation proved a Claude interaction; it picks where a
     // draft comes from and grants nothing.

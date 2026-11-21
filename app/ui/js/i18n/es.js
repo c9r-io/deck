@@ -1353,7 +1353,7 @@ const dictionary = {
   "mcp.rootResolved": "Deck autorizará {root}. Compruébalo y vuelve a pulsar Autorizar.",
   "mcp.summaryCreate": "crea sesiones",
   "mcp.permDrafts": "Redactar plantillas y automatizaciones",
-  "mcp.permDraftsHint": "Los borradores esperan en Requiere atención; nada funciona hasta que lo apruebes.",
+  "mcp.permDraftsHint": "Los borradores esperan en Requiere atención; nada funciona hasta que lo apruebes. También puede leer un resumen de tus ajustes (interruptores y recuentos, sin textos ni secretos) para decirte por qué algo no funciona; no puede cambiarlos.",
   "mcp.summaryDrafts": "redacta configuración",
   "mcp.permMentions": "Leer menciones de Slack",
   "mcp.permMentionsHint": "Otras personas escribieron estos mensajes y este agente los leerá. Abarca toda tu cuenta de Slack, no un proyecto. Con las automatizaciones, puede pasarlas a las suyas.",

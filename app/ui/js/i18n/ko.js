@@ -1353,7 +1353,7 @@ const dictionary = {
   "mcp.rootResolved": "Deck은 {root}을(를) 승인합니다. 확인한 뒤 ‘승인’을 다시 누르세요.",
   "mcp.summaryCreate": "세션 생성 가능",
   "mcp.permDrafts": "템플릿과 자동화 초안 작성",
-  "mcp.permDraftsHint": "초안은 '주의 필요'에 표시되며, 승인해야 적용됩니다.",
+  "mcp.permDraftsHint": "초안은 '주의 필요'에 표시되며, 승인해야 적용됩니다. 설정 요약(스위치와 개수만, 텍스트나 비밀 정보 없음)을 읽어 기능이 작동하지 않는 이유를 알려 줄 수도 있으며, 설정은 바꿀 수 없습니다.",
   "mcp.summaryDrafts": "설정 초안 작성",
   "mcp.permMentions": "Slack 멘션 읽기",
   "mcp.permMentionsHint": "멘션은 다른 사람이 쓴 메시지이며 이 Agent가 읽습니다. 프로젝트가 아니라 Slack 계정 전체가 대상입니다. 자동화도 허용하면 자신의 자동화에 넘길 수 있습니다.",

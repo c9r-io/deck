@@ -8353,3 +8353,200 @@ fn a_reissued_credential_replaces_the_old_one_and_revokes_its_grants_never_a_rev
     drop(runner);
     drop(root);
 }
+
+/// The settings summary (`settings_read.rs`): only a client the user lets
+/// draft reads it; it carries switches, closed words and counts, never the
+/// text, names or secrets around them; an unreadable settings file is an
+/// error, never defaults; a backup says so; reads are bounded.
+#[test]
+fn settings_summary_is_content_free_permitted_and_never_guesses() {
+    use super::settings_read::{Live, SOURCES_FOR_TESTS};
+    let (runtime, _runner, _root) = fixture("settings-read", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    crate::documents::test_door::commit(
+        json!({"projects": [{"id": "P1", "name": "Deck", "cmd": "claude --secret-flag", "dir": "/secret/dir",
+            "selected": "C2",
+            "columns": [{"id": "C1", "name": "Doing"}, {"id": "C2", "name": "Mine"}],
+            "templates": [{"name": "SECRET TEMPLATE", "steps": ["SECRET STEP"]}]}]}),
+        true,
+    );
+    let rule = |id: &str, source: &str, extra: Value| -> crate::inbound::Rule {
+        let mut value = json!({"id": id, "source": source, "badge": id, "projectId": "P1",
+            "columnId": "C1", "cmd": "claude", "template": "SECRET TEMPLATE", "name": "SECRET RULE"});
+        for (key, field) in extra.as_object().unwrap() {
+            value[key] = field.clone();
+        }
+        serde_json::from_value(value).unwrap()
+    };
+    CONFIG_FOR_TESTS.with(|cell| {
+        *cell.borrow_mut() = Some(Some(crate::inbound::Config {
+            slack_enabled: true,
+            rules: vec![
+                rule("eyes", "slack", json!({})),
+                rule("a1", "agent", json!({})),
+                rule("k1", "clock", json!({"enabled": true})),
+                rule("k2", "clock", json!({"enabled": false})),
+            ],
+        }))
+    });
+    let settings = json!({
+        "locale": "zh-Hans", "theme": "SECRET THEME WITH SPACES", "accent": "teal",
+        "notifyAway": true, "notifySound": false, "editor": "SECRET EDITOR",
+        "updateChannel": "nightly",
+        "voice": {"languages": ["zh-CN", "SECRET LANGUAGE"], "defaultLanguage": "system"},
+        "inbound": {"sources": {"slack": {"enabled": true}},
+            "channelConnection": {"enabled": false},
+            "channelRules": [{"id": "r1", "name": "SECRET CHANNEL"}]},
+    });
+    let live = Live {
+        os_notifications: "denied".into(),
+        agents: json!({"claude-code": {"signal": true, "lifecycle": false}, "codex": {"signal": false, "lifecycle": false, "replies": false}}),
+        summaries: json!({"hooks": true, "on": true}),
+        model_api: json!({"openai": {"saved": false, "check": null}, "anthropic": {"saved": true, "check": {"ok": false, "code": "auth", "at": 1}}}),
+        slack_tokens: [true, false, false],
+        slack_connected: false,
+        connector: Some((true, false, 2)),
+        pack_on_disk: false,
+        update_failure: Some("network"),
+    };
+    let set = |answer: super::settings_read::SettingsAnswer| {
+        SOURCES_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some((answer, live.clone())));
+    };
+    set(Ok((Some(settings.clone()), "main")));
+    let call = || route(&runtime, request("deck_settings_read", json!({})));
+
+    // without the draft choice: refused
+    assert_eq!(call()["error"]["code"], "PERMISSION_DENIED");
+    let mut permissions = no_permissions(false);
+    permissions.allow_drafts = true;
+    client_permissions(&runtime, "client_a", permissions).unwrap();
+
+    let answer = call();
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["source"], "main");
+    let item = |id: &str| {
+        answer["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == id)
+            .unwrap_or_else(|| panic!("{id} missing"))
+            .clone()
+    };
+    let notify = item("away-notifications");
+    assert_eq!(
+        notify["facts"],
+        json!({"enabled": true, "sound": false, "osPermission": "denied"})
+    );
+    assert_eq!(notify["where"]["section"], "agents");
+    assert_eq!(notify["where"]["path"].as_array().unwrap().len(), 2);
+    assert!(!notify["note"].as_str().unwrap().is_empty());
+    assert_eq!(item("editor")["facts"], json!({"chosen": true}));
+    assert_eq!(item("appearance")["facts"]["theme"], "deck-dark");
+    assert_eq!(item("voice")["facts"]["languages"], json!(["zh-CN"]));
+    assert_eq!(item("claude-reentry")["facts"]["lifecycle"], false);
+    assert_eq!(item("updates")["facts"]["channel"], "nightly");
+    assert_eq!(item("updates")["facts"]["lastCheckFailure"], "network");
+    let slack = item("slack-reactions")["facts"].clone();
+    assert_eq!(
+        (
+            &slack["userToken"],
+            &slack["botToken"],
+            &slack["channelRules"]
+        ),
+        (&json!("present"), &json!("absent"), &json!(1))
+    );
+    assert_eq!(
+        item("connector")["facts"],
+        json!({"enabled": true, "running": false, "trustedDevices": 2})
+    );
+    let project = &answer["projects"][0];
+    assert_eq!(
+        (
+            &project["defaultCmd"],
+            &project["defaultDir"],
+            &project["newCardColumn"]
+        ),
+        (&json!("set"), &json!("set"), &json!("C2"))
+    );
+    assert_eq!(
+        project["rules"],
+        json!({"slackBadge": {"total": 1, "approved": 0}, "agent": {"total": 1, "approved": 0},
+            "clock": {"total": 2, "enabled": 1}})
+    );
+    // every item the summary names is a real settings id
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../ui/test/fixtures/settings-items.json"
+    ))
+    .unwrap();
+    let ids: HashSet<&str> = fixture["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap())
+        .collect();
+    for listed in answer["items"].as_array().unwrap() {
+        assert!(ids.contains(listed["id"].as_str().unwrap()), "{listed}");
+    }
+    // content-free: no text the user or anyone else wrote leaves Deck
+    let text = answer.to_string();
+    for secret in ["SECRET", "--secret-flag", "/secret/dir"] {
+        assert!(!text.contains(secret), "{secret} leaked: {text}");
+    }
+
+    // a backup answers, and says so
+    set(Ok((Some(settings), "backup")));
+    let backup = call();
+    assert_eq!(backup["source"], "backup");
+    assert!(backup["sourceNote"].is_string());
+    // no settings file yet: Deck's defaults are the truth
+    set(Ok((None, "none")));
+    let first = call();
+    assert_eq!(first["source"], "none");
+    assert_eq!(
+        first["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == "away-notifications")
+            .unwrap()["facts"]["enabled"],
+        false
+    );
+    // unreadable: an error, never defaults
+    set(Err(()));
+    assert_eq!(call()["error"]["code"], "SETTINGS_UNAVAILABLE");
+    // bounded: 30 a minute; the four reads above count, the refused one
+    // (no permission) does not
+    set(Ok((None, "none")));
+    let codes: Vec<Value> = (0..30).map(|_| call()["error"]["code"].clone()).collect();
+    assert!(codes.contains(&json!("CAPACITY_EXCEEDED")));
+    assert_eq!(codes.iter().filter(|c| c.is_null()).count(), 30 - 4);
+
+    SOURCES_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    CONFIG_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// The summary's readers never verify live: no Slack call, no tmux probe,
+/// no secret out of the Keychain, no hash of the translation pack, no
+/// process. Checked over the module's code (comments aside).
+#[test]
+fn settings_summary_calls_no_verifying_reader() {
+    let code: String = include_str!("settings_read.rs")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for banned in [
+        "slack_connection_status",
+        "tmux_server_status",
+        "probe_server",
+        "keychain::get",
+        "pack::status",
+        "translation_pack_status",
+        "Command::new",
+        "reqwest",
+        "project_env",
+    ] {
+        assert!(!code.contains(banned), "settings_read.rs calls {banned}");
+    }
+}

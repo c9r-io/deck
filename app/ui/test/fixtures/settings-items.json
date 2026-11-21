@@ -1,0 +1,604 @@
+{
+  "items": [
+    {
+      "id": "language",
+      "section": "general",
+      "path": {
+        "en": [
+          "General & appearance",
+          "Language"
+        ],
+        "zh-Hans": [
+          "通用与外观",
+          "语言"
+        ],
+        "ja": [
+          "一般と外観",
+          "言語"
+        ],
+        "ko": [
+          "일반 및 모양",
+          "언어"
+        ],
+        "es": [
+          "General y apariencia",
+          "Idioma"
+        ],
+        "de": [
+          "Allgemein & Darstellung",
+          "Sprache"
+        ]
+      }
+    },
+    {
+      "id": "appearance",
+      "section": "general",
+      "path": {
+        "en": [
+          "General & appearance",
+          "Appearance"
+        ],
+        "zh-Hans": [
+          "通用与外观",
+          "外观"
+        ],
+        "ja": [
+          "一般と外観",
+          "外観"
+        ],
+        "ko": [
+          "일반 및 모양",
+          "모양"
+        ],
+        "es": [
+          "General y apariencia",
+          "Apariencia"
+        ],
+        "de": [
+          "Allgemein & Darstellung",
+          "Darstellung"
+        ]
+      }
+    },
+    {
+      "id": "shortcuts",
+      "section": "shortcuts",
+      "path": {
+        "en": [
+          "Shortcuts",
+          "Shortcuts"
+        ],
+        "zh-Hans": [
+          "快捷键",
+          "快捷键"
+        ],
+        "ja": [
+          "ショートカット",
+          "ショートカット"
+        ],
+        "ko": [
+          "단축키",
+          "단축키"
+        ],
+        "es": [
+          "Atajos",
+          "Atajos"
+        ],
+        "de": [
+          "Tastenkürzel",
+          "Tastenkürzel"
+        ]
+      }
+    },
+    {
+      "id": "voice",
+      "section": "terminal",
+      "path": {
+        "en": [
+          "Terminal & sessions",
+          "Voice input"
+        ],
+        "zh-Hans": [
+          "终端与 session",
+          "语音输入"
+        ],
+        "ja": [
+          "ターミナルとセッション",
+          "音声入力"
+        ],
+        "ko": [
+          "터미널 및 세션",
+          "음성 입력"
+        ],
+        "es": [
+          "Terminal y sesiones",
+          "Entrada de voz"
+        ],
+        "de": [
+          "Terminal & Sessions",
+          "Spracheingabe"
+        ]
+      }
+    },
+    {
+      "id": "local-translation",
+      "section": "terminal",
+      "path": {
+        "en": [
+          "Terminal & sessions",
+          "Local Intelligence"
+        ],
+        "zh-Hans": [
+          "终端与 session",
+          "本地智能"
+        ],
+        "ja": [
+          "ターミナルとセッション",
+          "ローカルインテリジェンス"
+        ],
+        "ko": [
+          "터미널 및 세션",
+          "로컬 인텔리전스"
+        ],
+        "es": [
+          "Terminal y sesiones",
+          "Inteligencia local"
+        ],
+        "de": [
+          "Terminal & Sessions",
+          "Lokale Intelligenz"
+        ]
+      }
+    },
+    {
+      "id": "editor",
+      "section": "terminal",
+      "path": {
+        "en": [
+          "Terminal & sessions",
+          "Open files in"
+        ],
+        "zh-Hans": [
+          "终端与 session",
+          "文件打开方式"
+        ],
+        "ja": [
+          "ターミナルとセッション",
+          "ファイルを開くアプリ"
+        ],
+        "ko": [
+          "터미널 및 세션",
+          "파일 열기 앱"
+        ],
+        "es": [
+          "Terminal y sesiones",
+          "Abrir archivos en"
+        ],
+        "de": [
+          "Terminal & Sessions",
+          "Dateien öffnen mit"
+        ]
+      }
+    },
+    {
+      "id": "session-restore",
+      "section": "terminal",
+      "path": {
+        "en": [
+          "Terminal & sessions",
+          "Shell recovery"
+        ],
+        "zh-Hans": [
+          "终端与 session",
+          "Shell 恢复"
+        ],
+        "ja": [
+          "ターミナルとセッション",
+          "shell の復元"
+        ],
+        "ko": [
+          "터미널 및 세션",
+          "Shell 복구"
+        ],
+        "es": [
+          "Terminal y sesiones",
+          "Recuperación del shell"
+        ],
+        "de": [
+          "Terminal & Sessions",
+          "Shell-Wiederherstellung"
+        ]
+      }
+    },
+    {
+      "id": "shell-service",
+      "section": "terminal",
+      "path": {
+        "en": [
+          "Terminal & sessions",
+          "Shell service"
+        ],
+        "zh-Hans": [
+          "终端与 session",
+          "Shell 服务"
+        ],
+        "ja": [
+          "ターミナルとセッション",
+          "シェルサービス"
+        ],
+        "ko": [
+          "터미널 및 세션",
+          "셸 서비스"
+        ],
+        "es": [
+          "Terminal y sesiones",
+          "Servicio de shell"
+        ],
+        "de": [
+          "Terminal & Sessions",
+          "Shell-Dienst"
+        ]
+      }
+    },
+    {
+      "id": "agent-status",
+      "section": "agents",
+      "path": {
+        "en": [
+          "Agents & notifications",
+          "Agent status"
+        ],
+        "zh-Hans": [
+          "Agent 与通知",
+          "Agent 状态"
+        ],
+        "ja": [
+          "Agent と通知",
+          "Agent 状態"
+        ],
+        "ko": [
+          "Agent 및 알림",
+          "Agent 상태"
+        ],
+        "es": [
+          "Agents y notificaciones",
+          "Estado del Agent"
+        ],
+        "de": [
+          "Agents & Mitteilungen",
+          "Agent-Status"
+        ]
+      }
+    },
+    {
+      "id": "claude-reentry",
+      "section": "agents",
+      "path": {
+        "en": [
+          "Agents & notifications",
+          "Claude session re-entry observation"
+        ],
+        "zh-Hans": [
+          "Agent 与通知",
+          "Claude 会话重入观察"
+        ],
+        "ja": [
+          "Agent と通知",
+          "Claude セッションの再開のための観測"
+        ],
+        "ko": [
+          "Agent 및 알림",
+          "Claude 세션 다시 열기 관측"
+        ],
+        "es": [
+          "Agents y notificaciones",
+          "Observación para reabrir sesiones de Claude"
+        ],
+        "de": [
+          "Agents & Mitteilungen",
+          "Claude-Sessions zum erneuten Öffnen beobachten"
+        ]
+      }
+    },
+    {
+      "id": "codex-reentry",
+      "section": "agents",
+      "path": {
+        "en": [
+          "Agents & notifications",
+          "Codex session re-entry observation"
+        ],
+        "zh-Hans": [
+          "Agent 与通知",
+          "Codex 会话重入观察"
+        ],
+        "ja": [
+          "Agent と通知",
+          "Codex セッションの再開のための観測"
+        ],
+        "ko": [
+          "Agent 및 알림",
+          "Codex 세션 다시 열기 관측"
+        ],
+        "es": [
+          "Agents y notificaciones",
+          "Observación para reabrir sesiones de Codex"
+        ],
+        "de": [
+          "Agents & Mitteilungen",
+          "Codex-Sessions zum erneuten Öffnen beobachten"
+        ]
+      }
+    },
+    {
+      "id": "away-notifications",
+      "section": "agents",
+      "path": {
+        "en": [
+          "Agents & notifications",
+          "Away notifications"
+        ],
+        "zh-Hans": [
+          "Agent 与通知",
+          "离席通知"
+        ],
+        "ja": [
+          "Agent と通知",
+          "離席中の通知"
+        ],
+        "ko": [
+          "Agent 및 알림",
+          "자리 비움 알림"
+        ],
+        "es": [
+          "Agents y notificaciones",
+          "Notificaciones en ausencia"
+        ],
+        "de": [
+          "Agents & Mitteilungen",
+          "Mitteilungen bei Abwesenheit"
+        ]
+      }
+    },
+    {
+      "id": "mcp",
+      "section": "mcp",
+      "path": {
+        "en": [
+          "MCP",
+          "MCP clients"
+        ],
+        "zh-Hans": [
+          "MCP",
+          "MCP 客户端"
+        ],
+        "ja": [
+          "MCP",
+          "MCP クライアント"
+        ],
+        "ko": [
+          "MCP",
+          "MCP 클라이언트"
+        ],
+        "es": [
+          "MCP",
+          "Clientes MCP"
+        ],
+        "de": [
+          "MCP",
+          "MCP-Clients"
+        ]
+      }
+    },
+    {
+      "id": "slack-reactions",
+      "section": "integrations",
+      "path": {
+        "en": [
+          "Integrations",
+          "Slack"
+        ],
+        "zh-Hans": [
+          "集成",
+          "Slack"
+        ],
+        "ja": [
+          "連携",
+          "Slack"
+        ],
+        "ko": [
+          "통합",
+          "Slack"
+        ],
+        "es": [
+          "Integraciones",
+          "Slack"
+        ],
+        "de": [
+          "Integrationen",
+          "Slack"
+        ]
+      }
+    },
+    {
+      "id": "model-api",
+      "section": "integrations",
+      "path": {
+        "en": [
+          "Integrations",
+          "Model APIs"
+        ],
+        "zh-Hans": [
+          "集成",
+          "模型 API"
+        ],
+        "ja": [
+          "連携",
+          "モデル API"
+        ],
+        "ko": [
+          "통합",
+          "모델 API"
+        ],
+        "es": [
+          "Integraciones",
+          "APIs de modelos"
+        ],
+        "de": [
+          "Integrationen",
+          "Modell-APIs"
+        ]
+      }
+    },
+    {
+      "id": "connector",
+      "section": "remote",
+      "path": {
+        "en": [
+          "Phone Connector",
+          "Phone Connector"
+        ],
+        "zh-Hans": [
+          "手机连接器",
+          "手机连接器"
+        ],
+        "ja": [
+          "Phone Connector",
+          "Phone Connector"
+        ],
+        "ko": [
+          "휴대폰 Connector",
+          "휴대폰 Connector"
+        ],
+        "es": [
+          "Connector del teléfono",
+          "Connector del teléfono"
+        ],
+        "de": [
+          "Telefon-Connector",
+          "Telefon-Connector"
+        ]
+      }
+    },
+    {
+      "id": "history",
+      "section": "data",
+      "path": {
+        "en": [
+          "Data & privacy",
+          "Command history"
+        ],
+        "zh-Hans": [
+          "数据与隐私",
+          "命令历史"
+        ],
+        "ja": [
+          "データとプライバシー",
+          "コマンド履歴"
+        ],
+        "ko": [
+          "데이터 및 개인정보",
+          "명령 기록"
+        ],
+        "es": [
+          "Datos y privacidad",
+          "Historial de comandos"
+        ],
+        "de": [
+          "Daten & Datenschutz",
+          "Befehlsverlauf"
+        ]
+      }
+    },
+    {
+      "id": "shell-data",
+      "section": "data",
+      "path": {
+        "en": [
+          "Data & privacy",
+          "Shell recovery data"
+        ],
+        "zh-Hans": [
+          "数据与隐私",
+          "Shell 恢复数据"
+        ],
+        "ja": [
+          "データとプライバシー",
+          "shell の復元データ"
+        ],
+        "ko": [
+          "데이터 및 개인정보",
+          "Shell 복구 데이터"
+        ],
+        "es": [
+          "Datos y privacidad",
+          "Datos de recuperación del shell"
+        ],
+        "de": [
+          "Daten & Datenschutz",
+          "Shell-Wiederherstellungsdaten"
+        ]
+      }
+    },
+    {
+      "id": "logs",
+      "section": "data",
+      "path": {
+        "en": [
+          "Data & privacy",
+          "Application logs"
+        ],
+        "zh-Hans": [
+          "数据与隐私",
+          "应用日志"
+        ],
+        "ja": [
+          "データとプライバシー",
+          "アプリケーションログ"
+        ],
+        "ko": [
+          "데이터 및 개인정보",
+          "애플리케이션 로그"
+        ],
+        "es": [
+          "Datos y privacidad",
+          "Registros de la aplicación"
+        ],
+        "de": [
+          "Daten & Datenschutz",
+          "App-Protokolle"
+        ]
+      }
+    },
+    {
+      "id": "updates",
+      "section": "about",
+      "path": {
+        "en": [
+          "About & updates",
+          "Update channel"
+        ],
+        "zh-Hans": [
+          "关于与更新",
+          "更新通道"
+        ],
+        "ja": [
+          "情報とアップデート",
+          "アップデートチャンネル"
+        ],
+        "ko": [
+          "정보 및 업데이트",
+          "업데이트 채널"
+        ],
+        "es": [
+          "Acerca de y actualizaciones",
+          "Canal de actualización"
+        ],
+        "de": [
+          "Info & Updates",
+          "Update-Kanal"
+        ]
+      }
+    }
+  ]
+}

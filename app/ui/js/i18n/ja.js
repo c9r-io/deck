@@ -1353,7 +1353,7 @@ const dictionary = {
   "mcp.rootResolved": "Deck は {root} を許可します。確認してから、もう一度「許可」をクリックしてください。",
   "mcp.summaryCreate": "セッションを作成可",
   "mcp.permDrafts": "テンプレートと自動化を下書きする",
-  "mcp.permDraftsHint": "下書きは「要対応」に表示され、承認するまで有効になりません。",
+  "mcp.permDraftsHint": "下書きは「要対応」に表示され、承認するまで有効になりません。設定の概要（スイッチと件数のみ。文章や秘密情報は含みません）を読み、機能しない理由を伝えることもできます。設定は変更できません。",
   "mcp.summaryDrafts": "設定を下書き",
   "mcp.permMentions": "Slack のメンションを読む",
   "mcp.permMentionsHint": "メンションは他の人が書いたメッセージで、この Agent が読みます。Slack アカウント全体が対象で、プロジェクト単位ではありません。自動化も許可すると、自分の自動化に渡せます。",

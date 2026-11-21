@@ -159,6 +159,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_config_describe` | Before drafting: the workflow, every field of a template and an Agent handover rule with its rules, copyable examples, and the client's projects with their columns, templates (name and structure, never step text) and Agent rules. Needs the client's separate **draft** choice. |
 | `deck_config_propose` | Draft a template and/or one Agent handover rule. `validate_only: true` checks and previews and records nothing; every problem is `{field, code, message, fix}`. A valid submission (fresh `request_id`) waits in Needs attention as a proposal; an identical pending draft is refused (`DUPLICATE_PROPOSAL`), at most 4 wait per client. Writes and authorizes nothing. |
 | `deck_config_proposal_get` | One of the client's proposals: `pending`, `approved` (saved as drafted), `edited` (saved without automatic sending, finished in the editor), `rejected` or `withdrawn`, with the next action. |
+| `deck_settings_read` | A content-free summary of your settings to diagnose why something does not work: per setting its stable id, its place in Settings (section and title in your UI language), its facts (switches, closed status words, counts, versions, the last recorded check) and a fixed note on what it depends on; per project its defaults (set or unset), the column new cards open in and its rules counted. No text, names, paths, commands, environment variables or secrets; nothing verified live. `SETTINGS_UNAVAILABLE` when the settings file cannot be read (never defaults), `source: "backup"` when Deck runs on its backup. Reads only; at most 30 a minute. Needs the **draft** choice. |
 | `deck_mentions_list` | The Slack messages that @mention you and are still open in your Deck list (not started, set aside or handed over), newest first: key, time, link, and the sender, channel and first 200 characters as external content. `cursor` + `wait_ms` (at most 5 s) waits for a change. Read from Deck's memory, never a Slack call; `SOURCE_UNAVAILABLE` with a reason (`slack-off`, `not-searched`, or the last search's failure) instead of a possibly stale list. Needs the client's separate **Slack mentions** choice. |
 | `deck_mention_read` | One open mention whole: text, sender, channel, link and its context (thread start and the replies before it, or the conversation's last messages, with file names), all as external content. |
 | `deck_mention_mark` | Mark one open mention for the user: `handling` (optionally with one of the caller's worker cards), `for-you` or `no-action`, with a note of at most 200 characters; `null` takes the caller's mark off. Another orchestrator's mark is `MENTION_MARKED`. Presentation only: the mention stays listed. |
@@ -515,6 +516,22 @@ rule saved from a draft says "Drafted by ‹client›" in the drawer. The client
 reads your decision with `deck_config_proposal_get`; it can never approve,
 delete or change anything itself. Stopping the choice or revoking the
 client withdraws what waits.
+
+The same choice lets the client read a summary of your settings
+(`deck_settings_read`), so its agent can answer "why don't I get
+notifications?" or "why does this card show no Agent status?" with the
+setting to change. The summary holds switches, status words and counts
+only: whether away notifications are on and macOS allows them, which
+Agents' status hooks and re-entry observation are installed, whether a
+model API key or a Slack token is saved (never the key) and what its last
+recorded check said, the Phone Connector's state, translation, voice and
+update channel, and per project whether a default command and directory are
+set and how many rules of each kind it has. It never carries a template's
+or rule's text, a channel, device or editor name, a path, a command, a
+project environment variable or a secret, and it checks nothing live (no
+Slack or network call, no tmux probe). Each setting comes with its id:
+typing the id into the search field of Settings shows exactly that
+setting. The client cannot change any setting.
 
 ## Slack mentions
 

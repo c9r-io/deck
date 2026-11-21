@@ -1353,7 +1353,7 @@ const dictionary = {
   "mcp.rootResolved": "Deck autorisiert {root}. Prüfen Sie es und klicken Sie dann erneut auf „Autorisieren“.",
   "mcp.summaryCreate": "erstellt Sessions",
   "mcp.permDrafts": "Vorlagen und Automatisierungen entwerfen",
-  "mcp.permDraftsHint": "Entwürfe warten unter Benötigt Aufmerksamkeit; nichts gilt, bevor Sie zustimmen.",
+  "mcp.permDraftsHint": "Entwürfe warten unter Benötigt Aufmerksamkeit; nichts gilt, bevor Sie zustimmen. Er kann auch eine Zusammenfassung Ihrer Einstellungen lesen (Schalter und Anzahlen, keine Texte oder Geheimnisse), um zu sagen, warum etwas nicht funktioniert; ändern kann er sie nicht.",
   "mcp.summaryDrafts": "entwirft Konfiguration",
   "mcp.permMentions": "Slack-Erwähnungen lesen",
   "mcp.permMentionsHint": "Andere haben diese Nachrichten geschrieben, und dieser Agent liest sie. Gilt für Ihr ganzes Slack-Konto, nicht für ein Projekt. Mit Automationen darf er sie an seine eigenen übergeben.",

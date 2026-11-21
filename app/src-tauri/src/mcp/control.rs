@@ -10,7 +10,7 @@ use super::*;
 /// added there without listing the tool here (and in
 /// `mcp-fixtures/tools.json`) is unreachable; the tests hold this list equal
 /// to the fixture and check that every member routes.
-pub(super) const CONTROL_TOOLS: [&str; 35] = [
+pub(super) const CONTROL_TOOLS: [&str; 36] = [
     "deck_automation_list",
     "deck_automation_trigger",
     "deck_capabilities",
@@ -38,6 +38,7 @@ pub(super) const CONTROL_TOOLS: [&str; 35] = [
     "deck_config_describe",
     "deck_config_propose",
     "deck_config_proposal_get",
+    "deck_settings_read",
     "deck_mentions_list",
     "deck_mention_read",
     "deck_mention_handoff",
@@ -220,6 +221,7 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
             "deck_config_proposal_get" => {
                 proposal_get(runtime, &request.client_id, request.arguments)
             }
+            "deck_settings_read" => settings_read(runtime, &request.client_id, request.arguments),
             "deck_mentions_list" => mentions_list(runtime, &request.client_id, request.arguments),
             "deck_mention_read" => mention_read(runtime, &request.client_id, request.arguments),
             "deck_mention_mark" => mention_mark(runtime, &request.client_id, request.arguments),

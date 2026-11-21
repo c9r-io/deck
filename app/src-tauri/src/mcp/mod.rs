@@ -257,7 +257,10 @@
 //! does. The client never approves or applies anything; it reads the
 //! decision (`deck_config_proposal_get`). Withdrawing the choice or revoking
 //! the client withdraws what waits. A ledger holding a proposal or the
-//! choice is written at `STATE_VERSION_PROPOSALS` (sticky).
+//! choice is written at `STATE_VERSION_PROPOSALS` (sticky). The same choice
+//! reads the content-free settings summary (`settings_read.rs`,
+//! `deck_settings_read`): switches, closed words and counts with each
+//! setting's id and place; it writes nothing and verifies nothing live.
 //!
 //! Slack mentions (`mentions.rs`, `docs/mcp.md` "Slack mentions"): a client
 //! with the separate local choice `allow_mentions` (account-wide) reads the
@@ -410,6 +413,7 @@ mod proposals;
 mod reports;
 mod runner;
 mod session;
+mod settings_read;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -429,6 +433,7 @@ use proposals::*;
 use reports::*;
 use runner::*;
 use session::*;
+use settings_read::*;
 use state::*;
 use wire::*;
 use workers::*;

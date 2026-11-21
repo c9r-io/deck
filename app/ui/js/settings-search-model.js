@@ -18,6 +18,11 @@
 // same "Agent 与通知" section, while "terminal" shows Terminal & sessions
 // (whose items never say "terminal") beside the MCP clients, and
 // "terminal voice" narrows to Voice input.
+// A query that is exactly one item's stable id (any case) shows that item
+// alone: the MCP settings summary names each setting by its id
+// (`mcp/settings_read.rs`), so an Agent can tell the user what to type.
+// `test/fixtures/settings-items.json` mirrors these ids, sections and
+// titles for that summary; `settings-items.test.mjs` holds it equal.
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { EXTENSION_CONTRIBUTIONS } from './extensions-generated.js';
 
@@ -113,8 +118,11 @@ const translations = (dictionaries, key) => Object.values(dictionaries || {})
 /** null for an empty query (normal navigation); otherwise the matches as
  *  [{ section, items: [id…] }] in sidebar order, possibly empty. */
 export function searchSettings(query, dictionaries) {
-  const terms = normalizeSearchQuery(query).split(' ').filter(Boolean);
+  const normalized = normalizeSearchQuery(query);
+  const terms = normalized.split(' ').filter(Boolean);
   if (!terms.length) return null;
+  const exact = settingItem(normalized);
+  if (exact) return [{ section: exact.section, items: [exact.id] }];
   const own = entry => [...entry.labelKeys.flatMap(key => translations(dictionaries, key)), ...entry.keywords]
     .join('\n').toLocaleLowerCase();
   const matches = hay => terms.every(term => hay.includes(term));

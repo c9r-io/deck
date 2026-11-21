@@ -33,7 +33,7 @@ spec = importlib.util.spec_from_file_location("agent_e2e", os.path.join(HERE, "m
 agent_e2e = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(agent_e2e)
 Adapter, PROTOCOL = agent_e2e.Adapter, agent_e2e.PROTOCOL
-TOOLS = 35
+TOOLS = 36
 FENCE = "<external_message "
 TOKEN = "CARDS-DONE-OK"
 

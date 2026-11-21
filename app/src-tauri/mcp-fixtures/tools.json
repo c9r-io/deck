@@ -27,6 +27,7 @@
     "deck_session_create",
     "deck_session_inspect",
     "deck_sessions_list",
+    "deck_settings_read",
     "deck_worker_close",
     "deck_worker_list",
     "deck_worker_reply",

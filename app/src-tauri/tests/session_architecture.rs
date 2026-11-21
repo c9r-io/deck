@@ -510,6 +510,7 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
             "ensure_review_schema in scheduler/mod.rs save_queue",
             "load_as_owner in documents.rs load_settings_at",
             "read_typed in documents.rs current_settings_value",
+            "read_typed in documents.rs settings_for_summary",
             "read_typed in documents.rs settings_value_at",
             "read_typed in inbound.rs read_config_strict_at",
             "read_typed in inbound_channel.rs read_config_at",
@@ -527,6 +528,7 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
             "documents.rs recover_channel_grant_activations",
             "documents.rs retire_channel_grants_locked",
             "documents.rs save_settings",
+            "documents.rs settings_for_summary",
             "documents.rs settings_value",
             "inbound.rs read_config_strict",
             "inbound_channel.rs read_config",
@@ -534,7 +536,8 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
             "scheduler/mod.rs save_queue",
         ],
         "a new reader of settings.json: route it through documents::settings_value, \
-         inbound::read_config_strict or inbound_channel::read_config"
+         inbound::read_config_strict or inbound_channel::read_config (the MCP settings \
+         summary's settings_for_summary reads it itself: it must tell a failure from no file)"
     );
 }
 

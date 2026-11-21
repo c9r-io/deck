@@ -1359,7 +1359,7 @@ const dictionary = {
   'mcp.rootResolved': 'Deck 将授权 {root}。确认无误后再点一次“授权”。',
   'mcp.summaryCreate': '可创建 session',
   "mcp.permDrafts": "起草模板和自动化",
-  "mcp.permDraftsHint": "起草的内容出现在“待关注”里，你批准后才生效。",
+  "mcp.permDraftsHint": "起草的内容出现在“待关注”里，你批准后才生效。它还可以读取设定摘要（只有开关和计数，没有文字和密钥），告诉你某个功能为什么没生效；它改不了设定。",
   "mcp.summaryDrafts": "起草配置",
   "mcp.permMentions": "读取 Slack 提及",
   "mcp.permMentionsHint": "提到你的消息是别人写的，这个 Agent 会读到。范围是整个 Slack 账号，不分项目。同时允许触发 Agent 自动化时，它可以把提及交给自己的自动化。",
