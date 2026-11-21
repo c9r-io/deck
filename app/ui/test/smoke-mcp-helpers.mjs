@@ -24,7 +24,7 @@ export async function openPermissions(clientName) {
   const { $ } = await import('../js/state.js');
   const { openSettings, renderMcpSettings } = await import('../js/settings.js');
   const { t } = await import('../js/i18n.js');
-  await openSettings({ section: 'remote' });
+  await openSettings({ section: 'mcp' });
   await renderMcpSettings();
   const row = [...document.querySelectorAll('.mcp-client-row')].find(value => value.textContent.includes(clientName));
   const open = row?.querySelector('button.mcp-permissions');

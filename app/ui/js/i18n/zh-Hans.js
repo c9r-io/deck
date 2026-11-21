@@ -1514,7 +1514,7 @@ const dictionary = {
   'mcp.outputSharingActive': '正在共享 managed 输出；会持续到客户端被撤销、你接管终端或关闭 MCP。',
   'mcp.executionUntil': '任意程序执行授权有效至 {time}。',
   'mcp.executionRequired': '当前没有本地执行授权。项目源码读取权限与此独立。',
-  'mcp.outputRetention': 'Managed 输出保留时间',
+  'mcp.outputRetention': 'MCP session 输出保留时间',
   'mcp.retention1h': '1 小时',
   'mcp.retention24h': '24 小时',
   'mcp.retention3d': '3 天',

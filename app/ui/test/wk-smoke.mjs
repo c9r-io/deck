@@ -2600,7 +2600,7 @@ async function settingsNavigationSmoke() {
     && $('toasts').lastElementChild?.textContent === t('settings.logsReset');
   await report('settings-logs', safeFocus && resetReady, safeFocus ? 1 : 0, resetReady ? 1 : 0);
   let visible = 0;
-  const sections = ['general', 'shortcuts', 'terminal', 'agents', 'integrations', 'remote', 'data', 'about'];
+  const sections = ['general', 'shortcuts', 'terminal', 'agents', 'mcp', 'integrations', 'remote', 'data', 'about'];
   for (const id of sections) {
     $('set-nav-' + id).click();
     const panels = [...document.querySelectorAll('.set-panel')].filter(panel => !panel.hidden);
@@ -2641,7 +2641,7 @@ export async function verifySettings() {
     // a client; cancellation and the original write path remain observable.
     const { renderMcpSettings } = await import('../js/settings.js');
     const { openSettings: openRemote } = await import('../js/settings.js');
-    await openRemote({ section: 'remote' });
+    await openRemote({ section: 'mcp' });
     await renderMcpSettings();
     const beforeMcp = await inv('mcp_status');
     if (beforeMcp.enabled || beforeMcp.clients.length) throw new Error('MCP smoke requires fresh isolated state');
@@ -2684,9 +2684,9 @@ export async function verifySettings() {
     await adding;
     await report('settings-mcp-cancel-authorize', explicitTarget && !(await inv('mcp_status')).clients.length);
     /* a client row: its buttons (Claude Code and Codex setup,
-       Permissions…, Revoke, and Tunnel setup when the helper is installed)
-       each on one line, beside the client's name and
-       never over it; the row is kept as evidence/settings-mcp-client-row.png */
+       Permissions…, Reissue…, Revoke) each on one line, below the client's
+       name and never over it (Tunnel buttons live in their own strip);
+       the row is kept as evidence/settings-mcp-client-row.png */
     const rowClient = await inv('mcp_client_add', { name: 'Orchestrator', projects: [],
       permissions: { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false,
         allowDrafts: false, allowMentions: false, ruleColumn: false, workerTypes: [], allProjects: true } });
@@ -2699,7 +2699,7 @@ export async function verifySettings() {
     const rowDetails = clientRow?.querySelector('.mcp-client-details')?.getBoundingClientRect();
     const oneLine = rowButtons.filter(button => button.getBoundingClientRect().height <= 40);
     const besideName = !!rowDetails && rowDetails.width > 160
-      && rowButtons.every(button => button.getBoundingClientRect().left >= rowDetails.right - 1);
+      && rowButtons.every(button => button.getBoundingClientRect().top >= rowDetails.bottom - 1);
     await inv('smoke_native_snapshot', { name: 'settings-mcp-client-row' }).catch(() => -1);
     await report('settings-mcp-client-row', rowButtons.length >= 4 && oneLine.length === rowButtons.length && besideName,
       1, rowButtons.length * 10 + (oneLine.length === rowButtons.length ? 0 : 1) + (besideName ? 0 : 2));

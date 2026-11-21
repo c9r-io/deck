@@ -99,9 +99,9 @@ export function createMcpSettings(host) {
     for (const client of status?.clients || []) {
       const row = document.createElement('div'); row.className = 'set-row mcp-client-row';
       const details = document.createElement('div'); details.className = 'mcp-client-details';
-      const label = document.createElement('span');
+      const label = document.createElement('span'); label.className = 'mcp-client-name';
       label.textContent = client.name;
-      const scope = document.createElement('span'); scope.style.color = 'var(--muted)';
+      const scope = document.createElement('span'); scope.className = 'mcp-client-scope';
       scope.textContent = [client.allProjects ? t('mcp.allProjectsShort') : t('mcp.projectCount', { count: formatNumber(client.projects?.length || 0) }),
         ...permissionSummary(client).map(key => t(key)),
         ...(client.revoked ? [t('mcp.revoked')] : [])].join(' · ');
@@ -121,7 +121,7 @@ export function createMcpSettings(host) {
         };
         const copyClaude = copyButton('mcp.copyClaude', claudeAddCommand, 'mcp.claudeCopied');
         const copy = copyButton('mcp.copyConfig', codexConfig, 'mcp.configCopied');
-        const revoke = document.createElement('button'); revoke.className = 'btn'; revoke.textContent = t('mcp.revoke');
+        const revoke = document.createElement('button'); revoke.className = 'btn set-danger'; revoke.textContent = t('mcp.revoke');
         revoke.onclick = async () => {
           if (!await confirmDangerDialog(t('mcp.revokeConfirm', { name: client.name }), t('mcp.revoke'))) return;
           try { await inv('mcp_client_revoke', { clientId: client.id }); await renderMcpSettings(); }
@@ -182,22 +182,27 @@ export function createMcpSettings(host) {
          by the backend for an authenticated request only, mcp/mod.rs): the one
          thing that helps is restarting that integration, so the row says so */
       if (client.adapterRefused === true && !client.revoked) {
-        const note = document.createElement('div'); note.className = 'mcp-tunnel-status mcp-adapter-refused';
+        const note = document.createElement('div'); note.className = 'mcp-adapter-refused';
         note.style.color = 'var(--wait)';
         note.textContent = t('mcp.adapterRefused');
         row.appendChild(note);
       }
       clients.appendChild(row);
-      renderTunnelForClient(client, row, actions);
+      renderTunnelForClient(client, row);
     }
   }
 
   /* Tunnel is an optional enhancement. This async branch never delays MCP
-     rendering and never participates in revoke/delete authority changes. */
-  async function renderTunnelForClient(client, row, actions) {
-    const line = document.createElement('div'); line.className = 'mcp-tunnel-status';
+     rendering and never participates in revoke/delete authority changes.
+     Its status and its own buttons share one strip under the client's
+     buttons, so a Tunnel action never reads as one of the client's. */
+  async function renderTunnelForClient(client, row) {
+    const strip = document.createElement('div'); strip.className = 'mcp-tunnel';
+    const line = document.createElement('span'); line.className = 'mcp-tunnel-status';
     line.textContent = t('mcp.tunnelChecking');
-    row.appendChild(line);
+    const actions = document.createElement('div'); actions.className = 'mcp-tunnel-actions';
+    strip.append(line, actions);
+    row.appendChild(strip);
     let status;
     try { status = await inv('tunnel_helper_status', { clientId: client.id }); }
     catch (_) { status = { helperState: 'helper_error' }; }
@@ -225,13 +230,13 @@ export function createMcpSettings(host) {
        runtime reports ready: a start that timed out leaves the runtime in
        `starting`, which alone would read as "still trying" */
     if (status.failureCode) {
-      const failure = document.createElement('div'); failure.className = 'mcp-tunnel-status mcp-tunnel-failure';
+      const failure = document.createElement('div'); failure.className = 'mcp-tunnel-failure';
       failure.style.color = 'var(--wait)';
       const code = tunnelCode(status.failureCode);
       failure.textContent = t('mcp.tunnelLastFailure', {
         action: t(tunnelActionKey(status.failedAction)), reason: t(tunnelFailureKey(code)), code,
       });
-      row.appendChild(failure);
+      strip.appendChild(failure);
     }
     const buttons = [];
     let pending = false;

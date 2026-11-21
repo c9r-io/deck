@@ -1,5 +1,5 @@
 1792082964 [ui] smoke-check settings-logs a=1 b=1
-1792082964 [ui] smoke-check settings-navigation a=8 b=8
+1792082964 [ui] smoke-check settings-navigation a=9 b=9
 1792082964 [ui] smoke-check settings-mcp-cancel-enable a=1 b=0
 1792082964 [ui] smoke-check settings-mcp-enable a=1 b=0
 1792082964 [ui] smoke-check settings-mcp-cancel-authorize a=1 b=0

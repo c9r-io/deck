@@ -518,8 +518,12 @@ test('Tunnel actions expose stopped state and suppress double activation while p
   await renderMcpSettings();
   await tick();
   const row = fakeDocument.getElementById('set-mcp-clients').children[0];
-  assert.match(row.children.at(-1).textContent, /stopped/);
-  const start = row.children[1].children.find(button => button.textContent === 'Start Tunnel');
+  // the Tunnel strip holds its status and its own buttons, apart from the client's
+  const strip = row.children.at(-1);
+  assert.equal(String(strip.className), 'mcp-tunnel');
+  assert.match(strip.children[0].textContent, /stopped/);
+  assert.ok(!row.children[1].children.some(button => button.textContent === 'Start Tunnel'));
+  const start = strip.children[1].children.find(button => button.textContent === 'Start Tunnel');
   start.fire('click'); start.fire('click');
   await tick();
   assert.equal(starts, 1);
