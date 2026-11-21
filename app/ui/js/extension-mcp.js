@@ -396,12 +396,13 @@ export function createMcpSettings(host) {
           remove.type = 'button'; remove.className = 'btn mcp-type-remove'; remove.textContent = '✕';
           remove.title = t('mcp.typeRemove'); remove.setAttribute('aria-label', t('mcp.typeRemove'));
           remove.onclick = () => { perms.workerTypes.splice(index, 1); paintTypes(); };
-          /* the models a start may choose: one per line, under the row */
-          const models = document.createElement('textarea');
-          models.className = 'mcp-type-models'; models.rows = 1; models.spellcheck = false;
-          models.value = modelLines(type.models).join('\n');
+          /* the models a start may choose: comma-separated, under the row */
+          const models = document.createElement('input');
+          models.type = 'text'; models.className = 'mcp-type-models'; models.spellcheck = false;
+          models.autocomplete = 'off';
+          models.value = modelLines(type.models).join(', ');
           models.placeholder = t('mcp.typeModels'); models.setAttribute('aria-label', t('mcp.typeModels'));
-          models.oninput = () => { type.models = models.value.split('\n'); showError(permError, null, ''); };
+          models.oninput = () => { type.models = modelLines(models.value); showError(permError, null, ''); };
           row.append(typeName, cmd, description, remove, models);
           list.appendChild(row);
         });

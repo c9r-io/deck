@@ -340,10 +340,10 @@ never sent again: it waits for you as an uncertain delivery. Deck still
 cannot see when Pi waits on one of its own dialogs, so such a card reads
 "working" meanwhile. Pi's final message reaches `deck_worker_reply` only
 while you let Deck forward it (the same switch). Under a type you may
-also list **models the orchestrator may choose**, one per line (at most
+also list **models the orchestrator may choose**, separated by commas (at most
 20, each one word without spaces that does not start with `-`): a start
 may then name one of them (`model`) and Deck appends `--model <that
-line>` to your command, so one type covers several models (Claude
+entry>` to your command, so one type covers several models (Claude
 `--model`, Codex `--model`, Pi `--model provider/id[:thinking]`). Only a
 command that names no model itself may carry a list (no `--model`, `-m`,
 `--models`, `--provider` or `…model=…` in it); a model Deck does not find

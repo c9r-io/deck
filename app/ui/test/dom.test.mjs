@@ -2265,12 +2265,13 @@ test('an MCP client row opens its permissions in the one dialog and saves them a
   await tick(); await tick();
   const second = calls.find(([c]) => c === 'mcp_client_permissions');
   assert.deepEqual(second[1].permissions.workerTypes.map(t => t.cmd), ['claude --permission-mode auto', 'codex --no-daemon --yolo', 'codex --no-daemon']);
-  // a type's models: one per line, sent trimmed; refused on a command that names a model
+  // a type's models: comma-separated, sent trimmed; refused on a command that names a model
   calls.length = 0;
   open().fire('click');
   const rows = fakeDocument.getElementById('mcp-perm-types').children;
   const models = rows[0].children[4];
-  models.value = ' sonnet\n\nopus '; models.fire('input');
+  assert.equal(models.tagName, 'INPUT', 'one line, not a growing textarea');
+  models.value = ' sonnet,\t, opus '; models.fire('input');
   rows[0].children[1].value = 'claude --model haiku'; rows[0].children[1].fire('input');
   fakeDocument.getElementById('mcp-auth-yes').fire('click');
   await tick();

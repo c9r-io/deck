@@ -1351,7 +1351,7 @@ const dictionary = {
   'mcp.typeCommandInvalid': '类型的命令必须以 claude、codex 或 pi 开头，只能带简单参数。',
   'mcp.typeCodexDaemon': 'Codex 类型必须带 --no-daemon：否则 Deck 无法信任 Codex 的状态，它的输入永远不会发出。',
   'mcp.typePiObserver': 'Pi 类型需要先开启 Pi 的工作状态（设置 › Agent 与通知）：Deck 通过这个扩展把每一行交给 Pi，从不往 Pi 里打字。',
-  'mcp.typeModels': '编排者可选的模型，每行一个（可留空）',
+  'mcp.typeModels': '编排者可选的模型，用逗号分隔（可留空）',
   'mcp.typeModelsInvalid': '每个模型是一个不含空格和引号、不以“-”开头的词，最多 100 个字符；每个类型最多 20 个，不能重复。',
   'mcp.typeModelInCommand': '这条命令已经指定了模型（--model、-m、model=…）：列了可选模型时，请把它从命令里去掉，模型只在一处写。',
   'mcp.typeListInvalid': '请检查工作卡片类型：最多 8 个，每个都要选栏目，说明不超过 200 字且只有一行。',

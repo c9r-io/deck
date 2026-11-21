@@ -1345,7 +1345,7 @@ const dictionary = {
   "mcp.typeCommandInvalid": "Der Befehl eines Arbeitstyps beginnt mit claude, codex oder pi, nur mit einfachen Argumenten.",
   "mcp.typeCodexDaemon": "Ein Codex-Arbeitstyp braucht --no-daemon: ohne kann Deck dem Status von Codex nicht vertrauen, und seine Zeilen würden nie gesendet.",
   "mcp.typePiObserver": "Ein Pi-Arbeitstyp braucht den Arbeitsstatus von Pi (Einstellungen › Agenten und Benachrichtigungen): Deck übergibt jede Zeile über diese Erweiterung an Pi und tippt nie in Pi.",
-  "mcp.typeModels": "Modelle, die der Orchestrator wählen darf, eines pro Zeile (optional)",
+  "mcp.typeModels": "Modelle, die der Orchestrator wählen darf, durch Kommas getrennt (optional)",
   "mcp.typeModelsInvalid": "Jedes Modell ist ein Wort ohne Leerzeichen und Anführungszeichen, das nicht mit „-“ beginnt, höchstens 100 Zeichen; höchstens 20 pro Typ, keine Wiederholungen.",
   "mcp.typeModelInCommand": "Dieser Befehl nennt bereits ein Modell (--model, -m, model=…): Mit einer Modellliste nimm es aus dem Befehl, damit das Modell an einer Stelle steht.",
   "mcp.typeListInvalid": "Prüfen Sie die Arbeitstypen: höchstens 8, jeder mit einer Spalte und einer einzeiligen Beschreibung von höchstens 200 Zeichen.",

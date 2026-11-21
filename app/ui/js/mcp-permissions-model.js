@@ -17,7 +17,7 @@
 //   trip. A type has no column: where its cards open is the start's
 //   (mcp/workers.rs `worker_start`), and a `columnId` a type still carries
 //   from an older build is dropped here (`permissionsPayload`).
-// - A type may list the models a start may choose (one per line, each a
+// - A type may list the models a start may choose (comma-separated, each a
 //   single simple argument not starting with `-`, at most 20, no repeats),
 //   only on a command that names no model itself (`--model`, `-m…`,
 //   `--models`, `--provider`, any `…model=…`): Deck then appends
@@ -36,10 +36,11 @@ const TYPE_NAME = /^[a-z0-9_-]{1,32}$/;
 const COMMAND_WORD = /^[A-Za-z0-9\-_./:=+,@]+$/;
 export const MAX_TYPE_MODELS = 20;
 
-/* a model list as typed (one per line) or as stored (an array): trimmed
-   entries, blank lines dropped */
+/* a model list as typed (separated by commas, ASCII or full-width, or by
+   line breaks) or as stored (an array): entries trimmed of spaces and tabs,
+   empty ones dropped */
 export function modelLines(value) {
-  const lines = Array.isArray(value) ? value : String(value || '').split('\n');
+  const lines = Array.isArray(value) ? value : String(value || '').split(/[,，\n]/);
   return lines.map(line => String(line).trim()).filter(Boolean);
 }
 

@@ -48,7 +48,9 @@ test('a type may list models: one per line, only on a command that names none', 
   const on = types => ({ allowWorkers: true, workerTypes: types });
   const problem = types => workerTypesProblem(on(types));
   const type = (cmd, models) => ({ name: 'a', cmd, description: '', models });
-  assert.deepEqual(modelLines(' sonnet \n\nopus\n'), ['sonnet', 'opus']);
+  assert.deepEqual(modelLines(' sonnet,\topus ,, haiku\t'), ['sonnet', 'opus', 'haiku'], 'commas; spaces and tabs trimmed');
+  assert.deepEqual(modelLines('sonnet，opus'), ['sonnet', 'opus'], 'a full-width comma separates too');
+  assert.deepEqual(modelLines(' sonnet \n\nopus\n'), ['sonnet', 'opus'], 'line breaks still separate (a pasted list)');
   assert.deepEqual(modelLines(['x', ' ']), ['x']);
   // the payload carries the trimmed lines, and no key when there are none
   assert.deepEqual(permissionsPayload(on([type('claude', 'sonnet\n opus ')])).workerTypes[0].models, ['sonnet', 'opus']);

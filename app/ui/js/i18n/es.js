@@ -1345,7 +1345,7 @@ const dictionary = {
   "mcp.typeCommandInvalid": "El comando de un tipo empieza por claude, codex o pi, solo con argumentos sencillos.",
   "mcp.typeCodexDaemon": "Un tipo de Codex necesita --no-daemon: sin él, Deck no puede fiarse del estado de Codex y sus líneas nunca se enviarían.",
   "mcp.typePiObserver": "Un tipo Pi necesita el estado de trabajo de Pi (Ajustes › Agentes y notificaciones): Deck entrega cada línea a Pi mediante esa extensión y nunca escribe en Pi.",
-  "mcp.typeModels": "Modelos que el orquestador puede elegir, uno por línea (opcional)",
+  "mcp.typeModels": "Modelos que el orquestador puede elegir, separados por comas (opcional)",
   "mcp.typeModelsInvalid": "Cada modelo es una sola palabra sin espacios ni comillas que no empieza por “-”, de hasta 100 caracteres; hasta 20 por tipo, sin repetir.",
   "mcp.typeModelInCommand": "Este comando ya indica un modelo (--model, -m, model=…): con una lista de modelos, quítalo del comando para que el modelo se indique en un solo sitio.",
   "mcp.typeListInvalid": "Revisa los tipos de trabajo: 8 como máximo, cada uno con una columna y una descripción de una línea de 200 caracteres como máximo.",

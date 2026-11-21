@@ -1352,7 +1352,7 @@ const dictionary = {
   'mcp.typeCommandInvalid': 'A worker type’s command starts with claude, codex or pi, with simple arguments only.',
   'mcp.typeCodexDaemon': 'A Codex worker type needs --no-daemon: without it Deck cannot trust Codex’s status, and its lines would never go out.',
   'mcp.typePiObserver': 'A Pi worker type needs Pi’s work status (Settings › Agents & notifications): Deck hands each line to Pi through that extension and never types into Pi.',
-  'mcp.typeModels': 'Models the orchestrator may choose, one per line (optional)',
+  'mcp.typeModels': 'Models the orchestrator may choose, separated by commas (optional)',
   'mcp.typeModelsInvalid': 'Each model is one word without spaces or quotes that does not start with “-”, at most 100 characters, at most 20 per type, no repeats.',
   'mcp.typeModelInCommand': 'This command already names a model (--model, -m, model=…): with a model list, take it out of the command so the model is named in one place.',
   'mcp.typeListInvalid': 'Check the worker types: at most 8, each with a column and a one-line description of at most 200 characters.',
