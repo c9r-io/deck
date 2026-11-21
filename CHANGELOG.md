@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.35 — 2026-11-21 (Nightly)
 
 - MCP worker types may list the models an orchestrator can choose from,
   one per line, under Settings › MCP › a client › Permissions…. A start
