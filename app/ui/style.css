@@ -827,6 +827,10 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .mcp-type-row input { min-width: 0; font-size: var(--fs-11); }
 .mcp-type-row .mcp-type-cmd { font-family: var(--mono); }
 .mcp-type-row .mcp-type-models { grid-column: 2 / -1; min-width: 0; font-family: var(--mono); font-size: var(--fs-11); }
+/* one worker type is two lines (command, models): the list puts more space
+   and a hairline between types than between a type's own lines */
+#mcp-perm-types { display: flex; flex-direction: column; gap: var(--sp-10); }
+#mcp-perm-types > * + * { padding-top: var(--sp-10); border-top: 1px solid var(--border-soft); }
 #mcp-perm-type-add { align-self: flex-start; }
 /* a project's environment variables: name, a write-only value, remove */
 #pdf-env { display: flex; flex-direction: column; gap: var(--sp-6); margin-bottom: var(--sp-8); }
