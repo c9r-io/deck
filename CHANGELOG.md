@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.38 — 2026-11-23 (Nightly)
+
+- An Agent you let work while you are away can leave the questions that
+  need your judgment in its own card's scratchpad instead of its terminal
+  (`deck_card_note`; `deck_card_notes` reads back its own notes' state).
+  Deck proves the card from the calling process, so an Agent writes only
+  into the card it runs in, and needs no extra permission. A note shows
+  who wrote it, when, a one-line title (the text unfolds under it) and
+  "Went ahead with its recommendation" when the Agent already acted.
+- The card shows "? N" for the notes waiting for you (click: its
+  scratchpad); Needs attention lists the card under "Waiting for your
+  judgment" with a Scratchpad button. No notification, no Dock count.
+- In the scratchpad, Agent notes come first; Handled folds one away,
+  Answer keeps your reply as your own note (starting with the note's
+  title), ready to queue to the Agent. You never edit or queue an Agent's
+  note. A filter (All / From Agents / Mine) appears with any Agent note.
+  A card holding notes is never closed automatically, like any card with a
+  scratchpad.
+- Bounds: 32 open notes a card, 120-character titles, 8 KiB texts. A Board
+  holding a note is written at schema v12, which an older Deck refuses
+  untouched instead of reading it as damaged.
+
 ## 0.8.37 — 2026-11-22 (Nightly)
 
 - A Codex worker card that runs `codex exec` itself (for example to
