@@ -552,6 +552,32 @@ needs "Ask again" marked needs-you and "Done again" can-close, and both
 still open. Judge with `scripts/smoke-verdict <data> cards-mcp`. Keep the
 screen unlocked and the window in front.
 
+## Agent notes through MCP (WKWebView mode `notes-mcp`)
+
+`notes-mcp` is the Agent notes in a card's scratchpad (`mcp/notes.rs`) in
+the real window: the same carrier as `cards-mcp` (debug only, isolated data
+dir under `/private/tmp`, a unique `deck-smoke-…` socket, the fixture's
+`copy_agent.py` and `work/`). The page authorizes one client
+`orchestrator` with no further choice and opens the plain shell "Agent"
+(`notes-armed`). The operator types `scripts/mcp-notes-e2e.py --phase
+write` (adapter, socket, credential and evidence arguments as
+`mcp-orchestrators-e2e.py`) into its pane: 38 tools, `mayLeaveNotes`,
+notes q1 (acted) and q2 (revised under its key), q3 written and withdrawn.
+`notes-shown`: the card's chip reads "? 2", Needs attention lists it under
+"Waiting for your judgment" with "2 Agent notes", its Scratchpad button
+opens two Agent rows (author, the acted label on q1 only, no checkbox, the
+filter). `notes-handled`: Handled on q1; Answer on q2 starts with the
+title's prefix, ⌘↵ keeps the user's own note and handles q2; the fold
+reads "Handled (2)", the row leaves Needs attention and the chip goes.
+After `notes-read-ready` the operator types `--phase read` into the same
+pane (both handled, q1 again `NOTE_HANDLED`, q4 written): `notes-read`
+needs "? 1". Last the page opens "Live" running the fixture's `live.sh`
+(a real Claude Code `-p` with only this instance's adapter, asked in plain
+words to go ahead with a choice and leave the user a note):
+`notes-live` needs one open note there marked acted. Judge with
+`scripts/smoke-verdict <data> notes-mcp`. Keep the screen unlocked and the
+window in front.
+
 ## Orchestrator cards (WKWebView mode `orchestrators`)
 
 `orchestrators` is several orchestrators on ONE MCP client, each in its

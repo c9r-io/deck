@@ -27,7 +27,7 @@
 //      sends each at least one line. The page counts them.
 // No hook word and no event is synthesized: the Signal comes from the real
 // Claude Code in each card.
-export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false } = {}) {
+export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false } = {}) {
   const { openPermissions, pause, setPermission, until } = await import('./smoke-mcp-helpers.mjs');
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider, panes } = await import('../js/board.js');
@@ -597,6 +597,109 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     await pause(60_000);
     await report('done', !failed, 1, 7);
   };
+  /* `notes-mcp`: Agent notes in a card's scratchpad (mcp/notes.rs). The
+     page authorizes a client with no further choice and opens the plain
+     shell "Agent" (`notes-armed`); the operator types
+     scripts/mcp-notes-e2e.py (phase write) into it: two open notes, one
+     revised, one withdrawn. The page sees what the person sees: the card's
+     "? 2" chip, the card under "Waiting for your judgment" in Needs
+     attention, its Scratchpad button opening two Agent rows (author, the
+     acted label, no checkbox, the filter); it marks one Handled and answers
+     the other (⌘↵ in the answer field: the user's own note, prefixed with
+     the title, and the note handled), the chip and the row gone
+     (`notes-handled`). Then `notes-read-ready`: phase read sees both
+     handled and adds one more (`notes-read`, "? 1"). Last, the fixture's
+     live.sh in a card "Live": a real Claude Code asked in plain words to
+     go ahead and leave the user a note (`notes-live`). */
+  const notesRun = async ({ project, column, work, fixture }) => {
+    const { showAttention } = await import('../js/attention.js');
+    const { closeBuffer } = await import('../js/board.js');
+    const { state } = await import('../js/state.js');
+    await inv('mcp_enable');
+    const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
+      permissions: { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false,
+        workerTypes: [], workerFirstSend: false, allowDrafts: false, allowMentions: false } });
+    const listed = await until(async () => {
+      const status = await inv('mcp_status');
+      return status.enabled && status.socketReady && status.clients.some(value => value.id === client.id) ? status : null;
+    }, 15_000, 250);
+    await report('workers-client', !!listed);
+    const open = async (title, cmd) => (await provider.createStarted({ projectId: project.id, columnId: column.id,
+      title, dir: work, cmd }, { requireCreated: true })).card;
+    const agent = await open('Agent', '');
+    await report('notes-armed', !!agent?.session);
+    const notesOf = card => (provider.get(card.id)?.buffer?.entries || []).filter(entry => entry.kind === 'agent');
+    const byKey = (card, key) => notesOf(card).find(entry => entry.source?.eventId === key);
+    const toBoard = async () => { closeBuffer(); if (state.view !== 'board') backToBoard(); await pause(400); };
+    const chip = card => { const el = document.querySelector(`.card[data-sid="${card.id}"] .note-chip`); return el && !el.hidden ? el.textContent : ''; };
+    const tools = $('attention-tools');
+    const pendingRow = card => $('attention-list').querySelector(`.attention-row[data-sid="${card.id}"]`);
+    const toPending = async () => { closeBuffer(); showAttention(); tools.querySelector('[data-filter="pending"]').click(); await pause(400); };
+
+    /* phase write: q1 (acted) and q2 (revised) open, q3 withdrawn */
+    /* all five writes landed (each raises the scratchpad's revision: q1, q2,
+       its revision, q3, its withdrawal), then a moment for the client to
+       list them before the user acts */
+    const written = await until(() => notesOf(agent).length === 2 && byKey(agent, 'q2')?.revision === 2 && byKey(agent, 'q1')
+      && (provider.get(agent.id)?.buffer?.revision || 0) >= 5 ? true : null, 600_000, 1000);
+    await pause(3_000);
+    await toBoard();
+    const chipTwo = chip(agent);
+    await toPending();
+    const headings = [...$('attention-list').querySelectorAll('.attention-section')].map(el => el.textContent);
+    const row = pendingRow(agent);
+    const notesButton = row?.querySelector('.attention-notes');
+    const reasonOk = !!row?.querySelector('.attention-reason')?.textContent.includes(t('attention.notes', { count: '2' }));
+    notesButton?.click(); await pause(500);
+    const panel = $('buffer-panel');
+    const agentRows = [...panel.querySelectorAll('.buffer-agent')];
+    const rowOf = key => panel.querySelector(`.buffer-agent[data-id="${byKey(agent, key)?.id}"]`);
+    const shownOk = !!written && chipTwo === '? 2' && headings.includes(t('attention.section.notes')) && reasonOk
+      && !!notesButton && !notesButton.hidden && !panel.hidden && agentRows.length === 2
+      && agentRows.every(el => !el.querySelector('input[type="checkbox"]') && el.querySelector('.buffer-meta')?.textContent.includes('Agent · orchestrator'))
+      && !!rowOf('q1')?.querySelector('.buffer-acted') && !rowOf('q2')?.querySelector('.buffer-acted')
+      && rowOf('q2')?.querySelector('summary')?.textContent === 'Keep the old v1 API for one release?'
+      && !$('buffer-filter').hidden;
+    await report('notes-shown', shownOk, agentRows.length, chipTwo === '? 2' ? 1 : 0);
+
+    /* the user handles q1 and answers q2 */
+    rowOf('q1')?.querySelector('.buffer-note-actions .btn')?.click();
+    const q1Handled = await until(() => byKey(agent, 'q1')?.handledAt ? true : null, 10_000, 200);
+    await pause(300);
+    const answerButton = rowOf('q2')?.querySelectorAll('.buffer-note-actions .btn')[1];
+    answerButton?.click(); await pause(200);
+    const field = rowOf('q2')?.querySelector('.buffer-answer');
+    const prefix = t('buffer.agentAnswerPrefix', { title: 'Keep the old v1 API for one release?' });
+    const prefilled = field?.value === prefix;
+    if (field) {
+      field.value = `${prefix}keep it for one release`;
+      field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }));
+    }
+    const answered = await until(() => byKey(agent, 'q2')?.handledAt
+      && (provider.get(agent.id)?.buffer?.entries || []).some(entry => entry.kind === 'manual' && entry.text === `${prefix}keep it for one release`) ? true : null, 10_000, 200);
+    await pause(500);
+    const manualRow = [...panel.querySelectorAll('.buffer-row:not(.buffer-agent)')][0];
+    const fold = panel.querySelector('.buffer-handled > summary')?.textContent;
+    const gone = await until(async () => { await toPending(); return pendingRow(agent) ? null : true; }, 30_000, 2000);
+    await toBoard();
+    await report('notes-handled', !!q1Handled && prefilled && !!answered && !!manualRow?.querySelector('input[type="checkbox"]')
+      && fold === t('buffer.agentHandledCount', { count: '2' }) && !!gone && chip(agent) === '', prefilled ? 1 : 0, answered ? 1 : 0);
+
+    /* phase read: both handled, one more note */
+    await report('notes-read-ready', true);
+    const fourth = await until(() => byKey(agent, 'q4') && !byKey(agent, 'q4').handledAt ? true : null, 300_000, 1000);
+    await toBoard();
+    await report('notes-read', !!fourth && chip(agent) === '? 1');
+
+    /* a real Claude Code, in a card of its own, asked in plain words */
+    const live = await open('Live', `sh ${fixture}/live.sh`);
+    const liveNote = await until(() => notesOf(live).find(entry => !entry.handledAt) || null, 900_000, 2000);
+    await toBoard();
+    await report('notes-live', !!liveNote && liveNote.acted === true && liveNote.title.length > 0 && chip(live) === '? 1'
+      && notesOf(agent).length === 3, liveNote ? 1 : 0, liveNote?.acted ? 1 : 0);
+    await pause(5_000);
+    await report('done', !failed, 1, 8);
+  };
   let first = null;
   try {
     if (store.cards.length) throw new Error('nonempty isolated board');
@@ -604,8 +707,8 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
        `--no-daemon` worker through part A only (no reply is forwarded for
        Codex, and part B is not run: `done` then reports b=2) */
     const scenario = drafting ? 'drafts' : mentioning ? 'mentions' : orchestrating ? 'orchestrators'
-      : projecting ? 'projects' : carding ? 'cards' : await inv('smoke_native_scenario').catch(() => '');
-    if (!['live', 'codex', 'types', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards'].includes(scenario)) throw new Error('scenario');
+      : projecting ? 'projects' : carding ? 'cards' : noting ? 'notes' : await inv('smoke_native_scenario').catch(() => '');
+    if (!['live', 'codex', 'types', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards', 'notes'].includes(scenario)) throw new Error('scenario');
     const codex = scenario === 'codex';
     /* `types`: no template and no rule; the client carries one Claude worker
        type and the first-send choice, and the scripted client starts the
@@ -624,6 +727,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     if (scenario === 'drafts') { await drafts({ project, column, work }); return; }
     if (scenario === 'mentions') { await mentionsRun({ project, column, work }); return; }
     if (scenario === 'cards') { await cardsRun({ project, column, work, fixture }); return; }
+    if (scenario === 'notes') { await notesRun({ project, column, work, fixture }); return; }
     if (scenario === 'projects') {
       await projectsRun({ work, cmd: 'claude --setting-sources project', fixture });
       return;

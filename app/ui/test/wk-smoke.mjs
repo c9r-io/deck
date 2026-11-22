@@ -3531,6 +3531,13 @@ export async function verifyCardsMcp() {
   await runWorkersSmoke({ carding: true });
 }
 
+// Agent notes left in a card's scratchpad by a scripted client, then a real
+// agent, and handled in the real window (workers-smoke.mjs).
+export async function verifyNotesMcp() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ noting: true });
+}
+
 // Each place a refused credential or a failed check says why, in the real
 // webview, kept as evidence/uxf-*.png (ux-failures-smoke.mjs).
 export async function verifyUxFailures() {

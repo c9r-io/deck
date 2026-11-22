@@ -226,6 +226,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("drafts", "m.verifyDrafts()"),
     ("mentions-mcp", "m.verifyMentionsMcp()"),
     ("cards-mcp", "m.verifyCardsMcp()"),
+    ("notes-mcp", "m.verifyNotesMcp()"),
     ("orchestrators", "m.verifyOrchestrators()"),
     ("projects", "m.verifyProjects()"),
     ("reentry-shapes", "m.verifyReentryShapes()"),

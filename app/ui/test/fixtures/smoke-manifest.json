@@ -920,6 +920,19 @@
         "workers-exception": { "failureOnly": true }
       }
     },
+    "notes-mcp": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "notes-armed": {},
+        "notes-shown": {},
+        "notes-handled": {},
+        "notes-read-ready": {},
+        "notes-read": {},
+        "notes-live": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
     "reentry-shapes": {
       "terminal": "done",
       "checks": {
