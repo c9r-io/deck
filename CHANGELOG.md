@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.8.37 — 2026-11-22 (Nightly)
+
+- A Codex worker card that runs `codex exec` itself (for example to
+  generate images) keeps its status. Before, the nested Codex's events
+  claimed the card, were refused, and the first refusal blinded the card
+  for good: no working / turn-done, and every line queued for it stayed
+  held until the card was replaced. Now, when the card's Codex was
+  started with `--no-daemon` (as worker types must be), events from a
+  Codex running below it are refused on their own (`nested-client` in the
+  log) and change nothing about the card. A Codex without that launch
+  proof, such as one on a shared daemon, is treated as before.
+- `deck_worker_list` says why a live worker has no status
+  (`agent.why`): `codex-unattributed` (Deck cannot attribute that Codex's
+  status and will not until it exits; lines into it stay held, so the
+  orchestrator should not wait), `codex-unproven` (it has not reported
+  yet), or `no-turn-seen`.
+- After a shell service restart with Agent re-entry, a result where every
+  card was re-entered and confirmed, nothing needs a look and no queued
+  line was paused is now one toast instead of a dialog. The dialog still
+  opens for anything else, says how many queued lines the restart paused
+  (only when it paused some), and names an additional working directory
+  on the card that has one instead of under every result.
+- Settings › MCP › worker types: each type's two lines are spaced apart
+  from the next type.
+
 ## 0.8.36 — 2026-11-21 (Nightly)
 
 - An MCP client you let draft configuration can now also read a summary
