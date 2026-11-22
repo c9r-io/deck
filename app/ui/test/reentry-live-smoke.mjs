@@ -405,7 +405,7 @@ export async function runReentryLiveSmoke() {
     const settled = ended && $('tmux-lifecycle-title').textContent === t('reentry.result.restarted')
       && !!says(A, 'reentry.result.confirmedOrdinary')
       && [B, C].every(card => details(says(card, 'reentry.result.confirmed')).includes(t('reentry.warning.bypass-reauthorized')))
-      && footer().includes(t('reentry.result.queuesPaused'));
+      && footer().includes(t('reentry.result.queueRowsPaused', { count: 1 }));
     // a = entries confirmed; b = rows that speak of the bypass flag
     await report('relive-b-result', settled, confirmed().length, flagged().length);
     // E's client started before the hooks existed; what its row says is recorded, never judged

@@ -2047,7 +2047,7 @@ fn restart_tmux_server_inner(
             "[tmux-restart] queue-paused count={paused} elapsed_ms={}",
             started.elapsed().as_millis()
         ));
-        Ok(())
+        Ok(paused)
     };
     let mut phases = Some(Phases {
         preparation: preparation_deadline,
@@ -2120,7 +2120,7 @@ fn restart_transaction_on(
     post_budget: Duration,
     held: &std::sync::RwLockWriteGuard<'static, ()>,
     detach: &dyn Fn(),
-    pause: &dyn Fn() -> Result<(), DeckError>,
+    pause: &dyn Fn() -> Result<usize, DeckError>,
     progress: &dyn Fn(&str, usize, usize),
 ) -> Result<(ServerSnapshot, Option<crate::agent_reentry::ReentryResult>), DeckError> {
     // Freeze the user's approval against the listing just validated, before
@@ -2150,7 +2150,7 @@ fn restart_transaction_on(
     if let (Some(plan), Some((env, _, _))) = (plan.as_mut(), reentry) {
         plan.seal_exits(env);
     }
-    pause()?;
+    let paused = pause()?;
     crate::session_runtime::check_deadline()?;
     drop(phases.preparation);
     let replace_deadline = crate::session_runtime::Deadline::until(
@@ -2167,6 +2167,7 @@ fn restart_transaction_on(
         return Ok((fresh, None));
     };
     plan.server_replaced();
+    plan.queue_paused(paused);
     // The post phase: one shared share for every approved entry's shell,
     // single launch and receipt, then the confirmation's own short share
     // (`Plan::reopen` installs both deadlines). Nothing in it can fail the

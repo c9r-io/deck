@@ -36,7 +36,9 @@ import { initInputSource } from './input-source.js';
 import { cancelTerminalSelection } from './selection.js';
 import { closeManagedForRestart, managedBlockers } from './restart-managed.js';
 import { initTranslationLens } from './translation-lens.js';
-import { afterManagedClose, awaitReentryResult, reentryRequest, responseLost, restartOutcome } from './reentry-model.js';
+import {
+  afterManagedClose, awaitReentryResult, projectResult, reentryRequest, responseLost, restartOutcome,
+} from './reentry-model.js';
 import {
   currentReentryPlan, initReentry, lockReentry, reentryConfirmLabel, reentryResultShown, refreshReentry,
   showReentryPreview, showReentryProgress, showReentryResult, showRestartProgress,
@@ -235,6 +237,21 @@ function presentReentryResult(outcome, { focus = true } = {}) {
   return view;
 }
 
+/* The end of a restart that requested re-entry: a result that needs nothing
+   from the user (reentry-model.js `quiet`) closes the modal and is said in
+   one toast; anything else is the result list and its one toast. */
+function concludeReentry(shown) {
+  const quiet = projectResult(shown).quiet;
+  if (quiet) {
+    closeLifecycleModal();
+    toast(t(quiet.key, quiet.params));
+    return { pending: false };
+  }
+  const view = presentReentryResult(shown);
+  if (view.toast) toast(t(view.toast));
+  return view;
+}
+
 /* A result whose operation is still running is shown at once, with its
    unsettled entries in progress, and then FOLLOWED: a bounded read-only poll
    repaints the same list as entries settle. Nothing is invoked again. When
@@ -382,8 +399,7 @@ async function restartTmuxServer() {
       /* the backend worker may still be settling entries: they are shown as
          in progress and followed by reading, never by invoking again */
       const shown = { replaced, result: outcome.result, requested: reentry.cards };
-      const view = presentReentryResult(shown);
-      if (view.toast) toast(t(view.toast));
+      const view = concludeReentry(shown);
       if (view.pending) followReentryResult(requestId, shown).catch(() => {});
     }
   } catch (error) {
@@ -410,8 +426,7 @@ async function restartTmuxServer() {
         if (ctx.tmuxServerStatus) ctx.tmuxServerStatus.notice = null;
       }
       // the bounded read above is over: what still runs is said to be pending
-      const view = presentReentryResult({ replaced, result: known.result, requested: reentry.cards, pollEnded: true });
-      if (view.toast) toast(t(view.toast));
+      concludeReentry({ replaced, result: known.result, requested: reentry.cards, pollEnded: true });
     } else {
       const key = {
         'managed-review-changed': 'tmux.impactChanged',

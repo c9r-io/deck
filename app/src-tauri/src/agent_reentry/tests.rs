@@ -309,6 +309,7 @@ fn the_seal_refuses_nothing_and_says_per_card_why_an_entry_stops() {
             request_id: "req-seal".into(),
             state: OperationState::Running,
             server_replaced: false,
+            queue_paused: None,
             entries: Vec::new(),
         })),
         // "alive" and "stuck" name this live process; "gone" and "left" a
@@ -431,6 +432,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
             request_id: "req-same".into(),
             state: OperationState::Running,
             server_replaced: false,
+            queue_paused: None,
             entries: Vec::new(),
         })),
         entries: vec![entry("one"), entry("two"), entry("three")],
@@ -3339,6 +3341,11 @@ fn a_waiting_queue_row_is_paused_on_disk_before_the_kill_and_stays_paused_after_
     );
     let result = result.unwrap();
     assert_eq!(entry(&result, "a").outcome, Outcome::Confirmed);
+    assert_eq!(
+        result.queue_paused,
+        Some(1),
+        "the result counts the paused row"
+    );
     // after a confirmed entry: still paused, in memory and on disk
     assert_eq!(
         crate::scheduler::paused_for_tests(&queues.q.lock_or_recover()),

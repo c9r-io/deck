@@ -233,6 +233,43 @@ test('two confirmed and one unconfirmed after a replacement is "restarted", neve
   setLocale('en');
 });
 
+test('a clean result is one toast: every card confirmed, nothing but the bypass mark, no queue row paused', () => {
+  const clean = (queuePaused, extra = []) => reentryResult({ ...complete([
+    entry('A', 'confirmed', { warnings: ['bypass-reauthorized'] }),
+    entry('B', 'confirmed'),
+    ...extra,
+  ]), queuePaused });
+  setLocale('en');
+  const quiet = projectResult({ replaced: true, result: clean(0), requested: ['A', 'B'] });
+  assert.deepEqual(quiet.quiet, { key: 'reentry.result.quietBypass', params: { count: 2 } });
+  assert.equal(say(quiet.quiet), 'Shell service restarted. 2 Agent session(s) re-entered; the bypass flag was sent as authorized.');
+  assert.deepEqual(quiet.footer, [], 'no queue row was paused and no directory is said in the footer');
+  const ordinary = reentryResult({ ...complete([entry('B', 'confirmed')]), queuePaused: 0 });
+  assert.deepEqual(projectResult({ replaced: true, result: ordinary, requested: ['B'] }).quiet,
+    { key: 'reentry.result.quiet', params: { count: 1 } });
+  // each of these keeps the list
+  const loud = [
+    ['a paused queue row', { replaced: true, result: clean(2), requested: ['A', 'B'] }],
+    ['an unknown pause', { replaced: true, result: clean(undefined), requested: ['A', 'B'] }],
+    ['an unconfirmed entry', { replaced: true, result: clean(0, [entry('C', 'unconfirmed', { reason: 'launch-unconfirmed' })]), requested: ['A', 'B', 'C'] }],
+    ['a started entry', { replaced: true, result: clean(0, [entry('C', 'started')]), requested: ['A', 'B', 'C'] }],
+    ['an additional directory', { replaced: true, result: clean(0, [entry('C', 'confirmed', { warnings: ['additional-dirs-not-restored'] })]), requested: ['A', 'B', 'C'] }],
+    ['a requested card without an answer', { replaced: true, result: clean(0), requested: ['A', 'B', 'D'] }],
+    ['a running operation', { replaced: true, result: reentryResult({ ...complete([entry('A', 'confirmed')]), state: 'running', queuePaused: 0 }), requested: ['A'] }],
+    ['no replacement', { replaced: false, result: reentryResult({ ...complete([entry('A', 'confirmed')], false), queuePaused: 0 }), requested: ['A'] }],
+  ];
+  for (const [what, outcome] of loud) assert.equal(projectResult(outcome).quiet, null, what);
+  // the footer says the count when rows were paused, the old sentence when unknown
+  assert.deepEqual(projectResult(loud[0][1]).footer.map(say), ['2 waiting list item(s) were paused and stay paused until you resume them.']);
+  assert.deepEqual(projectResult(loud[1][1]).footer.map(say), ['Queues remain paused.']);
+  // the directory line is the entry's own, never the footer's
+  const dirs = projectResult(loud[4][1]);
+  assert.deepEqual(dirs.rows[2].details.map(say), ['Additional working directories may need to be restored.']);
+  assert.ok(!dirs.footer.map(say).some(line => /director/i.test(line)));
+  assert.equal(reentryResult({ ...complete([]), queuePaused: -1 }).queuePaused, null);
+  assert.equal(reentryResult({ ...complete([]), queuePaused: '3' }).queuePaused, null);
+});
+
 test('a replacement that did not happen is titled so, with the exited agents said separately', () => {
   const outcome = restartOutcome({ server: { serverPid: 1 }, replaced: false, reentry: complete([entry('A', 'not-attempted', { shell: false })], false) });
   assert.equal(outcome.replaced, false);

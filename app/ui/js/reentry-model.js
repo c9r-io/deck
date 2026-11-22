@@ -61,6 +61,15 @@
 // says the result is still pending and can be looked at later: that is not
 // "could not be confirmed" either.
 //
+// The footer says that queue rows stay paused only when this restart paused
+// some (`queuePaused` > 0, with the count) or the backend did not say
+// (null); an additional working directory is said on its own entry only.
+// `quiet` is the one toast that REPLACES the list: a completed replacement
+// where every requested card was confirmed re-entered, no entry carries a
+// warning other than `bypass-reauthorized`, and the backend said that no
+// queue row was paused. The toast says that the bypass flag was sent as
+// authorized when it was; any other result keeps the list.
+//
 // # Shell-only progress
 // A restart that asked for no re-entry shows its progress exactly as it did
 // before re-entry existed: `shellProgressLabel` is the per-phase text of the
@@ -380,6 +389,8 @@ export function reentryResult(raw) {
   return {
     state,
     serverReplaced: raw.serverReplaced === true,
+    // the queue rows this restart paused; null when the backend did not say
+    queuePaused: Number.isSafeInteger(raw.queuePaused) && raw.queuePaused >= 0 ? raw.queuePaused : null,
     entries: raw.entries.map(entry => {
       const cardId = idOf(entry?.cardId);
       return cardId && {
@@ -505,10 +516,38 @@ export function projectResult({ replaced, result, requested = [], pollEnded = fa
       ...(waiting ? [text(ended ? 'reentry.result.pendingEnded' : 'reentry.result.pending')] : []),
     ],
     rows,
-    footer: [...(done ? [text('reentry.result.queuesPaused')] : []), text(WARNING_KEYS['additional-dirs-not-restored'])],
+    footer: done ? queueFooter(result?.queuePaused ?? null) : [],
     // one toast at most, and only the server conclusion
     toast: done ? 'tmux.restartComplete' : null,
+    // nothing here asks anything of the user: the list is replaced by this
+    // one toast (null while anything needs a look)
+    quiet: done ? quietToast(result, rows, requested) : null,
   };
+}
+
+// what the restart did to the queues: said only when rows were paused, or
+// when the backend did not say how many
+function queueFooter(paused) {
+  if (paused === 0) return [];
+  return [paused == null ? text('reentry.result.queuesPaused') : text('reentry.result.queueRowsPaused', { count: paused })];
+}
+
+// A completed replacement where every requested card was re-entered and
+// confirmed, no entry carries anything but the bypass mark, and no queue
+// row was paused, needs nothing from the user: it is said in one toast.
+// Anything else keeps the list. The bypass mark is said in the toast too.
+const QUIET_WARNINGS = ['bypass-reauthorized'];
+function quietToast(result, rows, requested) {
+  if (!result || result.state !== 'complete' || result.queuePaused !== 0) return null;
+  const entries = result.entries;
+  if (!entries.length || rows.length !== entries.length) return null;
+  const ids = new Set(entries.map(entry => entry.cardId));
+  if (requested.some(cardId => idOf(cardId) && !ids.has(cardId))) return null;
+  const clean = entries.every(entry => entry.outcome === 'confirmed'
+    && entry.warnings.every(code => QUIET_WARNINGS.includes(code)));
+  if (!clean) return null;
+  const bypass = entries.some(entry => entry.warnings.includes('bypass-reauthorized'));
+  return text(bypass ? 'reentry.result.quietBypass' : 'reentry.result.quiet', { count: entries.length });
 }
 
 /* ---------- lost response ---------- */

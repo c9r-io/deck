@@ -633,6 +633,12 @@ pub(crate) struct ReentryResult {
     pub(crate) request_id: String,
     pub(crate) state: OperationState,
     pub(crate) server_replaced: bool,
+    /// How many waiting queue rows this restart paused before the
+    /// replacement (`scheduler::pause_for_server_restart`). `None` when the
+    /// operation did not record it (a crash recovery pauses nothing; a
+    /// result read before the pause): the webview then says the queues may
+    /// be paused rather than that none are.
+    pub(crate) queue_paused: Option<usize>,
     pub(crate) entries: Vec<EntryView>,
 }
 
@@ -1685,6 +1691,7 @@ pub(crate) fn freeze(
         request_id: request_id.to_string(),
         state: OperationState::Running,
         server_replaced: false,
+        queue_paused: None,
         entries: entries
             .iter()
             .map(|(entry, _)| entry.view.clone())
@@ -1851,6 +1858,7 @@ impl Plan {
             request_id: request_id.to_string(),
             state: OperationState::Running,
             server_replaced: false,
+            queue_paused: None,
             entries: ready
                 .iter()
                 .map(|entry| entry.view.clone())
@@ -2002,6 +2010,11 @@ impl Plan {
     /// plan can turn the restart into a failure.
     pub(crate) fn server_replaced(&mut self) {
         self.shared.lock_or_recover().server_replaced = true;
+    }
+
+    /// The number of queue rows this restart paused, for the result list.
+    pub(crate) fn queue_paused(&mut self, rows: usize) {
+        self.shared.lock_or_recover().queue_paused = Some(rows);
     }
 
     fn settle(entry: &mut Entry, outcome: Outcome, reason: Option<Reason>) {

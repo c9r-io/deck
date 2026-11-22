@@ -161,6 +161,8 @@ const NATIVE_SESSION_KEYS = new Map([
   ['reentry.stage.reopening', 'the stage that reopens the Agent sessions'],
   ['reentry.result.confirmed', 'the Claude session whose re-entry was confirmed (approved sentence)'],
   ['reentry.result.confirmedOrdinary', 'the Claude session whose re-entry was confirmed'],
+  ['reentry.result.quiet', 'counts the Agent sessions whose re-entry was confirmed (the toast that replaces the list)'],
+  ['reentry.result.quietBypass', 'counts the Agent sessions whose re-entry was confirmed, the bypass flag sent as authorized'],
   ['reentry.reason.final-session-unconfirmed', 'the native session the client ended in'],
   ['reentry.reason.native-session-not-found', 'the original native session Claude could not find'],
   ['reentry.reason.user-action-required', 'the Claude session that asks for the user during its startup'],
