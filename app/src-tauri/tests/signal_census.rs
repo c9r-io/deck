@@ -266,6 +266,16 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         1,
         Presentation,
     ),
+    // the Codex trust of a worker's process, read only to say WHY it has
+    // no observed state (`why`: codex-unattributed / codex-unproven): a
+    // word for the orchestrator, never a send, a hold lifted or a close
+    (
+        "mcp/workers.rs",
+        "observe_sessions",
+        "generation_evidence(",
+        1,
+        Presentation,
+    ),
     // a worker card's close (`deck_worker_close`): an Agent asking the
     // user (`needs-input`) REFUSES the close, at the request and again at
     // admission, and nothing else is read: no word ever closes a card

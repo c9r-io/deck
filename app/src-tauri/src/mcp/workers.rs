@@ -420,6 +420,10 @@ pub(super) struct Seen {
     alive: bool,
     state: Option<&'static str>,
     episode: u64,
+    /// The Codex Signal trust of the session's current foreground
+    /// generation (`agent_status::CodexSignalTrust`), when one applies:
+    /// what `why` says when no state is observed.
+    codex: Option<crate::agent_status::CodexSignalTrust>,
 }
 
 /// One pane listing: for each session, whether it is alive and what its
@@ -433,6 +437,11 @@ pub(super) fn observe_sessions() -> Option<HashMap<String, Seen>> {
     let rows = crate::tmux::list_panes().ok()?;
     let agents = crate::agent_status::projections(&rows);
     let current = crate::agent_status::reporting(&rows, crate::agent_status::live_generation);
+    let evidence = crate::agent_status::generation_evidence(
+        &rows,
+        crate::agent_status::live_generation,
+        |_| None,
+    );
     let mut seen: HashMap<String, Seen> = rows
         .iter()
         .map(|row| {
@@ -442,6 +451,7 @@ pub(super) fn observe_sessions() -> Option<HashMap<String, Seen>> {
                     alive: true,
                     state: None,
                     episode: 0,
+                    codex: evidence.get(&row.session_name).and_then(|e| e.codex),
                 },
             )
         })
@@ -471,6 +481,30 @@ pub(super) fn seen_for_tests(state: Option<&'static str>, episode: u64) -> Seen 
         alive: true,
         state,
         episode,
+        codex: None,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn codex_seen_for_tests(codex: crate::agent_status::CodexSignalTrust) -> Seen {
+    Seen {
+        alive: true,
+        state: None,
+        episode: 0,
+        codex: Some(codex),
+    }
+}
+
+/// Why a live worker has no observed state, for the orchestrator: a Codex
+/// whose status Deck cannot attribute (it holds until that Codex exits, and
+/// so do the lines queued into it), a Codex that has not proven its status
+/// yet (its lines wait for its first own hook), or no turn seen yet.
+fn unavailable_why(codex: Option<crate::agent_status::CodexSignalTrust>) -> &'static str {
+    use crate::agent_status::CodexSignalTrust::{Trusted, Unavailable, Unknown};
+    match codex {
+        Some(Unavailable) => "codex-unattributed",
+        Some(Unknown) => "codex-unproven",
+        Some(Trusted) | None => "no-turn-seen",
     }
 }
 
@@ -553,7 +587,12 @@ fn view(
                 ..
             }),
         ) => json!({"state": state, "episode": episode}),
-        (Some(_), _) => json!({"state": "unavailable", "episode": 0}),
+        (Some(_), Some(seen)) => json!({
+            "state": "unavailable",
+            "episode": 0,
+            "why": unavailable_why(seen.codex),
+        }),
+        (Some(_), None) => json!({"state": "unavailable", "episode": 0}),
     };
     json!({
         "cardId": row.worker.card_id,

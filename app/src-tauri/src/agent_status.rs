@@ -175,6 +175,10 @@
 //! binding, shared-daemon Signal remains unavailable and scheduler/readiness
 //! gates stay in place. Embedded Codex (`--no-daemon`) attribution topology
 //! can satisfy this model; that does not certify full attention coverage.
+//! Under such an embedded foreground, a discontinuous Codex event is a
+//! client nested below it (a `codex exec` run as a tool): refused as
+//! `nested-client`, it marks nothing (`CodexSignalTrust`), so a worker's
+//! own tool use never blinds its card.
 //! Claude Code keeps its existing admission. Inherited `$TMUX_PANE`, cwd,
 //! timing, executable names, transcript paths and session/thread/turn IDs
 //! are never pane ownership proof.
@@ -684,6 +688,14 @@ fn with_agents<R>(f: impl FnOnce(&mut HashMap<PaneKey, Entry>) -> R) -> R {
 ///   without trustworthy interactive-client/pane binding);
 /// - `Unknown`: no evidence yet (fresh process, or Deck restarted).
 ///
+/// One discontinuity marks nothing (approved 2026-11-22): when the
+/// generation's foreground was launched with `--no-daemon`
+/// (`embedded_codex`), its own hooks never leave the pane's terminal, so
+/// a discontinuous Codex event reaching it is another client nested below
+/// it — a `codex exec` the agent runs as a tool — and is refused as
+/// `nested-client` without touching the generation's trust or
+/// observation. Without that launch proof the rule below stands.
+///
 /// A discontinuity proves that events can now claim this pane without
 /// trustworthy attribution, so it dominates an earlier `Trusted`: the
 /// generation's Codex observation is cleared at once (no stale attention
@@ -852,6 +864,47 @@ fn prove_trust(row: &PaneRow, generation: ForegroundGeneration, trust: CodexSign
 /// generation.
 fn prove_claude_interaction(row: &PaneRow, generation: ForegroundGeneration) {
     with_generation(row, generation, |record| record.claude_interaction = true);
+}
+
+/// Whether the generation's foreground program is a Codex client the
+/// kernel shows was launched with `--no-daemon` (its launch image, read
+/// for this pid and re-checked against the generation's birth instant):
+/// an embedded client runs its OWN hooks itself, so each of them is
+/// terminal-continuous (`terminal_continuous`), and a discontinuous Codex
+/// event that still reaches it comes from another Codex client below it
+/// (`nested-client`). This decides only that such an event marks nothing;
+/// it never makes anything `Trusted`, which still needs an accepted hook.
+/// A foreground that lies about its own launch can only misreport its own
+/// pane — the accepted residual of the module header. Anything else
+/// (a wrapper without the flag, an unreadable image, a recycled pid) is
+/// `false`, the existing fail-closed path.
+fn embedded_codex(generation: ForegroundGeneration) -> bool {
+    #[cfg(test)]
+    return EMBEDDED_FOR_TESTS.with(|forced| forced.borrow().contains(&generation.pid));
+    #[cfg(not(test))]
+    {
+        let Some(args) = crate::procinfo::argv(generation.pid) else {
+            return false;
+        };
+        launched_embedded(&args)
+            && crate::procinfo::process_start(generation.pid)
+                == Some((generation.start_seconds, generation.start_micros))
+    }
+}
+
+/// `--no-daemon` among a launch's options (before any `--`).
+fn launched_embedded(args: &[String]) -> bool {
+    args.iter()
+        .skip(1)
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "--no-daemon")
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The leader pids a test declares launched with `--no-daemon`.
+    static EMBEDDED_FOR_TESTS: std::cell::RefCell<std::collections::HashSet<u32>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
 /// Whether this exact pane generation was proven Codex-`Unavailable`.
@@ -1255,8 +1308,9 @@ pub(crate) struct Accepted {
 /// also in the peer's ancestry (`generation-mismatch`: the reporter is not
 /// the pane's current foreground program — a late event of an exited or
 /// replaced agent), and an unbroken terminal from the helper to that leader
-/// (`terminal-discontinuity`, see `terminal_continuous`); a Codex event of
-/// a generation already proven ambiguous is refused too
+/// (`terminal-discontinuity`, see `terminal_continuous`; a Codex one under
+/// an embedded Codex foreground is `nested-client` and marks nothing); a
+/// Codex event of a generation already proven ambiguous is refused too
 /// (`ambiguous-generation`, `CodexSignalTrust`). Runtime proof
 /// (Claude Code 2.1.282, Codex 0.156.1): the helper's parent IS the
 /// foreground leader; no fixed depth is required, so a wrapper leader is
@@ -1306,6 +1360,13 @@ pub(crate) fn ingest_accepted(
         .class;
     let codex = class == SignalClass::Codex;
     if !terminal_continuous(&origin.table, &chain, generation.pid, row.pane_pid) {
+        // A Codex client NESTED under an embedded Codex foreground (e.g. a
+        // `codex exec` the agent runs as a tool): refused, and it marks
+        // nothing — the foreground's own hooks never take this path
+        // (`embedded_codex`), so the generation's evidence stays its own.
+        if codex && embedded_codex(generation) {
+            return Err("nested-client");
+        }
         if codex {
             prove_trust(row, generation, CodexSignalTrust::Unavailable);
             // the generation's Codex observation stops presenting at once
@@ -1955,6 +2016,7 @@ const DROP_REASONS: &[&str] = &[
     "generation-mismatch",
     "terminal-discontinuity",
     "ambiguous-generation",
+    "nested-client",
     "stale-interaction",
     "interaction-mismatch",
     "duplicate-interaction",
@@ -3209,6 +3271,126 @@ mod tests {
         assert!(with_evidence(|records| records.is_empty()));
         reset_for_tests();
         crate::notify::reset_for_tests();
+    }
+
+    /// A `codex exec` the agent runs as a tool (Codex 0.171.0, probed
+    /// 2026-11-22 with the real helper: the exec is the leader's child in its
+    /// own terminal-less group, and its hooks' helper is the exec's; the
+    /// leader's own hooks stayed continuous before, during and after it).
+    /// Under a foreground launched with `--no-daemon`, the nested client's
+    /// hooks are refused as `nested-client` and mark
+    /// nothing — before or after the foreground proved itself — while the
+    /// foreground's own hooks keep being accepted. The same events under a
+    /// foreground without that launch proof keep the existing degradation.
+    #[test]
+    fn a_nested_codex_client_under_an_embedded_foreground_marks_nothing() {
+        use CodexSignalTrust::{Trusted, Unavailable, Unknown};
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        crate::notify::reset_for_tests();
+        let rows = [row("deck-card-aaaa", "$1", "%3", 300, true, "codex")];
+        let mut table = world(&[pane(300, 7, 310, 2000)]);
+        EMBEDDED_FOR_TESTS.with(|forced| forced.borrow_mut().insert(310));
+        // the nested exec, its own terminal-less group under the leader
+        // (as probed); `wrapped` adds a tool shell between them
+        let nested = |table: &mut ProcessTable, base: u32| {
+            table.insert(base, process(base, 310, 0, 0, 4000));
+            detached_hook(table, base + 2, base)
+        };
+        let wrapped = |table: &mut ProcessTable, base: u32| {
+            table.insert(base, process(base, 310, 0, 0, 4000));
+            table.insert(base + 1, process(base + 1, base, 0, 0, 4000));
+            detached_hook(table, base + 2, base + 1)
+        };
+        // before the foreground's first hook: refused, nothing proven
+        let early = nested(&mut table, 400);
+        assert_eq!(
+            codex_report("working", "%3", Some(early), &table, &rows),
+            Err("nested-client")
+        );
+        assert_eq!(trust(&rows, &table).get("deck-card-aaaa"), Some(&Unknown));
+        assert!(owner_held(&rows, &table, "deck-card-aaaa"));
+        // the foreground's own hook proves it
+        let own = detached_hook(&mut table, 330, 310);
+        assert_eq!(
+            codex_report("working", "%3", Some(own), &table, &rows),
+            Ok(())
+        );
+        assert_eq!(trust(&rows, &table).get("deck-card-aaaa"), Some(&Trusted));
+        // the nested client's words change nothing that was observed
+        for (index, word) in ["working", "turn-done", "needs-input"].iter().enumerate() {
+            let hook = nested(&mut table, 410 + 10 * index as u32);
+            assert_eq!(
+                codex_report(word, "%3", Some(hook), &table, &rows),
+                Err("nested-client"),
+                "{word}"
+            );
+        }
+        let shelled = wrapped(&mut table, 450);
+        assert_eq!(
+            codex_report("turn-done", "%3", Some(shelled), &table, &rows),
+            Err("nested-client")
+        );
+        assert_eq!(trust(&rows, &table).get("deck-card-aaaa"), Some(&Trusted));
+        assert_eq!(
+            signal(&rows, "deck-card-aaaa").map(|s| s.0),
+            Some("working")
+        );
+        // the foreground's own turn ending is still accepted and releases
+        let done = detached_hook(&mut table, 340, 310);
+        assert_eq!(
+            codex_report("turn-done", "%3", Some(done), &table, &rows),
+            Ok(())
+        );
+        assert_eq!(
+            signal(&rows, "deck-card-aaaa").map(|s| s.0),
+            Some("turn-done")
+        );
+        assert!(!owner_held(&rows, &table, "deck-card-aaaa"));
+        // without the launch proof the same nested event degrades as before
+        EMBEDDED_FOR_TESTS.with(|forced| forced.borrow_mut().clear());
+        let unproven = nested(&mut table, 500);
+        assert_eq!(
+            codex_report("working", "%3", Some(unproven), &table, &rows),
+            Err("terminal-discontinuity")
+        );
+        assert_eq!(
+            trust(&rows, &table).get("deck-card-aaaa"),
+            Some(&Unavailable)
+        );
+        assert_eq!(signal(&rows, "deck-card-aaaa"), None);
+        assert!(owner_held(&rows, &table, "deck-card-aaaa"));
+        reset_for_tests();
+        crate::notify::reset_for_tests();
+    }
+
+    /// `--no-daemon` counts only as an option of the launch itself.
+    #[test]
+    fn an_embedded_launch_is_read_from_its_options() {
+        let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        assert!(launched_embedded(&args(&[
+            "codex",
+            "--no-daemon",
+            "--yolo"
+        ])));
+        assert!(launched_embedded(&args(&[
+            "node",
+            "/x/codex.js",
+            "--no-daemon"
+        ])));
+        assert!(launched_embedded(&args(&[
+            "codex",
+            "resume",
+            "--no-daemon",
+            "id"
+        ])));
+        assert!(!launched_embedded(&args(&["codex", "--yolo"])));
+        assert!(
+            !launched_embedded(&args(&["--no-daemon"])),
+            "argv[0] is not an option"
+        );
+        assert!(!launched_embedded(&args(&["codex", "--", "--no-daemon"])));
+        assert!(!launched_embedded(&args(&["codex", "--no-daemon=1"])));
     }
 
     /// A Claude foreground is never gated and a Codex-sourced discontinuity

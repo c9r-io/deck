@@ -107,7 +107,11 @@ session/thread/turn IDs are not pane ownership proof. This is a provenance rule,
 not a version allowlist: 0.157.1 and 0.160.0 remain BLOCKED; `--no-daemon`
 embedded attribution topology can satisfy the existing model. See
 `docs/codex-signal-certification-20261002.md`; current `CodexSignalTrust::Unavailable`
-and scheduler/readiness gates remain unchanged.
+and scheduler/readiness gates remain unchanged, with one approved exception
+(2026-11-22): under a foreground the kernel shows was launched with
+`--no-daemon`, a discontinuous Codex event is a client nested below it (a
+`codex exec` run as a tool), refused as `nested-client` without marking the
+generation (`agent_status.rs` `embedded_codex`).
 Prefer a future official client-provenance primitive to a permanent substitute
 protocol; expose the gap honestly while authoritative attribution is unavailable.
 

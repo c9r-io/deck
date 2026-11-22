@@ -5818,6 +5818,26 @@ fn worker_cards_are_recorded_listed_refused_and_taken_over() {
     assert_eq!(workers[0]["takenOver"], false);
     assert_eq!(listed["mayReadReplies"], true);
     assert_eq!(listed["nextSendSequence"], 0);
+    // no observed state: why, by the Codex trust of the card's process
+    {
+        use crate::agent_status::CodexSignalTrust::{Trusted, Unavailable, Unknown};
+        for (seen, why) in [
+            (codex_seen_for_tests(Unavailable), "codex-unattributed"),
+            (codex_seen_for_tests(Unknown), "codex-unproven"),
+            (codex_seen_for_tests(Trusted), "no-turn-seen"),
+            (seen_for_tests(None, 0), "no-turn-seen"),
+        ] {
+            let map = HashMap::from([("deck-w1".to_owned(), seen)]);
+            OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(Some(map)));
+            let listed = call("deck_worker_list", json!({}));
+            assert_eq!(
+                listed["workers"][0]["agent"],
+                json!({"state": "unavailable", "episode": 0, "why": why}),
+                "{why}"
+            );
+        }
+    }
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(seen(5)));
     // wait returns at once when the episode is not the one the caller saw
     let waited = call(
         "deck_worker_wait",

@@ -805,7 +805,7 @@ impl DeckServer {
             ),
             tool::<Empty>(
                 "deck_worker_list",
-                "List this client's worker cards: the cards its automation triggers created that the local user lets it drive. Each has cardId, title, alive, agent {state: working | turn-done | needs-input | unavailable, episode} (unavailable with alive true: no turn seen since Deck restarted or resumed the agent; you may still send after episode 0), takenOver (the user typed into it; your lines wait until they hand it back), unsent and the states of your recent lines. Content-free. Also mayReadReplies and nextSendSequence.",
+                "List this client's worker cards: the cards its automation triggers created that the local user lets it drive. Each has cardId, title, alive, agent {state: working | turn-done | needs-input | unavailable, episode, why} (unavailable with alive true says why: no-turn-seen = no turn seen since Deck restarted or resumed the agent, you may still send after episode 0; codex-unproven = this Codex has not reported its own status yet, your lines wait for it; codex-unattributed = Deck cannot attribute this Codex process's status and will not until it exits, your lines into it stay held: do not wait, start another card or tell the user), takenOver (the user typed into it; your lines wait until they hand it back), unsent and the states of your recent lines. Content-free. Also mayReadReplies and nextSendSequence.",
                 ro.clone(),
             ),
             tool::<WorkerWaitInput>(

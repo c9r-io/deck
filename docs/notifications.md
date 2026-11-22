@@ -252,7 +252,10 @@ it back at the next poll (`bell.rs`, Cadence).
   notifies and never counts on the Dock, and no other card receives its
   events. The first such refusal also withdraws that Codex process's earlier
   status (the channel is now ambiguous), and no later hook of the same
-  process restores it. Because Deck then cannot see a Codex permission
+  process restores it. A Codex started with `--no-daemon` runs its own
+  hooks itself, so a refused event under it comes from another Codex it
+  runs as a tool (a `codex exec`): that one is refused as `nested-client`
+  and changes nothing about the card. Because Deck then cannot see a Codex permission
   prompt, lists hold every automatic send into that card (send-now still
   works). Installing the hooks does not by itself mean
   status works. Codex running without the shared service (embedded) has

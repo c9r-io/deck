@@ -343,3 +343,18 @@ SessionStart + 两个 UserPromptSubmit/Stop 合计 5 个 kernel-peer samples。�
 [goal-lock]: https://github.com/openai/codex/blob/979011409de0a60b52f179721948e65531d26144/codex-rs/app-server/src/thread_state.rs#L363
 [plan-overlay]: https://github.com/openai/codex/blob/979011409de0a60b52f179721948e65531d26144/codex-rs/tui/src/chatwidget/turn_runtime.rs#L196
 [session-end-root]: https://github.com/openai/codex/blob/979011409de0a60b52f179721948e65531d26144/codex-rs/core/src/hook_runtime.rs#L471
+
+## 补记（2026-11-22）：嵌套 Codex 客户端不再降级外层
+
+用户批准的唯一例外。起因：Codex 工人卡（`codex --no-daemon --yolo`）按生图流程并行运行 28 个 `codex exec`，每个嵌套客户端的 hook 继承了这张卡的 `TMUX_PANE`，以 `terminal-discontinuity` 被拒；按第 11 节的现行规则，第一次拒收即把这一代标为 Unavailable，此后外层自己的 hook 也被拒（`ambiguous-generation`），调度器一直挡住发往这张卡的行。
+
+新规则（`agent_status.rs` `embedded_codex`）：断链的 Codex 事件，若这一代前台进程经内核读取的启动参数含 `--no-daemon`（并核对 pid 出生时间），则以 `nested-client` 拒收，不改变这一代的信任与观测。没有这条启动证明时，第 11 节的规则不变。接受一条事件的条件（kernel peer、pane ancestry、当前前台 generation、严格 terminal continuity）没有任何放宽；`Trusted` 仍只能由一条被接受的 hook 建立。
+
+实测（Codex 0.171.0，隔离 tmux server，真实 `deck-status-helper`，探针 socket 在 helper 连接期间取 kernel peer 与进程快照，按同一连续性规则判定）：
+
+```text
+外层 working / turn-done:  helper(tty 0, 自身组) → codex --no-daemon --yolo(pane tty)      连续
+嵌套 working / turn-done:  helper(tty 0, 自身组) → codex exec(tty 0, 自身组) → 外层 codex  断开
+```
+
+外层的 hook 在嵌套客户端运行前、运行中、运行后都保持连续；嵌套 exec 是外层的直接子进程。共享 daemon 拓扑（第 6 节）中起 daemon 的 TUI 未以 `--no-daemon` 启动，不受影响。残余：前台进程伪造自己的启动参数只能误报它自己的 pane，与模块头已接受的残余相同。

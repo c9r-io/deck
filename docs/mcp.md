@@ -150,7 +150,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_session_close` | Use Deck's ordinary close transaction; running jobs require explicit confirmation. |
 | `deck_automation_list` | The Agent automations this client is delegated to trigger: each rule's automation id, name, project and current revision, plus `nextTriggerSequence`. Needs the client's separate **automation delegation**. |
 | `deck_automation_trigger` | Hand one classified item (`text`, optional `from`/`where`/`link`) to one automation by id and revision. Deck creates the rule's card and sends its approved steps; the operation reports `committed` with `cardId` or `rejected` with a closed code (`RULE_CHANGED` with `currentRevision`, `TARGET_MISSING`, `TEMPLATE_MISSING`, `RULE_BLOCKED`, `RULE_MISSING`, `CLIENT_REVOKED`). Not session or execution authority. |
-| `deck_worker_list` | This client's worker cards (the cards its automation triggers created, and those `deck_worker_start` started, while it may drive them): card id, title, alive, Agent observation `{state, episode}`, `takenOver`, unsent lines and the states of its recent lines, plus `mayReadReplies` and `nextSendSequence`. Content-free. Needs the client's separate **worker** choice. |
+| `deck_worker_list` | This client's worker cards (the cards its automation triggers created, and those `deck_worker_start` started, while it may drive them): card id, title, alive, Agent observation `{state, episode}` (`why` when unavailable), `takenOver`, unsent lines and the states of its recent lines, plus `mayReadReplies` and `nextSendSequence`. Content-free. Needs the client's separate **worker** choice. |
 | `deck_worker_wait` | The same views once one of the named cards moves past the episode the caller saw, is taken over or stops; at most 5 s (`wait_ms`), call again after `changed: false`. |
 | `deck_worker_report` | Called by the agent IN a worker card: hands Deck a text (at most 8192 bytes) for the orchestrator that started the card. It names no card and no recipient; Deck sees which card the call comes from. `NOT_A_WORKER_CARD` anywhere else. |
 | `deck_worker_reports` | A worker card's kept reports (the newest 4, each with its sequence and time; `after` for newer ones only). Durable; needs the **replies** choice. |
@@ -390,6 +390,16 @@ card's episode is no longer the one the line was written after, and
 otherwise types it only when the ordinary readiness holds allow, never
 while the agent is asking you something (after 10 s of quiet in the pane,
 and at least a minute after the card's previous line).
+
+A live worker with no observed state reads `agent: unavailable`,
+episode 0, and `why`: `no-turn-seen` (below), `codex-unproven` (this
+Codex has not reported its own status yet; lines into it wait for that),
+or `codex-unattributed` (Deck cannot attribute this Codex process's
+status — e.g. it uses a shared daemon — and will not until the process
+exits; lines into it stay held, so the orchestrator should not wait for
+it). A `codex exec` the worker itself runs as a tool does not cause the
+last one when the worker was started with `--no-daemon`, as worker types
+must be: its events are refused as `nested-client` and mark nothing.
 
 After Deck restarts (an update included) a worker reads `alive: true`,
 `agent: unavailable`, episode 0 until its agent's next turn: Deck keeps no
