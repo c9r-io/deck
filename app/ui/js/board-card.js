@@ -11,6 +11,7 @@ import { paintCardSignalStatus, paintCardAttentionBadge } from './attention.js';
 import { setQueueChip } from './scheduler.js';
 import { ruleOf } from './automation.js';
 import { ruleLabel } from './automation-model.js';
+import { openAgentNotes } from './buffer-model.js';
 import { t } from './i18n.js';
 
 /**
@@ -21,6 +22,7 @@ import { t } from './i18n.js';
  * @property {(event: MouseEvent, id: string) => unknown} context
  * @property {(card: Object) => HTMLElement} reminderChip
  * @property {(card: Object) => HTMLElement|null} [workerChip]
+ * @property {(id: string) => unknown} [openNotes]
  */
 
 /**
@@ -31,7 +33,7 @@ import { t } from './i18n.js';
  * @param {BoardCardActions} actions
  * @returns {HTMLElement}
  */
-export function createBoardCard(s, { open, close, togglePinned, context, reminderChip, workerChip }) {
+export function createBoardCard(s, { open, close, togglePinned, context, reminderChip, workerChip, openNotes }) {
   const el = document.createElement('div');
   el.className = 'card' + (s.status === 'waiting' ? ' waiting' : s.status === 'attention' ? ' attention' : '');
   el.dataset.sid = s.id;
@@ -43,7 +45,7 @@ export function createBoardCard(s, { open, close, togglePinned, context, reminde
      attention badge is always present and only hidden (attention.js). */
   el.innerHTML = `
     <div class="card-top"><span class="dot ${s.status}"></span><button class="card-title card-open" type="button"></button><span class="card-attention-badge" hidden></span><button class="card-pin" type="button"></button><button class="card-x" type="button">✕</button></div>
-    <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="auto-chip"></span><span class="q-chip"></span><span class="mem-chip"></span></div>
+    <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="auto-chip"></span><span class="q-chip"></span><button class="note-chip" type="button" hidden></button><span class="mem-chip"></span></div>
     <div class="card-status"><span class="card-status-text"></span><button class="card-signal-help" type="button" hidden></button></div>
     <div class="card-desc"></div>`;
   const opener = el.querySelector('.card-open');
@@ -78,6 +80,16 @@ export function createBoardCard(s, { open, close, togglePinned, context, reminde
   el.querySelector('.mem-chip').title = t('session.memory');
   setMemChip(el.querySelector('.mem-chip'), s);
   setQueueChip(el.querySelector('.q-chip'), s);   // self-fill: survives card rebuilds
+  /* the Agent notes waiting for the user (buffer-model.js): a count that
+     opens the card's scratchpad, never the card itself */
+  const noteChip = el.querySelector('.note-chip');
+  const notes = openAgentNotes(s).length;
+  noteChip.hidden = !notes;
+  noteChip.textContent = notes ? `? ${notes}` : '';
+  noteChip.title = notes ? t('card.agentNotes', { count: notes }) : '';
+  noteChip.setAttribute('aria-label', noteChip.title || t('buffer.open'));
+  noteChip.dataset.navFocus = `card:${s.id}:notes`;
+  noteChip.onclick = e => { e.stopPropagation(); openNotes?.(s.id); };
   const autoChip = el.querySelector('.auto-chip');
   const rule = ruleOf(s.origin);
   autoChip.textContent = rule ? '↻ ' + ruleLabel(rule) : '';
@@ -107,7 +119,7 @@ export function createBoardCard(s, { open, close, togglePinned, context, reminde
   };
   el.addEventListener('click', e => {
     e.stopPropagation();   // don't toggle the board selection underneath
-    if (e.target.closest('.card-x, .card-pin, .card-signal-help, .card-reminder, .card-worker')) return;
+    if (e.target.closest('.card-x, .card-pin, .card-signal-help, .card-reminder, .card-worker, .note-chip')) return;
     open(s.id);
   });
   el.oncontextmenu = e => context(e, s.id);

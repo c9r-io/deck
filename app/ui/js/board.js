@@ -87,7 +87,7 @@ import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.j
 import { locateAttentionCard, refreshAttention, showAttention } from './attention.js';
 import { paintMentions } from './slack-mentions.js';
 import { cardLabels, dismissKey, labelsKey, seenDismissals } from './notify-model.js';
-import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, retainedBuffer } from './buffer-model.js';
+import { addManual, addQueueCopy, agentNoteChanged, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, isAgentNote, markHandled, openAgentNote, putAgentNote, retainedBuffer } from './buffer-model.js';
 import { nextCollectedAt } from './channel-model.js';
 import { connectorAuthorityClaim, connectorFirstSendClaim, normalizeTaskPresets } from './connector-model.js';
 import { createBoardCard } from './board-card.js';
@@ -537,7 +537,7 @@ export const provider = {
           return !next || next.text !== copy.text || next.entryRevision !== copy.entryRevision
             || next.createdAt !== copy.createdAt;
         });
-        if (changedExternal || changedCopy) {
+        if (changedExternal || changedCopy || agentNoteChanged(entry, proposed)) {
           const error = new Error('external buffer entries are immutable');
           error.stage = 'immutable';
           throw error;
@@ -547,6 +547,25 @@ export const provider = {
     });
     const c = this.get(sid);
     if (c) emit('list', c);
+  },
+  /* one Agent note a client wrote from its card (`deck_card_note`,
+     mcp/notes.rs → mcp.js putNote): merged into the card's CURRENT
+     scratchpad inside the one transaction, so it never races the user's
+     own edit (theirs is a CAS on the revision and simply retries). */
+  async putAgentNote(sid, plan) {
+    let outcome = { ok: false, reason: 'card-missing' };
+    await mutateBoard(draft => {
+      const c = draft.cards.find(x => x.id === sid);
+      if (!c) return { noop: true };
+      const result = putAgentNote(c.buffer, plan, Date.now());
+      if (result.error) { outcome = { ok: false, reason: result.error }; return { noop: true }; }
+      outcome = { ok: true };
+      if (result.noop) return { noop: true };
+      c.buffer = result.buffer;
+    });
+    const c = this.get(sid);
+    if (c) emit('list', c);
+    return outcome;
   },
   async setChannelRun(sid, expectedGroupKey, update) {
     await mutateBoard(draft => {
@@ -800,6 +819,10 @@ export const provider = {
 let bufferTargetId = null;
 let bufferUiEpoch = 0;
 const bufferSelected = new Set();
+/* which entries the panel lists ('all', 'agent', 'mine') and whether the
+   handled Agent notes are unfolded: this card's view only, reset with it */
+let bufferFilter = 'all';
+let bufferHandledOpen = false;
 /* What is typed and not yet kept, in memory only: a new note per card, and a
    note's edit per card and note. A text field saves nothing when it loses
    the focus — closing the panel, another card or a re-render keeps it. */
@@ -837,6 +860,7 @@ function changeBufferTarget(cardId) {
   if (bufferTargetId !== cardId) {
     bufferUiEpoch++;
     bufferSelected.clear();
+    bufferFilter = 'all'; bufferHandledOpen = false;
     keepNewNoteDraft();
     $('buffer-new').value = newNoteDrafts.get(cardId) || '';
   }
@@ -847,7 +871,7 @@ function changeBufferTarget(cardId) {
   syncBufferQueueButton();
 }
 const bufferLimitKey = error => ({ entries: 'buffer.limit.entries', copies: 'buffer.limit.copies', entry: 'buffer.limit.entry', total: 'buffer.limit.total',
-  'leading-command': 'buffer.leadingCommand' })[error];
+  'leading-command': 'buffer.leadingCommand', 'agent-note': 'buffer.agentNoQueue' })[error];
 
 async function persistBuffer(card, expectedRevision, next) {
   const error = bufferLimitError(next);
@@ -878,8 +902,19 @@ export function renderBufferUI() {
   }
   $('buffer-collecting').hidden = !buffer.collecting;
   $('buffer-stop').hidden = !buffer.collecting || !card.channelRun;
-  const list = $('buffer-list'); list.replaceChildren($('buffer-empty'));
-  for (const entry of buffer.entries) {
+  const deleteButton = entry => {
+    const del = document.createElement('button'); del.className = 'btn buffer-del'; del.textContent = '✕';
+    del.title = t('common.delete'); del.setAttribute('aria-label', t('common.delete'));
+    del.onclick = async () => {
+      if (!await confirmDialog(t('buffer.deleteConfirm'))) return;
+      if (await persistBuffer(card, buffer.revision || 0, deleteEntry(buffer, entry.id)) && bufferStillShows(card.id, uiEpoch)) {
+        bufferSelected.delete(entry.id);
+        renderBufferUI();
+      }
+    };
+    return del;
+  };
+  const noteRow = entry => {
     const row = document.createElement('article'); row.className = 'buffer-row'; row.dataset.id = entry.id;
     const check = document.createElement('input'); check.type = 'checkbox'; check.checked = bufferSelected.has(entry.id);
     check.setAttribute('aria-label', t('buffer.select'));
@@ -938,18 +973,98 @@ export function renderBufferUI() {
     for (const copy of entry.copies || []) {
       const badge = document.createElement('span'); badge.textContent = t(`buffer.state.${bufferEvidence(copy)}`); badge.dataset.state = bufferEvidence(copy); copies.appendChild(badge);
     }
-    const del = document.createElement('button'); del.className = 'btn buffer-del'; del.textContent = '✕';
-    del.title = t('common.delete'); del.setAttribute('aria-label', t('common.delete'));
-    del.onclick = async () => {
-      if (!await confirmDialog(t('buffer.deleteConfirm'))) return;
-      if (await persistBuffer(card, buffer.revision || 0, deleteEntry(buffer, entry.id)) && bufferStillShows(card.id, uiEpoch)) {
-        bufferSelected.delete(entry.id);
-        renderBufferUI();
-      }
-    };
-    body.append(meta, field, unsaved, links, copies); row.append(check, body, del); list.appendChild(row);
+    const del = deleteButton(entry);
+    body.append(meta, field, unsaved, links, copies); row.append(check, body, del);
+    return row;
+  };
+  /* An Agent note (buffer-model.js): its author and time, whether it already
+     went ahead, the title to scan, the text folded under it. Never selected
+     for the queue and never edited: the user marks it handled, or answers
+     it with a note of their own (prefixed with the note's title) that they
+     queue like any other — writing the answer marks the note handled. */
+  const agentRow = entry => {
+    const row = document.createElement('article'); row.className = 'buffer-row buffer-agent'; row.dataset.id = entry.id;
+    if (entry.handledAt) row.dataset.handled = 'true';
+    const gutter = document.createElement('span'); gutter.className = 'buffer-agent-mark'; gutter.textContent = entry.handledAt ? '✓' : '?';
+    gutter.setAttribute('aria-hidden', 'true');
+    const body = document.createElement('div'); body.className = 'buffer-body';
+    const meta = document.createElement('div'); meta.className = 'buffer-meta';
+    meta.textContent = [t('buffer.agentBy', { client: entry.source?.client || 'MCP' }), formatDateTime(entry.updatedAt),
+      entry.handledAt ? t('buffer.agentHandledAt', { time: formatDateTime(entry.handledAt) }) : null].filter(Boolean).join(' · ');
+    if (entry.acted) {
+      const acted = document.createElement('span'); acted.className = 'buffer-acted'; acted.textContent = t('buffer.agentActed');
+      meta.append(' ', acted);
+    }
+    const note = document.createElement('details'); note.className = 'buffer-note';
+    const summary = document.createElement('summary'); summary.textContent = entry.title;
+    const text = document.createElement('div'); text.className = 'buffer-note-text'; text.textContent = entry.text || '';
+    note.append(summary); if (entry.text) note.append(text);
+    body.append(meta, note);
+    if (!entry.handledAt) {
+      const actions = document.createElement('div'); actions.className = 'buffer-note-actions';
+      const handled = document.createElement('button'); handled.className = 'btn'; handled.textContent = t('buffer.agentHandle');
+      handled.onclick = async () => {
+        const result = markHandled(buffer, entry.id, Date.now());
+        if (!result.error && !result.noop && await persistBuffer(card, buffer.revision || 0, result.buffer)
+          && bufferStillShows(card.id, uiEpoch)) renderBufferUI();
+      };
+      const answer = document.createElement('button'); answer.className = 'btn'; answer.textContent = t('buffer.agentAnswer');
+      answer.onclick = () => {
+        answer.disabled = true;
+        const field = document.createElement('textarea'); field.rows = 2; field.maxLength = 32768; field.spellcheck = false;
+        field.className = 'buffer-answer';
+        field.value = t('buffer.agentAnswerPrefix', { title: entry.title });
+        field.setAttribute('aria-label', t('buffer.agentAnswer'));
+        const hint = document.createElement('span'); hint.className = 'buffer-unsaved'; hint.textContent = t('buffer.agentAnswerHint');
+        field.addEventListener('keydown', async event => {
+          if (event.isComposing || event.keyCode === 229) return;
+          if (event.key === 'Escape') {
+            event.preventDefault(); event.stopPropagation();
+            field.remove(); hint.remove(); answer.disabled = false;
+            return;
+          }
+          if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
+          event.preventDefault();
+          const value = field.value.trim();
+          if (!value) return;
+          const added = addManual(buffer, { id: genId('N'), text: value, now: Date.now() });
+          if (added.error) { toast(t(bufferLimitKey(added.error))); return; }
+          const result = markHandled(added.buffer, entry.id, Date.now());
+          if (await persistBuffer(card, buffer.revision || 0, result.buffer) && bufferStillShows(card.id, uiEpoch)) renderBufferUI();
+        });
+        body.append(field, hint);
+        field.focus(); field.setSelectionRange(field.value.length, field.value.length);
+      };
+      actions.append(handled, answer);
+      body.append(actions);
+    }
+    row.append(gutter, body, deleteButton(entry));
+    return row;
+  };
+  const list = $('buffer-list'); list.replaceChildren($('buffer-empty'));
+  const agentNotes = buffer.entries.filter(isAgentNote);
+  const filterBar = $('buffer-filter');
+  filterBar.hidden = agentNotes.length === 0;
+  if (filterBar.hidden) bufferFilter = 'all';
+  for (const button of filterBar.querySelectorAll('button')) {
+    button.setAttribute('aria-pressed', String(button.dataset.filter === bufferFilter));
   }
-  $('buffer-empty').hidden = buffer.entries.length > 0;
+  const shown = entry => bufferFilter === 'all' || (bufferFilter === 'agent') === isAgentNote(entry);
+  /* open Agent notes first: they are what the user came back for; the
+     rest in their order; handled notes folded at the end */
+  for (const entry of buffer.entries.filter(openAgentNote).filter(shown)) list.appendChild(agentRow(entry));
+  for (const entry of buffer.entries.filter(entry => !isAgentNote(entry)).filter(shown)) list.appendChild(noteRow(entry));
+  const handledNotes = agentNotes.filter(entry => entry.handledAt).filter(shown);
+  if (handledNotes.length) {
+    const fold = document.createElement('details'); fold.className = 'buffer-handled';
+    fold.open = bufferHandledOpen;
+    fold.ontoggle = () => { bufferHandledOpen = fold.open; };
+    const summary = document.createElement('summary');
+    summary.textContent = t('buffer.agentHandledCount', { count: formatNumber(handledNotes.length) });
+    fold.append(summary, ...handledNotes.map(agentRow));
+    list.appendChild(fold);
+  }
+  $('buffer-empty').hidden = list.children.length > 1;
   $('buffer-note-count').textContent = t('buffer.noteCount', { count: formatNumber(buffer.entries.length) });
   syncBufferQueueButton();
 }
@@ -1082,6 +1197,9 @@ export function initBuffer() {
     $('buffer-add').click();
   });
   $('buffer-queue').onclick = queueSelectedBufferEntries;
+  for (const button of $('buffer-filter').querySelectorAll('button')) {
+    button.onclick = () => { bufferFilter = button.dataset.filter; renderBufferUI(); };
+  }
   $('buffer-stop').onclick = async () => {
     const card = activeBufferCard();
     if (!card?.channelRun) return;
@@ -1824,7 +1942,7 @@ export function cardEl(s) {
   return createBoardCard(s, {
     open: openSession, close: closeSession,
     togglePinned: id => provider.togglePinned(id),
-    context: showSessionCtx, reminderChip, workerChip,
+    context: showSessionCtx, reminderChip, workerChip, openNotes: id => openBuffer(id),
   });
 }
 

@@ -168,6 +168,8 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_card_reply` | That final message whole (head and tail when long), as external content, only while its episode is the card's current one (`EPISODE_MOVED`); `REPLY_GONE` when Deck kept none. |
 | `deck_card_mark` | Mark one card on its current episode: `needs-you`, `can-close` or `working`, with a note of at most 200 characters; `null` takes the caller's own mark off (another client's is `CARD_MARKED`, though a later mark replaces it). Presentation only. |
 | `deck_card_update` | Rename one card of the client's projects and/or move it to a column, of its own project or (`project_id`) of another the client reaches: `card_id`, `request_id`, `title` + `from_title`, `column_id` + `from_column_id`. Refused with `CARD_CHANGED` when the card is no longer where or named as the request says, `COLUMN_NOT_FOUND` for a column outside the target project or a project out of reach, `CAPACITY_EXCEEDED` past 30 a minute. Returns an operation (`deck_operation_get`): `committed`, or `rejected` with `card-changed`, `card-starting`, `card-collecting`, `card-managed` or `card-missing`. Types, starts and closes nothing. Needs the client's separate **organize cards** choice (and the card snapshot). |
+| `deck_card_note` | Leave, revise or withdraw one note for the user in the scratchpad of the card the call comes from (proved from the kernel; `NOT_IN_A_CARD` otherwise): `request_id`, `key` (the client's own; the same key revises the note while it is open), `title` (one line, at most 120 characters), `text` (at most 8 KiB), `acted` (the Agent already went ahead with its recommendation), or `withdraw: true` with the key alone. `NOTE_HANDLED` once the user handled that key, `CAPACITY_EXCEEDED` past 32 open notes on the card, `RATE_LIMITED` past 12 a minute. Returns an operation (`deck_operation_get`): `committed`, or `rejected` with `note-handled`, `note-capacity`, `note-conflict` or `card-missing`. Any locally authorized client; no separate choice. |
+| `deck_card_notes` | The caller's own notes in the card the call comes from: `key`, `title`, `acted`, `state` (`open` or `handled`), `updatedAt`. Never the user's notes or another client's. |
 | `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence`. Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over. |
 | `deck_worker_close` | Close one worker card the calling orchestrator card started (`card_id`, `after_episode`, `send_sequence`, `request_id`): `WORKER_NOT_FOUND` for any other card and for every card when the call comes from no Deck card, `WORKER_TAKEN_OVER` while you hold it, `WORKER_NEEDS_YOU` while its agent asks you something, `EPISODE_MOVED` when it moved on. An operation to poll: `committed` once the card is gone, or `rejected` with `card-shown` (a pane shows it), `reminder-protected`, `card-kept` (a kept scratchpad), or the refusals above when the card changed before the close ran. Part of **Drive worker cards**; 30 a minute together with lines. |
 
@@ -640,6 +642,47 @@ Agent's question. Stopping the choice,
 a project leaving the client's scope, revoking the client or disabling MCP
 takes effect on the next call and removes the client's marks. A ledger
 holding this choice is written at version 14 (sticky).
+
+## Notes for the user
+
+An Agent you let go on while you are away can leave the questions that
+need your judgment in its own card's **scratchpad** instead of its
+terminal (`deck_card_note`, approved 2026-11-23). Tell it so in your
+instructions, for example: "where you need my decision, go ahead with
+your recommendation and leave a note".
+
+- **Its own card only.** Deck reads which card the call comes from out of
+  the kernel, as for an orchestrator card; a client outside a card, or
+  naming another card, writes nothing. Any client you authorized may do
+  it: a note is presentation data and needs no separate choice.
+- **You see who wrote it.** A note shows "Agent · client name", its time,
+  "Went ahead with its recommendation" when the Agent said so, and a
+  one-line title; its text unfolds under it. Your own notes and Slack
+  messages are labelled as before; with any Agent note in the scratchpad
+  a filter shows All, From Agents or Mine.
+- **Where you find it.** The card shows "? N" (open notes) and the chip
+  opens its scratchpad; Needs attention lists the card under **Waiting for
+  your judgment** with a Scratchpad button, unless a stronger reason
+  (an input request, a turn that ended unread, a held delivery, a bell)
+  already lists it. No notification, no Dock count, no card status: the
+  Agent did not stop.
+- **What you do with it.** **Handled** folds it away (under "Handled"
+  at the end of the scratchpad). **Answer** opens a field that starts
+  with "About “title”:"; ⌘↵ keeps it as YOUR note and marks the Agent's
+  handled; tick it and queue it like any note to send it to the Agent. An
+  Agent note itself is never edited by you and never queued.
+- **What the Agent sees.** `deck_card_notes` lists its own notes with
+  `open` or `handled`, nothing of yours. A handled key is closed to it
+  (`NOTE_HANDLED`): something new is a new note. It may revise an open
+  note under the same key, or withdraw it when it resolved the question
+  itself.
+- **Bounds and safety.** 32 open notes a card, 120 characters a title,
+  8 KiB a text, 12 writes a card a minute. A note is written by the
+  Board's own transaction (`card-note` operation), never replayed after a
+  restart. It sends, queues, moves and closes nothing, and like any kept
+  scratchpad it keeps the card from every automatic close. A Board that
+  holds one is written at schema v12, which an older Deck refuses
+  untouched. The phone shows a note read-only (source "agent").
 
 ## Organizing cards
 

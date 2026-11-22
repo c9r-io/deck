@@ -114,9 +114,26 @@ use std::sync::Mutex;
 // protects an Agent trigger rule (settings.json) and the queue origins it
 // admits (a row's or a delivery's authority or override with the agent
 // trigger word); v10 protects a worker card's delegated queue rows (queue
-// only); v11 protects a clock rule's one-time schedule (settings only).
+// only); v11 protects a clock rule's one-time schedule (settings only); v12
+// protects an Agent's note in a card's scratchpad (deck.json only).
 // Ordinary documents keep v1; upgrades are sticky.
-pub const SCHEMA_VERSION: u64 = 11;
+pub const SCHEMA_VERSION: u64 = 12;
+
+// v12: a scratchpad entry an MCP client wrote from its card (`kind:
+// "agent"`, `mcp/notes.rs`). A v11 reader's Board validation refuses the
+// unknown kind, which would quarantine the Board; refuse it untouched
+// instead.
+fn uses_agent_note(v: &serde_json::Value) -> bool {
+    v.get("cards")
+        .and_then(|v| v.as_array())
+        .is_some_and(|cards| {
+            cards.iter().any(|card| {
+                card["buffer"]["entries"]
+                    .as_array()
+                    .is_some_and(|entries| entries.iter().any(|e| e["kind"] == "agent"))
+            })
+        })
+}
 
 // An Agent rule is a source word a v8 reader rejects wholesale (its settings
 // validation refuses the unknown source, which would quarantine the file),
@@ -844,7 +861,9 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let feature_version = if name == "settings.json" && uses_schedule_once(&data) {
+    let feature_version = if name == "deck.json" && uses_agent_note(&data) {
+        12
+    } else if name == "settings.json" && uses_schedule_once(&data) {
         11
     } else if name == "queue.json" && uses_worker_send(&data) {
         10
@@ -2473,6 +2492,32 @@ mod agent_trigger_version_tests {
         save_typed::<serde_json::Value>(&p, &once.to_string()).unwrap();
         let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         assert!(raw["schema_version"].as_u64().unwrap() < 11);
+    }
+
+    /// v12 on deck.json only, and only for an Agent's scratchpad note:
+    /// sticky, and refused by a v11 reader.
+    #[test]
+    fn agent_notes_upgrade_the_board_to_sticky_v12_only_when_used() {
+        let dir = TestDir::new("agent-note-version");
+        let board = |kind: &str| serde_json::json!({"projects":[],"cards":[{"id":"c1","buffer":{"revision":1,"entries":[{"id":"n1","kind":kind,"text":"t"}]}}]});
+        let p = dir.join("deck.json");
+        save_typed::<serde_json::Value>(&p, &board("manual").to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert!(raw["schema_version"].as_u64().unwrap() < 12);
+        save_typed::<serde_json::Value>(&p, &board("agent").to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], 12);
+        assert!(
+            envelope_payload_for(&raw, 11).is_err(),
+            "a v11 reader refuses it"
+        );
+        save_typed::<serde_json::Value>(&p, &board("manual").to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], 12, "sticky");
+        let p = dir.join("queue.json");
+        save_typed::<serde_json::Value>(&p, &board("agent").to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert!(raw["schema_version"].as_u64().unwrap() < 12);
     }
 
     /// v9 on settings.json and queue.json only; deck.json keeps its own

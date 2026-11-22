@@ -48,6 +48,11 @@
     "max_bytes": 1048576,
     "max_serialized_bytes": 2097152
   },
+  "agent_note": {
+    "title_max_chars": 120,
+    "text_max_bytes": 8192,
+    "open_max": 32
+  },
   "presets_max": 50,
   "notify": {
     "labels_max": 4096,

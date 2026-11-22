@@ -10,7 +10,7 @@ use super::*;
 /// added there without listing the tool here (and in
 /// `mcp-fixtures/tools.json`) is unreachable; the tests hold this list equal
 /// to the fixture and check that every member routes.
-pub(super) const CONTROL_TOOLS: [&str; 36] = [
+pub(super) const CONTROL_TOOLS: [&str; 38] = [
     "deck_automation_list",
     "deck_automation_trigger",
     "deck_capabilities",
@@ -47,6 +47,8 @@ pub(super) const CONTROL_TOOLS: [&str; 36] = [
     "deck_card_reply",
     "deck_card_mark",
     "deck_card_update",
+    "deck_card_note",
+    "deck_card_notes",
 ];
 
 /// Whether `credential` is the current credential of a client that may use
@@ -240,6 +242,12 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
             "deck_card_update" => {
                 super::cards::card_update(runtime, &request.client_id, request.arguments)
             }
+            "deck_card_note" => {
+                super::notes::card_note(runtime, &request.client_id, request.arguments)
+            }
+            "deck_card_notes" => {
+                super::notes::card_notes(runtime, &request.client_id, request.arguments)
+            }
             _ => unsupported(),
         }
     };
@@ -262,6 +270,7 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
                 | "deck_mention_mark"
                 | "deck_card_mark"
                 | "deck_card_update"
+                | "deck_card_note"
         ) {
             Some("request-denied")
         } else {

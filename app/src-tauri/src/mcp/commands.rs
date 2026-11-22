@@ -1008,7 +1008,16 @@ pub(crate) struct PendingView {
 
 #[tauri::command]
 pub(crate) fn mcp_pending() -> Result<Vec<PendingView>, DeckError> {
-    runtime()?.read(|doc| {
+    pending_in(runtime()?)
+}
+
+#[cfg(test)]
+pub(super) fn mcp_pending_in(runtime: &Runtime) -> Vec<PendingView> {
+    pending_in(runtime).unwrap_or_default()
+}
+
+fn pending_in(runtime: &Runtime) -> Result<Vec<PendingView>, DeckError> {
+    runtime.read(|doc| {
         if !doc.config.enabled {
             Vec::new()
         } else {
@@ -1023,6 +1032,7 @@ pub(crate) fn mcp_pending() -> Result<Vec<PendingView>, DeckError> {
                                 | WORKER_START_KIND
                                 | super::workers::WORKER_CLOSE_KIND
                                 | super::cards::CARD_UPDATE_KIND
+                                | super::notes::CARD_NOTE_KIND
                         )
                 })
                 .filter_map(|operation| {

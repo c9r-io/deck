@@ -623,7 +623,8 @@ fn only_a_load_a_save_and_the_users_exit_commit_a_board() {
 /// an MCP client's worker cards and project scope; `project_dirs` names only
 /// a current Board's projects. `board_layout` and `board_is_current` serve
 /// an MCP client's card snapshot (`mcp/cards.rs`): names and order for
-/// presentation, and a recovered Board refused. The reminder module keeps its own copy to
+/// presentation, and a recovered Board refused. `card_agent_notes` serves
+/// an MCP client's notes (`mcp/notes.rs`), a current Board only. The reminder module keeps its own copy to
 /// project from (a wake or a tick projects without a commit) and offers it to
 /// nobody. The door reaches the projection through one observer, registered
 /// by the reminder module itself when its bridge starts; a second registrant,
@@ -658,13 +659,14 @@ fn the_board_door_owns_the_committed_board_and_tells_one_observer() {
             "board_is_current",
             "board_layout",
             "board_preset_choices",
+            "card_agent_notes",
             "card_follow_ups",
             "card_targets",
             "commit_board",
             "committed_board",
             "project_dirs"
         ],
-        "the door's committed-Board copy has one writer and eight readers: `committed_board` \
+        "the door's committed-Board copy has one writer and nine readers: `committed_board` \
          for the door's own persistence decisions, `board_authority`, which answers only for a \
          current Board, for a reader that grants something on what the Board says, \
          `board_preset_choices` for the readers that take a preset's choice back, and \
@@ -672,7 +674,15 @@ fn the_board_door_owns_the_committed_board_and_tells_one_observer() {
          `card_targets`, where a worker card's terminal is (current only for a send), and \
          `project_dirs`, the current Board's projects for an MCP client's project scope, and \
          `board_layout` (projects and columns by name) with `board_is_current` for an MCP \
-         client's card snapshot, presentation only, refused on a recovered Board"
+         client's card snapshot, presentation only, refused on a recovered Board, and \
+         `card_agent_notes`, a card's Agent notes on a current Board only, which an MCP \
+         client's note reads to refuse before journaling and to list its own notes' state"
+    );
+    // an Agent note's checks refuse before a Board intent; the webview's
+    // transaction decides again (mcp/notes.rs)
+    assert_eq!(
+        callers_of("card_agent_notes("),
+        ["mcp/notes.rs card_note", "mcp/notes.rs card_notes"]
     );
     // the card snapshot's readers grant nothing. Besides the snapshot,
     // `card_update` and a worker start's `named_column` read them only to
@@ -693,6 +703,8 @@ fn the_board_door_owns_the_committed_board_and_tells_one_observer() {
         [
             "mcp/cards.rs card_update",
             "mcp/cards.rs cards_snapshot",
+            "mcp/notes.rs card_note",
+            "mcp/notes.rs card_notes",
             "mcp/workers.rs named_column"
         ]
     );

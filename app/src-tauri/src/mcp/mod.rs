@@ -314,6 +314,16 @@
 //! a scope change, revocation and disable reject what waits. A ledger
 //! holding the choice is written at `STATE_VERSION_CARD_EDITS` (sticky).
 //!
+//! Agent notes (`notes.rs`, approved 2026-11-23): any authorized client
+//! may leave, revise or withdraw a note for the user in the scratchpad of
+//! the card its call comes from (`origin.rs`, from the kernel; never
+//! another card), and read back its own notes' state (`deck_card_notes`).
+//! No separate choice: a note is presentation data. Journaled as a
+//! `card-note` Board intent the webview's one transaction commits or
+//! refuses (`mcp.js` `putNote`), never replayed. It sends, queues, moves,
+//! closes and authorizes nothing; the user cannot queue it. Revocation and
+//! disable reject what waits; notes already written stay the user's.
+//!
 //! Orchestrator cards (`origin.rs`, `docs/mcp.md` "Orchestrator cards"):
 //! several agents may share one client, each in its own Deck card. Deck
 //! reads which card a call comes from out of the kernel (the adapter's peer
@@ -341,7 +351,8 @@
 //! session-level requests including close; `automation` the automation
 //! delegation above; `workers` the worker cards; `origin` the orchestrator
 //! card of a call; `mentions` the Slack mentions reader and its marks;
-//! `cards` the card snapshot and its marks; `proposals` the drafted
+//! `cards` the card snapshot and its marks; `notes` the Agent notes in a
+//! card's scratchpad; `proposals` the drafted
 //! configuration; `jobs` exec, job reads and every
 //! job side effect; `control` request routing plus the socket thread; and
 //! `commands` the local Tauri commands and the guards other modules call
@@ -381,6 +392,7 @@ mod control;
 mod grants;
 mod jobs;
 mod mentions;
+mod notes;
 pub(crate) use mentions::MarkView;
 mod operations;
 mod origin;

@@ -413,6 +413,12 @@ struct BufferSource {
     sender_user_id: Option<String>,
     #[serde(default)]
     sender_bot_id: Option<String>,
+    /// An `agent` entry's client (`mcp/notes.rs`): its ledger id and the
+    /// name it had when it wrote.
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    client: Option<String>,
     #[serde(default, flatten)]
     extra: HashMap<String, serde_json::Value>,
 }
@@ -682,6 +688,41 @@ fn bounded_buffer_id(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
 }
 
+/// Characters an Agent note's title may hold (`mcp/notes.rs`,
+/// `buffer-model.js` `AGENT_TITLE_MAX`).
+pub(crate) const AGENT_NOTE_TITLE_MAX: usize = 120;
+/// Bytes an Agent note's text may hold (`buffer-model.js` `AGENT_TEXT_MAX`).
+pub(crate) const AGENT_NOTE_TEXT_MAX_BYTES: usize = 8 * 1024;
+/// Open (unhandled) Agent notes one card may hold (`buffer-model.js`
+/// `AGENT_OPEN_MAX`).
+pub(crate) const AGENT_NOTES_OPEN_MAX: usize = 32;
+
+/// An `agent` entry: text an MCP client wrote from the card it runs in
+/// (`mcp/notes.rs`). Its key is the client's own, its title one line; it
+/// is never queued (no copies) and, once the user handled it, says when.
+fn valid_agent_note(entry: &BufferEntry, source: &BufferSource) -> bool {
+    let title = entry.extra.get("title").and_then(|v| v.as_str());
+    source.source_type == "agent"
+        && bounded_buffer_id(&source.event_id)
+        && source.client_id.as_deref().is_some_and(bounded_buffer_id)
+        && source
+            .client
+            .as_ref()
+            .is_some_and(|v| v.len() <= 128 && !v.chars().any(char::is_control))
+        && title.is_some_and(|t| {
+            !t.trim().is_empty()
+                && t.chars().count() <= AGENT_NOTE_TITLE_MAX
+                && !t.chars().any(char::is_control)
+        })
+        && entry.text.len() <= AGENT_NOTE_TEXT_MAX_BYTES
+        && entry.copies.is_empty()
+        && entry.extra.get("acted").is_none_or(|v| v.is_boolean())
+        && entry
+            .extra
+            .get("handledAt")
+            .is_none_or(|v| v.as_u64().is_some_and(|at| at > 0))
+}
+
 fn validate_buffer(card_id: &str, buffer: &CardBuffer) -> Result<(), DeckError> {
     if buffer.entries.len() > BUFFER_MAX_ENTRIES {
         return Err(DeckError::new(
@@ -700,7 +741,7 @@ fn validate_buffer(card_id: &str, buffer: &CardBuffer) -> Result<(), DeckError> 
                 format!("card {card_id}: invalid or duplicate buffer entry id"),
             ));
         }
-        if !matches!(entry.kind.as_str(), "manual" | "external")
+        if !matches!(entry.kind.as_str(), "manual" | "external" | "agent")
             || entry.revision == 0
             || entry.created_at == 0
             || entry.updated_at < entry.created_at
@@ -713,6 +754,7 @@ fn validate_buffer(card_id: &str, buffer: &CardBuffer) -> Result<(), DeckError> 
         }
         match (&entry.kind[..], &entry.source) {
             ("manual", None) => {}
+            ("agent", Some(source)) if valid_agent_note(entry, source) => {}
             ("external", Some(source))
                 if !source.event_id.is_empty()
                     && source.event_id.len() <= 256
@@ -1334,6 +1376,50 @@ pub(crate) fn board_layout() -> Vec<ProjectLayout> {
             Some(ProjectLayout { id, name, columns })
         })
         .collect()
+}
+
+/// One Agent note of a card (`mcp/notes.rs`), as the committed Board holds
+/// it: the client that wrote it, its key, title, whether the Agent said it
+/// went ahead with its own recommendation, and whether the user handled it.
+pub(crate) struct AgentNote {
+    pub(crate) client_id: String,
+    pub(crate) key: String,
+    pub(crate) title: String,
+    pub(crate) acted: bool,
+    pub(crate) handled: bool,
+    pub(crate) updated_at: u64,
+}
+
+/// The Agent notes of card `card_id` on the CURRENT committed Board, in
+/// Board order; `None` when there is no current Board or no such card.
+pub(crate) fn card_agent_notes(card_id: &str) -> Option<Vec<AgentNote>> {
+    let committed = COMMITTED_BOARD.lock_or_recover();
+    let (board, standing) = committed.as_ref()?;
+    if !matches!(standing, BoardStanding::Current) {
+        return None;
+    }
+    let card = board["cards"]
+        .as_array()?
+        .iter()
+        .find(|card| card["id"].as_str() == Some(card_id))?;
+    Some(
+        card["buffer"]["entries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry["kind"] == "agent")
+            .filter_map(|entry| {
+                Some(AgentNote {
+                    client_id: entry["source"]["clientId"].as_str()?.to_string(),
+                    key: entry["source"]["eventId"].as_str()?.to_string(),
+                    title: entry["title"].as_str().unwrap_or_default().to_string(),
+                    acted: entry["acted"].as_bool().unwrap_or(false),
+                    handled: entry["handledAt"].as_u64().is_some(),
+                    updated_at: entry["updatedAt"].as_u64().unwrap_or(0),
+                })
+            })
+            .collect(),
+    )
 }
 
 /// Whether the committed Board is the current one (not answered from a
@@ -3776,6 +3862,60 @@ mod tests {
             validate_buffer("s1", &extended).is_err(),
             "unknown nested metadata is preserved in the serialized capacity measurement"
         );
+    }
+
+    /// An Agent's note (`mcp/notes.rs`): a client id and name, its own key,
+    /// a one-line title, bounded text, no queue copies, a handled time.
+    #[test]
+    fn an_agent_note_is_validated_as_its_own_kind() {
+        let note = || {
+            serde_json::json!({
+                "id":"A1","kind":"agent","text":"why","revision":1,"createdAt":1,"updatedAt":1,
+                "title":"Pick a port","acted":true,"copies":[],
+                "source":{"type":"agent","eventId":"port","clientId":"cl_1","client":"Claude Code"}
+            })
+        };
+        let check = |entry: serde_json::Value| {
+            let buffer: CardBuffer = serde_json::from_value(
+                serde_json::json!({"revision":1,"collecting":false,"entries":[entry]}),
+            )
+            .unwrap();
+            validate_buffer("s1", &buffer).is_ok()
+        };
+        assert!(check(note()));
+        let mut handled = note();
+        handled["handledAt"] = serde_json::json!(5);
+        assert!(check(handled));
+        let broken: [(&str, serde_json::Value); 8] = [
+            ("/title", serde_json::json!("two\nlines")),
+            (
+                "/title",
+                serde_json::json!("x".repeat(AGENT_NOTE_TITLE_MAX + 1)),
+            ),
+            ("/title", serde_json::Value::Null),
+            (
+                "/text",
+                serde_json::json!("x".repeat(AGENT_NOTE_TEXT_MAX_BYTES + 1)),
+            ),
+            ("/source/clientId", serde_json::Value::Null),
+            ("/source/type", serde_json::json!("channel")),
+            ("/handledAt", serde_json::json!(0)),
+            (
+                "/copies",
+                serde_json::json!([{"operationId":"B1","entryRevision":1,"text":"why","createdAt":2,"state":"queued"}]),
+            ),
+        ];
+        for (pointer, value) in broken {
+            let mut entry = note();
+            match entry.pointer_mut(pointer) {
+                Some(slot) => *slot = value,
+                None => entry[&pointer[1..]] = value,
+            }
+            assert!(!check(entry), "{pointer} refused");
+        }
+        let mut sourceless = note();
+        sourceless["source"] = serde_json::Value::Null;
+        assert!(!check(sourceless));
     }
 
     #[test]

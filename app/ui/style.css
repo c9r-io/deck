@@ -928,6 +928,28 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .buffer-add { flex: none; display: flex; flex-direction: column; gap: var(--sp-8); padding: var(--sp-10) var(--sp-12); border-top: 1px solid var(--border-soft); }
 .buffer-add textarea { min-width: 0; max-height: 22vh; }   /* the notes above stay in view */
 #buffer-empty { color: var(--faint); padding: var(--sp-12) var(--sp-2); }
+/* Agent notes (buffer-model.js): who wrote them is always visible; an open
+   one is marked in the attention colour, a handled one recedes */
+.buffer-filter { flex: none; display: flex; gap: var(--sp-6); padding: var(--sp-8) var(--sp-12) 0; }
+.buffer-filter[hidden] { display: none; }
+.buffer-filter .btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent-dim); }
+.buffer-agent { border-color: var(--waiting-soft-border); }
+.buffer-agent[data-handled] { border-color: var(--border-soft); opacity: .72; }
+.buffer-agent-mark { flex: none; width: 1.2em; text-align: center; font-family: var(--mono); font-weight: 600; color: var(--wait); }
+.buffer-agent[data-handled] .buffer-agent-mark { color: var(--ok); }
+.buffer-acted { color: var(--muted); border: 1px solid var(--border); border-radius: 9px; padding: 0 var(--sp-6); }
+.buffer-note > summary { cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+.buffer-note-text { margin-top: var(--sp-6); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; line-height: 1.5; }
+.buffer-note-actions { display: flex; gap: var(--sp-6); margin-top: var(--sp-8); }
+.buffer-answer { display: block; width: 100%; margin-top: var(--sp-8); }
+.buffer-handled { flex-shrink: 0; display: flex; flex-direction: column; gap: var(--sp-6); }
+.buffer-handled > summary { cursor: pointer; color: var(--faint); font-size: var(--fs-11); padding: var(--sp-4) var(--sp-2); }
+.buffer-handled[open] > summary { margin-bottom: var(--sp-6); }
+.card .note-chip {
+  font-family: var(--mono); font-size: var(--fs-10); color: var(--wait);
+  border: 1px solid var(--waiting-soft-border); border-radius: 4px;
+  padding: 1px var(--sp-6); flex: none; background: none; cursor: pointer;
+}
 .card .q-chip {
   font-family: var(--mono); font-size: var(--fs-10); color: var(--wait);
   border: 1px solid var(--waiting-soft-border); border-radius: 4px;
@@ -1474,7 +1496,8 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
    list past the window */
 .attention-row, .attention-labels { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto; gap: var(--sp-16); align-items: center; padding: var(--sp-16) var(--sp-12); border-bottom: 1px solid var(--border); line-height: 1.55; }
 .attention-row > span { min-width: 0; overflow-wrap: anywhere; }
-.attention-row > .missed-acts { display: flex; gap: var(--sp-8); }
+.attention-row > .missed-acts, .attention-row > .attention-acts { display: flex; gap: var(--sp-8); justify-content: flex-end; }
+.attention-acts > [hidden] { display: none; }
 .attention-card-name { font-weight: 600; display: flex; align-items: center; }
 /* a long title keeps to three lines (the whole title is its tooltip), so a
    row stays a row at the largest font size */
@@ -1529,12 +1552,12 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 @media (max-width: 1050px) {
   .attention-row, .attention-labels { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: var(--sp-8) var(--sp-12); }
   .attention-row .attention-viewed { grid-column: 2; }
-  .attention-row > button, .attention-row > .missed-acts { grid-column: 3; grid-row: span 2; }
+  .attention-row > button, .attention-row > .missed-acts, .attention-row > .attention-acts { grid-column: 3; grid-row: span 2; }
 }
 @media (max-width: 720px) {
   .attention-row, .attention-labels { grid-template-columns: minmax(0, 1fr) auto; }
   .attention-row .attention-origin, .attention-row .attention-reason, .attention-row .attention-viewed { grid-column: 1; }
-  .attention-row > button { grid-column: 2; grid-row: 1 / span 4; }
+  .attention-row > button, .attention-row > .attention-acts { grid-column: 2; grid-row: 1 / span 4; }
 }
 
 .attention-labels { font-size: var(--fs-11); color: var(--muted); padding: var(--sp-8) var(--sp-12); }

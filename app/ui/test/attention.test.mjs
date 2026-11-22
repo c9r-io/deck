@@ -215,7 +215,7 @@ test('the card badge is the agent part of the Dock set: needs input or an unread
 });
 
 test('every pending-list section, the bell included, has a heading in both languages', () => {
-  assert.deepEqual(Object.keys(ATTENTION_SECTION_LABELS), ['input', 'waiting', 'bell', 'done', 'reminder', 'followed']);
+  assert.deepEqual(Object.keys(ATTENTION_SECTION_LABELS), ['input', 'waiting', 'bell', 'done', 'notes', 'reminder', 'followed']);
   for (const [locale, dictionary] of Object.entries(dictionaries)) {
     for (const key of Object.values(ATTENTION_SECTION_LABELS)) {
       assert.equal(typeof dictionary[key], 'string', `${locale} ${key}`);
@@ -567,4 +567,31 @@ test('the cards one orchestrator opened form one group, listed in the order thei
       assert.ok(dictionary[key], `${name} has ${key}`);
     }
   }
+});
+
+/* Agent notes (buffer-model.js, mcp/notes.rs): a card with an open one
+   joins pending under its own heading unless a stronger reason lists it;
+   a handled one counts for nothing; never a status or the card badge */
+test('open Agent notes list a card under "Waiting for your judgment" and nothing else', () => {
+  const tracker = trackerOf();
+  const note = (id, handledAt) => ({ id, kind: 'agent', title: 'Pick', text: '', revision: 1, createdAt: 1, updatedAt: 1, copies: [],
+    source: { type: 'agent', eventId: id, clientId: 'c', client: 'Claude Code' }, ...(handledAt ? { handledAt } : {}) });
+  const quiet = cards.find(card => !tracker.matches(card, 'pending') && tracker.category(card) !== 'stopped');
+  const before = tracker.counts(cards).pending;
+  const handledOnly = cards.map(card => card === quiet ? { ...card, buffer: { revision: 1, entries: [note('a', 5)] } } : card);
+  assert.equal(tracker.counts(handledOnly).pending, before, 'a handled note waits for nobody');
+  const noted = cards.map(card => card === quiet ? { ...card, buffer: { revision: 1, entries: [note('a'), note('b'), note('c', 5)] } } : card);
+  const target = noted.find(card => card.id === quiet.id);
+  assert.equal(tracker.noted(target), 2);
+  assert.equal(tracker.counts(noted).pending, before + 1);
+  assert.equal(tracker.category(target), tracker.category(quiet), 'notes are no status');
+  assert.equal(attentionBadge(tracker, target), attentionBadge(tracker, quiet), 'nor the card badge');
+  const rows = attentionRows(projects, noted, tracker, 'pending');
+  assert.equal(rows.find(row => row.card.id === quiet.id).kind, 'notes');
+  const kinds = rows.map(row => row.kind);
+  assert.deepEqual(kinds, Object.keys(ATTENTION_SECTION_LABELS).flatMap(kind => kinds.filter(k => k === kind)), 'sections in order');
+  // a stronger reason keeps listing the card under its own heading
+  const input = cards.find(card => tracker.category(card) === 'input');
+  const inputNoted = cards.map(card => card === input ? { ...card, buffer: { revision: 1, entries: [note('a')] } } : card);
+  assert.equal(attentionRows(projects, inputNoted, tracker, 'pending').find(row => row.card.id === input.id).kind, 'input');
 });

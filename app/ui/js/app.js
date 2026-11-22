@@ -8,7 +8,7 @@ import { $, ctx, genId, initInputDiagnostics, inv, listen, state, store, uev } f
 import { createBoardExit, initDialogs, toast } from './dialogs.js';
 import { initSettings, loadSettings, openSettings, installTranslationPack } from './settings.js';
 import {
-  activeProject, closeBuffer, closeSelectedCards, initBuffer, panes, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow, queueFollowUp,
+  activeProject, closeBuffer, closeSelectedCards, initBuffer, openBuffer, panes, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow, queueFollowUp,
   projectDefaultsSummary, prepareCardsForServerRestart, provider, render, startPolling, stopPolling, switchProject,
 } from './board.js';
 import { closePaneBySid, initLayout, leaveSessionView, openSession } from './layout.js';
@@ -525,7 +525,7 @@ function initModules() {
   initDialogs();
   initSettings();
   initTerminalChrome();
-  initAttention({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp });
+  initAttention({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp });
   initMentions({ provider, render, switchProject, leaveSessionView, closeBuffer });
   initWorkers({ render });
   const editRule = async ruleId => {

@@ -8570,3 +8570,193 @@ fn settings_summary_calls_no_verifying_reader() {
         assert!(!code.contains(banned), "settings_read.rs calls {banned}");
     }
 }
+
+/// Agent notes (`notes.rs`): only a call Deck sees coming from a card
+/// writes, and only into that card; the write is a Board intent for the
+/// webview, idempotent by request id; a handled key is closed to its
+/// writer; a card holds at most 32 open notes; the reader lists the
+/// caller's own notes only, never the user's or another client's.
+#[test]
+fn an_agent_leaves_notes_only_in_its_own_card() {
+    let (runtime, _runner, root) = fixture("agent-notes", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let call = |card: Option<&str>, tool: &str, args: Value| {
+        let _as = super::origin::enter_as(card);
+        route(&runtime, request(tool, args))
+    };
+    let note = |key: &str, handled: bool, client: &str| {
+        let mut entry = json!({
+            "id": format!("A{key}"), "kind": "agent", "text": "t", "revision": 1,
+            "createdAt": 1, "updatedAt": 2, "title": format!("about {key}"), "acted": true, "copies": [],
+            "source": {"type": "agent", "eventId": key, "clientId": client, "client": "Claude Code"}
+        });
+        if handled {
+            entry["handledAt"] = json!(3);
+        }
+        entry
+    };
+    let mut entries = vec![
+        note("port", false, "client_a"),
+        note("done", true, "client_a"),
+        note("theirs", false, "client_other"),
+        json!({"id": "N1", "kind": "manual", "text": "mine", "revision": 1, "createdAt": 1, "updatedAt": 1, "copies": []}),
+    ];
+    let card = |id: &str, entries: &[Value]| json!({"id": id, "session": format!("deck-{}", id.to_lowercase()), "title": id, "cmd": "claude", "dir": "/tmp", "buffer": {"revision": 1, "entries": entries}});
+    let commit = |entries: &[Value]| {
+        crate::documents::test_door::commit(
+            json!({"projects": [], "cards": [card("C1", entries), card("C2", &[])]}),
+            true,
+        )
+    };
+    commit(&entries);
+    let write = |card: Option<&str>, args: Value| call(card, "deck_card_note", args);
+
+    // deck_capabilities says whether this call can leave one
+    assert_eq!(
+        call(Some("C1"), "deck_capabilities", json!({}))["mayLeaveNotes"],
+        true
+    );
+    assert_eq!(
+        call(None, "deck_capabilities", json!({}))["mayLeaveNotes"],
+        false
+    );
+    // from no card, nothing; malformed arguments are refused before anything
+    let refused = write(
+        None,
+        json!({"request_id": "r1", "key": "k", "title": "Pick"}),
+    );
+    assert_eq!(refused["error"]["code"], "NOT_IN_A_CARD", "{refused}");
+    for bad in [
+        json!({"request_id": "r1", "key": "k"}),
+        json!({"request_id": "r1", "key": "a b", "title": "Pick"}),
+        json!({"request_id": "r1", "key": "k", "title": "two\nlines"}),
+        json!({"request_id": "r1", "key": "k", "title": "x".repeat(121)}),
+        json!({"request_id": "r1", "key": "k", "title": "Pick", "text": "x".repeat(8193)}),
+        json!({"request_id": "r1", "key": "k", "withdraw": true, "title": "Pick"}),
+        json!({"request_id": "r1", "key": "k", "title": "Pick", "card_id": "C2"}),
+    ] {
+        assert_eq!(
+            write(Some("C1"), bad.clone())["error"]["code"],
+            "INVALID_ARGUMENTS",
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        write(
+            Some("GONE"),
+            json!({"request_id": "r1", "key": "k", "title": "Pick"})
+        )["error"]["code"],
+        "CARD_NOT_FOUND"
+    );
+
+    // a write is an intent for the webview, bound to the caller's card
+    let accepted = write(
+        Some("C1"),
+        json!({"request_id": "r1", "key": "port", "title": " Which port? ", "text": "8080 or 9090", "acted": true}),
+    );
+    assert_eq!(accepted["state"], "accepted", "{accepted}");
+    assert_eq!(accepted["kind"], super::notes::CARD_NOTE_KIND);
+    let plan = &accepted["result"];
+    assert_eq!(plan["cardId"], "C1");
+    assert_eq!(plan["key"], "port");
+    assert_eq!(plan["title"], "Which port?");
+    assert_eq!(plan["acted"], true);
+    assert_eq!(plan["clientId"], "client_a");
+    let entry_id = plan["entryId"].as_str().unwrap().to_string();
+    assert!(entry_id.starts_with('A') && entry_id.len() == 25);
+    // the same request again is the same operation; another argument set under it is refused
+    let again = write(
+        Some("C1"),
+        json!({"request_id": "r1", "key": "port", "title": " Which port? ", "text": "8080 or 9090", "acted": true}),
+    );
+    assert_eq!(again["operationId"], accepted["operationId"]);
+    assert_eq!(
+        write(
+            Some("C1"),
+            json!({"request_id": "r1", "key": "port", "title": "Other"})
+        )["error"]["code"],
+        "REQUEST_ID_CONFLICT"
+    );
+    // a revision of the same key keeps the entry id; another key has its own
+    let revised = write(
+        Some("C2"),
+        json!({"request_id": "r2", "key": "port", "title": "Again"}),
+    );
+    assert_eq!(revised["result"]["entryId"], entry_id.as_str());
+    assert_eq!(revised["result"]["cardId"], "C2");
+    let pending: Vec<_> = super::commands::mcp_pending_in(&runtime)
+        .into_iter()
+        .filter(|p| p.kind == super::notes::CARD_NOTE_KIND)
+        .collect();
+    assert_eq!(pending.len(), 2, "the webview is handed both");
+
+    // a handled key is closed to its writer, and withdrawing nothing is a no-op
+    assert_eq!(
+        write(
+            Some("C1"),
+            json!({"request_id": "r3", "key": "done", "title": "More"})
+        )["error"]["code"],
+        "NOTE_HANDLED"
+    );
+    let noop = write(
+        Some("C1"),
+        json!({"request_id": "r4", "key": "never", "withdraw": true}),
+    );
+    assert_eq!(noop["unchanged"], true, "{noop}");
+    let withdraw = write(
+        Some("C1"),
+        json!({"request_id": "r5", "key": "port", "withdraw": true}),
+    );
+    assert_eq!(withdraw["result"]["withdraw"], true);
+    assert!(withdraw["result"].get("title").is_none());
+
+    // the reader: the caller's own notes, with their state, nothing else
+    let read = call(Some("C1"), "deck_card_notes", json!({}));
+    let notes = read["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 2, "{read}");
+    assert_eq!(
+        (
+            notes[0]["key"].as_str(),
+            notes[0]["state"].as_str(),
+            notes[0]["acted"].as_bool()
+        ),
+        (Some("port"), Some("open"), Some(true))
+    );
+    assert_eq!(
+        (notes[1]["key"].as_str(), notes[1]["state"].as_str()),
+        (Some("done"), Some("handled"))
+    );
+    assert!(!read.to_string().contains("mine") && !read.to_string().contains("theirs"));
+    assert_eq!(
+        call(None, "deck_card_notes", json!({}))["error"]["code"],
+        "NOT_IN_A_CARD"
+    );
+
+    // 32 open notes on a card: a new key is refused, a revision still goes
+    entries.extend((0..30).map(|i| note(&format!("n{i}"), false, "client_a")));
+    commit(&entries);
+    assert_eq!(
+        write(
+            Some("C1"),
+            json!({"request_id": "r6", "key": "fresh", "title": "New"})
+        )["error"]["code"],
+        "CAPACITY_EXCEEDED"
+    );
+    assert_eq!(
+        write(
+            Some("C1"),
+            json!({"request_id": "r7", "key": "port", "title": "Revised"})
+        )["state"],
+        "accepted"
+    );
+    // a recovered Board is never written on a client's word
+    crate::documents::test_door::commit(json!({"projects": [], "cards": [card("C1", &[])]}), false);
+    assert_eq!(
+        write(
+            Some("C1"),
+            json!({"request_id": "r8", "key": "k", "title": "Pick"})
+        )["error"]["code"],
+        "SOURCE_UNAVAILABLE"
+    );
+    drop(root);
+}

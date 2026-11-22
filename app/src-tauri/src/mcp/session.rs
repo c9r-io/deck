@@ -83,6 +83,9 @@ pub(super) fn capabilities(
                 "mayReadMentions": client.allow_mentions,
                 "mayReadCards": client.allow_cards,
                 "mayEditCards": client.allow_cards && client.allow_card_edits,
+                // notes for the user go into that card's scratchpad
+                // (`notes.rs`): only a call from a card can leave one
+                "mayLeaveNotes": !card.is_null(),
                 // the Deck card this call comes from, as the kernel says
                 // (`origin.rs`); its worker cards are grouped under it
                 "orchestratorCard": card

@@ -26,6 +26,7 @@ import {
   CHANNEL_IDLE_MAX, CHANNEL_IDS_MAX, CHANNEL_KEYWORD_MAX_CHARS, CHANNEL_KEYWORDS_MAX, CHANNEL_RULES_MAX,
 } from '../js/channel-model.js';
 import {
+  AGENT_OPEN_MAX, AGENT_TEXT_MAX_BYTES, AGENT_TITLE_MAX,
   BUFFER_MAX_BYTES, BUFFER_MAX_COPIES, BUFFER_MAX_ENTRIES, BUFFER_MAX_ENTRY_BYTES, BUFFER_MAX_SERIALIZED_BYTES,
 } from '../js/buffer-model.js';
 import { normalizeTaskPreset, PRESET_MAX } from '../js/connector-model.js';
@@ -74,6 +75,8 @@ test('channel, buffer, preset and drop mirrors', () => {
     max_entries: BUFFER_MAX_ENTRIES, max_copies: BUFFER_MAX_COPIES, max_entry_bytes: BUFFER_MAX_ENTRY_BYTES,
     max_bytes: BUFFER_MAX_BYTES, max_serialized_bytes: BUFFER_MAX_SERIALIZED_BYTES,
   }, limits.buffer);
+  assert.deepEqual({ title_max_chars: AGENT_TITLE_MAX, text_max_bytes: AGENT_TEXT_MAX_BYTES, open_max: AGENT_OPEN_MAX },
+    limits.agent_note);
   assert.equal(PRESET_MAX, limits.presets_max);
   assert.equal(MAX_DROP_BYTES, limits.drop_max_bytes);
   assert.equal(MAX_TRANSLATION_BYTES, limits.translation_max_bytes);

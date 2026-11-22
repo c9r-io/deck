@@ -24,6 +24,10 @@
 //   ends with it, and the pending list gives it its own section heading
 //   (`ATTENTION_SECTION_LABELS`). It is not a filter, not the card badge and
 //   not a status.
+// - A card with open Agent notes (`tracker.noted`) is a pending row under
+//   its own heading unless a stronger reason lists it; its reason says how
+//   many, and its "Notes" button opens the card's scratchpad here
+//   (`openBuffer`). Never the card badge, a status or a notification.
 // - A held delivery (`tracker.waiting`, attention-model.js) is a list row and
 //   a filter, counted in the sidebar's pending number; the row's reason ends
 //   with it. The Board card says it on its queue chip (scheduler.js), not on
@@ -73,7 +77,7 @@
 //   the card's pane. Painting them reads no agent word.
 // - A leaf of the import graph: the Board and layout actions it calls
 //   (`pollNow`, `provider`, `render`, `switchProject`, `leaveSessionView`,
-//   `closeBuffer`, `openSession`, `closeSelectedCards`, `queueFollowUp`) arrive through
+//   `closeBuffer`, `openBuffer`, `openSession`, `closeSelectedCards`, `queueFollowUp`) arrive through
 //   `initAttention(deps)` from app.js, so board.js and layout.js may import
 //   this module without a cycle.
 import { $, ctx, inv, QUIET_SECS, state, store } from './state.js';
@@ -86,7 +90,7 @@ import { draftsCountText, pendingNow, proposalRow } from './proposals.js';
 import { missedCountText, missedNow, missedRow } from './missed-once.js';
 import { workerDriver, workerLabel, workerOf } from './workers.js';
 
-let pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp;
+let pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp;
 
 let pointerHeld = false;
 /* batch close: the ids the user ticked in "Turn ended", the rows last
@@ -344,9 +348,14 @@ function updateRows() {
         paintBatch();
       };
       el.querySelector('.attention-card-name').append(pick, node('span', 'attention-card-title'), node('span', 'attention-worker'), pin);
+      const notes = node('button', 'btn attention-notes'); notes.type = 'button';
+      notes.onclick = () => openBuffer?.(card.id);
       const open = node('button', 'btn attention-open'); open.type = 'button';
       open.onclick = () => openAttentionCard(card.id);
-      el.append(open);
+      /* one cell: the scratchpad (when an Agent left notes) and the card */
+      const acts = node('span', 'attention-acts');
+      acts.append(notes, open);
+      el.append(acts);
       /* an MCP client's mark on this turn ending, on a line of its own:
          a suggestion the user may clear (mcp/cards.rs) */
       const mark = node('div', 'attention-mark');
@@ -389,7 +398,11 @@ function updateRows() {
     pin.setAttribute('aria-pressed', String(card.pinned === true));
     pin.classList.toggle('active', card.pinned === true);
     row.querySelector('.attention-origin').textContent = `${project.name} / ${column.name}`;
-    row.querySelector('.attention-reason').textContent = (card.pinned === true ? `${t('attention.filter.followed')} · ` : '') + attentionStatusText(card) + (ctx.attention.waiting(card) ? ' · ' + t(`attention.waiting.${ctx.attention.waiting(card)}`) : '') + (ctx.attention.rang(card) ? ' · ' + t('attention.bell') : '') + (card.reminder ? ' · ' + t(card.reminder.due || card.reminder.dueAt <= Date.now() ? 'reminder.due' : 'reminder.pending') : '') + endedText(snapshot);
+    row.querySelector('.attention-reason').textContent = (card.pinned === true ? `${t('attention.filter.followed')} · ` : '') + attentionStatusText(card) + (ctx.attention.waiting(card) ? ' · ' + t(`attention.waiting.${ctx.attention.waiting(card)}`) : '') + (ctx.attention.rang(card) ? ' · ' + t('attention.bell') : '') + (card.reminder ? ' · ' + t(card.reminder.due || card.reminder.dueAt <= Date.now() ? 'reminder.due' : 'reminder.pending') : '') + (ctx.attention.noted(card) ? ' · ' + t('attention.notes', { count: formatNumber(ctx.attention.noted(card)) }) : '') + endedText(snapshot);
+    const notesButton = row.querySelector('.attention-notes');
+    notesButton.hidden = !ctx.attention.noted(card);
+    notesButton.textContent = t('attention.notesOpen');
+    notesButton.setAttribute('aria-label', t('attention.notesOpenNamed', { name: card.title }));
     row.querySelector('.attention-reason').dataset.status = snapshot?.status || 'unknown';
     row.querySelector('.attention-viewed').textContent = sourceText(card);
     paintMark(row.querySelector('.attention-mark'), card, snapshot?.mark);
@@ -597,7 +610,7 @@ export async function openFromNotification(session) {
 }
 
 export function initAttention(deps) {
-  ({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp } = deps);
+  ({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp } = deps);
   $('attention-btn').onclick = () => showAttention();
   $('attention-back').onclick = () => switchProject(state.projectId);
   document.addEventListener('pointerdown', event => {

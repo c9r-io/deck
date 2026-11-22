@@ -1,5 +1,6 @@
 import { reminderDue } from './reminder-model.js';
 import { PI_COVERAGE } from './pi-model.js';
+import { openAgentNotes } from './buffer-model.js';
 // attention-model.js — runtime-only observations and derived attention.
 // No Board writes, hook installation, inferred readiness, or durable ordering.
 // Three layers, kept apart:
@@ -75,6 +76,13 @@ import { PI_COVERAGE } from './pi-model.js';
 //   or clears it. It joins `pending` and the list like a held delivery, is
 //   never a card status, the card badge or a filter, and says only that the
 //   bell rang — not that anything ended, succeeded or needs input.
+// - Agent notes: `noted(card)` counts the open notes an Agent left in the
+//   card's scratchpad for the user to judge (buffer-model.js, mcp/notes.rs;
+//   Board data, not an observation). A card with one joins `pending` under
+//   its own heading ("Waiting for your judgment") unless a stronger reason
+//   lists it; the row says how many. It is never a status, the card's
+//   attention badge, the Dock count or a notification: the Agent did not
+//   stop, the notes wait for the user to come back.
 import { CARD_QUIET_SECS, effectiveCardStatus, itemDead } from './pure.js';
 
 /* the marks an MCP client may set on a card (mcp/cards.rs MARKS) */
@@ -85,7 +93,7 @@ export const ATTENTION_SECTION_LABELS = Object.freeze({
      kind `attentionRows` returns under 'pending' has one; a bell is a row
      reason, not a filter, so it has its own heading key. */
   input: 'attention.filter.input', waiting: 'attention.filter.waiting', bell: 'attention.section.bell',
-  done: 'attention.filter.done', reminder: 'attention.filter.reminder', followed: 'attention.filter.followed',
+  done: 'attention.filter.done', notes: 'attention.section.notes', reminder: 'attention.filter.reminder', followed: 'attention.filter.followed',
 });
 /* most pressing first: one reason per session */
 export const DELIVERY_WAITS = Object.freeze(['ambiguous', 'failed', 'review', 'channel-stopped', 'channel-unverified', 'external', 'first-send', 'codex-signal', 'pi-input-unverified', 'authority-unverified']);
@@ -128,6 +136,7 @@ export function createAttentionTracker() {
   let waits = new Map();
   const waiting = card => (card && waits.get(card.session)) || null;
   const rang = card => get(card)?.bell === true;
+  const noted = card => openAgentNotes(card).length;
   const get = card => {
     const value = card && snapshots.get(card.id);
     return value?.session === card?.session ? value : null;
@@ -154,13 +163,13 @@ export function createAttentionTracker() {
   const matches = (card, filter) => {
     const kind = category(card);
     return filter === 'all' || (filter === 'reminder' ? reminderDue(card) : filter === 'reminders' ? !!card.reminder : false) || (filter === 'followed' ? card.pinned === true
-      : filter === 'pending' ? kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card) || !!waiting(card) || rang(card)
+      : filter === 'pending' ? kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card) || !!waiting(card) || rang(card) || noted(card) > 0
       : filter === 'waiting' ? !!waiting(card)
       : filter === 'ended' ? ended(card)
       : filter === 'unavailable' ? kind === 'unavailable' || kind === 'unknown' : kind === filter);
   };
   return {
-    get, category, matches, waiting, rang, ended,
+    get, category, matches, waiting, rang, ended, noted,
     deliveries(items, plans) { waits = deliveryWaits(items || [], plans || []); },
     record(cards, infos, visible, now) {
       visible = visible || new Set();
@@ -246,7 +255,7 @@ export function createAttentionTracker() {
         if (ended(card)) counts.ended++;
         if (card.pinned === true) counts.followed++;
         if (waiting(card)) counts.waiting++;
-        if (kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card) || waiting(card) || rang(card)) counts.pending++;
+        if (kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card) || waiting(card) || rang(card) || noted(card)) counts.pending++;
         if (kind === 'unknown') counts.unavailable++;
       }
       if (cards.some(card => card.reminder)) { counts.reminder = cards.filter(card => reminderDue(card)).length; counts.reminders = cards.filter(card => card.reminder).length; }
@@ -331,6 +340,7 @@ export function attentionRows(projects, cards, tracker, filter) {
         /* an input request outranks a held delivery; the row names both */
         const kind = category !== 'input' && tracker.waiting(card) ? 'waiting'
           : tracker.rang(card) ? 'bell'
+          : tracker.noted?.(card) && !['input', 'done'].includes(category) ? 'notes'
           : reminderDue(card) && !['input', 'done'].includes(category) ? 'reminder' : filter === 'pending' && !['input', 'done'].includes(category) ? 'followed' : category;
         ordered.push({ card, project, column, kind });
       }

@@ -189,6 +189,25 @@ async function updateCard(pending) {
   }
 }
 
+/* one note an Agent left from the card it runs in (`deck_card_note`,
+   mcp/notes.rs): written, revised or withdrawn in that card's scratchpad
+   in ONE Board transaction (provider.putAgentNote, buffer-model.js
+   putAgentNote). A refusal wrote nothing, so it is `rejected` with its
+   word; a save that threw is unknown (`handle`). Silent: the card's badge
+   and Needs attention show it. */
+export const noteRefusal = reason => ({
+  'note-handled': 'note-handled', 'note-capacity': 'note-capacity', 'note-conflict': 'note-conflict',
+}[reason] || 'card-missing');
+
+async function putNote(pending) {
+  const plan = pending.result || {};
+  const outcome = await provider.putAgentNote(plan.cardId, {
+    entryId: plan.entryId, key: plan.key, clientId: plan.clientId, client: plan.client,
+    title: plan.title, text: plan.text || '', acted: plan.acted === true, withdraw: plan.withdraw === true,
+  });
+  await finish(pending.operationId, outcome.ok ? 'committed' : 'rejected', outcome.ok ? null : noteRefusal(outcome.reason));
+}
+
 async function handle(item) {
   let pending;
   try { pending = await inv('mcp_claim', { operationId: item.operationId }); } catch (_) { return; }
@@ -198,6 +217,7 @@ async function handle(item) {
     if (pending.kind === 'worker-start') return await startWorker(pending);
     if (pending.kind === 'worker-close') return await closeWorker(pending);
     if (pending.kind === 'card-update') return await updateCard(pending);
+    if (pending.kind === 'card-note') return await putNote(pending);
     await finish(pending.operationId, 'rejected', 'unsupported-operation');
   } catch (_) {
     await finish(pending.operationId, 'ambiguous', 'board-transaction-unknown');

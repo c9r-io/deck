@@ -176,6 +176,14 @@ fn channel_buffer_preset_and_drop_limits_match_the_fixture() {
         number(&b["max_serialized_bytes"]),
         BUFFER_MAX_SERIALIZED_BYTES as u64
     );
+    let a = &l["agent_note"];
+    use crate::documents::{AGENT_NOTES_OPEN_MAX, AGENT_NOTE_TEXT_MAX_BYTES, AGENT_NOTE_TITLE_MAX};
+    assert_eq!(number(&a["title_max_chars"]), AGENT_NOTE_TITLE_MAX as u64);
+    assert_eq!(
+        number(&a["text_max_bytes"]),
+        AGENT_NOTE_TEXT_MAX_BYTES as u64
+    );
+    assert_eq!(number(&a["open_max"]), AGENT_NOTES_OPEN_MAX as u64);
     assert_eq!(number(&l["presets_max"]), PRESETS_MAX as u64);
     assert_eq!(
         number(&l["drop_max_bytes"]),
