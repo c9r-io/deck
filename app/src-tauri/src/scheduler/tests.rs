@@ -2952,6 +2952,8 @@ fn seen_codex(
             agent,
             codex: Some(trust),
             claude_interaction: false,
+            agy_interaction: false,
+            agy: false,
             pi: false,
             authority_unverified: false,
             board_unverified: false,

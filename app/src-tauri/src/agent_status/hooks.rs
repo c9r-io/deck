@@ -307,6 +307,13 @@ fn hook_value(style: HookStyle, helper: &str, source: &str, state: &str) -> serd
     }
 }
 
+/// Whether a hook command runs Deck's status helper (the bundled one, or the
+/// legacy copy): what makes another agent's hook entry Deck's
+/// (`agent_agy`).
+pub(crate) fn status_helper_command(command: &str) -> bool {
+    Family::Signal.owns(command)
+}
+
 fn hook_is_ours(family: Family, hook: &serde_json::Value) -> bool {
     hook.get("command")
         .and_then(|c| c.as_str())
@@ -1149,7 +1156,7 @@ fn family_helper_path_in(bundle: &Path, family: Family) -> Result<String, DeckEr
 /// named one would break when the path vanished and would make the agent
 /// CLI execute an unsigned binary. Such builds cannot install hooks and
 /// never touch the agent's config at boot.
-fn installed_helper_path() -> Result<String, DeckError> {
+pub(crate) fn installed_helper_path() -> Result<String, DeckError> {
     installed_family_helper_path(Family::Signal)
 }
 
@@ -1241,6 +1248,9 @@ pub(crate) enum SignalClass {
     /// (`agent_pi`), never through the hook parser, and prove no interaction
     /// evidence for the scheduler. A recognized Pi only ever adds a hold.
     Pi,
+    /// agy (`agent_agy`): v1 hook words; an accepted one proves an agy
+    /// interaction for the first-interaction gate of an agy row.
+    Agy,
 }
 
 /// The hook-based installation of one agent: its Signal hook spec table and
@@ -1267,6 +1277,8 @@ pub(crate) struct HookInstall {
 pub(crate) enum Install {
     Hooks(HookInstall),
     PiExtension,
+    /// agy's one named entry in its own hooks file (`agent_agy`).
+    AgyHooks,
 }
 
 /// One supported agent: its wire source word (also the Settings toggle's
@@ -1356,7 +1368,7 @@ impl AgentAdapter {
     fn hook_install(&self) -> Option<&HookInstall> {
         match &self.install {
             Install::Hooks(install) => Some(install),
-            Install::PiExtension => None,
+            Install::PiExtension | Install::AgyHooks => None,
         }
     }
 }
@@ -1480,6 +1492,7 @@ fn migrate_registered_agents(
     mut migrate_hook: impl FnMut(&AgentAdapter, &str) -> bool,
     retire_legacy: impl FnOnce(),
     mut migrate_pi: impl FnMut(),
+    mut migrate_agy: impl FnMut(&str),
 ) {
     if let Some(helper) = helper {
         let mut legacy_referenced = false;
@@ -1492,6 +1505,11 @@ fn migrate_registered_agents(
         }
         if hooks_visited > 0 && !legacy_referenced {
             retire_legacy();
+        }
+        for adapter in crate::extensions::unambiguous_agents() {
+            if matches!(adapter.install, Install::AgyHooks) {
+                migrate_agy(helper);
+            }
         }
     }
     // This second registry pass preserves the old ordering: hook migration
@@ -1510,6 +1528,7 @@ pub(crate) fn migrate_agents_on_boot() {
         migrate_hook_adapter_on_boot,
         retire_legacy_helper_copy,
         crate::agent_pi::config::migrate_on_boot,
+        crate::agent_agy::migrate_on_boot,
     );
 }
 
@@ -1637,6 +1656,10 @@ pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
                     replies: Some(status.reply),
                 }
             }
+            Install::AgyHooks => AgentSettingsStatus {
+                signal: crate::agent_agy::enabled(),
+                ..AgentSettingsStatus::default()
+            },
         };
         agents.insert(adapter.source, status);
     }
@@ -1679,6 +1702,9 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
         Install::PiExtension => {
             return crate::agent_pi::config::set(crate::agent_pi::Capability::Signal, enable)
         }
+        // agy's hooks file is an object of named hooks: its own module
+        // writes Deck's one entry
+        Install::AgyHooks => return crate::agent_agy::set(enable),
     };
     let (source, style, never_ran) = (adapter.source, install.style, install.never_ran);
     let path =

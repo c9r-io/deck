@@ -211,7 +211,8 @@
 //! client's worker types (the user's commands; Codex only with
 //! `--no-daemon`; Pi only while Pi's work status is on, its lines handed to
 //! Pi by Deck's observer between runs and never typed,
-//! `agent_pi::handover`; with, when the type lists models, one of them the
+//! `agent_pi::handover`; agy only while Deck's agy hooks entry is on, its
+//! lines typed under agy's first-interaction gate, `agent_agy`; with, when the type lists models, one of them the
 //! start chose, byte for byte, appended as `--model <the listed entry>`,
 //! never a model the client wrote: `MODEL_NOT_LISTED`, approved 2026-11-21)
 //! through a `worker-start` Board intent the webview commits,

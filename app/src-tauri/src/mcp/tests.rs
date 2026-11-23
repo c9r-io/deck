@@ -6011,6 +6011,13 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
         refused(&[claude("terra", "pi --model gpt-5.6-terra")]),
         TYPE_PI_OBSERVER
     );
+    // an agy worker: its lines wait for agy's own words, and this test's
+    // home has no agy hooks entry
+    assert_eq!(
+        refused(&[claude("agy", "agy --model gemini-4-neon-high")]),
+        TYPE_AGY_SIGNAL
+    );
+    assert_eq!(refused(&[claude("agyx", "agyx")]), TYPE_COMMAND_INVALID);
     assert_eq!(refused(&[claude("pie", "pie")]), TYPE_COMMAND_INVALID);
     assert_eq!(refused(&[claude("pi", "pi $(x)")]), TYPE_COMMAND_INVALID);
     let nine: Vec<_> = (0..9).map(|i| claude(&format!("t{i}"), "claude")).collect();

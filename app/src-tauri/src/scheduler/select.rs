@@ -50,8 +50,14 @@
 //!   gate never clears and the row waits for send-now — an intentional,
 //!   documented degradation. A new generation and a Deck restart both start
 //!   without evidence. The evidence is only this prerequisite; every other
-//!   hold here still applies once it exists. Other process-bound rows
-//!   (`expected_process` naming any other program) are unchanged.
+//!   hold here still applies once it exists. agy (`agent_agy`, `row_agy`):
+//!   a row configured for `agy`, or any row whose target is a recognized
+//!   agy (an agy word of the generation, or the literal foreground name),
+//!   waits for `agy_interaction`; agy shows a folder-trust question that
+//!   Enter answers before its first prompt and reports no question at all.
+//!   agy is not in `interactive_agent` (remote admission). Other
+//!   process-bound rows (`expected_process` naming any other program) are
+//!   unchanged.
 //! - First-send readiness override (`first_send.rs`): the head row of a
 //!   Slack badge or clock run whose rule, or of a phone task whose preset,
 //!   explicitly accepted the startup-dialog risk
@@ -149,6 +155,12 @@ pub(crate) struct Observed {
     /// An accepted Claude interaction word came from the Signal target's
     /// current foreground generation (`agent_status::Evidence`).
     pub(crate) claude_interaction: bool,
+    /// An accepted agy word came from that generation
+    /// (`agent_status::Evidence::agy_interaction`).
+    pub(crate) agy_interaction: bool,
+    /// The Signal target is a recognized agy (`agent_status::Evidence::agy`):
+    /// it only ever ADDS the first-interaction gate.
+    pub(crate) agy: bool,
     /// The Signal target is a recognized Pi (`agent_status::Evidence::pi`):
     /// a proven observer of its current foreground generation, or Pi's name
     /// on that foreground. Recognition only: it holds, and proves nothing.
@@ -257,6 +269,8 @@ pub(crate) fn observe_with(
                 agent: agents.get(session).map(|o| o.state),
                 codex: evidence.get(session).and_then(|e| e.codex),
                 claude_interaction: evidence.get(session).is_some_and(|e| e.claude_interaction),
+                agy_interaction: evidence.get(session).is_some_and(|e| e.agy_interaction),
+                agy: evidence.get(session).is_some_and(|e| e.agy),
                 pi: evidence.get(session).is_some_and(|e| e.pi),
                 pi_ready: evidence
                     .get(session)
@@ -308,6 +322,12 @@ pub(crate) fn row_agent(i: &QueueItem) -> Option<&'static str> {
     i.expected_process
         .as_deref()
         .and_then(crate::admission::interactive_agent)
+}
+
+/// Whether a row is configured for agy. Not `row_agent`: that closed list
+/// is remote admission's too, and agy is no remote agent.
+pub(crate) fn row_agy(i: &QueueItem) -> bool {
+    i.expected_process.as_deref() == Some(crate::agent_agy::PROCESS)
 }
 
 /// Whether a row is configured for Pi. Not `row_agent`: that closed list is
@@ -463,6 +483,13 @@ fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool
         _ => {}
     }
     if configured == Some("claude") && !o.claude_interaction && !overridden {
+        return Some(Hold::FirstInteraction);
+    }
+    // agy (`agent_agy`): a row configured for it, or any row whose target is
+    // a recognized agy, waits for an agy word of this generation — agy
+    // shows a folder-trust question before its first prompt that Enter
+    // answers, and reports no question at all
+    if (row_agy(i) || o.agy) && !o.agy_interaction && !overridden {
         return Some(Hold::FirstInteraction);
     }
     None

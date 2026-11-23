@@ -114,8 +114,12 @@ fn hook_status_command_returns_both_closed_agent_fields() {
     let agents = object["agents"].as_object().expect("agent status map");
     assert_eq!(
         agents.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["claude-code", "codex", "pi"]
+        ["agy", "claude-code", "codex", "pi"]
     );
+    // agy: its one switch, nothing else (`agent_agy`)
+    assert!(agents["agy"]["signal"].is_boolean());
+    assert!(agents["agy"]["lifecycle"].is_null());
+    assert!(agents["agy"].get("replies").is_none());
     for source in ["claude-code", "codex", "pi"] {
         let agent = agents[source].as_object().expect("agent status");
         // Codex and Pi also say whether the final message is forwarded
@@ -279,6 +283,7 @@ fn duplicate_agent_registry_has_no_migration_side_effects() {
         },
         || retired.set(retired.get() + 1),
         || pi.set(pi.get() + 1),
+        |_| pi.set(pi.get() + 1),
     );
     assert_eq!((hooks.get(), retired.get(), pi.get()), (0, 0, 0));
 }
@@ -298,6 +303,7 @@ fn unique_hook_adapter_participates_in_generic_migration() {
         },
         || retired.set(retired.get() + 1),
         || panic!("a hook adapter must not run Pi migration"),
+        |_| panic!("a hook adapter must not run agy migration"),
     );
     assert_eq!((hooks.get(), retired.get()), (1, 1));
 }

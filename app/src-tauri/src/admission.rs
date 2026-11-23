@@ -28,23 +28,28 @@ pub(crate) fn channel_agent_command(cmd: &str) -> Option<&'static str> {
 /// Deck's own observer and never typed (`agent_pi::handover`, approved
 /// 2026-11-20); no other path admits Pi, and `interactive_agent` stays the
 /// closed list remote admission and the first-interaction gate read.
+///
+/// agy (approved 2026-11-23, `agent_agy`) the same way: its lines are typed
+/// like Claude's, under the scheduler's first-interaction gate for an agy
+/// row (`scheduler/select.rs` `row_agy`), and remote admission still does
+/// not list it.
 pub(crate) fn worker_agent_command(cmd: &str) -> Option<&'static str> {
     if let Some(agent) = channel_agent_command(cmd) {
         return Some(agent);
     }
-    let rest = cmd.strip_prefix(crate::agent_pi::PROCESS)?;
-    if !rest.is_empty() && !rest.starts_with(' ') {
-        return None;
-    }
-    rest.split(' ')
-        .skip(1)
-        .all(|word| {
-            !word.is_empty()
-                && word
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_./:=+,@".contains(&byte))
+    [crate::agent_pi::PROCESS, crate::agent_agy::PROCESS]
+        .into_iter()
+        .find(|program| {
+            cmd.strip_prefix(program).is_some_and(|rest| {
+                (rest.is_empty() || rest.starts_with(' '))
+                    && rest.split(' ').skip(1).all(|word| {
+                        !word.is_empty()
+                            && word.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || b"-_./:=+,@".contains(&byte)
+                            })
+                    })
+            })
         })
-        .then_some(crate::agent_pi::PROCESS)
 }
 
 /// Deck's closed set of recognized interactive agents, by executable
@@ -102,6 +107,17 @@ mod tests {
         assert_eq!(worker_agent_command("pi"), Some("pi"));
         assert_eq!(worker_agent_command("pi --model gpt-5.6-terra"), Some("pi"));
         assert_eq!(worker_agent_command("claude --model opus"), Some("claude"));
+        assert_eq!(worker_agent_command("agy"), Some("agy"));
+        assert_eq!(
+            worker_agent_command("agy --model gemini-4-neon-high"),
+            Some("agy")
+        );
+        // agy is a worker agent only: remote admission does not list it
+        assert_eq!(channel_agent_command("agy"), None);
+        assert_eq!(interactive_agent("agy"), None);
+        for refused in ["agyx", "agy  --model x", "agy --model $(x)", "agy ;ls"] {
+            assert_eq!(worker_agent_command(refused), None, "{refused}");
+        }
         for refused in [
             "pip install x",
             "pi  --model x",

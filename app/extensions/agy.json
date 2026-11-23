@@ -1,0 +1,8 @@
+{
+  "id": "agy",
+  "kind": "agent",
+  "rust": "crate::agent_agy::AGY",
+  "ui": "extension-agy.js",
+  "order": 35,
+  "selected": false
+}

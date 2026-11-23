@@ -7,6 +7,7 @@ pub(super) const AGENT_ADAPTERS: &[crate::agent_status::AgentAdapter] = &[
     crate::agent_status::CLAUDE_CODE,
     crate::agent_status::CODEX,
     crate::agent_pi::PI,
+    crate::agent_agy::AGY,
 ];
 
 pub(super) const TRANSLATION_PROVIDERS:
@@ -33,7 +34,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.source)
                 .collect::<Vec<_>>(),
-            ["claude-code", "codex", "pi"]
+            ["claude-code", "codex", "pi", "agy"]
         );
         assert_eq!(
             TRANSLATION_PROVIDERS

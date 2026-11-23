@@ -33,6 +33,13 @@
 //! `"after_tool":true`, which tells deck the word may only end that same
 //! interaction's input request (`agent_status.rs`, "After a tool").
 //!
+//! A third, for agy (Google Antigravity CLI), whose `PreInvocation` hook runs
+//! before EVERY model call of a turn: deck's entry runs
+//! `agy working --turn-start`, and the helper reads the TOP-LEVEL number
+//! `invocationNum` and sends only when it is exactly 0 (the first call of a
+//! turn); any other value, a missing or repeated key, or a payload that does
+//! not parse sends nothing. agy has no per-turn id, so its lines are v1.
+//!
 //! Wire: v1 `{v:1, source, state, socket, server_pid, pane}`; v2 adds
 //! `interaction` (a source id, never synthesized); v3 adds `reply` (with or
 //! without `interaction`). deck accepts all three; it takes `reply` off
@@ -73,6 +80,60 @@ const AFTER_TOOL_FLAG: &str = "--after-tool";
 /// main thread's and on the permission Notification). Only its presence is
 /// read.
 const SUBAGENT_FIELD: &str = "agent_id";
+
+/// The argument deck adds to agy's PreInvocation hook; honoured for
+/// `agy working` only.
+const TURN_START_FLAG: &str = "--turn-start";
+
+/// The top-level key of agy's PreInvocation payload that numbers the model
+/// calls of one turn (agy 1.5.14: 0 for the first).
+const INVOCATION_FIELD: &str = "invocationNum";
+
+/// Whether this is the PreInvocation hook deck wrote for agy.
+fn turn_start(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("agy")
+        && args.get(2).map(String::as_str) == Some("working")
+        && args.get(3).map(String::as_str) == Some(TURN_START_FLAG)
+        && args.len() == 4
+}
+
+/// Whether agy's payload says this model call is the first of its turn:
+/// a top-level `invocationNum` that is exactly the number 0, read in one
+/// strict pass (a repeated key, malformed JSON or anything else: no).
+fn first_invocation(payload: &[u8]) -> bool {
+    struct Visit;
+    impl<'de> Visitor<'de> for Visit {
+        type Value = Option<bool>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a JSON object")
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut found = None;
+            while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
+                if key == INVOCATION_FIELD {
+                    if found.is_some() {
+                        return Err(serde::de::Error::custom("duplicate key"));
+                    }
+                    found = Some(map.next_value::<serde_json::Value>()? == serde_json::json!(0));
+                } else {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+            Ok(found)
+        }
+    }
+    if payload.len() > MAX_PAYLOAD {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(payload) else {
+        return false;
+    };
+    let mut de = serde_json::Deserializer::from_str(text);
+    let Ok(found) = (&mut de).deserialize_map(Visit) else {
+        return false;
+    };
+    de.end().is_ok() && found == Some(true)
+}
 
 /// Whether this is the PostToolUse hook deck wrote.
 fn after_tool(args: &[String]) -> bool {
@@ -392,6 +453,10 @@ fn main() {
     let (Some(source), Some(state)) = (args.get(1), args.get(2)) else {
         return;
     };
+    // agy: only the first model call of a turn says the turn started
+    if turn_start(&args) && !first_invocation(&payload) {
+        return;
+    }
     let after_tool = after_tool(&args);
     let wants_reply = wants_reply(&args);
     let fields = fields_with(
@@ -952,5 +1017,44 @@ mod tests {
         assert_eq!(build_after_tool_message("/t/deck,9,0", "%1", &found), None);
         // presence is not read unless asked
         assert!(!fields_from("claude-code", subagent.as_bytes(), false).present);
+    }
+
+    #[test]
+    fn agy_sends_working_only_for_the_first_model_call_of_a_turn() {
+        let args = |words: &[&str]| -> Vec<String> {
+            std::iter::once("helper")
+                .chain(words.iter().copied())
+                .map(String::from)
+                .collect()
+        };
+        assert!(turn_start(&args(&["agy", "working", "--turn-start"])));
+        assert!(!turn_start(&args(&["agy", "working"])));
+        assert!(!turn_start(&args(&["agy", "turn-done", "--turn-start"])));
+        assert!(!turn_start(&args(&[
+            "claude-code",
+            "working",
+            "--turn-start"
+        ])));
+        assert!(!turn_start(&args(&["agy", "working", "--turn-start", "x"])));
+
+        assert!(first_invocation(
+            br#"{"conversationId":"x","invocationNum":0,"lastUserInput":"secret"}"#
+        ));
+        for no in [
+            &br#"{"invocationNum":1}"#[..],
+            br#"{"invocationNum":"0"}"#,
+            br#"{"invocationNum":0.5}"#,
+            br#"{"invocationNum":null}"#,
+            br#"{"conversationId":"x"}"#,
+            br#"{"invocationNum":0,"invocationNum":0}"#,
+            br#"{"x":{"invocationNum":0}}"#,
+            br#"[0]"#,
+            b"not json",
+            br#"{"invocationNum":0} trailing"#,
+        ] {
+            assert!(!first_invocation(no), "{}", String::from_utf8_lossy(no));
+        }
+        // agy has no interaction id: its line is v1
+        assert_eq!(identity_field("agy"), None);
     }
 }

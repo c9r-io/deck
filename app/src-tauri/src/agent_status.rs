@@ -763,6 +763,11 @@ pub(crate) enum CodexSignalTrust {
 /// merely because it was admitted.
 const CLAUDE_INTERACTION_WORDS: &[&str] = &[WORKING, NEEDS_INPUT, TURN_DONE];
 
+/// The agy words that prove an agy interaction (`agent_agy`): the turn's
+/// first model call and its end. agy reports no `needs-input`; a line that
+/// claims one is not evidence.
+const AGY_INTERACTION_WORDS: &[&str] = &[WORKING, TURN_DONE];
+
 /// Evidence Deck holds about ONE pane foreground generation (same identity
 /// as `Entry`: pane, leader pid, birth instant), in memory only — a Deck
 /// restart starts without any, and nothing is persisted or reconstructed.
@@ -784,6 +789,8 @@ struct GenerationEvidence {
     generation: ForegroundGeneration,
     codex: Option<CodexSignalTrust>,
     claude_interaction: bool,
+    /// An accepted agy word came from this generation (`agent_agy`).
+    agy_interaction: bool,
     /// A Pi observer of this generation said hello and the kernel proved it
     /// to be the pane's foreground program (`agent_pi::transport`). `Some`
     /// is what recognizes the generation as Pi; `PiSeen::now` is what Deck
@@ -869,6 +876,7 @@ fn with_generation(
                 generation,
                 codex: None,
                 claude_interaction: false,
+                agy_interaction: false,
                 pi: None,
             });
         if record.session_id != row.session_id
@@ -881,6 +889,7 @@ fn with_generation(
                 generation,
                 codex: None,
                 claude_interaction: false,
+                agy_interaction: false,
                 pi: None,
             };
         }
@@ -903,6 +912,11 @@ fn prove_trust(row: &PaneRow, generation: ForegroundGeneration, trust: CodexSign
 /// generation.
 fn prove_claude_interaction(row: &PaneRow, generation: ForegroundGeneration) {
     with_generation(row, generation, |record| record.claude_interaction = true);
+}
+
+/// Record that an accepted agy word came from this pane generation.
+fn prove_agy_interaction(row: &PaneRow, generation: ForegroundGeneration) {
+    with_generation(row, generation, |record| record.agy_interaction = true);
 }
 
 /// Whether the generation's foreground program is a Codex client the
@@ -968,6 +982,12 @@ pub(crate) struct Evidence {
     pub(crate) codex: Option<CodexSignalTrust>,
     /// An accepted Claude interaction came from this generation.
     pub(crate) claude_interaction: bool,
+    /// An accepted agy word came from this generation (`agent_agy`).
+    pub(crate) agy_interaction: bool,
+    /// The target is a recognized agy: such a word came from this
+    /// generation, or the foreground is literally `agy`. Presentation (its
+    /// limited coverage) and the scheduler's gate only; never proof.
+    pub(crate) agy: bool,
     /// The target is a recognized Pi: an observer of this generation was
     /// proven (whatever the foreground's name — `node` for an npm install),
     /// or the foreground is literally `pi`. Recognition only ever ADDS the
@@ -1009,6 +1029,9 @@ pub(crate) fn generation_evidence(
                         .and_then(|r| r.codex)
                         .or((row.command == "codex").then_some(CodexSignalTrust::Unknown)),
                     claude_interaction: proven.is_some_and(|r| r.claude_interaction),
+                    agy_interaction: proven.is_some_and(|r| r.agy_interaction),
+                    agy: proven.is_some_and(|r| r.agy_interaction)
+                        || row.command == crate::agent_agy::PROCESS,
                     pi,
                     pi_signal: pi.then_some(observed.unwrap_or(PiCoverage::Unavailable)),
                 };
@@ -1101,6 +1124,13 @@ pub(crate) fn parse_event(line: &str) -> Result<Event, &'static str> {
         .iter()
         .find(|s| Some(**s) == obj.get("state").and_then(|v| v.as_str()))
         .ok_or("unknown-state")?;
+    // agy has no question hook (`agent_agy`): a line claiming one is no
+    // word of Deck's agy entry
+    if *state == NEEDS_INPUT
+        && crate::extensions::agent(source).is_some_and(|adapter| adapter.class == SignalClass::Agy)
+    {
+        return Err("agy-no-input-word");
+    }
     let socket = obj
         .get("socket")
         .and_then(|v| v.as_str())
@@ -1515,6 +1545,8 @@ pub(crate) fn ingest_accepted(
         prove_trust(row, generation, CodexSignalTrust::Trusted);
     } else if class == SignalClass::Claude && CLAUDE_INTERACTION_WORDS.contains(&event.state) {
         prove_claude_interaction(row, generation);
+    } else if class == SignalClass::Agy && AGY_INTERACTION_WORDS.contains(&event.state) {
+        prove_agy_interaction(row, generation);
     }
     let targeted = signal_targets(&rows)
         .get(&row.session_name)
@@ -3270,6 +3302,8 @@ mod tests {
             agent: projections(rows).get(session).map(|o| o.state),
             codex: trust(rows, table).get(session).copied(),
             claude_interaction: false,
+            agy_interaction: false,
+            agy: false,
             pi: false,
         };
         crate::scheduler::agent_holds(&owner, Some(&seen))
@@ -3558,6 +3592,8 @@ mod tests {
             agent: Some("turn-done"),
             codex,
             claude_interaction: false,
+            agy_interaction: false,
+            agy: false,
             pi: false,
         };
         assert!(!crate::scheduler::agent_holds(
@@ -3684,6 +3720,100 @@ mod tests {
         }))
         .unwrap();
         crate::scheduler::agent_holds(&row, Some(&observed(rows, table, session)))
+    }
+
+    fn agy_report(
+        state: &str,
+        peer: Option<u32>,
+        table: &ProcessTable,
+        rows: &[PaneRow],
+    ) -> Result<(), &'static str> {
+        let origin = Origin {
+            peer,
+            table: table.clone(),
+        };
+        let line = event_line(state, "%3").replace("\"claude-code\"", "\"agy\"");
+        ingest(&line, &origin, || Some(rows.to_vec()))
+    }
+
+    fn agy_row(session: &str, expected: Option<&str>) -> crate::scheduler::QueueItem {
+        serde_json::from_value(serde_json::json!({
+            "id": "o", "session": session, "card_id": "c", "dir": "", "cmd": "agy",
+            "text": "x", "mode": "chain", "added": 0, "expected_process": expected
+        }))
+        .unwrap()
+    }
+
+    /// agy (`agent_agy`): its two v1 words are accepted through the ordinary
+    /// kernel admission (the hook's `sh` is agy's child, an extra hop the
+    /// ancestry walk takes), mark the generation `agy_interaction`, and open
+    /// the scheduler's gate for an agy row; a `needs-input` that claims to
+    /// be agy's is refused, and a new generation starts without evidence.
+    #[test]
+    fn agy_words_are_admitted_and_gate_its_rows_until_they_arrive() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let session = "deck-card-agy1";
+        let rows = [row(session, "$1", "%3", 300, true, "agy")];
+        let mut table = world(&[pane(300, 7, 310, 2000)]);
+        // a live agy without a word: recognized by name, held, either way
+        // the row is configured
+        let seen = observed(&rows, &table, session);
+        assert!(seen.agy && !seen.agy_interaction);
+        for expected in [Some("agy"), None] {
+            assert!(crate::scheduler::agent_holds(
+                &agy_row(session, expected),
+                Some(&seen)
+            ));
+        }
+        // agy runs `sh -c`, and the helper is the shell's child
+        let shell = detached_hook(&mut table, 320, 310);
+        let helper = ProcessInfo {
+            pgid: 320,
+            ..process(shell + 10, shell, 0, 0, 5000)
+        };
+        table.insert(helper.pid, helper);
+        assert_eq!(
+            agy_report("needs-input", Some(helper.pid), &table, &rows),
+            Err("agy-no-input-word")
+        );
+        assert_eq!(projection(&rows, session), None);
+        assert!(!observed(&rows, &table, session).agy_interaction);
+        assert_eq!(
+            agy_report("working", Some(helper.pid), &table, &rows),
+            Ok(())
+        );
+        assert_eq!(projection(&rows, session), Some("working"));
+        let seen = observed(&rows, &table, session);
+        assert!(seen.agy && seen.agy_interaction);
+        assert!(
+            !seen.claude_interaction,
+            "an agy word is no Claude evidence"
+        );
+        assert!(!crate::scheduler::agent_holds(
+            &agy_row(session, Some("agy")),
+            Some(&seen)
+        ));
+        assert_eq!(
+            agy_report("turn-done", Some(helper.pid), &table, &rows),
+            Ok(())
+        );
+        assert_eq!(projection(&rows, session), Some("turn-done"));
+        // a v1 working after a turn ended starts the next one (agy resumes on
+        // its own once background work ends)
+        assert_eq!(
+            agy_report("working", Some(helper.pid), &table, &rows),
+            Ok(())
+        );
+        assert_eq!(projection(&rows, session), Some("working"));
+        // a new agy process: no evidence, held again
+        let fresh = world(&[pane(300, 7, 311, 3000)]);
+        assert!(!observed(&rows, &fresh, session).agy_interaction);
+        assert!(crate::scheduler::agent_holds(
+            &agy_row(session, Some("agy")),
+            Some(&observed(&rows, &fresh, session))
+        ));
+        reset_for_tests();
     }
 
     /// `AgentInteractionEstablished` for Claude: an ACCEPTED interaction word

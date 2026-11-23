@@ -458,7 +458,7 @@ mod tests {
         assert_eq!(SERVICES.iter().map(|s| s.id).collect::<Vec<_>>(), ["slack"]);
         assert_eq!(
             AGENT_ADAPTERS.iter().map(|a| a.source).collect::<Vec<_>>(),
-            ["claude-code", "codex", "pi"]
+            ["claude-code", "codex", "pi", "agy"]
         );
         // registered is not re-entered: Claude and Codex declare that
         // capability, each under its own source word; Pi does not

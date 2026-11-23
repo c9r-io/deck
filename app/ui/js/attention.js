@@ -108,6 +108,10 @@ const node = (tag, className, text) => {
   return el;
 };
 
+/* A live card whose foreground is a recognized agy: it reports a turn's
+   start and end, never a question to the user (agent_agy.rs). */
+const agyCoverage = snapshot => !!(snapshot?.alive && snapshot.agy === true);
+
 export function attentionStatusText(card) {
   const snapshot = ctx.attention.get(card);
   if (!snapshot) return t('attention.unknown');
@@ -118,6 +122,7 @@ export function attentionStatusText(card) {
   else if (snapshot.agent === 'turn-done') text = t(snapshot.seen ? 'attention.doneRead' : 'attention.doneUnread');
   else if (snapshot.agent === 'working') text = t('attention.working');
   else if (piStatusKey(snapshot)) text = t(piStatusKey(snapshot));
+  else if (agyCoverage(snapshot)) text = t('signal.agy.limited');
   else if (gap) text = t(gap === 'unknown' ? 'signal.codex.unknown' : 'signal.codex.unavailable');
   else text = t(snapshot.idle == null ? 'attention.noSignal'
     : snapshot.idle >= QUIET_SECS ? 'attention.quiet' : 'attention.recent');
@@ -130,8 +135,8 @@ export function attentionStatusText(card) {
 export async function showSignalDiagnostics(card, opener = null) {
   const snapshot = ctx.attention.get(card);
   const gap = codexCoverageGap(snapshot);
-  /* a recognized Pi explains its limited coverage under every state */
-  const pi = piDetailKeys(snapshot);
+  /* a recognized Pi or agy explains its limited coverage under every state */
+  const pi = piDetailKeys(snapshot) || (agyCoverage(snapshot) ? ['signal.agy.hint', 'signal.agy.hold'] : null);
   if (!gap && !pi) return;
   const lines = pi ? pi.map(key => t(key))
     : [t(gap === 'unknown' ? 'signal.codex.unknownHint' : 'signal.codex.unavailableHint'), t('signal.codex.checks'), t('signal.codex.compatibility')];
@@ -149,7 +154,8 @@ export function paintCardSignalStatus(el, card) {
   /* the status line is cut with an ellipsis: the whole summary is here */
   el.title = [sourceText(card), ctx.attention.get(card)?.summary].filter(Boolean).join('\n');
   const help = el.querySelector('.card-signal-help');
-  help.hidden = !codexCoverageGap(ctx.attention.get(card)) && !piCoverage(ctx.attention.get(card));
+  help.hidden = !codexCoverageGap(ctx.attention.get(card)) && !piCoverage(ctx.attention.get(card))
+    && !agyCoverage(ctx.attention.get(card));
   help.textContent = t('signal.details');
   help.setAttribute('aria-label', t('signal.detailsNamed', { name: card.title }));
   help.onclick = event => { event.stopPropagation(); void showSignalDiagnostics(card, help); };

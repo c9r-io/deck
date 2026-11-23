@@ -6,6 +6,7 @@
 //! (atomic persistence + logs), history (completion), commands (the rest).
 
 mod admission;
+mod agent_agy;
 mod agent_origin;
 mod agent_pi;
 mod agent_reentry;

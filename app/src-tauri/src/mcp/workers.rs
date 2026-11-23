@@ -11,9 +11,11 @@
 //!   one, and a client sees only its own.
 //! - Worker types (`WorkerType`): the user's list, per client, of the kinds
 //!   of worker card it may start — a name, the user's own command (`claude`,
-//!   `codex --no-daemon` or, while Pi's work status is on, `pi`, with simple
-//!   arguments, `validate_worker_types`; a Pi worker's lines are handed to Pi
-//!   by Deck's observer, never typed: `agent_pi::handover`)
+//!   `codex --no-daemon`, while Pi's work status is on `pi`, or, while
+//!   Deck's agy hooks entry is on, `agy`, with simple arguments,
+//!   `validate_worker_types`; a Pi worker's lines are handed to Pi by Deck's
+//!   observer, never typed: `agent_pi::handover`; an agy worker's are typed
+//!   under agy's first-interaction gate: `agent_agy`)
 //!   and a description the orchestrator reads, optionally with the models
 //!   a start may choose (`models`: single simple arguments, at most
 //!   `MAX_TYPE_MODELS`, only on a command that names no model itself).
@@ -1368,6 +1370,7 @@ pub(super) const TYPE_COMMAND_INVALID: &str = "mcp-worker-type-command";
 pub(super) const TYPE_CODEX_DAEMON: &str = "mcp-worker-type-codex-daemon";
 pub(super) const TYPE_LIST_INVALID: &str = "mcp-worker-type-list";
 pub(super) const TYPE_PI_OBSERVER: &str = "mcp-worker-type-pi-observer";
+pub(super) const TYPE_AGY_SIGNAL: &str = "mcp-worker-type-agy-signal";
 pub(super) const TYPE_MODELS_INVALID: &str = "mcp-worker-type-models";
 pub(super) const TYPE_MODEL_IN_COMMAND: &str = "mcp-worker-type-model-in-command";
 
@@ -1440,6 +1443,12 @@ pub(super) fn validate_worker_types(types: &[WorkerType]) -> Result<(), DeckErro
         }
         if agent == "codex" && !worker_type.cmd.split(' ').any(|word| word == "--no-daemon") {
             return Err(invalid(TYPE_CODEX_DAEMON));
+        }
+        // an agy worker's lines wait for agy's own words (the scheduler's
+        // first-interaction gate): without Deck's agy entry there are none,
+        // and its orchestrator could not see a turn end either
+        if agent == crate::agent_agy::PROCESS && !crate::agent_agy::enabled() {
+            return Err(invalid(TYPE_AGY_SIGNAL));
         }
         if worker_type.description.chars().count() > MAX_TYPE_DESCRIPTION_CHARS
             || worker_type.description.chars().any(char::is_control)

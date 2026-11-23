@@ -15,6 +15,9 @@ import { openAgentNotes } from './buffer-model.js';
 //   (pi-model.js): `connected` is limited coverage, never an input request.
 //   Like the Codex word it is kept beside the observation and feeds no
 //   category, count or badge.
+// - agy coverage: `agy` says the card's foreground is a recognized agy
+//   (agent_agy.rs): limited coverage (a turn's start and end, never a
+//   question to the user). Explanatory only, like `piSignal`.
 // - Attention: `seen` (read/unread) and the derived categories. Read means
 //   successfully displayed, never handled. With a backend episode (FR-SI-05:
 //   `episode` is Deck's opaque token for one accepted observation) the
@@ -195,6 +198,7 @@ export function createAttentionTracker() {
           session: card.session, alive: info.alive, agent, status,
           codexSignal: info.alive && CODEX_SIGNAL_TRUST.includes(info.codex_signal) ? info.codex_signal : null,
           piSignal: info.alive && PI_COVERAGE.includes(info.pi_signal) ? info.pi_signal : null,
+          agy: info.alive && info.agy === true,
           idle: info.idle_secs ?? null, observedAt: now, stale: false, episode, episodeViewed,
           /* one line about what Claude said when this episode's turn ended
              (turn_summary.rs, opt-in): the backend sends it only for the

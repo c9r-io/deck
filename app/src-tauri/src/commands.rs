@@ -625,6 +625,11 @@ pub(crate) struct SessInfo {
     /// only: no attention episode, no hold depends on its value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pi_signal: Option<crate::agent_status::PiCoverage>,
+    /// The SAME Signal target is a recognized agy (`agent_status::Evidence`):
+    /// its card explains that agy reports a turn's start and end and never
+    /// a question to the user. Explanatory only, like `pi_signal`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    agy: bool,
     /// the Deck-local attention episode of that same observation
     /// (`agent_status::Observation`): opaque, never a source id, never
     /// authority. None without an observation.
@@ -1124,6 +1129,7 @@ pub(crate) fn poll_observing_bells(
                 agent: pane.and(agents.get(&name)).map(|o| o.state),
                 codex_signal: pane.and(evidence.get(&name)).and_then(|e| e.codex),
                 pi_signal: pane.and(evidence.get(&name)).and_then(|e| e.pi_signal),
+                agy: pane.and(evidence.get(&name)).is_some_and(|e| e.agy),
                 episode: pane.and(agents.get(&name)).map(|o| o.episode),
                 episode_viewed: pane.and(agents.get(&name)).is_some_and(|o| o.viewed),
                 episode_since: pane

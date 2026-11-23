@@ -259,7 +259,10 @@ evolution; it makes scope expansion deliberate.
   or `deck_worker_start` started (`ContentClass::Delegated`), under every
   readiness hold plus the human hold (the user's keystroke holds it until
   handed back); it starts only the worker types the user listed (Codex only
-  with `--no-daemon`), never a command it writes — it may pick one of the
+  with `--no-daemon`; agy, approved 2026-11-23, only while Deck's agy hooks
+  entry is on, its lines typed like Claude's under agy's own
+  first-interaction gate, `agent_agy.rs`, `scheduler/select.rs` `row_agy`),
+  never a command it writes — it may pick one of the
   models the user listed for that type, which Deck appends as `--model`
   from the list, never a model it names (approved 2026-11-21,
   `mcp/workers.rs` `start_command`) — and never answers an
@@ -411,6 +414,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Card Reminders | `reminder.rs`, `ui/js/reminder-model.js` (+ `docs/card-reminders.md`) |
 | Agent status, attribution and listener | `agent_status.rs`, `agent_origin.rs`, `src-tauri/status-helper/` |
 | Agent hooks configuration, installation and migration | `agent_status/hooks.rs` (contract), `agent_status/hooks/tests.rs` |
+| agy (Google Antigravity CLI) adapter: Deck's one named entry in `~/.gemini/config/hooks.json` (PreInvocation turn start, Stop; never PreToolUse), v1 words, no `needs-input` (agy has no question hook), the first-interaction gate for an agy row | `agent_agy.rs` (contract), `status-helper` (`--turn-start`), `ui/js/extension-agy.js`, `attention.js` (the limited-coverage note) |
 | Pi agent adapter: registration, the one settings entry (work status; with it, the final message), observer transport | `agent_pi.rs` (contract), `agent_pi/config.rs`, `agent_pi/transport.rs` (the sender proof, wire v4), `agent_pi/handover.rs` (a Pi worker card's line, handed over by the observer), `resources/pi/` (the observer extension: `signal.ts` reads nothing, `reply.ts` the final message; both hand over a worker line), `scripts/pi_native.py`, `scripts/pi-live-verify.py`, `.github/workflows/pi-compat.yml` (weekly, newest Pi: an alarm, not a gate) |
 | Agent re-entry on a shell-service restart, crash recovery | `agent_reentry/` (contract in `mod.rs`; adapters `claude.rs`, `codex.rs`; crash recovery `recovery.rs`, `ui/js/recovery-model.js`, `agent-recovery.js`), `src-tauri/lifecycle-helper/`, `procinfo.rs`, `procinfo/code_identity.rs`, `resume.rs` (`printed`, the one pane-text reader), `ui/js/reentry-model.js`, `restart-reentry.js` |
 | First-party extension composition, access startup and Settings controllers | `extensions.rs`, `app/extensions/*.json`, `scripts/extension_catalog.py`, `ui/js/settings-extensions.js`, `ui/js/extension-*.js` (Agent, Slack, translation, Connector, MCP/Tunnel, voice preferences; + `docs/first-party-extensions.md`) |

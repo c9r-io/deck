@@ -123,10 +123,11 @@ fn rust_census() -> Census {
 const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // the closed vocabulary, the parser and the hook spec tables
     // (+1 each: `CLAUDE_INTERACTION_WORDS`, the closed list of Claude words
-    // that may establish interaction evidence — a producer fact, no authority)
-    ("agent_status.rs", "", "TURN_DONE", 3, Producer),
+    // that may establish interaction evidence — a producer fact, no authority;
+    // +1 for `TURN_DONE` and `WORKING`: `AGY_INTERACTION_WORDS`, agy's two)
+    ("agent_status.rs", "", "TURN_DONE", 4, Producer),
     ("agent_status.rs", "", "NEEDS_INPUT", 3, Producer),
-    ("agent_status.rs", "", "WORKING", 3, Producer),
+    ("agent_status.rs", "", "WORKING", 4, Producer),
     ("agent_status.rs", "", "\"turn-done\"", 1, Producer),
     ("agent_status.rs", "", "\"needs-input\"", 1, Producer),
     ("agent_status.rs", "", "\"working\"", 1, Producer),
@@ -147,6 +148,11 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // same interaction's `needs-input` — it narrows admission, grants nothing
     ("agent_status.rs", "parse_event", "WORKING", 1, Producer),
     ("agent_status.rs", "asks_in", "NEEDS_INPUT", 1, Producer),
+    // agy (`agent_agy`): its hooks entry names the two words it reports,
+    // and the parser refuses a `needs-input` claiming to be agy's (agy has
+    // no question hook) — producer facts, no authority
+    ("agent_agy.rs", "entry", "\"turn-done\"", 1, Producer),
+    ("agent_status.rs", "parse_event", "NEEDS_INPUT", 1, Producer),
     // ingest forwards a word to the desktop attention loop only from the
     // session's Signal target pane; `renotify` re-projects (reconcile on
     // target changes, ingest when a Codex generation turns ambiguous)
