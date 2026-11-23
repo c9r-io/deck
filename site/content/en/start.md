@@ -4,7 +4,9 @@ Open a session to use deck as an ordinary terminal. Each card represents a termi
 
 ## Install and prepare
 
-1. [Download Stable](https://github.com/c9r-io/deck/releases/latest), open the DMG and drag deck to Applications. Releases are signed and Apple-notarized; Apple Silicon Macs are currently supported.
+You need an Apple Silicon Mac running **macOS 11 or later**.
+
+1. [Download Stable](https://github.com/c9r-io/deck/releases/latest), open the DMG and drag deck to Applications. Releases are signed and Apple-notarized.
 2. Open deck. No deck account is needed, and tmux is included.
 3. You can use the shell without configuring additional features. If you want an agent, install and sign in to its CLI separately; model access and charges belong to that tool.
 
@@ -21,7 +23,9 @@ Board groups are manual. Drag cards to place them, and click a group's empty are
 
 Open **New session ▾ → Project defaults…**, also available by right-clicking the project tab. Set an optional directory and launch command. **＋** and ⌘N then use these defaults and send the command once on the first start.
 
-**New shell only** uses the project directory without sending its command. Creating a session from a path menu or a card's “in this directory” action uses that location and always starts a shell only.
+**New shell only** appears in **New session ▾** only when the project has a non-empty default command. It skips that command for this session and keeps the default directory, or your home directory if none is set. If you have set only a directory, create a session normally to open a shell there.
+
+Creating a session from a path menu or a card's “in this directory” action uses that location and always starts a shell only.
 
 If the directory no longer exists, deck offers cancel, edit defaults or a shell in your home directory. It does not save a new card for a failed start.
 

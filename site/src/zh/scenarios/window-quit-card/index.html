@@ -42,7 +42,7 @@
 <p>按 <strong>⌘W</strong> 或点窗口左上角的红色按钮。等约 10 秒，从 Dock 点开 Deck 并回到卡片。你应该能看到 PID 不变、序号继续增加。这只是收起窗口，没有退出应用。满足条件时，Deck 仍可发送已排队的提示词、启动定时任务。</p>
 <h2 id="quit">3. 退出 Deck，再打开同一版本</h2>
 <p>退出会影响整个 Deck。先确认其他卡片或规则不需要 Deck 在这段时间发送提示词或启动任务。趁终端还在打印，按 <strong>⌘Q</strong>。等约 10 秒，再打开同一版本的 Deck，回到同一张卡片。退出期间打印的行应该有相同的 PID 和递增的序号。如果命令已自然结束，重新运行再试一次。</p>
-<p>终端程序可以继续运行，但 Deck 退出期间不会发送待发提示词，也不会启动新的自动化。检查真实任务时，终端输出和卡片的 <strong>⏱</strong> 列表要分开看。重新打开 Deck 后，支持的 Agent 可能还需要一次新的交互，提示词才会继续发送。先读等待原因，再检查终端，不要盲目手动发送。<a href="/zh/guide/prompts/">列表没继续时该查什么。</a> 这个演示不包括 Mac 睡眠或重启。<a href="/zh/scenarios/daily-code-review/#schedule">查看错过定时运行时会怎样处理。</a></p>
+<p>终端程序可以继续运行，但 Deck 退出期间不会发送待发提示词，也不会启动新的自动化。检查真实任务时，终端输出和卡片的 <strong>⏱</strong> 列表要分开看。重新打开 Deck 后，支持的 Agent 可能还需要一次新的交互，提示词才会继续发送。先读等待原因，再检查终端，不要盲目手动发送。<a href="/zh/guide/prompts/#没有继续时怎么办">列表没继续时该查什么。</a> 这个演示不包括 Mac 睡眠或重启。<a href="/zh/scenarios/daily-code-review/#schedule">查看错过定时运行时会怎样处理。</a></p>
 <h2 id="close">4. 保留所需输出，再关闭测试卡片</h2>
 <p>先保存要留下的输出，查看有无未保存的工作和排队提示词，再点看板上这张测试卡片的 <strong>×</strong>。普通卡片可能立即关闭：卡片消失、终端会话结束，剩余待发提示词被取消。关闭卡片后不要指望靠 Shell 恢复找回输出。<a href="/zh/guide/sessions/">查看哪些关闭操作会先确认，以及能够恢复什么。</a></p>
 <p class="gsource">Stable 源码：<a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/src-tauri/src/main.rs#L400-L411">窗口</a> · <a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/src-tauri/src/main.rs#L615-L632">退出</a> · <a href="{{GITHUB_URL}}/blob/7f14b9b1e42a2f72230b421078b3a93cd8a02963/app/src-tauri/src/commands.rs#L481-L490">关闭卡片</a></p>

@@ -12,6 +12,8 @@ Leaving a terminal view, quitting the app and ending a session are different act
 | Close a card | Ends that session and removes the card | Cancels that card's pending lists |
 | Restart the Mac or background shell service | Existing processes end | Local lists remain saved. After a Mac restart they are rechecked when deck runs again; a shell-service restart initiated in Deck pauses affected lists until you resume them |
 
+Try these actions with a disposable card: [close the window, quit Deck, or close a card?](/scenarios/window-quit-card/)
+
 > For an automation configured to close its card, leaving the pane may allow automatic finishing. Closing a pane does not itself terminate a session, but it does not promise to keep such a run forever. [Automatic finish conditions →](/guide/automations/#finishing-and-inspection)
 
 ## End a session deliberately

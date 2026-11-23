@@ -191,7 +191,7 @@
 <details><summary>我需要一直开着 deck 吗？</summary><p>如果要定时发送 prompt 或启动自动化，deck 需要保持运行。退出 deck 后，原有 session 仍可继续运行；重启机器或后台 Shell 服务则会结束其中的进程。 <a class="textlink" href="/zh/guide/sessions/">查看指南 →</a></p></details>
 <details><summary>安静代表 agent 准备好了吗？</summary><p>不代表。没有有效的 agent 状态报告时，琥珀色只说明 session 已有一段时间没有输出。启用 Claude Code 或 Codex 的状态集成后，还可以看到输入请求和本轮结束报告。新建 Codex 会话时，<code>codex --no-daemon</code> 是可选的 hook 兼容路径，还需在 <code>/hooks</code> 中审查并信任。无法可靠归属到终端的共享服务事件会被 Deck 拒绝。本轮结束也不代表任务一定成功。 <a class="textlink" href="/zh/guide/attention/">查看指南 →</a></p></details>
 <details><summary>打开结果就会发送下一条吗？</summary><p>如果开启了人工检查，仅仅打开结果不会让列表继续，还需要点击确认。没有开启人工检查的列表，则按原有的时间和目标条件发送，不受是否打开结果影响。 <a class="textlink" href="/zh/guide/prompts/">查看指南 →</a></p></details>
-<details><summary>需要另外安装 agent 吗？</summary><p>需要。deck 已内置 tmux，但 Claude Code、Codex 等 CLI 需要自行安装和配置，账号及模型服务也由它们提供。已有的 shell、脚本和其他终端工具同样可以使用。 <a class="textlink" href="/zh/guide/start/">查看指南 →</a></p></details>
+<details><summary>不装 Agent，也能用 deck 吗？</summary><p>能。创建会话就可以运行普通终端命令或脚本，deck 已内置 tmux。想使用 Claude Code、Codex 等 Agent 时，再另行安装和配置相应 CLI；账号及模型服务由它们提供。 <a class="textlink" href="/zh/guide/start/">查看指南 →</a></p></details>
 </div>
 </div>
 </section>
