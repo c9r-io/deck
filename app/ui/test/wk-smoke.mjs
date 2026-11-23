@@ -3538,6 +3538,13 @@ export async function verifyNotesMcp() {
   await runWorkersSmoke({ noting: true });
 }
 
+// An agy worker's first line held until its folder is trusted in agy, then
+// sent on its own (workers-smoke.mjs `agyTrustRun`).
+export async function verifyAgyTrust() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ agyTrusting: true });
+}
+
 // Each place a refused credential or a failed check says why, in the real
 // webview, kept as evidence/uxf-*.png (ux-failures-smoke.mjs).
 export async function verifyUxFailures() {

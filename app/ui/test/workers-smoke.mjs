@@ -27,7 +27,7 @@
 //      sends each at least one line. The page counts them.
 // No hook word and no event is synthesized: the Signal comes from the real
 // Claude Code in each card.
-export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false } = {}) {
+export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false, agyTrusting = false } = {}) {
   const { openPermissions, pause, setPermission, until } = await import('./smoke-mcp-helpers.mjs');
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider, panes } = await import('../js/board.js');
@@ -729,6 +729,8 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     const still = await queue(card.session);
     await report('agy-held', !!held && !still.delivered.length && still.mine.length === 1
       && still.plan(still.mine[0])?.stage === 'agy-trust');
+    /* now the person (or the operator, in the pane) answers agy */
+    await report('agy-trust-ready', true);
     const sent = await until(async () => {
       const s = await queue(card.session);
       return s.delivered.length ? s : null;
@@ -743,7 +745,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
        `--no-daemon` worker through part A only (no reply is forwarded for
        Codex, and part B is not run: `done` then reports b=2) */
     const scenario = drafting ? 'drafts' : mentioning ? 'mentions' : orchestrating ? 'orchestrators'
-      : projecting ? 'projects' : carding ? 'cards' : noting ? 'notes' : await inv('smoke_native_scenario').catch(() => '');
+      : projecting ? 'projects' : carding ? 'cards' : noting ? 'notes' : agyTrusting ? 'agy-trust' : await inv('smoke_native_scenario').catch(() => '');
     if (!['live', 'codex', 'types', 'agy-trust', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards', 'notes'].includes(scenario)) throw new Error('scenario');
     const codex = scenario === 'codex';
     /* `types`: no template and no rule; the client carries one Claude worker

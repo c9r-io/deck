@@ -452,19 +452,27 @@ report and the text read back. Keep the screen unlocked and
 the window in front: a locked screen or a covered window freezes the page's
 timers (its takeover and hand-back steps then never come).
 
-Scenario `agy-trust` (write `agy-trust`; no hooks file, the user's own
-Deck agy hooks entry reports through the pane's `DECK_STATUS_SOCK`; agy
-signed in under the user's home): the client is authorized with one agy
+## agy folder trust (WKWebView mode `agy-trust`)
+
+The same carrier and fixture as `workers` (`copy_agent.py` and `work/`; no
+scenario file, no hooks file: the user's own Deck agy hooks entry reports
+through the pane's `DECK_STATUS_SOCK`; agy signed in under the user's home).
+The client is authorized with one agy
 worker type (`agy --mode auto`) and the first-send choice, scoped to `work/`,
 a directory agy has never trusted. The operator's client starts one worker
 there with `deck_worker_start` (`dir` = `work/`). The page checks the card
 (`agy-card`), its first line held at `agy-trust` and still undelivered 20 s
-later (`agy-held`), then waits up to 30 min for the person to answer agy's
-trust question in the card and sees the line delivered (`agy-delivered`,
-`done` b=9). Nothing types into the card. Afterwards the trusted test
+later (`agy-held`), reports `agy-trust-ready` and waits up to 30 min for
+the person (or the operator, with `tmux send-keys Enter` into the pane) to
+answer agy's trust question and sees the line delivered (`agy-delivered`,
+`done` b=9). Judge with `scripts/smoke-verdict <data> agy-trust`. Nothing types into the card. Afterwards the trusted test
 directory stays in agy's `trustedWorkspaces` (agy's file, not Deck's).
-First run 2026-11-23 on this Mac: PASS, the worker wrote its file and agy
-reported `working` then `turn-done`.
+First runs 2026-11-23: on the user's Mac PASS (the person answered agy);
+on air2 PASS 7/7 (the operator answered in the pane; agy's hooks file did
+not exist there, so the runner wrote Deck's entry naming a link
+`<root>/hook/deck.app/Contents/MacOS/deck-status-helper` to the carrier's
+helper — Deck recognizes its entry by that path — and removed the file and
+the run's trusted folder after).
 
 ## One-time automations (check `automation-once`, mode `run`)
 

@@ -933,6 +933,18 @@
         "workers-exception": { "failureOnly": true }
       }
     },
+    "agy-trust": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "workers-armed": {},
+        "agy-card": {},
+        "agy-held": {},
+        "agy-trust-ready": {},
+        "agy-delivered": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
     "reentry-shapes": {
       "terminal": "done",
       "checks": {
